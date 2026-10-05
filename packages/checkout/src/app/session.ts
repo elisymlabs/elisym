@@ -47,6 +47,7 @@ import type { Asset, Network } from '@elisym/pay-core';
 import { type Eip1193Client, readQuantity, withAbort } from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, isSignature } from '@solana/kit';
 import type { CheckoutState } from '../embed/protocol';
+import type { FollowOnly, RefusedReason } from './controller';
 import { type TempoWalletOption, TempoChainUnsupported, walletErrorKind } from './evm-wallets';
 import { REF_NEEDS_VERIFIED_STORE, sameRef } from './ref-scope';
 
@@ -100,6 +101,8 @@ export type Problem =
   | { reason: 'wallet_failed' | 'wallet_unsupported' }
   | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
   | { reason: 'offer_changed' | 'offer_refused' }
+  /** The store stopped selling the product while an order of it is followed. */
+  | { reason: 'sold_out' }
   /** Another account's purchase of this product holds it in this browser: try later. */
   | { reason: 'other_purchase' }
   | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
@@ -243,7 +246,13 @@ export type View =
       receipt?: Receipt;
     }
   | { kind: 'refunded'; store?: StoreInfo; product?: About['product']; receipt?: Receipt }
-  | { kind: 'refused'; message: string; store?: StoreInfo; product?: About['product'] };
+  | {
+      kind: 'refused';
+      reason: RefusedReason;
+      message: string;
+      store?: StoreInfo;
+      product?: About['product'];
+    };
 
 export interface SessionDeps {
   store: OrderStore;
@@ -290,7 +299,7 @@ export interface SessionDeps {
    * paying, delivered, or ended and still heard): no new payment, this message
    * where the offer would be.
    */
-  followOnly?: { message: string; orderId: string };
+  followOnly?: FollowOnly;
 }
 
 /** A late answer or find for an order that is not on screen. */
@@ -483,7 +492,7 @@ export class CheckoutSession {
   /** The generation the running watch timer belongs to. */
   private watchGeneration = -1;
   /** Never pays, only follows this order (the offer was refused, or its network is not served). */
-  private followOnly: { message: string; orderId?: string } | undefined;
+  private followOnly: { reason: RefusedReason; message: string; orderId?: string } | undefined;
   /** The problem last shown on the offer, kept across a redraw. */
   private offerProblem: Problem | undefined;
   /** Listeners on the product's orders that ended unpaid: a delivery for one still shows. */
@@ -529,7 +538,7 @@ export class CheckoutSession {
    * Why a re-check refused this page, while an order kept it from ending: the
    * trust level is no longer shown, and no new purchase is offered.
    */
-  private refusedHere: string | undefined;
+  private refusedHere: { reason: RefusedReason; message: string } | undefined;
   /** The last block-height estimate of the live Solana attempt, by attempt. */
   private retryEstimate:
     | { attemptId: string; seconds: number; at: number; latched: boolean }
@@ -595,6 +604,7 @@ export class CheckoutSession {
         ),
       );
       this.followOnly = {
+        reason: 'offer_refused',
         message: NO_NETWORK,
         ...(stillFollowed === undefined ? {} : { orderId: stillFollowed.orderId }),
       };
@@ -1798,10 +1808,11 @@ export class CheckoutSession {
     };
   }
 
-  private refuse(message: string): void {
+  private refuse(reason: RefusedReason, message: string): void {
     this.refused = true;
     this.show({
       kind: 'refused',
+      reason,
       message,
       store: { name: this.offer.offer.profile.name },
       product: productOf(this.offer.offer.product),
@@ -1830,10 +1841,11 @@ export class CheckoutSession {
     }
     const reloaded = await this.deps.reloadOffer();
     if (!reloaded.ok) {
-      return this.refusedOnReload(reloaded.message);
+      const reason = reloaded.refusal === 'product_not_on_sale' ? 'sold_out' : 'offer_refused';
+      return this.refusedOnReload(reason, reloaded.message);
     }
     if (this.customerRef !== undefined && reloaded.offer.level !== 'A') {
-      return this.refusedOnReload(REF_NEEDS_VERIFIED_STORE);
+      return this.refusedOnReload('offer_refused', REF_NEEDS_VERIFIED_STORE);
     }
     // The fresh offer's own warnings are passed: only the payout and its amount decide.
     const verdict = compareOffers(this.payout, reloaded.confirm, reloaded);
@@ -1841,7 +1853,7 @@ export class CheckoutSession {
     // it, never one on another network. None: refused, exactly as above.
     const fallback = this.payablePayouts(reloaded)[0];
     if (verdict === 'gone' && fallback === undefined) {
-      return this.refusedOnReload(NO_PAYABLE_PAYOUT);
+      return this.refusedOnReload('offer_refused', NO_PAYABLE_PAYOUT);
     }
     this.offer = reloaded;
     this.refusedHere = undefined;
@@ -1864,17 +1876,17 @@ export class CheckoutSession {
   }
 
   /** The re-verification refused: a live order is still followed, else the widget refuses. */
-  private refusedOnReload(message: string): undefined {
+  private refusedOnReload(reason: RefusedReason, message: string): undefined {
     // The store no longer accepts this page: its trust level is not shown again.
-    this.refusedHere = message;
+    this.refusedHere = { reason, message };
     const live = this.record;
     if (live !== undefined && live.state !== 'created' && live.state !== 'ordered') {
       // No new payment, but the order that is paying or paid is still followed.
-      this.render({ problem: { reason: 'offer_refused' } });
+      this.render({ problem: { reason } });
       return undefined;
     }
     this.setRecord(undefined);
-    this.refuse(message);
+    this.refuse(reason, message);
     return undefined;
   }
 
@@ -1918,7 +1930,7 @@ export class CheckoutSession {
       // A reference credits an account: never on an offer that is not level A.
       if (this.customerRef !== undefined && this.offer.offer.level !== 'A') {
         this.setRecord(undefined);
-        this.refuse(REF_NEEDS_VERIFIED_STORE);
+        this.refuse('offer_refused', REF_NEEDS_VERIFIED_STORE);
         return undefined;
       }
       this.working('ordering');
@@ -2243,7 +2255,7 @@ export class CheckoutSession {
     }
     // A refusal by the store stays explained on every redraw while the order lives.
     const refused: Problem | undefined =
-      this.refusedHere === undefined ? undefined : { reason: 'offer_refused' };
+      this.refusedHere === undefined ? undefined : { reason: this.refusedHere.reason };
     const problem = extra.problem ?? this.attemptProblem ?? refused;
     const retryIn = this.retryCountdown(record);
     const requestEndsIn = tempo && !signed ? this.requestCountdown(record) : undefined;
@@ -2357,12 +2369,13 @@ export class CheckoutSession {
     if (this.refusedHere !== undefined) {
       // The store refused this page while an order was still live; that order
       // has ended, so the refusal shows now instead of a new purchase.
-      this.refuse(this.refusedHere);
+      this.refuse(this.refusedHere.reason, this.refusedHere.message);
       return;
     }
     if (this.followOnly !== undefined) {
       this.show({
         kind: 'refused',
+        reason: this.followOnly.reason,
         message: this.followOnly.message,
         store: { name: this.offer.offer.profile.name },
         product: productOf(this.offer.offer.product),

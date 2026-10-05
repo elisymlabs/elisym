@@ -414,7 +414,18 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       name: 'refused',
       view: {
         kind: 'refused',
+        reason: 'offer_refused',
         message: 'The store is not on this domain.',
+        store: { name: 'Demo Shop' },
+        product: about.product,
+      },
+    },
+    {
+      name: 'sold-out',
+      view: {
+        kind: 'refused',
+        reason: 'sold_out',
+        message: 'Sold out. This product is not available right now.',
         store: { name: 'Demo Shop' },
         product: about.product,
       },

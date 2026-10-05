@@ -7,8 +7,19 @@ import type { Network } from '@elisym/pay-core';
 import type { CheckoutParams } from '../embed/protocol';
 import type { HandshakeRefusal } from './handshake';
 import { ordersForRef } from './ref-scope';
+import { REFUSALS } from './ui/text';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
+
+/** Why an offer view refuses a new purchase: the store's refusal, or a stopped product. */
+export type RefusedReason = 'offer_refused' | 'sold_out';
+
+/** A refused offer that still has an order of this device to follow, never paid again. */
+export interface FollowOnly {
+  reason: RefusedReason;
+  message: string;
+  orderId: string;
+}
 
 /** A start still running this long says so: never a refusal, the session keeps going. */
 export const SLOW_START_MS = 30_000;
@@ -47,6 +58,8 @@ export type RefusalReason =
   | 'no_storage'
   /** `verifyOffer` or the widget's own policy refused the offer. */
   | 'offer_refused'
+  /** The store stopped selling the product (its listing is not on sale). */
+  | 'sold_out'
   /** Something failed unexpectedly (storage, the network): nothing is offered. */
   | 'failed'
   /** The page passed a customer reference that is not a valid one. */
@@ -143,6 +156,10 @@ export async function screenForPage(
     store: deps.store,
     skipUnreachable: true,
   });
+  // Before the reference gating: visibility is public, so this tells the page nothing.
+  if (!loaded.ok && loaded.refusal === 'product_not_on_sale') {
+    return { kind: 'refused', reason: 'sold_out' };
+  }
   if (params.customerRef !== undefined) {
     // Strict origin refuses any store that is not level A on this page's domain.
     if (
@@ -164,7 +181,7 @@ export type PageStart =
   | {
       kind: 'offer';
       offer: ReadyOffer;
-      followOnly?: { message: string; orderId: string };
+      followOnly?: FollowOnly;
       /** Follow-only: the refusal the page is shown (and told) all the same. */
       refusal?: Extract<Screen, { kind: 'refused' }>;
     };
@@ -200,7 +217,11 @@ export async function openPage(
     kind: 'offer',
     offer: followed.offer,
     followOnly: {
-      message: refused.message ?? 'This product cannot be bought here.',
+      reason: refused.reason === 'sold_out' ? 'sold_out' : 'offer_refused',
+      message:
+        refused.reason === 'sold_out'
+          ? REFUSALS.sold_out
+          : (refused.message ?? 'This product cannot be bought here.'),
       orderId: followed.orderId,
     },
     refusal: refused,

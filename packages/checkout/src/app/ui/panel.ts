@@ -11,6 +11,7 @@ export const PROBLEM_PLACE = {
   offer_changed: 'offer',
   bad_email: 'offer',
   offer_refused: 'offer',
+  sold_out: 'offer',
   other_purchase: 'offer',
   too_late: 'offer',
   no_wallet: 'wallets',

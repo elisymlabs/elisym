@@ -560,6 +560,51 @@ describe('buy_product', () => {
     expect(run.chain.landed.size).toBe(1);
   });
 
+  function stopListing(run: Awaited<ReturnType<typeof world>>): void {
+    run.events.push(
+      sign(
+        buildProductEvent({
+          d: D,
+          title: 'Agents 101',
+          description: 'Twelve lessons.',
+          price: { amount: '49', currency: 'USD' },
+          accept: [USDC_DEVNET_CAIP19],
+          visibility: 'sold-out',
+          createdAt: T0 + 1,
+        }),
+        run.shop.store,
+      ),
+    );
+  }
+
+  it('quotes a sold-out product as sold out, without the store text, ordering nothing', async () => {
+    const run = await world();
+    stopListing(run);
+    const refused = await tool('buy_product').handler(run.ctx, { product: run.shop.naddr });
+    const shown = text(refused as never);
+    expect((refused as { isError?: boolean }).isError).toBe(true);
+    expect(shown).toContain('This product is sold out');
+    expect(shown).not.toContain('The listing is sold-out');
+    expect(shown).not.toContain('store-provided');
+    expect(await orders(run)).toEqual([]);
+  });
+
+  it('a product sold out since the quote: nothing ordered or paid', async () => {
+    const run = await world();
+    const quote = await quoteId(run);
+    stopListing(run);
+    const refused = await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    const shown = text(refused as never);
+    expect(shown).toContain('sold out since the quote');
+    expect(shown).toContain('Do not retry.');
+    expect(shown).not.toContain('The listing is sold-out');
+    expect(await orders(run)).toEqual([]);
+    expect(run.chain.sent).toEqual([]);
+  });
+
   it('shows why an offer was refused as untrusted data', async () => {
     const run = await world();
     run.events.splice(0, run.events.length);

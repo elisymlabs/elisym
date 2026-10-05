@@ -41,6 +41,11 @@ export const STOP_GLYPH = svg(
     '<path fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" d="M8.5 8.5l7 7M15.5 8.5l-7 7"/>',
 );
 
+export const SOLD_OUT_GLYPH = svg(
+  '<circle cx="12" cy="12" r="12" fill="#5b6470"/>' +
+    '<path fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" d="M7.5 12h9"/>',
+);
+
 export const RETURN_GLYPH = svg(
   '<circle cx="12" cy="12" r="12" fill="#5b6470"/>' +
     '<path fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M9.5 8L6.5 11l3 3M7 11h6.5a3.5 3.5 0 010 7H11"/>',
