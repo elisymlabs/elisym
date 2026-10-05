@@ -84,12 +84,13 @@ or use Protection Bypass for Automation and open the preview once with
 
 ### Preview checklist
 
-- [ ] The build log prints `first screen`, `v1/embed.js` and `v2/embed.js` lines and no error.
+- [ ] The build log prints `first screen`, `v1/embed.js`, `v2/embed.js` and `v3/embed.js` lines
+      and no error.
 - [ ] `/checkout` responds with the `Content-Security-Policy`, `Referrer-Policy: no-referrer`
       and `Cache-Control: no-cache` headers.
-- [ ] `/v1/embed.js` and `/v2/embed.js` respond with `Access-Control-Allow-Origin: *` and the
+- [ ] `/v1/embed.js`, `/v2/embed.js` and `/v3/embed.js` respond with `Access-Control-Allow-Origin: *` and the
       immutable `Cache-Control`.
-- [ ] With the preview's `/v2/embed.js`, the button opens the checkout in a modal; the close
+- [ ] With the preview's `/v3/embed.js`, the button opens the checkout in a modal; the close
       button, Escape and a click outside it close it, and focus returns to the button.
 - [ ] A test page with `<elisym-buy product="<devnet naddr>" network="devnet" theme="dark">` and the
       preview's `/v1/embed.js` shows the offer. The page receives `ready` and nothing else
@@ -104,17 +105,18 @@ or use Protection Bypass for Automation and open the preview once with
 ## Production release
 
 1. Merge to `main`. Vercel builds Production with the variables above.
-2. Check that the build log's `v1/embed.js` and `v2/embed.js` lines equal `src/embed/v1.sri`
-   and `src/embed/v2.sri`, and that `https://pay.elisym.network/v2/embed.js` hashes to
-   `src/embed/v2.sri` before any page or doc points at it.
+2. Check that the build log's `v1/embed.js`, `v2/embed.js` and `v3/embed.js` lines equal
+   `src/embed/v1.sri`, `src/embed/v2.sri` and `src/embed/v3.sri`, and that
+   `https://pay.elisym.network/v3/embed.js` hashes to `src/embed/v3.sri` before any page or doc
+   points at it.
 3. Run the preview checklist against `https://pay.elisym.network`, with a mainnet product,
    before announcing it. Real money is involved, so a person does this step.
-4. Merchants pin (v1 is kept working as it is; new pages use v2):
+4. Merchants pin (v1 and v2 are kept working as they are; new pages use v3):
 
    ```html
    <script
-     src="https://pay.elisym.network/v2/embed.js"
-     integrity="<the value in src/embed/v2.sri>"
+     src="https://pay.elisym.network/v3/embed.js"
+     integrity="<the value in src/embed/v3.sri>"
      crossorigin="anonymous"
    ></script>
    ```

@@ -43,8 +43,8 @@ npx @elisym/merchant-node run
 ```html
 <elisym-buy product="naddr1..." network="devnet" theme="dark"></elisym-buy>
 <script
-  src="https://pay.elisym.network/v2/embed.js"
-  integrity="sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ"
+  src="https://pay.elisym.network/v3/embed.js"
+  integrity="sha384-FPsJfAuhwQU0mlPKTKLwCTp1YGK6aFRh0pT+Gl1T3UML2jlIK7EkW8FW5ue2qFJX"
   crossorigin="anonymous"
 ></script>
 ```
@@ -300,7 +300,9 @@ To edit the config in the volume, mount a host directory instead, for example
 To credit a user's account on your own backend after a payment (a deposit, a top-up), let the
 node tell your backend. The node, and only the node, sends a signed `order.paid` webhook once it
 has verified the payment on chain. Never credit from the browser: anything a page reports can be
-forged by the buyer.
+forged by the buyer. The page passes your id of the account as `customer-ref` (v3 loader, level A
+store on its own domain); [Credit an account](https://docs.elisym.network/commerce/credit-an-account)
+walks through the page, the webhook and the receiver.
 
 ```json
 "webhook": { "url": "https://shop.example.com/elisym/webhook" }
@@ -364,14 +366,18 @@ What your receiver does, in this order:
 
 1. Read the raw body. Refuse a timestamp more than 300 seconds from your clock, and a signature
    that does not match (compare with `crypto.timingSafeEqual` on equal-length buffers).
-2. Check `event` is `order.paid` (answer `test` with 2xx and credit nothing), `store` is your
-   store's key, and `payment.asset` is in your own allowlist of exact asset ids. Take the decimals
-   from your allowlist, not from the body.
-3. In one database transaction: insert the event, and credit the account only when the row was
-   inserted. A duplicate (the node sends at least once) answers 2xx and credits nothing. An order
-   with no or an unknown `customerRef` is inserted as `queued`, credits nothing and answers 2xx;
-   you credit it by hand later.
-4. Answer 2xx only after the commit. Any other answer, or none within 10 seconds, is retried.
+2. Answer `test` with 2xx and credit nothing. For `order.paid`, check that `store` is your
+   store's key, `product.address` is in your own allowlist of deposit products, `payment.asset`
+   is in your own allowlist of exact asset ids (take the decimals from it, not from the body),
+   and `customerRef` names an account you know. The product check matters: any buyer can add a
+   `customer-ref` in devtools, so without it a buyer of another product of yours would get that
+   product and an equal balance. An event that fails a check is inserted as `queued` with what
+   the node verified, credits nothing and answers 2xx (an error would be retried for 7 days).
+3. In one database transaction: insert the event as `credited`, and credit the account only when
+   the row was inserted. A duplicate (the node sends at least once) answers 2xx and credits
+   nothing.
+4. Answer 2xx only after the commit. Any other answer, or none within 10 seconds, is retried: keep
+   5xx for your own failures (the database is down).
 
 The events table keeps every row for good, with two unique keys: the event id, and the order
 itself, so neither a resend nor a hand credit of the same order credits twice:
@@ -379,34 +385,44 @@ itself, so neither a resend nor a hand credit of the same order credits twice:
 ```sql
 CREATE TABLE elisym_events (
   id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  event_id     TEXT UNIQUE,              -- null for an order answered by hand (no webhook)
+  event_id     TEXT UNIQUE,               -- null for an order answered by hand (no webhook)
   store        TEXT NOT NULL,
   buyer_pubkey TEXT NOT NULL,
   order_id     TEXT NOT NULL,
-  account      TEXT,
-  status       TEXT NOT NULL,            -- 'credited' or 'queued'
+  product      TEXT,                      -- product.address
+  customer_ref TEXT,                      -- as the body names it, unchecked
+  asset        TEXT,                      -- payment.asset
+  amount       NUMERIC,                   -- payment.amount, subunits verified on chain
+  account      TEXT,                      -- the account credited
+  status       TEXT NOT NULL,             -- 'credited' or 'queued'
   UNIQUE (store, buyer_pubkey, order_id)
 );
 
--- From the webhook, in the transaction that credits: credit only when a row comes back.
-INSERT INTO elisym_events (event_id, store, buyer_pubkey, order_id, account, status)
-VALUES ($1, $2, $3, $4, $5, 'credited')
+-- From the webhook, every check passed, in the transaction that credits:
+-- credit $8 (in your allowlist's decimals) to $9 only when a row comes back.
+INSERT INTO elisym_events
+  (event_id, store, buyer_pubkey, order_id, product, customer_ref, asset, amount, account, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'credited')
 ON CONFLICT DO NOTHING
 RETURNING id;
 
--- No or unknown customerRef: kept for you, nothing credited.
-INSERT INTO elisym_events (event_id, store, buyer_pubkey, order_id, status)
-VALUES ($1, $2, $3, $4, 'queued')
+-- Anything else that is signed (no or unknown customerRef, another store, an asset or a
+-- product not on your lists): kept with what the node verified, nothing credited, answer 2xx.
+INSERT INTO elisym_events
+  (event_id, store, buyer_pubkey, order_id, product, customer_ref, asset, amount, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
 ON CONFLICT DO NOTHING;
 
--- Crediting a queued event by hand, in one transaction with the credit: credit only when a row comes back.
+-- Crediting a queued event by hand, in one transaction with the credit: credit the row's own
+-- asset and amount (RETURNING) to $1, only when a row comes back.
 UPDATE elisym_events SET status = 'credited', account = $1
 WHERE event_id = $2 AND status = 'queued'
-RETURNING id;
+RETURNING id, asset, amount;
 ```
 
-An order answered by hand sends no webhook: credit it with the plain insert, `event_id` null and
-the order's store, buyer and order id (`orders` lists them), in the same transaction as the credit.
+A queued row keeps the asset and the amount the node verified: a hand credit uses those. An order
+answered by hand sends no webhook: credit it with the plain insert, `event_id` null and the
+order's store, buyer and order id (`orders` lists them), in the same transaction as the credit.
 
 ```js
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -442,7 +458,7 @@ createServer((request, response) => {
       return;
     }
     try {
-      await creditOnce(JSON.parse(body)); // steps 2 and 3: your code
+      await creditOnce(JSON.parse(body)); // steps 2 and 3: queues, never throws, on a failed check
       response.writeHead(200).end();
     } catch {
       response.writeHead(500).end(); // the node sends it again later

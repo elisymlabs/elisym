@@ -9,7 +9,7 @@
 export const HEIGHT_ANIMATION_MS = 200;
 /** No animation frame this long (a throttled, hidden frame): the target is posted at once. */
 export const FRAME_STALL_MS = 100;
-/** The loaders' cap on the frame's height (`embed/v2/embed.ts`, `MAX_FRAME_HEIGHT`). */
+/** The loaders' cap on the frame's height (`embed/v3/embed.ts`, `MAX_FRAME_HEIGHT`). */
 export const MAX_FRAME_HEIGHT = 2000;
 
 /** `FrameHandle` and `TimerHandle` are what the host's scheduler returns (numbers in a browser). */

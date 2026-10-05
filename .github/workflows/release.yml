@@ -61,6 +61,16 @@ jobs:
           # before they are tagged, so a re-run still releases them and sets
           # the outputs the docker and mcp-registry jobs wait for. merchant-node
           # builds on commerce and pay-core only.
+          #
+          # react depends on nothing here and goes last. Its publish is the one
+          # failure that does not stop the run: by then mcp, cli and
+          # merchant-node may be tagged, and a stopped run would never start the
+          # docker and mcp-registry jobs for them (a re-run skips tagged
+          # packages and so sets no outputs). A failed react publish is only a
+          # warning and stays untagged; a re-run, or the next release, tags it,
+          # also when it was published by hand (its first version must be: a new
+          # name cannot be published through Trusted Publishing first).
+          NON_FATAL_PUBLISH="react"
           PACKAGES=(
             "pay-core:@elisym/pay-core"
             "commerce:@elisym/commerce"
@@ -68,6 +78,7 @@ jobs:
             "sdk:@elisym/sdk"
             "mcp:@elisym/mcp"
             "cli:@elisym/cli"
+            "react:@elisym/react"
           )
 
           for entry in "${PACKAGES[@]}"; do
@@ -85,10 +96,24 @@ jobs:
               continue
             fi
 
-            echo "  Publishing ${PKG_NAME}@${VERSION} to npm..."
-            cd "${PKG_DIR}"
-            npm publish --provenance --access public
-            cd "${GITHUB_WORKSPACE}"
+            # A version already on npm (published by hand, or by a run that
+            # failed before it tagged) is only tagged and released.
+            if npm view "${PKG_NAME}@${VERSION}" version >/dev/null 2>&1; then
+              echo "  ${PKG_NAME}@${VERSION} is already on npm. Tagging only."
+            else
+              echo "  Publishing ${PKG_NAME}@${VERSION} to npm..."
+              cd "${PKG_DIR}"
+              if ! npm publish --provenance --access public; then
+                cd "${GITHUB_WORKSPACE}"
+                if [ "${DIR}" = "${NON_FATAL_PUBLISH}" ]; then
+                  echo "::warning::${PKG_NAME}@${VERSION} was not published; left untagged for a re-run."
+                  continue
+                fi
+                echo "::error::${PKG_NAME}@${VERSION} was not published."
+                exit 1
+              fi
+              cd "${GITHUB_WORKSPACE}"
+            fi
 
             echo "  Creating git tag ${TAG}..."
             git tag "${TAG}"

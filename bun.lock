@@ -251,6 +251,24 @@
         "decimal.js-light": "~2.5.0",
       },
     },
+    "packages/react": {
+      "name": "@elisym/react",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/node": "~25.5.0",
+        "@types/react": "~19.2.0",
+        "@types/react-dom": "~19.2.0",
+        "happy-dom": "~20.14.5",
+        "react": "~19.2.0",
+        "react-dom": "~19.2.0",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+      "peerDependencies": {
+        "react": ">=18 <20",
+      },
+    },
     "packages/sdk": {
       "name": "@elisym/sdk",
       "version": "0.41.0",
@@ -533,6 +551,8 @@
     "@elisym/merchant-node": ["@elisym/merchant-node@workspace:packages/merchant-node"],
 
     "@elisym/pay-core": ["@elisym/pay-core@workspace:packages/pay-core"],
+
+    "@elisym/react": ["@elisym/react@workspace:packages/react"],
 
     "@elisym/sdk": ["@elisym/sdk@workspace:packages/sdk"],
 

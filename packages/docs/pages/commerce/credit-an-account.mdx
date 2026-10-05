@@ -1,0 +1,293 @@
+# Credit an account
+
+Sell a deposit or a top-up: the buyer pays through the checkout on your page, and your backend credits their account with what they paid. The payment goes straight from the buyer's wallet to yours; what tells your backend is your own node, in a signed webhook, once it has verified the payment on chain.
+
+## Why the browser is never trusted
+
+A page hears the checkout's status events (`completed`, `onPaid` in React), but a buyer can fake anything a page hears: devtools, a forged event, a call to your handler. So the page shows a thank-you, and nothing more. Credit only from the webhook:
+
+1. Your page passes your own id of the logged-in account (`customer-ref`) to the checkout.
+2. The checkout puts it into the order, encrypted end to end to your node.
+3. Your node verifies the payment on chain, then sends `order.paid` to your backend, signed with a secret only the node and your backend hold. It carries the reference, the asset and the amount the node verified, never the total the buyer claimed.
+4. Your backend checks the signature and credits that amount to that account, once.
+
+The webhook says "this account got X paid on chain". It is not proof of who the buyer is: anyone may pay into an account they name, with their own money. Let the webhook only add balance; never let it change account data (an email, a linked key).
+
+## What you need
+
+- **A level A store** on the domain your page is served from (see [Level A](/commerce/quickstart#level-a-let-your-domain-vouch-for-the-store)). The checkout honours a reference only for a level A store, on a page served from its domain or a subdomain, in the top-level page. Everywhere else a page with a reference is refused. Any subdomain of the verified domain can name accounts this way: if subdomains serve content you do not control, verify a dedicated domain for the store.
+- **The node's webhook**, configured with a secret (below).
+- **A database** for the events, in your backend.
+
+## 1. The page
+
+Use the v3 loader, which takes `customer-ref`:
+
+```html
+<elisym-buy
+  product="naddr1..."
+  network="mainnet"
+  theme="dark"
+  label="Deposit 1 USD"
+  customer-ref="user_42"
+></elisym-buy>
+<script
+  src="https://pay.elisym.network/v3/embed.js"
+  integrity="sha384-FPsJfAuhwQU0mlPKTKLwCTp1YGK6aFRh0pT+Gl1T3UML2jlIK7EkW8FW5ue2qFJX"
+  crossorigin="anonymous"
+></script>
+```
+
+The reference is your own opaque id of the account: 1 to 128 of `A-Z a-z 0-9 . _ : @ -`, such as a user id. Not an email. The checkout refuses any other value and frames nothing.
+
+- **Take it from your server session**, never from the URL or anything else a link can set.
+- **Show the account** next to the button ("Adds to: Alice"), so a buyer sees where the money goes.
+- **Send `Content-Security-Policy: frame-ancestors 'self'`** (or `X-Frame-Options: SAMEORIGIN`) on the page, and keep the element in the top-level document: the checkout refuses a reference in a nested frame.
+- **Protect login against CSRF**, so no other site can log a visitor into someone else's account and with it someone else's reference.
+- **Render it once the reference is known.** `customer-ref=""` (present and empty) means "not known yet": the button shows disabled and nothing is framed until you set the value. Do not change the reference while the checkout is open; a new value reloads the checkout, and an order already placed keeps the reference it was placed with.
+
+Each reference has its own orders in the buyer's browser: a page for another account never shows, continues or pays an order placed for this one. One loader per page: v3 logs an error when an older loader defined `<elisym-buy>` first, because an older loader ignores `customer-ref`.
+
+### In React
+
+[`@elisym/react`](https://www.npmjs.com/package/@elisym/react) renders the element and adds the pinned v3 loader once per document (React 18 and 19; server rendering writes the element only):
+
+```tsx
+import { ElisymBuy } from '@elisym/react';
+
+export function Deposit({ account }: { account: { id: string; name: string } | undefined }) {
+  return (
+    <>
+      <p>Adds to: {account?.name ?? '...'}</p>
+      <ElisymBuy
+        product="naddr1..."
+        network="mainnet"
+        theme="dark"
+        label="Deposit 1 USD"
+        customerRef={account?.id}
+        requireCustomerRef
+        onPaid={() => console.log('Thanks: your balance updates in a moment.')}
+      />
+    </>
+  );
+}
+```
+
+With `requireCustomerRef`, the component waits (disabled button) until `customerRef` is set. `onPaid` is for the UI only.
+
+## 2. The node's webhook
+
+Add the URL to the node's `config.json`, make a secret of at least 32 bytes that only the node and your backend hold, and check that your receiver takes a signed test event (node stopped, after [the export block](/commerce/quickstart#1-create-the-store)):
+
+```bash
+node -e '
+const fs = require("fs");
+const home = process.env.ELISYM_MERCHANT_HOME;
+if (!home) throw new Error("run the export block first");
+const path = `${home}/config.json`;
+const config = JSON.parse(fs.readFileSync(path, "utf8"));
+config.webhook = { url: "https://<your backend>/elisym/webhook" };
+fs.writeFileSync(path, JSON.stringify(config, null, 2));
+'
+[ -s ~/.elisym-merchant-webhook ] || (umask 077 && openssl rand -hex 32 > ~/.elisym-merchant-webhook)
+export ELISYM_MERCHANT_WEBHOOK_SECRET_FILE=~/.elisym-merchant-webhook
+npx @elisym/merchant-node webhook test
+npx @elisym/merchant-node run
+```
+
+The URL must be `https:` on a public DNS name (`"allowInsecure": true` allows `http:` and local hosts, for a local test receiver). `run` refuses to start with a webhook and no secret. The secret is never written to the node's home, logged or shown. Give your backend the same secret, as a string.
+
+## 3. What the node sends
+
+Each event is a `POST` with `Content-Type: application/json` and these headers:
+
+| Header               | Value                                                                   |
+| -------------------- | ----------------------------------------------------------------------- |
+| `X-Elisym-Event`     | `order.paid` (or `test` from `webhook test`)                            |
+| `X-Elisym-Event-Id`  | The event id, also in the body                                          |
+| `X-Elisym-Timestamp` | Unix seconds of this attempt                                            |
+| `X-Elisym-Signature` | `v1=` and the hex HMAC-SHA256, keyed by the secret, of `timestamp.body` |
+
+```json
+{
+  "event": "order.paid",
+  "eventId": "<hex>",
+  "store": "<store pubkey hex>",
+  "orderId": "<uuid>",
+  "buyerPubkey": "<hex>",
+  "customerRef": "user_42",
+  "product": { "address": "30402:<store>:<d>" },
+  "payment": {
+    "asset": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "amount": "1000000",
+    "amountDisplay": "1",
+    "decimals": 6,
+    "symbol": "USDC",
+    "tx": "<transaction>",
+    "medium": "solana",
+    "paidAt": 1791100000
+  },
+  "email": "buyer@example.com"
+}
+```
+
+`customerRef` and `email` are there only when the order has them. `payment.amount` is what the node verified on chain, in the asset's subunits. `eventId` is the same for every send of one payment, and differs for two orders one Tempo transaction paid: it is your idempotency key. `payment.tx` is for your records only.
+
+## 4. The receiver
+
+In this order:
+
+1. **Authenticate.** Read the raw body. Refuse a timestamp more than 300 seconds from your clock, and a signature that does not match, compared in constant time on equal-length buffers.
+2. **Check the event.** Answer `event: "test"` with 2xx and credit nothing. For `order.paid`, every one of these must hold:
+   - `store` is your store's key;
+   - `product.address` is in your own allowlist of deposit products (`30402:<store>:<d>`);
+   - `payment.asset` is in your own allowlist of exact asset ids, which also gives its decimals (never take them from the body);
+   - `customerRef` names an account you know.
+
+   The product check matters: any buyer can add a `customer-ref` to a page in devtools, so without it a buyer of another product of yours (a course) would get the course and an equal balance. An event that fails any check is **not an error**: insert it as `queued` with what the node verified, credit nothing and answer 2xx. You look at it and credit it by hand, or not. Throwing would answer 5xx, and the node would send it again for seven days.
+3. **Record and credit in one database transaction.** Insert the event as `credited`; credit `payment.amount` to the account only when the row was inserted.
+4. **Answer 2xx only after the commit.** Only a failure of your own (the database is down) answers 5xx, so the node sends the event again.
+
+The node sends each event at least once, so a duplicate is normal: it finds its row, credits nothing and answers 2xx.
+
+```sql
+CREATE TABLE elisym_events (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  event_id     TEXT UNIQUE,               -- null for an order answered by hand (no webhook)
+  store        TEXT NOT NULL,
+  buyer_pubkey TEXT NOT NULL,
+  order_id     TEXT NOT NULL,
+  product      TEXT,                      -- product.address
+  customer_ref TEXT,                      -- as the body names it, unchecked
+  asset        TEXT,                      -- payment.asset
+  amount       NUMERIC,                   -- payment.amount, subunits verified on chain
+  account      TEXT,                      -- the account credited
+  status       TEXT NOT NULL,             -- 'credited' or 'queued'
+  UNIQUE (store, buyer_pubkey, order_id)
+);
+
+-- From the webhook, every check passed, in the transaction that credits:
+-- credit $8 (in your allowlist's decimals) to $9 only when a row comes back.
+INSERT INTO elisym_events
+  (event_id, store, buyer_pubkey, order_id, product, customer_ref, asset, amount, account, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'credited')
+ON CONFLICT DO NOTHING
+RETURNING id;
+
+-- Anything else that is signed (no or unknown customerRef, another store, an asset or a
+-- product not on your lists): kept with what the node verified, nothing credited, answer 2xx.
+INSERT INTO elisym_events
+  (event_id, store, buyer_pubkey, order_id, product, customer_ref, asset, amount, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'queued')
+ON CONFLICT DO NOTHING;
+
+-- Crediting a queued event by hand, in one transaction with the credit: credit the row's own
+-- asset and amount (RETURNING) to $1, only when a row comes back.
+UPDATE elisym_events SET status = 'credited', account = $1
+WHERE event_id = $2 AND status = 'queued'
+RETURNING id, asset, amount;
+```
+
+Two unique keys, the event id and the order itself, so neither a resend nor a hand credit of the same order credits twice. A queued row keeps the asset and the amount the node verified: a hand credit uses those, never a figure from elsewhere. Keep every row for good. Treat `customerRef` as an opaque lookup key, in parameterized queries only.
+
+A receiver with `node:http` (the database part is yours):
+
+```js
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createServer } from 'node:http';
+
+const SECRET = process.env.ELISYM_MERCHANT_WEBHOOK_SECRET;
+if (!SECRET) {
+  throw new Error('set ELISYM_MERCHANT_WEBHOOK_SECRET');
+}
+const MAX_BODY_BYTES = 64 * 1024;
+
+function verified(body, timestamp, signature) {
+  const fresh = Math.abs(Date.now() / 1000 - Number(timestamp)) <= 300;
+  const mac = createHmac('sha256', SECRET).update(`${timestamp}.${body}`).digest('hex');
+  const expected = Buffer.from(`v1=${mac}`);
+  const given = Buffer.from(signature);
+  return fresh && expected.length === given.length && timingSafeEqual(expected, given);
+}
+
+createServer((request, response) => {
+  const chunks = [];
+  let size = 0;
+  request.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      response.writeHead(413).end();
+      request.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  request.on('end', async () => {
+    const body = Buffer.concat(chunks).toString('utf8');
+    const timestamp = String(request.headers['x-elisym-timestamp'] ?? '');
+    const signature = String(request.headers['x-elisym-signature'] ?? '');
+    if (!verified(body, timestamp, signature)) {
+      response.writeHead(401).end();
+      return;
+    }
+    try {
+      await creditOnce(JSON.parse(body)); // steps 2 and 3: queues, never throws, on a failed check
+      response.writeHead(200).end();
+    } catch {
+      response.writeHead(500).end(); // the node sends it again later
+    }
+  });
+}).listen(8080);
+```
+
+With Express, take the raw body for this route, and the same `verified` check:
+
+```js
+import express from 'express';
+
+const app = express();
+app.post(
+  '/elisym/webhook',
+  express.raw({ type: 'application/json', limit: '64kb' }),
+  async (request, response) => {
+    const body = request.body.toString('utf8');
+    if (
+      !verified(
+        body,
+        request.get('x-elisym-timestamp') ?? '',
+        request.get('x-elisym-signature') ?? '',
+      )
+    ) {
+      response.sendStatus(401);
+      return;
+    }
+    try {
+      await creditOnce(JSON.parse(body));
+      response.sendStatus(200);
+    } catch {
+      response.sendStatus(500);
+    }
+  },
+);
+app.listen(8080);
+```
+
+Never parse the body as JSON before the check: the signature covers the exact bytes the node sent.
+
+## Retries and gaps
+
+- The event is written in the same ledger save that records the payment, so a crash never loses it, and a restarted node sends what is pending. Delivery to the buyer never waits on it.
+- A failed attempt is retried after 30 seconds, doubling to an hour, for 7 days; then it is `failed`. No redirect is followed, and an answer slower than 10 seconds counts as failed.
+- `npx @elisym/merchant-node orders` shows each paid order's reference, webhook state (`pending`, `sent`, `failed` or `none`) and event id. With the node stopped, `webhook retry <buyer>:<orderId>` sends a pending or failed event again now, and `webhook resend <buyer>:<orderId>` sends one for any paid order.
+
+What sends no webhook on its own, so you credit it by hand (record the event id, or the order with a null `event_id`, in the same transaction as the credit):
+
+- a payment verified before the webhook was configured, or by a node older than 0.7.0: `webhook resend` sends it;
+- an order answered by hand (`deliver`, `refund`): `orders` and the command show its reference;
+- a payment the node never saw: a node offline for longer than the three days it watches an order can miss payments for orders placed before it went down.
+
+In Docker the node runs on Bun, which sends the webhook through the proxy `HTTP_PROXY` / `HTTPS_PROXY` name, if set; list your backend in `NO_PROXY` when it should go direct.
+
+## Rotating the secret
+
+Let the receiver accept the old and the new secret, set the new one for the node and restart it (it signs every attempt afresh, pending ones too), then drop the old one.
