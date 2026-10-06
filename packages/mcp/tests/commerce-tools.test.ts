@@ -8,7 +8,12 @@ import {
   buildProductEvent,
   wrapOrderMessage,
 } from '@elisym/commerce';
-import { type OrderRecord, MemoryOrderBackend, OrderStore } from '@elisym/commerce/buyer';
+import {
+  type OrderRecord,
+  MemoryOrderBackend,
+  OrderStore,
+  applyStatus,
+} from '@elisym/commerce/buyer';
 import { USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { NATIVE_SOL, assetKey, generateSolanaWallet } from '@elisym/sdk';
 import { getBase58Encoder } from '@solana/kit';
@@ -142,6 +147,32 @@ async function storeDelivers(run: World, record: OrderRecord, message: Partial<O
       record.buyerPubkey,
     ).recipientWrap,
   );
+}
+
+/**
+ * The store's status for `record`, stored as the agent's listener stores it once
+ * heard: written here so no test waits on a follow budget to hear it.
+ */
+async function storeCompletes(
+  run: World,
+  record: OrderRecord,
+  message: Partial<OrderMessage> = {},
+): Promise<OrderRecord> {
+  const status = {
+    type: 'status',
+    buyerPubkey: record.buyerPubkey,
+    orderId: record.orderId,
+    status: 'completed',
+    ...message,
+  } as Parameters<typeof applyStatus>[2];
+  const agentStore = new OrderStore(
+    new FileOrderBackend(run.agent.agentDir as string, { durable: false }),
+  );
+  const applied = await applyStatus(agentStore, record.orderId, status, NOW + 100);
+  if (applied?.state !== 'completed') {
+    throw new Error(`not completed: ${applied?.state ?? 'no record'}`);
+  }
+  return applied;
 }
 
 beforeEach(() => {
@@ -293,12 +324,12 @@ describe('buy_product', () => {
       quote_id: first.id,
       accept_warnings: first.warnings,
     });
-    const [record] = await orders(run);
-    await storeDelivers(run, record as OrderRecord);
+    const record = await paidOrder(run);
+    await storeCompletes(run, record);
     const followed = text(
-      (await tool('get_order').handler(run.ctx, { order_id: record?.orderId })) as never,
+      (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
     );
-    expect(followed).toContain(`Payment complete (order ${record?.orderId})`);
+    expect(followed).toContain(`Payment complete (order ${record.orderId})`);
     const second = await quoteId(run);
     const shown = text(
       (await tool('buy_product').handler(run.ctx, {
@@ -306,9 +337,9 @@ describe('buy_product', () => {
         accept_warnings: second.warnings,
       })) as never,
     );
-    expect(shown).toContain(`Payment complete (order ${record?.orderId})`);
+    expect(shown).toContain(`Payment complete (order ${record.orderId})`);
     expect(shown).toContain(
-      `This agent already completed a purchase of this product (order ${record?.orderId}). To buy it again, call buy_product with buy_again: true.`,
+      `This agent already completed a purchase of this product (order ${record.orderId}). To buy it again, call buy_product with buy_again: true.`,
     );
     expect(new Set(run.chain.sent).size).toBe(1);
   });
@@ -727,8 +758,7 @@ async function completedUnseen(run: World): Promise<OrderRecord> {
     throw new Error('no signed attempt');
   }
   expect(record.paidTx).toBeUndefined();
-  await storeDelivers(run, record);
-  return record;
+  return storeCompletes(run, record);
 }
 
 const NEUTRAL = (orderId: string) => `Order ${orderId} completed by the store.`;
@@ -837,7 +867,7 @@ describe('a completed order, in words (D6, rev 4 #1, rev 5 #1)', () => {
     });
     const record = await paidOrder(run);
     expect(record.paidTx).toBeDefined();
-    await storeDelivers(run, record);
+    await storeCompletes(run, record);
     const probe = lookupAnswers(run, async () => ({ value: [null] }));
     const said = text(
       (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
@@ -857,7 +887,7 @@ describe('a completed order, in words (D6, rev 4 #1, rev 5 #1)', () => {
     const [record] = await orders(run);
     expect(record?.state).toBe('ordered');
     expect(record?.marker).toBeUndefined();
-    await storeDelivers(run, record as OrderRecord);
+    await storeCompletes(run, record as OrderRecord);
     const probe = lookupAnswers(run, async () => ({ value: [null] }));
     const said = text(
       (await tool('get_order').handler(run.ctx, { order_id: record?.orderId })) as never,
@@ -874,7 +904,7 @@ describe('a completed order, in words (D6, rev 4 #1, rev 5 #1)', () => {
       accept_warnings: quote.warnings,
     });
     const [record] = await orders(run);
-    await storeDelivers(run, record as OrderRecord, {
+    await storeCompletes(run, record as OrderRecord, {
       delivery: { method: 'access', value: 'LICENSE-KEY-1234' },
     });
     const followed = text(
@@ -900,7 +930,6 @@ describe('a completed order, in words (D6, rev 4 #1, rev 5 #1)', () => {
     const run = await world();
     const record = await completedUnseen(run);
     lookupAnswers(run, async () => ({ value: [null] }));
-    await tool('get_order').handler(run.ctx, { order_id: record.orderId });
     expect((await orders(run))[0]?.state).toBe('completed');
     const sent = new Set(run.chain.sent).size;
     const second = await quoteId(run);
