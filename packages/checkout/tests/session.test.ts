@@ -17,9 +17,12 @@ import {
   CHAIN_TIME_TIMEOUT_MS,
   RETRY_SETTLE_BLOCKS,
   SLOT_SECS_ESTIMATE,
+  TX_RECHECKS,
+  WATCH_EVERY_MS,
   type SessionDeps,
   CheckoutSession,
   explorerLink,
+  solanaVerdict,
   type View,
 } from '../src/app/session';
 import { receiptText } from '../src/app/ui/text';
@@ -208,10 +211,10 @@ async function recordOf(offer: Ready): Promise<OrderRecord> {
 }
 
 describe('a purchase', () => {
-  it('goes from the offer to the delivery, telling the page only state names', async () => {
+  it('goes from the offer to completion, telling the page only state names', async () => {
     const run = await setup();
     await run.session.start();
-    expect(run.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(run.last()).toMatchObject({ kind: 'offer' });
     await run.session.pay('Fake');
     expect(run.wallet.requests).toBe(1);
     expect(run.last()).toMatchObject({ kind: 'waiting_payment' });
@@ -226,10 +229,9 @@ describe('a purchase', () => {
     if (paidTx === undefined || paid.paidAt === undefined) {
       throw new Error('a paid record names its transaction and when it was found');
     }
+    // The store's delivery (an older node still sends one) is never shown.
     expect(run.last()).toEqual({
       kind: 'delivered',
-      text: 'https://shop.example/course',
-      link: 'https://shop.example/course',
       // The header keeps naming the store, with the level the offer has now.
       store: { name: profile.name, level, ...(domain === undefined ? {} : { domain }) },
       // The header names the product the order is for.
@@ -817,7 +819,7 @@ describe('a purchase', () => {
     expect(tabA.wallet.requests).toBe(requests);
   });
 
-  it('starts over from a cancelled order the store never acknowledged', async () => {
+  it('a cancelled order the store never acknowledged: heard at load, never paid (L1)', async () => {
     const run = await setup();
     run.relays.refuse = INBOX;
     await run.session.start();
@@ -826,14 +828,27 @@ describe('a purchase', () => {
     const first = await placedFor(run);
     expect(first.state).toBe('created');
     await storeSays(run.shop, run.relays, first, { status: 'cancelled', delivery: undefined });
-    // Still unacknowledged on the next load; the stored cancellation is heard there.
+    run.session.dispose();
+    // Still unacknowledged on the next load: the listener started at load hears the
+    // stored cancellation (the cancelled view, as before the silent continuation).
     run.relays.refuse = INBOX;
-    await run.session.start();
+    const again = reload(run);
+    await again.session.start();
     await settle();
-    expect((await recordOf(run.offer)).state).toBe('created');
-    expect(run.last()).toMatchObject({ kind: 'cancelled' });
-    await run.session.startOver();
-    expect(run.last()).toMatchObject({ kind: 'offer' });
+    const heard = await store.get(first.orderId);
+    expect(heard).toMatchObject({ state: 'created', status: { status: 'cancelled' } });
+    expect(again.last()).toMatchObject({ kind: 'cancelled' });
+    expect(again.statuses).toEqual(['ready']);
+    await again.session.startOver();
+    expect(again.last()).toMatchObject({ kind: 'offer' });
+    // A press now places a new order: the cancelled one is never paid.
+    run.relays.refuse = [];
+    await again.session.pay('Fake');
+    expect((await store.get(first.orderId))?.marker).toBeUndefined();
+    const paid = (await store.forProduct(run.offer.productAddress)).filter(
+      (record) => record.marker !== undefined,
+    );
+    expect(paid.map((record) => record.orderId)).not.toContain(first.orderId);
   });
 
   it('offers only a new order when the store cancelled during an attempt that ended', async () => {
@@ -1593,7 +1608,7 @@ describe('a purchase', () => {
     run.chain.expire();
     await run.session.startOver();
     expect((await recordOf(run.offer)).state).toBe('ended-unpaid');
-    expect(run.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(run.last()).toMatchObject({ kind: 'offer' });
     expect(run.statuses).toContain('ended');
   });
 
@@ -1775,23 +1790,16 @@ describe('the email, checked against the order actually sent', () => {
     return record;
   }
 
-  it('never blocks continuing an open order with a typo held for another one', async () => {
-    const second = solanaAddress();
-    const run = await setup({ transform: (offer) => withSecondPayout(offer, second) });
+  it('a typo typed over an open order asks for a fix before anything ends or opens (D8.1)', async () => {
+    const run = await setup();
     run.deps.collectEmail = true;
     await run.session.start();
     const first = await openOrder(run);
-    expect(lastOffer(run).continuing).toBe('ordered');
-    run.session.choosePayout(1);
-    expect(lastOffer(run).continuing).toBe(false);
     run.session.setEmail('not an email');
-    run.session.choosePayout(0);
-    expect(lastOffer(run).continuing).toBe('ordered');
     await run.session.pay('Fake');
-    expect(
-      run.views.some((view) => view.kind === 'offer' && view.problem?.reason === 'bad_email'),
-    ).toBe(false);
-    expect(run.wallet.requests).toBe(1);
+    expect(lastOffer(run).problem).toEqual({ reason: 'bad_email' });
+    expect(run.wallet.requests).toBe(0);
+    expect((await store.get(first.orderId))?.state).toBe('ordered');
     const all = await store.forProduct(run.offer.productAddress);
     expect(all.map((record) => record.orderId)).toEqual([first.orderId]);
   });
@@ -1814,7 +1822,6 @@ describe('the email, checked against the order actually sent', () => {
     await run.session.pay('Fake');
     const view = lastOffer(run);
     expect(view.problem).toEqual({ reason: 'bad_email' });
-    expect(view.continuing).toBe(false);
     expect(await store.forProduct(run.offer.productAddress)).toHaveLength(1);
     expect(run.wallet.requests).toBe(0);
   });
@@ -1885,10 +1892,8 @@ describe('the open order the offer continues', () => {
     run.relays.refuse = INBOX;
     await run.session.start();
     await run.session.pay('Fake');
-    expect(lastOffer(run)).toMatchObject({
-      continuing: 'created',
-      problem: { reason: 'order_not_acknowledged' },
-    });
+    expect(lastOffer(run)).toMatchObject({ problem: { reason: 'order_not_acknowledged' } });
+    expect((await recordOf(run.offer)).state).toBe('created');
   });
 
   it('stays across a reload that changed nothing, and ends with a new price', async () => {
@@ -1897,18 +1902,16 @@ describe('the open order the offer continues', () => {
     const tokens = run.chain.tokens;
     run.chain.tokens = 1n;
     await run.session.pay('Fake');
-    expect(lastOffer(run).continuing).toBe('ordered');
+    const first = await recordOf(run.offer);
+    expect(first.state).toBe('ordered');
     run.advance(600);
     await run.session.pay('Fake');
-    expect(lastOffer(run).continuing).toBe('ordered');
+    expect(await recordOf(run.offer)).toMatchObject({ orderId: first.orderId, state: 'ordered' });
     run.chain.tokens = tokens;
     run.advance(600);
     run.deps.reloadOffer = async () => raised(run.offer, NOW + 1230);
     await run.session.pay('Fake');
-    expect(lastOffer(run)).toMatchObject({
-      continuing: false,
-      problem: { reason: 'offer_changed' },
-    });
+    expect(lastOffer(run)).toMatchObject({ problem: { reason: 'offer_changed' } });
   });
 });
 
@@ -2743,11 +2746,15 @@ function statusRpc(chain: FakeSolana, answer: (signature: string) => Promise<unk
 }
 
 /** A completed order whose payment this checkout's watch never confirmed: the store answered first. */
-async function answeredFirst(rpcFor?: (chain: FakeSolana) => SessionDeps['rpcFor']) {
+async function answeredFirst(
+  rpcFor?: (chain: FakeSolana) => SessionDeps['rpcFor'],
+  prepare?: (run: Awaited<ReturnType<typeof setup>>) => void,
+) {
   const run = await setup();
   if (rpcFor !== undefined) {
     run.deps.rpcFor = rpcFor(run.chain);
   }
+  prepare?.(run);
   // The transaction lands, but the watch cannot read it yet: no `paidTx`.
   run.chain.indexLag = true;
   await run.session.start();
@@ -3052,7 +3059,7 @@ describe('a reload after a finished purchase (D1)', () => {
     await deliveredBefore(run);
     const again = reload(run);
     await again.session.start();
-    expect(again.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(again.last()).toMatchObject({ kind: 'offer' });
     expect(again.statuses).toEqual(['ready']);
   });
 
@@ -3070,7 +3077,7 @@ describe('a reload after a finished purchase (D1)', () => {
     expect((await recordOf(run.offer)).state).toBe('refunded');
     const again = reload(run);
     await again.session.start();
-    expect(again.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(again.last()).toMatchObject({ kind: 'offer' });
     expect(again.statuses).toEqual(['ready']);
   });
 
@@ -3259,10 +3266,8 @@ describe('Your purchases: the session side', () => {
     expect(probe.state.reads).toBe(1);
     // Opened again now: the record as it stands, delivered, not the paying snapshot.
     const now = await run.session.purchase(paying.orderId);
-    expect(now).toMatchObject({
-      status: 'delivered',
-      delivery: { text: 'https://shop.example/course' },
-    });
+    expect(now).toMatchObject({ status: 'delivered' });
+    expect(now).not.toHaveProperty('delivery');
     expect(now?.receipt).not.toHaveProperty('openStatus');
     expect(now?.receipt.sent).toBeDefined();
     expect(probe.state.reads).toBe(1);
@@ -3303,5 +3308,768 @@ describe('Your purchases: a transaction the chain does not confirm', () => {
     expect(receipt).toBeDefined();
     expect(receipt).not.toHaveProperty('sent');
     expect(receipt).not.toHaveProperty('paid');
+  });
+});
+
+/** Every record of the product as stored: equal before and after means nothing was written. */
+async function storedSnapshot(offer: Ready): Promise<string> {
+  return JSON.stringify(await store.forProduct(offer.productAddress));
+}
+
+describe('the reset when the modal reopens (D4)', () => {
+  it('a completed order goes back to the first step at once, writing nothing (M10)', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    expect(run.last()).toMatchObject({ kind: 'delivered' });
+    const before = await storedSnapshot(run.offer);
+    expect(run.session.resetFinished()).toBe(true);
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    expect(run.statuses.at(-1)).toBe('ready');
+    await settle();
+    expect(await storedSnapshot(run.offer)).toBe(before);
+    // A press after it places a new order beside the finished one.
+    await run.session.pay('Fake');
+    expect(await store.forProduct(run.offer.productAddress)).toHaveLength(2);
+  });
+
+  it('a refunded order too', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer), {
+      status: 'cancelled',
+      delivery: undefined,
+      refund: { tx: '6'.repeat(88), amount: '49000000' },
+    } as Partial<OrderMessage>);
+    expect(run.last()).toMatchObject({ kind: 'refunded' });
+    const before = await storedSnapshot(run.offer);
+    expect(run.session.resetFinished()).toBe(true);
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    expect(run.statuses.at(-1)).toBe('ready');
+    expect(await storedSnapshot(run.offer)).toBe(before);
+  });
+
+  async function unchangedBy(run: Awaited<ReturnType<typeof setup>>): Promise<void> {
+    const views = run.views.length;
+    const statuses = run.statuses.length;
+    const before = await storedSnapshot(run.offer);
+    expect(run.session.resetFinished()).toBe(false);
+    expect(run.views).toHaveLength(views);
+    expect(run.statuses).toHaveLength(statuses);
+    expect(await storedSnapshot(run.offer)).toBe(before);
+  }
+
+  it('never for a paid order the store has not answered', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_store' });
+    await unchangedBy(run);
+  });
+
+  it('never for a payment still out', async () => {
+    const run = await setup();
+    run.chain.dropSends = true;
+    await run.session.start();
+    await run.session.pay('Fake');
+    expect((await recordOf(run.offer)).state).toBe('paying');
+    await unchangedBy(run);
+  });
+
+  it('never for an open order a decline left', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'reject';
+    await run.session.start();
+    await run.session.pay('Fake');
+    expect((await recordOf(run.offer)).state).toBe('ordered');
+    await unchangedBy(run);
+  });
+
+  it('never for an unpaid order the store cancelled', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'reject';
+    await run.session.start();
+    await run.session.pay('Fake');
+    await storeSays(run.shop, run.relays, await recordOf(run.offer), {
+      status: 'cancelled',
+      delivery: undefined,
+    });
+    expect(run.last()).toMatchObject({ kind: 'cancelled' });
+    await unchangedBy(run);
+  });
+
+  it('never on a page that only follows an order (M11)', async () => {
+    const run = await setup();
+    const delivered = await deliveredBefore(run);
+    const followed = reload(run, {
+      followOnly: {
+        reason: 'offer_refused',
+        message: 'This product cannot be bought here.',
+        orderId: delivered.orderId,
+      },
+    });
+    await followed.session.start();
+    expect(followed.last()).toMatchObject({ kind: 'delivered' });
+    const views = followed.views.length;
+    expect(followed.session.resetFinished()).toBe(false);
+    expect(followed.views).toHaveLength(views);
+  });
+
+  it('never during an action or a press (M12)', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    const startingOver = run.session.startOver();
+    expect(run.session.resetFinished()).toBe(false);
+    await startingOver;
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    const second = (await store.forProduct(run.offer.productAddress)).find(
+      (record) => record.state === 'paid',
+    );
+    if (second === undefined) {
+      throw new Error('no second order');
+    }
+    await storeSays(run.shop, run.relays, second);
+    expect(run.last()).toMatchObject({ kind: 'delivered' });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const wallets = run.deps.wallets;
+    run.deps.wallets = (network) =>
+      wallets(network).map((option) => ({
+        ...option,
+        connect: async () => {
+          await held;
+          return option.connect();
+        },
+      }));
+    const pressing = run.session.pay('Fake');
+    expect(run.session.resetFinished()).toBe(false);
+    release();
+    await pressing;
+  });
+
+  it('never after the session ended', async () => {
+    const run = await setup();
+    await run.session.start();
+    await run.session.pay('Fake');
+    await run.timers.tick();
+    await storeSays(run.shop, run.relays, await recordOf(run.offer));
+    run.session.dispose();
+    expect(run.session.resetFinished()).toBe(false);
+  });
+});
+
+/** An order placed, then declined in the wallet: `ordered`, with no attempt. */
+async function declinedBefore(
+  run: Awaited<ReturnType<typeof setup>>,
+  email?: string,
+): Promise<OrderRecord> {
+  await run.session.start();
+  if (email !== undefined) {
+    run.session.setEmail(email);
+  }
+  run.wallet.behaviour = 'reject';
+  await run.session.pay('Fake');
+  run.wallet.behaviour = 'sign';
+  const record = await recordOf(run.offer);
+  expect(record.state).toBe('ordered');
+  expect(record.marker).toBeUndefined();
+  return record;
+}
+
+/** The email an order carries to the store, if any. */
+async function emailOf(run: Awaited<ReturnType<typeof setup>>, record: OrderRecord) {
+  const { unwrapOrderMessage } = await import('@elisym/commerce');
+  const message = unwrapOrderMessage(record.orderWrap as never, run.shop.store.secretKey)?.message;
+  return message !== undefined && 'email' in message ? message.email : undefined;
+}
+
+describe('a returning visitor with an unpaid order (D8)', () => {
+  it('an open order: the same offer and the same "ready" as a new visitor (M23)', async () => {
+    const run = await setup();
+    const newVisitor = reload(run);
+    await newVisitor.session.start();
+    newVisitor.session.dispose();
+    await declinedBefore(run);
+    run.session.dispose();
+    const again = reload(run);
+    await again.session.start();
+    await settle();
+    expect(again.views).toEqual(newVisitor.views);
+    expect(again.statuses).toEqual(['ready']);
+  });
+
+  it('an order the store never acknowledged: the same offer and "ready", nothing resumed at load', async () => {
+    const run = await setup();
+    const newVisitor = reload(run);
+    await newVisitor.session.start();
+    newVisitor.session.dispose();
+    run.relays.refuse = INBOX;
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.session.dispose();
+    const created = await recordOf(run.offer);
+    expect(created.state).toBe('created');
+    run.relays.refuse = [];
+    const again = reload(run);
+    await again.session.start();
+    await settle();
+    expect(again.views).toEqual(newVisitor.views);
+    expect(again.statuses).toEqual(['ready']);
+    // Not acknowledged behind the visitor's back: only a press resumes it.
+    expect((await store.get(created.orderId))?.state).toBe('created');
+    await again.session.pay('Fake');
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([created.orderId]);
+    expect(all[0]?.state).not.toBe('created');
+  });
+
+  it('an empty email pays the same order (M20)', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    const again = reload(run);
+    await again.session.start();
+    const requests = run.wallet.requests;
+    await again.session.pay('Fake');
+    expect(run.wallet.requests).toBe(requests + 1);
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([open.orderId]);
+    expect(again.statuses).toEqual(['ready', 'ordered', 'paying']);
+  });
+
+  it('a typed email ends the open order and places a new one carrying it (M21)', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    const again = reload(run);
+    await again.session.start();
+    again.session.setEmail('buyer@example.com');
+    await again.session.pay('Fake');
+    expect((await store.get(open.orderId))?.state).toBe('ended-unpaid');
+    const placed = (await store.forProduct(run.offer.productAddress)).find(
+      (record) => record.orderId !== open.orderId,
+    );
+    if (placed === undefined) {
+      throw new Error('no new order');
+    }
+    expect(await emailOf(run, placed)).toBe('buyer@example.com');
+    expect(placed.state).not.toBe('ordered');
+  });
+
+  it('a typed email beside an attempt that may still land follows it, never a second order (M22)', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    const typing = reload(run);
+    await typing.session.start();
+    // Another tab of the page pays the same order meanwhile, and its payment does not land yet.
+    run.chain.dropSends = true;
+    const other = reload(run);
+    await other.session.start();
+    await other.session.pay('Fake');
+    expect((await store.get(open.orderId))?.state).toBe('paying');
+    const requests = run.wallet.requests;
+    typing.session.setEmail('buyer@example.com');
+    await typing.session.pay('Fake');
+    expect(run.wallet.requests).toBe(requests);
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([open.orderId]);
+    expect(typing.last()).toMatchObject({ kind: 'waiting_payment' });
+  });
+
+  it('an unusable typed email asks for a fix and changes no order', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    const again = reload(run);
+    await again.session.start();
+    again.session.setEmail('not an email');
+    const requests = run.wallet.requests;
+    await again.session.pay('Fake');
+    expect(again.last()).toMatchObject({ kind: 'offer', problem: { reason: 'bad_email' } });
+    expect(run.wallet.requests).toBe(requests);
+    expect(await store.forProduct(run.offer.productAddress)).toEqual([
+      await store.get(open.orderId),
+    ]);
+    expect((await store.get(open.orderId))?.state).toBe('ordered');
+  });
+
+  it('the session’s own order, retried with the email it sent, stays the same order (M26)', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    const open = await declinedBefore(run, 'buyer@example.com');
+    expect(await emailOf(run, open)).toBe('buyer@example.com');
+    // Declined: the same press again, the email still typed.
+    await run.session.pay('Fake');
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([open.orderId]);
+    expect(all[0]?.state).not.toBe('ordered');
+  });
+
+  it('the session’s own unacknowledged order, retried with its email, stays the same order (M26)', async () => {
+    const run = await setup();
+    run.deps.collectEmail = true;
+    run.relays.refuse = INBOX;
+    await run.session.start();
+    run.session.setEmail('buyer@example.com');
+    await run.session.pay('Fake');
+    const first = await recordOf(run.offer);
+    expect(first.state).toBe('created');
+    run.relays.refuse = [];
+    await run.session.pay('Fake');
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([first.orderId]);
+  });
+
+  it('a decline after the continuation still posts "ordered"', async () => {
+    const run = await setup();
+    await declinedBefore(run);
+    run.session.dispose();
+    const again = reload(run);
+    await again.session.start();
+    run.wallet.behaviour = 'reject';
+    await again.session.pay('Fake');
+    expect(again.statuses).toEqual(['ready', 'ordered']);
+  });
+});
+
+/** A client whose first publish waits for `release` (or throws), as a slow or failing relay. */
+function heldPublish(relays: MemoryRelays, mode: 'hold' | 'throw') {
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  const client = new Proxy(relays, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== 'publish' || typeof value !== 'function') {
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+      return async (...args: unknown[]) => {
+        if (first) {
+          first = false;
+          if (mode === 'throw') {
+            throw new Error('relay down');
+          }
+          await gate;
+        }
+        return value.apply(target, args);
+      };
+    },
+  });
+  return { client, release: () => release() };
+}
+
+describe('the open order resumed in the background (D8.2)', () => {
+  it('a press while it runs waits for it, then pays the same order exactly once (M30, M32)', async () => {
+    const run = await setup();
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    const held = heldPublish(run.relays, 'hold');
+    const again = reload(run, { clientFor: () => held.client });
+    await again.session.start();
+    expect(again.last()).toMatchObject({ kind: 'offer' });
+    const requests = run.wallet.requests;
+    const pressing = again.session.pay('Fake');
+    await settle();
+    // The wallet is not asked to sign before the order is republished.
+    expect(run.wallet.requests).toBe(requests);
+    held.release();
+    await pressing;
+    expect(run.wallet.requests).toBe(requests + 1);
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([open.orderId]);
+    expect(again.statuses).toEqual(['ready', 'ordered', 'paying']);
+  });
+
+  it('once it settles the page has heard exactly "ready" (M31)', async () => {
+    const run = await setup();
+    await declinedBefore(run);
+    run.session.dispose();
+    const again = reload(run);
+    await again.session.start();
+    await settle();
+    await run.timers.tick();
+    expect(again.statuses).toEqual(['ready']);
+    expect(again.views.every((view) => view.kind === 'offer')).toBe(true);
+  });
+
+  it('a resume that throws draws nothing, and the next press still pays', async () => {
+    const run = await setup();
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    const failing = heldPublish(run.relays, 'throw');
+    const again = reload(run, { clientFor: () => failing.client });
+    await again.session.start();
+    await settle();
+    expect(again.views).toHaveLength(1);
+    expect(again.statuses).toEqual(['ready']);
+    const requests = run.wallet.requests;
+    await again.session.pay('Fake');
+    expect(run.wallet.requests).toBe(requests + 1);
+    expect((await store.get(open.orderId))?.state).not.toBe('ordered');
+  });
+});
+
+describe('the sent transaction checked again (rev 4 #2, rev 5 #2)', () => {
+  for (const [name, firstAnswer] of [
+    [
+      'throws',
+      async () => {
+        throw new Error('node down');
+      },
+    ],
+    [
+      'is only processed',
+      async () => ({ value: [{ err: null, confirmationStatus: 'processed' }] }),
+    ],
+    [
+      'is processed with an error',
+      async () => ({ value: [{ err: { failed: true }, confirmationStatus: 'processed' }] }),
+    ],
+    ['knows nothing yet', async () => ({ value: [null] })],
+  ] as const) {
+    it(`the first look-up ${name}, the second succeeds: "Transaction sent" appears (M34)`, async () => {
+      const probe: { state?: { reads: number } } = {};
+      let answers = 0;
+      const { run, signature } = await answeredFirst((chain) => {
+        const made = statusRpc(chain, () => {
+          answers += 1;
+          return answers === 1
+            ? firstAnswer()
+            : Promise.resolve({ value: [{ err: null, confirmationStatus: 'finalized' }] });
+        });
+        probe.state = made.state;
+        return () => made.rpc;
+      });
+      await settle();
+      expect(probe.state?.reads).toBe(1);
+      expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+      const statuses = run.statuses.length;
+      await run.timers.tick();
+      expect(probe.state?.reads).toBe(2);
+      expect(receiptOfView(run.last())?.sent?.tx).toBe(signature);
+      // The switch posts nothing.
+      expect(run.statuses).toHaveLength(statuses);
+      // Definitive now: no more look-ups, on any redraw or tick.
+      run.session.refresh();
+      await run.timers.tick();
+      await run.timers.tick();
+      expect(probe.state?.reads).toBe(2);
+    });
+  }
+
+  it('an answer that never settles is asked at most 1 + 3 times, on any redraw (M34, M35)', async () => {
+    const probe: { state?: { reads: number } } = {};
+    const { run } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, async () => ({ value: [null] }));
+      probe.state = made.state;
+      return () => made.rpc;
+    });
+    for (let turn = 0; turn < 8; turn += 1) {
+      run.session.refresh();
+      await run.timers.tick();
+    }
+    expect(probe.state?.reads).toBe(1 + TX_RECHECKS);
+    expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+    expect(run.last()).toMatchObject({ kind: 'delivered' });
+  });
+
+  it('a confirmed failure is final: never asked again', async () => {
+    const probe: { state?: { reads: number } } = {};
+    const { run } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, async () => ({
+        value: [{ err: { failed: true }, confirmationStatus: 'confirmed' }],
+      }));
+      probe.state = made.state;
+      return () => made.rpc;
+    });
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(probe.state?.reads).toBe(1);
+    expect(receiptOfView(run.last())).not.toHaveProperty('sent');
+  });
+
+  for (const [name, end] of [
+    [
+      'the reset on reopen',
+      (run: Awaited<ReturnType<typeof setup>>) => run.session.resetFinished(),
+    ],
+    ['the session ending', (run: Awaited<ReturnType<typeof setup>>) => run.session.dispose()],
+    ['Buy again', (run: Awaited<ReturnType<typeof setup>>) => run.session.startOver()],
+  ] as const) {
+    it(`no look-up after ${name}, and its timer is stopped (M36)`, async () => {
+      const probe: { state?: { reads: number } } = {};
+      /** The re-check timers set: the only timeouts of `WATCH_EVERY_MS`. */
+      const rechecks: unknown[] = [];
+      const { run } = await answeredFirst(
+        (chain) => {
+          const made = statusRpc(chain, async () => {
+            throw new Error('node down');
+          });
+          probe.state = made.state;
+          return () => made.rpc;
+        },
+        (prepared) => {
+          const setTimer = prepared.deps.setTimeout;
+          prepared.deps.setTimeout = (handler, ms) => {
+            const handle = setTimer(handler, ms);
+            if (ms === WATCH_EVERY_MS) {
+              rechecks.push(handle);
+            }
+            return handle;
+          };
+        },
+      );
+      await settle();
+      expect(probe.state?.reads).toBe(1);
+      expect(rechecks).toHaveLength(1);
+      await end(run);
+      await settle();
+      expect(rechecks.filter((handle) => run.timers.running.has(handle as number))).toEqual([]);
+      await run.timers.tick();
+      await run.timers.tick();
+      expect(probe.state?.reads).toBe(1);
+    });
+  }
+
+  it('the purchases detail reads an unknown answer as nothing sent, and a definitive one when reopened', async () => {
+    const probe: { state?: { reads: number } } = {};
+    let answers = 0;
+    const { run, signature } = await answeredFirst((chain) => {
+      const made = statusRpc(chain, () => {
+        answers += 1;
+        return answers === 1
+          ? Promise.resolve({ value: [null] })
+          : Promise.resolve({ value: [{ err: null, confirmationStatus: 'finalized' }] });
+      });
+      probe.state = made.state;
+      return () => made.rpc;
+    });
+    await settle();
+    const order = await recordOf(run.offer);
+    expect((await run.session.purchase(order.orderId))?.receipt).not.toHaveProperty('sent');
+    await run.timers.tick();
+    expect((await run.session.purchase(order.orderId))?.receipt.sent?.tx).toBe(signature);
+  });
+});
+
+describe('the chain’s answer, three ways', () => {
+  it('succeeded or failed only once confirmed; anything else unknown', () => {
+    expect(solanaVerdict({ err: null, confirmationStatus: 'confirmed' })).toBe('succeeded');
+    expect(solanaVerdict({ err: null, confirmationStatus: 'finalized' })).toBe('succeeded');
+    expect(solanaVerdict({ err: { x: 1 }, confirmationStatus: 'confirmed' })).toBe('failed');
+    expect(solanaVerdict({ err: { x: 1 }, confirmationStatus: 'finalized' })).toBe('failed');
+    expect(solanaVerdict({ err: null, confirmationStatus: 'processed' })).toBe('unknown');
+    expect(solanaVerdict({ err: { x: 1 }, confirmationStatus: 'processed' })).toBe('unknown');
+    expect(solanaVerdict({ err: null, confirmationStatus: null })).toBe('unknown');
+    expect(solanaVerdict(null)).toBe('unknown');
+  });
+});
+
+/** The same relays, but a listener hears nothing: only a one-shot read can find a stored answer. */
+function deafTo(relays: MemoryRelays): MemoryRelays {
+  return new Proxy(relays, {
+    get(target, property, receiver) {
+      if (property === 'subscribe') {
+        return () => ({ close: () => undefined });
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+describe('a store answer held for an order not taken yet (L1)', () => {
+  for (const [name, message] of [
+    ['a hand cancel', { status: 'cancelled', delivery: undefined }],
+    [
+      'a refund',
+      {
+        status: 'cancelled',
+        delivery: undefined,
+        refund: { tx: '6'.repeat(88), amount: '49000000' },
+      },
+    ],
+  ] as const) {
+    it(`${name} held for it ends it at the press, never pays it (Solana)`, async () => {
+      const run = await setup();
+      run.relays.refuse = INBOX;
+      await run.session.start();
+      await run.session.pay('Fake');
+      run.session.dispose();
+      const first = await placedFor(run);
+      expect(first.state).toBe('created');
+      run.relays.refuse = [];
+      await storeSays(run.shop, run.relays, first, message as Partial<OrderMessage>);
+      // The listener started at load hears nothing: only the read at the press finds it.
+      const deaf = deafTo(run.relays);
+      const again = reload(run, { clientFor: () => deaf });
+      await again.session.start();
+      await settle();
+      expect(again.last()).toMatchObject({ kind: 'offer' });
+      await again.session.pay('Fake');
+      const stored = await store.get(first.orderId);
+      expect(stored?.marker).toBeUndefined();
+      expect(stored?.paidTx).toBeUndefined();
+      expect(stored?.status?.status).toBe('cancelled');
+      const placed = (await store.forProduct(run.offer.productAddress)).filter(
+        (record) => record.orderId !== first.orderId,
+      );
+      if (name === 'a hand cancel') {
+        // Ended unpaid: the press placed and paid a new order instead.
+        expect(placed).toHaveLength(1);
+        expect(placed[0]?.marker).toBeDefined();
+      } else {
+        // Refunded by the store: shown as such, and nothing is paid.
+        expect(stored?.state).toBe('refunded');
+        expect(again.last()).toMatchObject({ kind: 'refunded' });
+        expect(placed).toEqual([]);
+      }
+    });
+  }
+
+  it('heard at load by the listener: the order shows cancelled, never the offer to pay it', async () => {
+    const run = await setup();
+    run.relays.refuse = INBOX;
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.session.dispose();
+    const first = await placedFor(run);
+    run.relays.refuse = [];
+    await storeSays(run.shop, run.relays, first, { status: 'cancelled', delivery: undefined });
+    const again = reload(run);
+    await again.session.start();
+    await settle();
+    expect((await store.get(first.orderId))?.status?.status).toBe('cancelled');
+    expect(again.last()).toMatchObject({ kind: 'cancelled' });
+    expect(again.statuses).toEqual(['ready']);
+  });
+
+  it('an order the store took and answered nothing for is paid as before', async () => {
+    const run = await setup();
+    run.relays.refuse = INBOX;
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.session.dispose();
+    const first = await placedFor(run);
+    run.relays.refuse = [];
+    const again = reload(run);
+    await again.session.start();
+    await again.session.pay('Fake');
+    const all = await store.forProduct(run.offer.productAddress);
+    expect(all.map((record) => record.orderId)).toEqual([first.orderId]);
+    expect(all[0]?.marker).toBeDefined();
+  });
+});
+
+describe('a page that only follows an order (L4)', () => {
+  it('never posts "ready" after "refused" for an open unpaid order', async () => {
+    const run = await setup();
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    const followed = reload(run, {
+      followOnly: {
+        reason: 'offer_refused',
+        message: 'This product cannot be bought here.',
+        orderId: open.orderId,
+      },
+    });
+    await followed.session.start();
+    await settle();
+    expect(followed.statuses).not.toContain('ready');
+    expect(followed.last()).not.toMatchObject({ kind: 'offer' });
+  });
+});
+
+describe('the listener follows the relays the store reads today (round 2)', () => {
+  it('a created order whose store inbox moved: the completion on the new relays is heard after the press', async () => {
+    const run = await setup();
+    run.relays.refuse = INBOX;
+    await run.session.start();
+    await run.session.pay('Fake');
+    run.session.dispose();
+    const first = await placedFor(run);
+    expect(first.state).toBe('created');
+    // The store moved its inbox since the order was placed.
+    const moved = ['wss://inbox-c.example.com', 'wss://inbox-d.example.com'];
+    run.relays.refuse = [];
+    await run.relays.publish(INBOX, inboxList(run.shop.store, moved, NOW));
+    const again = reload(run);
+    await again.session.start();
+    await again.session.pay('Fake');
+    await run.timers.tick();
+    const paid = await store.get(first.orderId);
+    expect(paid?.state).toBe('paid');
+    expect(paid?.inboxRelays).toEqual(moved);
+    const completed = {
+      type: 'status',
+      buyerPubkey: first.buyerPubkey,
+      orderId: first.orderId,
+      status: 'completed',
+    } as OrderMessage;
+    await run.relays.publish(
+      moved,
+      wrapOrderMessage(
+        buildOrderMessage(completed, NOW + 100),
+        run.shop.store.secretKey,
+        first.buyerPubkey,
+      ).recipientWrap,
+    );
+    await settle();
+    expect((await store.get(first.orderId))?.state).toBe('completed');
+    expect(again.last()).toMatchObject({ kind: 'delivered' });
+    expect(again.statuses.at(-1)).toBe('completed');
+  });
+
+  it('an open order finished before its background resume settles is not listened to again', async () => {
+    const run = await setup();
+    const open = await declinedBefore(run);
+    run.session.dispose();
+    // The store refunded it meanwhile; the listener started at load hears it at once.
+    await storeSays(run.shop, run.relays, open, {
+      status: 'cancelled',
+      delivery: undefined,
+      refund: { tx: '6'.repeat(88), amount: '49000000' },
+    } as Partial<OrderMessage>);
+    const held = heldPublish(run.relays, 'hold');
+    const again = reload(run, { clientFor: () => held.client });
+    await again.session.start();
+    await settle();
+    expect((await store.get(open.orderId))?.state).toBe('refunded');
+    const listening = () =>
+      run.relays.listeners.filter((listener) =>
+        (listener.filter['#p'] ?? []).includes(open.buyerPubkey),
+      ).length;
+    expect(listening()).toBe(0);
+    const subscribe = run.relays.subscribe.bind(run.relays);
+    let subscriptions = 0;
+    run.relays.subscribe = (relays, filter, onEvent) => {
+      subscriptions += 1;
+      return subscribe(relays, filter, onEvent);
+    };
+    const drawn = again.views.length;
+    held.release();
+    await settle();
+    // No new subscription for it, so no replayed answer drawn again.
+    expect(subscriptions).toBe(0);
+    expect(again.views).toHaveLength(drawn);
+    expect(listening()).toBe(0);
   });
 });

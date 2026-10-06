@@ -277,7 +277,7 @@ describe('a page with a customer reference', () => {
     await world.timers.tick();
     // Their delivery is heard here (in the background) and stored, never shown.
     expect((await only(world, 'user_a')).state).toBe('completed');
-    expect(shown.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(shown.last()).toMatchObject({ kind: 'offer' });
     expect(shown.statuses).toEqual(['ready']);
     sawNothingOf(shown, theirs);
     await shown.session.pay('Fake');
@@ -285,7 +285,7 @@ describe('a page with a customer reference', () => {
     // Their own page starts a new purchase; their delivery is in its Your purchases.
     const own = page(world, 'user_a');
     await own.session.start();
-    expect(own.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(own.last()).toMatchObject({ kind: 'offer' });
     expect(own.statuses).toEqual(['ready']);
   });
 
@@ -301,14 +301,15 @@ describe('a page with a customer reference', () => {
     expect(open.state).toBe('ordered');
     const shown = page(world, 'user_b');
     await shown.session.start();
-    expect(shown.last()).toMatchObject({ kind: 'offer', continuing: false });
+    expect(shown.last()).toMatchObject({ kind: 'offer' });
     await shown.session.pay('Fake');
     expect((await only(world, 'user_b')).orderId).not.toBe(open.orderId);
     // The other account's open order is untouched, and still theirs to continue.
     expect((await only(world, 'user_a')).state).toBe('ordered');
     const again = page(world, 'user_a');
     await again.session.start();
-    expect(again.last()).toMatchObject({ kind: 'offer', continuing: 'ordered' });
+    expect(again.last()).toMatchObject({ kind: 'offer' });
+    expect(again.statuses).toEqual(['ready']);
   });
 
   it('a page without a reference sees no order that carries one (and the reverse)', async () => {

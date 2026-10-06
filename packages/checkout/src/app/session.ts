@@ -1,14 +1,20 @@
-import type { Product, TrustLevel } from '@elisym/commerce';
+import {
+  KIND_GIFT_WRAP,
+  MAX_FUTURE_SKEW_SECS,
+  type Product,
+  type TrustLevel,
+} from '@elisym/commerce';
 import { type LoadedOffer, type PricedPayout, isSnapshotStale } from '@elisym/commerce/buyer';
 import {
   type OrderDeps,
   applyStatus,
   clockAgrees,
   compareOffers,
-  deliveryLink,
   listenForStatus,
   placeOrder,
   resumeOrder,
+  statusFor,
+  WRAP_BACKDATE_SECS,
 } from '@elisym/commerce/buyer';
 import {
   type OrderRecord,
@@ -46,6 +52,7 @@ import {
 import type { Asset, Network } from '@elisym/pay-core';
 import { type Eip1193Client, readQuantity, withAbort } from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, isSignature } from '@solana/kit';
+import { hexToBytes } from 'nostr-tools/utils';
 import type { CheckoutState } from '../embed/protocol';
 import type { FollowOnly, RefusedReason } from './controller';
 import { type TempoWalletOption, TempoChainUnsupported, walletErrorKind } from './evm-wallets';
@@ -70,7 +77,7 @@ export const WATCH_EVERY_MS = 5_000;
 export const REPUBLISH_EVERY_MS = 3 * 60_000;
 /** An attempt still unsure this long after it was made: say "contact the store". */
 export const UNSURE_AFTER_SECS = 10 * 60;
-/** At most this many of the product's ended orders keep listening for a late delivery. */
+/** At most this many of the product's ended orders keep listening for a late completion. */
 export const MAX_ENDED_LISTENERS = 5;
 /** A found payment with no store answer this long after: "contact the store". */
 export const NO_ANSWER_AFTER_SECS = 30 * 60;
@@ -91,6 +98,23 @@ export const EPOCH_READ_TIMEOUT_MS = 4_000;
 export const CHAIN_TIME_TIMEOUT_MS = 15_000;
 /** The one look-up of a transaction a receipt may name gives up after this long: no row then. */
 export const TX_CHECK_TIMEOUT_MS = 10_000;
+/** An unknown answer about a sent transaction is asked again this many times at most. */
+export const TX_RECHECKS = 3;
+/**
+ * A resumed order the store took only now is read for a store answer held for it
+ * (a hand cancel or refund) before it is paid, for at most this long.
+ */
+export const HELD_STATUS_READ_MS = 2_000;
+
+/**
+ * What the chain says of a sent transaction. `succeeded` and `failed` are
+ * final (confirmed or finalized); anything else - not found, only processed,
+ * an error, a timeout, no RPC - is `unknown`, never read as "not paid".
+ */
+export type TxVerdict = 'succeeded' | 'failed' | 'unknown';
+
+/** A sent transaction's check: running, final, or unknown after `attempts` look-ups. */
+type TxCheck = 'pending' | boolean | { kind: 'unknown'; attempts: number };
 
 /** A wallet as the screens show it. */
 export interface WalletChoice {
@@ -166,7 +190,7 @@ export interface Receipt {
   openStatus?: OpenStatus;
 }
 
-/** Where a purchase that is not delivered or refunded stands. */
+/** Where a purchase that is not completed or refunded stands. */
 export type OpenStatus = 'waiting_store' | 'paying' | 'blocked' | 'cancelled_paid';
 
 /** A time estimate: `seconds` left as of `at` (unix seconds, device clock). */
@@ -185,12 +209,6 @@ export type View =
       payoutIndex: number;
       wallets: WalletChoice[];
       problem?: Problem;
-      /**
-       * An earlier order of this product on these exact terms is still open: it
-       * is paid as it is (its email went with it), so no email is asked. `created`:
-       * not acknowledged by the store yet; `ordered`: acknowledged, not paid.
-       */
-      continuing: false | 'created' | 'ordered';
       /** The merchant asks for an email (optional for the buyer). */
       askEmail: boolean;
       email: string;
@@ -255,10 +273,9 @@ export type View =
   | { kind: 'blocked'; store?: StoreInfo; product?: About['product'] }
   /** The store cancelled an order that was not paid: a new one may start. */
   | { kind: 'cancelled'; store?: StoreInfo; product?: About['product'] }
+  /** The store completed the order (the name stays from when it delivered). */
   | {
       kind: 'delivered';
-      text: string;
-      link?: string;
       store?: StoreInfo;
       product?: About['product'];
       receipt?: Receipt;
@@ -326,8 +343,6 @@ export interface SessionDeps {
 export interface Banner {
   orderId: string;
   state: 'paid' | 'blocked' | 'completed' | 'refunded';
-  text?: string;
-  link?: string;
 }
 
 /** At most this long, and shaped like an address; anything else is not sent. */
@@ -378,6 +393,24 @@ export function payoutPaying(payout: PricedPayout): Paying {
     network: networkOf(payout),
     chain: railOf(payout),
   };
+}
+
+/**
+ * A Solana signature status as a verdict: final only when confirmed or
+ * finalized; a processed status, with or without an error, proves nothing.
+ */
+export function solanaVerdict(
+  status: { err: unknown; confirmationStatus?: string | null } | null | undefined,
+): TxVerdict {
+  if (status === null || status === undefined) {
+    return 'unknown';
+  }
+  const final =
+    status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized';
+  if (!final) {
+    return 'unknown';
+  }
+  return status.err === null ? 'succeeded' : 'failed';
 }
 
 /** A receipt with the transaction this checkout sent, once its chain check succeeded. */
@@ -434,7 +467,7 @@ function stateOf(record: OrderRecord): CheckoutState | undefined {
 
 /**
  * One product's purchase in the widget: it resumes whatever record of the
- * product is open, and drives a new one from the offer to the delivery. Every
+ * product is open, and drives a new one from the offer to its completion. Every
  * money rule lives in the core (order flow, Solana pay); this only sequences
  * it, re-reads the record before acting, and renders plain states. Everything
  * a record starts (the watch, the listener, the republishing) is bound to that
@@ -477,13 +510,13 @@ export class CheckoutSession {
   private followOnly: { reason: RefusedReason; message: string; orderId?: string } | undefined;
   /** The problem last shown on the offer, kept across a redraw. */
   private offerProblem: Problem | undefined;
-  /** Listeners on the product's orders that ended unpaid: a delivery for one still shows. */
+  /** Listeners on the product's orders that ended unpaid: a completion for one still shows. */
   private readonly background = new Map<string, { close(): void }>();
   /** When each background-heard order was placed (the cap keeps the newest). */
   private readonly backgroundCreated = new Map<string, number>();
   /** The background-heard orders of another account (the cap drops them first). */
   private readonly backgroundOther = new Set<string>();
-  /** Deliveries or refunds heard for ended orders, shown once nothing live is on screen. */
+  /** Completions or refunds heard for ended orders, shown once nothing live is on screen. */
   private readonly pendingAnswers = new Map<string, OrderRecord>();
   /** A Tempo hash returned in this session that could not be stored yet: the watch retries it. */
   private pendingHash: { orderId: string; hash: string } | undefined;
@@ -514,10 +547,12 @@ export class CheckoutSession {
   private readonly overAttemptIds = new Set<string>();
   /** The transaction each finished order's receipt may name, chosen once. */
   private readonly receiptCandidates = new Map<string, string>();
-  /** The one on-chain look-up of each such transaction, by order and transaction. */
-  private readonly txChecks = new Map<string, 'pending' | boolean>();
+  /** The on-chain look-up of each such transaction, by order and transaction: only final answers stay. */
+  private readonly txChecks = new Map<string, TxCheck>();
   /** That look-up's own promise, by the same key: a receipt opened later awaits it, never a second one. */
   private readonly txLookups = new Map<string, Promise<boolean>>();
+  /** The one re-check timer of an unknown answer, by the same key (only while its order is on screen). */
+  private readonly txRechecks = new Map<string, unknown>();
   /**
    * Why a re-check refused this page, while an order kept it from ending: the
    * trust level is no longer shown, and no new purchase is offered.
@@ -541,6 +576,8 @@ export class CheckoutSession {
    * browser: they resolve them (store answers, watch verdicts) and show nothing.
    */
   private readonly followers = new Map<string, { timer: unknown; listener: { close(): void } }>();
+  /** The background republishing of an open order drawn at load: a press waits for it. */
+  private resuming: Promise<void> | undefined;
   /** A follower saw the product freed while a press was running: the press's end redraws. */
   private exclusionFreed = false;
   /** The offer on screen carries the "another purchase is in progress" note. */
@@ -624,8 +661,65 @@ export class CheckoutSession {
       await this.follow(shown);
       return;
     }
+    if (
+      followed === undefined &&
+      (shown.state === 'created' || shown.state === 'ordered') &&
+      shown.marker === undefined &&
+      !cancelledUnpaid(shown)
+    ) {
+      // An open unpaid order is continued silently: the offer is drawn exactly as for
+      // a first visit (no note, same status, before any relay round trip). It listens
+      // for the store now (a held cancel or refund ends it before any payment); an
+      // acknowledged one is republished in the background, a `created` one at the press.
+      this.setRecord(shown);
+      this.relays = shown.inboxRelays;
+      this.showOffer();
+      this.status('ready');
+      this.listen(shown);
+      if (shown.state === 'ordered') {
+        this.resuming = this.resumeInBackground(shown);
+      }
+      return;
+    }
     const resumed = await resumeOrder(shown, this.orderDeps(), this.deps.now());
     await this.follow(resumed.record, resumed.relays);
+  }
+
+  /**
+   * Republish an acknowledged order drawn at load, then listen on the relays the
+   * store reads today. It holds no press, draws nothing and tells the page
+   * nothing; a failure is swallowed.
+   */
+  private async resumeInBackground(record: OrderRecord): Promise<void> {
+    try {
+      const resumed = await resumeOrder(record, this.orderDeps(), this.deps.now());
+      if (this.disposed || this.record?.orderId !== record.orderId) {
+        return;
+      }
+      // The listener started at load may have heard it finish meanwhile: nothing to follow.
+      const current = this.record;
+      if (current === undefined || isTerminal(current)) {
+        return;
+      }
+      this.listenAgainOn(resumed.relays, current);
+    } catch {
+      // The press does not republish an acknowledged order: it relies on the
+      // periodic republish and the receipt's own publish, as before this resume.
+    }
+  }
+
+  /**
+   * Listen for `record` on `relays` (where the store reads today): a listener
+   * started on other relays, at load, is replaced rather than kept.
+   */
+  private listenAgainOn(relays: string[], record: OrderRecord): void {
+    const moved = relays.join() !== this.relays.join();
+    this.relays = relays;
+    if (moved && this.listening?.orderId === record.orderId) {
+      this.listening.closer.close();
+      this.listening = undefined;
+    }
+    this.listen(record);
   }
 
   /** What the buyer typed as email (sent with a new order only when it is one). */
@@ -739,10 +833,12 @@ export class CheckoutSession {
       return;
     }
     // A new order is certain: a typo never costs a wallet prompt or the open order.
-    // (Both rails: `payTempo` starts below.) An order continued on its own terms
-    // went with its email already, so no typed value blocks it.
+    // (Both rails: `payTempo` starts below.) An open order continued as it is
+    // went with its own email already, so only a new email makes a new order.
     const newOrder =
-      this.record === undefined || onOtherTerms(this.record, this.payout, this.customerRef);
+      this.record === undefined ||
+      onOtherTerms(this.record, this.payout, this.customerRef) ||
+      this.emailChanged(this.record);
     if (newOrder && this.emailUnusable()) {
       this.showOffer({ reason: 'bad_email' });
       return;
@@ -1079,6 +1175,27 @@ export class CheckoutSession {
     );
   }
 
+  /**
+   * The buyer typed an email this session did not send with that open order: it
+   * goes with a new order instead (the old one ends unpaid). A retry of this
+   * session's own order with the same email pays the same order; after a reload
+   * the old order's email is unknown, so any typed email starts a new one.
+   */
+  private emailChanged(record: OrderRecord): boolean {
+    if (
+      this.deps.collectEmail !== true ||
+      (record.state !== 'created' && record.state !== 'ordered')
+    ) {
+      return false;
+    }
+    const typed = this.email.trim();
+    if (typed === '') {
+      return false;
+    }
+    const usable = usableEmail(typed);
+    return usable === undefined || usable !== this.sentEmail.get(record.orderId);
+  }
+
   /** The buyer typed an email the merchant asked for, and it is not one. */
   private emailUnusable(): boolean {
     return (
@@ -1160,6 +1277,7 @@ export class CheckoutSession {
       void this.checkSentTx(record, tx);
       return base;
     }
+    // Pending, unknown (its own timer asks again) or failed: no row, and no new look-up here.
     return checked === true ? withSent(record, base, tx, network) : base;
   }
 
@@ -1178,8 +1296,8 @@ export class CheckoutSession {
   }
 
   /**
-   * One purchase as it stands now, for its detail: its status, its delivery
-   * and its receipt from the record read once, never the list's older snapshot.
+   * One purchase as it stands now, for its detail: its status and its
+   * receipt from the record read once, never the list's older snapshot.
    */
   async purchase(orderId: string): Promise<Purchase | undefined> {
     const record = await this.ownStoreRecord(orderId);
@@ -1219,23 +1337,40 @@ export class CheckoutSession {
     }
     const key = `${record.orderId}:${tx}`;
     const checked = this.txChecks.get(key);
-    const found =
-      checked === true || checked === false
-        ? checked
-        : await (this.txLookups.get(key) ?? this.checkSentTx(record, tx));
+    let found: boolean;
+    if (checked === true || checked === false) {
+      found = checked;
+    } else if (checked === 'pending') {
+      found = await (this.txLookups.get(key) ?? Promise.resolve(false));
+    } else if (checked === undefined) {
+      found = await this.checkSentTx(record, tx);
+    } else {
+      // Unknown: never read as "not paid", and never a look-up beyond its timer's.
+      found = false;
+    }
     return found ? withSent(record, base, tx, network) : base;
   }
 
   /**
-   * Look a sent transaction up once, on the order's own network: found and
-   * successful, or nothing. A late answer only fills the cache; it redraws only
-   * the same finished order, and never during an action.
+   * Look a sent transaction up on the order's own network. Only a final answer
+   * is kept (confirmed or finalized: it succeeded or it failed); an unknown one
+   * is asked again by one timer while that finished order is on screen, at most
+   * `TX_RECHECKS` times. A success redraws the same finished order only, never
+   * during an action. Resolves `true` only for a success.
    */
   private checkSentTx(record: OrderRecord, tx: string): Promise<boolean> {
     const key = `${record.orderId}:${tx}`;
-    const lookup = this.sentTxSucceeded(record, tx)
-      .catch(() => false)
-      .then((found) => {
+    const before = this.txChecks.get(key);
+    const attempts = typeof before === 'object' ? before.attempts : 0;
+    const lookup = this.sentTxVerdict(record, tx)
+      .catch((): TxVerdict => 'unknown')
+      .then((verdict) => {
+        if (verdict === 'unknown') {
+          this.txChecks.set(key, { kind: 'unknown', attempts: attempts + 1 });
+          this.recheckLater(record, tx, attempts + 1);
+          return false;
+        }
+        const found = verdict === 'succeeded';
         this.txChecks.set(key, found);
         const current = this.record;
         if (
@@ -1255,38 +1390,68 @@ export class CheckoutSession {
     return lookup;
   }
 
-  private async sentTxSucceeded(record: OrderRecord, tx: string): Promise<boolean> {
+  /** One more look-up of an unknown answer, later, only while that finished order is on screen. */
+  private recheckLater(record: OrderRecord, tx: string, attempts: number): void {
+    const key = `${record.orderId}:${tx}`;
+    const current = this.record;
+    if (
+      attempts > TX_RECHECKS ||
+      this.disposed ||
+      this.txRechecks.has(key) ||
+      current?.orderId !== record.orderId ||
+      !isTerminal(current)
+    ) {
+      return;
+    }
+    const handle = this.deps.setTimeout(() => {
+      // Only the one timer set for this key, once: never a stopped or replaced one.
+      if (this.txRechecks.get(key) !== handle) {
+        return;
+      }
+      this.txRechecks.delete(key);
+      const shown = this.record;
+      if (this.disposed || shown?.orderId !== record.orderId || !isTerminal(shown)) {
+        return;
+      }
+      void this.checkSentTx(record, tx);
+    }, WATCH_EVERY_MS);
+    this.txRechecks.set(key, handle);
+  }
+
+  /** Every re-check timer stops (the finished order left the screen, or the session ended). */
+  private stopRechecks(): void {
+    for (const handle of this.txRechecks.values()) {
+      this.deps.clearTimeout(handle);
+    }
+    this.txRechecks.clear();
+  }
+
+  private async sentTxVerdict(record: OrderRecord, tx: string): Promise<TxVerdict> {
     if (recordTarget(record) === undefined) {
-      return false;
+      return 'unknown';
     }
     if (recordRail(record) === 'solana') {
       const rpc = this.rpcOfRecord(record);
       if (rpc === undefined || !isSignature(tx)) {
-        return false;
+        return 'unknown';
       }
       const statuses = await rpc
         .getSignatureStatuses([tx], { searchTransactionHistory: true })
         .send({ abortSignal: AbortSignal.timeout(TX_CHECK_TIMEOUT_MS) });
-      const status = statuses.value[0];
-      return (
-        status !== null &&
-        status !== undefined &&
-        status.err === null &&
-        (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized')
-      );
+      return solanaVerdict(statuses.value[0]);
     }
     const client = this.tempoOfRecord(record);
     if (client === undefined) {
-      return false;
+      return 'unknown';
     }
     const receipt: unknown = await withAbort(
       client.request({ method: 'eth_getTransactionReceipt', params: [tx] }),
       AbortSignal.timeout(TX_CHECK_TIMEOUT_MS),
     );
     if (typeof receipt !== 'object' || receipt === null || !('status' in receipt)) {
-      return false;
+      return 'unknown';
     }
-    return readQuantity(receipt.status) === 1n;
+    return readQuantity(receipt.status) === 1n ? 'succeeded' : 'failed';
   }
 
   /**
@@ -1396,14 +1561,7 @@ export class CheckoutSession {
     if (state !== 'paid' && state !== 'blocked' && state !== 'completed' && state !== 'refunded') {
       return;
     }
-    const text = state === 'completed' ? (record.status?.delivery ?? '') : undefined;
-    const link = text === undefined ? undefined : deliveryLink(text);
-    this.deps.onBanner?.({
-      orderId: record.orderId,
-      state,
-      ...(text === undefined ? {} : { text }),
-      ...(link === undefined ? {} : { link }),
-    });
+    this.deps.onBanner?.({ orderId: record.orderId, state });
   }
 
   /**
@@ -1525,7 +1683,7 @@ export class CheckoutSession {
     // Not a press: it never runs beside one, so it keeps the current id.
     await this.guard(this.press, async () => {
       const current = (await this.deps.store.get(record.orderId)) ?? record;
-      // Finished (delivered or refunded): nothing to end, a new order may start.
+      // Finished (completed or refunded): nothing to end, a new order may start.
       if (isTerminal(current)) {
         this.setRecord(undefined);
         this.showOffer();
@@ -1542,6 +1700,29 @@ export class CheckoutSession {
         await this.follow(ended.record);
       }
     });
+  }
+
+  /**
+   * The modal closed on a finished order (completed or refunded) the buyer saw:
+   * the checkout goes back to its first step, as "Buy again" does - at once,
+   * writing nothing. Never during an action, never on a follow-only page, never
+   * for an order that is not finished: those return `false` and change nothing.
+   */
+  resetFinished(): boolean {
+    const record = this.record;
+    if (
+      this.busy ||
+      this.pressing ||
+      this.disposed ||
+      this.followOnly !== undefined ||
+      record === undefined ||
+      !isTerminal(record)
+    ) {
+      return false;
+    }
+    this.setRecord(undefined);
+    this.showOffer();
+    return true;
   }
 
   /** Draw the current screen again (a wallet registered, say); never during an action. */
@@ -1933,6 +2114,13 @@ export class CheckoutSession {
    * Acknowledged means the store's inbox holds it; the wallet never opens before.
    */
   private async orderFor(chainTime: number): Promise<OrderRecord | undefined> {
+    // An open order drawn at load is republished in the background: the press
+    // waits for it here, after the wallet's connect and before its own re-read.
+    const resuming = this.resuming;
+    this.resuming = undefined;
+    if (resuming !== undefined) {
+      await resuming;
+    }
     let record =
       this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
     if (record !== undefined && gone(record)) {
@@ -1940,22 +2128,31 @@ export class CheckoutSession {
       this.setRecord(undefined);
       record = undefined;
     }
-    const stale = record !== undefined && onOtherTerms(record, this.payout, this.customerRef);
+    const stale =
+      record !== undefined &&
+      (onOtherTerms(record, this.payout, this.customerRef) || this.emailChanged(record));
     if (record !== undefined && stale) {
-      const ended = await this.endOrder(record);
-      if (!ended.ended) {
-        // Its attempt may still land: follow it, never a second order beside it.
-        await this.follow(ended.record);
+      if (!(await this.endStale(record))) {
         return undefined;
       }
-      this.setRecord(undefined);
       record = undefined;
     }
     if (record?.state === 'created') {
       this.working('ordering');
       const resumed = await resumeOrder(record, this.orderDeps(), this.deps.now());
       record = resumed.record;
-      this.relays = resumed.relays;
+      this.listenAgainOn(resumed.relays, record);
+      if (record.state === 'ordered') {
+        // Taken by the store only now: an answer it holds for it (a hand cancel or
+        // refund) is read first, so such an order ends instead of being paid.
+        record = await this.readHeldStatus(record);
+        if (onOtherTerms(record, this.payout, this.customerRef)) {
+          if (!(await this.endStale(record))) {
+            return undefined;
+          }
+          record = undefined;
+        }
+      }
     }
     if (record === undefined) {
       // The one place both rails decide on a new order: never one with an unusable email.
@@ -2025,6 +2222,59 @@ export class CheckoutSession {
     this.record = composed.record;
     this.listen(composed.record);
     return composed.record;
+  }
+
+  /**
+   * End an open order that cannot be paid as it is (other terms, a typed email,
+   * a store cancel): `true` once it ended. An attempt that may still land is
+   * followed instead (`false`), never a second order beside it.
+   */
+  private async endStale(record: OrderRecord): Promise<boolean> {
+    const ended = await this.endOrder(record);
+    if (!ended.ended) {
+      await this.follow(ended.record);
+      return false;
+    }
+    this.setRecord(undefined);
+    return true;
+  }
+
+  /**
+   * One read of the store's answers already sent for `record` (the same wraps the
+   * listener hears), each stored, bounded by `HELD_STATUS_READ_MS`. A read that
+   * fails or runs out finds nothing; the listener still hears it later.
+   */
+  private async readHeldStatus(record: OrderRecord): Promise<OrderRecord> {
+    const client = this.deps.clientFor(hexToBytes(record.buyerSecretKey));
+    let timer: unknown;
+    const timedOut = new Promise<[]>((resolve) => {
+      timer = this.deps.setTimeout(() => resolve([]), HELD_STATUS_READ_MS);
+    });
+    try {
+      const relays = this.relays.length === 0 ? record.inboxRelays : this.relays;
+      const wraps = await Promise.race([
+        client.query(relays, [
+          {
+            kinds: [KIND_GIFT_WRAP],
+            '#p': [record.buyerPubkey],
+            since: record.createdAt - WRAP_BACKDATE_SECS - MAX_FUTURE_SKEW_SECS,
+          },
+        ]),
+        timedOut,
+      ]);
+      for (const wrap of wraps) {
+        const status = statusFor(record, wrap);
+        if (status !== undefined) {
+          await applyStatus(this.deps.store, record.orderId, status, this.deps.now());
+        }
+      }
+    } catch {
+      // Nothing read: the listener still hears an answer later.
+    } finally {
+      this.deps.clearTimeout(timer);
+      client.close();
+    }
+    return (await this.deps.store.get(record.orderId)) ?? record;
   }
 
   private async afterPay(result: SolanaPayResult, rpc: Rpc<SolanaRpcApi>): Promise<void> {
@@ -2132,6 +2382,7 @@ export class CheckoutSession {
   private setRecord(record: OrderRecord | undefined): void {
     if (record?.orderId !== this.record?.orderId) {
       this.stop();
+      this.stopRechecks();
       this.attemptProblem = undefined;
       this.attemptOver = false;
       this.retryEstimate = undefined;
@@ -2226,12 +2477,9 @@ export class CheckoutSession {
     const store = this.storeInfo();
     const product = productOf(record.offer.product);
     if (record.state === 'completed') {
-      const text = status?.delivery ?? '';
-      const link = deliveryLink(text);
+      // A delivery an older node still sends is never shown: nothing is delivered through the checkout.
       this.show({
         kind: 'delivered',
-        text,
-        ...(link === undefined ? {} : { link }),
         store,
         product,
         receipt: this.receiptOf(record, network),
@@ -2438,7 +2686,6 @@ export class CheckoutSession {
       payouts,
       payoutIndex,
       wallets: this.walletChoices(this.payout),
-      continuing: this.continuing(),
       askEmail: this.deps.collectEmail === true,
       email: this.email,
       ...(shown === undefined ? {} : { problem: shown }),
@@ -2446,15 +2693,6 @@ export class CheckoutSession {
     if (this.record === undefined) {
       this.status('ready');
     }
-  }
-
-  /** The open order a pay press continues on its own terms, if any (its email went with it). */
-  private continuing(): false | 'created' | 'ordered' {
-    const record = this.record;
-    if (record === undefined || onOtherTerms(record, this.payout, this.customerRef)) {
-      return false;
-    }
-    return record.state === 'created' || record.state === 'ordered' ? record.state : false;
   }
 
   /** Reconcile the live attempt until it is found, ends, or the store answers. */
@@ -2566,7 +2804,7 @@ export class CheckoutSession {
           this.attemptOver = true;
           this.noteOver(watched.record);
           this.render();
-          // The attempt provably ended: a delivery already heard now shows.
+          // The attempt provably ended: a completion already heard now shows.
           void this.showPendingAnswer();
         } else if (watched.state === 'blocked') {
           this.stopWatching();
@@ -2649,9 +2887,9 @@ export class CheckoutSession {
   }
 
   /**
-   * The product's orders that ended unpaid still hear the store (the plan: a
-   * delivery that arrives for any record of the product is shown). When one is
-   * delivered or refunded and nothing live is on screen, it is shown.
+   * The product's orders that ended unpaid still hear the store (a completion
+   * that arrives for any record of the product is shown). When one is
+   * completed or refunded and nothing live is on screen, it is shown.
    */
   private listenToEnded(records: readonly OrderRecord[], relays: readonly string[] = []): void {
     for (const record of records) {
@@ -2733,14 +2971,14 @@ export class CheckoutSession {
   }
 
   /**
-   * Show an ended order's delivery or refund once nothing live is on screen:
+   * Show an ended order's completion or refund once nothing live is on screen:
    * never during an action, and never over an order that is (per the store)
    * paying or paid - in this tab or another.
    */
   private async showPendingAnswer(
     onlyDeliveries = false,
   ): Promise<'shown' | 'held' | 'failed' | 'none'> {
-    // A delivery first (the buyer has something to open), else the newest refund.
+    // A completion first, else the newest refund.
     const pending = [...this.pendingAnswers.values()]
       .filter((answer) => !onlyDeliveries || answer.state === 'completed')
       .sort(
@@ -2806,8 +3044,8 @@ export class CheckoutSession {
   }
 
   /**
-   * Before any wallet opens: a delivery already heard for an earlier order is
-   * shown instead (the buyer has it). `false` means go on.
+   * Before any wallet opens: a completion already heard for an earlier order is
+   * shown instead. `false` means go on.
    */
   private async deliveryFirst(): Promise<boolean> {
     const outcome = await this.showPendingAnswer(true);

@@ -45,16 +45,7 @@ function Fixtures() {
             <Checkout
               screen={{ kind: 'loading' }}
               view={canned.view}
-              banner={
-                canned.name === 'offer'
-                  ? {
-                      orderId: 'x',
-                      state: 'completed',
-                      text: 'https://shop.example/a',
-                      link: 'https://shop.example/a',
-                    }
-                  : undefined
-              }
+              banner={canned.name === 'offer' ? { orderId: 'x', state: 'completed' } : undefined}
               actions={NOTHING}
               {...canned.props}
             />

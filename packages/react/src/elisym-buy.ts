@@ -12,9 +12,9 @@ export interface ElisymBuyProps extends ElementOptions {
   /** The purchase moved on. A state name only: never unlock or credit anything on it. */
   onStatus?: (state: CheckoutState) => void;
   /**
-   * The store delivered (`completed`). For your UI only, such as a thank-you
-   * note: a buyer can fake anything the page hears. Credit an account only from
-   * your node's signed webhook.
+   * The store completed the order (`completed`). For your UI only, such as a
+   * thank-you note: a buyer can fake anything the page hears. Act only on your
+   * node's signed webhook.
    */
   onPaid?: () => void;
 }

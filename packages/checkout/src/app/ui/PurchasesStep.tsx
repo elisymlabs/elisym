@@ -27,9 +27,6 @@ const READ_FAILED = 'failed';
 
 export const READ_FAILED_TEXT = 'Your purchases could not be read here.';
 
-/** Always shown next to the export, whatever is in it. */
-export const EXPORT_WARNING = 'The file contains your delivery links. Keep it private.';
-
 /** Hand the buyer a file, from the frame's own origin. */
 function saveFile(name: string, text: string): void {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
@@ -156,7 +153,6 @@ export function PurchasesStep({ source, storeName, onBack }: Props) {
       <button type="button" class="secondary" onClick={() => void download()}>
         Download CSV
       </button>
-      <p class="note">{EXPORT_WARNING}</p>
       <button type="button" class="secondary" onClick={onBack}>
         Back
       </button>

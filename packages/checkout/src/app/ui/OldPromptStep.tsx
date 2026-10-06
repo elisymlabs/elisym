@@ -13,13 +13,13 @@ export function OldPromptStep({ view, onContinue, onBack }: Props) {
       <StepHeading level={3}>Check your wallet first</StepHeading>
       <div class="problem" role="alert">
         <p>
-          An earlier payment request for this product may still be open in your wallet. Approving it
-          would pay that order as well. Reject it in your wallet first.
+          Your wallet may still show a payment request from before. Reject it there: approving it
+          would pay that earlier order too.
         </p>
         <p>
           {view.until > 0
-            ? `After ${new Date(view.until * 1000).toLocaleString()}, or if the store changed its price or payout, the store will not deliver that order on its own: you would have to contact it.`
-            : 'If the store changed its price or payout, the store will not deliver that order on its own: you would have to contact it.'}
+            ? `If it is approved after ${new Date(view.until * 1000).toLocaleString()} (or after a price change), the store will not complete that order on its own: contact the store.`
+            : 'If it is approved after a price change, the store will not complete that order on its own: contact the store.'}
         </p>
       </div>
       <button type="button" class="primary" onClick={onContinue}>

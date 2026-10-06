@@ -17,7 +17,7 @@ export const REFUSALS: Record<RefusalReason, string> = {
 };
 
 /** Under a sold-out screen: the same for every buyer, so it tells no one's state. */
-export const SOLD_OUT_PAID_LINE = 'An order already paid is still delivered.';
+export const SOLD_OUT_PAID_LINE = 'An order already paid is still completed.';
 
 export const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string> = {
   checking: 'Checking…',
@@ -83,9 +83,9 @@ export function problemText(problem: Problem, asset: Asset): string {
     case 'rejected':
       return 'You declined in the wallet. Nothing was paid.';
     case 'late_approval':
-      return 'Your wallet approved an earlier request after that order had ended: it pays that order. The checkout keeps watching for it; contact the store if nothing arrives.';
+      return 'Your wallet approved an old request, so it paid that earlier order. The checkout keeps watching it; contact the store if it is not completed.';
     case 'attempt_over':
-      return 'The payment was not made. If your wallet still shows the old request, reject it: approving it now would pay that order too.';
+      return 'The payment was not made. If your wallet still shows the request, reject it there.';
     case 'self_payment':
       return 'This wallet is the store’s own payout address; pay from another wallet.';
     case 'too_late':
@@ -103,11 +103,11 @@ export function problemText(problem: Problem, asset: Asset): string {
     case 'offer_changed':
       return 'The store changed this offer. Review it before paying.';
     case 'offer_refused':
-      return 'The store no longer offers this product here. Your order is still being followed.';
+      return 'The store no longer offers this product here. Your earlier order is still being checked.';
     case 'sold_out':
-      return 'This product is sold out now. Your order is still being followed.';
+      return 'This product is sold out now. Your earlier order is still being checked.';
     case 'other_purchase':
-      return 'Another purchase of this product is in progress in this browser. Try again in a few minutes.';
+      return 'Another payment for this product is still in progress in this browser. Try again in a few minutes.';
     case 'bad_email':
       return 'That email does not look right. Fix it, or leave the field empty.';
     case 'insufficient_token':
@@ -140,7 +140,7 @@ export function slowHint(step: 'checking' | 'signing', chain: Rail, cancellable 
 
 /** A start still running after `SLOW_START_MS`: never a refusal. */
 export function slowLoading(modal: boolean): string {
-  return `This is taking longer than usual: the checkout is still checking your earlier order with the network. ${
+  return `This is taking longer than usual. ${
     modal
       ? 'You can close this and come back, or reload the page.'
       : 'Keep this page open, or reload it.'
@@ -174,17 +174,6 @@ export function receiptField(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, RECEIPT_FIELD_MAX);
-}
-
-/**
- * A delivery the store sent, made safe as text but kept whole: bidi and
- * control characters other than a newline are replaced, nothing is trimmed,
- * collapsed or cut (a cut link or key is broken; parsing already bounds it).
- */
-export function deliveryField(value: string): string {
-  return Array.from(value, (character) =>
-    character !== '\n' && unsafeCharacter(character) ? ' ' : character,
-  ).join('');
 }
 
 /** An unfinished purchase's `Status:` line in its receipt. */
@@ -224,14 +213,14 @@ export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded' | '
   if (paid?.at !== undefined) {
     lines.push(`Payment confirmed on: ${new Date(paid.at * 1000).toLocaleString()}`);
   } else if (receipt.answeredAt !== undefined && kind !== 'open') {
-    const label = kind === 'refunded' ? 'Refunded on' : 'Delivered on';
+    const label = kind === 'refunded' ? 'Refunded on' : 'Completed on';
     lines.push(`${label}: ${new Date(receipt.answeredAt * 1000).toLocaleString()}`);
   }
   if (kind === 'refunded') {
     lines.push('Refunded by the store');
   }
   if (kind === 'open') {
-    // Never a delivery or refund date: this purchase is not finished.
+    // Never a completion or refund date: this purchase is not finished.
     if (receipt.orderedAt !== undefined) {
       lines.push(`Ordered on: ${new Date(receipt.orderedAt * 1000).toLocaleString()}`);
     }

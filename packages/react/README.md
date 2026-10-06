@@ -47,7 +47,7 @@ A `false` boolean leaves its attribute out.
 
 Events: `onOpen` and `onClose` (modal display; `onClose` also when the element is removed while
 open), `onStatus(state)` for every state the checkout reports, and `onPaid` once the store
-delivered (`completed`).
+completed the order (`completed`). It is for your UI only: act only on your node's signed webhook.
 
 The package's entry is client code (`'use client'`). For the loader's pin in server code, such as a
 Server Component or a `Content-Security-Policy` header, import the plain values from

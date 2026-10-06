@@ -28,9 +28,10 @@ interface Props {
 
 /**
  * The offer, top to bottom: the product and price, the payout, the email, then
- * "Choose wallet" - or, once pressed, the wallets right below. Nothing above
- * is hidden by the wallets: the payout and the email stay editable until a
- * payment starts.
+ * the wallets. Only after a new offer-class problem (a changed price, say) does
+ * "Choose wallet" stand in for them, so the buyer reviews before paying. Nothing
+ * above is hidden by the wallets: the payout and the email stay editable until a
+ * payment starts. A returning buyer's open order changes nothing here.
  */
 export function OfferPanel({
   view,
@@ -48,7 +49,7 @@ export function OfferPanel({
   const labelId = useId();
   const paying = payoutPaying(view.payout);
   const tempo = paying.chain === 'tempo';
-  const emailField = view.askEmail && view.continuing === false;
+  const emailField = view.askEmail;
   // A mistyped email shows at the field; with the wallets open, a wallet problem shows among them.
   const atEmail = emailField && problem?.reason === 'bad_email' ? problem : undefined;
   const inWallets =
@@ -79,17 +80,8 @@ export function OfferPanel({
           />
         </div>
       )}
-      {view.askEmail ? (
-        <EmailField value={email} onInput={onEmail} continuing={view.continuing} />
-      ) : null}
+      {view.askEmail ? <EmailField value={email} onInput={onEmail} /> : null}
       <ProblemNote problem={atEmail} asset={paying.asset} reveal />
-      {!view.askEmail && view.continuing !== false ? (
-        <p class="note">
-          {view.continuing === 'created'
-            ? 'Your earlier order is being sent.'
-            : 'Your earlier order is still open.'}
-        </p>
-      ) : null}
       <ProblemNote problem={aboveButton} asset={paying.asset} tempo={tempo} reveal />
       {walletsOpen ? (
         <WalletSection

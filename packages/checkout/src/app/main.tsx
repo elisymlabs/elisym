@@ -15,6 +15,7 @@ import { acceptHandshake } from './handshake';
 import { createHeightAnimator } from './height';
 import { armFirstFocus, closeOnEscape } from './modal-frame';
 import { holdFrame, startPage } from './page';
+import { wireReopen } from './reopen';
 import { type Banner, CheckoutSession, type View } from './session';
 import type { PurchasesSource } from './ui/PurchasesStep';
 import { discoverWallets, payingWallets, solanaChain } from './wallets';
@@ -33,6 +34,8 @@ let view: View | undefined;
 let banner: Banner | undefined;
 /** The opened order database's backend: "Your purchases" reads every record through it. */
 let backend: IndexedDbOrderBackend | undefined;
+/** Bumped when the checkout went back to its first step after a finished order's modal closed. */
+let resetCount = 0;
 
 // The session's own promises reach the UI: a step change caused by the buyer
 // takes focus only until the action that caused it settles.
@@ -60,7 +63,26 @@ const purchases: PurchasesSource = {
 
 /** Shown in the page's modal dialog: the frame can ask to close it. */
 const MODAL = params?.display === 'modal';
-const closeModal = MODAL ? () => handshake.post({ type: 'close' }) : undefined;
+/** In a modal only: closing it after a finished order brings the first step back. */
+const reopen = wireReopen(params?.display, window, {
+  reset: () => {
+    if (session?.resetFinished() !== true) {
+      return false;
+    }
+    resetCount += 1;
+    draw();
+    return true;
+  },
+  terminal: () => view?.kind === 'delivered' || view?.kind === 'refunded',
+  setTimer: (callback, ms) => window.setTimeout(callback, ms),
+  clearTimer: (handle) => window.clearTimeout(handle as number),
+});
+const closeModal = MODAL
+  ? () => {
+      handshake.post({ type: 'close' });
+      reopen?.closedFromFrame();
+    }
+  : undefined;
 const firstFocus = MODAL
   ? armFirstFocus(window, () =>
       document.getElementById('checkout-title')?.focus({ preventScroll: true }),
@@ -76,6 +98,7 @@ function draw(): void {
         banner={banner}
         actions={actions}
         purchases={purchases}
+        resetCount={resetCount}
         {...(closeModal === undefined ? {} : { onClose: closeModal })}
       />,
       root,
@@ -190,6 +213,7 @@ async function start(pageOrigin: string): Promise<void> {
         clearTimeout: (handle) => window.clearTimeout(handle as number),
         onView: (next) => {
           view = next;
+          reopen?.viewChanged();
           draw();
         },
         onStatus,

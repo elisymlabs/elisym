@@ -93,11 +93,12 @@ Products sold through the [elisym checkout](/commerce/quickstart) can be bought 
   - Call it with `product` (an `naddr1...`) to get a **quote**, without ordering or paying anything. The quote shows the store's key, trust level and verified domain, the price, the payout address, and the warnings.
   - Only after the user approves, call it again with the `quote_id`, plus `accept_warnings` for each warning they confirmed.
   - If anything in the offer changed since the quote, a new quote comes back and nothing is ordered.
-  - It returns the delivery, or an order id to follow.
-  - A product this agent already bought is shown, not bought again, unless you pass `buy_again: true`.
+  - It returns when the store completed the order, or an order id to follow. Nothing is delivered through elisym: the store handles the purchase on its side.
+  - A completed order says "Payment complete" when the payment is recorded or its transaction is confirmed on chain, "no payment recorded" only when no transaction was sent or the chain proved it failed, and neither when the chain cannot say.
+  - A product this agent already completed a purchase of is shown, not bought again, unless you pass `buy_again: true`.
 - `get_order` - list the agent's orders, or follow one by `order_id`. It sends the order again, checks the payment, and waits briefly for the store. It never pays.
 
-Store-written text (titles, names, the delivery) is untrusted data, wrapped like job results. The payment counts against the session spend limit, fee and rent included, and is refused up front if it would go over.
+Store-written text (titles and names) is untrusted data, wrapped like job results. The payment counts against the session spend limit, fee and rent included, and is refused up front if it would go over.
 
 On mainnet two more rules apply.
 

@@ -919,3 +919,61 @@ describe('what a page hears of a refusal with an earlier Tempo order', () => {
     expect(page.heard).toEqual(NO_ORDER);
   });
 });
+
+describe('a store answer held for a Tempo order not taken yet (L1)', () => {
+  it('a hand cancel held for it ends it at the press, never pays it', async () => {
+    const run = await setup();
+    run.relays.refuse = INBOX;
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    run.session.dispose();
+    const [first] = await records(run.offer);
+    if (first === undefined) {
+      throw new Error('no order');
+    }
+    expect(first.state).toBe('created');
+    expect(run.wallet.requests).toBe(0);
+    run.relays.refuse = [];
+    const cancelled = {
+      type: 'status',
+      buyerPubkey: first.buyerPubkey,
+      orderId: first.orderId,
+      status: 'cancelled',
+    } as OrderMessage;
+    await run.relays.publish(
+      INBOX,
+      wrapOrderMessage(
+        buildOrderMessage(cancelled, NOW + 100),
+        run.shop.store.secretKey,
+        first.buyerPubkey,
+      ).recipientWrap,
+    );
+    // The listener started at load hears nothing: only the read at the press finds it.
+    const deaf = new Proxy(run.relays, {
+      get(target, property, receiver) {
+        if (property === 'subscribe') {
+          return () => ({ close: () => undefined });
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const views: View[] = [];
+    const again = new CheckoutSession(run.offer, {
+      ...run.deps,
+      clientFor: () => deaf,
+      onView: (view) => views.push(view),
+    });
+    await again.start();
+    await settle();
+    expect(views.at(-1)).toMatchObject({ kind: 'offer' });
+    await again.pay('MetaMask');
+    const stored = await store.get(first.orderId);
+    expect(stored?.marker).toBeUndefined();
+    expect(stored?.paidTx).toBeUndefined();
+    expect(stored?.status?.status).toBe('cancelled');
+    const placed = (await records(run.offer)).filter((record) => record.orderId !== first.orderId);
+    expect(placed).toHaveLength(1);
+    expect(run.wallet.requests).toBe(1);
+  });
+});

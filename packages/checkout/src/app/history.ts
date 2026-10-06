@@ -1,9 +1,9 @@
-import { type OrderRecord, deliveryLink, isTerminal } from '@elisym/commerce/buyer';
+import { type OrderRecord, isTerminal } from '@elisym/commerce/buyer';
 import Decimal from 'decimal.js-light';
 import { openStatusOf, receiptBase, recordNetwork } from './receipts';
 import { sameRef } from './ref-scope';
 import type { OpenStatus, Receipt } from './session';
-import { deliveryField, networkLabel, receiptField } from './ui/text';
+import { networkLabel, receiptField } from './ui/text';
 
 export type PurchaseStatus = 'delivered' | 'refunded' | OpenStatus;
 
@@ -11,8 +11,8 @@ export type PurchaseStatus = 'delivered' | 'refunded' | OpenStatus;
  * One payment of the buyer's, as "Your purchases" shows and exports it: an
  * allowlist of what the record says, never the record itself. The one-time
  * buyer key, the signed wraps, the payment request, the attempt marker (with
- * its signed transaction), the reference, the payout address and the email
- * never leave this module.
+ * its signed transaction), the reference, the payout address, the email and
+ * any delivery an older node sent never leave this module.
  */
 export interface Purchase {
   orderId: string;
@@ -21,8 +21,6 @@ export interface Purchase {
   status: PurchaseStatus;
   /** The same shape the receipt panel shows, without a sent transaction (checked on opening). */
   receipt: Receipt;
-  /** What the store delivered: completed only. */
-  delivery?: { text: string; link?: string };
   /** The CAIP-19 id of the coin the order is for. */
   assetId: string;
   /** The order is for the product of this page's checkout. */
@@ -31,7 +29,7 @@ export interface Purchase {
 
 /** A purchase's status as the list, the detail and the export name it. */
 export const PURCHASE_STATUS_LABELS: Record<PurchaseStatus, string> = {
-  delivered: 'Delivered',
+  delivered: 'Completed',
   refunded: 'Refunded',
   waiting_store: 'Waiting for the store',
   paying: 'Payment in progress',
@@ -74,14 +72,11 @@ export function purchaseOf(record: OrderRecord, productAddress: string): Purchas
   if (status === undefined) {
     return undefined;
   }
-  const text = record.state === 'completed' ? (record.status?.delivery ?? '') : undefined;
-  const link = text === undefined ? undefined : deliveryLink(text);
   return {
     orderId: record.orderId,
     createdAt: record.createdAt,
     status,
     receipt: receiptBase(record, recordNetwork(record)),
-    ...(text === undefined ? {} : { delivery: { text, ...(link === undefined ? {} : { link }) } }),
     assetId: record.payout.caip19,
     thisProduct: record.productAddress === productAddress,
   };
@@ -122,7 +117,6 @@ const CSV_COLUMNS = [
   'order_id',
   'transaction',
   'explorer',
-  'delivery',
 ] as const;
 
 /** A cell a spreadsheet would run as a formula: its first non-blank character starts one. */
@@ -167,7 +161,6 @@ function csvRow(purchase: Purchase): string {
     // Only a payment this checkout confirmed: never a transaction nobody checked.
     cell(receipt.paid === undefined ? '' : receiptField(receipt.paid.tx)),
     cell(receipt.paid?.explorer ?? ''),
-    cell(purchase.delivery === undefined ? '' : deliveryField(purchase.delivery.text), true),
   ].join(',');
 }
 

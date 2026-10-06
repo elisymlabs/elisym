@@ -48,8 +48,11 @@ interface Props {
   actions: Actions;
   /** In a modal only: ask the page to close it. */
   onClose?: () => void;
-  /** Dev only (the fixture page): the wallet section starts open. */
-  initialWalletsOpen?: boolean;
+  /**
+   * Bumped when the session went back to the first step after the modal closed
+   * on a finished order: "Your purchases" closes and the panel starts over.
+   */
+  resetCount?: number;
   /** Dev only (the fixture page): the payout list starts open. */
   initialListOpen?: boolean;
   /** How long an unanswered action waits before its hint (the fixture page shows it at once). */
@@ -119,7 +122,7 @@ function productOf(view: View | undefined): string | undefined {
 /**
  * The checkout card: a header (the product, the store, its trust level), one panel that
  * grows top to bottom as the purchase goes on, and a footer. Store data is
- * rendered as text only; a delivery is a link only when it is `https:`. The
+ * rendered as text only, never as a link. The
  * session decides what is possible; this only decides what is open and where
  * focus goes after the buyer acts.
  */
@@ -129,7 +132,7 @@ export function Checkout({
   banner,
   actions,
   onClose,
-  initialWalletsOpen = false,
+  resetCount = 0,
   initialListOpen = false,
   hintAfterMs = HINT_AFTER_MS,
   purchases,
@@ -137,9 +140,16 @@ export function Checkout({
 }: Props) {
   /** "Your purchases" is open over the session, which keeps running underneath. */
   const [historyOpen, setHistoryOpen] = useState(initialPurchasesOpen);
-  const panel = useRef(
-    initialWalletsOpen ? { ...INITIAL_PANEL, walletsOpen: true } : INITIAL_PANEL,
-  );
+  const panel = useRef(INITIAL_PANEL);
+  /** The last reset seen: a new one returns the card to its first step. */
+  const resets = useRef(resetCount);
+  if (resetCount !== resets.current) {
+    resets.current = resetCount;
+    panel.current = INITIAL_PANEL;
+    if (historyOpen) {
+      setHistoryOpen(false);
+    }
+  }
   const seen = useRef<View | undefined>(undefined);
   const email = useRef('');
   const store = useRef<StoreInfo | undefined>(undefined);

@@ -8,7 +8,12 @@ import {
   buildProductEvent,
   wrapOrderMessage,
 } from '@elisym/commerce';
-import { type OrderRecord, MemoryOrderBackend } from '@elisym/commerce/buyer';
+import {
+  type OrderRecord,
+  MemoryOrderBackend,
+  OrderStore,
+  applyStatus,
+} from '@elisym/commerce/buyer';
 import { USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { NATIVE_SOL, assetKey, generateSolanaWallet } from '@elisym/sdk';
 import { getBase58Encoder } from '@solana/kit';
@@ -142,6 +147,32 @@ async function storeDelivers(run: World, record: OrderRecord, message: Partial<O
       record.buyerPubkey,
     ).recipientWrap,
   );
+}
+
+/**
+ * The store's status for `record`, stored as the agent's listener stores it once
+ * heard: written here so no test waits on a follow budget to hear it.
+ */
+async function storeCompletes(
+  run: World,
+  record: OrderRecord,
+  message: Partial<OrderMessage> = {},
+): Promise<OrderRecord> {
+  const status = {
+    type: 'status',
+    buyerPubkey: record.buyerPubkey,
+    orderId: record.orderId,
+    status: 'completed',
+    ...message,
+  } as Parameters<typeof applyStatus>[2];
+  const agentStore = new OrderStore(
+    new FileOrderBackend(run.agent.agentDir as string, { durable: false }),
+  );
+  const applied = await applyStatus(agentStore, record.orderId, status, NOW + 100);
+  if (applied?.state !== 'completed') {
+    throw new Error(`not completed: ${applied?.state ?? 'no record'}`);
+  }
+  return applied;
 }
 
 beforeEach(() => {
@@ -286,23 +317,30 @@ describe('buy_product', () => {
     expect(record?.marker).toBeUndefined();
   });
 
-  it('shows a delivery already bought instead of paying again, unless asked to buy again', async () => {
+  it('says a purchase is complete instead of paying again, unless asked to buy again', async () => {
     const run = await world();
     const first = await quoteId(run);
     await tool('buy_product').handler(run.ctx, {
       quote_id: first.id,
       accept_warnings: first.warnings,
     });
-    const [record] = await orders(run);
-    await storeDelivers(run, record as OrderRecord);
-    const followed = await tool('get_order').handler(run.ctx, { order_id: record?.orderId });
-    expect(text(followed as never)).toContain('shop.example/course');
+    const record = await paidOrder(run);
+    await storeCompletes(run, record);
+    const followed = text(
+      (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
+    );
+    expect(followed).toContain(`Payment complete (order ${record.orderId})`);
     const second = await quoteId(run);
-    const shown = await tool('buy_product').handler(run.ctx, {
-      quote_id: second.id,
-      accept_warnings: second.warnings,
-    });
-    expect(text(shown as never)).toContain('already bought');
+    const shown = text(
+      (await tool('buy_product').handler(run.ctx, {
+        quote_id: second.id,
+        accept_warnings: second.warnings,
+      })) as never,
+    );
+    expect(shown).toContain(`Payment complete (order ${record.orderId})`);
+    expect(shown).toContain(
+      `This agent already completed a purchase of this product (order ${record.orderId}). To buy it again, call buy_product with buy_again: true.`,
+    );
     expect(new Set(run.chain.sent).size).toBe(1);
   });
 
@@ -675,5 +713,250 @@ describe('the spend reservations of a payment attempt', () => {
     );
     releaseCosts(ctx, 'a', false);
     expect(spent(ctx).lamports).toBe(5_000n);
+  });
+});
+
+/** The completed order's own look-up answers `answer`; the payment watch reads the chain as is. */
+function lookupAnswers(run: World, answer: () => Promise<unknown>) {
+  const state = { reads: 0, configs: [] as unknown[] };
+  const rpc = new Proxy(run.chain.rpc, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property !== 'getSignatureStatuses' || typeof value !== 'function') {
+        return value;
+      }
+      return (signatures: string[], config: unknown) => {
+        const real = value(signatures, config) as { send(options?: unknown): Promise<unknown> };
+        return {
+          send: (options?: { abortSignal?: AbortSignal }) => {
+            // Only the completed order's look-up carries a timeout (the watch's reads do not).
+            if (options?.abortSignal === undefined) {
+              return real.send(options);
+            }
+            state.reads += 1;
+            state.configs.push(config);
+            return answer();
+          },
+        };
+      };
+    },
+  });
+  commerceRuntime.solanaRpc = () => rpc as never;
+  return state;
+}
+
+/** A purchase whose payment this agent never saw land: the store completed it first. */
+async function completedUnseen(run: World): Promise<OrderRecord> {
+  run.chain.indexLag = true;
+  const quote = await quoteId(run);
+  await tool('buy_product').handler(run.ctx, {
+    quote_id: quote.id,
+    accept_warnings: quote.warnings,
+  });
+  const [record] = await orders(run);
+  if (record?.marker?.rail !== 'solana' || record.marker.signature === undefined) {
+    throw new Error('no signed attempt');
+  }
+  expect(record.paidTx).toBeUndefined();
+  return storeCompletes(run, record);
+}
+
+const NEUTRAL = (orderId: string) => `Order ${orderId} completed by the store.`;
+
+/**
+ * A bought order with its payment recorded, as the watch records it once it
+ * sees the landed transaction: written here so no test waits on the watch's timing.
+ */
+async function paidOrder(run: World): Promise<OrderRecord> {
+  const [record] = await orders(run);
+  const signature = record?.marker?.rail === 'solana' ? record.marker.signature : undefined;
+  if (record === undefined || signature === undefined || !run.chain.landed.has(signature)) {
+    throw new Error('no landed attempt');
+  }
+  if (record.paidTx !== undefined) {
+    return record;
+  }
+  const paidStore = new OrderStore(
+    new FileOrderBackend(run.agent.agentDir as string, { durable: false }),
+  );
+  const written = await paidStore.update(record.orderId, record.version, {
+    state: 'paid',
+    paidTx: signature,
+    paidAt: NOW + 40,
+  });
+  if (!written.ok) {
+    throw new Error(`paid not written: ${written.reason}`);
+  }
+  return written.record;
+}
+
+describe('a completed order, in words (D6, rev 4 #1, rev 5 #1)', () => {
+  for (const [name, status, expected] of [
+    ['confirmed, no error', { err: null, confirmationStatus: 'confirmed' }, 'complete'],
+    ['finalized, no error', { err: null, confirmationStatus: 'finalized' }, 'complete'],
+    ['confirmed with an error', { err: { failed: 1 }, confirmationStatus: 'confirmed' }, 'none'],
+    ['finalized with an error', { err: { failed: 1 }, confirmationStatus: 'finalized' }, 'none'],
+    ['unknown to the chain', null, 'neutral'],
+    ['only processed', { err: null, confirmationStatus: 'processed' }, 'neutral'],
+    ['processed with an error', { err: { failed: 1 }, confirmationStatus: 'processed' }, 'neutral'],
+  ] as const) {
+    it(`its own transaction ${name} (M29, M33)`, async () => {
+      const run = await world();
+      const record = await completedUnseen(run);
+      const probe = lookupAnswers(run, async () => ({ value: [status] }));
+      const said = text(
+        (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
+      );
+      expect(probe.reads).toBe(1);
+      // Searched in the full history, as the checkout and the payment watch do (L2).
+      expect(probe.configs).toEqual([{ searchTransactionHistory: true }]);
+      if (expected === 'complete') {
+        expect(said).toContain(`Payment complete (order ${record.orderId})`);
+      } else if (expected === 'none') {
+        expect(said).toContain(
+          `Order ${record.orderId} completed by the store; no payment recorded.`,
+        );
+      } else {
+        expect(said).toContain(NEUTRAL(record.orderId));
+        expect(said).not.toContain('no payment');
+        expect(said).not.toContain('Payment complete');
+      }
+    });
+  }
+
+  it('a look-up that throws is neutral', async () => {
+    const run = await world();
+    const record = await completedUnseen(run);
+    const probe = lookupAnswers(run, async () => {
+      throw new Error('node down');
+    });
+    const said = text(
+      (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
+    );
+    expect(probe.reads).toBe(1);
+    expect(said).toContain(NEUTRAL(record.orderId));
+    expect(said).not.toContain('no payment');
+  });
+
+  it('no RPC of the order’s own network: neutral, with no look-up made', async () => {
+    const run = await world();
+    const record = await completedUnseen(run);
+    const probe = lookupAnswers(run, async () => ({ value: [null] }));
+    // The agent runs on mainnet now, and no devnet endpoint can be reached.
+    run.agent.network = 'mainnet';
+    commerceRuntime.purchaseRpc = async (network) => {
+      if (network === 'devnet') {
+        throw new Error('no devnet endpoint');
+      }
+      return { url: 'fake', canProveOver: false };
+    };
+    const said = text(
+      (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
+    );
+    expect(probe.reads).toBe(0);
+    expect(said).toContain(NEUTRAL(record.orderId));
+    expect(said).not.toContain('no payment');
+  });
+
+  it('a payment this agent saw land: complete, with no look-up', async () => {
+    const run = await world();
+    const quote = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    const record = await paidOrder(run);
+    expect(record.paidTx).toBeDefined();
+    await storeCompletes(run, record);
+    const probe = lookupAnswers(run, async () => ({ value: [null] }));
+    const said = text(
+      (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
+    );
+    expect(probe.reads).toBe(0);
+    expect(said).toContain(`Payment complete (order ${record.orderId})`);
+  });
+
+  it('completed by hand with no attempt at all: no payment recorded, with no look-up', async () => {
+    const run = await world();
+    run.chain.lamports = 0n;
+    const quote = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    const [record] = await orders(run);
+    expect(record?.state).toBe('ordered');
+    expect(record?.marker).toBeUndefined();
+    await storeCompletes(run, record as OrderRecord);
+    const probe = lookupAnswers(run, async () => ({ value: [null] }));
+    const said = text(
+      (await tool('get_order').handler(run.ctx, { order_id: record?.orderId })) as never,
+    );
+    expect(probe.reads).toBe(0);
+    expect(said).toContain(`Order ${record?.orderId} completed by the store; no payment recorded.`);
+  });
+
+  it('never outputs a delivery an older store node sent (M19)', async () => {
+    const run = await world();
+    const quote = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    const [record] = await orders(run);
+    await storeCompletes(run, record as OrderRecord, {
+      delivery: { method: 'access', value: 'LICENSE-KEY-1234' },
+    });
+    const followed = text(
+      (await tool('get_order').handler(run.ctx, { order_id: record?.orderId })) as never,
+    );
+    expect((await orders(run))[0]?.status?.delivery).toBe('LICENSE-KEY-1234');
+    const second = await quoteId(run);
+    const guarded = text(
+      (await tool('buy_product').handler(run.ctx, {
+        quote_id: second.id,
+        accept_warnings: second.warnings,
+      })) as never,
+    );
+    for (const said of [followed, guarded]) {
+      expect(said).not.toContain('LICENSE-KEY-1234');
+      expect(said).not.toContain('delivery_link');
+      expect(said).not.toContain('delivery_text');
+      expect(said).not.toContain('Delivered');
+    }
+  });
+
+  it('the buy-again guard uses the same neutral words when the chain cannot say', async () => {
+    const run = await world();
+    const record = await completedUnseen(run);
+    lookupAnswers(run, async () => ({ value: [null] }));
+    expect((await orders(run))[0]?.state).toBe('completed');
+    const sent = new Set(run.chain.sent).size;
+    const second = await quoteId(run);
+    const guarded = text(
+      (await tool('buy_product').handler(run.ctx, {
+        quote_id: second.id,
+        accept_warnings: second.warnings,
+      })) as never,
+    );
+    expect(guarded).toContain(NEUTRAL(record.orderId));
+    expect(guarded).not.toContain('no payment');
+    expect(guarded).toContain('To buy it again, call buy_product with buy_again: true.');
+    expect(new Set(run.chain.sent).size).toBe(sent);
+  });
+
+  it('a paid order waits for the store to confirm', async () => {
+    const run = await world();
+    const quote = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    const record = await paidOrder(run);
+    expect(record.state).toBe('paid');
+    const said = text(
+      (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
+    );
+    expect(said).toContain('Waiting for the store to confirm; call get_order later.');
   });
 });
