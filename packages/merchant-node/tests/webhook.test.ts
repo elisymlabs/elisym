@@ -26,6 +26,7 @@ import {
   webhookEventId,
 } from '../src/ledger';
 import {
+  NO_WEBHOOK_NOTICE,
   WEBHOOK_SECRET_ENV,
   WEBHOOK_SECRET_FILE_ENV,
   WebhookSender,
@@ -293,6 +294,7 @@ describe('the secret', () => {
     expect(readWebhookSecret({ [WEBHOOK_SECRET_ENV]: 'short' })).toBe('short');
     expect(webhookTarget(undefined, 'short')).toEqual({
       warning: expect.stringMatching(/no webhook/),
+      notice: NO_WEBHOOK_NOTICE,
     });
   });
 
@@ -301,7 +303,11 @@ describe('the secret', () => {
       /no secret is set/,
     );
     expect(webhookTarget(undefined, SECRET).warning).toMatch(/no webhook/);
-    expect(webhookTarget(undefined, undefined)).toEqual({});
+    // M7: no webhook at all is said once, as a notice (never a refusal).
+    expect(webhookTarget(undefined, undefined)).toEqual({ notice: NO_WEBHOOK_NOTICE });
+    expect(NO_WEBHOOK_NOTICE).toBe(
+      'no webhook: paid orders reach you only through orders and the admin page',
+    );
     expect(webhookTarget({ url: 'https://shop.example/hook' }, SECRET)).toEqual({
       target: { url: 'https://shop.example/hook', secret: SECRET },
     });
@@ -614,7 +620,6 @@ describe('the orders listing', () => {
     state.answeredByHand = {
       [`${BUYER}:hand`]: {
         kind: 'delivered',
-        delivery: { method: 'access', value: 'https://x.example' },
         customerRef: 'user-9',
         reportedTxs: [],
         refusedTxs: [],
@@ -628,7 +633,7 @@ describe('the orders listing', () => {
     expect(lines[1]).toContain(`webhook=none event=${webhookEventId(STORE, without.key, SIG)}`);
     expect(lines[1]).not.toContain('ref=');
     expect(lines[2]).not.toContain('webhook=');
-    expect(lines.at(-1)).toContain('ref=user-9');
+    expect(lines.at(-1)).toBe(`answered by hand: ${BUYER}:hand completed ref=user-9`);
     expect(shownRef('a'.repeat(40))).toBe(`${'a'.repeat(21)}...`);
     expect(shownRef('bad\u001b[2Jref')).toBe('bad?[2Jref');
   });
@@ -662,10 +667,7 @@ describe('the customer reference', () => {
     const { state } = world();
     const order = paidOrder({ paid: undefined, customerRef: 'user-123' });
     state.orders[order.key] = order;
-    const plan = planHandAnswer(state, order.key, {
-      kind: 'delivered',
-      delivery: { method: 'access', value: 'https://x.example' },
-    });
+    const plan = planHandAnswer(state, order.key, { kind: 'delivered' });
     expect(plan).toMatchObject({ ok: true, answer: { customerRef: 'user-123' } });
   });
 });

@@ -9,7 +9,7 @@ import type { ProductLine } from './store';
 const STATE_LABELS: Record<OrderState, string> = {
   ordered: 'ordered',
   payment_reported: 'payment reported (not confirmed by your node)',
-  delivered: 'delivered',
+  delivered: 'completed',
   released: 'released by hand',
   refunded: 'refunded',
 };

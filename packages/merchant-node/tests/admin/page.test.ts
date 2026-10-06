@@ -188,7 +188,8 @@ describe('the admin page', () => {
     const cells = [...(rows[0]?.querySelectorAll('td') ?? [])].map((cell) => cell.textContent);
     expect(cells).toHaveLength(headers.length);
     expect(cells[headers.indexOf('Ref')]).toBe('user-42');
-    expect(text).toContain('delivered');
+    expect(text).toContain('completed');
+    expect(text).not.toContain('delivered');
     expect(text).toContain('1 USDC');
     expect(byId('orders').querySelector('img')).toBeNull();
     const link = byId('orders').querySelector('a');

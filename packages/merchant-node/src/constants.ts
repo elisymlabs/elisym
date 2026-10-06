@@ -79,7 +79,7 @@ export const MAX_REPEATS_IN_FLIGHT = 4;
 
 /**
  * The store's copies of its replies (for the admin) waiting to be published: a
- * catch-up delivers every paid order at once. A copy is lost past this.
+ * catch-up completes every paid order at once. A copy is lost past this.
  */
 export const SELF_COPY_QUEUE_MAX = 512;
 

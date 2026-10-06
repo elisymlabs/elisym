@@ -46,7 +46,6 @@ describe('delivering a paid order', () => {
     const deps = {
       pool: recordingPool(sent),
       inboxRelays: RELAYS,
-      delivery: { method: 'access' as const, value: 'https://shop.example/course' },
       storeSecretKey: store.secretKey,
       auth: async (template: Parameters<typeof finalizeEvent>[0]) =>
         finalizeEvent(template, store.secretKey),
@@ -63,6 +62,9 @@ describe('delivering a paid order', () => {
       type: 'status',
       status: 'completed',
     });
+    const buyerCopy = unwrapOrderMessage(sent[0]?.event ?? attempt.selfWrap, buyer.secretKey);
+    expect(buyerCopy?.message).toMatchObject({ type: 'status', status: 'completed' });
+    expect(buyerCopy?.message).not.toHaveProperty('delivery');
     // The copy goes to every inbox relay, including the one that took the buyer's.
     sent.length = 0;
     await publishSelfCopy(deps)(attempt.selfWrap);

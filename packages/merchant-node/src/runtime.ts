@@ -32,7 +32,7 @@ import {
   recordTempoCheck,
 } from './tempo';
 
-/** One delivery attempt: the relays that took it now, and the store's own copy of the reply. */
+/** One attempt to send the completed status: the relays that took it now, and the store's own copy. */
 export interface DeliveryAttempt {
   taken: string[];
   selfWrap: NostrEvent;
@@ -46,14 +46,14 @@ export interface RuntimeDeps {
   /** Write the ledger to disk. */
   save: () => void;
   /**
-   * Publish the delivery of one paid order to the store's inbox relays, except
+   * Publish the completed status of one paid order to the store's inbox relays, except
    * `skip` (they took it already); resolves to the relays that took it now and
    * the store's own copy of the reply (published separately, see `selfCopies`).
    */
   deliver: (order: MerchantOrder, skip: readonly string[]) => Promise<DeliveryAttempt>;
   /**
-   * Where the store's copy of a delivery goes, once per order: on the attempt
-   * that makes it delivered. Without it no copy is published.
+   * Where the store's copy of a completed status goes, once per order: on the
+   * attempt that completes it. Without it no copy is published.
    */
   selfCopies?: SelfCopies;
   /** How many inbox relays the store has: a delivery wants two of them (see `deliveryDone`). */
@@ -233,10 +233,10 @@ export class MerchantRuntime {
     const { deliver, log } = this.deps;
     void deliver(order, [])
       .then(({ taken }) => {
-        log(`delivery for ${order.key} sent again: taken by ${taken.length}`);
+        log(`completion for ${order.key} sent again: taken by ${taken.length}`);
       })
       .catch((error: unknown) => {
-        log(`delivery for ${order.key} not sent again: ${String(error)}`);
+        log(`completion for ${order.key} not sent again: ${String(error)}`);
       })
       .finally(() => {
         this.repeatsInFlight -= 1;
@@ -341,16 +341,16 @@ export class MerchantRuntime {
       if (deliveryDone(order.deliveredTo?.length ?? 0, inboxRelayCount, paidAge)) {
         changed = true;
         order.deliveredAt = at;
-        log(`delivered ${order.key} (${order.paid?.signature ?? ''})`);
+        log(`completed ${order.key} (${order.paid?.signature ?? ''})`);
         // One copy per order, of the attempt that made it delivered. Published
         // after the save below by the copy queue, which never blocks this one.
         if (attempt === undefined) {
-          log(`copy for ${order.key} not made: the delivery could not be built`);
+          log(`copy for ${order.key} not made: the completed status could not be built`);
         } else {
           selfCopies?.add(attempt.selfWrap, order.key);
         }
       } else {
-        log(`delivery for ${order.key} taken by ${order.deliveredTo?.length ?? 0}; will retry`);
+        log(`completion for ${order.key} taken by ${order.deliveredTo?.length ?? 0}; will retry`);
       }
     });
     if (changed) {

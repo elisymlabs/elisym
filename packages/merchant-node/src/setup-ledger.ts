@@ -61,7 +61,7 @@ export function clockProblem(what: string, date: number, startedAt: number): str
 /**
  * Why the node may not use this home with these products: a product the
  * ledger has a history for - a listing that went out, or any terms - has no
- * directory. Its orders could be paid and never delivered, and its listing would
+ * directory. Its orders could be paid and never completed, and its listing would
  * stay on sale. Membership is by the exact directory names read.
  */
 export function historyRefusal(

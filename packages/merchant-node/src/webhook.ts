@@ -69,6 +69,14 @@ export function readWebhookSecret(
 }
 
 /**
+ * Said once when `run` starts with no webhook: the buyer gets nothing in-band,
+ * so a paid order reaches the merchant only through these two (a notice, not a
+ * refusal: a store may fulfil by hand).
+ */
+export const NO_WEBHOOK_NOTICE =
+  'no webhook: paid orders reach you only through orders and the admin page';
+
+/**
  * The target a node runs with: a configured webhook needs its secret, at least
  * `WEBHOOK_MIN_SECRET_BYTES` bytes, so a missing or short one refuses to start;
  * a secret without a webhook is only a warning, whatever its length.
@@ -76,11 +84,14 @@ export function readWebhookSecret(
 export function webhookTarget(
   webhook: { url: string } | undefined,
   secret: string | undefined,
-): { target?: WebhookTarget; warning?: string } {
+): { target?: WebhookTarget; warning?: string; notice?: string } {
   if (webhook === undefined) {
     return secret === undefined
-      ? {}
-      : { warning: `${WEBHOOK_SECRET_ENV} is set but config.json has no webhook: none is sent` };
+      ? { notice: NO_WEBHOOK_NOTICE }
+      : {
+          warning: `${WEBHOOK_SECRET_ENV} is set but config.json has no webhook: none is sent`,
+          notice: NO_WEBHOOK_NOTICE,
+        };
   }
   if (secret === undefined) {
     throw new Error(`config.json has a webhook and no secret is set: ${WEBHOOK_SECRET_HINT}`);

@@ -2,7 +2,8 @@
 
 The self-hosted store behind the elisym checkout. It publishes your products to Nostr, takes
 orders sent by the checkout widget, checks each payment on chain (USDC on Solana, or a
-stablecoin on Tempo), and sends the buyer what they bought.
+stablecoin on Tempo), and completes the order. Your backend acts on each payment through the
+node's signed `order.paid` webhook.
 
 You do not need an account or a server of ours. The node holds your store's keys and a small
 ledger on your own disk.
@@ -14,8 +15,6 @@ ledger on your own disk.
 - For Solana payouts, a Solana RPC endpoint for the node itself. On mainnet, use your own
   provider key (Helius, Triton, ...). A key restricted to a browser origin does not work from a
   server. Tempo is read through its public endpoint unless you set your own.
-- What the buyer gets once paid: a link (a Blossom URL, a course page, a download) or text
-  (a license key).
 
 ## Quick start (devnet)
 
@@ -30,7 +29,7 @@ This creates `~/.elisym-merchant/` with a `config.json` to edit, one product to 
 - `payouts[0].address`: your Solana wallet address, paid for every product.
 
 Then edit `products/my-product/PRODUCT.md` (see [Products](#products)): the title, the price in
-USD (paid 1:1 in USDC) and the link or text the buyer gets. Add a directory per further
+USD (paid 1:1 in USDC) and the description. Add a directory per further
 product. Then publish the store and start taking orders:
 
 ```bash
@@ -59,10 +58,10 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `init`                             | Creates the home: a `config.json` template (never overwritten), an example product in `products/my-product/PRODUCT.md`, and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                   |
 | `setup`                            | Checks the inbox relays, publishes the store and the listing of every new or changed product, and records the terms it offers                                                                                                                          |
-| `run`                              | Takes orders, verifies payments and delivers                                                                                                                                                                                                           |
-| `orders`                           | Lists the orders: open, paid, delivered, the product, the buyer's email, the customer reference, and for a paid order its webhook state and event id                                                                                                   |
+| `run`                              | Takes orders, verifies payments and completes the orders                                                                                                                                                                                               |
+| `orders`                           | Lists the orders: open, paid, completed, the product, the buyer's email, the customer reference, and for a paid order its webhook state and event id                                                                                                   |
 | `check`                            | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
-| `deliver`                          | Answers an unpaid order by hand with its product's delivery (node stopped); `--product <d>` names the product of an order the ledger no longer holds, required when the store has several products                                                     |
+| `complete`                         | Answers an unpaid order by hand: closes it and sends `completed` (node stopped)                                                                                                                                                                        |
 | `refund`                           | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
 | `encrypt-keys`                     | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
 | `store-key`                        | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
@@ -121,37 +120,38 @@ underscores, starting with a letter or digit. A `PRODUCT.md` is YAML frontmatter
 title: Deposit 10 USD
 priceUsd: '10'
 summary: Adds 10 USD to your account balance.
-delivery:
-  method: access
-  value: https://example.com/<the link the buyer gets>
 ---
 
-What the buyer gets, in markdown. This body is the listing's description.
+Adds 10 USD to your account, in markdown. This body is the listing's description.
 ```
 
-| Key               | Meaning                                                                                 |
-| ----------------- | --------------------------------------------------------------------------------------- |
-| `title`           | Title (1 to 200 characters)                                                             |
-| `priceUsd`        | Price in USD, quoted: `"49"` or `"0.50"`. A bare number is refused                      |
-| `onSale`          | Optional, `true` by default. `false` stops selling the product (see below)              |
-| `summary`         | Optional short line                                                                     |
-| `delivery.method` | `access`, `download`, `license`, `api` or `webhook`: how the checkout labels it         |
-| `delivery.value`  | The link or text the buyer gets (up to 1024 characters), quoted if it reads as a number |
+| Key        | Meaning                                                                    |
+| ---------- | -------------------------------------------------------------------------- |
+| `title`    | Title (1 to 200 characters)                                                |
+| `priceUsd` | Price in USD, quoted: `"49"` or `"0.50"`. A bare number is refused         |
+| `onSale`   | Optional, `true` by default. `false` stops selling the product (see below) |
+| `summary`  | Optional short line                                                        |
 
-- An unknown or misspelled key is refused, also inside `delivery`: a misspelled `onSale` would
-  otherwise leave the product on sale.
+- An unknown or misspelled key is refused: a misspelled `onSale` would otherwise leave the
+  product on sale. A `delivery` (from a node older than 0.9.0) is refused by name: remove it.
 - A malformed `PRODUCT.md` stops `setup`, `run` and `check`, naming the file: a product is never
   skipped. A link, a pipe or a directory without `PRODUCT.md` is refused too. Entries starting
   with `.` (such as `.git`) and files placed directly in `products/` are ignored.
-- `setup` refuses a product whose delivery is still the example `init` wrote.
-- A delivery value can be a secret link: never publish the `products/` directory or commit it to
-  a public repository.
+- `setup` refuses a product whose title and text are still the example `init` wrote.
+
+**What the buyer gets.** Nothing in-band: once the node has checked a payment on chain, it sends
+the order's `completed` status and the checkout shows Payment complete with a receipt. What the
+buyer paid for happens on your side: act on the signed `order.paid` [webhook](#credit-an-account-the-webhook).
+
+Upgrading from 0.8: remove `delivery` from every `PRODUCT.md` (the node refuses it), and run
+`complete` where you ran `deliver`. A paid order a 0.8 node had not completed yet, or a status
+sent again, now goes out without the link it carried.
 
 **Stopping a product.** Set `onSale: false` and run `setup`: its listing is republished as sold
 out, every checkout shows Sold out, and its terms end once that listing reached a relay. An
 order already placed is still honored within the usual window. **Never delete the directory of a
 product that was published** (or ever had terms): `setup`, `run` and `check` refuse to start
-without it, because its orders could be paid and never delivered. A product's id cannot change:
+without it, because its orders could be paid and never completed. A product's id cannot change:
 a new directory is a new product, and the old one stays, stopped with `onSale: false`.
 
 ### Inbox relays
@@ -164,9 +164,9 @@ stops: buyers send orders to all of them. Retention cannot be tested, so pick re
 and `wss://relay.elisym.network` passed when this was written. `wss://relay.damus.io` did
 not: it accepts gift wraps but does not serve them back.
 
-A delivery counts as done once two inbox relays accept it (or all of them, when only one is
-configured). While one relay is down, the node retries only that relay, each minute. An hour
-after the payment, one relay is enough. If a relay later drops a delivery, the node sends the
+A completed status counts as sent once two inbox relays accept it (or all of them, when only one
+is configured). While one relay is down, the node retries only that relay, each minute. An hour
+after the payment, one relay is enough. If a relay later drops it, the node sends the
 status again when it reads that order or a receipt for it again: at most every ten minutes per
 order, and a few at a time (the rest wait until the order is read again).
 
@@ -236,7 +236,7 @@ snapshots taken before encrypting still hold the plain keys.
 Both keys, the default, is what protects buyers: the store key signs the profile that names the
 owner, so a plain store key lets whoever copies the home publish a profile naming another owner
 and redirect new buyers. `--owner-only` (on `init` or `encrypt-keys`) encrypts the owner key
-only, for a node that must run without the passphrase: `run`, `check`, `deliver` and `refund`
+only, for a node that must run without the passphrase: `run`, `check`, `complete` and `refund`
 then need none, but only buyers who bought before (and so pinned the owner) are protected.
 
 `store-key` prints the store key for the admin page. In Docker run it with a terminal and
@@ -265,8 +265,8 @@ hidden, and one line counts them.
 | ---------------- | --------------------------------------------------------------------- |
 | ordered          | an order, nothing more yet                                            |
 | payment reported | the buyer reported a payment the node has not confirmed (not counted) |
-| delivered        | the node credited a payment and delivered (counted in the totals)     |
-| released by hand | answered with `deliver` without a payment (not counted)               |
+| completed        | the node credited a payment and sent its completed status (counted)   |
+| released by hand | answered with `complete` without a payment (not counted)              |
 | refunded         | answered with `refund` (the refund is shown, not counted)             |
 
 - The key stays in the tab's memory: it is never stored and never sent anywhere (it only
@@ -513,10 +513,10 @@ createServer((request, response) => {
 }).listen(8080);
 ```
 
-Delivery and retries:
+Sending and retries:
 
 - The entry is written in the same ledger save that records the payment, so a crash never loses
-  it: a restarted node sends what is pending. Delivery to the buyer never waits on it.
+  it: a restarted node sends what is pending. The completed status never waits on it.
 - A failed attempt is retried after 30 seconds, doubling to an hour, for 7 days; then it is
   `failed`. `orders` shows each paid order's webhook state (`pending`, `sent`, `failed`, or
   `none`) and its event id. `webhook retry` sends a pending or failed one again now (node stopped).
@@ -536,7 +536,7 @@ when there is none, so a later webhook never credits it twice):
 
 - A payment verified while no webhook was configured, or by a node older than 0.7.0:
   `webhook resend <buyer>:<orderId>` sends it now.
-- An order answered by hand (`deliver`, `refund`): `orders` and the command show its reference.
+- An order answered by hand (`complete`, `refund`): `orders` and the command show its reference.
 - A payment the node never saw: a node offline for longer than the three-day catch-up window
   can miss payments for orders placed before it went down.
 
@@ -550,7 +550,7 @@ The [admin page](#admin) shows each order's reference; the webhook state is in `
 - The owner's payout list must name only payouts this node checks: on its networks, at the
   addresses its ledger records. `run` refuses to start when the published list names another
   one, for example a Tempo address added from elsewhere without a `tempo` block, or an address
-  `setup` did not record. A buyer could pay that address and never get a delivery. It refuses the same way
+  `setup` did not record. A buyer could pay that address and never get the order completed. It refuses the same way
   when the published listing asks a price the ledger does not record (a `setup` killed
   between publishing and recording, for example by `docker stop`), and when the published
   inbox list names a relay the node does not read (the config changed without `setup`). Run
@@ -564,10 +564,10 @@ The [admin page](#admin) shows each order's reference; the webhook state is in `
 
 - One network per node; any number of products, each in its own directory: USDC on Solana and
   stablecoins on Tempo (Moderato on devnet). Every product shares the store's payout list.
-- Delivery is each product's link or text. Uploading a file to Blossom is up to you; the link
-  goes in the product's `delivery.value`.
+- The node returns nothing to the buyer: the `completed` status and its receipt only. What the
+  buyer paid for is up to your backend (the `order.paid` webhook).
 - Refunds are made by hand from your wallet. `refund` reports one to the buyer of an order the
-  node did not credit; a refund of a delivered order is between you and the buyer.
-- Every answer the node sends a buyer (a delivery, a hand answer) is also wrapped to the store's
+  node did not credit; a refund of a completed order is between you and the buyer.
+- Every answer the node sends a buyer (a completed status, a hand answer) is also wrapped to the store's
   own key and published to its inbox relays, so the [admin page](#admin) can read what the node
   answered. These copies are never read back as orders.

@@ -798,7 +798,7 @@ describe("the store's copy of a delivery", () => {
     await runtime.deliverPending();
     expect(state.orders.k?.deliveredAt).toBeDefined();
     expect(published).toEqual([]);
-    expect(logs).toContain('copy for k not made: the delivery could not be built');
+    expect(logs).toContain('copy for k not made: the completed status could not be built');
   });
 });
 

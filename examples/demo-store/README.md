@@ -48,9 +48,6 @@ cat > ~/.elisym-demo-devnet/products/demo/PRODUCT.md <<'PRODUCT'
 ---
 title: Demo product
 priceUsd: "0.01"
-delivery:
-  method: access
-  value: https://elisym.network
 ---
 
 A test purchase through the elisym checkout.
@@ -111,10 +108,11 @@ Use a separate home, so the devnet store keeps working:
 npx @elisym/merchant-node init --network mainnet --home ~/.elisym-demo-mainnet
 ```
 
-Fill in the mainnet home the way step 1 did, with your own product. The snippet leaves the
-delivery link empty, so a real buyer never gets a placeholder: `setup` refuses the product until
-you put the link the buyer gets in its `delivery.value`, the RPC URL in `rpcUrl` and your
-address in the payout.
+Fill in the mainnet home the way step 1 did: the RPC URL in `rpcUrl`, your address in the
+payout, and your own product. The snippet writes `init`'s example title and text, so `setup`
+refuses the product until you set its title and description. The store
+returns nothing to the buyer: once a payment is checked, the checkout shows Payment complete,
+and your backend acts on the node's signed `order.paid` webhook.
 
 ```bash
 node -e '
@@ -130,14 +128,11 @@ rm -rf ~/.elisym-demo-mainnet/products/my-product
 mkdir -p ~/.elisym-demo-mainnet/products/demo
 cat > ~/.elisym-demo-mainnet/products/demo/PRODUCT.md <<'PRODUCT'
 ---
-title: Demo product
+title: My product
 priceUsd: "1"
-delivery:
-  method: access
-  value: ""
 ---
 
-A test purchase through the elisym checkout.
+What the buyer pays for.
 PRODUCT
 ```
 

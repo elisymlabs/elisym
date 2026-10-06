@@ -136,7 +136,7 @@ const configSchema = z
         context.addIssue({ code: 'custom', path: ['webhook', 'url'], message: problem });
       }
     }
-    // One relay under two spellings would count twice toward a delivery.
+    // One relay under two spellings would count twice toward a completion.
     const spellings = config.inboxRelays.map(
       (relay) => checkoutRelaySpelling(relay) ?? relay.replace(/\/+$/, ''),
     );
@@ -155,7 +155,7 @@ const configSchema = z
       const path = ['payouts', index];
       const caip19 = parseCaip19(payout.caip19);
       // The node verifies payments on its configured networks only: a buyer who
-      // paid on another rail or network would never get a delivery.
+      // paid on another rail or network would never be completed.
       if (caip19 === undefined) {
         context.addIssue({
           code: 'custom',
@@ -219,7 +219,7 @@ const configSchema = z
       seen.add(caip19.id);
     });
     // A page shows the payouts on its own network only, and anyone can frame a level C
-    // store: Moderato on a mainnet store would let a testnet coin pay for a real delivery.
+    // store: Moderato on a mainnet store would let a testnet coin pay for a real order.
     if (
       config.tempo !== undefined &&
       tempoRegistryNetwork(config.tempo.network) !== config.network
