@@ -3,8 +3,9 @@ import '../../src/app/styles.css';
 import './fixtures.css';
 import { render } from 'preact';
 import { useState } from 'preact/hooks';
-import { type Actions, Checkout } from '../../src/app/Checkout';
+import type { Actions } from '../../src/app/Checkout';
 import { cannedViews } from './canned';
+import { Staged } from './Staged';
 
 const WIDTHS = [420, 375];
 const THEMES = ['auto', 'light', 'dark'] as const;
@@ -42,13 +43,7 @@ function Fixtures() {
         {cannedViews().map((canned) => (
           <figure key={canned.name} class={width === 375 ? 'narrow' : 'wide'}>
             <figcaption>{canned.name}</figcaption>
-            <Checkout
-              screen={{ kind: 'loading' }}
-              view={canned.view}
-              banner={canned.name === 'offer' ? { orderId: 'x', state: 'completed' } : undefined}
-              actions={NOTHING}
-              {...canned.props}
-            />
+            <Staged canned={canned} actions={NOTHING} />
           </figure>
         ))}
       </div>

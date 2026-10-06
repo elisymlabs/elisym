@@ -13,12 +13,16 @@
   --problem-background: #fdecec;
   --problem-text: #8a1c1c;
   --success: #1f9d55;
+  --success-background: #e6f5ec;
+  --success-text: #13693a;
   --radius-small: 8px;
   --radius: 12px;
   --radius-large: 16px;
   --motion: 160ms ease;
   /* "Your purchases" keeps this one height whatever it holds: the frame says nothing of it. */
   --history-height: 320px;
+  /* The stepper's last circle filling: never longer than FINISH_FILL_MS. */
+  --step-fill: 450ms;
   color-scheme: light dark;
 }
 
@@ -42,6 +46,8 @@
     --problem-background: #3d1a1a;
     --problem-text: #f19a9a;
     --success: #4cc38a;
+    --success-background: #133022;
+    --success-text: #8be0b3;
   }
 }
 
@@ -61,6 +67,8 @@
   --problem-background: #3d1a1a;
   --problem-text: #f19a9a;
   --success: #4cc38a;
+  --success-background: #133022;
+  --success-text: #8be0b3;
 }
 
 * {
@@ -530,6 +538,10 @@ button:disabled {
   border: 2px solid var(--border);
   border-radius: 50%;
   background: var(--background);
+  /* A color change only: it runs when a mounted stage becomes done, never on a first draw. */
+  transition:
+    background-color var(--step-fill) ease,
+    border-color var(--step-fill) ease;
 }
 
 .stepper li[data-state='done'] {
@@ -667,62 +679,249 @@ button:disabled {
   text-decoration: underline;
 }
 
-/* Fixed, whatever it holds (loading, none, many, one opened): it scrolls inside. */
+/* Fixed, whatever it holds (loading, none, many, one opened): it scrolls inside, nav and actions too. */
 .purchases-region {
   height: var(--history-height);
   overflow-y: auto;
-  border: 1px solid var(--border);
+  padding: 0 4px;
+  scroll-padding-top: 44px;
+  scroll-padding-bottom: 40px;
+}
+
+.purchases-nav {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0 8px;
+  background: var(--background);
+}
+
+.purchases-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+  background: var(--background);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: none;
   border-radius: var(--radius-small);
-  padding: 8px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 400;
+}
+
+.icon-button:hover {
+  background: var(--surface-hover);
+}
+
+.text-button,
+.nav-back {
+  min-height: 32px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+}
+
+.text-button {
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.text-button:hover {
+  text-decoration: underline;
+}
+
+.nav-back {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .purchase-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+.purchase-list li + li {
+  border-top: 1px solid var(--border);
+}
+
 .purchase-row {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 2px 12px;
   width: 100%;
-  border-color: var(--border);
-  background: var(--surface);
+  padding: 8px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: transparent;
   color: var(--text);
   font-weight: 400;
   text-align: left;
 }
 
-.purchase-product {
-  font-weight: 600;
-  overflow-wrap: anywhere;
+.purchase-row:hover {
+  background: var(--surface-hover);
 }
 
-.purchase-date,
-.purchase-amount,
-.purchase-state {
+.purchase-product {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.purchase-amount {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-day {
   color: var(--muted);
   font-size: 13px;
 }
 
-.purchase-detail {
+.status-badge {
+  justify-self: end;
+  padding: 1px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-badge[data-tone='success'] {
+  background: var(--success-background);
+  color: var(--success-text);
+}
+
+.status-badge[data-tone='neutral'] {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.status-badge[data-tone='pending'] {
+  background: var(--warning-background);
+  color: var(--warning-text);
+}
+
+.status-badge[data-tone='problem'] {
+  background: var(--problem-background);
+  color: var(--problem-text);
+}
+
+/* One flat card: nothing inside it has a border or a surface of its own. */
+.purchase-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  align-items: stretch;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
 }
 
-.purchase-detail > .link-button {
-  align-self: flex-start;
-}
-
-.purchase-status {
+.purchase-card .note {
   margin: 0;
-  font-weight: 600;
+}
+
+.purchase-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.purchase-total {
+  margin: 0;
+  white-space: nowrap;
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.purchase-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.purchase-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.purchase-facts > div {
+  display: contents;
+}
+
+.purchase-facts dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.purchase-facts dd {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.order-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.purchase-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.purchase-copy .text-button {
+  margin-left: -8px;
+}
+
+/* The full receipt, shown only when the clipboard was refused: on the card, not a card in it. */
+.purchase-receipt-full {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-small);
+  background: var(--background);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -6,7 +6,7 @@ import type { Banner, StoreInfo, View } from './session';
 import { BannerNote } from './ui/BannerNote';
 import { ChainGlyph } from './ui/ChainGlyph';
 import { isPhone } from './ui/device';
-import { DoneStep } from './ui/DoneStep';
+import { DoneStep, doneHeading } from './ui/DoneStep';
 import { EndedStep } from './ui/EndedStep';
 import { focusFallback } from './ui/focus';
 import { Footer } from './ui/Footer';
@@ -38,6 +38,32 @@ export interface Actions {
 /** An action left unanswered this long (a wallet window has no timeout) gets a hint. */
 export const HINT_AFTER_MS = 60_000;
 
+/**
+ * A completed order with no payment shown yet ("Order complete") keeps the
+ * confirming step this long at most, for the sent transaction's check to say
+ * "Payment complete".
+ */
+export const FINISH_WAIT_MS = 2500;
+
+/** The last stage's fill (`--step-fill`, 450 ms) plus a rest, before the done screen. */
+export const FINISH_FILL_MS = 600;
+
+type WaitingPaymentView = Extract<View, { kind: 'waiting_payment' }>;
+
+/**
+ * The confirming step held on screen after the order completed: `waiting` for
+ * the payment to show (up to `FINISH_WAIT_MS`), then `filling` its last stage
+ * (`FINISH_FILL_MS`), then the done screen.
+ */
+interface Finishing {
+  from: WaitingPaymentView;
+  phase: 'waiting' | 'filling';
+  /** The phase whose timer runs: each is armed once, whatever is redrawn meanwhile. */
+  armed?: 'waiting' | 'filling';
+  /** Focus was in the held content when the hold began (an inert subtree loses it). */
+  hadFocus: boolean;
+}
+
 interface Props {
   /** Before the purchase session starts: waiting, loading or refused. */
   screen: Screen;
@@ -61,6 +87,33 @@ interface Props {
   purchases?: PurchasesSource;
   /** Dev only (the fixture page): "Your purchases" starts open. */
   initialPurchasesOpen?: boolean;
+  /** Dev only (the fixture page): this purchase starts opened in "Your purchases". */
+  initialOpened?: string;
+  /** The buyer asks for reduced motion: a completed order shows at once, with no fill. */
+  reducedMotion?: () => boolean;
+  /** How long a completed order waits for its payment to show (the fixture page and tests). */
+  finishWaitMs?: number;
+  /** How long the last stage's fill is held (the fixture page and tests). */
+  finishFillMs?: number;
+}
+
+/** Focus is in the purchase's content: below the header, above the footer. */
+function inContent(card: HTMLElement | null, element: Element | null): boolean {
+  return (
+    card !== null &&
+    element !== null &&
+    card.contains(element) &&
+    element.closest('.header, .footer') === null
+  );
+}
+
+/** Where focus is, at the end of a hold, calls for the next screen's heading. */
+function focusLost(card: HTMLElement | null, rule: 'swap' | 'cancel'): boolean {
+  const active = document.activeElement;
+  if (active === null || active === document.body || inContent(card, active)) {
+    return true;
+  }
+  return rule === 'swap' && card?.contains(active) !== true;
 }
 
 /** The network a view is about, when it says. */
@@ -137,15 +190,28 @@ export function Checkout({
   hintAfterMs = HINT_AFTER_MS,
   purchases,
   initialPurchasesOpen = false,
+  initialOpened,
+  reducedMotion = () => false,
+  finishWaitMs = FINISH_WAIT_MS,
+  finishFillMs = FINISH_FILL_MS,
 }: Props) {
   /** "Your purchases" is open over the session, which keeps running underneath. */
   const [historyOpen, setHistoryOpen] = useState(initialPurchasesOpen);
   const panel = useRef(INITIAL_PANEL);
+  const finishing = useRef<Finishing | undefined>(undefined);
+  const finishTimer = useRef<number | undefined>(undefined);
+  /** The hold ends with no done screen of its own: what is drawn next is the session's view. */
+  const cancelFinishing = () => {
+    finishing.current = undefined;
+    window.clearTimeout(finishTimer.current);
+    finishTimer.current = undefined;
+  };
   /** The last reset seen: a new one returns the card to its first step. */
   const resets = useRef(resetCount);
   if (resetCount !== resets.current) {
     resets.current = resetCount;
     panel.current = INITIAL_PANEL;
+    cancelFinishing();
     if (historyOpen) {
       setHistoryOpen(false);
     }
@@ -168,15 +234,49 @@ export function Checkout({
   const runs = useRef(0);
   const [, redraw] = useState(0);
 
+  /** The header follows the view on screen (a held step keeps the one it had). */
+  const adoptHeader = (shown: View | undefined) => {
+    network.current = networkOf(shown) ?? network.current;
+    store.current = storeOf(shown) ?? store.current;
+    product.current = productOf(shown) ?? product.current;
+  };
+
   if (view !== seen.current) {
     const active = document.activeElement;
     focusedBefore.current =
       active instanceof HTMLElement && card.current?.contains(active) === true ? active : null;
+    const previous = seen.current;
     seen.current = view;
+    const hold = finishing.current;
+    if (hold !== undefined && view?.kind === 'delivered') {
+      // The same completed order drawn again: only "Payment complete" moves it on.
+      if (hold.phase === 'waiting' && doneHeading(view) === 'Payment complete') {
+        hold.phase = 'filling';
+      }
+    } else if (hold !== undefined) {
+      cancelFinishing();
+      if (hold.hadFocus && focusLost(card.current, 'cancel')) {
+        focusNext.current = 'fallback';
+      }
+    } else if (
+      view?.kind === 'delivered' &&
+      previous?.kind === 'waiting_payment' &&
+      !previous.canRetry &&
+      !historyOpen &&
+      !reducedMotion()
+    ) {
+      const paid = doneHeading(view) === 'Payment complete';
+      // An unserved network is never checked: "Payment complete" cannot come, so no wait.
+      if (paid || !previous.unserved) {
+        finishing.current = {
+          from: previous,
+          phase: paid ? 'filling' : 'waiting',
+          hadFocus: inContent(card.current, document.activeElement),
+        };
+      }
+    }
     panel.current = advancePanel(panel.current, view);
-    network.current = networkOf(view) ?? network.current;
-    store.current = storeOf(view) ?? store.current;
-    product.current = productOf(view) ?? product.current;
+    adoptHeader(finishing.current?.from ?? view);
     locked.current = false;
     if (view?.kind === 'offer') {
       // Reseeded from the session on every offer: what is shown is what is sent.
@@ -212,6 +312,28 @@ export function Checkout({
     }
   });
 
+  useEffect(() => {
+    const hold = finishing.current;
+    if (hold === undefined || hold.armed === hold.phase) {
+      return;
+    }
+    hold.armed = hold.phase;
+    window.clearTimeout(finishTimer.current);
+    finishTimer.current = window.setTimeout(
+      () => {
+        finishTimer.current = undefined;
+        finishing.current = undefined;
+        if (hold.hadFocus && focusLost(card.current, 'swap')) {
+          focusNext.current = 'fallback';
+        }
+        adoptHeader(seen.current);
+        redraw((count) => count + 1);
+      },
+      hold.phase === 'filling' ? finishFillMs : finishWaitMs,
+    );
+  });
+  useEffect(() => () => window.clearTimeout(finishTimer.current), []);
+
   const run = (action: () => Promise<void>, lock = false) => {
     runs.current += 1;
     const mine = runs.current;
@@ -245,6 +367,8 @@ export function Checkout({
 
   const openPurchases = () => {
     if (!historyOpen) {
+      // The done screen shows on Back.
+      cancelFinishing();
       focusNext.current = 'wallets';
       setHistoryOpen(true);
     }
@@ -254,16 +378,21 @@ export function Checkout({
     setHistoryOpen(false);
   };
 
+  const historyShown = view !== undefined && purchases !== undefined && historyOpen;
+  /** A completed order held on its confirming step: drawn exactly as it was, but for the stepper. */
+  const held = view?.kind === 'delivered' ? finishing.current : undefined;
+  const shown: View | undefined = held?.from ?? view;
   let body: ComponentChildren;
-  if (view !== undefined && purchases !== undefined && historyOpen) {
+  if (historyShown) {
     body = (
       <PurchasesStep
         source={purchases}
         {...(store.current?.name === undefined ? {} : { storeName: store.current.name })}
         onBack={closePurchases}
+        {...(initialOpened === undefined ? {} : { initialOpened })}
       />
     );
-  } else if (view === undefined) {
+  } else if (shown === undefined) {
     if (screen.kind === 'refused' && screen.reason === 'sold_out') {
       body = <SoldOutStep />;
     } else if (screen.kind === 'refused') {
@@ -287,20 +416,20 @@ export function Checkout({
     }
   } else {
     const problem =
-      view.kind === 'offer' || view.kind === 'waiting_payment'
-        ? shownProblem(panel.current, view.problem)
+      shown.kind === 'offer' || shown.kind === 'waiting_payment'
+        ? shownProblem(panel.current, shown.problem)
         : undefined;
-    switch (view.kind) {
+    switch (shown.kind) {
       case 'offer':
         body = (
           <OfferPanel
-            view={view}
+            view={shown}
             problem={problem}
             email={email.current}
             onEmail={setEmail}
             walletsOpen={panel.current.walletsOpen}
             onOpenWallets={() => {
-              panel.current = openWallets(panel.current, view.problem);
+              panel.current = openWallets(panel.current, shown.problem);
               focusNext.current = 'wallets';
               redraw((count) => count + 1);
             }}
@@ -317,20 +446,22 @@ export function Checkout({
       case 'waiting_store':
         body = (
           <>
-            <ProductBlock product={view.about.product} />
-            <PayingLine paying={view.paying} />
-            {view.about.email === undefined ? null : (
+            <ProductBlock product={shown.about.product} />
+            <PayingLine paying={shown.paying} />
+            {shown.about.email === undefined ? null : (
               <p class="sent-email">
-                <span class="label">Email</span> {view.about.email}
+                <span class="label">Email</span> {shown.about.email}
               </p>
             )}
             <ProgressStep
-              view={view}
+              view={shown}
               problem={problem}
               onRetry={(name) => run(() => actions.retry(name))}
               onStartOver={startOver}
               onCancel={cancel}
               hintAfterMs={hintAfterMs}
+              complete={held?.phase === 'filling'}
+              busy={held !== undefined}
             />
           </>
         );
@@ -338,15 +469,15 @@ export function Checkout({
       case 'old_prompt':
         body = (
           <>
-            <ProductBlock product={view.about.product} />
-            {view.paying === undefined ? null : (
+            <ProductBlock product={shown.about.product} />
+            {shown.paying === undefined ? null : (
               <p class="pay-label">
-                <ChainGlyph chain={view.paying.chain} />
-                <span>{payoutLabel(view.paying)}</span>
+                <ChainGlyph chain={shown.paying.chain} />
+                <span>{payoutLabel(shown.paying)}</span>
               </p>
             )}
             <OldPromptStep
-              view={view}
+              view={shown}
               onContinue={() => run(() => actions.confirmOldPrompt())}
               onBack={actions.cancelOldPrompt}
             />
@@ -354,7 +485,7 @@ export function Checkout({
         );
         break;
       case 'delivered':
-        body = <DoneStep view={view} onBuyAgain={startOver} onDone={onClose} />;
+        body = <DoneStep view={shown} onBuyAgain={startOver} onDone={onClose} />;
         break;
       case 'refunded':
         body = (
@@ -363,8 +494,8 @@ export function Checkout({
             title="Refunded"
             action={{ label: 'Start a new order', run: startOver }}
             after={
-              view.receipt === undefined ? undefined : (
-                <ReceiptBlock receipt={view.receipt} kind="refunded" />
+              shown.receipt === undefined ? undefined : (
+                <ReceiptBlock receipt={shown.receipt} kind="refunded" />
               )
             }
           >
@@ -394,14 +525,14 @@ export function Checkout({
         );
         break;
       case 'refused':
-        if (view.reason === 'sold_out') {
+        if (shown.reason === 'sold_out') {
           body = <SoldOutStep />;
           break;
         }
         body = (
           <EndedStep glyph={STOP_GLYPH} title="Not available" alert>
             <p>{REFUSALS.offer_refused}</p>
-            <p class="note">{view.message}</p>
+            <p class="note">{shown.message}</p>
           </EndedStep>
         );
         break;
@@ -419,7 +550,9 @@ export function Checkout({
         />
         {body}
         <Footer
-          {...(view === undefined || purchases === undefined ? {} : { onPurchases: openPurchases })}
+          {...(view === undefined || purchases === undefined || historyShown
+            ? {}
+            : { onPurchases: openPurchases })}
         />
       </section>
     </>

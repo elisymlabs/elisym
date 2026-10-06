@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
@@ -7,15 +9,17 @@ import {
   type ReadyOffer,
   aboutOf,
   cannedOffer,
+  cannedSource,
   offerView,
   waitingView,
 } from '../scripts/fixtures/canned';
-import { type Actions, Checkout } from '../src/app/Checkout';
+import { type Actions, Checkout, FINISH_FILL_MS, FINISH_WAIT_MS } from '../src/app/Checkout';
 import type { Screen } from '../src/app/controller';
 import type { Banner, Paying, Problem, Receipt, View } from '../src/app/session';
 import { SOLD_OUT_GLYPH } from '../src/app/ui/glyphs';
 import { PROBLEM_PLACE } from '../src/app/ui/panel';
-import { receiptText as fullReceiptText } from '../src/app/ui/text';
+import type { PurchasesSource } from '../src/app/ui/PurchasesStep';
+import { STEPPER_STAGES, receiptText as fullReceiptText } from '../src/app/ui/text';
 
 interface Calls {
   pay: string[];
@@ -32,6 +36,32 @@ interface DrawProps {
   banner?: Banner;
   onClose?: () => void;
   screen?: Screen;
+  resetCount?: number;
+}
+
+interface MountOptions {
+  refused?: boolean;
+  hintAfterMs?: number;
+  cancelDraws?: View;
+  reducedMotion?: () => boolean;
+  finishWaitMs?: number;
+  finishFillMs?: number;
+  purchases?: PurchasesSource;
+}
+
+/** A stage's name, without the hidden ", done" / ", current" that says its state. */
+function stageName(stage: Element | null | undefined): string | undefined {
+  if (stage === null || stage === undefined) {
+    return undefined;
+  }
+  const copy = stage.cloneNode(true);
+  if (!(copy instanceof Element)) {
+    return undefined;
+  }
+  for (const hidden of copy.querySelectorAll('.visually-hidden')) {
+    hidden.remove();
+  }
+  return copy.textContent ?? '';
 }
 
 /** The copy button's label on screen (the others in its cell are hidden). */
@@ -40,10 +70,7 @@ function currentLabel(ui: { container: HTMLElement }): string | undefined {
 }
 
 /** A `Checkout` in the page, with actions that record what they were asked. */
-function mount(
-  view?: View,
-  options: { refused?: boolean; hintAfterMs?: number; cancelDraws?: View } = {},
-) {
+function mount(view?: View, options: MountOptions = {}) {
   const container = document.createElement('div');
   document.body.append(container);
   const calls: Calls = {
@@ -99,6 +126,11 @@ function mount(
           {...(props.banner === undefined ? {} : { banner: props.banner })}
           {...(props.onClose === undefined ? {} : { onClose: props.onClose })}
           {...(options.hintAfterMs === undefined ? {} : { hintAfterMs: options.hintAfterMs })}
+          {...(props.resetCount === undefined ? {} : { resetCount: props.resetCount })}
+          {...(options.reducedMotion === undefined ? {} : { reducedMotion: options.reducedMotion })}
+          {...(options.finishWaitMs === undefined ? {} : { finishWaitMs: options.finishWaitMs })}
+          {...(options.finishFillMs === undefined ? {} : { finishFillMs: options.finishFillMs })}
+          {...(options.purchases === undefined ? {} : { purchases: options.purchases })}
           actions={actions}
         />,
         container,
@@ -135,6 +167,13 @@ function mount(
 }
 
 type Ui = ReturnType<typeof mount>;
+
+/** Each stage's state, in order. */
+function stageStates(ui: Ui): (string | null)[] {
+  return [...ui.container.querySelectorAll('.stepper li')].map((stage) =>
+    stage.getAttribute('data-state'),
+  );
+}
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -348,7 +387,7 @@ describe('the payout dropdown', () => {
 
   it('is a label, not a control, for a single payout', () => {
     const ui = mount(offerView(cannedOffer({ payouts: ['solana-mainnet'] })));
-    expect(ui.container.querySelector('.pay-label')?.textContent).toBe('USDC · Solana mainnet');
+    expect(ui.container.querySelector('.pay-label')?.textContent).toBe('USDC · Solana');
     expect(ui.has('[aria-haspopup="listbox"]')).toBe(false);
   });
 
@@ -653,7 +692,7 @@ describe('progress', () => {
     expect(ui.container.querySelector('.paying')?.textContent).toBe(
       'Paying 55 USDC · Solana devnet',
     );
-    expect(ui.container.querySelector('[aria-current="step"]')?.textContent).toBe(
+    expect(stageName(ui.container.querySelector('[aria-current="step"]'))).toBe(
       'Confirm in wallet',
     );
   });
@@ -920,14 +959,18 @@ describe('progress', () => {
   it('shows a cancellation after payment as an alert', () => {
     const ui = mount({ kind: 'waiting_store', paying, about, cancelled: true, noAnswer: true });
     expect(ui.alerts().join(' ')).toContain('the store cancelled this order');
+    // The payment did happen.
+    expect(stageStates(ui)).toEqual(['done', 'done', 'done']);
     expect(ui.text()).toContain('The store has not answered for a while');
   });
 
-  it('shows the wait for the store', () => {
+  it('shows the wait for the store, every stage done: the payment is complete (S-b)', () => {
     const ui = mount({ kind: 'waiting_store', paying, about, cancelled: false, noAnswer: false });
     expect(ui.text()).toContain('Paid. Waiting for the store to confirm');
     expect(ui.text()).toContain('Stores usually answer within minutes');
-    expect(ui.container.querySelector('[aria-current="step"]')?.textContent).toBe('Complete');
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Paid');
+    expect(stageStates(ui)).toEqual(['done', 'done', 'done']);
+    expect(ui.container.querySelector('[aria-current]')).toBeNull();
   });
 
   it('asks about an old prompt with its two buttons, the payment read-only above', () => {
@@ -1083,7 +1126,7 @@ describe('the receipt', () => {
     const text = receiptText(ui);
     expect(text).toContain('Store: Demo Shop');
     expect(text).toContain('Product: Agents 101');
-    expect(text).toContain('Paid: 1.5 USDC · Solana mainnet');
+    expect(text).toContain('Paid: 1.5 USDC · Solana');
     expect(text).toContain(`Payment confirmed on: ${new Date(PAID_AT * 1000).toLocaleString()}`);
     expect(text).toContain('2031');
     expect(text).toContain('Order: order-1');
@@ -1132,12 +1175,12 @@ describe('the receipt', () => {
     const text = receiptText(ui, receipt({ paid: undefined }), 'refunded');
     expect(text).not.toContain('Paid');
     expect(text).not.toContain('Transaction');
-    expect(text).toContain('Total: 1.5 USDC · Solana mainnet');
+    expect(text).toContain('Total: 1.5 USDC · Solana');
     expect(text).not.toContain('not seen');
     expect(text).toContain(`Refunded on: ${new Date((PAID_AT + 60) * 1000).toLocaleString()}`);
     expect(text).toContain('Refunded by the store');
     expect(shownText(ui)).not.toContain('Paid');
-    expect(shownText(ui)).toContain('Total: 1.5 USDC · Solana mainnet');
+    expect(shownText(ui)).toContain('Total: 1.5 USDC · Solana');
     expect(ui.container.querySelector('.receipt a')).toBeNull();
   });
 
@@ -1523,7 +1566,7 @@ describe('the receipt of a transaction this checkout only sent', () => {
   it('names it last, says Total (never Paid), as "Transaction sent" linked', () => {
     const ui = mount({ kind: 'delivered', receipt: sent() });
     const text = fullReceiptText(sent(), 'delivered');
-    expect(text).toContain('Total: 1.5 USDC · Solana mainnet');
+    expect(text).toContain('Total: 1.5 USDC · Solana');
     expect(text).not.toContain('Paid');
     expect(text.split('\n').at(-1)).toBe('Transaction sent: SIG');
     expect(ui.container.querySelector('.receipt-text')?.textContent).toContain(
@@ -1634,5 +1677,432 @@ describe('sections that appear', () => {
     const note = ui.container.querySelector('[data-problem-note]');
     expect(note?.classList.contains('reveal')).toBe(true);
     expect(note?.closest('.step')).toBeNull();
+  });
+});
+
+describe('the stepper (S-a, S-b)', () => {
+  const progressViews: [string, View][] = [
+    ['checking', { kind: 'working', step: 'checking', paying, about }],
+    ['ordering', { kind: 'working', step: 'ordering', paying, about }],
+    ['signing', { kind: 'working', step: 'signing', paying, about }],
+    ['a retry', waitingView(about, paying, { canRetry: true })],
+    ['confirming', waitingView(about, paying)],
+    ['paid', { kind: 'waiting_store', paying, about, cancelled: false, noAnswer: false }],
+  ];
+
+  it('has three stages on every progress view: no "Complete", no "Payment confirmed"', () => {
+    for (const [, view] of progressViews) {
+      const ui = mount(view);
+      const names = [...ui.container.querySelectorAll('.stepper li')].map(stageName);
+      expect(names).toEqual([...STEPPER_STAGES]);
+      expect(names).toEqual(['Order sent', 'Confirm in wallet', 'Payment complete']);
+      expect(ui.text()).not.toContain('Payment confirmed');
+      document.body.replaceChildren();
+    }
+  });
+
+  it('marks the current stage, and says each state in text, not color only', () => {
+    const expected: Record<string, (string | null)[]> = {
+      checking: ['active', 'todo', 'todo'],
+      ordering: ['active', 'todo', 'todo'],
+      signing: ['done', 'active', 'todo'],
+      'a retry': ['done', 'active', 'todo'],
+      confirming: ['done', 'done', 'active'],
+      paid: ['done', 'done', 'done'],
+    };
+    for (const [name, view] of progressViews) {
+      const ui = mount(view);
+      expect(stageStates(ui)).toEqual(expected[name]);
+      const stages = [...ui.container.querySelectorAll('.stepper li')];
+      for (const stage of stages) {
+        const state = stage.getAttribute('data-state');
+        const hidden = stage.querySelector('.visually-hidden')?.textContent;
+        const suffixes: Record<string, string> = { done: ', done', active: ', current' };
+        expect(hidden).toBe(state === null ? undefined : suffixes[state]);
+        expect(stage.getAttribute('aria-current')).toBe(state === 'active' ? 'step' : null);
+      }
+      document.body.replaceChildren();
+    }
+    const confirming = mount(waitingView(about, paying));
+    expect(stageName(confirming.container.querySelector('[aria-current="step"]'))).toBe(
+      'Payment complete',
+    );
+  });
+});
+
+describe('the last stage fills before the done screen (D9)', () => {
+  const WAIT = 2500;
+  const FILL = 600;
+  const confirming = (overrides: Parameters<typeof waitingView>[2] = {}) =>
+    waitingView(about, paying, overrides);
+  const delivered = (shown: Receipt = receipt()): View => ({
+    kind: 'delivered',
+    store: about.store,
+    product: about.product,
+    receipt: shown,
+  });
+  const unpaid = () => receipt({ paid: undefined });
+  const progress = (ui: Ui) => ui.container.querySelector('[data-step="progress"]');
+  const done = (ui: Ui) => ui.container.querySelector('[data-step="done"]');
+  const advance = (ms: number) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  /** The card as markup, with what a hold may change (the stepper's state, inert) taken out. */
+  const normalized = (ui: Ui) => {
+    const card = ui.container.querySelector('.card')?.cloneNode(true);
+    if (!(card instanceof Element)) {
+      throw new Error('no card');
+    }
+    for (const stage of card.querySelectorAll('.stepper li')) {
+      stage.removeAttribute('data-state');
+      stage.removeAttribute('aria-current');
+      stage.querySelector('.visually-hidden')?.remove();
+    }
+    const step = card.querySelector('[data-step="progress"]');
+    step?.removeAttribute('inert');
+    step?.removeAttribute('aria-busy');
+    return card.outerHTML;
+  };
+  const finishing = (options: MountOptions = {}, from: View = confirming()) =>
+    mount(from, { finishWaitMs: WAIT, finishFillMs: FILL, ...options });
+
+  it('fills the third stage, then shows "Payment complete" (S-c, S3)', () => {
+    vi.useFakeTimers();
+    const ui = finishing({}, confirming({ problem: { reason: 'wallet_failed' } }));
+    expect(ui.text()).toContain('The wallet did not sign.');
+    const before = normalized(ui);
+    ui.draw({ view: delivered() });
+    expect(progress(ui)).not.toBeNull();
+    expect(stageStates(ui)).toEqual(['done', 'done', 'done']);
+    expect(ui.container.querySelector('[aria-current]')).toBeNull();
+    expect(progress(ui)?.hasAttribute('inert')).toBe(true);
+    expect(ui.text()).not.toContain('Buy again');
+    // Held exactly as it was, its problem note too (S19).
+    expect(normalized(ui)).toBe(before);
+    advance(FILL / 2);
+    // The same completed order drawn again never restarts the fill (S16).
+    ui.draw({ view: delivered() });
+    expect(normalized(ui)).toBe(before);
+    advance(FILL / 2 - 1);
+    expect(progress(ui)).not.toBeNull();
+    expect(done(ui)).toBeNull();
+    advance(1);
+    expect(progress(ui)).toBeNull();
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Payment complete');
+    expect(ui.text()).toContain('Buy again');
+  });
+
+  it('waits for the payment to show before filling, then fills (S-d, S4)', () => {
+    vi.useFakeTimers();
+    const ui = finishing();
+    const before = normalized(ui);
+    ui.draw({ view: delivered(unpaid()) });
+    expect(progress(ui)).not.toBeNull();
+    // Still confirming: the circle named "Payment complete" is not filled for "Order complete".
+    expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
+    expect(normalized(ui)).toBe(before);
+    advance(1000);
+    expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
+    ui.draw({ view: delivered(receipt({ paid: undefined, sent: { tx: TX } })) });
+    expect(stageStates(ui)).toEqual(['done', 'done', 'done']);
+    expect(normalized(ui)).toBe(before);
+    advance(FILL - 1);
+    expect(done(ui)).toBeNull();
+    advance(1);
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Payment complete');
+  });
+
+  it('shows "Order complete" with no fill once the wait runs out, armed once (S-d, S5, S16)', () => {
+    vi.useFakeTimers();
+    const ui = finishing();
+    let allDone = false;
+    const observer = new MutationObserver(() => {
+      const states = stageStates(ui);
+      if (states.length > 0 && states.every((state) => state === 'done')) {
+        allDone = true;
+      }
+    });
+    observer.observe(ui.container, { attributes: true, subtree: true, childList: true });
+    ui.draw({ view: delivered(unpaid()) });
+    advance(WAIT - 100);
+    // The same "Order complete" drawn again does not extend the wait.
+    ui.draw({ view: delivered(unpaid()) });
+    advance(99);
+    expect(progress(ui)).not.toBeNull();
+    advance(1);
+    observer.disconnect();
+    expect(progress(ui)).toBeNull();
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe('Order complete');
+    expect(allDone).toBe(false);
+  });
+
+  it('swaps at once under reduced motion, with no timer left (S-e, S6)', () => {
+    vi.useFakeTimers();
+    const ui = finishing({ reducedMotion: () => true });
+    ui.draw({ view: delivered() });
+    expect(progress(ui)).toBeNull();
+    expect(done(ui)).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    const waiting = finishing({ reducedMotion: () => true });
+    waiting.draw({ view: delivered(unpaid()) });
+    expect(done(waiting)).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('never holds without a confirming step seen in this session (S-f, S7, S15, S20)', () => {
+    vi.useFakeTimers();
+    const atOnce: [string, View | undefined][] = [
+      ['a load', undefined],
+      ['the wallet still open', { kind: 'working', step: 'signing', paying, about }],
+      [
+        'the store waited on',
+        { kind: 'waiting_store', paying, about, cancelled: false, noAnswer: false },
+      ],
+      ['a retry offered', confirming({ canRetry: true })],
+    ];
+    for (const [name, from] of atOnce) {
+      const ui = from === undefined ? finishing({}, delivered()) : finishing({}, from);
+      if (from !== undefined) {
+        ui.draw({ view: delivered() });
+      }
+      expect({ name, done: done(ui) !== null }).toEqual({ name, done: true });
+      expect({ name, timers: vi.getTimerCount() }).toEqual({ name, timers: 0 });
+      document.body.replaceChildren();
+    }
+    const refunded = finishing({}, { kind: 'working', step: 'signing', paying, about });
+    refunded.draw({ view: { kind: 'refunded', receipt: receipt() } });
+    expect(refunded.text()).toContain('Refunded');
+    const blocked = finishing();
+    blocked.draw({ view: { kind: 'blocked', store: about.store } });
+    expect(blocked.text()).toContain('Payment blocked');
+    expect(progress(blocked)).toBeNull();
+    // A network this checkout cannot check never says "Payment complete": no wait.
+    const unserved = finishing({}, confirming({ unserved: true }));
+    unserved.draw({ view: delivered(unpaid()) });
+    expect(unserved.container.querySelector('[data-heading]')?.textContent).toBe('Order complete');
+  });
+
+  it('never holds a completion that arrives under "Your purchases": Back shows it at once (S-f)', () => {
+    vi.useFakeTimers();
+    const ui = finishing({ purchases: cannedSource([]) });
+    ui.click('Your purchases');
+    ui.draw({ view: delivered() });
+    act(() =>
+      ui.container.querySelector<HTMLButtonElement>('[aria-label="Back to checkout"]')?.click(),
+    );
+    expect(done(ui)).not.toBeNull();
+    expect(progress(ui)).toBeNull();
+  });
+
+  it('is cancelled by another view, a reset or an unmount (S-g, S8)', () => {
+    vi.useFakeTimers();
+    const ui = finishing();
+    ui.draw({ view: delivered() });
+    expect(progress(ui)).not.toBeNull();
+    ui.draw({ view: { kind: 'refunded', receipt: receipt() } });
+    expect(ui.text()).toContain('Refunded');
+    // Its timer is gone too: nothing fires later (a redraw, a focus move).
+    expect(vi.getTimerCount()).toBe(0);
+    advance(FILL * 10);
+    expect(done(ui)).toBeNull();
+    expect(ui.text()).toContain('Refunded');
+
+    const reset = finishing();
+    reset.draw({ view: delivered(unpaid()) });
+    expect(progress(reset)).not.toBeNull();
+    reset.draw({ resetCount: 1 });
+    expect(progress(reset)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+
+    document.body.replaceChildren();
+    const gone = finishing();
+    gone.draw({ view: delivered() });
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    act(() => render(null, gone.container));
+    expect(vi.getTimerCount()).toBe(0);
+    advance(FILL * 10);
+    expect(gone.container.innerHTML).toBe('');
+  });
+
+  it('is cancelled by opening "Your purchases": Back shows the done screen, no timer left (S-g)', () => {
+    vi.useFakeTimers();
+    const ui = finishing({ purchases: cannedSource([]) });
+    ui.draw({ view: delivered() });
+    expect(progress(ui)).not.toBeNull();
+    ui.click('Your purchases');
+    act(() =>
+      ui.container.querySelector<HTMLButtonElement>('[aria-label="Back to checkout"]')?.click(),
+    );
+    expect(done(ui)).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('holds the step inert and busy in both phases, until the swap (S-h, S9)', () => {
+    vi.useFakeTimers();
+    const ui = finishing();
+    expect(progress(ui)?.hasAttribute('inert')).toBe(false);
+    expect(progress(ui)?.hasAttribute('aria-busy')).toBe(false);
+    ui.draw({ view: delivered(unpaid()) });
+    expect(progress(ui)?.hasAttribute('inert')).toBe(true);
+    expect(progress(ui)?.getAttribute('aria-busy')).toBe('true');
+    ui.draw({ view: delivered() });
+    expect(progress(ui)?.hasAttribute('inert')).toBe(true);
+    expect(progress(ui)?.getAttribute('aria-busy')).toBe('true');
+    advance(FILL);
+    expect(progress(ui)).toBeNull();
+    expect(ui.container.querySelector('[inert], [aria-busy]')).toBeNull();
+  });
+
+  describe('focus (S-i)', () => {
+    const heading = (ui: Ui) => ui.container.querySelector<HTMLElement>('[data-heading]');
+
+    it('moves to the done heading at the swap when the inert step lost it (S10, S12)', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      act(() => heading(ui)?.focus());
+      expect(document.activeElement?.textContent).toBe('Confirming payment');
+      ui.draw({ view: delivered() });
+      // As Chrome and Firefox do to an element that becomes inert.
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(document.activeElement).toBe(document.body);
+      advance(FILL);
+      expect(document.activeElement?.textContent).toBe('Payment complete');
+      expect(document.activeElement?.hasAttribute('data-heading')).toBe(true);
+    });
+
+    it('moves to the done heading even when focus stayed in the held step', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      act(() => heading(ui)?.focus());
+      ui.draw({ view: delivered() });
+      advance(FILL);
+      expect(document.activeElement?.textContent).toBe('Payment complete');
+    });
+
+    it('stays where the buyer moved it during the hold', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing({ purchases: cannedSource([]) });
+      act(() => heading(ui)?.focus());
+      ui.draw({ view: delivered() });
+      const link = ui.container.querySelector<HTMLElement>('[data-purchases-button]');
+      act(() => link?.focus());
+      advance(FILL);
+      expect(done(ui)).not.toBeNull();
+      expect(document.activeElement).toBe(link);
+    });
+
+    it('moves to the next view’s heading when a hold is cancelled with focus lost (S21)', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      act(() => heading(ui)?.focus());
+      ui.draw({ view: delivered() });
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      ui.draw({ view: { kind: 'refunded', receipt: receipt() } });
+      expect(document.activeElement?.textContent).toBe('Refunded');
+    });
+
+    it('is not taken at the swap when focus was outside the content as the hold began', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(document.activeElement).toBe(document.body);
+      ui.draw({ view: delivered() });
+      expect(progress(ui)).not.toBeNull();
+      advance(FILL);
+      expect(done(ui)).not.toBeNull();
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it('is not taken when a hold is cancelled and focus was outside the content as it began', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      expect(document.activeElement).toBe(document.body);
+      ui.draw({ view: delivered() });
+      expect(progress(ui)).not.toBeNull();
+      ui.draw({ view: { kind: 'refunded', receipt: receipt() } });
+      expect(ui.text()).toContain('Refunded');
+      expect(document.activeElement).toBe(document.body);
+    });
+
+    it('moves to the done heading at the swap when focus went outside the card', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      act(() => heading(ui)?.focus());
+      ui.draw({ view: delivered() });
+      const outside = document.createElement('button');
+      document.body.append(outside);
+      act(() => outside.focus());
+      expect(document.activeElement).toBe(outside);
+      advance(FILL);
+      expect(document.activeElement?.textContent).toBe('Payment complete');
+      outside.remove();
+    });
+
+    it('stays outside the card when a hold is cancelled there', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      act(() => heading(ui)?.focus());
+      ui.draw({ view: delivered() });
+      const outside = document.createElement('button');
+      document.body.append(outside);
+      act(() => outside.focus());
+      ui.draw({ view: { kind: 'refunded', receipt: receipt() } });
+      expect(ui.text()).toContain('Refunded');
+      expect(document.activeElement).toBe(outside);
+      outside.remove();
+    });
+
+    it('is not taken at the swap when focus was in the header as the hold began', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+      const ui = finishing();
+      const title = ui.container.querySelector<HTMLElement>('.header #checkout-title');
+      act(() => title?.focus());
+      expect(document.activeElement).toBe(title);
+      ui.draw({ view: delivered() });
+      advance(FILL);
+      expect(done(ui)).not.toBeNull();
+      expect(document.activeElement).toBe(title);
+    });
+
+    it('is not taken when the frame does not have focus', () => {
+      vi.useFakeTimers();
+      vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+      const ui = finishing();
+      act(() => heading(ui)?.focus());
+      ui.draw({ view: delivered() });
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      advance(FILL);
+      expect(done(ui)).not.toBeNull();
+      expect(ui.container.contains(document.activeElement)).toBe(false);
+    });
+  });
+
+  it('fills by a color transition no longer than the hold, never replayed on a mount (S-j, S11)', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/styles.css'), 'utf8');
+    const fill = /--step-fill:\s*(\d+)ms;/.exec(css);
+    expect(fill).not.toBeNull();
+    expect(Number(fill?.[1])).toBeLessThanOrEqual(FINISH_FILL_MS);
+    const rule = (selector: string) => {
+      const escaped = selector.replace(/[.[\]'=:()]/g, (character) => `\\${character}`);
+      return new RegExp(`(^|\\n)${escaped}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? '';
+    };
+    expect(rule('.stepper li::before')).toMatch(/transition:[^;]*var\(--step-fill\)/);
+    expect(rule(".stepper li[data-state='done']::before")).not.toMatch(/animation/);
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)\s*\{[^@]*transition: none !important;/,
+    );
+    expect(FINISH_FILL_MS).toBe(600);
+    expect(FINISH_WAIT_MS).toBe(2500);
   });
 });
