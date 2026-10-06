@@ -99,6 +99,7 @@ function draw(): void {
         actions={actions}
         purchases={purchases}
         resetCount={resetCount}
+        reducedMotion={prefersReducedMotion}
         {...(closeModal === undefined ? {} : { onClose: closeModal })}
       />,
       root,
@@ -254,6 +255,10 @@ function contentHeight(): number {
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
 
+function prefersReducedMotion(): boolean {
+  return typeof matchMedia === 'function' && matchMedia(REDUCED_MOTION).matches;
+}
+
 /** The frame's height, told smoothly: the loader sets each reported height at once. */
 const heights = createHeightAnimator({
   post: (height) => handshake.post({ type: 'resize', height }),
@@ -262,7 +267,7 @@ const heights = createHeightAnimator({
   cancelFrame: (handle) => window.cancelAnimationFrame(handle),
   setTimer: (callback, ms) => window.setTimeout(callback, ms),
   clearTimer: (handle) => window.clearTimeout(handle),
-  reducedMotion: () => typeof matchMedia === 'function' && matchMedia(REDUCED_MOTION).matches,
+  reducedMotion: prefersReducedMotion,
   innerWidth: () => window.innerWidth,
   innerHeight: () => window.innerHeight,
   setGrowing: (on) => document.documentElement.classList.toggle('growing', on),

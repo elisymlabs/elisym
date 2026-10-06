@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
-import { isTouchOnly } from './device';
+import { copyLabels, useCopy } from './copy';
+
+export { COPIED_FOR_MS } from './copy';
 
 interface Props {
   text: string;
@@ -15,20 +16,6 @@ interface Props {
    * clipboard is refused, the exact `text` replaces it visibly and is selected.
    */
   shown?: ComponentChildren;
-}
-
-/** How long the button says "Copied" (or how to copy the selection) before its name returns. */
-export const COPIED_FOR_MS = 2000;
-
-type Outcome = 'copied' | 'selected';
-
-/** How a buyer copies the selected text themselves: shown in the button, and announced. */
-function selectedHint(): { label: string; announcement: string } {
-  if (isTouchOnly(navigator.userAgent, navigator.maxTouchPoints)) {
-    return { label: 'Text selected', announcement: 'Text selected: copy it from the menu.' };
-  }
-  const keys = /Mac/.test(navigator.userAgent) ? 'Press ⌘C' : 'Press Ctrl+C';
-  return { label: keys, announcement: `Selected: ${keys} to copy it.` };
 }
 
 /**
@@ -46,69 +33,11 @@ export function CopyText({
   textClass,
   shown,
 }: Props) {
-  const box = useRef<HTMLParagraphElement>(null);
-  const [outcome, setOutcome] = useState<Outcome | undefined>(undefined);
-  /** The full text shown in place of `shown`, once the clipboard was refused. */
-  const [revealed, setRevealed] = useState(false);
-  const pendingSelect = useRef(false);
-  const [said, setSaid] = useState('');
-  const timers = useRef<{ reset?: number; say?: number }>({});
-  useEffect(
-    () => () => {
-      window.clearTimeout(timers.current.reset);
-      window.clearTimeout(timers.current.say);
-    },
-    [],
-  );
-  const show = (next: Outcome, message: string) => {
-    setOutcome(next);
-    // Cleared now and set on the next tick: the same message twice is announced twice.
-    setSaid('');
-    window.clearTimeout(timers.current.say);
-    timers.current.say = window.setTimeout(() => setSaid(message), 0);
-    window.clearTimeout(timers.current.reset);
-    timers.current.reset = window.setTimeout(() => setOutcome(undefined), COPIED_FOR_MS);
-  };
-  const selectBox = () => {
-    const node = box.current;
-    const selection = window.getSelection();
-    if (node !== null && selection !== null) {
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-  };
-  // The full text is rendered on the next paint: select it once it is there.
-  useEffect(() => {
-    if (revealed && pendingSelect.current) {
-      pendingSelect.current = false;
-      selectBox();
-    }
-  }, [revealed]);
-  const select = () => {
-    if (shown !== undefined && !revealed) {
-      pendingSelect.current = true;
-      setRevealed(true);
-    } else {
-      selectBox();
-    }
-    show('selected', selectedHint().announcement);
-  };
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      show('copied', copiedText);
-    } catch {
-      select();
-    }
-  };
-  const labels: { key: 'idle' | Outcome; text: string }[] = [
-    { key: 'idle', text: label },
-    { key: 'copied', text: '✓ Copied' },
-    { key: 'selected', text: selectedHint().label },
-  ];
-  const current = outcome ?? 'idle';
+  const { copy, current, revealed, box, said } = useCopy<HTMLParagraphElement>({
+    text,
+    copiedText,
+    hasShortForm: shown !== undefined,
+  });
   return (
     <div class="copy">
       {shown === undefined || revealed ? (
@@ -120,7 +49,7 @@ export function CopyText({
       )}
       <button type="button" class="secondary copy-button" onClick={() => void copy()}>
         <span class="label-stack">
-          {labels.map((entry) => (
+          {copyLabels(label).map((entry) => (
             <span key={entry.key} class="label-option" data-current={entry.key === current}>
               {entry.text}
             </span>

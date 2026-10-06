@@ -1,6 +1,7 @@
 import type { Problem, View } from '../session';
 import { StepHeading } from './StepHeading';
 import { Stepper } from './Stepper';
+import { STEPPER_STAGES } from './text';
 import { WaitingPayment } from './WaitingPayment';
 import { WaitingStore } from './WaitingStore';
 import { WorkingStatus } from './WorkingStatus';
@@ -14,6 +15,10 @@ interface Props {
   onStartOver(): void;
   onCancel(): void;
   hintAfterMs: number;
+  /** The payment is complete: every stage is done (the last one fills). */
+  complete?: boolean;
+  /** Held on screen for a moment before the done screen: nothing in it can be pressed. */
+  busy?: boolean;
 }
 
 function activeStage(view: ProgressView): number {
@@ -23,7 +28,8 @@ function activeStage(view: ProgressView): number {
     case 'waiting_payment':
       return view.canRetry ? 1 : 2;
     case 'waiting_store':
-      return 3;
+      // Paid: the payment is complete, only the store's answer is left.
+      return STEPPER_STAGES.length;
   }
 }
 
@@ -46,11 +52,17 @@ export function ProgressStep({
   onStartOver,
   onCancel,
   hintAfterMs,
+  complete = false,
+  busy = false,
 }: Props) {
   return (
-    <div class="step" data-step="progress">
+    <div
+      class="step"
+      data-step="progress"
+      {...(busy ? { inert: true, 'aria-busy': 'true' as const } : {})}
+    >
       <StepHeading level={3}>{heading(view)}</StepHeading>
-      <Stepper active={activeStage(view)} />
+      <Stepper active={complete ? STEPPER_STAGES.length : activeStage(view)} />
       {view.kind === 'working' ? (
         <WorkingStatus view={view} hintAfterMs={hintAfterMs} onCancel={onCancel} />
       ) : null}

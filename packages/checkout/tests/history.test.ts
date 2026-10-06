@@ -318,6 +318,36 @@ describe('the export (D3)', () => {
     expect(sent?.[9]).toBe('');
   });
 
+  it('names a real-money network by its chain alone, a test one with its network', () => {
+    const network = (chain: 'solana' | 'tempo', on: 'mainnet' | 'devnet') =>
+      cells(
+        purchasesCsv([
+          purchase({ paying: { amount: '1', asset: NATIVE_SOL, network: on, chain } }),
+        ]),
+      )[1]?.[6];
+    expect(network('solana', 'mainnet')).toBe('Solana');
+    expect(network('tempo', 'mainnet')).toBe('Tempo');
+    expect(network('solana', 'devnet')).toBe('Solana devnet');
+    expect(network('tempo', 'devnet')).toBe('Tempo devnet');
+  });
+
+  it('keeps the full status label, never the short badge (P14)', () => {
+    const statuses = cells(
+      purchasesCsv([
+        purchase({}, { status: 'blocked' }),
+        purchase({}, { status: 'cancelled_paid' }),
+        purchase({}, { status: 'waiting_store' }),
+      ]),
+    )
+      .slice(1)
+      .map((row) => row[3]);
+    expect(statuses).toEqual([
+      'Payment blocked by the recipient',
+      'Cancelled by the store (no refund stated)',
+      'Waiting for the store',
+    ]);
+  });
+
   it('a file name from the store and the day', () => {
     expect(csvFileName('My Shop!', new Date('2026-10-05T12:00:00Z'))).toBe(
       'elisym-purchases-my-shop-2026-10-05.csv',

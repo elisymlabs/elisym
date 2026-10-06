@@ -176,6 +176,17 @@ export interface CannedProps {
   hintAfterMs?: number;
   purchases?: PurchasesSource;
   initialPurchasesOpen?: boolean;
+  initialOpened?: string;
+  finishFillMs?: number;
+  finishWaitMs?: number;
+}
+
+/** A fixture drawn as `view`, then as `next` once mounted (a live transition to look at). */
+export interface CannedView {
+  name: string;
+  view: View | undefined;
+  props?: CannedProps;
+  next?: View;
 }
 
 const CANNED_STATUSES: readonly PurchaseStatus[] = [
@@ -223,6 +234,28 @@ export function cannedSource(purchases: Purchase[]): PurchasesSource {
   };
 }
 
+/** Purchases whose opened detail finds its sent transaction on chain. */
+function sentSource(purchases: Purchase[]): PurchasesSource {
+  return {
+    purchases: async () => purchases,
+    purchase: async (orderId) => {
+      const found = purchases.find((each) => each.orderId === orderId);
+      return found === undefined
+        ? undefined
+        : {
+            ...found,
+            receipt: {
+              ...found.receipt,
+              sent: {
+                tx: CANNED_SIGNATURE,
+                explorer: `https://explorer.solana.com/tx/${CANNED_SIGNATURE}?cluster=devnet`,
+              },
+            },
+          };
+    },
+  };
+}
+
 /** A Solana signature and a Tempo hash, for receipts. */
 const CANNED_SIGNATURE =
   '5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW';
@@ -230,7 +263,7 @@ const CANNED_HASH = '0x9b2f5c1d7e3a4b6c8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3
 
 /** Every state the checkout draws, for the fixture page. Times are from the device clock now. */
 
-export function cannedViews(): { name: string; view: View | undefined; props?: CannedProps }[] {
+export function cannedViews(): CannedView[] {
   const now = nowSeconds();
   const solana = cannedOffer();
   const many = cannedOffer({
@@ -469,5 +502,41 @@ export function cannedViews(): { name: string; view: View | undefined; props?: C
       view: offerView(solana),
       props: { purchases: cannedSource(cannedPurchases(count, now)), initialPurchasesOpen: true },
     })),
+    ...cannedPurchases(CANNED_STATUSES.length, now).map((purchase) => ({
+      name: `your purchases: detail ${purchase.status}`,
+      view: offerView(solana),
+      props: {
+        purchases: cannedSource([purchase]),
+        initialPurchasesOpen: true,
+        initialOpened: purchase.orderId,
+      },
+    })),
+    {
+      name: 'your purchases: detail with a sent transaction',
+      view: offerView(solana),
+      props: {
+        purchases: sentSource(cannedPurchases(1, now)),
+        initialPurchasesOpen: true,
+        initialOpened: cannedPurchases(1, now)[0]?.orderId ?? '',
+      },
+    },
+    {
+      name: 'progress: finishing (the last stage filled, held)',
+      view: waitingView(about, paying),
+      next: {
+        kind: 'delivered',
+        store: about.store,
+        product: about.product,
+        receipt: {
+          store: 'Demo Shop',
+          product: about.product.title,
+          paying,
+          orderId: 'b3a7c2d4-0000-4000-8000-000000000005',
+          paid: { tx: CANNED_SIGNATURE, at: now - 5 },
+          answeredAt: now,
+        },
+      },
+      props: { finishFillMs: 60_000 },
+    },
   ];
 }

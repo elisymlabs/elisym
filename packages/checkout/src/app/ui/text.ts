@@ -1,5 +1,6 @@
 import { type Asset, NATIVE_SOL, type Network, formatAssetAmount } from '@elisym/pay-core';
 import type { RefusalReason } from '../controller';
+import type { PurchaseStatus } from '../history';
 import { REF_NEEDS_VERIFIED_STORE } from '../ref-scope';
 import type { OpenStatus, Paying, Problem, Rail, Receipt, View } from '../session';
 
@@ -48,9 +49,13 @@ export function shownText(value: string): string {
   return parts.length <= MAX_SHOWN_CHARS ? value : `${parts.slice(0, MAX_SHOWN_CHARS).join('')}…`;
 }
 
-/** "Solana devnet", "Tempo mainnet": the network a payment runs on, always shown. */
+/**
+ * "Solana", "Solana devnet": the network a payment runs on, always shown. Real
+ * money is just the chain; a test network says so, so test money is never
+ * mistaken for real.
+ */
 export function networkLabel(chain: Rail, network: Network): string {
-  return `${CHAIN_NAMES[chain]} ${network}`;
+  return network === 'mainnet' ? CHAIN_NAMES[chain] : `${CHAIN_NAMES[chain]} ${network}`;
 }
 
 /** A pay-with choice: "USDC · Solana devnet". */
@@ -189,9 +194,62 @@ export function shortTx(tx: string): string {
   return tx.length <= 12 ? tx : `${tx.slice(0, 6)}…${tx.slice(-4)}`;
 }
 
-/** "1.5 USDC · Solana mainnet": what an order is for. */
+/** An order id shortened for the screen, as a transaction is: its first 6 and last 4 characters. */
+export function shortId(id: string): string {
+  return shortTx(id);
+}
+
+/** "1.5 USDC": an order's amount, without its network. */
+export function amountText(paying: Paying): string {
+  return formatAssetAmount(paying.asset, BigInt(paying.amount));
+}
+
+/** "1.5 USDC · Solana": what an order is for. */
 export function paidLine(paying: Paying): string {
-  return `${formatAssetAmount(paying.asset, BigInt(paying.amount))} · ${networkLabel(paying.chain, paying.network)}`;
+  return `${amountText(paying)} · ${networkLabel(paying.chain, paying.network)}`;
+}
+
+/** "Oct 5, 2026": the day a purchase was placed (`createdAt`, seconds). */
+export function purchaseDay(createdAt: number): string {
+  return new Date(createdAt * 1000).toLocaleDateString(undefined, { dateStyle: 'medium' });
+}
+
+/** A dated line of a receipt: its label, and when (seconds). */
+export interface ReceiptMoment {
+  label: string;
+  at: number;
+}
+
+/** When a payment was confirmed, else when the store answered a finished order. */
+function finishedMoment(
+  receipt: Receipt,
+  kind: 'delivered' | 'refunded' | 'open',
+): ReceiptMoment | undefined {
+  if (receipt.paid?.at !== undefined) {
+    return { label: 'Payment confirmed on', at: receipt.paid.at };
+  }
+  if (receipt.answeredAt !== undefined && kind !== 'open') {
+    return { label: kind === 'refunded' ? 'Refunded on' : 'Completed on', at: receipt.answeredAt };
+  }
+  return undefined;
+}
+
+/**
+ * The receipt's own moment, as its copied text dates it: the payment's
+ * confirmation, else the store's answer to a finished order, else when an
+ * unfinished one was placed. Nothing when the receipt has no date.
+ */
+export function receiptMoment(
+  receipt: Receipt,
+  kind: 'delivered' | 'refunded' | 'open',
+): ReceiptMoment | undefined {
+  const finished = finishedMoment(receipt, kind);
+  if (finished !== undefined) {
+    return finished;
+  }
+  return kind === 'open' && receipt.orderedAt !== undefined
+    ? { label: 'Ordered on', at: receipt.orderedAt }
+    : undefined;
 }
 
 /**
@@ -210,11 +268,9 @@ export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded' | '
   if (amount !== undefined) {
     lines.push(paid === undefined ? `Total: ${amount}` : `Paid: ${amount}`);
   }
-  if (paid?.at !== undefined) {
-    lines.push(`Payment confirmed on: ${new Date(paid.at * 1000).toLocaleString()}`);
-  } else if (receipt.answeredAt !== undefined && kind !== 'open') {
-    const label = kind === 'refunded' ? 'Refunded on' : 'Completed on';
-    lines.push(`${label}: ${new Date(receipt.answeredAt * 1000).toLocaleString()}`);
+  const finished = finishedMoment(receipt, kind);
+  if (finished !== undefined) {
+    lines.push(`${finished.label}: ${new Date(finished.at * 1000).toLocaleString()}`);
   }
   if (kind === 'refunded') {
     lines.push('Refunded by the store');
@@ -236,3 +292,47 @@ export function receiptText(receipt: Receipt, kind: 'delivered' | 'refunded' | '
   }
   return lines.join('\n');
 }
+
+/** The payment stepper's stages: the last fills once the payment is complete. */
+export const STEPPER_STAGES = ['Order sent', 'Confirm in wallet', 'Payment complete'] as const;
+
+/** "Your purchases": every string it shows. */
+export const PURCHASES_TEXT = {
+  title: 'Your purchases',
+  backToCheckout: 'Back to checkout',
+  backToList: 'Your purchases',
+  backToListLabel: 'Back to your purchases',
+  loading: 'Loading…',
+  empty: 'No purchases from this store in this browser yet.',
+  downloadCsv: 'Download CSV',
+  details: 'Purchase details',
+  product: 'Product',
+  order: 'Order',
+  orderHelp: 'Give this number to the store if you need help.',
+  copyOrder: 'Copy order number',
+  orderCopied: 'Order number copied.',
+  transaction: 'Transaction',
+  transactionSent: 'Transaction sent',
+  copyReceipt: 'Copy receipt',
+  receiptCopied: 'Receipt copied.',
+  otherProduct: "Open this product's checkout to follow it.",
+} as const;
+
+/** A status badge's color: never the only signal, its text always says it. */
+export type BadgeTone = 'success' | 'neutral' | 'pending' | 'problem';
+
+/** A purchase's status as a short badge (the full label stays in its `title` and the export). */
+export const PURCHASE_BADGES: Record<PurchaseStatus, { text: string; tone: BadgeTone }> = {
+  delivered: { text: 'Completed', tone: 'success' },
+  refunded: { text: 'Refunded', tone: 'neutral' },
+  waiting_store: { text: 'Waiting for the store', tone: 'pending' },
+  paying: { text: 'Payment in progress', tone: 'pending' },
+  blocked: { text: 'Payment blocked', tone: 'problem' },
+  cancelled_paid: { text: 'Cancelled', tone: 'problem' },
+};
+
+/** What a short badge leaves out, said under it in the detail. */
+export const PURCHASE_STATUS_NOTES: Partial<Record<PurchaseStatus, string>> = {
+  blocked: 'Payment blocked by the recipient.',
+  cancelled_paid: 'Cancelled by the store (no refund stated).',
+};
