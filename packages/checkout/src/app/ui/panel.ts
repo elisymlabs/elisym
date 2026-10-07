@@ -32,6 +32,7 @@ export const PROBLEM_PLACE = {
   wallet_failed: 'wallets',
   wallet_unsupported: 'wallets',
   attempt_over: 'wallets',
+  earlier_payment: 'wallets',
 } as const satisfies Record<Problem['reason'], 'offer' | 'wallets'>;
 
 /** The panel's own state over the session's views: whether the wallet section is open. */

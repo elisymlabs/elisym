@@ -1,5 +1,6 @@
 import type { Asset } from '@elisym/pay-core';
 import type { Problem } from '../session';
+import { EarlierPaymentNote } from './EarlierPaymentNote';
 import { problemText } from './text';
 
 interface Props {
@@ -14,6 +15,9 @@ interface Props {
 export function ProblemNote({ problem, asset, tempo = false, reveal = false }: Props) {
   if (problem === undefined) {
     return null;
+  }
+  if (problem.reason === 'earlier_payment') {
+    return <EarlierPaymentNote problem={problem} reveal={reveal} />;
   }
   return (
     <div

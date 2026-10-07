@@ -684,6 +684,316 @@ describe('the wallets', () => {
   });
 });
 
+/** The unanswered-wallet hint's lines, and what its live region says. */
+function unanswered(ui: Ui): { lines: string[]; spoken: string | undefined } {
+  return {
+    lines: [...ui.container.querySelectorAll('p.hint')].map((line) => line.textContent ?? ''),
+    spoken: ui.container.querySelector('[data-unanswered-status]')?.textContent ?? undefined,
+  };
+}
+
+const REJECT_LINE = 'If you do not want to pay, reject the request in your wallet.';
+
+describe('the wallet has not answered a payment request (D7)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('U-i Solana: nothing for 10 s, then when Start over opens, its countdown, then the check', () => {
+    vi.useFakeTimers();
+    const signing: View = { kind: 'working', step: 'signing', paying, about };
+    const ui = mount(signing);
+    act(() => {
+      vi.advanceTimersByTime(9_999);
+    });
+    expect(ui.has('.hint')).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(unanswered(ui).lines).toEqual([
+      'Your wallet has not answered. You can start over once the request expires.',
+      REJECT_LINE,
+    ]);
+    // The probe's countdown arrives: a redraw of the same step keeps the hint up.
+    const now = Math.floor(Date.now() / 1000);
+    ui.draw({
+      view: { ...signing, startOverIn: { seconds: 65, at: now }, unsureAt: now + 600 },
+    });
+    expect(unanswered(ui).lines).toEqual([
+      'Your wallet has not answered. You can start over in 1:05.',
+      REJECT_LINE,
+    ]);
+    expect(ui.container.querySelector('p.hint .countdown')?.textContent).toBe('1:05');
+    act(() => {
+      vi.advanceTimersByTime(65_000);
+    });
+    expect(unanswered(ui).lines).toEqual([
+      'Checking whether the request has expired…',
+      REJECT_LINE,
+    ]);
+    act(() => {
+      vi.advanceTimersByTime(600_000);
+    });
+    expect(unanswered(ui).lines).toEqual([
+      'This is taking long. If it does not resolve, contact the store.',
+      REJECT_LINE,
+    ]);
+    expect(ui.buttons().some((each) => each.textContent === 'Cancel')).toBe(false);
+    expect(ui.text()).not.toContain('reload the page');
+  });
+
+  it('U-i Tempo: its own words, and a countdown still running is never "taking long" (M55)', () => {
+    vi.useFakeTimers();
+    const now = Math.floor(Date.now() / 1000);
+    const signing: View = {
+      kind: 'working',
+      step: 'signing',
+      paying: tempoPaying,
+      about,
+      // About 11 minutes in: past `unsureAt` (setAt + 10 min), long before the
+      // request's late deadline (about 40 min after it was made).
+      unsureAt: now - 60,
+    };
+    const ui = mount(signing);
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    // No countdown yet, past `unsureAt`: taking long.
+    expect(unanswered(ui).lines[0]).toBe(
+      'This is taking long. If it does not resolve, contact the store.',
+    );
+    const later = Math.floor(Date.now() / 1000);
+    ui.draw({ view: { ...signing, startOverIn: { seconds: 29 * 60, at: later } } });
+    expect(unanswered(ui).lines).toEqual([
+      'Your wallet has not answered. You can start over in 29:00.',
+      REJECT_LINE,
+    ]);
+    expect(unanswered(ui).spoken).toBe(
+      'Your wallet has not answered. Start over opens when the checkout stops waiting for it.',
+    );
+    act(() => {
+      vi.advanceTimersByTime(29 * 60_000);
+    });
+    // The countdown reached 0: the docs' sequence, countdown -> checking -> taking long.
+    expect(unanswered(ui).lines).toEqual([
+      'Checking whether the request was approved…',
+      REJECT_LINE,
+    ]);
+    expect(unanswered(ui).spoken).toBe('Checking whether the request was approved…');
+    act(() => {
+      vi.advanceTimersByTime(600_000 - 1_000);
+    });
+    expect(unanswered(ui).lines[0]).toBe('Checking whether the request was approved…');
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(unanswered(ui).lines[0]).toBe(
+      'This is taking long. If it does not resolve, contact the store.',
+    );
+    expect(unanswered(ui).spoken).toBe(
+      'This is taking long. If it does not resolve, contact the store.',
+    );
+    ui.draw({ view: { ...signing, unsureAt: later + 3600 } });
+    expect(unanswered(ui).lines[0]).toBe(
+      'Your wallet has not answered. You can start over once the checkout stops waiting for it.',
+    );
+    expect(ui.text()).not.toContain('reload the page');
+  });
+
+  it('U-i Solana: a countdown at 0 says checking even past unsureAt, taking long only after UNSURE_AFTER_SECS more', () => {
+    vi.useFakeTimers();
+    const now = Math.floor(Date.now() / 1000);
+    const ui = mount({
+      kind: 'working',
+      step: 'signing',
+      paying,
+      about,
+      // The countdown ended 5 minutes ago and `unsureAt` already passed.
+      startOverIn: { seconds: 0, at: now - 300 },
+      unsureAt: now - 30,
+    });
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(unanswered(ui).lines).toEqual([
+      'Checking whether the request has expired…',
+      REJECT_LINE,
+    ]);
+    expect(unanswered(ui).spoken).toBe('Checking whether the request has expired…');
+    act(() => {
+      vi.advanceTimersByTime(289_000);
+    });
+    expect(unanswered(ui).lines[0]).toBe('Checking whether the request has expired…');
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(unanswered(ui).lines[0]).toBe(
+      'This is taking long. If it does not resolve, contact the store.',
+    );
+    expect(unanswered(ui).spoken).toBe(
+      'This is taking long. If it does not resolve, contact the store.',
+    );
+  });
+
+  it('U-j the live region speaks once per phase, never the ticking number (M19)', () => {
+    vi.useFakeTimers();
+    const now = Math.floor(Date.now() / 1000);
+    const ui = mount({
+      kind: 'working',
+      step: 'signing',
+      paying,
+      about,
+      startOverIn: { seconds: 20, at: now },
+      unsureAt: now + 600,
+    });
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    const counting = unanswered(ui).spoken;
+    expect(counting).toBe(
+      'Your wallet has not answered. Start over opens when the request expires.',
+    );
+    for (let tick = 0; tick < 9; tick += 1) {
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(unanswered(ui).spoken).toBe(counting);
+    }
+    // The countdown sits outside every live region.
+    for (const live of ui.container.querySelectorAll('[role="status"], [aria-live]')) {
+      expect(live.querySelector('.countdown')).toBeNull();
+    }
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(unanswered(ui).spoken).toBe('Checking whether the request has expired…');
+  });
+
+  it('says it is taking long from exactly unsureAt, not a second later', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_750_000_000_000);
+    const now = Math.floor(Date.now() / 1000);
+    const ui = mount({ kind: 'working', step: 'signing', paying, about, unsureAt: now + 20 });
+    act(() => {
+      vi.advanceTimersByTime(19_000);
+    });
+    expect(unanswered(ui).lines[0]).toBe(
+      'Your wallet has not answered. You can start over once the request expires.',
+    );
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(Math.floor(Date.now() / 1000)).toBe(now + 20);
+    expect(unanswered(ui).lines[0]).toBe(
+      'This is taking long. If it does not resolve, contact the store.',
+    );
+  });
+
+  it('a Tempo request with no countdown yet announces its own words', () => {
+    vi.useFakeTimers();
+    const ui = mount({ kind: 'working', step: 'signing', paying: tempoPaying, about });
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(unanswered(ui).spoken).toBe(
+      'Your wallet has not answered. Start over opens when the checkout stops waiting for it.',
+    );
+  });
+});
+
+describe('the earlier-payment line (D5, R-h)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function lineOf(ui: Ui): { text: string; spoken: string | undefined } {
+    const note = ui.container.querySelector('[data-problem-note]');
+    const spoken = note?.querySelector('[data-earlier-status]')?.textContent ?? undefined;
+    return { text: note?.querySelector('p')?.textContent ?? '', spoken };
+  }
+
+  const cases: [Problem, string, string][] = [
+    [
+      { reason: 'earlier_payment', phase: 'confirming' },
+      'A payment from earlier is still being confirmed. Try again in a moment.',
+      'A payment from earlier is still being confirmed.',
+    ],
+    [
+      { reason: 'earlier_payment', phase: 'tempo_request' },
+      'Your wallet already has a request open. Answer or reject it there, or try again in a moment.',
+      'Your wallet already has a request open.',
+    ],
+    [
+      { reason: 'earlier_payment', phase: 'waiting_store' },
+      'Your earlier payment arrived and is waiting for the store. It shows under Your purchases.',
+      'Your earlier payment arrived and is waiting for the store. It shows under Your purchases.',
+    ],
+    [
+      { reason: 'earlier_payment', phase: 'waiting_store', cancelled: true },
+      'Your earlier payment arrived, but the store cancelled the order. It shows under Your purchases.',
+      'Your earlier payment arrived, but the store cancelled the order. It shows under Your purchases.',
+    ],
+  ];
+  for (const [problem, text, spoken] of cases) {
+    it(`says "${text}"`, () => {
+      const ui = mount(offerView(cannedOffer(), { problem }));
+      expect(lineOf(ui)).toEqual({ text, spoken });
+      expect(ui.alerts()).toEqual([]);
+      expect(ui.walletsOpen()).toBe(true);
+    });
+  }
+
+  for (const phase of ['confirming', 'tempo_request'] as const) {
+    it(`counts down (${phase}) without a live-region change, then says "in a moment"`, () => {
+      vi.useFakeTimers();
+      const now = Math.floor(Date.now() / 1000);
+      const ui = mount(
+        offerView(cannedOffer(), {
+          problem: { reason: 'earlier_payment', phase, retryIn: { seconds: 75, at: now } },
+        }),
+      );
+      const before = lineOf(ui);
+      expect(before.text).toBe(
+        phase === 'confirming'
+          ? 'A payment from earlier is still being confirmed. You can try again in 1:15.'
+          : 'Your wallet already has a request open. Answer or reject it there, or try again in 1:15.',
+      );
+      for (let tick = 0; tick < 10; tick += 1) {
+        act(() => {
+          vi.advanceTimersByTime(1_000);
+        });
+        expect(lineOf(ui).spoken).toBe(before.spoken);
+      }
+      expect(lineOf(ui).text).toContain('1:05');
+      act(() => {
+        vi.advanceTimersByTime(65_000);
+      });
+      expect(lineOf(ui).text).toContain('in a moment.');
+      expect(lineOf(ui).spoken).toBe(before.spoken);
+    });
+  }
+
+  it('never fades in on its own inside the wallet step, which already does', () => {
+    const ui = mount(
+      offerView(cannedOffer(), { problem: { reason: 'earlier_payment', phase: 'confirming' } }),
+    );
+    const note = ui.container.querySelector('[data-problem-note]');
+    expect(note?.closest('.step')).not.toBeNull();
+    expect(note?.classList.contains('problem')).toBe(true);
+    expect(note?.classList.contains('reveal')).toBe(false);
+  });
+
+  it('clears when the session draws the offer without it', () => {
+    const offer = cannedOffer();
+    const ui = mount(
+      offerView(offer, { problem: { reason: 'earlier_payment', phase: 'confirming' } }),
+    );
+    expect(ui.has('[data-earlier-status]')).toBe(true);
+    ui.draw({ view: offerView(offer) });
+    expect(ui.has('[data-earlier-status]')).toBe(false);
+  });
+});
+
 describe('progress', () => {
   it('names the product and the exact payment, read-only, in place of the choice', () => {
     const ui = mount({ kind: 'working', step: 'signing', paying, about });
@@ -709,26 +1019,21 @@ describe('progress', () => {
     expect(ui.has('.chip')).toBe(false);
   });
 
-  for (const step of ['checking', 'signing'] as const) {
-    it(`says what to do when the wallet has not answered for a while (${step})`, () => {
-      vi.useFakeTimers();
-      const ui = mount({ kind: 'working', step, paying, about });
-      expect(ui.has('.hint')).toBe(false);
-      act(() => {
-        vi.advanceTimersByTime(59_000);
-      });
-      expect(ui.has('.hint')).toBe(false);
-      act(() => {
-        vi.advanceTimersByTime(1_000);
-      });
-      const hint = ui.container.querySelector('.hint')?.textContent ?? '';
-      expect(hint).toBe(
-        step === 'checking'
-          ? 'This is taking long. Reload the page to try again; no new payment request has been sent to your wallet.'
-          : 'Your wallet has not answered. If you closed its window, reload the page: the order picks up where it is, and a retry opens once it is safe.',
-      );
+  it('says what to do when a check has not answered for a while (checking waits 60 s)', () => {
+    vi.useFakeTimers();
+    const ui = mount({ kind: 'working', step: 'checking', paying, about });
+    expect(ui.has('.hint')).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(59_000);
     });
-  }
+    expect(ui.has('.hint')).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(ui.container.querySelector('.hint')?.textContent).toBe(
+      'This is taking long. Reload the page to try again; no new payment request has been sent to your wallet.',
+    );
+  });
 
   it('offers Cancel while the wallet has not answered its connect request, and says so', () => {
     vi.useFakeTimers();
@@ -741,6 +1046,27 @@ describe('progress', () => {
     );
     ui.click('Cancel');
     expect(ui.calls.cancel).toBe(1);
+  });
+
+  it('a check that stops being cancellable waits the full hint delay again from the flip', () => {
+    vi.useFakeTimers();
+    const ui = mount({ kind: 'working', step: 'checking', paying, about, cancellable: true });
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(ui.has('.hint')).toBe(false);
+    // The wallet answered its connect request: same step, no longer cancellable.
+    ui.draw({ view: { kind: 'working', step: 'checking', paying, about } });
+    act(() => {
+      vi.advanceTimersByTime(59_999);
+    });
+    expect(ui.has('.hint')).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(ui.container.querySelector('.hint')?.textContent).toBe(
+      'This is taking long. Reload the page to try again; no new payment request has been sent to your wallet.',
+    );
   });
 
   it('has no Cancel once the wallet answered (checking, ordering, signing)', () => {
@@ -786,16 +1112,9 @@ describe('progress', () => {
     expect(document.activeElement?.textContent).toBe('Choose a wallet');
   });
 
-  it('words the hint for Tempo, and gives none while the order is sent', () => {
+  it('gives no hint while the order is sent', () => {
     vi.useFakeTimers();
-    const ui = mount({ kind: 'working', step: 'signing', paying: tempoPaying, about });
-    act(() => {
-      vi.advanceTimersByTime(60_000);
-    });
-    expect(ui.container.querySelector('.hint')?.textContent).toContain(
-      'keeps checking the request',
-    );
-    ui.draw({ view: { kind: 'working', step: 'ordering', paying, about } });
+    const ui = mount({ kind: 'working', step: 'ordering', paying, about });
     act(() => {
       vi.advanceTimersByTime(120_000);
     });

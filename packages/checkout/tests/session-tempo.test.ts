@@ -258,7 +258,11 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
     clearTimeout: timers.clear,
     onView: (view) => views.push(view),
     onStatus: () => undefined,
-    onBanner: (banner) => banners.push(banner),
+    onBanner: (banner) => {
+      if (banner !== undefined) {
+        banners.push(banner);
+      }
+    },
   };
   return {
     shop,
@@ -336,7 +340,7 @@ describe('paying on Tempo in the widget', () => {
     expect(run.wallet.requests).toBe(requested + 1);
   });
 
-  it('finds a late approval of an ended order on the next load, as a banner', async () => {
+  it('finds a late approval of an ended order on the next load: stored, no banner (D1c)', async () => {
     const run = await setup();
     run.wallet.behaviour = 'fail';
     await run.session.start();
@@ -350,13 +354,12 @@ describe('paying on Tempo in the widget', () => {
     run.land((over as OrderRecord).reference);
     const again = new CheckoutSession(run.offer, run.deps);
     await again.start();
-    expect(run.banners).toEqual([
-      expect.objectContaining({ orderId: (over as OrderRecord).orderId, state: 'paid' }),
-    ]);
+    await settle();
+    expect(run.banners).toEqual([]);
     expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
   });
 
-  it('a late approval found while a delivered purchase is the newest: the offer, the banner, no second payment (F3)', async () => {
+  it('a late approval found while a delivered purchase is the newest: the offer, no banner, no second payment (F3)', async () => {
     const run = await setup();
     run.wallet.behaviour = 'fail';
     await run.session.start();
@@ -387,19 +390,21 @@ describe('paying on Tempo in the widget', () => {
     run.land(over.reference);
     const again = new CheckoutSession(run.offer, run.deps);
     await again.start();
+    await settle();
     expect(run.last()).toMatchObject({ kind: 'offer' });
-    expect(run.banners).toEqual([
-      expect.objectContaining({ orderId: over.orderId, state: 'paid' }),
-    ]);
+    expect(run.banners).toEqual([]);
     run.wallet.behaviour = 'land';
     const requests = run.wallet.requests;
     await again.pay('MetaMask');
-    // The paid order holds the product: it is followed, and no wallet opens.
+    // The paid order holds the product: its line, and no wallet opens.
     expect(run.wallet.requests).toBe(requests);
-    expect(run.last()).toMatchObject({ kind: 'waiting_store' });
+    expect(run.last()).toMatchObject({
+      kind: 'offer',
+      problem: { reason: 'earlier_payment', phase: 'waiting_store' },
+    });
   });
 
-  it('resumes a paying Tempo order before a newer delivered purchase (F4)', async () => {
+  it('follows a paying Tempo order in the background beside a newer delivered purchase (F4, D1c)', async () => {
     const run = await setup();
     run.wallet.behaviour = 'fail';
     await run.session.start();
@@ -428,7 +433,8 @@ describe('paying on Tempo in the widget', () => {
     }));
     const again = new CheckoutSession(run.offer, run.deps);
     await again.start();
-    expect(run.last()).toMatchObject({ kind: 'waiting_payment', tempo: true });
+    expect(run.last()).toMatchObject({ kind: 'offer' });
+    expect(run.timers.running.size).toBeGreaterThan(0);
   });
 
   it('watches a payment approved after another tab ended the order, and shows it when found', async () => {
@@ -443,9 +449,20 @@ describe('paying on Tempo in the widget', () => {
     await run.session.pay('MetaMask');
     expect(run.wallet.requests).toBe(before);
     expect(run.last()).toMatchObject({ problem: { reason: 'late_approval' } });
+    const watched = (run.session as unknown as { lateHash: { timer: unknown } | undefined })
+      .lateHash;
+    if (watched === undefined) {
+      throw new Error('the late hash is not watched');
+    }
+    expect(run.timers.running.has(watched.timer as number)).toBe(true);
     await run.timers.tick();
     expect(run.banners).toEqual([expect.objectContaining({ state: 'paid' })]);
     expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
+    // Found: its watch stops, and later ticks never show the banner again.
+    expect(run.timers.running.has(watched.timer as number)).toBe(false);
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.banners).toHaveLength(1);
   });
 
   it('asks for a fixed email before the wallet connects or switches chain', async () => {
@@ -772,6 +789,7 @@ describe('another account in the same browser, on Tempo', () => {
       onView: (view) => views.push(view),
     });
     await page.start();
+    await settle();
     // Reconciled here (the record is paid now), never announced to this account.
     expect((await records(run.offer))[0]).toMatchObject({ state: 'paid', paidTx: HASH });
     expect(run.banners).toEqual([]);

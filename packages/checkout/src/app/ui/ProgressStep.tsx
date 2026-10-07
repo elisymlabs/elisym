@@ -15,6 +15,8 @@ interface Props {
   onStartOver(): void;
   onCancel(): void;
   hintAfterMs: number;
+  /** How long a payment request may go unanswered before its hint. */
+  unansweredHintMs: number;
   /** The payment is complete: every stage is done (the last one fills). */
   complete?: boolean;
   /** Held on screen for a moment before the done screen: nothing in it can be pressed. */
@@ -52,6 +54,7 @@ export function ProgressStep({
   onStartOver,
   onCancel,
   hintAfterMs,
+  unansweredHintMs,
   complete = false,
   busy = false,
 }: Props) {
@@ -64,7 +67,12 @@ export function ProgressStep({
       <StepHeading level={3}>{heading(view)}</StepHeading>
       <Stepper active={complete ? STEPPER_STAGES.length : activeStage(view)} />
       {view.kind === 'working' ? (
-        <WorkingStatus view={view} hintAfterMs={hintAfterMs} onCancel={onCancel} />
+        <WorkingStatus
+          view={view}
+          hintAfterMs={hintAfterMs}
+          unansweredHintMs={unansweredHintMs}
+          onCancel={onCancel}
+        />
       ) : null}
       {view.kind === 'waiting_payment' ? (
         <WaitingPayment view={view} problem={problem} onRetry={onRetry} onStartOver={onStartOver} />

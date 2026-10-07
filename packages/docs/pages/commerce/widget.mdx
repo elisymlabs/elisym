@@ -28,7 +28,7 @@ Each product has its own `naddr`: to sell several, put one `<elisym-buy>` per pr
 | `label`         | text                           | The Buy button's text. Without it, or when empty, the button reads "Buy". Changing it never reloads the checkout.                          |
 | `customer-ref`  | your account id                | The account a payment credits, through your node's webhook (see [Credit an account](/commerce/credit-an-account)). Honoured only for a level A store on its own domain, in the top-level page; it turns `strict-origin` on. Empty means "not known yet": the button shows disabled and nothing is framed. |
 
-Changing any other attribute re-frames the checkout when what the checkout receives changes. A different `customer-ref` is a different account: its orders and its history in the browser are its own, and the checkout never shows or continues another reference's order. An open modal stays open, unless the change is to `display="inline"` or removes `product` (or makes it something other than an `naddr1...`), which close it. A purchase that is in progress is not lost: the checkout keeps it in the browser and resumes it.
+Changing any other attribute re-frames the checkout when what the checkout receives changes. A different `customer-ref` is a different account: its orders and its history in the browser are its own, and the checkout never shows or continues another reference's order. An open modal stays open, unless the change is to `display="inline"` or removes `product` (or makes it something other than an `naddr1...`), which close it. A purchase that is in progress is not lost: the checkout keeps it in the browser, follows it in the background and lists it under Your purchases; the re-framed checkout starts at its first step (a page where the checkout refuses to sell still shows it).
 
 ## What the buyer sees
 
@@ -39,11 +39,13 @@ The checkout is one panel inside the frame that grows as the purchase goes on:
 3. The email field, when you set `collect-email`.
 4. The wallets the buyer's browser has, at once under **Pay with**. The payout and the email above stay editable until a payment starts. After a price change, the wallets close and the buyer presses **Choose wallet** to open them again, so the new price is seen before any wallet can be clicked.
 5. Once the buyer picks a wallet, the payment's progress takes the wallets' place, and the payment shows read-only above it.
-6. **Payment complete** (or **Order complete** when the receipt shows no payment, such as an order the store completed by hand), or the refund, with a receipt: what the order cost, the order number (to give the store if the buyer needs help), and the transaction this checkout sent once the chain says it went through, shown shortened as its explorer link ("Paid" when this checkout confirmed the payment itself; "Copy receipt" copies the full id), or how the order ended. **Buy again** starts a new purchase. Nothing is delivered through the checkout: the store acts on its node's webhook (see [Credit an account](/commerce/credit-an-account)). The receipt stays until the buyer leaves. In a modal, closing it after a finished purchase returns the checkout to its first step, so opening it again starts a new purchase (the page hears `ready`). Earlier purchases are under **Your purchases**.
+6. **Payment complete** (or **Order complete** when the receipt shows no payment, such as an order the store completed by hand), or the refund, with a receipt: what the order cost, the order number (to give the store if the buyer needs help), and the transaction this checkout sent once the chain says it went through, shown shortened as its explorer link ("Paid" when this checkout confirmed the payment itself; "Copy receipt" copies the full id), or how the order ended. **Buy again** starts a new purchase. Nothing is delivered through the checkout: the store acts on its node's webhook (see [Credit an account](/commerce/credit-an-account)). The receipt stays until the buyer leaves. In a modal, closing it at any point returns the checkout to its first step: the page hears `ready` (except on a page where the checkout refuses to sell, which keeps its refusal and the order it shows; the page then keeps `refused`). A payment already sent goes on and shows under **Your purchases**. A press while it may still land says so and waits; it never asks the wallet for a second payment. Earlier purchases are under **Your purchases**.
 
 While the wallet connects, the buyer can cancel and choose another wallet.
 
-There is no confirmation step and no box to tick. The product's name heads the checkout the whole time, with the store's name under it and its trust level when it has one (level A or B), unless the store no longer offers the product on this page, and a devnet checkout says "Test network". The buyer always has something to do or knows how long to wait: when the buyer declines in the wallet, the checkout is back at once and the same order can be paid again; when a wallet failed in another way, the checkout says "you can retry in about M:SS" while the attempt may still land, then offers the retry and Start over once it provably cannot. An immediate retry after a decline relies on the wallet not sending a transaction it reports as declined. Pages that still use `v1/embed.js` get the same checkout, inline, with no change to their snippet.
+If the wallet does not answer a Solana payment request, after a few seconds the checkout counts down to when the request expires (about a minute and a half), then offers Start over. Rejecting the request in the wallet ends it at once.
+
+There is no confirmation step and no box to tick. The product's name heads the checkout the whole time, with the store's name under it and its trust level when it has one (level A or B), unless the store no longer offers the product on this page, and a devnet checkout says "Test network". The buyer always has something to do or knows how long to wait: when the buyer declines in the wallet, the checkout is back at once and the same order can be paid again; when a wallet failed in another way, the checkout says "you can retry in about M:SS" while the attempt may still land, then offers the retry and Start over once it provably cannot. If the buyer closes the checkout meanwhile, the attempt goes on in the background and shows under Your purchases; a new press asks the wallet for nothing while it may still land: it says so, with a countdown when one applies. An immediate retry after a decline relies on the wallet not sending a transaction it reports as declined. Pages that still use `v1/embed.js` get the same checkout, inline, with no change to their snippet.
 
 ## Status events
 
@@ -57,16 +59,16 @@ document.querySelector('elisym-buy').addEventListener('elisym-status', (event) =
 
 | State       | Meaning                                                                      |
 | ----------- | ---------------------------------------------------------------------------- |
-| `ready`     | The verified offer is shown.                                                 |
+| `ready`     | The verified offer is shown: at every load of a page the checkout accepts, and after any close of the modal. |
 | `ordered`   | The order reached the store's inbox relays. Nothing is paid yet. Posted when it happens in this session; a page loaded over an earlier unpaid order hears `ready`. |
-| `paying`    | A payment was requested from the buyer's wallet. It may still land, or expire. When the buyer declines in the wallet, the order is `ordered` again (a page that already heard `paying` hears `ordered`): nothing was paid, and the same order can be paid again. |
+| `paying`    | A payment was requested from the buyer's wallet. It may still land, or expire. When the buyer declines in the wallet, the order is `ordered` again (a page that already heard `paying` hears `ordered`; not after the checkout was closed: the page then hears nothing more about that order): nothing was paid, and the same order can be paid again. |
 | `paid`      | The payment is confirmed on chain. Waiting for the store to confirm.        |
-| `completed` | The store completed the order, while the checkout was open (or on the next load of a paid order still waiting for the store). A reload after a finished purchase starts a new one: the page hears `ready`, not `completed` again. |
+| `completed` | The store completed the order while the checkout showed it. Not sent for an order completed after the modal was closed or the page reloaded, and never on a page that hears `refused`. A reload after a finished purchase starts a new one: the page hears `ready`, not `completed` again. |
 | `refunded`  | The store cancelled the order and refunded it.                               |
 | `ended`     | The buyer left an order that was never paid.                                 |
 | `refused`   | The checkout will not sell here (see below). On a page without `customer-ref`, when the buyer has an earlier order of this product, the checkout still shows it to them inside a frame that keeps the refusal's height (the order scrolls within it), and the page hears `refused` only: a page never learns what a visitor bought. A refusal on a page with `customer-ref` shows no order at all. A page whose network this checkout does not serve hears `refused` whether or not the visitor bought before. |
 
-Use them for analytics, or to show your own "thank you" next to the checkout. Never unlock or credit anything on an event: it tells you a state, not who paid. Your backend learns from your node's signed `order.paid` webhook ([Credit an account](/commerce/credit-an-account)).
+Use them for analytics, or to show your own "thank you" next to the checkout. Outcomes of orders followed in the background (after a close or a reload) are not posted: act on the webhook. Never unlock or credit anything on an event: it tells you a state, not who paid. Your backend learns from your node's signed `order.paid` webhook ([Credit an account](/commerce/credit-an-account)).
 
 A returning buyer with an earlier unpaid order of the product sees the same checkout as a new visitor, and their order is continued silently when they pay. An email typed then goes with a new order instead.
 
@@ -74,7 +76,7 @@ In modal display the element also fires `elisym-open` when the modal opens and `
 
 ## In React
 
-[`@elisym/react`](https://www.npmjs.com/package/@elisym/react) renders the element and adds the pinned v3 loader once per document (React 18 and 19). Props map to the attributes (`collectEmail` to `collect-email`, `customerRef` to `customer-ref`), and the events to `onOpen`, `onClose`, `onStatus` and `onPaid` (on `completed`, for your UI only):
+[`@elisym/react`](https://www.npmjs.com/package/@elisym/react) renders the element and adds the pinned v3 loader once per document (React 18 and 19). Props map to the attributes (`collectEmail` to `collect-email`, `customerRef` to `customer-ref`), and the events to `onOpen`, `onClose`, `onStatus` and `onPaid` (on `completed`, for your UI only, while the checkout shows that order; it does not fire for an order completed after the modal was closed or the page reloaded, nor on a page that hears `refused`. Never use it for fulfillment: your node's signed webhook is the source of truth):
 
 ```tsx
 import { ElisymBuy } from '@elisym/react';
@@ -151,7 +153,7 @@ In every case but the first, and those the loader refuses itself, the page recei
 
 A product the store has stopped selling shows as **Sold out** instead of the store or domain refusals above: no Pay button, and a note that an order already paid is still completed. The page receives `refused`, as for any refusal.
 
-On a page without `customer-ref`, a buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later. On a page with `customer-ref` a refusal is final: it shows no order. That order is still followed and answered by your node, and shown on the next visit the checkout accepts, or under Your purchases.
+On a page without `customer-ref` that refuses to sell, a buyer with an order already paid or in progress still sees that order to its end, even if the offer is refused later. Elsewhere, an order in progress is followed in the background and shown under Your purchases; the Buy button always starts a new purchase, and waits while that order may still be paid. On a page with `customer-ref` a refusal is final: it shows no order. That order is still followed and answered by your node and shows under Your purchases; a later visit the checkout accepts follows it in the background instead of showing it.
 
 ## Paying on Tempo
 
@@ -159,18 +161,20 @@ A store with a Tempo payout is paid from an EIP-6963 wallet (MetaMask). The chec
 
 A Tempo wallet request never expires, so the checkout never retries a Tempo payment by itself:
 
-- While the wallet has not answered, the checkout counts down to the request's late deadline, about 40 minutes ("the checkout stops waiting for this request in about M:SS; if you do not want to pay, reject it in your wallet"). Then it says it is **checking whether the request was approved**, and if that stays unresolved, **this is taking long: check your wallet activity, or contact the store**.
+- While the wallet has not answered (the checkout open on it), it counts down to the request's late deadline, about 40 minutes: "Your wallet has not answered. You can start over in M:SS.", then "Checking whether the request was approved…", then, with no countdown left, "This is taking long. If it does not resolve, contact the store.".
+- When the wallet call failed with no hash, or on a page that shows only an existing order whose request is still open, the checkout says "the checkout stops waiting for this request in about M:SS; if you do not want to pay, reject it in your wallet", and if that stays unresolved, **this is taking long: check your wallet activity, or contact the store**.
+- A press after a close or a reload: a request from this page that may still be approved blocks a new Tempo payment of that product ("Your wallet already has a request open. Answer or reject it there, or try again in m:ss.") until it is answered or its late deadline passes, and the old-prompt question still guards the next payment.
 - A declined request ends the order: nothing was signed.
 - A request that timed out ends the order, but the wallet may still show it. Before any new payment of the product the buyer is asked to reject it: **approving the old request pays that order as well**.
 - If the recipient's account refuses the coin, the payment is **blocked**: the money is held, not delivered. Contact the store.
 - A sent payment that fails on chain (for example, the wallet's fee left too little of the coin) holds the product in that browser until the store answers: contact the store, which releases it with `complete`.
 
-Two cases can only be settled by hand, and the buyer is told to contact the store:
+Two cases can only be settled by hand, and the open checkout tells the buyer to contact the store; after the checkout is closed or the page reloaded, the order is listed under Your purchases (on a page that shows only an existing order, it is still shown, with the note):
 
 - an old request approved more than three days after the order, or more than 45 minutes after the store changed its price or payout: the money reaches the store, and the node does not complete it on its own;
 - a payment the store's node has not answered 30 minutes after it was found (on either rail).
 
-The store answers such an order with its node's `complete` or `refund` command (see [the quick start](/commerce/quickstart#answering-an-order-by-hand)). The checkout also re-checks, on each visit, Tempo orders that ended in the last three days: a late payment found there shows as a note on whatever is on screen.
+The store answers such an order with its node's `complete` or `refund` command (see [the quick start](/commerce/quickstart#answering-an-order-by-hand)). The checkout also re-checks, on each visit, Tempo orders that ended in the last three days: a late payment found there is stored and shows under Your purchases (on a page that shows only an existing order, as a note on whatever is on screen).
 
 ## One loader, pinned
 

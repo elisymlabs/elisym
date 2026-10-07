@@ -101,9 +101,12 @@ or use Protection Bypass for Automation and open the preview once with
 - [ ] After a finished purchase, closing and reopening the modal shows the first step (try the
       close button, Escape, a click on the backdrop and the checkout's own Done). The page hears
       `ready` again. An inline checkout keeps its receipt.
+- [ ] Closing during signing also shows the first step on the next open; a press then shows the
+      earlier-payment line with no wallet prompt.
 - [ ] The first screen shows the wallets under Pay with, and a click on one opens its prompt (the
       popup is not blocked). After a price change the wallets close and Choose wallet opens them.
-- [ ] Reloading during `paying` resumes the same order, and no second wallet prompt appears.
+- [ ] Reloading during `paying` shows the first step; the order is under Your purchases, and a
+      press shows the earlier-payment line with no wallet prompt.
 - [ ] With site data blocked for the checkout's origin (the browser's "block all cookies and
       site data" setting, so IndexedDB fails), the checkout shows "This browser blocks
       storage for the checkout", the page receives `refused`, and there is no Pay button.

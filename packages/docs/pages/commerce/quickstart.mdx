@@ -172,7 +172,7 @@ The buyer's page shows a choice between the store's payouts on the page's networ
 
 ## Answering an order by hand
 
-A buyer who cannot finish a purchase is told to contact the store: a payment the node refused (paid after a price change, or after the three days it watches an order), or one that never landed. With the node **stopped**, answer the order from its key (`orders` lists them):
+A buyer who cannot finish a purchase is told so by the open checkout (after the checkout is closed or the page reloaded, the order is listed under Your purchases): a payment the node refused (paid after a price change, or after the three days it watches an order), or one that never landed. With the node **stopped**, answer the order from its key (`orders` lists them):
 
 ```bash
 npx @elisym/merchant-node complete <buyer>:<orderId>

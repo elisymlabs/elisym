@@ -35,8 +35,11 @@ export interface Actions {
   cancel(): void;
 }
 
-/** An action left unanswered this long (a wallet window has no timeout) gets a hint. */
+/** A check left unanswered this long (a wallet window has no timeout) gets a hint. */
 export const HINT_AFTER_MS = 60_000;
+
+/** A payment request the wallet has not answered this long gets its countdown and hint. */
+export const UNANSWERED_HINT_MS = 10_000;
 
 /**
  * A completed order with no payment shown yet ("Order complete") keeps the
@@ -75,14 +78,16 @@ interface Props {
   /** In a modal only: ask the page to close it. */
   onClose?: () => void;
   /**
-   * Bumped when the session went back to the first step after the modal closed
-   * on a finished order: "Your purchases" closes and the panel starts over.
+   * Bumped when the session went back to the first step after the modal
+   * closed: "Your purchases" closes and the panel starts over.
    */
   resetCount?: number;
   /** Dev only (the fixture page): the payout list starts open. */
   initialListOpen?: boolean;
-  /** How long an unanswered action waits before its hint (the fixture page shows it at once). */
+  /** How long an unanswered check waits before its hint (the fixture page shows it at once). */
   hintAfterMs?: number;
+  /** How long an unanswered payment request waits before its hint (the fixture page: at once). */
+  unansweredHintMs?: number;
   /** "Your purchases", offered on every session view (the same with or without any). */
   purchases?: PurchasesSource;
   /** Dev only (the fixture page): "Your purchases" starts open. */
@@ -188,6 +193,7 @@ export function Checkout({
   resetCount = 0,
   initialListOpen = false,
   hintAfterMs = HINT_AFTER_MS,
+  unansweredHintMs = UNANSWERED_HINT_MS,
   purchases,
   initialPurchasesOpen = false,
   initialOpened,
@@ -460,6 +466,7 @@ export function Checkout({
               onStartOver={startOver}
               onCancel={cancel}
               hintAfterMs={hintAfterMs}
+              unansweredHintMs={unansweredHintMs}
               complete={held?.phase === 'filling'}
               busy={held !== undefined}
             />

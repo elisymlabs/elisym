@@ -5,6 +5,7 @@ agentskills
 antipattern
 autolinks
 auxe
+backgrounded
 bankr
 bech
 behaviour
@@ -56,6 +57,7 @@ extensionless
 eykt
 feff
 FLASHX
+followable
 freetext
 frontmatter
 fsmonitor

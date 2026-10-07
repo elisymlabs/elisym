@@ -2,7 +2,7 @@ import { type Asset, NATIVE_SOL, type Network, formatAssetAmount } from '@elisym
 import type { RefusalReason } from '../controller';
 import type { PurchaseStatus } from '../history';
 import { REF_NEEDS_VERIFIED_STORE } from '../ref-scope';
-import type { OpenStatus, Paying, Problem, Rail, Receipt, View } from '../session';
+import type { EarlierPayment, OpenStatus, Paying, Problem, Rail, Receipt, View } from '../session';
 
 export const REFUSALS: Record<RefusalReason, string> = {
   not_framed: 'This checkout only works embedded in a store page.',
@@ -119,6 +119,70 @@ export function problemText(problem: Problem, asset: Asset): string {
       return `Not enough funds: the price is ${formatAssetAmount(asset, problem.needed)}, the wallet holds ${formatAssetAmount(asset, problem.available)}.`;
     case 'insufficient_sol':
       return `Not enough SOL for the network fees: ${formatAssetAmount(NATIVE_SOL, problem.needed)} needed, ${formatAssetAmount(NATIVE_SOL, problem.available)} held.`;
+    case 'earlier_payment': {
+      const line = earlierPaymentLine(problem, undefined);
+      return `${line.lead}${line.tail}`;
+    }
+  }
+}
+
+/** The press-time line about the buyer's own earlier payment: never "contact the store". */
+export const EARLIER_PAYMENT = {
+  confirming: 'A payment from earlier is still being confirmed.',
+  tempoRequest: 'Your wallet already has a request open.',
+  tempoRequestDo: 'Answer or reject it there, or try again',
+  waitingStore:
+    'Your earlier payment arrived and is waiting for the store. It shows under Your purchases.',
+  cancelled:
+    'Your earlier payment arrived, but the store cancelled the order. It shows under Your purchases.',
+} as const;
+
+/**
+ * The earlier-payment line in parts: `countdown` (m:ss) sits between `lead` and
+ * `tail` while time is left (`left > 0`); otherwise "in a moment" is in the text.
+ */
+export function earlierPaymentLine(
+  problem: EarlierPayment,
+  left: number | undefined,
+): { lead: string; countdown?: string; tail: string } {
+  const counting = left !== undefined && left > 0;
+  switch (problem.phase) {
+    case 'waiting_store':
+      return {
+        lead: problem.cancelled === true ? EARLIER_PAYMENT.cancelled : EARLIER_PAYMENT.waitingStore,
+        tail: '',
+      };
+    case 'confirming':
+      return counting
+        ? {
+            lead: `${EARLIER_PAYMENT.confirming} You can try again in `,
+            countdown: formatCountdown(left),
+            tail: '.',
+          }
+        : { lead: `${EARLIER_PAYMENT.confirming} Try again in a moment.`, tail: '' };
+    case 'tempo_request':
+      return counting
+        ? {
+            lead: `${EARLIER_PAYMENT.tempoRequest} ${EARLIER_PAYMENT.tempoRequestDo} in `,
+            countdown: formatCountdown(left),
+            tail: '.',
+          }
+        : {
+            lead: `${EARLIER_PAYMENT.tempoRequest} ${EARLIER_PAYMENT.tempoRequestDo} in a moment.`,
+            tail: '',
+          };
+  }
+}
+
+/** What the earlier-payment line's live region says: once per phase, never the ticking number. */
+export function earlierPaymentStatus(problem: EarlierPayment): string {
+  switch (problem.phase) {
+    case 'waiting_store':
+      return problem.cancelled === true ? EARLIER_PAYMENT.cancelled : EARLIER_PAYMENT.waitingStore;
+    case 'confirming':
+      return EARLIER_PAYMENT.confirming;
+    case 'tempo_request':
+      return EARLIER_PAYMENT.tempoRequest;
   }
 }
 
@@ -129,19 +193,36 @@ export function formatCountdown(seconds: number): string {
 }
 
 /**
- * After `hintAfterMs` of an action with no answer: what the buyer can do.
+ * After `hintAfterMs` of checking with no answer: what the buyer can do.
  * `cancellable`: the wallet has not answered its connect request yet.
  */
-export function slowHint(step: 'checking' | 'signing', chain: Rail, cancellable = false): string {
-  if (step === 'checking') {
-    return cancellable
-      ? 'Your wallet has not answered. Answer it, or cancel and choose again.'
-      : 'This is taking long. Reload the page to try again; no new payment request has been sent to your wallet.';
-  }
-  return chain === 'tempo'
-    ? 'Your wallet has not answered. If you closed its window, reload the page: the checkout keeps checking the request, and once it has lapsed a new order can start after a question about the old request.'
-    : 'Your wallet has not answered. If you closed its window, reload the page: the order picks up where it is, and a retry opens once it is safe.';
+export function slowHint(cancellable = false): string {
+  return cancellable
+    ? 'Your wallet has not answered. Answer it, or cancel and choose again.'
+    : 'This is taking long. Reload the page to try again; no new payment request has been sent to your wallet.';
 }
+
+/** The wallet has not answered a payment request: what the checkout does, and when Start over opens. */
+export const UNANSWERED = {
+  lead: 'Your wallet has not answered.',
+  unknown: {
+    solana: 'You can start over once the request expires.',
+    tempo: 'You can start over once the checkout stops waiting for it.',
+  } satisfies Record<Rail, string>,
+  /** Around the countdown: "You can start over in m:ss." */
+  countingLead: 'You can start over in ',
+  checking: {
+    solana: 'Checking whether the request has expired…',
+    tempo: 'Checking whether the request was approved…',
+  } satisfies Record<Rail, string>,
+  takingLong: 'This is taking long. If it does not resolve, contact the store.',
+  reject: 'If you do not want to pay, reject the request in your wallet.',
+  /** Said once, politely, when the hint appears. */
+  announce: {
+    solana: 'Your wallet has not answered. Start over opens when the request expires.',
+    tempo: 'Your wallet has not answered. Start over opens when the checkout stops waiting for it.',
+  } satisfies Record<Rail, string>,
+} as const;
 
 /** A start still running after `SLOW_START_MS`: never a refusal. */
 export function slowLoading(modal: boolean): string {
