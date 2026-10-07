@@ -121,9 +121,6 @@ export const WEBHOOK_TIMEOUT_MS = 10_000;
 /** The answer body is read up to this much and dropped. */
 export const WEBHOOK_MAX_ANSWER_BYTES = 4 * 1024;
 
-/** A webhook secret is at least this many bytes (`openssl rand -hex 32` gives 64). */
-export const WEBHOOK_MIN_SECRET_BYTES = 32;
-
 /** Product ids per `'#d'` filter: each yields one listing per relay, well under any relay's default limit. */
 export const LISTING_CHUNK_SIZE = 50;
 

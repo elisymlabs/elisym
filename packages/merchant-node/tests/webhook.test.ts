@@ -4,6 +4,12 @@ import { type IncomingMessage, type ServerResponse, createServer } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  type OrderPaidWebhookEvent,
+  type WebhookHeaders,
+  signWebhook,
+  verifyWebhook,
+} from '@elisym/commerce/webhook';
 import { afterEach, describe, expect, it } from 'vitest';
 import { configProblems, configTemplate, webhookUrlProblem } from '../src/config';
 import {
@@ -36,7 +42,7 @@ import {
   readWebhookSecret,
   retryPause,
   sendWebhook,
-  webhookSignature,
+  testBody,
   webhookTarget,
 } from '../src/webhook';
 import { orderLines, rearmWebhook, shownRef } from '../src/webhook-commands';
@@ -257,14 +263,105 @@ describe('the order.paid body', () => {
 });
 
 describe('the signature', () => {
-  it('is v1= HMAC-SHA256 over the timestamp, a dot and the raw body', () => {
-    expect(webhookSignature(SECRET, 1_791_100_000, '{"a":1}')).toBe(
+  it('is v1= HMAC-SHA256 over the timestamp, a dot and the raw body', async () => {
+    // The golden vectors `@elisym/commerce` asserts too (its tests/webhook.test.ts, T1 and T2).
+    expect(await signWebhook({ secret: SECRET, timestamp: 1_791_100_000, body: '{"a":1}' })).toBe(
       'v1=3c8a1c2fe10d3b2f9f419de45b1a81e4ef90265bcf45dd734dc99989fde5ac99',
     );
+    expect(
+      await signWebhook({
+        secret: 'é'.repeat(16),
+        timestamp: 1_791_100_000,
+        body: '{"note":"€ 🎉 \uD800"}',
+      }),
+    ).toBe('v1=c48a492c1e01c179c02f25597d1011fa2cad17e38e94994ccd2927d985bccbc3');
     // The timestamp is signed: the same body at another time signs differently.
-    expect(webhookSignature(SECRET, 1_791_100_001, '{"a":1}')).not.toBe(
-      webhookSignature(SECRET, 1_791_100_000, '{"a":1}'),
-    );
+    expect(
+      await signWebhook({ secret: SECRET, timestamp: 1_791_100_001, body: '{"a":1}' }),
+    ).not.toBe(await signWebhook({ secret: SECRET, timestamp: 1_791_100_000, body: '{"a":1}' }));
+  });
+});
+
+/** One `sendWebhook` to a captured fetch: the headers and body it sent. */
+async function captureSend(
+  event: { name: string; eventId: string; body: string },
+  now: () => number = () => NOW,
+) {
+  const captured: { headers: Headers; body: string }[] = [];
+  const result = await sendWebhook(
+    { url: 'https://shop.example.com/hook', secret: SECRET },
+    event,
+    {
+      now,
+      userAgent: 'test',
+      fetch: (_input, init) => {
+        if (typeof init.body !== 'string') {
+          throw new Error('the node sends a string body');
+        }
+        captured.push({ headers: new Headers(init.headers), body: init.body });
+        return Promise.resolve(new Response('ok', { status: 200 }));
+      },
+    },
+  );
+  expect(result).toEqual({ ok: true, status: 200 });
+  const [sent] = captured;
+  if (sent === undefined) {
+    throw new Error('nothing sent');
+  }
+  return sent;
+}
+
+describe('the receiver library verifies what the node sends', () => {
+  it('order.paid with every optional field round-trips through verifyWebhook', async () => {
+    const order = paidOrder({ customerRef: 'user-123', email: 'buyer@example.com' });
+    const entry = newWebhookEntry(STORE, order, NOW);
+    const body = orderPaidBody(order, entry, { storePubkey: STORE });
+    const sent = await captureSend({ name: 'order.paid', eventId: entry.eventId, body });
+    const headers: WebhookHeaders = sent.headers;
+    const expected: OrderPaidWebhookEvent = {
+      event: 'order.paid',
+      eventId: entry.eventId,
+      store: STORE,
+      orderId: ORDER_ID,
+      buyerPubkey: BUYER,
+      customerRef: 'user-123',
+      product: { address: PRODUCT },
+      payment: {
+        asset: USDC_DEVNET_CAIP19,
+        amount: '1500000',
+        amountDisplay: '1.5',
+        decimals: 6,
+        symbol: 'USDC',
+        tx: SIG,
+        medium: 'solana-devnet',
+        paidAt: T0 + 120,
+      },
+      email: 'buyer@example.com',
+    };
+    expect(await verifyWebhook({ secret: SECRET, body: sent.body, headers, now: NOW })).toEqual({
+      ok: true,
+      event: expected,
+    });
+  });
+
+  it('a test event round-trips too', async () => {
+    const { body, eventId } = testBody(STORE);
+    const sent = await captureSend({ name: 'test', eventId, body });
+    expect(
+      await verifyWebhook({ secret: SECRET, body: sent.body, headers: sent.headers, now: NOW }),
+    ).toEqual({ ok: true, event: { event: 'test', eventId, store: STORE } });
+  });
+
+  it('the timestamp header is the signed one, even when the clock ticks', async () => {
+    const { body, eventId } = testBody(STORE);
+    let clock = NOW;
+    const sent = await captureSend({ name: 'test', eventId, body }, () => {
+      clock += 1;
+      return clock;
+    });
+    expect(
+      await verifyWebhook({ secret: SECRET, body: sent.body, headers: sent.headers, now: clock }),
+    ).toEqual({ ok: true, event: { event: 'test', eventId, store: STORE } });
   });
 });
 
@@ -282,6 +379,14 @@ describe('the secret', () => {
     expect(() => readWebhookSecret({ [WEBHOOK_SECRET_FILE_ENV]: '/secret' }, () => '\n')).toThrow(
       /is empty/,
     );
+  });
+
+  it('drops one trailing LF or CRLF from the secret file, and nothing more', () => {
+    const fileEnv = { [WEBHOOK_SECRET_FILE_ENV]: '/secret' };
+    expect(readWebhookSecret(fileEnv, () => `${SECRET}\r\n`)).toBe(SECRET);
+    expect(readWebhookSecret(fileEnv, () => `${SECRET}\n\n`)).toBe(`${SECRET}\n`);
+    expect(readWebhookSecret(fileEnv, () => ` ${SECRET} \n`)).toBe(` ${SECRET} `);
+    expect(readWebhookSecret(fileEnv, () => `${SECRET}\r`)).toBe(`${SECRET}\r`);
   });
 
   it('must be 32 bytes for a configured webhook, and is only warned about without one', () => {
@@ -420,6 +525,24 @@ describe('the sender', () => {
       attempts: 1,
       lastStatus: 200,
     });
+  });
+
+  it('reports a signing failure as a result, never a rejection, and sends nothing', async () => {
+    let fetched = 0;
+    const result = await sendWebhook(
+      { url: 'https://shop.example.com/hook', secret: 'short' },
+      { name: 'test', ...testBody(STORE) },
+      {
+        now: () => 1.5,
+        userAgent: 'test',
+        fetch: () => {
+          fetched += 1;
+          return Promise.resolve(new Response('ok'));
+        },
+      },
+    );
+    expect(result.ok).toBe(false);
+    expect(fetched).toBe(0);
   });
 
   it('retries a 500 later, never sooner', async () => {
