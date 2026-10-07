@@ -174,6 +174,7 @@ export function waitingView(
 export interface CannedProps {
   initialListOpen?: boolean;
   hintAfterMs?: number;
+  unansweredHintMs?: number;
   purchases?: PurchasesSource;
   initialPurchasesOpen?: boolean;
   initialOpened?: string;
@@ -286,6 +287,48 @@ export function cannedViews(): CannedView[] {
       props: { initialListOpen: true },
     },
     {
+      name: 'offer: earlier payment confirming, countdown',
+      view: offerView(solana, {
+        problem: {
+          reason: 'earlier_payment',
+          phase: 'confirming',
+          retryIn: { seconds: 75, at: now },
+        },
+      }),
+    },
+    {
+      name: 'offer: earlier payment confirming, in a moment',
+      view: offerView(solana, { problem: { reason: 'earlier_payment', phase: 'confirming' } }),
+    },
+    {
+      name: 'offer: earlier Tempo request open, countdown',
+      view: offerView(tempo, {
+        wallets: [{ name: 'MetaMask' }],
+        problem: {
+          reason: 'earlier_payment',
+          phase: 'tempo_request',
+          retryIn: { seconds: 29 * 60, at: now },
+        },
+      }),
+    },
+    {
+      name: 'offer: earlier Tempo request open, in a moment',
+      view: offerView(tempo, {
+        wallets: [{ name: 'MetaMask' }],
+        problem: { reason: 'earlier_payment', phase: 'tempo_request' },
+      }),
+    },
+    {
+      name: 'offer: earlier payment waiting for the store',
+      view: offerView(solana, { problem: { reason: 'earlier_payment', phase: 'waiting_store' } }),
+    },
+    {
+      name: 'offer: earlier payment, cancelled by the store',
+      view: offerView(solana, {
+        problem: { reason: 'earlier_payment', phase: 'waiting_store', cancelled: true },
+      }),
+    },
+    {
       name: 'offer: a changed price (Choose wallet)',
       view: offerView(many, { askEmail: true, problem: { reason: 'offer_changed' } }),
     },
@@ -320,9 +363,58 @@ export function cannedViews(): CannedView[] {
     },
     { name: 'working', view: { kind: 'working', step: 'signing', paying, about } },
     {
-      name: 'working: no answer from the wallet',
-      view: { kind: 'working', step: 'signing', paying, about },
-      props: { hintAfterMs: 0 },
+      name: 'signing: wallet unanswered, no estimate yet',
+      view: { kind: 'working', step: 'signing', paying, about, unsureAt: now + 600 },
+      props: { unansweredHintMs: 0 },
+    },
+    {
+      name: 'signing: wallet unanswered, countdown',
+      view: {
+        kind: 'working',
+        step: 'signing',
+        paying,
+        about,
+        startOverIn: { seconds: 65, at: now },
+        unsureAt: now + 600,
+      },
+      props: { unansweredHintMs: 0 },
+    },
+    {
+      name: 'signing: wallet unanswered, 0:00 (checking)',
+      view: {
+        kind: 'working',
+        step: 'signing',
+        paying,
+        about,
+        startOverIn: { seconds: 0, at: now },
+        unsureAt: now + 600,
+      },
+      props: { unansweredHintMs: 0 },
+    },
+    {
+      name: 'signing: wallet unanswered, taking long',
+      view: {
+        kind: 'working',
+        step: 'signing',
+        paying,
+        about,
+        // The countdown ended UNSURE_AFTER_SECS ago and the attempt is still unresolved.
+        startOverIn: { seconds: 0, at: now - 600 },
+        unsureAt: now - 1,
+      },
+      props: { unansweredHintMs: 0 },
+    },
+    {
+      name: 'signing: Tempo request unanswered, countdown',
+      view: {
+        kind: 'working',
+        step: 'signing',
+        paying: tempoPaying,
+        about,
+        startOverIn: { seconds: 29 * 60, at: now },
+        unsureAt: now - 60,
+      },
+      props: { unansweredHintMs: 0 },
     },
     {
       name: 'waiting for the payment',

@@ -28,6 +28,7 @@ import {
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutParams, CheckoutState } from '../src/embed/protocol';
 import { framePage } from './page-harness';
+import { gate } from './reset-harness';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';
@@ -35,9 +36,11 @@ const PAGE = 'https://merchant.example';
 type Ready = Extract<LoadedOffer, { ok: true }>;
 
 let store: OrderStore;
+let backend: IndexedDbOrderBackend;
 
 beforeEach(async () => {
-  store = new OrderStore(new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory())));
+  backend = new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory()));
+  store = new OrderStore(backend);
 });
 
 class Timers {
@@ -134,7 +137,11 @@ function page(
     clearTimeout: world.timers.clear,
     onView: (view) => views.push(view),
     onStatus: (state) => statuses.push(state),
-    onBanner: (banner) => banners.push(banner),
+    onBanner: (banner) => {
+      if (banner !== undefined) {
+        banners.push(banner);
+      }
+    },
     ...(customerRef === undefined ? {} : { customerRef }),
   };
   const session = new CheckoutSession(options.offer ?? world.offer, deps);
@@ -446,6 +453,42 @@ describe('another account holding the product in this browser', () => {
     expect(shown.last()).not.toHaveProperty('problem');
   });
 
+  it('the note stays when this account’s own background order is answered (round 5 LOW-2)', async () => {
+    const world = await browser();
+    const theirs = await payingOrder(world, 'user_a');
+    // This account's blocked payment, followed in the background for its refund.
+    const blocked: OrderRecord = {
+      ...theirs,
+      orderId: 'b'.repeat(64),
+      customerRef: 'user_b',
+      state: 'blocked',
+      createdAt: theirs.createdAt - 10,
+      version: 1,
+    };
+    await backend.transactProduct(blocked.productAddress, () => ({
+      write: [blocked],
+      result: undefined,
+    }));
+    world.chain.dropSends = true;
+    const shown = page(world, 'user_b');
+    await shown.session.start();
+    await settle();
+    await shown.session.pay('Fake');
+    expect(shown.last()).toMatchObject({ kind: 'offer', problem: { reason: 'other_purchase' } });
+    const views = shown.views.length;
+    await storeSays(world, blocked, {
+      status: 'cancelled',
+      delivery: undefined,
+      refund: { tx: '6'.repeat(88), amount: '49000000' },
+    } as Partial<OrderMessage>);
+    expect((await store.get(blocked.orderId))?.status?.status).toBe('cancelled');
+    // Their order still holds the product: the note names it, and stays.
+    expect((await store.get(theirs.orderId))?.state).toBe('paying');
+    expect(shown.views.slice(views)).toEqual([]);
+    expect(shown.last()).toMatchObject({ kind: 'offer', problem: { reason: 'other_purchase' } });
+    world.chain.dropSends = false;
+  });
+
   it('stops following when the page is disposed', async () => {
     const world = await browser();
     await payingOrder(world, 'user_a');
@@ -488,13 +531,14 @@ describe('ended orders of another account', () => {
     sawNothingOf(shown, theirs);
   });
 
-  it('a late delivery of its own ended order still shows', async () => {
+  it('a late delivery of its own ended order is stored after a reload, never shown (D1c)', async () => {
     const world = await browser();
     const own = await endedOrder(world, 'user_b');
     const shown = page(world, 'user_b');
     await shown.session.start();
     await storeSays(world, own);
-    expect(shown.last()).toMatchObject({ kind: 'delivered' });
+    expect((await only(world, 'user_b')).state).toBe('completed');
+    expect(shown.last()).toMatchObject({ kind: 'offer' });
   });
 
   it('its own ended orders are heard first when the listeners are full', async () => {
@@ -507,7 +551,10 @@ describe('ended orders of another account', () => {
     const shown = page(world, 'user_b');
     await shown.session.start();
     await storeSays(world, own);
-    expect(shown.last()).toMatchObject({ kind: 'delivered' });
+    // Heard (and stored), though only quietly after a load.
+    expect((await all(world)).find((record) => record.orderId === own.orderId)?.state).toBe(
+      'completed',
+    );
   });
 });
 
@@ -893,5 +940,220 @@ describe('a sold-out product', () => {
     } finally {
       counted.restore();
     }
+  });
+});
+
+describe('another account’s note (round 8)', () => {
+  /** A copy of `record` as another account's tab would have left it: it holds the product. */
+  async function heldBy(
+    record: OrderRecord,
+    customerRef: string,
+    letter: string,
+    changes: Partial<OrderRecord> = {},
+  ): Promise<OrderRecord> {
+    const seeded: OrderRecord = {
+      ...record,
+      orderId: letter.repeat(64),
+      customerRef,
+      version: 1,
+      ...changes,
+    };
+    await backend.transactProduct(seeded.productAddress, () => ({
+      write: [seeded],
+      result: undefined,
+    }));
+    return seeded;
+  }
+
+  function noteOf(view: View | undefined): boolean {
+    return view?.kind === 'offer' && view.problem?.reason === 'other_purchase';
+  }
+
+  /**
+   * A press that meets `holder`'s note, and whose follower finds it answered while
+   * that press still runs: a product freed during the press, its note cleared at the end.
+   */
+  async function freedDuringPress(
+    world: Browser,
+    shown: ReturnType<typeof page>,
+    holder: OrderRecord,
+  ) {
+    const onView = shown.deps.onView;
+    shown.deps.onView = (view) => {
+      onView(view);
+      if (noteOf(view)) {
+        shown.deps.onView = onView;
+        for (const handler of [...world.timers.running.values()]) {
+          handler();
+        }
+      }
+    };
+    const get = store.get.bind(store);
+    let looks = 0;
+    store.get = (orderId: string) => {
+      if (orderId === holder.orderId) {
+        looks += 1;
+        if (looks >= 2) {
+          return Promise.resolve({ ...holder, state: 'completed' as const });
+        }
+      }
+      return get(orderId);
+    };
+    return { restore: () => (store.get = get) };
+  }
+
+  it('freed while the retry that met it is still running: the offer shows after the retry (B14)', async () => {
+    const world = await browser();
+    const shown = page(world, 'user_b');
+    await shown.session.start();
+    // This account's attempt goes out, never lands, and provably ends: a retry is offered.
+    world.chain.dropSends = true;
+    await shown.session.pay('Fake');
+    world.chain.expire();
+    world.chain.nextBlockhash();
+    await world.timers.tick();
+    world.chain.dropSends = false;
+    expect(shown.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    // Another account's attempt now holds the product: the retry's marker is refused.
+    const theirs = await heldBy(await only(world, 'user_b'), 'user_a', 'a');
+    const requests = world.wallet.requests;
+    world.chain.dropSends = true;
+    const freed = await freedDuringPress(world, shown, theirs);
+    try {
+      await shown.session.retry('Fake');
+      await settle();
+    } finally {
+      freed.restore();
+    }
+    world.chain.dropSends = false;
+    expect(world.wallet.requests).toBe(requests);
+    expect(shown.views.filter((view) => noteOf(view))).toHaveLength(1);
+    expect(shown.last()).toMatchObject({ kind: 'offer' });
+    expect(shown.last()).not.toHaveProperty('problem');
+  });
+
+  it('a holder that appears after the load is followed from the press: its note clears by itself (P10)', async () => {
+    const world = await browser();
+    const shown = page(world, 'user_b');
+    await shown.session.start();
+    // Another account pays after this page loaded: nothing here follows it yet.
+    const theirs = await paidOrder(world, 'user_a');
+    await shown.session.pay('Fake');
+    expect(noteOf(shown.last())).toBe(true);
+    await storeSays(world, theirs);
+    await world.timers.tick();
+    expect((await only(world, 'user_a')).state).toBe('completed');
+    expect(shown.last()).toMatchObject({ kind: 'offer' });
+    expect(shown.last()).not.toHaveProperty('problem');
+  });
+
+  it('a holder freed during a press with no note up never clears the note that press then shows (N9)', async () => {
+    const world = await browser();
+    const theirs = await payingOrder(world, 'user_a');
+    // A second account's paid order, followed from the load, holds the product too.
+    const paid = await heldBy(theirs, 'user_c', 'c', { state: 'paid', paidTx: '5'.repeat(88) });
+    world.chain.dropSends = true;
+    const shown = page(world, 'user_b');
+    await shown.session.start();
+    await settle();
+    // The press is held at its first read of the store, the working view on screen.
+    const read = gate();
+    const reached = gate();
+    const forProduct = store.forProduct.bind(store);
+    store.forProduct = async (productAddress: string) => {
+      store.forProduct = forProduct;
+      reached.open();
+      await read.promise;
+      return forProduct(productAddress);
+    };
+    const pressed = shown.session.pay('Fake');
+    await reached.promise;
+    expect(shown.last()).toMatchObject({ kind: 'working', step: 'checking' });
+    // The second account's order is answered meanwhile: its follower sees it free.
+    const answered = await store.update(paid.orderId, paid.version, { state: 'completed' });
+    expect(answered.ok).toBe(true);
+    await world.timers.tick();
+    read.open();
+    await pressed;
+    await settle();
+    // The first account's order still holds: its note stays.
+    expect((await store.get(theirs.orderId))?.state).toBe('paying');
+    expect(noteOf(shown.last())).toBe(true);
+    world.chain.dropSends = false;
+  });
+
+  it('a product freed during one press never clears the note of a later press (N10)', async () => {
+    const world = await browser();
+    const theirs = await payingOrder(world, 'user_a');
+    world.chain.dropSends = true;
+    const shown = page(world, 'user_b');
+    await shown.session.start();
+    const freed = await freedDuringPress(world, shown, theirs);
+    try {
+      await shown.session.pay('Fake');
+      await settle();
+    } finally {
+      freed.restore();
+    }
+    expect(shown.views.filter((view) => noteOf(view))).toHaveLength(1);
+    expect(shown.last()).not.toHaveProperty('problem');
+    // Their order is answered for real; a third account's attempt now holds the product.
+    const stored = await store.get(theirs.orderId);
+    if (stored === undefined) {
+      throw new Error('no record');
+    }
+    expect((await store.update(stored.orderId, stored.version, { state: 'completed' })).ok).toBe(
+      true,
+    );
+    const holder = await heldBy(theirs, 'user_d', 'd');
+    await shown.session.pay('Fake');
+    await settle();
+    expect((await store.get(holder.orderId))?.state).toBe('paying');
+    expect(noteOf(shown.last())).toBe(true);
+    world.chain.dropSends = false;
+  });
+
+  it('a product freed by a press cut short by a close never clears the note of the next press (N16)', async () => {
+    const world = await browser();
+    const theirs = await payingOrder(world, 'user_a');
+    world.chain.dropSends = true;
+    const shown = page(world, 'user_b');
+    await shown.session.start();
+    const freed = await freedDuringPress(world, shown, theirs);
+    // The modal closes right after the follower saw the product freed, before the press ends.
+    const clear = shown.deps.clearInterval;
+    let closed = false;
+    shown.deps.clearInterval = (id) => {
+      clear(id);
+      if (!closed && shown.views.some((view) => noteOf(view))) {
+        closed = true;
+        queueMicrotask(() => {
+          expect(shown.session.resetOnClose()).toBe(true);
+        });
+      }
+    };
+    try {
+      await shown.session.pay('Fake');
+      await settle();
+    } finally {
+      freed.restore();
+      shown.deps.clearInterval = clear;
+    }
+    expect(closed).toBe(true);
+    expect(shown.last()).toMatchObject({ kind: 'offer' });
+    expect(shown.last()).not.toHaveProperty('problem');
+    const stored = await store.get(theirs.orderId);
+    if (stored === undefined) {
+      throw new Error('no record');
+    }
+    expect((await store.update(stored.orderId, stored.version, { state: 'completed' })).ok).toBe(
+      true,
+    );
+    const holder = await heldBy(theirs, 'user_d', 'd');
+    await shown.session.pay('Fake');
+    await settle();
+    expect((await store.get(holder.orderId))?.state).toBe('paying');
+    expect(noteOf(shown.last())).toBe(true);
+    world.chain.dropSends = false;
   });
 });

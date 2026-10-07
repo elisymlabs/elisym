@@ -140,7 +140,8 @@ Adds 10 USD to your account, in markdown. This body is the listing's description
 - `setup` refuses a product whose title and text are still the example `init` wrote.
 
 **What the buyer gets.** Nothing in-band: once the node has checked a payment on chain, it sends
-the order's `completed` status and the checkout shows Payment complete with a receipt. What the
+the order's `completed` status and the checkout shows Payment complete with a receipt (while the
+checkout is open on it; after a close or reload, under Your purchases). What the
 buyer paid for happens on your side: act on the signed `order.paid` [webhook](#credit-an-account-the-webhook).
 
 Upgrading from 0.8: remove `delivery` from every `PRODUCT.md` (the node refuses it), and run

@@ -8,21 +8,20 @@ import {
   wireReopen,
 } from '../src/app/reopen';
 
-/** A session stand-in: `terminal` is what is on screen; a reset draws the first step. */
-function fakeSession(terminal = false) {
+/** A session stand-in: every reset it accepts draws the first step; `refuse` makes it say no. */
+function fakeSession() {
   const timers = new Map<number, { callback: () => void; ms: number }>();
   let next = 1;
-  const state = { terminal, resets: 0 };
+  const state = { resets: 0, refuse: false, asked: 0 };
   const deps: ReopenDeps = {
     reset: () => {
-      if (!state.terminal) {
+      state.asked += 1;
+      if (state.refuse) {
         return false;
       }
       state.resets += 1;
-      state.terminal = false;
       return true;
     },
-    terminal: () => state.terminal,
     setTimer: (callback, ms) => {
       const id = next;
       next += 1;
@@ -42,45 +41,33 @@ function fakeSession(terminal = false) {
   return { deps, state, timers, runTimers };
 }
 
-describe('the reset decision (D4)', () => {
-  it('a finished order seen while shown resets once on the hide', () => {
-    const session = fakeSession();
-    const machine = createReopenReset(session.deps);
-    machine.shown(true);
-    session.state.terminal = true;
-    machine.viewChanged();
-    machine.shown(false);
-    expect(session.state.resets).toBe(1);
-  });
-
-  it('a finished order that arrived while hidden is shown on the next open, then reset by the close after', () => {
+describe('the reset decision (D6)', () => {
+  it('a hide after a show resets once, whatever is on screen', () => {
     const session = fakeSession();
     const machine = createReopenReset(session.deps);
     machine.shown(true);
     machine.shown(false);
-    session.state.terminal = true;
-    machine.viewChanged();
-    machine.shown(true);
-    expect(session.state.resets).toBe(0);
+    expect(session.state.resets).toBe(1);
+    // Repeated hide signals reset nothing more.
     machine.shown(false);
     expect(session.state.resets).toBe(1);
+    // Every close resets: shown again, hidden again.
+    machine.shown(true);
+    machine.shown(false);
+    expect(session.state.resets).toBe(2);
   });
 
-  it('a hide right after the frame’s own close resets at once', () => {
+  it('a hide with no show before it does nothing', () => {
     const session = fakeSession();
     const machine = createReopenReset(session.deps);
-    session.state.terminal = true;
-    // Never seen shown (no shown signal yet): only the frame's close counts.
-    machine.closedFromFrame();
-    machine.shown(true);
     machine.shown(false);
-    expect(session.state.resets).toBe(1);
-    expect(session.timers.size).toBe(0);
+    expect(session.state.asked).toBe(0);
   });
 
-  it('the frame’s own close with no hide resets after the fallback (M15)', () => {
-    const session = fakeSession(true);
+  it('the frame’s own close with no hide resets after the fallback, once (M15)', () => {
+    const session = fakeSession();
     const machine = createReopenReset(session.deps);
+    machine.shown(true);
     machine.closedFromFrame();
     expect(session.state.resets).toBe(0);
     expect([...session.timers.values()].map((timer) => timer.ms)).toEqual([
@@ -88,62 +75,46 @@ describe('the reset decision (D4)', () => {
     ]);
     session.runTimers();
     expect(session.state.resets).toBe(1);
-  });
-
-  it('the frame’s own close does nothing for an order not finished', () => {
-    const session = fakeSession(false);
-    const machine = createReopenReset(session.deps);
-    machine.closedFromFrame();
-    expect(session.timers.size).toBe(0);
-  });
-
-  it('never resets an order not finished, however often it hides', () => {
-    const session = fakeSession();
-    const machine = createReopenReset(session.deps);
-    for (let turn = 0; turn < 3; turn += 1) {
-      machine.shown(true);
-      machine.viewChanged();
-      machine.shown(false);
-    }
-    expect(session.state.resets).toBe(0);
-  });
-
-  it('a finished order that arrived while hidden is not reset by a repeated hide signal', () => {
-    const session = fakeSession();
-    const machine = createReopenReset(session.deps);
-    machine.shown(true);
-    machine.shown(false);
-    session.state.terminal = true;
-    machine.viewChanged();
-    machine.shown(false);
-    expect(session.state.resets).toBe(0);
-  });
-
-  it('repeated hide signals reset once', () => {
-    const session = fakeSession();
-    const machine = createReopenReset(session.deps);
-    machine.shown(true);
-    session.state.terminal = true;
-    machine.viewChanged();
-    machine.shown(false);
-    // The buyer bought again, and the order finished while the frame stayed hidden.
-    session.state.terminal = true;
-    machine.shown(false);
-    machine.shown(false);
+    session.runTimers();
     expect(session.state.resets).toBe(1);
   });
 
-  it('a view that leaves the finished order before the hide cancels the reset', () => {
+  it('the frame’s own close twice within the fallback keeps one fallback: one reset, no timer left', () => {
     const session = fakeSession();
     const machine = createReopenReset(session.deps);
     machine.shown(true);
-    session.state.terminal = true;
-    machine.viewChanged();
-    // Buy again pressed: the first step is drawn while shown.
-    session.state.terminal = false;
-    machine.viewChanged();
+    machine.closedFromFrame();
+    machine.closedFromFrame();
+    expect(session.timers.size).toBe(1);
+    session.runTimers();
+    expect(session.state.resets).toBe(1);
+    expect(session.timers.size).toBe(0);
+  });
+
+  it('a hide right after the frame’s own close resets at once, and the fallback never runs', () => {
+    const session = fakeSession();
+    const machine = createReopenReset(session.deps);
+    machine.shown(true);
+    machine.closedFromFrame();
     machine.shown(false);
+    expect(session.state.resets).toBe(1);
+    expect(session.timers.size).toBe(0);
+    session.runTimers();
+    expect(session.state.resets).toBe(1);
+  });
+
+  it('a refused reset changes nothing, and the next close asks again', () => {
+    const session = fakeSession();
+    const machine = createReopenReset(session.deps);
+    session.state.refuse = true;
+    machine.shown(true);
+    machine.shown(false);
+    expect(session.state.asked).toBe(1);
     expect(session.state.resets).toBe(0);
+    session.state.refuse = false;
+    machine.shown(true);
+    machine.shown(false);
+    expect(session.state.resets).toBe(1);
   });
 });
 
@@ -230,23 +201,21 @@ describe('the shown signal', () => {
 describe('the wiring', () => {
   it('only in a modal: inline gets nothing (M14)', () => {
     const page = fakeWindow();
-    const session = fakeSession(true);
+    const session = fakeSession();
     expect(wireReopen('inline', page.self, session.deps)).toBeUndefined();
     expect(wireReopen(undefined, page.self, session.deps)).toBeUndefined();
     expect(page.observed).toEqual([]);
     page.intersect(true);
     page.intersect(false);
-    expect(session.state.resets).toBe(0);
+    expect(session.state.asked).toBe(0);
   });
 
-  it('in a modal, a close after the finished order was seen resets it', () => {
+  it('in a modal, any close resets (M20)', () => {
     const page = fakeWindow();
     const session = fakeSession();
     const machine = wireReopen('modal', page.self, session.deps);
     expect(machine).toBeDefined();
     page.intersect(true);
-    session.state.terminal = true;
-    machine?.viewChanged();
     page.intersect(false);
     expect(session.state.resets).toBe(1);
   });

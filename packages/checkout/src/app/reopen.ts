@@ -1,7 +1,7 @@
 /**
- * After a finished purchase, closing the modal returns the checkout to its
- * first step. The loaders tell the frame nothing on open or close, so the frame
- * watches whether it is shown: a closed dialog hides it (`display: none`).
+ * Closing the modal returns the checkout to its first step, in every state.
+ * The loaders tell the frame nothing on open or close, so the frame watches
+ * whether it is shown: a closed dialog hides it (`display: none`).
  */
 
 /** After the frame's own Done or Escape, a reset runs this long later if no hide signal came. */
@@ -10,8 +10,6 @@ export const CLOSE_RESET_FALLBACK_MS = 400;
 export interface ReopenDeps {
   /** Go back to the first step; `false` when the session refused (nothing changed). */
   reset(): boolean;
-  /** The view on screen is a finished order (completed or refunded). */
-  terminal(): boolean;
   setTimer(callback: () => void, ms: number): unknown;
   clearTimer(handle: unknown): void;
 }
@@ -19,22 +17,17 @@ export interface ReopenDeps {
 export interface ReopenReset {
   /** The frame became shown (`true`) or hidden (`false`). */
   shown(on: boolean): void;
-  /** The session drew a new view. */
-  viewChanged(): void;
   /** The frame itself asked the page to close the modal (Done, Escape inside). */
   closedFromFrame(): void;
 }
 
 /**
- * The reset decision. A finished order counts as seen once its view was on
- * screen while the frame was shown; a hide after that resets at once (the
- * frame redraws the first step while invisible). A finished view that arrived
- * while hidden is shown once on the next open, then reset by the close after.
+ * The reset decision: a hide after the frame was shown resets at once (the
+ * frame redraws the first step while invisible); a close the frame asked for
+ * resets after `CLOSE_RESET_FALLBACK_MS` if no hide reported it first.
  */
 export function createReopenReset(deps: ReopenDeps): ReopenReset {
   let isShown = false;
-  let seen = false;
-  let pendingClose = false;
   let fallback: unknown;
 
   const stopFallback = () => {
@@ -45,11 +38,7 @@ export function createReopenReset(deps: ReopenDeps): ReopenReset {
   };
   const resetNow = () => {
     stopFallback();
-    pendingClose = false;
-    seen = false;
-    if (deps.terminal()) {
-      deps.reset();
-    }
+    deps.reset();
   };
 
   return {
@@ -58,30 +47,15 @@ export function createReopenReset(deps: ReopenDeps): ReopenReset {
         return;
       }
       isShown = on;
-      if (on) {
-        if (deps.terminal()) {
-          seen = true;
-        }
-        return;
-      }
-      if (seen || pendingClose) {
+      if (!on) {
         resetNow();
       }
     },
-    viewChanged() {
-      seen = isShown && deps.terminal();
-    },
     closedFromFrame() {
-      if (!deps.terminal()) {
-        return;
-      }
-      pendingClose = true;
       stopFallback();
       fallback = deps.setTimer(() => {
         fallback = undefined;
-        if (pendingClose) {
-          resetNow();
-        }
+        resetNow();
       }, CLOSE_RESET_FALLBACK_MS);
     },
   };

@@ -26,7 +26,7 @@ import {
   onOtherTerms,
   recordToShow,
 } from '@elisym/commerce/buyer';
-import type { OrderStore } from '@elisym/commerce/buyer';
+import { type OrderStore, type StoreWrite, STORE_WRITE_ATTEMPTS } from '@elisym/commerce/buyer';
 import {
   type SolanaPayResult,
   type SolanaWallet,
@@ -105,6 +105,13 @@ export const TX_RECHECKS = 3;
  * (a hand cancel or refund) before it is paid, for at most this long.
  */
 export const HELD_STATUS_READ_MS = 2_000;
+/**
+ * A press waits at most this long for an order placement still in flight (a
+ * press detached by a close) before it reads the open orders: the placement's
+ * own bounds, commerce's `RELAY_QUERY_DEADLINE_MS` inbox read plus its
+ * `RELAY_PUBLISH_DEADLINE_MS` publish.
+ */
+export const PLACING_WAIT_MS = 35_000;
 
 /**
  * What the chain says of a sent transaction. `succeeded` and `failed` are
@@ -140,7 +147,26 @@ export type Problem =
   | { reason: 'sold_out' }
   /** Another account's purchase of this product holds it in this browser: try later. */
   | { reason: 'other_purchase' }
+  /**
+   * The buyer's own earlier payment of this product may still land (or landed and
+   * waits for the store): this press asked the wallet nothing.
+   */
+  | EarlierPayment
   | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
+
+/** Why a press found an earlier payment of this product in this browser, and when to try again. */
+export interface EarlierPayment {
+  reason: 'earlier_payment';
+  /**
+   * `confirming`: an attempt may still land; `tempo_request`: a Tempo request
+   * not approved yet is open in the wallet; `waiting_store`: it was paid.
+   */
+  phase: 'confirming' | 'tempo_request' | 'waiting_store';
+  /** `waiting_store`: the store cancelled the paid order (no refund stated). */
+  cancelled?: boolean;
+  /** About when a press may proceed (the holder's own attempt). */
+  retryIn?: Countdown;
+}
 
 /** The payment a progress screen is about: the live order's, else the payout chosen. */
 export interface Paying {
@@ -220,6 +246,10 @@ export type View =
       about: About;
       /** Waiting for the wallet's connect answer: the buyer may cancel and choose again. */
       cancellable?: true;
+      /** Signing: about when the unanswered request can be judged over (Start over then). */
+      startOverIn?: Countdown;
+      /** Signing: after this (unix seconds), with no countdown left, it is taking long. */
+      unsureAt?: number;
     }
   | {
       kind: 'waiting_payment';
@@ -326,9 +356,10 @@ export interface SessionDeps {
   tempoChainTime?(client: Eip1193Client): Promise<number>;
   /**
    * A store answer (or a late payment found) for an order not on screen: shown
-   * at once as a banner, never held back by the order that is.
+   * at once as a banner, never held back by the order that is. `undefined`
+   * clears it: the modal closed and opens again at its first step.
    */
-  onBanner?(banner: Banner): void;
+  onBanner?(banner: Banner | undefined): void;
   /**
    * The offer is refused now, but the product has an order to follow (paid,
    * paying, delivered, or ended and still heard): no new payment, this message
@@ -465,6 +496,84 @@ function stateOf(record: OrderRecord): CheckoutState | undefined {
   }
 }
 
+/** What a follow-only session shows instead of an offer, and the one order it follows. */
+interface FollowOnlyState {
+  reason: RefusedReason;
+  message: string;
+  orderId?: string;
+}
+
+/** An open unpaid order this checkout may still pay: placed or acknowledged, no attempt, not cancelled. */
+function continuedUnpaid(record: OrderRecord): boolean {
+  return (
+    (record.state === 'created' || record.state === 'ordered') &&
+    record.marker === undefined &&
+    !cancelledUnpaid(record)
+  );
+}
+
+/**
+ * An order followed in the background while not on screen: one that holds the
+ * product (an attempt that may land, a payment waiting for the store), and a
+ * blocked payment whose store answer (a refund) must still be stored.
+ */
+function followable(record: OrderRecord): boolean {
+  return !isTerminal(record) && (holdsPayExclusion(record) || record.state === 'blocked');
+}
+
+/** Whole seconds until an attempt's blockhash is settled past its last valid height. */
+function settleSeconds(lastValid: bigint, height: bigint): { seconds: number; blocksLeft: number } {
+  const left = lastValid + RETRY_SETTLE_BLOCKS - height;
+  const blocksLeft = left > 0n ? Number(left) : 0;
+  return { seconds: Math.ceil(blocksLeft * SLOT_SECS_ESTIMATE), blocksLeft };
+}
+
+/** A press's own identity, for the store writes it makes: its id, and the close count it began at. */
+interface PressScope {
+  press: number;
+  resets: number;
+}
+
+/** One watch pass's verdict, on either rail. */
+type Watched =
+  | Awaited<ReturnType<typeof watchSolanaPayment>>
+  | Awaited<ReturnType<typeof watchTempoPayment>>;
+
+/** The verdict of one watch pass, as `applyVerdict` applied it. */
+type VerdictApplied =
+  /** A payment found (`paid`) or blocked: drawn; a caller outside the watch follows it. */
+  | 'follow'
+  /** Another tab replaced the attempt during the pass: drawn, and nothing else follows it. */
+  | 'replaced'
+  /** Drawn: an attempt proven over, or cleared. */
+  | 'drawn'
+  /** Not applied: stale, terminal, or not ended. */
+  | 'skipped';
+
+/** The unanswered-wallet probe of one signing press. */
+interface Probe {
+  press: number;
+  orderId: string;
+  generation: number;
+  /** `resets` when the probe started: a close since then drops what it would draw. */
+  resets: number;
+  timer: unknown;
+  ticking: boolean;
+  /** The countdown drawn last, so an unchanged one is not drawn again. */
+  drawn: string;
+}
+
+/** A background follower: another account's holder, or this account's order not on screen. */
+interface Follower {
+  /** The rail tick, while the order holds the product (`undefined` once stopped). */
+  timer: unknown;
+  listener: { close(): void };
+  /** This account's own order: republished, its relays followed. */
+  republish: unknown;
+  relays: string[];
+  ticking: boolean;
+}
+
 /**
  * One product's purchase in the widget: it resumes whatever record of the
  * product is open, and drives a new one from the offer to its completion. Every
@@ -507,7 +616,7 @@ export class CheckoutSession {
   /** The generation the running watch timer belongs to. */
   private watchGeneration = -1;
   /** Never pays, only follows this order (the offer was refused, or its network is not served). */
-  private followOnly: { reason: RefusedReason; message: string; orderId?: string } | undefined;
+  private followOnly: FollowOnlyState | undefined;
   /** The problem last shown on the offer, kept across a redraw. */
   private offerProblem: Problem | undefined;
   /** Listeners on the product's orders that ended unpaid: a completion for one still shows. */
@@ -575,13 +684,39 @@ export class CheckoutSession {
    * Silent followers of other accounts' orders that hold the product in this
    * browser: they resolve them (store answers, watch verdicts) and show nothing.
    */
-  private readonly followers = new Map<string, { timer: unknown; listener: { close(): void } }>();
+  private readonly followers = new Map<string, Follower>();
   /** The background republishing of an open order drawn at load: a press waits for it. */
   private resuming: Promise<void> | undefined;
+  /** An order placement in flight (its press may be detached since): a press waits for it. */
+  private placing: Promise<unknown> | undefined;
   /** A follower saw the product freed while a press was running: the press's end redraws. */
   private exclusionFreed = false;
-  /** The offer on screen carries the "another purchase is in progress" note. */
+  /** The offer on screen carries a note that clears once a holder frees the product. */
   private noteShown = false;
+  /** The order of this account the earlier-payment line on screen names. */
+  private lineHolder: string | undefined;
+  /** Bumped by every close of the modal: an action that captured an older value draws nothing. */
+  private resets = 0;
+  /** `start` drew its first view: a close before that changes nothing. */
+  private started = false;
+  /**
+   * This account's orders whose outcome is stored only: followed in the
+   * background after a close or a load, never posted, drawn or shown as a banner.
+   */
+  private readonly quiet = new Set<string>();
+  /**
+   * The current record continued without the buyer engaging with it (at load,
+   * or kept on a close): its store answer that finishes it is stored only.
+   */
+  private silent: string | undefined;
+  /** That answer landed while a press ran: the press drops the record where it ends or re-reads. */
+  private silentAnswered: string | undefined;
+  /** The record of the last marker write through a press's store (the newest known copy). */
+  private marked: OrderRecord | undefined;
+  /** The probe of a press whose wallet has not answered. */
+  private unanswered: Probe | undefined;
+  /** The view drawn last. */
+  private shownView: View | undefined;
 
   constructor(
     offer: ReadyOffer,
@@ -606,7 +741,13 @@ export class CheckoutSession {
     this.customerRef = deps.customerRef;
   }
 
-  /** Resume the product's open record (published again, the store's inbox read again), or show the offer. */
+  /**
+   * The first step: the offer (or the open unpaid order continued silently
+   * behind it), drawn right after the local read. Every order of this account
+   * in progress is followed in the background, never shown: it is under "Your
+   * purchases", and a press for the product waits while it may still land. A
+   * follow-only page shows exactly the order it follows.
+   */
   async start(): Promise<void> {
     // Two sets: every record is listened to, reconciled and resolved; only the
     // page's own account's records are shown, resumed or followed.
@@ -633,6 +774,51 @@ export class CheckoutSession {
         ...(stillFollowed === undefined ? {} : { orderId: stillFollowed.orderId }),
       };
     }
+    const followed = this.followOnly;
+    if (followed !== undefined) {
+      await this.startFollowOnly(allRecords, records, followed);
+      return;
+    }
+    // Drawn before any relay or RPC round trip: the same offer, at the same moment,
+    // for a visitor with or without an order in progress.
+    const shown = recordToShow(records);
+    const continued = shown !== undefined && continuedUnpaid(shown) ? shown : undefined;
+    if (continued === undefined) {
+      this.showOffer();
+      this.status('ready');
+    } else {
+      // An open unpaid order is continued silently: the offer is drawn exactly as for
+      // a first visit (no note, same status). It listens for the store now (a held
+      // cancel or refund ends it before any payment); an acknowledged one is
+      // republished in the background, a `created` one at the press.
+      this.setRecord(continued);
+      this.silent = continued.orderId;
+      this.relays = continued.inboxRelays;
+      this.showOffer();
+      this.status('ready');
+    }
+    this.started = true;
+    for (const record of records) {
+      if (record.orderId !== continued?.orderId) {
+        this.quiet.add(record.orderId);
+      }
+    }
+    if (continued !== undefined) {
+      this.listen(continued);
+      if (continued.state === 'ordered') {
+        this.resuming = this.resumeInBackground(continued);
+      }
+    }
+    for (const record of records) {
+      if (followable(record)) {
+        this.followOwn(record);
+      }
+    }
+    void this.startInBackground(allRecords).catch(() => undefined);
+  }
+
+  /** At load, after the first step is drawn: ended orders heard, Tempo ones reconciled, others resolved. */
+  private async startInBackground(allRecords: readonly OrderRecord[]): Promise<void> {
     this.listenToEnded(allRecords);
     // A Tempo order that ended with its prompt still open may have been paid since.
     await this.reconcileEnded(allRecords);
@@ -641,44 +827,29 @@ export class CheckoutSession {
         this.followOther(record);
       }
     }
-    // Follow-only: exactly the order the snapshot was built from, never another.
-    const followed = this.followOnly;
-    const shown =
-      followed === undefined
-        ? recordToShow(records)
-        : records.find((record) => record.orderId === followed.orderId);
+  }
+
+  /** A page that only follows an order: exactly the order the snapshot was built from. */
+  private async startFollowOnly(
+    allRecords: readonly OrderRecord[],
+    records: readonly OrderRecord[],
+    followed: FollowOnlyState,
+  ): Promise<void> {
+    this.listenToEnded(allRecords);
+    // A Tempo order that ended with its prompt still open may have been paid since.
+    await this.reconcileEnded(allRecords);
+    for (const record of allRecords) {
+      if (!this.own(record) && holdsPayExclusion(record)) {
+        this.followOther(record);
+      }
+    }
+    const shown = records.find((record) => record.orderId === followed.orderId);
     if (shown === undefined || shown.state === 'ended-unpaid') {
       this.showOffer();
       return;
     }
     if (isTerminal(shown)) {
-      if (followed === undefined) {
-        // A finished purchase does not reopen the checkout: a fresh one starts,
-        // and the old one is under "Your purchases".
-        this.showOffer();
-        return;
-      }
       await this.follow(shown);
-      return;
-    }
-    if (
-      followed === undefined &&
-      (shown.state === 'created' || shown.state === 'ordered') &&
-      shown.marker === undefined &&
-      !cancelledUnpaid(shown)
-    ) {
-      // An open unpaid order is continued silently: the offer is drawn exactly as for
-      // a first visit (no note, same status, before any relay round trip). It listens
-      // for the store now (a held cancel or refund ends it before any payment); an
-      // acknowledged one is republished in the background, a `created` one at the press.
-      this.setRecord(shown);
-      this.relays = shown.inboxRelays;
-      this.showOffer();
-      this.status('ready');
-      this.listen(shown);
-      if (shown.state === 'ordered') {
-        this.resuming = this.resumeInBackground(shown);
-      }
       return;
     }
     const resumed = await resumeOrder(shown, this.orderDeps(), this.deps.now());
@@ -751,10 +922,11 @@ export class CheckoutSession {
 
   /** The buyer confirmed the old-prompt warning: the refused payment runs again. */
   async confirmOldPrompt(): Promise<void> {
+    const resets = this.resets;
     const pending = this.oldPrompt;
     const current =
       this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
-    if (pending === undefined || this.busy || current === undefined) {
+    if (pending === undefined || this.busy || current === undefined || this.resets !== resets) {
       return;
     }
     this.oldPrompt = undefined;
@@ -762,6 +934,10 @@ export class CheckoutSession {
     const written = await this.deps.store.update(current.orderId, current.version, {
       confirmedOverIds: confirmed,
     });
+    // Closed meanwhile: the confirmation stands, nothing is paid from a closed modal.
+    if (this.resets !== resets) {
+      return;
+    }
     if (!written.ok) {
       this.showOffer({ reason: 'failed' });
       return;
@@ -812,24 +988,61 @@ export class CheckoutSession {
     if (this.disposed || this.cancellableFor === undefined || this.cancellableFor !== this.press) {
       return;
     }
-    this.press += 1;
-    this.cancellableFor = undefined;
-    this.busy = false;
-    this.busyOwner = undefined;
-    this.pressing = false;
-    this.retrying = false;
+    this.endPress();
+    this.dropAnsweredSilent();
     // Exactly how an action ends: the stored truth, then any answer held meanwhile.
     this.render();
     void this.showPendingAnswer();
   }
 
+  /**
+   * The press now running is no longer the current one: its awaits drop what
+   * they bring back (a wallet answer goes to `lateAnswer`). It touches no
+   * record and no order, and draws nothing.
+   */
+  private endPress(): void {
+    this.press += 1;
+    // Its own end (`redrawIfFreed`) never runs: whoever ended it draws the screen.
+    this.exclusionFreed = false;
+    this.cancellableFor = undefined;
+    this.busy = false;
+    this.busyOwner = undefined;
+    this.pressing = false;
+    this.retrying = false;
+    this.stopProbe();
+  }
+
+  /** The press `press` was ended (a close, a probe verdict, a cancel) or the session ended. */
+  private stale(press: number): boolean {
+    return this.press !== press || this.disposed;
+  }
+
+  /**
+   * A silent record the store finished while a press ran: dropped where the
+   * press ends, never drawn or posted (it was never the buyer's).
+   */
+  private dropAnsweredSilent(): boolean {
+    if (this.silentAnswered === undefined || this.silentAnswered !== this.record?.orderId) {
+      return false;
+    }
+    this.silentAnswered = undefined;
+    this.setRecord(undefined);
+    return true;
+  }
+
   private async payPressed(walletName: string, press: number): Promise<void> {
+    // The close count when the press started: a marker write that lands after a
+    // close is followed in the background, never shown.
+    const resets = this.resets;
     this.lastWallet = walletName;
     this.lastAction = 'pay';
     if (this.lateHashHolds()) {
       return;
     }
-    if (await this.deliveryFirst()) {
+    if (await this.deliveryFirst(press)) {
+      return;
+    }
+    if (this.stale(press)) {
       return;
     }
     // A new order is certain: a typo never costs a wallet prompt or the open order.
@@ -844,15 +1057,19 @@ export class CheckoutSession {
       return;
     }
     if (railOf(this.payout) === 'tempo') {
-      await this.payTempo(walletName, press);
+      await this.payTempo(walletName, press, resets);
       return;
     }
     await this.guard(press, async () => {
+      // Before the wallet is asked anything, not even to connect.
+      if (await this.earlierPayment(press)) {
+        return;
+      }
       this.cancellableFor = press;
       this.working('checking', true);
       const answer = await this.connect(walletName, networkOf(this.payout));
-      if (this.press !== press) {
-        // Cancelled: the answer is dropped, nothing is drawn.
+      if (this.stale(press)) {
+        // Cancelled or closed: the answer is dropped, nothing is drawn.
         return;
       }
       this.cancellableFor = undefined;
@@ -862,16 +1079,19 @@ export class CheckoutSession {
       }
       const wallet = answer.wallet;
       this.working('checking');
-      const ready = await this.freshOffer();
-      const rpc = this.deps.rpcFor(networkOf(this.payout));
-      if (ready === undefined) {
+      const ready = await this.freshOffer(press);
+      if (ready === undefined || this.stale(press)) {
         return;
       }
+      const rpc = this.deps.rpcFor(networkOf(this.payout));
       if (rpc === undefined) {
         this.showOffer({ reason: 'rpc_error' });
         return;
       }
       const chainTime = await this.readChainTime(rpc);
+      if (this.stale(press)) {
+        return;
+      }
       if (chainTime === undefined) {
         this.showOffer({ reason: 'rpc_error' });
         return;
@@ -880,20 +1100,26 @@ export class CheckoutSession {
         this.showOffer({ reason: 'clock_skew' });
         return;
       }
-      const record = await this.orderFor(chainTime);
-      if (record === undefined) {
+      const record = await this.orderFor(chainTime, press);
+      if (record === undefined || this.stale(press)) {
         return;
       }
       this.working('signing');
       this.stopWatching();
       this.generation += 1;
+      this.startProbe(press, record);
       const result = await payWithSolana(
         record,
         wallet,
         { fresh: ready, chainTime },
-        this.payDeps(rpc),
+        this.payDeps(rpc, { press, resets }),
       );
-      await this.afterPay(result, rpc);
+      this.stopProbe(press);
+      if (this.stale(press)) {
+        await this.lateAnswer(result, resets);
+        return;
+      }
+      await this.afterPay(result, rpc, press, resets);
     });
   }
 
@@ -902,8 +1128,12 @@ export class CheckoutSession {
    * or composed, order on Tempo's finalized time, then one wallet request. No
    * retry exists on Tempo: an attempt stays live until it is found or proven over.
    */
-  private async payTempo(walletName: string, press: number): Promise<void> {
+  private async payTempo(walletName: string, press: number, resets: number): Promise<void> {
     await this.guard(press, async () => {
+      // Before the wallet is asked anything, not even to connect.
+      if (await this.earlierPayment(press)) {
+        return;
+      }
       this.cancellableFor = press;
       this.working('checking', true);
       const network = networkOf(this.payout);
@@ -917,7 +1147,7 @@ export class CheckoutSession {
       try {
         wallet = await option.connect();
       } catch (error) {
-        if (this.press !== press) {
+        if (this.stale(press)) {
           // Cancelled: a late refusal draws nothing.
           return;
         }
@@ -925,13 +1155,13 @@ export class CheckoutSession {
         this.showOffer({ reason: tempoConnectProblem(error) });
         return;
       }
-      if (this.press !== press) {
+      if (this.stale(press)) {
         return;
       }
       this.cancellableFor = undefined;
       this.working('checking');
-      const ready = await this.freshOffer();
-      if (ready === undefined) {
+      const ready = await this.freshOffer(press);
+      if (ready === undefined || this.stale(press)) {
         return;
       }
       const client = this.deps.tempoFor?.(network);
@@ -943,26 +1173,46 @@ export class CheckoutSession {
       try {
         chainTime = await (this.deps.tempoChainTime ?? readTempoChainTime)(client);
       } catch {
-        this.showOffer({ reason: 'rpc_error' });
+        if (!this.stale(press)) {
+          this.showOffer({ reason: 'rpc_error' });
+        }
+        return;
+      }
+      if (this.stale(press)) {
         return;
       }
       if (!clockAgrees(chainTime, this.deps.now())) {
         this.showOffer({ reason: 'clock_skew' });
         return;
       }
-      const record = await this.orderFor(chainTime);
-      if (record === undefined) {
+      const record = await this.orderFor(chainTime, press);
+      if (record === undefined || this.stale(press)) {
         return;
       }
       this.working('signing');
       this.stopWatching();
       this.generation += 1;
-      const result = await payWithTempo(record, wallet, ready, this.tempoDeps(client));
-      await this.afterTempoPay(result);
+      this.startProbe(press, record);
+      const result = await payWithTempo(
+        record,
+        wallet,
+        ready,
+        this.tempoDeps(client, { press, resets }),
+      );
+      this.stopProbe(press);
+      if (this.stale(press)) {
+        await this.lateAnswer(result, resets);
+        return;
+      }
+      await this.afterTempoPay(result, press, resets);
     });
   }
 
-  private async afterTempoPay(result: TempoPayResult): Promise<void> {
+  private async afterTempoPay(
+    result: TempoPayResult,
+    press: number,
+    resets: number,
+  ): Promise<void> {
     if (result.ok) {
       // Remembered before anything else: a store that answered while the wallet was
       // open makes the record terminal, and its receipt still names what was sent.
@@ -970,6 +1220,10 @@ export class CheckoutSession {
     }
     if (result.record !== undefined) {
       const stored = await this.deps.store.get(result.record.orderId);
+      if (this.stale(press)) {
+        await this.lateAnswer(result, resets);
+        return;
+      }
       this.setRecord(stored !== undefined && isTerminal(stored) ? stored : result.record);
       if (stored !== undefined && isTerminal(stored)) {
         await this.follow(stored);
@@ -1005,7 +1259,7 @@ export class CheckoutSession {
         });
         return;
       case 'needs_confirmation':
-        await this.askOldPrompt(result.unconfirmed ?? []);
+        await this.askOldPrompt(result.unconfirmed ?? [], press);
         return;
       case 'rejected':
         // Nothing was signed: the order ended, a new one may start (no old-prompt warning).
@@ -1035,7 +1289,13 @@ export class CheckoutSession {
       case 'unpayable': {
         const current =
           this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
+        if (this.stale(press)) {
+          return;
+        }
         const ended = current === undefined ? undefined : await this.endOrder(current);
+        if (this.stale(press)) {
+          return;
+        }
         if (ended !== undefined && !ended.ended) {
           await this.follow(ended.record);
           return;
@@ -1044,19 +1304,16 @@ export class CheckoutSession {
         this.showOffer({ reason: result.reason === 'unpayable' ? 'failed' : result.reason });
         return;
       }
-      case 'exclusion': {
-        const holder =
-          result.holder === undefined ? undefined : await this.deps.store.get(result.holder);
-        if (holder !== undefined) {
-          await this.followHolder(holder);
-          return;
-        }
-        this.showOffer({ reason: 'failed' });
+      case 'exclusion':
+        await this.metHolder(result.holder, press);
         return;
-      }
       default: {
         const current =
           this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
+        if (this.stale(press)) {
+          await this.lateAnswer(result, resets);
+          return;
+        }
         if (current !== undefined) {
           await this.follow(current);
         } else {
@@ -1067,13 +1324,43 @@ export class CheckoutSession {
   }
 
   /**
+   * The store refused the marker: another order of this product holds a live
+   * attempt. This account's own is never shown again: its earlier-payment line,
+   * and it is followed in the background. Another account's keeps its note.
+   */
+  private async metHolder(holderId: string | undefined, press: number): Promise<void> {
+    const holder = holderId === undefined ? undefined : await this.deps.store.get(holderId);
+    if (holder !== undefined && this.own(holder) && followable(holder)) {
+      this.followOwn(holder);
+    }
+    if (this.stale(press)) {
+      return;
+    }
+    if (holder === undefined) {
+      this.showOffer({ reason: 'failed' });
+      return;
+    }
+    if (!this.own(holder)) {
+      this.followOther(holder);
+      this.showOffer({ reason: 'other_purchase' });
+      return;
+    }
+    const line = await this.holderLine(holder);
+    if (this.stale(press)) {
+      return;
+    }
+    this.showLine(holder.orderId, line);
+  }
+
+  /**
    * A payment refused for an ended Tempo order whose prompt may still be
    * approved: ask. Every order counts (another account's too, since its prompt
    * would pay as well), but only the date comes from them: what is shown is
    * this page's own terms.
    */
-  private async askOldPrompt(unconfirmed: string[]): Promise<void> {
-    this.oldPrompt = { walletName: this.lastWallet, action: this.lastAction, unconfirmed };
+  private async askOldPrompt(unconfirmed: string[], press: number): Promise<void> {
+    const walletName = this.lastWallet;
+    const action = this.lastAction;
     let until = 0;
     try {
       const records = await this.deps.store.forProduct(this.offer.productAddress);
@@ -1086,6 +1373,11 @@ export class CheckoutSession {
     } catch {
       // The date is shown when known; the question is asked either way.
     }
+    // Closed meanwhile: no question on the first step, with nothing behind it.
+    if (this.stale(press)) {
+      return;
+    }
+    this.oldPrompt = { walletName, action, unconfirmed };
     const terms = this.termsShown(false);
     const paying = this.payingOf(terms);
     this.show({
@@ -1114,7 +1406,13 @@ export class CheckoutSession {
     if (this.lateHash === undefined) {
       return false;
     }
-    this.showOffer({ reason: 'late_approval' });
+    // An order followed in the background since a close: only that a payment from
+    // earlier is still being confirmed, never the old banner's text.
+    if (this.quiet.has(this.lateHash.orderId)) {
+      this.showLine(this.lateHash.orderId, { reason: 'earlier_payment', phase: 'confirming' });
+    } else {
+      this.showOffer({ reason: 'late_approval' });
+    }
     return true;
   }
 
@@ -1128,6 +1426,15 @@ export class CheckoutSession {
       this.deps.clearInterval(this.lateHash.timer);
     }
     let checking = false;
+    // A close since this watch started makes its outcome stored, never shown.
+    const resets = this.resets;
+    // This watch's own entry: a later watch replaces it, and a check of this one
+    // still in flight then must never stop the later one.
+    const own: { orderId: string; hash: string; timer: unknown } = {
+      orderId: record.orderId,
+      hash,
+      timer: undefined,
+    };
     const check = async () => {
       if (checking || this.disposed) {
         return;
@@ -1142,9 +1449,12 @@ export class CheckoutSession {
           pendingHash: hash,
         });
         if (watched.state === 'paid' || watched.state === 'blocked' || watched.state === 'closed') {
-          this.banner(watched.record);
-          if (this.lateHash !== undefined) {
-            this.deps.clearInterval(this.lateHash.timer);
+          // Its own outcome is still this order's banner (quiet rules apply there).
+          if (this.resets === resets) {
+            this.banner(watched.record);
+          }
+          if (this.lateHash === own) {
+            this.deps.clearInterval(own.timer);
             this.lateHash = undefined;
           }
         }
@@ -1152,15 +1462,15 @@ export class CheckoutSession {
         checking = false;
       }
     };
-    const timer = this.deps.setInterval(() => void check().catch(() => undefined), WATCH_EVERY_MS);
-    this.lateHash = { orderId: record.orderId, hash, timer };
+    own.timer = this.deps.setInterval(() => void check().catch(() => undefined), WATCH_EVERY_MS);
+    this.lateHash = own;
     this.sentHash.set(record.orderId, hash);
     void check().catch(() => undefined);
   }
 
-  private tempoDeps(client: Eip1193Client): TempoPayDeps {
+  private tempoDeps(client: Eip1193Client, scope?: PressScope): TempoPayDeps {
     return {
-      store: this.deps.store,
+      store: scope === undefined ? this.deps.store : this.pressStore(scope),
       readClient: this.deps.readClient,
       clientFor: this.deps.clientFor,
       client,
@@ -1476,7 +1786,11 @@ export class CheckoutSession {
   }
 
   /** A progress screen, with the payment and the product it is about. */
-  private working(step: 'checking' | 'ordering' | 'signing', cancellable = false): void {
+  private working(
+    step: 'checking' | 'ordering' | 'signing',
+    cancellable = false,
+    unanswered: { startOverIn?: Countdown; unsureAt?: number } = {},
+  ): void {
     const terms = this.termsShown(step === 'signing');
     const paying = this.payingOf(terms);
     this.show({
@@ -1485,6 +1799,8 @@ export class CheckoutSession {
       about: this.aboutOf(terms),
       ...(paying === undefined ? {} : { paying }),
       ...(cancellable ? { cancellable: true as const } : {}),
+      ...(unanswered.startOverIn === undefined ? {} : { startOverIn: unanswered.startOverIn }),
+      ...(unanswered.unsureAt === undefined ? {} : { unsureAt: unanswered.unsureAt }),
     });
   }
 
@@ -1553,8 +1869,9 @@ export class CheckoutSession {
   }
 
   private banner(record: OrderRecord): void {
-    // Another account's answer never reaches this page.
-    if (!this.own(record)) {
+    // Another account's answer never reaches this page; an order followed in the
+    // background since a close or a load is stored only.
+    if (!this.own(record) || this.quiet.has(record.orderId)) {
       return;
     }
     const state = record.state;
@@ -1598,12 +1915,16 @@ export class CheckoutSession {
     walletName: string,
     press: number,
   ): Promise<void> {
+    const resets = this.resets;
     this.lastWallet = walletName;
     this.lastAction = 'retry';
     if (this.lateHashHolds()) {
       return;
     }
-    if (await this.deliveryFirst()) {
+    if (await this.deliveryFirst(press)) {
+      return;
+    }
+    if (this.stale(press)) {
       return;
     }
     const network = this.networkOfRecord(record);
@@ -1613,7 +1934,7 @@ export class CheckoutSession {
     await this.guard(press, async () => {
       this.retrying = true;
       try {
-        await this.retryGuarded(record, walletName, network, press);
+        await this.retryGuarded(record, walletName, network, { press, resets });
       } finally {
         if (this.press === press) {
           this.retrying = false;
@@ -1626,12 +1947,13 @@ export class CheckoutSession {
     record: OrderRecord,
     walletName: string,
     network: Network,
-    press: number,
+    scope: PressScope,
   ): Promise<void> {
+    const press = scope.press;
     this.cancellableFor = press;
     this.working('checking', true);
     const answer = await this.connect(walletName, network);
-    if (this.press !== press) {
+    if (this.stale(press)) {
       return;
     }
     this.cancellableFor = undefined;
@@ -1641,9 +1963,9 @@ export class CheckoutSession {
     }
     const wallet = answer.wallet;
     this.working('checking');
-    const ready = await this.freshOffer();
+    const ready = await this.freshOffer(press);
     // The re-verification drew its own view (a changed or refused offer).
-    if (ready === undefined) {
+    if (ready === undefined || this.stale(press)) {
       return;
     }
     const rpc = this.deps.rpcFor(network);
@@ -1652,11 +1974,17 @@ export class CheckoutSession {
       return;
     }
     const chainTime = await this.readChainTime(rpc);
+    if (this.stale(press)) {
+      return;
+    }
     if (chainTime === undefined) {
       this.render({ problem: { reason: 'rpc_error' } });
       return;
     }
     const current = (await this.deps.store.get(record.orderId)) ?? record;
+    if (this.stale(press)) {
+      return;
+    }
     if (current.status?.status === 'cancelled') {
       // The store cancelled it: never another attempt (the store refuses one too).
       await this.follow(current);
@@ -1665,13 +1993,19 @@ export class CheckoutSession {
     this.working('signing');
     this.stopWatching();
     this.generation += 1;
+    this.startProbe(press, current);
     const result = await retryWithSolana(
       current,
       wallet,
       { fresh: ready, chainTime },
-      this.payDeps(rpc),
+      this.payDeps(rpc, scope),
     );
-    await this.afterPay(result, rpc);
+    this.stopProbe(press);
+    if (this.stale(press)) {
+      await this.lateAnswer(result, scope.resets);
+      return;
+    }
+    await this.afterPay(result, rpc, press, scope.resets);
   }
 
   /** Leave an order that will not be paid (only once nothing can still land). */
@@ -1680,48 +2014,130 @@ export class CheckoutSession {
     if (this.busy || record === undefined) {
       return;
     }
+    const resets = this.resets;
     // Not a press: it never runs beside one, so it keeps the current id.
     await this.guard(this.press, async () => {
-      const current = (await this.deps.store.get(record.orderId)) ?? record;
-      // Finished (completed or refunded): nothing to end, a new order may start.
-      if (isTerminal(current)) {
-        this.setRecord(undefined);
-        this.showOffer();
-        return;
-      }
-      const ended = await this.endOrder(current);
-      if (ended.ended) {
-        const relays = this.relays;
-        this.setRecord(undefined);
-        this.listenToEnded([ended.record], relays);
-        this.status('ended');
-        this.showOffer();
-      } else {
-        await this.follow(ended.record);
+      try {
+        await this.leaveOrder(record, resets);
+      } finally {
+        // No press ends after it to redraw: a product freed meanwhile is drawn by
+        // its own screen, never left to clear a later press's note.
+        this.exclusionFreed = false;
       }
     });
   }
 
+  /** `startOver`'s work, under its guard. */
+  private async leaveOrder(record: OrderRecord, resets: number): Promise<void> {
+    const current = (await this.deps.store.get(record.orderId)) ?? record;
+    // Closed meanwhile: the first step is on screen already.
+    if (this.resets !== resets) {
+      return;
+    }
+    // Finished (completed or refunded): nothing to end, a new order may start.
+    if (isTerminal(current)) {
+      this.setRecord(undefined);
+      this.showOffer();
+      return;
+    }
+    const ended = await this.endOrder(current);
+    if (this.resets !== resets) {
+      // The end the buyer asked for stands; its store answer is still stored.
+      if (ended.ended) {
+        this.stopFollowing(ended.record.orderId);
+        this.quiet.add(ended.record.orderId);
+        this.listenToEnded([ended.record], ended.record.inboxRelays);
+      }
+      return;
+    }
+    if (ended.ended) {
+      const relays = this.relays;
+      this.setRecord(undefined);
+      this.listenToEnded([ended.record], relays);
+      this.status('ended');
+      this.showOffer();
+    } else {
+      await this.follow(ended.record);
+    }
+  }
+
   /**
-   * The modal closed on a finished order (completed or refunded) the buyer saw:
-   * the checkout goes back to its first step, as "Buy again" does - at once,
-   * writing nothing. Never during an action, never on a follow-only page, never
-   * for an order that is not finished: those return `false` and change nothing.
+   * The modal closed: the next open shows the first step, a fresh offer, in
+   * every state. View-only: it writes nothing, ends nothing and clears no
+   * marker. A press running is detached (its wallet answer still lands, in the
+   * background); an order that may still land is followed in the background and
+   * shows under "Your purchases"; an open unpaid order stays, continued
+   * silently. Refused (`false`, nothing changes) on a follow-only or refused
+   * page, before the first view, and after the session ended.
    */
-  resetFinished(): boolean {
-    const record = this.record;
-    if (
-      this.busy ||
-      this.pressing ||
-      this.disposed ||
-      this.followOnly !== undefined ||
-      record === undefined ||
-      !isTerminal(record)
-    ) {
+  resetOnClose(): boolean {
+    if (this.disposed || this.followOnly !== undefined || this.refused || !this.started) {
       return false;
     }
-    this.setRecord(undefined);
-    this.showOffer();
+    this.resets += 1;
+    // 1. A running press is detached: its later awaits draw, post and pay nothing.
+    if (this.busy || this.pressing) {
+      this.endPress();
+    }
+    // 2. The foreground machinery of the record on screen stops.
+    this.stopProbe();
+    this.stopWatching();
+    if (this.noAnswerTimer !== undefined) {
+      this.deps.clearInterval(this.noAnswerTimer.handle);
+      this.noAnswerTimer = undefined;
+    }
+    // 3. An order that may still land goes on in the background: the newest known
+    // copy, since a marker written during signing reaches `this.record` only later.
+    let current = this.record;
+    const marked = this.marked;
+    if (
+      current !== undefined &&
+      marked !== undefined &&
+      marked.orderId === current.orderId &&
+      marked.version > current.version
+    ) {
+      current = marked;
+    }
+    if (current !== undefined && followable(current)) {
+      this.followOwn(current, this.relays.length === 0 ? undefined : this.relays);
+    }
+    // 4. What is shown is cleared; an open unpaid order stays, silently.
+    if (this.dropAnsweredSilent()) {
+      current = undefined;
+    }
+    if (current !== undefined && this.record !== undefined && continuedUnpaid(current)) {
+      this.record = current;
+      this.silent = current.orderId;
+    } else {
+      this.setRecord(undefined);
+    }
+    this.attemptProblem = undefined;
+    this.attemptOver = false;
+    this.oldPrompt = undefined;
+    this.offerProblem = undefined;
+    this.noteShown = false;
+    this.lineHolder = undefined;
+    this.exclusionFreed = false;
+    // 5. Everything of this account heard in the background is stored only from now on.
+    for (const orderId of this.background.keys()) {
+      if (!this.backgroundOther.has(orderId)) {
+        this.quiet.add(orderId);
+      }
+    }
+    if (this.lateHash !== undefined) {
+      this.quiet.add(this.lateHash.orderId);
+    }
+    for (const orderId of this.pendingAnswers.keys()) {
+      this.quiet.add(orderId);
+    }
+    this.pendingAnswers.clear();
+    this.deps.onBanner?.(undefined);
+    // 6. The first step (a redraw of the plain offer would be identical).
+    const view = this.shownView;
+    if (view?.kind !== 'offer' || view.problem !== undefined) {
+      this.showOffer();
+    }
+    this.status('ready');
     return true;
   }
 
@@ -1740,6 +2156,7 @@ export class CheckoutSession {
 
   dispose(): void {
     this.disposed = true;
+    this.stopProbe();
     if (this.lateHash !== undefined) {
       this.deps.clearInterval(this.lateHash.timer);
       this.lateHash = undefined;
@@ -1760,6 +2177,300 @@ export class CheckoutSession {
     }
   }
 
+  // ---- the unanswered wallet ------------------------------------------------
+
+  /**
+   * While a press waits for the wallet's signature, the attempt is measured:
+   * a countdown to when it can be proven over, and the watch's own verdicts.
+   * Started after the watch stopped and the generation moved on.
+   */
+  private startProbe(press: number, record: OrderRecord): void {
+    this.stopProbe();
+    const probe: Probe = {
+      press,
+      orderId: record.orderId,
+      generation: this.generation,
+      resets: this.resets,
+      timer: undefined,
+      ticking: false,
+      drawn: '',
+    };
+    probe.timer = this.deps.setInterval(
+      () => void this.probeTick(probe).catch(() => undefined),
+      WATCH_EVERY_MS,
+    );
+    this.unanswered = probe;
+    void this.probeTick(probe).catch(() => undefined);
+  }
+
+  /** Stop the probe (only `press`'s, when named). */
+  private stopProbe(press?: number): void {
+    const probe = this.unanswered;
+    if (probe === undefined || (press !== undefined && probe.press !== press)) {
+      return;
+    }
+    this.deps.clearInterval(probe.timer);
+    this.unanswered = undefined;
+  }
+
+  /** This probe stopped (its press ended, the wallet answered, a close) while a tick awaited. */
+  private probeGone(probe: Probe): boolean {
+    return this.unanswered !== probe || this.stale(probe.press);
+  }
+
+  private async probeTick(probe: Probe): Promise<void> {
+    if (probe.ticking || this.probeGone(probe)) {
+      return;
+    }
+    probe.ticking = true;
+    try {
+      const stored = await this.deps.store.get(probe.orderId);
+      if (this.probeGone(probe) || stored?.marker === undefined) {
+        return;
+      }
+      // A retry's predecessor, already proven over: never judged or counted again.
+      if (this.overAttemptIds.has(stored.marker.attemptId)) {
+        return;
+      }
+      this.attemptOver = false;
+      const shown = this.record;
+      if (shown?.orderId === probe.orderId) {
+        // The marker reaches the record on screen here (the press holds the pre-marker copy).
+        if (stored.version > shown.version || shown.marker === undefined) {
+          this.record = stored;
+        }
+      }
+      const marker = stored.marker;
+      const tempo = marker.rail === 'tempo';
+      if (!tempo) {
+        this.readRetryEstimate(stored, probe.generation);
+      }
+      const startOverIn = tempo ? this.requestCountdown(stored) : this.retryCountdown(stored);
+      const unsureAt = marker.setAt + UNSURE_AFTER_SECS;
+      const key = `${startOverIn === undefined ? '' : startOverIn.at + startOverIn.seconds}/${unsureAt}`;
+      if (key !== probe.drawn) {
+        probe.drawn = key;
+        this.working('signing', false, {
+          ...(startOverIn === undefined ? {} : { startOverIn }),
+          unsureAt,
+        });
+      }
+      const watched = await this.watchOnce(stored);
+      if (this.probeGone(probe) || watched === undefined) {
+        return;
+      }
+      if (watched.state !== 'over' && watched.state !== 'paid' && watched.state !== 'blocked') {
+        // Waiting, unsure, or the store answered: the press keeps waiting for the wallet.
+        return;
+      }
+      // Proven over, paid or blocked: the press ends here; the wallet's answer, when
+      // it comes, is a late one.
+      this.endPress();
+      const applied = await this.applyVerdict(watched, probe.generation);
+      if (this.resets !== probe.resets || this.disposed) {
+        return;
+      }
+      const record = this.record;
+      if ((applied === 'follow' || applied === 'replaced') && record !== undefined) {
+        // Followed as the press would have: the watch, the receipt resent, the republishing.
+        await this.follow(record);
+      } else if (applied === 'skipped' && !this.busy && !this.pressing) {
+        // What the press's own end would have drawn: a finished order, a held answer.
+        if (record !== undefined && isTerminal(record) && !this.refused) {
+          this.render();
+        }
+        void this.showPendingAnswer();
+      }
+    } finally {
+      probe.ticking = false;
+    }
+  }
+
+  /**
+   * The wallet answered a press that is no longer the current one (a close, or
+   * the probe's verdict). Its money bookkeeping always runs: an order that may
+   * still land is followed in the background, a hash is remembered and watched.
+   * It never draws a screen of its own: the order's own screen is refreshed only
+   * while the modal stayed open, and after a close at most a line clears.
+   * `pressResets`: the close count when the press began.
+   */
+  private async lateAnswer(
+    result: SolanaPayResult | TempoPayResult,
+    pressResets: number,
+  ): Promise<void> {
+    const resets = this.resets;
+    const hash = 'hash' in result ? result.hash : undefined;
+    if (result.ok && hash !== undefined) {
+      this.sentHash.set(result.record.orderId, hash);
+    }
+    const record = result.record;
+    if (record === undefined) {
+      return;
+    }
+    const orderId = record.orderId;
+    const stored = (await this.deps.store.get(orderId)) ?? record;
+    const shown = this.record?.orderId === orderId;
+    if (!shown && followable(stored)) {
+      this.followOwn(stored);
+    }
+    if (continuedUnpaid(stored)) {
+      this.narrowFollower(orderId);
+    }
+    if (gone(stored)) {
+      this.stopFollowing(orderId);
+      if (!shown && (this.resets !== pressResets || this.quiet.has(orderId))) {
+        this.quiet.add(orderId);
+      }
+      if (hash !== undefined && result.ok) {
+        // Approved for an order that ended meanwhile: watched until it is found.
+        this.watchLateHash(stored, hash);
+      }
+      this.listenToEnded([stored], stored.inboxRelays);
+    }
+    if (!holdsPayExclusion(stored)) {
+      this.ownFreed(orderId);
+    }
+    if (this.resets !== resets || this.disposed || this.busy || this.pressing) {
+      return;
+    }
+    if (this.resets !== pressResets) {
+      // Closed since the press began: the first step stays; a line may clear.
+      return;
+    }
+    if (shown) {
+      // The modal stayed open (a probe verdict ended the press): its order, as stored.
+      this.record = stored;
+      if (stored.marker === undefined) {
+        this.attemptOver = false;
+      }
+      this.render();
+      return;
+    }
+    if (
+      hash !== undefined &&
+      gone(stored) &&
+      !this.quiet.has(orderId) &&
+      this.shownView?.kind === 'offer'
+    ) {
+      this.showOffer({ reason: 'late_approval' });
+    }
+  }
+
+  // ---- the press after a close: an earlier payment --------------------------
+
+  /**
+   * Before the wallet is asked anything: an order of this account that may
+   * still land holds the product. One pass on its rail; proven over, it is
+   * ended (proven again) and the press goes on; otherwise its line, and `true`:
+   * the press stops, no wallet request.
+   */
+  private async earlierPayment(press: number): Promise<boolean> {
+    this.working('checking');
+    const all = await this.deps.store.forProduct(this.offer.productAddress);
+    if (this.stale(press)) {
+      return true;
+    }
+    const holders = all.filter((record) => this.own(record) && holdsPayExclusion(record));
+    for (const holder of holders) {
+      if (this.record?.orderId === holder.orderId) {
+        // Never drawn or told again: it goes on in the background.
+        this.setRecord(undefined);
+      }
+      this.followOwn(holder);
+    }
+    for (const holder of holders) {
+      const pendingHash = this.sentHash.get(holder.orderId);
+      const watched = await this.watchOnce(holder, pendingHash);
+      if (this.stale(press)) {
+        return true;
+      }
+      if (watched?.state === 'over') {
+        const ended = await this.endOrder(
+          watched.record,
+          pendingHash === undefined ? {} : { pendingHash },
+        );
+        if (ended.ended) {
+          this.stopFollowing(holder.orderId);
+          this.quiet.add(holder.orderId);
+          this.listenToEnded([ended.record], ended.record.inboxRelays);
+        }
+        if (this.stale(press)) {
+          return true;
+        }
+        if (ended.ended) {
+          continue;
+        }
+      }
+      // Read again after the pass: a holder that no longer holds is no line.
+      const fresh = await this.deps.store.get(holder.orderId);
+      if (this.stale(press)) {
+        return true;
+      }
+      if (fresh === undefined || !holdsPayExclusion(fresh) || watched?.state === 'closed') {
+        continue;
+      }
+      const line = await this.holderLine(fresh);
+      if (this.stale(press)) {
+        return true;
+      }
+      this.showLine(fresh.orderId, line);
+      return true;
+    }
+    return false;
+  }
+
+  /** The earlier-payment line for a holder of this account, from its stored record. */
+  private async holderLine(holder: OrderRecord): Promise<EarlierPayment> {
+    if (holder.state === 'paid' || holder.paidTx !== undefined) {
+      return {
+        reason: 'earlier_payment',
+        phase: 'waiting_store',
+        ...(holder.status?.status === 'cancelled' ? { cancelled: true } : {}),
+      };
+    }
+    const marker = holder.marker;
+    if (marker?.rail === 'tempo') {
+      const known = marker.txHash ?? this.sentHash.get(holder.orderId);
+      if (known !== undefined || marker.bundleId !== undefined) {
+        // Approved: being confirmed, with nothing to count down.
+        return { reason: 'earlier_payment', phase: 'confirming' };
+      }
+      const retryIn = this.requestCountdown(holder);
+      return {
+        reason: 'earlier_payment',
+        phase: 'tempo_request',
+        ...(retryIn === undefined ? {} : { retryIn }),
+      };
+    }
+    const retryIn = marker?.rail === 'solana' ? await this.holderCountdown(holder) : undefined;
+    return {
+      reason: 'earlier_payment',
+      phase: 'confirming',
+      ...(retryIn === undefined ? {} : { retryIn }),
+    };
+  }
+
+  /** About when a holder's Solana attempt can be proven over: one bounded height read. */
+  private async holderCountdown(holder: OrderRecord): Promise<Countdown | undefined> {
+    const marker = holder.marker;
+    const rpc = this.rpcOfRecord(holder);
+    if (marker?.rail !== 'solana' || rpc === undefined) {
+      return undefined;
+    }
+    try {
+      const lastValid = BigInt(marker.lastValidBlockHeight);
+      const epoch = await rpc
+        .getEpochInfo({ commitment: 'finalized' })
+        .send({ abortSignal: AbortSignal.timeout(EPOCH_READ_TIMEOUT_MS) });
+      return {
+        seconds: settleSeconds(lastValid, BigInt(epoch.blockHeight)).seconds,
+        at: this.deps.now(),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
   // ---- internals -----------------------------------------------------------
 
   /** The record is the page's own account's (the same reference, or none on both). */
@@ -1769,22 +2480,22 @@ export class CheckoutSession {
 
   /** Every view goes here: the "another purchase" note is tracked by what is on screen. */
   private show(view: View): void {
-    this.noteShown = view.kind === 'offer' && view.problem?.reason === 'other_purchase';
-    this.deps.onView(view);
-  }
-
-  /**
-   * The order holding the product's payment: followed when it is this
-   * account's; another account's is never shown, only resolved silently, and
-   * the offer says the product is busy in this browser for now.
-   */
-  private async followHolder(holder: OrderRecord): Promise<void> {
-    if (this.own(holder)) {
-      await this.follow(holder);
-      return;
+    const reason = view.kind === 'offer' ? view.problem?.reason : undefined;
+    this.noteShown = reason === 'other_purchase' || reason === 'earlier_payment';
+    if (!this.noteShown) {
+      // The note that was freed is gone: a note drawn later names another holder.
+      this.exclusionFreed = false;
     }
-    this.followOther(holder);
-    this.showOffer({ reason: 'other_purchase' });
+    if (reason !== 'earlier_payment') {
+      this.lineHolder = undefined;
+      // The line is no longer on screen: a redraw of the offer never brings it back
+      // without the holder it names (that line would never clear by itself).
+      if (this.offerProblem?.reason === 'earlier_payment') {
+        this.offerProblem = undefined;
+      }
+    }
+    this.shownView = view;
+    this.deps.onView(view);
   }
 
   /**
@@ -1801,12 +2512,18 @@ export class CheckoutSession {
     const listener = listenForStatus(record, record.inboxRelays, this.orderDeps(), (message) => {
       void applyStatus(this.deps.store, orderId, message, this.deps.now()).catch(() => undefined);
     });
-    let ticking = false;
+    const follower: Follower = {
+      timer: undefined,
+      listener,
+      republish: undefined,
+      relays: record.inboxRelays,
+      ticking: false,
+    };
     const tick = async () => {
-      if (ticking || this.disposed || !this.followers.has(orderId)) {
+      if (follower.ticking || this.disposed || this.followers.get(orderId) !== follower) {
         return;
       }
-      ticking = true;
+      follower.ticking = true;
       try {
         const current = await this.deps.store.get(orderId);
         if (current === undefined || !holdsPayExclusion(current)) {
@@ -1819,11 +2536,14 @@ export class CheckoutSession {
           this.exclusionFreedNow();
         }
       } finally {
-        ticking = false;
+        follower.ticking = false;
       }
     };
-    const timer = this.deps.setInterval(() => void tick().catch(() => undefined), WATCH_EVERY_MS);
-    this.followers.set(orderId, { timer, listener });
+    follower.timer = this.deps.setInterval(
+      () => void tick().catch(() => undefined),
+      WATCH_EVERY_MS,
+    );
+    this.followers.set(orderId, follower);
     void tick().catch(() => undefined);
   }
 
@@ -1856,12 +2576,198 @@ export class CheckoutSession {
     return ended.ended;
   }
 
+  /**
+   * Follow this account's order in the background, with no screen: everything
+   * the foreground does for it (the listener, the republishing with the relay
+   * move, the rail's watch) and nothing more but one end: an attempt proven
+   * over, proven again by `endOrder`, is ended. It posts nothing and draws
+   * nothing: its outcome is stored, under "Your purchases". One per order.
+   */
+  private followOwn(record: OrderRecord, relays?: readonly string[]): void {
+    const orderId = record.orderId;
+    this.quiet.add(orderId);
+    if (this.disposed || !this.own(record)) {
+      return;
+    }
+    const existing = this.followers.get(orderId);
+    if (existing !== undefined) {
+      // Narrowed to its listener, or its tick stopped (open again), now holding again
+      // (another tab paid it): whatever of the two is missing is armed again.
+      if (followable(record)) {
+        this.armOwn(record, existing);
+      }
+      return;
+    }
+    const heardOn = relays === undefined ? record.inboxRelays : [...relays];
+    const follower: Follower = {
+      timer: undefined,
+      listener: this.listenInBackground(record, heardOn),
+      republish: undefined,
+      relays: heardOn,
+      ticking: false,
+    };
+    this.followers.set(orderId, follower);
+    this.armOwn(record, follower);
+  }
+
+  /**
+   * A backgrounded order's republishing and, while it holds the product, its rail
+   * tick: each armed only when it is not running yet (never two of one).
+   */
+  private armOwn(record: OrderRecord, follower: Follower): void {
+    const orderId = record.orderId;
+    const republishArmed = follower.republish === undefined;
+    if (republishArmed) {
+      follower.republish = this.deps.setInterval(
+        () => void this.republishOwn(orderId, follower).catch(() => undefined),
+        REPUBLISH_EVERY_MS,
+      );
+    }
+    if (follower.timer === undefined && holdsPayExclusion(record)) {
+      follower.timer = this.deps.setInterval(
+        () => void this.tickOwn(orderId, follower).catch(() => undefined),
+        WATCH_EVERY_MS,
+      );
+    }
+    if (republishArmed) {
+      // The order and its receipt go out again now, never awaited by a draw.
+      void Promise.resolve()
+        .then(() => this.republishOwn(orderId, follower))
+        .catch(() => undefined);
+    }
+  }
+
+  /** A background listener for this account's order: its answers are stored, nothing else. */
+  private listenInBackground(record: OrderRecord, relays: readonly string[]): { close(): void } {
+    const orderId = record.orderId;
+    return listenForStatus(record, relays, this.orderDeps(), (message) => {
+      void applyStatus(this.deps.store, orderId, message, this.deps.now())
+        .then((updated) => {
+          if (updated !== undefined && (isTerminal(updated) || gone(updated))) {
+            this.stopFollowing(orderId);
+            this.ownFreed(orderId);
+          }
+        })
+        .catch(() => undefined);
+    });
+  }
+
+  /** Publish a backgrounded order again, moving its listener when the store reads elsewhere. */
+  private async republishOwn(orderId: string, follower: Follower): Promise<void> {
+    if (this.disposed || this.followers.get(orderId) !== follower) {
+      return;
+    }
+    const fresh = await this.deps.store.get(orderId);
+    if (this.followers.get(orderId) !== follower) {
+      return;
+    }
+    if (fresh === undefined || isTerminal(fresh) || gone(fresh)) {
+      this.stopFollowing(orderId);
+      this.ownFreed(orderId);
+      return;
+    }
+    if (continuedUnpaid(fresh)) {
+      this.narrowFollower(orderId);
+      return;
+    }
+    const resumed = await resumeOrder(fresh, this.orderDeps(), this.deps.now());
+    if (this.disposed || this.followers.get(orderId) !== follower) {
+      return;
+    }
+    const moved =
+      resumed.relays.length !== follower.relays.length ||
+      resumed.relays.some((relay) => !follower.relays.includes(relay));
+    if (moved) {
+      follower.relays = resumed.relays;
+      follower.listener.close();
+      follower.listener = this.listenInBackground(resumed.record, resumed.relays);
+    }
+  }
+
+  /** One pass of a backgrounded order's rail, while it holds the product. */
+  private async tickOwn(orderId: string, follower: Follower): Promise<void> {
+    if (follower.ticking || this.disposed || this.followers.get(orderId) !== follower) {
+      return;
+    }
+    follower.ticking = true;
+    try {
+      const current = await this.deps.store.get(orderId);
+      if (this.followers.get(orderId) !== follower) {
+        return;
+      }
+      if (current === undefined || isTerminal(current) || gone(current)) {
+        this.stopFollowing(orderId);
+        this.ownFreed(orderId);
+        return;
+      }
+      if (continuedUnpaid(current)) {
+        this.narrowFollower(orderId);
+        return;
+      }
+      if (!holdsPayExclusion(current)) {
+        // A blocked payment: its listener and republishing stay, the rail is done.
+        this.stopTick(follower);
+        this.ownFreed(orderId);
+        return;
+      }
+      const watched = await this.watchOnce(current, this.sentHash.get(orderId));
+      if (watched === undefined || this.followers.get(orderId) !== follower) {
+        return;
+      }
+      if (watched.state !== 'over') {
+        if (!holdsPayExclusion(watched.record)) {
+          this.stopTick(follower);
+          this.ownFreed(orderId);
+        }
+        return;
+      }
+      // Proven over: ended through `endOrder`, which proves it again before its one write.
+      const pendingHash = this.sentHash.get(orderId);
+      const ended = await this.endOrder(
+        watched.record,
+        pendingHash === undefined ? {} : { pendingHash },
+      );
+      if (!ended.ended) {
+        return;
+      }
+      this.stopFollowing(orderId);
+      this.quiet.add(orderId);
+      this.listenToEnded([ended.record], follower.relays);
+      this.ownFreed(orderId);
+    } finally {
+      follower.ticking = false;
+    }
+  }
+
+  /** A backgrounded order is open and unpaid again: only its listener stays (no republish, no rail). */
+  private narrowFollower(orderId: string): void {
+    const follower = this.followers.get(orderId);
+    if (follower !== undefined) {
+      this.stopTick(follower);
+      if (follower.republish !== undefined) {
+        this.deps.clearInterval(follower.republish);
+        follower.republish = undefined;
+      }
+    }
+    this.ownFreed(orderId);
+  }
+
+  private stopTick(follower: Follower): void {
+    if (follower.timer !== undefined) {
+      this.deps.clearInterval(follower.timer);
+      follower.timer = undefined;
+    }
+  }
+
   private stopFollowing(orderId: string): void {
     const follower = this.followers.get(orderId);
     if (follower === undefined) {
       return;
     }
-    this.deps.clearInterval(follower.timer);
+    this.stopTick(follower);
+    if (follower.republish !== undefined) {
+      this.deps.clearInterval(follower.republish);
+    }
     follower.listener.close();
     this.followers.delete(orderId);
   }
@@ -1879,6 +2785,45 @@ export class CheckoutSession {
       return;
     }
     this.redrawNote();
+  }
+
+  /**
+   * An order of this account stopped holding the product: only the earlier-payment
+   * line that names it gives way (another account's note waits for its own holder).
+   */
+  private ownFreed(orderId: string): void {
+    if (this.lineHolder !== orderId || !this.earlierPaymentShown()) {
+      return;
+    }
+    this.exclusionFreedNow();
+  }
+
+  /** The earlier-payment line for `holderId`, on the offer. */
+  private showLine(holderId: string, line: EarlierPayment): void {
+    this.lineHolder = holderId;
+    // A product freed earlier in the press was another holder's: never this new line's.
+    this.exclusionFreed = false;
+    this.showOffer(line);
+    // A late approval holds the product in this session only: its store record never does.
+    if (this.lateHash?.orderId !== holderId) {
+      void this.freedWhileDrawn(holderId);
+    }
+  }
+
+  /**
+   * The holder read again once its line is up: one freed while the line was being
+   * computed (its follower already gone, the line not yet up) clears it now.
+   */
+  private async freedWhileDrawn(holderId: string): Promise<void> {
+    let record: OrderRecord | undefined;
+    try {
+      record = await this.deps.store.get(holderId);
+    } catch {
+      return;
+    }
+    if (record === undefined || !holdsPayExclusion(record)) {
+      this.ownFreed(holderId);
+    }
   }
 
   /** A press ended: a product freed during it shows its offer, if the note is still up. */
@@ -1900,7 +2845,18 @@ export class CheckoutSession {
       !this.refused
     ) {
       this.showOffer();
+      // An answer held back by the payment that held the product shows now.
+      void this.showPendingAnswer();
     }
+  }
+
+  /**
+   * The offer on screen says an earlier payment of this account holds the
+   * product: like a live order on screen, it holds back other orders' answers.
+   */
+  private earlierPaymentShown(): boolean {
+    const view = this.shownView;
+    return view?.kind === 'offer' && view.problem?.reason === 'earlier_payment';
   }
 
   /**
@@ -1921,10 +2877,15 @@ export class CheckoutSession {
       if (this.press !== press) {
         return;
       }
+      // A silent record the store finished meanwhile is dropped, never followed.
+      const dropped = this.dropAnsweredSilent();
       // Show what is stored, never a screen the record does not back.
       const stored =
         this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
-      if (stored === undefined) {
+      if (this.stale(press)) {
+        return;
+      }
+      if (stored === undefined || dropped || this.dropAnsweredSilent()) {
         this.setRecord(undefined);
         this.showOffer({ reason: 'failed' });
       } else {
@@ -1938,6 +2899,8 @@ export class CheckoutSession {
         if (this.cancellableFor === press) {
           this.cancellableFor = undefined;
         }
+        this.stopProbe(press);
+        this.dropAnsweredSilent();
         // The store answered the current order during the action: that answer shows.
         if (this.record !== undefined && isTerminal(this.record) && !this.refused) {
           this.render();
@@ -1947,9 +2910,19 @@ export class CheckoutSession {
     }
   }
 
-  /** End an order that holds nothing yet, or whose attempt provably ended on its own network. */
-  private endOrder(record: OrderRecord): Promise<{ ended: boolean; record: OrderRecord }> {
+  /**
+   * End an order that holds nothing yet, or whose attempt provably ended on its
+   * own network. `pendingHash`: a Tempo hash returned in this session that could
+   * not be stored (it still makes the attempt held).
+   */
+  private endOrder(
+    record: OrderRecord,
+    options: { pendingHash?: string } = {},
+  ): Promise<{ ended: boolean; record: OrderRecord }> {
     const tempo = recordRail(record) === 'tempo' ? this.tempoOfRecord(record) : undefined;
+    if (tempo !== undefined && options.pendingHash !== undefined && record.state !== 'created') {
+      return endTempoOrder(record, this.tempoDeps(tempo), { pendingHash: options.pendingHash });
+    }
     return endOrder(record, {
       store: this.deps.store,
       readClient: this.deps.readClient,
@@ -1986,6 +2959,18 @@ export class CheckoutSession {
     }
   }
 
+  /** Settles once `work` settles (its outcome dropped) or after `ms`, whichever comes first. */
+  private waitAtMost(work: Promise<unknown>, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const finish = () => {
+        this.deps.clearTimeout(timer);
+        resolve();
+      };
+      const timer = this.deps.setTimeout(finish, ms);
+      work.then(finish, finish);
+    });
+  }
+
   /** Chain time, or `undefined` when unreadable or slower than `CHAIN_TIME_TIMEOUT_MS`. */
   private readChainTime(rpc: Rpc<SolanaRpcApi>): Promise<number | undefined> {
     return new Promise((resolve) => {
@@ -2007,14 +2992,74 @@ export class CheckoutSession {
     });
   }
 
-  private payDeps(rpc: Rpc<SolanaRpcApi>) {
+  private payDeps(rpc: Rpc<SolanaRpcApi>, scope?: PressScope) {
     return {
-      store: this.deps.store,
+      store: scope === undefined ? this.deps.store : this.pressStore(scope),
       readClient: this.deps.readClient,
       clientFor: this.deps.clientFor,
       rpc,
       now: this.deps.now,
     };
+  }
+
+  /**
+   * The store as one press's pay rail sees it. A write that starts or replaces an
+   * attempt (a marker) is refused once the press is stale: the rail then never
+   * reaches the wallet. Every other write passes, stale or not: after the wallet
+   * answered, the signature before its broadcast and the Tempo hash must be
+   * stored. Every marker write that succeeds is the newest known copy; one that
+   * lands after a close is followed in the background.
+   */
+  private pressStore(scope: PressScope): OrderStore {
+    const store = this.deps.store;
+    const latch = (written: StoreWrite): StoreWrite => {
+      if (written.ok) {
+        this.latchMarked(written.record, scope);
+      }
+      return written;
+    };
+    const refused: StoreWrite = { ok: false, reason: 'conflict' };
+    const setMarker = async (...args: Parameters<OrderStore['setMarker']>) =>
+      this.stale(scope.press) ? refused : latch(await store.setMarker(...args));
+    const updateMarker = async (...args: Parameters<OrderStore['updateMarker']>) => {
+      const [, , attemptId, next] = args;
+      return this.stale(scope.press) && next.attemptId !== attemptId
+        ? refused
+        : latch(await store.updateMarker(...args));
+    };
+    const clearMarker = async (...args: Parameters<OrderStore['clearMarker']>) =>
+      latch(await store.clearMarker(...args));
+    return new Proxy(store, {
+      get(target, property) {
+        if (property === 'setMarker') {
+          return setMarker;
+        }
+        if (property === 'updateMarker') {
+          return updateMarker;
+        }
+        if (property === 'clearMarker') {
+          return clearMarker;
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }
+
+  /**
+   * A marker write of a press succeeded: the newest known copy. Written after a
+   * close (the press began before it), an order that may still land is followed
+   * in the background and leaves the screen when no press runs.
+   */
+  private latchMarked(record: OrderRecord, scope: PressScope): void {
+    this.marked = record;
+    if (this.resets === scope.resets || !followable(record)) {
+      return;
+    }
+    this.followOwn(record);
+    if (this.record?.orderId === record.orderId && !this.busy && !this.pressing) {
+      this.setRecord(undefined);
+    }
   }
 
   private orderDeps(): OrderDeps {
@@ -2052,11 +3097,15 @@ export class CheckoutSession {
    * two minutes. A changed price or payout sends the buyer back to the offer;
    * a refusal ends the attempt. Warnings are no change: none is asked about.
    */
-  private async freshOffer(): Promise<ReadyOffer | undefined> {
+  private async freshOffer(press: number): Promise<ReadyOffer | undefined> {
     if (!isSnapshotStale(this.offer.snapshotAt, this.deps.now())) {
       return this.offer;
     }
     const reloaded = await this.deps.reloadOffer();
+    // Closed meanwhile: nothing of the reload is drawn over the first step.
+    if (this.stale(press)) {
+      return undefined;
+    }
     if (!reloaded.ok) {
       const reason = reloaded.refusal === 'product_not_on_sale' ? 'sold_out' : 'offer_refused';
       return this.refusedOnReload(reason, reloaded.message);
@@ -2113,26 +3162,49 @@ export class CheckoutSession {
    * old terms, ends first - and a new one starts only if it provably ended.
    * Acknowledged means the store's inbox holds it; the wallet never opens before.
    */
-  private async orderFor(chainTime: number): Promise<OrderRecord | undefined> {
+  private async orderFor(chainTime: number, press: number): Promise<OrderRecord | undefined> {
     // An open order drawn at load is republished in the background: the press
     // waits for it here, after the wallet's connect and before its own re-read.
     const resuming = this.resuming;
     this.resuming = undefined;
     if (resuming !== undefined) {
       await resuming;
+      if (this.stale(press)) {
+        return undefined;
+      }
+    }
+    // A press detached by a close may still be placing its order: the read below
+    // sees it once stored, so it is adopted or ended, never paid beside.
+    const placing = this.placing;
+    if (placing !== undefined) {
+      await this.waitAtMost(placing, PLACING_WAIT_MS);
+      if (this.stale(press)) {
+        return undefined;
+      }
+    }
+    // Never a second open order beside one: this account's open orders, as stored now.
+    if ((await this.openOrders(press)) === 'stop') {
+      return undefined;
     }
     let record =
       this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
-    if (record !== undefined && gone(record)) {
-      this.noteOver(record);
-      this.setRecord(undefined);
-      record = undefined;
+    if (this.stale(press)) {
+      return undefined;
+    }
+    if (record !== undefined) {
+      const settled = await this.settleCurrent(record, press);
+      if (settled === 'stop') {
+        return undefined;
+      }
+      if (settled === 'dropped') {
+        record = undefined;
+      }
     }
     const stale =
       record !== undefined &&
       (onOtherTerms(record, this.payout, this.customerRef) || this.emailChanged(record));
     if (record !== undefined && stale) {
-      if (!(await this.endStale(record))) {
+      if (!(await this.endStale(record, press))) {
         return undefined;
       }
       record = undefined;
@@ -2140,14 +3212,26 @@ export class CheckoutSession {
     if (record?.state === 'created') {
       this.working('ordering');
       const resumed = await resumeOrder(record, this.orderDeps(), this.deps.now());
+      if (this.stale(press)) {
+        return undefined;
+      }
       record = resumed.record;
       this.listenAgainOn(resumed.relays, record);
       if (record.state === 'ordered') {
         // Taken by the store only now: an answer it holds for it (a hand cancel or
         // refund) is read first, so such an order ends instead of being paid.
         record = await this.readHeldStatus(record);
-        if (onOtherTerms(record, this.payout, this.customerRef)) {
-          if (!(await this.endStale(record))) {
+        if (this.stale(press)) {
+          return undefined;
+        }
+        const settled = await this.settleCurrent(record, press);
+        if (settled === 'stop') {
+          return undefined;
+        }
+        if (settled === 'dropped') {
+          record = undefined;
+        } else if (onOtherTerms(record, this.payout, this.customerRef)) {
+          if (!(await this.endStale(record, press))) {
             return undefined;
           }
           record = undefined;
@@ -2168,7 +3252,7 @@ export class CheckoutSession {
       }
       this.working('ordering');
       const email = this.deps.collectEmail === true ? usableEmail(this.email) : undefined;
-      const placed = await placeOrder(
+      const placement = placeOrder(
         {
           offer: this.offer,
           payout: this.payout,
@@ -2179,13 +3263,26 @@ export class CheckoutSession {
         },
         this.orderDeps(),
       );
+      this.placing = placement;
+      let placed: Awaited<typeof placement>;
+      try {
+        placed = await placement;
+      } finally {
+        if (this.placing === placement) {
+          this.placing = undefined;
+        }
+      }
+      // Sent with it whether or not the store took it yet: a resume sends the same order.
+      if (placed.record !== undefined && email !== undefined) {
+        this.sentEmail.set(placed.record.orderId, email);
+      }
+      // Closed meanwhile: the placed order stays stored; the next press pays or ends it.
+      if (this.stale(press)) {
+        return undefined;
+      }
       if (placed.record !== undefined) {
         this.setRecord(placed.record);
         this.relays = placed.record.inboxRelays;
-        // Sent with it whether or not the store took it yet: a resume sends the same order.
-        if (email !== undefined) {
-          this.sentEmail.set(placed.record.orderId, email);
-        }
       }
       if (!placed.ok) {
         const problems: Record<typeof placed.reason, Problem> = {
@@ -2202,12 +3299,37 @@ export class CheckoutSession {
     this.setRecord(record);
     if (record.state !== 'ordered') {
       if (record.state === 'created') {
+        // The press took it, and the buyer now sees its problem: no longer silent.
+        this.silent = undefined;
         this.showOffer({ reason: 'order_not_acknowledged' });
       } else {
         await this.follow(record);
       }
       return undefined;
     }
+    // The store answered a silent order during this press: never paid here. One that
+    // holds the product (another tab paid it) is followed, its line shown; one that
+    // finished or ended is dropped unseen.
+    if (this.silentAnswered === record.orderId) {
+      this.silentAnswered = undefined;
+      this.setRecord(undefined);
+      const stored = await this.deps.store.get(record.orderId);
+      if (this.stale(press)) {
+        return undefined;
+      }
+      if (stored === undefined || !followable(stored)) {
+        this.showOffer();
+        return undefined;
+      }
+      this.followOwn(stored);
+      const line = await this.holderLine(stored);
+      if (!this.stale(press)) {
+        this.showLine(stored.orderId, line);
+      }
+      return undefined;
+    }
+    // The press commits to this order: its store answers show from now on.
+    this.silent = undefined;
     this.status('ordered');
     // A Tempo request is composed at the pay press (after the checks), in the core.
     if (recordRail(record) === 'tempo') {
@@ -2215,6 +3337,9 @@ export class CheckoutSession {
       return record;
     }
     const composed = await composeOrderPayment(record, this.deps.store);
+    if (this.stale(press)) {
+      return undefined;
+    }
     if (!composed.ok) {
       this.showOffer({ reason: 'failed' });
       return undefined;
@@ -2225,12 +3350,235 @@ export class CheckoutSession {
   }
 
   /**
+   * This account's open orders of the product, read from the store at the press:
+   * the one to pay becomes `this.record` (checked for held store answers before
+   * it is adopted), every other one (and every one the store cancelled) ends.
+   * `stop`: the press stopped and drew why.
+   */
+  private async openOrders(press: number): Promise<'go' | 'stop'> {
+    const all = await this.deps.store.forProduct(this.offer.productAddress);
+    if (this.stale(press)) {
+      return 'stop';
+    }
+    const own = all.filter((record) => this.own(record));
+    const current = this.record;
+    const storedCurrent =
+      current === undefined ? undefined : own.find((record) => record.orderId === current.orderId);
+    if (
+      storedCurrent !== undefined &&
+      !continuedUnpaid(storedCurrent) &&
+      !cancelledUnpaid(storedCurrent) &&
+      (await this.settleCurrent(storedCurrent, press)) === 'stop'
+    ) {
+      return 'stop';
+    }
+    const candidates = own.filter((record) => continuedUnpaid(record));
+    const toEnd = own.filter((record) => cancelledUnpaid(record));
+    const onTheseTerms = (record: OrderRecord) =>
+      !onOtherTerms(record, this.payout, this.customerRef) && !this.emailChanged(record);
+    const shownId = this.record?.orderId;
+    let pick = candidates.find((record) => record.orderId === shownId && onTheseTerms(record));
+    const passed = new Set<string>();
+    while (pick === undefined) {
+      const rest = candidates
+        .filter((record) => record.orderId !== shownId && !passed.has(record.orderId))
+        .sort((left, right) => right.createdAt - left.createdAt);
+      const choice =
+        rest.find((record) => record.state === 'ordered' && onTheseTerms(record)) ?? rest[0];
+      if (choice === undefined) {
+        break;
+      }
+      passed.add(choice.orderId);
+      const checked = await this.checkCandidate(choice, press);
+      if (checked === 'stop') {
+        return 'stop';
+      }
+      if (checked === 'skip') {
+        continue;
+      }
+      if (checked.kind === 'cancelled') {
+        toEnd.push(checked.record);
+        continue;
+      }
+      pick = checked.record;
+    }
+    const pickedId = pick?.orderId;
+    for (const record of candidates) {
+      if (record.orderId !== pickedId && !passed.has(record.orderId)) {
+        toEnd.push(record);
+      }
+    }
+    let exhausted = false;
+    for (const record of toEnd) {
+      const outcome = await this.endOpen(record, press);
+      if (outcome === 'stale') {
+        return 'stop';
+      }
+      exhausted ||= outcome === 'exhausted';
+    }
+    if (exhausted) {
+      // An open order that cannot be ended: never a second one placed beside it.
+      this.showOffer({ reason: 'failed' });
+      return 'stop';
+    }
+    return 'go';
+  }
+
+  /**
+   * A candidate to pay that is not on screen: its held store answers read (on
+   * its own relays) and the store read again before it is adopted, with no
+   * await between that read and the adoption.
+   */
+  private async checkCandidate(
+    choice: OrderRecord,
+    press: number,
+  ): Promise<
+    | 'stop'
+    | 'skip'
+    | { kind: 'adopted'; record: OrderRecord }
+    | { kind: 'cancelled'; record: OrderRecord }
+  > {
+    await this.readHeldStatus(choice, choice.inboxRelays);
+    if (this.stale(press)) {
+      return 'stop';
+    }
+    const fresh = await this.deps.store.get(choice.orderId);
+    if (this.stale(press)) {
+      return 'stop';
+    }
+    if ((await this.recheckCurrent(press)) === 'stop') {
+      return 'stop';
+    }
+    if (fresh === undefined || isTerminal(fresh) || gone(fresh)) {
+      return 'skip';
+    }
+    if (cancelledUnpaid(fresh)) {
+      return { kind: 'cancelled', record: fresh };
+    }
+    if (!continuedUnpaid(fresh)) {
+      // Marked or paid meanwhile (another tab): it holds the product.
+      if (followable(fresh)) {
+        this.followOwn(fresh);
+      }
+      const line = await this.holderLine(fresh);
+      if (!this.stale(press)) {
+        this.showLine(fresh.orderId, line);
+      }
+      return 'stop';
+    }
+    this.stopFollowing(fresh.orderId);
+    this.quiet.delete(fresh.orderId);
+    this.setRecord(fresh);
+    this.relays = fresh.inboxRelays;
+    // Not the buyer's yet: an answer that finishes it before the press commits is stored only.
+    this.silent = fresh.orderId;
+    this.listen(fresh);
+    return { kind: 'adopted', record: fresh };
+  }
+
+  /** `this.record` read again: one that is no longer open is settled (`settleCurrent`). */
+  private async recheckCurrent(press: number): Promise<'go' | 'stop'> {
+    const current = this.record;
+    if (current === undefined) {
+      return 'go';
+    }
+    const stored = await this.deps.store.get(current.orderId);
+    if (this.stale(press)) {
+      return 'stop';
+    }
+    if (stored === undefined || continuedUnpaid(stored) || cancelledUnpaid(stored)) {
+      return 'go';
+    }
+    return (await this.settleCurrent(stored, press)) === 'stop' ? 'stop' : 'go';
+  }
+
+  /**
+   * `this.record` as stored at a re-read of a press. Open: kept. The buyer's
+   * own (engaged) order that finished, ended elsewhere, holds or is blocked:
+   * followed (today's behaviour), the press stops. A silent one
+   * that finished: dropped unseen; one that holds: followed in the background,
+   * its earlier-payment line, the press stops.
+   */
+  private async settleCurrent(
+    stored: OrderRecord,
+    press: number,
+  ): Promise<'keep' | 'dropped' | 'stop'> {
+    const orderId = stored.orderId;
+    const answered = this.silentAnswered === orderId;
+    const silent = this.silent === orderId || answered;
+    // A copy read before the answer was stored still looks open: the flag stays for
+    // the commit site.
+    if (this.record?.orderId !== orderId || continuedUnpaid(stored) || cancelledUnpaid(stored)) {
+      return 'keep';
+    }
+    if (answered) {
+      this.silentAnswered = undefined;
+    }
+    if (!silent) {
+      await this.follow(stored);
+      return 'stop';
+    }
+    this.setRecord(undefined);
+    if (isTerminal(stored) || gone(stored)) {
+      return 'dropped';
+    }
+    if (followable(stored)) {
+      this.followOwn(stored);
+    }
+    const line = await this.holderLine(stored);
+    if (!this.stale(press)) {
+      this.showLine(stored.orderId, line);
+    }
+    return 'stop';
+  }
+
+  /**
+   * End an open order beside the one paid (a version compare-and-swap), reading
+   * it again after a lost one. `left`: it holds or ended meanwhile (another tab);
+   * `exhausted`: still open after every attempt.
+   */
+  private async endOpen(
+    record: OrderRecord,
+    press: number,
+  ): Promise<'ended' | 'left' | 'exhausted' | 'stale'> {
+    let current = record;
+    for (let attempt = 0; attempt < STORE_WRITE_ATTEMPTS; attempt += 1) {
+      const ended = await this.endOrder(current);
+      if (ended.ended) {
+        this.stopFollowing(current.orderId);
+        this.quiet.add(current.orderId);
+        this.listenToEnded([ended.record]);
+        if (this.stale(press)) {
+          return 'stale';
+        }
+        // The order on screen, ended by this press: no longer the buyer's (as `endStale`).
+        if (this.record?.orderId === current.orderId) {
+          this.setRecord(undefined);
+        }
+        return 'ended';
+      }
+      const fresh = await this.deps.store.get(current.orderId);
+      if (this.stale(press)) {
+        return 'stale';
+      }
+      if (fresh === undefined || !(continuedUnpaid(fresh) || cancelledUnpaid(fresh))) {
+        return 'left';
+      }
+      current = fresh;
+    }
+    return 'exhausted';
+  }
+
+  /**
    * End an open order that cannot be paid as it is (other terms, a typed email,
    * a store cancel): `true` once it ended. An attempt that may still land is
    * followed instead (`false`), never a second order beside it.
    */
-  private async endStale(record: OrderRecord): Promise<boolean> {
+  private async endStale(record: OrderRecord, press: number): Promise<boolean> {
     const ended = await this.endOrder(record);
+    if (this.stale(press)) {
+      return false;
+    }
     if (!ended.ended) {
       await this.follow(ended.record);
       return false;
@@ -2243,17 +3591,21 @@ export class CheckoutSession {
    * One read of the store's answers already sent for `record` (the same wraps the
    * listener hears), each stored, bounded by `HELD_STATUS_READ_MS`. A read that
    * fails or runs out finds nothing; the listener still hears it later.
+   * `relays`: where to read (the record's own when it is not on screen).
    */
-  private async readHeldStatus(record: OrderRecord): Promise<OrderRecord> {
+  private async readHeldStatus(
+    record: OrderRecord,
+    relays?: readonly string[],
+  ): Promise<OrderRecord> {
     const client = this.deps.clientFor(hexToBytes(record.buyerSecretKey));
     let timer: unknown;
     const timedOut = new Promise<[]>((resolve) => {
       timer = this.deps.setTimeout(() => resolve([]), HELD_STATUS_READ_MS);
     });
     try {
-      const relays = this.relays.length === 0 ? record.inboxRelays : this.relays;
+      const readOn = relays ?? (this.relays.length === 0 ? record.inboxRelays : this.relays);
       const wraps = await Promise.race([
-        client.query(relays, [
+        client.query(readOn, [
           {
             kinds: [KIND_GIFT_WRAP],
             '#p': [record.buyerPubkey],
@@ -2277,10 +3629,19 @@ export class CheckoutSession {
     return (await this.deps.store.get(record.orderId)) ?? record;
   }
 
-  private async afterPay(result: SolanaPayResult, rpc: Rpc<SolanaRpcApi>): Promise<void> {
+  private async afterPay(
+    result: SolanaPayResult,
+    rpc: Rpc<SolanaRpcApi>,
+    press: number,
+    resets: number,
+  ): Promise<void> {
     if (result.record !== undefined) {
       // The store may have answered meanwhile: what is stored wins over the core's copy.
       const stored = await this.deps.store.get(result.record.orderId);
+      if (this.stale(press)) {
+        await this.lateAnswer(result, resets);
+        return;
+      }
       this.setRecord(stored !== undefined && isTerminal(stored) ? stored : result.record);
       if (stored !== undefined && isTerminal(stored)) {
         await this.follow(stored);
@@ -2308,6 +3669,9 @@ export class CheckoutSession {
         const current = this.record;
         const ended =
           current === undefined ? undefined : await endSolanaOrder(current, this.payDeps(rpc));
+        if (this.stale(press)) {
+          return;
+        }
         if (ended !== undefined && !ended.ended) {
           await this.follow(ended.record);
           return;
@@ -2341,25 +3705,22 @@ export class CheckoutSession {
         this.showOrWait({ reason: result.reason });
         return;
       case 'needs_confirmation':
-        await this.askOldPrompt(result.unconfirmed ?? []);
+        await this.askOldPrompt(result.unconfirmed ?? [], press);
         return;
-      case 'exclusion': {
-        // Another order of this product holds a live attempt: that one is what to follow.
-        const holder =
-          result.holder === undefined ? undefined : await this.deps.store.get(result.holder);
-        if (holder !== undefined) {
-          await this.followHolder(holder);
-          return;
-        }
-        this.showOffer({ reason: 'failed' });
+      case 'exclusion':
+        // Another order of this product holds a live attempt: never a second request.
+        await this.metHolder(result.holder, press);
         return;
-      }
       default: {
         if (result.reason === 'still_waiting' || result.reason === 'already_paid') {
           this.attemptOver = false;
         }
         const current =
           this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
+        if (this.stale(press)) {
+          await this.lateAnswer(result, resets);
+          return;
+        }
         if (current !== undefined) {
           await this.follow(current);
         } else {
@@ -2386,6 +3747,9 @@ export class CheckoutSession {
       this.attemptProblem = undefined;
       this.attemptOver = false;
       this.retryEstimate = undefined;
+      // Silent is about one order: another one on screen is not.
+      this.silent = undefined;
+      this.silentAnswered = undefined;
     }
     this.record = record;
   }
@@ -2592,8 +3956,11 @@ export class CheckoutSession {
     if (request === undefined) {
       return undefined;
     }
-    const now = this.deps.now();
-    return { seconds: Math.max(0, tempoLateDeadline(request) - now), at: now };
+    // Anchored at the deadline once it passed: its zero moment stays put, so the
+    // probe never redraws it and "taking long" comes `UNSURE_AFTER_SECS` after it.
+    const deadline = tempoLateDeadline(request);
+    const at = Math.min(this.deps.now(), deadline);
+    return { seconds: deadline - at, at };
   }
 
   /**
@@ -2629,15 +3996,27 @@ export class CheckoutSession {
         ) {
           return;
         }
-        const left = lastValid + RETRY_SETTLE_BLOCKS - BigInt(epoch.blockHeight);
-        const blocksLeft = left > 0n ? Number(left) : 0;
+        const settle = settleSeconds(lastValid, BigInt(epoch.blockHeight));
+        const blocksLeft = settle.blocksLeft;
         const at = this.deps.now();
-        let seconds = Math.ceil(blocksLeft * SLOT_SECS_ESTIMATE);
+        let seconds = settle.seconds;
         // Skipped slots make blocks slower than the estimate: never count back up,
         // or the line would flip between "checking" and "waiting".
         const earlier = this.retryEstimate;
         if (earlier?.attemptId === attemptId) {
-          seconds = Math.min(seconds, Math.max(0, earlier.seconds - (at - earlier.at)));
+          const earlierZeroAt = earlier.at + earlier.seconds;
+          if (earlierZeroAt <= at) {
+            // Already at 0: it stays at 0 from the same moment, or every read would
+            // push "taking long" back while blocks are still left.
+            this.retryEstimate = {
+              attemptId,
+              seconds: 0,
+              at: earlierZeroAt,
+              latched: blocksLeft === 0,
+            };
+            return;
+          }
+          seconds = Math.min(seconds, earlierZeroAt - at);
         }
         this.retryEstimate = { attemptId, seconds, at, latched: blocksLeft === 0 };
       })
@@ -2736,84 +4115,7 @@ export class CheckoutSession {
         if (watched === undefined) {
           return;
         }
-        if (
-          this.busy ||
-          generation !== this.generation ||
-          this.disposed ||
-          (this.record !== undefined && isTerminal(this.record))
-        ) {
-          return;
-        }
-        // The listener may have stored a newer version (a status) during the pass.
-        const stored = await this.deps.store.get(watched.record.orderId);
-        if (this.busy || generation !== this.generation || this.disposed) {
-          return;
-        }
-        this.record =
-          stored !== undefined && stored.version > watched.record.version ? stored : watched.record;
-        // Another tab replaced the attempt during the pass: its verdict is not this one's.
-        if (this.record.marker?.attemptId !== watched.record.marker?.attemptId) {
-          this.attemptOver = false;
-          this.render();
-          void this.showPendingAnswer();
-          return;
-        }
-        if (watched.record.state === 'created' || watched.record.state === 'ordered') {
-          // The attempt was cleared (nothing was requested, or the buyer declined in
-          // another tab): back to the offer, and the page hears the order is open again.
-          this.stopWatching();
-          this.attemptOver = false;
-          const reopened = stateOf(this.record);
-          if (reopened !== undefined && reopened !== 'ended') {
-            this.status(reopened);
-          }
-          this.render();
-          void this.showPendingAnswer();
-          return;
-        }
-        if (watched.state === 'paid') {
-          this.stopWatching();
-          this.status('paid');
-          this.render();
-        } else if (watched.state === 'closed') {
-          this.stopWatching();
-          this.render();
-        } else if (watched.state === 'over' && recordRail(watched.record) === 'tempo') {
-          // A Tempo attempt proven over ends at once (no retry): its prompt stays open,
-          // so the next payment of the product asks for confirmation first.
-          this.stopWatching();
-          const client = this.tempoOfRecord(watched.record);
-          const ended =
-            client === undefined
-              ? undefined
-              : await endTempoOrder(watched.record, this.tempoDeps(client));
-          if (ended?.ended === true && generation === this.generation && !this.busy) {
-            this.setRecord(undefined);
-            this.listenToEnded([ended.record]);
-            this.status('ended');
-            this.showOffer({ reason: 'attempt_over' });
-            void this.showPendingAnswer();
-          } else if (generation === this.generation && !this.disposed) {
-            // Not ended (a lost write, a read that answered otherwise): keep watching.
-            this.render();
-            this.watch();
-          }
-        } else if (watched.state === 'over') {
-          this.stopWatching();
-          this.attemptProblem = undefined;
-          this.attemptOver = true;
-          this.noteOver(watched.record);
-          this.render();
-          // The attempt provably ended: a completion already heard now shows.
-          void this.showPendingAnswer();
-        } else if (watched.state === 'blocked') {
-          this.stopWatching();
-          this.render();
-        } else {
-          // Waiting: whatever was over, a new attempt (another tab's) is live now.
-          this.attemptOver = false;
-          this.render();
-        }
+        await this.applyVerdict(watched, generation);
       } finally {
         this.watching = false;
       }
@@ -2825,27 +4127,135 @@ export class CheckoutSession {
     void tick().catch(() => undefined);
   }
 
+  /**
+   * Apply one watch pass's verdict for the record on screen (the regular watch,
+   * or the unanswered-wallet probe once its press ended): the newer stored copy
+   * adopted, an attempt another tab replaced kept watching, then the verdict's
+   * screen. Dropped when stale (another record or attempt, an action running,
+   * the session ended) or once the record on screen is finished.
+   */
+  private async applyVerdict(watched: Watched, generation: number): Promise<VerdictApplied> {
+    if (
+      this.busy ||
+      generation !== this.generation ||
+      this.disposed ||
+      (this.record !== undefined && isTerminal(this.record))
+    ) {
+      return 'skipped';
+    }
+    // The listener may have stored a newer version (a status) during the pass.
+    const stored = await this.deps.store.get(watched.record.orderId);
+    if (this.busy || generation !== this.generation || this.disposed) {
+      return 'skipped';
+    }
+    this.record =
+      stored !== undefined && stored.version > watched.record.version ? stored : watched.record;
+    // Another tab replaced the attempt during the pass: its verdict is not this one's.
+    if (this.record.marker?.attemptId !== watched.record.marker?.attemptId) {
+      this.attemptOver = false;
+      this.render();
+      void this.showPendingAnswer();
+      return 'replaced';
+    }
+    if (watched.record.state === 'created' || watched.record.state === 'ordered') {
+      // The attempt was cleared (nothing was requested, or the buyer declined in
+      // another tab): back to the offer, and the page hears the order is open again.
+      this.stopWatching();
+      this.attemptOver = false;
+      const reopened = stateOf(this.record);
+      if (reopened !== undefined && reopened !== 'ended') {
+        this.status(reopened);
+      }
+      this.render();
+      void this.showPendingAnswer();
+      return 'drawn';
+    }
+    if (watched.state === 'paid') {
+      this.stopWatching();
+      this.status('paid');
+      this.render();
+      return 'follow';
+    }
+    if (watched.state === 'closed') {
+      this.stopWatching();
+      this.render();
+      return 'drawn';
+    }
+    if (watched.state === 'over' && recordRail(watched.record) === 'tempo') {
+      // A Tempo attempt proven over ends at once (no retry): its prompt stays open,
+      // so the next payment of the product asks for confirmation first.
+      this.stopWatching();
+      const client = this.tempoOfRecord(watched.record);
+      const ended =
+        client === undefined
+          ? undefined
+          : await endTempoOrder(watched.record, this.tempoDeps(client));
+      if (ended?.ended === true && generation === this.generation && !this.busy) {
+        this.setRecord(undefined);
+        this.listenToEnded([ended.record]);
+        this.status('ended');
+        this.showOffer({ reason: 'attempt_over' });
+        void this.showPendingAnswer();
+        return 'drawn';
+      }
+      if (ended?.ended === true) {
+        // Ended, but no longer on screen (a close, a press): its answer is still stored.
+        this.quiet.add(ended.record.orderId);
+        this.listenToEnded([ended.record]);
+        return 'skipped';
+      }
+      if (generation === this.generation && !this.disposed) {
+        // Not ended (a lost write, a read that answered otherwise): keep watching.
+        this.render();
+        this.watch();
+      }
+      return 'skipped';
+    }
+    if (watched.state === 'over') {
+      this.stopWatching();
+      this.attemptProblem = undefined;
+      this.attemptOver = true;
+      this.noteOver(watched.record);
+      this.render();
+      // The attempt provably ended: a completion already heard now shows.
+      void this.showPendingAnswer();
+      return 'drawn';
+    }
+    if (watched.state === 'blocked') {
+      this.stopWatching();
+      this.render();
+      return 'follow';
+    }
+    // Waiting: whatever was over, a new attempt (another tab's) is live now.
+    this.attemptOver = false;
+    this.render();
+    return 'drawn';
+  }
+
   /** One watch pass on the record's own rail. */
   private async watchOnce(
     current: OrderRecord,
-  ): Promise<
-    | Awaited<ReturnType<typeof watchSolanaPayment>>
-    | Awaited<ReturnType<typeof watchTempoPayment>>
-    | undefined
-  > {
+    pendingHash?: string,
+  ): Promise<Watched | undefined> {
     if (recordRail(current) === 'tempo') {
       const client = this.tempoOfRecord(current);
       if (client === undefined) {
         return undefined;
       }
       const pending =
-        this.pendingHash?.orderId === current.orderId ? this.pendingHash.hash : undefined;
+        pendingHash ??
+        (this.pendingHash?.orderId === current.orderId ? this.pendingHash.hash : undefined);
       const watched = await watchTempoPayment(current, this.tempoDeps(client), {
         ...(pending === undefined ? {} : { pendingHash: pending }),
       });
       const stored =
         watched.record.marker?.rail === 'tempo' ? watched.record.marker.txHash : undefined;
-      if (pending !== undefined && stored === pending) {
+      if (
+        pending !== undefined &&
+        stored === pending &&
+        this.pendingHash?.orderId === current.orderId &&
+        this.pendingHash.hash === pending
+      ) {
         this.pendingHash = undefined;
       }
       return watched;
@@ -2932,8 +4342,9 @@ export class CheckoutSession {
             this.background.delete(record.orderId);
             this.backgroundCreated.delete(record.orderId);
             this.backgroundOther.delete(record.orderId);
-            // Another account's answer is stored, never shown here.
-            if (!this.own(updated)) {
+            // Another account's answer is stored, never shown here; neither is one of an
+            // order followed in the background since a close or a load.
+            if (!this.own(updated) || this.quiet.has(updated.orderId)) {
               return;
             }
             // Never held: a Tempo order's answer shows at once, whatever is on screen.
@@ -2977,7 +4388,9 @@ export class CheckoutSession {
    */
   private async showPendingAnswer(
     onlyDeliveries = false,
+    press?: number,
   ): Promise<'shown' | 'held' | 'failed' | 'none'> {
+    const resets = this.resets;
     // A completion first, else the newest refund.
     const pending = [...this.pendingAnswers.values()]
       .filter((answer) => !onlyDeliveries || answer.state === 'completed')
@@ -2989,12 +4402,21 @@ export class CheckoutSession {
     if (pending === undefined) {
       return 'none';
     }
-    if (this.busy || this.disposed || this.refused) {
+    // A press's own delivery check (`deliveryFirst`) is never held by the line.
+    if (
+      this.busy ||
+      this.disposed ||
+      this.refused ||
+      (press === undefined && this.earlierPaymentShown())
+    ) {
       return 'held';
     }
     try {
       const current = this.record;
       const live = current === undefined ? undefined : await this.deps.store.get(current.orderId);
+      if (press !== undefined && this.stale(press)) {
+        return 'held';
+      }
       // A live order holds the answer back - unless its attempt provably ended
       // (the one the watch judged over is still the stored one).
       const attemptEnded =
@@ -3012,7 +4434,7 @@ export class CheckoutSession {
         return 'held';
       }
       if (!this.pendingAnswers.has(pending.orderId)) {
-        // Another call showed it meanwhile.
+        // Another call showed it meanwhile (or a close dropped it).
         return 'shown';
       }
       if (this.busy) {
@@ -3026,13 +4448,28 @@ export class CheckoutSession {
       }
       if (live !== undefined && (live.state === 'ordered' || attemptEnded)) {
         const ended = this.recordServed(live) ? await this.endOrder(live) : undefined;
+        if (ended?.ended === true) {
+          // Its store answer is still heard, whatever happened meanwhile: stored only
+          // once the modal closed.
+          if (this.resets !== resets) {
+            this.quiet.add(ended.record.orderId);
+          }
+          this.listenToEnded([ended.record], this.relays);
+        }
         if (!this.pendingAnswers.has(pending.orderId)) {
           return 'shown';
         }
-        if (ended === undefined || !ended.ended || this.busy) {
+        if (
+          ended === undefined ||
+          !ended.ended ||
+          this.busy ||
+          (press !== undefined && this.stale(press))
+        ) {
           return 'held';
         }
-        this.listenToEnded([ended.record], this.relays);
+      }
+      if (this.resets !== resets) {
+        return 'held';
       }
       await this.follow(pending);
       this.pendingAnswers.delete(pending.orderId);
@@ -3047,8 +4484,11 @@ export class CheckoutSession {
    * Before any wallet opens: a completion already heard for an earlier order is
    * shown instead. `false` means go on.
    */
-  private async deliveryFirst(): Promise<boolean> {
-    const outcome = await this.showPendingAnswer(true);
+  private async deliveryFirst(press: number): Promise<boolean> {
+    const outcome = await this.showPendingAnswer(true, press);
+    if (this.stale(press)) {
+      return true;
+    }
     if (outcome === 'failed') {
       this.render({ problem: { reason: 'failed' } });
       return true;
@@ -3068,6 +4508,28 @@ export class CheckoutSession {
       void applyStatus(this.deps.store, orderId, message, this.deps.now()).then((updated) => {
         // Only the current record's answer counts; an abandoned order's is kept, not shown.
         if (updated === undefined || this.disposed || this.record?.orderId !== orderId) {
+          return;
+        }
+        if (this.silent === orderId && !continuedUnpaid(updated)) {
+          // An order the buyer never engaged with, no longer open (finished, cancelled,
+          // paid or ended by another tab): stored only, nothing drawn or told. A press
+          // running holds its own copy: it drops the order where it re-reads or ends.
+          this.listening?.closer.close();
+          this.listening = undefined;
+          const relays = this.relays.length === 0 ? updated.inboxRelays : [...this.relays];
+          if (this.busy || this.pressing) {
+            this.silentAnswered = orderId;
+          } else {
+            this.setRecord(undefined);
+          }
+          // Its later answers are still stored, quietly: never shown here.
+          if (followable(updated)) {
+            this.followOwn(updated, relays);
+          }
+          if (gone(updated)) {
+            this.quiet.add(orderId);
+            this.listenToEnded([updated], relays);
+          }
           return;
         }
         this.record = updated;
