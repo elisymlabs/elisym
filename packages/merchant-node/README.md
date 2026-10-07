@@ -369,7 +369,8 @@ npx @elisym/merchant-node webhook test
 
 `run` refuses to start with a webhook and no secret. The secret is never written to the home,
 never logged and never shown by `orders`. In Docker, mount the file and name it with `-e`, as the
-passphrase above.
+passphrase above. Give your backend the same secret; if it reads the same file, drop one trailing
+newline (`/\r?\n$/`), as the node does.
 
 Each request is a `POST` with `Content-Type: application/json` and these headers:
 
@@ -407,12 +408,20 @@ fields only for a coin the node knows):
 ```
 
 `payment.amount` is what the node verified on chain, in subunits: credit that, never a total the
-buyer claims. `customerRef` is your own id for the account, which the page passed to the checkout.
+buyer claims. `payment.amountDisplay` is approximate and for display only (it may be in exponent
+notation, such as `1e-9`). `customerRef` is your own id for the account, which the page passed to the checkout.
 
 What your receiver does, in this order:
 
-1. Read the raw body. Refuse a timestamp more than 300 seconds from your clock, and a signature
-   that does not match (compare with `crypto.timingSafeEqual` on equal-length buffers).
+1. Authenticate with `verifyWebhook` from
+   [`@elisym/commerce/webhook`](https://www.npmjs.com/package/@elisym/commerce)
+   (`npm install @elisym/commerce`): pass the raw body (string or bytes, capped at 64 KiB before
+   you read it), the headers and your secret. It checks the signature in constant time, the 300-second window
+   and the event's shape, and returns a typed event or a reason: `bad_signature` and `stale`
+   answer 401, `malformed` answers 400 (sent again later), `unknown_event` (an event a newer node
+   sends that this library does not know) answers 2xx and is ignored. It does not check the
+   store, the product, the asset or the account, and it does not deduplicate: steps 2 and 3 are
+   yours. Never route on `X-Elisym-Event`, which is not signed: use `event.event`.
 2. Answer `test` with 2xx and credit nothing. For `order.paid`, check that `store` is your
    store's key, `product.address` is in your own allowlist of deposit products, `payment.asset`
    is in your own allowlist of exact asset ids (take the decimals from it, not from the body),
@@ -472,14 +481,16 @@ answered by hand sends no webhook: credit it with the plain insert, `event_id` n
 order's store, buyer and order id (`orders` lists them), in the same transaction as the credit.
 
 ```js
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { verifyWebhook } from '@elisym/commerce/webhook';
 
 const SECRET = process.env.ELISYM_MERCHANT_WEBHOOK_SECRET;
 if (!SECRET) {
   throw new Error('set ELISYM_MERCHANT_WEBHOOK_SECRET');
 }
 const MAX_BODY_BYTES = 64 * 1024;
+// unknown_event: 2xx, ignored (not logged here); malformed: 400, sent again later.
+const STATUS = { bad_signature: 401, stale: 401, malformed: 400, unknown_event: 200 };
 
 createServer((request, response) => {
   const chunks = [];
@@ -494,18 +505,20 @@ createServer((request, response) => {
     chunks.push(chunk);
   });
   request.on('end', async () => {
-    const body = Buffer.concat(chunks).toString('utf8');
-    const timestamp = String(request.headers['x-elisym-timestamp'] ?? '');
-    const mac = createHmac('sha256', SECRET).update(`${timestamp}.${body}`).digest('hex');
-    const expected = Buffer.from(`v1=${mac}`);
-    const given = Buffer.from(String(request.headers['x-elisym-signature'] ?? ''));
-    const fresh = Math.abs(Date.now() / 1000 - Number(timestamp)) <= 300;
-    if (!fresh || expected.length !== given.length || !timingSafeEqual(expected, given)) {
-      response.writeHead(401).end();
-      return;
-    }
     try {
-      await creditOnce(JSON.parse(body)); // steps 2 and 3: queues, never throws, on a failed check
+      // Inside the try: it throws on a misconfiguration, such as a short secret.
+      const result = await verifyWebhook({
+        secret: SECRET,
+        body: Buffer.concat(chunks),
+        headers: request.headers,
+      });
+      if (!result.ok) {
+        response.writeHead(STATUS[result.reason]).end();
+        return;
+      }
+      if (result.event.event === 'order.paid') {
+        await creditOnce(result.event); // steps 2 and 3: queues, never throws, on a failed check
+      }
       response.writeHead(200).end();
     } catch {
       response.writeHead(500).end(); // the node sends it again later
@@ -529,8 +542,25 @@ Sending and retries:
   Node.js (`npx`), it uses no proxy unless Node is told to (`NODE_USE_ENV_PROXY=1`).
 - `eventId` is the hex sha256 of `<store pubkey>:<buyer>:<orderId>:<payment transaction>`: the
   same for every send of a payment, and different for two orders one Tempo transaction paid.
-- To rotate the secret, let the receiver accept the old and the new one, set the new one and
-  restart the node (it signs every attempt afresh, pending ones too), then drop the old one.
+- To rotate the secret, pass `verifyWebhook` both, only the ones that are set (an unset variable
+  must not count), and check their length at startup:
+
+  ```js
+  import { WEBHOOK_MIN_SECRET_BYTES } from '@elisym/commerce/webhook';
+
+  const SECRETS = [process.env.WEBHOOK_SECRET, process.env.WEBHOOK_SECRET_OLD].filter(
+    (secret) => typeof secret === 'string' && secret !== '',
+  );
+  if (SECRETS.length === 0) throw new Error('set WEBHOOK_SECRET');
+  for (const secret of SECRETS) {
+    if (new TextEncoder().encode(secret).length < WEBHOOK_MIN_SECRET_BYTES) {
+      throw new Error(`a webhook secret is shorter than ${WEBHOOK_MIN_SECRET_BYTES} bytes`);
+    }
+  }
+  ```
+
+  Pass `secret: SECRETS`, set the new secret for the node and restart it (it signs every attempt
+  afresh, pending ones too), then drop the old one.
 
 What sends no webhook on its own (a credit made by hand records the event id, or the order key
 when there is none, so a later webhook never credits it twice):

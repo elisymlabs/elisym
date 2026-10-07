@@ -4,9 +4,19 @@
  * entry (see `recordPayment`), sent until a 2xx or its deadline. The request is
  * signed with a secret only the node and the backend hold.
  */
-import { createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseCaip19 } from '@elisym/commerce';
+import {
+  type OrderPaidWebhookEvent,
+  type TestWebhookEvent,
+  WEBHOOK_EVENT_HEADER,
+  WEBHOOK_EVENT_ID_HEADER,
+  WEBHOOK_MIN_SECRET_BYTES,
+  WEBHOOK_SIGNATURE_HEADER,
+  WEBHOOK_TIMESTAMP_HEADER,
+  signWebhook,
+} from '@elisym/commerce/webhook';
 import Decimal from 'decimal.js-light';
 import {
   MAX_WEBHOOKS_IN_FLIGHT,
@@ -14,7 +24,6 @@ import {
   WEBHOOK_FIRST_PAUSE_SECS,
   WEBHOOK_MAX_ANSWER_BYTES,
   WEBHOOK_MAX_PAUSE_SECS,
-  WEBHOOK_MIN_SECRET_BYTES,
   WEBHOOK_TIMEOUT_MS,
 } from './constants';
 import type { LedgerState, MerchantOrder, WebhookEntry } from './ledger';
@@ -104,14 +113,6 @@ export function webhookTarget(
   return { target: { url: webhook.url, secret } };
 }
 
-/** `v1=<hex HMAC-SHA256(secret, timestamp + "." + body)>`. */
-export function webhookSignature(secret: string, timestamp: number, body: string): string {
-  const mac = createHmac('sha256', Buffer.from(secret, 'utf8'))
-    .update(`${timestamp}.${body}`, 'utf8')
-    .digest('hex');
-  return `v1=${mac}`;
-}
-
 /**
  * The `order.paid` body of a paid order, compact JSON in a fixed key order. It
  * carries what the node verified on chain - the asset and amount paid - never
@@ -155,13 +156,16 @@ export function orderPaidBody(
       paidAt: paid.blockTime,
     },
     ...(order.email === undefined ? {} : { email: order.email }),
-  });
+  } satisfies OrderPaidWebhookEvent);
 }
 
 /** A `test` body: it checks the receiver's signature check, and credits nothing. */
 export function testBody(storePubkey: string): { body: string; eventId: string } {
   const eventId = randomBytes(32).toString('hex');
-  return { body: JSON.stringify({ event: 'test', eventId, store: storePubkey }), eventId };
+  return {
+    body: JSON.stringify({ event: 'test', eventId, store: storePubkey } satisfies TestWebhookEvent),
+    eventId,
+  };
 }
 
 export type SendResult =
@@ -235,15 +239,16 @@ export async function sendWebhook(
   const timestamp = options.now();
   const doFetch: FetchLike = options.fetch ?? fetch;
   try {
+    const signature = await signWebhook({ secret: target.secret, timestamp, body: event.body });
     const response = await doFetch(target.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': options.userAgent,
-        'X-Elisym-Event': event.name,
-        'X-Elisym-Event-Id': event.eventId,
-        'X-Elisym-Timestamp': String(timestamp),
-        'X-Elisym-Signature': webhookSignature(target.secret, timestamp, event.body),
+        [WEBHOOK_EVENT_HEADER]: event.name,
+        [WEBHOOK_EVENT_ID_HEADER]: event.eventId,
+        [WEBHOOK_TIMESTAMP_HEADER]: String(timestamp),
+        [WEBHOOK_SIGNATURE_HEADER]: signature,
       },
       body: event.body,
       redirect: 'error',

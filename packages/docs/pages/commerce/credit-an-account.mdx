@@ -108,7 +108,7 @@ npx @elisym/merchant-node webhook test
 npx @elisym/merchant-node run
 ```
 
-The URL must be `https:` on a public DNS name (`"allowInsecure": true` allows `http:` and local hosts, for a local test receiver). `run` refuses to start with a webhook and no secret. The secret is never written to the node's home, logged or shown. Give your backend the same secret, as a string.
+The URL must be `https:` on a public DNS name (`"allowInsecure": true` allows `http:` and local hosts, for a local test receiver). `run` refuses to start with a webhook and no secret. The secret is never written to the node's home, logged or shown. Give your backend the same secret, as a string. If your backend reads the node's secret file, drop one trailing newline (`/\r?\n$/`), as the node does.
 
 ## 3. What the node sends
 
@@ -144,13 +144,40 @@ Each event is a `POST` with `Content-Type: application/json` and these headers:
 }
 ```
 
-`customerRef` and `email` are there only when the order has them. `payment.amount` is what the node verified on chain, in the asset's subunits. `eventId` is the same for every send of one payment, and differs for two orders one Tempo transaction paid: it is your idempotency key. `payment.tx` is for your records only.
+`customerRef` and `email` are there only when the order has them. `payment.amount` is what the node verified on chain, in the asset's subunits. `eventId` is the same for every send of one payment, and differs for two orders one Tempo transaction paid: it is your idempotency key. `payment.tx` is for your records only. `payment.amountDisplay` is approximate and for display only (it may be in exponent notation, such as `1e-9`): credit `payment.amount`, with the decimals from your own list.
 
 ## 4. The receiver
 
+Your backend verifies each request with `verifyWebhook` from `@elisym/commerce/webhook`, the same library the node signs with:
+
+```bash
+npm install @elisym/commerce
+```
+
+The package is ESM only. A CommonJS `require` of it needs Node 20.19+ or 22.12+.
+
+`@elisym/commerce` has required, tightly pinned peers (`@solana/kit`, `nostr-tools`, `@solana-program/*`, `decimal.js-light`). A backend that already depends on another version of one of them gets npm `ERESOLVE`. `@elisym/commerce/webhook` loads none of them, so for a backend that only verifies webhooks:
+
+- **First choice:** an npm `overrides` entry scoped to `@elisym/commerce` that points each conflicting peer at your own version. Add one `$name` entry per conflicting peer you depend on directly, all in the same block, then run `npm install @elisym/commerce`. It covers the peers of `@elisym/commerce` and of the packages it brings in, and it is kept in `package.json`, so `npm ci` in CI and deploy works too:
+
+  ```json
+  "overrides": {
+    "@elisym/commerce": { "@solana/kit": "$@solana/kit", "nostr-tools": "$nostr-tools" }
+  }
+  ```
+
+  The rest of `@elisym/commerce` (the main entry, `./buyer`) may not load with your versions; `./webhook` does.
+
+- **Fallback:** `legacy-peer-deps=true` in your project's `.npmrc` (a one-off `--legacy-peer-deps` is not remembered by a later `npm ci`). It applies to **every** package: npm then installs no peers at all, so any peer another dependency needs must be listed directly.
+
 In this order:
 
-1. **Authenticate.** Read the raw body. Refuse a timestamp more than 300 seconds from your clock, and a signature that does not match, compared in constant time on equal-length buffers.
+1. **Authenticate with `verifyWebhook`.** Pass the raw body (string or bytes), the headers and your secret. It checks the signature in constant time, the 300-second window and the event's shape, and returns a typed event. Cap the body at 64 KiB before you read it (the node always sends `Content-Length`; without it, your platform's body limit applies). Never pass `JSON.stringify(req.body)`: the signature covers the exact bytes the node sent. Then answer by `result.reason`:
+   - `bad_signature` (the signature or timestamp is missing, ill-formed or does not match) or `stale` (signed, but more than 300 seconds from your clock; a steady `stale` means a clock is off): 401.
+   - `malformed` (signed and fresh, but not an event of the shape this library knows): 400. The node sends it again for 7 days, so upgrading `@elisym/commerce` within that time still gets the event.
+   - `unknown_event` (signed and fresh, an event type this library does not know, from a newer node): 2xx, credit nothing, and log it.
+
+   Never route on `X-Elisym-Event`: it is not signed; use `event.event`.
 2. **Check the event.** Answer `event: "test"` with 2xx and credit nothing. For `order.paid`, every one of these must hold:
    - `store` is your store's key;
    - `product.address` is in your own allowlist of deposit products (`30402:<store>:<d>`, where `<d>` is the product's directory name under `products/`). List each deposit product of the store; its other products stay `queued`;
@@ -162,6 +189,16 @@ In this order:
 4. **Answer 2xx only after the commit.** Only a failure of your own (the database is down) answers 5xx, so the node sends the event again.
 
 The node sends each event at least once, so a duplicate is normal: it finds its row, credits nothing and answers 2xx.
+
+What `verifyWebhook` does not do, so your backend does it:
+
+- check that `store` is your store's key;
+- check `product.address` against your allowlist of deposit products;
+- check `payment.asset` against your allowlist of exact asset ids, and take its decimals from that list, never from the body;
+- look up the account `customerRef` names (an opaque key, in parameterized queries only);
+- make the event idempotent by `eventId` and by the order (the two unique keys below); within the 300-second window a replayed request verifies again, and those keys make it a no-op;
+- credit, queue, run the database transaction and answer;
+- read the raw body and cap its size (before the call).
 
 ```sql
 CREATE TABLE elisym_events (
@@ -203,25 +240,60 @@ RETURNING id, asset, amount;
 
 Two unique keys, the event id and the order itself, so neither a resend nor a hand credit of the same order credits twice. A queued row keeps the asset and the amount the node verified: a hand credit uses those, never a figure from elsewhere. Keep every row for good. Treat `customerRef` as an opaque lookup key, in parameterized queries only.
 
-A receiver with `node:http` (the database part is yours):
+A receiver for a fetch-style platform (a Next.js route handler, Bun, Deno, Workers; the database part is yours):
+
+```ts twoslash
+import type { OrderPaidWebhookEvent } from '@elisym/commerce/webhook';
+declare const WEBHOOK_SECRET: string;
+declare function creditOnce(event: OrderPaidWebhookEvent): Promise<void>;
+// ---cut---
+import { verifyWebhook } from '@elisym/commerce/webhook';
+
+const MAX_BODY_BYTES = 64 * 1024;
+
+export async function POST(request: Request): Promise<Response> {
+  if (Number(request.headers.get('content-length') ?? 0) > MAX_BODY_BYTES) {
+    return new Response(null, { status: 413 });
+  }
+  try {
+    const body = await request.text();
+    const result = await verifyWebhook({ secret: WEBHOOK_SECRET, body, headers: request.headers });
+    if (!result.ok) {
+      switch (result.reason) {
+        case 'bad_signature':
+        case 'stale':
+          return new Response(null, { status: 401 });
+        case 'malformed':
+          return new Response(null, { status: 400 }); // the node sends it again later
+        case 'unknown_event':
+          console.warn('ignored a webhook event this library does not know');
+          return new Response(null, { status: 200 });
+      }
+    }
+    if (result.event.event === 'test') {
+      return new Response(null, { status: 200 });
+    }
+    await creditOnce(result.event); // steps 2 and 3: queues, never throws, on a failed check
+    return new Response(null, { status: 200 });
+  } catch {
+    return new Response(null, { status: 500 }); // the node sends it again later
+  }
+}
+```
+
+The same with `node:http`, which passes the body as bytes and `request.headers` as is:
 
 ```js
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { verifyWebhook } from '@elisym/commerce/webhook';
 
 const SECRET = process.env.ELISYM_MERCHANT_WEBHOOK_SECRET;
 if (!SECRET) {
   throw new Error('set ELISYM_MERCHANT_WEBHOOK_SECRET');
 }
 const MAX_BODY_BYTES = 64 * 1024;
-
-function verified(body, timestamp, signature) {
-  const fresh = Math.abs(Date.now() / 1000 - Number(timestamp)) <= 300;
-  const mac = createHmac('sha256', SECRET).update(`${timestamp}.${body}`).digest('hex');
-  const expected = Buffer.from(`v1=${mac}`);
-  const given = Buffer.from(signature);
-  return fresh && expected.length === given.length && timingSafeEqual(expected, given);
-}
+// unknown_event: 2xx, ignored (not logged here); malformed: 400, sent again later.
+const STATUS = { bad_signature: 401, stale: 401, malformed: 400, unknown_event: 200 };
 
 createServer((request, response) => {
   const chunks = [];
@@ -236,15 +308,19 @@ createServer((request, response) => {
     chunks.push(chunk);
   });
   request.on('end', async () => {
-    const body = Buffer.concat(chunks).toString('utf8');
-    const timestamp = String(request.headers['x-elisym-timestamp'] ?? '');
-    const signature = String(request.headers['x-elisym-signature'] ?? '');
-    if (!verified(body, timestamp, signature)) {
-      response.writeHead(401).end();
-      return;
-    }
     try {
-      await creditOnce(JSON.parse(body)); // steps 2 and 3: queues, never throws, on a failed check
+      const result = await verifyWebhook({
+        secret: SECRET,
+        body: Buffer.concat(chunks),
+        headers: request.headers,
+      });
+      if (!result.ok) {
+        response.writeHead(STATUS[result.reason]).end();
+        return;
+      }
+      if (result.event.event === 'order.paid') {
+        await creditOnce(result.event); // steps 2 and 3: queues, never throws, on a failed check
+      }
       response.writeHead(200).end();
     } catch {
       response.writeHead(500).end(); // the node sends it again later
@@ -253,29 +329,34 @@ createServer((request, response) => {
 }).listen(8080);
 ```
 
-With Express, take the raw body for this route, and the same `verified` check:
+With Express, take the raw body for this route, and the same `SECRET` and `STATUS`. `express.raw` leaves no Buffer for a request without a body, so check for one before the call:
 
 ```js
 import express from 'express';
+import { verifyWebhook } from '@elisym/commerce/webhook';
 
 const app = express();
 app.post(
   '/elisym/webhook',
-  express.raw({ type: 'application/json', limit: '64kb' }),
+  express.raw({ type: '*/*', limit: '64kb' }),
   async (request, response) => {
-    const body = request.body.toString('utf8');
-    if (
-      !verified(
-        body,
-        request.get('x-elisym-timestamp') ?? '',
-        request.get('x-elisym-signature') ?? '',
-      )
-    ) {
-      response.sendStatus(401);
+    if (!Buffer.isBuffer(request.body)) {
+      response.sendStatus(400);
       return;
     }
     try {
-      await creditOnce(JSON.parse(body));
+      const result = await verifyWebhook({
+        secret: SECRET,
+        body: request.body,
+        headers: request.headers,
+      });
+      if (!result.ok) {
+        response.sendStatus(STATUS[result.reason]);
+        return;
+      }
+      if (result.event.event === 'order.paid') {
+        await creditOnce(result.event);
+      }
       response.sendStatus(200);
     } catch {
       response.sendStatus(500);
@@ -285,7 +366,7 @@ app.post(
 app.listen(8080);
 ```
 
-Never parse the body as JSON before the check: the signature covers the exact bytes the node sent.
+Each one calls `verifyWebhook` inside the `try` that answers 500: it throws on a misconfiguration (such as a secret shorter than 32 bytes), and a throw outside a `try` would end the process.
 
 ## Retries and gaps
 
@@ -303,4 +384,20 @@ In Docker the node runs on Bun, which sends the webhook through the proxy `HTTP_
 
 ## Rotating the secret
 
-Let the receiver accept the old and the new secret, set the new one for the node and restart it (it signs every attempt afresh, pending ones too), then drop the old one.
+`verifyWebhook` takes an array of secrets and accepts a signature made with any of them. Pass only the ones that are set, and check their length when the backend starts, so a short secret stops it before the first request:
+
+```js
+import { WEBHOOK_MIN_SECRET_BYTES } from '@elisym/commerce/webhook';
+
+const SECRETS = [process.env.WEBHOOK_SECRET, process.env.WEBHOOK_SECRET_OLD].filter(
+  (secret) => typeof secret === 'string' && secret !== '',
+);
+if (SECRETS.length === 0) throw new Error('set WEBHOOK_SECRET');
+for (const secret of SECRETS) {
+  if (new TextEncoder().encode(secret).length < WEBHOOK_MIN_SECRET_BYTES) {
+    throw new Error(`a webhook secret is shorter than ${WEBHOOK_MIN_SECRET_BYTES} bytes`);
+  }
+}
+```
+
+Then pass `secret: SECRETS`. Set the new secret for the node and restart it (it signs every attempt afresh, pending ones too), and finally drop the old one.

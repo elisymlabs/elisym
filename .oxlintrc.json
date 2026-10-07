@@ -49,6 +49,19 @@
           "__dirname"
         ]
       }
+    },
+    {
+      "files": ["packages/commerce/src/webhook/**"],
+      "rules": {
+        "eslint/no-restricted-globals": [
+          "error",
+          "Buffer",
+          "process",
+          "require",
+          "global",
+          "__dirname"
+        ]
+      }
     }
   ],
   "ignorePatterns": [
