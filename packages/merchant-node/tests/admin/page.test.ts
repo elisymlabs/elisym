@@ -19,6 +19,8 @@ import {
   wrapOf,
 } from './fixtures';
 
+/** Unwrapping dozens of gift wraps can take seconds on a CI runner shared with other packages' tests. */
+const HEAVY_READ = { timeout: 15_000 };
 const HOSTILE_EMAIL = '<img/src=x/onerror=alert(1)>@evil.example';
 const HOSTILE_NAME = '<b>Shop</b>';
 
@@ -331,7 +333,10 @@ describe('the admin page', () => {
     });
     keyInput().value = nip19.nsecEncode(store.secretKey);
     byId('open').click();
-    await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(4));
+    await vi.waitFor(
+      () => expect(byId('orders').querySelectorAll('tr')).toHaveLength(4),
+      HEAVY_READ,
+    );
     expect(byId('warnings').textContent).not.toMatch(/no listing found/);
   });
 
@@ -409,7 +414,10 @@ describe('the admin page', () => {
     });
     keyInput().value = nip19.nsecEncode(store.secretKey);
     byId('open').click();
-    await vi.waitFor(() => expect(byId('orders').querySelectorAll('tr')).toHaveLength(1));
+    await vi.waitFor(
+      () => expect(byId('orders').querySelectorAll('tr')).toHaveLength(1),
+      HEAVY_READ,
+    );
     const lines = [...byId('warnings').querySelectorAll('li')].map((item) => item.textContent);
     expect(lines.filter((line) => line?.includes('no listing found'))).toEqual([
       '50 orders name products with no listing found (an unknown product, or the relays did not answer): they are hidden.',
@@ -417,8 +425,9 @@ describe('the admin page', () => {
     // A later read that finds nothing never drops a listing already read.
     events = [];
     byId('refresh').click();
-    await vi.waitFor(() =>
-      expect(byId('warnings').textContent).toMatch(/did not answer for the store/),
+    await vi.waitFor(
+      () => expect(byId('warnings').textContent).toMatch(/did not answer for the store/),
+      HEAVY_READ,
     );
     expect(byId('orders').querySelectorAll('tr')).toHaveLength(1);
   });
