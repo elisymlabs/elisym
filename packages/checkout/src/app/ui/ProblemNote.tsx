@@ -10,9 +10,17 @@ interface Props {
   tempo?: boolean;
   /** Fades in on its own: only outside a step that already does (never two at once). */
   reveal?: boolean;
+  /** The screen offers something to press now (a wait before its retry does not). */
+  canPress?: boolean;
 }
 
-export function ProblemNote({ problem, asset, tempo = false, reveal = false }: Props) {
+export function ProblemNote({
+  problem,
+  asset,
+  tempo = false,
+  reveal = false,
+  canPress = true,
+}: Props) {
   if (problem === undefined) {
     return null;
   }
@@ -26,7 +34,7 @@ export function ProblemNote({ problem, asset, tempo = false, reveal = false }: P
       tabindex={-1}
       data-problem-note=""
     >
-      <p>{problemText(problem, asset)}</p>
+      <p>{problemText(problem, asset, canPress)}</p>
       {tempo && (problem.reason === 'no_wallet' || problem.reason === 'tempo_unsupported') ? (
         <p>MetaMask is known to work.</p>
       ) : null}

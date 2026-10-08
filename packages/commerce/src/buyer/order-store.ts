@@ -215,7 +215,7 @@ function patchRefusal(current: OrderRecord, patch: RecordPatch): 'not_ready' | u
  * Whether the store has closed the order - cancelled or delivered it. No wallet
  * request, first or retry, is ever made for such an order.
  */
-function storeClosed(record: Pick<OrderRecord, 'status'>): boolean {
+export function storeClosed(record: Pick<OrderRecord, 'status'>): boolean {
   return record.status?.status === 'cancelled' || record.status?.status === 'completed';
 }
 

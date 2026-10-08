@@ -29,6 +29,7 @@ interface Calls {
   email: string[];
   oldPromptBack: number;
   cancel: number;
+  signAgain: number;
 }
 
 interface DrawProps {
@@ -81,6 +82,7 @@ function mount(view?: View, options: MountOptions = {}) {
     email: [],
     oldPromptBack: 0,
     cancel: 0,
+    signAgain: 0,
   };
   /** What the next action resolves with; a test may hold it open. */
   let settle: Promise<void> = Promise.resolve();
@@ -97,6 +99,10 @@ function mount(view?: View, options: MountOptions = {}) {
     },
     retry: (name) => {
       calls.retry.push(name);
+      return settle;
+    },
+    signAgain: () => {
+      calls.signAgain += 1;
       return settle;
     },
     startOver: () => {
@@ -2423,5 +2429,322 @@ describe('the last stage fills before the done screen (D9)', () => {
     );
     expect(FINISH_FILL_MS).toBe(600);
     expect(FINISH_WAIT_MS).toBe(2500);
+  });
+});
+
+describe('a Solana wallet that failed, asked again', () => {
+  const NOW_SECS = 1_750_000_000;
+  const heading = (ui: Ui) => ui.container.querySelector('[data-heading]')?.textContent;
+  const notes = (ui: Ui) =>
+    [...ui.container.querySelectorAll('[data-problem-note]')].map((note) => note.textContent);
+  const unsigned = (overrides: Partial<Extract<View, { kind: 'waiting_payment' }>> = {}) =>
+    waitingView(about, paying, { signed: false, ...overrides });
+  const counting = { retryIn: { seconds: 72, at: NOW_SECS } };
+
+  function atNow() {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_SECS * 1000);
+  }
+
+  it('keeps the wallet step current while nothing is signed or seen, on both rails', () => {
+    const ui = mount(unsigned());
+    expect(stageStates(ui)).toEqual(['done', 'active', 'todo']);
+    ui.draw({ view: waitingView(about, tempoPaying, { tempo: true, signed: false }) });
+    expect(stageStates(ui)).toEqual(['done', 'active', 'todo']);
+    ui.draw({ view: unsigned({ seenOnChain: true }) });
+    expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
+    ui.draw({ view: waitingView(about, paying) });
+    expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
+  });
+
+  it('heads each rail honestly while nothing is signed', () => {
+    atNow();
+    const ui = mount(unsigned(counting));
+    expect(heading(ui)).toBe('Payment not sent yet');
+    ui.draw({ view: unsigned({ ...counting, seenOnChain: true }) });
+    expect(heading(ui)).toBe('Confirming payment');
+    ui.draw({ view: unsigned({ ...counting, unserved: true }) });
+    expect(heading(ui)).toBe('Confirming payment');
+    ui.draw({
+      view: waitingView(about, tempoPaying, { tempo: true, signed: false, ...counting }),
+    });
+    expect(heading(ui)).toBe('Waiting for your wallet');
+    ui.draw({ view: waitingView(about, paying, counting) });
+    expect(heading(ui)).toBe('Confirming payment');
+    ui.draw({ view: waitingView(about, tempoPaying, { tempo: true, signed: true, ...counting }) });
+    expect(heading(ui)).toBe('Confirming payment');
+    ui.draw({ view: unsigned({ ...counting, canRetry: true }) });
+    expect(heading(ui)).toBe('Payment not made');
+  });
+
+  it('flips the heading to confirming at the countdown’s 0, with no new view', () => {
+    atNow();
+    const ui = mount(unsigned({ retryIn: { seconds: 2, at: NOW_SECS } }));
+    expect(heading(ui)).toBe('Payment not sent yet');
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(heading(ui)).toBe('Confirming payment');
+    expect(ui.status().join(' ')).toContain('Checking whether the payment went through');
+  });
+
+  it('says one status line, the first that holds', () => {
+    atNow();
+    const failed: Problem = { reason: 'wallet_failed' };
+    const rows: [Partial<Extract<View, { kind: 'waiting_payment' }>>, string][] = [
+      [
+        { retryIn: { seconds: 0, at: NOW_SECS }, seenOnChain: true, problem: failed },
+        'Checking whether the payment went through…',
+      ],
+      [
+        { seenOnChain: true, expiring: true, signedNotSent: true, problem: failed },
+        'A transaction for this order reached the network. The checkout is confirming it.',
+      ],
+      [
+        { expiring: true, signedNotSent: true, problem: failed },
+        'This request is about to expire.',
+      ],
+      [{ signedNotSent: true, problem: failed }, 'The wallet’s answer was not sent.'],
+      [
+        { problem: { reason: 'wallet_failed', declined: true } },
+        'You declined. Nothing new was sent.',
+      ],
+      [{ problem: failed }, 'The wallet did not answer.'],
+      [{ problem: { reason: 'wallet_unsupported' } }, 'The wallet’s answer was not sent.'],
+      [
+        { problem: { reason: 'failed' } },
+        'Something went wrong in the checkout. Nothing was sent.',
+      ],
+      [{ problem: { reason: 'rpc_error' } }, 'No signature reached this checkout.'],
+      [{}, 'No signature reached this checkout.'],
+    ];
+    const ui = mount(unsigned());
+    for (const [overrides, line] of rows) {
+      ui.draw({ view: unsigned({ ...counting, ...overrides }) });
+      expect(ui.status()).toEqual([line]);
+    }
+  });
+
+  it('never says a wallet failure twice: its note stays only where the line does not say it', () => {
+    const ui = mount(unsigned({ problem: { reason: 'wallet_failed' } }));
+    expect(notes(ui)).toEqual([]);
+    ui.draw({ view: unsigned({ problem: { reason: 'wallet_failed', declined: true } }) });
+    expect(notes(ui)).toEqual([]);
+    // An earlier line won: the failure is not said, so its note is.
+    ui.draw({ view: unsigned({ problem: { reason: 'wallet_failed' }, signedNotSent: true }) });
+    expect(notes(ui)).toEqual([
+      'The wallet did not sign. If it signed after all, the payment will be found.',
+    ]);
+    // Tempo and a network this checkout cannot check keep theirs.
+    ui.draw({
+      view: waitingView(about, tempoPaying, {
+        tempo: true,
+        signed: false,
+        problem: { reason: 'wallet_failed' },
+      }),
+    });
+    expect(notes(ui)).toHaveLength(1);
+    ui.draw({ view: unsigned({ unserved: true, problem: { reason: 'wallet_failed' } }) });
+    expect(notes(ui)).toHaveLength(1);
+    // A declined again request never says "nothing was paid" where its note shows.
+    ui.draw({
+      view: unsigned({ unserved: true, problem: { reason: 'wallet_failed', declined: true } }),
+    });
+    expect(notes(ui)).toEqual(['You declined. Nothing new was sent.']);
+  });
+
+  it('shows every other problem’s note on the unsigned wait, as before', () => {
+    const problems: [Problem, string][] = [
+      [{ reason: 'wallet_unsupported' }, 'This wallet changed the transaction'],
+      [{ reason: 'sold_out' }, 'This product is sold out now'],
+      [{ reason: 'wallet_busy' }, 'Your wallet already has a request open'],
+      [{ reason: 'rpc_error' }, 'The network could not be reached'],
+      [{ reason: 'again_declined' }, 'You declined. Nothing new was sent.'],
+      [
+        { reason: 'other_payer', payer: 'FakePayer1111111111111111111111111111111111' },
+        'Connect the account FakePa…1111 you started with.',
+      ],
+      [
+        { reason: 'insufficient_sol', needed: 5000n, available: 0n },
+        'Not enough SOL for the network fees',
+      ],
+    ];
+    const ui = mount(unsigned());
+    for (const [problem, text] of problems) {
+      ui.draw({ view: unsigned({ problem }) });
+      expect(notes(ui).join(' ')).toContain(text);
+    }
+  });
+
+  it('says nothing was sent after the checkout itself failed, and how long to wait', () => {
+    atNow();
+    const ui = mount(unsigned({ ...counting, problem: { reason: 'failed' } }));
+    expect(ui.status()).toEqual(['Something went wrong in the checkout. Nothing was sent.']);
+    expect(notes(ui)).toEqual([]);
+    expect(ui.text()).toContain('You can retry in about');
+    // A signed wait keeps its own line: what was sent may still land. Its note never says
+    // "try again" while nothing can be pressed (a second payment elsewhere would pay twice).
+    ui.draw({ view: waitingView(about, paying, { ...counting, problem: { reason: 'failed' } }) });
+    expect(ui.status()).toEqual(['Waiting for the payment to confirm…']);
+    expect(notes(ui)).toEqual(['Something went wrong in the checkout.']);
+  });
+
+  it('says "try again" on the offer and among the wallets, where a press is there', () => {
+    const offer = cannedOffer();
+    // Among the wallets (WalletSection).
+    const ui = mount(offerView(offer, { problem: { reason: 'failed' } }));
+    expect(ui.walletsOpen()).toBe(true);
+    expect(notes(ui)).toEqual(['Something went wrong. Try again.']);
+    // Above the button while a review keeps the wallets closed (OfferPanel).
+    ui.draw({ view: offerView(offer, { problem: { reason: 'offer_changed' } }) });
+    ui.draw({ view: offerView(offer, { problem: { reason: 'failed' } }) });
+    expect(ui.walletsOpen()).toBe(false);
+    expect(notes(ui)).toEqual(['Something went wrong. Try again.']);
+  });
+
+  it('checks a signed payment at the countdown’s 0, with no note', () => {
+    atNow();
+    const ui = mount(waitingView(about, paying, { retryIn: { seconds: 2, at: NOW_SECS } }));
+    expect(ui.status()).toEqual(['Waiting for the payment to confirm…']);
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(ui.status()).toEqual(['Checking whether the payment went through…']);
+    expect(ui.has('.note')).toBe(false);
+  });
+
+  it('says the answer was not sent before it says the checkout failed', () => {
+    atNow();
+    const ui = mount(unsigned({ ...counting, signedNotSent: true, problem: { reason: 'failed' } }));
+    expect(ui.status()).toEqual(['The wallet’s answer was not sent.']);
+    expect(notes(ui)).toEqual(['Something went wrong in the checkout.']);
+  });
+
+  it('never says "try again" on a wait with nothing to press, and does where a retry is', () => {
+    atNow();
+    const failed: Problem = { reason: 'failed' };
+    const waits: Extract<View, { kind: 'waiting_payment' }>[] = [
+      unsigned({ retryIn: { seconds: 0, at: NOW_SECS }, problem: failed }),
+      waitingView(about, paying, { ...counting, problem: failed }),
+      waitingView(about, tempoPaying, { tempo: true, signed: false, problem: failed }),
+      waitingView(about, tempoPaying, { tempo: true, signed: true, problem: failed }),
+      unsigned({ unserved: true, problem: failed }),
+    ];
+    const ui = mount(unsigned());
+    for (const view of waits) {
+      ui.draw({ view });
+      expect(notes(ui)).toEqual(['Something went wrong in the checkout.']);
+    }
+    ui.draw({
+      view: unsigned({ canRetry: true, wallets: [{ name: 'Phantom' }], problem: failed }),
+    });
+    expect(notes(ui)).toEqual(['Something went wrong. Try again.']);
+  });
+
+  it('offers the wallet again, with its countdown note, and presses it', () => {
+    atNow();
+    const ui = mount(
+      unsigned({ ...counting, problem: { reason: 'wallet_failed' }, again: { wallet: 'Phantom' } }),
+    );
+    expect(ui.text()).toContain('Or try another wallet in about');
+    expect(ui.container.querySelector('.countdown')?.textContent).toBe('1:12');
+    ui.click('Open Phantom again');
+    expect(ui.calls.signAgain).toBe(1);
+  });
+
+  it('drops the button and its note at the countdown’s 0, with no new view', () => {
+    atNow();
+    const ui = mount(
+      unsigned({
+        retryIn: { seconds: 2, at: NOW_SECS },
+        problem: { reason: 'wallet_failed' },
+        again: { wallet: 'Phantom' },
+      }),
+    );
+    expect(ui.buttons().some((each) => each.textContent === 'Open Phantom again')).toBe(true);
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(ui.buttons().some((each) => each.textContent === 'Open Phantom again')).toBe(false);
+    expect(ui.text()).not.toContain('another wallet');
+    expect(ui.status()).toEqual(['Checking whether the payment went through…']);
+  });
+
+  it('keeps the honest wait while no estimate is known, the button there too', () => {
+    const ui = mount(unsigned({ again: { wallet: 'Phantom' } }));
+    expect(heading(ui)).toBe('Payment not sent yet');
+    expect(ui.text()).toContain('A retry opens about two minutes after the attempt');
+    expect(ui.text()).not.toContain('another wallet');
+    expect(ui.buttons().some((each) => each.textContent === 'Open Phantom again')).toBe(true);
+  });
+
+  it('says the other countdown notes as before', () => {
+    atNow();
+    const ui = mount(unsigned({ ...counting, problem: { reason: 'wallet_failed' } }));
+    expect(ui.text()).toContain('You can retry in about');
+    // Nothing signed and no problem (a reload): a retry, never "if it does not land".
+    ui.draw({ view: unsigned(counting) });
+    expect(ui.text()).toContain('You can retry in about');
+    ui.draw({ view: waitingView(about, paying, counting) });
+    expect(ui.text()).toContain('If it does not land, a retry opens in about');
+    ui.draw({
+      view: waitingView(about, paying, { ...counting, problem: { reason: 'wallet_unsupported' } }),
+    });
+    expect(ui.text()).toContain('You can retry in about');
+    // Follow-only keeps its start-over note, button or not.
+    ui.draw({ view: unsigned({ ...counting, followOnly: true, again: { wallet: 'Phantom' } }) });
+    expect(ui.text()).toContain('Start over opens in about');
+    expect(ui.text()).not.toContain('another wallet');
+    // At 0 only the checking line, no note.
+    ui.draw({ view: unsigned({ retryIn: { seconds: 0, at: NOW_SECS }, followOnly: true }) });
+    expect(ui.has('.note')).toBe(false);
+  });
+
+  it('heads a Tempo wait with nothing signed the same at 0 and where it cannot be checked', () => {
+    atNow();
+    const ui = mount(
+      waitingView(about, tempoPaying, {
+        tempo: true,
+        signed: false,
+        requestEndsIn: { seconds: 0, at: NOW_SECS },
+      }),
+    );
+    expect(heading(ui)).toBe('Waiting for your wallet');
+    ui.draw({
+      view: waitingView(about, tempoPaying, { tempo: true, signed: false, unserved: true }),
+    });
+    expect(heading(ui)).toBe('Waiting for your wallet');
+  });
+
+  it('runs the again press as an action: the view it brings takes focus', async () => {
+    let finish = () => undefined as void;
+    const ui = mount(
+      unsigned({ problem: { reason: 'wallet_failed' }, again: { wallet: 'Phantom' } }),
+    );
+    ui.hold(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    ui.click('Open Phantom again');
+    expect(ui.calls.signAgain).toBe(1);
+    (document.activeElement as HTMLElement | null)?.blur();
+    ui.draw({ view: { kind: 'working', step: 'checking', about } });
+    expect(document.activeElement).toBe(ui.container.querySelector('[data-heading]'));
+    expect(document.activeElement?.textContent).toBe('Paying');
+    await act(async () => finish());
+  });
+
+  it('has no again button on a retry, on Tempo, or on a network it cannot check', () => {
+    const again = { wallet: 'Phantom' };
+    const ui = mount(unsigned({ canRetry: true, again }));
+    const shown = () => ui.buttons().some((each) => each.textContent === 'Open Phantom again');
+    expect(shown()).toBe(false);
+    ui.draw({ view: waitingView(about, tempoPaying, { tempo: true, signed: false, again }) });
+    expect(shown()).toBe(false);
+    ui.draw({ view: unsigned({ unserved: true, again }) });
+    expect(shown()).toBe(false);
+    ui.draw({ view: unsigned({ again }) });
+    expect(shown()).toBe(true);
   });
 });

@@ -17,6 +17,7 @@ const NOTHING: Actions = {
   setEmail: () => undefined,
   pay: async () => undefined,
   retry: async () => undefined,
+  signAgain: async () => undefined,
   startOver: async () => undefined,
   cancel: () => undefined,
 };

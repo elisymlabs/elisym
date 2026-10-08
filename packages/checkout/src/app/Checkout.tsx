@@ -30,6 +30,8 @@ export interface Actions {
   setEmail(value: string): void;
   pay(walletName: string): Promise<void>;
   retry(walletName: string): Promise<void>;
+  /** Ask the Solana wallet that failed the live attempt again, in that attempt. */
+  signAgain(): Promise<void>;
   startOver(): Promise<void>;
   /** End a press whose wallet has not answered its connect request yet. */
   cancel(): void;
@@ -463,6 +465,7 @@ export function Checkout({
               view={shown}
               problem={problem}
               onRetry={(name) => run(() => actions.retry(name))}
+              onSignAgain={() => run(() => actions.signAgain())}
               onStartOver={startOver}
               onCancel={cancel}
               hintAfterMs={hintAfterMs}

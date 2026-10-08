@@ -68,8 +68,14 @@ export function payingLine(paying: Paying): string {
   return `Paying ${formatAssetAmount(paying.asset, BigInt(paying.amount))} · ${networkLabel(paying.chain, paying.network)}`;
 }
 
-/** `asset`: the coin the order is paid in, for amounts of it. */
-export function problemText(problem: Problem, asset: Asset): string {
+/** A decline of an again request: the attempt it asked for stays live, so never "nothing was paid". */
+export const AGAIN_DECLINED = 'You declined. Nothing new was sent.';
+
+/**
+ * `asset`: the coin the order is paid in, for amounts of it. `canPress`: the screen
+ * offers something to press now; without it, nothing says "try again".
+ */
+export function problemText(problem: Problem, asset: Asset, canPress = true): string {
   switch (problem.reason) {
     case 'no_wallet':
       return 'Connect a wallet for this network (Phantom or Solflare on Solana, MetaMask on Tempo).';
@@ -100,9 +106,17 @@ export function problemText(problem: Problem, asset: Asset): string {
     case 'no_store_inbox':
       return 'The store names no inbox to send orders to. Contact the store.';
     case 'failed':
-      return 'Something went wrong. Try again.';
+      return canPress
+        ? 'Something went wrong. Try again.'
+        : 'Something went wrong in the checkout.';
     case 'wallet_failed':
-      return 'The wallet did not sign. If it signed after all, the payment will be found.';
+      return problem.declined === true
+        ? AGAIN_DECLINED
+        : 'The wallet did not sign. If it signed after all, the payment will be found.';
+    case 'again_declined':
+      return AGAIN_DECLINED;
+    case 'other_payer':
+      return `Connect the account ${shortTx(problem.payer)} you started with.`;
     case 'wallet_unsupported':
       return 'This wallet changed the transaction, which the checkout never sends. Use another wallet once a retry is possible.';
     case 'offer_changed':

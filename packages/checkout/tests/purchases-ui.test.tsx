@@ -88,6 +88,7 @@ function mount(
       return settle;
     },
     retry: () => settle,
+    signAgain: () => settle,
     startOver: () => settle,
     cancel: () => {
       calls.cancel += 1;
@@ -1034,6 +1035,7 @@ describe('the card after a reset on reopen (D4)', () => {
       setEmail: () => undefined,
       pay: async () => undefined,
       retry: async () => undefined,
+      signAgain: async () => undefined,
       startOver: async () => undefined,
       cancel: () => undefined,
     };

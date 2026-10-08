@@ -89,3 +89,11 @@ export const PAYMENT_SCAN_MARGIN_SECS = 30 * 60;
 
 /** Compute units the payment transaction asks for: what pay-core's own builder uses. */
 export const SOLANA_COMPUTE_UNIT_LIMIT = 200_000;
+
+/**
+ * The same wallet is asked again (`signAgainWithSolana`) only while the
+ * confirmed height is more than this many blocks (about 16 s) below the
+ * attempt's last valid height: a wallet that simulates the transaction must
+ * still find its blockhash alive.
+ */
+export const AGAIN_MARGIN_BLOCKS = 40n;

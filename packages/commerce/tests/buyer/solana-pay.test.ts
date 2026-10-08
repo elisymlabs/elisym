@@ -1,10 +1,10 @@
-import { USDC_SOLANA_DEVNET } from '@elisym/pay-core';
+import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/pay-core';
 import { getBase64Encoder } from '@solana/kit';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { type LoadedOffer, loadOffer } from '../../src/buyer/offer';
 import { placeOrder } from '../../src/buyer/order-flow';
 import type { OrderRecord } from '../../src/buyer/order-record';
-import { MemoryOrderBackend, OrderStore } from '../../src/buyer/order-store';
+import { MemoryOrderBackend, OrderStore, storeClosed } from '../../src/buyer/order-store';
 import {
   type SolanaPayDeps,
   checkBeforePaying,
@@ -14,10 +14,11 @@ import {
   isSolanaUserRejection,
   payWithSolana,
   retryWithSolana,
+  signAgainWithSolana,
   storedSolanaRequest,
   watchSolanaPayment,
 } from '../../src/buyer/solana-pay';
-import { DAY, MemoryRelays, NOW, type Shop, inboxList, makeShop } from './fixtures';
+import { DAY, MemoryRelays, NOW, type Shop, inboxList, makeShop, solanaAddress } from './fixtures';
 import { ACKNOWLEDGED, record as contractRecord } from './order-store.contract';
 import { EMPTY_ACCOUNT_RENT, FakeSolana, FakeWallet, signatureOf } from './solana-fixtures';
 
@@ -29,9 +30,12 @@ const PRICE = 49_000_000n;
 type Ready = Extract<LoadedOffer, { ok: true }>;
 
 let store: OrderStore;
+/** The store's backend: a test may write a record directly, past every rule. */
+let backend: MemoryOrderBackend;
 
 beforeEach(async () => {
-  store = new OrderStore(new MemoryOrderBackend());
+  backend = new MemoryOrderBackend();
+  store = new OrderStore(backend);
 });
 
 async function loaded(shop: Shop, relays: MemoryRelays): Promise<Ready> {
@@ -885,6 +889,65 @@ describe("the caller's spend limits", () => {
     expect(spend.released).toEqual([]);
   });
 
+  it('gives back a first ask’s reservation when its signature cannot be written', async () => {
+    const cases: [string, (run: Awaited<ReturnType<typeof setup>>) => OrderStore][] = [
+      [
+        'another tab replaced the attempt while the wallet was open',
+        ({ record, wallet }) => {
+          wallet.duringPrompt = async () => {
+            const current = await stored(record.orderId);
+            if (current.marker === undefined) {
+              throw new Error('no marker');
+            }
+            await store.updateMarker(current.orderId, current.version, current.marker.attemptId, {
+              ...current.marker,
+              attemptId: 'other-tab-attempt',
+            });
+          };
+          return store;
+        },
+      ],
+      [
+        'the store refused the write outright',
+        () => {
+          const refusing = Object.create(store) as OrderStore;
+          refusing.updateMarker = async () => ({ ok: false, reason: 'not_ready' });
+          return refusing;
+        },
+      ],
+      [
+        'every write lost its race',
+        () => {
+          const losing = Object.create(store) as OrderStore;
+          losing.updateMarker = async () => ({ ok: false, reason: 'conflict' });
+          return losing;
+        },
+      ],
+    ];
+    for (const [name, arrange] of cases) {
+      const run = await setup();
+      const spend = limits();
+      const result = await payWithSolana(run.record, run.wallet, run.input, {
+        ...run.deps,
+        store: arrange(run),
+        reserve: spend.reserve,
+        release: spend.release,
+      });
+      expect({
+        name,
+        reason: result.ok ? 'paid' : result.reason,
+        signedNotSent: result.ok ? undefined : result.signedNotSent,
+        afterMarker: result.ok ? undefined : result.afterMarker,
+      }).toEqual({ name, reason: 'conflict', signedNotSent: true, afterMarker: undefined });
+      expect({ name, released: spend.released }).toEqual({
+        name,
+        released: spend.reserved.map((entry) => entry.attemptId),
+      });
+      expect({ name, count: spend.released.length }).toEqual({ name, count: 1 });
+      expect({ name, sent: run.chain.sent }).toEqual({ name, sent: [] });
+    }
+  });
+
   it('reserves again for a retry, before its marker replaces the old one', async () => {
     const { record, wallet, chain, deps, input } = await setup();
     wallet.behaviour = 'throw';
@@ -1018,6 +1081,8 @@ describe('a decline in the wallet', () => {
     };
     const result = await payWithSolana(record, wallet, input, deps);
     expect(result).toMatchObject({ ok: false, reason: 'conflict' });
+    // A decline: nothing was signed.
+    expect(result).not.toHaveProperty('signedNotSent');
     expect((await stored(record.orderId)).marker?.attemptId).toBe(otherAttempt);
   });
 
@@ -1058,5 +1123,976 @@ describe('a decline in the wallet', () => {
       reason: 'wallet_failed',
     });
     expect((await stored(record.orderId)).marker).toBeDefined();
+  });
+});
+
+describe('asking the same wallet again', () => {
+  /** A first ask the wallet failed: the attempt is live, with its handle. */
+  async function failedOnce(options: { lamports?: bigint } = {}) {
+    const run = await setup();
+    if (options.lamports !== undefined) {
+      run.chain.lamports = options.lamports;
+    }
+    run.wallet.behaviour = 'throw';
+    const failed = await payWithSolana(run.record, run.wallet, run.input, run.deps);
+    if (failed.ok || failed.again === undefined) {
+      throw new Error('expected a wallet failure with a handle');
+    }
+    run.wallet.behaviour = 'sign';
+    const waiting = await stored(run.record.orderId);
+    if (waiting.marker?.rail !== 'solana') {
+      throw new Error('no Solana marker');
+    }
+    return { ...run, failed, again: failed.again, waiting, marker: waiting.marker };
+  }
+
+  /** Write `change` of the stored record straight to the backend, past every rule. */
+  async function tamper(orderId: string, change: (record: OrderRecord) => OrderRecord) {
+    const current = await stored(orderId);
+    await backend.transactProduct(current.productAddress, () => ({
+      write: [change(current)],
+      result: undefined,
+    }));
+  }
+
+  /** The store, with every marker write and release counted. */
+  function counted() {
+    const calls = { updateMarker: 0, clearMarker: 0, released: [] as string[], reserved: 0 };
+    const spied = Object.create(store) as OrderStore;
+    spied.updateMarker = (...args: Parameters<OrderStore['updateMarker']>) => {
+      calls.updateMarker += 1;
+      return store.updateMarker(...args);
+    };
+    spied.clearMarker = (...args: Parameters<OrderStore['clearMarker']>) => {
+      calls.clearMarker += 1;
+      return store.clearMarker(...args);
+    };
+    return {
+      calls,
+      store: spied,
+      release: (attemptId: string) => {
+        calls.released.push(attemptId);
+      },
+      reserve: () => {
+        calls.reserved += 1;
+      },
+    };
+  }
+
+  it('hands back a handle on a first ask and a retry the wallet failed, with only its ids', async () => {
+    const { again, marker, wallet, record } = await failedOnce();
+    expect(Object.keys(again).sort()).toEqual(['attemptId', 'orderId', 'payer']);
+    expect(Object.isFrozen(again)).toBe(true);
+    expect(again).toEqual({
+      orderId: record.orderId,
+      attemptId: marker.attemptId,
+      payer: wallet.address,
+    });
+    const retry = await setup();
+    retry.wallet.behaviour = 'throw';
+    await payWithSolana(retry.record, retry.wallet, retry.input, retry.deps);
+    retry.chain.expire();
+    retry.chain.nextBlockhash();
+    const retried = await retryWithSolana(
+      await stored(retry.record.orderId),
+      retry.wallet,
+      retry.input,
+      retry.deps,
+    );
+    expect(retried).toMatchObject({ ok: false, reason: 'wallet_failed' });
+    expect(retried.ok === false && retried.again !== undefined).toBe(true);
+    expect(retried.ok === false ? retried.again?.attemptId : undefined).toBe(
+      (await stored(retry.record.orderId)).marker?.attemptId,
+    );
+  });
+
+  it('keeps the attempt’s own message though the wallet wrote over what it was handed', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    const scribbler = {
+      address: wallet.address,
+      signTransaction: async (bytes: Uint8Array): Promise<Uint8Array> => {
+        bytes.fill(0);
+        throw new Error('wallet failed');
+      },
+    };
+    const failed = await payWithSolana(record, scribbler, input, deps);
+    if (failed.ok || failed.again === undefined) {
+      throw new Error('expected a wallet failure with a handle');
+    }
+    const paid = await signAgainWithSolana(failed.again, wallet, deps);
+    expect(paid).toMatchObject({ ok: true });
+    expect(await watchSolanaPayment(await stored(record.orderId), deps)).toMatchObject({
+      state: 'paid',
+    });
+    expect(chain.sent).toHaveLength(1);
+  });
+
+  it('pays in the same attempt: the signature recorded before the broadcast', async () => {
+    const { again, wallet, chain, deps, marker, record } = await failedOnce();
+    let markerAtSend: OrderRecord['marker'];
+    chain.onSend = async () => {
+      markerAtSend = (await stored(record.orderId)).marker;
+    };
+    const paid = await signAgainWithSolana(again, wallet, deps);
+    if (!paid.ok) {
+      throw new Error(paid.reason);
+    }
+    expect(wallet.requests).toBe(2);
+    expect(markerAtSend).toMatchObject({
+      attemptId: marker.attemptId,
+      blockhash: marker.blockhash,
+      signature: paid.signature,
+      signedTransaction: chain.sent[0],
+    });
+    expect(chain.sent).toHaveLength(1);
+    expect(await watchSolanaPayment(paid.record, deps)).toMatchObject({ state: 'paid' });
+  });
+
+  it('accepts a message the wallet changed but kept valid, on again and on a first ask', async () => {
+    const first = await setup();
+    first.wallet.behaviour = 'raise_price';
+    expect(await payWithSolana(first.record, first.wallet, first.input, first.deps)).toMatchObject({
+      ok: true,
+    });
+    const { again, wallet, deps } = await failedOnce();
+    wallet.behaviour = 'raise_price';
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({ ok: true });
+  });
+
+  it('checks what the wallet returned before it lists the reference again', async () => {
+    for (const listing of ['shows a row', 'throws'] as const) {
+      const { again, wallet, chain, deps, marker } = await failedOnce();
+      wallet.behaviour = 'swap_blockhash';
+      let atAnswer = 0;
+      wallet.duringPrompt = async () => {
+        if (listing === 'throws') {
+          chain.listingFails = true;
+        } else {
+          chain.extraListed = [
+            { signature: signatureOf(1), failed: false, slot: BigInt(marker.slot ?? '0') },
+          ];
+        }
+        atAnswer = chain.calls.length;
+      };
+      const result = await signAgainWithSolana(again, wallet, deps);
+      expect({ listing, reason: result.ok ? 'paid' : result.reason }).toEqual({
+        listing,
+        reason: 'wallet_unsupported',
+      });
+      expect({
+        listing,
+        listed: chain.calls.slice(atAnswer).includes('getSignaturesForAddress'),
+      }).toEqual({ listing, listed: false });
+    }
+  });
+
+  it('sends nothing the wallet returned for another blockhash, and hands no handle back', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce();
+    wallet.behaviour = 'swap_blockhash';
+    const result = await signAgainWithSolana(again, wallet, deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'wallet_unsupported',
+      detail: 'lifetime_changed',
+      attemptId: marker.attemptId,
+    });
+    expect(result).not.toHaveProperty('again');
+    expect(result).not.toHaveProperty('afterMarker');
+    expect(chain.sent).toEqual([]);
+    const first = await setup();
+    first.wallet.behaviour = 'swap_blockhash';
+    const unsupported = await payWithSolana(first.record, first.wallet, first.input, first.deps);
+    expect(unsupported).toMatchObject({ ok: false, reason: 'wallet_unsupported' });
+    expect(unsupported).not.toHaveProperty('again');
+  });
+
+  it('keeps the attempt on a decline: nothing cleared or released, and a handle back', async () => {
+    const { again, wallet, deps, marker, record } = await failedOnce();
+    wallet.behaviour = 'reject';
+    const spy = counted();
+    const result = await signAgainWithSolana(again, wallet, {
+      ...deps,
+      store: spy.store,
+      release: spy.release,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'wallet_failed',
+      declined: true,
+      record: { orderId: record.orderId, state: 'paying' },
+      attemptId: marker.attemptId,
+    });
+    expect(result).not.toHaveProperty('afterMarker');
+    expect(result.ok === false && result.again !== undefined).toBe(true);
+    expect(spy.calls.clearMarker).toBe(0);
+    expect(spy.calls.released).toEqual([]);
+    expect((await stored(record.orderId)).marker?.attemptId).toBe(marker.attemptId);
+    // Asked again at once, the same wallet pays the same attempt.
+    wallet.behaviour = 'sign';
+    if (result.ok || result.again === undefined) {
+      throw new Error('no handle');
+    }
+    expect(await signAgainWithSolana(result.again, wallet, deps)).toMatchObject({ ok: true });
+  });
+
+  it('still releases a decline on a first ask, with no handle', async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'reject';
+    const spy = counted();
+    const result = await payWithSolana(record, wallet, input, {
+      ...deps,
+      store: spy.store,
+      release: spy.release,
+    });
+    expect(spy.calls.released).toHaveLength(1);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'rejected',
+      attemptId: spy.calls.released[0],
+    });
+    expect(result).not.toHaveProperty('again');
+    expect(result).not.toHaveProperty('declined');
+    expect(spy.calls.clearMarker).toBe(1);
+  });
+
+  it('hands a handle back when the wallet fails again', async () => {
+    const { again, wallet, deps, marker } = await failedOnce();
+    wallet.behaviour = 'throw';
+    const result = await signAgainWithSolana(again, wallet, deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'wallet_failed',
+      attemptId: marker.attemptId,
+    });
+    expect(result).not.toHaveProperty('declined');
+    expect(result.ok === false ? result.again?.attemptId : undefined).toBe(marker.attemptId);
+  });
+
+  it('sends nothing when the reference shows a transaction once the wallet answered', async () => {
+    const { again, wallet, chain, deps, marker, record } = await failedOnce();
+    const spy = counted();
+    wallet.duringPrompt = async () => {
+      chain.extraListed = [
+        { signature: signatureOf(1), failed: false, slot: BigInt(marker.slot ?? '0') },
+      ];
+    };
+    const result = await signAgainWithSolana(again, wallet, { ...deps, store: spy.store });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'still_waiting',
+      record: { orderId: record.orderId, state: 'paying' },
+      afterMarker: true,
+      signedNotSent: true,
+      attemptId: marker.attemptId,
+    });
+    expect(result).not.toHaveProperty('again');
+    expect(spy.calls.updateMarker).toBe(0);
+    expect(chain.sent).toEqual([]);
+    expect((await stored(record.orderId)).marker).not.toHaveProperty('signature');
+  });
+
+  it('sends nothing when the reference cannot be read once the wallet answered', async () => {
+    const { again, wallet, chain, deps, marker, record } = await failedOnce();
+    const spy = counted();
+    wallet.duringPrompt = async () => {
+      chain.listingFails = true;
+    };
+    const result = await signAgainWithSolana(again, wallet, { ...deps, store: spy.store });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'rpc_error',
+      record: { orderId: record.orderId, state: 'paying' },
+      afterMarker: true,
+      signedNotSent: true,
+      attemptId: marker.attemptId,
+    });
+    expect(result).not.toHaveProperty('again');
+    expect(spy.calls.updateMarker).toBe(0);
+    expect(chain.sent).toEqual([]);
+  });
+
+  it('names its attempt when every write of the answer lost, and sends nothing', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce();
+    const spy = counted();
+    spy.store.updateMarker = async () => ({ ok: false, reason: 'conflict' });
+    const result = await signAgainWithSolana(again, wallet, { ...deps, store: spy.store });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'conflict',
+      record: { orderId: again.orderId },
+      attemptId: marker.attemptId,
+    });
+    expect(chain.sent).toEqual([]);
+  });
+
+  it('judges the whole page, newest first: a new row above an older one holds the ask', async () => {
+    const before = await failedOnce();
+    const beforeSlot = BigInt(before.marker.slot ?? '0');
+    before.chain.extraListed = [
+      { signature: signatureOf(1), failed: false, slot: beforeSlot },
+      { signature: signatureOf(2), failed: false, slot: beforeSlot - 1n },
+    ];
+    expect(await signAgainWithSolana(before.again, before.wallet, before.deps)).toMatchObject({
+      ok: false,
+      reason: 'still_waiting',
+    });
+    expect(before.wallet.requests).toBe(1);
+    const after = await failedOnce();
+    const afterSlot = BigInt(after.marker.slot ?? '0');
+    after.wallet.duringPrompt = async () => {
+      after.chain.extraListed = [
+        { signature: signatureOf(1), failed: false, slot: afterSlot },
+        { signature: signatureOf(2), failed: false, slot: afterSlot - 1n },
+      ];
+    };
+    expect(await signAgainWithSolana(after.again, after.wallet, after.deps)).toMatchObject({
+      ok: false,
+      reason: 'still_waiting',
+      signedNotSent: true,
+    });
+    expect(after.chain.sent).toEqual([]);
+  });
+
+  it('lists the reference at confirmed: a row not finalized yet still holds the ask', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce();
+    chain.extraListed = [
+      {
+        signature: signatureOf(1),
+        failed: false,
+        slot: BigInt(marker.slot ?? '0'),
+        unfinalized: true,
+      },
+    ];
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'still_waiting',
+    });
+    expect(wallet.requests).toBe(1);
+  });
+
+  it('refuses a closed order as not payable before it looks at the account', async () => {
+    const { again, deps, record } = await failedOnce();
+    await tamper(record.orderId, (current) => ({
+      ...current,
+      status: { status: 'cancelled', at: NOW + 40 },
+    }));
+    const other = await FakeWallet.create();
+    const result = await signAgainWithSolana(again, other, deps);
+    expect(result).toMatchObject({ ok: false, reason: 'not_payable' });
+    expect(result).not.toHaveProperty('again');
+    expect(result).not.toHaveProperty('afterMarker');
+    expect(other.requests).toBe(0);
+  });
+
+  it('lists the reference before the fee check: a landed transaction is no funds note', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce({
+      lamports: EMPTY_ACCOUNT_RENT + 100_000n,
+    });
+    wallet.behaviour = 'raise_price';
+    wallet.duringPrompt = async () => {
+      chain.extraListed = [
+        { signature: signatureOf(1), failed: false, slot: BigInt(marker.slot ?? '0') },
+      ];
+    };
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'still_waiting',
+    });
+  });
+
+  it('never releases in again mode: a fee it cannot cover, a lost write', async () => {
+    const short = await failedOnce({ lamports: EMPTY_ACCOUNT_RENT + 100_000n });
+    short.wallet.behaviour = 'raise_price';
+    const spy = counted();
+    const result = await signAgainWithSolana(short.again, short.wallet, {
+      ...short.deps,
+      store: spy.store,
+      release: spy.release,
+      reserve: spy.reserve,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'insufficient_sol',
+      afterMarker: true,
+      signedNotSent: true,
+      attemptId: short.marker.attemptId,
+    });
+    expect(result).not.toHaveProperty('again');
+    expect(short.chain.sent).toEqual([]);
+    const lost = await failedOnce();
+    const conflicting = counted();
+    conflicting.store.updateMarker = async () => ({ ok: false, reason: 'not_ready' });
+    expect(
+      await signAgainWithSolana(lost.again, lost.wallet, {
+        ...lost.deps,
+        store: conflicting.store,
+        release: conflicting.release,
+        reserve: conflicting.reserve,
+      }),
+    ).toMatchObject({ ok: false, reason: 'conflict', attemptId: lost.marker.attemptId });
+    expect([...spy.calls.released, ...conflicting.calls.released]).toEqual([]);
+    expect(spy.calls.reserved + conflicting.calls.reserved).toBe(0);
+    expect(lost.chain.sent).toEqual([]);
+  });
+
+  it('marks a first ask whose wallet signed a fee it cannot cover as live and not sent', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    wallet.behaviour = 'raise_price';
+    chain.lamports = EMPTY_ACCOUNT_RENT + 100_000n;
+    const result = await payWithSolana(record, wallet, input, deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'insufficient_sol',
+      afterMarker: true,
+      signedNotSent: true,
+      attemptId: (await stored(record.orderId)).marker?.attemptId,
+    });
+    // Refused before the marker: nothing live, nothing to say about it.
+    const before = await setup();
+    before.chain.lamports = 1n;
+    const refused = await payWithSolana(before.record, before.wallet, before.input, before.deps);
+    expect(refused).toMatchObject({ ok: false, reason: 'insufficient_sol' });
+    expect(refused).not.toHaveProperty('afterMarker');
+    expect(refused).not.toHaveProperty('signedNotSent');
+    expect(refused).not.toHaveProperty('attemptId');
+  });
+
+  it('never records the answer on an attempt another tab started meanwhile', async () => {
+    const { again, wallet, chain, deps, record } = await failedOnce();
+    wallet.duringPrompt = async () => {
+      const current = await stored(record.orderId);
+      if (current.marker === undefined) {
+        throw new Error('no marker');
+      }
+      const replaced = await store.updateMarker(
+        current.orderId,
+        current.version,
+        current.marker.attemptId,
+        { ...current.marker, attemptId: 'other-tab-attempt' },
+      );
+      if (!replaced.ok) {
+        throw new Error(replaced.reason);
+      }
+    };
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'conflict',
+      // The attempt this call worked on, never the one read back.
+      attemptId: again.attemptId,
+      signedNotSent: true,
+    });
+    const after = await stored(record.orderId);
+    expect(after.marker?.attemptId).toBe('other-tab-attempt');
+    expect(after.marker).not.toHaveProperty('signature');
+    expect(chain.sent).toEqual([]);
+  });
+
+  it('sends nothing for an order found paid while the wallet was open', async () => {
+    const { again, wallet, chain, deps, record } = await failedOnce();
+    wallet.duringPrompt = async () => {
+      const current = await stored(record.orderId);
+      await store.update(current.orderId, current.version, {
+        state: 'paid',
+        paidTx: signatureOf(9),
+        paidAt: NOW + 40,
+      });
+    };
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'conflict',
+    });
+    expect(chain.sent).toEqual([]);
+  });
+
+  it('asks nothing for a handle it did not give out, or a copy of one', async () => {
+    const { again, wallet, deps } = await failedOnce();
+    for (const handle of [{ ...again }, { orderId: again.orderId, attemptId: 'x', payer: 'y' }]) {
+      expect(await signAgainWithSolana(handle, wallet, deps)).toEqual({
+        ok: false,
+        reason: 'not_payable',
+      });
+    }
+    expect(wallet.requests).toBe(1);
+  });
+
+  it('asks nothing unless the stored attempt is still exactly the handle’s', async () => {
+    const otherPayee = solanaAddress();
+    const otherReference = solanaAddress();
+    const cases: [string, (run: Awaited<ReturnType<typeof failedOnce>>) => Promise<void>][] = [
+      [
+        'another attempt',
+        async ({ record }) =>
+          tamper(record.orderId, (current) =>
+            current.marker === undefined
+              ? current
+              : { ...current, marker: { ...current.marker, attemptId: 'other' } },
+          ),
+      ],
+      [
+        'a signature set',
+        async ({ record, marker }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            marker: { ...marker, signature: signatureOf(3) },
+          })),
+      ],
+      [
+        'not paying',
+        async ({ record }) => tamper(record.orderId, (current) => ({ ...current, state: 'paid' })),
+      ],
+      [
+        'closed by the store',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            status: { status: 'cancelled', at: NOW + 40 },
+          })),
+      ],
+      [
+        'a marker without its slot',
+        async ({ record, marker }) =>
+          tamper(record.orderId, (current) => {
+            const { slot: _slot, ...rest } = marker;
+            return { ...current, marker: rest };
+          }),
+      ],
+      [
+        'another blockhash',
+        async ({ record, marker }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            marker: { ...marker, blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' },
+          })),
+      ],
+      [
+        'another last valid height',
+        async ({ record, marker }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            marker: {
+              ...marker,
+              lastValidBlockHeight: (BigInt(marker.lastValidBlockHeight) + 1n).toString(),
+            },
+          })),
+      ],
+      [
+        'a record its stored request does not pay',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            payout: { ...current.payout, address: otherPayee },
+          })),
+      ],
+      [
+        'no stored request',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => {
+            const { paymentRequest: _request, ...rest } = current;
+            return rest;
+          }),
+      ],
+      [
+        'a payout no coin is known for',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            payout: { ...current.payout, caip19: 'solana:unknown/token:nothing' },
+          })),
+      ],
+      [
+        'another payee, record and request together',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            payout: { ...current.payout, address: otherPayee },
+            paymentRequest: JSON.stringify({
+              ...storedSolanaRequest(current),
+              recipient: otherPayee,
+            }),
+          })),
+      ],
+      [
+        'another amount, record and request together',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            amount: (PRICE + 1n).toString(),
+            paymentRequest: JSON.stringify({
+              ...storedSolanaRequest(current),
+              amount: Number(PRICE + 1n),
+            }),
+          })),
+      ],
+      [
+        'another reference, record and request together',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            reference: otherReference,
+            paymentRequest: JSON.stringify({
+              ...storedSolanaRequest(current),
+              reference: otherReference,
+            }),
+          })),
+      ],
+      [
+        'another mint, record and request together',
+        async ({ record }) =>
+          tamper(record.orderId, (current) => ({
+            ...current,
+            payout: {
+              ...current.payout,
+              caip19: `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:${USDC_SOLANA_MAINNET.mint ?? ''}`,
+            },
+            paymentRequest: JSON.stringify({
+              ...storedSolanaRequest(current),
+              network: 'mainnet',
+              asset: USDC_SOLANA_MAINNET,
+            }),
+          })),
+      ],
+    ];
+    for (const [name, change] of cases) {
+      const run = await failedOnce();
+      await change(run);
+      const calls = run.chain.calls.length;
+      expect({ name, result: await signAgainWithSolana(run.again, run.wallet, run.deps) }).toEqual({
+        name,
+        result: {
+          ok: false,
+          reason: 'not_payable',
+          record: await stored(run.record.orderId),
+          attemptId: run.marker.attemptId,
+        },
+      });
+      expect({ name, requests: run.wallet.requests }).toEqual({ name, requests: 1 });
+      // Refused before any chain read.
+      expect({ name, reads: run.chain.calls.length }).toEqual({ name, reads: calls });
+    }
+  });
+
+  it('judges the account before it reads the chain', async () => {
+    const { again, chain, deps, marker } = await failedOnce();
+    chain.blockHeightFails = true;
+    const other = await FakeWallet.create();
+    const calls = chain.calls.length;
+    expect(await signAgainWithSolana(again, other, deps)).toMatchObject({
+      ok: false,
+      reason: 'other_payer',
+      attemptId: marker.attemptId,
+    });
+    expect(chain.calls.slice(calls)).toEqual([]);
+  });
+
+  it('asks nothing of another account, and the handle stays usable', async () => {
+    const { again, wallet, deps, marker } = await failedOnce();
+    const other = await FakeWallet.create();
+    const result = await signAgainWithSolana(again, other, deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'other_payer',
+      afterMarker: true,
+      attemptId: marker.attemptId,
+      again,
+    });
+    expect(other.requests).toBe(0);
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({ ok: true });
+  });
+
+  it('asks nothing once the blockhash is within the margin of its end', async () => {
+    const edge = await failedOnce();
+    // The confirmed tip at exactly the last valid height minus 40: too close.
+    edge.chain.advance(BigInt(edge.marker.lastValidBlockHeight) - 40n - edge.chain.height - 32n);
+    const result = await signAgainWithSolana(edge.again, edge.wallet, edge.deps);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'request_expiring',
+      afterMarker: true,
+      attemptId: edge.marker.attemptId,
+    });
+    expect(result).not.toHaveProperty('again');
+    expect(edge.wallet.requests).toBe(1);
+    // Judged before the reference is listed: a listing that throws, or that shows a row,
+    // never turns it into a failed read or a transaction seen.
+    for (const listing of ['throws', 'shows a row'] as const) {
+      const late = await failedOnce();
+      late.chain.advance(BigInt(late.marker.lastValidBlockHeight) - 40n - late.chain.height - 32n);
+      if (listing === 'throws') {
+        late.chain.listingFails = true;
+      } else {
+        late.chain.extraListed = [
+          { signature: signatureOf(1), failed: false, slot: BigInt(late.marker.slot ?? '0') },
+        ];
+      }
+      const calls = late.chain.calls.length;
+      const refused = await signAgainWithSolana(late.again, late.wallet, late.deps);
+      expect({ listing, reason: refused.ok ? 'paid' : refused.reason }).toEqual({
+        listing,
+        reason: 'request_expiring',
+      });
+      expect(refused).not.toHaveProperty('again');
+      expect({
+        listing,
+        listed: late.chain.calls.slice(calls).includes('getSignaturesForAddress'),
+      }).toEqual({ listing, listed: false });
+    }
+    // One block earlier it is still asked.
+    const inside = await failedOnce();
+    inside.chain.advance(
+      BigInt(inside.marker.lastValidBlockHeight) - 41n - inside.chain.height - 32n,
+    );
+    expect(await signAgainWithSolana(inside.again, inside.wallet, inside.deps)).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it('asks nothing when the height cannot be read, and keeps the handle', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce();
+    chain.blockHeightFails = true;
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'rpc_error',
+      afterMarker: true,
+      attemptId: marker.attemptId,
+      again,
+    });
+    expect(wallet.requests).toBe(1);
+  });
+
+  it('asks nothing while the reference lists anything since the attempt began', async () => {
+    for (const failed of [false, true]) {
+      const { again, wallet, chain, deps, marker } = await failedOnce();
+      chain.extraListed = [{ signature: signatureOf(1), failed, slot: BigInt(marker.slot ?? '0') }];
+      const result = await signAgainWithSolana(again, wallet, deps);
+      expect(result).toMatchObject({
+        ok: false,
+        reason: 'still_waiting',
+        afterMarker: true,
+        attemptId: marker.attemptId,
+      });
+      expect(result).not.toHaveProperty('again');
+      expect(result).not.toHaveProperty('signedNotSent');
+      expect(wallet.requests).toBe(1);
+    }
+  });
+
+  it('counts a full page of the reference as a transaction, never as clean', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce();
+    chain.extraListed = Array.from({ length: 1000 }, (_, index) => ({
+      signature: signatureOf(index + 10),
+      failed: true,
+      slot: BigInt(marker.slot ?? '0') + 1n,
+    }));
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'still_waiting',
+    });
+    expect(wallet.requests).toBe(1);
+  });
+
+  it('ignores what the reference listed before the attempt began', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce();
+    chain.extraListed = [
+      { signature: signatureOf(1), failed: false, slot: BigInt(marker.slot ?? '0') - 1n },
+    ];
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({ ok: true });
+  });
+
+  it('asks nothing when the reference cannot be read, and keeps the handle', async () => {
+    const { again, wallet, chain, deps, marker } = await failedOnce();
+    chain.listingFails = true;
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'rpc_error',
+      afterMarker: true,
+      attemptId: marker.attemptId,
+      again,
+    });
+    expect(wallet.requests).toBe(1);
+  });
+
+  it('asks nothing once the caller says no, right before the wallet', async () => {
+    const { again, wallet, deps, marker } = await failedOnce();
+    let asked = 0;
+    const result = await signAgainWithSolana(again, wallet, {
+      ...deps,
+      mayAsk: () => {
+        asked += 1;
+        return false;
+      },
+    });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'not_payable',
+      record: await stored(again.orderId),
+      attemptId: marker.attemptId,
+    });
+    expect(asked).toBe(1);
+    expect(wallet.requests).toBe(1);
+    expect(await signAgainWithSolana(again, wallet, { ...deps, mayAsk: () => true })).toMatchObject(
+      { ok: true },
+    );
+  });
+
+  it('names the attempt on every refusal after its marker, and live only where it is', async () => {
+    const { record, wallet, deps, input } = await setup();
+    wallet.behaviour = 'throw';
+    const failed = await payWithSolana(record, wallet, input, deps);
+    const attemptId = (await stored(record.orderId)).marker?.attemptId;
+    expect(failed).toMatchObject({ ok: false, reason: 'wallet_failed', attemptId });
+    expect(failed).not.toHaveProperty('afterMarker');
+    expect(failed).not.toHaveProperty('signedNotSent');
+  });
+
+  it('reads no caller veto and lists nothing on a first ask', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    // Spam under the reference, newer than any attempt: a first ask is not held by it.
+    chain.extraListed = [{ signature: signatureOf(1), failed: true, slot: 10n ** 12n }];
+    const paid = await payWithSolana(record, wallet, input, { ...deps, mayAsk: () => false });
+    expect(paid).toMatchObject({ ok: true });
+    expect(chain.sent).toHaveLength(1);
+  });
+
+  it('never asks again with any handle of an attempt whose wallet signed', async () => {
+    const cases: [string, (run: Awaited<ReturnType<typeof failedOnce>>) => void][] = [
+      [
+        'the reference could not be read after the answer',
+        (run) => {
+          run.wallet.duringPrompt = async () => {
+            run.chain.listingFails = true;
+          };
+        },
+      ],
+      [
+        'the fee the wallet signed could not be covered',
+        (run) => {
+          run.wallet.behaviour = 'raise_price';
+        },
+      ],
+      [
+        'the wallet changed the transaction',
+        (run) => {
+          run.wallet.behaviour = 'swap_blockhash';
+        },
+      ],
+    ];
+    for (const [name, arrange] of cases) {
+      const run = await failedOnce(
+        name.startsWith('the fee') ? { lamports: EMPTY_ACCOUNT_RENT + 100_000n } : {},
+      );
+      arrange(run);
+      const answered = await signAgainWithSolana(run.again, run.wallet, run.deps);
+      expect({ name, ok: answered.ok }).toEqual({ name, ok: false });
+      run.wallet.behaviour = 'sign';
+      run.wallet.duringPrompt = undefined;
+      run.chain.listingFails = false;
+      run.chain.lamports = 1_000_000_000n;
+      expect({ name, again: await signAgainWithSolana(run.again, run.wallet, run.deps) }).toEqual({
+        name,
+        again: { ok: false, reason: 'not_payable' },
+      });
+      expect({ name, requests: run.wallet.requests }).toEqual({ name, requests: 2 });
+      expect({ name, sent: run.chain.sent }).toEqual({ name, sent: [] });
+    }
+  });
+
+  it('shares the attempt’s asks between the first handle and one an again call handed back', async () => {
+    for (const behaviour of ['reject', 'throw'] as const) {
+      const signedOnce = await failedOnce();
+      signedOnce.wallet.behaviour = behaviour;
+      const handedBack = await signAgainWithSolana(
+        signedOnce.again,
+        signedOnce.wallet,
+        signedOnce.deps,
+      );
+      if (handedBack.ok || handedBack.again === undefined) {
+        throw new Error('expected a handle back');
+      }
+      const second = handedBack.again;
+      // The first handle signs; the answer is not sent (the reference could not be read).
+      signedOnce.wallet.behaviour = 'sign';
+      signedOnce.wallet.duringPrompt = async () => {
+        signedOnce.chain.listingFails = true;
+      };
+      expect(
+        await signAgainWithSolana(signedOnce.again, signedOnce.wallet, signedOnce.deps),
+      ).toMatchObject({ ok: false, reason: 'rpc_error', signedNotSent: true });
+      signedOnce.wallet.duringPrompt = undefined;
+      signedOnce.chain.listingFails = false;
+      expect({
+        behaviour,
+        result: await signAgainWithSolana(second, signedOnce.wallet, signedOnce.deps),
+      }).toEqual({ behaviour, result: { ok: false, reason: 'not_payable' } });
+      expect({ behaviour, requests: signedOnce.wallet.requests }).toEqual({
+        behaviour,
+        requests: 3,
+      });
+      expect(signedOnce.chain.sent).toEqual([]);
+      // Two calls at once, one with each handle: the wallet is asked once.
+      const together = await failedOnce();
+      together.wallet.behaviour = behaviour;
+      const back = await signAgainWithSolana(together.again, together.wallet, together.deps);
+      if (back.ok || back.again === undefined) {
+        throw new Error('expected a handle back');
+      }
+      together.wallet.behaviour = 'sign';
+      const results = await Promise.all([
+        signAgainWithSolana(together.again, together.wallet, together.deps),
+        signAgainWithSolana(back.again, together.wallet, together.deps),
+      ]);
+      expect({ behaviour, oks: results.map((result) => result.ok) }).toEqual({
+        behaviour,
+        oks: [true, false],
+      });
+      expect({ behaviour, requests: together.wallet.requests }).toEqual({ behaviour, requests: 3 });
+      expect(together.chain.sent).toHaveLength(1);
+    }
+  });
+
+  it('asks the wallet once for two calls with one handle at a time', async () => {
+    const { again, wallet, chain, deps } = await failedOnce();
+    const [first, second] = await Promise.all([
+      signAgainWithSolana(again, wallet, deps),
+      signAgainWithSolana(again, wallet, deps),
+    ]);
+    expect([first.ok, second]).toEqual([true, { ok: false, reason: 'not_payable' }]);
+    expect(wallet.requests).toBe(2);
+    expect(chain.sent).toHaveLength(1);
+  });
+
+  it('keeps an old handle usable after a failure or a decline that signed nothing', async () => {
+    for (const behaviour of ['throw', 'reject'] as const) {
+      const { again, wallet, deps } = await failedOnce();
+      wallet.behaviour = behaviour;
+      expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+        ok: false,
+        reason: 'wallet_failed',
+      });
+      // A call that ended with no signature lets the next one ask.
+      wallet.behaviour = 'sign';
+      expect({ behaviour, result: (await signAgainWithSolana(again, wallet, deps)).ok }).toEqual({
+        behaviour,
+        result: true,
+      });
+    }
+  });
+
+  it('lets the next call ask after one that threw before the wallet answered', async () => {
+    const { again, wallet, deps } = await failedOnce();
+    const throwing = Object.create(store) as OrderStore;
+    throwing.get = async () => {
+      throw new Error('storage failed');
+    };
+    await expect(signAgainWithSolana(again, wallet, { ...deps, store: throwing })).rejects.toThrow(
+      'storage failed',
+    );
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({ ok: true });
+  });
+
+  it('exports the store’s own closed predicate', () => {
+    expect(storeClosed({ status: { status: 'cancelled', at: NOW } })).toBe(true);
+    expect(storeClosed({ status: { status: 'completed', at: NOW } })).toBe(true);
+    expect(storeClosed({ status: { status: 'pending', at: NOW } })).toBe(false);
+    expect(storeClosed({})).toBe(false);
   });
 });
