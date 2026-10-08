@@ -60,6 +60,8 @@ export interface NodeAmount {
 
 export interface Credit extends NodeAmount {
   medium: string;
+  /** Subunits of `amount` that went to an elisym treasury (the protocol fee), as the node said. */
+  fee: string;
 }
 
 export interface OrderRow {
@@ -251,10 +253,10 @@ function rowOf(key: string, group: Group, store: AdminStore): OrderRow | undefin
   let released = false;
   for (const { message } of byDate(group.statuses.values())) {
     if (message.status === 'completed' && message.receipt !== undefined) {
-      const { medium, tx, amount, caip19 } = message.receipt;
+      const { medium, tx, amount, fee, caip19 } = message.receipt;
       const earlier = credits.get(tx);
       if (earlier === undefined || (earlier.asset === undefined && caip19 !== undefined)) {
-        credits.set(tx, { medium, ...nodeAmount(tx, amount, caip19) });
+        credits.set(tx, { medium, fee, ...nodeAmount(tx, amount, caip19) });
       }
     } else if (message.status === 'completed') {
       released = true;
@@ -319,7 +321,20 @@ export function wholeUnits(subunits: string, asset: Caip19): string {
     .toString();
 }
 
-/** Credited amounts summed per asset, each payment once, from the node's statuses only. */
+/**
+ * What one credit put in the merchant's wallet: the amount paid less the
+ * protocol fee (a fee the amount cannot carry is not subtracted).
+ */
+function netOf(credit: Credit): Decimal {
+  const amount = new AmountDecimal(credit.amount);
+  const fee = new AmountDecimal(credit.fee);
+  return fee.gt(amount) ? amount : amount.minus(fee);
+}
+
+/**
+ * Credited amounts summed per asset, each payment once, from the node's
+ * statuses only: what reached the merchant's wallet (net of the protocol fee).
+ */
 export function totalsOf(rows: readonly OrderRow[]): Totals {
   const counted = new Set<string>();
   const perAsset = new Map<string, { asset: Caip19; sum: Decimal }>();
@@ -331,7 +346,7 @@ export function totalsOf(rows: readonly OrderRow[]): Totals {
         continue;
       }
       counted.add(id);
-      const amount = new AmountDecimal(credit.amount);
+      const amount = netOf(credit);
       if (credit.asset === undefined) {
         unknownAsset.set(
           credit.medium,

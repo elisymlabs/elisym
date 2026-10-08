@@ -2,13 +2,18 @@ import { parseCaip19 } from '@elisym/commerce';
 import {
   type Asset,
   type DirectInstruction,
+  type DirectSolanaTransaction,
+  type DirectVerification,
   type Network,
+  type PaymentRequestData,
   ELISYM_PROTOCOL_TAG,
   boundTransferAmount,
+  boundTreasuryLegs,
   composeSolanaPaymentRequest,
   directInstructionsFromRpcTransaction,
+  judgeDirectSolanaPayment,
   listReferenceSignatures,
-  verifyDirectSolanaPayment,
+  readDirectSolanaTransaction,
 } from '@elisym/pay-core';
 import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from '@solana-program/token';
 import { type Rpc, type Signature, type SolanaRpcApi, address } from '@solana/kit';
@@ -19,12 +24,15 @@ import {
   SOLANA_MEDIUMS,
   TERMS_WINDOW_SECS,
 } from './constants';
+import { knownTreasuries, paymentFloor } from './fee';
 import {
   type LedgerState,
   type MerchantOrder,
   type ScannedTransaction,
   type WebhookOutbox,
   claimPayment,
+  clearFeeUnresolved,
+  markFeeUnresolved,
   openOrders,
   recordPayment,
 } from './ledger';
@@ -37,12 +45,19 @@ export interface SolanaContext {
   network: Network;
   /** With a webhook configured: a payment verified here queues its `order.paid` webhook. */
   outbox?: WebhookOutbox;
+  /** Seconds: the moment the known treasuries are judged at. Default: the system clock. */
+  now?: () => number;
 }
 
 export type PaymentCheck =
   | { kind: 'paid'; order: MerchantOrder }
-  /** Nothing final was learned (a node error, a page not readable, not landed yet). */
-  | { kind: 'ask_again' }
+  /**
+   * Nothing final was learned (a node error, a page not readable, not landed
+   * yet). `feeUnresolved`: the payment carried the order's floor to the
+   * merchant and the rest to no elisym treasury this node knows (paid rule 3):
+   * never refused, a later treasury read may resolve it.
+   */
+  | { kind: 'ask_again'; feeUnresolved?: true }
   | {
       kind: 'refused';
       reason: 'claimed_by_another_order' | 'not_a_payment_for_this_order' | 'order_already_paid';
@@ -63,11 +78,107 @@ function solanaAsset(terms: OfferTerms, network: Network): Asset | undefined {
 
 const ASK_AGAIN_REASONS: readonly string[] = ['rpc_error', 'unreadable', 'not_found'];
 
+/** The clock of a check: the context's, else the system's. */
+export function contextNow(context: { now?: () => number }): number {
+  return context.now === undefined ? Math.floor(Date.now() / 1000) : context.now();
+}
+
+/** How one transaction came out against one term. */
+type TermJudgement =
+  /** A verified payment, and the part of it that went to a treasury (0 under rule 1). */
+  | { kind: 'paid'; verdict: Extract<DirectVerification, { verified: true }>; fee: bigint }
+  /** Ask again; `unresolved` for a split to no known treasury (rule 3). */
+  | { kind: 'ask'; unresolved: boolean }
+  /** Not a payment of this term. */
+  | { kind: 'no' };
+
+/**
+ * Judge one landed transaction against one term, by the node's paid rule, with
+ * `P` the term's price, `B` what is bound to the payout and `FLOOR` the price
+ * less a fee at the program's cap:
+ * 1. `B >= P`: paid, no fee (the fee-less request, exactly as before fees).
+ * 2. `FLOOR <= B < P` and a known treasury other than the payout got `P - B`
+ *    bound to the order: paid, fee `P - B` (the request with that fee leg).
+ * 3. `FLOOR <= B < P` otherwise: ask again, never refused.
+ * 4. Anything else: not a payment of this term.
+ * Each request is composed in a try: one that cannot be composed skips its term.
+ */
+async function judgeTerm(
+  landed: DirectSolanaTransaction,
+  terms: OfferTerms,
+  asset: Asset,
+  order: MerchantOrder,
+  network: Network,
+  treasuries: readonly string[],
+): Promise<TermJudgement> {
+  const price = BigInt(terms.amount);
+  const requestWith = (fee?: { treasury: string; amount: bigint }): PaymentRequestData =>
+    composeSolanaPaymentRequest({
+      recipient: terms.payout,
+      amount: price,
+      asset,
+      network,
+      reference: order.reference,
+      createdAt: order.createdAt,
+      ...(fee === undefined ? {} : { fee }),
+    });
+  let request: PaymentRequestData;
+  try {
+    request = requestWith();
+  } catch {
+    return { kind: 'no' };
+  }
+  const verdict = await judgeDirectSolanaPayment(landed, request);
+  if (verdict.verified) {
+    return { kind: 'paid', verdict, fee: 0n };
+  }
+  if (ASK_AGAIN_REASONS.includes(verdict.reason)) {
+    return { kind: 'ask', unresolved: false };
+  }
+  const bound = verdict.payeeBound ?? 0n;
+  if (bound === 0n || bound >= price || bound < paymentFloor(price)) {
+    return { kind: 'no' };
+  }
+  const fee = price - bound;
+  let instructions: DirectInstruction[];
+  try {
+    instructions = directInstructionsFromRpcTransaction(landed.transaction);
+  } catch {
+    return { kind: 'ask', unresolved: false };
+  }
+  // A treasury that is the payout would count the merchant's own leg twice.
+  const legs = await boundTreasuryLegs(instructions, {
+    reference: order.reference,
+    asset,
+    treasuries: treasuries.filter((treasury) => treasury !== terms.payout),
+  });
+  let unreadable = false;
+  for (const [treasury, received] of legs) {
+    if (received < fee) {
+      continue;
+    }
+    let split: PaymentRequestData;
+    try {
+      split = requestWith({ treasury, amount: fee });
+    } catch {
+      continue;
+    }
+    const splitVerdict = await judgeDirectSolanaPayment(landed, split);
+    if (splitVerdict.verified) {
+      return { kind: 'paid', verdict: splitVerdict, fee };
+    }
+    unreadable ||= ASK_AGAIN_REASONS.includes(splitVerdict.reason);
+  }
+  return { kind: 'ask', unresolved: !unreadable };
+}
+
 /**
  * Check one transaction against one order, per the direct-mode contract: the
  * payment is bound to the order's derived reference at the instruction level,
  * pays terms the store offered within the window before the payment's block
- * time, and is claimed once. On `paid` the ledger holds the claim and the
+ * time (by the paid rule of `judgeTerm`: in full, or split with a known elisym
+ * treasury), and is claimed once. The transaction is read ONCE, whatever the
+ * number of terms and treasuries. On `paid` the ledger holds the claim and the
  * payment; the caller saves it before delivering.
  */
 export async function checkPayment(
@@ -88,26 +199,35 @@ export async function checkPayment(
   }
   // Defence in depth: the block-time check below is the guard.
   const d = orderProductD(order);
-  const candidates = termsSince(state.terms, d, order.createdAt - ORDER_SCAN_MARGIN_SECS);
+  const candidates = termsSince(state.terms, d, order.createdAt - ORDER_SCAN_MARGIN_SECS).flatMap(
+    (terms) => {
+      const asset = solanaAsset(terms, context.network);
+      return asset === undefined ? [] : [{ terms, asset }];
+    },
+  );
+  if (candidates.length === 0) {
+    return { kind: 'refused', reason: 'not_a_payment_for_this_order' };
+  }
+  const landed = await readDirectSolanaTransaction(context.rpc, signature);
+  if (!landed.found) {
+    return landed.reason === 'bad_signature'
+      ? { kind: 'refused', reason: 'not_a_payment_for_this_order' }
+      : { kind: 'ask_again' };
+  }
+  const treasuries = knownTreasuries(state, context.network, 'solana', contextNow(context));
   let askAgain = false;
-  for (const terms of candidates) {
-    const asset = solanaAsset(terms, context.network);
-    if (asset === undefined) {
+  let unresolved = false;
+  for (const { terms, asset } of candidates) {
+    const judged = await judgeTerm(landed, terms, asset, order, context.network, treasuries);
+    if (judged.kind === 'ask') {
+      askAgain = true;
+      unresolved ||= judged.unresolved;
       continue;
     }
-    const request = composeSolanaPaymentRequest({
-      recipient: terms.payout,
-      amount: BigInt(terms.amount),
-      asset,
-      network: context.network,
-      reference: order.reference,
-      createdAt: order.createdAt,
-    });
-    const verdict = await verifyDirectSolanaPayment(context.rpc, request, signature);
-    if (!verdict.verified) {
-      askAgain ||= ASK_AGAIN_REASONS.includes(verdict.reason);
+    if (judged.kind === 'no') {
       continue;
     }
+    const { verdict, fee } = judged;
     // A null block time is judged again later, never guessed.
     if (verdict.blockTime === null) {
       askAgain = true;
@@ -130,7 +250,10 @@ export async function checkPayment(
       order,
       {
         signature,
-        amount: verdict.amount.toString(),
+        // The total paid: the merchant's bound part and the fee (any treasury
+        // excess above the fee is not the merchant's and is not recorded).
+        amount: (verdict.amount + fee).toString(),
+        fee: fee.toString(),
         blockTime: verdict.blockTime,
         caip19: terms.caip19,
         medium: SOLANA_MEDIUMS[context.network],
@@ -138,6 +261,9 @@ export async function checkPayment(
       context.outbox,
     );
     return { kind: 'paid', order };
+  }
+  if (unresolved) {
+    return { kind: 'ask_again', feeUnresolved: true };
   }
   return askAgain
     ? { kind: 'ask_again' }
@@ -234,6 +360,29 @@ export interface CatchUpResult {
   paid: MerchantOrder[];
   /** Receiving accounts whose history was cut short by the page cap: older payments may be missed. */
   incomplete: string[];
+  /** `<order key> <tx>` of each payment newly found unresolved (paid rule 3), for the log. */
+  unresolved?: string[];
+}
+
+/**
+ * Keep a check's rule-3 answer on the order (see `MerchantOrder.feeUnresolved`)
+ * and give it a place in the recheck queue; a newly unresolved transaction is
+ * added to `result` for the log.
+ */
+export function noteUnresolved(
+  order: MerchantOrder,
+  tx: string,
+  check: { kind: string; feeUnresolved?: true },
+  now: number,
+  result: CatchUpResult,
+): void {
+  if (check.kind !== 'ask_again' || check.feeUnresolved !== true) {
+    return;
+  }
+  order.recheckedAt = { ...order.recheckedAt, [tx]: order.recheckedAt?.[tx] ?? now };
+  if (markFeeUnresolved(order, tx, now)) {
+    (result.unresolved ??= []).push(`${order.key} ${tx}`);
+  }
 }
 
 /**
@@ -251,6 +400,7 @@ export async function catchUp(
   const result: CatchUpResult = { paid: [], incomplete: [] };
   const open = openOrders(state, now, CATCH_UP_SECS);
   forgetOldScans(state, now);
+  const checkContext: SolanaContext = { ...context, now: () => now };
   if (open.length === 0) {
     return result;
   }
@@ -265,16 +415,20 @@ export async function catchUp(
     ) {
       return;
     }
-    const check = await checkPayment(state, order, signature, context);
+    const check = await checkPayment(state, order, signature, checkContext);
     if (check.kind === 'paid') {
       result.paid.push(order);
     } else if (check.kind === 'refused') {
       order.refusedTxs = [...(order.refusedTxs ?? []), signature];
+      clearFeeUnresolved(order, signature);
     }
+    noteUnresolved(order, signature, check, now, result);
   };
-  // Reported transactions not yet judged, first in first out (queue position:
-  // arrival, then last check), under one budget for the whole sweep: every one
-  // is reached within a few sweeps, and fresh reports cannot jump ahead of it.
+  // Reported transactions not yet judged, and payments the scan found that were
+  // judged unresolved before (they stay open for days), first in first out
+  // (queue position: arrival, then last check), under one budget for the whole
+  // sweep: every one is reached within a few sweeps, and fresh reports cannot
+  // jump ahead of it.
   const pending: { order: MerchantOrder; signature: string; checkedAt: number }[] = [];
   for (const order of open) {
     for (const signature of order.reportedTxs) {
@@ -289,11 +443,6 @@ export async function catchUp(
         pending.push({ order, signature, checkedAt: order.recheckedAt?.[signature] ?? 0 });
       }
     }
-  }
-  pending.sort((left, right) => left.checkedAt - right.checkedAt);
-  for (const { order, signature } of pending.slice(0, MAX_RECHECKS_PER_SWEEP)) {
-    order.recheckedAt = { ...order.recheckedAt, [signature]: now };
-    await credit(order, signature);
   }
   let oldest = Number.POSITIVE_INFINITY;
   for (const order of open) {
@@ -340,11 +489,27 @@ export async function catchUp(
       }
       for (const reference of scan.references) {
         const order = byReference.get(reference);
-        if (order !== undefined) {
+        if (order === undefined) {
+          continue;
+        }
+        if (order.feeUnresolved?.[entry.signature] === undefined) {
           await credit(order, entry.signature);
+        } else if (
+          !pending.some((queued) => queued.order === order && queued.signature === entry.signature)
+        ) {
+          pending.push({
+            order,
+            signature: entry.signature,
+            checkedAt: order.recheckedAt?.[entry.signature] ?? 0,
+          });
         }
       }
     }
+  }
+  pending.sort((left, right) => left.checkedAt - right.checkedAt);
+  for (const { order, signature } of pending.slice(0, MAX_RECHECKS_PER_SWEEP)) {
+    order.recheckedAt = { ...order.recheckedAt, [signature]: now };
+    await credit(order, signature);
   }
   return result;
 }

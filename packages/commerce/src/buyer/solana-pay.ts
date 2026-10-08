@@ -38,9 +38,10 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   verifySignature,
 } from '@solana/kit';
-import { isOfferPayout, parseCaip19 } from '../index';
+import { type VerifiedOffer, isOfferPayout, parseCaip19 } from '../index';
 import {
   AGAIN_MARGIN_BLOCKS,
+  MAX_CLOCK_SKEW_SECS,
   MERCHANT_CATCH_UP_SECS,
   PAYMENT_SCAN_MARGIN_SECS,
   PAY_CUTOFF_SECS,
@@ -48,6 +49,14 @@ import {
   STORE_WRITE_ATTEMPTS,
 } from './constants';
 import { nowSecs } from './events';
+import {
+  type FeePlan,
+  type FeeRefusal,
+  type FeeTermsSource,
+  planFee,
+  sameFeePlan,
+  storedFeePlan,
+} from './fee';
 import { type LoadedOffer, isSnapshotStale } from './offer';
 import { type OrderDeps, sendReceipt } from './order-flow';
 import { type OrderRecord, type PaymentMarker, isTerminal } from './order-record';
@@ -75,7 +84,13 @@ const ADVANCE_NONCE_DISCRIMINATOR = 4;
 /** Signatures under one reference the widget checks at most; past it the answer is "unsure". */
 const MAX_REFERENCE_CANDIDATES = 100;
 /** Verdicts that say nothing final about a signature: ask again later. */
-const UNSURE_VERDICTS = ['rpc_error', 'unreadable', 'not_found', 'bad_request'] as const;
+const UNSURE_VERDICTS = [
+  'rpc_error',
+  'unreadable',
+  'not_found',
+  'bad_request',
+  'split_unresolved',
+] as const;
 
 /**
  * A wallet account offering `solana:signTransaction`. The wallet signs the wire
@@ -130,7 +145,12 @@ export interface SolanaPayDeps extends OrderDeps {
    * read; `false` asks the wallet nothing (`not_payable`).
    */
   mayAsk?: () => boolean;
+  /** The protocol fee terms of a chain, read fresh at every decision point (`planFee`). */
+  feeTerms: FeeTermsSource;
 }
+
+/** What following and ending an attempt needs: no fee terms (nothing is composed or signed). */
+export type SolanaWatchDeps = Omit<SolanaPayDeps, 'feeTerms'>;
 
 export interface PayInput {
   /** A FRESH verified offer (at most two minutes old): the payout and price are checked against it. */
@@ -144,12 +164,22 @@ export type SolanaPayRefusal =
   | 'not_payable'
   /** The offer snapshot is older than two minutes: verify again. */
   | 'stale_offer'
-  /** The store no longer offers this payout at this price: end this order and start a new one. */
+  /**
+   * The store no longer offers this payout at this price, or the protocol fee
+   * is no longer the one the stored request carries: end this order and start
+   * a new one.
+   */
   | 'offer_changed'
   /** Too close to the end of the merchant's catch-up: a new order instead. */
   | 'too_late'
   /** The payer is the payout address itself (a transfer to oneself pays nothing). */
   | 'self_payment'
+  /**
+   * `store_outdated`: the fee is above 0 and the store's node cannot take a
+   * split - end this order (`offer_changed` does the same). The other two:
+   * nothing was requested, the record is left as it is (see `FeeRefusal`).
+   */
+  | FeeRefusal
   | 'insufficient_token'
   | 'insufficient_sol'
   /** A chain read failed; nothing was requested. */
@@ -280,23 +310,45 @@ export function storedSolanaRequest(record: OrderRecord): PaymentRequestData | u
   return parsed.ok ? parsed.data : undefined;
 }
 
-function solanaAssetOf(record: OrderRecord): { asset: Asset; network: Network } | undefined {
+interface SolanaCoin {
+  asset: Asset;
+  network: Network;
+  /** The chain's CAIP-2 id: what the fee terms are read for. */
+  chain: string;
+}
+
+function solanaAssetOf(record: OrderRecord): SolanaCoin | undefined {
   const caip19 = parseCaip19(record.payout.caip19);
   if (caip19 === undefined || caip19.chain.family !== 'solana') {
     return undefined;
   }
-  return { asset: caip19.asset, network: caip19.chain.network };
+  return { asset: caip19.asset, network: caip19.chain.network, chain: caip19.chain.caip2 };
 }
+
+export interface ComposeOrderPaymentInput {
+  /** The FRESH verified offer: whether the store's node declares fee support. */
+  offer: Pick<VerifiedOffer, 'feeSupport'>;
+  feeTerms: FeeTermsSource;
+  /** The wallet that will pay, when known: a treasury that is the payer gets no fee leg. */
+  payer?: string;
+}
+
+export type ComposeOrderPaymentResult =
+  | { ok: true; record: OrderRecord }
+  | { ok: false; reason: Extract<StoreWrite, { ok: false }>['reason'] | FeeRefusal };
 
 /**
  * Compose the order's payment request once, right after the order was
- * acknowledged, from the order's own snapshot; resume and every verdict use this
- * stored request, never a recomposed one.
+ * acknowledged, from the order's own snapshot and the fee planned now
+ * (`feePlanFor`); resume and every verdict use this stored request, never a
+ * recomposed one. A fee refusal composes nothing: `store_outdated` ends the
+ * order at the caller, the other two leave it as it is.
  */
 export async function composeOrderPayment(
   record: OrderRecord,
   store: OrderStore,
-): Promise<StoreWrite> {
+  input: ComposeOrderPaymentInput,
+): Promise<ComposeOrderPaymentResult> {
   if (record.paymentRequest !== undefined) {
     return { ok: true, record };
   }
@@ -304,15 +356,30 @@ export async function composeOrderPayment(
   if (coin === undefined) {
     return { ok: false, reason: 'not_ready' };
   }
+  const amount = BigInt(record.amount);
+  const planned = await planFee(
+    input.feeTerms,
+    coin.chain,
+    input.offer,
+    {
+      payout: record.payout.address,
+      ...(input.payer === undefined ? {} : { payer: input.payer }),
+    },
+    amount,
+  );
+  if (!planned.ok) {
+    return planned;
+  }
   let request: PaymentRequestData;
   try {
     request = composeSolanaPaymentRequest({
       recipient: record.payout.address,
-      amount: BigInt(record.amount),
+      amount,
       asset: coin.asset,
       network: coin.network,
       reference: record.reference,
       createdAt: record.createdAt,
+      ...(planned.plan.amount === 0n ? {} : { fee: planned.plan }),
     });
   } catch {
     return { ok: false, reason: 'not_ready' };
@@ -346,36 +413,47 @@ interface Funds {
 }
 
 type Checked =
-  | { ok: true; request: PaymentRequestData; asset: Asset; network: Network; funds: Funds }
+  | {
+      ok: true;
+      request: PaymentRequestData;
+      asset: Asset;
+      network: Network;
+      /** The fee leg the stored request carries (planned again and found the same). */
+      fee: FeePlan;
+      funds: Funds;
+    }
   | Extract<SolanaPayResult, { ok: false }>;
 
-/** The stored request pays what the record says: the payout, the reference, the coin. */
+/**
+ * The stored request pays what the record says: the payout, the reference, the
+ * coin, the total. Structural only: its fee leg is compared with a fresh plan
+ * in a step of its own, whose refusal ends the order (`offer_changed`).
+ */
 function requestMatches(
   request: PaymentRequestData,
   record: OrderRecord,
-  coin: { asset: Asset; network: Network },
+  coin: SolanaCoin,
 ): boolean {
   return (
     request.recipient === record.payout.address &&
     request.reference === record.reference &&
     BigInt(request.amount) === BigInt(record.amount) &&
     (request.network ?? 'devnet') === coin.network &&
-    request.asset?.mint === coin.asset.mint &&
-    (request.fee_amount ?? 0) === 0 &&
-    request.fee_address === undefined
+    request.asset?.mint === coin.asset.mint
   );
 }
 
 /**
  * Every check that runs BEFORE the marker: nothing was requested if one fails.
  * The fresh offer must still hold this payout at exactly the stored amount (a
- * higher price cannot be accepted, a lower one would overpay).
+ * higher price cannot be accepted, a lower one would overpay), and the fee
+ * planned now from fresh terms must be the leg the stored request carries.
  */
 export async function checkBeforePaying(
   record: OrderRecord,
   payer: string,
   input: PayInput,
-  deps: Pick<SolanaPayDeps, 'rpc' | 'now'>,
+  deps: Pick<SolanaPayDeps, 'rpc' | 'now' | 'feeTerms'>,
 ): Promise<Checked> {
   const request = storedSolanaRequest(record);
   const coin = solanaAssetOf(record);
@@ -409,35 +487,57 @@ export async function checkBeforePaying(
   if (payer === record.payout.address) {
     return { ok: false, reason: 'self_payment', record };
   }
-  const funds = await checkFunds(deps.rpc, request, payer, coin);
+  const planned = await planFee(
+    deps.feeTerms,
+    coin.chain,
+    input.fresh.offer,
+    { payout: record.payout.address, payer },
+    BigInt(record.amount),
+  );
+  if (!planned.ok) {
+    return { ok: false, reason: planned.reason, record };
+  }
+  const fee = storedFeePlan(request);
+  if (!sameFeePlan(fee, planned.plan)) {
+    return { ok: false, reason: 'offer_changed', record };
+  }
+  const funds = await checkFunds(deps.rpc, request, payer, coin, fee);
   if (!funds.ok) {
     return { ...funds, record };
   }
-  return { ok: true, request, asset: coin.asset, network: coin.network, funds: funds.funds };
+  return { ok: true, request, asset: coin.asset, network: coin.network, fee, funds: funds.funds };
 }
 
-/** The payer's and the payee's accounts of the asset: what the payment write-locks. */
+/** The account of `owner` that receives or sends `asset`: the wallet itself for SOL. */
+async function assetAccount(owner: string, asset: Asset): Promise<string> {
+  if (asset.mint === undefined) {
+    return owner;
+  }
+  const [account] = await findAssociatedTokenPda({
+    owner: address(owner),
+    mint: address(asset.mint),
+    tokenProgram: address(asset.tokenProgram ?? TOKEN_PROGRAM_ADDRESS),
+  });
+  return account;
+}
+
+/**
+ * The accounts of the asset the payment write-locks: the payer's, the payee's,
+ * and the treasury's when the payment carries a fee leg.
+ */
 async function assetAccounts(
   payer: string,
   recipient: string,
   asset: Asset,
-): Promise<{ payer: string; payee: string }> {
-  if (asset.mint === undefined) {
-    return { payer, payee: recipient };
+  fee: FeePlan,
+): Promise<{ payer: string; payee: string; locked: string[] }> {
+  const payerAccount = await assetAccount(payer, asset);
+  const payeeAccount = await assetAccount(recipient, asset);
+  const locked = [payerAccount, payeeAccount];
+  if (fee.amount > 0n) {
+    locked.push(await assetAccount(fee.treasury, asset));
   }
-  const tokenProgram = address(asset.tokenProgram ?? TOKEN_PROGRAM_ADDRESS);
-  const mint = address(asset.mint);
-  const [payerAccount] = await findAssociatedTokenPda({
-    owner: address(payer),
-    mint,
-    tokenProgram,
-  });
-  const [payeeAccount] = await findAssociatedTokenPda({
-    owner: address(recipient),
-    mint,
-    tokenProgram,
-  });
-  return { payer: payerAccount, payee: payeeAccount };
+  return { payer: payerAccount, payee: payeeAccount, locked };
 }
 
 /** The payer's balance of the asset's token, 0 when it holds no token account. */
@@ -465,14 +565,15 @@ async function checkFunds(
   rpc: Rpc<SolanaRpcApi>,
   request: PaymentRequestData,
   payer: string,
-  coin: { asset: Asset; network: Network },
+  coin: SolanaCoin,
+  fee: FeePlan,
 ): Promise<{ ok: true; funds: Funds } | Extract<SolanaPayResult, { ok: false }>> {
   try {
     const amount = BigInt(request.amount);
-    const accounts = await assetAccounts(payer, request.recipient, coin.asset);
+    const accounts = await assetAccounts(payer, request.recipient, coin.asset, fee);
     const priceMicroLamports = await estimatePriorityFeeMicroLamports(rpc, {
       network: coin.network,
-      accounts: [address(accounts.payer), address(accounts.payee)],
+      accounts: accounts.locked.map((account) => address(account)),
     });
     const fees = await estimateSolFeeLamports(rpc, request, payer, coin.network, {
       computeUnitLimit: SOLANA_COMPUTE_UNIT_LIMIT,
@@ -539,7 +640,8 @@ async function unsignedPayment(
   const instructions = await buildPaymentInstructions(
     checked.request,
     createNoopSigner(payerAddress),
-    { programId: getProtocolProgramId(checked.network) },
+    // The fee leg carries the order's markers too: the merchant binds it as it binds the payee's.
+    { programId: getProtocolProgramId(checked.network), bindFeeLeg: true },
   );
   const { context, value: latest } = await rpc
     .getLatestBlockhash({ commitment: 'confirmed' })
@@ -574,7 +676,7 @@ export type SignedRefusal =
   | 'wrong_payer'
   /** A signature is missing or does not verify. */
   | 'unsigned'
-  /** The bound transfer is gone or pays another amount. */
+  /** The bound transfer (or the bound fee leg) is gone or pays another amount. */
   | 'not_bound'
   /** A compute-budget setting twice: the runtime refuses the whole transaction. */
   | 'duplicate_compute_budget';
@@ -620,9 +722,11 @@ function transactionFee(instructions: readonly DirectInstruction[], signatures: 
  * What the widget sends of a transaction the wallet returned: only one whose
  * lifetime is exactly the attempt's blockhash (no durable nonce), paid by the
  * wallet account, fully signed, with each compute-budget setting at most once,
- * and whose bound transfer still pays exactly the stored amount - the same
- * binding the merchant and "found" judge. It also returns the fee the
- * transaction pays: a wallet may raise the price the widget set.
+ * and whose bound transfers still pay exactly what the stored request asks -
+ * the payee `amount - fee_amount` and the treasury `fee_amount`, each bound to
+ * the reference: the same binding the merchant and "found" judge. It also
+ * returns the fee the transaction pays: a wallet may raise the price the
+ * widget set.
  */
 export async function checkSignedTransaction(
   bytes: Uint8Array,
@@ -681,13 +785,27 @@ export async function checkSignedTransaction(
   if (feeLamports === undefined) {
     return { ok: false, reason: 'duplicate_compute_budget' };
   }
+  if (payerSignature === null) {
+    return { ok: false, reason: 'unsigned' };
+  }
+  const fee = storedFeePlan(expected.request);
   const bound = await boundTransferAmount(instructions, {
     reference: expected.request.reference,
     recipient: expected.request.recipient,
     asset: expected.asset,
   });
-  if (payerSignature === null || bound !== BigInt(expected.request.amount)) {
-    return { ok: false, reason: payerSignature === null ? 'unsigned' : 'not_bound' };
+  if (bound !== BigInt(expected.request.amount) - fee.amount) {
+    return { ok: false, reason: 'not_bound' };
+  }
+  if (fee.amount > 0n) {
+    const treasuryBound = await boundTransferAmount(instructions, {
+      reference: expected.request.reference,
+      recipient: fee.treasury,
+      asset: expected.asset,
+    });
+    if (treasuryBound !== fee.amount) {
+      return { ok: false, reason: 'not_bound' };
+    }
   }
   return {
     ok: true,
@@ -1095,6 +1213,7 @@ async function searchPayment(
   request: PaymentRequestData,
   rpc: Rpc<SolanaRpcApi>,
   minContextSlot: bigint | undefined,
+  now: number,
 ): Promise<Search> {
   const own = record.marker?.rail === 'solana' ? record.marker.signature : undefined;
   const candidates: string[] = own === undefined ? [] : [own];
@@ -1135,6 +1254,11 @@ async function searchPayment(
     if (!(UNSURE_VERDICTS as readonly string[]).includes(verdict.reason)) {
       continue;
     }
+    // A split the merchant node may still credit (to a treasury it knows) holds
+    // the order - until its catch-up is over, after which it can no longer.
+    if (verdict.reason === 'split_unresolved' && !merchantMayStillCredit(record, now)) {
+      continue;
+    }
     // Not served and not listed: it has not landed - for the attempt's own
     // signature only once its status is unknown too, from the bank's recent
     // statuses and from history (an address index may lag the slot the node is at).
@@ -1152,6 +1276,18 @@ async function searchPayment(
     unsure = true;
   }
   return unsure ? 'unsure' : 'none';
+}
+
+/**
+ * Whether the merchant's node may still credit a payment of `record`: its
+ * catch-up has not ended, judged on the device clock with the skew allowance
+ * (the same predicate as Tempo's `mayStillBePaid`).
+ */
+export function merchantMayStillCredit(
+  record: Pick<OrderRecord, 'createdAt'>,
+  now: number,
+): boolean {
+  return now - record.createdAt <= MERCHANT_CATCH_UP_SECS + MAX_CLOCK_SKEW_SECS;
 }
 
 /**
@@ -1186,7 +1322,7 @@ async function statusKnown(
 async function recordPaid(
   record: OrderRecord,
   signature: string,
-  deps: SolanaPayDeps,
+  deps: SolanaWatchDeps,
 ): Promise<OrderRecord> {
   let current: OrderRecord | undefined = record;
   const own = record.marker?.rail === 'solana' ? record.marker.signature : undefined;
@@ -1241,7 +1377,7 @@ async function ledgerReaches(rpc: Rpc<SolanaRpcApi>, slot: string | undefined): 
  */
 export async function watchSolanaPayment(
   record: OrderRecord,
-  deps: SolanaPayDeps,
+  deps: SolanaWatchDeps,
 ): Promise<SolanaWatch> {
   // Delivered or refunded: the store has answered, nothing is left to watch (the
   // delivery can arrive before the widget itself found the payment).
@@ -1278,7 +1414,7 @@ export async function watchSolanaPayment(
   if (settledAt !== undefined && !(await ledgerReaches(deps.rpc, marker.slot))) {
     settledAt = undefined;
   }
-  const search = await searchPayment(record, request, deps.rpc, settledAt);
+  const search = await searchPayment(record, request, deps.rpc, settledAt, (deps.now ?? nowSecs)());
   if (search !== 'none' && search !== 'unsure') {
     return { state: 'paid', record: await recordPaid(record, search.found, deps) };
   }
@@ -1416,6 +1552,7 @@ async function askAgain(
     stored.reference !== bound.request.reference ||
     stored.recipient !== bound.request.recipient ||
     BigInt(stored.amount) !== BigInt(bound.request.amount) ||
+    !sameFeePlan(storedFeePlan(stored), bound.fee) ||
     coin.asset.mint !== bound.asset.mint
   ) {
     return { ok: false, reason: 'not_payable', record, attemptId };
@@ -1459,7 +1596,7 @@ async function askAgain(
  */
 export async function endSolanaOrder(
   record: OrderRecord,
-  deps: SolanaPayDeps,
+  deps: SolanaWatchDeps,
 ): Promise<{ ended: boolean; record: OrderRecord }> {
   if (record.state === 'ordered' && record.marker === undefined) {
     const written = await deps.store.update(record.orderId, record.version, {

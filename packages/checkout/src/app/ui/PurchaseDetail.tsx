@@ -7,6 +7,7 @@ import {
   PURCHASES_TEXT,
   PURCHASE_STATUS_NOTES,
   amountText,
+  feeLine,
   networkLabel,
   receiptField,
   receiptMoment,
@@ -81,6 +82,11 @@ export function PurchaseDetail({ purchase, fresh }: Props) {
           ? null
           : ` · ${networkLabel(receipt.paying.chain, receipt.paying.network)}`}
       </p>
+      {receipt.paying === undefined || shown.feeAmount === undefined ? null : (
+        <p class="note" data-fee-line="">
+          {feeLine(receipt.paying.asset, BigInt(shown.feeAmount))}
+        </p>
+      )}
       {note === undefined ? null : <p class="note">{note}</p>}
       {kind === 'open' && !shown.thisProduct ? (
         <p class="note">{PURCHASES_TEXT.otherProduct}</p>

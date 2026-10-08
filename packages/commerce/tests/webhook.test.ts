@@ -634,7 +634,7 @@ describe('verifyWebhook', () => {
       future: { nested: true },
       ['__proto__']: { polluted: true },
       product: { ...ORDER_PAID.product, title: 'Course' },
-      payment: { ...ORDER_PAID.payment, fee: '0' },
+      payment: { ...ORDER_PAID.payment, refundable: false },
     });
     const result = await verifyAt(extra, nodeHeaders(sign(extra)));
     expect(result).toEqual({ ok: true, event: ORDER_PAID });
@@ -643,7 +643,7 @@ describe('verifyWebhook', () => {
     }
     expect(Object.keys(result.event)).not.toContain('future');
     expect(Object.keys(result.event.product)).toEqual(['address']);
-    expect(Object.keys(result.event.payment)).not.toContain('fee');
+    expect(Object.keys(result.event.payment)).not.toContain('refundable');
     expect(Object.getPrototypeOf(result.event)).toBe(Object.prototype);
 
     const { customerRef: _ref, email: _email, ...required } = ORDER_PAID;
@@ -711,6 +711,63 @@ describe('verifyWebhook', () => {
       ok: true,
       event: padded,
     });
+  });
+
+  it('T10c: keeps the protocol fee and the net when present, and needs neither', async () => {
+    // An event from a node before protocol-fee support: no fee, no net.
+    expect(Object.keys(ORDER_PAID.payment)).not.toContain('fee');
+    const old = await verifyAt(ORDER_PAID_BODY, nodeHeaders(sign(ORDER_PAID_BODY)));
+    expect(old).toEqual({ ok: true, event: ORDER_PAID });
+
+    const withFee: OrderPaidWebhookEvent = {
+      ...ORDER_PAID,
+      payment: { ...ORDER_PAID.payment, fee: '15000', net: '1485000' },
+    };
+    const body = JSON.stringify(withFee);
+    const result = await verifyAt(body, nodeHeaders(sign(body)));
+    expect(result).toEqual({ ok: true, event: withFee });
+    if (!result.ok || result.event.event !== 'order.paid') {
+      throw new Error('not order.paid');
+    }
+    expect(result.event.payment.fee).toBe('15000');
+    expect(result.event.payment.net).toBe('1485000');
+    for (const [key, value] of [
+      ['fee', '0'],
+      ['net', '0'],
+      ['fee', `9${'9'.repeat(38)}`],
+    ] as const) {
+      expect(`${key}=${value}: ${await signedReason(orderPaidWith(['payment', key], value))}`).toBe(
+        `${key}=${value}: ok`,
+      );
+    }
+    // Each alone is kept alone.
+    const feeOnly = await verifyAt(
+      orderPaidWith(['payment', 'fee'], '7'),
+      nodeHeaders(sign(orderPaidWith(['payment', 'fee'], '7'))),
+    );
+    expect(feeOnly.ok && feeOnly.event.event === 'order.paid' && feeOnly.event.payment).toEqual({
+      ...ORDER_PAID.payment,
+      fee: '7',
+    });
+
+    for (const key of ['fee', 'net']) {
+      for (const [name, value] of [
+        ['a number', 15_000],
+        ['null', null],
+        ['empty', ''],
+        ['negative', '-1'],
+        ['a leading zero', '01'],
+        ['a fraction', '1.5'],
+        ['40 digits', `1${'0'.repeat(39)}`],
+        ['a trailing char', '15x'],
+        ['an array', ['1']],
+      ] as const) {
+        const label = `${key} ${name}`;
+        expect(`${label}: ${await signedReason(orderPaidWith(['payment', key], value))}`).toBe(
+          `${label}: malformed`,
+        );
+      }
+    }
   });
 
   it('T10b: reads only own fields, never a polluted prototype', async () => {

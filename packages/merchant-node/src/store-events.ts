@@ -145,6 +145,8 @@ export function buildStoreWideEvents(
   keys: StoreKeys,
   createdAt: number,
   paytoCreatedAt: number,
+  /** Declare protocol-fee support in the store profile (see `setup`): only a node that can judge splits. */
+  feeSupport = false,
 ): { payoutList: NostrEvent; others: NostrEvent[] } {
   const storePubkey = getPublicKey(keys.storeSecretKey);
   const ownerPubkey = getPublicKey(keys.ownerSecretKey);
@@ -162,6 +164,7 @@ export function buildStoreWideEvents(
           name: config.name,
           ownerPubkey,
           createdAt,
+          fee: feeSupport,
           ...(config.nip05 === undefined ? {} : { nip05: config.nip05 }),
         }),
       ),

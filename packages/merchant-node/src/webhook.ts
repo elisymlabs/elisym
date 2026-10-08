@@ -127,6 +127,8 @@ export function orderPaidBody(
   if (paid === undefined) {
     throw new Error(`${order.key} is not paid: no webhook`);
   }
+  // A payment recorded before protocol-fee support carries no fee.
+  const fee = paid.fee ?? '0';
   const asset = parseCaip19(paid.caip19)?.asset;
   const display =
     asset === undefined
@@ -150,6 +152,8 @@ export function orderPaidBody(
     payment: {
       asset: paid.caip19,
       amount: paid.amount,
+      fee,
+      net: (BigInt(paid.amount) - BigInt(fee)).toString(),
       ...display,
       tx: paid.signature,
       medium: paid.medium,

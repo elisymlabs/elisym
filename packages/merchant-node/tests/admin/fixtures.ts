@@ -104,7 +104,7 @@ export function receiptBody(store: Key, buyer: Key, orderId: string, tx = TX1) {
 export function deliveredBody(
   buyer: Key,
   orderId: string,
-  receipt: { tx?: string; amount?: string; caip19?: string; medium?: string } = {},
+  receipt: { tx?: string; amount?: string; fee?: string; caip19?: string; medium?: string } = {},
 ) {
   return {
     type: 'status' as const,
@@ -115,7 +115,7 @@ export function deliveredBody(
       medium: receipt.medium ?? 'solana-devnet',
       tx: receipt.tx ?? TX1,
       amount: receipt.amount ?? '1000000',
-      fee: '0',
+      fee: receipt.fee ?? '0',
       ...(receipt.caip19 === undefined ? {} : { caip19: receipt.caip19 }),
     },
   };

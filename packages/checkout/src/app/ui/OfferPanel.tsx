@@ -19,6 +19,8 @@ interface Props {
   onOpenWallets(): void;
   onChoosePayout(index: number): void;
   onPay(name: string): void;
+  /** The earlier-payment line's "Check in wallet". */
+  onCheckWallet?: () => void;
   phone: boolean;
   /** A wallet was pressed: the payout and the wallets wait for the next view. */
   locked: boolean;
@@ -42,10 +44,12 @@ export function OfferPanel({
   onOpenWallets,
   onChoosePayout,
   onPay,
+  onCheckWallet,
   phone,
   locked,
   initialListOpen = false,
 }: Props) {
+  const checkWallet = onCheckWallet === undefined ? {} : { onCheckWallet };
   const labelId = useId();
   const paying = payoutPaying(view.payout);
   const tempo = paying.chain === 'tempo';
@@ -82,7 +86,13 @@ export function OfferPanel({
       )}
       {view.askEmail ? <EmailField value={email} onInput={onEmail} /> : null}
       <ProblemNote problem={atEmail} asset={paying.asset} reveal />
-      <ProblemNote problem={aboveButton} asset={paying.asset} tempo={tempo} reveal />
+      <ProblemNote
+        problem={aboveButton}
+        asset={paying.asset}
+        tempo={tempo}
+        reveal
+        {...checkWallet}
+      />
       {walletsOpen ? (
         <WalletSection
           wallets={view.wallets}
@@ -92,6 +102,7 @@ export function OfferPanel({
           phone={phone}
           locked={locked}
           onPay={onPay}
+          {...checkWallet}
         />
       ) : (
         <button type="button" class="primary" onClick={onOpenWallets}>

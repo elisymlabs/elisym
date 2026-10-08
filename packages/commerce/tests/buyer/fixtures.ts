@@ -17,6 +17,12 @@ export const USDC_DEVNET_CAIP19 =
 export const USDC_MAINNET_CAIP19 =
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
+/** Fee terms at a zero rate: no fee leg, today's request byte for byte. */
+export const NO_FEE_TERMS = async (): Promise<{ feeBps: number; treasury: string }> => ({
+  feeBps: 0,
+  treasury: '',
+});
+
 export const T0 = 1_750_000_000;
 export const DAY = 24 * 60 * 60;
 export const NOW = T0 + 10 * DAY;
@@ -57,6 +63,8 @@ export function makeShop(
     caip19?: string;
     /** The payout address (a Tempo payout needs an EVM one). */
     payout?: string;
+    /** The store's node declares protocol-fee support (`['fee', '1']` on its profile). */
+    fee?: boolean;
   } = {},
 ): Shop {
   const owner = nostrKey();
@@ -80,6 +88,7 @@ export function makeShop(
         ownerPubkey: owner.pubkey,
         createdAt: T0,
         ...(options.nip05 === undefined ? {} : { nip05: options.nip05 }),
+        ...(options.fee === undefined ? {} : { fee: options.fee }),
       }),
       store,
     ),

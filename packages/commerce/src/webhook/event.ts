@@ -10,8 +10,19 @@ import { HEX_PUBKEY_RE } from '../tags';
 export interface WebhookPayment {
   /** CAIP-19 asset id the node verified (e.g. solana:<genesis>/token:<mint>). */
   asset: string;
-  /** Decimal string of subunits verified on chain: credit this. */
+  /** Decimal string of subunits verified on chain: the price paid in total. Credit this. */
   amount: string;
+  /**
+   * Decimal string of subunits of `amount` that went to the elisym protocol
+   * treasury, not to the merchant ("0" when none). Absent from events sent by
+   * nodes before protocol-fee support.
+   */
+  fee?: string;
+  /**
+   * Decimal string of subunits of `amount` the merchant's wallet received
+   * (`amount - fee`). Absent from events sent by nodes before protocol-fee support.
+   */
+  net?: string;
   /**
    * Approximate, for display only (may be exponent notation, e.g. "1e-9"); only for a coin the
    * node knows. Never credit from it.
@@ -112,6 +123,8 @@ function parsePayment(value: unknown): WebhookPayment | undefined {
   }
   const asset = own(value, 'asset');
   const amount = own(value, 'amount');
+  const fee = own(value, 'fee');
+  const net = own(value, 'net');
   const amountDisplay = own(value, 'amountDisplay');
   const decimals = own(value, 'decimals');
   const symbol = own(value, 'symbol');
@@ -128,6 +141,14 @@ function parsePayment(value: unknown): WebhookPayment | undefined {
     !Number.isSafeInteger(paidAt) ||
     paidAt < 0
   ) {
+    return undefined;
+  }
+  // Optional (events from nodes before protocol-fee support carry neither), but
+  // strict when present: they are money.
+  if (fee !== undefined && (typeof fee !== 'string' || !SUBUNITS_RE.test(fee))) {
+    return undefined;
+  }
+  if (net !== undefined && (typeof net !== 'string' || !SUBUNITS_RE.test(net))) {
     return undefined;
   }
   if (
@@ -151,6 +172,8 @@ function parsePayment(value: unknown): WebhookPayment | undefined {
   return {
     asset,
     amount,
+    ...(fee === undefined ? {} : { fee }),
+    ...(net === undefined ? {} : { net }),
     ...(amountDisplay === undefined ? {} : { amountDisplay }),
     ...(decimals === undefined ? {} : { decimals }),
     ...(symbol === undefined ? {} : { symbol }),

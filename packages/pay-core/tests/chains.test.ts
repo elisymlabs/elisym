@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { TEMPO_UNPAYABLE_ADDRESSES as EVM_ENTRY_UNPAYABLE_ADDRESSES } from '../src/evm/index';
 import {
   ALL_ASSETS,
   EVM_ASSETS,
@@ -17,6 +18,8 @@ import {
 } from '../src/payment/assets';
 import {
   CHAINS,
+  COIN_CONTRACTS,
+  TEMPO_UNPAYABLE_ADDRESSES,
   chainByCaip2,
   chainFamilyOf,
   chainFor,
@@ -26,6 +29,7 @@ import {
   isEvmTxHashFormat,
   isEvmWireAddress,
   isEvmWireTxHash,
+  isPayable,
   isVirtualEvmAddress,
   normalizeEvmAddress,
 } from '../src/payment/chains';
@@ -208,5 +212,21 @@ describe('the asset lists', () => {
       expect(() => resolveAssetFromPaymentRequest(hostile as never)).toThrow(/Unknown asset/);
       expect(() => resolveAssetFromPaymentRequest(hostile as never)).not.toThrow(TypeError);
     }
+  });
+});
+
+describe('isPayable (the EVM payability rule, rail-neutral)', () => {
+  it('refuses the system accounts, the coin contracts and virtual addresses', () => {
+    for (const address of [...TEMPO_UNPAYABLE_ADDRESSES, ...COIN_CONTRACTS]) {
+      expect(isPayable(address)).toBe(false);
+    }
+    expect(COIN_CONTRACTS).toEqual(EVM_ASSETS.map((coin) => (coin.mint ?? '').toLowerCase()));
+    expect(isPayable(`0x11223344${'fd'.repeat(10)}556677889900`)).toBe(false);
+    expect(isPayable('0x7edb1404ebae28332867756c0d01440b9e63f3f7')).toBe(true);
+  });
+
+  it('is still published from the evm entry, the same list', () => {
+    expect(EVM_ENTRY_UNPAYABLE_ADDRESSES).toBe(TEMPO_UNPAYABLE_ADDRESSES);
+    expect(TEMPO_UNPAYABLE_ADDRESSES).toHaveLength(5);
   });
 });

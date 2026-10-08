@@ -11,10 +11,12 @@
  * Wallet Standard chain id and NOT CAIP-2 - the two never mix.)
  *
  * This module is data and string checks only. Anything that needs keccak or an
- * rpc client lives under `@elisym/pay-core/evm`.
+ * rpc client lives under `@elisym/pay-core/evm`, which imports from here - never
+ * the other way round.
  */
 
 import type { Network } from '../types';
+import { EVM_ASSETS } from './assets';
 
 export type ChainSlug = 'solana' | 'tempo';
 export type ChainFamily = 'solana' | 'evm';
@@ -156,4 +158,52 @@ export function isVirtualEvmAddress(address: string): boolean {
 /** Lowercase form used on the wire, or `undefined` when `value` is not an EVM address. */
 export function normalizeEvmAddress(value: unknown): string | undefined {
   return isEvmAddressFormat(value) ? value.toLowerCase() : undefined;
+}
+
+/** Twenty zero bytes: the burn address, and the `recoveryAuthority` that means "the originator". */
+export const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
+/** Tempo's TIP-403 receive-policy registry. */
+export const TEMPO_POLICY_REGISTRY = '0x403c000000000000000000000000000000000000';
+/** Tempo's guard that holds a blocked transfer's funds and emits `TransferBlocked`. */
+export const TEMPO_TRANSFER_GUARD = '0xb10c000000000000000000000000000000000000';
+/**
+ * Tempo's fee sink. Every Tempo receipt ends with a transfer to it, on a
+ * reverted transaction too - so a sender matching its own legs must never count
+ * one.
+ */
+export const TEMPO_FEE_SINK = '0xfeec000000000000000000000000000000000000';
+/** Tempo's TIP-1022 address registry precompile, live on mainnet. */
+export const TEMPO_ADDRESS_REGISTRY = '0xfdc0000000000000000000000000000000000000';
+
+/**
+ * Addresses no payment of ours may name. Four are Tempo's own system accounts -
+ * the policy registry, the transfer guard, the fee sink and the address
+ * registry - and the fifth is the burn address: money sent to any of them is
+ * gone, and nothing this SDK can read would ever report it as delivered - the
+ * fee sink is excluded from every leg match by name.
+ */
+export const TEMPO_UNPAYABLE_ADDRESSES: readonly string[] = [
+  ZERO_ADDRESS,
+  TEMPO_POLICY_REGISTRY,
+  TEMPO_TRANSFER_GUARD,
+  TEMPO_FEE_SINK,
+  TEMPO_ADDRESS_REGISTRY,
+];
+
+/** The contracts of every registry coin: a token precompile holds no one's balance. */
+export const COIN_CONTRACTS: readonly string[] = EVM_ASSETS.flatMap((coin) =>
+  coin.mint === undefined ? [] : [coin.mint.toLowerCase()],
+);
+
+/**
+ * Whether money sent to the EVM `address` (wire form: lowercase) can reach
+ * someone: not a virtual address, not one of the protocol's own system
+ * accounts, and not a coin's own contract.
+ */
+export function isPayable(address: string): boolean {
+  return (
+    !isVirtualEvmAddress(address) &&
+    !TEMPO_UNPAYABLE_ADDRESSES.includes(address) &&
+    !COIN_CONTRACTS.includes(address)
+  );
 }

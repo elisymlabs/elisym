@@ -28,6 +28,7 @@ function makeAccount(overrides?: {
   pendingAdmin?: Address | null;
   paused?: boolean;
   version?: number;
+  evmTreasury?: Uint8Array;
 }) {
   return {
     address: 'ConfigPda1111111111111111111111111111111111' as Address,
@@ -41,6 +42,7 @@ function makeAccount(overrides?: {
           : { __option: 'Some' as const, value: overrides.pendingAdmin },
       paused: overrides?.paused ?? false,
       version: overrides?.version ?? 1,
+      evmTreasury: overrides?.evmTreasury ?? new Uint8Array(20),
     },
   };
 }
@@ -159,5 +161,26 @@ describe('getProtocolConfig', () => {
     await expect(getProtocolConfig(makeRpc(), PROGRAM_ID, 'mainnet')).rejects.toThrow(
       /no cached value/,
     );
+  });
+
+  it('reads the EVM treasury as lowercase 0x hex', async () => {
+    const bytes = Uint8Array.from({ length: 20 }, (_value, index) => 0xa0 + index);
+    fetchConfigMock.mockResolvedValueOnce(makeAccount({ evmTreasury: bytes }));
+    const config = await getProtocolConfig(makeRpc(), PROGRAM_ID, 'devnet');
+    expect(config.evmTreasury).toBe('0xa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3');
+  });
+
+  it('keeps leading zero bytes of the EVM treasury', async () => {
+    const bytes = new Uint8Array(20);
+    bytes[19] = 1;
+    fetchConfigMock.mockResolvedValueOnce(makeAccount({ evmTreasury: bytes }));
+    const config = await getProtocolConfig(makeRpc(), PROGRAM_ID, 'devnet');
+    expect(config.evmTreasury).toBe(`0x${'0'.repeat(38)}01`);
+  });
+
+  it('reads all-zero EVM treasury bytes as not set', async () => {
+    fetchConfigMock.mockResolvedValueOnce(makeAccount({ evmTreasury: new Uint8Array(20) }));
+    const config = await getProtocolConfig(makeRpc(), PROGRAM_ID, 'devnet');
+    expect(config.evmTreasury).toBeUndefined();
   });
 });

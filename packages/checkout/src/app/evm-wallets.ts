@@ -1,4 +1,4 @@
-import type { TempoWallet } from '@elisym/commerce/buyer';
+import type { CallsStatus, TempoWallet } from '@elisym/commerce/buyer';
 import type { ChainConfig } from '@elisym/pay-core';
 
 /** An EIP-1193 provider, reduced to `request`. */
@@ -25,7 +25,146 @@ export interface Eip6963Wallet {
 export interface TempoWalletOption {
   name: string;
   icon?: string;
+  /** The wallet's EIP-6963 `rdns`, when it says: a bundle it approved is followed through it. */
+  rdns?: string;
   connect(): Promise<TempoWallet>;
+}
+
+/**
+ * Every EIP-5792 read the checkout makes waits at most this long: a wallet
+ * that does not answer is treated as one that cannot say (never awaited
+ * forever by a press or the watch).
+ */
+export const WALLET_READ_TIMEOUT_MS = 5_000;
+
+/** `wallet_getCapabilities`' `atomic.status` values that mean "sends a batch atomically". */
+const ATOMIC_STATUSES: readonly string[] = ['ready', 'supported'];
+
+/** The wallet did not answer a read in time. */
+export class WalletReadTimeout extends Error {
+  constructor() {
+    super('the wallet did not answer in time');
+    this.name = 'WalletReadTimeout';
+  }
+}
+
+/** `provider.request(args)`, refused with `WalletReadTimeout` after `WALLET_READ_TIMEOUT_MS`. */
+function boundedRequest(
+  provider: Eip1193Provider,
+  args: { method: string; params?: readonly unknown[] | object },
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new WalletReadTimeout()), WALLET_READ_TIMEOUT_MS);
+    provider.request(args).then(
+      (answer) => {
+        clearTimeout(timer);
+        resolve(answer);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * `wallet_getCapabilities(from, [chainId])`: whether the wallet sends a batch
+ * atomically on that chain (`atomic.status` `ready` or `supported`). Any other
+ * answer is "no"; an error or no answer in time is thrown, and the caller
+ * (`tempoWalletCanBatch`) reads that as "no".
+ */
+export async function readAtomicCapability(
+  provider: Eip1193Provider,
+  from: string,
+  chainId: string,
+): Promise<boolean> {
+  const answer = await boundedRequest(provider, {
+    method: 'wallet_getCapabilities',
+    params: [from, [chainId]],
+  });
+  const forChain = fieldOf(answer, chainId) ?? fieldOf(answer, chainId.toLowerCase());
+  const status = fieldOf(fieldOf(forChain, 'atomic'), 'status');
+  return typeof status === 'string' && ATOMIC_STATUSES.includes(status);
+}
+
+/**
+ * `wallet_getCallsStatus(bundleId)`, bounded by `WALLET_READ_TIMEOUT_MS`. An
+ * answer that is not an object with a numeric `status` is refused (thrown):
+ * nothing is read from it.
+ */
+export async function readCallsStatus(
+  provider: Eip1193Provider,
+  bundleId: string,
+): Promise<CallsStatus> {
+  const answer = await boundedRequest(provider, {
+    method: 'wallet_getCallsStatus',
+    params: [bundleId],
+  });
+  const status = fieldOf(answer, 'status');
+  if (typeof status !== 'number') {
+    throw new Error('the wallet answered no calls status');
+  }
+  const atomic = fieldOf(answer, 'atomic');
+  const receipts = fieldOf(answer, 'receipts');
+  return {
+    status,
+    ...(typeof atomic === 'boolean' ? { atomic } : {}),
+    ...(Array.isArray(receipts)
+      ? {
+          receipts: receipts.map((receipt: unknown) => ({
+            transactionHash: fieldOf(receipt, 'transactionHash'),
+          })),
+        }
+      : {}),
+  };
+}
+
+/**
+ * `wallet_sendCalls` (EIP-5792 v2): every call in ONE atomic batch
+ * (`atomicRequired: true`). Resolves the bundle id the wallet returned.
+ */
+export async function sendAtomicCalls(
+  provider: Eip1193Provider,
+  request: { from: string; chainId: string; calls: readonly { to: string; data: string }[] },
+): Promise<{ bundleId: string }> {
+  const answer = await provider.request({
+    method: 'wallet_sendCalls',
+    params: [
+      {
+        version: '2.0.0',
+        from: request.from,
+        chainId: request.chainId,
+        atomicRequired: true,
+        calls: request.calls.map((call) => ({ to: call.to, data: call.data, value: '0x0' })),
+      },
+    ],
+  });
+  // v2 answers `{ id }`; an older wallet answers the id itself.
+  const bundleId = typeof answer === 'string' ? answer : fieldOf(answer, 'id');
+  if (typeof bundleId !== 'string') {
+    throw new Error('the wallet returned no bundle id');
+  }
+  return { bundleId };
+}
+
+/**
+ * A provider found by EIP-6963 discovery, asked only for a bundle's status:
+ * no `eth_requestAccounts`, so nothing prompts the buyer. A wallet that will
+ * not answer without a connection simply answers nothing here.
+ */
+export function bundleStatusReader(
+  wallets: readonly Eip6963Wallet[],
+  rdns: string | undefined,
+): Pick<TempoWallet, 'callsStatus'> | undefined {
+  if (rdns === undefined) {
+    return undefined;
+  }
+  const found = wallets.find((wallet) => wallet.info.rdns === rdns);
+  if (found === undefined) {
+    return undefined;
+  }
+  return { callsStatus: (bundleId) => readCallsStatus(found.provider, bundleId) };
 }
 
 /**
@@ -163,6 +302,7 @@ async function addChain(
 export async function connectTempo(
   provider: Eip1193Provider,
   chain: ChainConfig,
+  rdns?: string,
 ): Promise<TempoWallet> {
   const accounts = await provider.request({ method: 'eth_requestAccounts' });
   const address = Array.isArray(accounts) ? accounts[0] : undefined;
@@ -170,8 +310,15 @@ export async function connectTempo(
     throw new Error('the wallet has no account');
   }
   await switchTo(provider, chain);
+  const from = address.toLowerCase();
   return {
-    address: address.toLowerCase(),
+    address: from,
+    ...(rdns === undefined ? {} : { rdns }),
+    capabilities: async (chainId) => ({
+      atomic: await readAtomicCapability(provider, from, chainId),
+    }),
+    sendCalls: (request) => sendAtomicCalls(provider, request),
+    callsStatus: (bundleId) => readCallsStatus(provider, bundleId),
     async chainId() {
       const answer = await provider.request({ method: 'eth_chainId' });
       return typeof answer === 'string' ? Number.parseInt(answer, 16) : Number.NaN;
@@ -201,7 +348,8 @@ export function tempoWalletOptions(
     .map((wallet) => ({
       name: wallet.info.name,
       ...(wallet.info.icon?.startsWith('data:') === true ? { icon: wallet.info.icon } : {}),
-      connect: () => connectTempo(wallet.provider, chain),
+      ...(wallet.info.rdns === undefined ? {} : { rdns: wallet.info.rdns }),
+      connect: () => connectTempo(wallet.provider, chain, wallet.info.rdns),
     }));
 }
 

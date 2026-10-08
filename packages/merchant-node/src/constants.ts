@@ -115,6 +115,9 @@ export const WEBHOOK_TICK_MS = 5_000;
 /** Webhooks sent at once: a slow receiver never piles up connections. */
 export const MAX_WEBHOOKS_IN_FLIGHT = 4;
 
+/** One read of the elisym fee config (its genesis check included): past it the config RPC counts as unreachable. */
+export const FEE_CONFIG_READ_TIMEOUT_MS = 10_000;
+
 /** One webhook request, its answer read included. */
 export const WEBHOOK_TIMEOUT_MS = 10_000;
 

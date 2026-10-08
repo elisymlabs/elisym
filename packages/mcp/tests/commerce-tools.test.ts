@@ -6,6 +6,7 @@ import {
   buildOrderMessage,
   buildPaytoEvent,
   buildProductEvent,
+  buildStoreProfileEvent,
   wrapOrderMessage,
 } from '@elisym/commerce';
 import {
@@ -14,9 +15,9 @@ import {
   OrderStore,
   applyStatus,
 } from '@elisym/commerce/buyer';
-import { USDC_SOLANA_DEVNET } from '@elisym/pay-core';
+import { FeeConfigError, USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { NATIVE_SOL, assetKey, generateSolanaWallet } from '@elisym/sdk';
-import { getBase58Encoder } from '@solana/kit';
+import { address, getBase58Encoder } from '@solana/kit';
 import type { NostrEvent } from 'nostr-tools';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -31,8 +32,10 @@ import {
   inboxList,
   makeShop,
   sign,
+  solanaAddress,
 } from '../../commerce/tests/buyer/fixtures';
 import { FakeSolana } from '../../commerce/tests/buyer/solana-fixtures';
+import { getConfigEncoder } from '../../config-client/src/generated/accounts/config';
 import { AgentContext, type AgentInstance } from '../src/context.js';
 import { defaultSpendLimitsMap } from '../src/session-limits.js';
 import { FileOrderBackend } from '../src/storage/orders.js';
@@ -102,6 +105,7 @@ async function world(
   Object.assign(commerceRuntime, {
     relayClient: () => relays,
     solanaRpc: () => chain.rpc,
+    feeTerms: async () => ({ feeBps: 0, treasury: '' }),
     purchaseRpc: async () => ({ url: 'fake', canProveOver: true }),
     judgeStorage: async () => ({ durable: true }),
     guardedFetch: () => fetch,
@@ -958,5 +962,356 @@ describe('a completed order, in words (D6, rev 4 #1, rev 5 #1)', () => {
       (await tool('get_order').handler(run.ctx, { order_id: record.orderId })) as never,
     );
     expect(said).toContain('Waiting for the store to confirm; call get_order later.');
+  });
+});
+
+describe('the elisym protocol fee (commerce-fee plan, sections 5 and 7)', () => {
+  const TREASURY = solanaAddress();
+
+  /** The store's node declares fee support: a newer profile with `['fee', '1']`. */
+  function declaresFee(run: World): void {
+    run.events.push(
+      sign(
+        buildStoreProfileEvent({
+          name: 'Shop',
+          ownerPubkey: run.shop.owner.pubkey,
+          createdAt: T0 + 1,
+          fee: true,
+        }),
+        run.shop.store,
+      ),
+    );
+  }
+
+  type Answer = number | Error;
+
+  /**
+   * The fee terms answer each read in turn (the last answer repeats): a rate
+   * in bps to `TREASURY`, or a thrown error. Reads, in a buy: the quote, the
+   * check before ordering, the compose, the check before paying.
+   */
+  function feeAnswers(...answers: Answer[]): { reads: () => number } {
+    let reads = 0;
+    commerceRuntime.feeTerms = async () => {
+      const answer = answers[Math.min(reads, answers.length - 1)] as Answer;
+      reads += 1;
+      if (answer instanceof Error) {
+        throw answer;
+      }
+      return answer === 0 ? { feeBps: 0, treasury: '' } : { feeBps: answer, treasury: TREASURY };
+    };
+    return { reads: () => reads };
+  }
+
+  async function buy(run: World): Promise<{ body: string; isError: boolean }> {
+    const quote = await quoteId(run);
+    const result = await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    return {
+      body: text(result as never),
+      isError: (result as { isError?: boolean }).isError === true,
+    };
+  }
+
+  const UNAVAILABLE = new FeeConfigError('unavailable', 'rpc down');
+  const WRONG_CLUSTER = new FeeConfigError('wrong_cluster', 'devnet rpc as mainnet');
+
+  describe('the wiring', () => {
+    const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
+    const SOLANA_DEVNET = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
+    const SOLANA_MAINNET = 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
+
+    function devnetRpc() {
+      const fail = () => ({
+        send: async () => {
+          throw new Error('down');
+        },
+      });
+      return {
+        getGenesisHash: () => ({ send: async () => DEVNET_GENESIS }),
+        getAccountInfo: fail,
+        getMultipleAccounts: fail,
+      } as never;
+    }
+
+    it("reads the config of the order chain's own network, genesis-checked", async () => {
+      // A devnet endpoint asked for mainnet terms: refused before any read.
+      await expect(original.feeTerms(devnetRpc(), SOLANA_MAINNET)).rejects.toMatchObject({
+        code: 'wrong_cluster',
+      });
+      // The same endpoint for devnet passes the check and reads the config (down here).
+      await expect(original.feeTerms(devnetRpc(), SOLANA_DEVNET)).rejects.toMatchObject({
+        code: 'unavailable',
+      });
+    });
+
+    it("reads the Solana rail's treasury of that config, never the EVM one", async () => {
+      const solanaTreasury = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
+      const bytes = getConfigEncoder().encode({
+        version: 1,
+        bump: 255,
+        admin: address(solanaTreasury),
+        pendingAdmin: null,
+        treasury: address(solanaTreasury),
+        feeBps: 100,
+        paused: false,
+        lastUpdated: 0,
+        evmTreasury: new Uint8Array(20).fill(0x11),
+        reserved: new Uint8Array(108),
+      });
+      const account = {
+        data: [Buffer.from(bytes).toString('base64'), 'base64'],
+        executable: false,
+        lamports: 1_000_000n,
+        owner: '11111111111111111111111111111111',
+        rentEpoch: 0n,
+        space: BigInt(bytes.length),
+      };
+      const rpc = {
+        getGenesisHash: () => ({ send: async () => DEVNET_GENESIS }),
+        getAccountInfo: () => ({ send: async () => ({ context: { slot: 1n }, value: account }) }),
+      } as never;
+      await expect(original.feeTerms(rpc, SOLANA_DEVNET)).resolves.toEqual({
+        feeBps: 100,
+        treasury: solanaTreasury,
+      });
+    });
+  });
+
+  describe('the quote', () => {
+    it('says the fee the price includes, in the coin, never as a float', async () => {
+      const run = await world();
+      declaresFee(run);
+      feeAnswers(100);
+      const quote = await quoteId(run);
+      expect(quote.body).toContain('Price: 49 USDC');
+      expect(quote.body).toContain('Includes elisym fee 0.49 USDC');
+    });
+
+    it('adds no fee line at a zero fee', async () => {
+      const run = await world();
+      feeAnswers(0);
+      const quote = await quoteId(run);
+      expect(quote.body).not.toMatch(/fee/i);
+    });
+
+    it('says the fee is unknown when the terms cannot be read, never "no fee"', async () => {
+      for (const error of [UNAVAILABLE, WRONG_CLUSTER, new Error('anything')]) {
+        const run = await world();
+        declaresFee(run);
+        feeAnswers(error);
+        const quote = await quoteId(run);
+        expect(quote.body).toContain('Fee: unknown');
+        expect(quote.body).toContain('cannot buy now');
+        expect(quote.body).not.toMatch(/no fee/i);
+      }
+    });
+
+    it('says the store must update when the fee is above 0 and the store does not declare it', async () => {
+      const run = await world();
+      feeAnswers(100);
+      const quote = await quoteId(run);
+      expect(quote.body).toContain('store must update');
+      expect(quote.body).not.toContain('Includes elisym fee');
+    });
+  });
+
+  describe('a treasury that is the payer itself', () => {
+    it('carries no fee leg: an outdated store is not refused, and the order is paid', async () => {
+      const run = await world();
+      const payer = (run.agent.solanaKeypair as { publicKey: string }).publicKey;
+      commerceRuntime.feeTerms = async () => ({ feeBps: 100, treasury: payer });
+      const quote = await quoteId(run);
+      expect(quote.body).not.toMatch(/fee/i);
+      const bought = await tool('buy_product').handler(run.ctx, {
+        quote_id: quote.id,
+        accept_warnings: quote.warnings,
+      });
+      expect(text(bought as never)).toMatch(/paid|confirming/);
+      const [record] = await orders(run);
+      expect(record?.paymentRequest).not.toContain('fee_address');
+      expect(run.chain.landed.size).toBe(1);
+    });
+  });
+
+  describe('before ordering', () => {
+    it('refuses an outdated store: nothing ordered or signed, not retryable', async () => {
+      const run = await world();
+      feeAnswers(100);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('must be updated');
+      expect(bought.body).toContain('Nothing was ordered');
+      expect(bought.body).not.toMatch(/try again|retry/i);
+      expect(await orders(run)).toEqual([]);
+      expect(run.chain.sent).toEqual([]);
+    });
+
+    it('refuses while the terms cannot be read: nothing ordered, retryable', async () => {
+      const run = await world();
+      // The quote reads them fine; the buy re-checks anyway.
+      feeAnswers(0, UNAVAILABLE);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('could not be read');
+      expect(bought.body).toContain('try again');
+      expect(await orders(run)).toEqual([]);
+    });
+
+    it('refuses an unusable configuration without retry wording', async () => {
+      const run = await world();
+      feeAnswers(0, WRONG_CLUSTER);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('cannot be used right now');
+      expect(bought.body).not.toMatch(/try again|retry/i);
+      expect(await orders(run)).toEqual([]);
+    });
+  });
+
+  describe('composing the request after the order exists', () => {
+    it('ends the order when the fee rose and the store is outdated (not "could not be prepared")', async () => {
+      const run = await world();
+      feeAnswers(0, 0, 100);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('store_outdated');
+      expect(bought.body).toContain('it was ended and nothing was paid');
+      expect(bought.body).not.toContain('could not be prepared');
+      const [record] = await orders(run);
+      expect(record?.state).toBe('ended-unpaid');
+      expect(record?.paymentRequest).toBeUndefined();
+      expect(run.chain.sent).toEqual([]);
+      // The product is free again: the next buy places a new order (here refused before ordering).
+      feeAnswers(0);
+      const again = await buy(run);
+      expect(again.isError).toBe(false);
+      expect(await orders(run)).toHaveLength(2);
+    });
+
+    it('leaves the record while the terms cannot be read, and pays it on the next call', async () => {
+      const run = await world();
+      feeAnswers(0, 0, UNAVAILABLE);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('try again');
+      expect(bought.body).not.toContain('could not be prepared');
+      const [record] = await orders(run);
+      expect(record?.state).toBe('ordered');
+      expect(record?.paymentRequest).toBeUndefined();
+      expect(run.chain.sent).toEqual([]);
+      feeAnswers(0);
+      const again = await buy(run);
+      expect(again.body).toMatch(/paid|confirming/);
+      const after = await orders(run);
+      expect(after).toHaveLength(1);
+      expect(after[0]?.orderId).toBe(record?.orderId);
+      expect(run.chain.landed.size).toBe(1);
+    });
+
+    it('leaves the record on an unusable configuration, without retry wording', async () => {
+      const run = await world();
+      feeAnswers(0, 0, WRONG_CLUSTER);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('cannot be used right now');
+      expect(bought.body).not.toMatch(/try again|retry/i);
+      expect((await orders(run))[0]?.state).toBe('ordered');
+      expect(run.chain.sent).toEqual([]);
+    });
+  });
+
+  describe('a fee raised between the compose and the first payment', () => {
+    it('ends a stored fee-0 request with offer_changed (never not_payable), nothing signed', async () => {
+      const run = await world();
+      declaresFee(run);
+      feeAnswers(0, 0, 0, 100);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('offer_changed');
+      expect(bought.body).toContain('it was ended and nothing was paid');
+      const [record] = await orders(run);
+      expect(record?.state).toBe('ended-unpaid');
+      expect(record?.paymentRequest).toBeDefined();
+      expect(run.chain.sent).toEqual([]);
+    });
+
+    it('ends it with store_outdated when the store does not declare fee support', async () => {
+      const run = await world();
+      feeAnswers(0, 0, 0, 100);
+      const bought = await buy(run);
+      expect(bought.body).toContain('store_outdated');
+      expect(bought.body).toContain('must be updated');
+      expect((await orders(run))[0]?.state).toBe('ended-unpaid');
+      expect(run.chain.sent).toEqual([]);
+    });
+
+    it('leaves the record when the terms cannot be read before paying, retryable', async () => {
+      const run = await world();
+      feeAnswers(0, 0, 0, UNAVAILABLE);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('try again');
+      expect((await orders(run))[0]?.state).toBe('ordered');
+      expect(run.chain.sent).toEqual([]);
+    });
+
+    it('leaves the record on an unusable configuration before paying, without retry wording', async () => {
+      const run = await world();
+      feeAnswers(0, 0, 0, WRONG_CLUSTER);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('cannot be used right now');
+      expect(bought.body).not.toMatch(/try again|retry/i);
+      expect((await orders(run))[0]?.state).toBe('ordered');
+    });
+  });
+
+  describe('a retry after an attempt proven over', () => {
+    async function overAttempt(run: World): Promise<OrderRecord> {
+      for (const [key, limit] of run.ctx.sessionSpendLimits) {
+        run.ctx.sessionSpendLimits.set(key, limit * 1000n);
+      }
+      feeAnswers(0);
+      run.chain.dropSends = true;
+      await buy(run);
+      const [stuck] = await orders(run);
+      expect(stuck?.state).toBe('paying');
+      run.chain.expire();
+      run.chain.nextBlockhash();
+      run.chain.dropSends = false;
+      return stuck as OrderRecord;
+    }
+
+    it('ends the order when the store became outdated for the fee', async () => {
+      const run = await world();
+      const stuck = await overAttempt(run);
+      feeAnswers(100);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('store_outdated');
+      expect(bought.body).toContain('it was ended and nothing was paid');
+      const after = await orders(run);
+      expect(after).toHaveLength(1);
+      expect(after[0]?.orderId).toBe(stuck.orderId);
+      expect(after[0]?.state).toBe('ended-unpaid');
+      expect(run.chain.landed.size).toBe(0);
+    });
+
+    it('leaves the attempt while the terms cannot be read, retryable', async () => {
+      const run = await world();
+      const stuck = await overAttempt(run);
+      feeAnswers(UNAVAILABLE);
+      const bought = await buy(run);
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('try again');
+      const after = await orders(run);
+      expect(after).toHaveLength(1);
+      expect(after[0]?.state).toBe('paying');
+      expect(after[0]?.marker?.attemptId).toBe(stuck.marker?.attemptId);
+      expect(run.chain.landed.size).toBe(0);
+    });
   });
 });

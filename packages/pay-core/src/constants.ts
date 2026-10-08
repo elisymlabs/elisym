@@ -56,6 +56,14 @@ export function getProtocolProgramId(cluster: ProtocolCluster): Address {
   }
 }
 
+/**
+ * The highest protocol fee, in basis points (10%), on every rail. The Solana
+ * `elisym-config` program refuses a larger `fee_bps`, and so did the EVM
+ * config contract; a reader treats a larger value as a config it cannot use.
+ * A merchant node's floor is the price less a fee at this rate.
+ */
+export const MAX_FEE_BPS = 1000;
+
 /** The Solana system program, as a string: no import, no runtime cost. */
 export const SYSTEM_PROGRAM_ADDRESS_STR = '11111111111111111111111111111111';
 

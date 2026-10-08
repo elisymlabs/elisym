@@ -70,4 +70,11 @@ pub mod elisym_config {
     ) -> Result<()> {
         instructions::increment_stats_v2::handler(ctx, amount, mint)
     }
+
+    pub fn set_evm_treasury(
+        ctx: Context<AdminOnly>,
+        new_evm_treasury: [u8; 20],
+    ) -> Result<()> {
+        instructions::set_evm_treasury::handler(ctx, new_evm_treasury)
+    }
 }

@@ -17,6 +17,7 @@ import {
   formatAssetAmount,
   type Asset,
 } from '../src/payment/assets';
+import { COIN_CONTRACTS, TEMPO_UNPAYABLE_ADDRESSES } from '../src/payment/chains';
 
 const SPL_FIXTURE: Asset = {
   chain: 'solana',
@@ -218,6 +219,19 @@ describe('ops scripts cover every known asset', () => {
       expect(source, `${asset.symbol} (${asset.mint}) missing from ${scriptPath}`).toContain(
         asset.mint,
       );
+    }
+  });
+
+  // admin.ts refuses an EVM treasury no payment may name, from its own copy of
+  // the list (an import back would be a workspace cycle).
+  it('admin.ts lists every unpayable Tempo address and coin contract', async () => {
+    const { readFileSync } = await import('node:fs');
+    const source = readFileSync(
+      new URL('../../../packages/config-client/scripts/admin.ts', import.meta.url),
+      'utf8',
+    ).toLowerCase();
+    for (const address of [...TEMPO_UNPAYABLE_ADDRESSES, ...COIN_CONTRACTS]) {
+      expect(source, `${address} missing from admin.ts`).toContain(address.toLowerCase());
     }
   });
 });

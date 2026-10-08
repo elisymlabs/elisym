@@ -14,16 +14,24 @@ export {
 } from './payment/solana';
 export {
   boundTransferAmount,
+  boundTreasuryLegs,
   composeSolanaPaymentRequest,
   directInstructionsFromCompiledMessage,
   directInstructionsFromRpcTransaction,
+  judgeDirectSolanaPayment,
   listReferenceSignatures,
+  readDirectSolanaTransaction,
   verifyDirectSolanaPayment,
 } from './payment/direct';
 export type {
   BoundTransferExpectation,
+  BoundTreasuryExpectation,
   ComposeSolanaPaymentRequestOptions,
   DirectInstruction,
+  DirectPaymentEvidence,
+  DirectRefusalReason,
+  DirectSolanaTransaction,
+  DirectSolanaTransactionRead,
   DirectVerification,
   ListReferenceSignaturesOptions,
   ReferenceSignature,
@@ -145,6 +153,14 @@ export {
 } from './payment/wallet';
 export { clearProtocolConfigCache, getProtocolConfig } from './config/onchain';
 export type { GetProtocolConfigOptions, ProtocolConfig } from './config/onchain';
+export {
+  FeeConfigError,
+  feeAmountFor,
+  protocolFeeFor,
+  readFeeTerms,
+  solanaConfigNetworkFor,
+} from './config/fee-terms';
+export type { FeeConfigErrorCode, FeeRail, FeeTerms } from './config/fee-terms';
 export type {
   Network,
   PaymentValidationCode,
@@ -157,6 +173,7 @@ export type {
 } from './types';
 export {
   ELISYM_PROTOCOL_TAG,
+  MAX_FEE_BPS,
   getProtocolProgramId,
   PROTOCOL_PROGRAM_ID_DEVNET,
   PROTOCOL_PROGRAM_ID_MAINNET,

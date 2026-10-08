@@ -1,8 +1,3 @@
-/**
- * Two accounts in one browser: a page with a customer reference sees, resumes
- * and reports only its own account's orders. Another account's orders are
- * still resolved in the background (store answers, chain verdicts), silently.
- */
 import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import { type LoadedOffer, type OrderRecord, OrderStore, loadOffer } from '@elisym/commerce/buyer';
 import { IDBFactory } from 'fake-indexeddb';
@@ -27,6 +22,12 @@ import {
 } from '../src/app/session';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutParams, CheckoutState } from '../src/embed/protocol';
+/**
+ * Two accounts in one browser: a page with a customer reference sees, resumes
+ * and reports only its own account's orders. Another account's orders are
+ * still resolved in the background (store answers, chain verdicts), silently.
+ */
+import { NO_FEE_TERMS } from './fee-fixtures';
 import { framePage } from './page-harness';
 import { gate } from './reset-harness';
 
@@ -127,6 +128,7 @@ function page(
     readClient: world.relays,
     clientFor: () => world.relays,
     rpcFor: () => world.chain.rpc,
+    feeTerms: NO_FEE_TERMS,
     wallets: () => [{ name: 'Fake', connect: async () => world.wallet }],
     reloadOffer: async () => reload(await world.load(world.now())),
     now: world.now,
@@ -643,6 +645,7 @@ describe('what a page hears of a refusal, with or without an earlier order', () 
         readClient: world.relays,
         clientFor: () => world.relays,
         rpcFor: () => world.chain.rpc,
+        feeTerms: NO_FEE_TERMS,
         wallets: () => [{ name: 'Fake', connect: async () => world.wallet }],
         reloadOffer: async () => world.load(world.now()),
         now: world.now,
@@ -835,6 +838,7 @@ describe('a sold-out product', () => {
         readClient: world.relays,
         clientFor: () => world.relays,
         rpcFor: () => world.chain.rpc,
+        feeTerms: NO_FEE_TERMS,
         wallets: () => [{ name: 'Fake', connect: async () => world.wallet }],
         reloadOffer: async () => world.load(world.now()),
         now: world.now,

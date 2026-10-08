@@ -18,7 +18,16 @@ import {
   storedSolanaRequest,
   watchSolanaPayment,
 } from '../../src/buyer/solana-pay';
-import { DAY, MemoryRelays, NOW, type Shop, inboxList, makeShop, solanaAddress } from './fixtures';
+import {
+  DAY,
+  MemoryRelays,
+  NO_FEE_TERMS,
+  NOW,
+  type Shop,
+  inboxList,
+  makeShop,
+  solanaAddress,
+} from './fixtures';
 import { ACKNOWLEDGED, record as contractRecord } from './order-store.contract';
 import { EMPTY_ACCOUNT_RENT, FakeSolana, FakeWallet, signatureOf } from './solana-fixtures';
 
@@ -63,7 +72,10 @@ async function ordered(relays: MemoryRelays, fresh: Ready): Promise<OrderRecord>
   if (!placed.ok) {
     throw new Error(placed.reason);
   }
-  const composed = await composeOrderPayment(placed.record, store);
+  const composed = await composeOrderPayment(placed.record, store, {
+    offer: fresh.offer,
+    feeTerms: NO_FEE_TERMS,
+  });
   if (!composed.ok) {
     throw new Error(composed.reason);
   }
@@ -84,6 +96,7 @@ async function setup() {
     clientFor: () => relays,
     rpc: chain.rpc,
     now: () => NOW + 30,
+    feeTerms: NO_FEE_TERMS,
   };
   const input = { fresh, chainTime: NOW + 30 };
   return { shop, relays, fresh, record, wallet, chain, deps, input };
@@ -107,7 +120,10 @@ describe('composing the request', () => {
       created_at: record.createdAt,
       network: 'devnet',
     });
-    const again = await composeOrderPayment(record, store);
+    const again = await composeOrderPayment(record, store, {
+      offer: { feeSupport: false },
+      feeTerms: NO_FEE_TERMS,
+    });
     expect(again).toMatchObject({ ok: true, record: { version: record.version } });
   });
 });

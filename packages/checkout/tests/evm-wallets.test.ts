@@ -1,11 +1,18 @@
+import { tempoWalletCanBatch } from '@elisym/commerce/buyer';
 import { chainByCaip2 } from '@elisym/pay-core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type Eip1193Provider,
   type Eip6963Wallet,
   TEMPO_UNSUPPORTED_RDNS,
   TempoChainUnsupported,
+  WALLET_READ_TIMEOUT_MS,
+  WalletReadTimeout,
+  bundleStatusReader,
   connectTempo,
+  readAtomicCapability,
+  readCallsStatus,
+  sendAtomicCalls,
   discoverEvmWallets,
   tempoWalletOptions,
 } from '../src/app/evm-wallets';
@@ -142,5 +149,178 @@ describe('connecting a Tempo wallet', () => {
       expect(outcome).not.toBeInstanceOf(TempoChainUnsupported);
       expect(outcome).toMatchObject({ code });
     }
+  });
+});
+
+/** A provider that records every request with its params and answers from `answer`. */
+function recording(answer: (method: string, params: unknown) => unknown) {
+  const requests: { method: string; params: unknown }[] = [];
+  const target: Eip1193Provider = {
+    async request({ method, params }) {
+      requests.push({ method, params });
+      const value = answer(method, params);
+      if (value instanceof Error) {
+        throw value;
+      }
+      return value;
+    },
+  };
+  return { provider: target, requests };
+}
+
+describe('EIP-5792: batching on Tempo', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads atomic batching for the account and the chain: ready and supported only', async () => {
+    for (const [status, atomic] of [
+      ['ready', true],
+      ['supported', true],
+      ['unsupported', false],
+    ] as const) {
+      const wallet = recording(() => ({ '0xa5bf': { atomic: { status } } }));
+      expect(await readAtomicCapability(wallet.provider, ACCOUNT, '0xa5bf')).toBe(atomic);
+      expect(wallet.requests).toEqual([
+        { method: 'wallet_getCapabilities', params: [ACCOUNT, ['0xa5bf']] },
+      ]);
+    }
+    const otherChain = recording(() => ({ '0x1079': { atomic: { status: 'ready' } } }));
+    expect(await readAtomicCapability(otherChain.provider, ACCOUNT, '0xa5bf')).toBe(false);
+  });
+
+  it('gives up on a capabilities read that never answers', async () => {
+    vi.useFakeTimers();
+    const silent: Eip1193Provider = { request: () => new Promise(() => undefined) };
+    const read = readAtomicCapability(silent, ACCOUNT, '0xa5bf');
+    const caught = read.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(WALLET_READ_TIMEOUT_MS);
+    expect(await caught).toBeInstanceOf(WalletReadTimeout);
+  });
+
+  it('sends both legs as one atomic batch and returns the bundle id', async () => {
+    const wallet = recording(() => ({ id: 'bundle-1' }));
+    const calls = [
+      { to: '0x20c0000000000000000000000000000000000000', data: '0x01' },
+      { to: '0x20c0000000000000000000000000000000000000', data: '0x02' },
+    ];
+    expect(
+      await sendAtomicCalls(wallet.provider, { from: ACCOUNT, chainId: '0xa5bf', calls }),
+    ).toEqual({ bundleId: 'bundle-1' });
+    expect(wallet.requests).toEqual([
+      {
+        method: 'wallet_sendCalls',
+        params: [
+          {
+            version: '2.0.0',
+            from: ACCOUNT,
+            chainId: '0xa5bf',
+            atomicRequired: true,
+            calls: calls.map((call) => ({ ...call, value: '0x0' })),
+          },
+        ],
+      },
+    ]);
+    const older = recording(() => 'bundle-2');
+    expect(
+      await sendAtomicCalls(older.provider, { from: ACCOUNT, chainId: '0xa5bf', calls }),
+    ).toEqual({ bundleId: 'bundle-2' });
+    const nothing = recording(() => ({}));
+    await expect(
+      sendAtomicCalls(nothing.provider, { from: ACCOUNT, chainId: '0xa5bf', calls }),
+    ).rejects.toThrow();
+  });
+
+  it('reads a bundle status, and refuses an answer with no numeric status', async () => {
+    const wallet = recording(() => ({
+      status: 200,
+      atomic: true,
+      receipts: [{ transactionHash: '0xab', logs: [] }],
+    }));
+    expect(await readCallsStatus(wallet.provider, 'bundle-1')).toEqual({
+      status: 200,
+      atomic: true,
+      receipts: [{ transactionHash: '0xab' }],
+    });
+    expect(wallet.requests).toEqual([{ method: 'wallet_getCallsStatus', params: ['bundle-1'] }]);
+    const words = recording(() => ({ status: 'CONFIRMED' }));
+    await expect(readCallsStatus(words.provider, 'bundle-1')).rejects.toThrow();
+  });
+
+  it('gives up on a status read that never answers within 5 s', async () => {
+    expect(WALLET_READ_TIMEOUT_MS).toBe(5_000);
+    vi.useFakeTimers();
+    const silent: Eip1193Provider = { request: () => new Promise(() => undefined) };
+    const caught = readCallsStatus(silent, 'bundle-1').catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(WALLET_READ_TIMEOUT_MS - 1);
+    let settled = false;
+    void caught.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await caught).toBeInstanceOf(WalletReadTimeout);
+  });
+
+  it('asks a discovered wallet about a bundle without connecting it', async () => {
+    const wallet = recording(() => ({ status: 100 }));
+    const found: Eip6963Wallet[] = [
+      { info: { uuid: 'u', name: 'MetaMask', rdns: 'io.metamask' }, provider: wallet.provider },
+    ];
+    expect(bundleStatusReader(found, 'app.other')).toBeUndefined();
+    expect(bundleStatusReader(found, undefined)).toBeUndefined();
+    const reader = bundleStatusReader(found, 'io.metamask');
+    expect(await reader?.callsStatus?.('bundle-1')).toEqual({ status: 100 });
+    expect(wallet.requests.map((request) => request.method)).toEqual(['wallet_getCallsStatus']);
+  });
+
+  it('connects with the batching methods and the rdns', async () => {
+    const wallet = recording((method) => {
+      if (method === 'eth_requestAccounts') {
+        return [ACCOUNT];
+      }
+      if (method === 'wallet_getCapabilities') {
+        return { '0xa5bf': { atomic: { status: 'ready' } } };
+      }
+      return null;
+    });
+    const connected = await connectTempo(wallet.provider, CHAIN, 'io.metamask');
+    expect(connected.rdns).toBe('io.metamask');
+    expect(await connected.capabilities?.('0xa5bf')).toEqual({ atomic: true });
+    const option = tempoWalletOptions(
+      [{ info: { uuid: 'u', name: 'MetaMask', rdns: 'io.metamask' }, provider: wallet.provider }],
+      CHAIN,
+    )[0];
+    expect(option?.rdns).toBe('io.metamask');
+    // The wallet it connects names its rdns too: a bundle it approves records it.
+    expect((await option?.connect())?.rdns).toBe('io.metamask');
+  });
+
+  it('connects a wallet that cannot batch as one: unsupported, or a capabilities read that fails', async () => {
+    const unsupported = recording((method) => {
+      if (method === 'eth_requestAccounts') {
+        return [ACCOUNT];
+      }
+      if (method === 'wallet_getCapabilities') {
+        return { '0xa5bf': { atomic: { status: 'unsupported' } } };
+      }
+      return null;
+    });
+    const plain = await connectTempo(unsupported.provider, CHAIN, 'io.metamask');
+    expect(await plain.capabilities?.('0xa5bf')).toEqual({ atomic: false });
+    expect(await tempoWalletCanBatch(plain, '0xa5bf')).toBe(false);
+    const failing = recording((method) => {
+      if (method === 'eth_requestAccounts') {
+        return [ACCOUNT];
+      }
+      if (method === 'wallet_getCapabilities') {
+        return failure(-32601, 'method not found');
+      }
+      return null;
+    });
+    const broken = await connectTempo(failing.provider, CHAIN, 'io.metamask');
+    expect(await tempoWalletCanBatch(broken, '0xa5bf')).toBe(false);
+    expect(failing.requests.map((request) => request.method)).toContain('wallet_getCapabilities');
   });
 });

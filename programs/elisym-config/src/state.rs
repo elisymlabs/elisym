@@ -28,7 +28,12 @@ pub struct Config {
     /// outside this program, so the flag can only ever be advisory.
     pub paused: bool,
     pub last_updated: i64,
-    pub _reserved: [u8; 128],
+    /// Protocol-fee treasury on the EVM rails (Tempo), a raw 20-byte address.
+    /// All-zero means "not set". Carved from `_reserved` and declared after
+    /// `last_updated` so every earlier field keeps its offset in live accounts
+    /// and the account size is unchanged (no realloc, no migration).
+    pub evm_treasury: [u8; 20],
+    pub _reserved: [u8; 108],
 }
 
 /// Network-wide payment counter and volume aggregator.

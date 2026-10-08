@@ -20,6 +20,7 @@ import {
   PURCHASE_BADGES,
   PURCHASE_STATUS_NOTES,
   STEPPER_STAGES,
+  feeLine,
   networkLabel,
   receiptField,
   receiptMoment,
@@ -80,6 +81,7 @@ function mount(
   let settle: Promise<void> = Promise.resolve();
   const actions: Actions = {
     choosePayout: () => undefined,
+    checkInWallet: async () => undefined,
     confirmOldPrompt: async () => undefined,
     cancelOldPrompt: () => undefined,
     setEmail: () => undefined,
@@ -515,6 +517,26 @@ describe('Download CSV (N4)', () => {
     await detail.open();
     await detail.openRow();
     expect(detail.has('Download CSV')).toBe(false);
+  });
+});
+
+describe('the fee line', () => {
+  it('names the elisym fee a purchase includes, and nothing when it has none', async () => {
+    const base = purchaseOf('delivered');
+    const asset = base.receipt.paying?.asset;
+    if (asset === undefined) {
+      throw new Error('a canned purchase names its coin');
+    }
+    const ui = mount(counted([{ ...base, feeAmount: '490000' }]));
+    await ui.open();
+    await ui.openRow();
+    const line = ui.detail()?.querySelector('[data-fee-line]');
+    expect(line?.textContent).toBe(feeLine(asset, 490_000n));
+    expect(line?.textContent).toContain('Includes elisym fee');
+    const plain = mount(counted([base]));
+    await plain.open();
+    await plain.openRow();
+    expect(plain.detail()?.querySelector('[data-fee-line]')).toBeNull();
   });
 });
 
@@ -1038,6 +1060,7 @@ describe('the card after a reset on reopen (D4)', () => {
       signAgain: async () => undefined,
       startOver: async () => undefined,
       cancel: () => undefined,
+      checkInWallet: async () => undefined,
     };
     const source = counted(cannedPurchases(2, NOW));
     const draw = (view: View, resetCount: number) =>

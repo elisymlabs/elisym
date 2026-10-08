@@ -329,7 +329,36 @@ describe('store profile', () => {
       name: 'Shop',
       nip05: '_@shop.example',
       ownerPubkey: owner,
+      feeSupport: false,
     });
+    expect(event.tags).toEqual([['owner', owner]]);
+  });
+
+  it('declares protocol-fee support with the fee tag, and reads it back', () => {
+    const owner = 'a'.repeat(64);
+    const declared = buildStoreProfileEvent({ ownerPubkey: owner, fee: true });
+    expect(declared.tags).toEqual([
+      ['owner', owner],
+      ['fee', '1'],
+    ]);
+    expect(parseStoreProfile(declared)?.feeSupport).toBe(true);
+    const undeclared = buildStoreProfileEvent({ ownerPubkey: owner, fee: false });
+    expect(undeclared.tags).toEqual([['owner', owner]]);
+    expect(parseStoreProfile(undeclared)?.feeSupport).toBe(false);
+  });
+
+  it('reads fee support only from a fee tag of version 1', () => {
+    const read = (tags: string[][]) => parseStoreProfile({ content: '{}', tags })?.feeSupport;
+    expect(read([])).toBe(false);
+    expect(read([['fee', '2']])).toBe(false);
+    expect(read([['fee']])).toBe(false);
+    expect(read([['fees', '1']])).toBe(false);
+    expect(
+      read([
+        ['fee', '2'],
+        ['fee', '1'],
+      ]),
+    ).toBe(true);
   });
 
   it('keeps picture and website only as https URLs', () => {
@@ -341,7 +370,7 @@ describe('store profile', () => {
         }),
         tags: [],
       }),
-    ).toEqual({});
+    ).toEqual({ feeSupport: false });
     expect(
       parseStoreProfile({
         content: JSON.stringify({
@@ -350,7 +379,11 @@ describe('store profile', () => {
         }),
         tags: [],
       }),
-    ).toEqual({ website: 'https://shop.example', picture: 'https://shop.example/logo.png' });
+    ).toEqual({
+      website: 'https://shop.example',
+      picture: 'https://shop.example/logo.png',
+      feeSupport: false,
+    });
   });
 
   it('refuses to build a field its own reader would drop', () => {
@@ -366,13 +399,15 @@ describe('store profile', () => {
         content: JSON.stringify({ name: 'S', picture: null, about: 42, website: 'x'.repeat(2000) }),
         tags: [],
       }),
-    ).toEqual({ name: 'S' });
+    ).toEqual({ name: 'S', feeSupport: false });
   });
 
   it('is undefined for content that is not a profile, and ignores a malformed owner', () => {
     expect(parseStoreProfile({ content: 'nope', tags: [] })).toBeUndefined();
     expect(parseStoreProfile({ content: '[]', tags: [] })).toBeUndefined();
-    expect(parseStoreProfile({ content: '{}', tags: [['owner', 'XYZ']] })).toEqual({});
+    expect(parseStoreProfile({ content: '{}', tags: [['owner', 'XYZ']] })).toEqual({
+      feeSupport: false,
+    });
   });
 });
 

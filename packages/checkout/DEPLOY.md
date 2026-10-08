@@ -65,7 +65,12 @@ One full-history endpoint per network, used for both sending and finding payment
 4. Previews run on `*.vercel.app`, which the origin restriction blocks, so the variable is
    set for Production only: a preview offers mainnet products as "network not available"
    and is tested on devnet.
-5. The origin restriction is for this mainnet key only. If `VITE_SOLANA_RPC_URL_DEVNET` is
+5. The same endpoint reads the elisym protocol fee: every purchase reads it fresh from the
+   `elisym-config` program before ordering, Tempo included (a Tempo mainnet purchase reads
+   the Solana MAINNET config, a Moderato one the devnet config). A build without
+   `VITE_SOLANA_RPC_URL_MAINNET` therefore refuses every mainnet purchase on both rails,
+   which is why the Production build fails without it.
+6. The origin restriction is for this mainnet key only. If `VITE_SOLANA_RPC_URL_DEVNET` is
    set, its key must not be restricted to `https://pay.elisym.network`, or every preview's
    devnet purchase gets a 403. Leaving it unset uses the public devnet endpoint.
 

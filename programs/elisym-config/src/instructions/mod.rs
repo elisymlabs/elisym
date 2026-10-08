@@ -9,6 +9,7 @@ pub mod increment_stats_v2;
 pub mod initialize;
 pub mod initialize_stats;
 pub mod propose_admin;
+pub mod set_evm_treasury;
 pub mod set_fee_bps;
 pub mod set_treasury;
 

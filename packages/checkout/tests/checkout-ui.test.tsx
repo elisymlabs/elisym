@@ -19,7 +19,11 @@ import type { Banner, Paying, Problem, Receipt, View } from '../src/app/session'
 import { SOLD_OUT_GLYPH } from '../src/app/ui/glyphs';
 import { PROBLEM_PLACE } from '../src/app/ui/panel';
 import type { PurchasesSource } from '../src/app/ui/PurchasesStep';
-import { STEPPER_STAGES, receiptText as fullReceiptText } from '../src/app/ui/text';
+import {
+  CHECK_IN_WALLET,
+  STEPPER_STAGES,
+  receiptText as fullReceiptText,
+} from '../src/app/ui/text';
 
 interface Calls {
   pay: string[];
@@ -30,6 +34,7 @@ interface Calls {
   oldPromptBack: number;
   cancel: number;
   signAgain: number;
+  checkWallet: number;
 }
 
 interface DrawProps {
@@ -83,6 +88,7 @@ function mount(view?: View, options: MountOptions = {}) {
     oldPromptBack: 0,
     cancel: 0,
     signAgain: 0,
+    checkWallet: 0,
   };
   /** What the next action resolves with; a test may hold it open. */
   let settle: Promise<void> = Promise.resolve();
@@ -91,6 +97,9 @@ function mount(view?: View, options: MountOptions = {}) {
     confirmOldPrompt: async () => undefined,
     cancelOldPrompt: () => {
       calls.oldPromptBack += 1;
+    },
+    checkInWallet: async () => {
+      calls.checkWallet += 1;
     },
     setEmail: (value) => calls.email.push(value),
     pay: (name) => {
@@ -220,10 +229,15 @@ const OFFER_PROBLEMS: Problem[] = [
   { reason: 'sold_out' },
   { reason: 'other_purchase' },
   { reason: 'too_late' },
+  { reason: 'store_outdated' },
 ];
 
 const WALLET_PROBLEMS: Problem[] = [
   { reason: 'no_wallet' },
+  { reason: 'wallet_cannot_batch' },
+  { reason: 'fee_config_unavailable' },
+  { reason: 'fee_config_invalid' },
+  { reason: 'wallet_payment_failed' },
   { reason: 'rpc_error' },
   { reason: 'clock_skew' },
   { reason: 'wrong_chain' },
@@ -277,6 +291,60 @@ describe('the panel rule', () => {
       expect(ui.alerts()).toHaveLength(1);
     });
   }
+
+  const FEE_TEXTS: [Problem, string][] = [
+    [
+      { reason: 'store_outdated' },
+      'This store’s payment node must be updated before it can take payments. Nothing was paid.',
+    ],
+    [
+      { reason: 'wallet_cannot_batch' },
+      'This wallet cannot send this payment in one step. Nothing was paid; choose another wallet.',
+    ],
+    [
+      { reason: 'fee_config_unavailable' },
+      'The elisym fee terms could not be read. Nothing was paid; try again in a moment.',
+    ],
+    [
+      { reason: 'fee_config_invalid' },
+      'The elisym fee configuration cannot be used right now. Nothing was paid.',
+    ],
+    [
+      { reason: 'wallet_payment_failed' },
+      'Your wallet reports that the payment failed. Nothing was paid.',
+    ],
+  ];
+  for (const [problem, text] of FEE_TEXTS) {
+    it(`renders the ${problem.reason} problem in its own words`, () => {
+      const offer = cannedOffer();
+      const ui = withWallets(offerView(offer));
+      ui.draw({ view: { kind: 'working', step: 'checking', about } });
+      ui.draw({ view: offerView(offer, { problem }) });
+      expect(ui.alerts()).toContain(text);
+    });
+  }
+
+  it('never asks to try again on a fee configuration that cannot be used', () => {
+    const [, text] = FEE_TEXTS.find(([problem]) => problem.reason === 'fee_config_invalid') ?? [];
+    expect(text).toBeDefined();
+    expect(text?.toLowerCase()).not.toContain('try');
+  });
+
+  it('offers "Check in wallet" on an earlier payment its wallet would not answer about', () => {
+    const offer = cannedOffer({ payouts: ['tempo-devnet'] });
+    const line: Problem = { reason: 'earlier_payment', phase: 'confirming', checkWallet: true };
+    const ui = withWallets(offerView(offer));
+    ui.draw({ view: { kind: 'working', step: 'checking', about } });
+    ui.draw({ view: offerView(offer, { problem: line }) });
+    const button = ui.buttons().find((each) => each.textContent === CHECK_IN_WALLET);
+    expect(button).toBeDefined();
+    act(() => button?.click());
+    expect(ui.calls.checkWallet).toBe(1);
+    ui.draw({
+      view: offerView(offer, { problem: { reason: 'earlier_payment', phase: 'confirming' } }),
+    });
+    expect(ui.buttons().some((each) => each.textContent === CHECK_IN_WALLET)).toBe(false);
+  });
 
   it('after a declined retry, shows the decline among the wallets', () => {
     const offer = cannedOffer();

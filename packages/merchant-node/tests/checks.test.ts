@@ -470,6 +470,34 @@ describe('reading many products', () => {
   }, 20_000);
 });
 
+describe('reading the store profile', () => {
+  it("every view carries the store's newest profile (kind 0), never another key's", async () => {
+    const owner = key();
+    const store = key();
+    const stranger = key();
+    const profileOf = (who: typeof store, createdAt: number) =>
+      finalizeEvent(
+        { kind: 0, created_at: createdAt, tags: [], content: '{"name":"Shop"}' },
+        who.secretKey,
+      );
+    const older = profileOf(store, T0);
+    const newer = profileOf(store, T0 + 5);
+    const events = [older, newer, profileOf(stranger, T0 + 10)];
+    const { pool } = cappedPool(events, 4);
+    const pubkeys = { storePubkey: store.pubkey, ownerPubkey: owner.pubkey };
+    const views = await readRelayViews(
+      pool,
+      [['wss://a.example'], ['wss://b.example']],
+      pubkeys,
+      [],
+    );
+    expect(views).toHaveLength(2);
+    for (const view of views) {
+      expect(view.profile?.id).toBe(newer.id);
+    }
+  });
+});
+
 describe("the store's published inbox list", () => {
   const store = key();
   const inboxList = (relays: string[]) =>

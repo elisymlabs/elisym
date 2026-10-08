@@ -1070,6 +1070,14 @@ export async function buildPaymentInstructions(
      * `buildTransaction` passes it for you; a direct caller is on their own.
      */
     treasury?: Address;
+    /**
+     * Give the fee transfer the same two read-only markers as the provider
+     * transfer (this reference, then `ELISYM_PROTOCOL_TAG`), so a direct-mode
+     * verifier can bind the treasury's leg to the order the way it binds the
+     * payee's (`boundTreasuryLegs`). Off by default: agent-job transactions
+     * keep their shape. Commerce payments always pass it.
+     */
+    bindFeeLeg?: boolean;
   },
 ): Promise<readonly unknown[]> {
   const recipient = address(paymentRequest.recipient);
@@ -1130,6 +1138,13 @@ export async function buildPaymentInstructions(
     );
   }
 
+  const feeMarkers = options.bindFeeLeg
+    ? [
+        { address: reference, role: AccountRole.READONLY },
+        { address: protocolTag, role: AccountRole.READONLY },
+      ]
+    : [];
+
   const memoInstruction = options.jobEventId
     ? getAddMemoInstruction({ memo: `elisym:v1:${options.jobEventId}` })
     : null;
@@ -1156,13 +1171,15 @@ export async function buildPaymentInstructions(
     }
     instructions.push(providerTransferIxWithMarkers);
     if (paymentRequest.fee_address && feeAmount > 0) {
-      instructions.push(
-        getTransferSolInstruction({
-          source: payerSigner,
-          destination: address(paymentRequest.fee_address),
-          amount: BigInt(feeAmount),
-        }),
-      );
+      const feeTransferIx = getTransferSolInstruction({
+        source: payerSigner,
+        destination: address(paymentRequest.fee_address),
+        amount: BigInt(feeAmount),
+      });
+      instructions.push({
+        ...feeTransferIx,
+        accounts: [...feeTransferIx.accounts, ...feeMarkers],
+      });
     }
     instructions.push(incrementStatsIx);
     return instructions;
@@ -1289,19 +1306,21 @@ export async function buildPaymentInstructions(
   instructions.push(providerTransferIxWithMarkers);
 
   if (feeOwnerAta && paymentRequest.fee_address && feeAmount > 0) {
-    instructions.push(
-      getTransferCheckedInstruction(
-        {
-          source: payerAta,
-          mint,
-          destination: feeOwnerAta,
-          authority: payerSigner,
-          amount: BigInt(feeAmount),
-          decimals: asset.decimals,
-        },
-        { programAddress: tokenProgram },
-      ),
+    const feeTransferIx = getTransferCheckedInstruction(
+      {
+        source: payerAta,
+        mint,
+        destination: feeOwnerAta,
+        authority: payerSigner,
+        amount: BigInt(feeAmount),
+        decimals: asset.decimals,
+      },
+      { programAddress: tokenProgram },
     );
+    instructions.push({
+      ...feeTransferIx,
+      accounts: [...feeTransferIx.accounts, ...feeMarkers],
+    });
   }
 
   instructions.push(incrementStatsIx);

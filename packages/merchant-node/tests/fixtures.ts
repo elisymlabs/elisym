@@ -272,3 +272,87 @@ export function chain(
   } as unknown as Rpc<SolanaRpcApi>;
   return { rpc, log };
 }
+
+/** A Solana treasury the protocol config names in the split tests. */
+export const TREASURY = address('GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy');
+/** Another treasury: a rotated-out one, or an address that is no treasury at all. */
+export const OTHER_TREASURY = address('HXtBm8XZbxaTt41uqaKhwUAa6Z1aPyvJdsZVENiWsetg');
+
+/**
+ * The RPC view of a payment split under the order's reference: `payee` bound
+ * to the payout, `treasury` bound (with the same markers) to `to`, both in
+ * devnet USDC, with honest balance rows (or `rows` to override them).
+ */
+export async function landedSplit(
+  reference: string,
+  payee: bigint,
+  treasury: bigint,
+  to: string = TREASURY,
+  options: { blockTime?: number; rows?: { owner: string; pre: string; post: string }[] } = {},
+): Promise<Record<string, unknown>> {
+  const request = composeSolanaPaymentRequest({
+    recipient: PAYOUT,
+    amount: payee + treasury,
+    asset: USDC_SOLANA_DEVNET,
+    network: 'devnet',
+    reference,
+    createdAt: T0,
+    fee: { treasury: to, amount: treasury },
+  });
+  const instructions = await buildPaymentInstructions(request, createNoopSigner(PAYER), {
+    programId: getProtocolProgramId('devnet'),
+    bindFeeLeg: true,
+  });
+  const compiled = compileTransactionMessage(
+    pipe(
+      createTransactionMessage({ version: 0 }),
+      (draft) => setTransactionMessageFeePayer(PAYER, draft),
+      (draft) =>
+        setTransactionMessageLifetimeUsingBlockhash(
+          { blockhash: BLOCKHASH, lastValidBlockHeight: 100n },
+          draft,
+        ),
+      (draft) =>
+        appendTransactionMessageInstructions(
+          instructions as Parameters<typeof appendTransactionMessageInstructions>[0],
+          draft,
+        ),
+    ),
+  );
+  const base58 = getBase58Decoder();
+  const rows = options.rows ?? [
+    { owner: PAYOUT, pre: '0', post: payee.toString() },
+    { owner: to, pre: '0', post: treasury.toString() },
+  ];
+  const tokenRow = (owner: string, amount: string) => ({
+    accountIndex: 1,
+    mint: USDC_SOLANA_DEVNET.mint,
+    owner,
+    uiTokenAmount: { amount },
+  });
+  return {
+    slot: 42n,
+    blockTime: options.blockTime ?? T0 + 120,
+    transaction: {
+      message: {
+        accountKeys: compiled.staticAccounts.map(String),
+        header: {
+          numRequiredSignatures: compiled.header.numSignerAccounts,
+          numReadonlySignedAccounts: compiled.header.numReadonlySignerAccounts,
+          numReadonlyUnsignedAccounts: compiled.header.numReadonlyNonSignerAccounts,
+        },
+        instructions: compiled.instructions.map((instruction) => ({
+          programIdIndex: instruction.programAddressIndex,
+          accounts: instruction.accountIndices ?? [],
+          data: base58.decode(instruction.data ?? new Uint8Array()),
+        })),
+      },
+    },
+    meta: {
+      err: null,
+      loadedAddresses: { writable: [], readonly: [] },
+      preTokenBalances: rows.map((row) => tokenRow(row.owner, row.pre)),
+      postTokenBalances: rows.map((row) => tokenRow(row.owner, row.post)),
+    },
+  };
+}

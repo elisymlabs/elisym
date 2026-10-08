@@ -6,6 +6,7 @@
  */
 export * from './constants';
 export * from './events';
+export * from './fee';
 export * from './inbox';
 export * from './local-wallet';
 export * from './offer';

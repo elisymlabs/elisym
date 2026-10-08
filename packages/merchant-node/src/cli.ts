@@ -13,21 +13,31 @@ import { SimplePool } from 'nostr-tools/pool';
 import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
 import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
 import {
+  type RelayView,
   checkDomain,
   checkInboxRelays,
   offerProblems,
+  profileFeeSupport,
   readBeforeSetup,
   readRelayViews,
 } from './checks';
 import {
   type MerchantConfig,
   configTemplate,
+  hasSolanaRail,
   loadConfig,
   priceProblems,
   tempoRegistryNetwork,
 } from './config';
 import { CATCH_UP_INTERVAL_MS, OFFER_RELAYS, SOLANA_MEDIUMS, WEBHOOK_TICK_MS } from './constants';
 import { deliverOrder, publishSelfCopy } from './deliver';
+import {
+  TreasuryReader,
+  type TreasuryRefresh,
+  feeConfigRpcUrl,
+  feeDeclaration,
+  profileFeeWarning,
+} from './fee';
 import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
@@ -51,7 +61,13 @@ import {
   readPassphrase,
   storeKeyForAdmin,
 } from './keys';
-import { type LedgerState, type WebhookOutbox, loadLedger, saveLedger } from './ledger';
+import {
+  type LedgerState,
+  type WebhookOutbox,
+  openLedger,
+  openLedgerForUpgrade,
+  saveLedger,
+} from './ledger';
 import { InboxListener } from './listener';
 import { printable } from './printable';
 import {
@@ -404,6 +420,24 @@ function loadStore(home: MerchantHome): { config: MerchantConfig; products: Map<
   return { config, products };
 }
 
+/** The reader of the elisym fee config over the config RPC (see `feeConfigRpcUrl`). */
+function treasuryReader(config: MerchantConfig): TreasuryReader {
+  return new TreasuryReader(createSolanaRpc(feeConfigRpcUrl(config)), config.network);
+}
+
+/** Warn (never refuse) when the store profile buyers read does not declare fee support. */
+function warnProfile(views: readonly RelayView[], refresh: TreasuryRefresh): void {
+  const { found, feeSupport } = profileFeeSupport(views);
+  const warning = profileFeeWarning(
+    found,
+    feeSupport,
+    refresh.kind === 'read' ? refresh.feeBps : undefined,
+  );
+  if (warning !== undefined) {
+    log(`warning: ${warning}`);
+  }
+}
+
 /** Refuse a home whose ledger has a history for a product with no directory (see `historyRefusal`). */
 function refuseLostHistory(state: LedgerState, products: ReadonlyMap<string, Product>): void {
   const refusal = historyRefusal(state, products);
@@ -433,8 +467,21 @@ async function setup(home: MerchantHome): Promise<void> {
   // missing or wrong passphrase must never leave a half-published store.
   const loaded = loadKeys(home);
   const keys = openSetupKeys(loaded, readPassphrase());
-  const state = loadLedger(home.ledger);
-  refuseLostHistory(state, products);
+  // Converted to this version and saved before any relay or chain is
+  // contacted: from here an older node refuses this home.
+  const state = openLedgerForUpgrade(home.ledger, (read) => refuseLostHistory(read, products));
+  // Only a node that can judge split payments declares fee support: the config
+  // RPC's cluster is checked and the treasuries are read and saved before
+  // anything is published.
+  const declaration = feeDeclaration(
+    state,
+    config.network,
+    await treasuryReader(config).refresh(state, nowSecs()),
+  );
+  saveLedger(home.ledger, state);
+  if (declaration.warning !== undefined) {
+    console.log(`warning ${declaration.warning}`);
+  }
   const pool = new SimplePool();
   try {
     const failing = await reportInboxRelays(pool, config, keys.storeSecretKey);
@@ -460,7 +507,7 @@ async function setup(home: MerchantHome): Promise<void> {
     if (clock.length > 0) {
       throw new Error(clock.join('; '));
     }
-    const wide = buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt);
+    const wide = buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt, declaration.declare);
     const publisher = setupPublisher(
       pool,
       relays,
@@ -485,6 +532,9 @@ async function setup(home: MerchantHome): Promise<void> {
     saveLedger(home.ledger, state);
     console.log(`store   ${loaded.storePubkey}`);
     console.log(`owner   ${loaded.ownerPubkey}`);
+    console.log(
+      `fee     ${declaration.declare ? 'protocol-fee support declared' : 'protocol-fee support NOT declared (see the warning above)'}`,
+    );
     const hints = config.inboxRelays.slice(0, 2);
     for (const outcome of outcomes) {
       const selling = outcome.onSale ? 'on sale' : 'stopped';
@@ -520,7 +570,7 @@ async function refuseOffersNotHonoured(
   pubkeys: { storePubkey: string; ownerPubkey: string },
   state: LedgerState,
   products: ReadonlyMap<string, Product>,
-): Promise<void> {
+): Promise<RelayView[]> {
   // Judged twice: from the default relays, which every page reads, and with the
   // store's own inbox relays too, which a page reads when its naddr hints them.
   const views = [OFFER_RELAYS, [...new Set([...OFFER_RELAYS, ...config.inboxRelays])]];
@@ -542,6 +592,7 @@ async function refuseOffersNotHonoured(
       'warning: no relay served a listing or the payout list; run setup if the store is not published',
     );
   }
+  return read;
 }
 
 /** A stop request's exit code (128 + the signal's number). */
@@ -589,9 +640,25 @@ async function run(home: MerchantHome): Promise<void> {
   takeLock(home);
   // Pings find a half-open socket, which would otherwise never close.
   const pool = new SimplePool({ enablePing: true });
-  const state = loadLedger(home.ledger);
-  refuseLostHistory(state, products);
-  await refuseOffersNotHonoured(pool, config, loaded, state, products);
+  // Converted to this version and saved before any relay or chain is
+  // contacted: from here an older node refuses this home. Only setup declares
+  // fee support; run converts and publishes nothing.
+  const state = openLedgerForUpgrade(home.ledger, (read) => refuseLostHistory(read, products));
+  const views = await refuseOffersNotHonoured(pool, config, loaded, state, products);
+  // The config RPC's cluster is checked before any of its answers is used: a
+  // mismatch stops the node, an endpoint down is asked again every sweep.
+  const treasuries = treasuryReader(config);
+  const firstRead = await treasuries.refresh(state, nowSecs());
+  if (firstRead.kind === 'wrong_cluster') {
+    throw new Error(firstRead.problem);
+  }
+  if (firstRead.kind === 'unreachable') {
+    log(
+      `warning: the elisym fee config could not be read (${firstRead.problem}); asked again every sweep`,
+    );
+  }
+  saveLedger(home.ledger, state);
+  warnProfile(views, firstRead);
 
   // One queue: every ledger change happens in order, and is saved before anything is sent.
   let queue: Promise<void> = Promise.resolve();
@@ -606,9 +673,11 @@ async function run(home: MerchantHome): Promise<void> {
     target === undefined ? undefined : { storePubkey, now: nowSecs };
   const tempoContext = tempoContextFor(config, storePubkey);
   const tempo =
-    tempoContext === undefined || outbox === undefined ? tempoContext : { ...tempoContext, outbox };
+    tempoContext === undefined
+      ? undefined
+      : { ...tempoContext, now: nowSecs, ...(outbox === undefined ? {} : { outbox }) };
   const mediums = [
-    ...(config.rpcUrl === undefined ? [] : [SOLANA_MEDIUMS[config.network]]),
+    ...(hasSolanaRail(config) ? [SOLANA_MEDIUMS[config.network]] : []),
     ...(tempo === undefined ? [] : [tempo.medium]),
   ];
   // The store's copies of its replies go to every inbox relay, whichever took the buyer copy.
@@ -637,11 +706,14 @@ async function run(home: MerchantHome): Promise<void> {
     context: {
       rpc: createSolanaRpc(config.rpcUrl ?? 'https://api.devnet.solana.com'),
       network: config.network,
+      now: nowSecs,
       ...(outbox === undefined ? {} : { outbox }),
     },
     ...(tempo === undefined ? {} : { tempo }),
     // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
-    ...(config.rpcUrl === undefined ? { catchUp: async () => ({ paid: [], incomplete: [] }) } : {}),
+    ...(hasSolanaRail(config) ? {} : { catchUp: async () => ({ paid: [], incomplete: [] }) }),
+    refreshTreasuries: () => treasuries.refresh(state, nowSecs()),
+    stop: () => process.exit(1),
     save: () => saveLedger(home.ledger, state),
     // Completion needs no product: the status carries only the receipt.
     deliver: async (order, skip) =>
@@ -755,7 +827,7 @@ function startWebhooks(
 }
 
 function listOrders(home: MerchantHome): void {
-  const state = loadLedger(home.ledger);
+  const state = openLedger(home.ledger);
   for (const line of orderLines(state, loadKeys(home).storePubkey)) {
     console.log(line);
   }
@@ -799,7 +871,7 @@ async function webhookAgain(home: MerchantHome, kind: RearmKind, key: string): P
   const target = commandTarget(config);
   const storePubkey = loadKeys(home).storePubkey;
   takeLock(home);
-  const state = loadLedger(home.ledger);
+  const state = openLedger(home.ledger);
   const plan = rearmWebhook(state, key, kind, storePubkey, nowSecs());
   if (!plan.ok) {
     throw new Error(plan.problem);
@@ -842,7 +914,7 @@ async function webhookCommand(home: MerchantHome, args: Args): Promise<void> {
 
 async function check(home: MerchantHome): Promise<void> {
   const { config, products } = loadStore(home);
-  const state = loadLedger(home.ledger);
+  const state = openLedger(home.ledger);
   refuseLostHistory(state, products);
   const loaded = loadKeys(home);
   // The relay probe is signed and AUTHed by the store key; nostr.json is written
@@ -855,11 +927,20 @@ async function check(home: MerchantHome): Promise<void> {
   try {
     const failing = await reportInboxRelays(pool, config, storeSecretKey);
     let offers: unknown;
+    let views: RelayView[] = [];
     try {
-      await refuseOffersNotHonoured(pool, config, loaded, state, products);
+      views = await refuseOffersNotHonoured(pool, config, loaded, state, products);
     } catch (error) {
       offers = error;
     }
+    // Read into memory only: check writes no ledger.
+    const feeRead = await treasuryReader(config).refresh(state, nowSecs());
+    if (feeRead.kind === 'read') {
+      console.log(`fee     the protocol fee is ${feeRead.feeBps} bps`);
+    } else {
+      console.log(`fee     ${feeRead.problem}`);
+    }
+    warnProfile(views, feeRead);
     await reportDomain(
       home,
       config,
@@ -868,6 +949,9 @@ async function check(home: MerchantHome): Promise<void> {
     );
     if (offers !== undefined) {
       throw offers;
+    }
+    if (feeRead.kind === 'wrong_cluster') {
+      throw new Error(feeRead.problem);
     }
     if (failing.length > 0) {
       throw new Error(
@@ -910,7 +994,7 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   const config = loadConfig(home.config);
   const storeSecretKey = openSecret(loadKeys(home), 'store', readPassphrase());
   takeLock(home);
-  const state = loadLedger(home.ledger);
+  const state = openLedger(home.ledger);
   let request: HandRequest;
   if (args.command === 'complete') {
     request = { kind: 'delivered' };
@@ -933,6 +1017,14 @@ async function answerByHand(home: MerchantHome, args: Args): Promise<void> {
   console.log(`reported ${held.reportedTxs.join(', ') || '-'}`);
   console.log(`refused  ${(held.refusedTxs ?? []).join(', ') || '-'}`);
   console.log(`no leg   ${(held.noLegTxs ?? []).join(', ') || '-'}`);
+  // Payments of at least the floor whose rest reached no known elisym treasury (paid rule 3).
+  const unresolved =
+    order === undefined
+      ? state.unresolvedPayments.filter((entry) => entry.key === key).map((entry) => entry.tx)
+      : Object.keys(order.feeUnresolved ?? {});
+  if (unresolved.length > 0) {
+    console.log(`fee      unresolved: ${unresolved.join(', ')} (the owner decides on these)`);
+  }
   if (plan.answer.customerRef !== undefined) {
     console.log(
       `ref      ${printable(plan.answer.customerRef)} (a hand answer sends no webhook: credit it by hand)`,

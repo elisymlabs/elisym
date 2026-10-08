@@ -243,7 +243,40 @@ function holdsEvidence(marker: PaymentMarker): boolean {
 function keepsEvidence(current: PaymentMarker, next: PaymentMarker): boolean {
   const before = markerEvidence(current);
   const after = markerEvidence(next);
-  return before.every((value, index) => value === '' || value === after[index]);
+  // A failed bundle stays failed: the wallet's final word is never taken back.
+  const failedKept =
+    current.rail !== 'tempo' ||
+    current.bundleFailed !== true ||
+    (next.rail === 'tempo' && next.bundleFailed === true);
+  return failedKept && before.every((value, index) => value === '' || value === after[index]);
+}
+
+/**
+ * Whether `next` marks a bundle failed that `current` did not: only for a
+ * marker that holds a bundle and no hash (a hash is evidence of its own, and
+ * the wallet's word on a bundle says nothing about it).
+ */
+function failsBundle(current: PaymentMarker, next: PaymentMarker): 'ok' | 'refused' | 'none' {
+  if (next.rail !== 'tempo' || next.bundleFailed !== true) {
+    return 'none';
+  }
+  if (current.rail === 'tempo' && current.bundleFailed === true) {
+    return 'none';
+  }
+  return current.rail === 'tempo' &&
+    current.bundleId !== undefined &&
+    current.txHash === undefined &&
+    next.txHash === undefined
+    ? 'ok'
+    : 'refused';
+}
+
+/**
+ * A Tempo marker whose only evidence is a bundle the wallet reported failed:
+ * it may still end `over` (and only that).
+ */
+function onlyFailedBundle(marker: PaymentMarker): boolean {
+  return marker.rail === 'tempo' && marker.bundleFailed === true && marker.txHash === undefined;
 }
 
 /**
@@ -470,7 +503,8 @@ export function judgeUpdateMarker(
   if (
     (retry && next.rail === 'tempo') ||
     (!retry && !keepsEvidence(current.marker, next)) ||
-    (!retry && windowMoved)
+    (!retry && windowMoved) ||
+    failsBundle(current.marker, next) === 'refused'
   ) {
     return refused('not_ready');
   }
@@ -520,10 +554,15 @@ export function judgeClearMarker(
   // A Tempo attempt that holds a sent hash or an approved bundle may still land
   // (under a new hash, through a relayer): it never ends unpaid, it stays live
   // until it is found. One that ends says why, once: a proving rejection (nothing
-  // signed) or `over` (proven unpaid, its prompt still open).
+  // signed) or `over` (proven unpaid, its prompt still open). The one release: a
+  // bundle the wallet reported failed, with no hash, may end `over`.
   const tempo = current.marker?.rail === 'tempo';
   if (nextState === 'ended-unpaid' && tempo) {
-    if (current.marker !== undefined && holdsEvidence(current.marker)) {
+    if (
+      current.marker !== undefined &&
+      holdsEvidence(current.marker) &&
+      !(onlyFailedBundle(current.marker) && endedBy === 'over')
+    ) {
       return refused('not_ready');
     }
     if (endedBy === undefined) {

@@ -1,8 +1,3 @@
-/**
- * The widget's session paying on Tempo: a fake chain that evaluates log
- * filters, a finalized head the test moves, and an EIP-1193 wallet whose
- * payment lands as a real `TransferWithMemo` receipt.
- */
 import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import { type LoadedOffer, OrderStore, applyStatus, loadOffer } from '@elisym/commerce/buyer';
 import type { OrderRecord } from '@elisym/commerce/buyer';
@@ -21,6 +16,12 @@ import { type FakeChainOptions, fakeTempoChain } from '../../pay-core/tests/temp
 import { TempoChainUnsupported } from '../src/app/evm-wallets';
 import { type Banner, CheckoutSession, type SessionDeps, type View } from '../src/app/session';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
+/**
+ * The widget's session paying on Tempo: a fake chain that evaluates log
+ * filters, a finalized head the test moves, and an EIP-1193 wallet whose
+ * payment lands as a real `TransferWithMemo` receipt.
+ */
+import { NO_FEE_TERMS } from './fee-fixtures';
 import { framePage } from './page-harness';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
@@ -245,6 +246,7 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
     readClient: relays,
     clientFor: () => relays,
     rpcFor: () => undefined,
+    feeTerms: NO_FEE_TERMS,
     wallets: () => [],
     tempoFor: () => client,
     tempoWallets: () => [{ name: 'MetaMask', connect: async () => tempoWallet }],
@@ -895,6 +897,7 @@ describe('what a page hears of a refusal with an earlier Tempo order', () => {
         readClient: run.relays,
         clientFor: () => run.relays,
         rpcFor: () => undefined,
+        feeTerms: run.deps.feeTerms,
         wallets: () => [],
         tempoFor: run.deps.tempoFor,
         tempoWallets: run.deps.tempoWallets,

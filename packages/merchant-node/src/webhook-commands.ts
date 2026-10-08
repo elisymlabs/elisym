@@ -91,14 +91,22 @@ export function orderLines(state: LedgerState, storePubkey: string): string[] {
   const all = Object.values(state.orders).sort((left, right) => left.createdAt - right.createdAt);
   const lines = all.map((order) => {
     const when = new Date(order.createdAt * 1000).toISOString();
-    const paid = order.paid === undefined ? '' : ` ${order.paid.amount} ${order.paid.signature}`;
+    // The total paid, then what reached the merchant's wallet and the protocol fee.
+    const fee = order.paid?.fee ?? '0';
+    const paid =
+      order.paid === undefined
+        ? ''
+        : ` ${order.paid.amount} net=${(BigInt(order.paid.amount) - BigInt(fee)).toString()} fee=${fee} ${order.paid.signature}`;
+    const unresolved = Object.keys(order.feeUnresolved ?? {});
+    // A payment clears the mark (see `recordPayment`): only an open order shows it.
+    const feeUnresolved = unresolved.length > 0 ? ` feeUnresolved=${unresolved.join(',')}` : '';
     const email = order.email === undefined ? '' : ` email=${printable(order.email)}`;
     const ref = order.customerRef === undefined ? '' : ` ref=${shownRef(order.customerRef)}`;
     const webhook =
       order.paid === undefined
         ? ''
         : ` webhook=${order.webhook?.state ?? 'none'} event=${webhookEventId(storePubkey, order.key, order.paid.signature)}`;
-    return `${when} ${orderStatus(order)} ${order.key} product=${printable(orderProductD(order))}${paid}${email}${ref}${webhook}`;
+    return `${when} ${orderStatus(order)} ${order.key} product=${printable(orderProductD(order))}${paid}${feeUnresolved}${email}${ref}${webhook}`;
   });
   lines.push(`${all.length} order(s)`);
   for (const [key, answer] of Object.entries(state.answeredByHand ?? {})) {
@@ -109,6 +117,11 @@ export function orderLines(state: LedgerState, storePubkey: string): string[] {
         : `refunded ${answer.amount ?? ''} in ${answer.tx ?? ''}`;
     const ref = answer.customerRef === undefined ? '' : ` ref=${shownRef(answer.customerRef)}`;
     lines.push(`answered by hand: ${key} ${what}${ref}`);
+  }
+  for (const entry of state.unresolvedPayments) {
+    lines.push(
+      `closed unresolved: ${entry.key} ${entry.tx} since ${new Date(entry.at * 1000).toISOString()} (no known elisym treasury got the rest: answer it by hand)`,
+    );
   }
   return lines;
 }
