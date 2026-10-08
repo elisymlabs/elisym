@@ -1,6 +1,6 @@
 {
   "name": "@elisym/mcp",
-  "version": "0.32.2",
+  "version": "0.33.0",
   "description": "MCP server for elisym - AI agent discovery, jobs, and payments",
   "keywords": [
     "ai-agents",
@@ -56,9 +56,9 @@
     "prepublishOnly": "bun run build && node scripts/preflight-publish.mjs"
   },
   "dependencies": {
-    "@elisym/commerce": "~0.10.0",
-    "@elisym/pay-core": "~0.1.2",
-    "@elisym/sdk": "~0.41.0",
+    "@elisym/commerce": "~0.11.0",
+    "@elisym/pay-core": "~0.2.0",
+    "@elisym/sdk": "~0.42.0",
     "@modelcontextprotocol/sdk": "~1.28.0",
     "@solana-program/memo": "~0.11.0",
     "@solana-program/system": "~0.12.0",
