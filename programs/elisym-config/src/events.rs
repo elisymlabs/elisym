@@ -44,6 +44,13 @@ pub struct TreasuryUpdated {
 }
 
 #[event]
+pub struct EvmTreasuryUpdated {
+    pub old_evm_treasury: [u8; 20],
+    pub new_evm_treasury: [u8; 20],
+    pub timestamp: i64,
+}
+
+#[event]
 pub struct StatsInitialized {
     pub admin: Pubkey,
     pub timestamp: i64,

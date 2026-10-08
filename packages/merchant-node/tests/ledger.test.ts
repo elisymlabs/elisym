@@ -64,12 +64,12 @@ describe('ledger', () => {
   it('saves and loads the whole state, and starts empty without a file', () => {
     const directory = mkdtempSync(join(tmpdir(), 'merchant-ledger-'));
     const path = join(directory, 'ledger.json');
-    expect(loadLedger(path)).toEqual(emptyLedger());
+    expect(loadLedger(path)).toEqual({ state: emptyLedger(), read: 'missing' });
     const state = emptyLedger();
     state.orders.a = order('a', 5);
     claimPayment(state, 'S', 'a');
     saveLedger(path, state);
-    expect(loadLedger(path)).toEqual(state);
+    expect(loadLedger(path)).toEqual({ state, read: 4 });
     expect(() => readFileSync(`${path}.tmp`)).toThrow();
   });
 

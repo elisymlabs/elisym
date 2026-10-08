@@ -40,8 +40,9 @@ export function buildDeliveryReply(
       receipt: {
         medium: order.paid.medium,
         tx: order.paid.signature,
+        // The total paid, and the part of it that went to an elisym treasury.
         amount: order.paid.amount,
-        fee: '0',
+        fee: order.paid.fee ?? '0',
         ...(asset === undefined ? {} : { caip19: asset }),
       },
     },

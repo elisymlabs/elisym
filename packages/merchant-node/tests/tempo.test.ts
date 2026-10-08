@@ -192,7 +192,7 @@ describe('checkTempoPayment', () => {
     expect(Object.entries(run.state.claims)).toEqual([
       [`eip155:4217:${HASH}:${run.memo}`, run.order.key],
     ]);
-    expect(run.state.version).toBe(3);
+    expect(run.state.version).toBe(4);
     expect(run.order.webhook).toBeUndefined();
   });
 
@@ -344,26 +344,26 @@ describe('Tempo receipts and the ledger', () => {
     expect(intake(state, receipt(memo, HASH, 'tempo-moderato'), identity)).toMatchObject({
       reason: 'foreign_payment',
     });
-    expect(state.version).toBe(3);
+    expect(state.version).toBe(4);
     expect(intake(state, receipt(memo, HASH), identity)).toMatchObject({
       kind: 'receipt',
       tx: HASH,
     });
-    // V2: a Tempo event leaves a 0.8 ledger at version 3.
-    expect(state.version).toBe(3);
+    // V2: a Tempo event leaves the ledger at its version.
+    expect(state.version).toBe(4);
   });
 
   it('V1: refuses a 0.7 ledger (version 1 or 2) as an old home, and an unknown version', () => {
     const path = `${process.env.TMPDIR ?? '/tmp'}/elisym-ledger-${Date.now()}-${Math.random()}.json`;
     const state = emptyLedger();
-    expect(state.version).toBe(3);
+    expect(state.version).toBe(4);
     saveLedger(path, state);
-    expect(loadLedger(path).version).toBe(3);
+    expect(loadLedger(path).state.version).toBe(4);
     for (const version of [1, 2]) {
       saveLedger(path, { ...state, version: version as never });
       expect(() => loadLedger(path)).toThrow('create a new home with init');
     }
-    saveLedger(path, { ...state, version: 4 as never });
+    saveLedger(path, { ...state, version: 5 as never });
     expect(() => loadLedger(path)).toThrow('Unknown ledger version');
   });
 

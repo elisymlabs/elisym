@@ -4,7 +4,13 @@ import {
   type Product,
   type TrustLevel,
 } from '@elisym/commerce';
-import { type LoadedOffer, type PricedPayout, isSnapshotStale } from '@elisym/commerce/buyer';
+import {
+  type FeeTermsSource,
+  type LoadedOffer,
+  type PricedPayout,
+  isSnapshotStale,
+  planFee,
+} from '@elisym/commerce/buyer';
 import {
   type OrderDeps,
   applyStatus,
@@ -33,6 +39,7 @@ import {
   storeClosed,
 } from '@elisym/commerce/buyer';
 import {
+  type ComposeOrderPaymentResult,
   type SolanaPayResult,
   type SolanaSignAgain,
   type SolanaWallet,
@@ -44,10 +51,14 @@ import {
   watchSolanaPayment,
 } from '@elisym/commerce/buyer';
 import {
+  type TempoBundleStep,
   type TempoPayDeps,
   type TempoPayResult,
   type TempoWallet,
+  type TempoWatchOptions,
   endTempoOrder,
+  followTempoBundle,
+  tempoWalletCanBatch,
   mayStillBePaid,
   payWithTempo,
   MERCHANT_CATCH_UP_SECS,
@@ -156,6 +167,19 @@ export type Problem =
   | { reason: 'again_declined' }
   | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
   | { reason: 'offer_changed' | 'offer_refused' }
+  /**
+   * The protocol fee is above 0 and the store's payment node cannot take a
+   * fee-split payment yet: nothing was ordered or paid (an order on screen ended).
+   */
+  | { reason: 'store_outdated' }
+  /** The payment carries a fee leg and this wallet cannot send both in one batch: another wallet can. */
+  | { reason: 'wallet_cannot_batch' }
+  /** The fee terms could not be read now: nothing was paid, try again. */
+  | { reason: 'fee_config_unavailable' }
+  /** elisym's fee configuration cannot be used right now (no retry wording). */
+  | { reason: 'fee_config_invalid' }
+  /** The wallet reported the batched payment failed: it was not made. */
+  | { reason: 'wallet_payment_failed' }
   /** The store stopped selling the product while an order of it is followed. */
   | { reason: 'sold_out' }
   /** Another account's purchase of this product holds it in this browser: try later. */
@@ -179,6 +203,11 @@ export interface EarlierPayment {
   cancelled?: boolean;
   /** About when a press may proceed (the holder's own attempt). */
   retryIn?: Countdown;
+  /**
+   * The holder's approved bundle could not be asked about through its wallet
+   * without a connection: "Check in wallet" connects it and asks.
+   */
+  checkWallet?: true;
 }
 
 /** The payment a progress screen is about: the live order's, else the payout chosen. */
@@ -346,6 +375,13 @@ export interface SessionDeps {
   clientFor: OrderDeps['clientFor'];
   /** The widget's RPC for a network, or `undefined` when none is configured. */
   rpcFor(network: Network): Rpc<SolanaRpcApi> | undefined;
+  /** The protocol fee terms of a chain (CAIP-2), read fresh: see `planFee`. */
+  feeTerms: FeeTermsSource;
+  /**
+   * The EIP-6963 wallet named `rdns`, asked only for a bundle's status (no
+   * connect, no prompt): how an approved bundle is observed after a reload.
+   */
+  bundleWallet?(rdns: string | undefined): Pick<TempoWallet, 'callsStatus'> | undefined;
   /** Wallets that can pay on this network. */
   wallets(network: Network): WalletOption[];
   /** Verify the offer again (a snapshot older than two minutes is never paid against). */
@@ -555,6 +591,18 @@ interface PressScope {
   resets: number;
 }
 
+/** A bundle this session knows of, and the wallet to ask about it. */
+interface BundleHold {
+  orderId: string;
+  bundleId: string;
+  wallet: Pick<TempoWallet, 'callsStatus'>;
+}
+
+/** The chain id as EIP-1193 wants it (`0x...`). */
+function chainIdHex(payout: PricedPayout): string {
+  return `0x${(payout.target.caip19.chain.evmChainId ?? 0).toString(16)}`;
+}
+
 /** One watch pass's verdict, on either rail. */
 type Watched =
   | Awaited<ReturnType<typeof watchSolanaPayment>>
@@ -667,6 +715,19 @@ export class CheckoutSession {
   private lastAction: 'pay' | 'retry' = 'pay';
   /** A hash approved for an order another tab ended meanwhile: watched until it is found. */
   private lateHash: { orderId: string; hash: string; timer: unknown } | undefined;
+  /**
+   * A bundle id returned in this session that could not be stored on the marker:
+   * it holds the order like a stored bundle (`pendingBundleId`) and is asked
+   * about through its wallet on every pass, until a hash or the wallet's "failed".
+   * It outlives a close, as `pendingHash` does.
+   */
+  private pendingBundle: BundleHold | undefined;
+  /** The stored bundle of the order on screen, asked about on the foreground watch only. */
+  private bundleFollow: BundleHold | undefined;
+  /** A bundle approved for an order another tab ended meanwhile: followed until it resolves. */
+  private lateBundle: (BundleHold & { timer: unknown }) | undefined;
+  /** The wallet each order's bundle was approved in (this session's press or "Check in wallet"). */
+  private readonly bundleWallets = new Map<string, Pick<TempoWallet, 'callsStatus'>>();
   /** The one-shot "no answer from the store" redraw. */
   private noAnswerTimer: { orderId: string; handle: unknown } | undefined;
   /** The wallet of the last pay press (a confirmation re-runs it). */
@@ -1130,7 +1191,9 @@ export class CheckoutSession {
         this.showOffer({ reason: 'clock_skew' });
         return;
       }
-      const record = await this.orderFor(chainTime, press);
+      const record = await this.orderFor(chainTime, press, wallet.address, () =>
+        this.feeAllowsOrder(ready, wallet.address, undefined, press),
+      );
       if (record === undefined || this.stale(press)) {
         return;
       }
@@ -1215,7 +1278,9 @@ export class CheckoutSession {
         this.showOffer({ reason: 'clock_skew' });
         return;
       }
-      const record = await this.orderFor(chainTime, press);
+      const record = await this.orderFor(chainTime, press, wallet.address, () =>
+        this.feeAllowsOrder(ready, wallet.address, wallet, press),
+      );
       if (record === undefined || this.stale(press)) {
         return;
       }
@@ -1231,27 +1296,68 @@ export class CheckoutSession {
       );
       this.stopProbe(press);
       if (this.stale(press)) {
-        await this.lateAnswer(result, resets);
+        await this.lateAnswer(result, resets, wallet);
         return;
       }
-      await this.afterTempoPay(result, press, resets);
+      await this.afterTempoPay(result, press, resets, wallet);
     });
+  }
+
+  /**
+   * Before a new order is placed: the protocol fee planned from fresh terms for
+   * this offer and payer, and on Tempo with a fee leg, a wallet that batches.
+   * A refusal is drawn on the offer (`false`): nothing was ordered or paid. An
+   * open order is never checked here: its compose (or the core) decides, so a
+   * `store_outdated` one with no marker ends instead of staying open.
+   */
+  private async feeAllowsOrder(
+    ready: ReadyOffer,
+    payer: string,
+    tempoWallet: TempoWallet | undefined,
+    press: number,
+  ): Promise<boolean> {
+    const planned = await planFee(
+      this.deps.feeTerms,
+      this.payout.target.caip19.chain.caip2,
+      ready.offer,
+      { payout: this.payout.target.address, payer },
+      this.payout.amount,
+    );
+    if (this.stale(press)) {
+      return false;
+    }
+    if (!planned.ok) {
+      this.showOffer({ reason: planned.reason });
+      return false;
+    }
+    if (
+      tempoWallet !== undefined &&
+      planned.plan.amount > 0n &&
+      !(await tempoWalletCanBatch(tempoWallet, chainIdHex(this.payout)))
+    ) {
+      if (!this.stale(press)) {
+        this.showOffer({ reason: 'wallet_cannot_batch' });
+      }
+      return false;
+    }
+    return !this.stale(press);
   }
 
   private async afterTempoPay(
     result: TempoPayResult,
     press: number,
     resets: number,
+    wallet: TempoWallet,
   ): Promise<void> {
     if (result.ok) {
       // Remembered before anything else: a store that answered while the wallet was
       // open makes the record terminal, and its receipt still names what was sent.
-      this.sentHash.set(result.record.orderId, result.hash);
+      this.rememberSent(result, wallet);
     }
     if (result.record !== undefined) {
       const stored = await this.deps.store.get(result.record.orderId);
       if (this.stale(press)) {
-        await this.lateAnswer(result, resets);
+        await this.lateAnswer(result, resets, wallet);
         return;
       }
       this.setRecord(stored !== undefined && isTerminal(stored) ? stored : result.record);
@@ -1259,6 +1365,31 @@ export class CheckoutSession {
         await this.follow(stored);
         return;
       }
+    }
+    if (result.ok && 'bundleId' in result) {
+      this.attemptProblem = undefined;
+      this.attemptOver = false;
+      const hold: BundleHold = {
+        orderId: result.record.orderId,
+        bundleId: result.bundleId,
+        wallet,
+      };
+      if (result.bundleUnsaved === true && result.record.state === 'ended-unpaid') {
+        // Another tab ended the order while the wallet was open: the buyer approved
+        // the bundle anyway. It is followed until it resolves, and said so.
+        this.watchLateBundle(result.record, hold);
+        this.listenToEnded([result.record], this.relays);
+        this.setRecord(undefined);
+        this.showOffer({ reason: 'late_approval' });
+        return;
+      }
+      if (result.bundleUnsaved === true) {
+        this.pendingBundle = hold;
+      } else {
+        this.bundleFollow = hold;
+      }
+      await this.follow(result.record);
+      return;
     }
     if (result.ok) {
       this.attemptProblem = undefined;
@@ -1312,9 +1443,15 @@ export class CheckoutSession {
       case 'wrong_chain':
       case 'self_payment':
       case 'rpc_error':
+      case 'wallet_cannot_batch':
+      case 'fee_config_unavailable':
+      case 'fee_config_invalid':
+        // Nothing was requested: the record stays as it is (`ordered` again after a
+        // wallet that cannot batch), and another wallet or a later press can pay it.
         this.showOrWait({ reason: result.reason });
         return;
       case 'offer_changed':
+      case 'store_outdated':
       case 'too_late':
       case 'unpayable': {
         const current =
@@ -1341,7 +1478,7 @@ export class CheckoutSession {
         const current =
           this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
         if (this.stale(press)) {
-          await this.lateAnswer(result, resets);
+          await this.lateAnswer(result, resets, wallet);
           return;
         }
         if (current !== undefined) {
@@ -1419,11 +1556,27 @@ export class CheckoutSession {
     });
   }
 
-  /** An unsaved hash of an order another tab ended: it is a late approval now. */
+  /** What a Tempo pay answer sent, remembered for receipts and for following a bundle. */
+  private rememberSent(
+    result: Extract<TempoPayResult, { ok: true }>,
+    wallet: Pick<TempoWallet, 'callsStatus'> | undefined,
+  ): void {
+    if ('hash' in result) {
+      this.sentHash.set(result.record.orderId, result.hash);
+    } else if (wallet !== undefined) {
+      this.bundleWallets.set(result.record.orderId, wallet);
+    }
+  }
+
+  /** An unsaved hash or bundle of an order another tab ended: it is a late approval now. */
   private adoptLateHash(record: OrderRecord): void {
     if (this.pendingHash?.orderId === record.orderId) {
       this.watchLateHash(record, this.pendingHash.hash);
       this.pendingHash = undefined;
+    }
+    if (this.pendingBundle?.orderId === record.orderId) {
+      this.watchLateBundle(record, this.pendingBundle);
+      this.pendingBundle = undefined;
     }
   }
 
@@ -1433,13 +1586,14 @@ export class CheckoutSession {
    * so there is no prompt left to reject.
    */
   private lateHashHolds(): boolean {
-    if (this.lateHash === undefined) {
+    const late = this.lateHash ?? this.lateBundle;
+    if (late === undefined) {
       return false;
     }
     // An order followed in the background since a close: only that a payment from
     // earlier is still being confirmed, never the old banner's text.
-    if (this.quiet.has(this.lateHash.orderId)) {
-      this.showLine(this.lateHash.orderId, { reason: 'earlier_payment', phase: 'confirming' });
+    if (this.quiet.has(late.orderId)) {
+      this.showLine(late.orderId, { reason: 'earlier_payment', phase: 'confirming' });
     } else {
       this.showOffer({ reason: 'late_approval' });
     }
@@ -1498,6 +1652,152 @@ export class CheckoutSession {
     void check().catch(() => undefined);
   }
 
+  /**
+   * Follow a bundle approved for an ended order (known only in this session):
+   * asked about through its wallet until a hash comes (then it is a late hash)
+   * or the wallet says it failed (the hold is dropped); meanwhile the memo watch
+   * may find its payment. Every press is refused while it lasts.
+   */
+  private watchLateBundle(record: OrderRecord, hold: BundleHold): void {
+    const client = this.tempoOfRecord(record);
+    if (client === undefined || this.disposed) {
+      return;
+    }
+    if (this.lateBundle !== undefined) {
+      this.deps.clearInterval(this.lateBundle.timer);
+    }
+    let checking = false;
+    const resets = this.resets;
+    const own: BundleHold & { timer: unknown } = { ...hold, timer: undefined };
+    const stopOwn = () => {
+      if (this.lateBundle === own) {
+        this.deps.clearInterval(own.timer);
+        this.lateBundle = undefined;
+      }
+    };
+    const check = async () => {
+      if (checking || this.disposed || this.lateBundle !== own) {
+        return;
+      }
+      checking = true;
+      try {
+        const current = await this.deps.store.get(record.orderId);
+        if (current === undefined) {
+          return;
+        }
+        const step = await followTempoBundle(
+          current,
+          this.tempoDeps(client),
+          own.wallet,
+          own.bundleId,
+        );
+        if (step.step === 'hash') {
+          stopOwn();
+          this.watchLateHash(step.record, step.hash);
+          return;
+        }
+        if (step.step === 'failed') {
+          // The wallet's final word: this bundle never paid. Nothing is stored.
+          stopOwn();
+          return;
+        }
+        const watched = await watchTempoPayment(step.record, this.tempoDeps(client), {
+          pendingBundleId: own.bundleId,
+        });
+        if (watched.state === 'paid' || watched.state === 'blocked' || watched.state === 'closed') {
+          if (this.resets === resets) {
+            this.banner(watched.record);
+          }
+          stopOwn();
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    own.timer = this.deps.setInterval(() => void check().catch(() => undefined), WATCH_EVERY_MS);
+    this.lateBundle = own;
+    this.bundleWallets.set(record.orderId, hold.wallet);
+    void check().catch(() => undefined);
+  }
+
+  /** The bundle a pass on `record` asks its wallet about: this session's unsaved one, or the one on screen. */
+  private bundleToFollow(record: OrderRecord): BundleHold | undefined {
+    if (this.pendingBundle?.orderId === record.orderId) {
+      return this.pendingBundle;
+    }
+    const marker = record.marker;
+    const follow = this.bundleFollow;
+    if (
+      follow?.orderId === record.orderId &&
+      marker?.rail === 'tempo' &&
+      marker.bundleId === follow.bundleId &&
+      marker.bundleFailed !== true &&
+      marker.txHash === undefined
+    ) {
+      return follow;
+    }
+    return undefined;
+  }
+
+  /** What one answer about a bundle changes in this session's holds. */
+  private applyBundleStep(orderId: string, bundleId: string, step: TempoBundleStep): void {
+    const matches = (hold: BundleHold | undefined) =>
+      hold?.orderId === orderId && hold.bundleId === bundleId;
+    if (step.step !== 'hash' && step.step !== 'failed') {
+      return;
+    }
+    if (matches(this.pendingBundle)) {
+      this.pendingBundle = undefined;
+    }
+    if (matches(this.bundleFollow)) {
+      this.bundleFollow = undefined;
+    }
+    if (step.step === 'hash') {
+      this.sentHash.set(orderId, step.hash);
+      if (step.hashUnsaved === true) {
+        this.pendingHash = { orderId, hash: step.hash };
+      }
+      return;
+    }
+    if (this.record?.orderId === orderId) {
+      this.setAttemptProblem({ reason: 'wallet_payment_failed' }, this.record.marker?.attemptId);
+    }
+  }
+
+  /** The in-session holds of an order a Tempo watch or end must count: its unsaved bundle. */
+  private bundleHold(orderId: string): TempoWatchOptions {
+    return this.pendingBundle?.orderId === orderId
+      ? { pendingBundleId: this.pendingBundle.bundleId }
+      : {};
+  }
+
+  /**
+   * Ask the wallet that approved `record`'s stored bundle how it went, without a
+   * connection (EIP-6963 discovery, or this session's own wallet): before any
+   * memo watch at load and at a press. `reachable: false`: no wallet answered,
+   * so "Check in wallet" is offered; the order stays held either way.
+   */
+  private async observeBundle(
+    record: OrderRecord,
+  ): Promise<{ record: OrderRecord; reachable: boolean }> {
+    const marker = record.marker;
+    const client = this.tempoOfRecord(record);
+    if (
+      marker?.rail !== 'tempo' ||
+      marker.bundleId === undefined ||
+      marker.bundleFailed === true ||
+      marker.txHash !== undefined ||
+      client === undefined
+    ) {
+      return { record, reachable: true };
+    }
+    const wallet =
+      this.bundleWallets.get(record.orderId) ?? this.deps.bundleWallet?.(marker.bundleWallet);
+    const step = await followTempoBundle(record, this.tempoDeps(client), wallet, marker.bundleId);
+    this.applyBundleStep(record.orderId, marker.bundleId, step);
+    return { record: step.record, reachable: step.step !== 'unknown' };
+  }
+
   private tempoDeps(client: Eip1193Client, scope?: PressScope): TempoPayDeps {
     return {
       store: scope === undefined ? this.deps.store : this.pressStore(scope),
@@ -1505,6 +1805,7 @@ export class CheckoutSession {
       clientFor: this.deps.clientFor,
       client,
       now: this.deps.now,
+      feeTerms: this.deps.feeTerms,
     };
   }
 
@@ -1885,7 +2186,9 @@ export class CheckoutSession {
         continue;
       }
       try {
-        const watched = await watchTempoPayment(record, this.tempoDeps(client));
+        // An approved bundle first: the wallet may already know it failed or landed.
+        const observed = await this.observeBundle(record);
+        const watched = await watchTempoPayment(observed.record, this.tempoDeps(client));
         if (watched.state === 'paid' || watched.state === 'blocked') {
           this.banner(watched.record);
         } else if (watched.state === 'over') {
@@ -2166,6 +2469,69 @@ export class CheckoutSession {
     await this.afterPay(result, rpc, press, scope.resets, offer.walletName);
   }
 
+  /**
+   * "Check in wallet": the earlier-payment line names an approved bundle its
+   * wallet would not answer about without a connection. Connect that wallet
+   * (the one that approved it, by `rdns`), then the press path's own first
+   * step: the earlier payment is asked about through it, and its line drawn
+   * again - or, freed, the offer. It never asks the wallet to pay.
+   */
+  async checkInWallet(): Promise<void> {
+    const holderId = this.lineHolder;
+    if (this.busy || this.pressing || this.followOnly !== undefined || holderId === undefined) {
+      return;
+    }
+    this.press += 1;
+    const press = this.press;
+    this.pressing = true;
+    try {
+      await this.guard(press, () => this.checkInWalletGuarded(holderId, press));
+    } finally {
+      if (this.press === press) {
+        this.pressing = false;
+        this.redrawIfFreed();
+      }
+    }
+  }
+
+  private async checkInWalletGuarded(holderId: string, press: number): Promise<void> {
+    const holder = await this.deps.store.get(holderId);
+    const network = holder === undefined ? undefined : this.networkOfRecord(holder);
+    if (this.stale(press) || holder === undefined || network === undefined) {
+      return;
+    }
+    const marker = holder.marker;
+    const options = this.deps.tempoWallets?.(network) ?? [];
+    const rdns = marker?.rail === 'tempo' ? marker.bundleWallet : undefined;
+    // A bundle whose wallet is named is checked in through that wallet only.
+    const named = rdns === undefined ? undefined : options.find((each) => each.rdns === rdns);
+    const option = rdns === undefined && options.length === 1 ? options[0] : named;
+    if (option === undefined) {
+      this.showOffer({ reason: 'no_wallet' });
+      return;
+    }
+    this.cancellableFor = press;
+    this.working('checking', true);
+    let wallet: TempoWallet;
+    try {
+      wallet = await option.connect();
+    } catch (error) {
+      if (!this.stale(press)) {
+        this.cancellableFor = undefined;
+        this.showOffer({ reason: tempoConnectProblem(error) });
+      }
+      return;
+    }
+    if (this.stale(press)) {
+      return;
+    }
+    this.cancellableFor = undefined;
+    this.bundleWallets.set(holderId, wallet);
+    if (!(await this.earlierPayment(press)) && !this.stale(press)) {
+      this.showOffer();
+    }
+  }
+
   /** Leave an order that will not be paid (only once nothing can still land). */
   async startOver(): Promise<void> {
     const record = this.record;
@@ -2241,6 +2607,9 @@ export class CheckoutSession {
     // 2. The foreground machinery of the record on screen stops.
     this.stopProbe();
     this.stopWatching();
+    // Only the foreground poll of a STORED bundle: the marker keeps it, and the next
+    // load or press asks about it. An unsaved or late bundle keeps its own hold.
+    this.bundleFollow = undefined;
     if (this.noAnswerTimer !== undefined) {
       this.deps.clearInterval(this.noAnswerTimer.handle);
       this.noAnswerTimer = undefined;
@@ -2287,6 +2656,9 @@ export class CheckoutSession {
     if (this.lateHash !== undefined) {
       this.quiet.add(this.lateHash.orderId);
     }
+    if (this.lateBundle !== undefined) {
+      this.quiet.add(this.lateBundle.orderId);
+    }
     for (const orderId of this.pendingAnswers.keys()) {
       this.quiet.add(orderId);
     }
@@ -2320,6 +2692,10 @@ export class CheckoutSession {
     if (this.lateHash !== undefined) {
       this.deps.clearInterval(this.lateHash.timer);
       this.lateHash = undefined;
+    }
+    if (this.lateBundle !== undefined) {
+      this.deps.clearInterval(this.lateBundle.timer);
+      this.lateBundle = undefined;
     }
     if (this.noAnswerTimer !== undefined) {
       this.deps.clearInterval(this.noAnswerTimer.handle);
@@ -2457,6 +2833,7 @@ export class CheckoutSession {
   private async lateAnswer(
     result: SolanaPayResult | TempoPayResult,
     pressResets: number,
+    wallet?: TempoWallet,
   ): Promise<void> {
     const resets = this.resets;
     const hash = 'hash' in result ? result.hash : undefined;
@@ -2481,12 +2858,27 @@ export class CheckoutSession {
         this.againOffer = undefined;
       }
     }
+    const bundle =
+      result.ok && 'bundleId' in result && wallet !== undefined
+        ? {
+            hold: { orderId: result.record.orderId, bundleId: result.bundleId, wallet },
+            unsaved: result.bundleUnsaved === true,
+          }
+        : undefined;
+    if (bundle !== undefined) {
+      this.bundleWallets.set(bundle.hold.orderId, bundle.hold.wallet);
+    }
     const record = result.record;
     if (record === undefined) {
       return;
     }
     const orderId = record.orderId;
     const stored = (await this.deps.store.get(orderId)) ?? record;
+    // An unsaved bundle of an order still paying holds it in this session (the
+    // background tick passes it on); one of an order ended meanwhile is late.
+    if (bundle?.unsaved === true && !gone(stored)) {
+      this.pendingBundle = bundle.hold;
+    }
     const shown = this.record?.orderId === orderId;
     if (!shown && followable(stored)) {
       this.followOwn(stored);
@@ -2502,6 +2894,9 @@ export class CheckoutSession {
       if (hash !== undefined && result.ok) {
         // Approved for an order that ended meanwhile: watched until it is found.
         this.watchLateHash(stored, hash);
+      }
+      if (bundle?.unsaved === true) {
+        this.watchLateBundle(stored, bundle.hold);
       }
       this.listenToEnded([stored], stored.inboxRelays);
     }
@@ -2525,7 +2920,7 @@ export class CheckoutSession {
       return;
     }
     if (
-      hash !== undefined &&
+      (hash !== undefined || bundle?.unsaved === true) &&
       gone(stored) &&
       !this.quiet.has(orderId) &&
       this.shownView?.kind === 'offer'
@@ -2558,15 +2953,20 @@ export class CheckoutSession {
     }
     for (const holder of holders) {
       const pendingHash = this.sentHash.get(holder.orderId);
-      const watched = await this.watchOnce(holder, pendingHash);
+      // An approved bundle is asked about first, through the wallet that approved it.
+      const observed = await this.observeBundle(holder);
+      if (this.stale(press)) {
+        return true;
+      }
+      const watched = await this.watchOnce(observed.record, pendingHash);
       if (this.stale(press)) {
         return true;
       }
       if (watched?.state === 'over') {
-        const ended = await this.endOrder(
-          watched.record,
-          pendingHash === undefined ? {} : { pendingHash },
-        );
+        const ended = await this.endOrder(watched.record, {
+          ...(pendingHash === undefined ? {} : { pendingHash }),
+          ...this.bundleHold(holder.orderId),
+        });
         if (ended.ended) {
           this.stopFollowing(holder.orderId);
           this.quiet.add(holder.orderId);
@@ -2591,7 +2991,7 @@ export class CheckoutSession {
       if (this.stale(press)) {
         return true;
       }
-      this.showLine(fresh.orderId, line);
+      this.showLine(fresh.orderId, observed.reachable ? line : { ...line, checkWallet: true });
       return true;
     }
     return false;
@@ -2609,7 +3009,11 @@ export class CheckoutSession {
     const marker = holder.marker;
     if (marker?.rail === 'tempo') {
       const known = marker.txHash ?? this.sentHash.get(holder.orderId);
-      if (known !== undefined || marker.bundleId !== undefined) {
+      // A bundle the wallet reported failed is no approval: its request counts down.
+      const approvedBundle =
+        (marker.bundleId !== undefined && marker.bundleFailed !== true) ||
+        this.pendingBundle?.orderId === holder.orderId;
+      if (known !== undefined || approvedBundle) {
         // Approved: being confirmed, with nothing to count down.
         return { reason: 'earlier_payment', phase: 'confirming' };
       }
@@ -2735,11 +3139,12 @@ export class CheckoutSession {
       if (client === undefined) {
         return false;
       }
-      const watched = await watchTempoPayment(record, this.tempoDeps(client));
+      const holds = this.bundleHold(record.orderId);
+      const watched = await watchTempoPayment(record, this.tempoDeps(client), holds);
       if (watched.state !== 'over') {
         return !holdsPayExclusion(watched.record);
       }
-      const ended = await endTempoOrder(watched.record, this.tempoDeps(client));
+      const ended = await endTempoOrder(watched.record, this.tempoDeps(client), holds);
       return ended.ended;
     }
     const rpc = this.rpcOfRecord(record);
@@ -2901,10 +3306,10 @@ export class CheckoutSession {
       }
       // Proven over: ended through `endOrder`, which proves it again before its one write.
       const pendingHash = this.sentHash.get(orderId);
-      const ended = await this.endOrder(
-        watched.record,
-        pendingHash === undefined ? {} : { pendingHash },
-      );
+      const ended = await this.endOrder(watched.record, {
+        ...(pendingHash === undefined ? {} : { pendingHash }),
+        ...this.bundleHold(orderId),
+      });
       if (!ended.ended) {
         return;
       }
@@ -3099,11 +3504,12 @@ export class CheckoutSession {
    */
   private endOrder(
     record: OrderRecord,
-    options: { pendingHash?: string } = {},
+    options: TempoWatchOptions = {},
   ): Promise<{ ended: boolean; record: OrderRecord }> {
     const tempo = recordRail(record) === 'tempo' ? this.tempoOfRecord(record) : undefined;
-    if (tempo !== undefined && options.pendingHash !== undefined && record.state !== 'created') {
-      return endTempoOrder(record, this.tempoDeps(tempo), { pendingHash: options.pendingHash });
+    const held = options.pendingHash !== undefined || options.pendingBundleId !== undefined;
+    if (tempo !== undefined && held && record.state !== 'created') {
+      return endTempoOrder(record, this.tempoDeps(tempo), options);
     }
     return endOrder(record, {
       store: this.deps.store,
@@ -3181,6 +3587,7 @@ export class CheckoutSession {
       clientFor: this.deps.clientFor,
       rpc,
       now: this.deps.now,
+      feeTerms: this.deps.feeTerms,
     };
   }
 
@@ -3343,8 +3750,14 @@ export class CheckoutSession {
    * payout and price, else a new one. An order the store cancelled, or one on
    * old terms, ends first - and a new one starts only if it provably ended.
    * Acknowledged means the store's inbox holds it; the wallet never opens before.
+   * `feeAllows` runs only before a new order is placed.
    */
-  private async orderFor(chainTime: number, press: number): Promise<OrderRecord | undefined> {
+  private async orderFor(
+    chainTime: number,
+    press: number,
+    payer: string,
+    feeAllows: () => Promise<boolean>,
+  ): Promise<OrderRecord | undefined> {
     // An open order drawn at load is republished in the background: the press
     // waits for it here, after the wallet's connect and before its own re-read.
     const resuming = this.resuming;
@@ -3421,6 +3834,9 @@ export class CheckoutSession {
       }
     }
     if (record === undefined) {
+      if (!(await feeAllows())) {
+        return undefined;
+      }
       // The one place both rails decide on a new order: never one with an unusable email.
       if (this.emailUnusable()) {
         this.showOffer({ reason: 'bad_email' });
@@ -3518,17 +3934,53 @@ export class CheckoutSession {
       this.listen(record);
       return record;
     }
-    const composed = await composeOrderPayment(record, this.deps.store);
+    const composed = await composeOrderPayment(record, this.deps.store, {
+      offer: this.offer.offer,
+      feeTerms: this.deps.feeTerms,
+      payer,
+    });
     if (this.stale(press)) {
       return undefined;
     }
     if (!composed.ok) {
-      this.showOffer({ reason: 'failed' });
+      await this.composeRefused(record, composed.reason, press);
       return undefined;
     }
     this.record = composed.record;
     this.listen(composed.record);
     return composed.record;
+  }
+
+  /**
+   * The order's request could not be composed. `store_outdated`: this order
+   * can never be paid as it is, so it ends (nothing was requested) and the
+   * product is free again. The fee terms unreadable or unusable: the order is
+   * left as it is, nothing was paid. Anything else: it could not be prepared.
+   */
+  private async composeRefused(
+    record: OrderRecord,
+    reason: Extract<ComposeOrderPaymentResult, { ok: false }>['reason'],
+    press: number,
+  ): Promise<void> {
+    if (reason === 'fee_config_unavailable' || reason === 'fee_config_invalid') {
+      this.showOffer({ reason });
+      return;
+    }
+    if (reason !== 'store_outdated') {
+      this.showOffer({ reason: 'failed' });
+      return;
+    }
+    const ended = await this.endOrder(record);
+    if (this.stale(press)) {
+      return;
+    }
+    if (ended.ended) {
+      const relays = this.relays;
+      this.setRecord(undefined);
+      this.listenToEnded([ended.record], relays);
+      this.status('ended');
+    }
+    this.showOffer({ reason: 'store_outdated' });
   }
 
   /**
@@ -3857,6 +4309,7 @@ export class CheckoutSession {
         });
         return;
       case 'offer_changed':
+      case 'store_outdated':
       case 'too_late': {
         // Nothing was requested for this attempt: the order ends only if it provably did.
         const current = this.record;
@@ -3894,6 +4347,9 @@ export class CheckoutSession {
         return;
       case 'self_payment':
       case 'rpc_error':
+      case 'fee_config_unavailable':
+      case 'fee_config_invalid':
+        // Nothing was requested: the record is left as it is for a later press.
         this.showOrWait({ reason: result.reason });
         return;
       case 'needs_confirmation':
@@ -4224,8 +4680,12 @@ export class CheckoutSession {
       const pending =
         this.pendingHash?.orderId === record.orderId ? this.pendingHash.hash : undefined;
       signature = marker.txHash ?? pending;
+      // A bundle the wallet reported failed shows like a request not answered: its countdown.
       signed =
-        marker.txHash !== undefined || marker.bundleId !== undefined || pending !== undefined;
+        marker.txHash !== undefined ||
+        (marker.bundleId !== undefined && marker.bundleFailed !== true) ||
+        this.pendingBundle?.orderId === record.orderId ||
+        pending !== undefined;
     }
     // A refusal by the store stays explained on every redraw while the order lives.
     const refused: Problem | undefined =
@@ -4526,7 +4986,11 @@ export class CheckoutSession {
       const ended =
         client === undefined
           ? undefined
-          : await endTempoOrder(watched.record, this.tempoDeps(client));
+          : await endTempoOrder(
+              watched.record,
+              this.tempoDeps(client),
+              this.bundleHold(watched.record.orderId),
+            );
       if (ended?.ended === true && generation === this.generation && !this.busy) {
         this.setRecord(undefined);
         this.listenToEnded([ended.record]);
@@ -4579,11 +5043,28 @@ export class CheckoutSession {
       if (client === undefined) {
         return undefined;
       }
+      let record = current;
+      let callPending = false;
+      // A bundle this session knows of is asked about through its wallet first.
+      const bundle = this.bundleToFollow(record);
+      if (bundle !== undefined) {
+        const step = await followTempoBundle(
+          record,
+          this.tempoDeps(client),
+          bundle.wallet,
+          bundle.bundleId,
+        );
+        record = step.record;
+        this.applyBundleStep(record.orderId, bundle.bundleId, step);
+        callPending = step.step === 'pending';
+      }
       const pending =
         pendingHash ??
-        (this.pendingHash?.orderId === current.orderId ? this.pendingHash.hash : undefined);
-      const watched = await watchTempoPayment(current, this.tempoDeps(client), {
+        (this.pendingHash?.orderId === record.orderId ? this.pendingHash.hash : undefined);
+      const watched = await watchTempoPayment(record, this.tempoDeps(client), {
         ...(pending === undefined ? {} : { pendingHash: pending }),
+        ...(callPending ? { callPending } : {}),
+        ...this.bundleHold(record.orderId),
       });
       const stored =
         watched.record.marker?.rail === 'tempo' ? watched.record.marker.txHash : undefined;

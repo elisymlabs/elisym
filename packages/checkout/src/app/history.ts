@@ -1,4 +1,10 @@
-import { type OrderRecord, isTerminal } from '@elisym/commerce/buyer';
+import {
+  type OrderRecord,
+  isTerminal,
+  storedFeePlan,
+  storedSolanaRequest,
+  storedTempoRequest,
+} from '@elisym/commerce/buyer';
 import Decimal from 'decimal.js-light';
 import { openStatusOf, receiptBase, recordNetwork } from './receipts';
 import { sameRef } from './ref-scope';
@@ -25,6 +31,19 @@ export interface Purchase {
   assetId: string;
   /** The order is for the product of this page's checkout. */
   thisProduct: boolean;
+  /**
+   * The protocol fee inside the price (subunits of the order's coin), from the
+   * stored payment request; absent when it carries no fee leg.
+   */
+  feeAmount?: string;
+}
+
+/** The fee leg the order's stored request carries, in subunits, or none. */
+function feeOf(record: OrderRecord): bigint {
+  const request = record.payout.caip19.startsWith('eip155:')
+    ? storedTempoRequest(record)
+    : storedSolanaRequest(record);
+  return request === undefined ? 0n : storedFeePlan(request).amount;
 }
 
 /** A purchase's status as the list, the detail and the export name it. */
@@ -72,6 +91,7 @@ export function purchaseOf(record: OrderRecord, productAddress: string): Purchas
   if (status === undefined) {
     return undefined;
   }
+  const fee = feeOf(record);
   return {
     orderId: record.orderId,
     createdAt: record.createdAt,
@@ -79,6 +99,7 @@ export function purchaseOf(record: OrderRecord, productAddress: string): Purchas
     receipt: receiptBase(record, recordNetwork(record)),
     assetId: record.payout.caip19,
     thisProduct: record.productAddress === productAddress,
+    ...(fee > 0n ? { feeAmount: fee.toString() } : {}),
   };
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@elisym/pay-core",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Payment primitives for elisym: requests, fees, assets, and on-chain verification on Solana and Tempo.",
   "keywords": [
     "elisym",

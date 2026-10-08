@@ -602,6 +602,64 @@
       ]
     },
     {
+      "name": "set_evm_treasury",
+      "discriminator": [
+        87,
+        156,
+        244,
+        51,
+        34,
+        97,
+        170,
+        135
+      ],
+      "accounts": [
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "event_authority"
+        },
+        {
+          "name": "program"
+        }
+      ],
+      "args": [
+        {
+          "name": "new_evm_treasury",
+          "type": {
+            "array": [
+              "u8",
+              20
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "set_fee_bps",
       "discriminator": [
         2,
@@ -813,6 +871,19 @@
         167,
         178,
         91
+      ]
+    },
+    {
+      "name": "EvmTreasuryUpdated",
+      "discriminator": [
+        42,
+        203,
+        34,
+        78,
+        0,
+        225,
+        175,
+        226
       ]
     },
     {
@@ -1109,11 +1180,26 @@
             "type": "i64"
           },
           {
+            "name": "evm_treasury",
+            "docs": [
+              "Protocol-fee treasury on the EVM rails (Tempo), a raw 20-byte address.",
+              "All-zero means \"not set\". Carved from `_reserved` and declared after",
+              "`last_updated` so every earlier field keeps its offset in live accounts",
+              "and the account size is unchanged (no realloc, no migration)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
+          },
+          {
             "name": "_reserved",
             "type": {
               "array": [
                 "u8",
-                128
+                108
               ]
             }
           }
@@ -1136,6 +1222,36 @@
           {
             "name": "fee_bps",
             "type": "u16"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "EvmTreasuryUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "old_evm_treasury",
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
+          },
+          {
+            "name": "new_evm_treasury",
+            "type": {
+              "array": [
+                "u8",
+                20
+              ]
+            }
           },
           {
             "name": "timestamp",

@@ -1,7 +1,3 @@
-/**
- * Closing the modal resets it, never a double spend (commerce-modal-reset.md),
- * on Tempo: a request that never expires, its hash, the old-prompt question.
- */
 import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import {
   type LoadedOffer,
@@ -37,6 +33,11 @@ import {
 import { isTakingLong } from '../src/app/ui/UnansweredHint';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
+/**
+ * Closing the modal resets it, never a double spend (commerce-modal-reset.md),
+ * on Tempo: a request that never expires, its hash, the old-prompt question.
+ */
+import { NO_FEE_TERMS } from './fee-fixtures';
 import { gate, internals, settle, spyStore } from './reset-harness';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
@@ -297,6 +298,7 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
     readClient: relays,
     clientFor: () => relays,
     rpcFor: () => undefined,
+    feeTerms: NO_FEE_TERMS,
     wallets: () => [],
     tempoFor: () => client,
     tempoWallets: () => [{ name: 'MetaMask', connect: async () => tempoWallet }],
@@ -1030,7 +1032,13 @@ describe('Tempo: the earlier-payment line (round 8)', () => {
       result: undefined,
     }));
     await run.session.pay('MetaMask');
-    expect(lineOf(run.last())).toEqual({ reason: 'earlier_payment', phase: 'confirming' });
+    // No wallet here can be asked about another tab's bundle without a connection:
+    // the line offers "Check in wallet" beside it.
+    expect(lineOf(run.last())).toEqual({
+      reason: 'earlier_payment',
+      phase: 'confirming',
+      checkWallet: true,
+    });
     expect(run.wallet.requests).toBe(1);
     void held;
   });

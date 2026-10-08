@@ -1,9 +1,10 @@
 /**
  * Issuing a Tempo payment request - the provider's side of a quote.
  *
- * Everything the request will later be verified against is read from the chain
- * HERE, once, and frozen into the request: the fee and the treasury as they are
- * now, the block the provider's scans may start from, and a memo nobody else can
+ * Everything the request will later be verified against is fixed HERE, once,
+ * and frozen into the request: the fee and the treasury the caller read (one
+ * source for every rail - the Solana `elisym-config` program, `readFeeTerms`),
+ * the block the provider's scans may start from, and a memo nobody else can
  * guess. A verification later reads none of it again, so a treasury rotation or
  * a fee switched on midway cannot orphan a request that was already paid.
  *
@@ -12,7 +13,8 @@
  * when it arrives, and it cannot make that promise blind.
  */
 
-import { PAYMENT_DEFAULTS } from '../constants';
+import type { FeeTerms } from '../config/fee-terms';
+import { MAX_FEE_BPS, PAYMENT_DEFAULTS } from '../constants';
 import type { Asset } from '../payment/assets';
 import { assetsFor } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
@@ -21,7 +23,7 @@ import { calculateProtocolFeeSubunits } from '../payment/fee-subunits';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { caip19ForAsset, PaymentRequestV2Schema } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
-import { assertEvmChain, getEvmProtocolConfig } from './config';
+import { assertEvmChain } from './config';
 import { MAX_ISSUER_CLOCK_SKEW_SECS } from './constants';
 import { readFinalizedBlock } from './logs';
 import { canStrangerReceive } from './policy';
@@ -37,6 +39,12 @@ export interface CreateTempoPaymentRequestOptions {
   amount: bigint;
   /** A coin of this chain, from the SDK registry. */
   asset: Asset;
+  /**
+   * The protocol fee rate and the EVM treasury, as the caller read them for
+   * this chain's paired network (`readFeeTerms(rpc, network, 'tempo')`). The
+   * treasury is only read at a fee above zero.
+   */
+  feeTerms: FeeTerms;
   expirySecs?: number;
   /** Overridable only so that a test can pin it; production reads the clock. */
   nowSecs?: number;
@@ -78,6 +86,10 @@ export async function createTempoPaymentRequest(
   if (options.amount <= 0n) {
     throw new Error('A payment request needs a positive amount.');
   }
+  const { feeBps, treasury } = options.feeTerms;
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > MAX_FEE_BPS) {
+    throw new Error(`The fee rate must be a whole number of bps from 0 to ${MAX_FEE_BPS}.`);
+  }
   const expirySecs = options.expirySecs ?? PAYMENT_DEFAULTS.PAYMENT_EXPIRY_SECS;
   if (!Number.isInteger(expirySecs) || expirySecs <= 0 || expirySecs > MAX_EXPIRY_SECS) {
     throw new Error(`Invalid expiry: ${expirySecs}. Must be an integer 1-${MAX_EXPIRY_SECS}.`);
@@ -109,12 +121,11 @@ export async function createTempoPaymentRequest(
     );
   }
 
-  const config = await getEvmProtocolConfig(client, chain);
-  const feeAmount = calculateProtocolFeeSubunits(options.amount, config.feeBps);
-  const feeAddress = config.feeBps > 0 ? normalizeEvmAddress(config.treasury) : undefined;
-  if (config.feeBps > 0) {
+  const feeAmount = calculateProtocolFeeSubunits(options.amount, feeBps);
+  const feeAddress = feeBps > 0 ? normalizeEvmAddress(treasury) : undefined;
+  if (feeBps > 0) {
     if (feeAddress === undefined || !isEvmWireAddress(feeAddress)) {
-      throw new Error('The protocol config names a treasury that is not an address.');
+      throw new Error('The fee terms name a treasury that is not an address.');
     }
     // No test can kill this, and it is kept for its message: the v2 schema refuses
     // the same request two lines below, so the only thing this changes is
@@ -126,9 +137,7 @@ export async function createTempoPaymentRequest(
       );
     }
     if (feeAmount >= options.amount) {
-      throw new Error(
-        `An amount of ${options.amount} is too small to carry a ${config.feeBps} bps fee.`,
-      );
+      throw new Error(`An amount of ${options.amount} is too small to carry a ${feeBps} bps fee.`);
     }
   }
 

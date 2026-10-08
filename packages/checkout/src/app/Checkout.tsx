@@ -35,6 +35,8 @@ export interface Actions {
   startOver(): Promise<void>;
   /** End a press whose wallet has not answered its connect request yet. */
   cancel(): void;
+  /** Connect the wallet that approved an earlier bundle and ask it how that bundle went. */
+  checkInWallet(): Promise<void>;
 }
 
 /** A check left unanswered this long (a wallet window has no timeout) gets a hint. */
@@ -443,6 +445,7 @@ export function Checkout({
             }}
             onChoosePayout={actions.choosePayout}
             onPay={(name) => run(() => actions.pay(name), true)}
+            onCheckWallet={() => run(() => actions.checkInWallet(), true)}
             phone={isPhone(navigator.userAgent)}
             locked={locked.current}
             initialListOpen={initialListOpen}

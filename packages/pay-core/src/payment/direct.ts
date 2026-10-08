@@ -33,6 +33,7 @@ import {
 import {
   COMPUTE_BUDGET_PROGRAM_ADDRESS_STR,
   ELISYM_PROTOCOL_TAG,
+  MAX_FEE_BPS,
   PAYMENT_DEFAULTS,
   SYSTEM_PROGRAM_ADDRESS_STR,
 } from '../constants';
@@ -46,7 +47,9 @@ import {
   assetsFor,
   resolveAssetFromPaymentRequest,
 } from './assets';
+import { calculateProtocolFeeSubunits } from './fee-subunits';
 import { readBalance, isReadableTokenRow } from './read-balance';
+import type { ParsedPaymentRequest } from './schema';
 import { parsePaymentRequest } from './schema';
 
 /** SPL Token `TransferChecked`: `[12, amount u64 LE, decimals u8]`. */
@@ -92,7 +95,7 @@ function isDeniedReference(reference: string, recipient: string, asset: Asset): 
 export interface ComposeSolanaPaymentRequestOptions {
   /** The payee's WALLET address (the owner of the token account for an SPL asset). */
   recipient: string;
-  /** The total, in the asset's subunits. There is no fee leg in direct mode. */
+  /** The TOTAL the payer sends, in the asset's subunits. A fee leg comes out of it. */
   amount: bigint;
   /** A Solana asset of `network`, from the registry. */
   asset: Asset;
@@ -102,12 +105,22 @@ export interface ComposeSolanaPaymentRequestOptions {
   /** Epoch SECONDS on the chain's clock. */
   createdAt: number;
   expirySecs?: number;
+  /**
+   * The protocol fee leg: `amount` of the total goes to `treasury`, the payee
+   * gets the rest. The AMOUNT, never a rate - the caller computed it once
+   * (`feeAmountFor`), so nothing downstream recomputes it differently. An
+   * amount of 0 (or no `fee`) is no fee leg: the request is byte-identical to
+   * one composed without it.
+   */
+  fee?: { treasury: string; amount: bigint };
 }
 
 /**
- * The v1 request for a direct payment: the given reference, no fee leg. Parsed
- * by the schema every reader parses it with. Throws on anything the payer must
- * not send, with a fixed message - the payee's address can come from outside.
+ * The v1 request for a direct payment: the given reference and, when `fee`
+ * carries a positive amount, a fee leg (`fee_address` / `fee_amount`, with
+ * `amount` staying the total). Parsed by the schema every reader parses it
+ * with. Throws on anything the payer must not send, with a fixed message - the
+ * payee's address can come from outside.
  */
 export function composeSolanaPaymentRequest(
   options: ComposeSolanaPaymentRequestOptions,
@@ -144,6 +157,7 @@ export function composeSolanaPaymentRequest(
   if (coin === undefined) {
     throw new Error('The asset is not a Solana coin of that network.');
   }
+  const feeLeg = composeFeeLeg(options, coin);
   const assetRef: PaymentAssetRef | undefined =
     coin === NATIVE_SOL || coin.mint === undefined
       ? undefined
@@ -152,6 +166,7 @@ export function composeSolanaPaymentRequest(
     recipient: options.recipient,
     amount: Number(options.amount),
     reference: options.reference,
+    ...feeLeg,
     created_at: options.createdAt,
     expiry_secs: options.expirySecs ?? DIRECT_EXPIRY_SECS,
     ...(assetRef ? { asset: assetRef } : {}),
@@ -162,6 +177,42 @@ export function composeSolanaPaymentRequest(
     throw new Error(parsed.error.message);
   }
   return request;
+}
+
+/** The request's fee fields for `options.fee`, or none at a zero fee. */
+function composeFeeLeg(
+  options: ComposeSolanaPaymentRequestOptions,
+  asset: Asset,
+): { fee_address: string; fee_amount: number } | undefined {
+  if (options.fee === undefined) {
+    return undefined;
+  }
+  const { treasury, amount } = options.fee;
+  if (typeof amount !== 'bigint' || amount < 0n) {
+    throw new Error('The fee must be a non-negative whole number of subunits.');
+  }
+  if (amount === 0n) {
+    return undefined;
+  }
+  if (typeof treasury !== 'string' || !isAddress(treasury)) {
+    throw new Error('The treasury is not a Solana address.');
+  }
+  if (treasury === options.recipient) {
+    // One transfer would count as the payee's AND the treasury's.
+    throw new Error('The treasury is the payee itself; the fee leg would be a self-transfer.');
+  }
+  // The treasury's leg carries the same markers as the payee's, so the same
+  // rule applies: a treasury that is the reference, the tag, the mint or a
+  // program can never be told apart from the payment's own accounts.
+  if (isDeniedReference(treasury, options.reference, asset)) {
+    throw new Error(
+      'The treasury cannot be the reference, the protocol tag, the mint or a program.',
+    );
+  }
+  if (amount >= options.amount) {
+    throw new Error('The amount is too small to carry the fee: the payee would receive nothing.');
+  }
+  return { fee_address: treasury, fee_amount: Number(amount) };
 }
 
 // ---- the instruction-level binding -------------------------------------------
@@ -479,6 +530,40 @@ async function transferredIntoPayee(
   return total;
 }
 
+export interface BoundTreasuryExpectation {
+  /** The order's reference, base58. */
+  reference: string;
+  asset: Asset;
+  /** Candidate treasury WALLET addresses. */
+  treasuries: readonly string[];
+}
+
+/**
+ * What each candidate treasury received in `asset` under this reference: per
+ * treasury, the sum of its BOUND transfers - markers required exactly as for
+ * the payee (`boundTransferAmount` with the treasury as the recipient). A
+ * treasury that received nothing bound maps to `0n`.
+ */
+export async function boundTreasuryLegs(
+  instructions: readonly DirectInstruction[],
+  expectation: BoundTreasuryExpectation,
+): Promise<Map<string, bigint>> {
+  const legs = new Map<string, bigint>();
+  for (const treasury of expectation.treasuries) {
+    if (!legs.has(treasury)) {
+      legs.set(
+        treasury,
+        await boundTransferAmount(instructions, {
+          reference: expectation.reference,
+          recipient: treasury,
+          asset: expectation.asset,
+        }),
+      );
+    }
+  }
+  return legs;
+}
+
 // ---- finding and verifying ---------------------------------------------------
 
 export interface ReferenceSignature {
@@ -552,21 +637,43 @@ export async function listReferenceSignatures(
   return { signatures, complete: false };
 }
 
+/**
+ * Why a transaction does not pay a direct request. What each one asks of the
+ * caller is on `verifyDirectSolanaPayment`.
+ */
+export type DirectRefusalReason =
+  | 'bad_request'
+  | 'bad_signature'
+  | 'not_found'
+  | 'rpc_error'
+  | 'failed'
+  | 'unreadable'
+  | 'not_bound'
+  | 'underpaid'
+  | 'balance_mismatch'
+  | 'split_unresolved';
+
+/**
+ * What a judged transaction carried under the order's reference, on every
+ * verdict reached after its instructions were read.
+ */
+export interface DirectPaymentEvidence {
+  /** The bound sum to the payee (`boundTransferAmount`). */
+  payeeBound: bigint;
+  /** The bound sum to the request's `fee_address`; present when the request asks for a fee. */
+  fee?: bigint;
+  blockTime: number | null;
+}
+
 export type DirectVerification =
-  | { verified: true; signature: string; amount: bigint; blockTime: number | null; slot: bigint }
-  | {
-      verified: false;
-      reason:
-        | 'bad_request'
-        | 'bad_signature'
-        | 'not_found'
-        | 'rpc_error'
-        | 'failed'
-        | 'unreadable'
-        | 'not_bound'
-        | 'underpaid'
-        | 'balance_mismatch';
-    };
+  | ({
+      verified: true;
+      signature: string;
+      /** The payee's bound amount (as `payeeBound`). */
+      amount: bigint;
+      slot: bigint;
+    } & DirectPaymentEvidence)
+  | ({ verified: false; reason: DirectRefusalReason } & Partial<DirectPaymentEvidence>);
 
 function recipientBalanceChange(
   transaction: unknown,
@@ -643,50 +750,40 @@ function recipientBalanceChange(
   return index < 0 || pre === null || post === null ? null : post - pre;
 }
 
+/** A request the judge accepted, with every value read from what the schema returned. */
+interface CheckedDirectRequest {
+  request: ParsedPaymentRequest;
+  asset: Asset;
+  amount: bigint;
+  /** The fee leg the request asks for, when it asks for one. */
+  fee?: { treasury: string; amount: bigint };
+}
+
 /**
- * Whether the transaction `signature` pays `request` in direct mode: it landed
- * without error, its bound instructions (above) sum to at least the amount, and
- * the payee's balance rose at least as much. A payee still claims each
- * signature once - this answers only what one transaction is worth to one order.
- *
- * `rpc_error`, `unreadable` and `not_found` are questions to ask again (a node
- * failed, a page could not be read, the transaction has not landed yet);
- * `bad_request` is the caller's; `bad_signature`, `failed`, `not_bound`,
- * `underpaid` and `balance_mismatch` are final for that signature.
+ * The request as the judge reads it, or `undefined` for `bad_request`. The
+ * request is re-read by the schema: a fractional or non-positive amount would
+ * make any bound transfer verify.
  */
-export async function verifyDirectSolanaPayment(
-  rpc: Rpc<SolanaRpcApi>,
+async function checkDirectRequest(
   request: PaymentRequestData,
-  signature: string,
-  options: { commitment?: 'confirmed' | 'finalized' } = {},
-): Promise<DirectVerification> {
-  // The request is re-read by the schema: a fractional or non-positive amount
-  // would make any bound transfer verify, and the signature comes from a receipt.
+): Promise<CheckedDirectRequest | undefined> {
   let serialized: string;
   try {
     serialized = JSON.stringify(request);
   } catch {
-    return { verified: false, reason: 'bad_request' };
+    return undefined;
   }
   const parsed = parsePaymentRequest(serialized);
   if (!parsed.ok) {
-    return { verified: false, reason: 'bad_request' };
+    return undefined;
   }
   // Every value below is read from what the schema accepted, not the caller's object.
   const checked = parsed.data;
-  if (typeof signature !== 'string' || !isSignature(signature)) {
-    // It can never land, so asking again would be pointless.
-    return { verified: false, reason: 'bad_signature' };
-  }
-  // Direct mode has no fee leg; a request that names one is not a direct request.
-  if (checked.fee_address !== undefined || (checked.fee_amount ?? 0) !== 0) {
-    return { verified: false, reason: 'bad_request' };
-  }
   let asset: Asset;
   try {
     asset = resolveAssetFromPaymentRequest(checked);
   } catch {
-    return { verified: false, reason: 'bad_request' };
+    return undefined;
   }
   // A coin of the request's own network: the mint is what the check compares.
   const network = checked.network ?? 'devnet';
@@ -695,19 +792,99 @@ export async function verifyDirectSolanaPayment(
       (coin) => coin.token === asset.token && coin.mint === asset.mint,
     )
   ) {
-    return { verified: false, reason: 'bad_request' };
+    return undefined;
   }
   // A reference no transfer can be bound to is the caller's error, not a verdict on
   // any signature: refuse it here rather than answer `not_bound` for every payment.
   if (!isAddress(checked.recipient) || !isAddress(checked.reference)) {
-    return { verified: false, reason: 'bad_request' };
+    return undefined;
   }
   const target = await payeeTarget(checked.recipient, asset);
   if (
     isDeniedReference(checked.reference, checked.recipient, asset) ||
     checked.reference === target.destination
   ) {
-    return { verified: false, reason: 'bad_request' };
+    return undefined;
+  }
+  const amount = BigInt(checked.amount);
+  // A fee leg is both fields with a positive amount; one without the other is
+  // not a request any composer writes.
+  if (checked.fee_address === undefined && (checked.fee_amount ?? 0) === 0) {
+    return { request: checked, asset, amount };
+  }
+  if (
+    checked.fee_address === undefined ||
+    checked.fee_amount === undefined ||
+    checked.fee_amount <= 0 ||
+    !isAddress(checked.fee_address)
+  ) {
+    return undefined;
+  }
+  const feeAmount = BigInt(checked.fee_amount);
+  // The v1 schema allows both of these. A treasury that is the payee would let
+  // one transfer count as both legs; a fee of the whole amount leaves the payee
+  // nothing to be bound to.
+  if (checked.fee_address === checked.recipient || feeAmount >= amount) {
+    return undefined;
+  }
+  return {
+    request: checked,
+    asset,
+    amount,
+    fee: { treasury: checked.fee_address, amount: feeAmount },
+  };
+}
+
+/** The lowest payee amount the merchant node may still credit for `amount` (its 10% floor). */
+function payeeFloor(amount: bigint): bigint {
+  return amount - calculateProtocolFeeSubunits(amount, MAX_FEE_BPS);
+}
+
+/** One account's side of a judged transfer: bound enough, and its balance rose to match. */
+type LegCheck = 'ok' | 'unreadable' | 'balance_mismatch';
+
+async function checkLegBalance(
+  transaction: unknown,
+  instructions: readonly DirectInstruction[],
+  owner: string,
+  asset: Asset,
+  expected: bigint,
+): Promise<LegCheck> {
+  const change = recipientBalanceChange(transaction, owner, asset);
+  const arrived = await transferredIntoPayee(instructions, owner, asset);
+  if (change === null) {
+    // A page this check cannot read is a question to ask again, not a verdict.
+    return 'unreadable';
+  }
+  if (change < expected || change < arrived) {
+    return 'balance_mismatch';
+  }
+  return 'ok';
+}
+
+/** A landed transaction as `getTransaction` (`encoding: 'json'`) answered it. */
+export interface DirectSolanaTransaction {
+  signature: string;
+  transaction: unknown;
+}
+
+export type DirectSolanaTransactionRead =
+  | ({ found: true } & DirectSolanaTransaction)
+  | { found: false; reason: 'bad_signature' | 'rpc_error' | 'not_found' };
+
+/**
+ * One `getTransaction` for `signature`, raw indices (`encoding: 'json'`), for
+ * `judgeDirectSolanaPayment`. A caller judging one transaction against several
+ * requests reads it once.
+ */
+export async function readDirectSolanaTransaction(
+  rpc: Rpc<SolanaRpcApi>,
+  signature: string,
+  options: { commitment?: 'confirmed' | 'finalized' } = {},
+): Promise<DirectSolanaTransactionRead> {
+  if (typeof signature !== 'string' || !isSignature(signature)) {
+    // It can never land, so asking again would be pointless.
+    return { found: false, reason: 'bad_signature' };
   }
   let transaction: unknown;
   try {
@@ -721,10 +898,51 @@ export async function verifyDirectSolanaPayment(
   } catch {
     // A node that fails (or a transaction version it will not serve) says
     // nothing about the payment: the caller asks again.
-    return { verified: false, reason: 'rpc_error' };
+    return { found: false, reason: 'rpc_error' };
   }
   if (transaction === null || transaction === undefined) {
-    return { verified: false, reason: 'not_found' };
+    return { found: false, reason: 'not_found' };
+  }
+  return { found: true, signature, transaction };
+}
+
+/**
+ * Whether a landed transaction pays `request` in direct mode. Reads no chain.
+ *
+ * The checks, in this order:
+ * 1. Nothing bound to the payee: `not_bound`.
+ * 2. The payee's bound sum reaches the whole `amount`: the verdict a fee-less
+ *    request gets - `verified`, or `unreadable` / `balance_mismatch` from the
+ *    payee's balance check - whatever the request says about a fee. A payer
+ *    that skipped the fee leg still paid the price.
+ * 3. The request asks for a fee: the payee bound at least `amount - fee_amount`
+ *    AND the treasury (`fee_address`) bound at least `fee_amount`, in the same
+ *    asset under the same reference, and both balances rose to match -
+ *    `verified`, `unreadable` (a balance page of either that cannot be read) or
+ *    `balance_mismatch` (a real shortfall).
+ * 4. The payee's bound sum is at least the merchant node's floor (`amount`
+ *    less a fee at `MAX_FEE_BPS`): `split_unresolved`. The node may still
+ *    credit it as a split to a treasury it knows, so a buyer holds the order
+ *    rather than ending it - until the merchant's catch-up window closes. This
+ *    applies to a fee-less request too.
+ * 5. Otherwise `underpaid`.
+ *
+ * `bad_request` for a request the schema refuses, one naming only one of
+ * `fee_address` / `fee_amount`, a treasury that is the payee, or a fee of the
+ * whole amount. Every verdict reached after the instructions were read carries
+ * `payeeBound`, `fee` (when the request asks for one) and `blockTime`.
+ */
+export async function judgeDirectSolanaPayment(
+  landed: DirectSolanaTransaction,
+  request: PaymentRequestData,
+): Promise<DirectVerification> {
+  const checked = await checkDirectRequest(request);
+  if (checked === undefined) {
+    return { verified: false, reason: 'bad_request' };
+  }
+  const { signature, transaction } = landed;
+  if (typeof signature !== 'string' || !isSignature(signature)) {
+    return { verified: false, reason: 'bad_signature' };
   }
   const meta = fieldOf(transaction, 'meta');
   if (meta === null || meta === undefined) {
@@ -743,38 +961,102 @@ export async function verifyDirectSolanaPayment(
   } catch {
     return { verified: false, reason: 'unreadable' };
   }
-  const bound = await boundTransferAmount(instructions, {
-    reference: checked.reference,
-    recipient: checked.recipient,
-    asset,
-  });
-  if (bound === 0n) {
-    return { verified: false, reason: 'not_bound' };
-  }
-  const expected = BigInt(checked.amount);
-  if (bound < expected) {
-    return { verified: false, reason: 'underpaid' };
-  }
-  const change = recipientBalanceChange(transaction, checked.recipient, asset);
-  const arrived = await transferredIntoPayee(instructions, checked.recipient, asset);
-  if (change === null) {
-    // A page this check cannot read is a question to ask again, not a verdict.
-    return { verified: false, reason: 'unreadable' };
-  }
-  if (change < expected || change < arrived) {
-    return { verified: false, reason: 'balance_mismatch' };
-  }
-  const blockTime = fieldOf(transaction, 'blockTime');
-  const slot = fieldOf(transaction, 'slot');
-  if (typeof slot !== 'number' && typeof slot !== 'bigint') {
-    return { verified: false, reason: 'unreadable' };
-  }
-  return {
-    verified: true,
-    signature,
-    amount: bound,
+  const { asset, amount, fee } = checked;
+  const { recipient, reference } = checked.request;
+  const payeeBound = await boundTransferAmount(instructions, { reference, recipient, asset });
+  const rawBlockTime = fieldOf(transaction, 'blockTime');
+  const evidence: DirectPaymentEvidence = {
+    payeeBound,
     blockTime:
-      typeof blockTime === 'number' || typeof blockTime === 'bigint' ? Number(blockTime) : null,
-    slot: BigInt(slot),
+      typeof rawBlockTime === 'number' || typeof rawBlockTime === 'bigint'
+        ? Number(rawBlockTime)
+        : null,
   };
+  let treasuryBound = 0n;
+  if (fee !== undefined) {
+    treasuryBound = await boundTransferAmount(instructions, {
+      reference,
+      recipient: fee.treasury,
+      asset,
+    });
+    evidence.fee = treasuryBound;
+  }
+  const refuse = (reason: DirectRefusalReason): DirectVerification => ({
+    verified: false,
+    reason,
+    ...evidence,
+  });
+  const verify = (): DirectVerification => {
+    const slot = fieldOf(transaction, 'slot');
+    if (typeof slot !== 'number' && typeof slot !== 'bigint') {
+      return refuse('unreadable');
+    }
+    return { verified: true, signature, amount: payeeBound, slot: BigInt(slot), ...evidence };
+  };
+
+  // 1. FIRST: at `amount == 1` the floor is 0, and nothing is not a payment.
+  if (payeeBound === 0n) {
+    return refuse('not_bound');
+  }
+  // 2. The whole price to the payee: today's fee-less verdict, final either way.
+  if (payeeBound >= amount) {
+    const payee = await checkLegBalance(transaction, instructions, recipient, asset, amount);
+    return payee === 'ok' ? verify() : refuse(payee);
+  }
+  // 3. The split the request asks for.
+  if (fee !== undefined && payeeBound >= amount - fee.amount && treasuryBound >= fee.amount) {
+    const payee = await checkLegBalance(
+      transaction,
+      instructions,
+      recipient,
+      asset,
+      amount - fee.amount,
+    );
+    if (payee !== 'ok') {
+      return refuse(payee);
+    }
+    const treasury = await checkLegBalance(
+      transaction,
+      instructions,
+      fee.treasury,
+      asset,
+      fee.amount,
+    );
+    return treasury === 'ok' ? verify() : refuse(treasury);
+  }
+  // 4. What the merchant node may still credit as a split.
+  if (payeeBound >= payeeFloor(amount)) {
+    return refuse('split_unresolved');
+  }
+  return refuse('underpaid');
+}
+
+/**
+ * Whether the transaction `signature` pays `request` in direct mode:
+ * `readDirectSolanaTransaction` then `judgeDirectSolanaPayment` (the rules are
+ * there). A payee still claims each signature once - this answers only what
+ * one transaction is worth to one order.
+ *
+ * `rpc_error`, `unreadable` and `not_found` are questions to ask again (a node
+ * failed, a page could not be read, the transaction has not landed yet);
+ * `bad_request` is the caller's; `split_unresolved` is final for that
+ * signature only once the merchant node can no longer credit it (its catch-up
+ * window is over); `bad_signature`, `failed`, `not_bound`, `underpaid` and
+ * `balance_mismatch` are final for that signature.
+ */
+export async function verifyDirectSolanaPayment(
+  rpc: Rpc<SolanaRpcApi>,
+  request: PaymentRequestData,
+  signature: string,
+  options: { commitment?: 'confirmed' | 'finalized' } = {},
+): Promise<DirectVerification> {
+  // The request first, so a bad one never costs a chain read.
+  if ((await checkDirectRequest(request)) === undefined) {
+    return { verified: false, reason: 'bad_request' };
+  }
+  const landed = await readDirectSolanaTransaction(rpc, signature, options);
+  if (!landed.found) {
+    return { verified: false, reason: landed.reason };
+  }
+  return judgeDirectSolanaPayment(landed, request);
 }

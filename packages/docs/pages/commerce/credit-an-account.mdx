@@ -133,6 +133,8 @@ Each event is a `POST` with `Content-Type: application/json` and these headers:
   "payment": {
     "asset": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "amount": "1000000",
+    "fee": "10000",
+    "net": "990000",
     "amountDisplay": "1",
     "decimals": 6,
     "symbol": "USDC",
@@ -144,7 +146,7 @@ Each event is a `POST` with `Content-Type: application/json` and these headers:
 }
 ```
 
-`customerRef` and `email` are there only when the order has them. `payment.amount` is what the node verified on chain, in the asset's subunits. `eventId` is the same for every send of one payment, and differs for two orders one Tempo transaction paid: it is your idempotency key. `payment.tx` is for your records only. `payment.amountDisplay` is approximate and for display only (it may be in exponent notation, such as `1e-9`): credit `payment.amount`, with the decimals from your own list.
+`customerRef` and `email` are there only when the order has them. `payment.amount` is what the node verified on chain, in the asset's subunits: the price the buyer paid in total, what you credit. When the payment carried the elisym protocol fee, it was split: `payment.fee` went to the elisym treasury and `payment.net` (`amount - fee`) reached your wallet, so your wallet shows `net`, not `amount`. Both are subunit strings (`"0"` and `amount` without a fee); events from nodes before protocol-fee support carry neither, and `verifyWebhook` accepts both shapes. `eventId` is the same for every send of one payment, and differs for two orders one Tempo transaction paid: it is your idempotency key. `payment.tx` is for your records only. `payment.amountDisplay` is approximate and for display only (it may be in exponent notation, such as `1e-9`): credit `payment.amount`, with the decimals from your own list.
 
 ## 4. The receiver
 
@@ -210,7 +212,7 @@ CREATE TABLE elisym_events (
   product      TEXT,                      -- product.address
   customer_ref TEXT,                      -- as the body names it, unchecked
   asset        TEXT,                      -- payment.asset
-  amount       NUMERIC,                   -- payment.amount, subunits verified on chain
+  amount       NUMERIC,                   -- payment.amount, subunits verified on chain (the total paid)
   account      TEXT,                      -- the account credited
   status       TEXT NOT NULL,             -- 'credited' or 'queued'
   UNIQUE (store, buyer_pubkey, order_id)
