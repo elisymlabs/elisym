@@ -43,6 +43,7 @@ const actions: Actions = {
   setEmail: (value) => session?.setEmail(value),
   pay: async (name) => session?.pay(name),
   retry: async (name) => session?.retry(name),
+  signAgain: async () => session?.signAgain(),
   startOver: async () => session?.startOver(),
   choosePayout: (index) => session?.choosePayout(index),
   confirmOldPrompt: async () => session?.confirmOldPrompt(),

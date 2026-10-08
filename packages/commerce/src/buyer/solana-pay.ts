@@ -40,6 +40,7 @@ import {
 } from '@solana/kit';
 import { isOfferPayout, parseCaip19 } from '../index';
 import {
+  AGAIN_MARGIN_BLOCKS,
   MERCHANT_CATCH_UP_SECS,
   PAYMENT_SCAN_MARGIN_SECS,
   PAY_CUTOFF_SECS,
@@ -50,7 +51,7 @@ import { nowSecs } from './events';
 import { type LoadedOffer, isSnapshotStale } from './offer';
 import { type OrderDeps, sendReceipt } from './order-flow';
 import { type OrderRecord, type PaymentMarker, isTerminal } from './order-record';
-import type { OrderStore, StoreWrite } from './order-store';
+import { type OrderStore, type StoreWrite, storeClosed } from './order-store';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 type SolanaMarker = Extract<PaymentMarker, { rail: 'solana' }>;
@@ -124,6 +125,11 @@ export interface SolanaPayDeps extends OrderDeps {
   reserve?: (costs: PaymentCosts, attemptId: string) => void;
   /** Called when the attempt `attemptId` was refused after `reserve`, before any broadcast. */
   release?: (attemptId: string) => void;
+  /**
+   * `signAgainWithSolana` only: asked right before the wallet is, after every
+   * read; `false` asks the wallet nothing (`not_payable`).
+   */
+  mayAsk?: () => boolean;
 }
 
 export interface PayInput {
@@ -154,7 +160,9 @@ export type SolanaPayRefusal =
   | 'conflict'
   /**
    * The wallet did not sign, and did not prove it declined (`isSolanaUserRejection`).
-   * The attempt stays live until its blockhash expires.
+   * The attempt stays live until its blockhash expires. With `declined`: the buyer
+   * declined an again request (`signAgainWithSolana`), which proves nothing about
+   * the attempt's earlier request, so it stays live too.
    */
   | 'wallet_failed'
   /**
@@ -164,6 +172,10 @@ export type SolanaPayRefusal =
   | 'rejected'
   /** The wallet returned a transaction the widget does not send (below). Same wait. */
   | 'wallet_unsupported'
+  /** `signAgainWithSolana`: the wallet's account is not the attempt's payer. */
+  | 'other_payer'
+  /** `signAgainWithSolana`: the attempt's blockhash is too close to its end to ask again. */
+  | 'request_expiring'
   /** A retry before the last attempt provably ended. */
   | 'still_waiting'
   | 'already_paid'
@@ -190,7 +202,74 @@ export type SolanaPayResult =
       available?: bigint;
       /** For `wallet_unsupported`: what was wrong with the returned transaction. */
       detail?: SignedRefusal;
+      /**
+       * For `wallet_failed`, and for `signAgainWithSolana`'s `other_payer` / pre-ask
+       * `rpc_error`: the same wallet may be asked again, in the same attempt.
+       */
+      again?: SolanaSignAgain;
+      /** For `wallet_failed` of an again request: the buyer declined it (code 4001). */
+      declined?: true;
+      /**
+       * The attempt this call worked on is still live: the refusal came after its
+       * marker was written, and the caller keeps watching it.
+       */
+      afterMarker?: true;
+      /** The wallet signed, and the checkout did not send it (it waits for the attempt instead). */
+      signedNotSent?: true;
+      /** The attempt this call worked on, on every refusal after its marker was written. */
+      attemptId?: string;
     };
+
+/**
+ * A way back to the attempt `attemptId` after its wallet failed: the same
+ * wallet (`payer`) may be asked again, in the same attempt, with
+ * `signAgainWithSolana`. Frozen and never persisted: the transaction it asks
+ * for stays inside this module, out of the caller's reach.
+ */
+export interface SolanaSignAgain {
+  readonly orderId: string;
+  readonly attemptId: string;
+  readonly payer: string;
+}
+
+/**
+ * One attempt's wallet requests, shared by every handle given out for it: once
+ * its wallet signed, no handle of it asks again; while one asks, none other does.
+ */
+interface AttemptAsks {
+  signed: boolean;
+  inFlight: boolean;
+}
+
+/** What a handle stands for: the attempt's own transaction and the checks it was built on. */
+interface AgainAttempt {
+  orderId: string;
+  attemptId: string;
+  payer: string;
+  unsigned: Unsigned;
+  checked: Extract<Checked, { ok: true }>;
+  asks: AttemptAsks;
+}
+
+/** Every handle given out, with what it stands for: only a handle from here is ever honoured. */
+const AGAIN_ATTEMPTS = new WeakMap<SolanaSignAgain, AgainAttempt>();
+
+function newAsks(): AttemptAsks {
+  return { signed: false, inFlight: false };
+}
+
+function againHandle(attempt: AgainAttempt): SolanaSignAgain {
+  const handle: SolanaSignAgain = Object.freeze({
+    orderId: attempt.orderId,
+    attemptId: attempt.attemptId,
+    payer: attempt.payer,
+  });
+  AGAIN_ATTEMPTS.set(handle, {
+    ...attempt,
+    unsigned: { ...attempt.unsigned, bytes: new Uint8Array(attempt.unsigned.bytes) },
+  });
+  return handle;
+}
 
 /** The request stored on the record, as the schema reads it. */
 export function storedSolanaRequest(record: OrderRecord): PaymentRequestData | undefined {
@@ -655,7 +734,7 @@ async function releaseRejected(
   record: OrderRecord,
   attemptId: string,
   deps: SolanaPayDeps,
-): Promise<SolanaPayResult> {
+): Promise<Extract<SolanaPayResult, { ok: false }>> {
   let current: OrderRecord | undefined = record;
   for (let attempt = 0; attempt < STORE_WRITE_ATTEMPTS && current !== undefined; attempt += 1) {
     if (current.marker?.attemptId !== attemptId || current.state !== 'paying') {
@@ -683,7 +762,10 @@ async function releaseRejected(
  * returned, record the signature and the bytes BEFORE the first broadcast, send,
  * and send the receipt. An explicit decline releases the attempt at once (no
  * signed bytes exist); any other failure leaves the marker, so the attempt stays
- * live until its blockhash expires.
+ * live until its blockhash expires, and hands back a way to ask the same wallet
+ * again. `again` (`signAgainWithSolana`): asked only while `mayAsk` allows, a
+ * decline keeps the attempt (an earlier request of it may still land), nothing
+ * is released, and the reference is listed again before anything is recorded.
  */
 async function signAndSend(
   record: OrderRecord,
@@ -692,16 +774,49 @@ async function signAndSend(
   wallet: SolanaWallet,
   checked: Extract<Checked, { ok: true }>,
   deps: SolanaPayDeps,
+  mode: 'first' | 'again',
+  asks: AttemptAsks,
 ): Promise<SolanaPayResult> {
+  const attemptId = marker.attemptId;
+  // Again mode keeps the attempt live: its reservation stays with it.
+  const release = () => {
+    if (mode === 'first') {
+      deps.release?.(attemptId);
+    }
+  };
+  const handle = () =>
+    againHandle({
+      orderId: record.orderId,
+      attemptId,
+      payer: wallet.address,
+      unsigned,
+      checked,
+      asks,
+    });
+  if (mode === 'again' && deps.mayAsk?.() === false) {
+    return { ok: false, reason: 'not_payable', record, attemptId };
+  }
   let signedBytes: Uint8Array;
   try {
-    signedBytes = await wallet.signTransaction(unsigned.bytes);
+    signedBytes = await wallet.signTransaction(new Uint8Array(unsigned.bytes));
+    // Signed, whatever happens to it next: no handle of this attempt asks again.
+    asks.signed = true;
   } catch (error) {
     if (isSolanaUserRejection(error)) {
-      deps.release?.(marker.attemptId);
-      return releaseRejected(record, marker.attemptId, deps);
+      if (mode === 'again') {
+        return {
+          ok: false,
+          reason: 'wallet_failed',
+          declined: true,
+          record,
+          attemptId,
+          again: handle(),
+        };
+      }
+      release();
+      return { ...(await releaseRejected(record, attemptId, deps)), attemptId };
     }
-    return { ok: false, reason: 'wallet_failed', record };
+    return { ok: false, reason: 'wallet_failed', record, attemptId, again: handle() };
   }
   const signed = await checkSignedTransaction(signedBytes, {
     payer: wallet.address,
@@ -710,35 +825,49 @@ async function signAndSend(
     asset: checked.asset,
   });
   if (!signed.ok) {
-    return { ok: false, reason: 'wallet_unsupported', record, detail: signed.reason };
+    return { ok: false, reason: 'wallet_unsupported', record, detail: signed.reason, attemptId };
+  }
+  const notSent = { afterMarker: true, signedNotSent: true, attemptId } as const;
+  if (mode === 'again') {
+    // A transaction of an earlier request of this attempt may have landed meanwhile:
+    // the watch decides, and nothing more is sent.
+    const listed = await listedSinceMarker(deps.rpc, checked.request.reference, marker.slot);
+    if (listed !== 'clean') {
+      return {
+        ok: false,
+        reason: listed === 'row' ? 'still_waiting' : 'rpc_error',
+        record,
+        ...notSent,
+      };
+    }
   }
   // A wallet may raise the price the widget set: a payer who cannot cover the fee
   // it signed would send a transaction that never lands.
   const needed = checked.funds.otherLamports + signed.feeLamports;
   if (checked.funds.lamports < needed) {
-    deps.release?.(marker.attemptId);
+    release();
     return {
       ok: false,
       reason: 'insufficient_sol',
       record,
       needed,
       available: checked.funds.lamports,
+      ...notSent,
     };
   }
   // The wallet may take long: the attempt id, not the version the caller saw, is
   // what must still hold. A failed write means no broadcast.
   let current: OrderRecord | undefined = record;
   for (let attempt = 0; attempt < STORE_WRITE_ATTEMPTS && current !== undefined; attempt += 1) {
-    if (current.marker?.attemptId !== marker.attemptId) {
-      deps.release?.(marker.attemptId);
-      return { ok: false, reason: 'conflict', record: current };
+    if (current.marker?.attemptId !== attemptId) {
+      release();
+      return { ok: false, reason: 'conflict', record: current, attemptId, signedNotSent: true };
     }
-    const written = await deps.store.updateMarker(
-      current.orderId,
-      current.version,
-      marker.attemptId,
-      { ...marker, signature: signed.signature, signedTransaction: signed.wire },
-    );
+    const written = await deps.store.updateMarker(current.orderId, current.version, attemptId, {
+      ...marker,
+      signature: signed.signature,
+      signedTransaction: signed.wire,
+    });
     if (written.ok) {
       await broadcast(deps.rpc, signed.wire);
       const receipt = await sendReceipt(
@@ -754,13 +883,48 @@ async function signAndSend(
       };
     }
     if (written.reason !== 'conflict') {
-      deps.release?.(marker.attemptId);
-      return { ok: false, reason: 'conflict', record: current };
+      release();
+      return { ok: false, reason: 'conflict', record: current, attemptId, signedNotSent: true };
     }
     current = await deps.store.get(record.orderId);
   }
-  deps.release?.(marker.attemptId);
-  return { ok: false, reason: 'conflict', ...(current === undefined ? {} : { record: current }) };
+  release();
+  return {
+    ok: false,
+    reason: 'conflict',
+    ...(current === undefined ? {} : { record: current }),
+    attemptId,
+    signedNotSent: true,
+  };
+}
+
+/**
+ * Whether anything is listed under the reference since the attempt's marker
+ * (`slot`, the slot its blockhash was read at): a row at or above it, failed
+ * or not, is `row`. Rows come newest first, so one page decides: a page whose
+ * every row is older reached the floor, and a full page holding one at or
+ * above it is a row already. `error`: the listing could not be read.
+ */
+async function listedSinceMarker(
+  rpc: Rpc<SolanaRpcApi>,
+  reference: string,
+  slot: string | undefined,
+): Promise<'clean' | 'row' | 'error'> {
+  try {
+    if (slot === undefined) {
+      return 'error';
+    }
+    const floor = BigInt(slot);
+    const rows = await rpc
+      .getSignaturesForAddress(address(reference), {
+        limit: SIGNATURE_PAGE_LIMIT,
+        commitment: 'confirmed',
+      })
+      .send();
+    return rows.some((row) => BigInt(row.slot) >= floor) ? 'row' : 'clean';
+  } catch {
+    return 'error';
+  }
 }
 
 function storeRefusal(
@@ -861,7 +1025,7 @@ export async function payWithSolana(
     deps.release?.(marker.attemptId);
     return storeRefusal(marked, record);
   }
-  return signAndSend(marked.record, marker, unsigned, wallet, checked, deps);
+  return signAndSend(marked.record, marker, unsigned, wallet, checked, deps, 'first', newAsks());
 }
 
 export type SolanaWatch =
@@ -1185,7 +1349,107 @@ export async function retryWithSolana(
     deps.release?.(marker.attemptId);
     return storeRefusal(replaced, judged);
   }
-  return signAndSend(replaced.record, marker, unsigned, wallet, checked, deps);
+  return signAndSend(replaced.record, marker, unsigned, wallet, checked, deps, 'first', newAsks());
+}
+
+/**
+ * Ask the wallet of a failed attempt again, inside the SAME attempt: its own
+ * transaction (same blockhash, payer and bound amount), at once - trusted as a
+ * decline is trusted: a wallet that reports a failure sent nothing. Refused
+ * (`not_payable`, the wallet never asked) unless `again` is a handle this module
+ * gave out and the stored attempt is still exactly its own: paying, not closed
+ * by the store, the same attempt, blockhash and lifetime, no signature yet, and
+ * a stored request that still pays what the transaction pays. Refused too, the
+ * attempt left live, for another account (`other_payer`), a blockhash about to
+ * expire (`request_expiring`), anything listed under the reference since the
+ * attempt began (`still_waiting`: the watch decides) and a failed read
+ * (`rpc_error`). Nothing is reserved: the attempt's reservation is still held.
+ * Every handle of one attempt shares its asks: once the wallet signed for the
+ * attempt (whatever became of the answer), or while another call asks it, the
+ * answer is `not_payable` and the wallet is never asked.
+ */
+export async function signAgainWithSolana(
+  again: SolanaSignAgain,
+  wallet: SolanaWallet,
+  deps: SolanaPayDeps,
+): Promise<SolanaPayResult> {
+  const attempt = AGAIN_ATTEMPTS.get(again);
+  // Its wallet signed already (the answer was not sent), or another call asks it now.
+  if (attempt === undefined || attempt.asks.signed || attempt.asks.inFlight) {
+    return { ok: false, reason: 'not_payable' };
+  }
+  attempt.asks.inFlight = true;
+  try {
+    return await askAgain(attempt, again, wallet, deps);
+  } finally {
+    attempt.asks.inFlight = false;
+  }
+}
+
+async function askAgain(
+  attempt: AgainAttempt,
+  again: SolanaSignAgain,
+  wallet: SolanaWallet,
+  deps: SolanaPayDeps,
+): Promise<SolanaPayResult> {
+  const record = await deps.store.get(attempt.orderId);
+  if (record === undefined) {
+    return { ok: false, reason: 'not_payable' };
+  }
+  const attemptId = attempt.attemptId;
+  const marker = record.marker;
+  const stored = storedSolanaRequest(record);
+  const coin = solanaAssetOf(record);
+  const bound = attempt.checked;
+  if (
+    record.state !== 'paying' ||
+    storeClosed(record) ||
+    marker?.rail !== 'solana' ||
+    marker.attemptId !== attemptId ||
+    marker.signature !== undefined ||
+    marker.slot === undefined ||
+    marker.blockhash !== attempt.unsigned.blockhash ||
+    marker.lastValidBlockHeight !== attempt.unsigned.lastValidBlockHeight.toString() ||
+    stored === undefined ||
+    coin === undefined ||
+    !requestMatches(stored, record, coin) ||
+    stored.reference !== bound.request.reference ||
+    stored.recipient !== bound.request.recipient ||
+    BigInt(stored.amount) !== BigInt(bound.request.amount) ||
+    coin.asset.mint !== bound.asset.mint
+  ) {
+    return { ok: false, reason: 'not_payable', record, attemptId };
+  }
+  const live = { record, attemptId, afterMarker: true } as const;
+  if (wallet.address !== attempt.payer) {
+    return { ok: false, reason: 'other_payer', ...live, again };
+  }
+  let height: bigint;
+  try {
+    height = BigInt(await deps.rpc.getBlockHeight({ commitment: 'confirmed' }).send());
+  } catch {
+    return { ok: false, reason: 'rpc_error', ...live, again };
+  }
+  if (height >= attempt.unsigned.lastValidBlockHeight - AGAIN_MARGIN_BLOCKS) {
+    return { ok: false, reason: 'request_expiring', ...live };
+  }
+  const listed = await listedSinceMarker(deps.rpc, stored.reference, marker.slot);
+  if (listed === 'row') {
+    return { ok: false, reason: 'still_waiting', ...live };
+  }
+  if (listed === 'error') {
+    return { ok: false, reason: 'rpc_error', ...live, again };
+  }
+  return signAndSend(
+    record,
+    marker,
+    attempt.unsigned,
+    wallet,
+    { ...bound, request: stored, asset: coin.asset, network: coin.network },
+    deps,
+    'again',
+    attempt.asks,
+  );
 }
 
 /**

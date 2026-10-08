@@ -62,6 +62,8 @@ interface Landed {
   json: Record<string, unknown>;
   accounts: string[];
   failed: boolean;
+  /** The tip's slot when it landed: what the reference listing says of it. */
+  slot: bigint;
 }
 
 /**
@@ -105,9 +107,13 @@ export class FakeSolana {
   firstAvailableBlock: bigint | undefined;
   /** `getFirstAvailableBlock` alone fails. */
   historyReadFails = false;
+  /** `getBlockHeight` alone fails. */
+  blockHeightFails = false;
+  /** `getSignaturesForAddress` alone fails. */
+  listingFails = false;
 
   /** The tip's slot (slots run ahead of heights by a fixed 10 000 here). */
-  private get tipSlot(): bigint {
+  get tipSlot(): bigint {
     return this.height + CONFIRMED_LEAD + 10_000n;
   }
   /** The last valid height of every blockhash the node handed out. */
@@ -117,9 +123,17 @@ export class FakeSolana {
   calls: string[] = [];
   /**
    * Extra signatures listed under any account: failed ones, or `junk` - landed
-   * transactions that pay nothing (spam under a public reference).
+   * transactions that pay nothing (spam under a public reference). Listed at
+   * `slot` (42 when not set: long before any attempt).
    */
-  extraListed: { signature: string; failed: boolean; junk?: boolean }[] = [];
+  extraListed: {
+    signature: string;
+    failed: boolean;
+    junk?: boolean;
+    slot?: bigint;
+    /** Confirmed only, not finalized yet: a `finalized` listing omits it. */
+    unfinalized?: boolean;
+  }[] = [];
   blockTime = 0;
 
   constructor(
@@ -208,6 +222,7 @@ export class FakeSolana {
     this.landed.set(signature, {
       accounts: keys,
       failed,
+      slot: this.tipSlot,
       json: {
         slot: 42n,
         blockTime: this.blockTime,
@@ -305,6 +320,14 @@ export class FakeSolana {
           };
         }),
       getSlot: () => this.answer('getSlot', () => 5_000n),
+      getBlockHeight: (config: { commitment?: string } = {}) =>
+        this.answer('getBlockHeight', () => {
+          if (this.blockHeightFails) {
+            throw new Error('height unavailable');
+          }
+          // Only `finalized` is the finalized height; anything else is the tip.
+          return config.commitment === 'finalized' ? this.height : this.height + CONFIRMED_LEAD;
+        }),
       getBlockTime: () => this.answer('getBlockTime', () => BigInt(this.blockTime)),
       getEpochInfo: (config: { commitment?: string } = {}) =>
         this.answer('getEpochInfo', () => {
@@ -339,10 +362,18 @@ export class FakeSolana {
         }),
       getSignaturesForAddress: (
         account: string,
-        config: { limit?: number; before?: string; minContextSlot?: bigint } = {},
+        config: {
+          limit?: number;
+          before?: string;
+          minContextSlot?: bigint;
+          commitment?: string;
+        } = {},
       ) =>
         this.answer('getSignaturesForAddress', async () => {
           await this.onList?.();
+          if (this.listingFails) {
+            throw new Error('listing unavailable');
+          }
           if (this.lagging && config.minContextSlot !== undefined) {
             throw new Error('Minimum context slot has not been reached');
           }
@@ -355,14 +386,24 @@ export class FakeSolana {
                   !this.pruned &&
                   landed.accounts.includes(account),
               )
-              .map(([signature, landed]) => ({ signature, failed: landed.failed })),
-            ...this.extraListed,
-          ].map((entry) => ({
-            signature: entry.signature,
-            err: entry.failed ? {} : null,
-            blockTime: this.blockTime,
-            slot: 42n,
-          }));
+              .map(([signature, landed]) => ({
+                signature,
+                failed: landed.failed,
+                slot: landed.slot,
+              })),
+            ...this.extraListed.filter(
+              (entry) => entry.unfinalized !== true || config.commitment !== 'finalized',
+            ),
+          ]
+            .map((entry) => ({
+              signature: entry.signature,
+              err: entry.failed ? {} : null,
+              blockTime: this.blockTime,
+              slot: entry.slot ?? 42n,
+            }))
+            // As a node lists them: newest first (the latest written first within a slot).
+            .reverse()
+            .sort((left, right) => Number(right.slot - left.slot));
           const from =
             config.before === undefined
               ? 0

@@ -26,14 +26,21 @@ import {
   onOtherTerms,
   recordToShow,
 } from '@elisym/commerce/buyer';
-import { type OrderStore, type StoreWrite, STORE_WRITE_ATTEMPTS } from '@elisym/commerce/buyer';
+import {
+  type OrderStore,
+  type StoreWrite,
+  STORE_WRITE_ATTEMPTS,
+  storeClosed,
+} from '@elisym/commerce/buyer';
 import {
   type SolanaPayResult,
+  type SolanaSignAgain,
   type SolanaWallet,
   composeOrderPayment,
   endSolanaOrder,
   payWithSolana,
   retryWithSolana,
+  signAgainWithSolana,
   watchSolanaPayment,
 } from '@elisym/commerce/buyer';
 import {
@@ -140,7 +147,13 @@ export type Problem =
   | { reason: 'no_wallet' | 'clock_skew' | 'rpc_error' | 'self_payment' | 'too_late' }
   | { reason: 'tempo_unsupported' | 'wallet_busy' }
   | { reason: 'order_not_acknowledged' | 'no_store_inbox' | 'failed' | 'bad_email' }
-  | { reason: 'wallet_failed' | 'wallet_unsupported' }
+  /** `declined`: the buyer declined an again request; the attempt stays live. */
+  | { reason: 'wallet_failed'; declined?: true }
+  | { reason: 'wallet_unsupported' }
+  /** The wallet asked again is on another account than the attempt's: `payer`, in full. */
+  | { reason: 'other_payer'; payer: string }
+  /** The buyer declined the again request's connect: the attempt stays live. */
+  | { reason: 'again_declined' }
   | { reason: 'policy_blocked' | 'wrong_chain' | 'rejected' | 'attempt_over' | 'late_approval' }
   | { reason: 'offer_changed' | 'offer_refused' }
   /** The store stopped selling the product while an order of it is followed. */
@@ -277,6 +290,14 @@ export type View =
       /** Tempo: about when the checkout stops waiting for the wallet request. */
       requestEndsIn?: Countdown;
       problem?: Problem;
+      /** Solana: the wallet that failed this attempt may be asked again, at once. */
+      again?: { wallet: string };
+      /** Solana: the attempt's request is about to expire: it is not asked again. */
+      expiring?: true;
+      /** Solana: a transaction for this order reached the network: the watch decides. */
+      seenOnChain?: true;
+      /** Solana: the wallet's last answer for this attempt was not sent. */
+      signedNotSent?: true;
     }
   | {
       kind: 'waiting_store';
@@ -605,8 +626,17 @@ export class CheckoutSession {
   private watching = false;
   private republishTimer: unknown;
   private listening: { orderId: string; closer: { close(): void } } | undefined;
-  /** Why the live attempt may not have gone out (the wallet failed): kept until it ends. */
-  private attemptProblem: Problem | undefined;
+  /**
+   * Why the live attempt may not have gone out (the wallet failed): kept until it
+   * ends, and shown only while the attempt on screen is the one it was set for.
+   */
+  private attemptProblem: { problem: Problem; attemptId: string | undefined } | undefined;
+  /** The Solana wallet that failed the live attempt, which may be asked again: its handle. */
+  private againOffer: { handle: SolanaSignAgain; walletName: string } | undefined;
+  /** What the answers about one Solana attempt said, for its status line and the again button. */
+  private againFlags:
+    | { attemptId: string; expiring?: true; seenOnChain?: true; signedNotSent?: true }
+    | undefined;
   private email = '';
   private lastStatus: CheckoutState | undefined;
   /** The current attempt provably ended with no payment (a retry is offered). */
@@ -1119,7 +1149,7 @@ export class CheckoutSession {
         await this.lateAnswer(result, resets);
         return;
       }
-      await this.afterPay(result, rpc, press, resets);
+      await this.afterPay(result, rpc, press, resets, walletName);
     });
   }
 
@@ -1272,7 +1302,7 @@ export class CheckoutSession {
         return;
       case 'wallet_failed':
         // No hash: the attempt may still land (a queued prompt): it stays live.
-        this.attemptProblem = { reason: 'wallet_failed' };
+        this.setAttemptProblem({ reason: 'wallet_failed' }, this.record?.marker?.attemptId);
         this.attemptOver = false;
         if (this.record !== undefined) {
           await this.follow(this.record);
@@ -2005,7 +2035,135 @@ export class CheckoutSession {
       await this.lateAnswer(result, scope.resets);
       return;
     }
-    await this.afterPay(result, rpc, press, scope.resets);
+    await this.afterPay(result, rpc, press, scope.resets, walletName);
+  }
+
+  /**
+   * Ask the Solana wallet that failed the live attempt again, inside that same
+   * attempt: offered only while the view's button is (`againFor`, judged now,
+   * not on the view the buyer saw). Nothing new is composed; commerce checks
+   * the stored attempt again and reads the chain before the wallet opens.
+   */
+  async signAgain(): Promise<void> {
+    const record = this.record;
+    const offer = record === undefined ? undefined : this.againFor(record);
+    if (
+      this.busy ||
+      this.pressing ||
+      this.followOnly !== undefined ||
+      record === undefined ||
+      offer === undefined
+    ) {
+      return;
+    }
+    this.press += 1;
+    const press = this.press;
+    this.pressing = true;
+    try {
+      await this.signAgainPressed(record, offer, press);
+    } finally {
+      if (this.press === press) {
+        this.pressing = false;
+        this.redrawIfFreed();
+      }
+    }
+  }
+
+  private async signAgainPressed(
+    record: OrderRecord,
+    offer: { handle: SolanaSignAgain; walletName: string },
+    press: number,
+  ): Promise<void> {
+    const resets = this.resets;
+    if (this.lateHashHolds()) {
+      return;
+    }
+    if (await this.deliveryFirst(press)) {
+      return;
+    }
+    if (this.stale(press)) {
+      return;
+    }
+    const network = this.networkOfRecord(record);
+    if (network === undefined) {
+      return;
+    }
+    await this.guard(press, async () => {
+      // The order's own terms on every progress view, as a retry shows them.
+      this.retrying = true;
+      try {
+        await this.signAgainGuarded(record, offer, network, { press, resets });
+      } finally {
+        if (this.press === press) {
+          this.retrying = false;
+        }
+      }
+    });
+  }
+
+  private async signAgainGuarded(
+    record: OrderRecord,
+    offer: { handle: SolanaSignAgain; walletName: string },
+    network: Network,
+    scope: PressScope,
+  ): Promise<void> {
+    const press = scope.press;
+    this.cancellableFor = press;
+    this.working('checking', true);
+    const answer = await this.connect(offer.walletName, network);
+    if (this.stale(press)) {
+      return;
+    }
+    this.cancellableFor = undefined;
+    if ('error' in answer) {
+      // The attempt stays live: a declined connect is no "nothing was paid".
+      this.render({
+        problem: {
+          reason: answer.error === 'rejected' ? 'again_declined' : connectProblem(answer.error),
+        },
+      });
+      return;
+    }
+    const current = (await this.deps.store.get(record.orderId)) ?? record;
+    if (this.stale(press)) {
+      return;
+    }
+    if (storeClosed(current)) {
+      // The store cancelled or delivered it: never another wallet request.
+      await this.follow(current);
+      return;
+    }
+    const rpc = this.deps.rpcFor(network);
+    if (rpc === undefined) {
+      this.render();
+      return;
+    }
+    this.working('signing');
+    this.stopWatching();
+    this.generation += 1;
+    this.startProbe(press, current);
+    let result: SolanaPayResult;
+    try {
+      result = await signAgainWithSolana(offer.handle, answer.wallet, {
+        ...this.payDeps(rpc, scope),
+        // A close or a probe verdict during the reads before the wallet opens no window.
+        mayAsk: () => !this.stale(press),
+      });
+    } catch (error) {
+      // The wallet may have signed before the store failed: it is never asked again
+      // for this attempt, and nothing says it did not answer.
+      if (this.againOffer === offer) {
+        this.againOffer = undefined;
+        this.setAttemptProblem({ reason: 'failed' }, offer.handle.attemptId);
+      }
+      throw error;
+    }
+    this.stopProbe(press);
+    if (this.stale(press)) {
+      await this.lateAnswer(result, scope.resets);
+      return;
+    }
+    await this.afterPay(result, rpc, press, scope.resets, offer.walletName);
   }
 
   /** Leave an order that will not be paid (only once nothing can still land). */
@@ -2029,6 +2187,7 @@ export class CheckoutSession {
 
   /** `startOver`'s work, under its guard. */
   private async leaveOrder(record: OrderRecord, resets: number): Promise<void> {
+    this.againOffer = undefined;
     const current = (await this.deps.store.get(record.orderId)) ?? record;
     // Closed meanwhile: the first step is on screen already.
     if (this.resets !== resets) {
@@ -2112,6 +2271,7 @@ export class CheckoutSession {
       this.setRecord(undefined);
     }
     this.attemptProblem = undefined;
+    this.againOffer = undefined;
     this.attemptOver = false;
     this.oldPrompt = undefined;
     this.offerProblem = undefined;
@@ -2302,6 +2462,24 @@ export class CheckoutSession {
     const hash = 'hash' in result ? result.hash : undefined;
     if (result.ok && hash !== undefined) {
       this.sentHash.set(result.record.orderId, hash);
+    }
+    if (!result.ok && 'attemptId' in result && result.attemptId !== undefined) {
+      // A Solana answer of its attempt: what it says of the attempt still counts (never
+      // over what is said of a newer attempt), and a handle of that attempt is let go
+      // unless the wallet only failed again.
+      if (
+        this.againFlags === undefined ||
+        this.againFlags.attemptId === result.attemptId ||
+        this.record?.marker?.attemptId === result.attemptId
+      ) {
+        this.rewriteAgainFlags(result);
+      }
+      if (
+        this.againOffer?.handle.attemptId === result.attemptId &&
+        result.reason !== 'wallet_failed'
+      ) {
+        this.againOffer = undefined;
+      }
     }
     const record = result.record;
     if (record === undefined) {
@@ -2889,7 +3067,11 @@ export class CheckoutSession {
         this.setRecord(undefined);
         this.showOffer({ reason: 'failed' });
       } else {
-        this.attemptProblem ??= { reason: 'failed' };
+        // A problem of the attempt on screen stays; one of another attempt never counts.
+        const attemptId = stored.marker?.attemptId;
+        if (this.attemptProblem === undefined || this.attemptProblem.attemptId !== attemptId) {
+          this.setAttemptProblem({ reason: 'failed' }, attemptId);
+        }
         await this.follow(stored, undefined, { reason: 'failed' });
       }
     } finally {
@@ -3634,7 +3816,15 @@ export class CheckoutSession {
     rpc: Rpc<SolanaRpcApi>,
     press: number,
     resets: number,
+    walletName: string,
   ): Promise<void> {
+    // The press is current here: its answer decides whether the same wallet may be asked again.
+    this.againOffer =
+      !result.ok && result.again !== undefined ? { handle: result.again, walletName } : undefined;
+    this.rewriteAgainFlags(result);
+    // Decided before anything is awaited too: a store failure next never leaves an earlier
+    // problem of this attempt that this answer proved false.
+    this.noteAnswerProblem(result);
     if (result.record !== undefined) {
       // The store may have answered meanwhile: what is stored wins over the core's copy.
       const stored = await this.deps.store.get(result.record.orderId);
@@ -3648,8 +3838,11 @@ export class CheckoutSession {
         return;
       }
     }
+    if (!result.ok && result.afterMarker === true) {
+      await this.afterLiveRefusal(result);
+      return;
+    }
     if (result.ok) {
-      this.attemptProblem = undefined;
       this.attemptOver = false;
       await this.follow(result.record);
       return;
@@ -3693,8 +3886,7 @@ export class CheckoutSession {
         return;
       case 'wallet_failed':
       case 'wallet_unsupported':
-        // Only an explicit decline proves nothing was signed: the attempt waits for expiry.
-        this.attemptProblem = { reason: result.reason };
+        // The attempt waits for expiry (its problem was noted as the answer came).
         this.attemptOver = false;
         if (this.record !== undefined) {
           await this.follow(this.record);
@@ -3728,6 +3920,140 @@ export class CheckoutSession {
         }
       }
     }
+  }
+
+  /**
+   * A refusal that left this call's attempt live (`afterMarker`): never a retry
+   * (the attempt may still land), the watch follows it again. What the buyer can
+   * act on stays as the attempt's problem (a read that failed, another account,
+   * the fee); a transaction seen, a request about to expire and an answer not
+   * sent say so on their own line.
+   */
+  private async afterLiveRefusal(result: Extract<SolanaPayResult, { ok: false }>): Promise<void> {
+    this.attemptOver = false;
+    const record = result.record ?? this.record;
+    if (record !== undefined) {
+      await this.follow(record);
+    }
+  }
+
+  /**
+   * The attempt's problem an answer leaves (`afterPay`, as soon as it comes). A live
+   * refusal keeps what the buyer can act on (a read that failed, another account, the
+   * fee); a transaction seen, a request about to expire and an answer not sent say so
+   * on their own line. A wallet that failed or changed the transaction says that.
+   */
+  private noteAnswerProblem(result: SolanaPayResult): void {
+    if (result.ok) {
+      // Signed and recorded: no earlier problem of the attempt holds any more.
+      this.attemptProblem = undefined;
+      return;
+    }
+    const attemptId = result.attemptId;
+    if (result.afterMarker === true) {
+      if (result.reason === 'rpc_error' && result.signedNotSent !== true) {
+        this.setAttemptProblem({ reason: 'rpc_error' }, attemptId);
+      } else if (result.reason === 'other_payer' && result.again !== undefined) {
+        this.setAttemptProblem({ reason: 'other_payer', payer: result.again.payer }, attemptId);
+      } else if (result.reason === 'insufficient_sol') {
+        this.setAttemptProblem(
+          {
+            reason: 'insufficient_sol',
+            needed: result.needed ?? 0n,
+            available: result.available ?? 0n,
+          },
+          attemptId,
+        );
+      } else {
+        this.attemptProblem = undefined;
+      }
+    } else if (result.signedNotSent === true) {
+      // Signed, and every write of the answer lost: the checkout's own failure, never the wallet's.
+      this.setAttemptProblem({ reason: 'failed' }, attemptId);
+    } else if (result.reason === 'wallet_failed' || result.reason === 'wallet_unsupported') {
+      // Only an explicit decline proves nothing was signed: the attempt waits for expiry.
+      this.setAttemptProblem(
+        result.reason === 'wallet_failed' && result.declined === true
+          ? { reason: 'wallet_failed', declined: true }
+          : { reason: result.reason },
+        attemptId,
+      );
+    }
+  }
+
+  private setAttemptProblem(problem: Problem, attemptId: string | undefined): void {
+    this.attemptProblem = { problem, attemptId };
+  }
+
+  /**
+   * What a Solana answer says of its attempt: a request about to expire and a
+   * transaction seen stay said for that attempt; whether the wallet's answer was
+   * not sent is said by the attempt's last answer only.
+   */
+  private rewriteAgainFlags(result: SolanaPayResult): void {
+    const attemptId = result.ok ? result.record.marker?.attemptId : result.attemptId;
+    if (attemptId === undefined) {
+      return;
+    }
+    const kept = this.againFlags?.attemptId === attemptId ? this.againFlags : undefined;
+    const refusal = result.ok ? undefined : result;
+    const expiring = kept?.expiring === true || refusal?.reason === 'request_expiring';
+    const seenOnChain =
+      kept?.seenOnChain === true ||
+      (refusal?.reason === 'still_waiting' && refusal.afterMarker === true);
+    this.againFlags = {
+      attemptId,
+      ...(expiring ? { expiring: true } : {}),
+      ...(seenOnChain ? { seenOnChain: true } : {}),
+      ...(refusal?.signedNotSent === true ? { signedNotSent: true } : {}),
+    };
+  }
+
+  /**
+   * The again request `record` offers now, if any: its wallet failed this very
+   * attempt, which may still land and has no signature, nothing says the request
+   * is about to expire or that a transaction reached the network, this page may
+   * pay, and that wallet is still here.
+   */
+  private againFor(
+    record: OrderRecord,
+  ): { handle: SolanaSignAgain; walletName: string } | undefined {
+    const offer = this.againOffer;
+    const marker = record.marker;
+    const flags = this.flagsFor(record);
+    const network = this.networkOfRecord(record);
+    if (
+      offer === undefined ||
+      offer.handle.orderId !== record.orderId ||
+      record.state !== 'paying' ||
+      marker?.rail !== 'solana' ||
+      marker.attemptId !== offer.handle.attemptId ||
+      marker.signature !== undefined ||
+      this.attemptOver ||
+      this.followOnly !== undefined ||
+      this.refusedHere !== undefined ||
+      storeClosed(record) ||
+      isTerminal(record) ||
+      flags?.expiring === true ||
+      flags?.seenOnChain === true ||
+      network === undefined ||
+      !this.deps.wallets(network).some((option) => option.name === offer.walletName)
+    ) {
+      return undefined;
+    }
+    return offer;
+  }
+
+  /** The flags of the Solana attempt `record` shows, while it may still land. */
+  private flagsFor(record: OrderRecord) {
+    const flags = this.againFlags;
+    const marker = record.marker;
+    return flags !== undefined &&
+      marker?.rail === 'solana' &&
+      flags.attemptId === marker.attemptId &&
+      !this.attemptOver
+      ? flags
+      : undefined;
   }
 
   /** A problem before any request: on the offer while none is live, else on the wait. */
@@ -3904,8 +4230,15 @@ export class CheckoutSession {
     // A refusal by the store stays explained on every redraw while the order lives.
     const refused: Problem | undefined =
       this.refusedHere === undefined ? undefined : { reason: this.refusedHere.reason };
-    const problem = extra.problem ?? this.attemptProblem ?? refused;
+    // The attempt's problem is about that attempt only: never another tab's that replaced it.
+    const attemptProblem =
+      this.attemptProblem !== undefined && this.attemptProblem.attemptId === marker?.attemptId
+        ? this.attemptProblem.problem
+        : undefined;
+    const problem = extra.problem ?? attemptProblem ?? refused;
     const retryIn = this.retryCountdown(record);
+    const flags = this.flagsFor(record);
+    const again = this.againFor(record);
     const requestEndsIn = tempo && !signed ? this.requestCountdown(record) : undefined;
     this.show({
       kind: 'waiting_payment',
@@ -3932,6 +4265,10 @@ export class CheckoutSession {
       ...(requestEndsIn === undefined ? {} : { requestEndsIn }),
       ...(signature === undefined ? {} : { explorer: explorerFor(record, signature, network) }),
       ...(problem === undefined ? {} : { problem }),
+      ...(again === undefined ? {} : { again: { wallet: again.walletName } }),
+      ...(flags?.expiring === true ? { expiring: true } : {}),
+      ...(flags?.seenOnChain === true ? { seenOnChain: true } : {}),
+      ...(flags?.signedNotSent === true ? { signedNotSent: true } : {}),
     });
   }
 

@@ -31,6 +31,8 @@ export const PROBLEM_PLACE = {
   late_approval: 'wallets',
   wallet_failed: 'wallets',
   wallet_unsupported: 'wallets',
+  other_payer: 'wallets',
+  again_declined: 'wallets',
   attempt_over: 'wallets',
   earlier_payment: 'wallets',
 } as const satisfies Record<Problem['reason'], 'offer' | 'wallets'>;

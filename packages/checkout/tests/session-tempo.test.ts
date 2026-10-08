@@ -290,6 +290,19 @@ async function records(offer: Ready): Promise<OrderRecord[]> {
 }
 
 describe('paying on Tempo in the widget', () => {
+  it('says the wallet failed while its attempt is still live', async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'fail';
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      tempo: true,
+      signed: false,
+      problem: { reason: 'wallet_failed' },
+    });
+  });
+
   it('pays with an EIP-6963 wallet and waits for the store', async () => {
     const run = await setup();
     await run.session.start();
