@@ -24,8 +24,8 @@ import {
 } from '../src/app/session';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
-import { holdRpc } from './reset-harness';
 import { NO_FEE_TERMS } from './fee-fixtures';
+import { holdRpc } from './reset-harness';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';

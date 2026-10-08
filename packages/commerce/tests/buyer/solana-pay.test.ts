@@ -1,6 +1,7 @@
 import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/pay-core';
 import { getBase64Encoder } from '@solana/kit';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { MERCHANT_CATCH_UP_SECS, PAY_CUTOFF_SECS } from '../../src/buyer/constants';
 import { type LoadedOffer, loadOffer } from '../../src/buyer/offer';
 import { placeOrder } from '../../src/buyer/order-flow';
 import type { OrderRecord } from '../../src/buyer/order-record';
@@ -221,6 +222,22 @@ describe('paying', () => {
       state: 'ordered',
       version: record.version,
     });
+  });
+
+  it('still pays on the last second before the cutoff and refuses one second later', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const lastSecond = record.createdAt + MERCHANT_CATCH_UP_SECS - PAY_CUTOFF_SECS;
+    expect(
+      await checkBeforePaying(record, wallet.address, { ...input, chainTime: lastSecond }, deps),
+    ).toMatchObject({ ok: true });
+    expect(
+      await checkBeforePaying(
+        record,
+        wallet.address,
+        { ...input, chainTime: lastSecond + 1 },
+        deps,
+      ),
+    ).toMatchObject({ ok: false, reason: 'too_late' });
   });
 
   it('reads nothing and opens no wallet for a record that is not waiting to pay', async () => {

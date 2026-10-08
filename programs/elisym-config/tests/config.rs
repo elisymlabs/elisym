@@ -1753,3 +1753,64 @@ fn t10_upgraded_program_writes_evm_treasury_into_an_old_layout_account() {
         assert_eq!(after._reserved, [0u8; 108]);
     }
 }
+
+/// Where `evm_treasury` sits in the raw account: discriminator, version, bump,
+/// admin, `pending_admin` (1 byte as `None`, 33 as `Some`), treasury, fee_bps,
+/// paused, last_updated. Off-chain readers decode these offsets directly
+/// (`packages/pay-core/tests/config-layout.test.ts`), so the struct round trip
+/// alone cannot prove them.
+fn evm_treasury_offset(pending_admin: Option<Pubkey>) -> usize {
+    let pending_admin_len = if pending_admin.is_some() { 33 } else { 1 };
+    8 + 1 + 1 + 32 + pending_admin_len + 32 + 2 + 1 + 8
+}
+
+#[test]
+fn t11_evm_treasury_bytes_sit_right_after_last_updated() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let new_admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let with_evm = set_evm_treasury(&mollusk, admin, config_after_init, EVM_TREASURY);
+    let offset = evm_treasury_offset(None);
+    assert_eq!(&with_evm.data[offset..offset + 20], &EVM_TREASURY);
+    assert!(with_evm.data[offset + 20..].iter().all(|byte| *byte == 0));
+
+    let proposed = run_admin_ix(&mollusk, admin, with_evm, ix_args::ProposeAdmin { new_admin });
+    let with_other_evm = set_evm_treasury(&mollusk, admin, proposed, OTHER_EVM_TREASURY);
+    let shifted_offset = evm_treasury_offset(Some(new_admin));
+    assert_eq!(read_config(&with_other_evm).pending_admin, Some(new_admin));
+    assert_eq!(
+        &with_other_evm.data[shifted_offset..shifted_offset + 20],
+        &OTHER_EVM_TREASURY
+    );
+    assert!(with_other_evm.data[shifted_offset + 20..]
+        .iter()
+        .all(|byte| *byte == 0));
+}
+
+/// Only the all-zero address means "not set": an address whose first or last
+/// byte is zero is a real address and is taken.
+#[test]
+fn t12_set_evm_treasury_takes_addresses_with_zero_edge_bytes() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let mut last_byte_only = [0u8; 20];
+    last_byte_only[19] = 1;
+    let mut second_byte_only = [0u8; 20];
+    second_byte_only[1] = 1;
+    let mut zero_first_and_last = [0x33u8; 20];
+    zero_first_and_last[0] = 0;
+    zero_first_and_last[19] = 0;
+
+    let mut config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    for evm_treasury in [last_byte_only, second_byte_only, zero_first_and_last] {
+        config_account = set_evm_treasury(&mollusk, admin, config_account, evm_treasury);
+        assert_eq!(read_config(&config_account).evm_treasury, evm_treasury);
+    }
+}

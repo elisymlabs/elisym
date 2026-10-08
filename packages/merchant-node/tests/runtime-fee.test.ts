@@ -141,6 +141,27 @@ describe('an unresolved payment at the runtime', () => {
     expect(logs.filter((line) => line.includes(FEE_UNRESOLVED_NOTE))).toHaveLength(1);
   });
 
+  it('a reported payment still unresolved on its retry keeps its place in the recheck queue', async () => {
+    const { runtime, deps, order, receipt, setup, now } = harness(undefined, () => ({
+      kind: 'ask_again',
+      feeUnresolved: true,
+    }));
+    const later: (() => Promise<void>)[] = [];
+    deps.later = (_ms, task) => {
+      later.push(task);
+    };
+    await runtime.handleWrap(order);
+    await runtime.handleWrap(receipt);
+    const held = Object.values(setup.state.orders)[0];
+    expect(held?.recheckedAt?.[SIG]).toBe(now);
+    // The retry runs later: the payment is still ranked by when it was reported.
+    deps.now = () => now + 600;
+    const retry = later.shift();
+    expect(retry).toBeDefined();
+    await retry?.();
+    expect(held?.recheckedAt?.[SIG]).toBe(now);
+  });
+
   it('a reported payment asked again for no fee reason is neither marked nor told', async () => {
     const { runtime, order, receipt, logs, setup } = harness(undefined, () => ({
       kind: 'ask_again',

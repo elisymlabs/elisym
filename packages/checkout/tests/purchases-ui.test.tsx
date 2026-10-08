@@ -532,7 +532,7 @@ describe('the fee line', () => {
     await ui.openRow();
     const line = ui.detail()?.querySelector('[data-fee-line]');
     expect(line?.textContent).toBe(feeLine(asset, 490_000n));
-    expect(line?.textContent).toContain('Includes elisym fee');
+    expect(line?.textContent).toBe('Includes elisym fee 0.49 USDC');
     const plain = mount(counted([base]));
     await plain.open();
     await plain.openRow();

@@ -428,6 +428,39 @@ describe('the profile warning', () => {
     expect(node.output()).toMatch(NO_PROFILE_FEE);
   });
 
+  it('check and run name a fee above 0 the config reads now', async () => {
+    const path = solanaHome();
+    const run = harness({
+      seed: [taglessProfile(path)],
+      genesis: DEVNET_GENESIS,
+      config: { treasury: TREASURY, feeBps: 300 },
+    });
+    const result = command(path, ['check'], run);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatch(NO_PROFILE_FEE);
+    expect(result.output).toMatch(/THE PROTOCOL FEE IS 300 bps NOW/);
+    const node = startRun(path, run);
+    expect(await until(() => /listening on/.test(node.output()))).toBe(true);
+    expect(node.output()).toMatch(/THE PROTOCOL FEE IS 300 bps NOW/);
+  });
+
+  it('check and run name no fee when the config reads 0', async () => {
+    const path = solanaHome();
+    const run = harness({
+      seed: [taglessProfile(path)],
+      genesis: DEVNET_GENESIS,
+      config: { treasury: TREASURY, feeBps: 0 },
+    });
+    const result = command(path, ['check'], run);
+    expect(result.code).toBe(0);
+    expect(result.output).toMatch(NO_PROFILE_FEE);
+    expect(result.output).not.toMatch(/NOW/);
+    const node = startRun(path, run);
+    expect(await until(() => /listening on/.test(node.output()))).toBe(true);
+    expect(node.output()).toMatch(NO_PROFILE_FEE);
+    expect(node.output()).not.toMatch(/NOW/);
+  });
+
   it('neither warns when no profile is served', async () => {
     const path = solanaHome();
     expect(command(path, ['check'], harness()).output).not.toMatch(NO_PROFILE_FEE);

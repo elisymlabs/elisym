@@ -10,6 +10,7 @@ import {
   fakeTempoChain,
   recordedReceipt,
 } from '../../../pay-core/tests/tempo-chain';
+import { MERCHANT_CATCH_UP_SECS, PAY_CUTOFF_SECS } from '../../src/buyer/constants';
 import { type LoadedOffer, loadOffer } from '../../src/buyer/offer';
 import { placeOrder } from '../../src/buyer/order-flow';
 import type { OrderRecord } from '../../src/buyer/order-record';
@@ -440,6 +441,28 @@ describe('paying on Tempo', () => {
       record: { state: 'ended-unpaid', endedBy: 'nothing' },
     });
     expect(payer.sent).toBe(0);
+  });
+
+  it('still pays on the last second before the cutoff and refuses one second later', async () => {
+    const onTime = await world();
+    const lastSecond = onTime.record.createdAt + MERCHANT_CATCH_UP_SECS - PAY_CUTOFF_SECS;
+    onTime.options.timestamps[HEAD] = lastSecond;
+    const paying = wallet(onTime, 'land');
+    const paid = await payWithTempo(
+      onTime.record,
+      paying,
+      { ...onTime.fresh, snapshotAt: NOW + 30 },
+      onTime.deps,
+    );
+    expect(paid).toMatchObject({ ok: true, hash: HASH });
+    expect(paying.sent).toBe(1);
+    const late = await world();
+    late.options.timestamps[HEAD] = lastSecond + 1;
+    const refused = wallet(late, 'land');
+    expect(
+      await payWithTempo(late.record, refused, { ...late.fresh, snapshotAt: NOW + 30 }, late.deps),
+    ).toMatchObject({ ok: false, reason: 'too_late' });
+    expect(refused.sent).toBe(0);
   });
 
   it('refuses when the fresh offer no longer pays this price, and a transfer to oneself', async () => {

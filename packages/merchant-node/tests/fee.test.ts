@@ -405,6 +405,30 @@ describe('the treasury reader deadline', () => {
     expect(state.treasuries).toEqual({});
   });
 
+  it('waits ten seconds by default: a config read answered after 5 s is recorded', async () => {
+    expect(FEE_CONFIG_READ_TIMEOUT_MS).toBe(10_000);
+    vi.useFakeTimers();
+    const { rpc } = configRpc(DEVNET_GENESIS);
+    const reader = new TreasuryReader(
+      rpc,
+      'devnet',
+      () =>
+        new Promise<ProtocolConfig>((resolve) => {
+          setTimeout(() => resolve(configRead('onchain')), 5_000);
+        }),
+    );
+    const state = emptyLedger();
+    let answer: unknown;
+    void reader.refresh(state, NOW).then((result) => {
+      answer = result;
+    });
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(answer).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(answer).toEqual({ kind: 'read', feeBps: 300 });
+    expect(state.treasuries.devnet?.solana).toEqual({ [SOL_TREASURY]: NOW });
+  });
+
   it('a read inside the deadline is recorded', async () => {
     const { rpc } = configRpc(DEVNET_GENESIS);
     const reader = new TreasuryReader(rpc, 'devnet', async () => configRead('onchain'), 1_000);
