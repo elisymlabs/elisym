@@ -12,6 +12,8 @@ interface Props {
   reveal?: boolean;
   /** The screen offers something to press now (a wait before its retry does not). */
   canPress?: boolean;
+  /** The earlier-payment line's "Check in wallet". */
+  onCheckWallet?: () => void;
 }
 
 export function ProblemNote({
@@ -20,12 +22,19 @@ export function ProblemNote({
   tempo = false,
   reveal = false,
   canPress = true,
+  onCheckWallet,
 }: Props) {
   if (problem === undefined) {
     return null;
   }
   if (problem.reason === 'earlier_payment') {
-    return <EarlierPaymentNote problem={problem} reveal={reveal} />;
+    return (
+      <EarlierPaymentNote
+        problem={problem}
+        reveal={reveal}
+        {...(onCheckWallet === undefined ? {} : { onCheckWallet })}
+      />
+    );
   }
   return (
     <div

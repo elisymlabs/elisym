@@ -14,12 +14,13 @@ import { isTerminal } from '@elisym/commerce/buyer';
 import { OrderStore } from '@elisym/commerce/buyer';
 import { createRelayClient } from '@elisym/commerce/buyer';
 import {
+  type SolanaPayDeps,
   type SolanaWallet,
   composeOrderPayment,
   payWithSolana,
   watchSolanaPayment,
 } from '@elisym/commerce/buyer';
-import { signerFromSecretKeyBase58 } from '@elisym/pay-core';
+import { readFeeTerms, signerFromSecretKeyBase58 } from '@elisym/pay-core';
 import {
   createSolanaRpc,
   getTransactionDecoder,
@@ -75,12 +76,14 @@ async function main(): Promise<void> {
     new IndexedDbOrderBackend(await openOrderDatabase(new IDBFactory())),
   );
   const readClient = createRelayClient();
-  const deps: OrderDeps & { rpc: typeof rpc } = {
+  const deps: OrderDeps & Pick<SolanaPayDeps, 'rpc' | 'feeTerms'> = {
     store,
     readClient,
     clientFor: (buyerSecretKey) =>
       createRelayClient({ auth: async (template) => finalizeEvent(template, buyerSecretKey) }),
     rpc,
+    // The devnet store pays on devnet: its fee terms come from the devnet config.
+    feeTerms: () => readFeeTerms(rpc, 'devnet', 'solana'),
   };
 
   const offer = await loadOffer(naddr, {
@@ -115,7 +118,11 @@ async function main(): Promise<void> {
   log(
     `order ${placed.record.orderId} acknowledged by ${placed.record.acknowledgedRelays.join(', ')}`,
   );
-  const composed = await composeOrderPayment(placed.record, store);
+  const composed = await composeOrderPayment(placed.record, store, {
+    offer: offer.offer,
+    feeTerms: deps.feeTerms,
+    payer: wallet.address,
+  });
   if (!composed.ok) {
     throw new Error(`request not composed: ${composed.reason}`);
   }

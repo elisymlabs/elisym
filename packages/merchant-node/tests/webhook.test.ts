@@ -200,7 +200,7 @@ describe('the outbox entry', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'merchant-webhook-')), 'ledger.json');
     saveLedger(path, state);
     // A new process: only what was saved.
-    const reloaded = loadLedger(path);
+    const reloaded = loadLedger(path).state;
     const { url, received } = await receiver();
     await sender(reloaded, url).tick();
     expect(received).toHaveLength(1);
@@ -225,6 +225,8 @@ describe('the order.paid body', () => {
         payment: {
           asset: USDC_DEVNET_CAIP19,
           amount: '1500000',
+          fee: '0',
+          net: '1500000',
           amountDisplay: '1.5',
           decimals: 6,
           symbol: 'USDC',
@@ -235,6 +237,32 @@ describe('the order.paid body', () => {
         email: 'buyer@example.com',
       }),
     );
+  });
+
+  it('splits the total paid into the protocol fee and what the merchant received', async () => {
+    const order = paidOrder({ paid: { ...PAID, amount: '1500000', fee: '15000' } });
+    const entry = newWebhookEntry(STORE, order, NOW);
+    const body = orderPaidBody(order, entry, { storePubkey: STORE });
+    const payment = (JSON.parse(body) as { payment: Record<string, unknown> }).payment;
+    // `amount` keeps meaning the total paid; the display is of the total too.
+    expect(payment).toMatchObject({
+      amount: '1500000',
+      fee: '15000',
+      net: '1485000',
+      amountDisplay: '1.5',
+    });
+    expect(Object.keys(payment).slice(0, 4)).toEqual(['asset', 'amount', 'fee', 'net']);
+    // The receiver library keeps both.
+    const sent = await captureSend({ name: 'order.paid', eventId: entry.eventId, body });
+    const verified = await verifyWebhook({
+      secret: SECRET,
+      body: sent.body,
+      headers: sent.headers,
+      now: NOW,
+    });
+    expect(
+      verified.ok && verified.event.event === 'order.paid' && verified.event.payment,
+    ).toMatchObject({ amount: '1500000', fee: '15000', net: '1485000' });
   });
 
   it('names the product the order named', () => {
@@ -255,6 +283,8 @@ describe('the order.paid body', () => {
     expect(body.payment).toEqual({
       asset: 'solana:unknown/token:nothing',
       amount: '1500000',
+      fee: '0',
+      net: '1500000',
       tx: SIG,
       medium: 'solana-devnet',
       paidAt: T0 + 120,
@@ -329,6 +359,8 @@ describe('the receiver library verifies what the node sends', () => {
       payment: {
         asset: USDC_DEVNET_CAIP19,
         amount: '1500000',
+        fee: '0',
+        net: '1500000',
         amountDisplay: '1.5',
         decimals: 6,
         symbol: 'USDC',

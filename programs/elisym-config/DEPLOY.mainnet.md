@@ -123,7 +123,7 @@ SOLANA_RPC_URL=<url> \
 
 **Cluster mismatch is now detected, not accepted.** `show` asks the RPC for its genesis hash and prints the cluster that actually answered, independently of `SOLANA_NETWORK` and of the endpoint string. If the two disagree it prints a `*** MISMATCH ***` banner and everything below it is about the wrong cluster - which is what used to produce orphan PDAs and a falsely-green gate in silence. The endpoint itself is logged as scheme+host only: Alchemy and QuickNode carry the API key in the URL path.
 
-The scripts that **sign** go further and abort: step 3b and every `admin.ts` mutation (`set-fee`, `set-treasury`, `propose-admin`, `accept-admin`, `cancel-pending-admin`) print the same `Cluster:` line and exit non-zero before sending anything if it disagrees with `SOLANA_NETWORK`. A cluster the endpoint cannot prove (unreachable, or a genesis hash that is neither mainnet nor devnet nor testnet) aborts the same way - so these commands need `SOLANA_NETWORK` set to match the endpoint, and cannot be pointed at a local validator. `show` still only warns: it signs nothing, and its job is to print the board even when the board is wrong. Steps 2 and 3 declare no network at all (they are network-agnostic by design), so their cluster is the one step 1b and step 4 confirm.
+The scripts that **sign** go further and abort: step 3b and every `admin.ts` mutation (`set-fee`, `set-treasury`, `set-evm-treasury`, `propose-admin`, `accept-admin`, `cancel-pending-admin`) print the same `Cluster:` line and exit non-zero before sending anything if it disagrees with `SOLANA_NETWORK`. A cluster the endpoint cannot prove (unreachable, or a genesis hash that is neither mainnet nor devnet nor testnet) aborts the same way - so these commands need `SOLANA_NETWORK` set to match the endpoint, and cannot be pointed at a local validator. `show` still only warns: it signs nothing, and its job is to print the board even when the board is wrong. Steps 2 and 3 declare no network at all (they are network-agnostic by design), so their cluster is the one step 1b and step 4 confirm.
 
 ## If a step after the deploy fails
 
@@ -181,6 +181,69 @@ Two filters decide whether these commands see anything, and both fail the same s
 
 - `--url` pins the cluster; without it they target the solana CLI's default. Use the same `<url>` as step 1: these commands are a `getProgramAccounts` scan over the loader, which is exactly the call the public endpoint is least likely to serve.
 - `-k` pins the authority they match on. The buffer's authority is step 1's `--upgrade-authority` signer, NOT the fee payer, so leaving `-k` off matches against whatever `solana config get` points at.
+
+## Upgrade in place (`evm_treasury` / `set_evm_treasury`)
+
+The commerce-fee release (`docs/plans/commerce-fee.md`) adds `evm_treasury: [u8; 20]` to `Config`, carved from `_reserved` after `last_updated`, and the admin instruction `set_evm_treasury`. The account keeps its size, every earlier field keeps its offset and `CURRENT_VERSION` stays 1: there is no realloc and no migration step, and a client built before the upgrade keeps decoding the account (the 20 bytes land in its `reserved`). This is an upgrade of the deployed program at the same address, not a fresh deploy - steps 2, 3 and 3b above do not run again.
+
+Preconditions (plan section 10): Igor's go-ahead for the cluster, the deployer still holds the upgrade authority (`solana program show` -> `Authority`), and the fee stays 0 until the rollout says otherwise - upgrading changes no fee. `<url>` is the dedicated endpoint, as above. Devnet first.
+
+```bash
+# U0. Fresh build from the reviewed commit; record the hash you ship.
+bun run program:build
+shasum -a 256 target/deploy/elisym_config.so
+
+# U1. Does the new binary fit the program-data account? Compare "Data Length"
+#     with the local size. If the .so is larger, extend by the difference
+#     FIRST (solana-cli 3.1.x would auto-extend inside the deploy, but an
+#     explicit extend keeps the failure, if any, out of the upgrade itself).
+solana program show BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE --url <url>
+stat -f%z target/deploy/elisym_config.so
+# only if the .so is larger than Data Length:
+solana program extend BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE <additional-bytes> \
+  --url <url> -k ~/.config/solana/id.json
+
+# U2. Write the buffer through <url> (--use-rpc, same reasons as step 1). It
+#     prints the buffer address; record it. The buffer holds a full programdata
+#     rent until U3 refunds it - see "If a deploy attempt aborts mid-way" if
+#     this dies part way.
+solana program write-buffer target/deploy/elisym_config.so \
+  --url <url> \
+  --use-rpc \
+  --with-compute-unit-price 50000 \
+  --max-sign-attempts 20 \
+  -k ~/.config/solana/id.json \
+  --buffer-authority ~/.config/solana/id.json
+
+# U3. Swap the program to the buffer (one transaction, signed by the upgrade
+#     authority; the buffer's rent comes back to the deployer).
+solana program deploy \
+  --url <url> \
+  -k ~/.config/solana/id.json \
+  --buffer <BUFFER_ADDRESS> \
+  --program-id BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE \
+  --upgrade-authority ~/.config/solana/id.json
+
+# U4. Upgrade the on-chain IDL (step 1a ran `init` once; every later change is
+#     `upgrade`). From the MONOREPO ROOT.
+anchor idl upgrade BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE \
+  -f target/idl/elisym_config.json --provider.cluster <url>
+
+# U5. Verify: Data Length / Last Deployed In Slot moved, and the board reads
+#     the SAME admin, treasury and fee as before the upgrade, plus
+#     "EVM treasury: not set".
+solana program show BrX1CRkSgvcjxBvc2bgc3QqgWjinusofDmeP7ZVxvwrE --url <url>
+SOLANA_NETWORK=<devnet|mainnet> SOLANA_RPC_URL=<url> \
+  bun run packages/config-client/scripts/admin.ts show
+
+# U6. Name the EVM treasury (admin-signed). The script refuses zero, a wrong
+#     length, a TIP-1022 virtual address, Tempo's system accounts and the coin
+#     contracts before signing anything. Then re-run U5: the board must print it.
+SOLANA_NETWORK=<devnet|mainnet> SOLANA_RPC_URL=<url> \
+  bun run packages/config-client/scripts/admin.ts set-evm-treasury 0x<40 hex>
+```
+
+`admin.ts` signs with a keypair file. On mainnet the admin is a browser wallet, so U6 there (and any `set-fee`) needs another signing path - an open item of the plan, decided at rollout, not covered here. U0-U4 are signed by the upgrade authority, which is still the deployer key.
 
 ## Post-launch follow-up (deferred, round 16)
 

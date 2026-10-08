@@ -2,6 +2,8 @@
 //!
 //! Coverage targets:
 //! - 6 happy-path flows (initialize, propose+accept, cancel pending, fee, treasury, rotation+lockout)
+//! - `set_evm_treasury` and the `Config` layout it extends (old-layout images, round trips across
+//!   the variable-length `pending_admin`)
 //! - 12 negative cases (validation, auth, reinit, missing pending)
 //! - Invariant assertions per success: bump match, version pin, last_updated monotonicity,
 //!   `_reserved` zeroed.
@@ -14,10 +16,12 @@
 //! through the `SBF_OUT_DIR` env var that we set inside `setup_sbf_dir`.
 
 use anchor_lang::{
-    solana_program::bpf_loader_upgradeable, system_program, AccountDeserialize, AccountSerialize,
-    InstructionData, Space, ToAccountMetas,
+    event::EVENT_IX_TAG_LE, solana_program::bpf_loader_upgradeable, system_program,
+    AccountDeserialize, AccountSerialize, AnchorDeserialize, Discriminator, InstructionData, Space,
+    ToAccountMetas,
 };
 use elisym_config::accounts as ix_accounts;
+use elisym_config::events::EvmTreasuryUpdated;
 use elisym_config::instruction as ix_args;
 use elisym_config::state::{
     AssetStats, Config, NetworkStats, ASSET_STATS_SEED, CONFIG_SEED, CURRENT_ASSET_STATS_VERSION,
@@ -174,7 +178,7 @@ fn assert_post_mutation_invariants(cfg: &Config, prev_last_updated: i64) {
     );
     assert_eq!(
         cfg._reserved,
-        [0u8; 128],
+        [0u8; 108],
         "_reserved must remain zeroed for forward-compat schema migration"
     );
 }
@@ -320,7 +324,8 @@ fn h1_initialize_creates_config_with_expected_values() {
     assert_eq!(cfg.version, 1);
     assert!(!cfg.paused);
     assert_eq!(cfg.pending_admin, None);
-    assert_eq!(cfg._reserved, [0u8; 128]);
+    assert_eq!(cfg.evm_treasury, [0u8; 20]);
+    assert_eq!(cfg._reserved, [0u8; 108]);
 
     // First mutation sets last_updated to clock; treat 0 as the prior baseline.
     assert_post_mutation_invariants(&cfg, 0);
@@ -468,7 +473,7 @@ fn h6_post_rotation_old_admin_locked_out_new_admin_can_act() {
     let config_after_accept = get_resulting(&accept_result, config_pk);
     let cfg_after_accept = read_config(&config_after_accept);
     assert_eq!(cfg_after_accept.admin, new_admin);
-    assert_eq!(cfg_after_accept._reserved, [0u8; 128]);
+    assert_eq!(cfg_after_accept._reserved, [0u8; 108]);
 
     // Old admin attempting set_fee_bps must be rejected by the `has_one = admin` check.
     let bad_ix = build_admin_only_ix(admin, ix_args::SetFeeBps { new_bps: 700 });
@@ -1372,3 +1377,379 @@ fn v8_increment_stats_v2_wrong_pda_for_mint_fails() {
     );
 }
 
+
+// ---------------------------------------------------------------------------
+// EVM treasury: the field carved from `_reserved`
+// ---------------------------------------------------------------------------
+
+const EVM_TREASURY: [u8; 20] = [0x11; 20];
+const OTHER_EVM_TREASURY: [u8; 20] = [0x22; 20];
+
+/// A later clock than `initialize` saw, so a handler that forgets to bump
+/// `last_updated` is caught (an equal timestamp would pass a `>=` check).
+const LATER_UNIX_TIMESTAMP: i64 = 1_900_000_000;
+
+fn set_evm_treasury(
+    mollusk: &Mollusk,
+    admin: Pubkey,
+    config_account: Account,
+    new_evm_treasury: [u8; 20],
+) -> Account {
+    set_evm_treasury_with_event(mollusk, admin, config_account, new_evm_treasury).0
+}
+
+/// `set_evm_treasury`, also returning the one `EvmTreasuryUpdated` it emitted.
+fn set_evm_treasury_with_event(
+    mollusk: &Mollusk,
+    admin: Pubkey,
+    config_account: Account,
+    new_evm_treasury: [u8; 20],
+) -> (Account, EvmTreasuryUpdated) {
+    let ix = build_admin_only_ix(admin, ix_args::SetEvmTreasury { new_evm_treasury });
+    let accounts = admin_only_accounts(admin, config_account);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    let event = evm_treasury_event(&result);
+    (get_resulting(&result, config_pda().0), event)
+}
+
+/// Decode the `EvmTreasuryUpdated` that `emit_cpi!` carried in its self-invoke:
+/// `EVENT_IX_TAG_LE ++ event discriminator ++ borsh(event)`, invoked on this
+/// program. Exactly one must be there.
+fn evm_treasury_event(result: &mollusk_svm::result::InstructionResult) -> EvmTreasuryUpdated {
+    let message = result
+        .message
+        .as_ref()
+        .expect("an executed instruction carries its compiled message");
+    let account_keys = message.account_keys();
+    let payloads: Vec<&[u8]> = result
+        .inner_instructions
+        .iter()
+        .filter(|inner| {
+            account_keys.get(usize::from(inner.instruction.program_id_index)) == Some(&PROGRAM_ID)
+        })
+        .filter_map(|inner| {
+            inner
+                .instruction
+                .data
+                .strip_prefix(EVENT_IX_TAG_LE)?
+                .strip_prefix(EvmTreasuryUpdated::DISCRIMINATOR)
+        })
+        .collect();
+    assert_eq!(payloads.len(), 1, "expected exactly one EvmTreasuryUpdated self-invoke");
+    let mut payload = payloads[0];
+    let event = EvmTreasuryUpdated::deserialize(&mut payload).expect("decodable event");
+    assert!(payload.is_empty(), "trailing bytes after the event");
+    event
+}
+
+fn run_admin_ix<A: InstructionData>(
+    mollusk: &Mollusk,
+    admin: Pubkey,
+    config_account: Account,
+    args: A,
+) -> Account {
+    let ix = build_admin_only_ix(admin, args);
+    let accounts = admin_only_accounts(admin, config_account);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    get_resulting(&result, config_pda().0)
+}
+
+fn accept_admin(mollusk: &Mollusk, new_admin: Pubkey, config_account: Account) -> Account {
+    let ix = build_accept_admin_ix(new_admin);
+    let accounts = accept_admin_accounts(new_admin, config_account);
+    let result = mollusk.process_and_validate_instruction(&ix, &accounts, &[Check::success()]);
+    get_resulting(&result, config_pda().0)
+}
+
+/// Every field except `evm_treasury`, `last_updated` and `_reserved`, which the
+/// caller asserts on its own.
+fn assert_same_identity(after: &Config, before: &Config) {
+    assert_eq!(after.version, before.version);
+    assert_eq!(after.bump, before.bump);
+    assert_eq!(after.admin, before.admin);
+    assert_eq!(after.pending_admin, before.pending_admin);
+    assert_eq!(after.treasury, before.treasury);
+    assert_eq!(after.fee_bps, before.fee_bps);
+    assert_eq!(after.paused, before.paused);
+}
+
+/// A `Config` account image written with the layout BEFORE `evm_treasury`
+/// existed: `..., last_updated: i64, _reserved: [u8; 128]`. Borsh by hand, so
+/// the image cannot drift with the struct under test.
+fn old_layout_image(
+    admin: Pubkey,
+    pending_admin: Option<Pubkey>,
+    treasury: Pubkey,
+    fee_bps: u16,
+    last_updated: i64,
+) -> Vec<u8> {
+    let (_, bump) = config_pda();
+    let mut data = Vec::with_capacity(8 + Config::INIT_SPACE);
+    data.extend_from_slice(Config::DISCRIMINATOR);
+    data.push(CURRENT_VERSION);
+    data.push(bump);
+    data.extend_from_slice(admin.as_ref());
+    match pending_admin {
+        None => data.push(0),
+        Some(pending) => {
+            data.push(1);
+            data.extend_from_slice(pending.as_ref());
+        }
+    }
+    data.extend_from_slice(treasury.as_ref());
+    data.extend_from_slice(&fee_bps.to_le_bytes());
+    data.push(0); // paused
+    data.extend_from_slice(&last_updated.to_le_bytes());
+    data.extend_from_slice(&[0u8; 128]);
+    if pending_admin.is_some() {
+        // The widest old image fills the account exactly: the new struct must
+        // still fit the space every live account was allocated with.
+        assert_eq!(data.len(), 8 + Config::INIT_SPACE);
+    }
+    // `Option::None` is one byte, so a live account keeps zero padding after `_reserved`.
+    data.resize(8 + Config::INIT_SPACE, 0);
+    data
+}
+
+#[test]
+fn t1_set_evm_treasury_writes_field_and_leaves_the_rest() {
+    let mut mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let before = read_config(&config_after_init);
+    mollusk.sysvars.clock.unix_timestamp = LATER_UNIX_TIMESTAMP;
+    let (after_account, event) =
+        set_evm_treasury_with_event(&mollusk, admin, config_after_init, EVM_TREASURY);
+    let after = read_config(&after_account);
+
+    assert_eq!(event.old_evm_treasury, [0u8; 20]);
+    assert_eq!(event.new_evm_treasury, EVM_TREASURY);
+    assert_eq!(event.timestamp, LATER_UNIX_TIMESTAMP);
+    assert_eq!(after.evm_treasury, EVM_TREASURY);
+    assert_eq!(after.last_updated, LATER_UNIX_TIMESTAMP);
+    assert_same_identity(&after, &before);
+    assert_post_mutation_invariants(&after, before.last_updated);
+}
+
+#[test]
+fn t2_set_evm_treasury_overwrites_a_previous_value() {
+    let mut mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let first = set_evm_treasury(&mollusk, admin, config_after_init, EVM_TREASURY);
+    mollusk.sysvars.clock.unix_timestamp = LATER_UNIX_TIMESTAMP;
+    let (second_account, event) =
+        set_evm_treasury_with_event(&mollusk, admin, first, OTHER_EVM_TREASURY);
+    let second = read_config(&second_account);
+    assert_eq!(event.old_evm_treasury, EVM_TREASURY);
+    assert_eq!(event.new_evm_treasury, OTHER_EVM_TREASURY);
+    assert_eq!(event.timestamp, LATER_UNIX_TIMESTAMP);
+    assert_eq!(second.evm_treasury, OTHER_EVM_TREASURY);
+    assert_eq!(second._reserved, [0u8; 108]);
+}
+
+#[test]
+fn t3_set_evm_treasury_by_non_admin_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let imposter = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let ix = build_admin_only_ix(
+        imposter,
+        ix_args::SetEvmTreasury {
+            new_evm_treasury: EVM_TREASURY,
+        },
+    );
+    let accounts = admin_only_accounts(imposter, config_account);
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(UNAUTHORIZED))],
+    );
+}
+
+#[test]
+fn t4_set_evm_treasury_to_zero_fails() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    // Set first, so a refused zero is not mistaken for "nothing changed".
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let config_with_evm = set_evm_treasury(&mollusk, admin, config_after_init, EVM_TREASURY);
+    let ix = build_admin_only_ix(
+        admin,
+        ix_args::SetEvmTreasury {
+            new_evm_treasury: [0u8; 20],
+        },
+    );
+    let accounts = admin_only_accounts(admin, config_with_evm);
+    let _ = mollusk.process_and_validate_instruction(
+        &ix,
+        &accounts,
+        &[Check::err(ProgramError::Custom(INVALID_TREASURY))],
+    );
+}
+
+#[test]
+fn t5_set_treasury_and_set_fee_bps_preserve_evm_treasury() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let new_treasury = Pubkey::new_unique();
+
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let config_with_evm = set_evm_treasury(&mollusk, admin, config_after_init, EVM_TREASURY);
+
+    let after_treasury = run_admin_ix(
+        &mollusk,
+        admin,
+        config_with_evm,
+        ix_args::SetTreasury { new_treasury },
+    );
+    let cfg_treasury = read_config(&after_treasury);
+    assert_eq!(cfg_treasury.treasury, new_treasury);
+    assert_eq!(cfg_treasury.evm_treasury, EVM_TREASURY);
+    assert_eq!(cfg_treasury._reserved, [0u8; 108]);
+
+    let after_fee = run_admin_ix(&mollusk, admin, after_treasury, ix_args::SetFeeBps { new_bps: 700 });
+    let cfg_fee = read_config(&after_fee);
+    assert_eq!(cfg_fee.fee_bps, 700);
+    assert_eq!(cfg_fee.evm_treasury, EVM_TREASURY);
+    assert_eq!(cfg_fee._reserved, [0u8; 108]);
+}
+
+/// `pending_admin` is an `Option<Pubkey>`: 1 byte as `None`, 33 as `Some`, so
+/// every field after it - `evm_treasury` included - moves by 32 bytes when an
+/// admin transfer is proposed and back when it ends. Borsh re-serializes the
+/// whole struct on each write; these round trips prove the value survives both
+/// moves and nothing leaks into `_reserved`.
+#[test]
+fn t6_evm_treasury_survives_propose_then_accept() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let new_admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let config_with_evm = set_evm_treasury(&mollusk, admin, config_after_init, EVM_TREASURY);
+
+    let proposed = run_admin_ix(&mollusk, admin, config_with_evm, ix_args::ProposeAdmin { new_admin });
+    let cfg_proposed = read_config(&proposed);
+    assert_eq!(cfg_proposed.pending_admin, Some(new_admin));
+    assert_eq!(cfg_proposed.evm_treasury, EVM_TREASURY);
+    assert_eq!(cfg_proposed._reserved, [0u8; 108]);
+
+    let cfg_accepted = read_config(&accept_admin(&mollusk, new_admin, proposed));
+    assert_eq!(cfg_accepted.admin, new_admin);
+    assert_eq!(cfg_accepted.pending_admin, None);
+    assert_eq!(cfg_accepted.evm_treasury, EVM_TREASURY);
+    assert_eq!(cfg_accepted._reserved, [0u8; 108]);
+}
+
+#[test]
+fn t7_evm_treasury_survives_propose_then_cancel() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let new_admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let config_with_evm = set_evm_treasury(&mollusk, admin, config_after_init, EVM_TREASURY);
+    let proposed = run_admin_ix(&mollusk, admin, config_with_evm, ix_args::ProposeAdmin { new_admin });
+    let cancelled = read_config(&run_admin_ix(
+        &mollusk,
+        admin,
+        proposed,
+        ix_args::CancelPendingAdmin {},
+    ));
+    assert_eq!(cancelled.pending_admin, None);
+    assert_eq!(cancelled.admin, admin);
+    assert_eq!(cancelled.evm_treasury, EVM_TREASURY);
+    assert_eq!(cancelled._reserved, [0u8; 108]);
+}
+
+/// The write itself at the shifted offset: set while a transfer is pending,
+/// then the transfer completes and the field moves back.
+#[test]
+fn t8_set_evm_treasury_while_admin_transfer_is_pending() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let new_admin = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    let config_after_init = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+    let proposed = run_admin_ix(&mollusk, admin, config_after_init, ix_args::ProposeAdmin { new_admin });
+    let with_evm = set_evm_treasury(&mollusk, admin, proposed, EVM_TREASURY);
+    let cfg_with_evm = read_config(&with_evm);
+    assert_eq!(cfg_with_evm.pending_admin, Some(new_admin));
+    assert_eq!(cfg_with_evm.evm_treasury, EVM_TREASURY);
+    assert_eq!(cfg_with_evm._reserved, [0u8; 108]);
+
+    let cfg_accepted = read_config(&accept_admin(&mollusk, new_admin, with_evm));
+    assert_eq!(cfg_accepted.evm_treasury, EVM_TREASURY);
+    assert_eq!(cfg_accepted._reserved, [0u8; 108]);
+}
+
+/// A live account written before the upgrade decodes with the new struct: the
+/// old fields read back unchanged and the 20 bytes carved from `_reserved` read
+/// as "not set". Both `pending_admin` widths, since that shifts where the
+/// carved bytes sit.
+#[test]
+fn t9_old_layout_account_decodes_with_the_new_struct() {
+    let admin = Pubkey::new_unique();
+    let pending = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+    let (_, bump) = config_pda();
+
+    for pending_admin in [None, Some(pending)] {
+        let image = old_layout_image(admin, pending_admin, treasury, 250, 1_700_000_000);
+        let cfg = Config::try_deserialize(&mut &image[..]).expect("old image decodes");
+        assert_eq!(cfg.version, CURRENT_VERSION);
+        assert_eq!(cfg.bump, bump);
+        assert_eq!(cfg.admin, admin);
+        assert_eq!(cfg.pending_admin, pending_admin);
+        assert_eq!(cfg.treasury, treasury);
+        assert_eq!(cfg.fee_bps, 250);
+        assert!(!cfg.paused);
+        assert_eq!(cfg.last_updated, 1_700_000_000);
+        assert_eq!(cfg.evm_treasury, [0u8; 20]);
+        assert_eq!(cfg._reserved, [0u8; 108]);
+    }
+}
+
+/// And the upgraded program operates on such an account: no realloc, no
+/// migration step in between.
+#[test]
+fn t10_upgraded_program_writes_evm_treasury_into_an_old_layout_account() {
+    let mollusk = mollusk_with_program();
+    let payer = Pubkey::new_unique();
+    let admin = Pubkey::new_unique();
+    let pending = Pubkey::new_unique();
+    let treasury = Pubkey::new_unique();
+
+    for pending_admin in [None, Some(pending)] {
+        let mut config_account = initialize_for_test(&mollusk, payer, admin, treasury, 300);
+        config_account.data = old_layout_image(admin, pending_admin, treasury, 250, 1_700_000_000);
+        let before = read_config(&config_account);
+        let after = read_config(&set_evm_treasury(&mollusk, admin, config_account, EVM_TREASURY));
+        assert_eq!(after.evm_treasury, EVM_TREASURY);
+        assert_eq!(after.pending_admin, pending_admin);
+        assert_same_identity(&after, &before);
+        assert_eq!(after._reserved, [0u8; 108]);
+    }
+}

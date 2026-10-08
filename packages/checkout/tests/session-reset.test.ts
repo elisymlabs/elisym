@@ -1,8 +1,3 @@
-/**
- * Closing the modal resets it, never a double spend (commerce-modal-reset.md):
- * the view-only reset (D1), the load (D1c), the detached press (D3), the press
- * after a close (D5, D5c), the background follower (D5b), on Solana.
- */
 import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
 import {
   type LoadedOffer,
@@ -35,6 +30,12 @@ import {
 import { isTakingLong } from '../src/app/ui/UnansweredHint';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
+/**
+ * Closing the modal resets it, never a double spend (commerce-modal-reset.md):
+ * the view-only reset (D1), the load (D1c), the detached press (D3), the press
+ * after a close (D5, D5c), the background follower (D5b), on Solana.
+ */
+import { NO_FEE_TERMS } from './fee-fixtures';
 import { gate, holdRpc, internals, settle, spyStore } from './reset-harness';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
@@ -110,6 +111,7 @@ async function setup(options: { shop?: Shop; transform?: (offer: Ready) => Ready
     readClient: relays,
     clientFor: () => relays,
     rpcFor: () => chain.rpc,
+    feeTerms: NO_FEE_TERMS,
     wallets: () => [
       {
         name: 'Fake',

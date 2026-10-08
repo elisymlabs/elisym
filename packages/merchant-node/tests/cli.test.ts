@@ -97,6 +97,49 @@ function writePaidLedger(home: string): string {
   return order.key;
 }
 
+/** Rewrite the home's ledger as a node before fee support left it: version 3, no fee fields. */
+function writeV3Ledger(home: string): void {
+  const path = join(home, 'ledger.json');
+  const state = existsSync(path)
+    ? (JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>)
+    : { ...emptyLedger() };
+  delete state.treasuries;
+  delete state.unresolvedPayments;
+  writeFileSync(path, JSON.stringify({ ...state, version: 3 }));
+}
+
+function ledgerVersion(home: string): unknown {
+  const path = join(home, 'ledger.json');
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  try {
+    return (JSON.parse(readFileSync(path, 'utf8')) as { version: unknown }).version;
+  } catch {
+    // Read while it is being replaced: ask again.
+    return undefined;
+  }
+}
+
+/** An edited home whose inbox relay and fee config RPC both refuse at once (no network). */
+function feeHome(): string {
+  const home = scratchDir();
+  expect(cli(['init', '--home', home]).code).toBe(0);
+  editProduct(home);
+  const config = configTemplate('devnet');
+  config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+  config.inboxRelays = ['ws://localhost:9'];
+  writeFileSync(
+    join(home, 'config.json'),
+    JSON.stringify({
+      ...config,
+      rpcUrl: 'http://127.0.0.1:9',
+      feeConfigRpcUrl: 'http://127.0.0.1:9',
+    }),
+  );
+  return home;
+}
+
 /** Run the CLI without blocking this process, so a local receiver can answer it. */
 function cliAsync(args: string[], env: Record<string, string> = {}) {
   return new Promise<{ code: number | null; output: string }>((resolve) => {
@@ -326,13 +369,65 @@ describe('the merchant CLI', () => {
     expect(ledger.orders[key]?.webhook?.state).toBe('failed');
   });
 
+  it('orders, check, complete and webhook retry refuse a ledger from before fee support', () => {
+    const home = webhookHome();
+    const key = writePaidLedger(home);
+    writeV3Ledger(home);
+    const env = { ELISYM_MERCHANT_WEBHOOK_SECRET: WEBHOOK_SECRET };
+    for (const args of [
+      ['orders'],
+      ['check'],
+      ['complete', key, '--yes'],
+      ['webhook', 'retry', key],
+      ['webhook', 'resend', key],
+    ]) {
+      const run = cli([...args, '--home', home], env);
+      expect(`${args[0] ?? ''}: ${String(run.code)}`).toBe(`${args[0] ?? ''}: 1`);
+      expect(run.output).toMatch(/run `elisym-merchant setup` or `run` once after upgrading/);
+    }
+    expect(ledgerVersion(home)).toBe(3);
+  });
+
+  it('setup converts a ledger from before fee support, and a missing one, before any relay', () => {
+    for (const missing of [false, true]) {
+      const home = feeHome();
+      if (!missing) {
+        writeV3Ledger(home);
+      }
+      const run = cli(['setup', '--home', home]);
+      // The inbox relay refuses: setup stops at its first relay check...
+      expect(run.code).not.toBe(0);
+      expect(run.output).toMatch(/inbox relays do not take and serve/);
+      // ...with the home already converted, and no fee support declared.
+      expect(ledgerVersion(home)).toBe(4);
+      expect(run.output).toMatch(/WITHOUT protocol-fee support/);
+    }
+  });
+
+  it('run converts a ledger from before fee support before it reads any relay', async () => {
+    const home = feeHome();
+    writeV3Ledger(home);
+    const child = spawn('bun', [CLI, 'run', '--home', home], {
+      env: { PATH: process.env.PATH ?? '', HOME: tmpdir() },
+    });
+    try {
+      const deadline = Date.now() + 15_000;
+      while (ledgerVersion(home) !== 4 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(ledgerVersion(home)).toBe(4);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  });
+
   it('orders prints the customer reference, the webhook state and the event id', () => {
     const home = webhookHome();
     const key = writePaidLedger(home);
     const run = cli(['orders', '--home', home]);
     expect(run.code).toBe(0);
     expect(run.output).toContain(
-      `${key} product=my-product 1000000 ${PAID_SIG} ref=user-123 webhook=failed event=${webhookEventId(storePubkeyOf(home), key, PAID_SIG)}`,
+      `${key} product=my-product 1000000 net=1000000 fee=0 ${PAID_SIG} ref=user-123 webhook=failed event=${webhookEventId(storePubkeyOf(home), key, PAID_SIG)}`,
     );
   });
 

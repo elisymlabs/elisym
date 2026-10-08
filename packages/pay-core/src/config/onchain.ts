@@ -27,7 +27,22 @@ export interface ProtocolConfig {
    */
   paused: boolean;
   version: number;
+  /**
+   * The protocol-fee treasury on the EVM rails (Tempo), as lowercase `0x` hex,
+   * or `undefined` while the program holds none (all-zero bytes - also what a
+   * program deployed before the field existed reads as).
+   */
+  evmTreasury: string | undefined;
   source: 'onchain' | 'cache';
+}
+
+/** `0x` + lowercase hex of the 20 bytes, or `undefined` when every byte is zero. */
+function evmTreasuryFrom(bytes: ArrayLike<number>): string | undefined {
+  const values = Array.from(bytes);
+  if (values.every((byte) => byte === 0)) {
+    return undefined;
+  }
+  return `0x${values.map((byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
 interface CacheEntry {
@@ -82,6 +97,7 @@ export async function getProtocolConfig(
       pendingAdmin: data.pendingAdmin.__option === 'Some' ? data.pendingAdmin.value : null,
       paused: data.paused,
       version: data.version,
+      evmTreasury: evmTreasuryFrom(data.evmTreasury),
       source: 'onchain',
     };
     cache.set(key, { config, expires: Date.now() + ttl });

@@ -345,6 +345,68 @@ describe('composeTempoPaymentRequest', () => {
   });
 });
 
+describe('composeTempoPaymentRequest with a fee AMOUNT', () => {
+  const base = {
+    chain: MAINNET,
+    asset: USDCE_TEMPO_MAINNET,
+    recipient: RECIPIENT,
+    amount: 49_000_000n,
+    treasury: TREASURY,
+    createdAt: NOW,
+    memo: MEMO,
+  };
+  // Past the types, the way a JavaScript caller can reach it.
+  const composeUntyped = composeTempoPaymentRequest as (options: unknown) => unknown;
+
+  it('writes the amount it is given, never one recomputed from a rate', () => {
+    // 7 is no ceil(49_000_000 * bps / 10_000) for any whole bps.
+    const request = composeTempoPaymentRequest({ ...base, feeAmount: 7n });
+    expect(request).toMatchObject({ amount: '49000000', fee_address: TREASURY, fee_amount: '7' });
+    const paid = buildTempoPaymentCalls(request, PAYER);
+    expect(paid.provider.amount).toBe(49_000_000n - 7n);
+  });
+
+  it('takes a fee of one subunit below the amount, and refuses the amount itself or more', () => {
+    expect(composeTempoPaymentRequest({ ...base, feeAmount: 48_999_999n }).fee_amount).toBe(
+      '48999999',
+    );
+    for (const feeAmount of [49_000_000n, 49_000_001n]) {
+      expect(() => composeTempoPaymentRequest({ ...base, feeAmount })).toThrow(/below the amount/);
+    }
+    expect(() => composeTempoPaymentRequest({ ...base, feeAmount: -1n })).toThrow(
+      /below the amount/,
+    );
+    expect(() => composeUntyped({ ...base, feeAmount: 7 })).toThrow(/below the amount/);
+  });
+
+  it('builds no fee leg at an amount of 0, whatever the treasury, the payee or the price', () => {
+    // Commerce always passes the amount, 0 when there is no leg: a payout that
+    // IS the treasury, a payer that is, and a 1-subunit price must never throw.
+    for (const treasury of [RECIPIENT, ZERO_ADDRESS, 'garbage']) {
+      const request = composeTempoPaymentRequest({ ...base, treasury, feeAmount: 0n });
+      expect(request.fee_address).toBeUndefined();
+      expect(request.fee_amount).toBeUndefined();
+    }
+    expect(composeTempoPaymentRequest({ ...base, amount: 1n, feeAmount: 0n }).amount).toBe('1');
+  });
+
+  it('checks the treasury of a positive fee amount as it checks one from a rate', () => {
+    expect(() =>
+      composeTempoPaymentRequest({ ...base, treasury: RECIPIENT, feeAmount: 5n }),
+    ).toThrow(/self-transfer/);
+    for (const treasury of [ZERO_ADDRESS, VIRTUAL, USDCE, 'garbage']) {
+      expect(() => composeTempoPaymentRequest({ ...base, treasury, feeAmount: 5n })).toThrow(
+        /treasury/,
+      );
+    }
+  });
+
+  it('takes the fee one way only: a rate or an amount, never both, never neither', () => {
+    expect(() => composeUntyped({ ...base, feeBps: 0, feeAmount: 0n })).toThrow(/exactly one/);
+    expect(() => composeUntyped({ ...base })).toThrow(/exactly one/);
+  });
+});
+
 describe('encodeTransferWithMemo', () => {
   it('holds the selector of transferWithMemo(address,uint256,bytes32)', () => {
     // Read off the mainnet batch above, where the chain executed it.

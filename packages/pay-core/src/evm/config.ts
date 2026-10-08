@@ -5,6 +5,7 @@
  * the only source of truth, and an unreadable config is a refusal, not a zero fee.
  */
 
+import { MAX_FEE_BPS } from '../constants';
 import type { ChainConfig } from '../payment/chains';
 import { isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
@@ -16,8 +17,11 @@ import { readAddressWord, readQuantity, readUint256, readWords } from './rpc-rea
 const CACHE_TTL_MS = 60_000;
 /** `config()` - both values in one call, so they come from one block. */
 const CONFIG_SELECTOR = '0x79502c55';
-/** The contract's own cap (`MAX_FEE_BPS`). A larger answer is not this contract. */
-export const MAX_EVM_FEE_BPS = 1000;
+/**
+ * The contract's own cap (`MAX_FEE_BPS`). A larger answer is not this contract.
+ * An alias of the rail-neutral `MAX_FEE_BPS`, kept for the names already published.
+ */
+export const MAX_EVM_FEE_BPS = MAX_FEE_BPS;
 
 /** The cached object is never handed out, and it says how old it is. */
 function snapshotOf(config: EvmProtocolConfig, cachedAt: number): EvmProtocolConfig {
@@ -149,6 +153,11 @@ export async function assertEvmChain(client: Eip1193Client, chain: ChainConfig):
 }
 
 /**
+ * @deprecated The protocol fee for every chain now comes from the Solana
+ * `elisym-config` program (`readFeeTerms` / `getProtocolConfig`, which carry
+ * the EVM treasury); no `ElisymConfig` contract is deployed on Tempo mainnet.
+ * Kept for the releases that still read it; nothing in this package calls it.
+ *
  * Read the config, cached for 60 s per chain. On an rpc FAILURE the last good
  * snapshot is served (stale-while-error, as on Solana); with nothing cached it
  * throws and the caller refuses. A wrong chain id is not a failure of that

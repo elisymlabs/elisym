@@ -23,6 +23,12 @@ export interface MerchantConfig extends StoreConfig {
    * do). Required only when a Solana payout is configured.
    */
   rpcUrl?: string;
+  /**
+   * A Solana RPC of the network to read the elisym protocol config from (the
+   * fee treasuries, for both rails). Default: `rpcUrl`, else the network's
+   * public endpoint. It switches on no Solana payments.
+   */
+  feeConfigRpcUrl?: string;
   /** Present when the store takes Tempo payouts: the network, and a server-side RPC. */
   tempo?: { network: TempoNetwork; rpcUrl?: string };
   /** Where the node tells the merchant's backend about each payment it verified. */
@@ -97,6 +103,7 @@ const configSchema = z
       .optional(),
     network: z.enum(['mainnet', 'devnet']),
     rpcUrl: urlWith('https:', 'http:').optional(),
+    feeConfigRpcUrl: urlWith('https:', 'http:').optional(),
     tempo: z
       .object({
         network: z.enum(['mainnet', 'moderato']),
@@ -341,4 +348,12 @@ export function priceProblems(
     }
   }
   return problems;
+}
+
+/**
+ * Whether the node takes Solana payments: only `rpcUrl` switches them on (and
+ * the Solana catch-up), never `feeConfigRpcUrl`.
+ */
+export function hasSolanaRail(config: Pick<MerchantConfig, 'rpcUrl'>): boolean {
+  return config.rpcUrl !== undefined;
 }

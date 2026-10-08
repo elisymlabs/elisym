@@ -11,6 +11,7 @@ export * from './adminPendingCancelled';
 export * from './adminProposed';
 export * from './assetStatsCreated';
 export * from './configInitialized';
+export * from './evmTreasuryUpdated';
 export * from './feeUpdated';
 export * from './statsIncremented';
 export * from './statsIncrementedV2';

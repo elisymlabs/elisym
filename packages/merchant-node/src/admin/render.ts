@@ -131,6 +131,14 @@ function rowElement(doc: Document, row: OrderRow): HTMLTableRowElement {
   lines(
     doc,
     creditedCell,
+    row.credits
+      .filter((credit) => credit.fee !== '0')
+      .map((credit) => `of which elisym fee ${amountText({ ...credit, amount: credit.fee })}`),
+    'note',
+  );
+  lines(
+    doc,
+    creditedCell,
     row.refunds.map((refund) => `refund ${amountText(refund)}`),
     'note',
   );

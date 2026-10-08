@@ -72,17 +72,39 @@ The protocol fee rate and treasury address live in the `elisym-config` Solana pr
 import { getProtocolConfig, clearProtocolConfigCache, getProtocolProgramId } from '@elisym/sdk';
 ```
 
+The same program is the fee source for **every** chain. Besides `treasury` (Solana) it holds `evmTreasury`, the treasury on the EVM rails - lowercase `0x` hex, or `undefined` while none is set. Tempo pays into it at the Solana rate: Tempo mainnet reads the mainnet config, Moderato the devnet one (`solanaConfigNetworkFor(caip2)` maps a chain to its config network and throws for any other chain). `MAX_FEE_BPS` (1000, 10%) is the cap on every rail; `MAX_EVM_FEE_BPS` is the same number under its older name.
+
+```ts twoslash
+import {
+  FeeConfigError,
+  feeAmountFor,
+  protocolFeeFor,
+  readFeeTerms,
+  solanaConfigNetworkFor,
+  MAX_FEE_BPS,
+} from '@elisym/sdk';
+```
+
+| Export                                          | Purpose                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `readFeeTerms(rpc, network, rail)`              | The `{ feeBps, treasury }` a commerce payment uses, read fresh. It checks the RPC's genesis hash against `network` FIRST and reads nothing from another cluster (`wrong_cluster`), then reads the config with `forceRefresh` and refuses a snapshot served from cache (`unavailable`). `rail` is `'solana'` or `'tempo'`. |
+| `protocolFeeFor(config, rail)`                  | The same, from a config you already hold. At a rate of 0 the treasury is `''`; on Tempo a positive rate needs an `evmTreasury` (`no_evm_treasury`) that a payment can reach (`bad_config`).                                                                                                                               |
+| `feeAmountFor(price, terms, { payout, payer })` | The fee in subunits, `ceil(price * feeBps / 10000)`. `0n` - no fee leg - at a rate of 0, when the treasury is the payout or the payer (EVM compared case-insensitively, base58 exactly), or when the fee would take the whole price.                                                                                      |
+| `FeeConfigError`                                | What the three throw: `code` is `unavailable` (ask again), `wrong_cluster`, `no_evm_treasury` or `bad_config` (configuration problems; asking again does not help).                                                                                                                                                       |
+
+A Tempo provider quoting a job passes these terms to `createTempoPaymentRequest` as `feeTerms` (`readFeeTerms(rpc, network, 'tempo')`); it no longer reads an EVM config contract. `getEvmProtocolConfig` stays exported but is deprecated - no config contract is deployed on Tempo mainnet. `composeTempoPaymentRequest` takes the fee either as a rate (`feeBps`) or as an amount you already computed (`feeAmount`, `0 <= feeAmount < amount`), never both.
+
 ## Building and validating payment
 
-| Export                                | Purpose                                                            |
-| ------------------------------------- | ----------------------------------------------------------------- |
-| `parsePaymentRequest`                 | Parse and validate a v1 (Solana) `payment-required` payload.     |
-| `parseAnyPaymentRequest`              | Decide the version first: no `v` is v1, `v: 2` is the EVM shape, anything else is refused. One `maxAmountSubunits` cap applies to both. |
-| `calculateProtocolFee`                | Compute the fee from amount + on-chain rate (bps).               |
-| `calculateProtocolFeeSubunits`        | The same rule over `bigint` subunits, for amounts that travel as strings. |
-| `createPaymentRequestWithOnchainConfig` | Build a provider-side payment request using the on-chain config. |
-| `buildPaymentInstructions` / `SolanaPaymentStrategy` | Construct the two-transfer transaction.            |
-| `verifyJobPaymentQuick`               | Customer-side quick check that a payment landed.                 |
+| Export                                               | Purpose                                                                                                                                 |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `parsePaymentRequest`                                | Parse and validate a v1 (Solana) `payment-required` payload.                                                                            |
+| `parseAnyPaymentRequest`                             | Decide the version first: no `v` is v1, `v: 2` is the EVM shape, anything else is refused. One `maxAmountSubunits` cap applies to both. |
+| `calculateProtocolFee`                               | Compute the fee from amount + on-chain rate (bps).                                                                                      |
+| `calculateProtocolFeeSubunits`                       | The same rule over `bigint` subunits, for amounts that travel as strings.                                                               |
+| `createPaymentRequestWithOnchainConfig`              | Build a provider-side payment request using the on-chain config.                                                                        |
+| `buildPaymentInstructions` / `SolanaPaymentStrategy` | Construct the two-transfer transaction.                                                                                                 |
+| `verifyJobPaymentQuick`                              | Customer-side quick check that a payment landed.                                                                                        |
 
 These APIs are network-explicit: request creation stamps the provider's `network` into the request, `SolanaPaymentStrategy.validatePaymentRequest` takes the customer's network and rejects a cross-network request before any money check, and `buildPaymentInstructions` requires an explicit `programId` (no silent devnet default - the program id is cluster-ambiguous by design).
 
@@ -149,45 +171,71 @@ The file-backed store refuses to start on an index it cannot read - unparseable,
 
 In a direct payment the payer pays a payee's address without a quote from the payee - the commerce checkout paying a merchant's signed payout address. The reference is not drawn at random: both sides derive it from the order (`deriveOrderPaymentReference` in `@elisym/commerce`), so the payee can tie a transfer to an order without having issued anything.
 
-| Export | Purpose |
-| --- | --- |
-| `composeSolanaPaymentRequest` | A v1 request with the given reference and no fee leg. `amount` is a `bigint`; `createdAt` is epoch seconds. |
-| `boundTransferAmount` | What a transaction's instructions pay the payee under ONE reference (below). |
-| `directInstructionsFromCompiledMessage` / `directInstructionsFromRpcTransaction` | Read the instructions of a message a wallet signed, or of a landed transaction from `getTransaction` with `encoding: 'json'`, into one shape. |
-| `listReferenceSignatures` | Every signature on a reference, paged with `before` until one is older than a floor. `complete: false` means the page cap cut it short; a node error throws. |
-| `verifyDirectSolanaPayment` | Whether one landed transaction pays the request: no error, bound amount at least the price, and the payee's balance rose as much. |
+| Export                                                                           | Purpose                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `composeSolanaPaymentRequest`                                                    | A v1 request with the given reference. `amount` is the TOTAL, a `bigint`; `createdAt` is epoch seconds. `fee: { treasury, amount }` adds a fee leg (`fee_address` / `fee_amount`) out of that total; a fee of 0 (or none) leaves the request byte-identical to a fee-less one. It throws for a treasury that is the payee, the reference, the tag, the mint or a program, and for a fee of the whole amount or more. |
+| `boundTransferAmount`                                                            | What a transaction's instructions pay the payee under ONE reference (below).                                                                                                                                                                                                                                                                                                                                         |
+| `boundTreasuryLegs`                                                              | The same binding for a list of candidate treasuries: a `Map` from each to what it received, bound, in the asset under the reference.                                                                                                                                                                                                                                                                                 |
+| `directInstructionsFromCompiledMessage` / `directInstructionsFromRpcTransaction` | Read the instructions of a message a wallet signed, or of a landed transaction from `getTransaction` with `encoding: 'json'`, into one shape.                                                                                                                                                                                                                                                                        |
+| `listReferenceSignatures`                                                        | Every signature on a reference, paged with `before` until one is older than a floor. `complete: false` means the page cap cut it short; a node error throws.                                                                                                                                                                                                                                                         |
+| `verifyDirectSolanaPayment`                                                      | Whether one landed transaction pays the request: no error, bound amount at least the price - or, for a request with a fee leg, at least `amount - fee_amount` to the payee AND at least `fee_amount` to the treasury - and each balance rose as much.                                                                                                                                                                |
+| `readDirectSolanaTransaction` / `judgeDirectSolanaPayment`                       | The same in two halves: one `getTransaction`, then a judgement that reads no chain. Read a transaction once and judge it against several requests.                                                                                                                                                                                                                                                                   |
 
-`verifyPayment` is not enough here. It checks that the reference appears anywhere in the transaction and reads the recipient's balance change over the whole of it, so one transfer carrying the references of two orders - at two stores of one owner, each with its own claim ledger - would satisfy both. A direct payment is bound at the **instruction** level instead: only a top-level transfer of the asset's program (SPL `TransferChecked` with the asset's mint and decimals into the payee's ASSOCIATED token account, or a System `Transfer` of lamports) FROM another account, whose accounts are the transfer's own followed by exactly two read-only, non-signer accounts - this reference, then the protocol tag, the way `buildPaymentInstructions` attaches them - counts, and only those instructions' own amounts are summed. A self-transfer never counts (it moves nothing, and SPL Token lets a delegate repeat it for free), and the payee's balance must rise by at least everything the transaction's top-level transfers of the bindable kind move into it, so the same money cannot back two orders. A payer that cannot sign such a top-level transfer itself - a multisig authority, whose signer accounts follow the transfer's own, or a smart wallet that transfers from inside its program - does not bind, and its payment is refused as `not_bound`.
+`verifyPayment` is not enough here. It checks that the reference appears anywhere in the transaction and reads the recipient's balance change over the whole of it, so one transfer carrying the references of two orders - at two stores of one owner, each with its own claim ledger - would satisfy both. A direct payment is bound at the **instruction** level instead: only a top-level transfer of the asset's program (SPL `TransferChecked` with the asset's mint and decimals into the payee's ASSOCIATED token account, or a System `Transfer` of lamports) FROM another account, whose accounts are the transfer's own followed by exactly two read-only, non-signer accounts - this reference, then the protocol tag, the way `buildPaymentInstructions` attaches them - counts, and only those instructions' own amounts are summed. A fee leg is bound the same way to the treasury: pass `bindFeeLeg: true` to `buildPaymentInstructions` and the fee transfer carries the same two markers (agent-job payments leave it off, and their transactions keep their shape). A self-transfer never counts (it moves nothing, and SPL Token lets a delegate repeat it for free), and the payee's balance must rise by at least everything the transaction's top-level transfers of the bindable kind move into it, so the same money cannot back two orders. A payer that cannot sign such a top-level transfer itself - a multisig authority, whose signer accounts follow the transfer's own, or a smart wallet that transfers from inside its program - does not bind, and its payment is refused as `not_bound`.
 
 ```ts
 import {
   boundTransferAmount,
+  boundTreasuryLegs,
   composeSolanaPaymentRequest,
   directInstructionsFromCompiledMessage,
   verifyDirectSolanaPayment,
 } from '@elisym/sdk';
 import { getCompiledTransactionMessageDecoder, getTransactionDecoder } from '@solana/kit';
 
-// Payer: compose, build with buildPaymentInstructions, let the wallet sign,
-// then check the returned message before broadcasting it.
-const request = composeSolanaPaymentRequest({ recipient, amount, asset, network, reference, createdAt });
+// Payer: compose (with `fee` when a protocol fee applies), build with
+// buildPaymentInstructions (bindFeeLeg: true), let the wallet sign, then check
+// the returned message before broadcasting it.
+const request = composeSolanaPaymentRequest({
+  recipient,
+  amount,
+  asset,
+  network,
+  reference,
+  createdAt,
+  fee,
+});
 const signed = getTransactionDecoder().decode(signedTransactionBytes);
 const signedMessage = getCompiledTransactionMessageDecoder().decode(signed.messageBytes);
+const instructions = directInstructionsFromCompiledMessage(signedMessage);
 // Broadcast only if the lifetime is exactly the blockhash you set (no swap, no
-// durable nonce) and the binding below reaches the price.
+// durable nonce) and the bindings below reach what the request asks for.
 const sameLifetime = signedMessage.lifetimeToken === latestBlockhash.blockhash;
-const paid = await boundTransferAmount(directInstructionsFromCompiledMessage(signedMessage), {
-  reference,
-  recipient,
-  asset,
-});
-const safeToBroadcast = sameLifetime && paid >= BigInt(request.amount);
+const paid = await boundTransferAmount(instructions, { reference, recipient, asset });
+const total = BigInt(request.amount);
+let legsBound: boolean;
+if (request.fee_address !== undefined && request.fee_amount !== undefined) {
+  // A fee request: `amount - fee_amount` to the payee AND `fee_amount` to the treasury.
+  const feeAmount = BigInt(request.fee_amount);
+  const treasuryLegs = await boundTreasuryLegs(instructions, {
+    reference,
+    asset,
+    treasuries: [request.fee_address],
+  });
+  const toTreasury = treasuryLegs.get(request.fee_address) ?? 0n;
+  legsBound = paid >= total - feeAmount && toTreasury >= feeAmount;
+} else {
+  legsBound = paid >= total;
+}
+const safeToBroadcast = sameLifetime && legsBound;
 
 // Payee: verify a transaction the payer reported, then claim its signature once.
 const result = await verifyDirectSolanaPayment(rpc, request, signature);
 ```
 
-A payee still claims each signature once, and refuses any reference it cannot derive from the order itself. `verifyDirectSolanaPayment` judges the transaction only; whether it came in time for the order (the price and payout it was due against) is the caller's check, from the `blockTime` it returns - a `null` block time means ask again, never "on time". The RPC you pass must be on the request's own network. Of the refusals, `rpc_error`, `unreadable` and `not_found` mean "ask again" (a node failed, a page could not be read, the transaction has not landed yet); `bad_request` is the caller's; `bad_signature`, `failed`, `not_bound`, `underpaid` and `balance_mismatch` are final for that signature.
+A payee still claims each signature once, and refuses any reference it cannot derive from the order itself. `verifyDirectSolanaPayment` judges the transaction only; whether it came in time for the order (the price and payout it was due against) is the caller's check, from the `blockTime` it returns - a `null` block time means ask again, never "on time". The RPC you pass must be on the request's own network. Of the refusals, `rpc_error`, `unreadable` and `not_found` mean "ask again" (a node failed, a page could not be read, the transaction has not landed yet); `bad_request` is the caller's - including a request naming only one of `fee_address` / `fee_amount`, a treasury that is the payee, or a fee of the whole amount; `bad_signature`, `failed`, `not_bound`, `underpaid` and `balance_mismatch` are final for that signature.
+
+The checks run in a fixed order, and they mirror what a merchant node credits. Nothing bound to the payee is `not_bound`. A payee bound to the **whole** amount gets the fee-less verdict whatever the request says about a fee - a payer that skipped the fee leg still paid the price. Then the split the request asks for. A payee bound to less than the amount but at least the node's floor - the amount less a fee at `MAX_FEE_BPS` - is `split_unresolved`, **for a fee-less request too**: the node may still credit it as a split to a treasury it knows, so it is not final while the merchant's catch-up window is open, and becomes final once that window is over. Below the floor it is `underpaid`. A real shortfall in the treasury's balance is `balance_mismatch`; a treasury balance page that cannot be read is `unreadable`. Every verdict reached after the instructions were read carries `payeeBound`, `fee` (what the treasury got, when the request asks for a fee) and `blockTime`.
 
 ## Estimating cost
 

@@ -502,14 +502,29 @@ describe('verifyDirectSolanaPayment', () => {
       { pre: '0', post: PRICE.toString() },
       { err: { InstructionError: [0, 'x'] } },
     );
-    expect(await verifyDirectSolanaPayment(rpcReturning(failed), request, SIGNATURE)).toEqual({
-      verified: false,
-      reason: 'failed',
-    });
-    expect(await verifyDirectSolanaPayment(rpcReturning(null), request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(failed), request, SIGNATURE)).toMatchObject(
+      {
+        verified: false,
+        reason: 'failed',
+      },
+    );
+    expect(await verifyDirectSolanaPayment(rpcReturning(null), request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'not_found',
     });
+    // Below the merchant node's floor (the price less a fee at the 10% cap):
+    // nothing the node can still credit, so final - and the verdict says how
+    // much WAS bound.
+    const twiceTheBound = { ...request, amount: request.amount * 2 };
+    expect(
+      await verifyDirectSolanaPayment(
+        rpcReturning(rpcView(compiled, { pre: '0', post: PRICE.toString() })),
+        twiceTheBound,
+        SIGNATURE,
+      ),
+    ).toEqual({ verified: false, reason: 'underpaid', payeeBound: PRICE, blockTime: NOW + 10 });
+    // One subunit short is within the floor: the node may credit it as a
+    // split, so it is not `underpaid` (see the split tests below).
     const dearer = { ...request, amount: request.amount + 1 };
     expect(
       await verifyDirectSolanaPayment(
@@ -517,9 +532,11 @@ describe('verifyDirectSolanaPayment', () => {
         dearer,
         SIGNATURE,
       ),
-    ).toEqual({ verified: false, reason: 'underpaid' });
+    ).toMatchObject({ verified: false, reason: 'split_unresolved', payeeBound: PRICE });
     const unbalanced = rpcView(compiled, { pre: '0', post: (PRICE - 1n).toString() });
-    expect(await verifyDirectSolanaPayment(rpcReturning(unbalanced), request, SIGNATURE)).toEqual({
+    expect(
+      await verifyDirectSolanaPayment(rpcReturning(unbalanced), request, SIGNATURE),
+    ).toMatchObject({
       verified: false,
       reason: 'balance_mismatch',
     });
@@ -530,7 +547,7 @@ describe('verifyDirectSolanaPayment', () => {
     const compiled = await compiledFor(request);
     const other = { ...request, reference: OTHER_REFERENCE };
     const view = rpcView(compiled, { pre: '0', post: PRICE.toString() });
-    expect(await verifyDirectSolanaPayment(rpcReturning(view), other, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(view), other, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'not_bound',
     });
@@ -554,7 +571,7 @@ describe('verifyDirectSolanaPayment', () => {
     for (const amount of [0, -1, 1.5]) {
       expect(
         await verifyDirectSolanaPayment(rpcReturning(view), { ...request, amount }, SIGNATURE),
-      ).toEqual({
+      ).toMatchObject({
         verified: false,
         reason: 'bad_request',
       });
@@ -572,7 +589,7 @@ describe('verifyDirectSolanaPayment', () => {
         },
       }),
     } as unknown as Rpc<SolanaRpcApi>;
-    expect(await verifyDirectSolanaPayment(failing, request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(failing, request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'rpc_error',
     });
@@ -585,7 +602,7 @@ describe('verifyDirectSolanaPayment', () => {
     meta.preTokenBalances = [
       { accountIndex: 1, mint: USDC_SOLANA_DEVNET.mint, uiTokenAmount: { amount: '5' } },
     ];
-    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'unreadable',
     });
@@ -599,14 +616,14 @@ describe('verifyDirectSolanaPayment', () => {
         uiTokenAmount: { amount: '1' },
       },
     ];
-    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'unreadable',
     });
     // A node that records no token balances at all: ask again, not a final mismatch.
     meta.preTokenBalances = [];
     meta.postTokenBalances = [];
-    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'unreadable',
     });
@@ -627,7 +644,7 @@ describe('verifyDirectSolanaPayment', () => {
     });
     const short = keys.map((_key, keyIndex) => (keyIndex === index ? 14_000_000n : 10_000_000n));
     Object.assign(view.meta as object, { postBalances: short });
-    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'balance_mismatch',
     });
@@ -697,14 +714,14 @@ describe('verifyDirectSolanaPayment', () => {
     ).toBe(PRICE);
     // ...but 2P was transferred in and only P stayed: neither order is paid by this transaction.
     for (const order of [request, other]) {
-      expect(await verifyDirectSolanaPayment(rpcReturning(view), order, SIGNATURE)).toEqual({
+      expect(await verifyDirectSolanaPayment(rpcReturning(view), order, SIGNATURE)).toMatchObject({
         verified: false,
         reason: 'balance_mismatch',
       });
     }
   });
 
-  it('answers bad_request for a request no transfer can be bound to, or one with a fee leg', async () => {
+  it('answers bad_request for a request no transfer can be bound to, or a half fee leg', async () => {
     const request = requestFor();
     const view = rpcView(await compiledFor(request), { pre: '0', post: PRICE.toString() });
     for (const reference of [
@@ -717,15 +734,24 @@ describe('verifyDirectSolanaPayment', () => {
     ]) {
       expect(
         await verifyDirectSolanaPayment(rpcReturning(view), { ...request, reference }, SIGNATURE),
+      ).toMatchObject({ verified: false, reason: 'bad_request' });
+    }
+    // A fee leg is both fields, the amount positive; one alone is no request a
+    // composer writes.
+    for (const half of [
+      { fee_address: PAYER },
+      { fee_amount: 10 },
+      { fee_address: PAYER, fee_amount: 0 },
+      { fee_address: '1'.repeat(40), fee_amount: 10 },
+    ]) {
+      expect(
+        await verifyDirectSolanaPayment(rpcReturning(view), { ...request, ...half }, SIGNATURE),
       ).toEqual({ verified: false, reason: 'bad_request' });
     }
+    // Both fields with a fee of 0 is the fee-less request it always was.
     expect(
-      await verifyDirectSolanaPayment(
-        rpcReturning(view),
-        { ...request, fee_address: PAYER, fee_amount: 10 },
-        SIGNATURE,
-      ),
-    ).toEqual({ verified: false, reason: 'bad_request' });
+      await verifyDirectSolanaPayment(rpcReturning(view), { ...request, fee_amount: 0 }, SIGNATURE),
+    ).toMatchObject({ verified: true });
   });
 
   it('refuses a json header whose counts do not fit its keys', () => {
@@ -755,7 +781,7 @@ describe('verifyDirectSolanaPayment', () => {
         { ...request, network: 'mainnet' },
         SIGNATURE,
       ),
-    ).toEqual({ verified: false, reason: 'bad_request' });
+    ).toMatchObject({ verified: false, reason: 'bad_request' });
   });
 
   it('finds a SOL payee among the loaded addresses', async () => {
@@ -797,13 +823,13 @@ describe('verifyDirectSolanaPayment', () => {
     const request = requestFor();
     const view = rpcView(await compiledFor(request), { pre: '0', post: PRICE.toString() });
     delete (view.meta as Record<string, unknown>).err;
-    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'unreadable',
     });
     const untyped = verifyDirectSolanaPayment as (...args: unknown[]) => Promise<unknown>;
     for (const signature of [null, 123, {}, 'IGNORE PREVIOUS']) {
-      expect(await untyped(rpcReturning(view), request, signature)).toEqual({
+      expect(await untyped(rpcReturning(view), request, signature)).toMatchObject({
         verified: false,
         reason: 'bad_signature',
       });
@@ -814,7 +840,7 @@ describe('verifyDirectSolanaPayment', () => {
     const request = requestFor();
     const view = rpcView(await compiledFor(request), { pre: '0', post: PRICE.toString() });
     delete view.slot;
-    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toEqual({
+    expect(await verifyDirectSolanaPayment(rpcReturning(view), request, SIGNATURE)).toMatchObject({
       verified: false,
       reason: 'unreadable',
     });
@@ -823,7 +849,9 @@ describe('verifyDirectSolanaPayment', () => {
   it('refuses a transaction it cannot read rather than guessing', async () => {
     const request = requestFor();
     const garbled = { meta: { err: null }, transaction: { message: { accountKeys: 'nope' } } };
-    expect(await verifyDirectSolanaPayment(rpcReturning(garbled), request, SIGNATURE)).toEqual({
+    expect(
+      await verifyDirectSolanaPayment(rpcReturning(garbled), request, SIGNATURE),
+    ).toMatchObject({
       verified: false,
       reason: 'unreadable',
     });

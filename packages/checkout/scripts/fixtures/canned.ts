@@ -81,7 +81,8 @@ export function cannedOffer(options: CannedOfferOptions = {}): ReadyOffer {
       ...(domain === undefined ? {} : { domain }),
       storePubkey,
       ownerPubkey: 'b'.repeat(64),
-      profile: options.name === undefined ? { name: 'Demo Shop' } : { name: options.name },
+      profile: { name: options.name ?? 'Demo Shop', feeSupport: false },
+      feeSupport: false,
       product: {
         storePubkey,
         d: 'course-101',

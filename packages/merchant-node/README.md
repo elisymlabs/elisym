@@ -54,21 +54,21 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 
 ## Commands
 
-| Command                            | What it does                                                                                                                                                                                                                                           |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `init`                             | Creates the home: a `config.json` template (never overwritten), an example product in `products/my-product/PRODUCT.md`, and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                   |
-| `setup`                            | Checks the inbox relays, publishes the store and the listing of every new or changed product, and records the terms it offers                                                                                                                          |
-| `run`                              | Takes orders, verifies payments and completes the orders                                                                                                                                                                                               |
-| `orders`                           | Lists the orders: open, paid, completed, the product, the buyer's email, the customer reference, and for a paid order its webhook state and event id                                                                                                   |
-| `check`                            | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                        |
-| `complete`                         | Answers an unpaid order by hand: closes it and sends `completed` (node stopped)                                                                                                                                                                        |
-| `refund`                           | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
-| `encrypt-keys`                     | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
-| `store-key`                        | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
-| `admin`                            | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                        |
-| `webhook test`                     | Sends a signed `test` event to the configured webhook; fails unless the receiver answers 2xx (see [Credit an account](#credit-an-account-the-webhook))                                                                                                 |
-| `webhook retry <buyer>:<orderId>`  | Sends a pending or failed `order.paid` webhook again now, with a fresh 7-day deadline (node stopped)                                                                                                                                                   |
-| `webhook resend <buyer>:<orderId>` | Sends the `order.paid` webhook of any paid order again, also one paid before the webhook was configured (node stopped)                                                                                                                                 |
+| Command                            | What it does                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `init`                             | Creates the home: a `config.json` template (never overwritten), an example product in `products/my-product/PRODUCT.md`, and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                                                                                                                                     |
+| `setup`                            | Checks the inbox relays, publishes the store and the listing of every new or changed product, and records the terms it offers                                                                                                                                                                                                                                            |
+| `run`                              | Takes orders, verifies payments and completes the orders                                                                                                                                                                                                                                                                                                                 |
+| `orders`                           | Lists the orders: open, paid, completed, the product, the buyer's email, the customer reference, for a paid order the total, `net=` (what reached your wallet), `fee=` (the protocol fee), its webhook state and event id, and `feeUnresolved=` for an open order holding a payment no known elisym treasury got the rest of (see [The protocol fee](#the-protocol-fee)) |
+| `check`                            | Checks the inbox relays, the owner's payout list and the domain                                                                                                                                                                                                                                                                                                          |
+| `complete`                         | Answers an unpaid order by hand: closes it and sends `completed` (node stopped)                                                                                                                                                                                                                                                                                          |
+| `refund`                           | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset                                                                                                                   |
+| `encrypt-keys`                     | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                                                                                                                                         |
+| `store-key`                        | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                                                                                                                                            |
+| `admin`                            | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                                                                                                                                          |
+| `webhook test`                     | Sends a signed `test` event to the configured webhook; fails unless the receiver answers 2xx (see [Credit an account](#credit-an-account-the-webhook))                                                                                                                                                                                                                   |
+| `webhook retry <buyer>:<orderId>`  | Sends a pending or failed `order.paid` webhook again now, with a fresh 7-day deadline (node stopped)                                                                                                                                                                                                                                                                     |
+| `webhook resend <buyer>:<orderId>` | Sends the `order.paid` webhook of any paid order again, also one paid before the webhook was configured (node stopped)                                                                                                                                                                                                                                                   |
 
 Every command takes `--home <dir>`. Without it, the home is `$ELISYM_MERCHANT_HOME`, else
 `~/.elisym-merchant`.
@@ -87,6 +87,19 @@ prints one line per product: on sale or stopped, published, unchanged or failed,
 A home made by merchant-node 0.7 or earlier (a `config.json` with `product`, or an older ledger)
 is not upgraded: every command refuses it. Create a new home with `init`.
 
+**Upgrading to protocol-fee support.** After upgrading from 0.9.1 or earlier, run `setup` once
+(then `run`): it converts the ledger to version 4 and saves it before it contacts any relay,
+then publishes the store profile declaring that the node accepts fee-split payments (see
+[The protocol fee](#the-protocol-fee)). `run` converts the ledger too (a service that restarts
+on the new release keeps running), but only `setup` declares fee support; until it does, `run`
+warns that buyers refuse the store while the protocol fee is above 0. Every other command
+(`orders`, `check`, `complete`, `refund`, `webhook retry` / `resend`) refuses a ledger that
+`setup` or `run` has not converted yet, and says so. There is no way back: versions 0.9.1 and
+earlier refuse a version 4 ledger, and a fix ships forward as a new release. Once a fee-aware
+`setup` has run, open any copy of the home - a backup taken before the upgrade included - only
+with a fee-aware version: a restored older copy under an older node would run under a profile
+that declares fee support, and that node refuses the split payments buyers then send.
+
 The home's lock (`run.lock`) keeps two processes from writing the ledger at once, wherever they
 run (containers and hosts sharing the home included). Its holder refreshes it every 20 seconds.
 A node that stopped without releasing it leaves it behind, and the lock frees itself 90 seconds
@@ -95,16 +108,17 @@ it starts.
 
 ## The config
 
-| Field         | Meaning                                                                                                                                         |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`        | The store's name, shown in the checkout                                                                                                         |
-| `nip05`       | Optional. `_@your-domain.com` for level A (see below)                                                                                           |
-| `network`     | `devnet` or `mainnet`                                                                                                                           |
-| `rpcUrl`      | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                   |
-| `tempo`       | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                             |
-| `inboxRelays` | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                 |
-| `payouts`     | One `{ "caip19": ..., "address": ... }` per coin, for every product, see [Tempo payouts](#tempo-payouts)                                        |
-| `webhook`     | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook) |
+| Field             | Meaning                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`            | The store's name, shown in the checkout                                                                                                                                                                                         |
+| `nip05`           | Optional. `_@your-domain.com` for level A (see below)                                                                                                                                                                           |
+| `network`         | `devnet` or `mainnet`                                                                                                                                                                                                           |
+| `rpcUrl`          | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                                                                                                   |
+| `feeConfigRpcUrl` | Optional. A Solana RPC (`https:`) of the node's network, to read the elisym protocol config (the fee treasuries, for both rails) from. Default: `rpcUrl`, else the network's public endpoint. It switches on no Solana payments |
+| `tempo`           | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                                                                                                             |
+| `inboxRelays`     | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                                                                                                 |
+| `payouts`         | One `{ "caip19": ..., "address": ... }` per coin, for every product, see [Tempo payouts](#tempo-payouts)                                                                                                                        |
+| `webhook`         | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook)                                                                                 |
 
 The node refuses to start with a config it cannot use, and names every problem.
 
@@ -191,6 +205,63 @@ one. Upgrade
 the node before the payout list names a Tempo address, and do not downgrade it afterwards: once
 the node has seen a Tempo order, an older node refuses its ledger.
 
+## The protocol fee
+
+elisym takes a protocol fee out of the merchant's revenue: the buyer pays the listed price, the
+merchant's wallet gets the price less the fee, an elisym treasury gets the fee. The rate is set
+in elisym's on-chain config (the Solana `elisym-config` program, read for Tempo too) and applied
+by the clients elisym ships (the checkout widget, the MCP `buy_product`). The node does not
+enforce the rate: it is your software. It credits an order when a payment delivers the price in
+total, either:
+
+1. all of it to your payout - the payment of any client, with or without a fee leg; or
+2. split between your payout and a known elisym treasury, with your payout getting at least
+   90% of the price (the program caps the fee at 10%) and the treasury the rest, under the
+   order's reference (Solana) or memo, in one transaction (Tempo). The order records the price
+   as `amount` and the treasury's part as `fee`; anything a treasury got above that is not
+   yours and is not recorded.
+
+A payment that gives your payout less than 90% of the price is refused as before.
+
+**Known treasuries.** On every sweep the node reads the config over the config RPC
+(`feeConfigRpcUrl`) and records the treasuries it names. Before it uses any answer, the RPC's
+genesis hash must match the node's network: a mismatch stops the node (and refuses `setup`
+before anything is published). An RPC that cannot be reached, or does not answer within 10
+seconds, is a warning, asked again on the next sweep; the treasuries read before keep counting, the last ones read whatever their age. A
+treasury stays known for the three-day catch-up window (plus 30 minutes) after the last read
+that named it, so a payment composed before a treasury rotation still pays.
+
+**Declaration.** Buyers add a fee leg only for a store whose profile declares that its node
+accepts split payments (`["fee", "1"]` on the store's kind 0); an older node would refuse a
+split. `setup` declares it once this home holds treasuries read from the config. A home that has
+never read them (the config RPC down at its first `setup`) publishes the profile without the
+declaration and says so loudly: run `setup` again once the config RPC answers. `run` and `check`
+warn when the profile the relays serve lacks the declaration.
+
+**`feeUnresolved`.** A payment that gave your payout at least 90% of the price and the rest to an
+address that is no treasury the node knows is neither credited nor refused: `orders` shows
+`feeUnresolved=<tx>`, the run log says "payment to this order matches no known elisym treasury",
+and the next treasury read may resolve it (a payment the node later sets aside for good - refused,
+or with no leg for the order - drops the mark). On Solana and Tempo alike, a split across two
+transactions lands here too. An order still unresolved when its three-day window closes is
+closed, logged loudly, and listed by `orders` as `closed unresolved` until you answer it by hand
+(`complete` or `refund`). This happens when:
+
+- the treasury was rotated while the node was offline (it never learnt the old address): keep a
+  rotated-out treasury able to receive for at least three days, and rotate only while nodes run;
+- the EVM treasury's TIP-403 receive policy bounced the fee leg on Tempo (elisym keeps it open
+  for USDC.e and pathUSD);
+- someone paid the rest to an address of their own.
+
+After a rotation of a COMPROMISED treasury, whoever holds the old address can, for the three
+days it stays known, pay you 90% of a price and the rest to himself, and the node records the
+order as paid: you are exposed up to 10% of each such order for about three days. A per-node
+switch to drop a treasury is not there yet.
+
+**Refunds.** `refund` answers only an unpaid order. A `feeUnresolved` order is yours to decide:
+complete it by hand if you accept the payment, or refund it from your wallet and report it with
+`refund`.
+
 ## Level A: your domain vouches for the store
 
 Without `nip05`, the store is level C. The checkout then shows the buyer that no domain vouches
@@ -257,7 +328,8 @@ npx @elisym/merchant-node admin       # open http://127.0.0.1:5199/ and paste it
 The page reads the store's inbox relays (its inbox list, or the default relays when it has
 none) with the store key and shows each order: when it was placed, its product, the total the
 buyer's order claims, the email, the customer reference, the state, what the node credited and the
-transaction. The totals add up what the node credited, per coin. A product list shows each product
+transaction. The totals add up what the node credited, per coin, net of the elisym fee: what reached the
+wallet (each row shows the total paid and, under it, the fee). A product list shows each product
 the loaded orders name, with its price and whether it is on sale or sold out. Orders naming a
 product whose listing was not found (an unknown product, or relays that did not answer) are
 hidden, and one line counts them.
@@ -396,6 +468,8 @@ fields only for a coin the node knows):
   "payment": {
     "asset": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "amount": "1000000",
+    "fee": "10000",
+    "net": "990000",
     "amountDisplay": "1",
     "decimals": 6,
     "symbol": "USDC",
@@ -407,8 +481,10 @@ fields only for a coin the node knows):
 }
 ```
 
-`payment.amount` is what the node verified on chain, in subunits: credit that, never a total the
-buyer claims. `payment.amountDisplay` is approximate and for display only (it may be in exponent
+`payment.amount` is what the node verified on chain, in subunits: the price paid in total. Credit
+that, never a total the buyer claims. `payment.fee` is the part of it that went to an elisym
+treasury (the protocol fee, `"0"` when none) and `payment.net` what reached your wallet
+(`amount - fee`); events from nodes before protocol-fee support carry neither. `payment.amountDisplay` is approximate and for display only (it may be in exponent
 notation, such as `1e-9`). `customerRef` is your own id for the account, which the page passed to the checkout.
 
 What your receiver does, in this order:

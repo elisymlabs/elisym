@@ -1,6 +1,6 @@
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { KIND_STORE_PROFILE, LIMITS } from '../constants';
-import { HEX_PUBKEY_RE, nowSecs, tagValue } from '../tags';
+import { HEX_PUBKEY_RE, nowSecs, tagValue, tagValues } from '../tags';
 
 const PROFILE_FIELDS = ['name', 'about', 'picture', 'website', 'nip05'] as const;
 type ProfileField = (typeof PROFILE_FIELDS)[number];
@@ -33,12 +33,24 @@ export interface StoreProfile {
   nip05?: string;
   /** The owner pubkey the store points at (tag `owner`). One half of the two-way link. */
   ownerPubkey?: string;
+  /**
+   * The store's node accepts protocol-fee v1 split payments (tag `['fee', '1']`):
+   * the price split between the merchant and an elisym treasury. A buyer adds a
+   * fee leg only for a store that declares it - an older node refuses a split.
+   */
+  feeSupport: boolean;
 }
 
-export interface StoreProfileInput extends Omit<StoreProfile, 'ownerPubkey'> {
+export interface StoreProfileInput extends Omit<StoreProfile, 'ownerPubkey' | 'feeSupport'> {
   ownerPubkey: string;
+  /** Declare protocol-fee v1 support: the `['fee', '1']` tag. */
+  fee?: boolean;
   createdAt?: number;
 }
+
+/** The tag a store's node declares protocol-fee v1 support with. */
+const FEE_TAG = 'fee';
+const FEE_VERSION = '1';
 
 /** Build the store's kind 0. The caller signs it with the STORE key. */
 export function buildStoreProfileEvent(input: StoreProfileInput): EventTemplate {
@@ -59,7 +71,7 @@ export function buildStoreProfileEvent(input: StoreProfileInput): EventTemplate 
   return {
     kind: KIND_STORE_PROFILE,
     created_at: input.createdAt ?? nowSecs(),
-    tags: [['owner', input.ownerPubkey]],
+    tags: [['owner', input.ownerPubkey], ...(input.fee === true ? [[FEE_TAG, FEE_VERSION]] : [])],
     content: JSON.stringify(content),
   };
 }
@@ -83,7 +95,9 @@ export function parseStoreProfile(
   }
   const fields: Record<string, unknown> = { ...raw };
   const owner = tagValue(event.tags, 'owner');
-  const profile: StoreProfile = {};
+  const profile: StoreProfile = {
+    feeSupport: tagValues(event.tags, FEE_TAG).includes(FEE_VERSION),
+  };
   for (const key of PROFILE_FIELDS) {
     const value = Object.hasOwn(fields, key) ? fields[key] : undefined;
     if (typeof value === 'string' && isReadableField(key, value)) {

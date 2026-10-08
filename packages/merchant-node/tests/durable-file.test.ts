@@ -38,7 +38,7 @@ describe('replaceFileDurably', () => {
     const path = join(directory, 'ledger.json');
     saveLedger(path, emptyLedger());
     expect(existsSync(`${path}.tmp`)).toBe(false);
-    expect(loadLedger(path)).toEqual(emptyLedger());
+    expect(loadLedger(path)).toEqual({ state: emptyLedger(), read: 4 });
   });
 });
 

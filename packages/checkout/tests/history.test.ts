@@ -1,7 +1,20 @@
 import { type LoadedOffer, type OrderRecord, loadOffer } from '@elisym/commerce/buyer';
-import { NATIVE_SOL } from '@elisym/pay-core';
+import {
+  CHAINS,
+  NATIVE_SOL,
+  PATHUSD_TEMPO,
+  USDC_SOLANA_DEVNET,
+  composeSolanaPaymentRequest,
+} from '@elisym/pay-core';
+import { composeTempoPaymentRequest } from '@elisym/pay-core/evm';
 import { describe, expect, it } from 'vitest';
-import { MemoryRelays, NOW, inboxList, makeShop } from '../../commerce/tests/buyer/fixtures';
+import {
+  MemoryRelays,
+  NOW,
+  inboxList,
+  makeShop,
+  solanaAddress,
+} from '../../commerce/tests/buyer/fixtures';
 import { type Purchase, csvFileName, purchasesCsv, purchasesOf } from '../src/app/history';
 import type { Receipt } from '../src/app/session';
 
@@ -355,5 +368,66 @@ describe('the export (D3)', () => {
     expect(csvFileName(undefined, new Date('2026-10-05T12:00:00Z'))).toBe(
       'elisym-purchases-store-2026-10-05.csv',
     );
+  });
+});
+
+describe('the fee a purchase includes', () => {
+  function requestFor(offer: Ready, fee?: bigint): string {
+    const payout = offer.payouts[0];
+    if (payout === undefined) {
+      throw new Error('no payout');
+    }
+    return JSON.stringify(
+      composeSolanaPaymentRequest({
+        recipient: payout.target.address,
+        amount: 49_000_000n,
+        asset: USDC_SOLANA_DEVNET,
+        network: 'devnet',
+        reference: solanaAddress(),
+        createdAt: NOW,
+        ...(fee === undefined ? {} : { fee: { treasury: solanaAddress(), amount: fee } }),
+      }),
+    );
+  }
+
+  it('carries the fee leg of the stored request, and none without one', async () => {
+    const offer = await loaded();
+    const [withFee] = purchasesOf(
+      [recordOf(offer, { paymentRequest: requestFor(offer, 490_000n) })],
+      scope(offer),
+    );
+    expect(withFee?.feeAmount).toBe('490000');
+    const [without] = purchasesOf(
+      [recordOf(offer, { paymentRequest: requestFor(offer) })],
+      scope(offer),
+    );
+    expect(without).toBeDefined();
+    expect(without?.feeAmount).toBeUndefined();
+  });
+
+  it('reads the fee leg of a Tempo order from its Tempo request', async () => {
+    const offer = await loaded();
+    const payout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+    const request = composeTempoPaymentRequest({
+      chain: CHAINS.TEMPO_DEVNET,
+      asset: PATHUSD_TEMPO,
+      recipient: payout,
+      amount: 49_000_000n,
+      feeAmount: 490_000n,
+      treasury: `0x${'77'.repeat(20)}`,
+      memo: `0x${'ab'.repeat(32)}`,
+      createdAt: NOW,
+    });
+    const [purchase] = purchasesOf(
+      [
+        recordOf(offer, {
+          payout: { caip19: `eip155:42431/erc20:${PATHUSD_TEMPO.mint ?? ''}`, address: payout },
+          medium: 'tempo-moderato',
+          paymentRequest: JSON.stringify(request),
+        }),
+      ],
+      scope(offer),
+    );
+    expect(purchase?.feeAmount).toBe('490000');
   });
 });

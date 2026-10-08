@@ -2285,6 +2285,7 @@ describe('createTempoPaymentRequest', () => {
   const asset = PATHUSD_TEMPO;
   const ACCEPTS = `0x${'1'.padStart(64, '0')}${'0'.repeat(64)}`;
   const REFUSES_THE_SENDER = `0x${'0'.repeat(64)}${'2'.padStart(64, '0')}`;
+  const NO_FEE = { feeBps: 0, treasury: '' };
 
   /**
    * The registry, answering the question the issuer actually asks: may an
@@ -2321,6 +2322,7 @@ describe('createTempoPaymentRequest', () => {
   it('issues a request its own parser accepts, with a random memo and a floor', async () => {
     const chain = issuer();
     const first = await createTempoPaymentRequest(chain.client, MODERATO, {
+      feeTerms: NO_FEE,
       recipient: RECIPIENT,
       amount: 1_000_000n,
       asset,
@@ -2331,6 +2333,7 @@ describe('createTempoPaymentRequest', () => {
     expect(first.request.fee_address).toBeUndefined();
     expect(first.fromBlock).toBe(36_200_000);
     const second = await createTempoPaymentRequest(chain.client, MODERATO, {
+      feeTerms: NO_FEE,
       recipient: RECIPIENT,
       amount: 1_000_000n,
       asset,
@@ -2357,6 +2360,7 @@ describe('createTempoPaymentRequest', () => {
     });
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000_000n,
         asset,
@@ -2370,6 +2374,7 @@ describe('createTempoPaymentRequest', () => {
     // time by more than the window would issue requests born expired.
     const chain = issuer();
     const { request } = await createTempoPaymentRequest(chain.client, MODERATO, {
+      feeTerms: NO_FEE,
       recipient: RECIPIENT,
       amount: 1_000_000n,
       asset,
@@ -2377,9 +2382,10 @@ describe('createTempoPaymentRequest', () => {
     expect(request.created_at).toBe(ISSUED_AT);
   });
 
-  it('carries the fee legs when the chain says there is a fee', async () => {
-    const chain = issuer({ fee: 250 });
+  it('carries the fee legs the fee terms of the caller ask for, treasury in wire form', async () => {
+    const chain = issuer();
     const { request } = await createTempoPaymentRequest(chain.client, MODERATO, {
+      feeTerms: { feeBps: 250, treasury: TREASURY.toUpperCase().replace('0X', '0x') },
       recipient: RECIPIENT,
       amount: 1_000_000n,
       asset,
@@ -2394,6 +2400,7 @@ describe('createTempoPaymentRequest', () => {
     });
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000_000n,
         asset,
@@ -2414,6 +2421,7 @@ describe('createTempoPaymentRequest', () => {
     const chain = issuer({ verdict: (address) => (address === RECIPIENT ? answer : ACCEPTS) });
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000_000n,
         asset,
@@ -2427,6 +2435,7 @@ describe('createTempoPaymentRequest', () => {
     // one to quote against.
     const chain = issuer();
     await createTempoPaymentRequest(chain.client, MODERATO, {
+      feeTerms: NO_FEE,
       recipient: RECIPIENT,
       amount: 1_000_000n,
       asset,
@@ -2449,6 +2458,7 @@ describe('createTempoPaymentRequest', () => {
     const chain = issuer();
     for (let round = 0; round < 2; round += 1) {
       await createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000_000n,
         asset,
@@ -2470,11 +2480,11 @@ describe('createTempoPaymentRequest', () => {
 
   it('refuses to quote when the TREASURY would block the fee leg', async () => {
     const chain = issuer({
-      fee: 250,
       verdict: (address) => (address === TREASURY ? REFUSES_THE_SENDER : ACCEPTS),
     });
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: { feeBps: 250, treasury: TREASURY },
         recipient: RECIPIENT,
         amount: 1_000_000n,
         asset,
@@ -2494,6 +2504,7 @@ describe('createTempoPaymentRequest', () => {
       const chain = issuer({ verdict: () => answer });
       await expect(
         createTempoPaymentRequest(chain.client, MODERATO, {
+          feeTerms: NO_FEE,
           recipient: RECIPIENT,
           amount: 1_000_000n,
           asset,
@@ -2506,6 +2517,7 @@ describe('createTempoPaymentRequest', () => {
     const chain = fakeTempoChain({ chainId: '0xa5bf', finalized: null });
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000_000n,
         asset,
@@ -2517,6 +2529,7 @@ describe('createTempoPaymentRequest', () => {
     const chain = fakeTempoChain({ chainId: '0x1079' });
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000_000n,
         asset,
@@ -2532,7 +2545,12 @@ describe('createTempoPaymentRequest', () => {
   ])('refuses to quote to %s', async (_label, recipient) => {
     const chain = issuer();
     await expect(
-      createTempoPaymentRequest(chain.client, MODERATO, { recipient, amount: 1_000n, asset }),
+      createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
+        recipient,
+        amount: 1_000n,
+        asset,
+      }),
     ).rejects.toThrow(/Not an address a payment can be issued to/);
   });
 
@@ -2543,6 +2561,7 @@ describe('createTempoPaymentRequest', () => {
     const chain = issuer();
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000n,
         asset: wrongAsset,
@@ -2555,9 +2574,10 @@ describe('createTempoPaymentRequest', () => {
   it('refuses an amount too small to carry the fee it would owe', async () => {
     // At the contract's own cap, one subunit rounds a whole subunit of fee -
     // and a provider leg of nothing is not a payment.
-    const chain = issuer({ fee: 1_000 });
+    const chain = issuer();
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: { feeBps: 1_000, treasury: TREASURY },
         recipient: RECIPIENT,
         amount: 1n,
         asset,
@@ -2571,7 +2591,12 @@ describe('createTempoPaymentRequest', () => {
   ])('refuses %s as an amount', async (_label, amount) => {
     const chain = issuer();
     await expect(
-      createTempoPaymentRequest(chain.client, MODERATO, { recipient: RECIPIENT, amount, asset }),
+      createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
+        recipient: RECIPIENT,
+        amount,
+        asset,
+      }),
     ).rejects.toThrow(/positive amount/);
   });
 
@@ -2583,6 +2608,7 @@ describe('createTempoPaymentRequest', () => {
     const chain = issuer();
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: NO_FEE,
         recipient: RECIPIENT,
         amount: 1_000n,
         asset,
@@ -2591,19 +2617,52 @@ describe('createTempoPaymentRequest', () => {
     ).rejects.toThrow(/Invalid expiry/);
   });
 
-  it('issues nothing when the config contract cannot be read', async () => {
-    const chain = fakeTempoChain({
-      chainId: '0xa5bf',
-      finalized: 36_200_000,
-      timestamps: { 36_200_000: ISSUED_AT },
-      onCall: () => '0x',
+  it('reads no config contract: the fee comes from the caller', async () => {
+    // One fee source for every rail - the Solana config, read by the caller.
+    // A Tempo `ElisymConfig` read here would be a second source, and on Tempo
+    // mainnet there is no contract to read at all.
+    const chain = issuer({ fee: 500 });
+    const { request } = await createTempoPaymentRequest(chain.client, MODERATO, {
+      feeTerms: NO_FEE,
+      recipient: RECIPIENT,
+      amount: 1_000_000n,
+      asset,
     });
+    expect(request.fee_address).toBeUndefined();
+    const configCalls = chain.calls.filter(
+      (call) =>
+        call.method === 'eth_call' &&
+        (call.params?.[0] as { to?: string } | undefined)?.to?.toLowerCase() ===
+          MODERATO.protocolConfig.address,
+    );
+    expect(configCalls).toEqual([]);
+  });
+
+  it.each([
+    ['above the cap', 1_001],
+    ['negative', -1],
+    ['not whole', 2.5],
+  ])('refuses fee terms whose rate is %s', async (_label, feeBps) => {
+    const chain = issuer();
     await expect(
       createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: { feeBps, treasury: TREASURY },
         recipient: RECIPIENT,
-        amount: 1_000n,
+        amount: 1_000_000n,
         asset,
       }),
-    ).rejects.toThrow(/Refusing the elisym config|Failed to read/);
+    ).rejects.toThrow(/fee rate must be a whole number of bps from 0 to 1000/);
+  });
+
+  it('refuses fee terms naming a treasury that is not an address', async () => {
+    const chain = issuer();
+    await expect(
+      createTempoPaymentRequest(chain.client, MODERATO, {
+        feeTerms: { feeBps: 250, treasury: '' },
+        recipient: RECIPIENT,
+        amount: 1_000_000n,
+        asset,
+      }),
+    ).rejects.toThrow(/treasury that is not an address/);
   });
 });

@@ -3,12 +3,14 @@ import {
   KIND_INBOX_RELAYS,
   KIND_PAYTO,
   KIND_PRODUCT,
+  KIND_STORE_PROFILE,
   LIMITS,
   buildOrderMessage,
   isPurchasable,
   parseCaip19,
   parsePayto,
   parseProduct,
+  parseStoreProfile,
   priceInSubunits,
   wrapOrderMessage,
 } from '@elisym/commerce';
@@ -244,11 +246,47 @@ export function inboxRelaysNotRead(
   return listed.slice(0, CHECKOUT_INBOX_CAP).filter((relay) => !reading.includes(relay));
 }
 
-/** What one set of relays serves: the newest listing of each product, payout list and inbox list. */
+/** What one set of relays serves: the newest listing of each product, payout list, inbox list and store profile. */
 export interface RelayView {
   listings: NostrEvent[];
   payoutList: NostrEvent | undefined;
   inboxList: NostrEvent | undefined;
+  /** The store's newest profile (kind 0): buyers read its fee declaration. */
+  profile?: NostrEvent | undefined;
+}
+
+/**
+ * Whether the relays serve a store profile, and whether every one served
+ * declares protocol-fee support: a buyer reading a view without it refuses
+ * this store while the fee is above 0.
+ */
+export function profileFeeSupport(views: readonly RelayView[]): {
+  found: boolean;
+  feeSupport: boolean;
+} {
+  const served = views.flatMap((view) => (view.profile === undefined ? [] : [view.profile]));
+  return {
+    found: served.length > 0,
+    feeSupport: served.every((profile) => parseStoreProfile(profile)?.feeSupport === true),
+  };
+}
+
+/** The store's newest profile (kind 0) the relays serve. */
+export async function newestStoreProfile(
+  pool: QueryPool,
+  relays: readonly string[],
+  storePubkey: string,
+): Promise<NostrEvent | undefined> {
+  const events = await pool
+    .querySync(
+      [...relays],
+      { kinds: [KIND_STORE_PROFILE], authors: [storePubkey] },
+      { maxWait: READ_WAIT_MS },
+    )
+    .catch(() => []);
+  return newest(
+    events.filter((event) => event.pubkey === storePubkey && event.kind === KIND_STORE_PROFILE),
+  );
 }
 
 /**
@@ -383,7 +421,8 @@ function errorText(error: unknown): string {
 
 /**
  * Read each set of relays a page may read, one view after the other, and in
- * each the listings, then the payout list, then the inbox list: never two
+ * each the listings, then the payout list, the inbox list and the store
+ * profile: never two
  * reads at once beside the listing chunks, so no relay carries more than
  * `MAX_SUBSCRIPTIONS_PER_RELAY` of our subscriptions.
  */
@@ -398,7 +437,8 @@ export async function readRelayViews(
     const listings = await newestListings(pool, relays, pubkeys.storePubkey, ds);
     const payoutList = await newestPayoutList(pool, relays, pubkeys.ownerPubkey);
     const inboxList = await newestInboxList(pool, relays, pubkeys.storePubkey);
-    read.push({ listings: [...listings.values()], payoutList, inboxList });
+    const profile = await newestStoreProfile(pool, relays, pubkeys.storePubkey);
+    read.push({ listings: [...listings.values()], payoutList, inboxList, profile });
   }
   return read;
 }
