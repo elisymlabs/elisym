@@ -265,14 +265,18 @@ describe('EIP-5792: batching on Tempo', () => {
 
   it('asks a discovered wallet about a bundle without connecting it', async () => {
     const wallet = recording(() => ({ status: 100 }));
+    const unnamed = recording(() => ({ status: 400 }));
     const found: Eip6963Wallet[] = [
+      { info: { uuid: 'n', name: 'Unnamed' }, provider: unnamed.provider },
       { info: { uuid: 'u', name: 'MetaMask', rdns: 'io.metamask' }, provider: wallet.provider },
     ];
     expect(bundleStatusReader(found, 'app.other')).toBeUndefined();
+    // A bundle whose approving wallet had no name is never asked of a nameless one.
     expect(bundleStatusReader(found, undefined)).toBeUndefined();
     const reader = bundleStatusReader(found, 'io.metamask');
     expect(await reader?.callsStatus?.('bundle-1')).toEqual({ status: 100 });
     expect(wallet.requests.map((request) => request.method)).toEqual(['wallet_getCallsStatus']);
+    expect(unnamed.requests).toEqual([]);
   });
 
   it('connects with the batching methods and the rdns', async () => {

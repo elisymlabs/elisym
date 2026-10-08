@@ -15,7 +15,9 @@ import {
   checkBeforePaying,
   composeOrderPayment,
   endSolanaOrder,
+  merchantMayStillCredit,
   payWithSolana,
+  signAgainWithSolana,
   storedSolanaRequest,
   watchSolanaPayment,
 } from '../../src/buyer/solana-pay';
@@ -35,9 +37,12 @@ const TREASURY = solanaAddress();
 type Ready = Extract<LoadedOffer, { ok: true }>;
 
 let store: OrderStore;
+/** The store's backend: a test may write a record directly, past every rule. */
+let backend: MemoryOrderBackend;
 
 beforeEach(() => {
-  store = new OrderStore(new MemoryOrderBackend());
+  backend = new MemoryOrderBackend();
+  store = new OrderStore(backend);
 });
 
 /** Fee terms a test can change between calls. */
@@ -352,6 +357,18 @@ describe('a split the merchant node may still credit', () => {
     }
   });
 
+  it('still holds on the last second of the catch-up and lets go one second later', async () => {
+    const { record, request, chain, deps, now } = await expiredAttempt();
+    await chain.injectPayment(withoutFee(request, FLOOR));
+    expect(record.createdAt).toBe(NOW);
+    now.value = AFTER_CATCH_UP - 1;
+    expect(merchantMayStillCredit(record, now.value)).toBe(true);
+    expect(await watchSolanaPayment(record, deps)).toMatchObject({ state: 'waiting' });
+    now.value = AFTER_CATCH_UP;
+    expect(merchantMayStillCredit(record, now.value)).toBe(false);
+    expect(await watchSolanaPayment(record, deps)).toMatchObject({ state: 'over' });
+  });
+
   it('ends a payee leg below the floor as unpaid at once', async () => {
     const { record, request, chain, deps } = await expiredAttempt();
     await chain.injectPayment(withoutFee(request, FLOOR - 1n));
@@ -365,5 +382,115 @@ describe('a split the merchant node may still credit', () => {
       state: 'paid',
       record: { paidTx: signature },
     });
+  });
+});
+
+describe('asking the same wallet again for a fee-bearing order', () => {
+  /** A first ask the wallet failed (not a decline): the attempt is live, with its handle. */
+  async function failedOnce(options: { terms?: FeeTerms } = {}) {
+    const run = await setup(options);
+    run.wallet.behaviour = 'throw';
+    const failed = await payWithSolana(run.record, run.wallet, run.input, run.deps);
+    if (failed.ok || failed.again === undefined) {
+      throw new Error('expected a wallet failure with a handle');
+    }
+    run.wallet.behaviour = 'sign';
+    const waiting = await stored(run.record.orderId);
+    if (waiting.marker?.rail !== 'solana') {
+      throw new Error('no Solana marker');
+    }
+    return { ...run, again: failed.again, marker: waiting.marker };
+  }
+
+  /** Rewrite the stored request straight in the backend, past every rule. */
+  async function tamperRequest(
+    orderId: string,
+    change: (request: PaymentRequestData) => PaymentRequestData,
+  ) {
+    const current = await stored(orderId);
+    const request = storedSolanaRequest(current);
+    if (request === undefined) {
+      throw new Error('no request');
+    }
+    await backend.transactProduct(current.productAddress, () => ({
+      write: [{ ...current, paymentRequest: JSON.stringify(change(request)) }],
+      result: undefined,
+    }));
+  }
+
+  it('pays both legs in the same attempt without reading the fee terms again', async () => {
+    for (const changed of [{ feeBps: 200, treasury: solanaAddress() }, new Error('down')]) {
+      const { again, wallet, chain, deps, record, terms } = await failedOnce();
+      // The terms moved (or cannot be read) since the attempt was built: again binds what it signed.
+      terms.current = changed;
+      const asked = terms.asked;
+      const paid = await signAgainWithSolana(again, wallet, deps);
+      if (!paid.ok) {
+        throw new Error(paid.reason);
+      }
+      expect(terms.asked).toBe(asked);
+      expect(wallet.requests).toBe(2);
+      expect(chain.sent).toHaveLength(1);
+      expect(await watchSolanaPayment(await stored(record.orderId), deps)).toMatchObject({
+        state: 'paid',
+        record: { paidTx: paid.signature },
+      });
+    }
+  });
+
+  it('sends nothing when the wallet asked again lowers the fee leg', async () => {
+    const { again, wallet, chain, deps } = await failedOnce();
+    wallet.behaviour = 'lower_fee_leg';
+    expect(await signAgainWithSolana(again, wallet, deps)).toMatchObject({
+      ok: false,
+      reason: 'wallet_unsupported',
+      detail: 'not_bound',
+    });
+    expect(chain.sent).toEqual([]);
+  });
+
+  it('asks nothing when the stored fee leg is no longer the one the attempt was built on', async () => {
+    const cases: [string, FeeTerms, (request: PaymentRequestData) => PaymentRequestData][] = [
+      [
+        'a fee leg added to a fee-less request',
+        AT_ZERO,
+        (request) => ({ ...request, fee_address: TREASURY, fee_amount: Number(FEE) }),
+      ],
+      [
+        'the fee leg removed',
+        AT_3_PERCENT,
+        (request) => {
+          const { fee_address: _feeAddress, fee_amount: _feeAmount, ...rest } = request;
+          return rest;
+        },
+      ],
+      [
+        'another fee amount',
+        AT_3_PERCENT,
+        (request) => ({ ...request, fee_amount: Number(FEE + 1n) }),
+      ],
+      [
+        'another treasury',
+        AT_3_PERCENT,
+        (request) => ({ ...request, fee_address: solanaAddress() }),
+      ],
+    ];
+    for (const [name, terms, change] of cases) {
+      const run = await failedOnce({ terms });
+      await tamperRequest(run.record.orderId, change);
+      const calls = run.chain.calls.length;
+      expect({ name, result: await signAgainWithSolana(run.again, run.wallet, run.deps) }).toEqual({
+        name,
+        result: {
+          ok: false,
+          reason: 'not_payable',
+          record: await stored(run.record.orderId),
+          attemptId: run.marker.attemptId,
+        },
+      });
+      expect({ name, requests: run.wallet.requests }).toEqual({ name, requests: 1 });
+      expect({ name, reads: run.chain.calls.length }).toEqual({ name, reads: calls });
+      expect({ name, sent: run.chain.sent }).toEqual({ name, sent: [] });
+    }
   });
 });

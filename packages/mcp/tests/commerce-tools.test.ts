@@ -1191,6 +1191,43 @@ describe('the elisym protocol fee (commerce-fee plan, sections 5 and 7)', () => 
       expect(await orders(run)).toHaveLength(2);
     });
 
+    it('says nothing was paid, never "it was ended", when the outdated store order cannot be ended', async () => {
+      const run = await world();
+      const agentStore = new OrderStore(
+        new FileOrderBackend(run.agent.agentDir as string, { durable: false }),
+      );
+      let reads = 0;
+      commerceRuntime.feeTerms = async () => {
+        reads += 1;
+        if (reads < 3) {
+          return { feeBps: 0, treasury: '' };
+        }
+        // The compose read: another writer moves the record on meanwhile, so
+        // ending the version the compose judged is refused.
+        const [placed] = await orders(run);
+        if (placed !== undefined && reads === 3) {
+          const moved = await agentStore.update(placed.orderId, placed.version, {
+            acknowledgedRelays: [...(placed.acknowledgedRelays ?? [])],
+          });
+          if (!moved.ok) {
+            throw new Error(`record not moved: ${moved.reason}`);
+          }
+        }
+        return { feeBps: 100, treasury: TREASURY };
+      };
+      const bought = await buy(run);
+      const [record] = await orders(run);
+      if (record === undefined) {
+        throw new Error('no order placed');
+      }
+      expect(bought.isError).toBe(true);
+      expect(bought.body).toContain('must be updated');
+      expect(bought.body).toContain(`Nothing was paid (order ${record.orderId}).`);
+      expect(bought.body).not.toContain('it was ended');
+      expect(record.state).toBe('ordered');
+      expect(run.chain.sent).toEqual([]);
+    });
+
     it('leaves the record while the terms cannot be read, and pays it on the next call', async () => {
       const run = await world();
       feeAnswers(0, 0, UNAVAILABLE);
@@ -1199,6 +1236,7 @@ describe('the elisym protocol fee (commerce-fee plan, sections 5 and 7)', () => 
       expect(bought.body).toContain('try again');
       expect(bought.body).not.toContain('could not be prepared');
       const [record] = await orders(run);
+      expect(bought.body).toContain(`Nothing was paid (order ${record?.orderId} is kept).`);
       expect(record?.state).toBe('ordered');
       expect(record?.paymentRequest).toBeUndefined();
       expect(run.chain.sent).toEqual([]);
@@ -1218,7 +1256,9 @@ describe('the elisym protocol fee (commerce-fee plan, sections 5 and 7)', () => 
       expect(bought.isError).toBe(true);
       expect(bought.body).toContain('cannot be used right now');
       expect(bought.body).not.toMatch(/try again|retry/i);
-      expect((await orders(run))[0]?.state).toBe('ordered');
+      const [record] = await orders(run);
+      expect(record?.state).toBe('ordered');
+      expect(bought.body).toContain(`Nothing was paid (order ${record?.orderId} is kept).`);
       expect(run.chain.sent).toEqual([]);
     });
   });

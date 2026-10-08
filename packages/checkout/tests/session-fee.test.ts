@@ -305,6 +305,18 @@ describe('the fee after the order (Solana)', () => {
     expect(problemOf(run.last())).toBe('fee_config_invalid');
     expect(run.wallet.requests).toBe(0);
   });
+
+  it('leaves the order as it is when the terms are unavailable before signing', async () => {
+    const run = await solanaSetup({
+      terms: [ZERO, ZERO, new FeeConfigError('unavailable', 'down')],
+    });
+    await run.session.start();
+    await run.session.pay('Fake');
+    const [record] = await store.forProduct(run.offer.productAddress);
+    expect(record).toMatchObject({ state: 'ordered' });
+    expect(problemOf(run.last())).toBe('fee_config_unavailable');
+    expect(run.wallet.requests).toBe(0);
+  });
 });
 
 // ---- Tempo ----------------------------------------------------------------
@@ -316,6 +328,10 @@ interface BundleWallet {
   sends: number;
   statusCalls: number;
   status: CallsStatus | Error;
+  /** The ids `sendCalls` hands out, in turn (the last repeats); `BUNDLE` when unset. */
+  ids?: string[];
+  /** The answer about one bundle id, over `status` when it gives one (a test may hold it). */
+  statusFor?: (bundleId: string) => Promise<CallsStatus | Error> | undefined;
   /** Thrown by `sendCalls` (a wallet error code). */
   sendError?: number;
   /** Another tab ends the order while the wallet is open. */
@@ -388,12 +404,13 @@ async function tempoSetup(
     status: { status: 100 },
     connects: 0,
   };
-  const callsStatus = async (): Promise<CallsStatus> => {
+  const callsStatus = async (bundleId: string): Promise<CallsStatus> => {
     bundle.statusCalls += 1;
-    if (bundle.status instanceof Error) {
-      throw bundle.status;
+    const status = (await bundle.statusFor?.(bundleId)) ?? bundle.status;
+    if (status instanceof Error) {
+      throw status;
     }
-    return bundle.status;
+    return status;
   };
   const tempoWallet: TempoWallet = {
     address: PAYER,
@@ -427,7 +444,8 @@ async function tempoSetup(
           );
         }
       }
-      return { bundleId: BUNDLE };
+      const ids = bundle.ids ?? [BUNDLE];
+      return { bundleId: ids[Math.min(bundle.sends - 1, ids.length - 1)] ?? BUNDLE };
     },
     callsStatus,
   };
@@ -507,7 +525,9 @@ async function tempoSetup(
     rpcFor: () => undefined,
     feeTerms: terms.source,
     bundleWallet: (rdns) =>
-      discovered && rdns === RDNS ? { callsStatus: () => callsStatus() } : undefined,
+      discovered && rdns === RDNS
+        ? { callsStatus: (bundleId: string) => callsStatus(bundleId) }
+        : undefined,
     wallets: () => [],
     tempoFor: () => client,
     tempoWallets: () => [
@@ -634,6 +654,25 @@ describe('the fee before a Tempo order', () => {
     expect(problemOf(run.last())).toBe('store_outdated');
     expect(run.bundle.sends).toBe(0);
   });
+
+  it.each([
+    ['fee_config_unavailable', new FeeConfigError('unavailable', 'down')],
+    ['fee_config_invalid', new FeeConfigError('bad_config', 'too high')],
+  ])(
+    'leaves the order ordered when the terms fail before signing (%s)',
+    async (reason, failure) => {
+      // The terms are read twice: before the order, and again before the wallet is asked.
+      const run = await tempoSetup({ terms: [{ feeBps: 100, treasury: TREASURY }, failure] });
+      await run.session.start();
+      await run.session.pay('MetaMask');
+      expect(run.terms.calls).toHaveLength(2);
+      const record = await onlyRecord(run.offer);
+      expect(record.state).toBe('ordered');
+      expect(record.marker).toBeUndefined();
+      expect(problemOf(run.last())).toBe(reason);
+      expect(run.bundle.sends).toBe(0);
+    },
+  );
 
   it('puts the order back to ordered when the wallet refuses the batch before any prompt', async () => {
     const run = await tempoSetup();
@@ -970,6 +1009,69 @@ describe('a Tempo payment as one bundle', () => {
     expect(run.bundle.sends).toBe(1);
   });
 
+  /**
+   * The open modal's probe proves the attempt over and ends the order while the
+   * wallet is still open; the wallet then returns the bundle the buyer approved
+   * (unsaved: its order ended).
+   */
+  async function approvedAfterTheProbeEnded() {
+    const run = await tempoSetup();
+    let release: () => void = () => undefined;
+    run.bundle.hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    let asked: () => void = () => undefined;
+    const sendAsked = new Promise<void>((resolve) => {
+      asked = resolve;
+    });
+    run.bundle.onSend = asked;
+    await run.session.start();
+    const pressed = run.session.pay('MetaMask');
+    await sendAsked;
+    await settle(80);
+    const record = await onlyRecord(run.offer);
+    // Past the deadline with a vouched "none", the wallet silent: the probe ends the order.
+    run.pastDeadline(record);
+    run.bundle.status = new Error('no answer');
+    await run.timers.tick();
+    await settle(80);
+    expect((await onlyRecord(run.offer)).state).toBe('ended-unpaid');
+    expect(problemOf(run.last())).toBe('attempt_over');
+    release();
+    await pressed;
+    await settle(80);
+    return { ...run, record };
+  }
+
+  it('notes a bundle the wallet returned after the open modal proved its order over and ended it', async () => {
+    const run = await approvedAfterTheProbeEnded();
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'late_approval' } });
+    // The approval holds every press: no second payment.
+    await run.session.pay('MetaMask');
+    expect(problemOf(run.last())).toBe('late_approval');
+    expect(run.bundle.sends).toBe(1);
+  });
+
+  it('asks the wallet nothing more about that bundle once it named the hash and the hash landed', async () => {
+    const run = await approvedAfterTheProbeEnded();
+    run.bundle.status = { status: 200, atomic: true, receipts: [{ transactionHash: HASH }] };
+    await run.timers.tick();
+    run.landBoth(run.record.reference);
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(await onlyRecord(run.offer)).toMatchObject({ state: 'paid', paidTx: HASH });
+    const asked = run.bundle.statusCalls;
+    // The paid order holds the press, judged by its hash alone: the wallet is not asked again.
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({
+      kind: 'offer',
+      problem: { reason: 'earlier_payment' },
+    });
+    await run.timers.tick();
+    expect(run.bundle.statusCalls).toBe(asked);
+    expect(run.bundle.sends).toBe(1);
+  });
+
   it('holds every press behind a late bundle answer, until the wallet says it failed', async () => {
     const run = await tempoSetup();
     run.bundle.endMeanwhile = true;
@@ -1130,6 +1232,157 @@ describe('a Tempo payment as one bundle', () => {
     expect(run.bundle.sends).toBe(1);
   });
 
+  it('asks the wallet that answered a closed press about its bundle at the next press', async () => {
+    // Discovery finds no wallet: only the wallet the closed press asked can answer.
+    const run = await tempoSetup({ discovered: false });
+    let release: () => void = () => undefined;
+    run.bundle.hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    let asked: () => void = () => undefined;
+    const sendAsked = new Promise<void>((resolve) => {
+      asked = resolve;
+    });
+    run.bundle.onSend = asked;
+    await run.session.start();
+    const pressed = run.session.pay('MetaMask');
+    await sendAsked;
+    expect(run.session.resetOnClose()).toBe(true);
+    // The wallet answers the closed press: the bundle is saved on the order.
+    release();
+    await pressed;
+    await settle(80);
+    expect(tempoMarker(await onlyRecord(run.offer)).bundleId).toBe(BUNDLE);
+    const statusCalls = run.bundle.statusCalls;
+    await run.session.pay('MetaMask');
+    expect(run.last()).toMatchObject({
+      kind: 'offer',
+      problem: { reason: 'earlier_payment', phase: 'confirming' },
+    });
+    const view = run.last();
+    expect(
+      view?.kind === 'offer' && view.problem?.reason === 'earlier_payment'
+        ? view.problem.checkWallet
+        : 'none',
+    ).toBeUndefined();
+    expect(run.bundle.statusCalls).toBeGreaterThan(statusCalls);
+    expect(run.bundle.sends).toBe(1);
+  });
+
+  it('asks the wallet nothing more about a bundle it said failed, though the failure could not be stored', async () => {
+    const run = await tempoSetup();
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(tempoMarker(await onlyRecord(run.offer)).bundleId).toBe(BUNDLE);
+    // Every write of the failure is refused: the stored marker still names a live bundle.
+    run.spy.refuseWrites(
+      (method, args) =>
+        method === 'updateMarker' &&
+        typeof args[3] === 'object' &&
+        args[3] !== null &&
+        'bundleFailed' in args[3],
+    );
+    run.bundle.status = { status: 400 };
+    await run.timers.tick();
+    const left = tempoMarker(await onlyRecord(run.offer));
+    expect(left.bundleId).toBe(BUNDLE);
+    expect(left.bundleFailed).toBeUndefined();
+    expect(problemOf(run.last())).toBe('wallet_payment_failed');
+    const asked = run.bundle.statusCalls;
+    expect(asked).toBeGreaterThan(0);
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.bundle.statusCalls).toBe(asked);
+    expect(run.bundle.sends).toBe(1);
+  });
+
+  it('asks the wallet nothing more about a bundle it named the hash of, though the hash could not be stored', async () => {
+    const run = await tempoSetup();
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(tempoMarker(await onlyRecord(run.offer)).bundleId).toBe(BUNDLE);
+    // Every write of the hash is refused: the stored marker still names a live bundle.
+    run.spy.refuseWrites(
+      (method, args) =>
+        method === 'updateMarker' &&
+        typeof args[3] === 'object' &&
+        args[3] !== null &&
+        'txHash' in args[3],
+    );
+    run.bundle.status = { status: 200, atomic: true, receipts: [{ transactionHash: HASH }] };
+    await run.timers.tick();
+    expect(tempoMarker(await onlyRecord(run.offer)).txHash).toBeUndefined();
+    const asked = run.bundle.statusCalls;
+    expect(asked).toBeGreaterThan(0);
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.bundle.statusCalls).toBe(asked);
+    expect(run.bundle.sends).toBe(1);
+  });
+
+  it('asks the wallet nothing more about its bundle once another tab stored that it failed', async () => {
+    const run = await tempoSetup();
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(tempoMarker(await onlyRecord(run.offer)).bundleId).toBe(BUNDLE);
+    // Another tab of the page hears the failure first and stores it.
+    run.bundle.status = { status: 400 };
+    await run.reload().start();
+    await settle(80);
+    expect(tempoMarker(await onlyRecord(run.offer)).bundleFailed).toBe(true);
+    const asked = run.bundle.statusCalls;
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.bundle.statusCalls).toBe(asked);
+    expect(run.bundle.sends).toBe(1);
+  });
+
+  it('asks the wallet nothing more about its bundle once another tab stored its hash', async () => {
+    const run = await tempoSetup();
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    expect(tempoMarker(await onlyRecord(run.offer)).bundleId).toBe(BUNDLE);
+    // Another tab of the page hears the hash first and stores it.
+    run.bundle.status = { status: 200, atomic: true, receipts: [{ transactionHash: HASH }] };
+    await run.reload().start();
+    await settle(80);
+    expect(tempoMarker(await onlyRecord(run.offer)).txHash).toBe(HASH);
+    const asked = run.bundle.statusCalls;
+    await run.timers.tick();
+    await run.timers.tick();
+    expect(run.bundle.statusCalls).toBe(asked);
+    expect(run.bundle.sends).toBe(1);
+  });
+
+  it('follows an order another tab found paid while the wallet was open, not as a late approval', async () => {
+    const run = await tempoSetup();
+    let release: () => void = () => undefined;
+    run.bundle.hold = new Promise((resolve) => {
+      release = resolve;
+    });
+    let asked: () => void = () => undefined;
+    const sendAsked = new Promise<void>((resolve) => {
+      asked = resolve;
+    });
+    run.bundle.onSend = asked;
+    await run.session.start();
+    const pressed = run.session.pay('MetaMask');
+    await sendAsked;
+    const record = await onlyRecord(run.offer);
+    // Both legs land while the wallet is still open, and another tab finds them.
+    run.landBoth(record.reference);
+    await run.reload().start();
+    await settle(80);
+    expect((await onlyRecord(run.offer)).state).toBe('paid');
+    // The wallet returns the bundle now: it cannot be stored on a paid order.
+    release();
+    await pressed;
+    await settle(80);
+    expect(tempoMarker(await onlyRecord(run.offer)).bundleId).toBeUndefined();
+    expect(run.last()).toMatchObject({ kind: 'waiting_store' });
+    expect(run.bundle.sends).toBe(1);
+  });
+
   it('stops a press after a close that closes again while the wallet is asked about its bundle', async () => {
     const run = await tempoSetup();
     await run.session.start();
@@ -1264,6 +1517,31 @@ describe('a bundle observed after a reload', () => {
     expect(first.bundle.sends).toBe(1);
   });
 
+  it('shows the free offer when "Check in wallet" hears the bundle failed past the deadline', async () => {
+    const first = await tempoSetup({ discovered: false });
+    await first.session.start();
+    await first.session.pay('MetaMask');
+    first.session.dispose();
+    const page = first.reload();
+    await page.start();
+    await settle(80);
+    await page.pay('MetaMask');
+    expect(first.last()).toMatchObject({
+      kind: 'offer',
+      problem: { reason: 'earlier_payment', phase: 'confirming', checkWallet: true },
+    });
+    const held = await onlyRecord(first.offer);
+    first.bundle.status = { status: 400 };
+    first.pastDeadline(held);
+    await page.checkInWallet();
+    const ended = await onlyRecord(first.offer);
+    expect(ended).toMatchObject({ state: 'ended-unpaid', endedBy: 'over' });
+    const view = first.last();
+    expect(view?.kind).toBe('offer');
+    expect(view?.kind === 'offer' ? view.problem : 'none').toBeUndefined();
+    expect(first.bundle.sends).toBe(1);
+  });
+
   it('connects no other wallet than the one that approved the bundle at "Check in wallet"', async () => {
     const first = await tempoSetup({ discovered: false });
     await first.session.start();
@@ -1363,6 +1641,58 @@ describe('a bundle observed after a reload', () => {
     await page.pay('MetaMask');
     expect((await onlyRecord(first.offer)).state).toBe('paying');
     expect(first.bundle.sends).toBe(1);
+  });
+
+  it('draws no problem on the order on screen when the bundle of another order fails', async () => {
+    const first = await tempoSetup();
+    first.bundle.ids = ['bundle-a', 'bundle-b'];
+    await first.session.start();
+    await first.session.pay('MetaMask');
+    first.session.dispose();
+    const earlier = await onlyRecord(first.offer);
+    expect(tempoMarker(earlier).bundleId).toBe('bundle-a');
+    // The reload asks the wallet about the earlier bundle; that first answer comes late.
+    let answer: () => void = () => undefined;
+    const answered = new Promise<CallsStatus>((resolve) => {
+      answer = () => resolve({ status: 400 });
+    });
+    let askedEarlier = 0;
+    first.bundle.statusFor = (bundleId) => {
+      if (bundleId !== 'bundle-a') {
+        return undefined;
+      }
+      askedEarlier += 1;
+      return askedEarlier === 1 ? answered : Promise.resolve({ status: 400 });
+    };
+    const page = first.reload();
+    await page.start();
+    // The press hears the failure itself, ends the earlier order past its deadline,
+    // and pays a new one once the buyer confirms the old prompt.
+    first.pastDeadline(earlier);
+    await page.pay('MetaMask');
+    expect(first.last()?.kind).toBe('old_prompt');
+    await page.confirmOldPrompt();
+    await settle(80);
+    const records = await store.forProduct(first.offer.productAddress);
+    const shown = records.find((record) => record.orderId !== earlier.orderId);
+    if (shown === undefined) {
+      throw new Error('no new order');
+    }
+    expect(tempoMarker(shown).bundleId).toBe('bundle-b');
+    expect(first.last()).toMatchObject({ kind: 'waiting_payment', signed: true });
+    // Now the load's late answer about the earlier bundle comes: it failed.
+    answer();
+    await settle(80);
+    await first.timers.tick();
+    const failed = await store.get(earlier.orderId);
+    if (failed === undefined) {
+      throw new Error('no earlier order');
+    }
+    expect(tempoMarker(failed).bundleFailed).toBe(true);
+    expect(askedEarlier).toBeGreaterThan(1);
+    const view = first.last();
+    expect(view).toMatchObject({ kind: 'waiting_payment', signed: true });
+    expect(problemOf(view)).toBeUndefined();
   });
 
   it('lands both legs of the bundle: the order is paid', async () => {
