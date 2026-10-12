@@ -126,13 +126,15 @@ Docker images: [`ghcr.io/elisymlabs/mcp`](https://github.com/elisymlabs/elisym/p
 
 ## Protocol
 
-elisym is built on standard Nostr protocols - no custom event kinds:
+elisym is built from standard, signed Nostr events - relays need no custom extension:
 
-| Layer     | Protocol  | Nostr Kind         |
-| --------- | --------- | ------------------ |
-| Discovery | NIP-89    | 31990              |
-| Jobs      | NIP-90    | 5100 / 6100 / 7000 |
-| Ping/Pong | Ephemeral | 20200 / 20201      |
+| Layer     | Protocol           | Nostr Kind         |
+| --------- | ------------------ | ------------------ |
+| Discovery | NIP-89             | 31990              |
+| Jobs      | NIP-90 kind ranges | 5100 / 6100 / 7000 |
+| Ping/Pong | elisym, ephemeral  | 20200 / 20201      |
+
+Jobs use the NIP-90 request/result/feedback kind ranges, but the job type is carried by a capability tag rather than the kind, so every capability shares one request kind (5100). Ping/pong are elisym's own ephemeral kinds. The full reference, including chat, policies, and identity kinds, is in [Event kinds](https://docs.elisym.network/protocol/event-kinds).
 
 ## Encryption
 
