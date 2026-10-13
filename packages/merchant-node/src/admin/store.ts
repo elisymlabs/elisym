@@ -25,6 +25,7 @@ import {
   newestStoreInbox,
 } from '@elisym/commerce/buyer';
 import type { NostrEvent } from 'nostr-tools';
+import { ALL_LISTINGS_MAX_PAGES, ALL_LISTINGS_PAGE_LIMIT } from '../constants';
 import { readListingChunks } from '../listing-reads';
 import { orderKey } from '../order-rules';
 import type { AdminListing, AdminStore } from './history';
@@ -140,6 +141,30 @@ export async function readListings(
   const events = await readListingChunks(ds, (chunk) =>
     client.query(relays, [{ kinds: [KIND_PRODUCT], authors: [storePubkey], '#d': chunk }]),
   );
+  return mergeNewestListings(kept, events, storePubkey, now);
+}
+
+/** Whether `event` wins over `other` by the newest rule: the newest `created_at`, then the lowest id. */
+function isNewer(event: NostrEvent, other: NostrEvent): boolean {
+  return (
+    event.created_at > other.created_at ||
+    (event.created_at === other.created_at && event.id < other.id)
+  );
+}
+
+/**
+ * Merge listing events into `kept` by product address, the newest genuine one
+ * winning (the newest `created_at`, then the lowest id, dated no further ahead
+ * than allowed). Nothing already kept is dropped. A kept listing was checked
+ * when it was kept: only new candidates are checked (a signature check is
+ * about a millisecond, and a store's listings arrive once per relay).
+ */
+export function mergeNewestListings(
+  kept: KeptListings,
+  events: readonly NostrEvent[],
+  storePubkey: string,
+  now: number,
+): Map<string, NostrEvent> {
   const byAddress = new Map<string, NostrEvent[]>();
   for (const event of events) {
     const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
@@ -152,17 +177,89 @@ export async function readListings(
   const merged = new Map(kept);
   for (const [address, candidates] of byAddress) {
     const before = kept.get(address);
-    const newest = newestGenuine(
-      before === undefined ? candidates : [before, ...candidates],
-      KIND_PRODUCT,
-      storePubkey,
-      now,
-    );
-    if (newest !== undefined && parseProduct(newest) !== undefined) {
+    const fresh =
+      before === undefined
+        ? candidates
+        : candidates.filter(
+            (candidate) => candidate.id !== before.id || candidate.sig !== before.sig,
+          );
+    const newest = newestGenuine(fresh, KIND_PRODUCT, storePubkey, now);
+    if (
+      newest !== undefined &&
+      (before === undefined || isNewer(newest, before)) &&
+      parseProduct(newest) !== undefined
+    ) {
       merged.set(address, newest);
     }
   }
   return merged;
+}
+
+/**
+ * Every listing of the store, for the hosted admin's product list. Each relay
+ * is paged on its own (one subscription per relay at a time), by `until`, until
+ * a page brings no event not seen from it. `incomplete` when a relay still
+ * brought new events after `ALL_LISTINGS_MAX_PAGES` pages, or stopped on a full
+ * page of nothing new (a same-second wall, or a relay ignoring `until`). Not
+ * detected: more listings in one second than a relay's own cap below
+ * `ALL_LISTINGS_PAGE_LIMIT`, and a dead relay, which reads as empty.
+ */
+export async function readAllListings(
+  client: RelayClient,
+  relays: readonly string[],
+  storePubkey: string,
+): Promise<{ events: NostrEvent[]; incomplete: boolean }> {
+  const readRelay = async (relay: string) => {
+    const seen = new Map<string, NostrEvent>();
+    let until: number | undefined;
+    // One page past the cap only to learn whether the list ended there.
+    for (let page = 0; page <= ALL_LISTINGS_MAX_PAGES; page += 1) {
+      const events = await client.query(
+        [relay],
+        [
+          {
+            kinds: [KIND_PRODUCT],
+            authors: [storePubkey],
+            limit: ALL_LISTINGS_PAGE_LIMIT,
+            ...(until === undefined ? {} : { until }),
+          },
+        ],
+      );
+      const fresh = events.filter((event) => !seen.has(event.id));
+      if (fresh.length === 0) {
+        return { events: [...seen.values()], incomplete: events.length >= ALL_LISTINGS_PAGE_LIMIT };
+      }
+      if (page === ALL_LISTINGS_MAX_PAGES) {
+        break;
+      }
+      for (const event of fresh) {
+        seen.set(event.id, event);
+      }
+      until = events.reduce((oldest, event) => Math.min(oldest, event.created_at), Infinity);
+    }
+    return { events: [...seen.values()], incomplete: true };
+  };
+  const results = await Promise.all(relays.map(readRelay));
+  // Relays answer copies of the same listings: each exact copy is checked once.
+  const copies = new Map<string, NostrEvent>();
+  for (const event of results.flatMap((result) => result.events)) {
+    copies.set(
+      JSON.stringify([
+        event.id,
+        event.sig,
+        event.pubkey,
+        event.created_at,
+        event.kind,
+        event.tags,
+        event.content,
+      ]),
+      event,
+    );
+  }
+  return {
+    events: [...copies.values()],
+    incomplete: results.some((result) => result.incomplete),
+  };
 }
 
 /** One product of the store as the admin shows it. */

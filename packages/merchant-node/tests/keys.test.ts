@@ -12,6 +12,7 @@ import { decode } from 'nostr-tools/nip19';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from 'nostr-tools/utils';
 import { describe, expect, it } from 'vitest';
+import { HOSTED_ADMIN_URL } from '../src/constants';
 import {
   createKeysFile,
   encryptHomeKeys,
@@ -23,6 +24,7 @@ import {
 import {
   PASSPHRASE_ENV,
   PASSPHRASE_FILE_ENV,
+  STORE_KEY_WARNING,
   type LoadedKeys,
   isSealed,
   keysFileText,
@@ -330,5 +332,12 @@ describe('keys in the home', () => {
     } finally {
       release();
     }
+  });
+});
+
+describe('the store-key warning', () => {
+  it('names where the key may be pasted: the local admin and the hosted one', () => {
+    expect(STORE_KEY_WARNING).toContain('`admin`');
+    expect(STORE_KEY_WARNING).toContain(HOSTED_ADMIN_URL);
   });
 });

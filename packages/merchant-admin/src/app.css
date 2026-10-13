@@ -1,0 +1,71 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: light dark;
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --surface-2: #f0f0f3;
+  --line: #e0e0e6;
+  --text: #1a1a2e;
+  --text-2: #6b6b80;
+  --accent: #1a1a2e;
+  --accent-text: #ffffff;
+  --green: #1d9e75;
+  --warn: #b45309;
+  --warn-bg: #fef3c7;
+  --error: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0c0f;
+    --surface: #16161a;
+    --surface-2: #1f1f25;
+    --line: #2c2c34;
+    --text: #f2f2f5;
+    --text-2: #9a9aab;
+    --accent: #f2f2f5;
+    --accent-text: #0c0c0f;
+    --green: #34d399;
+    --warn: #fbbf24;
+    --warn-bg: #2a2110;
+    --error: #f87171;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-accent: var(--accent);
+  --color-accent-text: var(--accent-text);
+  --color-green: var(--green);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-error: var(--error);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+@theme {
+  /* 1 unit = 1px, as in packages/app: `p-16` is 16px. */
+  --spacing: calc(1rem / 16);
+  --radius-4: 0.25rem;
+  --radius-8: 0.5rem;
+  --radius-12: 0.75rem;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The store key field: masked without being a password field (no password manager offers to save it). */
+.masked {
+  -webkit-text-security: disc;
+}

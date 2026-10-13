@@ -2,32 +2,9 @@
  * Renders the history into the page. Everything a buyer or a relay wrote is set
  * with `textContent` only, and a link is made only from an `https:` explorer URL.
  */
-import type { ClaimCheck, History, NodeAmount, OrderRow, OrderState } from './history';
-import { wholeUnits } from './history';
+import type { History, OrderRow } from './history';
+import { CLAIM_LABELS, STATE_LABELS, amountText, dateText, short } from './labels';
 import type { ProductLine } from './store';
-
-const STATE_LABELS: Record<OrderState, string> = {
-  ordered: 'ordered',
-  payment_reported: 'payment reported (not confirmed by your node)',
-  delivered: 'completed',
-  released: 'released by hand',
-  refunded: 'refunded',
-};
-
-const CLAIM_LABELS: Record<ClaimCheck, string> = {
-  matches: 'matches the listing',
-  differs: 'differs from the listing',
-  not_checked: 'listing changed around this order (not checked)',
-};
-
-/** Characters kept at each end of a shortened key or transaction. */
-const SHORT_EDGE = 8;
-
-function short(value: string): string {
-  return value.length <= SHORT_EDGE * 2 + 1
-    ? value
-    : `${value.slice(0, SHORT_EDGE)}...${value.slice(-SHORT_EDGE)}`;
-}
 
 function element<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
@@ -55,20 +32,6 @@ function txElement(doc: Document, tx: string, explorer: string | undefined): HTM
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
   return link;
-}
-
-/** An amount the node named: whole units of its asset, else raw subunits. */
-export function amountText(amount: NodeAmount, medium?: string): string {
-  if (amount.asset !== undefined) {
-    return `${wholeUnits(amount.amount, amount.asset)} ${amount.asset.asset.symbol}`;
-  }
-  return medium === undefined
-    ? `${amount.amount} subunits, asset unknown`
-    : `${amount.amount} subunits (${medium}), asset unknown`;
-}
-
-function dateText(seconds: number): string {
-  return `${new Date(seconds * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
 function lines(doc: Document, cell: HTMLElement, texts: readonly string[], className?: string) {
