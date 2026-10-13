@@ -1,3 +1,6 @@
+/** The product's name, everywhere a page names it. */
+export const PRODUCT_NAME = 'Pay Core';
+
 /** The hosted store admin: its own origin, never this page's (it holds the store key). */
 export const ADMIN_URL = 'https://admin.elisym.network';
 
@@ -7,6 +10,16 @@ export const DOCS = {
   creditAnAccount: 'https://docs.elisym.network/commerce/credit-an-account',
 };
 
+/** The quickstart as plain markdown: what a coding agent reads. */
+export const AGENT_DOCS_URL = `${DOCS.quickstart}.md`;
+
+/** What the merchant pastes into a coding agent to set the store up. */
+export const AGENT_PROMPT = [
+  `Add a Pay Core checkout to my website. Read ${AGENT_DOCS_URL} and follow it step by step:`,
+  'create my store node, publish my products, start the node and add the Buy button to my pages.',
+  'Before you start, ask me for my Solana wallet address, my Solana RPC URL, and each product with its price.',
+].join(' ');
+
 /** Makes a mainnet store: its home, a product to edit, and its keys. */
 export const INIT_COMMAND = 'npx @elisym/merchant-node init --network mainnet';
 
@@ -15,6 +28,7 @@ export const LOCAL_ADMIN_COMMAND = 'npx @elisym/merchant-node admin';
 
 export const GITHUB_URL = 'https://github.com/elisymlabs/elisym';
 export const X_URL = 'https://x.com/elisymlabs';
+export const ELISYM_URL = 'https://elisym.network';
 
 export interface DemoProduct {
   /** The product's `naddr1...`. It must sell on this page's origin: a store no domain vouches for (level C). */

@@ -14,6 +14,8 @@ const LANDING_CSP: Record<string, string[]> = {
   'default-src': ["'none'"],
   'script-src': ["'self'", 'https://pay.elisym.network'],
   'frame-src': ['https://pay.elisym.network'],
+  'style-src': ["'self'"],
+  'img-src': ["'self'", 'data:'],
   'connect-src': ["'self'"],
   'frame-ancestors': ["'none'"],
   'base-uri': ["'none'"],

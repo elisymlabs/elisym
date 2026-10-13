@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Icon } from './Icon';
 
 interface Props {
   text: string;
@@ -7,11 +8,14 @@ interface Props {
 
 export function CopyButton({ text, label }: Props) {
   const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(timer.current), []);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), 1500);
     } catch {
       setCopied(false);
     }
@@ -20,9 +24,11 @@ export function CopyButton({ text, label }: Props) {
     <button
       type="button"
       onClick={() => void copy()}
-      className="rounded-4 text-12 text-text-2 px-4 font-sans underline-offset-2 hover:underline"
+      aria-label={copied ? 'Copied' : label}
+      title={label}
+      className="rounded-6 text-text-3 hover:bg-surface-2 hover:text-text inline-grid size-24 shrink-0 place-items-center"
     >
-      {copied ? 'Copied' : label}
+      <Icon name={copied ? 'check' : 'copy'} className="size-14" />
     </button>
   );
 }

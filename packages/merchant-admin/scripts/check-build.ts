@@ -18,6 +18,8 @@ const DIST = new URL('../dist/', import.meta.url);
 const ADMIN_CSP: Record<string, string[]> = {
   'default-src': ["'none'"],
   'script-src': ["'self'"],
+  'style-src': ["'self'"],
+  'img-src': ["'self'", 'data:'],
   'connect-src': ['wss:'],
   'frame-src': ["'none'"],
   'frame-ancestors': ["'none'"],

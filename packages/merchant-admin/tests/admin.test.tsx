@@ -44,7 +44,7 @@ function keyInput(container: HTMLElement): HTMLInputElement {
 
 async function signIn(container: HTMLElement, value: string) {
   keyInput(container).value = value;
-  await act(async () => buttonNamed(container, 'Open').click());
+  await act(async () => buttonNamed(container, 'Open store').click());
 }
 
 function statusText(container: HTMLElement): string {
@@ -73,6 +73,7 @@ describe('sign in', () => {
     expect(input.getAttribute('autocapitalize')).toBe('off');
     expect(input.getAttribute('autocorrect')).toBe('off');
     expect(input.getAttribute('spellcheck')).toBe('false');
+    expect(input.className).toContain('placeholder:text-text-3');
   });
 
   it('refuses what is not a key, and opens nothing', async () => {
@@ -89,6 +90,23 @@ describe('sign in', () => {
     );
     expect(keyInput(mounted.container).value).toBe('');
     expect(createDeps).not.toHaveBeenCalled();
+  });
+
+  it('opens with Enter in the key field too', async () => {
+    const createDeps = vi.fn(() =>
+      fakeDeps(
+        relayClient(() => []),
+        [],
+      ),
+    );
+    mounted = await mount(<App ownTab createDeps={createDeps} leave={() => undefined} />);
+    const input = keyInput(mounted.container);
+    input.value = nip19.nsecEncode(key().secretKey);
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(createDeps).toHaveBeenCalledOnce();
+    expect(input.value).toBe('');
   });
 
   it('shows no key field in a tab another page opened or framed', async () => {
@@ -185,7 +203,7 @@ describe('the dashboard', () => {
     const rows = byId(container, 'orders').querySelectorAll('tr');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain(HOSTILE);
-    expect(rows[0]?.textContent).toContain('completed');
+    expect(rows[0]?.textContent).toContain('Completed');
     expect(byId(container, 'totals').textContent).toContain('1 USDC');
     expect(byId(container, 'totals').textContent).toContain('Orders loaded1');
     expect(byId(container, 'totals').textContent).not.toContain('nothing credited yet');
@@ -318,6 +336,10 @@ describe('the dashboard', () => {
     const { container } = mounted;
     await signIn(container, nip19.nsecEncode(store.secretKey));
     await settle(() => statusText(container) === 'Could not read: relay down');
+    // A way out, not an endless placeholder: the failure is said, in the error color.
+    expect(container.textContent).toContain('Your store could not be read');
+    expect(container.querySelector('.skeleton')).toBeNull();
+    expect(container.querySelector('[role="status"]')?.className).toContain('text-error');
     const refresh = buttonNamed(container, 'Refresh');
     expect(refresh.disabled).toBe(false);
     failing = false;
@@ -401,6 +423,9 @@ describe('the dashboard', () => {
     const links = mounted.container.querySelectorAll('a');
     expect(links).toHaveLength(1);
     expect(links[0]?.getAttribute('href')).toBe('https://explorer.example/tx/c');
+    // A new tab: the tab holding the key never navigates away.
+    expect(links[0]?.getAttribute('target')).toBe('_blank');
+    expect(links[0]?.getAttribute('rel')).toBe('noopener noreferrer');
   });
 
   it('a Refresh forced while a read runs reads nothing and keeps the buttons held', async () => {
@@ -528,12 +553,16 @@ describe('the dashboard', () => {
     const { container } = mounted;
     await signIn(container, nip19.nsecEncode(store.secretKey));
     await settle(() => /^Read 1000 order messages/.test(statusText(container)));
-    expect(byId(container, 'orders').textContent).not.toContain(lastId);
+    // A row shows the order id shortened, the whole id in its title.
+    const shows = (orderId: string) =>
+      byId(container, 'orders').querySelector(`[title="${orderId}"]`) !== null;
+    expect(shows(orderIdOf(0))).toBe(true);
+    expect(shows(lastId)).toBe(false);
     expect(byId(container, 'csv-partial').textContent).toMatch(/loaded orders only/);
 
     await act(async () => buttonNamed(container, 'Load more history').click());
     await settle(() => /^Read 1001 order messages/.test(statusText(container)));
-    expect(byId(container, 'orders').textContent).toContain(lastId);
+    expect(shows(lastId)).toBe(true);
     expect(container.querySelector('#csv-partial')).toBeNull();
     // Older history only: the store is read once, at open (a Refresh would read it again).
     expect(storeReads).toBe(1);

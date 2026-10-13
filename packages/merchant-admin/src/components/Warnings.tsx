@@ -1,3 +1,5 @@
+import { Icon } from './Icon';
+
 interface Props {
   texts: readonly string[];
 }
@@ -7,10 +9,13 @@ export function Warnings({ texts }: Props) {
     return null;
   }
   return (
-    <ul id="warnings" className="rounded-12 bg-warn-bg text-14 text-warn flex flex-col gap-6 p-14">
-      {texts.map((text) => (
-        <li key={text}>{text}</li>
-      ))}
-    </ul>
+    <div className="rounded-16 border-warn/30 bg-warn-bg text-warn flex gap-12 border p-16">
+      <Icon name="alert" className="mt-1 size-18 shrink-0" />
+      <ul id="warnings" className="text-14 flex flex-col gap-6">
+        {texts.map((text) => (
+          <li key={text}>{text}</li>
+        ))}
+      </ul>
+    </div>
   );
 }

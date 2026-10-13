@@ -52,8 +52,16 @@ describe('the admin source', () => {
       const code = readFileSync(path, 'utf8');
       expect(code).not.toMatch(/@elisym\/react|pay\.elisym\.network/);
       expect(code).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
+      // The CSP has style-src 'self': an inline style attribute would be refused.
+      expect(code).not.toMatch(/\bstyle=\{/);
       expect(code).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
     }
+  });
+
+  it('draws the focus ring in the readable accent, never the light-mode lime', () => {
+    expect(readFileSync(join(SRC, 'app.css'), 'utf8')).toMatch(
+      /:focus-visible \{\s*outline: 2px solid var\(--accent-ink\);/,
+    );
   });
 
   it('asks for the key only in a tab it claimed as its own', () => {
