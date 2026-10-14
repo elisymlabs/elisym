@@ -212,4 +212,27 @@ describe('the text colors', () => {
       }
     }
   });
+
+  it('labels each mark with a legend dot of its own color, and keeps the colors apart', () => {
+    const color = (mark: string) => mark.replace(/^(?:fill|stroke|bg)-/, '');
+    const states = Object.keys(STATE_FILLS) as (keyof typeof STATE_FILLS)[];
+    expect(states.sort()).toEqual((Object.keys(STATE_DOTS) as string[]).sort());
+    for (const state of states) {
+      expect(color(STATE_DOTS[state]), state).toBe(color(STATE_FILLS[state]));
+    }
+    for (const key of ['unknown', 'unpaid'] as const) {
+      expect(color(OTHER_DOTS[key]), key).toBe(color(OTHER_STROKES[key]));
+    }
+    expect(color(IDLE_DOT)).toBe(color(IDLE_STROKE));
+    expect(SERIES_STROKES).toHaveLength(SERIES_FILLS.length);
+    expect(SERIES_DOTS).toHaveLength(SERIES_FILLS.length);
+    SERIES_FILLS.forEach((fill, index) => {
+      expect(color(SERIES_STROKES[index] ?? ''), `series ${index}`).toBe(color(fill));
+      expect(color(SERIES_DOTS[index] ?? ''), `series ${index}`).toBe(color(fill));
+    });
+    expect(new Set(SERIES_FILLS.map(color)).size).toBe(SERIES_FILLS.length);
+    // Every state its own color, so the bar and its legend tell them apart.
+    expect(new Set(states.map((state) => color(STATE_FILLS[state]))).size).toBe(states.length);
+    expect(color(OTHER_STROKES.unknown)).not.toBe(color(OTHER_STROKES.unpaid));
+  });
 });
