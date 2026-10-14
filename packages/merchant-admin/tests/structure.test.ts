@@ -4,13 +4,11 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   HEADER_BAR,
-  HEADER_DOCS_LINK,
-  HEADER_LINK,
+  HEADER_HOME_LINK,
   HEADER_NAV,
   HEADER_ROW,
-  LANDING_SECTIONS,
+  LANDING_URL,
   PAGE_FRAME,
-  QUICKSTART_URL,
 } from '../src/constants';
 
 const ROOT = new URL('../', import.meta.url).pathname;
@@ -138,38 +136,30 @@ describe('the header', () => {
   const tokens = (classes: string) => classes.split(/\s+/).filter(Boolean).sort();
   const classOf = (pattern: RegExp) => landing.match(pattern)?.[1] ?? '';
 
-  it('is the landing header, class for class: bar, row, nav and links', () => {
+  it('is the landing header, class for class: bar, row and nav', () => {
     expect(tokens(classOf(/<header className="([^"]+)"/))).toEqual(tokens(HEADER_BAR));
     expect(tokens(classOf(/<div className="([^"]+)"/))).toEqual(
       tokens(HEADER_ROW).filter((token) => token !== 'w-full'),
     );
     expect(tokens(classOf(/<nav className="([^"]+)"/))).toEqual(tokens(HEADER_NAV));
-    expect(tokens(classOf(/key=\{item\.href\}[^>]*className="([^"]+)"/s))).toEqual(
-      tokens(HEADER_LINK),
-    );
-    expect(tokens(classOf(/href=\{DOCS\.quickstart\}[^>]*className="([^"]+)"/s))).toEqual(
-      tokens(HEADER_DOCS_LINK),
-    );
   });
 
-  it('links the landing sections the landing header links, and the same docs page', () => {
-    const items = [...landing.matchAll(/\{ href: '#([a-z-]+)', label: '([^']+)' \}/g)].map(
-      (match) => ({ id: match[1], label: match[2] }),
-    );
-    expect(items).toEqual(LANDING_SECTIONS);
-    const constants = readFileSync(join(ROOT, '../merchant-landing/src/constants.ts'), 'utf8');
-    expect(constants).toContain(`quickstart: '${QUICKSTART_URL}'`);
+  it('draws its one link as the landing draws a header link, but at every width', () => {
+    const link = tokens(classOf(/key=\{item\.href\}[^>]*className="([^"]+)"/s));
+    const shared = link.filter((token) => token !== 'hidden' && !token.includes(':inline'));
+    expect(link.length).toBeGreaterThan(shared.length);
+    expect(tokens(HEADER_HOME_LINK)).toEqual(expect.arrayContaining(shared));
+    expect(tokens(HEADER_HOME_LINK)).not.toContain('hidden');
   });
 });
 
 describe('the header links and logo', () => {
   const auth = readFileSync(join(SRC, 'components/AuthLayout.tsx'), 'utf8');
 
-  it('styles the section links and the docs link as the landing does', () => {
-    expect(auth).toMatch(/LANDING_SECTIONS\.map\([\s\S]*?className=\{HEADER_LINK\}/);
-    expect(auth).toMatch(/href=\{QUICKSTART_URL\} className=\{HEADER_DOCS_LINK\}/);
-    expect(auth.match(/className=\{HEADER_LINK\}/g)).toHaveLength(1);
-    expect(auth.match(/className=\{HEADER_DOCS_LINK\}/g)).toHaveLength(1);
+  it('has one link: home, to the landing', () => {
+    expect(auth.match(/<a /g)).toHaveLength(1);
+    expect(auth).toMatch(/href=\{LANDING_URL\} className=\{HEADER_HOME_LINK\}/);
+    expect(LANDING_URL).toBe('https://paycore.elisym.network');
   });
 
   it('draws the logo block with the landing logo classes, in order', () => {
