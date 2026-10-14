@@ -14,7 +14,7 @@
     "lint": "oxlint src/ tests/"
   },
   "dependencies": {
-    "@elisym/pay-core": "~0.2.0",
+    "@elisym/pay-core": "~0.3.0",
     "@solana/kit": "~6.8.0",
     "decimal.js-light": "~2.5.1"
   },
