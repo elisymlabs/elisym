@@ -3,8 +3,14 @@
  * and how it is printed. Every chain client comes in through `RunDeps`, so a
  * test runs it against fixtures.
  */
-import { type Network, isEvmAddressFormat, readFeeTerms, chainFor } from '@elisym/pay-core';
-import { type Eip1193Client, createJsonRpcClient } from '@elisym/pay-core/evm';
+import {
+  type Network,
+  FeeConfigError,
+  isEvmAddressFormat,
+  readFeeTerms,
+  chainFor,
+} from '@elisym/pay-core';
+import { type Eip1193Client, checkEvmChain, createJsonRpcClient } from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, createSolanaRpc } from '@solana/kit';
 import {
   type ContextCount,
@@ -134,7 +140,11 @@ export interface RunResult {
   complete: boolean;
 }
 
-/** The known treasuries: the flags, and the config's current ones on both rails. */
+/**
+ * The known treasuries: the flags, and the config's current ones on both rails.
+ * A Solana rpc on another cluster is fatal (every count would be the wrong
+ * chain's); any other failure to read the config leaves only the flags.
+ */
 async function treasuriesFor(
   rpc: Rpc<SolanaRpcApi>,
   network: Network,
@@ -149,12 +159,34 @@ async function treasuriesFor(
         treasuries.add(terms.treasury);
       }
     } catch (error) {
+      if (error instanceof FeeConfigError && error.code === 'wrong_cluster') {
+        throw new Error(`${SOLANA_RPC_ENV} does not serve Solana ${network}`);
+      }
       warn(
         `warning: the ${rail} fee terms could not be read (${redactUrls(error instanceof Error ? error.message : String(error))}): only --treasury addresses count as fees`,
       );
     }
   }
   return treasuries;
+}
+
+/** Refuse a Tempo endpoint that is not the network's chain, or that will not say. */
+async function assertTempoChain(
+  client: Eip1193Client,
+  url: string,
+  network: Network,
+): Promise<void> {
+  let chainId: bigint | null;
+  try {
+    chainId = await checkEvmChain(client, chainFor('tempo', network));
+  } catch (error) {
+    throw new Error(
+      `the Tempo rpc ${url} does not serve Tempo ${network}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (chainId === null) {
+    throw new Error(`the Tempo rpc ${url} did not answer eth_chainId`);
+  }
 }
 
 /** Scan both rails from the launch and build the report. */
@@ -164,11 +196,19 @@ export async function runStats(options: StatsOptions, deps: RunDeps): Promise<Ru
     throw new Error(`set ${SOLANA_RPC_ENV} to a Solana RPC with full history (a server-only key)`);
   }
   const network = options.network;
-  const tempoUrl = deps.env[TEMPO_RPC_ENV] ?? chainFor('tempo', network).rpcUrls[0];
+  const tempoChain = chainFor('tempo', network);
+  const tempoOverride = deps.env[TEMPO_RPC_ENV];
+  const tempoUrl =
+    tempoOverride === undefined || tempoOverride.length === 0
+      ? tempoChain.rpcUrls[0]
+      : tempoOverride;
   if (tempoUrl === undefined) {
     throw new Error(`set ${TEMPO_RPC_ENV}`);
   }
   const rpc = deps.solanaRpc(solanaUrl);
+  const client = deps.tempoClient(tempoUrl);
+  // Both endpoints are proven to be the asked network before anything is read.
+  await assertTempoChain(client, tempoUrl, network);
   const treasuries = await treasuriesFor(rpc, network, options.treasuries, deps.warn);
   const launch = MARKER_LAUNCH[network];
   const context: ContextCount[] = [];
@@ -177,7 +217,6 @@ export async function runStats(options: StatsOptions, deps: RunDeps): Promise<Ru
   context.push(...solana.context);
   context.push({ day: utcDay(deps.now()), rail: 'solana', bucket: 'partial_day', count: 1 });
 
-  const client = deps.tempoClient(tempoUrl);
   const head = await finalizedHead(client);
   const ranges = await hourRanges(blockClock(client), launch, head);
   const tempo = await scanTempo(client, network, ranges, treasuries);

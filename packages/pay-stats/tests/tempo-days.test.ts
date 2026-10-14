@@ -6,7 +6,6 @@ import {
   dayStart,
   firstBlockAtOrAfter,
   hourRanges,
-  partialDays,
 } from '../src/tempo-days';
 
 const LAUNCH = '2026-10-20';
@@ -73,7 +72,7 @@ describe('hourRanges', () => {
   const headTime = T0 + 30 * HOUR_SECS + 1800;
   const head = { number: (headTime - GENESIS_TIME) * 2 + 1, timestamp: headTime };
 
-  it('splits the run into hours with no gap and no overlap, the last one partial', async () => {
+  it('splits the run into hours with no gap and no overlap, the last one at the head', async () => {
     const clock = clockOf(twoPerSecond);
     const ranges = await hourRanges(clock, LAUNCH, head);
     expect(ranges).toHaveLength(31);
@@ -83,15 +82,13 @@ describe('hourRanges', () => {
       const next = ranges[index + 1];
       if (next !== undefined) {
         expect(next.fromBlock).toBe(range.toBlock + 1);
-        expect(range.partial).toBe(false);
       }
     }
     const last = ranges.at(-1);
-    expect(last).toMatchObject({ partial: true, toBlock: head.number });
+    expect(last).toMatchObject({ toBlock: head.number });
     // A day of 24 hours, then the partial second day.
     expect(ranges.filter((range) => range.day === '2026-10-20')).toHaveLength(24);
     expect(ranges.filter((range) => range.day === '2026-10-21')).toHaveLength(7);
-    expect([...partialDays(ranges, head.timestamp)]).toEqual(['2026-10-21']);
     // A few reads per hour, not a full search each.
     expect(clock.reads / ranges.length).toBeLessThan(40);
   });

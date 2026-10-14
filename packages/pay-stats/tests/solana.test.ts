@@ -119,6 +119,21 @@ describe('classifySolanaTransaction', () => {
     });
   });
 
+  it('leaves out a fee leg in another coin than the provider leg', () => {
+    const transaction = landedJson(
+      [
+        memo('elisym:commerce'),
+        usdcTransfer(PAYER_ATA, PAYOUT_ATA, 48_510_000n),
+        solTransfer(PAYER, TREASURY, 5_000n),
+      ],
+      { tokenOwners: OWNERS },
+    );
+    expect(classify(transaction)).toMatchObject({
+      kind: 'commerce',
+      candidate: { coin: 'USDC', provider: 48_510_000n, fees: [] },
+    });
+  });
+
   it('puts a payment with only treasury legs in treasury_only', () => {
     const transaction = landedJson(
       [memo('elisym:commerce'), usdcTransfer(PAYER_ATA, TREASURY_ATA, 3n)],

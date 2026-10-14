@@ -17,7 +17,6 @@ import { readBlockByNumber, readFinalizedBlock } from '@elisym/pay-core/evm';
 import { utcDay } from './aggregate';
 
 export const HOUR_SECS = 3600;
-const DAY_SECS = 86_400;
 /** About 0.555 s a block on Tempo mainnet (measured 2026-10-14). */
 const DEFAULT_BLOCKS_PER_HOUR = 6_500;
 /** How much past the expected boundary the first probe looks. */
@@ -136,8 +135,6 @@ export interface HourRange {
   day: string;
   fromBlock: number;
   toBlock: number;
-  /** The hour is not over at the finalized head. */
-  partial: boolean;
 }
 
 /** The UTC midnight of a `YYYY-MM-DD` day, unix seconds. */
@@ -151,7 +148,7 @@ export function dayStart(day: string): number {
 
 /**
  * Every hour from `launchDay` to the finalized head, as block ranges. An hour
- * with no block is left out; the last one ends at the head and is `partial`.
+ * with no block is left out; the last one ends at the head.
  */
 export async function hourRanges(
   clock: BlockClock,
@@ -191,20 +188,10 @@ export async function hourRanges(
         day: utcDay(start),
         fromBlock: boundary,
         toBlock: Math.min(next - 1, head.number),
-        partial: end > head.timestamp,
       });
       blocksPerHour = Math.max(1, next - boundary);
     }
     boundary = next;
   }
   return ranges;
-}
-
-/** The days a run covers that are not over at the head. */
-export function partialDays(ranges: readonly HourRange[], headTimestamp: number): Set<string> {
-  return new Set(
-    ranges
-      .filter((range) => dayStart(range.day) + DAY_SECS > headTimestamp)
-      .map((range) => range.day),
-  );
 }

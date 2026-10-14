@@ -442,17 +442,20 @@ describe('the payment reference form', () => {
     ['declares the marker', true, 'tempoMarked'],
     ['does not declare it', false, 'tempo'],
     ['says nothing', undefined, 'tempo'],
-  ] as const)('pays Tempo for a store that %s under the %s memo', async (_l, memoMarker, form) => {
-    const shop = makeShop({
-      caip19: TEMPO_CAIP19,
-      payout: EVM_PAYOUT,
-      ...(memoMarker === undefined ? {} : { memoMarker }),
-    });
-    const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
-    const { record, reference } = await placedOn(shop, relays, ['evm']);
-    expect(record.reference).toBe(reference[form]);
-    expect(record.medium).toBe('tempo');
-  });
+  ] as const)(
+    'pays Tempo for a store that %s (memoMarker %s) under the %s memo',
+    async (_label, memoMarker, form) => {
+      const shop = makeShop({
+        caip19: TEMPO_CAIP19,
+        payout: EVM_PAYOUT,
+        ...(memoMarker === undefined ? {} : { memoMarker }),
+      });
+      const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+      const { record, reference } = await placedOn(shop, relays, ['evm']);
+      expect(record.reference).toBe(reference[form]);
+      expect(record.medium).toBe('tempo');
+    },
+  );
 
   it('pays Solana under the reference key whatever the marker says', async () => {
     const shop = makeShop({ memoMarker: true });

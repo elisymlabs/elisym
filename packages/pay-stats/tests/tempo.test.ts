@@ -36,8 +36,8 @@ function leg(
 }
 
 const RANGES: HourRange[] = [
-  { start: 0, day: DAY, fromBlock: 100, toBlock: 199, partial: false },
-  { start: 3600, day: DAY, fromBlock: 200, toBlock: 299, partial: false },
+  { start: 0, day: DAY, fromBlock: 100, toBlock: 199 },
+  { start: 3600, day: DAY, fromBlock: 200, toBlock: 299 },
 ];
 
 describe('scanTempo', () => {

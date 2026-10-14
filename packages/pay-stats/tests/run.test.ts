@@ -1,5 +1,7 @@
-import type { Rpc, SolanaRpcApi } from '@solana/kit';
+import { PROTOCOL_PROGRAM_ID_MAINNET, chainFor } from '@elisym/pay-core';
+import { type Address, type Rpc, type SolanaRpcApi, address, none } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
+import { getConfigEncoder } from '../../config-client/src/index';
 import { TRANSFER_WITH_MEMO_TOPIC } from '../../pay-core/src/evm/constants';
 import { fakeTempoChain, invalidRangeError } from '../../pay-core/tests/tempo-chain';
 import {
@@ -18,6 +20,12 @@ const SECRET_URL = 'https://rpc.example.com/v1/secret-path?api-key=SECRET-KEY';
 const USDCE = '0x20c000000000000000000000b9537d11c60e8b50';
 const PAYER = '0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc';
 const PAYOUT = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+const EVM_TREASURY = '0x90f79bf6eb2c4f870365e785982e1f101e93b906';
+const SOLANA_TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
+const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
+const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
+const MARKED_MEMO = `0xfab22e7e${'01'.repeat(28)}`;
+const TX_HASH = `0x${'ab'.repeat(32)}`;
 const LAUNCH = dayStart(MARKER_LAUNCH.mainnet);
 const GENESIS_TIME = LAUNCH - 1000;
 const HEAD_TIME = LAUNCH + 2 * 3600 + 600;
@@ -45,6 +53,47 @@ const EMPTY_SOLANA = {
   getSignaturesForAddress: () => ({ send: async () => [] }),
 } as unknown as Rpc<SolanaRpcApi>;
 
+function evmBytes(hex: string): Uint8Array {
+  return Uint8Array.from(hex.slice(2).match(/.{2}/g) ?? [], (pair) => Number.parseInt(pair, 16));
+}
+
+/**
+ * A Solana node on `genesis` with no tagged transaction, serving a config
+ * account at 100 bps with both treasuries set at whatever address is asked.
+ */
+function solanaWithConfig(genesis: string): Rpc<SolanaRpcApi> {
+  const data = getConfigEncoder().encode({
+    version: 1,
+    bump: 254,
+    admin: address(SOLANA_TREASURY),
+    pendingAdmin: none(),
+    treasury: address(SOLANA_TREASURY),
+    feeBps: 100,
+    paused: false,
+    lastUpdated: 1_700_000_000n,
+    evmTreasury: evmBytes(EVM_TREASURY),
+    reserved: new Uint8Array(108),
+  });
+  const node = {
+    getGenesisHash: () => ({ send: async () => genesis }),
+    getSignaturesForAddress: () => ({ send: async () => [] }),
+    getAccountInfo: (_address: Address) => ({
+      send: async () => ({
+        context: { slot: 1n },
+        value: {
+          data: [Buffer.from(data).toString('base64'), 'base64'],
+          executable: false,
+          lamports: 1_000_000n,
+          owner: PROTOCOL_PROGRAM_ID_MAINNET,
+          space: BigInt(data.length),
+          rentEpoch: 0n,
+        },
+      }),
+    }),
+  };
+  return node as unknown as Rpc<SolanaRpcApi>;
+}
+
 function deps(tempo: ReturnType<typeof fakeTempoChain>, env: Record<string, string> = {}) {
   const out = { printed: [] as string[], warned: [] as string[] };
   const runDeps: RunDeps & { print: (text: string) => void } = {
@@ -58,24 +107,24 @@ function deps(tempo: ReturnType<typeof fakeTempoChain>, env: Record<string, stri
   return { runDeps, out };
 }
 
+/** A marked USDC.e transfer in the launch day's first hour. */
+function markedLog(to: string, amount: bigint, logIndex: number) {
+  return {
+    address: USDCE,
+    topics: [TRANSFER_WITH_MEMO_TOPIC, `0x${word(PAYER)}`, `0x${word(to)}`, MARKED_MEMO],
+    data: `0x${word(amount)}`,
+    blockNumber: (LAUNCH + 600 - GENESIS_TIME) * 2,
+    transactionHash: TX_HASH,
+    logIndex,
+  };
+}
+
 function chainWith(options: Parameters<typeof fakeTempoChain>[0] = {}) {
-  const marked = `0xfab22e7e${'01'.repeat(28)}`;
-  // A marked payment in the launch day's first hour.
-  const block = (LAUNCH + 600 - GENESIS_TIME) * 2;
   return fakeTempoChain({
     chainId: '0x1079',
     finalized: HEAD,
     timestamps: timestamps(),
-    logs: [
-      {
-        address: USDCE,
-        topics: [TRANSFER_WITH_MEMO_TOPIC, `0x${word(PAYER)}`, `0x${word(PAYOUT)}`, marked],
-        data: `0x${word(49_000_000n)}`,
-        blockNumber: block,
-        transactionHash: `0x${'ab'.repeat(32)}`,
-        logIndex: 0,
-      },
-    ],
+    logs: [markedLog(PAYOUT, 49_000_000n, 0)],
     ...options,
   });
 }
@@ -126,9 +175,62 @@ describe('the command line', () => {
     );
     expect(printed).toContain('# fees');
     expect(printed).toContain(`${MARKER_LAUNCH.mainnet},tempo,partial_day,1`);
+    expect(printed).toContain(`${MARKER_LAUNCH.mainnet},solana,partial_day,1`);
     // The fee config could not be read: said, without the URL.
     expect(out.warned.join('\n')).toMatch(/fee terms could not be read/);
     expect(`${printed}\n${out.warned.join('\n')}`).not.toContain('SECRET');
+  });
+
+  it('counts a leg to the on-chain config treasury as a fee', async () => {
+    const { runDeps, out } = deps(
+      chainWith({
+        logs: [markedLog(PAYOUT, 49_000_000n, 0), markedLog(EVM_TREASURY, 490_000n, 1)],
+      }),
+    );
+    runDeps.solanaRpc = () => solanaWithConfig(MAINNET_GENESIS);
+    expect(await main([], runDeps)).toBe(EXIT_OK);
+    const printed = out.printed.join('\n');
+    expect(printed).toContain(
+      `${MARKER_LAUNCH.mainnet},tempo,mainnet,USDC.e,${PAYOUT},1,49490000,49.49,49000000,490000,0,0`,
+    );
+    expect(printed).toContain(
+      `${MARKER_LAUNCH.mainnet},tempo,mainnet,USDC.e,${EVM_TREASURY},1,490000,0.49`,
+    );
+    expect(out.warned).toEqual([]);
+  });
+
+  it('refuses a Solana rpc on another cluster, scanning nothing', async () => {
+    const { runDeps, out } = deps(chainWith());
+    runDeps.solanaRpc = () => solanaWithConfig(DEVNET_GENESIS);
+    expect(await main([], runDeps)).toBe(EXIT_ERROR);
+    expect(out.printed).toEqual([]);
+    expect(out.warned.join('\n')).toMatch(/does not serve Solana mainnet/);
+  });
+
+  it('refuses a Tempo rpc on another chain, scanning nothing', async () => {
+    const { runDeps, out } = deps(chainWith({ chainId: '0xa5bf' }), {
+      ELISYM_STATS_TEMPO_RPC_URL: 'https://tempo.example.com/secret?key=SECRET-TEMPO',
+    });
+    expect(await main([], runDeps)).toBe(EXIT_ERROR);
+    expect(out.printed).toEqual([]);
+    const warned = out.warned.join('\n');
+    expect(warned).toContain('https://tempo.example.com does not serve Tempo mainnet');
+    expect(warned).not.toContain('SECRET');
+  });
+
+  it.each([
+    ['an override', 'https://tempo.example.com/key', 'https://tempo.example.com/key'],
+    ['an empty value as unset', '', chainFor('tempo', 'mainnet').rpcUrls[0]],
+  ])('reads the Tempo rpc from the environment, %s', async (_label, value, expected) => {
+    const { runDeps } = deps(chainWith(), { ELISYM_STATS_TEMPO_RPC_URL: value });
+    const asked: string[] = [];
+    const client = runDeps.tempoClient('');
+    runDeps.tempoClient = (url) => {
+      asked.push(url);
+      return client;
+    };
+    expect(await main([], runDeps)).toBe(EXIT_OK);
+    expect(asked).toEqual([expected]);
   });
 
   it('exits non-zero when an hour stays incomplete, still printing what it read', async () => {
