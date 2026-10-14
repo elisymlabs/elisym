@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { CLAIM_LABELS, type OrderRow, amountText, dateText, short } from '../lib/core';
-import { rowNotes } from '../lib/orders';
+import { feeText, rowNotes } from '../lib/orders';
 import { Icon } from './Icon';
 import { OrderDetails } from './OrderDetails';
 import { StatusPill } from './StatusPill';
@@ -86,6 +86,9 @@ export function OrderRowView({ row }: Props) {
               <span className="font-medium whitespace-nowrap">
                 {amountText(credit, credit.medium)}
               </span>
+              {feeText(credit) !== undefined && (
+                <span className="text-12 text-text-3 whitespace-nowrap">{`elisym fee ${feeText(credit)}`}</span>
+              )}
               <span className="text-12">
                 <TxLink tx={credit.tx} explorer={credit.explorer} />
               </span>

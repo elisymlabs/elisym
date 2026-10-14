@@ -30,7 +30,9 @@ function row(overrides: Partial<OrderRow> = {}): OrderRow {
     orderNotLoaded: false,
     claimCheck: 'matches',
     state: 'delivered',
-    credits: [{ tx: 'tx-1', amount: '1500000', asset: USDC, medium: 'solana-devnet' }],
+    credits: [
+      { tx: 'tx-1', amount: '1500000', asset: USDC, medium: 'solana-devnet', fee: '15000' },
+    ],
     refunds: [],
     reported: [],
     unlistedMedium: false,
@@ -64,6 +66,7 @@ describe('ordersCsv', () => {
     expect(cell('claim_check')).toBe('matches the listing');
     expect(cell('state')).toBe('completed');
     expect(cell('credited')).toBe('1.5');
+    expect(cell('credited_fee')).toBe('0.015');
     expect(cell('credited_asset')).toBe(USDC_DEVNET_CAIP19);
     expect(cell('transactions')).toBe('tx-1');
     expect(cell('buyer_pubkey')).toBe('b'.repeat(64));
@@ -73,13 +76,14 @@ describe('ordersCsv', () => {
     const [, first] = lines(
       ordersCsv([
         row({
-          credits: [{ tx: 'tx-1', amount: '7', medium: 'solana-devnet' }],
+          credits: [{ tx: 'tx-1', amount: '7', medium: 'solana-devnet', fee: '0' }],
           refunds: [{ tx: 'tx-2', amount: '3' }],
         }),
       ]),
     );
     const cell = (name: (typeof CSV_COLUMNS)[number]) => first?.[CSV_COLUMNS.indexOf(name)];
     expect(cell('credited')).toBe('7 subunits');
+    expect(cell('credited_fee')).toBe('0 subunits');
     expect(cell('credited_asset')).toBe('unknown (solana-devnet)');
     expect(cell('refunded')).toBe('3 subunits');
     expect(cell('refunded_asset')).toBe('unknown');

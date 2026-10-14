@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { CLAIM_LABELS, type OrderRow, STATE_LABELS, amountText, dateText } from '../lib/core';
-import { rowNotes } from '../lib/orders';
+import { feeText, rowNotes } from '../lib/orders';
 import { CopyButton } from './CopyButton';
 import { TxLink } from './TxLink';
 
@@ -62,6 +62,9 @@ export function OrderDetails({ row }: Props) {
           {row.credits.map((credit) => (
             <span key={`${credit.medium}|${credit.tx}`} className="flex flex-col">
               <span>{`credited ${amountText(credit, credit.medium)}`}</span>
+              {feeText(credit) !== undefined && (
+                <span className="text-text-2">{`of which elisym fee ${feeText(credit)}`}</span>
+              )}
               <TxLink tx={credit.tx} explorer={credit.explorer} full />
             </span>
           ))}
