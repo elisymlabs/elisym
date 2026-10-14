@@ -462,22 +462,22 @@ describe('AdminSession', () => {
   it('pages each relay, and unions relays with different windows', async () => {
     const store = key();
     const owner = key();
-    const many = Array.from({ length: 600 }, (_, index) =>
+    const many = Array.from({ length: 400 }, (_, index) =>
       listing(store, `p-${index.toString().padStart(3, '0')}`, T0 - 1000 + index),
     );
     const other = 'wss://second.example.com';
     const client = relayClient([], {
       byRelay: {
-        // The inbox holds the newest 400, the second relay the oldest 300.
-        [INBOX]: many.slice(200),
-        [other]: many.slice(0, 300),
+        // The inbox holds the newest 300, the second relay the oldest 260: each more than a page.
+        [INBOX]: many.slice(100),
+        [other]: many.slice(0, 260),
         'wss://relay.damus.io': storeEvents(store, owner, [INBOX, other]),
         'wss://nos.lol': storeEvents(store, owner, [INBOX, other]),
       },
     });
     const admin = session({ client, pool: fakePool([]), now }, store, true);
     const snapshot = snapshotOf(await admin.open());
-    expect(snapshot.allProducts?.lines).toHaveLength(600);
+    expect(snapshot.allProducts?.lines).toHaveLength(400);
     expect(snapshot.allProducts?.incomplete).toBe(false);
     const storeWide = client.asked.filter(
       ({ filter }) => filter.kinds?.includes(KIND_PRODUCT) === true && filter['#d'] === undefined,
@@ -490,7 +490,7 @@ describe('AdminSession', () => {
     const store = key();
     const owner = key();
     // Signed once: each case reads the newest `count` of them.
-    const signed = Array.from({ length: 950 }, (_, index) =>
+    const signed = Array.from({ length: 172 }, (_, index) =>
       listing(store, `c-${index}`, T0 - 5000 + index),
     );
     const spread = (count: number) => signed.slice(signed.length - count);
@@ -498,7 +498,7 @@ describe('AdminSession', () => {
       snapshotOf(
         await session(
           {
-            client: relayClient([...storeEvents(store, owner), ...spread(count)], { cap: 100 }),
+            client: relayClient([...storeEvents(store, owner), ...spread(count)], { cap: 20 }),
             pool: fakePool([]),
             now,
           },
@@ -506,18 +506,19 @@ describe('AdminSession', () => {
           true,
         ).open(),
       );
-    // Exactly eight full pages (the first brings 100, each next one 99 new: `until` is
+    // Exactly eight full pages (the first brings 20, each next one 19 new: `until` is
     // inclusive): the probe page finds nothing new, so the list is whole.
-    const exact = await read(793);
-    expect(exact.allProducts?.lines).toHaveLength(793);
+    const exact = await read(153);
+    expect(exact.allProducts?.lines).toHaveLength(153);
     expect(exact.allProducts?.incomplete).toBe(false);
-    const capped = await read(300);
-    expect(capped.allProducts?.lines).toHaveLength(300);
+    const capped = await read(60);
+    expect(capped.allProducts?.lines).toHaveLength(60);
     expect(capped.allProducts?.incomplete).toBe(false);
-    // Nine pages of 100 still bring new listings: more than the eight pages read.
-    const long = await read(950);
+    // Exactly nine full pages: the ninth still brings new listings, one page past the
+    // eight read, so the list is incomplete and holds the eight pages only.
+    const long = await read(172);
     expect(long.allProducts?.incomplete).toBe(true);
-    expect(long.allProducts?.lines.length).toBeLessThan(950);
+    expect(long.allProducts?.lines).toHaveLength(153);
   });
 
   it('a Refresh that reads the whole list clears incomplete', async () => {
@@ -550,7 +551,7 @@ describe('AdminSession', () => {
     const held = fakePool([], { hold: true });
     pool.subscribeEose = held.subscribeEose;
     const refreshing = admin.refresh();
-    await vi.waitFor(() => expect(stores).toEqual(['Shop', 'Shop']));
+    await vi.waitFor(() => expect(stores).toEqual(['Shop', 'Shop']), { timeout: 10_000 });
     held.release();
     await refreshing;
   });

@@ -8,6 +8,6 @@ export const STORE_KEY_COMMAND = 'npx @elisym/merchant-node store-key';
 export const LOCAL_ADMIN_COMMAND = 'npx @elisym/merchant-node admin';
 
 /** The Pay Core landing: its own origin, never this one. */
-export const LANDING_URL = 'https://merchant.elisym.network';
+export const LANDING_URL = 'https://paycore.elisym.network';
 
 export const QUICKSTART_URL = 'https://docs.elisym.network/commerce/quickstart';
