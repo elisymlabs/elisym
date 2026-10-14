@@ -85,7 +85,7 @@ export function OfferPanel({
         </div>
       )}
       {view.askEmail ? <EmailField value={email} onInput={onEmail} /> : null}
-      <ProblemNote problem={atEmail} asset={paying.asset} reveal />
+      <ProblemNote problem={atEmail} asset={paying.asset} tempo={tempo} reveal />
       <ProblemNote
         problem={aboveButton}
         asset={paying.asset}

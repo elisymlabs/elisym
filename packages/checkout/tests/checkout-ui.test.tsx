@@ -710,6 +710,17 @@ describe('the wallets', () => {
     expect(ui.text()).toContain('Reload this page after installing');
   });
 
+  it('name only Solana wallets on a Solana-only store, when a wallet failed', () => {
+    const offer = cannedOffer({ payouts: ['solana-devnet'] });
+    const ui = withWallets(
+      offerView(offer, { wallets: [{ name: 'Other' }], problem: { reason: 'no_wallet' } }),
+    );
+    expect(ui.alerts().join(' ')).toContain(
+      'Connect a Solana wallet, such as Phantom or Solflare.',
+    );
+    expect(ui.text()).not.toMatch(/Tempo|MetaMask/);
+  });
+
   it('name MetaMask for Tempo, when none is found and when a wallet failed', () => {
     const offer = cannedOffer({ payouts: ['tempo-devnet'] });
     const ui = withWallets(offerView(offer, { wallets: [] }));
@@ -719,7 +730,11 @@ describe('the wallets', () => {
     ui.draw({
       view: offerView(offer, { wallets: [{ name: 'Other' }], problem: { reason: 'no_wallet' } }),
     });
-    expect(ui.alerts().join(' ')).toContain('MetaMask is known to work');
+    expect(ui.alerts().join(' ')).toContain(
+      'Connect a wallet that can pay on Tempo, such as MetaMask.',
+    );
+    // A Tempo-only store: nothing about Solana.
+    expect(ui.text()).not.toMatch(/Solana|Phantom|Solflare/);
     ui.draw({
       view: offerView(offer, {
         wallets: [{ name: 'Other' }],

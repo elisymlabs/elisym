@@ -87,10 +87,18 @@ export const CHECK_IN_WALLET = 'Check in wallet';
  * `asset`: the coin the order is paid in, for amounts of it. `canPress`: the screen
  * offers something to press now; without it, nothing says "try again".
  */
-export function problemText(problem: Problem, asset: Asset, canPress = true): string {
+/** `tempo`: the payout's rail, so a wallet hint names only the network the store takes. */
+export function problemText(
+  problem: Problem,
+  asset: Asset,
+  tempo: boolean,
+  canPress = true,
+): string {
   switch (problem.reason) {
     case 'no_wallet':
-      return 'Connect a wallet for this network (Phantom or Solflare on Solana, MetaMask on Tempo).';
+      return tempo
+        ? 'Connect a wallet that can pay on Tempo, such as MetaMask.'
+        : 'Connect a Solana wallet, such as Phantom or Solflare.';
     case 'tempo_unsupported':
       return 'This wallet cannot pay on Tempo. Choose another wallet.';
     case 'wallet_busy':

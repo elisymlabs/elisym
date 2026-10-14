@@ -172,7 +172,12 @@ export function WaitingPayment({ view, problem, onRetry, onSignAgain, onStartOve
         {status}
       </p>
       {note === null ? null : <p class="note">{note}</p>}
-      <ProblemNote problem={problemShown} asset={view.asset} canPress={view.canRetry} />
+      <ProblemNote
+        problem={problemShown}
+        asset={view.asset}
+        tempo={view.tempo}
+        canPress={view.canRetry}
+      />
       {view.explorer === undefined ? null : (
         <p>
           <a href={view.explorer} target="_blank" rel="noopener noreferrer">
