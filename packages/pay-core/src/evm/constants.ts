@@ -6,37 +6,17 @@
  * ever taken from a card, a payment request or a job.
  */
 
-/** TIP-403 receive-policy registry. */
-export const TEMPO_POLICY_REGISTRY = '0x403c000000000000000000000000000000000000';
-/** The guard that holds a blocked transfer's funds and emits `TransferBlocked`. */
-export const TEMPO_TRANSFER_GUARD = '0xb10c000000000000000000000000000000000000';
-/**
- * The network's fee sink. Every Tempo receipt ends with a transfer to it, on a
- * reverted transaction too - so a sender matching its own legs must never count
- * one.
- */
-export const TEMPO_FEE_SINK = '0xfeec000000000000000000000000000000000000';
-
-/** Twenty zero bytes: the burn address, and the `recoveryAuthority` that means "the originator". */
-export const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
-
-/** The TIP-1022 address registry precompile, live on mainnet. */
-export const TEMPO_ADDRESS_REGISTRY = '0xfdc0000000000000000000000000000000000000';
-
-/**
- * Addresses no payment of ours may name. Four are the protocol's own system
- * accounts - the policy registry, the transfer guard, the fee sink and the
- * address registry - and the fifth is the burn address: money sent to any of
- * them is gone, and nothing this SDK can read would ever report it as
- * delivered - the fee sink is excluded from every leg match by name.
- */
-export const TEMPO_UNPAYABLE_ADDRESSES: readonly string[] = [
-  ZERO_ADDRESS,
+// The addresses no payment may name live with the chain registry, so the
+// rail-neutral code (the fee terms, the payability check) reads them without
+// importing the rail. Re-exported here, where they were first published.
+export {
+  TEMPO_ADDRESS_REGISTRY,
+  TEMPO_FEE_SINK,
   TEMPO_POLICY_REGISTRY,
   TEMPO_TRANSFER_GUARD,
-  TEMPO_FEE_SINK,
-  TEMPO_ADDRESS_REGISTRY,
-];
+  TEMPO_UNPAYABLE_ADDRESSES,
+  ZERO_ADDRESS,
+} from '../payment/chains';
 /** `receivePolicy(address)` on the registry: exactly 192 bytes back. */
 export const RECEIVE_POLICY_SELECTOR = '0xe111e611';
 /**

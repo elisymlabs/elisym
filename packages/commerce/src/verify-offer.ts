@@ -78,6 +78,12 @@ export interface VerifiedOffer {
   storePubkey: string;
   ownerPubkey: string;
   profile: StoreProfile;
+  /**
+   * The store's node takes protocol-fee v1 split payments (its profile carries
+   * `['fee', '1']`). A buyer adds a fee leg only for such a store: an older node
+   * refuses a split and the buyer would pay for nothing.
+   */
+  feeSupport: boolean;
   product: Product;
   /** Where a payment for this offer may go: the owner's 10133 addresses for the assets the product accepts. */
   payouts: PayoutTarget[];
@@ -466,6 +472,7 @@ export function evaluateOffer(
     storePubkey,
     ownerPubkey,
     profile,
+    feeSupport: profile.feeSupport,
     product,
     payouts,
     paytoCreatedAt: paytoEvent.created_at,

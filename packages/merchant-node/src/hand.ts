@@ -173,14 +173,16 @@ function refundAsset(
 }
 
 /**
- * Close the order in the ledger: gone from `orders` (with everything kept on it),
- * its key closed - never credited, never reusable, also by a node older than
- * this command - and the answer kept as sent.
+ * Close the order in the ledger: gone from `orders` (with everything kept on it,
+ * its unresolved payments too), its key closed - never credited, never
+ * reusable, also by a node older than this command - and the answer kept as sent.
  */
 export function applyHandAnswer(state: LedgerState, key: string, answer: HandAnswer): void {
   delete state.orders[key];
   (state.closedOrders ??= {})[key] = true;
   (state.answeredByHand ??= {})[key] = answer;
+  // The owner decided on the order's unresolved payments: they are no longer shown.
+  state.unresolvedPayments = state.unresolvedPayments.filter((entry) => entry.key !== key);
 }
 
 /**

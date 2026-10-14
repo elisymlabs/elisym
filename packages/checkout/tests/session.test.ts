@@ -28,6 +28,7 @@ import {
 import { receiptText } from '../src/app/ui/text';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
+import { NO_FEE_TERMS } from './fee-fixtures';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';
@@ -102,6 +103,7 @@ async function setup(
     readClient: relays,
     clientFor: () => relays,
     rpcFor: () => chain.rpc,
+    feeTerms: NO_FEE_TERMS,
     wallets: () => [{ name: 'Fake', connect: async () => wallet }],
     reloadOffer: async () => transform(await loaded(shop, relays, clock)),
     now: () => clock,

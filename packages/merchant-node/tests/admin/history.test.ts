@@ -278,6 +278,29 @@ describe('node statuses and totals', () => {
     expect(history.totals.perAsset[0]).toMatchObject({ amount: '1.5', subunits: '1500000' });
   });
 
+  it("carries the fee of the node's receipt to the credit, and totals what reached the wallet", () => {
+    const store = key();
+    const buyer = key();
+    const history = buildHistory(
+      [
+        message(
+          deliveredBody(buyer, ORDER_ID, {
+            caip19: USDC_DEVNET_CAIP19,
+            amount: '1000000',
+            fee: '30000',
+          }),
+          store.pubkey,
+          buyer.pubkey,
+        ),
+      ],
+      adminStore(store),
+    );
+    expect(history.rows[0]?.credits[0]).toMatchObject({ amount: '1000000', fee: '30000' });
+    expect(history.totals.perAsset).toEqual([
+      expect.objectContaining({ subunits: '970000', amount: '0.97' }),
+    ]);
+  });
+
   it('keeps an amount without a known asset out of the asset totals, per medium', () => {
     const store = key();
     const buyer = key();

@@ -98,11 +98,58 @@ describe('an order row', () => {
 
   it('names the network of a credit in an unknown asset', async () => {
     const texts = await cells(
-      row({ credits: [{ tx: 'credit-tx-00000000000000', amount: '7', medium: 'solana-devnet' }] }),
+      row({
+        credits: [
+          { tx: 'credit-tx-00000000000000', amount: '7', medium: 'solana-devnet', fee: '0' },
+        ],
+      }),
     );
     expect(texts[COLUMN.credited]).toBe(
       `7 subunits (solana-devnet), asset unknown${short('credit-tx-00000000000000')}`,
     );
+  });
+
+  it('names the network of a fee in an unknown asset', async () => {
+    const texts = await cells(
+      row({
+        credits: [
+          { tx: 'credit-tx-00000000000000', amount: '7', medium: 'solana-devnet', fee: '2' },
+        ],
+      }),
+    );
+    expect(texts[COLUMN.credited]).toContain(
+      'elisym fee 2 subunits (solana-devnet), asset unknown',
+    );
+  });
+
+  it('shows no fee line in the details of a credit without a fee', async () => {
+    mounted = await mount(
+      <table>
+        <tbody>
+          <OrderRowView
+            row={row({
+              credits: [
+                {
+                  tx: 'credit-tx-00000000000000',
+                  amount: '1000000',
+                  asset: USDC,
+                  medium: 'solana-devnet',
+                  fee: '0',
+                },
+              ],
+            })}
+          />
+        </tbody>
+      </table>,
+    );
+    const toggle = mounted.container.querySelector('button[aria-expanded]');
+    if (!(toggle instanceof HTMLButtonElement)) {
+      throw new Error('no details toggle');
+    }
+    await act(async () => toggle.click());
+    const details = mounted.container.querySelectorAll('tr')[1]?.textContent ?? '';
+    expect(details).toContain('credited 1 USDC');
+    expect(details).not.toContain('fee');
   });
 
   it('shows a reported transaction while nothing is credited', async () => {
@@ -139,6 +186,7 @@ describe('an order row', () => {
                   asset: USDC,
                   medium: 'solana-devnet',
                   explorer: 'https://explorer.example/tx/credit',
+                  fee: '10000',
                 },
               ],
             })}
@@ -151,6 +199,7 @@ describe('an order row', () => {
       throw new Error('no details toggle');
     }
     expect(mounted.container.querySelectorAll('tr')).toHaveLength(1);
+    expect(mounted.container.textContent).toContain('1 USDCelisym fee 0.01 USDC');
     await act(async () => toggle.click());
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const rows = mounted.container.querySelectorAll('tr');
@@ -158,7 +207,7 @@ describe('an order row', () => {
     const details = rows[1]?.textContent ?? '';
     expect(details).toContain('b'.repeat(64));
     expect(details).toContain('credit-tx-00000000000000');
-    expect(details).toContain('credited 1 USDC');
+    expect(details).toContain('credited 1 USDCof which elisym fee 0.01 USDC');
     expect(rows[1]?.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
     // The details pane loads no picture either: nothing a buyer wrote is fetched.
     expect(mounted.container.querySelector('img')).toBeNull();

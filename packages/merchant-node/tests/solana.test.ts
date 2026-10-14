@@ -3,6 +3,7 @@ import { TOKEN_PROGRAM_ADDRESS, findAssociatedTokenPda } from '@solana-program/t
 import { address } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import { MAX_RECHECKS_PER_SWEEP, TERMS_WINDOW_SECS } from '../src/constants';
+import { paymentFloor } from '../src/fee';
 import { intake } from '../src/intake';
 import { type MerchantOrder, webhookEventId } from '../src/ledger';
 import { catchUp, checkPayment, receivingAccount } from '../src/solana';
@@ -45,6 +46,7 @@ describe('checkPayment', () => {
     expect(order.paid).toEqual({
       signature: SIG,
       amount: PRICE.toString(),
+      fee: '0',
       blockTime: T0 + 120,
       caip19: USDC_DEVNET_CAIP19,
       medium: 'solana-devnet',
@@ -95,10 +97,10 @@ describe('checkPayment', () => {
     expect(second.order.paid).toBeUndefined();
   });
 
-  it("refuses a payment under another order's reference, or below the price", async () => {
+  it("refuses a payment under another order's reference, or below the price's floor", async () => {
     const { state, order } = placeOrder();
     const foreign = requestFor(placeOrder('b3a7c2d4-0000-4000-8000-000000000003').order.reference);
-    const underpaid = requestFor(order.reference, PRICE - 1n);
+    const underpaid = requestFor(order.reference, paymentFloor(PRICE) - 1n);
     const { rpc } = chain({
       [SIG]: await landedPayment(foreign),
       [OTHER_SIG]: await landedPayment(underpaid),
@@ -153,11 +155,13 @@ describe('checkPayment', () => {
 
   it('checks nothing against terms of another network', async () => {
     const { state, order } = placeOrder();
-    const { rpc } = chain({ [SIG]: await landedPayment(requestFor(order.reference)) });
+    const { rpc, log } = chain({ [SIG]: await landedPayment(requestFor(order.reference)) });
     expect(await checkPayment(state, order, SIG, { rpc, network: 'mainnet' })).toEqual({
       kind: 'refused',
       reason: 'not_a_payment_for_this_order',
     });
+    // No term can match: the transaction is never read.
+    expect(log.fetched).toEqual([]);
   });
 });
 
@@ -184,7 +188,7 @@ describe('catchUp', () => {
     const { rpc, log } = chain(
       {
         [SIG]: await landedPayment(requestFor(order.reference)),
-        [OTHER_SIG]: await landedPayment(requestFor(order.reference, PRICE - 1n)),
+        [OTHER_SIG]: await landedPayment(requestFor(order.reference, paymentFloor(PRICE) - 1n)),
       },
       [OTHER_SIG, SIG],
       { account },
@@ -287,7 +291,7 @@ describe('catchUp', () => {
   it('never fetches again a scanned transaction already refused for the order', async () => {
     const { state, order } = placeOrder();
     const { rpc, log } = chain(
-      { [SIG]: await landedPayment(requestFor(order.reference, PRICE - 1n)) },
+      { [SIG]: await landedPayment(requestFor(order.reference, paymentFloor(PRICE) - 1n)) },
       [SIG],
       { account: await payoutAccount() },
     );

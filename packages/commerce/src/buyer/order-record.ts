@@ -57,6 +57,13 @@ export type PaymentMarker =
       txHash?: string;
       /** A bundle id (`wallet_sendCalls`): approved, the hash comes later. */
       bundleId?: string;
+      /** The EIP-6963 `rdns` of the wallet that approved `bundleId`: where its status is asked. */
+      bundleWallet?: string;
+      /**
+       * The wallet reported `bundleId` failed for good (`400` / `500`): it no
+       * longer holds the order. Written once, never cleared.
+       */
+      bundleFailed?: boolean;
     };
 
 export interface OrderStatus {

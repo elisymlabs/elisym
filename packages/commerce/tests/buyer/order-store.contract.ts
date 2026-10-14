@@ -828,6 +828,108 @@ export function orderStoreContract(makeBackend: () => Promise<OrderBackend>): vo
       }
     });
 
+    it('marks only a stored bundle with no hash failed, and never takes that back', async () => {
+      const bundle = { bundleId: 'bundle', bundleWallet: 'io.metamask' };
+      const hash = `0x${'1'.repeat(64)}`;
+      // No bundle stored: nothing for the wallet's word to be about.
+      await tempoPaying('no-bundle', 'a', {
+        productAddress: `${PRODUCT}-no-bundle`,
+      });
+      expect(
+        await store.updateMarker('no-bundle', 3, 'a', {
+          ...tempoMarker('a'),
+          bundleFailed: true,
+        }),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      // A hash is evidence of its own: a failed bundle says nothing about it.
+      await tempoPaying('hashed', 'a', { productAddress: `${PRODUCT}-hashed` });
+      await store.updateMarker('hashed', 3, 'a', {
+        ...tempoMarker('a'),
+        ...bundle,
+        txHash: hash,
+      });
+      expect(
+        await store.updateMarker('hashed', 4, 'a', {
+          ...tempoMarker('a', { ...bundle, txHash: hash }),
+          bundleFailed: true,
+        }),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      // Nor may the failure and a hash arrive in one write.
+      await tempoPaying('both', 'a', { productAddress: `${PRODUCT}-both` });
+      await store.updateMarker('both', 3, 'a', tempoMarker('a', bundle));
+      expect(
+        await store.updateMarker(
+          'both',
+          4,
+          'a',
+          tempoMarker('a', { ...bundle, txHash: hash, bundleFailed: true }),
+        ),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      expect(
+        await store.updateMarker(
+          'both',
+          4,
+          'a',
+          tempoMarker('a', { ...bundle, bundleFailed: true }),
+        ),
+      ).toMatchObject({ ok: true, record: { marker: { bundleFailed: true } } });
+      for (const takenBack of [
+        tempoMarker('a', { ...bundle, bundleFailed: false }),
+        tempoMarker('a', bundle),
+      ]) {
+        expect(await store.updateMarker('both', 5, 'a', takenBack)).toMatchObject({
+          ok: false,
+          reason: 'not_ready',
+        });
+      }
+    });
+
+    it('ends a failed bundle only over: never back to ordered, never rejected', async () => {
+      const failed = tempoMarker('a', {
+        bundleId: 'bundle',
+        bundleFailed: true,
+      });
+      await tempoPaying('failed', 'a');
+      await store.updateMarker('failed', 3, 'a', tempoMarker('a', { bundleId: 'bundle' }));
+      await store.updateMarker('failed', 4, 'a', failed);
+      expect(await store.clearMarker('failed', 5, 'a', 'ordered')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      expect(await store.clearMarker('failed', 5, 'a', 'ended-unpaid', 'rejected')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      expect(await store.clearMarker('failed', 5, 'a', 'ended-unpaid', 'over')).toMatchObject({
+        ok: true,
+        record: {
+          state: 'ended-unpaid',
+          endedBy: 'over',
+          marker: { bundleFailed: true },
+        },
+      });
+      // A hash that arrives after the failure holds the order again.
+      await tempoPaying('late-hash', 'b', {
+        productAddress: `${PRODUCT}-late-hash`,
+      });
+      await store.updateMarker('late-hash', 3, 'b', tempoMarker('b', { bundleId: 'bundle' }));
+      await store.updateMarker('late-hash', 4, 'b', {
+        ...failed,
+        attemptId: 'b',
+      });
+      expect(
+        await store.updateMarker('late-hash', 5, 'b', {
+          ...failed,
+          attemptId: 'b',
+          txHash: `0x${'2'.repeat(64)}`,
+        }),
+      ).toMatchObject({ ok: true });
+      expect(await store.clearMarker('late-hash', 6, 'b', 'ended-unpaid', 'over')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+    });
+
     it('records why a Tempo order ended, once, and only on Tempo', async () => {
       await tempoPaying('reasonless', 'a');
       expect(await store.clearMarker('reasonless', 3, 'a', 'ended-unpaid')).toMatchObject({

@@ -16,8 +16,9 @@ const NOTES: { icon: IconName; title: string; body: ReactNode }[] = [
     title: 'Totals count what your node credited',
     body: (
       <>
-        A buyer&apos;s claimed total is not money received. Your node&apos;s <Code>orders</Code>{' '}
-        command is the reference.
+        They are what reached your wallet: a credited payment minus its elisym fee. A buyer&apos;s
+        claimed total is not money received. Your node&apos;s <Code>orders</Code> command is the
+        reference.
       </>
     ),
   },

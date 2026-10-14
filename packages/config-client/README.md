@@ -6,14 +6,15 @@ Codama-generated TypeScript client for the `elisym-config` Solana program. Used 
 
 Manage the on-chain config from the terminal. All commands default to the public devnet RPC; point `SOLANA_RPC_URL` (alias: `RPC_URL`) at another endpoint to target mainnet or a private RPC. The mainnet launch sequence lives in `programs/elisym-config/DEPLOY.mainnet.md`.
 
-| Command                  | Description                                           |
-| ------------------------ | ----------------------------------------------------- |
-| `show`                   | Display current on-chain config                       |
-| `set-fee <bps>`          | Update protocol fee (0-1000 bps)                      |
-| `set-treasury <pubkey>`  | Update treasury address                               |
-| `propose-admin <pubkey>` | Propose a new admin (step 1 of 2)                     |
-| `accept-admin`           | Accept admin role from new admin wallet (step 2 of 2) |
-| `cancel-pending-admin`   | Cancel a pending admin transfer                       |
+| Command                   | Description                                           |
+| ------------------------- | ----------------------------------------------------- |
+| `show`                    | Display current on-chain config                       |
+| `set-fee <bps>`           | Update protocol fee (0-1000 bps)                      |
+| `set-treasury <pubkey>`   | Update treasury address                               |
+| `set-evm-treasury <0x..>` | Set the fee treasury on the EVM rails (Tempo)         |
+| `propose-admin <pubkey>`  | Propose a new admin (step 1 of 2)                     |
+| `accept-admin`            | Accept admin role from new admin wallet (step 2 of 2) |
+| `cancel-pending-admin`    | Cancel a pending admin transfer                       |
 
 ```bash
 # Read config (no transaction)

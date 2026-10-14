@@ -20,6 +20,7 @@ const NOTHING: Actions = {
   signAgain: async () => undefined,
   startOver: async () => undefined,
   cancel: () => undefined,
+  checkInWallet: async () => undefined,
 };
 
 function Fixtures() {

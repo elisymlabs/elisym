@@ -6,10 +6,13 @@ import {
   MAX_REPEATS_IN_FLIGHT,
   RESEND_EVERY_SECS,
 } from './constants';
+import type { TreasuryRefresh } from './fee';
 import { type StoreIdentity, intake } from './intake';
 import {
   type LedgerState,
   type MerchantOrder,
+  clearFeeUnresolved,
+  markFeeUnresolved,
   pruneExpiredOrders,
   undeliveredOrders,
 } from './ledger';
@@ -72,7 +75,17 @@ export interface RuntimeDeps {
   tempo?: TempoContext;
   checkTempoPayment?: typeof checkTempoPayment;
   catchUpTempo?: typeof catchUpTempo;
+  /**
+   * Read the elisym fee config and record its treasuries in the ledger, at the
+   * start of each sweep. Without it the persisted treasuries are used as they are.
+   */
+  refreshTreasuries?: () => Promise<TreasuryRefresh>;
+  /** Stop the node: the fee config RPC serves another cluster. */
+  stop?: (problem: string) => void;
 }
+
+/** What the run log says of a payment that matches no known elisym treasury (paid rule 3). */
+export const FEE_UNRESOLVED_NOTE = 'payment to this order matches no known elisym treasury';
 
 /** A reported transaction this order has already judged: never checked again. */
 function settled(order: MerchantOrder, tx: string): boolean {
@@ -181,9 +194,19 @@ export class MerchantRuntime {
       check = await this.check(state, order, tx, context);
       if (check.kind === 'refused') {
         order.refusedTxs = [...(order.refusedTxs ?? []), tx];
+        clearFeeUnresolved(order, tx);
       }
     }
     log(`receipt ${order.key} ${tx}: ${check.kind}`);
+    if (check.kind === 'ask_again' && check.feeUnresolved === true) {
+      order.recheckedAt = {
+        ...order.recheckedAt,
+        [tx]: order.recheckedAt?.[tx] ?? this.deps.now(),
+      };
+      if (markFeeUnresolved(order, tx, this.deps.now())) {
+        log(`warning: ${order.key} ${tx}: ${FEE_UNRESOLVED_NOTE}`);
+      }
+    }
     save();
     if (check.kind === 'paid') {
       await this.deliverPending();
@@ -258,7 +281,25 @@ export class MerchantRuntime {
   async sweep(allLive: boolean, queuedAt: number): Promise<void> {
     const { state, context, save, log, now } = this.deps;
     state.resumeAt = resumePointAfterSweep(allLive, queuedAt, state.resumeAt);
-    pruneExpiredOrders(state, now());
+    for (const closed of pruneExpiredOrders(state, now())) {
+      log(
+        `WARNING: ${closed.key} closed unpaid with ${closed.tx} unresolved (${FEE_UNRESOLVED_NOTE}): answer it by hand (see orders)`,
+      );
+    }
+    if (this.deps.refreshTreasuries !== undefined) {
+      const refresh = await this.deps.refreshTreasuries();
+      if (refresh.kind === 'wrong_cluster') {
+        save();
+        log(`error: ${refresh.problem}: stopping`);
+        this.deps.stop?.(refresh.problem);
+        return;
+      }
+      if (refresh.kind === 'unreachable') {
+        log(
+          `warning: the fee config could not be read (${refresh.problem}); the treasuries known so far are used`,
+        );
+      }
+    }
     this.seenWraps.prune(readSince(now()));
     for (const [key, at] of this.resentAt) {
       if (now() - at >= RESEND_EVERY_SECS) {
@@ -293,6 +334,9 @@ export class MerchantRuntime {
         }
         for (const account of result.incomplete) {
           log(`warning: the history of ${account} was cut short; older payments may be missed`);
+        }
+        for (const unresolved of result.unresolved ?? []) {
+          log(`warning: ${unresolved}: ${FEE_UNRESOLVED_NOTE}`);
         }
       }
     } finally {

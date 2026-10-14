@@ -86,6 +86,10 @@ product deposit-10 on sale published naddr1...
 
 After a change to `config.json` or to a product, stop the node, run `setup` again, then start the node again: `setup` refuses while the node runs. `setup` republishes only what changed (`unchanged` in its report).
 
+**The protocol fee.** The store profile `setup` publishes declares that the node accepts payments split with the elisym protocol fee: the buyer pays the listed price, your wallet gets the price less the fee, an elisym treasury gets the fee. `setup` reads the fee config first (from the Solana RPC of the node's network: `feeConfigRpcUrl` in `config.json`, else `rpcUrl`, else the public endpoint) and declares support once it has read it; if it could not, it says so: run `setup` again once that RPC answers. Buyers refuse a store without the declaration while the fee is above 0, and `run` warns about it.
+
+**Upgrading the node.** After upgrading from 0.9.1 or earlier, stop the node, run `setup` once, then `run`. The upgrade converts the home's ledger, and there is no way back: older versions refuse the converted home. Open every copy of the home, a backup taken before the upgrade included, only with an upgraded version.
+
 **Stopping a product.** Add `onSale: false` to its `PRODUCT.md` and run `setup`: its listing is republished as sold out, and the checkout shows Sold out. An order a buyer already placed is still honored within the usual window. Never delete the directory of a product that was published: the node refuses to start without it, because its orders could be paid and never completed. A product id cannot change either: a new id is a new product, and the old one stays (stop it with `onSale: false`).
 
 ## 3. Run the node
@@ -126,7 +130,7 @@ npx @elisym/merchant-node store-key --yes
 npx @elisym/merchant-node admin
 ```
 
-Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: its product, the total the buyer claims, the email, whether it was paid and completed, and the transaction, with totals per coin. A product list shows each ordered product, on sale or sold out. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
+Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: its product, the total the buyer claims, the email, whether it was paid and completed, and the transaction, with totals per coin, net of the elisym fee. A product list shows each ordered product, on sale or sold out. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
 
 The same view is hosted at [https://admin.elisym.network](https://admin.elisym.network): paste the store key there instead of running `admin`. It also lists every product of the store, the store's inbox relays and payout networks, and exports the loaded orders as CSV. The key stays in that tab's memory, but the page's code is served by elisym on each visit, while the local page runs the version you installed. Browser extensions can read what you type into any page: use a browser profile without extensions you do not trust, or the local page.
 

@@ -22,6 +22,7 @@ import {
   type ParsedInitializeInstruction,
   type ParsedInitializeStatsInstruction,
   type ParsedProposeAdminInstruction,
+  type ParsedSetEvmTreasuryInstruction,
   type ParsedSetFeeBpsInstruction,
   type ParsedSetTreasuryInstruction,
 } from '../instructions';
@@ -86,6 +87,7 @@ export enum ElisymConfigInstruction {
   Initialize,
   InitializeStats,
   ProposeAdmin,
+  SetEvmTreasury,
   SetFeeBps,
   SetTreasury,
 }
@@ -186,6 +188,17 @@ export function identifyElisymConfigInstruction(
     containsBytes(
       data,
       fixEncoderSize(getBytesEncoder(), 8).encode(
+        new Uint8Array([87, 156, 244, 51, 34, 97, 170, 135])
+      ),
+      0
+    )
+  ) {
+    return ElisymConfigInstruction.SetEvmTreasury;
+  }
+  if (
+    containsBytes(
+      data,
+      fixEncoderSize(getBytesEncoder(), 8).encode(
         new Uint8Array([2, 161, 245, 141, 111, 32, 39, 198])
       ),
       0
@@ -236,6 +249,9 @@ export type ParsedElisymConfigInstruction<
   | ({
       instructionType: ElisymConfigInstruction.ProposeAdmin;
     } & ParsedProposeAdminInstruction<TProgram>)
+  | ({
+      instructionType: ElisymConfigInstruction.SetEvmTreasury;
+    } & ParsedSetEvmTreasuryInstruction<TProgram>)
   | ({
       instructionType: ElisymConfigInstruction.SetFeeBps;
     } & ParsedSetFeeBpsInstruction<TProgram>)

@@ -14,6 +14,7 @@ export const PROBLEM_PLACE = {
   sold_out: 'offer',
   other_purchase: 'offer',
   too_late: 'offer',
+  store_outdated: 'offer',
   no_wallet: 'wallets',
   tempo_unsupported: 'wallets',
   wallet_busy: 'wallets',
@@ -35,6 +36,10 @@ export const PROBLEM_PLACE = {
   again_declined: 'wallets',
   attempt_over: 'wallets',
   earlier_payment: 'wallets',
+  wallet_cannot_batch: 'wallets',
+  fee_config_unavailable: 'wallets',
+  fee_config_invalid: 'wallets',
+  wallet_payment_failed: 'wallets',
 } as const satisfies Record<Problem['reason'], 'offer' | 'wallets'>;
 
 /** The panel's own state over the session's views: whether the wallet section is open. */

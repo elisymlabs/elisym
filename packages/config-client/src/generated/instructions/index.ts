@@ -14,5 +14,6 @@ export * from './incrementStatsV2';
 export * from './initialize';
 export * from './initializeStats';
 export * from './proposeAdmin';
+export * from './setEvmTreasury';
 export * from './setFeeBps';
 export * from './setTreasury';

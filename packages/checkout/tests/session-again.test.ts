@@ -24,6 +24,7 @@ import {
 } from '../src/app/session';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../src/core/order-store-idb';
 import type { CheckoutState } from '../src/embed/protocol';
+import { NO_FEE_TERMS } from './fee-fixtures';
 import { holdRpc } from './reset-harness';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
@@ -150,6 +151,7 @@ async function setup() {
     readClient: relays,
     clientFor: () => relays,
     rpcFor: () => current.rpc,
+    feeTerms: NO_FEE_TERMS,
     wallets: () => options,
     reloadOffer: async () => loaded(shop, relays, clock),
     now: () => clock,

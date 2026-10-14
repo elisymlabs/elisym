@@ -111,6 +111,10 @@ export class FakeSolana {
   blockHeightFails = false;
   /** `getSignaturesForAddress` alone fails. */
   listingFails = false;
+  /** A fee treasury whose token account this node credits and reports, when a test sets it. */
+  treasury: string | undefined;
+  /** The accounts each priority-fee estimate asked about. */
+  priorityAccounts: string[][] = [];
 
   /** The tip's slot (slots run ahead of heights by a fixed 10 000 here). */
   get tipSlot(): bigint {
@@ -169,8 +173,13 @@ export class FakeSolana {
   }
 
   private async payeeAccount(): Promise<string> {
+    return FakeSolana.usdcAccount(this.payee);
+  }
+
+  /** The devnet USDC account of `owner`. */
+  static async usdcAccount(owner: string): Promise<string> {
     const [account] = await findAssociatedTokenPda({
-      owner: address(this.payee),
+      owner: address(owner),
       mint: address(USDC_SOLANA_DEVNET.mint ?? ''),
       tokenProgram: address('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'),
     });
@@ -206,19 +215,42 @@ export class FakeSolana {
       return;
     }
     const payeeAccount = await this.payeeAccount();
+    const treasuryAccount =
+      this.treasury === undefined ? undefined : await FakeSolana.usdcAccount(this.treasury);
     let credited = 0n;
+    let toTreasury = 0n;
     for (const instruction of message.instructions) {
       const data = instruction.data ?? new Uint8Array();
       const indices = instruction.accountIndices ?? [];
-      if (data[0] === 12 && data.length === 10 && keys[indices[2] ?? -1] === payeeAccount) {
-        credited += new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(
-          1,
-          true,
-        );
+      if (data[0] !== 12 || data.length !== 10) {
+        continue;
+      }
+      const moved = new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(
+        1,
+        true,
+      );
+      const destination = keys[indices[2] ?? -1];
+      if (destination === payeeAccount) {
+        credited += moved;
+      } else if (treasuryAccount !== undefined && destination === treasuryAccount) {
+        toTreasury += moved;
       }
     }
     const base58 = getBase58Decoder();
-    const failed = credited > this.tokens;
+    const failed = credited + toTreasury > this.tokens;
+    const treasuryRows = (amount: bigint) =>
+      this.treasury === undefined ||
+      treasuryAccount === undefined ||
+      !keys.includes(treasuryAccount)
+        ? []
+        : [
+            {
+              accountIndex: keys.indexOf(treasuryAccount),
+              mint: USDC_SOLANA_DEVNET.mint,
+              owner: this.treasury,
+              uiTokenAmount: { amount: amount.toString() },
+            },
+          ];
     this.landed.set(signature, {
       accounts: keys,
       failed,
@@ -251,6 +283,7 @@ export class FakeSolana {
               owner: this.payee,
               uiTokenAmount: { amount: '0' },
             },
+            ...treasuryRows(0n),
           ],
           postTokenBalances: [
             {
@@ -259,12 +292,13 @@ export class FakeSolana {
               owner: this.payee,
               uiTokenAmount: { amount: (failed ? 0n : credited).toString() },
             },
+            ...treasuryRows(failed ? 0n : toTreasury),
           ],
         },
       },
     });
     if (!failed) {
-      this.tokens -= credited;
+      this.tokens -= credited + toTreasury;
     }
   }
 
@@ -272,10 +306,14 @@ export class FakeSolana {
    * A payment of `request` sent from another wallet (another device): landed
    * now, listed under the reference, crediting the payee.
    */
-  async injectPayment(request: PaymentRequestData): Promise<string> {
+  async injectPayment(
+    request: PaymentRequestData,
+    options: { bindFeeLeg?: boolean } = {},
+  ): Promise<string> {
     const other = await generateKeyPairSigner();
     const instructions = await buildPaymentInstructions(request, createNoopSigner(other.address), {
       programId: getProtocolProgramId('devnet'),
+      ...(options.bindFeeLeg === true ? { bindFeeLeg: true } : {}),
     });
     const lastValidBlockHeight = this.height + CONFIRMED_LEAD + LIFETIME_BLOCKS;
     this.lifetimes.set(this.blockhash, lastValidBlockHeight);
@@ -336,7 +374,11 @@ export class FakeSolana {
             config.commitment === 'finalized' ? this.height : this.height + CONFIRMED_LEAD;
           return { blockHeight, absoluteSlot: blockHeight + 10_000n };
         }),
-      getRecentPrioritizationFees: () => this.answer('getRecentPrioritizationFees', () => []),
+      getRecentPrioritizationFees: (accounts: readonly string[] = []) =>
+        this.answer('getRecentPrioritizationFees', () => {
+          this.priorityAccounts.push(accounts.map(String));
+          return [];
+        }),
       getMinimumBalanceForRentExemption: (size: bigint) =>
         this.answer('getMinimumBalanceForRentExemption', () =>
           BigInt(size) === 0n ? EMPTY_ACCOUNT_RENT : TOKEN_ACCOUNT_RENT,
@@ -475,6 +517,14 @@ export type WalletBehaviour =
   | 'swap_blockhash'
   /** Lowers the transfer's amount before signing. */
   | 'change_amount'
+  /** Lowers only the LAST transfer (the fee leg, which follows the payee's). */
+  | 'lower_fee_leg'
+  /** Raises only the FIRST transfer (the payee's leg) by one subunit. */
+  | 'raise_payee_leg'
+  /** Raises only the LAST transfer (the fee leg) by one subunit. */
+  | 'raise_fee_leg'
+  /** Sets the FIRST transfer (the payee's leg) to the whole price, the fee leg unchanged. */
+  | 'payee_leg_full_price'
   /** Returns the transaction without a signature. */
   | 'no_signature'
   /** Puts a durable-nonce advance first, keeping the blockhash. */
@@ -551,6 +601,46 @@ export class FakeWallet implements SolanaWallet {
           { programAddressIndex: system, data: new Uint8Array([4, 0, 0, 0]) },
           ...message.instructions,
         ],
+      }) as typeof decoded.messageBytes;
+    }
+    if (
+      this.behaviour === 'lower_fee_leg' ||
+      this.behaviour === 'raise_payee_leg' ||
+      this.behaviour === 'raise_fee_leg' ||
+      this.behaviour === 'payee_leg_full_price'
+    ) {
+      const fullPrice = this.behaviour === 'payee_leg_full_price';
+      const payeeLeg = this.behaviour === 'raise_payee_leg' || fullPrice;
+      const raise = this.behaviour !== 'lower_fee_leg';
+      const message = legacyOrV0(getCompiledTransactionMessageDecoder().decode(messageBytes));
+      const transfers = message.instructions.flatMap((instruction, index) =>
+        instruction.data?.[0] === 12 && instruction.data.length === 10 ? [index] : [],
+      );
+      const last = payeeLeg ? transfers[0] : transfers[transfers.length - 1];
+      const feeData = message.instructions[transfers[transfers.length - 1] ?? -1]?.data;
+      const feeLegAmount =
+        feeData === undefined
+          ? 0n
+          : new DataView(feeData.buffer, feeData.byteOffset, feeData.byteLength).getBigUint64(
+              1,
+              true,
+            );
+      messageBytes = getCompiledTransactionMessageEncoder().encode({
+        ...message,
+        instructions: message.instructions.map((instruction, index) => {
+          if (index !== last || instruction.data === undefined) {
+            return instruction;
+          }
+          const changed = new Uint8Array(instruction.data);
+          const view = new DataView(changed.buffer);
+          const current = view.getBigUint64(1, true);
+          let next = raise ? current + 1n : 1n;
+          if (fullPrice) {
+            next = current + feeLegAmount;
+          }
+          view.setBigUint64(1, next, true);
+          return { ...instruction, data: changed };
+        }),
       }) as typeof decoded.messageBytes;
     }
     if (this.behaviour === 'swap_blockhash' || this.behaviour === 'change_amount') {

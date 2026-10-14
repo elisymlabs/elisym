@@ -71,6 +71,18 @@ export function payingLine(paying: Paying): string {
 /** A decline of an again request: the attempt it asked for stays live, so never "nothing was paid". */
 export const AGAIN_DECLINED = 'You declined. Nothing new was sent.';
 
+/** The store's payment node cannot take a fee-split payment: the store must update it. */
+export const STORE_OUTDATED_TEXT =
+  'This store’s payment node must be updated before it can take payments. Nothing was paid.';
+
+/** "Includes elisym fee 0.49 USDC": the part of the price the store's payout passes on. */
+export function feeLine(asset: Asset, feeAmount: bigint): string {
+  return `Includes elisym fee ${formatAssetAmount(asset, feeAmount)}`;
+}
+
+/** Under the earlier-payment line when its wallet would not answer: connect and ask it. */
+export const CHECK_IN_WALLET = 'Check in wallet';
+
 /**
  * `asset`: the coin the order is paid in, for amounts of it. `canPress`: the screen
  * offers something to press now; without it, nothing says "try again".
@@ -121,6 +133,16 @@ export function problemText(problem: Problem, asset: Asset, canPress = true): st
       return 'This wallet changed the transaction, which the checkout never sends. Use another wallet once a retry is possible.';
     case 'offer_changed':
       return 'The store changed this offer. Review it before paying.';
+    case 'store_outdated':
+      return STORE_OUTDATED_TEXT;
+    case 'wallet_cannot_batch':
+      return 'This wallet cannot send this payment in one step. Nothing was paid; choose another wallet.';
+    case 'fee_config_unavailable':
+      return 'The elisym fee terms could not be read. Nothing was paid; try again in a moment.';
+    case 'fee_config_invalid':
+      return 'The elisym fee configuration cannot be used right now. Nothing was paid.';
+    case 'wallet_payment_failed':
+      return 'Your wallet reports that the payment failed. Nothing was paid.';
     case 'offer_refused':
       return 'The store no longer offers this product here. Your earlier order is still being checked.';
     case 'sold_out':

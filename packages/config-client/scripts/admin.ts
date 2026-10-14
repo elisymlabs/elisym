@@ -8,6 +8,7 @@
  *   show                          - display current on-chain config
  *   set-fee <bps>                 - update protocol fee (0-1000)
  *   set-treasury <pubkey>         - update treasury address
+ *   set-evm-treasury <0x40hex>    - set the protocol-fee treasury on the EVM rails (Tempo)
  *   propose-admin <pubkey>        - propose a new admin (two-step transfer)
  *   accept-admin                  - accept admin role (run from new admin wallet)
  *   cancel-pending-admin          - cancel a pending admin transfer
@@ -47,6 +48,7 @@ import {
   getAcceptAdminInstructionAsync,
   getCancelPendingAdminInstructionAsync,
   getProposeAdminInstructionAsync,
+  getSetEvmTreasuryInstructionAsync,
   getSetFeeBpsInstructionAsync,
   getSetTreasuryInstructionAsync,
 } from '../src';
@@ -56,6 +58,7 @@ const COMMANDS = [
   'show',
   'set-fee',
   'set-treasury',
+  'set-evm-treasury',
   'propose-admin',
   'accept-admin',
   'cancel-pending-admin',
@@ -83,9 +86,67 @@ const KEYPAIR_PATH = process.env.KEYPAIR ?? join(homedir(), '.config/solana/id.j
 
 function usage(): never {
   console.error('Usage: bun run admin.ts <command> [args]');
-  console.error('Commands: show, set-fee <bps>, set-treasury <pubkey>,');
+  console.error(
+    'Commands: show, set-fee <bps>, set-treasury <pubkey>, set-evm-treasury <0x40hex>,',
+  );
   console.error('          propose-admin <pubkey>, accept-admin, cancel-pending-admin');
   process.exit(1);
+}
+
+const EVM_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+/**
+ * Tempo addresses no payment may name, copied from `@elisym/pay-core`'s
+ * `TEMPO_UNPAYABLE_ADDRESSES` and the EVM coins' contracts. Copied, not
+ * imported: pay-core dev-depends on this package, so an import back would be a
+ * workspace cycle. Every client refuses a fee leg to any of them, so writing one
+ * on-chain would only switch the fee off on Tempo with an error at every buyer.
+ */
+const EVM_UNPAYABLE_ADDRESSES: readonly string[] = [
+  '0x0000000000000000000000000000000000000000', // burn address
+  '0x403c000000000000000000000000000000000000', // TIP-403 policy registry
+  '0xb10c000000000000000000000000000000000000', // transfer guard
+  '0xfeec000000000000000000000000000000000000', // fee sink
+  '0xfdc0000000000000000000000000000000000000', // TIP-1022 address registry
+  '0x20c000000000000000000000b9537d11c60e8b50', // USDC.e contract
+  '0x20c0000000000000000000000000000000000000', // pathUSD contract
+];
+/** TIP-1022: bytes 4..14 of a virtual address are ten 0xfd bytes. */
+const VIRTUAL_ADDRESS_MARKER = 'fd'.repeat(10);
+const VIRTUAL_MARKER_START = 2 + 4 * 2;
+
+/**
+ * The 20 bytes of an EVM treasury argument, or a refusal. Case-insensitive
+ * (a checksummed address is accepted as written; the checksum is not verified).
+ */
+function parseEvmTreasury(value: string | undefined): Uint8Array | string {
+  if (value === undefined) {
+    return 'set-evm-treasury requires an address argument (0x and 40 hex characters)';
+  }
+  const lower = value.toLowerCase();
+  if (!EVM_ADDRESS_RE.test(lower)) {
+    return 'set-evm-treasury requires 0x followed by exactly 40 hex characters';
+  }
+  if (EVM_UNPAYABLE_ADDRESSES.includes(lower)) {
+    return 'that address is a protocol account, a coin contract or zero - no payment can go to it';
+  }
+  if (
+    lower.slice(VIRTUAL_MARKER_START, VIRTUAL_MARKER_START + VIRTUAL_ADDRESS_MARKER.length) ===
+    VIRTUAL_ADDRESS_MARKER
+  ) {
+    return 'that is a TIP-1022 virtual address - no payment can go to it';
+  }
+  const bytes = new Uint8Array(20);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(lower.slice(2 + index * 2, 4 + index * 2), 16);
+  }
+  return bytes;
+}
+
+function formatEvmTreasury(bytes: ArrayLike<number>): string {
+  if (Array.from(bytes).every((byte) => byte === 0)) {
+    return 'not set';
+  }
+  return `0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
 }
 
 async function sendTransaction(
@@ -171,6 +232,7 @@ async function show(): Promise<void> {
     console.log('Admin:         ', data.admin);
     console.log('Pending admin: ', pendingAdmin);
     console.log('Treasury:      ', data.treasury);
+    console.log('EVM treasury:  ', formatEvmTreasury(data.evmTreasury));
     console.log('Fee (bps):     ', data.feeBps, `(${(data.feeBps / 100).toFixed(2)}%)`);
     console.log('Paused:        ', data.paused);
     console.log('Last updated:  ', new Date(Number(data.lastUpdated) * 1000).toISOString());
@@ -288,6 +350,21 @@ async function main(): Promise<void> {
       );
       signature = await sendTransaction(ix, payer);
       console.log(`Treasury updated. Signature: ${signature}`);
+      break;
+    }
+
+    case 'set-evm-treasury': {
+      const parsed = parseEvmTreasury(args[0]);
+      if (typeof parsed === 'string') {
+        console.error(parsed);
+        process.exit(1);
+      }
+      const ix = await getSetEvmTreasuryInstructionAsync(
+        { admin: payer, eventAuthority, program: PROGRAM_ID, newEvmTreasury: parsed },
+        programOpts,
+      );
+      signature = await sendTransaction(ix, payer);
+      console.log(`EVM treasury updated to ${formatEvmTreasury(parsed)}. Signature: ${signature}`);
       break;
     }
 

@@ -1,6 +1,7 @@
 import { USDC_SOLANA_DEVNET, USDC_SOLANA_MAINNET } from '@elisym/pay-core';
 import { getBase64Encoder } from '@solana/kit';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { MERCHANT_CATCH_UP_SECS, PAY_CUTOFF_SECS } from '../../src/buyer/constants';
 import { type LoadedOffer, loadOffer } from '../../src/buyer/offer';
 import { placeOrder } from '../../src/buyer/order-flow';
 import type { OrderRecord } from '../../src/buyer/order-record';
@@ -18,7 +19,16 @@ import {
   storedSolanaRequest,
   watchSolanaPayment,
 } from '../../src/buyer/solana-pay';
-import { DAY, MemoryRelays, NOW, type Shop, inboxList, makeShop, solanaAddress } from './fixtures';
+import {
+  DAY,
+  MemoryRelays,
+  NO_FEE_TERMS,
+  NOW,
+  type Shop,
+  inboxList,
+  makeShop,
+  solanaAddress,
+} from './fixtures';
 import { ACKNOWLEDGED, record as contractRecord } from './order-store.contract';
 import { EMPTY_ACCOUNT_RENT, FakeSolana, FakeWallet, signatureOf } from './solana-fixtures';
 
@@ -63,7 +73,10 @@ async function ordered(relays: MemoryRelays, fresh: Ready): Promise<OrderRecord>
   if (!placed.ok) {
     throw new Error(placed.reason);
   }
-  const composed = await composeOrderPayment(placed.record, store);
+  const composed = await composeOrderPayment(placed.record, store, {
+    offer: fresh.offer,
+    feeTerms: NO_FEE_TERMS,
+  });
   if (!composed.ok) {
     throw new Error(composed.reason);
   }
@@ -84,6 +97,7 @@ async function setup() {
     clientFor: () => relays,
     rpc: chain.rpc,
     now: () => NOW + 30,
+    feeTerms: NO_FEE_TERMS,
   };
   const input = { fresh, chainTime: NOW + 30 };
   return { shop, relays, fresh, record, wallet, chain, deps, input };
@@ -107,7 +121,10 @@ describe('composing the request', () => {
       created_at: record.createdAt,
       network: 'devnet',
     });
-    const again = await composeOrderPayment(record, store);
+    const again = await composeOrderPayment(record, store, {
+      offer: { feeSupport: false },
+      feeTerms: NO_FEE_TERMS,
+    });
     expect(again).toMatchObject({ ok: true, record: { version: record.version } });
   });
 });
@@ -205,6 +222,22 @@ describe('paying', () => {
       state: 'ordered',
       version: record.version,
     });
+  });
+
+  it('still pays on the last second before the cutoff and refuses one second later', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const lastSecond = record.createdAt + MERCHANT_CATCH_UP_SECS - PAY_CUTOFF_SECS;
+    expect(
+      await checkBeforePaying(record, wallet.address, { ...input, chainTime: lastSecond }, deps),
+    ).toMatchObject({ ok: true });
+    expect(
+      await checkBeforePaying(
+        record,
+        wallet.address,
+        { ...input, chainTime: lastSecond + 1 },
+        deps,
+      ),
+    ).toMatchObject({ ok: false, reason: 'too_late' });
   });
 
   it('reads nothing and opens no wallet for a record that is not waiting to pay', async () => {

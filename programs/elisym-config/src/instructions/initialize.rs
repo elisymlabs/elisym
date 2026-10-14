@@ -55,7 +55,8 @@ pub fn handler(
     cfg.fee_bps = fee_bps;
     cfg.paused = false;
     cfg.last_updated = now;
-    cfg._reserved = [0u8; 128];
+    cfg.evm_treasury = [0u8; 20];
+    cfg._reserved = [0u8; 108];
 
     emit_cpi!(ConfigInitialized {
         admin,

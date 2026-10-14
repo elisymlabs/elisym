@@ -17,11 +17,11 @@
 
 import { PAYMENT_DEFAULTS } from '../constants';
 import type { Asset } from '../payment/assets';
-import { EVM_ASSETS } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
 import {
   chainByCaip2,
   isEvmWireAddress,
+  isPayable,
   isVirtualEvmAddress,
   normalizeEvmAddress,
 } from '../payment/chains';
@@ -37,7 +37,6 @@ import { MAX_EVM_FEE_BPS } from './config';
 import {
   EARLIEST_TEMPO_SECONDS,
   LATEST_TEMPO_SECONDS,
-  TEMPO_UNPAYABLE_ADDRESSES,
   TRANSFER_WITH_MEMO_SELECTOR,
 } from './constants';
 
@@ -45,7 +44,7 @@ const WORD_HEX_CHARS = 64;
 const MAX_UINT256 = (1n << 256n) - 1n;
 const MEMO_RE = /^0x[0-9a-f]{64}$/;
 
-export interface ComposeTempoPaymentRequestOptions {
+interface ComposeTempoPaymentRequestBase {
   /** A Tempo chain from the registry. */
   chain: ChainConfig;
   /** A coin of that chain, from the registry. */
@@ -54,9 +53,7 @@ export interface ComposeTempoPaymentRequestOptions {
   recipient: string;
   /** The TOTAL the payer sends, in subunits. The fee comes out of it, as on every rail. */
   amount: bigint;
-  /** The fee rate the payer read from the chain's config contract. */
-  feeBps: number;
-  /** The treasury the config names. Only read at a fee above zero. */
+  /** The treasury the fee goes to. Only read at a fee above zero. */
   treasury: string;
   /**
    * The memo that binds this payment to one order. A payer passes the one the
@@ -76,10 +73,14 @@ export interface ComposeTempoPaymentRequestOptions {
   expirySecs?: number;
 }
 
-/** The contracts of every registry coin: a token precompile holds no one's balance. */
-const COIN_CONTRACTS: readonly string[] = EVM_ASSETS.flatMap((coin) =>
-  coin.mint === undefined ? [] : [coin.mint.toLowerCase()],
-);
+/**
+ * The fee is given ONE way: as a rate (`feeBps`, the fee is computed here) or
+ * as an amount the caller already computed (`feeAmount`, `0 <= feeAmount <
+ * amount`; 0 is no fee leg). Commerce passes the amount, so a payer and a
+ * merchant that recompose the request never derive the fee differently.
+ */
+export type ComposeTempoPaymentRequestOptions = ComposeTempoPaymentRequestBase &
+  ({ feeBps: number; feeAmount?: never } | { feeAmount: bigint; feeBps?: never });
 
 /**
  * The v2 schema's verdict. A refusal names each field and a fixed reason, never
@@ -95,18 +96,6 @@ function parseRequest(value: unknown): ParsedPaymentRequestV2 {
 }
 
 /**
- * Whether money sent to `address` can reach someone: not a virtual address, not
- * one of the protocol's own system accounts, and not a coin's own contract.
- */
-function isPayable(address: string): boolean {
-  return (
-    !isVirtualEvmAddress(address) &&
-    !TEMPO_UNPAYABLE_ADDRESSES.includes(address) &&
-    !COIN_CONTRACTS.includes(address)
-  );
-}
-
-/**
  * The v2 request for paying `amount` of `asset` to `recipient`, with the fee
  * leg the config asks for. Throws on anything the payer must not send: the
  * v2 schema's own rules, a fee rate above the contract's ceiling, a protocol
@@ -114,8 +103,8 @@ function isPayable(address: string): boolean {
  * epoch seconds.
  *
  * A verifier that recomposes this request - the merchant, from an order and the
- * memo it was told - must pass the SAME `feeBps`, `treasury`, `createdAt` and
- * `expirySecs` the payer used, not the config or the default as they read
+ * memo it was told - must pass the SAME fee (`feeBps` or `feeAmount`), `treasury`,
+ * `createdAt` and `expirySecs` the payer used, not the config or the default as they read
  * today: a fee switched on or a treasury rotated in between yields a different
  * request, and the payment no longer matches it; a different expiry moves the
  * verifier's deadline. Persist them with the order, and bound the fee the payer
@@ -174,10 +163,7 @@ export function composeTempoPaymentRequest(
     // signed payout event), and this message can reach a model.
     throw new Error('The payee is not an address a payment can go to.');
   }
-  if (!Number.isInteger(options.feeBps) || options.feeBps < 0 || options.feeBps > MAX_EVM_FEE_BPS) {
-    throw new Error(`The fee rate must be a whole number of bps from 0 to ${MAX_EVM_FEE_BPS}.`);
-  }
-  const feeAmount = calculateProtocolFeeSubunits(options.amount, options.feeBps);
+  const feeAmount = feeAmountOf(options);
   let feeLeg: { fee_address: string; fee_amount: string } | undefined;
   if (feeAmount > 0n) {
     const treasury = normalizeEvmAddress(options.treasury);
@@ -205,6 +191,35 @@ export function composeTempoPaymentRequest(
     created_at: options.createdAt,
     expiry_secs: options.expirySecs ?? PAYMENT_DEFAULTS.PAYMENT_EXPIRY_SECS,
   });
+}
+
+/** The fee in subunits, from whichever of `feeBps` / `feeAmount` the caller gave. */
+function feeAmountOf(options: ComposeTempoPaymentRequestOptions): bigint {
+  const hasBps = options.feeBps !== undefined;
+  const hasAmount = options.feeAmount !== undefined;
+  if (hasBps === hasAmount) {
+    throw new Error('Give the fee as feeBps or as feeAmount, exactly one of them.');
+  }
+  if (hasAmount) {
+    if (
+      typeof options.feeAmount !== 'bigint' ||
+      options.feeAmount < 0n ||
+      options.feeAmount >= options.amount
+    ) {
+      throw new Error('The fee amount must be a whole number of subunits below the amount.');
+    }
+    return options.feeAmount;
+  }
+  const feeBps = options.feeBps;
+  if (
+    typeof feeBps !== 'number' ||
+    !Number.isInteger(feeBps) ||
+    feeBps < 0 ||
+    feeBps > MAX_EVM_FEE_BPS
+  ) {
+    throw new Error(`The fee rate must be a whole number of bps from 0 to ${MAX_EVM_FEE_BPS}.`);
+  }
+  return calculateProtocolFeeSubunits(options.amount, feeBps);
 }
 
 /** One call for `wallet_sendCalls` (EIP-5792) or the `to` / `data` of a transaction. */

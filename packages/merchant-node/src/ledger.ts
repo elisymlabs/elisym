@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
+import type { Network } from '@elisym/pay-core';
 import { CATCH_UP_SECS, WEBHOOK_DEADLINE_SECS } from './constants';
 import { replaceFileDurably } from './durable-file';
 import type { TermsPeriod } from './terms';
@@ -39,6 +40,14 @@ export interface MerchantOrder {
   blockedTx?: string;
   /** Queue position of each reported transaction: when it arrived, then when the sweep last checked it. */
   recheckedAt?: Record<string, number>;
+  /**
+   * Transactions that paid this order at least the floor, the rest to an
+   * address that is no elisym treasury this node knows (paid rule 3), and when
+   * each was first seen so. Neither paid nor refused: a later treasury read may
+   * resolve them. Cleared when the order is paid or answered by hand, and
+   * per transaction once it is set aside for good (`clearFeeUnresolved`).
+   */
+  feeUnresolved?: Record<string, number>;
   paid?: VerifiedPayment;
   /** The `order.paid` webhook, written in the same save as `paid` (see `recordPayment`). */
   webhook?: WebhookEntry;
@@ -51,8 +60,14 @@ export interface MerchantOrder {
 /** A payment the node verified on chain for one order. */
 export interface VerifiedPayment {
   signature: string;
-  /** Decimal string of subunits the bound transfer paid. */
+  /** Decimal string of subunits paid in total: the merchant's part and the protocol fee. */
   amount: string;
+  /**
+   * Decimal string of subunits of `amount` that went to an elisym treasury (the
+   * protocol fee): the merchant's wallet received `amount - fee`. Absent in a
+   * payment recorded by a node before protocol-fee support: read it as '0'.
+   */
+  fee?: string;
   blockTime: number;
   caip19: string;
   medium: string;
@@ -122,6 +137,7 @@ export function recordPayment(
   outbox: WebhookOutbox | undefined,
 ): void {
   order.paid = paid;
+  delete order.feeUnresolved;
   if (outbox !== undefined) {
     order.webhook = newWebhookEntry(outbox.storePubkey, order, outbox.now());
   }
@@ -151,12 +167,42 @@ export interface PublishedListing {
   createdAt: number;
 }
 
-/** The only ledger version this node reads and writes (a 0.7 node refuses it). */
-export const LEDGER_VERSION = 3;
+/**
+ * The only ledger version this node writes. 4 arrived with protocol-fee
+ * support: every older node refuses it ("Unknown ledger version"), so no node
+ * that would refuse a fee-split payment can ever run on a home whose store
+ * declared fee support.
+ */
+export const LEDGER_VERSION = 4;
+
+/** The version before protocol-fee support: `setup` and `run` convert it, nothing else opens it. */
+export const PRE_FEE_LEDGER_VERSION = 3;
+
+/** Why a command other than `setup` / `run` refuses a ledger of the version before fee support. */
+export const UPGRADE_FIRST_PROBLEM =
+  'this home was last run by a version before protocol-fee support: run `elisym-merchant setup` or `run` once after upgrading';
 
 /** Why a home made by merchant-node 0.7 or earlier is refused. */
 export const OLD_HOME_PROBLEM =
   'this home was made by merchant-node 0.7 or earlier: create a new home with init';
+
+/** The elisym treasuries one network's protocol config named, and when it last did. */
+export interface KnownTreasuries {
+  /** Solana treasury (base58) -> the last moment a fresh config read named it. */
+  solana: Record<string, number>;
+  /** EVM (Tempo) treasury (lowercase 0x) -> the last moment a fresh config read named it. */
+  evm: Record<string, number>;
+  /** What the last successful read named: kept whatever its age (an outage never empties the set). */
+  latest?: { solana: string; evm?: string };
+}
+
+/** A transaction of a rule-3 order that was closed unanswered: the owner may still answer it by hand. */
+export interface UnresolvedPayment {
+  key: string;
+  tx: string;
+  /** When the transaction was first seen unresolved. */
+  at: number;
+}
 
 export interface LedgerState {
   version: typeof LEDGER_VERSION;
@@ -189,6 +235,10 @@ export interface LedgerState {
   listings: Record<string, PublishedListing>;
   /** The payouts the owner's 10133 lists, and when it was signed: republished unchanged, it keeps its date. */
   payto?: { createdAt: number; payouts: string };
+  /** The elisym treasuries each network's config named (only fresh, genesis-checked reads write them). */
+  treasuries: Partial<Record<Network, KnownTreasuries>>;
+  /** Payments of rule-3 orders closed without an answer (see `pruneExpiredOrders`). */
+  unresolvedPayments: UnresolvedPayment[];
 }
 
 export interface ScannedTransaction {
@@ -206,6 +256,8 @@ export function emptyLedger(): LedgerState {
     terms: [],
     scans: {},
     listings: {},
+    treasuries: {},
+    unresolvedPayments: [],
   };
 }
 
@@ -241,14 +293,52 @@ export function undeliveredOrders(state: LedgerState): MerchantOrder[] {
  * Drop unpaid orders past the catch-up window (and a skew allowance): nothing
  * scans for them any more, and anyone can post them for free. Their rumor ids
  * stay, so the same order rumor is still a no-op; paid orders always stay, so a
- * claim can never be re-credited to a recreated order.
+ * claim can never be re-credited to a recreated order. The unresolved payments
+ * of a closed rule-3 order are kept in `unresolvedPayments` (the owner may
+ * still answer it by hand) and returned, for the log.
  */
-export function pruneExpiredOrders(state: LedgerState, now: number): void {
+export function pruneExpiredOrders(state: LedgerState, now: number): UnresolvedPayment[] {
+  const kept: UnresolvedPayment[] = [];
   for (const [key, order] of Object.entries(state.orders)) {
     if (order.paid === undefined && now - order.createdAt > CATCH_UP_SECS + MAX_FUTURE_SKEW_SECS) {
+      for (const [tx, at] of Object.entries(order.feeUnresolved ?? {})) {
+        kept.push({ key, tx, at });
+      }
       delete state.orders[key];
       (state.closedOrders ??= {})[key] = true;
     }
+  }
+  state.unresolvedPayments.push(...kept);
+  return kept;
+}
+
+/**
+ * Note that `tx` left `order` unresolved (paid rule 3). True when it is new
+ * for the order: only then is it logged.
+ */
+export function markFeeUnresolved(order: MerchantOrder, tx: string, at: number): boolean {
+  if (order.feeUnresolved?.[tx] !== undefined) {
+    return false;
+  }
+  order.feeUnresolved = { ...order.feeUnresolved, [tx]: at };
+  return true;
+}
+
+/**
+ * Forget that `tx` left `order` unresolved: it was set aside for good
+ * (refused, or found with no leg for the order) and will never be credited, so
+ * it is no unresolved payment any more. The record goes once it is empty.
+ */
+export function clearFeeUnresolved(order: MerchantOrder, tx: string): void {
+  if (order.feeUnresolved?.[tx] === undefined) {
+    return;
+  }
+  const rest = { ...order.feeUnresolved };
+  delete rest[tx];
+  if (Object.keys(rest).length === 0) {
+    delete order.feeUnresolved;
+  } else {
+    order.feeUnresolved = rest;
   }
 }
 
@@ -262,7 +352,17 @@ export function recordReport(order: MerchantOrder, tx: string, arrivedAt: number
   order.recheckedAt = { ...order.recheckedAt, [tx]: arrivedAt };
 }
 
-export function loadLedger(path: string): LedgerState {
+/**
+ * A ledger as read: always in this version's shape, and `read` says what the
+ * disk held - this version, the one before fee support (converted in memory,
+ * not yet saved), or nothing at all (a first run).
+ */
+export interface LoadedLedger {
+  state: LedgerState;
+  read: typeof LEDGER_VERSION | typeof PRE_FEE_LEDGER_VERSION | 'missing';
+}
+
+export function loadLedger(path: string): LoadedLedger {
   let text: string;
   try {
     text = readFileSync(path, 'utf8');
@@ -271,7 +371,7 @@ export function loadLedger(path: string): LedgerState {
     // directory, I/O) must stop the node: an empty ledger saved over the real one
     // would forget every claim, and a payment could be credited twice.
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      return emptyLedger();
+      return { state: emptyLedger(), read: 'missing' };
     }
     throw error;
   }
@@ -280,11 +380,45 @@ export function loadLedger(path: string): LedgerState {
   if (version === 1 || version === 2) {
     throw new Error(`${path}: ${OLD_HOME_PROBLEM}`);
   }
-  if (version !== LEDGER_VERSION) {
+  if (version !== LEDGER_VERSION && version !== PRE_FEE_LEDGER_VERSION) {
     throw new Error(`Unknown ledger version in ${path}`);
   }
+  // A ledger before fee support never saw a split payment (only a fee-aware
+  // setup declares the store's support, and it saves this version first): the
+  // conversion only sets the version and the new fields' empty defaults.
+  state.version = LEDGER_VERSION;
   state.scans ??= {};
   state.listings ??= {};
+  state.treasuries ??= {};
+  state.unresolvedPayments ??= [];
+  return { state, read: version };
+}
+
+/**
+ * The ledger `setup` and `run` work on: read, passed to `refuse` (which throws
+ * to stop with nothing written), then converted to this version and SAVED at
+ * once when the disk held an older one or none - before any relay or chain is
+ * contacted, so an older node refuses the home before this one can declare
+ * fee support.
+ */
+export function openLedgerForUpgrade(
+  path: string,
+  refuse: (state: LedgerState) => void,
+): LedgerState {
+  const { state, read } = loadLedger(path);
+  refuse(state);
+  if (read !== LEDGER_VERSION) {
+    saveLedger(path, state);
+  }
+  return state;
+}
+
+/** The ledger every other command works on: one before fee support is refused with the hint. */
+export function openLedger(path: string): LedgerState {
+  const { state, read } = loadLedger(path);
+  if (read === PRE_FEE_LEDGER_VERSION) {
+    throw new Error(`${path}: ${UPGRADE_FIRST_PROBLEM}`);
+  }
   return state;
 }
 

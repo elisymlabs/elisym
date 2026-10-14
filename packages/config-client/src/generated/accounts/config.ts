@@ -72,6 +72,13 @@ export type Config = {
    */
   paused: boolean;
   lastUpdated: bigint;
+  /**
+   * Protocol-fee treasury on the EVM rails (Tempo), a raw 20-byte address.
+   * All-zero means "not set". Carved from `_reserved` and declared after
+   * `last_updated` so every earlier field keeps its offset in live accounts
+   * and the account size is unchanged (no realloc, no migration).
+   */
+  evmTreasury: ReadonlyUint8Array;
   reserved: ReadonlyUint8Array;
 };
 
@@ -91,6 +98,13 @@ export type ConfigArgs = {
    */
   paused: boolean;
   lastUpdated: number | bigint;
+  /**
+   * Protocol-fee treasury on the EVM rails (Tempo), a raw 20-byte address.
+   * All-zero means "not set". Carved from `_reserved` and declared after
+   * `last_updated` so every earlier field keeps its offset in live accounts
+   * and the account size is unchanged (no realloc, no migration).
+   */
+  evmTreasury: ReadonlyUint8Array;
   reserved: ReadonlyUint8Array;
 };
 
@@ -106,7 +120,8 @@ export function getConfigEncoder(): Encoder<ConfigArgs> {
       ['feeBps', getU16Encoder()],
       ['paused', getBooleanEncoder()],
       ['lastUpdated', getI64Encoder()],
-      ['reserved', fixEncoderSize(getBytesEncoder(), 128)],
+      ['evmTreasury', fixEncoderSize(getBytesEncoder(), 20)],
+      ['reserved', fixEncoderSize(getBytesEncoder(), 108)],
     ]),
     (value) => ({ ...value, discriminator: CONFIG_DISCRIMINATOR })
   );
@@ -123,7 +138,8 @@ export function getConfigDecoder(): Decoder<Config> {
     ['feeBps', getU16Decoder()],
     ['paused', getBooleanDecoder()],
     ['lastUpdated', getI64Decoder()],
-    ['reserved', fixDecoderSize(getBytesDecoder(), 128)],
+    ['evmTreasury', fixDecoderSize(getBytesDecoder(), 20)],
+    ['reserved', fixDecoderSize(getBytesDecoder(), 108)],
   ]);
 }
 

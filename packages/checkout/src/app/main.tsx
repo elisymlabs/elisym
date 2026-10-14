@@ -10,7 +10,8 @@ import { IndexedDbOrderBackend, openOrderDatabase } from '../core/order-store-id
 import { decodeCheckoutParams } from '../embed/protocol';
 import { type Actions, Checkout } from './Checkout';
 import { type Screen, loadWithPins, startWithHint } from './controller';
-import { discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
+import { bundleStatusReader, discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
+import { feeTermsReader } from './fee-terms';
 import { acceptHandshake } from './handshake';
 import { createHeightAnimator } from './height';
 import { armFirstFocus, closeOnEscape } from './modal-frame';
@@ -49,6 +50,7 @@ const actions: Actions = {
   confirmOldPrompt: async () => session?.confirmOldPrompt(),
   cancelOldPrompt: () => session?.cancelOldPrompt(),
   cancel: () => session?.cancel(),
+  checkInWallet: async () => session?.checkInWallet(),
 };
 
 /** "Your purchases": read from the running session only (none before it starts). */
@@ -142,6 +144,8 @@ function rpcFor(network: Network): Rpc<SolanaRpcApi> | undefined {
   return rpc;
 }
 
+const feeTerms = feeTermsReader(rpcFor);
+
 /** Tempo's chain per network: mainnet, and Moderato (the registry's devnet). */
 function tempoCaip2(network: Network): string {
   return network === 'mainnet' ? 'eip155:4217' : 'eip155:42431';
@@ -194,6 +198,8 @@ async function start(pageOrigin: string): Promise<void> {
         clientFor: (buyerSecretKey) =>
           createRelayClient({ auth: async (template) => finalizeEvent(template, buyerSecretKey) }),
         rpcFor,
+        feeTerms,
+        bundleWallet: (rdns) => bundleStatusReader(evmWallets.list(), rdns),
         wallets: (network) => payingWallets(wallets.list(), solanaChain(network)),
         tempoFor,
         tempoWallets: (network) => {
