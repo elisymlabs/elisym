@@ -24,6 +24,10 @@
   --error-bg: #fee2e2;
   --blue: #1d4ed8;
   --blue-bg: #dbeafe;
+  --chart-1: #4d7c0f;
+  --chart-2: #2563eb;
+  --chart-3: #7c3aed;
+  --chart-4: #c2410c;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -51,6 +55,10 @@
     --error-bg: rgb(248 113 113 / 0.12);
     --blue: #93c5fd;
     --blue-bg: rgb(147 197 253 / 0.12);
+    --chart-1: #c6f432;
+    --chart-2: #60a5fa;
+    --chart-3: #a78bfa;
+    --chart-4: #fb923c;
   }
 }
 
@@ -77,6 +85,10 @@
   --color-error-bg: var(--error-bg);
   --color-blue: var(--blue);
   --color-blue-bg: var(--blue-bg);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
 }
@@ -141,9 +153,154 @@ body {
   }
 }
 
+/*
+ * The charts draw in once: bars grow from the baseline, day after day; the ring's
+ * arcs draw round one after another; the status bar grows from the left. Geometry
+ * comes from SVG attributes; each animation runs only to the value they set.
+ */
+.chart-bar {
+  transform-box: fill-box;
+  transform-origin: bottom;
+  animation: chart-grow-y 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.chart-bars > g:nth-child(2) .chart-bar {
+  animation-delay: 18ms;
+}
+.chart-bars > g:nth-child(3) .chart-bar {
+  animation-delay: 36ms;
+}
+.chart-bars > g:nth-child(4) .chart-bar {
+  animation-delay: 54ms;
+}
+.chart-bars > g:nth-child(5) .chart-bar {
+  animation-delay: 72ms;
+}
+.chart-bars > g:nth-child(6) .chart-bar {
+  animation-delay: 90ms;
+}
+.chart-bars > g:nth-child(7) .chart-bar {
+  animation-delay: 108ms;
+}
+.chart-bars > g:nth-child(8) .chart-bar {
+  animation-delay: 126ms;
+}
+.chart-bars > g:nth-child(9) .chart-bar {
+  animation-delay: 144ms;
+}
+.chart-bars > g:nth-child(10) .chart-bar {
+  animation-delay: 162ms;
+}
+.chart-bars > g:nth-child(11) .chart-bar {
+  animation-delay: 180ms;
+}
+.chart-bars > g:nth-child(12) .chart-bar {
+  animation-delay: 198ms;
+}
+.chart-bars > g:nth-child(13) .chart-bar {
+  animation-delay: 216ms;
+}
+.chart-bars > g:nth-child(14) .chart-bar {
+  animation-delay: 234ms;
+}
+.chart-bars > g:nth-child(15) .chart-bar {
+  animation-delay: 252ms;
+}
+.chart-bars > g:nth-child(16) .chart-bar {
+  animation-delay: 270ms;
+}
+.chart-bars > g:nth-child(17) .chart-bar {
+  animation-delay: 288ms;
+}
+.chart-bars > g:nth-child(18) .chart-bar {
+  animation-delay: 306ms;
+}
+.chart-bars > g:nth-child(19) .chart-bar {
+  animation-delay: 324ms;
+}
+.chart-bars > g:nth-child(20) .chart-bar {
+  animation-delay: 342ms;
+}
+.chart-bars > g:nth-child(21) .chart-bar {
+  animation-delay: 360ms;
+}
+.chart-bars > g:nth-child(22) .chart-bar {
+  animation-delay: 378ms;
+}
+.chart-bars > g:nth-child(23) .chart-bar {
+  animation-delay: 396ms;
+}
+.chart-bars > g:nth-child(24) .chart-bar {
+  animation-delay: 414ms;
+}
+.chart-bars > g:nth-child(25) .chart-bar {
+  animation-delay: 432ms;
+}
+.chart-bars > g:nth-child(26) .chart-bar {
+  animation-delay: 450ms;
+}
+.chart-bars > g:nth-child(27) .chart-bar {
+  animation-delay: 468ms;
+}
+.chart-bars > g:nth-child(28) .chart-bar {
+  animation-delay: 486ms;
+}
+.chart-bars > g:nth-child(29) .chart-bar {
+  animation-delay: 504ms;
+}
+.chart-bars > g:nth-child(30) .chart-bar {
+  animation-delay: 522ms;
+}
+
+.chart-arc {
+  animation: chart-draw 900ms cubic-bezier(0.3, 0.7, 0.2, 1) both;
+}
+
+.chart-arcs > circle:nth-child(2) {
+  animation-delay: 120ms;
+}
+.chart-arcs > circle:nth-child(3) {
+  animation-delay: 240ms;
+}
+.chart-arcs > circle:nth-child(4) {
+  animation-delay: 360ms;
+}
+.chart-arcs > circle:nth-child(5) {
+  animation-delay: 480ms;
+}
+.chart-arcs > circle:nth-child(6) {
+  animation-delay: 600ms;
+}
+
+.chart-strip {
+  transform-origin: left;
+  animation: chart-grow-x 800ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes chart-grow-y {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+@keyframes chart-grow-x {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes chart-draw {
+  from {
+    stroke-dasharray: 0 100;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .skeleton,
-  .animate-spin {
+  .animate-spin,
+  .chart-bar,
+  .chart-arc,
+  .chart-strip {
     animation: none;
   }
 }

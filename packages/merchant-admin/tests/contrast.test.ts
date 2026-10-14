@@ -127,4 +127,15 @@ describe('the text colors', () => {
       }
     }
   });
+
+  it('draws every chart series at 3:1 or better on the cards and the page, in both schemes', () => {
+    for (const colors of found) {
+      for (const series of ['chart-1', 'chart-2', 'chart-3', 'chart-4']) {
+        for (const background of ['surface', 'bg']) {
+          const ratio = contrast(named(colors, series), named(colors, background));
+          expect(ratio, `${series} on ${background}`).toBeGreaterThanOrEqual(3);
+        }
+      }
+    }
+  });
 });
