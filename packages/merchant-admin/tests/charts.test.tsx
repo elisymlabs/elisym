@@ -508,7 +508,9 @@ describe('the overview', () => {
     expect(links?.previousElementSibling?.className).toContain('bg-surface');
     const charts = page?.querySelector('[class*="1.6fr"]');
     expect(charts?.children).toHaveLength(3);
-    expect(charts?.firstElementChild?.className).toContain('lg:row-span-2');
+    expect(charts?.firstElementChild?.className.split(' ')).toEqual(
+      expect.arrayContaining(['h-380', 'lg:row-span-2', 'lg:h-auto']),
+    );
     expect(charts?.nextElementSibling).toBe(links?.previousElementSibling);
   });
 });
