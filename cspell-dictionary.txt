@@ -122,6 +122,7 @@ pino
 pipefail
 pipx
 prehash
+preimage
 pubkey
 pubkeys
 purplepag

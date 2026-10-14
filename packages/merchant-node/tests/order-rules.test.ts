@@ -91,6 +91,59 @@ describe('receiptProblem', () => {
   });
 });
 
+describe('receiptProblem with marked Tempo memos', () => {
+  const store = key();
+  const buyer = key();
+  const rules = { storePubkey: store.pubkey, mediums: ['solana-devnet', 'tempo-moderato'] };
+  const reference = deriveOrderPaymentReference({
+    storePubkey: store.pubkey,
+    buyerPubkey: buyer.pubkey,
+    orderId: ORDER_ID,
+  });
+  const other = deriveOrderPaymentReference({
+    storePubkey: store.pubkey,
+    buyerPubkey: key().pubkey,
+    orderId: ORDER_ID,
+  });
+  const receipt = (medium: string, ref: string, tx: string) => ({
+    type: 'receipt' as const,
+    storePubkey: store.pubkey,
+    orderId: ORDER_ID,
+    payment: { medium, reference: ref, tx },
+  });
+  const theOrder = { buyerPubkey: buyer.pubkey, orderId: ORDER_ID };
+  const tempo = (ref: string) =>
+    receiptProblem(receipt('tempo-moderato', ref, TEMPO_TX), theOrder, rules);
+
+  it('accepts the legacy and the marked memo of this order', () => {
+    expect(tempo(reference.tempo)).toBeUndefined();
+    expect(reference.tempoMarked.startsWith('0xfab22e7e')).toBe(true);
+    expect(tempo(reference.tempoMarked)).toBeUndefined();
+  });
+
+  it('refuses any other memo that looks marked', () => {
+    expect(tempo(other.tempoMarked)).toBe('wrong_reference');
+    // The magic, then the LAST 28 bytes of the hash.
+    expect(tempo(`0xfab22e7e${reference.tempo.slice(10)}`)).toBe('wrong_reference');
+    // Another magic before the right 28 bytes.
+    expect(tempo(`0xfab22e7f${reference.tempo.slice(2, 58)}`)).toBe('wrong_reference');
+    expect(tempo(`0xfab22e7e${'00'.repeat(28)}`)).toBe('wrong_reference');
+  });
+
+  it('keeps Solana on its one reference key', () => {
+    expect(
+      receiptProblem(
+        receipt('solana-devnet', reference.tempoMarked, signatureOf(1)),
+        theOrder,
+        rules,
+      ),
+    ).toBe('wrong_reference');
+    expect(
+      receiptProblem(receipt('solana-devnet', reference.solana, signatureOf(1)), theOrder, rules),
+    ).toBeUndefined();
+  });
+});
+
 describe('orderKey and TEMPO_HASH_RE', () => {
   it('keep their spellings', () => {
     expect(orderKey('buyer', 'order')).toBe('buyer:order');

@@ -7,8 +7,13 @@
  * A reported hash is pre-read (one receipt) before any full verify, so a report
  * of someone else's hash costs one read; catch-up finds payments by memo per
  * (coin, payout address), never one scan per order.
+ *
+ * An order may be paid under either of its two memos: the legacy order hash, or
+ * the marked form (the commerce magic and 28 bytes of the hash) a buyer uses for
+ * a store that declares `['memo-marker', '1']`. Both are accepted for every
+ * order, whatever the profile says today.
  */
-import { deriveOrderPaymentReference, parseCaip19 } from '@elisym/commerce';
+import { acceptedTempoMemos, deriveOrderPaymentReference, parseCaip19 } from '@elisym/commerce';
 import {
   type ChainConfig,
   type ParsedPaymentRequestV2,
@@ -95,12 +100,23 @@ const MAX_BLOCK_SAMPLES = 10_000;
 /** The rumor may be dated up to 15 minutes ahead: the scan starts this far before it. */
 const FLOOR_MARGIN_SECS = Math.max(ORDER_SCAN_MARGIN_SECS, 900);
 
+/** The order's legacy Tempo memo. */
 export function tempoMemo(order: MerchantOrder, storePubkey: string): string {
-  return deriveOrderPaymentReference({
-    storePubkey,
-    buyerPubkey: order.buyerPubkey,
-    orderId: order.orderId,
-  }).tempo;
+  return tempoMemos(order, storePubkey)[0];
+}
+
+/** Every memo the order may be paid under: legacy, then marked. Derived, never stored. */
+export function tempoMemos(
+  order: MerchantOrder,
+  storePubkey: string,
+): readonly [legacy: string, marked: string] {
+  return acceptedTempoMemos(
+    deriveOrderPaymentReference({
+      storePubkey,
+      buyerPubkey: order.buyerPubkey,
+      orderId: order.orderId,
+    }),
+  );
 }
 
 export interface TempoTerms {
@@ -281,12 +297,12 @@ async function verifyTerms(
   state: LedgerState,
   order: MerchantOrder,
   hash: string,
+  memo: string,
   context: TempoContext,
   plans: readonly TermPlan[],
   floor: { number: number; timestamp: number },
   satisfies: (terms: TempoTerms) => boolean,
 ): Promise<TermVerdict> {
-  const memo = tempoMemo(order, context.storePubkey);
   const verdicts: TermVerdict[] = [];
   for (const { candidate, fee } of plans) {
     const caip19 = parseCaip19(candidate.terms.caip19);
@@ -386,7 +402,10 @@ async function verifyTerms(
   return 'no_leg';
 }
 
-function asCheck(verdict: TermVerdict, order: MerchantOrder): TempoCheck {
+/** One memo group's verdict: a term verdict, or a guard log noting a blocked transfer. */
+type GroupVerdict = TermVerdict | 'blocked';
+
+function asCheck(verdict: GroupVerdict, order: MerchantOrder): TempoCheck {
   switch (verdict) {
     case 'paid':
       return { kind: 'paid', order };
@@ -396,6 +415,8 @@ function asCheck(verdict: TermVerdict, order: MerchantOrder): TempoCheck {
       return { kind: 'refused', reason: 'not_a_payment_for_this_order' };
     case 'no_leg':
       return { kind: 'no_leg' };
+    case 'blocked':
+      return { kind: 'blocked' };
     case 'unresolved':
       return { kind: 'ask_again', feeUnresolved: true };
     case 'ask':
@@ -404,25 +425,115 @@ function asCheck(verdict: TermVerdict, order: MerchantOrder): TempoCheck {
   return { kind: 'ask_again' };
 }
 
+/** What one memo group of a receipt is judged on. */
+interface MemoGroup {
+  memo: string;
+  /** The receipt's transfer legs under this memo. */
+  transfers: readonly TempoTransferLog[];
+  /** The receipt's guard logs under this memo. */
+  blocked: readonly { token: string; receiver: string; amount: bigint }[];
+  /** The legs a memo scan found under this hash with this memo (catch-up). */
+  scanned: readonly TempoTransferLog[];
+}
+
+interface GroupInputs {
+  state: LedgerState;
+  order: MerchantOrder;
+  hash: string;
+  context: TempoContext;
+  candidates: readonly TempoTerms[];
+  treasuries: readonly string[];
+  floor: () => Promise<{ number: number; timestamp: number } | undefined>;
+}
+
+/**
+ * Judge one memo group of a receipt exactly as a single-memo check: a group
+ * with no leg asks again when a scan found one (the receipt contradicts it) and
+ * is `no_leg` otherwise; a group with legs no term can use is `no_leg` only if
+ * the receipt shows every scanned leg of it; a guard log of at least the floor
+ * to a payout with no transfer is `blocked` (the caller decides whether to
+ * note it). Only a group with a plan is verified in full.
+ */
+async function judgeMemoGroup(inputs: GroupInputs, group: MemoGroup): Promise<GroupVerdict> {
+  const { candidates, treasuries } = inputs;
+  if (group.transfers.length === 0 && group.blocked.length === 0) {
+    return group.scanned.length > 0 ? 'ask' : 'no_leg';
+  }
+  const { plans, unresolved } = planTerms(candidates, group.transfers, treasuries);
+  if (plans.length === 0) {
+    if (unresolved) {
+      return 'unresolved';
+    }
+    // A scanned leg the receipt shows but no term of this order can use (below
+    // its own floor: the scan reads down to the lowest floor of every product)
+    // has no leg for this order; one the receipt does not show asks again.
+    if (group.scanned.length > 0) {
+      return group.scanned.every((leg) => receiptShows(group.transfers, leg)) ? 'no_leg' : 'ask';
+    }
+    // Transfer legs first: only a receipt with none of them is a blocked note,
+    // and only from a guard log of at least the floor to a payout (never a
+    // treasury's or dust).
+    const blocked = group.blocked.some((guard) =>
+      candidates.some(
+        (candidate) =>
+          guard.token === candidate.token &&
+          guard.receiver === candidate.terms.payout &&
+          guard.amount >= paymentFloor(BigInt(candidate.terms.amount)),
+      ),
+    );
+    return blocked ? 'blocked' : 'no_leg';
+  }
+  const floor = await inputs.floor();
+  if (floor === undefined) {
+    return 'ask';
+  }
+  const satisfies = (candidate: TempoTerms) =>
+    group.scanned.some(
+      (leg) =>
+        candidate.token === leg.token &&
+        candidate.terms.payout === leg.to &&
+        leg.amount >= paymentFloor(BigInt(candidate.terms.amount)),
+    );
+  const verdict = await verifyTerms(
+    inputs.state,
+    inputs.order,
+    inputs.hash,
+    group.memo,
+    inputs.context,
+    plans,
+    floor,
+    satisfies,
+  );
+  return verdict === 'paid' || !unresolved ? verdict : 'unresolved';
+}
+
+/** Two groups that did not pay, combined: unresolved, then ask, then blocked, then no leg. */
+const COMBINED_ORDER: readonly GroupVerdict[] = ['unresolved', 'ask', 'blocked'];
+
 /**
  * Check one hash for `order`. The receipt is read first (trusted as a verify
- * by hash trusts one), with every leg of the order's memo to a payout or a
- * known elisym treasury: no receipt asks again, a trusted receipt with no leg
- * for this order sets the hash aside (`no_leg`), a guard log of at least the
- * floor to a payout with no transfer notes `blocked`. Only a hash with a leg is
- * verified in full, by the paid rule of `planTerms`.
+ * by hash trusts one), with every leg under either of the order's memos to a
+ * payout or a known elisym treasury: no receipt asks again. Then each memo
+ * group is judged on its own (`judgeMemoGroup`), legacy first: the groups the
+ * receipt has a leg or a guard log in, and those a scan found legs in, or the
+ * legacy group alone when there are none. The first group that pays claims and
+ * records the payment, and no other group is judged - one order, one claim.
  *
- * `scanned`: the leg a memo scan found under this hash (catch-up). A receipt
- * that does not show it (the same coin and payout, at least its amount)
- * contradicts the scan and asks again; one that shows it with no leg this
- * order's terms can use is `no_leg`. No blocked note is taken from a scanned hash.
+ * With one group the verdict is the single-memo verdict. With two that did not
+ * pay, a refusal or a claim by another order counts as no leg (a mixed
+ * transaction is never refused), and the verdict is unresolved, else ask, else
+ * blocked, else no leg. A blocked note is taken only from a check with no
+ * scanned legs, and `order.blockedTx` is set only when it is the verdict.
+ *
+ * `scanned`: the legs a memo scan found under this hash for this order
+ * (catch-up), judged together within their memo group.
  */
 export async function checkTempoPayment(
   state: LedgerState,
   order: MerchantOrder,
   hash: string,
   context: TempoContext,
-  scanned?: TempoTransferLog,
+  scanned: readonly TempoTransferLog[] = [],
 ): Promise<TempoCheck> {
   if (order.paid !== undefined) {
     return order.paid.signature === hash
@@ -431,7 +542,7 @@ export async function checkTempoPayment(
   }
   const candidates = orderTempoCandidates(state, order, context);
   if (candidates.length === 0) {
-    return scanned === undefined
+    return scanned.length === 0
       ? { kind: 'refused', reason: 'not_a_payment_for_this_order' }
       : { kind: 'no_leg' };
   }
@@ -441,70 +552,75 @@ export async function checkTempoPayment(
     'evm',
     contextNow(context),
   );
+  const memos = tempoMemos(order, context.storePubkey);
   const pre = await readTempoReceiptLegs(context.client, hash, {
     chain: context.chain,
     tokens: [
       ...new Set([
         ...candidates.map((candidate) => candidate.token),
-        ...(scanned === undefined ? [] : [scanned.token]),
+        ...scanned.map((leg) => leg.token),
       ]),
     ],
     recipients: [
       ...new Set([
         ...candidates.map((candidate) => candidate.terms.payout),
         ...treasuries,
-        ...(scanned === undefined ? [] : [scanned.to]),
+        ...scanned.map((leg) => leg.to),
       ]),
     ],
-    memo: tempoMemo(order, context.storePubkey),
+    memo: memos,
     // Every leg: the paid rule needs the largest to the payout and to each treasury.
     minAmount: 1n,
   });
   if (pre.kind === 'unreadable' || pre.kind === 'absent') {
     return { kind: 'ask_again' };
   }
-  if (pre.kind === 'none') {
-    return scanned === undefined ? { kind: 'no_leg' } : { kind: 'ask_again' };
+  const transfers = pre.kind === 'legs' ? pre.transfers : [];
+  const guards = pre.kind === 'legs' ? pre.blocked : [];
+  const judged = memos.filter(
+    (memo) =>
+      scanned.some((leg) => leg.memo === memo) ||
+      transfers.some((leg) => leg.memo === memo) ||
+      guards.some((guard) => guard.memo === memo),
+  );
+  if (judged.length === 0) {
+    judged.push(memos[0]);
   }
-  const { plans, unresolved } = planTerms(candidates, pre.transfers, treasuries);
-  if (plans.length === 0) {
-    if (unresolved) {
-      return { kind: 'ask_again', feeUnresolved: true };
+  let floorRead: Promise<{ number: number; timestamp: number } | undefined> | undefined;
+  const inputs: GroupInputs = {
+    state,
+    order,
+    hash,
+    context,
+    candidates,
+    treasuries,
+    floor: () => (floorRead ??= orderFloor(context, order)),
+  };
+  const verdicts: GroupVerdict[] = [];
+  for (const memo of judged) {
+    const verdict = await judgeMemoGroup(inputs, {
+      memo,
+      transfers: transfers.filter((leg) => leg.memo === memo),
+      blocked: guards.filter((guard) => guard.memo === memo),
+      scanned: scanned.filter((leg) => leg.memo === memo),
+    });
+    if (verdict === 'paid') {
+      return asCheck(verdict, order);
     }
-    // A scanned leg the receipt shows but no term of this order can use (below
-    // its own floor: the scan reads down to the lowest floor of every product)
-    // has no leg for this order; one the receipt does not show asks again.
-    if (scanned !== undefined) {
-      return receiptShows(pre.transfers, scanned) ? { kind: 'no_leg' } : { kind: 'ask_again' };
-    }
-    // Transfer legs first: only a receipt with none of them is a blocked note,
-    // and only from a guard log of at least the floor to a payout (never a
-    // treasury's or dust).
-    const blocked = pre.blocked.some((guard) =>
-      candidates.some(
-        (candidate) =>
-          guard.token === candidate.token &&
-          guard.receiver === candidate.terms.payout &&
-          guard.amount >= paymentFloor(BigInt(candidate.terms.amount)),
-      ),
-    );
-    if (blocked) {
-      order.blockedTx = hash;
-      return { kind: 'blocked' };
-    }
-    return { kind: 'no_leg' };
+    // A blocked note comes only from a check with no scanned legs: catch-up
+    // never notes one, nor rechecks it every sweep.
+    verdicts.push(verdict === 'blocked' && scanned.length > 0 ? 'no_leg' : verdict);
   }
-  const floor = await orderFloor(context, order);
-  if (floor === undefined) {
-    return { kind: 'ask_again' };
+  let verdict: GroupVerdict;
+  if (verdicts.length === 1) {
+    verdict = verdicts[0] ?? 'no_leg';
+  } else {
+    verdict = COMBINED_ORDER.find((each) => verdicts.includes(each)) ?? 'no_leg';
   }
-  const satisfies = (candidate: TempoTerms) =>
-    scanned !== undefined &&
-    candidate.token === scanned.token &&
-    candidate.terms.payout === scanned.to &&
-    scanned.amount >= paymentFloor(BigInt(candidate.terms.amount));
-  const verdict = await verifyTerms(state, order, hash, context, plans, floor, satisfies);
-  return asCheck(verdict === 'paid' || !unresolved ? verdict : 'unresolved', order);
+  if (verdict === 'blocked') {
+    order.blockedTx = hash;
+  }
+  return asCheck(verdict, order);
 }
 
 /** Whether a receipt's `transfers` carry `scanned`: the same coin and payout, at least its amount. */
@@ -532,11 +648,12 @@ export function recordTempoCheck(order: MerchantOrder, hash: string, check: Temp
  * checked first (`checkTempoPayment`), oldest check first, within the sweep's
  * budget. Then one memo scan per (coin, payout address), from the oldest open
  * order's floor and down to the lowest payment floor of its terms, matched
- * locally against the open orders' derived memos. A match is judged by its
- * receipt with the scanned leg (`checkTempoPayment` with `scanned`), also when
- * its hash sits in `noLegTxs` (the match lifts it); a hash already refused or
- * found with no leg for the order (`tempoNoLeg`) is not judged again; an ask is
- * judged again, oldest check first, within the sweep's budget.
+ * locally against both derived memos of every open order. The matches of one
+ * (order, hash) are judged once, by its receipt with every scanned leg of the
+ * pair (`checkTempoPayment` with `scanned`), also when its hash sits in
+ * `noLegTxs` (the match lifts it); a hash already refused or found with no leg
+ * for the order (`tempoNoLeg`) is not judged again, nor written there twice; an
+ * ask is judged again, oldest check first, within the sweep's budget.
  */
 export async function catchUpTempo(
   state: LedgerState,
@@ -589,8 +706,19 @@ export async function catchUpTempo(
   if (floor === undefined) {
     return result;
   }
-  const byMemo = new Map(open.map((order) => [tempoMemo(order, context.storePubkey), order]));
-  const matches: { order: MerchantOrder; leg: TempoTransferLog; checkedAt: number }[] = [];
+  // Both forms of every open order. Two orders cannot share a memo: one form
+  // twice is an order id reused (refused at intake), across forms a preimage.
+  const byMemo = new Map<string, MerchantOrder>();
+  for (const order of open) {
+    for (const memo of tempoMemos(order, context.storePubkey)) {
+      byMemo.set(memo, order);
+    }
+  }
+  // Grouped by (order, hash): one check sees every leg the scans found for it.
+  const matches = new Map<
+    string,
+    { order: MerchantOrder; hash: string; legs: TempoTransferLog[]; checkedAt: number }
+  >();
   const pairs = new Map<string, TempoTerms[]>();
   for (const candidate of candidates) {
     const key = `${candidate.token}:${candidate.terms.payout}`;
@@ -625,18 +753,29 @@ export async function catchUpTempo(
       ) {
         continue;
       }
-      matches.push({ order, leg, checkedAt: order.recheckedAt?.[leg.transactionHash] ?? 0 });
+      const hash = leg.transactionHash;
+      const key = `${order.key} ${hash}`;
+      const match = matches.get(key);
+      if (match === undefined) {
+        matches.set(key, {
+          order,
+          hash,
+          legs: [leg],
+          checkedAt: order.recheckedAt?.[hash] ?? 0,
+        });
+      } else {
+        match.legs.push(leg);
+      }
     }
   }
-  matches.sort((left, right) => left.checkedAt - right.checkedAt);
-  for (const { order, leg } of matches.slice(0, MAX_RECHECKS_PER_SWEEP)) {
+  const sorted = [...matches.values()].sort((left, right) => left.checkedAt - right.checkedAt);
+  for (const { order, hash, legs } of sorted.slice(0, MAX_RECHECKS_PER_SWEEP)) {
     if (order.paid !== undefined) {
       continue;
     }
-    const hash = leg.transactionHash;
     order.recheckedAt = { ...order.recheckedAt, [hash]: now };
     // Judged by its receipt, by the same paid rule as a reported hash.
-    const check = await checkTempoPayment(state, order, hash, checkContext, leg);
+    const check = await checkTempoPayment(state, order, hash, checkContext, legs);
     // A match lifts a hash the pre-read set aside.
     if (order.noLegTxs?.includes(hash) === true) {
       order.noLegTxs = order.noLegTxs.filter((each) => each !== hash);
@@ -645,10 +784,14 @@ export async function catchUpTempo(
     if (check.kind === 'paid') {
       result.paid.push(order);
     } else if (check.kind === 'refused') {
-      order.refusedTxs = [...(order.refusedTxs ?? []), hash];
+      if (order.refusedTxs?.includes(hash) !== true) {
+        order.refusedTxs = [...(order.refusedTxs ?? []), hash];
+      }
       clearFeeUnresolved(order, hash);
     } else if (check.kind === 'no_leg') {
-      order.tempoNoLeg = [...(order.tempoNoLeg ?? []), hash];
+      if (order.tempoNoLeg?.includes(hash) !== true) {
+        order.tempoNoLeg = [...(order.tempoNoLeg ?? []), hash];
+      }
       clearFeeUnresolved(order, hash);
     }
   }

@@ -26,6 +26,7 @@ import {
   storedTempoRequest,
   watchTempoPayment,
 } from '../../src/buyer/tempo-pay';
+import { deriveOrderPaymentReference } from '../../src/orders/payment-reference';
 import { MemoryRelays, NO_FEE_TERMS, NOW, inboxList, makeShop } from './fixtures';
 
 /** A test may change what the composer returns (the real calls go in). */
@@ -110,7 +111,7 @@ const MODERATO: Network = {
 
 async function world(
   network: Network = MAINNET,
-  shopOptions: { fee?: boolean } = {},
+  shopOptions: { fee?: boolean; memoMarker?: boolean } = {},
 ): Promise<World> {
   const shop = makeShop({ caip19: network.caip19, payout: network.payout, ...shopOptions });
   const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
@@ -604,8 +605,11 @@ function batchWallet(run: World, behaviour: BatchBehaviour = 'drop'): BatchWalle
   return fake;
 }
 
-async function feeWorld(options: { fee?: boolean } = {}): Promise<World> {
-  const run = await world(MAINNET, { fee: options.fee ?? true });
+async function feeWorld(options: { fee?: boolean; memoMarker?: boolean } = {}): Promise<World> {
+  const run = await world(MAINNET, {
+    fee: options.fee ?? true,
+    ...(options.memoMarker === undefined ? {} : { memoMarker: options.memoMarker }),
+  });
   run.deps.feeTerms = AT_3_PERCENT;
   return run;
 }
@@ -1013,5 +1017,64 @@ describe('following a bundle', () => {
     const step = await followTempoBundle(record, run.deps, payer, BUNDLE);
     expect(step.step).toBe('failed');
     expect((await store.get(record.orderId))?.marker).toEqual(record.marker);
+  });
+});
+
+describe('the memo form of a Tempo order', () => {
+  function referenceOf(record: OrderRecord) {
+    return deriveOrderPaymentReference({
+      storePubkey: record.storePubkey,
+      buyerPubkey: record.buyerPubkey,
+      orderId: record.orderId,
+    });
+  }
+
+  it('pays a marked order under the marked memo on both legs, and finds it paid', async () => {
+    const run = await feeWorld({ memoMarker: true });
+    expect(run.record.reference).toBe(referenceOf(run.record).tempoMarked);
+    expect(run.record.reference.startsWith('0xfab22e7e')).toBe(true);
+    const payer = batchWallet(run, 'land');
+    const paid = await payWithTempo(run.record, payer, run.fresh, run.deps);
+    expect(paid).toMatchObject({ ok: true, bundleId: BUNDLE });
+    expect(payer.batches[0]?.calls.map((call) => `0x${call.data.slice(-64)}`)).toEqual([
+      run.record.reference,
+      run.record.reference,
+    ]);
+    const record = paid.ok ? paid.record : run.record;
+    expect(storedTempoRequest(record)?.memo).toBe(run.record.reference);
+  });
+
+  it('pays a marked fee-less order under the marked memo, and finds it paid', async () => {
+    const run = await world(MAINNET, { memoMarker: true });
+    const paid = await payWithTempo(run.record, wallet(run, 'land'), run.fresh, run.deps);
+    expect(paid).toMatchObject({ ok: true, hash: HASH });
+    const record = paid.ok ? paid.record : run.record;
+    expect(storedTempoRequest(record)?.memo).toBe(referenceOf(record).tempoMarked);
+    expect((await watchTempoPayment(record, run.deps)).state).toBe('paid');
+  });
+
+  it('keeps paying a legacy order under the legacy memo after the store declares the marker', async () => {
+    const run = await world();
+    expect(run.record.reference).toBe(referenceOf(run.record).tempo);
+    const tagged: Ready = { ...run.fresh, offer: { ...run.fresh.offer, memoMarker: true } };
+    const paid = await payWithTempo(run.record, wallet(run, 'land'), tagged, run.deps);
+    expect(paid).toMatchObject({ ok: true, hash: HASH });
+    const record = paid.ok ? paid.record : run.record;
+    expect(storedTempoRequest(record)?.memo).toBe(referenceOf(record).tempo);
+  });
+
+  it('refuses a stored request of the other form as not_payable', async () => {
+    const run = await world();
+    // A first attempt composes the request, then stops on the wallet's chain: nothing was requested.
+    const first = await payWithTempo(run.record, wallet(run, 'land', 42431), run.fresh, run.deps);
+    const record = first.ok ? run.record : (first.record as OrderRecord);
+    expect(storedTempoRequest(record)?.memo).toBe(referenceOf(record).tempo);
+    const switched = { ...record, reference: referenceOf(record).tempoMarked };
+    const payer = wallet(run, 'land');
+    expect(await payWithTempo(switched, payer, run.fresh, run.deps)).toMatchObject({
+      ok: false,
+      reason: 'not_payable',
+    });
+    expect(payer.sent).toBe(0);
   });
 });

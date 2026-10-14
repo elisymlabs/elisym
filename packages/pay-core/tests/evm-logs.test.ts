@@ -18,6 +18,7 @@ import {
   decodeTempoTransferLog,
   listTempoBlockedLogs,
   listTempoLogs,
+  listTempoMarkedTransfers,
   passesHistoryControl,
   readBlockByNumber,
   readFinalizedBlock,
@@ -985,5 +986,89 @@ describe('passesHistoryControl', () => {
         signal: AbortSignal.abort(),
       }),
     ).toBe(false);
+  });
+});
+
+describe('listTempoMarkedTransfers', () => {
+  const MARKED = `0xfab22e7e${'01'.repeat(28)}`;
+  const OTHER_PAYER = '0x1111111111111111111111111111111111111111';
+  const base = { token: TOKEN, fromBlock: 800, toBlock: 1_000, memoPrefix: '0xFAB22E7E' };
+
+  function marked(overrides: Partial<FakeLog> & { amount?: bigint } = {}): FakeLog {
+    return memoLog({
+      topics: [TRANSFER_WITH_MEMO_TOPIC, topicOf(PAYER), topicOf(RECIPIENT), MARKED],
+      ...overrides,
+    });
+  }
+
+  /** A node answering exactly these logs to every getLogs, whatever was asked. */
+  function answering(logs: FakeLog[]) {
+    const chain = fakeTempoChain({ finalized: 1_000, timestamps: { 1_000: 1 } });
+    return {
+      request: async (args: { method: string; params?: readonly unknown[] }) =>
+        args.method === 'eth_getLogs'
+          ? logs.map((log) => wireLog(log))
+          : chain.client.request(args),
+    };
+  }
+
+  it('asks for the event alone and keeps the marked transfers to anyone', async () => {
+    const toSomeoneElse = marked({
+      topics: [TRANSFER_WITH_MEMO_TOPIC, topicOf(PAYER), topicOf(OTHER_PAYER), MARKED],
+      logIndex: 3,
+    });
+    const chain = fakeTempoChain({ logs: [marked(), toSomeoneElse] });
+    const scan = await listTempoMarkedTransfers(chain.client, base);
+    expect(scan.candidates.map((log) => log.to)).toEqual([RECIPIENT, OTHER_PAYER]);
+    expect(scan.complete).toBe(true);
+    expect(scan.toBlock).toBe(1_000);
+    expect(chain.getLogsCalls).toEqual([
+      { address: TOKEN, topics: [TRANSFER_WITH_MEMO_TOPIC], fromBlock: 800, toBlock: 1_000 },
+    ]);
+  });
+
+  it.each([
+    ['another memo', memoLog()],
+    [
+      'from == to',
+      marked({ topics: [TRANSFER_WITH_MEMO_TOPIC, topicOf(PAYER), topicOf(PAYER), MARKED] }),
+    ],
+    ['a zero amount', marked({ amount: 0n })],
+  ])('drops %s without making the pass incomplete', async (_label, log) => {
+    const scan = await listTempoMarkedTransfers(answering([log]), base);
+    expect(scan.candidates).toEqual([]);
+    expect(scan.complete).toBe(true);
+  });
+
+  it('keeps a one-subunit transfer', async () => {
+    const scan = await listTempoMarkedTransfers(answering([marked({ amount: 1n })]), base);
+    expect(scan.candidates).toHaveLength(1);
+  });
+
+  it.each([
+    ['another emitter', marked({ address: `0x${'20'.repeat(20)}` })],
+    ['a block below the range', marked({ blockNumber: 799 })],
+    ['a block above the range', marked({ blockNumber: 1_001 })],
+  ])('makes the pass incomplete for %s', async (_label, log) => {
+    const scan = await listTempoMarkedTransfers(answering([log]), base);
+    expect(scan.candidates).toEqual([]);
+    expect(scan.complete).toBe(false);
+  });
+
+  it.each([
+    ['a floor above the ceiling', { fromBlock: 1_001 }],
+    ['a negative floor', { fromBlock: -1 }],
+    ['a NaN ceiling', { toBlock: Number.NaN }],
+  ])('refuses %s without asking the node', async (_label, change) => {
+    const chain = fakeTempoChain({ logs: [marked()] });
+    const scan = await listTempoMarkedTransfers(chain.client, { ...base, ...change });
+    expect(scan).toEqual({ candidates: [], complete: false, toBlock: null });
+    expect(chain.getLogsCalls).toEqual([]);
+  });
+
+  it('is incomplete when a chunk fails', async () => {
+    const chain = fakeTempoChain({ logs: [marked()], onGetLogs: () => invalidRangeError() });
+    const scan = await listTempoMarkedTransfers(chain.client, base);
+    expect(scan.complete).toBe(false);
   });
 });

@@ -53,6 +53,7 @@ import {
 } from './assets';
 import { degenerateReference, degenerateReferenceSync } from './degenerate-reference';
 import { assertExpiry, assertLamports, calculateProtocolFee, validateExpiry } from './fee';
+import { ELISYM_COMMERCE_MEMO, ELISYM_JOB_MEMO_PREFIX } from './markers';
 import { estimatePriorityFeeMicroLamports } from './priorityFee';
 import { isReadableTokenRow, readBalance } from './read-balance';
 import { parsePaymentRequest } from './schema';
@@ -1040,6 +1041,12 @@ function refuseDegenerateReferenceAgainst(
  * Nostr job id and indexers can join on-chain payments back to off-chain
  * job context.
  *
+ * If `options.commerceMemo` is set instead, the memo is the fixed text
+ * `elisym:commerce`, so a reader of the chain can count commerce payments apart
+ * from agent jobs. It is a label, never a payment condition: no verifier reads
+ * it, and a payment without it is credited the same. The two memos exclude each
+ * other.
+ *
  * Async because SPL ATAs are PDAs and `findAssociatedTokenPda` is async.
  *
  * Caller is responsible for validating `paymentRequest` upstream - and that
@@ -1078,8 +1085,18 @@ export async function buildPaymentInstructions(
      * keep their shape. Commerce payments always pass it.
      */
     bindFeeLeg?: boolean;
+    /**
+     * Prepend the SPL Memo `elisym:commerce` (no accounts, no signers), the
+     * public marker of a commerce payment. Off by default; commerce payments
+     * pass it. Throws together with `jobEventId`: a payment is one or the
+     * other.
+     */
+    commerceMemo?: boolean;
   },
 ): Promise<readonly unknown[]> {
+  if (options.commerceMemo === true && options.jobEventId) {
+    throw new Error('A payment carries either a job memo or the commerce memo, not both.');
+  }
   const recipient = address(paymentRequest.recipient);
   const reference = address(paymentRequest.reference);
   const protocolTag = address(ELISYM_PROTOCOL_TAG);
@@ -1145,9 +1162,14 @@ export async function buildPaymentInstructions(
       ]
     : [];
 
-  const memoInstruction = options.jobEventId
-    ? getAddMemoInstruction({ memo: `elisym:v1:${options.jobEventId}` })
-    : null;
+  let memoInstruction: ReturnType<typeof getAddMemoInstruction> | null = null;
+  if (options.jobEventId) {
+    memoInstruction = getAddMemoInstruction({
+      memo: `${ELISYM_JOB_MEMO_PREFIX}${options.jobEventId}`,
+    });
+  } else if (options.commerceMemo === true) {
+    memoInstruction = getAddMemoInstruction({ memo: ELISYM_COMMERCE_MEMO });
+  }
 
   // Native SOL path - unchanged from the pre-USDC behaviour.
   if (!asset.mint) {

@@ -6,6 +6,7 @@
 import {
   type OrderRequest,
   type PaymentReceipt,
+  acceptedTempoMemos,
   deriveOrderPaymentReference,
 } from '@elisym/commerce';
 import { EARLIEST_ORDER_SECS } from './constants';
@@ -59,8 +60,9 @@ export function isDirectOrder(
 /**
  * Why a buyer's receipt does not count for `order`, or `undefined` when it does.
  * The medium names the rail, and the rail decides the reference and the tx
- * spelling: a Tempo receipt carries this order's memo and a lowercase hash. The
- * reference is derived from the order alone, never taken from the buyer.
+ * spelling: a Tempo receipt carries one of this order's two memos (legacy or
+ * marked) and a lowercase hash. The reference is derived from the order alone,
+ * never taken from the buyer.
  */
 export function receiptProblem(
   message: PaymentReceipt,
@@ -74,7 +76,8 @@ export function receiptProblem(
     buyerPubkey: order.buyerPubkey,
     orderId: order.orderId,
   });
-  if (reference !== (tempo ? derived.tempo : derived.solana)) {
+  const accepted: readonly string[] = tempo ? acceptedTempoMemos(derived) : [derived.solana];
+  if (!accepted.includes(reference)) {
     return 'wrong_reference';
   }
   if (!store.mediums.includes(medium)) {

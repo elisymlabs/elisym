@@ -659,6 +659,76 @@ export async function listTempoLogs(
   return { candidates, complete: outcome.complete, toBlock: head };
 }
 
+export interface ListTempoMarkedTransfersOptions {
+  /** The registry token. Logs from any other emitter are not this token's. */
+  token: string;
+  /** Inclusive floor of the scan. */
+  fromBlock: number;
+  /** Inclusive ceiling. Never defaulted: a statistics window is fixed by its caller. */
+  toBlock: number;
+  /** The memo prefix a transfer must carry (`0x` and whole bytes of hex), e.g. the commerce magic. */
+  memoPrefix: string;
+  signal?: AbortSignal;
+}
+
+/**
+ * Every `TransferWithMemo` of `token` in `[fromBlock, toBlock]` whose memo
+ * starts with `memoPrefix`, to anyone - the read a public statistic of marked
+ * transfers is built on, never a verdict about one payment.
+ *
+ * The filter names only the event: a prefix is not a topic, so the memo is
+ * checked here. A log with another memo, with `from == to` or with a zero
+ * amount is dropped (somebody else's, or free to forge); a log from another
+ * emitter or outside the range asked for is the node answering something else
+ * and makes the scan incomplete.
+ */
+export async function listTempoMarkedTransfers(
+  client: Eip1193Client,
+  options: ListTempoMarkedTransfersOptions,
+): Promise<TempoLogScan> {
+  if (
+    !Number.isSafeInteger(options.fromBlock) ||
+    !Number.isSafeInteger(options.toBlock) ||
+    options.fromBlock < 0 ||
+    options.fromBlock > options.toBlock
+  ) {
+    return { candidates: [], complete: false, toBlock: null };
+  }
+  const memoPrefix = options.memoPrefix.toLowerCase();
+  const candidates: TempoTransferLog[] = [];
+  const outcome = await scanLogs(
+    client,
+    {
+      address: options.token,
+      topics: [TRANSFER_WITH_MEMO_TOPIC],
+      fromBlock: options.fromBlock,
+      toBlock: options.toBlock,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    },
+    (entry) => {
+      const decoded = decodeTempoTransferLog(entry, 'TransferWithMemo', options.token);
+      if (decoded.kind !== 'log') {
+        return 'unreadable';
+      }
+      const log = decoded.log;
+      if (log.blockNumber < options.fromBlock || log.blockNumber > options.toBlock) {
+        return 'unreadable';
+      }
+      if (
+        log.memo === undefined ||
+        !log.memo.startsWith(memoPrefix) ||
+        log.amount === 0n ||
+        sameAddress(log.from, log.to)
+      ) {
+        return 'drop';
+      }
+      candidates.push(log);
+      return 'ok';
+    },
+  );
+  return { candidates, complete: outcome.complete, toBlock: options.toBlock };
+}
+
 export interface ListBlockedLogsOptions {
   token: string;
   /** The account whose policy refused - the leg's `to`. */

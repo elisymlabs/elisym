@@ -1,7 +1,7 @@
 import { PaymentRequestV2Schema } from '@elisym/pay-core';
 import { isAddress } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
-import { deriveOrderPaymentReference } from '../src/orders/payment-reference';
+import { acceptedTempoMemos, deriveOrderPaymentReference } from '../src/orders/payment-reference';
 
 const STORE = 'a'.repeat(64);
 const BUYER = 'b'.repeat(64);
@@ -15,7 +15,18 @@ describe('deriveOrderPaymentReference', () => {
     ).toEqual({
       solana: '9X2A3QwTyptFanKJABbs62fSYnsBqUdXZrmeiJRHwGy2',
       tempo: '0x7e8e3a05d7b311fe99a4327022fc7f3d0990b07997a316909bdc1de60bf807fd',
+      // The commerce magic, then the first 28 bytes of `tempo`.
+      tempoMarked: '0xfab22e7e7e8e3a05d7b311fe99a4327022fc7f3d0990b07997a316909bdc1de6',
     });
+  });
+
+  it('lists the accepted Tempo memos legacy first, then marked', () => {
+    const reference = deriveOrderPaymentReference({
+      storePubkey: STORE,
+      buyerPubkey: BUYER,
+      orderId: ORDER_ID,
+    });
+    expect(acceptedTempoMemos(reference)).toEqual([reference.tempo, reference.tempoMarked]);
   });
 
   it('changes with each of its inputs, so no two orders share a reference', () => {
@@ -51,6 +62,11 @@ describe('deriveOrderPaymentReference', () => {
       expiry_secs: 600,
     });
     expect(request.success).toBe(true);
+    const marked = PaymentRequestV2Schema.safeParse({
+      ...(request.success ? request.data : {}),
+      memo: reference.tempoMarked,
+    });
+    expect(marked.success).toBe(true);
   });
 
   it('refuses keys that are not lowercase hex and an order id the protocol refuses', () => {

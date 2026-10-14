@@ -70,7 +70,10 @@ export interface CannedOfferOptions {
 }
 
 export function cannedOffer(options: CannedOfferOptions = {}): ReadyOffer {
-  const payouts = (options.payouts ?? ['solana-devnet']).map(priced);
+  const kinds = options.payouts ?? ['solana-devnet'];
+  const payouts = kinds.map(priced);
+  // A demo store on a Tempo payout runs a node that declares marked memos.
+  const memoMarker = kinds.some((kind) => kind.startsWith('tempo'));
   const level = options.level ?? 'A';
   const domain = options.domain ?? (level === 'C' ? undefined : 'shop.example');
   const storePubkey = 'a'.repeat(64);
@@ -81,8 +84,9 @@ export function cannedOffer(options: CannedOfferOptions = {}): ReadyOffer {
       ...(domain === undefined ? {} : { domain }),
       storePubkey,
       ownerPubkey: 'b'.repeat(64),
-      profile: { name: options.name ?? 'Demo Shop', feeSupport: false },
+      profile: { name: options.name ?? 'Demo Shop', feeSupport: false, memoMarker },
       feeSupport: false,
+      memoMarker,
       product: {
         storePubkey,
         d: 'course-101',

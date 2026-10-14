@@ -5,6 +5,7 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import {
   KIND_GIFT_WRAP,
   MAX_FUTURE_SKEW_SECS,
+  type OrderPaymentReference,
   type OrderStatusMessage,
   type OfferWarning,
   buildOrderMessage,
@@ -61,6 +62,24 @@ export function compareOffers(
     return 'changed';
   }
   return fresh.confirm.every((warning) => confirmed.includes(warning)) ? 'same' : 'changed';
+}
+
+/**
+ * The reference an order is paid under on its chain. On Tempo, the marked memo
+ * when the store declares `['memo-marker', '1']` (its node accepts both forms),
+ * the legacy memo otherwise. Fixed once, at placing: the record keeps it for
+ * its whole life, so a resumed order pays the form it was placed with whatever
+ * the store's profile says later.
+ */
+function paymentReferenceFor(
+  family: ChainConfig['family'],
+  reference: OrderPaymentReference,
+  memoMarker: boolean,
+): string {
+  if (family === 'solana') {
+    return reference.solana;
+  }
+  return memoMarker ? reference.tempoMarked : reference.tempo;
 }
 
 export interface PlaceOrderInput {
@@ -172,7 +191,7 @@ export async function placeOrder(
     payout: { caip19: payout.target.caip19.id, address: payout.target.address },
     amount: payout.amount.toString(),
     medium: mediumOf(chain),
-    reference: chain.family === 'solana' ? reference.solana : reference.tempo,
+    reference: paymentReferenceFor(chain.family, reference, offer.offer.memoMarker),
     offer: offer.offer,
     ...(input.customerRef === undefined ? {} : { customerRef: input.customerRef }),
     // Kept before it is sent: a crash in between is resumed by sending the same wrap.

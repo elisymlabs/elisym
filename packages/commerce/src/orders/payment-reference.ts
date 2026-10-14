@@ -1,3 +1,4 @@
+import { markTempoCommerceMemo } from '@elisym/pay-core';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58, hex } from '@scure/base';
 import { ORDER_PAYMENT_REFERENCE_PREFIX } from '../constants';
@@ -21,6 +22,13 @@ export interface OrderPaymentReference {
   solana: string;
   /** Tempo: the `transferWithMemo` memo, 32 bytes of lowercase hex. */
   tempo: string;
+  /**
+   * Tempo, marked: the commerce magic `0xfab22e7e`, then the first 28 bytes of
+   * `tempo`. Paid only to a store whose profile declares `['memo-marker', '1']`,
+   * whose node accepts both forms; it makes the payment countable as an elisym
+   * purchase from public chain data, and binds the order with 224 bits.
+   */
+  tempoMarked: string;
 }
 
 /**
@@ -61,5 +69,17 @@ export function deriveOrderPaymentReference(
       `${ORDER_PAYMENT_REFERENCE_PREFIX}:${input.storePubkey}:${input.buyerPubkey}:${input.orderId}`,
     ),
   );
-  return { solana: base58.encode(digest), tempo: `0x${hex.encode(digest)}` };
+  const tempo = `0x${hex.encode(digest)}`;
+  return { solana: base58.encode(digest), tempo, tempoMarked: markTempoCommerceMemo(tempo) };
+}
+
+/**
+ * Every Tempo memo an order may be paid under: the legacy form, then the marked
+ * one. A node that declares `['memo-marker', '1']` accepts both, whichever its
+ * store profile says today - a buyer fixes the form when it places the order.
+ */
+export function acceptedTempoMemos(
+  reference: Pick<OrderPaymentReference, 'tempo' | 'tempoMarked'>,
+): readonly [legacy: string, marked: string] {
+  return [reference.tempo, reference.tempoMarked];
 }

@@ -165,6 +165,8 @@ export function buildStoreWideEvents(
           ownerPubkey,
           createdAt,
           fee: feeSupport,
+          // Every node from 0.11 accepts both Tempo memo forms for every order.
+          memoMarker: true,
           ...(config.nip05 === undefined ? {} : { nip05: config.nip05 }),
         }),
       ),

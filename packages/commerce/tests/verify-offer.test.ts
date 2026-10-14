@@ -1136,3 +1136,25 @@ describe('verifyOffer', () => {
     expect(expectRefusal(result)).toBe('bad_pointer');
   });
 });
+
+describe('evaluateOffer - store capabilities', () => {
+  it('carries the profile memo marker onto the offer, false without the tag', () => {
+    const world = makeWorld();
+    expect(expectOffer(evaluate(world)).memoMarker).toBe(false);
+    const marked = sign(
+      buildStoreProfileEvent({
+        name: 'Shop',
+        ownerPubkey: world.owner.pubkey,
+        createdAt: T0,
+        memoMarker: true,
+      }),
+      world.store,
+    );
+    const offer = expectOffer(
+      evaluate(world, { events: [world.product, marked, world.payto, world.auth] }),
+    );
+    expect(offer.memoMarker).toBe(true);
+    expect(offer.profile.memoMarker).toBe(true);
+    expect(offer.feeSupport).toBe(false);
+  });
+});

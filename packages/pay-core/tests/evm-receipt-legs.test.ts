@@ -200,3 +200,83 @@ describe('readTempoReceiptLegs', () => {
     expect(result).toEqual({ kind: 'none' });
   });
 });
+
+describe('readTempoReceiptLegs with several memos', () => {
+  const MARKED_MEMO = `0xfab22e7e${SINGLE_MEMO.slice(2, 58)}`;
+  const singleLogs = SINGLE.logs as Record<string, unknown>[];
+  const memoLogs = singleLogs.filter((log) => (log.topics as string[])[3] === SINGLE_MEMO);
+  // The same leg again under the marked memo, as a second log of the receipt.
+  const markedCopies = memoLogs.map((log) => ({
+    ...log,
+    topics: [...(log.topics as string[]).slice(0, 3), MARKED_MEMO],
+    logIndex: '0x7f',
+  }));
+  const TWO_FORMS = { ...SINGLE, logs: [...singleLogs, ...markedCopies] };
+
+  it("finds the legs of both memos and keeps each one's own memo", async () => {
+    const result = await readTempoReceiptLegs(
+      mainnet({ receipts: { [SINGLE_HASH]: TWO_FORMS } }).client,
+      SINGLE_HASH,
+      { ...SINGLE_READ, memo: [SINGLE_MEMO, MARKED_MEMO] },
+    );
+    expect(result.kind === 'legs' && result.transfers.map((leg) => leg.memo)).toEqual([
+      SINGLE_MEMO,
+      MARKED_MEMO,
+    ]);
+  });
+
+  it('finds a leg under the second memo of the list alone', async () => {
+    const result = await readTempoReceiptLegs(mainnet().client, SINGLE_HASH, {
+      ...SINGLE_READ,
+      memo: [MARKED_MEMO, SINGLE_MEMO.toUpperCase().replace('0X', '0x')],
+    });
+    expect(result.kind === 'legs' && result.transfers.map((leg) => leg.memo)).toEqual([
+      SINGLE_MEMO,
+    ]);
+  });
+
+  it('answers none when neither memo is in the receipt', async () => {
+    const result = await readTempoReceiptLegs(
+      mainnet({ receipts: { [SINGLE_HASH]: TWO_FORMS } }).client,
+      SINGLE_HASH,
+      { ...SINGLE_READ, memo: [`0x${'ab'.repeat(32)}`, `0x${'cd'.repeat(32)}`] },
+    );
+    expect(result).toEqual({ kind: 'none' });
+  });
+
+  it('matches a guard log under the second memo too', async () => {
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: 1, [BLOCKED_BLOCK]: 1 },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const result = await readTempoReceiptLegs(chain.client, BLOCKED_HASH, {
+      chain: MODERATO,
+      tokens: [PATHUSD],
+      recipients: [BLOCKED_RECEIVER],
+      memo: [`0x${'ab'.repeat(32)}`, BLOCKED_MEMO],
+      minAmount: 1n,
+    });
+    expect(result.kind === 'legs' && result.blocked.map((guard) => guard.memo)).toEqual([
+      BLOCKED_MEMO,
+    ]);
+  });
+
+  it('ignores a guard log under a memo outside the list', async () => {
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: 1, [BLOCKED_BLOCK]: 1 },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const result = await readTempoReceiptLegs(chain.client, BLOCKED_HASH, {
+      chain: MODERATO,
+      tokens: [PATHUSD],
+      recipients: [BLOCKED_RECEIVER],
+      memo: [`0x${'ab'.repeat(32)}`, `0x${'cd'.repeat(32)}`],
+      minAmount: 1n,
+    });
+    expect(result).toEqual({ kind: 'none' });
+  });
+});

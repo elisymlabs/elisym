@@ -641,7 +641,13 @@ async function unsignedPayment(
     checked.request,
     createNoopSigner(payerAddress),
     // The fee leg carries the order's markers too: the merchant binds it as it binds the payee's.
-    { programId: getProtocolProgramId(checked.network), bindFeeLeg: true },
+    // The `elisym:commerce` memo is a public label only: `checkSignedTransaction`
+    // does not require it, and a wallet that strips it still pays the order.
+    {
+      programId: getProtocolProgramId(checked.network),
+      bindFeeLeg: true,
+      commerceMemo: true,
+    },
   );
   const { context, value: latest } = await rpc
     .getLatestBlockhash({ commitment: 'confirmed' })

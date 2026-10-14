@@ -1,0 +1,26 @@
+{
+  "name": "@elisym/pay-stats",
+  "version": "0.0.1",
+  "private": true,
+  "description": "elisym private statistics: count and USD volume of marked commerce payments on Solana and Tempo, from public chain data.",
+  "license": "MIT",
+  "author": "elisym labs",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "stats": "bun src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/ tests/"
+  },
+  "dependencies": {
+    "@elisym/pay-core": "~0.3.0",
+    "@solana/kit": "~6.8.0",
+    "decimal.js-light": "~2.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "~25.5.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.2.6"
+  }
+}

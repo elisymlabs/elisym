@@ -1,4 +1,4 @@
-import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
+import { MAX_FUTURE_SKEW_SECS, deriveOrderPaymentReference } from '@elisym/commerce';
 import { getBase58Decoder } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import { buildHistory, claimCheck } from '../../src/admin/history';
@@ -191,6 +191,40 @@ describe('receipts', () => {
     );
     expect(history.rows[0]?.state).toBe('payment_reported');
     expect(history.rows[0]?.reported).toHaveLength(MAX_RECEIPTS_PER_ORDER);
+  });
+
+  it('reports a Tempo receipt under the marked memo as under the legacy one', () => {
+    const store = key();
+    const buyer = key();
+    const derived = deriveOrderPaymentReference({
+      storePubkey: store.pubkey,
+      buyerPubkey: buyer.pubkey,
+      orderId: ORDER_ID,
+    });
+    const tempoReceipt = (reference: string, tx: string) => ({
+      type: 'receipt' as const,
+      storePubkey: store.pubkey,
+      orderId: ORDER_ID,
+      payment: { medium: 'tempo', reference, tx },
+    });
+    const history = buildHistory(
+      [
+        message(orderBody(store, ORDER_ID), buyer.pubkey, store.pubkey),
+        message(
+          tempoReceipt(derived.tempoMarked, `0x${'ab'.repeat(32)}`),
+          buyer.pubkey,
+          store.pubkey,
+        ),
+        message(tempoReceipt(derived.tempo, `0x${'cd'.repeat(32)}`), buyer.pubkey, store.pubkey),
+      ],
+      adminStore(store, { mediums: ['tempo'] }),
+      NOW,
+    );
+    expect(history.rows[0]?.state).toBe('payment_reported');
+    expect(history.rows[0]?.reported.map((entry) => entry.tx).sort()).toEqual([
+      `0x${'ab'.repeat(32)}`,
+      `0x${'cd'.repeat(32)}`,
+    ]);
   });
 
   it('drops a receipt under another reference or with a malformed tx', () => {

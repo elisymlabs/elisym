@@ -48,7 +48,7 @@ A payment on an EVM chain uses a separate, versioned shape. It is not a wider v1
 }
 ```
 
-The schema is strict and nothing defaults. `chain` is the [CAIP-2 id](/reference/networks#chain-identifiers) of a chain the client knows and `asset` is a CAIP-19 id on that same chain; the coin's contract and decimals always come from the client's own registry, never from the request. Amounts are canonical integer **strings** of subunits (no leading zero, at most 30 digits) and `amount` is the total, as in v1. The fee fields come together or not at all, and a zero fee is written by omitting both. Addresses, the memo and hashes are lowercase hex, and a virtual address is refused. `memo` is 32 random bytes the provider picks per request - the counterpart of the Solana `reference`: the payment is found by it.
+The schema is strict and nothing defaults. `chain` is the [CAIP-2 id](/reference/networks#chain-identifiers) of a chain the client knows and `asset` is a CAIP-19 id on that same chain; the coin's contract and decimals always come from the client's own registry, never from the request. Amounts are canonical integer **strings** of subunits (no leading zero, at most 30 digits) and `amount` is the total, as in v1. The fee fields come together or not at all, and a zero fee is written by omitting both. Addresses, the memo and hashes are lowercase hex, and a virtual address is refused. `memo` is 32 random bytes the provider picks per request - the counterpart of the Solana `reference`: the payment is found by it. A commerce order's memo is not random: it is derived from the order, and may carry the commerce marker (see [Commerce payment markers](#commerce-payment-markers)).
 
 ## The transaction
 
@@ -64,6 +64,17 @@ The customer signs and submits it, then publishes a `payment-completed` feedback
 Every payment built by the SDK embeds an **SPL Memo** instruction with the payload `elisym:v1:<jobEventId>`, where `<jobEventId>` is the Nostr id of the job request the payment settles. It is a permanent on-chain record of which job the payer meant the transaction for. It is a provenance marker, not an access check: the memo is optional, and the provider never reads it when verifying a payment.
 
 The memo is what makes a payment independently verifiable without any off-chain state: given a rating's `["tx", <sig>]` tag, anyone can fetch that transaction and confirm from the memo that it paid _this_ job. It is the anchor a future off-chain reputation indexer joins on (see [Reputation](/protocol/reputation)). Both automatic payment paths (SDK submit-and-pay, the web app) embed it; the manual `send_payment` tool embeds it when given the job id.
+
+## Commerce payment markers
+
+A commerce payment (the checkout widget, or an agent's `buy_product`) carries a public **marker**, so anyone can count elisym purchases from chain data alone. A marker is a label, never a condition: no verifier reads it, and a payment without one is credited exactly the same.
+
+- **Solana** - a top-level SPL Memo (Memo v2, no accounts, no signers) with the fixed text `elisym:commerce` (`ELISYM_COMMERCE_MEMO`), placed first among the payment's instructions (compute-budget instructions may precede it). It never shares a transaction with the job memo, whose namespace (`elisym:v1:`) it does not overlap. A wallet that drops it still pays the order; the payment is then counted as untagged.
+- **Tempo** - the memo word itself. An order's legacy memo is `sha256("elisym-order-payment:v1:<store>:<buyer>:<orderId>")`, 32 bytes. Its **marked** form is the 4-byte magic `0xfab22e7e` (`TEMPO_COMMERCE_MEMO_MAGIC`, the first 4 bytes of `sha256("elisym-memo-marker:commerce:v1")`) followed by the first 28 bytes of the legacy memo (`markTempoCommerceMemo`, `isTempoCommerceMemo`). It still binds the order with 224 bits, and the random order id keeps it private.
+
+A buyer pays a Tempo order under the marked memo only when the store's profile (kind 0) declares `["memo-marker", "1"]`. That tag means the store's node accepts **both** forms for every order, and receipts naming either; merchant-node 0.11 and later declares it on every `setup`. The form is fixed when the order is placed and kept for its life, so an order resumed after the store's profile changed pays the memo it was placed with. Agent-job Tempo memos stay 32 random bytes; a third party must not start a memo with the commerce magic.
+
+What the markers count is **marked transfers, not verified orders**: anyone can write one, which inflates a count and never credits anything, and a transfer the node refused (stale terms, below the floor) cannot be told apart from public data. A marked Tempo memo also makes a store's Tempo payout and its sales volume publicly enumerable and links a buyer's wallet to an elisym purchase - the same exposure a Solana commerce payment already has through the protocol tag and its reference. No order data is revealed.
 
 ## The protocol fee
 

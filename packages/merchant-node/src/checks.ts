@@ -257,18 +257,33 @@ export interface RelayView {
 
 /**
  * Whether the relays serve a store profile, and whether every one served
- * declares protocol-fee support: a buyer reading a view without it refuses
- * this store while the fee is above 0.
+ * declares protocol-fee support (a buyer reading a view without it refuses
+ * this store while the fee is above 0) and marked Tempo memos (a buyer reading
+ * a view without it pays under the legacy memo).
  */
-export function profileFeeSupport(views: readonly RelayView[]): {
+export function profileCapabilities(views: readonly RelayView[]): {
   found: boolean;
   feeSupport: boolean;
+  memoMarker: boolean;
 } {
   const served = views.flatMap((view) => (view.profile === undefined ? [] : [view.profile]));
+  const parsed = served.map((profile) => parseStoreProfile(profile));
   return {
     found: served.length > 0,
-    feeSupport: served.every((profile) => parseStoreProfile(profile)?.feeSupport === true),
+    feeSupport: parsed.every((profile) => profile?.feeSupport === true),
+    memoMarker: parsed.every((profile) => profile?.memoMarker === true),
   };
+}
+
+/** What `run` and `check` say about a store profile without the memo-marker tag (`undefined`: nothing to say). */
+export function profileMemoMarkerWarning(
+  profileFound: boolean,
+  memoMarker: boolean,
+): string | undefined {
+  if (!profileFound || memoMarker) {
+    return undefined;
+  }
+  return "the store profile does not declare marked Tempo memos: buyers pay under the legacy memo and those sales are not counted in elisym's public statistics - re-run setup";
 }
 
 /** The store's newest profile (kind 0) the relays serve. */

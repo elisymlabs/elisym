@@ -170,9 +170,14 @@ export interface PublishedListing {
  * The only ledger version this node writes. 4 arrived with protocol-fee
  * support: every older node refuses it ("Unknown ledger version"), so no node
  * that would refuse a fee-split payment can ever run on a home whose store
- * declared fee support.
+ * declared fee support. 5 arrived with marked Tempo memos, for the same reason:
+ * a node that refuses a marked receipt and scans only legacy memos never runs on
+ * a home whose store declared `['memo-marker', '1']`.
  */
-export const LEDGER_VERSION = 4;
+export const LEDGER_VERSION = 5;
+
+/** The version before marked Tempo memos: every command converts it in memory (the version only). */
+export const PRE_MEMO_LEDGER_VERSION = 4;
 
 /** The version before protocol-fee support: `setup` and `run` convert it, nothing else opens it. */
 export const PRE_FEE_LEDGER_VERSION = 3;
@@ -358,7 +363,11 @@ export function recordReport(order: MerchantOrder, tx: string, arrivedAt: number
  */
 export interface LoadedLedger {
   state: LedgerState;
-  read: typeof LEDGER_VERSION | typeof PRE_FEE_LEDGER_VERSION | 'missing';
+  read:
+    | typeof LEDGER_VERSION
+    | typeof PRE_MEMO_LEDGER_VERSION
+    | typeof PRE_FEE_LEDGER_VERSION
+    | 'missing';
 }
 
 export function loadLedger(path: string): LoadedLedger {
@@ -379,12 +388,18 @@ export function loadLedger(path: string): LoadedLedger {
   if (version === 1 || version === 2) {
     throw new Error(`${path}: ${OLD_HOME_PROBLEM}`);
   }
-  if (version !== LEDGER_VERSION && version !== PRE_FEE_LEDGER_VERSION) {
+  if (
+    version !== LEDGER_VERSION &&
+    version !== PRE_MEMO_LEDGER_VERSION &&
+    version !== PRE_FEE_LEDGER_VERSION
+  ) {
     throw new Error(`Unknown ledger version in ${path}`);
   }
   // A ledger before fee support never saw a split payment (only a fee-aware
   // setup declares the store's support, and it saves this version first): the
-  // conversion only sets the version and the new fields' empty defaults.
+  // conversion only sets the version and the new fields' empty defaults. One
+  // before marked memos holds nothing that depends on the memo (it is derived,
+  // never stored): only the version changes.
   state.version = LEDGER_VERSION;
   state.scans ??= {};
   state.listings ??= {};
@@ -398,7 +413,7 @@ export function loadLedger(path: string): LoadedLedger {
  * to stop with nothing written), then converted to this version and SAVED at
  * once when the disk held an older one or none - before any relay or chain is
  * contacted, so an older node refuses the home before this one can declare
- * fee support.
+ * fee support or marked Tempo memos.
  */
 export function openLedgerForUpgrade(
   path: string,
@@ -412,7 +427,11 @@ export function openLedgerForUpgrade(
   return state;
 }
 
-/** The ledger every other command works on: one before fee support is refused with the hint. */
+/**
+ * The ledger every other command works on: one before fee support is refused
+ * with the hint; one before marked memos is converted in memory, and any
+ * command that saves it leaves this version on disk.
+ */
 export function openLedger(path: string): LedgerState {
   const { state, read } = loadLedger(path);
   if (read === PRE_FEE_LEDGER_VERSION) {

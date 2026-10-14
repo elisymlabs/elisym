@@ -84,6 +84,12 @@ export interface VerifiedOffer {
    * refuses a split and the buyer would pay for nothing.
    */
   feeSupport: boolean;
+  /**
+   * The store's node accepts marked Tempo memos (its profile carries
+   * `['memo-marker', '1']`). A buyer pays a Tempo order under the marked memo
+   * only for such a store: an older node refuses any memo but the legacy one.
+   */
+  memoMarker: boolean;
   product: Product;
   /** Where a payment for this offer may go: the owner's 10133 addresses for the assets the product accepts. */
   payouts: PayoutTarget[];
@@ -473,6 +479,7 @@ export function evaluateOffer(
     ownerPubkey,
     profile,
     feeSupport: profile.feeSupport,
+    memoMarker: profile.memoMarker,
     product,
     payouts,
     paytoCreatedAt: paytoEvent.created_at,

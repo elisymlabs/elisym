@@ -330,6 +330,7 @@ describe('store profile', () => {
       nip05: '_@shop.example',
       ownerPubkey: owner,
       feeSupport: false,
+      memoMarker: false,
     });
     expect(event.tags).toEqual([['owner', owner]]);
   });
@@ -361,6 +362,51 @@ describe('store profile', () => {
     ).toBe(true);
   });
 
+  it('declares marked Tempo memos with the memo-marker tag, and reads it back', () => {
+    const owner = 'a'.repeat(64);
+    const declared = buildStoreProfileEvent({ ownerPubkey: owner, memoMarker: true });
+    expect(declared.tags).toEqual([
+      ['owner', owner],
+      ['memo-marker', '1'],
+    ]);
+    expect(parseStoreProfile(declared)).toEqual({
+      ownerPubkey: owner,
+      feeSupport: false,
+      memoMarker: true,
+    });
+    const undeclared = buildStoreProfileEvent({ ownerPubkey: owner, memoMarker: false });
+    expect(undeclared.tags).toEqual([['owner', owner]]);
+    expect(parseStoreProfile(undeclared)?.memoMarker).toBe(false);
+  });
+
+  it('reads the fee and memo-marker tags independently', () => {
+    const owner = 'a'.repeat(64);
+    const both = buildStoreProfileEvent({ ownerPubkey: owner, fee: true, memoMarker: true });
+    expect(both.tags).toEqual([
+      ['owner', owner],
+      ['fee', '1'],
+      ['memo-marker', '1'],
+    ]);
+    expect(parseStoreProfile(both)).toMatchObject({ feeSupport: true, memoMarker: true });
+    const read = (tags: string[][]) => parseStoreProfile({ content: '{}', tags });
+    expect(read([['fee', '1']])).toMatchObject({ feeSupport: true, memoMarker: false });
+    expect(read([['memo-marker', '1']])).toMatchObject({ feeSupport: false, memoMarker: true });
+  });
+
+  it('reads the memo marker only from a memo-marker tag of version 1', () => {
+    const read = (tags: string[][]) => parseStoreProfile({ content: '{}', tags })?.memoMarker;
+    expect(read([])).toBe(false);
+    expect(read([['memo-marker', '2']])).toBe(false);
+    expect(read([['memo-marker']])).toBe(false);
+    expect(read([['memo-markers', '1']])).toBe(false);
+    expect(
+      read([
+        ['memo-marker', '2'],
+        ['memo-marker', '1'],
+      ]),
+    ).toBe(true);
+  });
+
   it('keeps picture and website only as https URLs', () => {
     expect(
       parseStoreProfile({
@@ -370,7 +416,7 @@ describe('store profile', () => {
         }),
         tags: [],
       }),
-    ).toEqual({ feeSupport: false });
+    ).toEqual({ feeSupport: false, memoMarker: false });
     expect(
       parseStoreProfile({
         content: JSON.stringify({
@@ -383,6 +429,7 @@ describe('store profile', () => {
       website: 'https://shop.example',
       picture: 'https://shop.example/logo.png',
       feeSupport: false,
+      memoMarker: false,
     });
   });
 
@@ -399,7 +446,7 @@ describe('store profile', () => {
         content: JSON.stringify({ name: 'S', picture: null, about: 42, website: 'x'.repeat(2000) }),
         tags: [],
       }),
-    ).toEqual({ name: 'S', feeSupport: false });
+    ).toEqual({ name: 'S', feeSupport: false, memoMarker: false });
   });
 
   it('is undefined for content that is not a profile, and ignores a malformed owner', () => {
@@ -407,6 +454,7 @@ describe('store profile', () => {
     expect(parseStoreProfile({ content: '[]', tags: [] })).toBeUndefined();
     expect(parseStoreProfile({ content: '{}', tags: [['owner', 'XYZ']] })).toEqual({
       feeSupport: false,
+      memoMarker: false,
     });
   });
 });

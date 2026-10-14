@@ -49,10 +49,12 @@ export {
 export {
   listTempoLogs,
   listTempoBlockedLogs,
+  listTempoMarkedTransfers,
   readBlockByNumber,
   readFinalizedBlock,
   type ListBlockedLogsOptions,
   type ListTempoLogsOptions,
+  type ListTempoMarkedTransfersOptions,
   type TempoBlockedLog,
   type TempoBlockedScan,
   type TempoBlockRef,

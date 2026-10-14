@@ -4,6 +4,7 @@
  * still credit.
  */
 import { FeeConfigError, type FeeTerms, type PaymentRequestData } from '@elisym/pay-core';
+import { getBase64Encoder } from '@solana/kit';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { MAX_CLOCK_SKEW_SECS, MERCHANT_CATCH_UP_SECS } from '../../src/buyer/constants';
 import { type LoadedOffer, loadOffer } from '../../src/buyer/offer';
@@ -22,7 +23,7 @@ import {
   watchSolanaPayment,
 } from '../../src/buyer/solana-pay';
 import { MemoryRelays, NOW, inboxList, makeShop, solanaAddress } from './fixtures';
-import { FakeSolana, FakeWallet } from './solana-fixtures';
+import { FakeSolana, FakeWallet, MEMO_PROGRAM } from './solana-fixtures';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';
@@ -229,6 +230,18 @@ describe('paying with a fee leg', () => {
     expect(chain.priorityAccounts.at(-1)).toContain(treasuryAccount);
     const watched = await watchSolanaPayment(paid.record, deps);
     expect(watched).toMatchObject({ state: 'paid', record: { paidTx: paid.signature } });
+  });
+
+  it('fits the fee-bearing payment with its commerce memo in one packet', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    const paid = await payWithSolana(record, wallet, input, deps);
+    expect(paid.ok).toBe(true);
+    expect(wallet.asked[0]?.staticAccounts).toContain(MEMO_PROGRAM);
+    const wire = getBase64Encoder().encode(chain.sent[0] ?? '');
+    // The largest transaction the widget builds: two bound legs, the fee ATA,
+    // the memo. Solana's packet limit is 1232 bytes.
+    expect(wire.length).toBeGreaterThan(0);
+    expect(wire.length).toBeLessThanOrEqual(1232);
   });
 
   it('asks no treasury account in the estimate when there is no fee leg', async () => {

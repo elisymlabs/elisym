@@ -15,7 +15,7 @@ npm install @elisym/commerce @elisym/pay-core nostr-tools @solana/kit @solana-pr
 | Store profile       | 0                      | store         | `buildStoreProfileEvent`, `parseStoreProfile`                       |
 | Product             | 30402 (NIP-99, Gamma)  | store         | `buildProductEvent`, `parseProduct`, `priceInSubunits`              |
 | Orders, receipts    | 16 / 17 in a gift wrap | buyer / store | `buildOrderMessage`, `wrapOrderMessage`, `unwrapOrderMessage`       |
-| Payment reference   | -                      | -             | `deriveOrderPaymentReference`                                       |
+| Payment reference   | -                      | -             | `deriveOrderPaymentReference`, `acceptedTempoMemos`                 |
 | Offer verification  | -                      | -             | `verifyOffer`, `evaluateOffer`, `isOfferPayout`                     |
 | Webhook (merchant)  | -                      | node          | `verifyWebhook`, `signWebhook` (`@elisym/commerce/webhook`)         |
 
@@ -34,6 +34,10 @@ if (!isOfferPayout(result.offer, caip19, challenge.payTo)) throw new Error('Not 
 `fetchEvents` queries relays (at least two, so one relay cannot hide the newest payout event) or a resolver. Every event it returns is checked again for its signature, author and kind.
 
 On a server, pass `verifyOffer` a `fetch` that refuses private addresses: the merchant's domain comes from the store's own profile.
+
+## The payment reference
+
+`deriveOrderPaymentReference` gives an order's reference on each rail, derived from the store, the buyer and the order id: `solana` (the reference key), `tempo` (the legacy memo, the order hash) and `tempoMarked` (the commerce magic `0xfab22e7e`, then the first 28 bytes of `tempo`). A buyer pays a Tempo order under `tempoMarked` only for a store whose profile declares `["memo-marker", "1"]` (`StoreProfile.memoMarker`, `VerifiedOffer.memoMarker`); such a node accepts both forms for every order, and `acceptedTempoMemos` lists them, legacy first. The form is chosen when the order is placed and kept on its record. A Solana commerce payment carries the SPL Memo `elisym:commerce`. Both markers are public labels for counting purchases, never part of verifying one.
 
 ## The buyer side: `@elisym/commerce/buyer`
 
