@@ -4,6 +4,8 @@ Payment primitives for [elisym](https://github.com/elisymlabs/elisym): payment r
 
 This is the money core that `@elisym/sdk` re-exports. Use it directly when you need payments without the Nostr marketplace.
 
+Looking for Pay Core, the stablecoin checkout for your web page? This package is only its low-level primitives. Start with the [quick start](https://docs.elisym.network/commerce/quickstart) and [`@elisym/merchant-node`](https://www.npmjs.com/package/@elisym/merchant-node).
+
 ```bash
 npm install @elisym/pay-core @solana/kit @solana-program/system @solana-program/token @solana-program/memo decimal.js-light
 ```

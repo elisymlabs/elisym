@@ -75,7 +75,7 @@ export default defineConfig({
       ],
     },
     {
-      text: 'Sell with the checkout',
+      text: 'Sell with Pay Core',
       items: [
         { text: 'Quickstart', link: '/commerce/quickstart' },
         { text: 'The widget', link: '/commerce/widget' },

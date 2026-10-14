@@ -1,6 +1,6 @@
 # @elisym/react
 
-The [elisym checkout](https://docs.elisym.network/commerce/widget) as a React component: the
+The [Pay Core](https://docs.elisym.network/commerce/widget) checkout as a React component: the
 `<elisym-buy>` element, on the pinned v3 loader. React 18 and 19.
 
 ```bash

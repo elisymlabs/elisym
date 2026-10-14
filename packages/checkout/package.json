@@ -2,7 +2,7 @@
   "name": "@elisym/checkout",
   "version": "0.0.1",
   "private": true,
-  "description": "elisym checkout: the embeddable buy widget (iframe app) and its framework-free core.",
+  "description": "Pay Core checkout: the embeddable buy widget (iframe app) and its framework-free core.",
   "license": "MIT",
   "author": "elisym labs",
   "type": "module",

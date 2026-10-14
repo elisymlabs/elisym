@@ -44,7 +44,7 @@ function closedElement(event: Event): unknown {
 }
 
 /**
- * `<elisym-buy>`, the elisym checkout, on the pinned v3 loader. Server
+ * `<elisym-buy>`, the Pay Core checkout, on the pinned v3 loader. Server
  * rendering writes the element only; the loader's script is added in the
  * browser, once per document.
  */

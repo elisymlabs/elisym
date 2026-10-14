@@ -1,7 +1,7 @@
 {
   "name": "@elisym/react",
   "version": "0.1.0",
-  "description": "React component for the elisym checkout: the <elisym-buy> widget, pinned to the v3 loader.",
+  "description": "React component for the Pay Core checkout: the <elisym-buy> widget, pinned to the v3 loader.",
   "keywords": [
     "checkout",
     "elisym",
