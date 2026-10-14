@@ -195,7 +195,9 @@ describe('the order details', () => {
     mounted = await mount(<OrderDetails row={row('omega', 'expired')} />);
     const text = mounted.container.textContent ?? '';
     expect(text.split('no payment credited within 3 days')).toHaveLength(2);
-    expect(text).toContain('the orders command lists any payment left to answer');
+    expect(text).toContain(
+      'the orders command lists any payment the node found but could not credit',
+    );
   });
 });
 

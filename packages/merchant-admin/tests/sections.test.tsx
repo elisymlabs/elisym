@@ -163,6 +163,11 @@ describe('an order row', () => {
     expect(texts[COLUMN.state]).toBe('Payment reportednot confirmed by your node');
   });
 
+  it('shows a plain order with no note on its state', async () => {
+    const texts = await cells(row({ state: 'ordered' }));
+    expect(texts[COLUMN.state]).toBe('Ordered');
+  });
+
   it('shows an expired order as not paid in time, with nothing credited', async () => {
     const texts = await cells(row({ state: 'expired' }));
     expect(texts[COLUMN.state]).toBe('Expiredno payment credited within 3 days');

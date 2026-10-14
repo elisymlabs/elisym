@@ -194,6 +194,10 @@ describe('the text colors', () => {
     for (const name of used) {
       expect(CHART_COLORS, name).toContain(name);
     }
+    // A color without its theme mapping generates no utility: its slice and dot would vanish.
+    for (const name of CHART_COLORS) {
+      expect(CSS, name).toMatch(new RegExp(`--color-${name}:\\s*var\\(--${name}\\)`));
+    }
   });
 
   it('marks the charts only with checked chart colors of the right kind', () => {

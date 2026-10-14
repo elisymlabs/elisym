@@ -29,7 +29,7 @@
   --chart-3: #7c3aed;
   --chart-4: #c2410c;
   --chart-idle: #8b8b98;
-  --chart-expired: #78716c;
+  --chart-expired: #57534e;
 }
 
 @media (prefers-color-scheme: dark) {

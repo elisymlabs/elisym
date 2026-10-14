@@ -8,7 +8,7 @@ import { wholeUnits } from './history';
 export const STATE_LABELS: Readonly<Record<OrderState, string>> = {
   ordered: 'ordered',
   expired:
-    'expired (no payment credited within 3 days; the orders command lists any payment left to answer)',
+    'expired (no payment credited within 3 days; the orders command lists any payment the node found but could not credit)',
   payment_reported: 'payment reported (not confirmed by your node)',
   delivered: 'completed',
   released: 'released by hand',
