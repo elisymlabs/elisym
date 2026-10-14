@@ -101,6 +101,7 @@ describe('the sign-in header', () => {
       ['Home', 'https://paycore.elisym.network'],
     ]);
     expect(links[0]?.getAttribute('target')).toBeNull();
+    expect(links[0]?.closest('nav')?.getAttribute('aria-label')).toBe('Pay Core');
     expect(links[0]?.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     expect(mounted.container.querySelector('header')?.textContent).not.toContain('Sign in');
     expect(mounted.container.querySelector('header')?.textContent).toContain('Admin');
