@@ -6,6 +6,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { configProblems, hasSolanaRail } from '../src/config';
 import { parseProductText, uneditedProducts } from '../src/products';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -91,5 +92,20 @@ describe('the PRODUCT.md examples in the docs', () => {
   it('finds the examples it checks', () => {
     const found = files.flatMap((file) => productExamples(readFileSync(file, 'utf8')));
     expect(found.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("the quickstart's Tempo-only config", () => {
+  it('is one a node accepts, with Solana payments off', () => {
+    const text = readFileSync(join(ROOT, 'packages/docs/pages/commerce/quickstart.mdx'), 'utf8');
+    const block = text.split('**Only one network.**')[1]?.split('```json\n')[1]?.split('```')[0];
+    if (block === undefined) {
+      throw new Error('no Tempo-only config found');
+    }
+    const config: { rpcUrl?: string } = JSON.parse(
+      block.replace('<your Tempo address, lowercase>', `0x${'ab'.repeat(20)}`),
+    );
+    expect(configProblems(config)).toEqual([]);
+    expect(hasSolanaRail(config)).toBe(false);
   });
 });

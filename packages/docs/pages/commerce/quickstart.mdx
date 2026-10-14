@@ -15,10 +15,10 @@ This page takes you from nothing to a working purchase on **mainnet**, with real
 A coding agent that can run commands on your machine can do every step below for you. Paste this prompt into it:
 
 ```txt
-Add a Pay Core checkout to my website. Read https://docs.elisym.network/commerce/quickstart.md and follow it step by step: create my store node, publish my products, start the node and add the Buy button to my pages. Before you start, ask me for my store's name, my Solana wallet address, my Solana RPC URL, my Tempo wallet address if I also want stablecoin payments on Tempo (then add the Tempo payout as the guide says), and each product with its name, price and description. When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, the commands to see my orders and to add a product, and how to make a small test purchase.
+Add a Pay Core checkout to my website. Read https://docs.elisym.network/commerce/quickstart.md and follow it step by step: create my store node, publish my products, start the node and add the Buy button to my pages. Before you start, ask me for my store's name, my Solana wallet address and Solana RPC URL, my Tempo wallet address, and each product with its name, price and description. I may leave either wallet empty, but not both: add a payout only for each wallet I give, as the guide says, and ask for no Solana RPC URL without a Solana wallet. When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, the commands to see my orders and to add a product, and how to make a small test purchase.
 ```
 
-It asks for your store's name, your Solana wallet address, an RPC URL, a Tempo wallet address if you also take stablecoins on Tempo, and your products, then creates the store, publishes the products, starts the node and adds the Buy button. At the end it tells you where everything lives and which commands to run next. Read on to do it yourself, or to check what it did.
+It asks for your store's name, your Solana and Tempo wallet addresses (leave out the one you do not use), a Solana RPC URL when you take Solana, and your products, then creates the store, publishes the products, starts the node and adds the Buy button. At the end it tells you where everything lives and which commands to run next. Read on to do it yourself, or to check what it did.
 
 ## 1. Create the store
 
@@ -59,6 +59,25 @@ Open `$ELISYM_MERCHANT_HOME/config.json`, which holds what the whole store share
 
 - `rpcUrl` is your own Solana RPC endpoint that keeps the full transaction history. The public mainnet one is rate-limited and not meant for a server, and a key restricted to a browser origin does not work from a server.
 - `payouts[0].address` is the Solana wallet the money goes to, for every product. The `caip19` above is mainnet USDC.
+
+**Only one network.** A store takes payment only on the networks it lists in `payouts`, and needs at least one. Without a Tempo wallet, leave the config as above and skip [Tempo payouts](#tempo-payouts). Without a Solana wallet, remove both the Solana payout and `rpcUrl` (a `rpcUrl` alone switches Solana payments on), and take Tempo only:
+
+```json
+{
+  "name": "My store",
+  "network": "mainnet",
+  "tempo": { "network": "mainnet" },
+  "inboxRelays": ["wss://relay.elisym.network", "wss://nos.lol"],
+  "payouts": [
+    {
+      "caip19": "eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50",
+      "address": "<your Tempo address, lowercase>"
+    }
+  ]
+}
+```
+
+With both wallets, keep the Solana config above and add the Tempo payout as [Tempo payouts](#tempo-payouts) shows, before you run `setup`.
 
 Each product is a directory under `$ELISYM_MERCHANT_HOME/products`, named with the product's id: `products/my-product/PRODUCT.md`. Open it and fill in:
 
