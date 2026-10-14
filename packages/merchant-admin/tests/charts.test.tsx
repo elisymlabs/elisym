@@ -456,6 +456,42 @@ describe('the overview', () => {
     expect(totals.compareDocumentPosition(charts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(charts.querySelectorAll('.chart-arc')).toHaveLength(4);
   });
+
+  it('keeps the bars at the height of their card, not of their own aspect ratio', async () => {
+    mounted = await mount(<Charts rows={ROWS} nowSeconds={NOW} />);
+    const bars = mounted.container.querySelector('svg.chart-bars');
+    const classes = (element: Element | null | undefined) =>
+      (element?.getAttribute('class') ?? '').split(/\s+/);
+    expect(classes(bars)).toEqual(expect.arrayContaining(['absolute', 'inset-0', 'size-full']));
+    expect(classes(bars?.parentElement)).toEqual(
+      expect.arrayContaining(['relative', 'flex-1', 'min-h-160']),
+    );
+  });
+
+  it('lays the recent orders full width with the store links in a row under them', async () => {
+    mounted = await mount(
+      <Overview
+        snapshot={{
+          storePubkey: 'a'.repeat(64),
+          store: { name: 'Shop', relays: [], noInboxList: false, payoutMediums: [] },
+          history: { rows: ROWS, totals: { perAsset: [], unknownAsset: [] } },
+          products: [],
+          warnings: [],
+          more: false,
+        }}
+        onTab={() => undefined}
+      />,
+    );
+    const page = mounted.container.firstElementChild;
+    const recent = [...(page?.children ?? [])].find((child) =>
+      child.textContent?.startsWith('Recent orders'),
+    );
+    const links = recent?.nextElementSibling;
+    expect(recent?.parentElement).toBe(page);
+    expect(links?.className.split(' ')).toEqual(['grid', 'gap-12', 'sm:grid-cols-2']);
+    expect(links?.querySelectorAll(':scope > button')).toHaveLength(2);
+    expect(links?.nextElementSibling).toBeNull();
+  });
 });
 
 describe('the totals', () => {

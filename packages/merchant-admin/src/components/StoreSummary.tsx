@@ -13,7 +13,7 @@ export function StoreSummary({ snapshot, onProducts, onStore }: Props) {
   const onSale = lines.filter((product) => product.onSale).length;
   const { store } = snapshot;
   return (
-    <div className="flex flex-col gap-12">
+    <div className="grid gap-12 sm:grid-cols-2">
       <button
         type="button"
         onClick={onProducts}

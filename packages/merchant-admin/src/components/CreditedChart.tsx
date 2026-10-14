@@ -101,7 +101,7 @@ export function CreditedChart({ rows, coins, nowSeconds }: Props) {
         {readout}
       </p>
       <div className="flex flex-1 flex-col gap-8">
-        <div className="border-line flex flex-1 items-end border-b">
+        <div className="border-line relative min-h-160 flex-1 border-b">
           <DayBars
             key={coin.id}
             points={points}
