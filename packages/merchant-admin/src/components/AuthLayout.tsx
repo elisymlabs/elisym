@@ -1,16 +1,14 @@
 import type { ReactNode } from 'react';
 import {
   HEADER_BAR,
-  HEADER_DOCS_LINK,
-  HEADER_LINK,
+  HEADER_HOME_LINK,
   HEADER_NAV,
   HEADER_ROW,
-  LANDING_SECTIONS,
   LANDING_URL,
   PRODUCT_NAME,
-  QUICKSTART_URL,
 } from '../constants';
 import { ElisymLogo } from './ElisymLogo';
+import { Icon } from './Icon';
 import { LogoMark } from './LogoMark';
 
 interface Props {
@@ -18,9 +16,9 @@ interface Props {
 }
 
 /**
- * The frame of the pages before a store is open, under the landing's own header:
- * the same bar, logo and links, with Admin after the logo and no Sign in. No key
- * is loaded yet, so the links open in this tab.
+ * The frame of the pages before a store is open, under the landing's own bar and
+ * logo, with Admin after the logo and one link back to the landing. No key is
+ * loaded yet, so it opens in this tab.
  */
 export function AuthLayout({ children }: Props) {
   return (
@@ -41,13 +39,9 @@ export function AuthLayout({ children }: Props) {
             </span>
           </span>
           <nav className={HEADER_NAV} aria-label={PRODUCT_NAME}>
-            {LANDING_SECTIONS.map((section) => (
-              <a key={section.id} href={`${LANDING_URL}/#${section.id}`} className={HEADER_LINK}>
-                {section.label}
-              </a>
-            ))}
-            <a href={QUICKSTART_URL} className={HEADER_DOCS_LINK}>
-              Docs
+            <a href={LANDING_URL} className={HEADER_HOME_LINK}>
+              Home
+              <Icon name="external" className="size-14" />
             </a>
           </nav>
         </div>
