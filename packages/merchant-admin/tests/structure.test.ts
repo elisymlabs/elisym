@@ -2,7 +2,16 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { PAGE_FRAME } from '../src/constants';
+import {
+  HEADER_BAR,
+  HEADER_DOCS_LINK,
+  HEADER_LINK,
+  HEADER_NAV,
+  HEADER_ROW,
+  LANDING_SECTIONS,
+  PAGE_FRAME,
+  QUICKSTART_URL,
+} from '../src/constants';
 
 const ROOT = new URL('../', import.meta.url).pathname;
 const SRC = join(ROOT, 'src');
@@ -116,6 +125,64 @@ describe('the page frame', () => {
     for (const path of files(SRC).filter((path) => /\.(ts|tsx)$/.test(path))) {
       for (const width of readFileSync(path, 'utf8').match(/max-w-1\d{3}/g) ?? []) {
         expect(width).toBe('max-w-1160');
+      }
+    }
+  });
+});
+
+describe('the header', () => {
+  const landing = readFileSync(
+    join(ROOT, '../merchant-landing/src/components/SiteHeader.tsx'),
+    'utf8',
+  );
+  const tokens = (classes: string) => classes.split(/\s+/).filter(Boolean).sort();
+  const classOf = (pattern: RegExp) => landing.match(pattern)?.[1] ?? '';
+
+  it('is the landing header, class for class: bar, row, nav and links', () => {
+    expect(tokens(classOf(/<header className="([^"]+)"/))).toEqual(tokens(HEADER_BAR));
+    expect(tokens(classOf(/<div className="([^"]+)"/))).toEqual(
+      tokens(HEADER_ROW).filter((token) => token !== 'w-full'),
+    );
+    expect(tokens(classOf(/<nav className="([^"]+)"/))).toEqual(tokens(HEADER_NAV));
+    expect(tokens(classOf(/key=\{item\.href\}[^>]*className="([^"]+)"/s))).toEqual(
+      tokens(HEADER_LINK),
+    );
+    expect(tokens(classOf(/href=\{DOCS\.quickstart\}[^>]*className="([^"]+)"/s))).toEqual(
+      tokens(HEADER_DOCS_LINK),
+    );
+  });
+
+  it('links the landing sections the landing header links, and the same docs page', () => {
+    const items = [...landing.matchAll(/\{ href: '#([a-z-]+)', label: '([^']+)' \}/g)].map(
+      (match) => ({ id: match[1], label: match[2] }),
+    );
+    expect(items).toEqual(LANDING_SECTIONS);
+    const constants = readFileSync(join(ROOT, '../merchant-landing/src/constants.ts'), 'utf8');
+    expect(constants).toContain(`quickstart: '${QUICKSTART_URL}'`);
+  });
+});
+
+describe('the header colors', () => {
+  /** `--name: value` pairs of a CSS block, by name. */
+  const tokensIn = (block: string) =>
+    new Map(
+      [...block.matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)].map((match) => [match[1], match[2]]),
+    );
+  const schemes = (path: string) => {
+    const css = readFileSync(path, 'utf8');
+    const [base = '', other = ''] = css.split('@media (prefers-color-scheme');
+    const light = css.includes('@media (prefers-color-scheme: light)');
+    const first = tokensIn(base);
+    const second = tokensIn(other.split('@theme')[0] ?? '');
+    return light ? { dark: first, light: second } : { light: first, dark: second };
+  };
+
+  it('match the landing in both schemes: the bar, its line, the links and the badge', () => {
+    const admin = schemes(join(ROOT, 'src/app.css'));
+    const landing = schemes(join(ROOT, '../merchant-landing/src/app.css'));
+    for (const scheme of ['light', 'dark'] as const) {
+      for (const name of ['bg', 'line', 'line-2', 'surface-2', 'text', 'text-2', 'text-3']) {
+        expect(admin[scheme].get(name), `${scheme} --${name}`).toBe(landing[scheme].get(name));
       }
     }
   });

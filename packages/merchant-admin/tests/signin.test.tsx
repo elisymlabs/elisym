@@ -1,8 +1,9 @@
 import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
+import { Dashboard } from '../src/components/Dashboard';
 import { DashboardHeader } from '../src/components/DashboardHeader';
 import { SignIn } from '../src/components/SignIn';
-import { LOCAL_ADMIN_COMMAND, PAGE_FRAME } from '../src/constants';
+import { HEADER_BAR, LOCAL_ADMIN_COMMAND, PAGE_FRAME } from '../src/constants';
 import { type Mounted, byId, mount } from './mount';
 
 let mounted: Mounted | undefined;
@@ -63,7 +64,7 @@ describe('the page frame', () => {
   it('holds the sign-in header and the dashboard header', async () => {
     const tokens = PAGE_FRAME.split(' ');
     mounted = await mount(<SignIn onKey={() => undefined} />);
-    const header = classesOf(mounted.container.querySelector('header'));
+    const header = classesOf(mounted.container.querySelector('header > div'));
     expect(header).toEqual(expect.arrayContaining([...tokens, 'h-64']));
     // Pinned to the top: opening the security details never moves the form.
     expect(classesOf(mounted.container.querySelector('main'))).not.toContain('sm:items-center');
@@ -84,5 +85,44 @@ describe('the page frame', () => {
     // One line high, so the header row stays 64 and the logo sits where the landing's does.
     expect(classesOf(byId(mounted.container, 'store-pubkey').parentElement)).toContain('h-18');
     expect(classesOf(mounted.container.querySelector('[title="Pay Core"]'))).toContain('gap-10');
+  });
+});
+
+describe('the sign-in header', () => {
+  it('links the landing sections and the docs in this tab, with no Sign in', async () => {
+    mounted = await mount(<SignIn onKey={() => undefined} />);
+    const links = [...mounted.container.querySelectorAll('header nav a')];
+    expect(links.map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
+      ['Integration', 'https://paycore.elisym.network/#demo'],
+      ['How it works', 'https://paycore.elisym.network/#how'],
+      ['FAQ', 'https://paycore.elisym.network/#faq'],
+      ['Docs', 'https://docs.elisym.network/commerce/quickstart'],
+    ]);
+    expect(links.every((link) => link.getAttribute('target') === null)).toBe(true);
+    expect(mounted.container.querySelector('header')?.textContent).not.toContain('Sign in');
+    expect(mounted.container.querySelector('header')?.textContent).toContain('Admin');
+  });
+});
+
+describe('one bar from the landing to the dashboard', () => {
+  it('draws the landing bar on the sign-in page and on the dashboard, with the line at 64', async () => {
+    const bar = HEADER_BAR.split(' ');
+    mounted = await mount(<SignIn onKey={() => undefined} />);
+    expect(classesOf(mounted.container.querySelector('header'))).toEqual(bar);
+    await mounted.unmount();
+    mounted = await mount(
+      <Dashboard
+        state={{ pubkey: 'a'.repeat(64), status: 'Reading', busy: true }}
+        onRefresh={() => undefined}
+        onMore={() => undefined}
+        onLogOut={() => undefined}
+      />,
+    );
+    const header = mounted.container.querySelector('header');
+    expect(classesOf(header)).toEqual(bar);
+    expect(classesOf(header?.firstElementChild ?? null)).toEqual(['border-line/60', 'border-b']);
+    expect(classesOf(header?.firstElementChild?.firstElementChild ?? null)).toEqual(
+      expect.arrayContaining(['min-h-64', 'md:py-0']),
+    );
   });
 });

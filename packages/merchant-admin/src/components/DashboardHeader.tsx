@@ -19,7 +19,9 @@ interface Props {
 export function DashboardHeader({ pubkey, name, status, busy, onRefresh, onLogOut }: Props) {
   const npub = nip19.npubEncode(pubkey);
   return (
-    <div className={`${PAGE_FRAME} flex min-h-64 flex-wrap items-center gap-x-16 gap-y-12 py-12`}>
+    <div
+      className={`${PAGE_FRAME} flex min-h-64 flex-wrap items-center gap-x-16 gap-y-12 py-12 md:py-0`}
+    >
       <span className="flex items-center gap-10" title={PRODUCT_NAME}>
         <LogoMark className="size-28" />
         <span className="text-15 hidden font-semibold tracking-tight md:inline">
