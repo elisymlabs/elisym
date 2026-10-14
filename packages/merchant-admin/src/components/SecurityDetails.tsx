@@ -20,7 +20,7 @@ export function SecurityDetails() {
           extensions you do not trust, or the local admin: <Code>{LOCAL_ADMIN_COMMAND}</Code>.
         </li>
         <li>
-          This page’s code is served by elisym on each visit; the local admin runs the version you
+          This page’s code is served by Elisym on each visit; the local admin runs the version you
           installed.
         </li>
       </ul>

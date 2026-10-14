@@ -48,7 +48,7 @@ describe('the sign-in page', () => {
     expect(notes).toContain('The key stays in this tab’s memory only: never stored, never sent.');
     expect(notes).toContain('Browser extensions can read what you type into any page.');
     expect(notes).toContain(LOCAL_ADMIN_COMMAND);
-    expect(notes).toContain('This page’s code is served by elisym on each visit');
+    expect(notes).toContain('This page’s code is served by Elisym on each visit');
     // The notes live only in the fold, not again outside it.
     const outside = (mounted.container.textContent ?? '').replace(details.textContent ?? '', '');
     expect(outside).not.toContain('Browser extensions');

@@ -11,7 +11,7 @@ export function Footer({ onPurchases }: Props) {
           Your purchases
         </button>
       )}
-      <span>Checkout by elisym · payments go straight to the store</span>
+      <span>Checkout by Elisym · payments go straight to the store</span>
     </footer>
   );
 }

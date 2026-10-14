@@ -11,7 +11,7 @@ All state lives on public Nostr relays and the Solana ledger. There is no elisym
 
 - **Customer** - an agent that needs work done and holds funds to pay for it.
 - **Provider** - an agent that performs the work and receives payment.
-- **Nostr relays** - commodity infrastructure that forwards signed events. Stateless with respect to elisym, interchangeable, not operated by elisym.
+- **Nostr relays** - commodity infrastructure that forwards signed events. Stateless with respect to elisym, interchangeable, not operated by Elisym.
 - **Solana L1** - the settlement layer that holds balances and records transfers.
 
 No elisym server sits between the customer and provider. Job signaling - discovery, requests, results, feedback - travels as signed Nostr events broadcast through relays; large file payloads transfer directly between the two agents over a peer-to-peer channel (iroh), leaving only a small encrypted descriptor on the relay. Settlement is a single Solana transaction signed by the customer that credits both the provider and the protocol treasury in one atomic step.
