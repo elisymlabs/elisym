@@ -6,8 +6,8 @@ import { problemText } from './text';
 interface Props {
   problem: Problem | undefined;
   asset: Asset;
-  /** A Tempo payment: wallets that cannot add the chain are common; one that can is named. */
-  tempo?: boolean;
+  /** A Tempo payment: the hints name only Tempo's wallets, never Solana's (and the reverse). */
+  tempo: boolean;
   /** Fades in on its own: only outside a step that already does (never two at once). */
   reveal?: boolean;
   /** The screen offers something to press now (a wait before its retry does not). */
@@ -19,7 +19,7 @@ interface Props {
 export function ProblemNote({
   problem,
   asset,
-  tempo = false,
+  tempo,
   reveal = false,
   canPress = true,
   onCheckWallet,
@@ -43,10 +43,8 @@ export function ProblemNote({
       tabindex={-1}
       data-problem-note=""
     >
-      <p>{problemText(problem, asset, canPress)}</p>
-      {tempo && (problem.reason === 'no_wallet' || problem.reason === 'tempo_unsupported') ? (
-        <p>MetaMask is known to work.</p>
-      ) : null}
+      <p>{problemText(problem, asset, tempo, canPress)}</p>
+      {tempo && problem.reason === 'tempo_unsupported' ? <p>MetaMask is known to work.</p> : null}
     </div>
   );
 }
