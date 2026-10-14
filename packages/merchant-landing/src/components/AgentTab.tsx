@@ -7,7 +7,7 @@ export const AGENT_RUN: { mark: string; tone: string; text: string }[] = [
   {
     mark: '?',
     tone: 'text-accent-ink',
-    text: 'Your Solana and Tempo wallets, RPC, products?',
+    text: 'Your store name, wallets, RPC URL and products?',
   },
   { mark: '$', tone: 'text-text-3', text: INIT_COMMAND },
   { mark: '$', tone: 'text-text-3', text: 'npx @elisym/merchant-node setup' },
