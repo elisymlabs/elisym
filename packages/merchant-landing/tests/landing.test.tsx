@@ -109,18 +109,20 @@ describe('the landing', () => {
   it('hands the agent the quickstart as markdown, and the page shows the prompt it copies', async () => {
     expect(AGENT_DOCS_URL).toBe(`${DOCS.quickstart}.md`);
     expect(AGENT_PROMPT).toContain(AGENT_DOCS_URL);
-    // Both payout wallets: a Tempo buyer's coin goes to the Tempo address.
+    // Both payout wallets, each optional: a network without a wallet is left out.
     expect(AGENT_PROMPT).toContain('my Solana wallet address');
     expect(AGENT_PROMPT).toContain('my Tempo wallet address');
-    expect(AGENT_PROMPT).toContain('stablecoin payments on Tempo');
-    expect(AGENT_PROMPT).toContain('add the Tempo payout as the guide says');
-    expect(readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8')).toContain(
-      'a Tempo wallet address if you also take stablecoins on Tempo',
+    expect(AGENT_PROMPT).toContain('I may leave either wallet empty, but not both');
+    expect(AGENT_PROMPT).toContain('add a payout only for each wallet I give');
+    expect(AGENT_PROMPT).toContain('no Solana RPC URL without a Solana wallet');
+    const quickstart = readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8');
+    expect(quickstart).toContain(
+      'your Solana and Tempo wallet addresses (leave out the one you do not use)',
     );
+    // A Tempo-only store drops `rpcUrl` too: it alone switches Solana payments on.
+    expect(quickstart).toContain('remove both the Solana payout and `rpcUrl`');
     // The quickstart offers the same prompt, so both places hand an agent the same job.
-    expect(readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8')).toContain(
-      `\n${AGENT_PROMPT}\n`,
-    );
+    expect(quickstart).toContain(`\n${AGENT_PROMPT}\n`);
     const page = await render(<App />);
     expect(page.querySelector('#agent-prompt')).toBeNull();
     const agentTab = [...page.querySelectorAll('button')].find(
