@@ -10,3 +10,16 @@ code[data-language="txt"] > .line {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Code blocks scroll their code, not the <pre>. Vocs pins the copy (and wrap)
+   button with `position: absolute` inside the <pre>, so a scrolling <pre> takes
+   the button along and it ends up over the code. With the scroll on the inner
+   <code>, the <pre> stays put and the button keeps its top-right corner. Popups
+   of twoslash (their own <pre>) keep Vocs's styles. */
+pre[data-v]:not(.twoslash-popup-container *) {
+  overflow-x: hidden;
+}
+
+pre[data-v]:not(.twoslash-popup-container *) > code {
+  overflow-x: auto;
+}
