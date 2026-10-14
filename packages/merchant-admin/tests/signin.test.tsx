@@ -94,16 +94,14 @@ describe('the page frame', () => {
 });
 
 describe('the sign-in header', () => {
-  it('links the landing sections and the docs in this tab, with no Sign in', async () => {
+  it('links only home, the landing, in this tab with a leave-the-page icon, and no Sign in', async () => {
     mounted = await mount(<SignIn onKey={() => undefined} />);
-    const links = [...mounted.container.querySelectorAll('header nav a')];
+    const links = [...mounted.container.querySelectorAll('header a')];
     expect(links.map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
-      ['Integration', 'https://paycore.elisym.network/#demo'],
-      ['How it works', 'https://paycore.elisym.network/#how'],
-      ['FAQ', 'https://paycore.elisym.network/#faq'],
-      ['Docs', 'https://docs.elisym.network/commerce/quickstart'],
+      ['Home', 'https://paycore.elisym.network'],
     ]);
-    expect(links.every((link) => link.getAttribute('target') === null)).toBe(true);
+    expect(links[0]?.getAttribute('target')).toBeNull();
+    expect(links[0]?.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     expect(mounted.container.querySelector('header')?.textContent).not.toContain('Sign in');
     expect(mounted.container.querySelector('header')?.textContent).toContain('Admin');
   });
