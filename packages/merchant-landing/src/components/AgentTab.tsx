@@ -4,7 +4,11 @@ import { Icon } from './Icon';
 /** What an agent's run looks like, drawn: the commands are the quickstart's own. */
 export const AGENT_RUN: { mark: string; tone: string; text: string }[] = [
   { mark: '→', tone: 'text-text-3', text: 'Reading docs.elisym.network/commerce/quickstart.md' },
-  { mark: '?', tone: 'text-accent-ink', text: 'Your Solana wallet, RPC URL and products?' },
+  {
+    mark: '?',
+    tone: 'text-accent-ink',
+    text: 'Your Solana and Tempo wallets, RPC, products?',
+  },
   { mark: '$', tone: 'text-text-3', text: INIT_COMMAND },
   { mark: '$', tone: 'text-text-3', text: 'npx @elisym/merchant-node setup' },
   { mark: ' ', tone: 'text-text-3', text: 'product pro-plan on sale published naddr1...' },
