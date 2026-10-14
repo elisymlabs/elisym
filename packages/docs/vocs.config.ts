@@ -1,5 +1,44 @@
 import { defineConfig, McpSource } from 'vocs/config';
 
+interface HastNode {
+  type: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: HastNode[];
+}
+
+/** Shiki writes `class` as a string; other rehype plugins use a `className` list. */
+function classesOf(node: HastNode): string[] {
+  const { class: classText, className } = node.properties ?? {};
+  if (Array.isArray(className)) {
+    return className.map(String);
+  }
+  return typeof classText === 'string' ? classText.split(/\s+/) : [];
+}
+
+function isInlineShiki(node: HastNode): boolean {
+  return node.tagName === 'span' && classesOf(node).includes('shiki');
+}
+
+function dropInlineCodeTabStops(node: HastNode): void {
+  for (const child of node.children ?? []) {
+    if (isInlineShiki(node) && child.tagName === 'code' && child.properties !== undefined) {
+      delete child.properties.tabindex;
+    }
+    dropInlineCodeTabStops(child);
+  }
+}
+
+/**
+ * Inline highlighted code (`x{:ts}`) runs through the same Shiki transformers as a
+ * block and only becomes `span.shiki > code` afterwards, so the focusable-code
+ * transformer below would give it a tab stop. Vocs runs these rehype plugins after
+ * its Shiki step, which takes that stop back.
+ */
+function rehypeInlineCodeWithoutTabStop() {
+  return dropInlineCodeTabStops;
+}
+
 export default defineConfig({
   rootDir: '.',
   srcDir: '.',
@@ -11,6 +50,9 @@ export default defineConfig({
   iconUrl: '/favicon.svg',
   ogImageUrl: '/og-image.jpeg',
   checkDeadlinks: 'warn',
+  markdown: {
+    rehypePlugins: [rehypeInlineCodeWithoutTabStop],
+  },
   codeHighlight: {
     transformers: [
       // A code block scrolls its <code>, not its <pre> (see pages/_root.css), so the
