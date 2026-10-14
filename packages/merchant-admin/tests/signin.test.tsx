@@ -36,6 +36,8 @@ describe('the sign-in page', () => {
     const panel = mounted.container.querySelector('aside');
     expect(panel?.querySelectorAll(':scope > div')).toHaveLength(2);
     expect(panel?.querySelector('.bg-accent-soft')).toBeNull();
+    const cards = [...(panel?.querySelectorAll(':scope > div') ?? [])];
+    expect(new Set(cards.map((card) => card.className)).size).toBe(1);
   });
 
   it('folds the security details until asked, with every note inside', async () => {
