@@ -297,6 +297,9 @@ describe('the credited chart', () => {
     await mounted.rerender(<CreditedChart rows={[]} coins={[]} nowSeconds={NOW} />);
     expect(byId(mounted.container, 'credited-empty').textContent).toContain('Nothing credited yet');
     expect(mounted.container.querySelector('svg.chart-bars')).toBeNull();
+    expect(byId(mounted.container, 'credited-empty').closest('section')?.className).toMatch(
+      /(^| )flex-1( |$)/,
+    );
   });
 });
 
@@ -467,6 +470,7 @@ describe('the overview', () => {
     expect(classes(bars?.parentElement)).toEqual(
       expect.arrayContaining(['relative', 'flex-1', 'min-h-160']),
     );
+    expect(classes(bars?.parentElement?.parentElement)).toContain('flex-1');
     expect(classes(bars?.closest('section'))).toContain('flex-1');
   });
 
@@ -502,7 +506,10 @@ describe('the overview', () => {
     expect(links?.className.split(' ')).toEqual(expect.arrayContaining(['grid', 'sm:grid-cols-2']));
     expect(links?.children).toHaveLength(2);
     expect(links?.previousElementSibling?.className).toContain('bg-surface');
-    expect(page?.querySelector('[class*="1.6fr"]')).toBeNull();
+    const charts = page?.querySelector('[class*="1.6fr"]');
+    expect(charts?.children).toHaveLength(3);
+    expect(charts?.firstElementChild?.className).toContain('lg:row-span-2');
+    expect(charts?.nextElementSibling).toBe(links?.previousElementSibling);
   });
 });
 

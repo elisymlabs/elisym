@@ -36,7 +36,7 @@ export function CreditedChart({ rows, coins, nowSeconds }: Props) {
   const coin = coins[series];
   if (coin === undefined) {
     return (
-      <ChartCard title="Credited by order date">
+      <ChartCard title="Credited by order date" className="flex-1">
         <div id="credited-empty" className="flex flex-col items-center gap-8 py-40 text-center">
           <span className="bg-accent-soft text-accent-ink rounded-12 grid size-40 place-items-center">
             <Icon name="receipt" className="size-20" />
