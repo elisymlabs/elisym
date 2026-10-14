@@ -344,6 +344,7 @@ hidden, and one line counts them.
 | State            | Meaning                                                               |
 | ---------------- | --------------------------------------------------------------------- |
 | ordered          | an order, nothing more yet                                            |
+| expired          | ordered over 3 days ago and never paid: the node no longer takes it   |
 | payment reported | the buyer reported a payment the node has not confirmed (not counted) |
 | completed        | the node credited a payment and sent its completed status (counted)   |
 | released by hand | answered with `complete` without a payment (not counted)              |

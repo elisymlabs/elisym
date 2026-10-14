@@ -5,6 +5,7 @@ export const STATE_ORDER: readonly OrderState[] = [
   'delivered',
   'payment_reported',
   'ordered',
+  'expired',
   'refunded',
   'released',
 ];
@@ -12,6 +13,7 @@ export const STATE_ORDER: readonly OrderState[] = [
 /** A state's short name, for a badge or a filter: the full wording is `STATE_LABELS`. */
 export const STATE_SHORT: Readonly<Record<OrderState, string>> = {
   ordered: 'Ordered',
+  expired: 'Expired',
   payment_reported: 'Payment reported',
   delivered: 'Completed',
   released: 'Released by hand',
@@ -20,6 +22,7 @@ export const STATE_SHORT: Readonly<Record<OrderState, string>> = {
 
 export const STATE_TONE: Readonly<Record<OrderState, string>> = {
   ordered: 'bg-surface-2 text-text-2',
+  expired: 'bg-surface-2 text-text-3',
   payment_reported: 'bg-warn-bg text-warn',
   delivered: 'bg-green-bg text-green',
   released: 'bg-blue-bg text-blue',
@@ -32,6 +35,7 @@ export type StateFilter = OrderState | 'all';
 export function stateCounts(rows: readonly OrderRow[]): Record<OrderState, number> {
   const counts: Record<OrderState, number> = {
     ordered: 0,
+    expired: 0,
     payment_reported: 0,
     delivered: 0,
     released: 0,
@@ -75,6 +79,7 @@ export function feeText(credit: Credit): string | undefined {
 export function rowNotes(row: OrderRow): string[] {
   return [
     ...(row.state === 'payment_reported' ? ['not confirmed by your node'] : []),
+    ...(row.state === 'expired' ? ['not paid within 3 days'] : []),
     ...(row.orderNotLoaded ? ['order not loaded'] : []),
     ...(row.unlistedMedium ? ['receipt in a medium the store no longer lists'] : []),
   ];

@@ -1,3 +1,5 @@
+import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
+
 /**
  * A payment may pay any price or payout the store offered within this long
  * before the payment's block time: a relay lag or a rotation between the
@@ -13,6 +15,12 @@ export const ORDER_SCAN_MARGIN_SECS = 30 * 60;
 
 /** How long an unpaid order is caught up (per payout address, not per order). */
 export const CATCH_UP_SECS = 3 * 24 * 60 * 60;
+
+/**
+ * How long an unpaid order lives: the catch-up window and the rumor's skew allowance. Past
+ * it the node drops the order and credits no payment to it; the admin shows it as expired.
+ */
+export const UNPAID_ORDER_LIFETIME_SECS = CATCH_UP_SECS + MAX_FUTURE_SKEW_SECS;
 
 /** NIP-59 back-dates a gift wrap up to two days: a subscription reaches back that far. */
 export const WRAP_BACKDATE_SECS = 2 * 24 * 60 * 60;

@@ -111,8 +111,9 @@ async function type(input: HTMLInputElement, value: string) {
 
 describe('order filters', () => {
   it('counts the rows in each state', () => {
-    expect(stateCounts(ROWS)).toEqual({
+    expect(stateCounts([...ROWS, row('omega', 'expired')])).toEqual({
       ordered: 1,
+      expired: 1,
       payment_reported: 1,
       delivered: 2,
       released: 0,
@@ -187,6 +188,13 @@ describe('the order details', () => {
     mounted = await mount(<OrderDetails row={row('delta', 'payment_reported')} />);
     const text = mounted.container.textContent ?? '';
     expect(text.split('not confirmed by your node')).toHaveLength(2);
+  });
+
+  it('names an expired order as not paid in time once, and says nothing is to be done', async () => {
+    mounted = await mount(<OrderDetails row={row('omega', 'expired')} />);
+    const text = mounted.container.textContent ?? '';
+    expect(text.split('not paid within 3 days')).toHaveLength(2);
+    expect(text).toContain('nothing to do');
   });
 });
 

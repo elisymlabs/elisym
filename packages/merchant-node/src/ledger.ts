@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import type { Network } from '@elisym/pay-core';
-import { CATCH_UP_SECS, WEBHOOK_DEADLINE_SECS } from './constants';
+import { UNPAID_ORDER_LIFETIME_SECS, WEBHOOK_DEADLINE_SECS } from './constants';
 import { replaceFileDurably } from './durable-file';
 import type { TermsPeriod } from './terms';
 
@@ -300,7 +299,7 @@ export function undeliveredOrders(state: LedgerState): MerchantOrder[] {
 export function pruneExpiredOrders(state: LedgerState, now: number): UnresolvedPayment[] {
   const kept: UnresolvedPayment[] = [];
   for (const [key, order] of Object.entries(state.orders)) {
-    if (order.paid === undefined && now - order.createdAt > CATCH_UP_SECS + MAX_FUTURE_SKEW_SECS) {
+    if (order.paid === undefined && now - order.createdAt > UNPAID_ORDER_LIFETIME_SECS) {
       for (const [tx, at] of Object.entries(order.feeUnresolved ?? {})) {
         kept.push({ key, tx, at });
       }

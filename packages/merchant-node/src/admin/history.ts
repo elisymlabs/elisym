@@ -17,7 +17,11 @@ import {
 } from '@elisym/commerce';
 import { explorerTxUrl } from '@elisym/pay-core';
 import Decimal from 'decimal.js-light';
-import { MAX_RECEIPTS_PER_ORDER, TERMS_WINDOW_SECS } from '../constants';
+import {
+  MAX_RECEIPTS_PER_ORDER,
+  TERMS_WINDOW_SECS,
+  UNPAID_ORDER_LIFETIME_SECS,
+} from '../constants';
 import { type StoreRules, isDirectOrder, orderKey, receiptProblem } from '../order-rules';
 
 /** Plain notation for any amount, and room for sums of many 39-digit subunit counts. */
@@ -36,7 +40,14 @@ export interface AdminStore extends StoreRules {
   listings: ReadonlyMap<string, AdminListing>;
 }
 
-export type OrderState = 'ordered' | 'payment_reported' | 'delivered' | 'released' | 'refunded';
+export type OrderState =
+  | 'ordered'
+  /** Ordered, nothing more, and older than the node's watch: it can no longer be paid. */
+  | 'expired'
+  | 'payment_reported'
+  | 'delivered'
+  | 'released'
+  | 'refunded';
 
 /** How the buyer's claimed total compares with the store's current listing. */
 export type ClaimCheck =
@@ -225,7 +236,7 @@ export function claimCheck(
 }
 
 /** The row of one order, or `undefined` when nothing about it passed the rules. */
-function rowOf(key: string, group: Group, store: AdminStore): OrderRow | undefined {
+function rowOf(key: string, group: Group, store: AdminStore, now: number): OrderRow | undefined {
   const orders = byDate(group.orders.values());
   const first = orders[0];
   const order = orders.length === 1 ? first?.message : undefined;
@@ -288,6 +299,9 @@ function rowOf(key: string, group: Group, store: AdminStore): OrderRow | undefin
     (entry) => entry.createdAt,
   );
   const createdAt = first?.createdAt ?? Math.min(...dates);
+  if (state === 'ordered' && now - createdAt > UNPAID_ORDER_LIFETIME_SECS) {
+    state = 'expired';
+  }
   const item = order?.items[0];
   return {
     key,
@@ -375,13 +389,14 @@ export function totalsOf(rows: readonly OrderRow[]): Totals {
   };
 }
 
-/** The store's orders, newest first, and what the node credited. */
+/** The store's orders, newest first, and what the node credited, as of `now` (unix seconds). */
 export function buildHistory(
   messages: readonly UnwrappedOrderMessage[],
   store: AdminStore,
+  now: number,
 ): History {
   const rows = [...groupMessages(messages, store).entries()]
-    .map(([key, group]) => rowOf(key, group, store))
+    .map(([key, group]) => rowOf(key, group, store, now))
     .filter((row): row is OrderRow => row !== undefined)
     .sort((first, second) => second.createdAt - first.createdAt);
   return { rows, totals: totalsOf(rows) };
