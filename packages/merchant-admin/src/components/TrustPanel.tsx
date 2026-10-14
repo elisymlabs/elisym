@@ -18,7 +18,7 @@ const POINTS: { icon: IconName; title: string; body: ReactNode; tone: 'plain' | 
   {
     icon: 'key',
     title: 'Keep the store key like a password',
-    body: 'It signs for your store, including the payout address new buyers pay to. Paste it only here or into the local admin.',
+    body: 'It signs your store’s profile, which decides where new buyers’ payments go. Paste it only here or into the local admin.',
     tone: 'plain',
   },
 ];

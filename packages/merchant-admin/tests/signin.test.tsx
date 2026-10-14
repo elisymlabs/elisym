@@ -29,7 +29,9 @@ describe('the sign-in page', () => {
       'Pay Core never asks for a wallet’s secret key or seed phrase, so never paste one, here or anywhere else.',
     );
     expect(text).toContain('Keep the store key like a password');
-    expect(text).toContain('including the payout address new buyers pay to');
+    expect(text).toContain(
+      'It signs your store’s profile, which decides where new buyers’ payments go.',
+    );
   });
 
   it('folds the security details until asked, with every note inside', async () => {
@@ -63,6 +65,9 @@ describe('the page frame', () => {
     mounted = await mount(<SignIn onKey={() => undefined} />);
     const header = classesOf(mounted.container.querySelector('header'));
     expect(header).toEqual(expect.arrayContaining([...tokens, 'h-64']));
+    // Pinned to the top: opening the security details never moves the form.
+    expect(classesOf(mounted.container.querySelector('main'))).not.toContain('sm:items-center');
+    expect(classesOf(mounted.container.querySelector('main > div'))).toContain('items-start');
     await mounted.unmount();
 
     mounted = await mount(
@@ -76,5 +81,8 @@ describe('the page frame', () => {
     );
     const bar = classesOf(mounted.container.firstElementChild);
     expect(bar).toEqual(expect.arrayContaining([...tokens, 'min-h-64']));
+    // One line high, so the header row stays 64 and the logo sits where the landing's does.
+    expect(classesOf(byId(mounted.container, 'store-pubkey').parentElement)).toContain('h-18');
+    expect(classesOf(mounted.container.querySelector('[title="Pay Core"]'))).toContain('gap-10');
   });
 });

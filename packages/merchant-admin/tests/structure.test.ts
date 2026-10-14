@@ -100,6 +100,18 @@ describe('the page frame', () => {
     );
   });
 
+  it('spaces the logo mark from the name as the landing does', () => {
+    const logo = readFileSync(join(ROOT, '../merchant-landing/src/components/Logo.tsx'), 'utf8');
+    const gap = logo.match(/<a [^>]*className="flex items-center (gap-\d+)"/)?.[1];
+    expect(gap).toBeDefined();
+    for (const name of ['AuthLayout.tsx', 'DashboardHeader.tsx']) {
+      const code = readFileSync(join(SRC, 'components', name), 'utf8');
+      expect(code).toMatch(
+        new RegExp(`<span className="flex items-center ${gap ?? ''}"[^>]*>\\s*<LogoMark`),
+      );
+    }
+  });
+
   it('leaves no other page width in the admin', () => {
     for (const path of files(SRC).filter((path) => /\.(ts|tsx)$/.test(path))) {
       for (const width of readFileSync(path, 'utf8').match(/max-w-1\d{3}/g) ?? []) {
