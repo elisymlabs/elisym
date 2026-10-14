@@ -7,6 +7,7 @@ import { CreditedChart } from '../src/components/CreditedChart';
 import { OrdersDonut } from '../src/components/OrdersDonut';
 import { Overview } from '../src/components/Overview';
 import { StatusStrip } from '../src/components/StatusStrip';
+import { Totals } from '../src/components/Totals';
 import {
   LONG_SPAN_DAYS,
   SHORT_SPAN_DAYS,
@@ -272,7 +273,7 @@ describe('the orders ring and the status bar', () => {
     expect(mounted.container.querySelector('svg text')?.textContent).toBe('7');
     expect(byId(mounted.container, 'donut-legend').textContent).toContain('USDC on Solana457%');
     expect(mounted.container.querySelector('svg')?.getAttribute('aria-label')).toBe(
-      '7 orders: 4 USDC on Solana, 1 USDC.e on Tempo, 1 Asset unknown, 1 No payment credited',
+      '7 orders loaded: 4 USDC on Solana, 1 USDC.e on Tempo, 1 Asset unknown, 1 No payment credited',
     );
     await mounted.rerender(<OrdersDonut slices={[]} />);
     expect(byId(mounted.container, 'donut-empty').textContent).toBe('No orders yet.');
@@ -335,5 +336,32 @@ describe('the overview', () => {
     const charts = byId(mounted.container, 'charts');
     expect(totals.compareDocumentPosition(charts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(charts.querySelectorAll('.chart-arc')).toHaveLength(4);
+  });
+});
+
+describe('the totals', () => {
+  it('shows one credited card per coin and no order counts', async () => {
+    const coins = [USDC, USDC_E, PATH_USD].flatMap((coin) => (coin === undefined ? [] : [coin]));
+    mounted = await mount(
+      <Totals
+        history={{
+          rows: ROWS,
+          totals: {
+            perAsset: coins.map((asset) => ({ asset, subunits: '44500000', amount: '44.5' })),
+            unknownAsset: [],
+          },
+        }}
+      />,
+    );
+    const cards = [...byId(mounted.container, 'totals').children];
+    expect(cards.map((card) => card.querySelector('p')?.textContent)).toEqual([
+      'USDC credited',
+      'USDC.e credited',
+      'pathUSD credited',
+    ]);
+    const text = byId(mounted.container, 'totals').textContent ?? '';
+    for (const gone of ['Orders loaded', 'Completed', 'Payment reported', 'nothing credited yet']) {
+      expect(text).not.toContain(gone);
+    }
   });
 });

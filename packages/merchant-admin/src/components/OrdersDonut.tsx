@@ -43,7 +43,7 @@ export function OrdersDonut({ slices }: Props) {
             viewBox="0 0 120 120"
             className="size-128 shrink-0"
             role="img"
-            aria-label={`${total} ${total === 1 ? 'order' : 'orders'}: ${slices
+            aria-label={`${total} ${total === 1 ? 'order' : 'orders'} loaded: ${slices
               .map((slice) => `${slice.count} ${slice.label}`)
               .join(', ')}`}
           >

@@ -2,6 +2,7 @@ import { shareOf } from '../lib/charts';
 import type { OrderState } from '../lib/core';
 import { STATE_SHORT } from '../lib/orders';
 import { ChartCard } from './ChartCard';
+import { Icon } from './Icon';
 
 interface Props {
   parts: readonly { state: OrderState; count: number }[];
@@ -26,6 +27,7 @@ const DOTS: Readonly<Record<OrderState, string>> = {
 /** Where the loaded orders stand, as one bar split by state. */
 export function StatusStrip({ parts }: Props) {
   const total = parts.reduce((sum, part) => sum + part.count, 0);
+  const reported = parts.find((part) => part.state === 'payment_reported')?.count ?? 0;
   let start = 0;
   const segments = parts.map((part) => {
     const width = shareOf(part.count, total) * 100;
@@ -41,6 +43,15 @@ export function StatusStrip({ parts }: Props) {
         </p>
       ) : (
         <div className="flex flex-col gap-12">
+          {reported > 0 && (
+            <p
+              id="status-reported"
+              className="rounded-10 bg-warn-bg text-warn text-13 flex items-center gap-8 px-12 py-8 font-medium"
+            >
+              <Icon name="alert" className="size-16 shrink-0" />
+              {`${reported} ${reported === 1 ? 'payment' : 'payments'} reported, not confirmed by your node`}
+            </p>
+          )}
           <svg
             viewBox="0 0 100 10"
             preserveAspectRatio="none"
