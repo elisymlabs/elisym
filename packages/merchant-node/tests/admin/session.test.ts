@@ -243,6 +243,24 @@ function snapshotOf(outcome: Outcome): Snapshot {
 
 const now = () => T0 + 600;
 
+/** More listings in one second than a page holds. */
+const WALL_SIZE = 300;
+// Heavy on Schnorr: hundreds of signatures signed and checked, slow on a busy CI runner.
+const WALL_TIMEOUT_MS = 90_000;
+let sharedWall: { store: Key; owner: Key; wall: NostrEvent[] } | undefined;
+
+/** A store whose listings form a same-second wall: signed once, shared by the tests that need one. */
+function wallStore(): { store: Key; owner: Key; wall: NostrEvent[] } {
+  if (sharedWall === undefined) {
+    const store = key();
+    const wall = Array.from({ length: WALL_SIZE }, (_, index) =>
+      listing(store, `w-${index}`, T0 - 100),
+    );
+    sharedWall = { store, owner: key(), wall };
+  }
+  return sharedWall;
+}
+
 describe('AdminSession', () => {
   it('opens: status texts in order, the store before the orders, the final status last', async () => {
     const store = key();
@@ -521,20 +539,22 @@ describe('AdminSession', () => {
     expect(long.allProducts?.lines).toHaveLength(153);
   });
 
-  it('a Refresh that reads the whole list clears incomplete', async () => {
-    const store = key();
-    const owner = key();
-    const wall = Array.from({ length: 300 }, (_, index) => listing(store, `w-${index}`, T0 - 100));
-    let events = [...storeEvents(store, owner), ...wall];
-    const client: RelayClient = {
-      ...relayClient([]),
-      query: (relays, filters, options) => relayClient(events).query(relays, filters, options),
-    };
-    const admin = session({ client, pool: fakePool([]), now }, store, true);
-    expect(snapshotOf(await admin.open()).allProducts?.incomplete).toBe(true);
-    events = [...storeEvents(store, owner), ...wall.slice(0, 20)];
-    expect(snapshotOf(await admin.refresh()).allProducts?.incomplete).toBe(false);
-  });
+  it(
+    'a Refresh that reads the whole list clears incomplete',
+    { timeout: WALL_TIMEOUT_MS },
+    async () => {
+      const { store, owner, wall } = wallStore();
+      let events = [...storeEvents(store, owner), ...wall];
+      const client: RelayClient = {
+        ...relayClient([]),
+        query: (relays, filters, options) => relayClient(events).query(relays, filters, options),
+      };
+      const admin = session({ client, pool: fakePool([]), now }, store, true);
+      expect(snapshotOf(await admin.open()).allProducts?.incomplete).toBe(true);
+      events = [...storeEvents(store, owner), ...wall.slice(0, 20)];
+      expect(snapshotOf(await admin.refresh()).allProducts?.incomplete).toBe(false);
+    },
+  );
 
   it('tells the store on Refresh before the wraps are read', async () => {
     const store = key();
@@ -556,48 +576,50 @@ describe('AdminSession', () => {
     await refreshing;
   });
 
-  it('calls the list incomplete at a same-second wall and at a relay ignoring until', async () => {
-    const store = key();
-    const owner = key();
-    const wall = Array.from({ length: 300 }, (_, index) => listing(store, `w-${index}`, T0 - 100));
-    const wallSnapshot = snapshotOf(
-      await session(
-        { client: relayClient([...storeEvents(store, owner), ...wall]), pool: fakePool([]), now },
-        store,
-        true,
-      ).open(),
-    );
-    expect(wallSnapshot.allProducts?.incomplete).toBe(true);
+  it(
+    'calls the list incomplete at a same-second wall and at a relay ignoring until',
+    { timeout: WALL_TIMEOUT_MS },
+    async () => {
+      const { store, owner, wall } = wallStore();
+      const wallSnapshot = snapshotOf(
+        await session(
+          { client: relayClient([...storeEvents(store, owner), ...wall]), pool: fakePool([]), now },
+          store,
+          true,
+        ).open(),
+      );
+      expect(wallSnapshot.allProducts?.incomplete).toBe(true);
 
-    const spread = Array.from({ length: 300 }, (_, index) =>
-      listing(store, `s-${index}`, T0 - 1000 + index),
-    );
-    const ignoring = snapshotOf(
-      await session(
-        {
-          client: relayClient([...storeEvents(store, owner), ...spread], {
-            ignoreUntil: [INBOX],
-          }),
-          pool: fakePool([]),
-          now,
-        },
-        store,
-        true,
-      ).open(),
-    );
-    expect(ignoring.allProducts?.incomplete).toBe(true);
+      const spread = Array.from({ length: 300 }, (_, index) =>
+        listing(store, `s-${index}`, T0 - 1000 + index),
+      );
+      const ignoring = snapshotOf(
+        await session(
+          {
+            client: relayClient([...storeEvents(store, owner), ...spread], {
+              ignoreUntil: [INBOX],
+            }),
+            pool: fakePool([]),
+            now,
+          },
+          store,
+          true,
+        ).open(),
+      );
+      expect(ignoring.allProducts?.incomplete).toBe(true);
 
-    const few = Array.from({ length: 30 }, (_, index) => listing(store, `f-${index}`, T0 - 100));
-    const complete = snapshotOf(
-      await session(
-        { client: relayClient([...storeEvents(store, owner), ...few]), pool: fakePool([]), now },
-        store,
-        true,
-      ).open(),
-    );
-    expect(complete.allProducts?.incomplete).toBe(false);
-    expect(complete.allProducts?.lines).toHaveLength(30);
-  });
+      const few = Array.from({ length: 30 }, (_, index) => listing(store, `f-${index}`, T0 - 100));
+      const complete = snapshotOf(
+        await session(
+          { client: relayClient([...storeEvents(store, owner), ...few]), pool: fakePool([]), now },
+          store,
+          true,
+        ).open(),
+      );
+      expect(complete.allProducts?.incomplete).toBe(false);
+      expect(complete.allProducts?.lines).toHaveLength(30);
+    },
+  );
 
   it('keeps a product seen on open when a relay does not answer on Refresh', async () => {
     const store = key();
