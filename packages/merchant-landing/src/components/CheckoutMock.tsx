@@ -78,7 +78,7 @@ export function CheckoutMock() {
               Your purchases
             </p>
             <p className="text-11 text-text-3 mt-6">
-              Checkout by elisym · payments go straight to the store
+              Checkout by Elisym · payments go straight to the store
             </p>
           </div>
         </div>

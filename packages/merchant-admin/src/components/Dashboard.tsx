@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from 'react';
 import type { DashboardState } from '../App';
+import { HEADER_BAR, PAGE_FRAME } from '../constants';
 import { About } from './About';
 import { DashboardHeader } from './DashboardHeader';
 import { EmptyState } from './EmptyState';
@@ -72,18 +73,20 @@ export function Dashboard({ state, onRefresh, onMore, onLogOut }: Props) {
   };
   return (
     <div className="min-h-screen">
-      <header className="border-line bg-bg/85 sticky top-0 z-10 border-b backdrop-blur-md">
-        <DashboardHeader
-          pubkey={state.pubkey}
-          name={state.store?.name}
-          status={state.status}
-          busy={state.busy}
-          onRefresh={onRefresh}
-          onLogOut={onLogOut}
-        />
+      <header className={HEADER_BAR}>
+        <div className="border-line/60 border-b">
+          <DashboardHeader
+            pubkey={state.pubkey}
+            name={state.store?.name}
+            status={state.status}
+            busy={state.busy}
+            onRefresh={onRefresh}
+            onLogOut={onLogOut}
+          />
+        </div>
         <TabBar active={tab} counts={counts} panels={snapshot !== undefined} onSelect={select} />
       </header>
-      <main className="mx-auto max-w-1200 px-16 py-24 sm:px-24 sm:py-32">
+      <main className={`${PAGE_FRAME} py-24 sm:py-32`}>
         {snapshot === undefined ? (
           <NotRead tab={tab} busy={state.busy} />
         ) : (

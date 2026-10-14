@@ -328,7 +328,7 @@ npx @elisym/merchant-node admin       # open http://127.0.0.1:5199/ and paste it
 The same view is hosted at https://admin.elisym.network: paste the store key there instead of
 running `admin`. It also lists every product of the store, the store's profile, inbox relays and
 payout networks, and exports the loaded orders as CSV. The key stays in that tab's memory too, but
-the page's code is served by elisym on each visit, while the local page runs the version you
+the page's code is served by Elisym on each visit, while the local page runs the version you
 installed. Browser extensions can read what you type into any page: use a browser profile
 without extensions you do not trust, or the local page.
 

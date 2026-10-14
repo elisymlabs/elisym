@@ -205,7 +205,8 @@ describe('the dashboard', () => {
     expect(rows[0]?.textContent).toContain(HOSTILE);
     expect(rows[0]?.textContent).toContain('Completed');
     expect(byId(container, 'totals').textContent).toContain('1 USDC');
-    expect(byId(container, 'totals').textContent).toContain('Orders loaded1');
+    expect(byId(container, 'totals').textContent).not.toContain('Orders loaded');
+    expect(byId(container, 'charts').querySelector('svg text')?.textContent).toBe('1');
     expect(byId(container, 'totals').textContent).not.toContain('nothing credited yet');
     expect(rows[0]?.textContent).toContain(short(TX1));
     expect(rows[0]?.textContent).not.toContain(short(TX2));

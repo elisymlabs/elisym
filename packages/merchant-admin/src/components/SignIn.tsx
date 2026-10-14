@@ -1,41 +1,27 @@
-import { type ReactNode, useRef, useState } from 'react';
-import { LOCAL_ADMIN_COMMAND, QUICKSTART_URL, STORE_KEY_COMMAND } from '../constants';
+import { useEffect, useRef, useState } from 'react';
+import { QUICKSTART_URL, STORE_KEY_COMMAND } from '../constants';
 import { type StoreKey, parseStoreKey } from '../lib/core';
 import { AuthLayout } from './AuthLayout';
-import { Code } from './Code';
 import { CommandLine } from './CommandLine';
-import { Icon, type IconName } from './Icon';
+import { TrustPanel } from './TrustPanel';
 
 interface Props {
   onKey: (key: StoreKey) => void;
 }
 
-const NOTES: { icon: IconName; title: string; body: ReactNode }[] = [
-  {
-    icon: 'lock',
-    title: 'Kept in this tab only',
-    body: 'The key stays in this tab’s memory: never stored, never sent. It only decrypts your orders and signs in to your relays. Log out or close the tab when you are done.',
-  },
-  {
-    icon: 'eye',
-    title: 'Extensions can read it',
-    body: (
-      <>
-        Browser extensions see what you type into any page. Use a profile without extensions you do
-        not trust, or the local admin: <Code>{LOCAL_ADMIN_COMMAND}</Code>.
-      </>
-    ),
-  },
-  {
-    icon: 'alert',
-    title: 'It controls your store',
-    body: 'Anyone with this key can redirect payments from new buyers. This page’s code is served by elisym on each visit; the local admin runs the version you installed.',
-  },
-];
-
 /** The key field: a masked text field outside any form, read once and cleared. */
 export function SignIn({ onKey }: Props) {
   const input = useRef<HTMLInputElement>(null);
+  // Leaving by a link keeps this page in the back/forward cache: a typed key must not come back.
+  useEffect(() => {
+    const clear = () => {
+      if (input.current !== null) {
+        input.current.value = '';
+      }
+    };
+    window.addEventListener('pagehide', clear);
+    return () => window.removeEventListener('pagehide', clear);
+  }, []);
   const [error, setError] = useState('');
 
   const submit = () => {
@@ -55,12 +41,11 @@ export function SignIn({ onKey }: Props) {
 
   return (
     <AuthLayout>
-      <div className="grid w-full max-w-960 gap-24 lg:grid-cols-[1.1fr_0.9fr]">
+      <div className="grid w-full max-w-960 items-start gap-24 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-20 border-line bg-surface border p-24 shadow-sm sm:p-32">
           <h1 className="text-24 font-semibold tracking-tight">Sign in to your store</h1>
           <p className="text-15 text-text-2 mt-8">
-            See your orders, what your node credited, your products and your store profile, read
-            straight from your relays.
+            Open your orders, products and store profile with your store key.
           </p>
 
           <ol className="mt-28 flex flex-col gap-20">
@@ -130,25 +115,7 @@ export function SignIn({ onKey }: Props) {
           </p>
         </div>
 
-        <aside className="flex flex-col gap-12">
-          <p className="text-12 text-text-3 px-4 font-semibold tracking-wide uppercase">
-            Before you paste
-          </p>
-          {NOTES.map((note) => (
-            <div
-              key={note.title}
-              className="rounded-16 border-line bg-surface/60 flex gap-12 border p-16"
-            >
-              <span className="rounded-10 bg-surface-2 text-text-2 grid size-32 shrink-0 place-items-center">
-                <Icon name={note.icon} className="size-16" />
-              </span>
-              <div className="flex min-w-0 flex-col gap-4">
-                <p className="text-14 font-semibold">{note.title}</p>
-                <p className="text-13 text-text-2 leading-relaxed">{note.body}</p>
-              </div>
-            </div>
-          ))}
-        </aside>
+        <TrustPanel />
       </div>
     </AuthLayout>
   );

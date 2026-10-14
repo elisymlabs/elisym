@@ -36,7 +36,7 @@ export function TabBar({ active, counts, panels, onSelect }: Props) {
     <nav
       role="tablist"
       aria-label="Admin sections"
-      className="mx-auto flex max-w-1200 gap-4 overflow-x-auto px-12 sm:px-20"
+      className="mx-auto flex max-w-1160 gap-4 overflow-x-auto px-12 sm:px-20"
     >
       {TABS.map((tab, index) => {
         const selected = tab.id === active;

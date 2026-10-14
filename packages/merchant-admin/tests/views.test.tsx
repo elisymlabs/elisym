@@ -8,7 +8,9 @@ import { OrdersSection } from '../src/components/OrdersSection';
 import { ProductsSection } from '../src/components/ProductsSection';
 import { RecentOrders } from '../src/components/RecentOrders';
 import { Stat } from '../src/components/Stat';
+import { StatusStrip } from '../src/components/StatusStrip';
 import { Totals } from '../src/components/Totals';
+import { statusParts } from '../src/lib/charts';
 import type { OrderRow, OrderState, Snapshot } from '../src/lib/core';
 import { countText } from '../src/lib/count';
 import { ordersCsv } from '../src/lib/csv';
@@ -327,16 +329,35 @@ describe('the products tab', () => {
 });
 
 describe('the overview', () => {
-  it('counts completed and reported orders in the totals', async () => {
+  it('shows only what was credited in the totals: the order counts are in the charts', async () => {
     mounted = await mount(<Totals history={snapshot().history} />);
-    const text = byId(mounted.container, 'totals').textContent ?? '';
-    expect(text).toContain('Orders loaded4');
-    expect(text).toContain('Completed2');
-    expect(text).toContain('Payment reported1');
-    const reported = [...byId(mounted.container, 'totals').children].find((card) =>
-      card.textContent?.startsWith('Payment reported'),
+    const totals = byId(mounted.container, 'totals');
+    expect(totals.textContent).toBe('Creditednothing credited yetby your node');
+    expect(totals.children).toHaveLength(1);
+    expect(totals.className).toContain('grid-cols-1');
+    expect(totals.className).toContain('lg:grid-cols-[repeat(auto-fit,minmax(240px,1fr))]');
+  });
+
+  it('puts reported payments in the warn colors on the status card, only when there are some', async () => {
+    mounted = await mount(<StatusStrip parts={statusParts(stateCounts(ROWS))} />);
+    const line = byId(mounted.container, 'status-reported');
+    expect(line.textContent).toBe('1 payment reported, not confirmed by your node');
+    expect(line.className).toContain('bg-warn-bg');
+    expect(line.className).toContain('text-warn');
+    await mounted.rerender(
+      <StatusStrip
+        parts={statusParts(stateCounts(ROWS.filter((row) => row.state !== 'payment_reported')))}
+      />,
     );
-    expect(reported?.className).toContain('bg-warn-bg');
+    expect(mounted.container.querySelector('#status-reported')).toBeNull();
+    await mounted.rerender(
+      <StatusStrip
+        parts={statusParts(stateCounts([...ROWS, row('epsilon', 'payment_reported')]))}
+      />,
+    );
+    expect(byId(mounted.container, 'status-reported').textContent).toBe(
+      '2 payments reported, not confirmed by your node',
+    );
   });
 
   it('lists the newest orders first', async () => {

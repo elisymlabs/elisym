@@ -1,4 +1,5 @@
 import type { Snapshot } from '../lib/core';
+import { Charts } from './Charts';
 import { RecentOrders } from './RecentOrders';
 import { Section } from './Section';
 import { StoreSummary } from './StoreSummary';
@@ -20,6 +21,7 @@ export function Overview({ snapshot, onTab }: Props) {
       >
         <Totals history={snapshot.history} />
       </Section>
+      <Charts rows={snapshot.history.rows} nowSeconds={Math.floor(Date.now() / 1000)} />
       <div className="grid gap-16 lg:grid-cols-[1.6fr_1fr]">
         <RecentOrders rows={snapshot.history.rows} onViewAll={() => onTab('orders')} />
         <StoreSummary
