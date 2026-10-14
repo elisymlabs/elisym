@@ -21,6 +21,18 @@ const PAIRS: { text: string; on: string; over: string[] }[] = [
 
 const BACKGROUNDS = ['bg', 'surface', 'surface-2'];
 
+/** Classes in the chart sources that are not a chart's colors: surfaces, text, tints behind text. */
+const NOT_GRAPHICS = [
+  'none',
+  'transparent',
+  'surface',
+  'surface-2',
+  'text',
+  'text-2',
+  'accent-soft',
+  'warn-bg',
+];
+
 /** Every color the charts fill or stroke with: the series, the neutral, the states. */
 const CHART_COLORS = [
   'chart-1',
@@ -153,18 +165,19 @@ describe('the text colors', () => {
   });
 
   it('covers every color the chart components draw with', () => {
-    const names = ['DayBars', 'CreditedChart', 'OrdersDonut', 'StatusStrip'];
+    const files = ['DayBars', 'CreditedChart', 'OrdersDonut', 'StatusStrip'];
     const sources = [
-      ...names.map((name) =>
+      ...files.map((name) =>
         readFileSync(join(process.cwd(), `src/components/${name}.tsx`), 'utf8'),
       ),
       readFileSync(join(process.cwd(), 'src/lib/charts.ts'), 'utf8'),
     ].join('\n');
-    const used = new Set(
-      [...sources.matchAll(/\b(?:fill|stroke)-([a-z][a-z0-9-]*)/g)]
-        .map((match) => match[1] ?? '')
-        .filter((name) => !['none', 'transparent', 'surface-2', 'text', 'text-2'].includes(name)),
+    // Fills, strokes and the legends' dots; an arbitrary value (`fill-[#...]`) is never allowed.
+    const names = [...sources.matchAll(/\b(?:fill|stroke|bg)-(\[[^\]]*\]|[a-z][a-z0-9-]*)/g)].map(
+      (match) => match[1] ?? '',
     );
+    expect(names.filter((name) => name.startsWith('['))).toEqual([]);
+    const used = new Set(names.filter((name) => !NOT_GRAPHICS.includes(name)));
     expect(used.size).toBeGreaterThan(5);
     for (const name of used) {
       expect(CHART_COLORS, name).toContain(name);

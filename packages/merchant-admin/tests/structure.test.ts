@@ -162,6 +162,31 @@ describe('the header', () => {
   });
 });
 
+describe('the header links and logo', () => {
+  const auth = readFileSync(join(SRC, 'components/AuthLayout.tsx'), 'utf8');
+
+  it('styles the section links and the docs link as the landing does', () => {
+    expect(auth).toMatch(/LANDING_SECTIONS\.map\([\s\S]*?className=\{HEADER_LINK\}/);
+    expect(auth).toMatch(/href=\{QUICKSTART_URL\} className=\{HEADER_DOCS_LINK\}/);
+    expect(auth.match(/className=\{HEADER_LINK\}/g)).toHaveLength(1);
+    expect(auth.match(/className=\{HEADER_DOCS_LINK\}/g)).toHaveLength(1);
+  });
+
+  it('draws the logo block with the landing logo classes, in order', () => {
+    const landingLogo = readFileSync(
+      join(ROOT, '../merchant-landing/src/components/Logo.tsx'),
+      'utf8',
+    );
+    const classes = (code: string) =>
+      [...code.matchAll(/className="([^"]+)"/g)].map((match) => match[1] ?? '');
+    const wanted = classes(landingLogo);
+    const found = classes(auth);
+    const start = found.indexOf(wanted[0] ?? '');
+    expect(wanted.length).toBeGreaterThan(3);
+    expect(found.slice(start, start + wanted.length)).toEqual(wanted);
+  });
+});
+
 describe('the header colors', () => {
   /** `--name: value` pairs of a CSS block, by name. */
   const tokensIn = (block: string) =>

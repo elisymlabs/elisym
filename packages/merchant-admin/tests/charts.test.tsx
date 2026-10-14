@@ -305,6 +305,7 @@ describe('the credited chart, more', () => {
     );
     expect(byId(mounted.container, 'credited-readout').getAttribute('aria-live')).toBe('polite');
     await mounted.rerender(<CreditedChart rows={[]} coins={[]} nowSeconds={NOW} />);
+    expect(mounted.container.querySelector('h3')?.textContent).toBe('Credited by order date');
     expect(byId(mounted.container, 'credited-empty').textContent).toContain(
       'Your first paid order shows up here once your node confirms it on chain and you refresh.',
     );

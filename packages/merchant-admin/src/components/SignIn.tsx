@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { QUICKSTART_URL, STORE_KEY_COMMAND } from '../constants';
 import { type StoreKey, parseStoreKey } from '../lib/core';
 import { AuthLayout } from './AuthLayout';
@@ -12,6 +12,16 @@ interface Props {
 /** The key field: a masked text field outside any form, read once and cleared. */
 export function SignIn({ onKey }: Props) {
   const input = useRef<HTMLInputElement>(null);
+  // Leaving by a link keeps this page in the back/forward cache: a typed key must not come back.
+  useEffect(() => {
+    const clear = () => {
+      if (input.current !== null) {
+        input.current.value = '';
+      }
+    };
+    window.addEventListener('pagehide', clear);
+    return () => window.removeEventListener('pagehide', clear);
+  }, []);
   const [error, setError] = useState('');
 
   const submit = () => {

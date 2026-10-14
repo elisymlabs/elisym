@@ -126,3 +126,18 @@ describe('one bar from the landing to the dashboard', () => {
     );
   });
 });
+
+describe('a key typed but not opened', () => {
+  it('is cleared when the page is left, so the back/forward cache never brings it back', async () => {
+    mounted = await mount(<SignIn onKey={() => undefined} />);
+    const field = byId(mounted.container, 'store-key');
+    if (!(field instanceof HTMLInputElement)) {
+      throw new Error('no key field');
+    }
+    field.value = 'a'.repeat(64);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(field.value).toBe('');
+    expect(field.getAttribute('autocomplete')).toBe('off');
+    expect(field.getAttribute('spellcheck')).toBe('false');
+  });
+});
