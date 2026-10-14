@@ -51,6 +51,7 @@ const CHART_COLORS = [
   'chart-3',
   'chart-4',
   'chart-idle',
+  'chart-expired',
   'warn',
   'green',
   'blue',
@@ -192,6 +193,10 @@ describe('the text colors', () => {
     expect(used.size).toBeGreaterThan(5);
     for (const name of used) {
       expect(CHART_COLORS, name).toContain(name);
+    }
+    // A color without its theme mapping generates no utility: its slice and dot would vanish.
+    for (const name of CHART_COLORS) {
+      expect(CSS, name).toMatch(new RegExp(`--color-${name}:\\s*var\\(--${name}\\)`));
     }
   });
 

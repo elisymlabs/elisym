@@ -54,7 +54,8 @@ export function OrderDetails({ row }: Props) {
       <Field label="State">
         {[
           STATE_LABELS[row.state],
-          ...notes.filter((note) => note !== 'not confirmed by your node'),
+          // A note the full label already says is not said twice.
+          ...notes.filter((note) => !STATE_LABELS[row.state].includes(note)),
         ].join('; ')}
       </Field>
       <Field label="Transactions">

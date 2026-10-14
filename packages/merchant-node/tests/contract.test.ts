@@ -6,6 +6,7 @@ import {
   MAX_RECHECKS_PER_SWEEP,
   ORDER_SCAN_MARGIN_SECS,
   TERMS_WINDOW_SECS,
+  UNPAID_ORDER_LIFETIME_SECS,
 } from '../src/constants';
 import { intake } from '../src/intake';
 import { pruneExpiredOrders, recordReport } from '../src/ledger';
@@ -261,6 +262,9 @@ describe('pruning', () => {
     const setup = world();
     const order = orderIn(setup, 'b3a7c2d4-0000-4000-8000-00000000a008');
     pruneExpiredOrders(setup.state, order.createdAt + 3 * 24 * 60 * 60 + 60);
+    expect(setup.state.orders[order.key]).toBeDefined();
+    // The admin's Expired turns on at this same instant.
+    pruneExpiredOrders(setup.state, order.createdAt + UNPAID_ORDER_LIFETIME_SECS);
     expect(setup.state.orders[order.key]).toBeDefined();
     pruneExpiredOrders(setup.state, order.createdAt + 3 * 24 * 60 * 60 + 15 * 60 + 1);
     expect(setup.state.orders[order.key]).toBeUndefined();

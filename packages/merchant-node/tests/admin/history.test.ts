@@ -6,6 +6,7 @@ import {
   EARLIEST_ORDER_SECS,
   MAX_RECEIPTS_PER_ORDER,
   TERMS_WINDOW_SECS,
+  UNPAID_ORDER_LIFETIME_SECS,
 } from '../../src/constants';
 import {
   T0,
@@ -22,6 +23,8 @@ import {
 } from './fixtures';
 
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-000000000001';
+/** An hour after the fixtures' messages: every order in them is still live. */
+const NOW = T0 + 60 * 60;
 
 describe('who is believed', () => {
   it('ignores a status the store key did not seal, however it is dressed', () => {
@@ -39,6 +42,7 @@ describe('who is believed', () => {
         message(deliveredBody(buyer, ORDER_ID), buyer.pubkey, store.pubkey),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows).toHaveLength(1);
     expect(history.rows[0]?.state).toBe('ordered');
@@ -59,6 +63,7 @@ describe('who is believed', () => {
         ),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows).toHaveLength(1);
     expect(history.rows[0]).toMatchObject({ state: 'delivered', orderNotLoaded: false });
@@ -72,6 +77,7 @@ describe('who is believed', () => {
         message(receiptBody(store, store, ORDER_ID), store.pubkey, store.pubkey),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows).toEqual([]);
   });
@@ -93,6 +99,7 @@ describe('who is believed', () => {
         ),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows).toEqual([]);
   });
@@ -129,6 +136,7 @@ describe('which orders count', () => {
         message(orderBody(store, 'order-old'), buyer.pubkey, store.pubkey, EARLIEST_ORDER_SECS - 1),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows).toEqual([]);
   });
@@ -146,6 +154,7 @@ describe('which orders count', () => {
         ),
       ],
       adminStore(store, { productAddresses: new Set([productOf(store), second]) }),
+      NOW,
     );
     expect(history.rows.map((row) => row.state)).toEqual(['ordered']);
   });
@@ -154,11 +163,12 @@ describe('which orders count', () => {
     const store = key();
     const buyer = key();
     const resent = message(orderBody(store, ORDER_ID), buyer.pubkey, store.pubkey);
-    const once = buildHistory([resent, resent], adminStore(store));
+    const once = buildHistory([resent, resent], adminStore(store), NOW);
     expect(once.rows[0]).toMatchObject({ conflict: false, order: { orderId: ORDER_ID } });
     const conflicting = buildHistory(
       [resent, message(orderBody(store, ORDER_ID), buyer.pubkey, store.pubkey, T0 + 90)],
       adminStore(store),
+      NOW,
     );
     expect(conflicting.rows).toHaveLength(1);
     expect(conflicting.rows[0]?.conflict).toBe(true);
@@ -177,6 +187,7 @@ describe('receipts', () => {
     const history = buildHistory(
       [message(orderBody(store, ORDER_ID), buyer.pubkey, store.pubkey), ...receipts],
       adminStore(store),
+      NOW,
     );
     expect(history.rows[0]?.state).toBe('payment_reported');
     expect(history.rows[0]?.reported).toHaveLength(MAX_RECEIPTS_PER_ORDER);
@@ -194,6 +205,7 @@ describe('receipts', () => {
         message(badTx, buyer.pubkey, store.pubkey),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows[0]).toMatchObject({
       state: 'ordered',
@@ -211,6 +223,7 @@ describe('receipts', () => {
         message(receiptBody(store, buyer, ORDER_ID), buyer.pubkey, store.pubkey),
       ],
       adminStore(store, { mediums: ['solana'] }),
+      NOW,
     );
     expect(history.rows[0]).toMatchObject({ state: 'ordered', unlistedMedium: true });
   });
@@ -221,6 +234,7 @@ describe('receipts', () => {
     const history = buildHistory(
       [message(receiptBody(store, buyer, ORDER_ID), buyer.pubkey, store.pubkey)],
       adminStore(store, { mediums: ['solana'] }),
+      NOW,
     );
     expect(history.rows).toEqual([]);
   });
@@ -231,6 +245,7 @@ describe('receipts', () => {
     const history = buildHistory(
       [message(receiptBody(store, buyer, ORDER_ID), buyer.pubkey, store.pubkey)],
       adminStore(store),
+      NOW,
     );
     expect(history.rows[0]).toMatchObject({ state: 'payment_reported', orderNotLoaded: true });
   });
@@ -251,6 +266,7 @@ describe('node statuses and totals', () => {
     const history = buildHistory(
       [message(orderBody(store, ORDER_ID), buyer.pubkey, store.pubkey), ...resends],
       adminStore(store),
+      NOW,
     );
     expect(history.rows[0]?.credits).toHaveLength(1);
     expect(history.totals.perAsset).toEqual([
@@ -270,6 +286,7 @@ describe('node statuses and totals', () => {
         ),
       ],
       adminStore(store),
+      NOW,
     );
     const credit = history.rows[0]?.credits[0];
     expect(credit?.asset?.asset.symbol).toBe('USDC');
@@ -294,6 +311,7 @@ describe('node statuses and totals', () => {
         ),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows[0]?.credits[0]).toMatchObject({ amount: '1000000', fee: '30000' });
     expect(history.totals.perAsset).toEqual([
@@ -314,6 +332,7 @@ describe('node statuses and totals', () => {
         ),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.totals.perAsset).toEqual([]);
     expect(history.totals.unknownAsset).toEqual([{ medium: 'solana-devnet', subunits: '12' }]);
@@ -332,6 +351,7 @@ describe('node statuses and totals', () => {
         ),
       ),
       adminStore(store),
+      NOW,
     );
     expect(history.rows).toHaveLength(2);
     expect(history.totals.perAsset[0]?.subunits).toBe('1000000');
@@ -354,6 +374,7 @@ describe('node statuses and totals', () => {
         ),
       ),
       adminStore(store),
+      NOW,
     );
     expect(history.totals.perAsset[0]).toMatchObject({
       subunits: '18014398509481986',
@@ -400,6 +421,7 @@ describe('node statuses and totals', () => {
         ),
       ],
       adminStore(store),
+      NOW,
     );
     const byId = new Map(history.rows.map((row) => [row.orderId, row]));
     expect(byId.get('order-released')?.state).toBe('released');
@@ -445,7 +467,78 @@ describe('the claimed total', () => {
         ),
       ],
       adminStore(store),
+      NOW,
     );
     expect(history.rows[0]?.claimCheck).toBe('matches');
+  });
+});
+
+describe('an order nobody paid', () => {
+  /** The order's rumor is dated `T0 + 60` by default. */
+  const ORDERED_AT = T0 + 60;
+
+  function stateAt(
+    now: number,
+    extra: (
+      store: ReturnType<typeof key>,
+      buyer: ReturnType<typeof key>,
+    ) => ReturnType<typeof message>[] = () => [],
+  ) {
+    const store = key();
+    const buyer = key();
+    const history = buildHistory(
+      [message(orderBody(store, ORDER_ID), buyer.pubkey, store.pubkey), ...extra(store, buyer)],
+      adminStore(store),
+      now,
+    );
+    return history.rows[0]?.state;
+  }
+
+  it('expires once the node stopped watching it, the same moment the node drops it', () => {
+    expect(UNPAID_ORDER_LIFETIME_SECS).toBe(3 * 24 * 60 * 60 + MAX_FUTURE_SKEW_SECS);
+    expect(stateAt(ORDERED_AT + UNPAID_ORDER_LIFETIME_SECS)).toBe('ordered');
+    expect(stateAt(ORDERED_AT + UNPAID_ORDER_LIFETIME_SECS + 1)).toBe('expired');
+  });
+
+  it('never expires an order that was paid, reported, or answered by hand', () => {
+    const late = ORDERED_AT + UNPAID_ORDER_LIFETIME_SECS + 1;
+    expect(
+      stateAt(late, (store, buyer) => [
+        message(
+          deliveredBody(buyer, ORDER_ID, { caip19: USDC_DEVNET_CAIP19 }),
+          store.pubkey,
+          buyer.pubkey,
+        ),
+      ]),
+    ).toBe('delivered');
+    expect(
+      stateAt(late, (store, buyer) => [
+        message(receiptBody(store, buyer, ORDER_ID), buyer.pubkey, store.pubkey),
+      ]),
+    ).toBe('payment_reported');
+    expect(
+      stateAt(late, (store, buyer) => [
+        message(
+          { type: 'status', buyerPubkey: buyer.pubkey, orderId: ORDER_ID, status: 'completed' },
+          store.pubkey,
+          buyer.pubkey,
+        ),
+      ]),
+    ).toBe('released');
+    expect(
+      stateAt(late, (store, buyer) => [
+        message(
+          {
+            type: 'status',
+            buyerPubkey: buyer.pubkey,
+            orderId: ORDER_ID,
+            status: 'cancelled',
+            refund: { tx: TX2, amount: '1000000', caip19: USDC_DEVNET_CAIP19 },
+          },
+          store.pubkey,
+          buyer.pubkey,
+        ),
+      ]),
+    ).toBe('refunded');
   });
 });

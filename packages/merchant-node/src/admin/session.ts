@@ -289,7 +289,11 @@ export class AdminSession {
     const snapshot: Snapshot = {
       storePubkey,
       store: loaded,
-      history: buildHistory(reader.messages, adminStoreOf(storePubkey, loaded, this.listings)),
+      history: buildHistory(
+        reader.messages,
+        adminStoreOf(storePubkey, loaded, this.listings),
+        this.deps.now(),
+      ),
       products: productLines(this.listings),
       ...(allProducts === undefined ? {} : { allProducts }),
       warnings,
