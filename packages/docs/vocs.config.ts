@@ -11,6 +11,22 @@ export default defineConfig({
   iconUrl: '/favicon.svg',
   ogImageUrl: '/og-image.jpeg',
   checkDeadlinks: 'warn',
+  codeHighlight: {
+    transformers: [
+      // A code block scrolls its <code>, not its <pre> (see pages/_root.css), so the
+      // keyboard stop Shiki puts on the <pre> moves to the <code>: one tab stop per
+      // block, and the arrow keys scroll it.
+      {
+        name: 'elisym:focusable-code',
+        pre(node) {
+          delete node.properties.tabindex;
+        },
+        code(node) {
+          node.properties.tabindex = 0;
+        },
+      },
+    ],
+  },
   // "Ask AI" button - opens the docs' MCP endpoint in the reader's ChatGPT/Claude
   // (no LLM key needed on our side); also exposes the docs as an MCP source.
   mcp: {
