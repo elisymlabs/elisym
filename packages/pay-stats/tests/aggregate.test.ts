@@ -39,6 +39,30 @@ describe('counting purchases', () => {
     ]);
   });
 
+  it('sums a duplicate with its fee legs, apart from the purchase and the fee rows', () => {
+    const report = aggregate(
+      [
+        candidate({ position: { primary: 100, secondary: 0 } }),
+        candidate({
+          position: { primary: 200, secondary: 0 },
+          provider: 48_000_000n,
+          fees: [{ treasury: TREASURY, amount: 1_000_000n }],
+        }),
+      ],
+      [],
+    );
+    expect(report.purchases).toEqual([
+      expect.objectContaining({
+        count: 1,
+        gross_subunits: '49000000',
+        fee_subunits: '0',
+        duplicate_transfers: 1,
+        duplicate_subunits: '49000000',
+      }),
+    ]);
+    expect(report.fees).toEqual([]);
+  });
+
   it('keeps a reference first paid before --since a duplicate inside the window', () => {
     const report = aggregate(
       [

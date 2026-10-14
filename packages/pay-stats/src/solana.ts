@@ -58,16 +58,24 @@ function readU64(data: Uint8Array, offset: number): bigint | undefined {
   return new DataView(data.buffer, data.byteOffset + offset, 8).getBigUint64(0, true);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
 function fieldOf(value: unknown, key: string): unknown {
-  return typeof value === 'object' && value !== null && key in value
-    ? (value as Record<string, unknown>)[key]
-    : undefined;
+  return isRecord(value) && key in value ? value[key] : undefined;
 }
 
 function stringsOf(value: unknown): string[] | undefined {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string')
-    ? (value as string[])
-    : undefined;
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const entries: unknown[] = value;
+  return entries.every(isString) ? entries : undefined;
 }
 
 /**

@@ -198,12 +198,12 @@ function csvCell(value: string | number): string {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function csvTable(title: string, header: readonly string[], rows: readonly object[]): string {
-  const lines = rows.map((row) =>
-    header
-      .map((column) => csvCell((row as Record<string, string | number>)[column] ?? ''))
-      .join(','),
-  );
+function csvTable<Column extends string>(
+  title: string,
+  header: readonly Column[],
+  rows: readonly Record<Column, string | number>[],
+): string {
+  const lines = rows.map((row) => header.map((column) => csvCell(row[column])).join(','));
   return [`# ${title}`, header.join(','), ...lines].join('\n');
 }
 

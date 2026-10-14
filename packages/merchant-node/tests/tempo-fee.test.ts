@@ -1142,6 +1142,41 @@ describe('judging the memo groups of one receipt', () => {
     expect(run.order.blockedTx).toBeUndefined();
   });
 
+  it('asks again when a scanned marked leg below the floor is shown only by a legacy leg', async () => {
+    const run = setup();
+    land(run, HASH, [{ to: PAYOUT, amount: FLOOR - 1n }]);
+    const scanned = [scannedLeg(run, markedOf(run), FLOOR - 1n)];
+    const check = await checkTempoPayment(run.state, run.order, HASH, run.context, scanned);
+    expect(check).toEqual({ kind: 'ask_again' });
+    recordTempoCheck(run.order, HASH, check);
+    expect(run.order.noLegTxs).toBeUndefined();
+    expect(run.order.refusedTxs).toBeUndefined();
+    expect(run.order.paid).toBeUndefined();
+  });
+
+  it('catch-up records nothing for a marked leg below the floor the receipt shows only as legacy', async () => {
+    const run = setup();
+    cheaperProductBeside(run);
+    land(run, HASH, [{ to: PAYOUT, amount: FLOOR - 1n }]);
+    // The scan finds a marked leg under HASH that the receipt does not carry.
+    const legacyLog = run.options.logs.at(-1);
+    if (legacyLog === undefined) {
+      throw new Error('no landed log');
+    }
+    const [topic, from, to] = legacyLog.topics;
+    run.options.logs.push({
+      ...legacyLog,
+      topics: [topic, from, to, markedOf(run)],
+      logIndex: legacyLog.logIndex + 1,
+    });
+    const swept = await catchUpTempo(run.state, run.context, HEAD_TIME);
+    expect(swept.paid).toEqual([]);
+    expect(run.order.paid).toBeUndefined();
+    expect(run.order.tempoNoLeg).toBeUndefined();
+    expect(run.order.refusedTxs).toBeUndefined();
+    expect(run.order.recheckedAt?.[HASH]).toBe(HEAD_TIME);
+  });
+
   it('a mixed transaction with the legacy group refused and the marked one empty is no leg', async () => {
     const reported = setup();
     land(reported, HASH, [
