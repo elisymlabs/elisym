@@ -18,11 +18,11 @@ function classesOf(element: Element | null): string[] {
 }
 
 describe('the sign-in page', () => {
-  it('says what the page is, that the wallet stays the merchant’s, and what the key can do', async () => {
+  it('says the wallet stays the merchant’s and what the key can do, with no card singled out', async () => {
     mounted = await mount(<SignIn onKey={() => undefined} />);
     const text = mounted.container.textContent ?? '';
     expect(text).not.toContain('Before you paste');
-    expect(text).toContain('A view of your store');
+    expect(text).not.toContain('A view of your store');
     expect(text).toContain('Your wallet stays yours');
     expect(text).toContain('Buyers pay straight into your wallet.');
     expect(text).toContain('Nobody, neither elisym nor this page, can reach your wallet');
@@ -33,6 +33,9 @@ describe('the sign-in page', () => {
     expect(text).toContain(
       'It signs your store’s profile, which decides where new buyers’ payments go.',
     );
+    const panel = mounted.container.querySelector('aside');
+    expect(panel?.querySelectorAll(':scope > div')).toHaveLength(2);
+    expect(panel?.querySelector('.bg-accent-soft')).toBeNull();
   });
 
   it('folds the security details until asked, with every note inside', async () => {
