@@ -357,6 +357,7 @@ describe('the overview', () => {
 
   it('opens the quickstart from Help in a new tab, never in the tab holding the key', async () => {
     mounted = await mount(<About />);
+    expect(mounted.container.textContent).toContain('a credited payment minus its elisym fee');
     const link = mounted.container.querySelector('a');
     expect(link?.getAttribute('target')).toBe('_blank');
     expect(link?.getAttribute('rel')).toBe('noopener noreferrer');

@@ -109,6 +109,49 @@ describe('an order row', () => {
     );
   });
 
+  it('names the network of a fee in an unknown asset', async () => {
+    const texts = await cells(
+      row({
+        credits: [
+          { tx: 'credit-tx-00000000000000', amount: '7', medium: 'solana-devnet', fee: '2' },
+        ],
+      }),
+    );
+    expect(texts[COLUMN.credited]).toContain(
+      'elisym fee 2 subunits (solana-devnet), asset unknown',
+    );
+  });
+
+  it('shows no fee line in the details of a credit without a fee', async () => {
+    mounted = await mount(
+      <table>
+        <tbody>
+          <OrderRowView
+            row={row({
+              credits: [
+                {
+                  tx: 'credit-tx-00000000000000',
+                  amount: '1000000',
+                  asset: USDC,
+                  medium: 'solana-devnet',
+                  fee: '0',
+                },
+              ],
+            })}
+          />
+        </tbody>
+      </table>,
+    );
+    const toggle = mounted.container.querySelector('button[aria-expanded]');
+    if (!(toggle instanceof HTMLButtonElement)) {
+      throw new Error('no details toggle');
+    }
+    await act(async () => toggle.click());
+    const details = mounted.container.querySelectorAll('tr')[1]?.textContent ?? '';
+    expect(details).toContain('credited 1 USDC');
+    expect(details).not.toContain('fee');
+  });
+
   it('shows a reported transaction while nothing is credited', async () => {
     const texts = await cells(
       row({

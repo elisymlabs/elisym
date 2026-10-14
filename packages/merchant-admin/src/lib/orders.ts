@@ -64,7 +64,6 @@ export function filterRows(
   );
 }
 
-/** The notes on a row's state, besides the state itself. */
 /** The elisym protocol fee a credit carried, as text; undefined when it carried none. */
 export function feeText(credit: Credit): string | undefined {
   return credit.fee === '0'
@@ -72,6 +71,7 @@ export function feeText(credit: Credit): string | undefined {
     : amountText({ ...credit, amount: credit.fee }, credit.medium);
 }
 
+/** The notes on a row's state, besides the state itself. */
 export function rowNotes(row: OrderRow): string[] {
   return [
     ...(row.state === 'payment_reported' ? ['not confirmed by your node'] : []),
