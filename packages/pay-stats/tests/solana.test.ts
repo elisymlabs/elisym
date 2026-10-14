@@ -17,6 +17,8 @@ import {
   usdcTransfer,
 } from './solana-fixtures';
 
+/** SPL Memo v1: nothing elisym writes, so never read as a marker. */
+const MEMO_V1 = 'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo';
 const TREASURIES = new Set([TREASURY]);
 const OWNERS = { [PAYER_ATA]: PAYER, [PAYOUT_ATA]: PAYOUT, [TREASURY_ATA]: TREASURY };
 
@@ -74,6 +76,7 @@ describe('classifySolanaTransaction', () => {
     ['both memos', [memo('elisym:commerce'), memo('elisym:v1:abc')], 'ambiguous'],
     ['no memo', [], 'untagged'],
     ['another memo', [memo('hello')], 'untagged'],
+    ['a Memo v1 instruction', [{ ...memo('elisym:commerce'), program: MEMO_V1 }], 'untagged'],
   ])('puts a payment with %s in its context bucket', (_label, memos, bucket) => {
     const transaction = landedJson([...memos, solTransfer(PAYER, PAYOUT, 5_000n)]);
     expect(classify(transaction)).toEqual({ kind: 'context', day: '2026-10-20', bucket });

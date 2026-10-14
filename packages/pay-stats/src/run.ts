@@ -142,8 +142,9 @@ export interface RunResult {
 
 /**
  * The known treasuries: the flags, and the config's current ones on both rails.
- * A Solana rpc on another cluster is fatal (every count would be the wrong
- * chain's); any other failure to read the config leaves only the flags.
+ * The rpc's cluster is already proven; one that answers for another cluster
+ * here after all is still fatal (every count would be the wrong chain's). Any
+ * other failure to read the config leaves only the flags.
  */
 async function treasuriesFor(
   rpc: Rpc<SolanaRpcApi>,
@@ -168,6 +169,31 @@ async function treasuriesFor(
     }
   }
   return treasuries;
+}
+
+/**
+ * Refuse a Solana endpoint that is not the network's cluster, or that will not
+ * say: its genesis hash, cut to the CAIP-2 reference, must be the chain's.
+ */
+async function assertSolanaCluster(
+  rpc: Rpc<SolanaRpcApi>,
+  url: string,
+  network: Network,
+): Promise<void> {
+  let genesisHash: string;
+  try {
+    genesisHash = await rpc.getGenesisHash().send();
+  } catch (error) {
+    throw new Error(
+      `the Solana rpc ${url} did not answer getGenesisHash: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (
+    typeof genesisHash !== 'string' ||
+    `solana:${genesisHash.slice(0, 32)}` !== chainFor('solana', network).caip2
+  ) {
+    throw new Error(`the Solana rpc ${url} does not serve Solana ${network}`);
+  }
 }
 
 /** Refuse a Tempo endpoint that is not the network's chain, or that will not say. */
@@ -208,6 +234,7 @@ export async function runStats(options: StatsOptions, deps: RunDeps): Promise<Ru
   const rpc = deps.solanaRpc(solanaUrl);
   const client = deps.tempoClient(tempoUrl);
   // Both endpoints are proven to be the asked network before anything is read.
+  await assertSolanaCluster(rpc, solanaUrl, network);
   await assertTempoChain(client, tempoUrl, network);
   const treasuries = await treasuriesFor(rpc, network, options.treasuries, deps.warn);
   const launch = MARKER_LAUNCH[network];

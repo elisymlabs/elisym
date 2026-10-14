@@ -5,7 +5,7 @@
  * verifier binds. Balance deltas are never read: the stats PDA's rent shows as
  * one.
  *
- * A transaction is commerce when a top-level memo is exactly `elisym:commerce`,
+ * A transaction is commerce when a top-level Memo v2 is exactly `elisym:commerce`,
  * a job when one starts `elisym:v1:`, ambiguous with both, untagged with
  * neither (an elisym payment from before the marker, or a wallet that dropped
  * it). A memo inside another program's call is not the payer's and is ignored.
@@ -24,10 +24,8 @@ import { coinOf } from './usd';
 const SYSTEM_PROGRAM = '11111111111111111111111111111111';
 const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
-const MEMO_PROGRAMS = new Set([
-  'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
-  'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo',
-]);
+/** SPL Memo v2: the only memo program the widget and the MCP write with. */
+const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 /** System `Transfer`: a u32 discriminator, then the lamports. */
 const SYSTEM_TRANSFER = 2;
 /** SPL `TransferChecked`: one byte, the amount, the decimals. */
@@ -206,7 +204,7 @@ export function classifySolanaTransaction(
   const day = utcDay(time);
   const kinds = new Set(
     instructions.flatMap((instruction) =>
-      MEMO_PROGRAMS.has(instruction.program)
+      instruction.program === MEMO_PROGRAM
         ? [classifyElisymMemo(new TextDecoder().decode(instruction.data))]
         : [],
     ),

@@ -48,8 +48,9 @@ function timestamps(): Record<number, number> {
   });
 }
 
-/** A Solana node with no tagged transaction, and no fee config to read. */
+/** A Solana mainnet node with no tagged transaction, and no fee config to read. */
 const EMPTY_SOLANA = {
+  getGenesisHash: () => ({ send: async () => MAINNET_GENESIS }),
   getSignaturesForAddress: () => ({ send: async () => [] }),
 } as unknown as Rpc<SolanaRpcApi>;
 
@@ -199,12 +200,89 @@ describe('the command line', () => {
     expect(out.warned).toEqual([]);
   });
 
-  it('refuses a Solana rpc on another cluster, scanning nothing', async () => {
+  it.each([
+    ['another cluster', DEVNET_GENESIS],
+    ['no genesis hash', null],
+  ])('refuses a Solana rpc that answers %s, scanning nothing', async (_label, genesis) => {
     const { runDeps, out } = deps(chainWith());
-    runDeps.solanaRpc = () => solanaWithConfig(DEVNET_GENESIS);
+    const node = solanaWithConfig(MAINNET_GENESIS);
+    runDeps.solanaRpc = () =>
+      ({
+        ...node,
+        getGenesisHash: () => ({ send: async () => genesis }),
+      }) as unknown as Rpc<SolanaRpcApi>;
     expect(await main([], runDeps)).toBe(EXIT_ERROR);
     expect(out.printed).toEqual([]);
-    expect(out.warned.join('\n')).toMatch(/does not serve Solana mainnet/);
+    const warned = out.warned.join('\n');
+    expect(warned).toContain(
+      'the Solana rpc https://rpc.example.com does not serve Solana mainnet',
+    );
+    expect(warned).not.toContain('SECRET');
+  });
+
+  it('refuses a Solana rpc that cannot say its cluster, reading nothing more', async () => {
+    const { runDeps, out } = deps(chainWith());
+    const asked: string[] = [];
+    const node = {
+      getGenesisHash: () => ({
+        send: async () => {
+          asked.push('getGenesisHash');
+          throw new Error(`getGenesisHash failed at ${SECRET_URL}`);
+        },
+      }),
+      getSignaturesForAddress: () => ({
+        send: async () => {
+          asked.push('getSignaturesForAddress');
+          return [];
+        },
+      }),
+    };
+    runDeps.solanaRpc = () => node as unknown as Rpc<SolanaRpcApi>;
+    expect(await main([], runDeps)).toBe(EXIT_ERROR);
+    expect(out.printed).toEqual([]);
+    expect(asked).toEqual(['getGenesisHash']);
+    const warned = out.warned.join('\n');
+    expect(warned).toContain(
+      'the Solana rpc https://rpc.example.com did not answer getGenesisHash',
+    );
+    expect(warned).not.toContain('SECRET');
+  });
+
+  it('refuses a Solana rpc that names another cluster to the fee read', async () => {
+    const { runDeps, out } = deps(chainWith());
+    const answers = [MAINNET_GENESIS, DEVNET_GENESIS];
+    const node = solanaWithConfig(MAINNET_GENESIS);
+    runDeps.solanaRpc = () =>
+      ({
+        ...node,
+        getGenesisHash: () => ({ send: async () => answers.shift() ?? DEVNET_GENESIS }),
+      }) as unknown as Rpc<SolanaRpcApi>;
+    expect(await main([], runDeps)).toBe(EXIT_ERROR);
+    expect(out.printed).toEqual([]);
+    expect(out.warned.join('\n')).toContain(
+      'ELISYM_STATS_SOLANA_RPC_URL does not serve Solana mainnet',
+    );
+  });
+
+  it('refuses a Tempo rpc that cannot say its chain, scanning nothing', async () => {
+    const tempo = chainWith();
+    const { runDeps, out } = deps(tempo, {
+      ELISYM_STATS_TEMPO_RPC_URL: 'https://tempo.example.com/secret?key=SECRET-TEMPO',
+    });
+    runDeps.tempoClient = () => ({
+      request: async (call) => {
+        if (call.method === 'eth_chainId') {
+          throw new Error('eth_chainId failed');
+        }
+        return tempo.client.request(call);
+      },
+    });
+    expect(await main([], runDeps)).toBe(EXIT_ERROR);
+    expect(out.printed).toEqual([]);
+    expect(tempo.getLogsCalls).toEqual([]);
+    const warned = out.warned.join('\n');
+    expect(warned).toContain('https://tempo.example.com did not answer eth_chainId');
+    expect(warned).not.toContain('SECRET');
   });
 
   it('refuses a Tempo rpc on another chain, scanning nothing', async () => {
