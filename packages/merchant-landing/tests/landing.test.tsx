@@ -112,6 +112,7 @@ describe('the landing', () => {
     // Both payout wallets: a Tempo buyer's coin goes to the Tempo address.
     expect(AGENT_PROMPT).toContain('my Solana wallet address');
     expect(AGENT_PROMPT).toContain('my Tempo wallet address');
+    expect(AGENT_PROMPT).toContain('stablecoin payments on Tempo');
     expect(AGENT_PROMPT).toContain('add the Tempo payout as the guide says');
     expect(readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8')).toContain(
       'a Tempo wallet address if you also take stablecoins on Tempo',
