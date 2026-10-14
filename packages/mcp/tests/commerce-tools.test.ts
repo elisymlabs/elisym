@@ -1094,7 +1094,8 @@ describe('the elisym protocol fee (commerce-fee plan, sections 5 and 7)', () => 
       const run = await world();
       feeAnswers(0);
       const quote = await quoteId(run);
-      expect(quote.body).not.toMatch(/fee/i);
+      // A word, not a substring: the store key and the payout address are random and can hold "fee".
+      expect(quote.body).not.toMatch(/\bfee\b/i);
     });
 
     it('says the fee is unknown when the terms cannot be read, never "no fee"', async () => {
@@ -1124,7 +1125,8 @@ describe('the elisym protocol fee (commerce-fee plan, sections 5 and 7)', () => 
       const payer = (run.agent.solanaKeypair as { publicKey: string }).publicKey;
       commerceRuntime.feeTerms = async () => ({ feeBps: 100, treasury: payer });
       const quote = await quoteId(run);
-      expect(quote.body).not.toMatch(/fee/i);
+      // A word, not a substring: the store key and the payout address are random and can hold "fee".
+      expect(quote.body).not.toMatch(/\bfee\b/i);
       const bought = await tool('buy_product').handler(run.ctx, {
         quote_id: quote.id,
         accept_warnings: quote.warnings,
