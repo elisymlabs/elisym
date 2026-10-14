@@ -262,4 +262,21 @@ describe('readTempoReceiptLegs with several memos', () => {
       BLOCKED_MEMO,
     ]);
   });
+
+  it('ignores a guard log under a memo outside the list', async () => {
+    const chain = fakeTempoChain({
+      chainId: '0xa5bf',
+      finalized: 35_790_000,
+      timestamps: { 35_790_000: 1, [BLOCKED_BLOCK]: 1 },
+      receipts: { [BLOCKED_HASH]: BLOCKED },
+    });
+    const result = await readTempoReceiptLegs(chain.client, BLOCKED_HASH, {
+      chain: MODERATO,
+      tokens: [PATHUSD],
+      recipients: [BLOCKED_RECEIVER],
+      memo: [`0x${'ab'.repeat(32)}`, `0x${'cd'.repeat(32)}`],
+      minAmount: 1n,
+    });
+    expect(result).toEqual({ kind: 'none' });
+  });
 });
