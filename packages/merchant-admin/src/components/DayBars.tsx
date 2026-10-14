@@ -22,7 +22,7 @@ export function DayBars({ points, peak, symbol, fill, active, onActive }: Props)
     <svg
       viewBox={`0 0 ${points.length * DAY_WIDTH} ${HEIGHT}`}
       preserveAspectRatio="none"
-      className="chart-bars h-full min-h-160 w-full overflow-visible sm:min-h-200"
+      className="chart-bars absolute inset-0 size-full overflow-visible"
       role="group"
       aria-label={`${symbol} credited by order date`}
       onMouseLeave={() => onActive(undefined)}

@@ -39,7 +39,7 @@ export function OrdersDonut({ slices }: Props) {
         <div className="flex flex-wrap items-center gap-20">
           <svg
             viewBox="0 0 120 120"
-            className="size-128 shrink-0"
+            className="size-112 shrink-0"
             role="img"
             aria-label={`${total} ${total === 1 ? 'order' : 'orders'} loaded: ${slices
               .map((slice) => `${slice.count} ${slice.label}`)

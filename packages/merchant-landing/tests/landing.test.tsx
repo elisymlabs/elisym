@@ -109,6 +109,14 @@ describe('the landing', () => {
   it('hands the agent the quickstart as markdown, and the page shows the prompt it copies', async () => {
     expect(AGENT_DOCS_URL).toBe(`${DOCS.quickstart}.md`);
     expect(AGENT_PROMPT).toContain(AGENT_DOCS_URL);
+    // Both payout wallets: a Tempo buyer's coin goes to the Tempo address.
+    expect(AGENT_PROMPT).toContain('my Solana wallet address');
+    expect(AGENT_PROMPT).toContain('my Tempo wallet address');
+    expect(AGENT_PROMPT).toContain('stablecoin payments on Tempo');
+    expect(AGENT_PROMPT).toContain('add the Tempo payout as the guide says');
+    expect(readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8')).toContain(
+      'a Tempo wallet address if you also take stablecoins on Tempo',
+    );
     // The quickstart offers the same prompt, so both places hand an agent the same job.
     expect(readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8')).toContain(
       `\n${AGENT_PROMPT}\n`,

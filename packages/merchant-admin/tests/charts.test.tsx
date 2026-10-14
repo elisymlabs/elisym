@@ -5,6 +5,7 @@ import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Charts } from '../src/components/Charts';
 import { CreditedChart } from '../src/components/CreditedChart';
+import { LoadingOverview } from '../src/components/LoadingOverview';
 import { OrdersDonut } from '../src/components/OrdersDonut';
 import { Overview } from '../src/components/Overview';
 import { StatusStrip } from '../src/components/StatusStrip';
@@ -296,6 +297,9 @@ describe('the credited chart', () => {
     await mounted.rerender(<CreditedChart rows={[]} coins={[]} nowSeconds={NOW} />);
     expect(byId(mounted.container, 'credited-empty').textContent).toContain('Nothing credited yet');
     expect(mounted.container.querySelector('svg.chart-bars')).toBeNull();
+    expect(byId(mounted.container, 'credited-empty').closest('section')?.className).toMatch(
+      /(^| )flex-1( |$)/,
+    );
   });
 });
 
@@ -455,6 +459,59 @@ describe('the overview', () => {
     const charts = byId(mounted.container, 'charts');
     expect(totals.compareDocumentPosition(charts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(charts.querySelectorAll('.chart-arc')).toHaveLength(4);
+  });
+
+  it('keeps the bars at the height of their card, not of their own aspect ratio', async () => {
+    mounted = await mount(<Charts rows={ROWS} nowSeconds={NOW} />);
+    const bars = mounted.container.querySelector('svg.chart-bars');
+    const classes = (element: Element | null | undefined) =>
+      (element?.getAttribute('class') ?? '').split(/\s+/);
+    expect(classes(bars)).toEqual(expect.arrayContaining(['absolute', 'inset-0', 'size-full']));
+    expect(classes(bars?.parentElement)).toEqual(
+      expect.arrayContaining(['relative', 'flex-1', 'min-h-160']),
+    );
+    expect(classes(bars?.parentElement?.parentElement)).toContain('flex-1');
+    expect(classes(bars?.closest('section'))).toContain('flex-1');
+  });
+
+  it('lays the recent orders full width with the store links in a row under them', async () => {
+    mounted = await mount(
+      <Overview
+        snapshot={{
+          storePubkey: 'a'.repeat(64),
+          store: { name: 'Shop', relays: [], noInboxList: false, payoutMediums: [] },
+          history: { rows: ROWS, totals: { perAsset: [], unknownAsset: [] } },
+          products: [],
+          warnings: [],
+          more: false,
+        }}
+        onTab={() => undefined}
+      />,
+    );
+    const page = mounted.container.firstElementChild;
+    const recent = [...(page?.children ?? [])].find((child) =>
+      child.textContent?.startsWith('Recent orders'),
+    );
+    const links = recent?.nextElementSibling;
+    expect(recent?.parentElement).toBe(page);
+    expect(links?.className.split(' ')).toEqual(expect.arrayContaining(['grid', 'sm:grid-cols-2']));
+    expect(links?.querySelectorAll(':scope > button')).toHaveLength(2);
+    expect(links?.nextElementSibling).toBeNull();
+  });
+
+  it('loads in the same layout: recent orders full width, the store links in a row', async () => {
+    mounted = await mount(<LoadingOverview />);
+    const page = mounted.container.firstElementChild;
+    const links = page?.lastElementChild;
+    expect(links?.className.split(' ')).toEqual(expect.arrayContaining(['grid', 'sm:grid-cols-2']));
+    expect(links?.children).toHaveLength(2);
+    expect(links?.previousElementSibling?.className).toContain('bg-surface');
+    const charts = page?.querySelector('[class*="1.6fr"]');
+    expect(charts?.children).toHaveLength(3);
+    expect(charts?.firstElementChild?.className.split(' ')).toEqual(
+      expect.arrayContaining(['h-380', 'lg:row-span-2', 'lg:h-auto']),
+    );
+    expect(charts?.nextElementSibling).toBe(links?.previousElementSibling);
   });
 });
 
