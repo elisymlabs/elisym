@@ -344,12 +344,14 @@ hidden, and one line counts them.
 | State            | Meaning                                                               |
 | ---------------- | --------------------------------------------------------------------- |
 | ordered          | an order, nothing more yet                                            |
-| expired          | ordered over 3 days ago and never paid: the node no longer takes it   |
+| expired          | no payment credited within 3 days: the node no longer watches it      |
 | payment reported | the buyer reported a payment the node has not confirmed (not counted) |
 | completed        | the node credited a payment and sent its completed status (counted)   |
 | released by hand | answered with `complete` without a payment (not counted)              |
 | refunded         | answered with `refund` (the refund is shown, not counted)             |
 
+- An expired order can still hide a payment the node found but could not credit: the node logs
+  a `WARNING` when it closes such an order, and `orders` lists the payment to answer by hand.
 - The key stays in the tab's memory: it is never stored and never sent anywhere (it only
   answers relays that ask the store to authenticate). Close the tab when you are done. Whoever
   has the store key can redirect payments from new buyers.

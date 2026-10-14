@@ -51,6 +51,7 @@ const CHART_COLORS = [
   'chart-3',
   'chart-4',
   'chart-idle',
+  'chart-expired',
   'warn',
   'green',
   'blue',

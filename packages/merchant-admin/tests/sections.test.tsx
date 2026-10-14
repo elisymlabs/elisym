@@ -165,7 +165,7 @@ describe('an order row', () => {
 
   it('shows an expired order as not paid in time, with nothing credited', async () => {
     const texts = await cells(row({ state: 'expired' }));
-    expect(texts[COLUMN.state]).toBe('Expirednot paid within 3 days');
+    expect(texts[COLUMN.state]).toBe('Expiredno payment credited within 3 days');
     expect(texts[COLUMN.credited]).toBe('');
   });
 

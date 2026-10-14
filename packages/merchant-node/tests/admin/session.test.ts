@@ -307,6 +307,27 @@ describe('AdminSession', () => {
     expect(snapshot.store.relays).toEqual([INBOX]);
   });
 
+  it("reads an order against the session's own clock: ordered now, expired past the node's watch", async () => {
+    const store = key();
+    const owner = key();
+    const stateAt = async (clock: () => number) => {
+      const { wraps, unwrap } = wrapsOf(orderMessages(store, [D]));
+      const admin = session(
+        {
+          client: relayClient([...storeEvents(store, owner), listing(store, D)]),
+          pool: fakePool(wraps),
+          now: clock,
+          unwrap,
+        },
+        store,
+        false,
+      );
+      return snapshotOf(await admin.open()).history.rows.map((row) => row.state);
+    };
+    expect(await stateAt(now)).toEqual(['ordered']);
+    expect(await stateAt(() => T0 + 10 * 24 * 60 * 60)).toEqual(['expired']);
+  });
+
   it('answers busy while a call runs, including open', async () => {
     const store = key();
     const pool = fakePool([], { hold: true });

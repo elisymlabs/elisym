@@ -79,7 +79,7 @@ export function feeText(credit: Credit): string | undefined {
 export function rowNotes(row: OrderRow): string[] {
   return [
     ...(row.state === 'payment_reported' ? ['not confirmed by your node'] : []),
-    ...(row.state === 'expired' ? ['not paid within 3 days'] : []),
+    ...(row.state === 'expired' ? ['no payment credited within 3 days'] : []),
     ...(row.orderNotLoaded ? ['order not loaded'] : []),
     ...(row.unlistedMedium ? ['receipt in a medium the store no longer lists'] : []),
   ];

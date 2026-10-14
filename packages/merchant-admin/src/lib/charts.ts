@@ -42,7 +42,7 @@ export const STATE_FILLS: Readonly<Record<OrderState, string>> = {
   delivered: 'fill-green',
   payment_reported: 'fill-warn',
   ordered: 'fill-chart-idle',
-  expired: 'fill-chart-3',
+  expired: 'fill-chart-expired',
   refunded: 'fill-text-3',
   released: 'fill-blue',
 };
@@ -50,7 +50,7 @@ export const STATE_DOTS: Readonly<Record<OrderState, string>> = {
   delivered: 'bg-green',
   payment_reported: 'bg-warn',
   ordered: 'bg-chart-idle',
-  expired: 'bg-chart-3',
+  expired: 'bg-chart-expired',
   refunded: 'bg-text-3',
   released: 'bg-blue',
 };

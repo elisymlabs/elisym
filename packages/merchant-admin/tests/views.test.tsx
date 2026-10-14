@@ -14,7 +14,7 @@ import { statusParts } from '../src/lib/charts';
 import type { OrderRow, OrderState, Snapshot } from '../src/lib/core';
 import { countText } from '../src/lib/count';
 import { ordersCsv } from '../src/lib/csv';
-import { filterRows, stateCounts } from '../src/lib/orders';
+import { STATE_ORDER, filterRows, stateCounts } from '../src/lib/orders';
 import { type Mounted, buttonNamed, byId, mount } from './mount';
 
 function row(id: string, state: OrderState, overrides: Partial<OrderRow> = {}): OrderRow {
@@ -111,6 +111,7 @@ async function type(input: HTMLInputElement, value: string) {
 
 describe('order filters', () => {
   it('counts the rows in each state', () => {
+    expect(STATE_ORDER).toContain('expired');
     expect(stateCounts([...ROWS, row('omega', 'expired')])).toEqual({
       ordered: 1,
       expired: 1,
@@ -190,11 +191,11 @@ describe('the order details', () => {
     expect(text.split('not confirmed by your node')).toHaveLength(2);
   });
 
-  it('names an expired order as not paid in time once, and says nothing is to be done', async () => {
+  it('names an expired order as uncredited once, and points to the orders command for a payment left over', async () => {
     mounted = await mount(<OrderDetails row={row('omega', 'expired')} />);
     const text = mounted.container.textContent ?? '';
-    expect(text.split('not paid within 3 days')).toHaveLength(2);
-    expect(text).toContain('nothing to do');
+    expect(text.split('no payment credited within 3 days')).toHaveLength(2);
+    expect(text).toContain('the orders command lists any payment left to answer');
   });
 });
 

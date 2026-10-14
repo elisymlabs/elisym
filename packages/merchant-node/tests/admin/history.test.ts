@@ -525,5 +525,20 @@ describe('an order nobody paid', () => {
         ),
       ]),
     ).toBe('released');
+    expect(
+      stateAt(late, (store, buyer) => [
+        message(
+          {
+            type: 'status',
+            buyerPubkey: buyer.pubkey,
+            orderId: ORDER_ID,
+            status: 'cancelled',
+            refund: { tx: TX2, amount: '1000000', caip19: USDC_DEVNET_CAIP19 },
+          },
+          store.pubkey,
+          buyer.pubkey,
+        ),
+      ]),
+    ).toBe('refunded');
   });
 });
