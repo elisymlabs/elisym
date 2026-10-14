@@ -25,6 +25,34 @@ export const SERIES_STROKES = [
 ];
 export const SERIES_DOTS = ['bg-chart-1', 'bg-chart-2', 'bg-chart-3', 'bg-chart-4'];
 
+/** The ring's other slices: a credit in an unknown asset, and no credit yet. */
+export const IDLE_STROKE = 'stroke-chart-idle';
+export const IDLE_DOT = 'bg-chart-idle';
+export const OTHER_STROKES: Readonly<Record<string, string>> = {
+  unknown: 'stroke-warn',
+  unpaid: IDLE_STROKE,
+};
+export const OTHER_DOTS: Readonly<Record<string, string>> = {
+  unknown: 'bg-warn',
+  unpaid: IDLE_DOT,
+};
+
+/** Each order state's color in the status bar and its legend. */
+export const STATE_FILLS: Readonly<Record<OrderState, string>> = {
+  delivered: 'fill-green',
+  payment_reported: 'fill-warn',
+  ordered: 'fill-chart-idle',
+  refunded: 'fill-text-3',
+  released: 'fill-blue',
+};
+export const STATE_DOTS: Readonly<Record<OrderState, string>> = {
+  delivered: 'bg-green',
+  payment_reported: 'bg-warn',
+  ordered: 'bg-chart-idle',
+  refunded: 'bg-text-3',
+  released: 'bg-blue',
+};
+
 /** A coin the node credited, on its network. */
 export interface CoinSeries {
   /** The CAIP-19 id. */

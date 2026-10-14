@@ -2,6 +2,17 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  IDLE_DOT,
+  IDLE_STROKE,
+  OTHER_DOTS,
+  OTHER_STROKES,
+  SERIES_DOTS,
+  SERIES_FILLS,
+  SERIES_STROKES,
+  STATE_DOTS,
+  STATE_FILLS,
+} from '../src/lib/charts';
 
 const CSS = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
 
@@ -181,6 +192,24 @@ describe('the text colors', () => {
     expect(used.size).toBeGreaterThan(5);
     for (const name of used) {
       expect(CHART_COLORS, name).toContain(name);
+    }
+  });
+
+  it('marks the charts only with checked chart colors, never a surface or a line', () => {
+    const marks = [
+      ...SERIES_FILLS,
+      ...SERIES_STROKES,
+      ...SERIES_DOTS,
+      IDLE_STROKE,
+      IDLE_DOT,
+      ...Object.values(OTHER_STROKES),
+      ...Object.values(OTHER_DOTS),
+      ...Object.values(STATE_FILLS),
+      ...Object.values(STATE_DOTS),
+    ];
+    for (const mark of marks) {
+      const name = mark.replace(/^(?:fill|stroke|bg)-/, '');
+      expect(CHART_COLORS, mark).toContain(name);
     }
   });
 });

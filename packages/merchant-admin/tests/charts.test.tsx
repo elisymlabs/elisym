@@ -11,6 +11,10 @@ import { StatusStrip } from '../src/components/StatusStrip';
 import { Totals } from '../src/components/Totals';
 import {
   LONG_SPAN_DAYS,
+  OTHER_DOTS,
+  OTHER_STROKES,
+  STATE_DOTS,
+  STATE_FILLS,
   SHORT_SPAN_DAYS,
   creditedByDay,
   creditedCoins,
@@ -477,6 +481,40 @@ describe('the totals', () => {
     const text = byId(mounted.container, 'totals').textContent ?? '';
     for (const gone of ['Orders loaded', 'Completed', 'Payment reported', 'nothing credited yet']) {
       expect(text).not.toContain(gone);
+    }
+  });
+});
+
+describe('the chart marks take their colors from the maps', () => {
+  it('colors each status segment and legend dot by its state', async () => {
+    const parts = statusParts(stateCounts(ROWS));
+    mounted = await mount(<StatusStrip parts={parts} />);
+    const segments = [...mounted.container.querySelectorAll('.chart-segment')];
+    const dots = [
+      ...byId(mounted.container, 'status-legend').querySelectorAll('li > span:first-child'),
+    ];
+    parts.forEach((part, index) => {
+      expect(segments[index]?.getAttribute('class')).toBe(
+        `chart-segment ${STATE_FILLS[part.state]}`,
+      );
+      expect(dots[index]?.getAttribute('class')).toBe(
+        `size-8 rounded-full ${STATE_DOTS[part.state]}`,
+      );
+    });
+  });
+
+  it('colors the unknown and unpaid slices and their dots from the maps', async () => {
+    mounted = await mount(<OrdersDonut slices={orderSlices(ROWS, creditedCoins(ROWS))} />);
+    const arcs = [...mounted.container.querySelectorAll('.chart-arc')];
+    const dots = [
+      ...byId(mounted.container, 'donut-legend').querySelectorAll('li > span:first-child'),
+    ];
+    for (const [index, key] of [
+      [2, 'unknown'],
+      [3, 'unpaid'],
+    ] as const) {
+      expect(arcs[index]?.getAttribute('class')).toContain(OTHER_STROKES[key] ?? 'missing');
+      expect(dots[index]?.getAttribute('class')).toContain(OTHER_DOTS[key] ?? 'missing');
     }
   });
 });

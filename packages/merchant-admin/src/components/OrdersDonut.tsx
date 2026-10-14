@@ -1,4 +1,14 @@
-import { type OrderSlice, SERIES_DOTS, SERIES_STROKES, seriesClass, shareOf } from '../lib/charts';
+import {
+  type OrderSlice,
+  IDLE_DOT,
+  IDLE_STROKE,
+  OTHER_DOTS,
+  OTHER_STROKES,
+  SERIES_DOTS,
+  SERIES_STROKES,
+  seriesClass,
+  shareOf,
+} from '../lib/charts';
 import { ChartCard } from './ChartCard';
 
 interface Props {
@@ -9,16 +19,6 @@ const CENTER = 60;
 const RADIUS = 46;
 /** Room between two arcs, in hundredths of the ring. */
 const GAP = 1.2;
-
-const OTHER_STROKES: Readonly<Record<string, string>> = {
-  unknown: 'stroke-warn',
-  unpaid: 'stroke-chart-idle',
-};
-
-const OTHER_DOTS: Readonly<Record<string, string>> = {
-  unknown: 'bg-warn',
-  unpaid: 'bg-chart-idle',
-};
 
 /** The loaded orders by the coin and network they were paid in, drawn in on first show. */
 export function OrdersDonut({ slices }: Props) {
@@ -67,7 +67,7 @@ export function OrdersDonut({ slices }: Props) {
                   strokeDashoffset={-arc.start}
                   className={`chart-arc fill-none ${
                     arc.slice.series === undefined
-                      ? (OTHER_STROKES[arc.slice.key] ?? 'stroke-chart-idle')
+                      ? (OTHER_STROKES[arc.slice.key] ?? IDLE_STROKE)
                       : seriesClass(SERIES_STROKES, arc.slice.series)
                   }`}
                 />
@@ -92,7 +92,7 @@ export function OrdersDonut({ slices }: Props) {
                   aria-hidden="true"
                   className={`size-10 shrink-0 rounded-full ${
                     slice.series === undefined
-                      ? (OTHER_DOTS[slice.key] ?? 'bg-chart-idle')
+                      ? (OTHER_DOTS[slice.key] ?? IDLE_DOT)
                       : seriesClass(SERIES_DOTS, slice.series)
                   }`}
                 />

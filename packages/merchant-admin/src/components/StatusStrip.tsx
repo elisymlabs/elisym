@@ -1,4 +1,4 @@
-import { shareOf } from '../lib/charts';
+import { STATE_DOTS, STATE_FILLS, shareOf } from '../lib/charts';
 import type { OrderState } from '../lib/core';
 import { STATE_SHORT } from '../lib/orders';
 import { ChartCard } from './ChartCard';
@@ -7,22 +7,6 @@ import { Icon } from './Icon';
 interface Props {
   parts: readonly { state: OrderState; count: number }[];
 }
-
-const FILLS: Readonly<Record<OrderState, string>> = {
-  delivered: 'fill-green',
-  payment_reported: 'fill-warn',
-  ordered: 'fill-chart-idle',
-  refunded: 'fill-text-3',
-  released: 'fill-blue',
-};
-
-const DOTS: Readonly<Record<OrderState, string>> = {
-  delivered: 'bg-green',
-  payment_reported: 'bg-warn',
-  ordered: 'bg-chart-idle',
-  refunded: 'bg-text-3',
-  released: 'bg-blue',
-};
 
 /** Where the loaded orders stand, as one bar split by state. */
 export function StatusStrip({ parts }: Props) {
@@ -66,14 +50,17 @@ export function StatusStrip({ parts }: Props) {
                 y={0}
                 width={segment.width}
                 height={10}
-                className={`chart-segment ${FILLS[segment.part.state]}`}
+                className={`chart-segment ${STATE_FILLS[segment.part.state]}`}
               />
             ))}
           </svg>
           <ul id="status-legend" className="text-13 flex flex-wrap gap-x-16 gap-y-6">
             {parts.map((part) => (
               <li key={part.state} className="flex items-center gap-6">
-                <span aria-hidden="true" className={`size-8 rounded-full ${DOTS[part.state]}`} />
+                <span
+                  aria-hidden="true"
+                  className={`size-8 rounded-full ${STATE_DOTS[part.state]}`}
+                />
                 <span className="text-text-2">{STATE_SHORT[part.state]}</span>
                 <span className="font-medium tabular-nums">{part.count}</span>
               </li>
