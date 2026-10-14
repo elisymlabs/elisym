@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js-light';
-import type { Credit, OrderRow, OrderState } from './core';
+import { type Credit, type OrderRow, type OrderState, netOf } from './core';
 import { STATE_ORDER } from './orders';
 
 /** Plain notation and room for sums of many 39-digit subunit counts, as the totals use. */
@@ -32,7 +32,7 @@ export interface CoinSeries {
   symbol: string;
   /** The chain's slug: `solana`, `tempo`. */
   network: string;
-  /** Whole units credited over all loaded orders. */
+  /** Whole units credited over all loaded orders, net of the protocol fee as the totals. */
   total: string;
   /** Payments credited in it. */
   credits: number;
@@ -42,7 +42,7 @@ export interface CoinSeries {
 export interface DayPoint {
   /** `YYYY-MM-DD`, UTC. */
   day: string;
-  /** Whole units credited that day. */
+  /** Whole units credited that day, net of the protocol fee. */
   amount: string;
   /** Orders with a credit in this coin that day. */
   orders: number;
@@ -74,8 +74,11 @@ function uniqueCredits(rows: readonly OrderRow[]): { row: OrderRow; credit: Cred
   return found;
 }
 
-function wholeOf(subunits: string, coin: Coin): Decimal {
-  return new ChartDecimal(subunits).div(new ChartDecimal(10).pow(coin.asset.decimals));
+/** What a credit brought the merchant, net of the protocol fee exactly as the totals count it, in whole units. */
+function netWholeOf(credit: Credit, coin: Coin): Decimal {
+  return new ChartDecimal(netOf(credit).toString()).div(
+    new ChartDecimal(10).pow(coin.asset.decimals),
+  );
 }
 
 /** The UTC day of a date in seconds, as `YYYY-MM-DD`. */
@@ -98,7 +101,7 @@ export function creditedCoins(rows: readonly OrderRow[]): CoinSeries[] {
       continue;
     }
     const entry = byId.get(coin.id);
-    const amount = wholeOf(credit.amount, coin);
+    const amount = netWholeOf(credit, coin);
     if (entry === undefined) {
       byId.set(coin.id, { coin, sum: amount, credits: 1 });
     } else {
@@ -157,7 +160,7 @@ export function creditedByDay(
     if (coin === undefined || coin.id !== coinId || sum === undefined) {
       continue;
     }
-    sums.set(day, sum.plus(wholeOf(credit.amount, coin)));
+    sums.set(day, sum.plus(netWholeOf(credit, coin)));
     orders.get(day)?.add(row.key);
   }
   return days.map((day) => ({

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseCaip19 } from '@elisym/commerce';
+import { totalsOf } from '@merchant-admin-core/history';
 import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Charts } from '../src/components/Charts';
@@ -50,8 +51,9 @@ function credit(
   amount: string,
   asset: typeof USDC | null = USDC,
   medium = 'solana',
+  fee = '0',
 ): Credit {
-  return { tx, amount, medium, ...(asset === null || asset === undefined ? {} : { asset }) };
+  return { tx, amount, fee, medium, ...(asset === null || asset === undefined ? {} : { asset }) };
 }
 
 function row(
@@ -158,6 +160,38 @@ describe('the chart data', () => {
       { state: 'delivered', count: 6 },
       { state: 'ordered', count: 1 },
     ]);
+  });
+});
+
+describe('the chart data, net of the protocol fee', () => {
+  it('charts what reached the wallet: the amount less its fee, a fee too large not subtracted', () => {
+    const rows = [
+      row('n1', NOW, [credit('f1', '10000000', USDC, 'solana', '100000')]),
+      row('n2', NOW, [credit('f2', '5000', USDC, 'solana', '9000')]),
+      // A fee equal to the amount leaves nothing.
+      row('n3', NOW, [credit('f3', '7000', USDC, 'solana', '7000')]),
+    ];
+    const coinId = USDC?.id ?? '';
+    expect(creditedByDay(rows, coinId, NOW, SHORT_SPAN_DAYS).at(-1)?.amount).toBe('9.905');
+    expect(creditedCoins(rows)[0]?.total).toBe('9.905');
+  });
+
+  it('sums the days of each coin to the totals card of the same rows', () => {
+    const rows = [
+      row('p1', NOW - 20 * DAY, [credit('g1', '19000000', USDC, 'solana', '190000')]),
+      row('p2', NOW - 3 * DAY, [credit('g2', '4500000', USDC, 'solana', '45000')]),
+      row('p3', NOW - DAY, [credit('g3', '12000000', USDC_E, 'tempo', '120000')]),
+      row('p4', NOW, [credit('g4', '9000000', PATH_USD, 'tempo', '90000')]),
+      row('p5', NOW, [credit('g5', '1', USDC, 'solana', '0')]),
+    ];
+    const span = spanDays(rows, NOW);
+    expect(span).toBe(LONG_SPAN_DAYS);
+    const totals = totalsOf(rows);
+    for (const coin of creditedCoins(rows)) {
+      const card = totals.perAsset.find((total) => total.asset.id === coin.id);
+      expect(sumOf(creditedByDay(rows, coin.id, NOW, span)), coin.symbol).toBe(card?.amount);
+      expect(coin.total).toBe(card?.amount);
+    }
   });
 });
 

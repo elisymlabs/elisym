@@ -325,7 +325,7 @@ export function wholeUnits(subunits: string, asset: Caip19): string {
  * What one credit put in the merchant's wallet: the amount paid less the
  * protocol fee (a fee the amount cannot carry is not subtracted).
  */
-function netOf(credit: Credit): Decimal {
+export function netOf(credit: Credit): Decimal {
   const amount = new AmountDecimal(credit.amount);
   const fee = new AmountDecimal(credit.fee);
   return fee.gt(amount) ? amount : amount.minus(fee);
