@@ -19,7 +19,9 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 const DIST_ENTRY = join(__dirname, '..', 'dist', 'index.js');
-const STARTUP_TIMEOUT_MS = 5_000;
+// Each test spawns a fresh server: a cold start on a busy CI runner has taken over 5 s.
+const REQUEST_TIMEOUT_MS = 30_000;
+const TEST_TIMEOUT_MS = 60_000;
 
 interface JsonRpcResponse {
   jsonrpc: '2.0';
@@ -80,7 +82,7 @@ class McpHarness {
     return new Promise<JsonRpcResponse>((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error(`MCP request ${method} timed out`)),
-        STARTUP_TIMEOUT_MS,
+        REQUEST_TIMEOUT_MS,
       );
       this.pending.set(id, (r) => {
         clearTimeout(timer);
@@ -128,157 +130,162 @@ class McpHarness {
   }
 }
 
-describe('stdio MCP integration', () => {
-  let tmpHome: string;
-  let harness: McpHarness | null = null;
+describe(
+  'stdio MCP integration',
+  { timeout: TEST_TIMEOUT_MS },
+  () => {
+    let tmpHome: string;
+    let harness: McpHarness | null = null;
 
-  beforeEach(async () => {
-    tmpHome = await mkdtemp(join(tmpdir(), 'elisym-mcp-stdio-'));
-  });
-
-  afterEach(async () => {
-    if (harness) {
-      await harness.close();
-      harness = null;
-    }
-    await rm(tmpHome, { recursive: true, force: true });
-  });
-
-  it('initializes and exposes exactly 38 tools', async () => {
-    harness = new McpHarness(tmpHome);
-    await harness.initialize();
-
-    const response = await harness.send('tools/list', {});
-    expect(response.error).toBeUndefined();
-    const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(38);
-    const names = result.tools.map((t) => t.name).sort();
-    expect(names).toContain('sign_onchain_call');
-    expect(names).toContain('buy_product');
-    expect(names).toContain('get_order');
-    expect(names).toContain('approve_delegation');
-    expect(names).toContain('revoke_delegation');
-    expect(names).toContain('submit_delegated_job');
-    expect(names).toContain('submit_delegated_job_from_file');
-    expect(names).toContain('verify_agent_identities');
-    expect(names).toContain('fetch_job_file');
-    expect(names).toContain('withdraw');
-    expect(names).toContain('get_identity');
-    expect(names).toContain('get_delegation');
-    expect(names).toContain('estimate_payment_cost');
-    expect(names).toContain('submit_feedback');
-    expect(names).toContain('add_contact');
-    expect(names).toContain('remove_contact');
-    expect(names).toContain('list_contacts');
-    expect(names).toContain('submit_and_pay_job_from_file');
-    expect(names).toContain('submit_diff_review');
-    expect(names).toContain('get_agent_policies');
-    expect(names).not.toContain('ping_agent');
-    // Every tool must have a JSON Schema.
-    for (const tool of result.tools) {
-      expect(tool.inputSchema).toBeTypeOf('object');
-    }
-  });
-
-  it('get_identity returns the ephemeral agent on a fresh install', async () => {
-    harness = new McpHarness(tmpHome);
-    await harness.initialize();
-
-    const response = await harness.send('tools/call', {
-      name: 'get_identity',
-      arguments: {},
+    beforeEach(async () => {
+      tmpHome = await mkdtemp(join(tmpdir(), 'elisym-mcp-stdio-'));
     });
-    expect(response.error).toBeUndefined();
-    const result = response.result as {
-      content: Array<{ type: string; text: string }>;
-      isError?: boolean;
-    };
-    expect(result.isError).toBeFalsy();
-    const text = result.content[0]?.text ?? '';
-    const parsed = JSON.parse(text) as { npub: string; name: string };
-    expect(parsed.npub).toMatch(/^npub1[0-9a-z]+$/);
-    expect(parsed.name).toBe('mcp-agent');
-  });
 
-  it('malformed tool arguments return isError:true with a Zod message, not a crash', async () => {
-    harness = new McpHarness(tmpHome);
-    await harness.initialize();
-
-    const response = await harness.send('tools/call', {
-      name: 'create_job',
-      arguments: { input: 42 /* wrong type: should be string */ },
-    });
-    expect(response.error).toBeUndefined();
-    const result = response.result as {
-      content: Array<{ type: string; text: string }>;
-      isError?: boolean;
-    };
-    expect(result.isError).toBe(true);
-    const text = result.content[0]?.text ?? '';
-    // should be a short, readable message, not a raw JSON-stringified issue array.
-    expect(text).toMatch(/Invalid arguments.*input/i);
-    expect(text.length).toBeLessThan(500);
-  });
-
-  it('withdraw accepts token "lsm" through schema validation (blocked by a handler check, not Zod)', async () => {
-    harness = new McpHarness(tmpHome);
-    await harness.initialize();
-
-    const response = await harness.send('tools/call', {
-      name: 'withdraw',
-      arguments: {
-        address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
-        amount: '1',
-        token: 'lsm',
-      },
-    });
-    expect(response.error).toBeUndefined();
-    const result = response.result as {
-      content: Array<{ type: string; text: string }>;
-      isError?: boolean;
-    };
-    expect(result.isError).toBe(true);
-    const text = result.content[0]?.text ?? '';
-    // 'lsm' must clear the enum: the refusal comes from a handler-domain check
-    // (no Solana key on the ephemeral agent, the withdrawal gate, or the
-    // devnet mainnet-only refusal), never from Zod argument validation.
-    expect(text).not.toMatch(/Invalid arguments/i);
-    expect(text).toMatch(
-      /Solana payments not configured|Withdrawals are disabled|LSM is mainnet-only/,
-    );
-  });
-
-  it('unknown tool name returns isError:true', async () => {
-    harness = new McpHarness(tmpHome);
-    await harness.initialize();
-    const response = await harness.send('tools/call', {
-      name: 'tool_that_does_not_exist',
-      arguments: {},
-    });
-    const result = response.result as { content: Array<{ text: string }>; isError?: boolean };
-    expect(result.isError).toBe(true);
-    expect(result.content[0]?.text).toMatch(/Unknown tool/);
-  });
-
-  it('stdout contains only JSON-RPC frames (no stray console.log)', async () => {
-    harness = new McpHarness(tmpHome);
-    await harness.initialize();
-    await harness.send('tools/list', {});
-    // Every non-empty line on stdout should be valid JSON-RPC.
-    for (const line of harness.stdoutText.split('\n')) {
-      if (!line.trim()) {
-        continue;
+    afterEach(async () => {
+      if (harness) {
+        await harness.close();
+        harness = null;
       }
-      const parsed = JSON.parse(line) as { jsonrpc?: string };
-      expect(parsed.jsonrpc).toBe('2.0');
-    }
-  });
+      await rm(tmpHome, { recursive: true, force: true });
+    });
 
-  it('stderr contains the startup diagnostic (Created ephemeral agent)', async () => {
-    harness = new McpHarness(tmpHome);
-    await harness.initialize();
-    // Give stderr a moment to drain.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(harness.stderrText).toMatch(/ephemeral|agent/i);
-  });
-}, 30_000);
+    it('initializes and exposes exactly 38 tools', async () => {
+      harness = new McpHarness(tmpHome);
+      await harness.initialize();
+
+      const response = await harness.send('tools/list', {});
+      expect(response.error).toBeUndefined();
+      const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
+      expect(result.tools).toHaveLength(38);
+      const names = result.tools.map((t) => t.name).sort();
+      expect(names).toContain('sign_onchain_call');
+      expect(names).toContain('buy_product');
+      expect(names).toContain('get_order');
+      expect(names).toContain('approve_delegation');
+      expect(names).toContain('revoke_delegation');
+      expect(names).toContain('submit_delegated_job');
+      expect(names).toContain('submit_delegated_job_from_file');
+      expect(names).toContain('verify_agent_identities');
+      expect(names).toContain('fetch_job_file');
+      expect(names).toContain('withdraw');
+      expect(names).toContain('get_identity');
+      expect(names).toContain('get_delegation');
+      expect(names).toContain('estimate_payment_cost');
+      expect(names).toContain('submit_feedback');
+      expect(names).toContain('add_contact');
+      expect(names).toContain('remove_contact');
+      expect(names).toContain('list_contacts');
+      expect(names).toContain('submit_and_pay_job_from_file');
+      expect(names).toContain('submit_diff_review');
+      expect(names).toContain('get_agent_policies');
+      expect(names).not.toContain('ping_agent');
+      // Every tool must have a JSON Schema.
+      for (const tool of result.tools) {
+        expect(tool.inputSchema).toBeTypeOf('object');
+      }
+    });
+
+    it('get_identity returns the ephemeral agent on a fresh install', async () => {
+      harness = new McpHarness(tmpHome);
+      await harness.initialize();
+
+      const response = await harness.send('tools/call', {
+        name: 'get_identity',
+        arguments: {},
+      });
+      expect(response.error).toBeUndefined();
+      const result = response.result as {
+        content: Array<{ type: string; text: string }>;
+        isError?: boolean;
+      };
+      expect(result.isError).toBeFalsy();
+      const text = result.content[0]?.text ?? '';
+      const parsed = JSON.parse(text) as { npub: string; name: string };
+      expect(parsed.npub).toMatch(/^npub1[0-9a-z]+$/);
+      expect(parsed.name).toBe('mcp-agent');
+    });
+
+    it('malformed tool arguments return isError:true with a Zod message, not a crash', async () => {
+      harness = new McpHarness(tmpHome);
+      await harness.initialize();
+
+      const response = await harness.send('tools/call', {
+        name: 'create_job',
+        arguments: { input: 42 /* wrong type: should be string */ },
+      });
+      expect(response.error).toBeUndefined();
+      const result = response.result as {
+        content: Array<{ type: string; text: string }>;
+        isError?: boolean;
+      };
+      expect(result.isError).toBe(true);
+      const text = result.content[0]?.text ?? '';
+      // should be a short, readable message, not a raw JSON-stringified issue array.
+      expect(text).toMatch(/Invalid arguments.*input/i);
+      expect(text.length).toBeLessThan(500);
+    });
+
+    it('withdraw accepts token "lsm" through schema validation (blocked by a handler check, not Zod)', async () => {
+      harness = new McpHarness(tmpHome);
+      await harness.initialize();
+
+      const response = await harness.send('tools/call', {
+        name: 'withdraw',
+        arguments: {
+          address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+          amount: '1',
+          token: 'lsm',
+        },
+      });
+      expect(response.error).toBeUndefined();
+      const result = response.result as {
+        content: Array<{ type: string; text: string }>;
+        isError?: boolean;
+      };
+      expect(result.isError).toBe(true);
+      const text = result.content[0]?.text ?? '';
+      // 'lsm' must clear the enum: the refusal comes from a handler-domain check
+      // (no Solana key on the ephemeral agent, the withdrawal gate, or the
+      // devnet mainnet-only refusal), never from Zod argument validation.
+      expect(text).not.toMatch(/Invalid arguments/i);
+      expect(text).toMatch(
+        /Solana payments not configured|Withdrawals are disabled|LSM is mainnet-only/,
+      );
+    });
+
+    it('unknown tool name returns isError:true', async () => {
+      harness = new McpHarness(tmpHome);
+      await harness.initialize();
+      const response = await harness.send('tools/call', {
+        name: 'tool_that_does_not_exist',
+        arguments: {},
+      });
+      const result = response.result as { content: Array<{ text: string }>; isError?: boolean };
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toMatch(/Unknown tool/);
+    });
+
+    it('stdout contains only JSON-RPC frames (no stray console.log)', async () => {
+      harness = new McpHarness(tmpHome);
+      await harness.initialize();
+      await harness.send('tools/list', {});
+      // Every non-empty line on stdout should be valid JSON-RPC.
+      for (const line of harness.stdoutText.split('\n')) {
+        if (!line.trim()) {
+          continue;
+        }
+        const parsed = JSON.parse(line) as { jsonrpc?: string };
+        expect(parsed.jsonrpc).toBe('2.0');
+      }
+    });
+
+    it('stderr contains the startup diagnostic (Created ephemeral agent)', async () => {
+      harness = new McpHarness(tmpHome);
+      await harness.initialize();
+      // Give stderr a moment to drain.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(harness.stderrText).toMatch(/ephemeral|agent/i);
+    });
+  },
+  30_000,
+);
