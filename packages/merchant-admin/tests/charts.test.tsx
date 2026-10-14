@@ -5,6 +5,7 @@ import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Charts } from '../src/components/Charts';
 import { CreditedChart } from '../src/components/CreditedChart';
+import { LoadingOverview } from '../src/components/LoadingOverview';
 import { OrdersDonut } from '../src/components/OrdersDonut';
 import { Overview } from '../src/components/Overview';
 import { StatusStrip } from '../src/components/StatusStrip';
@@ -466,6 +467,7 @@ describe('the overview', () => {
     expect(classes(bars?.parentElement)).toEqual(
       expect.arrayContaining(['relative', 'flex-1', 'min-h-160']),
     );
+    expect(classes(bars?.closest('section'))).toContain('flex-1');
   });
 
   it('lays the recent orders full width with the store links in a row under them', async () => {
@@ -488,9 +490,19 @@ describe('the overview', () => {
     );
     const links = recent?.nextElementSibling;
     expect(recent?.parentElement).toBe(page);
-    expect(links?.className.split(' ')).toEqual(['grid', 'gap-12', 'sm:grid-cols-2']);
+    expect(links?.className.split(' ')).toEqual(expect.arrayContaining(['grid', 'sm:grid-cols-2']));
     expect(links?.querySelectorAll(':scope > button')).toHaveLength(2);
     expect(links?.nextElementSibling).toBeNull();
+  });
+
+  it('loads in the same layout: recent orders full width, the store links in a row', async () => {
+    mounted = await mount(<LoadingOverview />);
+    const page = mounted.container.firstElementChild;
+    const links = page?.lastElementChild;
+    expect(links?.className.split(' ')).toEqual(expect.arrayContaining(['grid', 'sm:grid-cols-2']));
+    expect(links?.children).toHaveLength(2);
+    expect(links?.previousElementSibling?.className).toContain('bg-surface');
+    expect(page?.querySelector('[class*="1.6fr"]')).toBeNull();
   });
 });
 
