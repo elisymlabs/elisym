@@ -77,7 +77,7 @@ Open `$ELISYM_MERCHANT_HOME/config.json`, which holds what the whole store share
 }
 ```
 
-With both wallets, keep the Solana config above and add the Tempo payout as [Tempo payouts](#tempo-payouts) shows, before you run `setup`.
+With both wallets, keep the Solana config above and add the Tempo payout with the `node -e` script in [Tempo payouts](#tempo-payouts) (only the script: you run `setup` in the next step).
 
 Each product is a directory under `$ELISYM_MERCHANT_HOME/products`, named with the product's id: `products/my-product/PRODUCT.md`. Open it and fill in:
 
@@ -146,7 +146,7 @@ No page yet? The repository has a ready one: [`examples/demo-store`](https://git
 
 ## 5. Buy it
 
-Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...) holding the price in USDC and a little SOL for the fee.
+Serve the page over http(s), for example with `npx serve .` on localhost. A page opened from disk (`file://`) has no origin, and the checkout refuses it. Open it in a browser with a Solana wallet that supports Wallet Standard (Phantom, Solflare, ...) holding the price in USDC and a little SOL for the fee. To pay on Tempo (the only choice on a Tempo-only store), use MetaMask holding a little more USDC.e on Tempo than the price.
 
 Click Buy: the checkout opens and shows the product, the price and who is selling it. Pay, and within seconds the node logs the order and the payment, and the checkout shows Payment complete with a receipt.
 
@@ -241,4 +241,4 @@ npx @elisym/merchant-node init --network devnet
 
 In `$ELISYM_MERCHANT_HOME/config.json` the template already has `"network": "devnet"`, the public devnet RPC `https://api.devnet.solana.com`, and devnet USDC `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`: set your devnet wallet address, and fill in `products/my-product/PRODUCT.md`. Run `setup` and `run` as above, and put the `naddr` this devnet setup prints in the snippet, with `network="devnet"`. Switch the wallet to devnet (testnet mode in Phantom or Solflare). The wallet needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
 
-For a Tempo payout on devnet, use Moderato, Tempo's testnet: the script above with `config.tempo = { network: "moderato" }` and `caip19: "eip155:42431/erc20:0x20c0000000000000000000000000000000000000"` (pathUSD).
+For a Tempo payout on devnet, use Moderato, Tempo's testnet: the script above with `config.tempo = { network: "moderato" }` and `caip19: "eip155:42431/erc20:0x20c0000000000000000000000000000000000000"` (pathUSD). A devnet store on Tempo only drops the Solana payout and `rpcUrl` as in [Only one network](#1-create-the-store), with those two values.
