@@ -2,13 +2,13 @@
 
 :root {
   color-scheme: light;
-  --bg: #f6f6f8;
+  --bg: #fafafa;
   --surface: #ffffff;
-  --surface-2: #f1f1f4;
+  --surface-2: #f2f2f5;
   --line: #e4e4ea;
   --line-2: #d4d4dc;
   --text: #121218;
-  --text-2: #5b5b6b;
+  --text-2: #575767;
   --text-3: #6b6b7a;
   --accent: #c6f432;
   --accent-ink: #3f6212;
@@ -28,6 +28,7 @@
   --chart-2: #2563eb;
   --chart-3: #7c3aed;
   --chart-4: #c2410c;
+  --chart-idle: #8b8b98;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -59,6 +60,7 @@
     --chart-2: #60a5fa;
     --chart-3: #a78bfa;
     --chart-4: #fb923c;
+    --chart-idle: #6b6b78;
   }
 }
 
@@ -89,6 +91,7 @@
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
+  --color-chart-idle: var(--chart-idle);
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
 }

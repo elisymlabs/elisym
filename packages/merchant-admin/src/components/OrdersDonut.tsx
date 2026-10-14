@@ -12,12 +12,12 @@ const GAP = 1.2;
 
 const OTHER_STROKES: Readonly<Record<string, string>> = {
   unknown: 'stroke-warn',
-  unpaid: 'stroke-line-2',
+  unpaid: 'stroke-chart-idle',
 };
 
 const OTHER_DOTS: Readonly<Record<string, string>> = {
   unknown: 'bg-warn',
-  unpaid: 'bg-line-2',
+  unpaid: 'bg-chart-idle',
 };
 
 /** The loaded orders by the coin and network they were paid in, drawn in on first show. */
@@ -67,7 +67,7 @@ export function OrdersDonut({ slices }: Props) {
                   strokeDashoffset={-arc.start}
                   className={`chart-arc fill-none ${
                     arc.slice.series === undefined
-                      ? (OTHER_STROKES[arc.slice.key] ?? 'stroke-line-2')
+                      ? (OTHER_STROKES[arc.slice.key] ?? 'stroke-chart-idle')
                       : seriesClass(SERIES_STROKES, arc.slice.series)
                   }`}
                 />
@@ -92,7 +92,7 @@ export function OrdersDonut({ slices }: Props) {
                   aria-hidden="true"
                   className={`size-10 shrink-0 rounded-full ${
                     slice.series === undefined
-                      ? (OTHER_DOTS[slice.key] ?? 'bg-line-2')
+                      ? (OTHER_DOTS[slice.key] ?? 'bg-chart-idle')
                       : seriesClass(SERIES_DOTS, slice.series)
                   }`}
                 />

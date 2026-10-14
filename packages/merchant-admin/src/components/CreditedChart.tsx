@@ -22,7 +22,10 @@ interface Props {
   nowSeconds: number;
 }
 
-/** What the node credited per day, one coin at a time: coins are never added together. */
+/**
+ * What the node credited, by the date each order was placed (the order's own date,
+ * UTC), one coin at a time: coins are never added together.
+ */
 export function CreditedChart({ rows, coins, nowSeconds }: Props) {
   const [chosen, setChosen] = useState<string | undefined>(undefined);
   const [active, setActive] = useState<number | undefined>(undefined);
@@ -33,14 +36,14 @@ export function CreditedChart({ rows, coins, nowSeconds }: Props) {
   const coin = coins[series];
   if (coin === undefined) {
     return (
-      <ChartCard title="Credited over time">
+      <ChartCard title="Credited by order date">
         <div id="credited-empty" className="flex flex-col items-center gap-8 py-40 text-center">
           <span className="bg-accent-soft text-accent-ink rounded-12 grid size-40 place-items-center">
             <Icon name="receipt" className="size-20" />
           </span>
           <p className="text-15 font-medium">Nothing credited yet</p>
           <p className="text-13 text-text-2 max-w-320">
-            Your first paid order shows up here as soon as your node confirms it on chain.
+            Your first paid order shows up here once your node confirms it on chain and you refresh.
           </p>
         </div>
       </ChartCard>
@@ -52,15 +55,15 @@ export function CreditedChart({ rows, coins, nowSeconds }: Props) {
   const point = active === undefined ? undefined : points[active];
   const first = points[0];
   const last = points[points.length - 1];
-  let readout = `${sumOf(points)} ${coin.symbol} credited in the last ${span} days`;
+  let readout = `${sumOf(points)} ${coin.symbol} credited on orders placed in the last ${span} days`;
   if (point !== undefined) {
-    readout = `${dayLabel(point.day)}: ${point.amount} ${coin.symbol} credited, ${point.orders} ${point.orders === 1 ? 'order' : 'orders'}`;
+    readout = `Placed ${dayLabel(point.day)}: ${point.amount} ${coin.symbol} credited, ${point.orders} ${point.orders === 1 ? 'order' : 'orders'}`;
   }
   return (
     <ChartCard
-      title="Credited over time"
+      title="Credited by order date"
       className="flex-1"
-      caption={`Per day, UTC. ${coin.symbol} on ${networkName(coin.network)}.`}
+      caption={`Per order date, UTC. ${coin.symbol} on ${networkName(coin.network)}.`}
       actions={
         coins.length > 1 && (
           <div

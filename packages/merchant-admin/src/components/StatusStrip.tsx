@@ -11,7 +11,7 @@ interface Props {
 const FILLS: Readonly<Record<OrderState, string>> = {
   delivered: 'fill-green',
   payment_reported: 'fill-warn',
-  ordered: 'fill-line-2',
+  ordered: 'fill-chart-idle',
   refunded: 'fill-text-3',
   released: 'fill-blue',
 };
@@ -19,7 +19,7 @@ const FILLS: Readonly<Record<OrderState, string>> = {
 const DOTS: Readonly<Record<OrderState, string>> = {
   delivered: 'bg-green',
   payment_reported: 'bg-warn',
-  ordered: 'bg-line-2',
+  ordered: 'bg-chart-idle',
   refunded: 'bg-text-3',
   released: 'bg-blue',
 };

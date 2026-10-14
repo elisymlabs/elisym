@@ -24,7 +24,7 @@ export function DayBars({ points, peak, symbol, fill, active, onActive }: Props)
       preserveAspectRatio="none"
       className="chart-bars h-full min-h-160 w-full overflow-visible sm:min-h-200"
       role="group"
-      aria-label={`${symbol} credited per day`}
+      aria-label={`${symbol} credited by order date`}
       onMouseLeave={() => onActive(undefined)}
     >
       {points.map((point, index) => {
@@ -37,7 +37,7 @@ export function DayBars({ points, peak, symbol, fill, active, onActive }: Props)
             key={point.day}
             tabIndex={0}
             role="img"
-            aria-label={`${dayLabel(point.day)}: ${point.amount} ${symbol} credited, ${point.orders} ${point.orders === 1 ? 'order' : 'orders'}`}
+            aria-label={`Placed ${dayLabel(point.day)}: ${point.amount} ${symbol} credited, ${point.orders} ${point.orders === 1 ? 'order' : 'orders'}`}
             className="chart-day"
             onMouseEnter={() => onActive(index)}
             onFocus={() => onActive(index)}

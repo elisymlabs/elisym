@@ -235,19 +235,19 @@ describe('the credited chart', () => {
     expect([...days].every((day) => day.getAttribute('tabindex') === '0')).toBe(true);
     expect(mounted.container.querySelectorAll('.chart-bar')).toHaveLength(2);
     expect(mounted.container.querySelector('svg')?.getAttribute('aria-label')).toBe(
-      'USDC credited per day',
+      'USDC credited by order date',
     );
     expect(byId(mounted.container, 'credited-readout').textContent).toBe(
-      '14 USDC credited in the last 14 days',
+      '14 USDC credited on orders placed in the last 14 days',
     );
     const last = days[days.length - 1];
     await act(async () => {
       last?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
     });
     expect(byId(mounted.container, 'credited-readout').textContent).toBe(
-      'Oct 14: 4 USDC credited, 2 orders',
+      'Placed Oct 14: 4 USDC credited, 2 orders',
     );
-    expect(last?.getAttribute('aria-label')).toBe('Oct 14: 4 USDC credited, 2 orders');
+    expect(last?.getAttribute('aria-label')).toBe('Placed Oct 14: 4 USDC credited, 2 orders');
     await act(async () => {
       last?.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
     });
@@ -277,7 +277,7 @@ describe('the credited chart', () => {
     });
     expect(buttons[1]?.getAttribute('aria-pressed')).toBe('true');
     expect(byId(mounted.container, 'credited-readout').textContent).toBe(
-      '3 USDC.e credited in the last 14 days',
+      '3 USDC.e credited on orders placed in the last 14 days',
     );
     expect(mounted.container.querySelectorAll('.chart-bar')).toHaveLength(1);
     expect(mounted.container.querySelector('.chart-bar')?.getAttribute('class')).toContain(
@@ -295,7 +295,79 @@ describe('the credited chart', () => {
   });
 });
 
+describe('the credited chart, more', () => {
+  it('names the order date in its caption and says when the empty chart fills', async () => {
+    const coins = creditedCoins(ROWS);
+    mounted = await mount(<CreditedChart rows={ROWS} coins={coins} nowSeconds={NOW} />);
+    expect(mounted.container.querySelector('h3')?.textContent).toBe('Credited by order date');
+    expect(mounted.container.querySelector('h3 + p')?.textContent).toBe(
+      'Per order date, UTC. USDC on Solana.',
+    );
+    expect(byId(mounted.container, 'credited-readout').getAttribute('aria-live')).toBe('polite');
+    await mounted.rerender(<CreditedChart rows={[]} coins={[]} nowSeconds={NOW} />);
+    expect(byId(mounted.container, 'credited-empty').textContent).toContain(
+      'Your first paid order shows up here once your node confirms it on chain and you refresh.',
+    );
+  });
+
+  it('says thirty days when an older order is charted', async () => {
+    const rows = [...ROWS, row('old', NOW - 20 * DAY, [credit('o1', '1000000')])];
+    mounted = await mount(
+      <CreditedChart rows={rows} coins={creditedCoins(rows)} nowSeconds={NOW} />,
+    );
+    expect(mounted.container.querySelectorAll('.chart-day')).toHaveLength(LONG_SPAN_DAYS);
+    expect(byId(mounted.container, 'credited-readout').textContent).toBe(
+      '15 USDC credited on orders placed in the last 30 days',
+    );
+  });
+
+  it('forgets a focused day when the coin changes', async () => {
+    const coins = creditedCoins(ROWS);
+    mounted = await mount(<CreditedChart rows={ROWS} coins={coins} nowSeconds={NOW} />);
+    const days = mounted.container.querySelectorAll('.chart-day');
+    await act(async () => {
+      days[days.length - 1]?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    });
+    expect(byId(mounted.container, 'credited-readout').textContent).toContain('Placed Oct 14');
+    const other = [...mounted.container.querySelectorAll('button[aria-pressed]')][1];
+    await act(async () => {
+      (other as HTMLButtonElement | undefined)?.click();
+    });
+    expect(byId(mounted.container, 'credited-readout').textContent).toBe(
+      '3 USDC.e credited on orders placed in the last 14 days',
+    );
+  });
+
+  it('colors each coin alike in the ring, its legend and the coin switch', async () => {
+    mounted = await mount(<Charts rows={ROWS} nowSeconds={NOW} />);
+    const switchDots = [...mounted.container.querySelectorAll('button[aria-pressed] span')].map(
+      (dot) => dot.getAttribute('class') ?? '',
+    );
+    const legendDots = [
+      ...byId(mounted.container, 'donut-legend').querySelectorAll('li > span:first-child'),
+    ].map((dot) => dot.getAttribute('class') ?? '');
+    const arcs = [...mounted.container.querySelectorAll('.chart-arc')].map(
+      (arc) => arc.getAttribute('class') ?? '',
+    );
+    ['chart-1', 'chart-2'].forEach((color, index) => {
+      expect(switchDots[index]).toContain(`bg-${color}`);
+      expect(legendDots[index]).toContain(`bg-${color}`);
+      expect(arcs[index]).toContain(`stroke-${color}`);
+    });
+  });
+});
+
 describe('the orders ring and the status bar', () => {
+  it('draws one order kind as a whole ring', async () => {
+    mounted = await mount(
+      <OrdersDonut slices={[{ key: 'unpaid', label: 'No payment credited', count: 3 }]} />,
+    );
+    const arcs = [...mounted.container.querySelectorAll('.chart-arc')];
+    expect(arcs).toHaveLength(1);
+    expect(arcs[0]?.getAttribute('stroke-dasharray')).toBe('100 0');
+    expect(arcs[0]?.getAttribute('stroke-dashoffset')).toBe('0');
+  });
+
   it('draws an arc per slice, with the total in the middle and a legend', async () => {
     const slices = orderSlices(ROWS, creditedCoins(ROWS));
     mounted = await mount(<OrdersDonut slices={slices} />);
@@ -303,7 +375,8 @@ describe('the orders ring and the status bar', () => {
     expect(arcs).toHaveLength(4);
     expect(arcs[0]?.getAttribute('class')).toContain('stroke-chart-1');
     expect(arcs[2]?.getAttribute('class')).toContain('stroke-warn');
-    expect(arcs[3]?.getAttribute('class')).toContain('stroke-line-2');
+    expect(arcs[1]?.getAttribute('class')).toContain('stroke-chart-2');
+    expect(arcs[3]?.getAttribute('class')).toContain('stroke-chart-idle');
     expect(mounted.container.querySelector('svg text')?.textContent).toBe('7');
     expect(byId(mounted.container, 'donut-legend').textContent).toContain('USDC on Solana457%');
     expect(mounted.container.querySelector('svg')?.getAttribute('aria-label')).toBe(
@@ -322,6 +395,13 @@ describe('the orders ring and the status bar', () => {
     ]);
     expect(segments[1]?.getAttribute('x')).toBe(segments[0]?.getAttribute('width'));
     expect(byId(mounted.container, 'status-legend').textContent).toBe('Completed6Ordered1');
+    const dots = [
+      ...byId(mounted.container, 'status-legend').querySelectorAll('li > span:first-child'),
+    ];
+    expect(dots.map((dot) => dot.getAttribute('class'))).toEqual([
+      'size-8 rounded-full bg-green',
+      'size-8 rounded-full bg-chart-idle',
+    ]);
     await mounted.rerender(<StatusStrip parts={[]} />);
     expect(byId(mounted.container, 'status-empty').textContent).toBe('No orders yet.');
   });

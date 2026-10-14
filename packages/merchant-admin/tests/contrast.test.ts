@@ -21,6 +21,19 @@ const PAIRS: { text: string; on: string; over: string[] }[] = [
 
 const BACKGROUNDS = ['bg', 'surface', 'surface-2'];
 
+/** Every color the charts fill or stroke with: the series, the neutral, the states. */
+const CHART_COLORS = [
+  'chart-1',
+  'chart-2',
+  'chart-3',
+  'chart-4',
+  'chart-idle',
+  'warn',
+  'green',
+  'blue',
+  'text-3',
+];
+
 /** An sRGB color with its alpha, channels 0-255. */
 interface Color {
   red: number;
@@ -128,14 +141,33 @@ describe('the text colors', () => {
     }
   });
 
-  it('draws every chart series at 3:1 or better on the cards and the page, in both schemes', () => {
+  it('draws every chart color at 3:1 or better on the cards and the page, in both schemes', () => {
     for (const colors of found) {
-      for (const series of ['chart-1', 'chart-2', 'chart-3', 'chart-4']) {
+      for (const series of CHART_COLORS) {
         for (const background of ['surface', 'bg']) {
           const ratio = contrast(named(colors, series), named(colors, background));
           expect(ratio, `${series} on ${background}`).toBeGreaterThanOrEqual(3);
         }
       }
+    }
+  });
+
+  it('covers every color the chart components draw with', () => {
+    const names = ['DayBars', 'CreditedChart', 'OrdersDonut', 'StatusStrip'];
+    const sources = [
+      ...names.map((name) =>
+        readFileSync(join(process.cwd(), `src/components/${name}.tsx`), 'utf8'),
+      ),
+      readFileSync(join(process.cwd(), 'src/lib/charts.ts'), 'utf8'),
+    ].join('\n');
+    const used = new Set(
+      [...sources.matchAll(/\b(?:fill|stroke)-([a-z][a-z0-9-]*)/g)]
+        .map((match) => match[1] ?? '')
+        .filter((name) => !['none', 'transparent', 'surface-2', 'text', 'text-2'].includes(name)),
+    );
+    expect(used.size).toBeGreaterThan(5);
+    for (const name of used) {
+      expect(CHART_COLORS, name).toContain(name);
     }
   });
 });
