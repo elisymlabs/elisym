@@ -31,6 +31,65 @@
       "dependsOn": ["build"],
       "inputs": ["$TURBO_DEFAULT$", "../docs/pages/**", "../../examples/demo-store/README.md"]
     },
+    "@elisym/merchant-admin#build": {
+      "dependsOn": ["^build", "generate"],
+      "outputs": ["dist/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../merchant-node/src/admin/**",
+        "../merchant-node/src/constants.ts",
+        "../merchant-node/src/order-rules.ts",
+        "../merchant-node/src/listing-reads.ts",
+        "../merchant-node/src/signature.ts",
+        "../merchant-node/package.json",
+        "../merchant-node/tests/admin/fixtures.ts",
+        "../merchant-node/tsconfig.json"
+      ]
+    },
+    "@elisym/merchant-admin#typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../merchant-node/src/admin/**",
+        "../merchant-node/src/constants.ts",
+        "../merchant-node/src/order-rules.ts",
+        "../merchant-node/src/listing-reads.ts",
+        "../merchant-node/src/signature.ts",
+        "../merchant-node/package.json",
+        "../merchant-node/tests/admin/fixtures.ts"
+      ]
+    },
+    "@elisym/merchant-admin#test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../merchant-node/src/admin/**",
+        "../merchant-node/src/constants.ts",
+        "../merchant-node/src/order-rules.ts",
+        "../merchant-node/src/listing-reads.ts",
+        "../merchant-node/src/signature.ts",
+        "../merchant-node/package.json",
+        "../merchant-node/tests/admin/fixtures.ts",
+        "../merchant-node/tsconfig.json",
+        "../merchant-node/src/cli.ts"
+      ]
+    },
+    "@elisym/merchant-landing#build": {
+      "dependsOn": ["^build", "generate"],
+      "outputs": ["dist/**"],
+      "inputs": ["$TURBO_DEFAULT$", "../merchant-admin/scripts/build-checks.ts"]
+    },
+    "@elisym/merchant-landing#test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../merchant-node/src/constants.ts",
+        "../merchant-node/README.md",
+        "../docs/pages/commerce/quickstart.mdx",
+        "../merchant-node/src/cli.ts",
+        "../docs/pages/commerce/**"
+      ]
+    },
     "@elisym/checkout#build": {
       "dependsOn": ["^build", "generate"],
       "outputs": ["dist/**"],
@@ -42,6 +101,10 @@
         "VITE_SOLANA_RPC_URL_MAINNET",
         "VITE_SOLANA_RPC_URL_DEVNET"
       ]
+    },
+    "@elisym/merchant-landing#typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "../merchant-admin/scripts/build-checks.ts"]
     }
   }
 }

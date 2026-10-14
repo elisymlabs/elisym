@@ -50,7 +50,7 @@ title: Demo product
 priceUsd: "0.01"
 ---
 
-A test purchase through the elisym checkout.
+A test purchase through Pay Core.
 PRODUCT
 npx @elisym/merchant-node setup --home ~/.elisym-demo-devnet
 npx @elisym/merchant-node run --home ~/.elisym-demo-devnet

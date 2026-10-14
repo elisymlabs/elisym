@@ -11,6 +11,7 @@ import { nsecEncode } from 'nostr-tools/nip19';
 import { getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { z } from 'zod';
+import { HOSTED_ADMIN_URL } from './constants';
 import { replaceFileDurably } from './durable-file';
 import { decryptSecret, encryptSecret, isEncrypted } from './secret-box';
 
@@ -229,12 +230,11 @@ export function encryptionNotes(ownerOnly: boolean): string[] {
 }
 
 /** Said with the store key, every time it is printed. */
-export const STORE_KEY_WARNING =
-  'warning: whoever holds this key can redirect payments from new buyers; paste it only into the admin on this machine';
+export const STORE_KEY_WARNING = `warning: whoever holds this key can redirect payments from new buyers; paste it only into the elisym admin: the local \`admin\` page or ${HOSTED_ADMIN_URL}`;
 
 /**
- * `store-key`: the store's secret key (nsec), to paste into the admin page on
- * this machine. Only to a terminal, or with `--yes`: it must not land in a log
+ * `store-key`: the store's secret key (nsec), to paste into the admin page
+ * (the local one, or the hosted admin). Only to a terminal, or with `--yes`: it must not land in a log
  * unasked. Checked before anything is decrypted. Never the owner key.
  */
 export function storeKeyForAdmin(

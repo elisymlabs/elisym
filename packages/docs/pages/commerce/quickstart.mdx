@@ -1,6 +1,6 @@
-# Sell with the checkout
+# Sell with Pay Core
 
-The elisym checkout sells digital products from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet; your backend learns of each payment from your node's signed webhook. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
+Pay Core is elisym's stablecoin checkout: it sells digital products from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet; your backend learns of each payment from your node's signed webhook. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
 
 The pieces:
 
@@ -127,6 +127,8 @@ npx @elisym/merchant-node admin
 ```
 
 Open [http://127.0.0.1:5199/](http://127.0.0.1:5199/). The page reads your inbox relays with the store key and lists each order: its product, the total the buyer claims, the email, whether it was paid and completed, and the transaction, with totals per coin. A product list shows each ordered product, on sale or sold out. The key stays in the tab: it is never stored or sent. With encrypted keys, `store-key` reads the passphrase like `run` does (`ELISYM_MERCHANT_PASSPHRASE` or `ELISYM_MERCHANT_PASSPHRASE_FILE`). `--yes` lets it print without a terminal; leave it out to have it refuse when its output would land in a log. Run `admin` with `npx`, not in Docker.
+
+The same view is hosted at [https://admin.elisym.network](https://admin.elisym.network): paste the store key there instead of running `admin`. It also lists every product of the store, the store's inbox relays and payout networks, and exports the loaded orders as CSV. The key stays in that tab's memory, but the page's code is served by elisym on each visit, while the local page runs the version you installed. Browser extensions can read what you type into any page: use a browser profile without extensions you do not trust, or the local page.
 
 ## Level A: let your domain vouch for the store
 

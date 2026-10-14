@@ -104,7 +104,7 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
          encrypt the keys in keys.json with $ELISYM_MERCHANT_PASSPHRASE
          (or the file $ELISYM_MERCHANT_PASSPHRASE_FILE names); both keys by default
   store-key [--yes]
-         print the store's secret key, for the admin page on this machine
+         print the store's secret key, for the admin page (local, or the hosted admin)
   admin [--port <port>]
          serve the admin page on 127.0.0.1 (default port ${DEFAULT_ADMIN_PORT}): paste the
          store key there to see the orders your inbox relays hold
@@ -998,8 +998,8 @@ function encryptKeys(home: MerchantHome, ownerOnly: boolean): void {
 }
 
 /**
- * `store-key`: the store's secret key, to paste into the admin page on this
- * machine. Only to a terminal, or with --yes: it must not land in a log
+ * `store-key`: the store's secret key, to paste into the admin page (the
+ * local one, or the hosted admin). Only to a terminal, or with --yes: it must not land in a log
  * unasked. Never the owner key.
  */
 function printStoreKey(home: MerchantHome, yes: boolean): void {

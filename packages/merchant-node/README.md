@@ -1,9 +1,9 @@
 # @elisym/merchant-node
 
-The self-hosted store behind the elisym checkout. It publishes your products to Nostr, takes
-orders sent by the checkout widget, checks each payment on chain (USDC on Solana, or a
-stablecoin on Tempo), and completes the order. Your backend acts on each payment through the
-node's signed `order.paid` webhook.
+The self-hosted store behind Pay Core, elisym's stablecoin checkout. It publishes your products
+to Nostr, takes orders sent by the checkout widget, checks each payment on chain (USDC on
+Solana, or a stablecoin on Tempo), and completes the order. Your backend acts on each payment
+through the node's signed `order.paid` webhook.
 
 You do not need an account or a server of ours. The node holds your store's keys and a small
 ledger on your own disk.
@@ -64,7 +64,7 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 | `complete`                         | Answers an unpaid order by hand: closes it and sends `completed` (node stopped)                                                                                                                                                                        |
 | `refund`                           | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset |
 | `encrypt-keys`                     | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                       |
-| `store-key`                        | Prints the store's secret key (nsec), for the admin page on this machine: only to a terminal, or with `--yes`                                                                                                                                          |
+| `store-key`                        | Prints the store's secret key (nsec), for the admin page (local, or the hosted admin): only to a terminal, or with `--yes`                                                                                                                             |
 | `admin`                            | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                        |
 | `webhook test`                     | Sends a signed `test` event to the configured webhook; fails unless the receiver answers 2xx (see [Credit an account](#credit-an-account-the-webhook))                                                                                                 |
 | `webhook retry <buyer>:<orderId>`  | Sends a pending or failed `order.paid` webhook again now, with a fresh 7-day deadline (node stopped)                                                                                                                                                   |
@@ -253,6 +253,13 @@ A logging driver that ships stdout elsewhere would keep it there too.
 npx @elisym/merchant-node store-key   # copy the nsec it prints
 npx @elisym/merchant-node admin       # open http://127.0.0.1:5199/ and paste it
 ```
+
+The same view is hosted at https://admin.elisym.network: paste the store key there instead of
+running `admin`. It also lists every product of the store, the store's profile, inbox relays and
+payout networks, and exports the loaded orders as CSV. The key stays in that tab's memory too, but
+the page's code is served by elisym on each visit, while the local page runs the version you
+installed. Browser extensions can read what you type into any page: use a browser profile
+without extensions you do not trust, or the local page.
 
 The page reads the store's inbox relays (its inbox list, or the default relays when it has
 none) with the store key and shows each order: when it was placed, its product, the total the

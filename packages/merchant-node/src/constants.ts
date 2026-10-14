@@ -124,6 +124,15 @@ export const WEBHOOK_MAX_ANSWER_BYTES = 4 * 1024;
 /** Product ids per `'#d'` filter: each yields one listing per relay, well under any relay's default limit. */
 export const LISTING_CHUNK_SIZE = 50;
 
+/** The hosted admin, where the store key may be pasted besides the local `admin` page. */
+export const HOSTED_ADMIN_URL = 'https://admin.elisym.network';
+
+/** Listings asked of one relay per page when the hosted admin reads all of a store's products. */
+export const ALL_LISTINGS_PAGE_LIMIT = 250;
+
+/** Pages read from one relay for all of a store's products before the list is called incomplete. */
+export const ALL_LISTINGS_MAX_PAGES = 8;
+
 /**
  * Our subscriptions on one relay connection at a time, counting every read:
  * a relay caps them, and a refused one comes back silently empty.

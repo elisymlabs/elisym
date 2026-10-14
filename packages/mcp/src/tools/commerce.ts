@@ -1,5 +1,5 @@
 /**
- * `buy_product` and `get_order`: buy a product sold through the elisym checkout,
+ * `buy_product` and `get_order`: buy a product sold through Pay Core (the checkout),
  * over Nostr, paid from the active agent's Solana wallet, and follow the order.
  *
  * The buyer core (`@elisym/commerce/buyer`) judges every money rule, the same
@@ -1016,7 +1016,7 @@ export const commerceTools: ToolDefinition[] = [
   defineTool({
     name: 'buy_product',
     description:
-      'Buy a digital product sold through the elisym checkout (naddr1...), paid from the active ' +
+      'Buy a digital product (naddr1...) sold through Pay Core, the elisym checkout, paid from the active ' +
       "agent's Solana wallet. Two steps: call with `product` to get a quote (store, trust level, " +
       'price, payout address, warnings) - it orders and pays nothing. Show the quote to the user; ' +
       'only after they approve, call with `quote_id` (and `accept_warnings` for each warning they ' +

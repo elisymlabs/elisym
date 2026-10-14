@@ -431,4 +431,156 @@ describe('the admin page', () => {
     );
     expect(byId('orders').querySelectorAll('tr')).toHaveLength(1);
   });
+
+  it('reads again on Refresh after a first open that failed', async () => {
+    const store = key();
+    const owner = key();
+    let failing = true;
+    startAdmin(document, {
+      client: {
+        ...fakeClient([]),
+        query: () =>
+          failing
+            ? Promise.reject(new Error('relay down'))
+            : Promise.resolve(storeEvents(store, owner)),
+      },
+      pool: fakePool([]),
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toBe('Could not read: relay down'));
+    expect(byId('dashboard').hidden).toBe(false);
+
+    failing = false;
+    byId('refresh').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toMatch(/^Read 0 order messages/));
+    expect(byId('store-name').textContent).toBe(HOSTILE_NAME);
+  });
+
+  it('reads only the products the orders name, never the whole store', async () => {
+    const store = key();
+    const owner = key();
+    const filters: { kinds?: number[]; '#d'?: string[] }[] = [];
+    startAdmin(document, {
+      client: {
+        ...fakeClient([]),
+        query: (_relays, asked) => {
+          filters.push(...asked);
+          return Promise.resolve(storeEvents(store, owner));
+        },
+      },
+      pool: fakePool([
+        wrapOf(orderBody(store, 'b3a7c2d4-0000-4000-8000-000000000009'), key(), store),
+      ]),
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toMatch(/^Read 1 order messages/));
+    byId('refresh').click();
+    await vi.waitFor(() => expect(byId('refresh')).toHaveProperty('disabled', false));
+    const products = filters.filter((filter) => filter.kinds?.includes(30402) === true);
+    expect(products.length).toBeGreaterThan(0);
+    expect(products.every((filter) => filter['#d'] !== undefined)).toBe(true);
+  });
+
+  it('keeps one session: a second key and a forced Refresh during a read change nothing', async () => {
+    const store = key();
+    const other = key();
+    const owner = key();
+    let reads = 0;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const pool = fakePool([]);
+    startAdmin(document, {
+      client: {
+        ...fakeClient([]),
+        query: () => {
+          reads += 1;
+          return Promise.resolve(storeEvents(store, owner));
+        },
+      },
+      pool: {
+        subscribeEose: (relays, filter, params) => {
+          void held.then(() => pool.subscribeEose(relays, filter, params));
+          return { close: () => undefined };
+        },
+      },
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toBe('Reading orders...'));
+    const readsBefore = reads;
+
+    keyInput().value = nip19.nsecEncode(other.secretKey);
+    byId('open').click();
+    expect(byId('store-pubkey').textContent).toBe(store.pubkey);
+
+    // A click the disabled button would refuse, forced: the session answers busy.
+    const refresh = byId('refresh');
+    if (!(refresh instanceof HTMLButtonElement)) {
+      throw new Error('#refresh is not a button');
+    }
+    refresh.onclick?.(new MouseEvent('click'));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(refresh.disabled).toBe(true);
+    expect(reads).toBe(readsBefore);
+
+    release();
+    await vi.waitFor(() => expect(byId('status').textContent).toMatch(/^Read 0 order messages/));
+    expect(refresh.disabled).toBe(false);
+  });
+
+  it('offers older history while a relay left some, and Load more history reads it', async () => {
+    const store = key();
+    const owner = key();
+    const buyer = key();
+    const orderId = 'b3a7c2d4-0000-4000-8000-000000000010';
+    const full = fakePool([wrapOf(orderBody(store, orderId), buyer, store)]);
+    let pages = 0;
+    let storeReads = 0;
+    startAdmin(document, {
+      client: {
+        ...fakeClient([]),
+        query: (_relays, filters) => {
+          if (filters.some((filter) => filter.kinds?.includes(KIND_INBOX_RELAYS) === true)) {
+            storeReads += 1;
+          }
+          return Promise.resolve(storeEvents(store, owner));
+        },
+      },
+      pool: {
+        subscribeEose(relays, filter, params) {
+          pages += 1;
+          if (pages === 1) {
+            // The first page ends without EOSE: the relay is left to read again.
+            queueMicrotask(() => params.onclose?.(['connection closed']));
+            return { close: () => undefined };
+          }
+          return full.subscribeEose(relays, filter, params);
+        },
+      },
+      now: () => Math.floor(Date.now() / 1000),
+      forget: () => undefined,
+    });
+    keyInput().value = nip19.nsecEncode(store.secretKey);
+    byId('open').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toMatch(/^Read 0 order messages/));
+    expect(byId('more-row').hidden).toBe(false);
+    expect(storeReads).toBe(1);
+
+    byId('more').click();
+    await vi.waitFor(() => expect(byId('status').textContent).toMatch(/^Read 1 order messages/));
+    // Older history only: the store is not read again (that is Refresh).
+    expect(storeReads).toBe(1);
+    expect(byId('orders').querySelectorAll('tr')).toHaveLength(1);
+    expect(byId('more-row').hidden).toBe(true);
+  });
 });

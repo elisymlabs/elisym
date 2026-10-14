@@ -1,7 +1,7 @@
 {
   "name": "@elisym/merchant-node",
   "version": "0.9.2",
-  "description": "elisym merchant node: self-hosted store for the elisym checkout - takes orders over Nostr, verifies payments, completes orders.",
+  "description": "Pay Core merchant node: the self-hosted store behind elisym's stablecoin checkout - takes orders over Nostr, verifies payments, completes orders.",
   "keywords": [
     "checkout",
     "commerce",
