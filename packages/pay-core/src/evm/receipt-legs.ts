@@ -34,8 +34,12 @@ export interface ReadTempoReceiptLegsOptions {
   tokens: readonly string[];
   /** The payout addresses a leg may pay (lowercase). */
   recipients: readonly string[];
-  /** The order's memo (0x + 64 lowercase hex). */
-  memo: string;
+  /**
+   * The order's memo (0x + 64 lowercase hex), or every memo the order may be
+   * paid under (a commerce order has a legacy and a marked form). Each leg
+   * returned keeps its own `memo`, so a caller can tell the forms apart.
+   */
+  memo: string | readonly string[];
   /** The lowest amount a leg must carry; the caller filters per term. */
   minAmount: bigint;
   signal?: AbortSignal;
@@ -46,14 +50,14 @@ export type TempoReceiptLegs =
   | { kind: 'unreadable' }
   /** The endpoint knows no such transaction (yet). */
   | { kind: 'absent' }
-  /** A trusted receipt with no leg for this memo to these recipients. */
+  /** A trusted receipt with no leg for these memos to these recipients. */
   | { kind: 'none' }
   | {
       kind: 'legs';
       blockNumber: number;
-      /** `TransferWithMemo` legs with this memo to a recipient, at least `minAmount`. */
+      /** `TransferWithMemo` legs with one of these memos to a recipient, at least `minAmount`. */
       transfers: TempoTransferLog[];
-      /** Transfers with this memo to a recipient that its receive policy blocked. */
+      /** Transfers with one of these memos to a recipient that its receive policy blocked. */
       blocked: TempoBlockedLog[];
     };
 
@@ -111,7 +115,9 @@ export async function readTempoReceiptLegs(
 
   const tokens = new Set(options.tokens.map((token) => token.toLowerCase()));
   const recipients = new Set(options.recipients.map((recipient) => recipient.toLowerCase()));
-  const memo = options.memo.toLowerCase();
+  const memoList: readonly string[] =
+    typeof options.memo === 'string' ? [options.memo] : options.memo;
+  const memos = new Set(memoList.map((memo) => memo.toLowerCase()));
   const transfers: TempoTransferLog[] = [];
   const blocked: TempoBlockedLog[] = [];
   // A reverted transaction emitted nothing: it holds no leg.
@@ -124,7 +130,8 @@ export async function readTempoReceiptLegs(
         decoded.log.transactionHash === wanted &&
         decoded.log.blockNumber === blockNumber &&
         recipients.has(decoded.log.to) &&
-        decoded.log.memo === memo &&
+        decoded.log.memo !== undefined &&
+        memos.has(decoded.log.memo) &&
         decoded.log.amount >= options.minAmount &&
         decoded.log.from !== decoded.log.to
       ) {
@@ -138,7 +145,7 @@ export async function readTempoReceiptLegs(
       guard.log.blockNumber === blockNumber &&
       tokens.has(guard.log.token) &&
       recipients.has(guard.log.receiver) &&
-      guard.log.memo === memo &&
+      memos.has(guard.log.memo) &&
       guard.log.amount >= options.minAmount
     ) {
       blocked.push(guard.log);

@@ -30,7 +30,14 @@ import {
   solanaAddress,
 } from './fixtures';
 import { ACKNOWLEDGED, record as contractRecord } from './order-store.contract';
-import { EMPTY_ACCOUNT_RENT, FakeSolana, FakeWallet, signatureOf } from './solana-fixtures';
+import {
+  type Compiled,
+  EMPTY_ACCOUNT_RENT,
+  FakeSolana,
+  FakeWallet,
+  MEMO_PROGRAM,
+  signatureOf,
+} from './solana-fixtures';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';
@@ -2127,5 +2134,44 @@ describe('asking the same wallet again', () => {
     expect(storeClosed({ status: { status: 'completed', at: NOW } })).toBe(true);
     expect(storeClosed({ status: { status: 'pending', at: NOW } })).toBe(false);
     expect(storeClosed({})).toBe(false);
+  });
+});
+
+/** The text of every SPL Memo instruction in a compiled message. */
+function memosIn(message: Compiled | undefined): string[] {
+  if (message === undefined) {
+    return [];
+  }
+  const memo = message.staticAccounts.findIndex((account) => account === MEMO_PROGRAM);
+  return message.instructions
+    .filter((instruction) => instruction.programAddressIndex === memo)
+    .map((instruction) => new TextDecoder().decode(instruction.data));
+}
+
+describe('the commerce memo', () => {
+  it('asks the wallet to sign a payment that carries one account-less elisym:commerce memo', async () => {
+    const { record, wallet, deps, input } = await setup();
+    const paid = await payWithSolana(record, wallet, input, deps);
+    expect(paid.ok).toBe(true);
+    const asked = wallet.asked[0];
+    expect(memosIn(asked)).toEqual(['elisym:commerce']);
+    const memo = asked?.staticAccounts.findIndex((account) => account === MEMO_PROGRAM);
+    const memoInstruction = asked?.instructions.find(
+      (instruction) => instruction.programAddressIndex === memo,
+    );
+    expect(memoInstruction?.accountIndices ?? []).toEqual([]);
+  });
+
+  it('pays and credits a transaction the wallet stripped the memo from', async () => {
+    const { record, wallet, chain, deps, input } = await setup();
+    wallet.behaviour = 'strip_memo';
+    const paid = await payWithSolana(record, wallet, input, deps);
+    if (!paid.ok) {
+      throw new Error(paid.reason);
+    }
+    const sent = chain.sent[0];
+    expect(sent).toBeDefined();
+    const watched = await watchSolanaPayment(paid.record, deps);
+    expect(watched).toMatchObject({ state: 'paid', record: { paidTx: paid.signature } });
   });
 });

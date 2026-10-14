@@ -17,7 +17,13 @@ import {
 } from '@elisym/commerce/buyer';
 import { FeeConfigError, USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { NATIVE_SOL, assetKey, generateSolanaWallet } from '@elisym/sdk';
-import { address, getBase58Encoder } from '@solana/kit';
+import {
+  address,
+  getBase58Encoder,
+  getBase64Encoder,
+  getCompiledTransactionMessageDecoder,
+  getTransactionDecoder,
+} from '@solana/kit';
 import type { NostrEvent } from 'nostr-tools';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -225,6 +231,28 @@ describe('buy_product', () => {
     });
     expect(text(again as never)).toContain('Unknown or expired quote_id');
     expect(new Set(run.chain.sent).size).toBe(1);
+  });
+
+  it('pays with a transaction that carries the elisym:commerce memo', async () => {
+    const run = await world();
+    const quote = await quoteId(run);
+    await tool('buy_product').handler(run.ctx, {
+      quote_id: quote.id,
+      accept_warnings: quote.warnings,
+    });
+    const wire = run.chain.sent[0];
+    if (wire === undefined) {
+      throw new Error('nothing sent');
+    }
+    const transaction = getTransactionDecoder().decode(getBase64Encoder().encode(wire));
+    const message = getCompiledTransactionMessageDecoder().decode(transaction.messageBytes);
+    const memoProgram = message.staticAccounts.findIndex(
+      (account) => account === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+    );
+    const memos = message.instructions
+      .filter((instruction) => instruction.programAddressIndex === memoProgram)
+      .map((instruction) => new TextDecoder().decode(instruction.data));
+    expect(memos).toEqual(['elisym:commerce']);
   });
 
   it('counts the payment against the session limits', async () => {

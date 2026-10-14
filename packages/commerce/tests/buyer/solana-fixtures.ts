@@ -30,7 +30,12 @@ import {
 } from '@solana/kit';
 import type { SolanaWallet } from '../../src/buyer/solana-pay';
 
-type Compiled = ReturnType<ReturnType<typeof getCompiledTransactionMessageDecoder>['decode']>;
+export type Compiled = ReturnType<
+  ReturnType<typeof getCompiledTransactionMessageDecoder>['decode']
+>;
+
+/** SPL Memo v2: where the `elisym:commerce` marker goes. */
+export const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 
 /** The widget builds v0 messages; a v1 one is not what these fakes handle. */
 function legacyOrV0(message: Compiled): Exclude<Compiled, { version: 1 }> {
@@ -534,12 +539,16 @@ export type WalletBehaviour =
   /** Appends its own compute-budget limit and price after the widget's. */
   | 'append_compute_budget'
   /** Replaces the widget's compute-unit price with a much higher one. */
-  | 'raise_price';
+  | 'raise_price'
+  /** Drops the `elisym:commerce` memo instruction before signing. */
+  | 'strip_memo';
 
 /** A Wallet Standard account in memory that signs (or misbehaves) as told. */
 export class FakeWallet implements SolanaWallet {
   behaviour: WalletBehaviour = 'sign';
   requests = 0;
+  /** The message of every transaction it was asked to sign, as the widget built it. */
+  asked: Compiled[] = [];
   /** Run while the wallet "shows" the prompt, before it answers. */
   duringPrompt: (() => Promise<void>) | undefined;
 
@@ -564,6 +573,17 @@ export class FakeWallet implements SolanaWallet {
     }
     const decoded = getTransactionDecoder().decode(bytes);
     let messageBytes = decoded.messageBytes;
+    this.asked.push(getCompiledTransactionMessageDecoder().decode(messageBytes));
+    if (this.behaviour === 'strip_memo') {
+      const message = legacyOrV0(getCompiledTransactionMessageDecoder().decode(messageBytes));
+      const memo = message.staticAccounts.findIndex((account) => account === MEMO_PROGRAM);
+      messageBytes = getCompiledTransactionMessageEncoder().encode({
+        ...message,
+        instructions: message.instructions.filter(
+          (instruction) => instruction.programAddressIndex !== memo,
+        ),
+      }) as typeof decoded.messageBytes;
+    }
     if (this.behaviour === 'append_compute_budget' || this.behaviour === 'raise_price') {
       const message = legacyOrV0(getCompiledTransactionMessageDecoder().decode(messageBytes));
       const budget = message.staticAccounts.findIndex((account) => account === COMPUTE_BUDGET);

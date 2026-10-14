@@ -31,6 +31,7 @@ const SOLANA_RPC_HOST = 'solana-rpc.harness';
 const PRODUCT_D = 'my-product';
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-000000000001';
 const NO_PROFILE_FEE = /store profile the relays serve does not declare protocol-fee support/;
+const NO_PROFILE_MEMO = /store profile does not declare marked Tempo memos/;
 
 interface Harness {
   dir: string;
@@ -204,13 +205,17 @@ function hasFeeTag(event: NostrEvent | undefined): boolean {
   return event?.tags.some((tag) => tag[0] === 'fee' && tag[1] === '1') === true;
 }
 
+function hasMemoMarkerTag(event: NostrEvent | undefined): boolean {
+  return event?.tags.some((tag) => tag[0] === 'memo-marker' && tag[1] === '1') === true;
+}
+
 /** The store's own profile without the fee tag, as a store set up before fee support left it. */
-function taglessProfile(path: string): NostrEvent {
+function taglessProfile(path: string, tags: string[][] = []): NostrEvent {
   return finalizeEvent(
     {
       kind: 0,
       created_at: Math.floor(Date.now() / 1000) - 3600,
-      tags: [],
+      tags,
       content: JSON.stringify({ name: 'Shop' }),
     },
     hexToBytes(keysOf(path).store),
@@ -227,6 +232,9 @@ describe('setup declares fee support only with treasuries it has read', () => {
     const profile = profileOf(published(run), keysOf(path).storePubkey);
     expect(profile).toBeDefined();
     expect(hasFeeTag(profile)).toBe(false);
+    // Marked Tempo memos are declared whatever the fee config says.
+    expect(hasMemoMarkerTag(profile)).toBe(true);
+    expect(result.output).toMatch(/memo {4}marked Tempo memos declared/);
   });
 
   it('with the config RPC down and treasuries persisted, the profile carries the fee tag', () => {
@@ -243,10 +251,12 @@ describe('setup declares fee support only with treasuries it has read', () => {
     const result = command(path, ['setup'], run);
     expect(result.code).toBe(0);
     expect(result.output).toMatch(/protocol-fee support declared/);
+    expect(result.output).toMatch(/memo {4}marked Tempo memos declared/);
     expect(hasFeeTag(profileOf(published(run), keysOf(path).storePubkey))).toBe(true);
+    expect(hasMemoMarkerTag(profileOf(published(run), keysOf(path).storePubkey))).toBe(true);
   });
 
-  it('a payout list no relay takes beside a profile they do: the ledger on disk is v4, with the treasuries read', () => {
+  it('a payout list no relay takes beside a profile they do: the ledger on disk is v5, with the treasuries read', () => {
     const path = solanaHome();
     const { treasuries: _treasuries, unresolvedPayments: _unresolved, ...v3 } = emptyLedger();
     writeLedger(path, { ...v3, version: PRE_FEE_LEDGER_VERSION });
@@ -261,7 +271,7 @@ describe('setup declares fee support only with treasuries it has read', () => {
     const events = published(run);
     expect(profileOf(events, keysOf(path).storePubkey)).toBeDefined();
     expect(events.some((event) => event.kind === 10133)).toBe(false);
-    expect(ledgerOf(path).version).toBe(4);
+    expect(ledgerOf(path).version).toBe(5);
     // The treasuries the declaration rests on were saved before anything was published.
     expect(ledgerOf(path).treasuries?.devnet?.latest?.solana).toBe(TREASURY);
   });
@@ -418,6 +428,7 @@ describe('the profile warning', () => {
     const result = command(path, ['check'], run);
     expect(result.code).toBe(0);
     expect(result.output).toMatch(NO_PROFILE_FEE);
+    expect(result.output).toMatch(NO_PROFILE_MEMO);
   });
 
   it('run warns about a served profile without the fee tag', async () => {
@@ -426,6 +437,24 @@ describe('the profile warning', () => {
     const node = startRun(path, run);
     expect(await until(() => /listening on/.test(node.output()))).toBe(true);
     expect(node.output()).toMatch(NO_PROFILE_FEE);
+    expect(node.output()).toMatch(NO_PROFILE_MEMO);
+  });
+
+  it('check warns only about the memo marker for a profile with the fee tag alone', () => {
+    const path = solanaHome();
+    const feeOnly = harness({ seed: [taglessProfile(path, [['fee', '1']])] });
+    const result = command(path, ['check'], feeOnly);
+    expect(result.output).not.toMatch(NO_PROFILE_FEE);
+    expect(result.output).toMatch(NO_PROFILE_MEMO);
+    const both = harness({
+      seed: [
+        taglessProfile(path, [
+          ['fee', '1'],
+          ['memo-marker', '1'],
+        ]),
+      ],
+    });
+    expect(command(path, ['check'], both).output).not.toMatch(NO_PROFILE_MEMO);
   });
 
   it('check and run name a fee above 0 the config reads now', async () => {
@@ -464,6 +493,7 @@ describe('the profile warning', () => {
   it('neither warns when no profile is served', async () => {
     const path = solanaHome();
     expect(command(path, ['check'], harness()).output).not.toMatch(NO_PROFILE_FEE);
+    expect(command(path, ['check'], harness()).output).not.toMatch(NO_PROFILE_MEMO);
     const node = startRun(path, harness());
     expect(await until(() => /listening on/.test(node.output()))).toBe(true);
     expect(node.output()).not.toMatch(NO_PROFILE_FEE);

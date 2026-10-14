@@ -64,6 +64,7 @@ export {
 export {
   type OrderPaymentReference,
   type OrderPaymentReferenceInput,
+  acceptedTempoMemos,
   deriveOrderPaymentReference,
 } from './orders/payment-reference';
 export {

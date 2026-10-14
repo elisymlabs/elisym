@@ -100,6 +100,16 @@ earlier refuse a version 4 ledger, and a fix ships forward as a new release. Onc
 with a fee-aware version: a restored older copy under an older node would run under a profile
 that declares fee support, and that node refuses the split payments buyers then send.
 
+**Upgrading to 0.11.** Stop the node, run `setup` once, then `run`. 0.11 accepts a Tempo payment
+under either form of the order's memo (see [Marked Tempo memos](#marked-tempo-memos)), and `setup`
+declares it in the store profile. Any 0.11 command that saves the ledger - `setup`, `run`,
+`webhook retry` / `resend`, `complete` and `refund` - writes it as version 5, tag published or
+not, so the home is 0.11-only from the first such command: 0.10 and earlier refuse a version 5
+ledger. There is no way back, and that is on purpose: a 0.10 node under a profile that declares
+marked memos would refuse every marked receipt and never find a marked payment, and the buyer
+would pay for nothing. Commands that only read (`orders`, `check`) open a version 4 ledger without
+writing it.
+
 The home's lock (`run.lock`) keeps two processes from writing the ledger at once, wherever they
 run (containers and hosts sharing the home included). Its holder refreshes it every 20 seconds.
 A node that stopped without releasing it leaves it behind, and the lock frees itself 90 seconds
@@ -237,6 +247,18 @@ split. `setup` declares it once this home holds treasuries read from the config.
 never read them (the config RPC down at its first `setup`) publishes the profile without the
 declaration and says so loudly: run `setup` again once the config RPC answers. `run` and `check`
 warn when the profile the relays serve lacks the declaration.
+
+### Marked Tempo memos
+
+An order's Tempo memo has two forms: the legacy one (the order hash, 32 bytes) and the marked
+one (the commerce magic `0xfab22e7e`, then the first 28 bytes of the hash). The marked form lets
+elisym's public statistics count the sale from chain data alone. `setup` always declares
+`["memo-marker", "1"]` on the store's kind 0, and a buyer pays under the marked form only for a
+store that declares it; the node accepts both forms for every order, and receipts naming either,
+whatever its profile says today. `run` and `check` warn when the profile the relays serve lacks
+the tag ("buyers pay under the legacy memo and those sales are not counted"): run `setup` again.
+A marked memo makes your Tempo payout and its sales volume publicly countable, as the protocol
+tag already does for Solana payments; no order data is revealed.
 
 **`feeUnresolved`.** A payment that gave your payout at least 90% of the price and the rest to an
 address that is no treasury the node knows is neither credited nor refused: `orders` shows

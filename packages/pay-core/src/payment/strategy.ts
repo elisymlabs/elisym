@@ -180,7 +180,9 @@ export interface BuildTransactionOptions {
    * with payload `elisym:v1:<jobEventId>`. Off-chain indexers join the memo
    * back to the originating job for per-provider/per-capability analytics.
    * Memo is omitted when this option is absent; the protocol tag is still
-   * attached either way.
+   * attached either way. Commerce payments carry `elisym:commerce` instead
+   * (`buildPaymentInstructions`' `commerceMemo`); the two never share a
+   * transaction.
    */
   jobEventId?: string;
 }

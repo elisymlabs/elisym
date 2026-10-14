@@ -69,7 +69,7 @@ describe('ledger', () => {
     state.orders.a = order('a', 5);
     claimPayment(state, 'S', 'a');
     saveLedger(path, state);
-    expect(loadLedger(path)).toEqual({ state, read: 4 });
+    expect(loadLedger(path)).toEqual({ state, read: 5 });
     expect(() => readFileSync(`${path}.tmp`)).toThrow();
   });
 

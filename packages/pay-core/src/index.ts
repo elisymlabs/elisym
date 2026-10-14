@@ -115,6 +115,15 @@ export type {
   BuildSignedPullOptions,
   ConfirmToTerminalOptions,
 } from './payment/settlement';
+export {
+  classifyElisymMemo,
+  ELISYM_COMMERCE_MEMO,
+  ELISYM_JOB_MEMO_PREFIX,
+  isTempoCommerceMemo,
+  markTempoCommerceMemo,
+  TEMPO_COMMERCE_MEMO_MAGIC,
+} from './payment/markers';
+export type { ElisymMemoKind } from './payment/markers';
 export { aggregateNetworkStats, getNetworkStats } from './payment/analytics';
 export type {
   AggregateNetworkStatsOptions,

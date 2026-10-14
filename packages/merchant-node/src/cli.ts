@@ -17,7 +17,8 @@ import {
   checkDomain,
   checkInboxRelays,
   offerProblems,
-  profileFeeSupport,
+  profileCapabilities,
+  profileMemoMarkerWarning,
   readBeforeSetup,
   readRelayViews,
 } from './checks';
@@ -425,9 +426,9 @@ function treasuryReader(config: MerchantConfig): TreasuryReader {
   return new TreasuryReader(createSolanaRpc(feeConfigRpcUrl(config)), config.network);
 }
 
-/** Warn (never refuse) when the store profile buyers read does not declare fee support. */
+/** Warn (never refuse) when the store profile buyers read does not declare fee support or marked memos. */
 function warnProfile(views: readonly RelayView[], refresh: TreasuryRefresh): void {
-  const { found, feeSupport } = profileFeeSupport(views);
+  const { found, feeSupport, memoMarker } = profileCapabilities(views);
   const warning = profileFeeWarning(
     found,
     feeSupport,
@@ -435,6 +436,10 @@ function warnProfile(views: readonly RelayView[], refresh: TreasuryRefresh): voi
   );
   if (warning !== undefined) {
     log(`warning: ${warning}`);
+  }
+  const memoWarning = profileMemoMarkerWarning(found, memoMarker);
+  if (memoWarning !== undefined) {
+    log(`warning: ${memoWarning}`);
   }
 }
 
@@ -535,6 +540,7 @@ async function setup(home: MerchantHome): Promise<void> {
     console.log(
       `fee     ${declaration.declare ? 'protocol-fee support declared' : 'protocol-fee support NOT declared (see the warning above)'}`,
     );
+    console.log('memo    marked Tempo memos declared');
     const hints = config.inboxRelays.slice(0, 2);
     for (const outcome of outcomes) {
       const selling = outcome.onSale ? 'on sale' : 'stopped';

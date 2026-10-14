@@ -388,6 +388,20 @@ describe('the merchant CLI', () => {
     expect(ledgerVersion(home)).toBe(3);
   });
 
+  it('reads a ledger from before marked memos without writing, and a saving command leaves v5', () => {
+    const home = webhookHome();
+    const key = writePaidLedger(home);
+    const path = join(home, 'ledger.json');
+    const v4 = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...v4, version: 4 }));
+    const env = { ELISYM_MERCHANT_WEBHOOK_SECRET: WEBHOOK_SECRET };
+    expect(cli(['orders', '--home', home], env).code).toBe(0);
+    expect(ledgerVersion(home)).toBe(4);
+    // The rearm is saved before the send (which fails against port 9).
+    cli(['webhook', 'retry', key, '--home', home], env);
+    expect(ledgerVersion(home)).toBe(5);
+  });
+
   it('setup converts a ledger from before fee support, and a missing one, before any relay', () => {
     for (const missing of [false, true]) {
       const home = feeHome();
@@ -399,7 +413,7 @@ describe('the merchant CLI', () => {
       expect(run.code).not.toBe(0);
       expect(run.output).toMatch(/inbox relays do not take and serve/);
       // ...with the home already converted, and no fee support declared.
-      expect(ledgerVersion(home)).toBe(4);
+      expect(ledgerVersion(home)).toBe(5);
       expect(run.output).toMatch(/WITHOUT protocol-fee support/);
     }
   });
@@ -412,10 +426,10 @@ describe('the merchant CLI', () => {
     });
     try {
       const deadline = Date.now() + 15_000;
-      while (ledgerVersion(home) !== 4 && Date.now() < deadline) {
+      while (ledgerVersion(home) !== 5 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      expect(ledgerVersion(home)).toBe(4);
+      expect(ledgerVersion(home)).toBe(5);
     } finally {
       child.kill('SIGKILL');
     }

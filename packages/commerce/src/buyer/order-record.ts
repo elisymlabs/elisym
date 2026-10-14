@@ -92,7 +92,12 @@ export interface OrderRecord {
   amount: string;
   /** The receipt's `medium`: `solana`, `solana-devnet`, `tempo`, `tempo-moderato`. */
   medium: string;
-  /** The derived payment reference (base58) or memo (0x hex). */
+  /**
+   * The derived payment reference (base58) or memo (0x hex). On Tempo it is the
+   * legacy memo, or the marked one when the store declared `['memo-marker', '1']`
+   * at placing; chosen once and kept for the record's life, so a resumed order
+   * pays and reports the memo it was placed with.
+   */
   reference: string;
   /** The verified offer the order was placed against. */
   offer: VerifiedOffer;

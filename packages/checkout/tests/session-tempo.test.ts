@@ -1,4 +1,9 @@
-import { type OrderMessage, buildOrderMessage, wrapOrderMessage } from '@elisym/commerce';
+import {
+  type OrderMessage,
+  buildOrderMessage,
+  deriveOrderPaymentReference,
+  wrapOrderMessage,
+} from '@elisym/commerce';
 import { type LoadedOffer, OrderStore, applyStatus, loadOffer } from '@elisym/commerce/buyer';
 import type { OrderRecord } from '@elisym/commerce/buyer';
 import type { TempoWallet } from '@elisym/commerce/buyer';
@@ -124,12 +129,18 @@ async function setup(transform: (offer: Ready) => Ready = (offer) => offer) {
           : args,
       ),
   };
-  const wallet = { behaviour: 'land' as Behaviour, requests: 0 };
+  const wallet = {
+    behaviour: 'land' as Behaviour,
+    requests: 0,
+    memos: [] as string[],
+    chainId: 42431,
+  };
   const tempoWallet: TempoWallet = {
     address: PAYER,
-    chainId: async () => 42431,
+    chainId: async () => wallet.chainId,
     sendCall: async (call) => {
       wallet.requests += 1;
+      wallet.memos.push(`0x${call.data.slice(-64)}`);
       if (wallet.behaviour === 'reject') {
         throw Object.assign(new Error('User rejected'), { code: 4001 });
       }
@@ -569,6 +580,78 @@ describe('paying on Tempo in the widget', () => {
       tempo: true,
       paying: { chain: 'tempo', network: 'devnet' },
     });
+  });
+});
+
+describe('the memo form a Tempo order is paid under', () => {
+  /** Whether the store's profile declares `['memo-marker', '1']`, as the offer is read now. */
+  function declaring(flag: { on: boolean }) {
+    return (offer: Ready): Ready => ({
+      ...offer,
+      offer: {
+        ...offer.offer,
+        memoMarker: flag.on,
+        profile: { ...offer.offer.profile, memoMarker: flag.on },
+      },
+    });
+  }
+
+  function referenceOf(record: OrderRecord | undefined) {
+    if (record === undefined) {
+      throw new Error('no record');
+    }
+    return deriveOrderPaymentReference({
+      storePubkey: record.storePubkey,
+      buyerPubkey: record.buyerPubkey,
+      orderId: record.orderId,
+    });
+  }
+
+  it('asks the wallet for the marked memo for a store that declares it, and is paid', async () => {
+    const run = await setup(declaring({ on: true }));
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    await run.timers.tick();
+    const [record] = await records(run.offer);
+    expect(record).toMatchObject({ state: 'paid', paidTx: HASH });
+    const marked = referenceOf(record).tempoMarked;
+    expect(marked.startsWith('0xfab22e7e')).toBe(true);
+    expect(record?.reference).toBe(marked);
+    expect(run.wallet.memos).toEqual([marked]);
+  });
+
+  it('asks the wallet for the legacy memo for a store that does not', async () => {
+    const run = await setup(declaring({ on: false }));
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    await run.timers.tick();
+    const [record] = await records(run.offer);
+    expect(record).toMatchObject({ state: 'paid' });
+    expect(run.wallet.memos).toEqual([referenceOf(record).tempo]);
+  });
+
+  it('keeps the legacy memo of an order placed before the store declared the marker', async () => {
+    const flag = { on: false };
+    const run = await setup(declaring(flag));
+    // The first press places the order and composes its request, then stops on
+    // the wallet's chain: nothing was requested, the order stays payable.
+    run.wallet.chainId = 4217;
+    await run.session.start();
+    await run.session.pay('MetaMask');
+    const [placed] = await records(run.offer);
+    const legacy = referenceOf(placed).tempo;
+    expect(placed?.reference).toBe(legacy);
+    expect(placed?.paymentRequest).toContain(legacy);
+    expect(run.wallet.memos).toEqual([]);
+    // The store re-runs setup: its profile declares the marker from now on.
+    flag.on = true;
+    run.wallet.chainId = 42431;
+    await run.session.pay('MetaMask');
+    await run.timers.tick();
+    const [record] = await records(run.offer);
+    expect(record?.orderId).toBe(placed?.orderId);
+    expect(record).toMatchObject({ state: 'paid', reference: legacy });
+    expect(run.wallet.memos).toEqual([legacy]);
   });
 });
 

@@ -846,7 +846,7 @@ describe('Tempo receipts at the runtime', () => {
     const order = Object.values(run.state.orders)[0];
     expect(order?.noLegTxs).toEqual([TEMPO_HASH]);
     expect(order?.refusedTxs).toBeUndefined();
-    expect(run.state.version).toBe(4);
+    expect(run.state.version).toBe(5);
   });
 
   it('leaves a Tempo hash alone on a node with no tempo block', async () => {

@@ -39,18 +39,33 @@ export interface StoreProfile {
    * fee leg only for a store that declares it - an older node refuses a split.
    */
   feeSupport: boolean;
+  /**
+   * The store's node accepts BOTH Tempo memo forms for every order (tag
+   * `['memo-marker', '1']`): the legacy order hash and the marked form, the
+   * commerce magic plus 28 bytes of it. A buyer pays under the marked memo only
+   * for a store that declares it - an older node refuses any other memo.
+   */
+  memoMarker: boolean;
 }
 
-export interface StoreProfileInput extends Omit<StoreProfile, 'ownerPubkey' | 'feeSupport'> {
+export interface StoreProfileInput extends Omit<
+  StoreProfile,
+  'ownerPubkey' | 'feeSupport' | 'memoMarker'
+> {
   ownerPubkey: string;
   /** Declare protocol-fee v1 support: the `['fee', '1']` tag. */
   fee?: boolean;
+  /** Declare that the node accepts marked Tempo memos: the `['memo-marker', '1']` tag. */
+  memoMarker?: boolean;
   createdAt?: number;
 }
 
 /** The tag a store's node declares protocol-fee v1 support with. */
 const FEE_TAG = 'fee';
 const FEE_VERSION = '1';
+/** The tag a store's node declares that it accepts marked Tempo memos with. */
+export const MEMO_MARKER_TAG = 'memo-marker';
+export const MEMO_MARKER_VERSION = '1';
 
 /** Build the store's kind 0. The caller signs it with the STORE key. */
 export function buildStoreProfileEvent(input: StoreProfileInput): EventTemplate {
@@ -71,7 +86,11 @@ export function buildStoreProfileEvent(input: StoreProfileInput): EventTemplate 
   return {
     kind: KIND_STORE_PROFILE,
     created_at: input.createdAt ?? nowSecs(),
-    tags: [['owner', input.ownerPubkey], ...(input.fee === true ? [[FEE_TAG, FEE_VERSION]] : [])],
+    tags: [
+      ['owner', input.ownerPubkey],
+      ...(input.fee === true ? [[FEE_TAG, FEE_VERSION]] : []),
+      ...(input.memoMarker === true ? [[MEMO_MARKER_TAG, MEMO_MARKER_VERSION]] : []),
+    ],
     content: JSON.stringify(content),
   };
 }
@@ -97,6 +116,7 @@ export function parseStoreProfile(
   const owner = tagValue(event.tags, 'owner');
   const profile: StoreProfile = {
     feeSupport: tagValues(event.tags, FEE_TAG).includes(FEE_VERSION),
+    memoMarker: tagValues(event.tags, MEMO_MARKER_TAG).includes(MEMO_MARKER_VERSION),
   };
   for (const key of PROFILE_FIELDS) {
     const value = Object.hasOwn(fields, key) ? fields[key] : undefined;

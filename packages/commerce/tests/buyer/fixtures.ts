@@ -65,6 +65,8 @@ export function makeShop(
     payout?: string;
     /** The store's node declares protocol-fee support (`['fee', '1']` on its profile). */
     fee?: boolean;
+    /** The store's node accepts marked Tempo memos (`['memo-marker', '1']` on its profile). */
+    memoMarker?: boolean;
   } = {},
 ): Shop {
   const owner = nostrKey();
@@ -89,6 +91,7 @@ export function makeShop(
         createdAt: T0,
         ...(options.nip05 === undefined ? {} : { nip05: options.nip05 }),
         ...(options.fee === undefined ? {} : { fee: options.fee }),
+        ...(options.memoMarker === undefined ? {} : { memoMarker: options.memoMarker }),
       }),
       store,
     ),

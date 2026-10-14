@@ -5,6 +5,7 @@
  * treasury `t`, both in the same receipt.
  */
 import { chainByCaip2 } from '@elisym/pay-core';
+import type { TempoTransferLog } from '@elisym/pay-core/evm';
 import { describe, expect, it } from 'vitest';
 import { TRANSFER_WITH_MEMO_TOPIC } from '../../pay-core/src/evm/constants';
 import {
@@ -20,7 +21,9 @@ import {
   catchUpTempo,
   checkTempoPayment,
   orderTempoCandidates,
+  recordTempoCheck,
   tempoMemo,
+  tempoMemos,
 } from '../src/tempo';
 import { publishTerms } from '../src/terms';
 import { D, PAYOUT as SOLANA_PAYOUT, T0, USDC_DEVNET_CAIP19, key, orderFrom } from './fixtures';
@@ -84,6 +87,7 @@ interface Setup {
   };
   memo: string;
   token: string;
+  store: ReturnType<typeof key>;
 }
 
 function setup(
@@ -151,6 +155,7 @@ function setup(
     options: chainOptions,
     memo: tempoMemo(taken.order, store.pubkey),
     token,
+    store,
   };
 }
 
@@ -161,13 +166,13 @@ function setup(
 function land(
   run: Setup,
   hash: string,
-  legs: readonly { to: string; amount: bigint; token?: string }[],
+  legs: readonly { to: string; amount: bigint; token?: string; memo?: string }[],
   { memo = run.memo, block = LAND } = {},
 ): void {
   const at = `0x${block.toString(16)}`;
   const logs = legs.map((leg, index) => ({
     address: leg.token ?? run.token,
-    topics: [TRANSFER_WITH_MEMO_TOPIC, `0x${word(PAYER)}`, `0x${word(leg.to)}`, memo],
+    topics: [TRANSFER_WITH_MEMO_TOPIC, `0x${word(PAYER)}`, `0x${word(leg.to)}`, leg.memo ?? memo],
     data: `0x${word(leg.amount)}`,
     blockNumber: block,
     transactionHash: hash,
@@ -671,7 +676,7 @@ describe('a scanned leg the receipt shows but no term of the order can use', () 
 });
 
 /** A receipt holding only a guard log that bounced `amount` to `receiver` (Moderato pathUSD). */
-function guarded(run: Setup, receiver: string, amount: bigint): void {
+function guarded(run: Setup, receiver: string, amount: bigint, memo = run.memo): void {
   const recorded = recordedReceipt('moderato-blocked-pathusd');
   const guard = (recorded.logs as Record<string, unknown>[]).find(
     (log) => String(log.address).toLowerCase() === '0xb10c000000000000000000000000000000000000',
@@ -682,7 +687,7 @@ function guarded(run: Setup, receiver: string, amount: bigint): void {
   const words = String(guard.data).slice(2).match(/.{64}/g) ?? [];
   words[0] = word(amount);
   words[8] = word(receiver);
-  words[13] = word(run.memo);
+  words[13] = word(memo);
   const topics = [...(guard.topics as string[])];
   topics[2] = `0x${word(receiver)}`;
   const at = `0x${LAND.toString(16)}`;
@@ -942,5 +947,384 @@ describe('a scanned leg the verify read contradicts', () => {
     expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toEqual({
       kind: 'no_leg',
     });
+  });
+});
+
+/** The order's marked memo: the commerce magic and 28 bytes of the legacy one. */
+function markedOf(run: Setup): string {
+  return tempoMemos(run.order, run.context.storePubkey)[1];
+}
+
+/** A leg a memo scan found under `HASH`, as `listTempoLogs` hands it over. */
+function scannedLeg(
+  run: Setup,
+  memo: string,
+  amount: bigint,
+  { to = PAYOUT, logIndex = 0 } = {},
+): TempoTransferLog {
+  return {
+    token: run.token,
+    blockHash: BLOCK_HASH,
+    from: PAYER,
+    to,
+    amount,
+    memo,
+    transactionHash: HASH,
+    logIndex,
+    blockNumber: LAND,
+  };
+}
+
+/** Count the receipt reads of `HASH`, and fail every one after the first `allowed`. */
+function receiptReads(run: Setup, allowed = Number.POSITIVE_INFINITY): { reads: number } {
+  const inner = run.context.client;
+  const counter = { reads: 0 };
+  run.context = {
+    ...run.context,
+    client: {
+      request: async (args) => {
+        if (args.method === 'eth_getTransactionReceipt' && args.params?.[0] === HASH) {
+          counter.reads += 1;
+          if (counter.reads > allowed) {
+            throw new Error('the node went away');
+          }
+        }
+        return await inner.request(args);
+      },
+    },
+  };
+  return counter;
+}
+
+/** A cheaper product on the order's coin and payout: the scan reads down to its floor. */
+function cheaperProductBeside(run: Setup, payout = PAYOUT): void {
+  const caip19 = run.state.terms[0]?.terms.caip19 ?? TEMPO_USDC;
+  run.state.terms = [
+    ...run.state.terms,
+    {
+      terms: { d: 'cheap', caip19, payout, amount: (PRICE / 100n).toString() },
+      from: T0 - 86_400,
+    },
+  ];
+}
+
+describe('marked Tempo memos', () => {
+  it('credits a marked receipt, claimed under the marked memo', async () => {
+    const run = setup();
+    const marked = markedOf(run);
+    expect(marked.startsWith('0xfab22e7e')).toBe(true);
+    land(run, HASH, [{ to: PAYOUT, amount: PRICE }], { memo: marked });
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toMatchObject({
+      kind: 'paid',
+    });
+    expect(run.order.paid).toMatchObject({ signature: HASH, amount: PRICE.toString(), fee: '0' });
+    expect(Object.keys(run.state.claims)).toEqual([`eip155:4217:${HASH}:${marked}`]);
+  });
+
+  it('credits a marked split, both legs under the marked memo', async () => {
+    const run = setup();
+    land(
+      run,
+      HASH,
+      [
+        { to: PAYOUT, amount: PRICE - FEE },
+        { to: TREASURY, amount: FEE },
+      ],
+      { memo: markedOf(run) },
+    );
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toMatchObject({
+      kind: 'paid',
+    });
+    expect(run.order.paid).toMatchObject({ amount: PRICE.toString(), fee: FEE.toString() });
+  });
+
+  it('never joins a marked payee leg and a legacy fee leg into a split', async () => {
+    const run = setup();
+    land(run, HASH, [
+      { to: PAYOUT, amount: PRICE - FEE, memo: markedOf(run) },
+      { to: TREASURY, amount: FEE },
+    ]);
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toEqual({
+      kind: 'ask_again',
+      feeUnresolved: true,
+    });
+    expect(run.order.paid).toBeUndefined();
+  });
+
+  it('credits a transaction paying both forms once: the legacy group, one claim, one webhook', async () => {
+    const run = setup();
+    land(run, HASH, [
+      { to: PAYOUT, amount: PRICE },
+      { to: PAYOUT, amount: PRICE, memo: markedOf(run) },
+    ]);
+    const outbox = { storePubkey: run.context.storePubkey, now: () => HEAD_TIME };
+    expect(
+      await checkTempoPayment(run.state, run.order, HASH, { ...run.context, outbox }),
+    ).toMatchObject({ kind: 'paid' });
+    expect(Object.keys(run.state.claims)).toEqual([`eip155:4217:${HASH}:${run.memo}`]);
+    expect(run.order.paid).toMatchObject({ signature: HASH, amount: PRICE.toString() });
+    expect(run.order.webhook).toMatchObject({ state: 'pending' });
+    // Asked again, it is the payment it already is.
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toMatchObject({
+      kind: 'paid',
+    });
+    expect(Object.keys(run.state.claims)).toHaveLength(1);
+  });
+
+  it('sets aside a marked leg of another order', async () => {
+    const run = setup();
+    land(run, HASH, [{ to: PAYOUT, amount: PRICE }], { memo: `0xfab22e7e${'12'.repeat(28)}` });
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toEqual({
+      kind: 'no_leg',
+    });
+    expect(run.order.paid).toBeUndefined();
+  });
+
+  it('catch-up finds a marked and a legacy payment in one sweep, scanning without a memo', async () => {
+    const run = setup();
+    const second = intake(
+      run.state,
+      orderFrom(key(), run.store, 'b3a7c2d4-0000-4000-8000-000000000002'),
+      storeIdentity(run.store.pubkey, [D], ['tempo', 'tempo-moderato']),
+    );
+    if (second.kind !== 'order') {
+      throw new Error('order not taken');
+    }
+    land(run, HASH, [{ to: PAYOUT, amount: PRICE }]);
+    const secondMarked = tempoMemos(second.order, run.store.pubkey)[1];
+    land(run, OTHER_HASH, [{ to: PAYOUT, amount: PRICE }], { memo: secondMarked });
+    const filters: { topics?: unknown[] }[] = [];
+    const inner = run.context.client;
+    run.context = {
+      ...run.context,
+      client: {
+        request: async (args) => {
+          if (args.method === 'eth_getLogs') {
+            filters.push(args.params?.[0] as { topics?: unknown[] });
+          }
+          return await inner.request(args);
+        },
+      },
+    };
+    const swept = await catchUpTempo(run.state, run.context, HEAD_TIME);
+    expect(swept.paid.map((order) => order.key).sort()).toEqual(
+      [run.order.key, second.order.key].sort(),
+    );
+    expect(run.order.paid?.signature).toBe(HASH);
+    expect(second.order.paid?.signature).toBe(OTHER_HASH);
+    const scans = filters.filter((filter) => filter.topics?.[0] === TRANSFER_WITH_MEMO_TOPIC);
+    expect(scans.length).toBeGreaterThan(0);
+    // The scan names no memo: both forms of every order are matched locally.
+    expect(scans.every((filter) => filter.topics?.[3] === null)).toBe(true);
+  });
+});
+
+describe('judging the memo groups of one receipt', () => {
+  it('pays through the legacy group when a marked leg was scanned', async () => {
+    const run = setup();
+    land(run, HASH, [{ to: PAYOUT, amount: PRICE }]);
+    const scanned = [scannedLeg(run, markedOf(run), PRICE)];
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context, scanned)).toMatchObject(
+      { kind: 'paid' },
+    );
+    expect(Object.keys(run.state.claims)).toEqual([`eip155:4217:${HASH}:${run.memo}`]);
+  });
+
+  it('asks again, recording nothing, when that legacy leg does not pay', async () => {
+    const run = setup();
+    land(run, HASH, [{ to: PAYOUT, amount: 1n }]);
+    const scanned = [scannedLeg(run, markedOf(run), PRICE)];
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context, scanned)).toEqual({
+      kind: 'ask_again',
+    });
+    expect(run.order.paid).toBeUndefined();
+    expect(run.state.claims).toEqual({});
+    expect(run.order.blockedTx).toBeUndefined();
+  });
+
+  it('a mixed transaction with the legacy group refused and the marked one empty is no leg', async () => {
+    const reported = setup();
+    land(reported, HASH, [
+      { to: PAYOUT, amount: PRICE },
+      { to: PAYOUT, amount: 1n, memo: markedOf(reported) },
+    ]);
+    startTermsAfterLanding(reported);
+    const check = await checkTempoPayment(reported.state, reported.order, HASH, reported.context);
+    expect(check).toEqual({ kind: 'no_leg' });
+    recordTempoCheck(reported.order, HASH, check);
+    expect(reported.order.noLegTxs).toEqual([HASH]);
+    expect(reported.order.refusedTxs).toBeUndefined();
+
+    const scanned = setup();
+    land(scanned, HASH, [
+      { to: PAYOUT, amount: PRICE },
+      { to: PAYOUT, amount: 1n, memo: markedOf(scanned) },
+    ]);
+    startTermsAfterLanding(scanned);
+    await catchUpTempo(scanned.state, scanned.context, HEAD_TIME);
+    expect(scanned.order.tempoNoLeg).toEqual([HASH]);
+    expect(scanned.order.refusedTxs).toBeUndefined();
+  });
+
+  it('a mixed transaction refused in both groups is no leg, never refused', async () => {
+    const run = setup();
+    land(run, HASH, [
+      { to: PAYOUT, amount: PRICE },
+      { to: PAYOUT, amount: PRICE, memo: markedOf(run) },
+    ]);
+    startTermsAfterLanding(run);
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toEqual({
+      kind: 'no_leg',
+    });
+    // One group alone is refused, as before marked memos.
+    const single = setup();
+    land(single, HASH, [{ to: PAYOUT, amount: PRICE }], { memo: markedOf(single) });
+    startTermsAfterLanding(single);
+    expect(await checkTempoPayment(single.state, single.order, HASH, single.context)).toEqual({
+      kind: 'refused',
+      reason: 'not_a_payment_for_this_order',
+    });
+  });
+
+  it('combines two groups: unresolved before ask', async () => {
+    const run = setup();
+    strangerSplit(run);
+    const scanned = [scannedLeg(run, markedOf(run), PRICE)];
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context, scanned)).toEqual({
+      kind: 'ask_again',
+      feeUnresolved: true,
+    });
+  });
+
+  it('combines two groups: no leg when neither has anything else to say', async () => {
+    const run = setup();
+    land(run, HASH, [
+      { to: PAYOUT, amount: 1n },
+      { to: PAYOUT, amount: 1n, memo: markedOf(run) },
+    ]);
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toEqual({
+      kind: 'no_leg',
+    });
+  });
+
+  it('judges two scanned legs of one memo together: satisfied by either one', async () => {
+    const run = setup();
+    land(run, HASH, [{ to: PAYOUT, amount: PRICE }], { memo: markedOf(run) });
+    revertingAfterFirstRead(run);
+    const scanned = [
+      scannedLeg(run, markedOf(run), PRICE, { to: STRANGER }),
+      scannedLeg(run, markedOf(run), PRICE, { logIndex: 1 }),
+    ];
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context, scanned)).toEqual({
+      kind: 'ask_again',
+    });
+  });
+
+  it('judges two scanned legs of one memo together: no leg only if the receipt shows both', async () => {
+    const shown = setup();
+    cheaperProductBeside(shown);
+    const small = FLOOR - 1n;
+    land(shown, HASH, [{ to: PAYOUT, amount: small }], { memo: markedOf(shown) });
+    const both = [
+      scannedLeg(shown, markedOf(shown), small),
+      scannedLeg(shown, markedOf(shown), small - 1n, { logIndex: 1 }),
+    ];
+    expect(await checkTempoPayment(shown.state, shown.order, HASH, shown.context, both)).toEqual({
+      kind: 'no_leg',
+    });
+    const missing = setup();
+    cheaperProductBeside(missing);
+    land(missing, HASH, [{ to: PAYOUT, amount: small }], { memo: markedOf(missing) });
+    const unseen = [
+      scannedLeg(missing, markedOf(missing), small),
+      scannedLeg(missing, markedOf(missing), small + 1n, { logIndex: 1 }),
+    ];
+    expect(
+      await checkTempoPayment(missing.state, missing.order, HASH, missing.context, unseen),
+    ).toEqual({ kind: 'ask_again' });
+  });
+
+  it('catch-up judges one (order, hash) once with every leg it scanned, and records the hash once', async () => {
+    const run = setup();
+    cheaperProductBeside(run);
+    const small = FLOOR - 1n;
+    land(run, HASH, [
+      { to: PAYOUT, amount: small },
+      { to: PAYOUT, amount: small, memo: markedOf(run) },
+    ]);
+    const counter = receiptReads(run);
+    const swept = await catchUpTempo(run.state, run.context, HEAD_TIME);
+    expect(swept.paid).toEqual([]);
+    expect(counter.reads).toBe(1);
+    expect(run.order.tempoNoLeg).toEqual([HASH]);
+    await catchUpTempo(run.state, run.context, HEAD_TIME + 60);
+    expect(run.order.tempoNoLeg).toEqual([HASH]);
+  });
+});
+
+describe('the blocked note with marked memos', () => {
+  const blockedReceiver = '0x70997970c51812dc3a010c7d01b50e0d17dc79c8';
+  const pathusd = '0x20c0000000000000000000000000000000000000';
+  const moderato = () =>
+    setup({
+      chainId: '0xa5bf',
+      caip19: `eip155:42431/erc20:${pathusd}`,
+      payout: blockedReceiver,
+    });
+
+  /** Add a transfer of `amount` under `memo` to the guard receipt `guarded` wrote. */
+  function besideGuard(run: Setup, memo: string, amount: bigint): void {
+    const receipt = run.options.receipts[HASH] as { logs: Record<string, unknown>[] };
+    const at = `0x${LAND.toString(16)}`;
+    const log = {
+      address: run.token,
+      topics: [TRANSFER_WITH_MEMO_TOPIC, `0x${word(PAYER)}`, `0x${word(blockedReceiver)}`, memo],
+      data: `0x${word(amount)}`,
+      blockNumber: LAND,
+      transactionHash: HASH,
+      logIndex: 9,
+    };
+    run.options.logs.push(log);
+    receipt.logs.push({ ...log, blockNumber: at, logIndex: '0x9', blockHash: BLOCK_HASH });
+  }
+
+  it('is taken from a guard-only receipt under the marked memo', async () => {
+    const run = moderato();
+    guarded(run, blockedReceiver, PRICE, markedOf(run));
+    expect(await checkTempoPayment(run.state, run.order, HASH, run.context)).toEqual({
+      kind: 'blocked',
+    });
+    expect(run.order.blockedTx).toBe(HASH);
+  });
+
+  it('wins over no leg in the other group, and loses to an ask', async () => {
+    const noLeg = moderato();
+    guarded(noLeg, blockedReceiver, PRICE);
+    besideGuard(noLeg, markedOf(noLeg), 1n);
+    expect(await checkTempoPayment(noLeg.state, noLeg.order, HASH, noLeg.context)).toEqual({
+      kind: 'blocked',
+    });
+    expect(noLeg.order.blockedTx).toBe(HASH);
+
+    const ask = moderato();
+    guarded(ask, blockedReceiver, PRICE);
+    besideGuard(ask, markedOf(ask), PRICE);
+    // The pre-read answers; the full verify of the marked leg does not.
+    receiptReads(ask, 1);
+    expect(await checkTempoPayment(ask.state, ask.order, HASH, ask.context)).toEqual({
+      kind: 'ask_again',
+    });
+    expect(ask.order.blockedTx).toBeUndefined();
+  });
+
+  it('is never taken during catch-up: a scanned legacy leg below the floor beside a marked guard', async () => {
+    const run = moderato();
+    cheaperProductBeside(run, blockedReceiver);
+    guarded(run, blockedReceiver, PRICE, markedOf(run));
+    besideGuard(run, run.memo, FLOOR - 1n);
+    const swept = await catchUpTempo(run.state, run.context, HEAD_TIME);
+    expect(swept.paid).toEqual([]);
+    expect(run.order.tempoNoLeg).toEqual([HASH]);
+    expect(run.order.blockedTx).toBeUndefined();
   });
 });

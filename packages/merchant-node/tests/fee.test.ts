@@ -13,7 +13,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type Credit, type OrderRow, totalsOf } from '../src/admin/history';
-import { profileFeeSupport } from '../src/checks';
+import { profileCapabilities, profileMemoMarkerWarning } from '../src/checks';
 import { configProblems, hasSolanaRail, loadConfig } from '../src/config';
 import { FEE_CONFIG_READ_TIMEOUT_MS } from '../src/constants';
 import {
@@ -33,6 +33,7 @@ import {
   type MerchantOrder,
   LEDGER_VERSION,
   PRE_FEE_LEDGER_VERSION,
+  PRE_MEMO_LEDGER_VERSION,
   emptyLedger,
   loadLedger,
   markFeeUnresolved,
@@ -98,7 +99,7 @@ describe('ledger version 4', () => {
     writeV3(path);
     const loaded = loadLedger(path);
     expect(loaded.read).toBe(3);
-    expect(loaded.state.version).toBe(4);
+    expect(loaded.state.version).toBe(LEDGER_VERSION);
     expect(loaded.state.treasuries).toEqual({});
     expect(loaded.state.unresolvedPayments).toEqual([]);
     // Reading converts nothing on disk.
@@ -112,10 +113,10 @@ describe('ledger version 4', () => {
     const path = scratch();
     writeV3(path);
     openLedgerForUpgrade(path, () => undefined);
-    expect(versionOnDisk(path)).toBe(4);
+    expect(versionOnDisk(path)).toBe(LEDGER_VERSION);
     const fresh = scratch();
     openLedgerForUpgrade(fresh, () => undefined);
-    expect(versionOnDisk(fresh)).toBe(4);
+    expect(versionOnDisk(fresh)).toBe(LEDGER_VERSION);
   });
 
   it('writes nothing when the refusal check stops the command', () => {
@@ -156,7 +157,57 @@ describe('ledger version 4', () => {
       expect(() => loadLedger(path)).toThrow('create a new home with init');
     }
     writeV3(path, (state) => {
-      state.version = 5;
+      state.version = 6;
+    });
+    expect(() => loadLedger(path)).toThrow('Unknown ledger version');
+  });
+});
+
+describe('ledger version 5', () => {
+  /** The check merchant-node 0.10 runs on its ledger: 3 or 4, nothing else. */
+  function releasedFeeLoad(path: string): void {
+    const version: unknown = versionOnDisk(path);
+    if (version !== 3 && version !== 4) {
+      throw new Error(`Unknown ledger version in ${path}`);
+    }
+  }
+
+  function writeV4(path: string): void {
+    writeFileSync(path, JSON.stringify({ ...emptyLedger(), version: PRE_MEMO_LEDGER_VERSION }));
+  }
+
+  it('reads a version 4 ledger as this version, changing only the version', () => {
+    const path = scratch();
+    writeV4(path);
+    const loaded = loadLedger(path);
+    expect(loaded.read).toBe(4);
+    expect(loaded.state).toEqual(emptyLedger());
+    expect(loaded.state.version).toBe(5);
+    expect(versionOnDisk(path)).toBe(4);
+  });
+
+  it('every command opens a version 4 ledger in memory without writing it', () => {
+    const path = scratch();
+    writeV4(path);
+    expect(openLedger(path).version).toBe(5);
+    expect(versionOnDisk(path)).toBe(4);
+  });
+
+  it('setup and run save version 5 at once, which merchant-node 0.10 refuses', () => {
+    const path = scratch();
+    writeV4(path);
+    expect(() => releasedFeeLoad(path)).not.toThrow();
+    openLedgerForUpgrade(path, () => undefined);
+    expect(versionOnDisk(path)).toBe(5);
+    expect(() => releasedFeeLoad(path)).toThrow('Unknown ledger version');
+  });
+
+  it('still refuses version 3 outside setup and run, and an unknown version 6', () => {
+    const path = scratch();
+    writeV3(path);
+    expect(() => openLedger(path)).toThrow(/once after upgrading/);
+    writeV3(path, (state) => {
+      state.version = 6;
     });
     expect(() => loadLedger(path)).toThrow('Unknown ledger version');
   });
@@ -488,6 +539,11 @@ describe('the fee declaration of setup', () => {
     expect(profileOf(true).tags).toContainEqual(['fee', '1']);
     expect(parseStoreProfile(profileOf(true))?.feeSupport).toBe(true);
     expect(profileOf(false).tags.some((tag) => tag[0] === 'fee')).toBe(false);
+    // Marked Tempo memos are declared always, with fee support or without.
+    for (const declare of [true, false]) {
+      expect(profileOf(declare).tags).toContainEqual(['memo-marker', '1']);
+      expect(parseStoreProfile(profileOf(declare))?.memoMarker).toBe(true);
+    }
   });
 });
 
@@ -496,10 +552,10 @@ describe('the profile warning of run and check', () => {
     finalizeEvent({ kind: 0, created_at: T0, tags, content: '{}' }, generateSecretKey());
 
   it('warns when a served profile lacks the fee tag, louder while the fee is above 0', () => {
-    const tagless = profileFeeSupport([
+    const tagless = profileCapabilities([
       { listings: [], payoutList: undefined, inboxList: undefined, profile: profile([]) },
     ]);
-    expect(tagless).toEqual({ found: true, feeSupport: false });
+    expect(tagless).toEqual({ found: true, feeSupport: false, memoMarker: false });
     expect(profileFeeWarning(tagless.found, tagless.feeSupport, 0)).toMatch(/re-run setup/);
     expect(profileFeeWarning(tagless.found, tagless.feeSupport, 0)).not.toMatch(/bps NOW/);
     expect(profileFeeWarning(tagless.found, tagless.feeSupport, 1)).toMatch(/1 bps NOW/);
@@ -507,7 +563,7 @@ describe('the profile warning of run and check', () => {
   });
 
   it('says nothing for a tagged profile, or when none is served', () => {
-    const tagged = profileFeeSupport([
+    const tagged = profileCapabilities([
       {
         listings: [],
         payoutList: undefined,
@@ -515,9 +571,11 @@ describe('the profile warning of run and check', () => {
         profile: profile([['fee', '1']]),
       },
     ]);
-    expect(tagged).toEqual({ found: true, feeSupport: true });
+    expect(tagged).toEqual({ found: true, feeSupport: true, memoMarker: false });
     expect(profileFeeWarning(tagged.found, tagged.feeSupport, 300)).toBeUndefined();
-    const none = profileFeeSupport([{ listings: [], payoutList: undefined, inboxList: undefined }]);
+    const none = profileCapabilities([
+      { listings: [], payoutList: undefined, inboxList: undefined },
+    ]);
     expect(none.found).toBe(false);
     expect(profileFeeWarning(none.found, none.feeSupport, 300)).toBeUndefined();
   });
@@ -532,7 +590,39 @@ describe('the profile warning of run and check', () => {
       },
       { listings: [], payoutList: undefined, inboxList: undefined, profile: profile([]) },
     ];
-    expect(profileFeeSupport(views)).toEqual({ found: true, feeSupport: false });
+    expect(profileCapabilities(views)).toEqual({
+      found: true,
+      feeSupport: false,
+      memoMarker: false,
+    });
+  });
+
+  it('warns when a served profile lacks the memo-marker tag, and only then', () => {
+    const view = (tags: string[][]) => ({
+      listings: [],
+      payoutList: undefined,
+      inboxList: undefined,
+      profile: profile(tags),
+    });
+    const marked = profileCapabilities([view([['memo-marker', '1']])]);
+    expect(marked).toEqual({ found: true, feeSupport: false, memoMarker: true });
+    expect(profileMemoMarkerWarning(marked.found, marked.memoMarker)).toBeUndefined();
+    const both = profileCapabilities([
+      view([
+        ['fee', '1'],
+        ['memo-marker', '1'],
+      ]),
+    ]);
+    expect(both).toEqual({ found: true, feeSupport: true, memoMarker: true });
+    const mixed = profileCapabilities([view([['memo-marker', '1']]), view([['fee', '1']])]);
+    expect(mixed).toEqual({ found: true, feeSupport: false, memoMarker: false });
+    expect(profileMemoMarkerWarning(mixed.found, mixed.memoMarker)).toMatch(
+      /does not declare marked Tempo memos.*not counted in elisym's public statistics - re-run setup/,
+    );
+    const none = profileCapabilities([
+      { listings: [], payoutList: undefined, inboxList: undefined },
+    ]);
+    expect(profileMemoMarkerWarning(none.found, none.memoMarker)).toBeUndefined();
   });
 });
 

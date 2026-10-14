@@ -405,6 +405,77 @@ describe('the receipt and resume', () => {
   });
 });
 
+describe('the payment reference form', () => {
+  const TEMPO_CAIP19 = 'eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50';
+  const EVM_PAYOUT = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+
+  async function placedOn(shop: Shop, relays: MemoryRelays, families: ('solana' | 'evm')[]) {
+    const loaded = await loadOffer(shop.naddr, {
+      client: relays,
+      pageOrigin: PAGE,
+      families,
+      now: NOW,
+    });
+    if (!loaded.ok) {
+      throw new Error(loaded.message);
+    }
+    const payout = loaded.payouts[0];
+    if (payout === undefined) {
+      throw new Error('no payout');
+    }
+    const result = await placeOrder(
+      { offer: loaded, payout, chainTime: NOW, deviceTime: NOW },
+      deps(relays),
+    );
+    if (!result.ok) {
+      throw new Error(result.reason);
+    }
+    const reference = deriveOrderPaymentReference({
+      storePubkey: result.record.storePubkey,
+      buyerPubkey: result.record.buyerPubkey,
+      orderId: result.record.orderId,
+    });
+    return { record: result.record, reference };
+  }
+
+  it.each([
+    ['declares the marker', true, 'tempoMarked'],
+    ['does not declare it', false, 'tempo'],
+    ['says nothing', undefined, 'tempo'],
+  ] as const)('pays Tempo for a store that %s under the %s memo', async (_l, memoMarker, form) => {
+    const shop = makeShop({
+      caip19: TEMPO_CAIP19,
+      payout: EVM_PAYOUT,
+      ...(memoMarker === undefined ? {} : { memoMarker }),
+    });
+    const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+    const { record, reference } = await placedOn(shop, relays, ['evm']);
+    expect(record.reference).toBe(reference[form]);
+    expect(record.medium).toBe('tempo');
+  });
+
+  it('pays Solana under the reference key whatever the marker says', async () => {
+    const shop = makeShop({ memoMarker: true });
+    const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+    const { record, reference } = await placedOn(shop, relays, ['solana']);
+    expect(record.reference).toBe(reference.solana);
+  });
+
+  it('sends the receipt under the marked memo the record holds', async () => {
+    const shop = makeShop({ caip19: TEMPO_CAIP19, payout: EVM_PAYOUT, memoMarker: true });
+    const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+    const { record, reference } = await placedOn(shop, relays, ['evm']);
+    const written = await sendReceipt(record, `0x${'ab'.repeat(32)}`, NOW + 60, deps(relays));
+    if (!written.ok) {
+      throw new Error(written.reason);
+    }
+    expect(asStore(shop, written.record.receiptWrap).message).toMatchObject({
+      type: 'receipt',
+      payment: { medium: 'tempo', reference: reference.tempoMarked },
+    });
+  });
+});
+
 describe('the store status', () => {
   async function ordered() {
     const shop = makeShop();
