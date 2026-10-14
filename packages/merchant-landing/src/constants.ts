@@ -18,6 +18,7 @@ export const AGENT_PROMPT = [
   `Add a Pay Core checkout to my website. Read ${AGENT_DOCS_URL} and follow it step by step:`,
   'create my store node, publish my products, start the node and add the Buy button to my pages.',
   'Before you start, ask me for my Solana wallet address, my Solana RPC URL, and each product with its price.',
+  'When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, and the commands to see my orders and to add a product.',
 ].join(' ');
 
 /** Makes a mainnet store: its home, a product to edit, and its keys. */

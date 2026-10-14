@@ -7,11 +7,12 @@ const shared = {
   external: ['react'],
 };
 
+// No `clean` here: the two builds share `dist/`, and a cleaning build's declaration
+// step deletes every `.d.ts`, including the other build's. The build script empties `dist/` first.
 export default defineConfig([
   {
     ...shared,
     entry: { index: 'src/index.ts' },
-    clean: true,
     // The component runs effects: a React Server Components app must render it on the client.
     banner: { js: "'use client';" },
   },

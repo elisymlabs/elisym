@@ -109,6 +109,10 @@ describe('the landing', () => {
   it('hands the agent the quickstart as markdown, and the page shows the prompt it copies', async () => {
     expect(AGENT_DOCS_URL).toBe(`${DOCS.quickstart}.md`);
     expect(AGENT_PROMPT).toContain(AGENT_DOCS_URL);
+    // The quickstart offers the same prompt, so both places hand an agent the same job.
+    expect(readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8')).toContain(
+      `\n${AGENT_PROMPT}\n`,
+    );
     const page = await render(<App />);
     expect(page.querySelector('#agent-prompt')).toBeNull();
     const agentTab = [...page.querySelectorAll('button')].find(

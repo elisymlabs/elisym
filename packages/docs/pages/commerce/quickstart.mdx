@@ -10,6 +10,16 @@ The pieces:
 
 This page takes you from nothing to a working purchase on **mainnet**, with real money. To try it first with test tokens, see [Try it free on devnet](#try-it-free-on-devnet) at the end. [The widget](/commerce/widget) page has every attribute, the status events and the security model.
 
+## Let your AI agent do it
+
+A coding agent that can run commands on your machine can do every step below for you. Paste this prompt into it:
+
+```text
+Add a Pay Core checkout to my website. Read https://docs.elisym.network/commerce/quickstart.md and follow it step by step: create my store node, publish my products, start the node and add the Buy button to my pages. Before you start, ask me for my Solana wallet address, my Solana RPC URL, and each product with its price. When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, and the commands to see my orders and to add a product.
+```
+
+It asks for your wallet address, an RPC URL and your products, then creates the store, publishes the products, starts the node and adds the Buy button. At the end it tells you where everything lives and which commands to run next. Read on to do it yourself, or to check what it did.
+
 ## 1. Create the store
 
 You need Node.js 22.4 or newer (or Docker, see [the node's README](https://github.com/elisymlabs/elisym/tree/main/packages/merchant-node#docker)).
