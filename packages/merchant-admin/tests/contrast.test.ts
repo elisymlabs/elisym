@@ -195,21 +195,21 @@ describe('the text colors', () => {
     }
   });
 
-  it('marks the charts only with checked chart colors, never a surface or a line', () => {
-    const marks = [
-      ...SERIES_FILLS,
-      ...SERIES_STROKES,
-      ...SERIES_DOTS,
-      IDLE_STROKE,
-      IDLE_DOT,
-      ...Object.values(OTHER_STROKES),
-      ...Object.values(OTHER_DOTS),
-      ...Object.values(STATE_FILLS),
-      ...Object.values(STATE_DOTS),
+  it('marks the charts only with checked chart colors of the right kind', () => {
+    // A fill map holds fills, a stroke map strokes, a legend dot map backgrounds.
+    const marks: [string, readonly string[]][] = [
+      ['fill-', [...SERIES_FILLS, ...Object.values(STATE_FILLS)]],
+      ['stroke-', [...SERIES_STROKES, IDLE_STROKE, ...Object.values(OTHER_STROKES)]],
+      [
+        'bg-',
+        [...SERIES_DOTS, IDLE_DOT, ...Object.values(OTHER_DOTS), ...Object.values(STATE_DOTS)],
+      ],
     ];
-    for (const mark of marks) {
-      const name = mark.replace(/^(?:fill|stroke|bg)-/, '');
-      expect(CHART_COLORS, mark).toContain(name);
+    for (const [prefix, values] of marks) {
+      for (const mark of values) {
+        expect(mark.startsWith(prefix), mark).toBe(true);
+        expect(CHART_COLORS, mark).toContain(mark.slice(prefix.length));
+      }
     }
   });
 });

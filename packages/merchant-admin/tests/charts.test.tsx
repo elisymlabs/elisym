@@ -486,8 +486,22 @@ describe('the totals', () => {
 });
 
 describe('the chart marks take their colors from the maps', () => {
-  it('colors each status segment and legend dot by its state', async () => {
-    const parts = statusParts(stateCounts(ROWS));
+  it('colors each status segment and legend dot by its state, every state drawn', async () => {
+    const parts = statusParts(
+      stateCounts([
+        ...ROWS,
+        row('r1', NOW, [], 'released'),
+        row('r2', NOW, [], 'refunded'),
+        row('r3', NOW, [], 'payment_reported'),
+      ]),
+    );
+    expect(parts.map((part) => part.state)).toEqual([
+      'delivered',
+      'payment_reported',
+      'ordered',
+      'refunded',
+      'released',
+    ]);
     mounted = await mount(<StatusStrip parts={parts} />);
     const segments = [...mounted.container.querySelectorAll('.chart-segment')];
     const dots = [

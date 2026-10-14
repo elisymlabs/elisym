@@ -1,7 +1,5 @@
 import {
   type OrderSlice,
-  IDLE_DOT,
-  IDLE_STROKE,
   OTHER_DOTS,
   OTHER_STROKES,
   SERIES_DOTS,
@@ -67,7 +65,7 @@ export function OrdersDonut({ slices }: Props) {
                   strokeDashoffset={-arc.start}
                   className={`chart-arc fill-none ${
                     arc.slice.series === undefined
-                      ? (OTHER_STROKES[arc.slice.key] ?? IDLE_STROKE)
+                      ? OTHER_STROKES[arc.slice.key]
                       : seriesClass(SERIES_STROKES, arc.slice.series)
                   }`}
                 />
@@ -92,7 +90,7 @@ export function OrdersDonut({ slices }: Props) {
                   aria-hidden="true"
                   className={`size-10 shrink-0 rounded-full ${
                     slice.series === undefined
-                      ? (OTHER_DOTS[slice.key] ?? IDLE_DOT)
+                      ? OTHER_DOTS[slice.key]
                       : seriesClass(SERIES_DOTS, slice.series)
                   }`}
                 />

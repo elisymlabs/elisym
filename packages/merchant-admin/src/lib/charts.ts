@@ -28,11 +28,11 @@ export const SERIES_DOTS = ['bg-chart-1', 'bg-chart-2', 'bg-chart-3', 'bg-chart-
 /** The ring's other slices: a credit in an unknown asset, and no credit yet. */
 export const IDLE_STROKE = 'stroke-chart-idle';
 export const IDLE_DOT = 'bg-chart-idle';
-export const OTHER_STROKES: Readonly<Record<string, string>> = {
+export const OTHER_STROKES: Readonly<Record<OtherSlice, string>> = {
   unknown: 'stroke-warn',
   unpaid: IDLE_STROKE,
 };
-export const OTHER_DOTS: Readonly<Record<string, string>> = {
+export const OTHER_DOTS: Readonly<Record<OtherSlice, string>> = {
   unknown: 'bg-warn',
   unpaid: IDLE_DOT,
 };
@@ -76,14 +76,13 @@ export interface DayPoint {
   orders: number;
 }
 
-/** A part of the orders: one coin, a credit in an unknown asset, or none yet. */
-export interface OrderSlice {
-  key: string;
-  label: string;
-  count: number;
-  /** The index of its coin in `creditedCoins`, for its color; absent for the others. */
-  series?: number;
-}
+/** The orders not filed under a coin: a credit in an asset the node did not name, or none yet. */
+export type OtherSlice = 'unknown' | 'unpaid';
+
+/** A part of the orders: one coin (with its index in `creditedCoins`, for its color), or another kind. */
+export type OrderSlice =
+  | { key: string; label: string; count: number; series: number }
+  | { key: OtherSlice; label: string; count: number; series?: undefined };
 
 /** Each credited payment once (as the totals count them), with the order it belongs to. */
 function uniqueCredits(rows: readonly OrderRow[]): { row: OrderRow; credit: Credit }[] {
