@@ -350,8 +350,9 @@ hidden, and one line counts them.
 | released by hand | answered with `complete` without a payment (not counted)              |
 | refunded         | answered with `refund` (the refund is shown, not counted)             |
 
-- An expired order can still hide a payment the node found but could not credit: the node logs
-  a `WARNING` when it closes such an order, and `orders` lists the payment to answer by hand.
+- An expired order can still hide a payment the node left unresolved: the node logs a `WARNING`
+  when it closes such an order, and `orders` lists the payment to answer by hand. A payment the
+  node refused (one short of the price, for example) is not listed: check the wallet.
 - The key stays in the tab's memory: it is never stored and never sent anywhere (it only
   answers relays that ask the store to authenticate). Close the tab when you are done. Whoever
   has the store key can redirect payments from new buyers.
