@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from 'react';
 import type { DashboardState } from '../App';
+import { PAGE_FRAME } from '../constants';
 import { About } from './About';
 import { DashboardHeader } from './DashboardHeader';
 import { EmptyState } from './EmptyState';
@@ -83,7 +84,7 @@ export function Dashboard({ state, onRefresh, onMore, onLogOut }: Props) {
         />
         <TabBar active={tab} counts={counts} panels={snapshot !== undefined} onSelect={select} />
       </header>
-      <main className="mx-auto max-w-1200 px-16 py-24 sm:px-24 sm:py-32">
+      <main className={`${PAGE_FRAME} py-24 sm:py-32`}>
         {snapshot === undefined ? (
           <NotRead tab={tab} busy={state.busy} />
         ) : (

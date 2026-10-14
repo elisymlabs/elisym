@@ -2,6 +2,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { PAGE_FRAME } from '../src/constants';
 
 const ROOT = new URL('../', import.meta.url).pathname;
 const SRC = join(ROOT, 'src');
@@ -81,6 +82,29 @@ describe('the admin source', () => {
       expect(command.startsWith('npx @elisym/merchant-node ')).toBe(true);
       const subcommand = command.split(' ')[2] ?? '';
       expect(cli).toMatch(new RegExp(`\\n  ${subcommand} `));
+    }
+  });
+});
+
+describe('the page frame', () => {
+  it('is the landing header’s width, gutters and height, so the logo holds its place', () => {
+    const landing = readFileSync(
+      join(ROOT, '../merchant-landing/src/components/SiteHeader.tsx'),
+      'utf8',
+    );
+    const frame = landing.match(/<div className="([^"]*max-w-[^"]*)"/)?.[1]?.split(' ') ?? [];
+    const tokens = PAGE_FRAME.split(' ').filter((token) => token !== 'w-full');
+    expect(frame).toEqual(expect.arrayContaining([...tokens, 'h-64']));
+    expect(frame.filter((token) => /^(max-w|px|sm:px)-/.test(token)).sort()).toEqual(
+      tokens.filter((token) => /^(max-w|px|sm:px)-/.test(token)).sort(),
+    );
+  });
+
+  it('leaves no other page width in the admin', () => {
+    for (const path of files(SRC).filter((path) => /\.(ts|tsx)$/.test(path))) {
+      for (const width of readFileSync(path, 'utf8').match(/max-w-1\d{3}/g) ?? []) {
+        expect(width).toBe('max-w-1160');
+      }
     }
   });
 });

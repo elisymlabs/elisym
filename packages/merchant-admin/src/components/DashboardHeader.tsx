@@ -1,5 +1,5 @@
 import * as nip19 from 'nostr-tools/nip19';
-import { PRODUCT_NAME } from '../constants';
+import { PAGE_FRAME, PRODUCT_NAME } from '../constants';
 import { short } from '../lib/core';
 import { CopyButton } from './CopyButton';
 import { Icon } from './Icon';
@@ -19,8 +19,8 @@ interface Props {
 export function DashboardHeader({ pubkey, name, status, busy, onRefresh, onLogOut }: Props) {
   const npub = nip19.npubEncode(pubkey);
   return (
-    <div className="mx-auto flex max-w-1200 flex-wrap items-center gap-x-16 gap-y-12 px-16 pt-14 pb-10 sm:px-24">
-      <span className="flex items-center gap-8" title={PRODUCT_NAME}>
+    <div className={`${PAGE_FRAME} flex min-h-64 flex-wrap items-center gap-x-16 gap-y-12 py-12`}>
+      <span className="flex items-center gap-10" title={PRODUCT_NAME}>
         <LogoMark className="size-28" />
         <span className="text-15 hidden font-semibold tracking-tight md:inline">
           {PRODUCT_NAME}
@@ -31,7 +31,7 @@ export function DashboardHeader({ pubkey, name, status, busy, onRefresh, onLogOu
         <p id="store-name" className="text-15 truncate font-semibold">
           {name ?? '(no profile name)'}
         </p>
-        <p className="text-12 text-text-3 flex items-center gap-2 font-mono">
+        <p className="text-12 text-text-3 flex h-18 items-center gap-2 font-mono">
           <span id="store-pubkey" title={npub}>
             {short(npub)}
           </span>
