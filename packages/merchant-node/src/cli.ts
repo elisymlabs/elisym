@@ -80,6 +80,7 @@ import {
   uneditedProducts,
 } from './products';
 import { setupPublisher } from './publish';
+import { listeningPool } from './relay-pool';
 import { MerchantRuntime } from './runtime';
 import { SelfCopies } from './self-copies';
 import {
@@ -644,8 +645,7 @@ async function run(home: MerchantHome): Promise<void> {
   const storeSecretKey = openSecret(loaded, 'store', readPassphrase());
   const storePubkey = loaded.storePubkey;
   takeLock(home);
-  // Pings find a half-open socket, which would otherwise never close.
-  const pool = new SimplePool({ enablePing: true });
+  const pool = listeningPool();
   // Converted to this version and saved before any relay or chain is
   // contacted: from here an older node refuses this home. Only setup declares
   // fee support; run converts and publishes nothing.
