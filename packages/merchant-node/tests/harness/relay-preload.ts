@@ -95,6 +95,19 @@ class FakeRelaySocket {
     setTimeout(() => this.onclose?.({ code: 1000, reason: '' }), 0);
   }
 
+  /** A WebSocket ping, answered at once: `run` keeps this socket rather than its `ws` one. */
+  ping(): void {
+    setTimeout(() => this.onPong?.(), 0);
+  }
+
+  once(event: string, listener: () => void): void {
+    if (event === 'pong') {
+      this.onPong = listener;
+    }
+  }
+
+  private onPong: (() => void) | undefined;
+
   deliver(message: unknown[]): void {
     if (this.readyState === FakeRelaySocket.OPEN) {
       this.onmessage?.({ data: JSON.stringify(message) });
