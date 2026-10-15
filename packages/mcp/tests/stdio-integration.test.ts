@@ -19,7 +19,9 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 const DIST_ENTRY = join(__dirname, '..', 'dist', 'index.js');
-const STARTUP_TIMEOUT_MS = 5_000;
+// Each test spawns a fresh server: a cold start on a busy CI runner has taken over 5 s.
+const REQUEST_TIMEOUT_MS = 30_000;
+const TEST_TIMEOUT_MS = 60_000;
 
 interface JsonRpcResponse {
   jsonrpc: '2.0';
@@ -80,7 +82,7 @@ class McpHarness {
     return new Promise<JsonRpcResponse>((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error(`MCP request ${method} timed out`)),
-        STARTUP_TIMEOUT_MS,
+        REQUEST_TIMEOUT_MS,
       );
       this.pending.set(id, (r) => {
         clearTimeout(timer);
@@ -128,7 +130,7 @@ class McpHarness {
   }
 }
 
-describe('stdio MCP integration', () => {
+describe('stdio MCP integration', { timeout: TEST_TIMEOUT_MS }, () => {
   let tmpHome: string;
   let harness: McpHarness | null = null;
 
@@ -281,4 +283,4 @@ describe('stdio MCP integration', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(harness.stderrText).toMatch(/ephemeral|agent/i);
   });
-}, 30_000);
+});

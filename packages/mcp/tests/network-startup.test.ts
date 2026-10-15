@@ -20,8 +20,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { saveAgentConfig } from '../src/config.js';
 
 const DIST_ENTRY = join(__dirname, '..', 'dist', 'index.js');
-const REQUEST_TIMEOUT_MS = 10_000;
-const TEST_TIMEOUT_MS = 20_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const TEST_TIMEOUT_MS = 60_000;
 
 interface JsonRpcResponse {
   jsonrpc: '2.0';
