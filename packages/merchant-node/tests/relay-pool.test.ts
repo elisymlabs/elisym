@@ -1,5 +1,5 @@
 import { SimplePool, useWebSocketImplementation } from 'nostr-tools/pool';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { canPing, listeningPool } from '../src/relay-pool';
 
@@ -66,11 +66,27 @@ describe('canPing', () => {
 
 describe('listeningPool', () => {
   const builtIn = globalThis.WebSocket;
-  afterEach(() => useWebSocketImplementation(builtIn));
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useWebSocketImplementation(builtIn);
+  });
 
   it('keeps the connection to a relay that answers pings but never a limit-0 REQ', async () => {
     const relay = await silentRelay();
     try {
+      expect(await connectionAfterPing(listeningPool(), relay.url)).toEqual({
+        pinging: true,
+        connected: true,
+      });
+    } finally {
+      await relay.close();
+    }
+  });
+
+  it('uses ws on a runtime with no global WebSocket', async () => {
+    const relay = await silentRelay();
+    try {
+      vi.stubGlobal('WebSocket', undefined);
       expect(await connectionAfterPing(listeningPool(), relay.url)).toEqual({
         pinging: true,
         connected: true,
