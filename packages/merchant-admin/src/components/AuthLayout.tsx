@@ -9,7 +9,7 @@ import {
 } from '../constants';
 import { ElisymLogo } from './ElisymLogo';
 import { Icon } from './Icon';
-import { LogoMark } from './LogoMark';
+import { PayCoreLogo } from './PayCoreLogo';
 
 interface Props {
   children: ReactNode;
@@ -26,13 +26,10 @@ export function AuthLayout({ children }: Props) {
       <header className={HEADER_BAR}>
         <div className={HEADER_ROW}>
           <span className="flex items-center gap-10">
-            <LogoMark className="size-28" />
-            <span className="flex items-center gap-8">
-              <span className="text-16 font-semibold tracking-tight">{PRODUCT_NAME}</span>
-              <span className="text-13 text-text-3 hidden items-center gap-6 sm:flex">
-                by
-                <ElisymLogo />
-              </span>
+            <PayCoreLogo className="h-28 w-auto" />
+            <span className="text-13 text-text-3 hidden items-center gap-6 sm:flex">
+              by
+              <ElisymLogo />
             </span>
             <span className="rounded-6 bg-surface-2 text-12 text-text-2 px-8 py-2 font-medium">
               Admin

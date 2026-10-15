@@ -4,6 +4,7 @@ import { short } from '../lib/core';
 import { CopyButton } from './CopyButton';
 import { Icon } from './Icon';
 import { LogoMark } from './LogoMark';
+import { PayCoreLogo } from './PayCoreLogo';
 import { StatusLine } from './StatusLine';
 
 interface Props {
@@ -23,10 +24,8 @@ export function DashboardHeader({ pubkey, name, status, busy, onRefresh, onLogOu
       className={`${PAGE_FRAME} flex min-h-64 flex-wrap items-center gap-x-16 gap-y-12 py-12 md:py-0`}
     >
       <span className="flex items-center gap-10" title={PRODUCT_NAME}>
-        <LogoMark className="size-28" />
-        <span className="text-15 hidden font-semibold tracking-tight md:inline">
-          {PRODUCT_NAME}
-        </span>
+        <LogoMark className="size-28 md:hidden" />
+        <PayCoreLogo className="hidden h-28 w-auto md:block" />
       </span>
       <span aria-hidden="true" className="bg-line hidden h-24 w-1 md:block" />
       <div className="min-w-0 flex-1">
