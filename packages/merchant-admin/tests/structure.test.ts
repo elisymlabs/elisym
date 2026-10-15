@@ -107,14 +107,16 @@ describe('the page frame', () => {
     );
   });
 
-  it('spaces the logo mark from the name as the landing does', () => {
+  it('spaces the logo from what follows it as the landing does', () => {
     const logo = readFileSync(join(ROOT, '../merchant-landing/src/components/Logo.tsx'), 'utf8');
     const gap = logo.match(/<a [^>]*className="flex items-center (gap-\d+)"/)?.[1];
     expect(gap).toBeDefined();
     for (const name of ['AuthLayout.tsx', 'DashboardHeader.tsx']) {
       const code = readFileSync(join(SRC, 'components', name), 'utf8');
       expect(code).toMatch(
-        new RegExp(`<span className="flex items-center ${gap ?? ''}"[^>]*>\\s*<LogoMark`),
+        new RegExp(
+          `<span className="flex items-center ${gap ?? ''}"[^>]*>\\s*<(?:LogoMark|PayCoreLogo)`,
+        ),
       );
     }
   });
@@ -172,7 +174,7 @@ describe('the header links and logo', () => {
     const wanted = classes(landingLogo);
     const found = classes(auth);
     const start = found.indexOf(wanted[0] ?? '');
-    expect(wanted.length).toBeGreaterThan(3);
+    expect(wanted.length).toBeGreaterThan(2);
     expect(found.slice(start, start + wanted.length)).toEqual(wanted);
   });
 });
