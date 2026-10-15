@@ -1,10 +1,12 @@
 import { SimplePool, useWebSocketImplementation } from 'nostr-tools/pool';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
-import { listeningPool } from '../src/relay-pool';
+import { canPing, listeningPool } from '../src/relay-pool';
 
 /** Short enough for a test, long enough for a pong over loopback. */
 const PING_TIMEOUT_MS = 500;
+/** How long a failed ping may take to close the socket. */
+const CLOSE_DEADLINE_MS = 2000;
 
 /** The private nostr-tools method `run` relies on, called directly instead of waiting 29 s. */
 interface Pinging {
@@ -31,16 +33,36 @@ async function silentRelay(): Promise<{ url: string; close: () => Promise<void> 
   };
 }
 
-async function connectionAfterPing(pool: SimplePool, url: string): Promise<boolean> {
-  const relay = await pool.ensureRelay(url);
-  relay.pingTimeout = PING_TIMEOUT_MS;
-  await (relay as unknown as Pinging).pingpong();
-  // A failed ping closes the socket: let the close event land.
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  const connected = relay.connected;
-  pool.destroy();
-  return connected;
+interface AfterPing {
+  pinging: boolean;
+  connected: boolean;
 }
+
+async function connectionAfterPing(pool: SimplePool, url: string): Promise<AfterPing> {
+  try {
+    const relay = await pool.ensureRelay(url);
+    relay.pingTimeout = PING_TIMEOUT_MS;
+    await (relay as unknown as Pinging).pingpong();
+    // A failed ping closes the socket: wait for the close to land.
+    const deadline = Date.now() + CLOSE_DEADLINE_MS;
+    while (relay.connected && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return { pinging: relay.enablePing === true, connected: relay.connected };
+  } finally {
+    pool.destroy();
+  }
+}
+
+describe('canPing', () => {
+  it('needs both ping and once, as nostr-tools does', () => {
+    expect(canPing({ ping() {}, once() {} })).toBe(true);
+    // Bun's built-in WebSocket: ping without once.
+    expect(canPing({ ping() {} })).toBe(false);
+    expect(canPing({ once() {} })).toBe(false);
+    expect(canPing({})).toBe(false);
+  });
+});
 
 describe('listeningPool', () => {
   const builtIn = globalThis.WebSocket;
@@ -49,7 +71,10 @@ describe('listeningPool', () => {
   it('keeps the connection to a relay that answers pings but never a limit-0 REQ', async () => {
     const relay = await silentRelay();
     try {
-      expect(await connectionAfterPing(listeningPool(), relay.url)).toBe(true);
+      expect(await connectionAfterPing(listeningPool(), relay.url)).toEqual({
+        pinging: true,
+        connected: true,
+      });
     } finally {
       await relay.close();
     }
@@ -59,9 +84,8 @@ describe('listeningPool', () => {
     const relay = await silentRelay();
     try {
       useWebSocketImplementation(builtIn);
-      expect(await connectionAfterPing(new SimplePool({ enablePing: true }), relay.url)).toBe(
-        false,
-      );
+      const after = await connectionAfterPing(new SimplePool({ enablePing: true }), relay.url);
+      expect(after.connected).toBe(false);
     } finally {
       await relay.close();
     }
