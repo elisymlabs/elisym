@@ -1,5 +1,5 @@
 import type { PricedPayout } from '@elisym/commerce/buyer';
-import { useEffect, useId, useRef, useState } from 'preact/hooks';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { payoutPaying } from '../session';
 import { ChainGlyph } from './ChainGlyph';
 import { payoutLabel } from './text';
@@ -16,11 +16,16 @@ interface Props {
   initialOpen?: boolean;
 }
 
+/** Room kept under an open list that reaches the end of the content. */
+const LIST_BOTTOM_GAP_PX = 8;
+
 /**
- * The payout dropdown: a button and a listbox in the page's flow (an overlay
- * would be cut by the frame). The list takes focus when it opens, by key or by
- * pointer, so Escape there closes the list and never the modal; every key it
- * handles is cancelled, so the browser's own button activation never reopens it.
+ * The payout dropdown: a button and a listbox floating over what follows it.
+ * While open, the body is kept at least as tall as the list's end, so the frame
+ * grows to hold it instead of cutting it. The list takes
+ * focus when it opens, by key or by pointer, so Escape there closes the list and
+ * never the modal; every key it handles is cancelled, so the browser's own
+ * button activation never reopens it.
  */
 export function PayoutSelect({
   payouts,
@@ -48,6 +53,60 @@ export function PayoutSelect({
   const listId = `${id}-list`;
   const valueId = `${id}-value`;
   const optionId = (index: number) => `${id}-option-${index}`;
+
+  // The body's height ignores the floating list, so while open the body is kept
+  // at least as tall as the list's end (plus a gap): the frame grows to hold it.
+  // That height depends only on what sits above the list, never on what it
+  // covers, so a change below it measures the same and writes no new size.
+  // Measured on every render and, while open, on any resize of the body; a change
+  // above it that neither renders nor resizes the body is not seen (none does).
+  // Only the floor this list set is ever cleared: the body is shared.
+  const holdsFloor = useRef(false);
+  const releaseFloor = () => {
+    if (holdsFloor.current) {
+      holdsFloor.current = false;
+      document.body.style.minHeight = '';
+    }
+  };
+  const fitList = () => {
+    if (list.current === null) {
+      releaseFloor();
+      return;
+    }
+    const body = document.body;
+    const listEnd = list.current.getBoundingClientRect().bottom - body.getBoundingClientRect().top;
+    body.style.minHeight = `${Math.ceil(listEnd + LIST_BOTTOM_GAP_PX)}px`;
+    holdsFloor.current = true;
+  };
+  useLayoutEffect(fitList);
+  useLayoutEffect(() => releaseFloor, []);
+  // A resize of the body may rewrap what sits above and move the list (a new
+  // frame width, the frame's own scrollbar coming or going): a floor moved inside
+  // the body's own resize would reach the frame's height a frame late, with a
+  // loop error. So a resize is measured on the next frame, never inside it.
+  useEffect(() => {
+    if (!open || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    let pending: number | undefined;
+    const observer = new ResizeObserver(() => {
+      // A frame already asked for measures for this resize too.
+      if (pending !== undefined) {
+        return;
+      }
+      pending = window.requestAnimationFrame(() => {
+        pending = undefined;
+        fitList();
+      });
+    });
+    observer.observe(document.body);
+    return () => {
+      observer.disconnect();
+      if (pending !== undefined) {
+        window.cancelAnimationFrame(pending);
+      }
+    };
+  }, [open]);
 
   useEffect(() => {
     if (open && focusList.current) {

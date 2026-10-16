@@ -16,6 +16,7 @@ import { emptyLedger, newWebhookEntry, webhookEventId } from '../src/ledger';
 import { PAYOUT, T0, USDC_DEVNET_CAIP19 } from './fixtures';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+const PRELOAD = fileURLToPath(new URL('./harness/relay-preload.ts', import.meta.url));
 const PASSPHRASE = 'correct horse battery staple';
 
 function cli(args: string[], env: Record<string, string> = {}, timeoutMs = 20_000) {
@@ -25,6 +26,19 @@ function cli(args: string[], env: Record<string, string> = {}, timeoutMs = 20_00
     timeout: timeoutMs,
   });
   // The child must have run to an exit code: a missing bun or a timeout never passes.
+  expect(result.error).toBeUndefined();
+  expect(typeof result.status).toBe('number');
+  return { code: result.status, output: `${result.stdout}${result.stderr}` };
+}
+
+/** `cli` kept off the network (`harness/relay-preload.ts`): for a command that reads the public relays. */
+function offlineCli(args: string[], env: Record<string, string> = {}) {
+  const harnessDir = mkdtempSync(join(tmpdir(), 'merchant-cli-harness-'));
+  const result = spawnSync('bun', ['--preload', PRELOAD, CLI, ...args], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH ?? '', HOME: tmpdir(), HARNESS_DIR: harnessDir, ...env },
+    timeout: 20_000,
+  });
   expect(result.error).toBeUndefined();
   expect(typeof result.status).toBe('number');
   return { code: result.status, output: `${result.stdout}${result.stderr}` };
@@ -332,12 +346,15 @@ describe('the merchant CLI', () => {
     config.inboxRelays = ['ws://localhost:9'];
     config.nip05 = '_@example.com';
     writeFileSync(join(home, 'config.json'), JSON.stringify(config));
-    // check reads the public offer relays and the domain: each read is bounded
-    // (about 10 s), so this call gets room for a slow network.
-    const run = cli(['check', '--home', home], {}, 50_000);
+    // check reads the offer relays and the domain: kept off the network, so a
+    // public relay that never answers cannot hold it past the timeout. The inbox
+    // relay refuses gift wraps: the nostr.json verdict still comes before that error.
+    const run = offlineCli(['check', '--home', home], { HARNESS_REJECT_KINDS: '1059' });
+    expect(run.code).not.toBe(0);
+    expect(run.output).toMatch(/refuses gift wraps/);
     expect(run.output).toMatch(/nostr {3}not written/);
     expect(existsSync(join(home, 'nostr.json'))).toBe(false);
-  }, 60_000);
+  });
 
   it('run with a webhook and no secret refuses before any relay or lock', () => {
     const home = webhookHome();
