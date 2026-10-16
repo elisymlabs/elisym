@@ -290,9 +290,7 @@ h3.step-heading {
 }
 
 .select-root {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  position: relative;
 }
 
 .select {
@@ -341,11 +339,17 @@ h3.step-heading {
 }
 
 .select-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  z-index: 10;
   margin: 0;
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--background);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.24);
   list-style: none;
 }
 

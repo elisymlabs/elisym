@@ -75,10 +75,14 @@ function currentLabel(ui: { container: HTMLElement }): string | undefined {
   return ui.container.querySelector('.label-option[data-current="true"]')?.textContent ?? undefined;
 }
 
+/** Every tree mounted by a test, unmounted after it: none keeps listening into the next. */
+const MOUNTED: HTMLElement[] = [];
+
 /** A `Checkout` in the page, with actions that record what they were asked. */
 function mount(view?: View, options: MountOptions = {}) {
   const container = document.createElement('div');
   document.body.append(container);
+  MOUNTED.push(container);
   const calls: Calls = {
     pay: [],
     retry: [],
@@ -191,6 +195,9 @@ function stageStates(ui: Ui): (string | null)[] {
 }
 
 afterEach(() => {
+  for (const container of MOUNTED.splice(0)) {
+    act(() => render(null, container));
+  }
   document.body.replaceChildren();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -611,6 +618,240 @@ describe('the payout dropdown', () => {
     expect(select(ui).getAttribute('aria-disabled')).toBe('false');
     expect(list(ui)).toBeNull();
     expect(select(ui).getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+describe('the payout list floating over what follows it', () => {
+  const many = () => offerView(cannedOffer({ payouts: ['solana-devnet', 'tempo-devnet'] }));
+  const select = (ui: Ui) => ui.container.querySelector('button.select') as HTMLButtonElement;
+  const listbox = (ui: Ui) => ui.container.querySelector('[role="listbox"]') as HTMLElement;
+  const minHeight = () => document.body.style.minHeight;
+  /** The open list ends at `list`; the body starts at `bodyTop` and ends at `bodyBottom`. */
+  function layout(list: number, bodyTop = 0, bodyBottom = 300) {
+    const at = { list, bodyTop, bodyBottom };
+    vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(
+      function measure(this: Element) {
+        if (this === document.body) {
+          return { top: at.bodyTop, bottom: at.bodyBottom } as DOMRect;
+        }
+        const bottom = this.matches('.select-list') ? at.list : 0;
+        return { top: 0, bottom } as DOMRect;
+      },
+    );
+    return at;
+  }
+
+  /** Every ResizeObserver made, with what it watches and whether it was let go. */
+  function observers() {
+    const made: { callback: () => void; watched: Element[]; disconnected: boolean }[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class FakeResizeObserver {
+        private readonly entry: (typeof made)[number];
+        constructor(callback: () => void) {
+          this.entry = { callback, watched: [], disconnected: false };
+          made.push(this.entry);
+        }
+        observe(target: Element) {
+          this.entry.watched.push(target);
+        }
+        unobserve() {}
+        disconnect() {
+          this.entry.disconnected = true;
+        }
+      },
+    );
+    return made;
+  }
+
+  /** The frames asked for, run by hand, and the ones cancelled. */
+  function frames() {
+    const asked = new Map<number, FrameRequestCallback>();
+    const cancelled: number[] = [];
+    let next = 0;
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      next += 1;
+      asked.set(next, callback);
+      return next;
+    });
+    vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((handle) => {
+      cancelled.push(handle);
+      asked.delete(handle);
+    });
+    const run = () =>
+      act(() => {
+        const due = [...asked.values()];
+        asked.clear();
+        for (const callback of due) {
+          callback(0);
+        }
+      });
+    return { asked, cancelled, run };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.style.minHeight = '';
+  });
+
+  it('keeps the body as tall as the open list’s end plus a gap, and lets go on close', () => {
+    layout(500, -40);
+    const ui = mount(many());
+    expect(minHeight()).toBe('');
+    act(() => select(ui).click());
+    expect(minHeight()).toBe('548px');
+    key(listbox(ui), 'keydown', 'Escape');
+    expect(minHeight()).toBe('');
+  });
+
+  it('rounds a fractional end up, so the list is never cut by a pixel', () => {
+    layout(500.2);
+    const ui = mount(many());
+    act(() => select(ui).click());
+    expect(minHeight()).toBe('509px');
+  });
+
+  it('lets go after a choice', () => {
+    layout(500);
+    const ui = mount(many());
+    act(() => select(ui).click());
+    act(() => (ui.container.querySelectorAll('[role="option"]')[1] as HTMLElement).click());
+    expect(minHeight()).toBe('');
+  });
+
+  it('lets go when a wallet press locks it', () => {
+    layout(500);
+    const offer = cannedOffer({ payouts: ['solana-devnet', 'tempo-devnet'] });
+    const ui = withWallets(offerView(offer));
+    act(() => select(ui).click());
+    expect(minHeight()).toBe('508px');
+    ui.hold(new Promise<void>(() => undefined));
+    ui.click('Phantom');
+    expect(minHeight()).toBe('');
+  });
+
+  it('lets go when it goes away while open', () => {
+    layout(500);
+    const ui = mount(many());
+    act(() => select(ui).click());
+    expect(minHeight()).toBe('508px');
+    act(() => render(null, ui.container));
+    expect(minHeight()).toBe('');
+  });
+
+  it('measures on a redraw and on a resize of the body, by what sits above the list only', () => {
+    const made = observers();
+    const pending = frames();
+    const at = layout(500);
+    const offer = cannedOffer({ payouts: ['solana-devnet', 'tempo-devnet'] });
+    const ui = mount(offerView(offer));
+    expect(made).toEqual([]);
+    act(() => select(ui).click());
+    expect(minHeight()).toBe('508px');
+    const [observer] = made;
+    expect(made).toHaveLength(1);
+    expect(observer?.watched).toEqual([document.body]);
+    // What the list covers grows: the same height, so nothing to settle.
+    at.bodyBottom = 900;
+    act(() => observer?.callback());
+    pending.run();
+    expect(minHeight()).toBe('508px');
+    // What sits above it grows: the list moves down, and so does the floor.
+    at.list = 540;
+    act(() => observer?.callback());
+    pending.run();
+    expect(minHeight()).toBe('548px');
+    at.list = 520;
+    ui.draw({ view: offerView(offer) });
+    expect(minHeight()).toBe('528px');
+  });
+
+  it('watches the body only while open, letting it go on every close', () => {
+    const made = observers();
+    layout(500);
+    const ui = mount(many());
+    act(() => select(ui).click());
+    key(listbox(ui), 'keydown', 'Escape');
+    expect(made.map((observer) => observer.disconnected)).toEqual([true]);
+    act(() => select(ui).click());
+    expect(made.map((observer) => observer.disconnected)).toEqual([true, false]);
+    act(() => select(ui).click());
+    expect(made.map((observer) => observer.disconnected)).toEqual([true, true]);
+  });
+
+  it('measures a resize of the body on the next frame, never inside the resize', () => {
+    const made = observers();
+    const pending = frames();
+    const at = layout(500);
+    const ui = mount(many());
+    act(() => select(ui).click());
+    const [observer] = made;
+    expect(minHeight()).toBe('508px');
+    // What is above rewraps (a new width, a scrollbar): nothing written yet.
+    at.list = 560;
+    act(() => observer?.callback());
+    act(() => observer?.callback());
+    expect(minHeight()).toBe('508px');
+    expect(pending.asked.size).toBe(1);
+    pending.run();
+    expect(minHeight()).toBe('568px');
+    // The next resize asks for a frame of its own.
+    at.list = 580;
+    act(() => observer?.callback());
+    expect(minHeight()).toBe('568px');
+    pending.run();
+    expect(minHeight()).toBe('588px');
+    // A resize keeps the list open: a scrollbar it brings never shuts it.
+    expect(listbox(ui)).not.toBeNull();
+  });
+
+  it('drops the frame it asked for when closed first', () => {
+    const made = observers();
+    const pending = frames();
+    layout(500);
+    const ui = mount(many());
+    act(() => select(ui).click());
+    act(() => made[0]?.callback());
+    expect(pending.asked.size).toBe(1);
+    key(listbox(ui), 'keydown', 'Escape');
+    expect(pending.cancelled).toEqual([1]);
+    expect(pending.asked.size).toBe(0);
+    expect(minHeight()).toBe('');
+  });
+
+  it('never clears a floor it did not set', () => {
+    layout(500);
+    const ui = mount(many());
+    document.body.style.minHeight = '700px';
+    ui.draw({ view: many() });
+    expect(minHeight()).toBe('700px');
+    // Its own floor, set and let go: what is set after that is not its own.
+    act(() => select(ui).click());
+    key(listbox(ui), 'keydown', 'Escape');
+    document.body.style.minHeight = '700px';
+    ui.draw({ view: many() });
+    expect(minHeight()).toBe('700px');
+    act(() => render(null, ui.container));
+    expect(minHeight()).toBe('700px');
+  });
+
+  it('still holds the list where there is no ResizeObserver', () => {
+    vi.stubGlobal('ResizeObserver', undefined);
+    layout(500);
+    const ui = mount(many());
+    act(() => select(ui).click());
+    expect(listbox(ui)).not.toBeNull();
+    expect(minHeight()).toBe('508px');
+  });
+
+  it('floats: the list is placed over its siblings, not in the flow', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app/styles.css'), 'utf8');
+    const rule = (selector: string) =>
+      new RegExp(`(^|\\n)\\${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[2] ?? '';
+    expect(rule('.select-root')).toMatch(/position: relative;/);
+    expect(rule('.select-list')).toMatch(/position: absolute;/);
+    expect(rule('.select-list')).toMatch(/z-index: \d+;/);
+    expect(rule('.select-list')).toMatch(/background: var\(--background\);/);
   });
 });
 
