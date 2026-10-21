@@ -80,6 +80,22 @@ The program is deliberately deployed at the **same address** on both clusters (`
 
 The protocol fee rate and treasury address are **not** constants - they live on-chain in the `elisym-config` program and are read via `getProtocolConfig`. The `ELISYM_PROTOCOL_TAG` is a read-only marker that lets anyone audit elisym payment activity on-chain. `ELISYM_COMMERCE_MEMO` and `ELISYM_JOB_MEMO_PREFIX` are the SPL Memo texts of a commerce and an agent-job payment, and `TEMPO_COMMERCE_MEMO_MAGIC` starts a marked Tempo commerce memo - see [Commerce payment markers](/protocol/payments#commerce-payment-markers).
 
+## Ethereum, Arbitrum and Base (registered, not yet payable)
+
+Circle USDC on these chains settles over EIP-3009 (`settlement: 'eip3009'` in `CHAINS`). The chains and coins are in the registry, but nothing in elisym pays on them yet - see [Networks](/reference/networks#ethereum-arbitrum-and-base-registered-not-yet-payable).
+
+| Constant                                  | Value                                                                |
+| ----------------------------------------- | -------------------------------------------------------------------- |
+| `USDC_ETHEREUM_MAINNET` / `_DEVNET`       | USDC on Ethereum / Sepolia (EIP-712 name `USD Coin` / `USDC`)        |
+| `USDC_ARBITRUM_MAINNET` / `_DEVNET`       | USDC on Arbitrum One / Arbitrum Sepolia (`USD Coin` on both)         |
+| `USDC_BASE_MAINNET` / `_DEVNET`           | USDC on Base / Base Sepolia (`USD Coin` / `USDC`)                    |
+| `AUTHORIZATION_USED_TOPIC` (`/evm`)       | `0x98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5` |
+| `AUTHORIZATION_CANCELED_TOPIC` (`/evm`)   | `0x1cdd46ff242716cdaa72d159d339a485b3438398348d68f09d7c8c0a59353d81` |
+| `TRANSFER_WITH_AUTHORIZATION_SELECTOR` (`/evm`) | `0xcf092995` (the bytes-signature overload)                    |
+| `FIAT_TOKEN_IMPLEMENTATION_SLOT` (`/evm`) | `0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3` |
+
+Each `eip3009` chain entry also carries its credit tag (`finality.credit`, `safe` on all six), the `eth_getLogs` block range a qualified provider must serve (`logRangeCap`), the expected tag lags (`waits`), the EIP-7702 delegates whose signature check is known to accept an account's own key (`knownDelegates`), and on Base its L1 fee oracle (`l1FeeOracle`). Each USDC asset carries its EIP-712 domain (`eip712`) and the FiatToken implementation pinned behind its proxy (`implementation`).
+
 ## Default timeouts
 
 From `DEFAULTS`. These are tunable client-side, not protocol rules.

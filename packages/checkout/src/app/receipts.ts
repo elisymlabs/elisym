@@ -1,10 +1,17 @@
+import { payoutRail } from '@elisym/commerce';
 import type { OrderRecord, PricedPayout } from '@elisym/commerce/buyer';
 import { isTerminal } from '@elisym/commerce/buyer';
 import type { Network } from '@elisym/pay-core';
 import type { OpenStatus, Paying, Rail, Receipt } from './session';
 
-export function recordRail(record: OrderRecord): Rail {
-  return record.payout.caip19.startsWith('eip155:') ? 'tempo' : 'solana';
+/**
+ * The rail a record pays on, by its payout's `settlement`, never the CAIP-2
+ * prefix: `undefined` for an `eip3009` payout (Ethereum, Arbitrum, Base), which
+ * no rail of this widget watches, ends or pays yet.
+ */
+export function recordRail(record: OrderRecord): Rail | undefined {
+  const rail = payoutRail(record.payout.caip19);
+  return rail === 'solana' || rail === 'tempo' ? rail : undefined;
 }
 
 /**
@@ -28,7 +35,8 @@ export function recordPaying(record: OrderRecord): Paying | undefined {
         amount: record.amount,
         asset: target.caip19.asset,
         network: target.caip19.chain.network,
-        chain: recordRail(record),
+        // The glyph and the chain name only; rail decisions read `recordRail`.
+        chain: target.caip19.chain.family === 'evm' ? 'tempo' : 'solana',
       };
 }
 

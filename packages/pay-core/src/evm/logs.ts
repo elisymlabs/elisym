@@ -440,13 +440,36 @@ export async function isOnThisChain(
 }
 
 /**
+ * The "ask for less" wordings of the providers qualified for the `eip3009`
+ * chains (PR 0, P4), next to Tempo's own two. Each names a cap on the RANGE or
+ * the RESULT; none matches Tempo's other `-32602` answers ("invalid block
+ * range params", "block range extends beyond current head block"), and none
+ * matches a rate limit, which a smaller range would not cure.
+ */
+const TOO_MUCH_PATTERNS: readonly RegExp[] = [
+  /exceeds max results/i,
+  /exceeds max block range/i,
+  // Tenderly gateways, in `data` as a bare string.
+  /block range too large/i,
+  // publicnode.
+  /exceed maximum block range/i,
+  // sepolia.base.org ("limited to a 200 range"), 1rpc ("limited to 0 - 50 blocks range").
+  /eth_getLogs is limited to/i,
+  // drpc's free plan.
+  /ranges over \d+ blocks are not supported/i,
+  // Paid providers' result caps (Alchemy, Infura); matched, not yet seen live.
+  /log response size exceeded/i,
+  /query returned more than \d+ results/i,
+];
+
+/**
  * Tempo answers FOUR different `eth_getLogs` failures with `-32602` and no
  * `data`, so they are told apart by the node's own message and nothing else.
  * Only the two that mean "you asked for too much" are worth retrying smaller;
  * "invalid block range params" and a range beyond the head are not, and a retry
  * loop on them would be an infinite one.
  */
-function isTooMuchError(error: unknown): boolean {
+export function isTooMuchError(error: unknown): boolean {
   // Read the words off whatever was thrown, not off one class: this module is
   // exported for a browser wallet's own provider, which throws its own error
   // shape, and a client whose cap errors go unrecognized never halves -
@@ -457,12 +480,12 @@ function isTooMuchError(error: unknown): boolean {
   const places = [
     error instanceof EvmRpcError ? error.rpcMessage : undefined,
     readField(error, 'message'),
+    readField(error, 'data'),
     readField(readField(error, 'data'), 'message'),
   ];
   return places.some(
     (place) =>
-      typeof place === 'string' &&
-      (/exceeds max results/i.test(place) || /exceeds max block range/i.test(place)),
+      typeof place === 'string' && TOO_MUCH_PATTERNS.some((pattern) => pattern.test(place)),
   );
 }
 

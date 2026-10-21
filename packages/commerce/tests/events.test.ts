@@ -1,6 +1,6 @@
 import { PATHUSD_TEMPO, USDC_SOLANA_DEVNET } from '@elisym/pay-core';
 import { describe, expect, it } from 'vitest';
-import { hasValidEvmChecksum, parseCaip19 } from '../src/caip';
+import { hasValidEvmChecksum, parseCaip19, payoutRail } from '../src/caip';
 import { KIND_PAYTO, KIND_PRODUCT, KIND_STORE_AUTH } from '../src/constants';
 import { buildPaytoEvent, parsePayto } from '../src/events/payto';
 import {
@@ -18,6 +18,7 @@ import {
   readStoreAuth,
 } from '../src/events/store-auth';
 import { buildStoreProfileEvent, parseStoreProfile } from '../src/events/store-profile';
+import { EIP3009_USDC } from './buyer/fixtures';
 import {
   EVM_VECTOR,
   USDCE_TEMPO_CAIP19,
@@ -41,11 +42,26 @@ describe('parseCaip19', () => {
     ).toBeUndefined();
   });
 
+  it('names the rail of a payout by settlement, never by the eip155 prefix', () => {
+    for (const { caip19 } of EIP3009_USDC) {
+      expect(payoutRail(caip19)).toBe('eip3009');
+    }
+    expect(payoutRail('eip155:42431/erc20:0x20c0000000000000000000000000000000000000')).toBe(
+      'tempo',
+    );
+    expect(
+      payoutRail(`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:${USDC_SOLANA_DEVNET.mint}`),
+    ).toBe('solana');
+    // A chain the registry does not hold keeps the rule its record was written under.
+    expect(payoutRail('eip155:10/erc20:0xabc')).toBe('tempo');
+    expect(payoutRail('solana:x/token:y')).toBe('solana');
+  });
+
   it('refuses a namespace that does not fit the chain, and an unknown chain', () => {
     expect(
       parseCaip19(`solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/erc20:${USDC_SOLANA_DEVNET.mint}`),
     ).toBeUndefined();
-    expect(parseCaip19(`eip155:1/erc20:${PATHUSD_TEMPO.mint}`)).toBeUndefined();
+    expect(parseCaip19(`eip155:10/erc20:${PATHUSD_TEMPO.mint}`)).toBeUndefined();
     expect(
       parseCaip19('eip155:4217/erc20:0x20C000000000000000000000B9537D11C60E8B50'),
     ).toBeUndefined();

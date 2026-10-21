@@ -106,6 +106,43 @@ describe('connecting a Tempo wallet', () => {
     expect(wallet.calls).toContain('wallet_addEthereumChain');
   });
 
+  it('adds Tempo and Moderato under their own names and the USD gas coin', async () => {
+    for (const [caip2, chainName] of [
+      ['eip155:4217', 'Tempo'],
+      ['eip155:42431', 'Tempo Moderato'],
+    ] as const) {
+      const chain = chainByCaip2(caip2);
+      if (chain === undefined) {
+        throw new Error(`the registry names ${caip2}`);
+      }
+      const added: unknown[] = [];
+      const wallet: Eip1193Provider = {
+        async request({ method, params }) {
+          if (method === 'eth_requestAccounts') {
+            return [ACCOUNT];
+          }
+          if (method === 'wallet_switchEthereumChain') {
+            throw failure(4902, 'Unrecognized chain ID');
+          }
+          if (method === 'wallet_addEthereumChain') {
+            added.push(...(Array.isArray(params) ? params : [params]));
+          }
+          return null;
+        },
+      };
+      await connectTempo(wallet, chain);
+      expect(added).toEqual([
+        {
+          chainId: `0x${chain.evmChainId?.toString(16)}`,
+          chainName,
+          nativeCurrency: { name: 'USD', symbol: 'USD', decimals: 18 },
+          rpcUrls: [...chain.rpcUrls],
+          blockExplorerUrls: [chain.explorerTx.split('/tx/')[0]],
+        },
+      ]);
+    }
+  });
+
   it('adds an unknown chain reported as -32603 with the message, or with 4902 nested', async () => {
     for (const error of [
       failure(

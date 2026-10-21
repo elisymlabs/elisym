@@ -10,6 +10,7 @@ import {
   parseCaip19,
   wrapOrderMessage,
 } from '@elisym/commerce';
+import { settlementOf } from '@elisym/pay-core';
 import type { HandAnswer, LedgerState } from './ledger';
 import { TEMPO_HASH_RE } from './order-rules';
 import { isSolanaSignature } from './signature';
@@ -161,12 +162,16 @@ function refundAsset(
   if (parsed === undefined) {
     return { ok: false, problem: `--asset ${asset} is not an asset this node knows` };
   }
-  const ofChain =
-    parsed.chain.family === 'evm' ? TEMPO_HASH_RE.test(request.tx) : isSolanaSignature(request.tx);
+  // By `settlement`, never by family: no refund on an `eip3009` chain (Base, ...) yet.
+  const rail = settlementOf(parsed.chain);
+  if (rail !== 'tempo' && rail !== 'solana') {
+    return { ok: false, problem: `--asset ${asset} is not an asset this node knows` };
+  }
+  const ofChain = rail === 'tempo' ? TEMPO_HASH_RE.test(request.tx) : isSolanaSignature(request.tx);
   if (!ofChain) {
     return {
       ok: false,
-      problem: `the refund tx is not a ${parsed.chain.family === 'evm' ? 'Tempo' : 'Solana'} transaction, as ${asset} needs`,
+      problem: `the refund tx is not a ${rail === 'tempo' ? 'Tempo' : 'Solana'} transaction, as ${asset} needs`,
     };
   }
   return { ok: true, asset };

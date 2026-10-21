@@ -6,7 +6,7 @@ import {
   priceInSubunits,
   splitNip05,
 } from '@elisym/commerce';
-import { EVM_ASSETS, type Network } from '@elisym/pay-core';
+import { EVM_ASSETS, type Network, settlementOf } from '@elisym/pay-core';
 import { TEMPO_UNPAYABLE_ADDRESSES } from '@elisym/pay-core/evm';
 import { z } from 'zod';
 import { OLD_HOME_PROBLEM } from './ledger';
@@ -168,6 +168,16 @@ const configSchema = z
           code: 'custom',
           path: [...path, 'caip19'],
           message: 'must be a coin this node can verify',
+        });
+        return;
+      }
+      // By `settlement`, never by family: an `eip3009` chain (Ethereum, Arbitrum,
+      // Base) is EVM too, and this node does not verify payments there yet.
+      if (settlementOf(caip19.chain) === 'eip3009') {
+        context.addIssue({
+          code: 'custom',
+          path: [...path, 'caip19'],
+          message: `is a coin of ${caip19.chain.chainName ?? caip19.chain.caip2}, which this node does not verify yet`,
         });
         return;
       }

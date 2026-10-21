@@ -5,6 +5,7 @@ import {
   buildStoreProfileEvent,
   encodeProductNaddr,
 } from '@elisym/commerce';
+import { CHAINS, type ChainConfig, assetsFor } from '@elisym/pay-core';
 import { getBase58Decoder } from '@solana/kit';
 import { type EventTemplate, type Filter, type NostrEvent, matchFilter } from 'nostr-tools';
 // Signed with `pure`: its verdict cache is the one `isGenuineEvent` must not trust.
@@ -16,6 +17,18 @@ export const USDC_DEVNET_CAIP19 =
 
 export const USDC_MAINNET_CAIP19 =
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+/** Every `eip3009` USDC in the registry, mainnet and devnet: the gates must refuse each. */
+export const EIP3009_USDC: readonly { chain: ChainConfig; caip19: string }[] = Object.values(
+  CHAINS,
+).flatMap((chain: ChainConfig) =>
+  chain.settlement === 'eip3009'
+    ? assetsFor(chain.slug, chain.network).map((coin) => ({
+        chain,
+        caip19: `${chain.caip2}/erc20:${coin.mint}`,
+      }))
+    : [],
+);
 
 /** Fee terms at a zero rate: no fee leg, today's request byte for byte. */
 export const NO_FEE_TERMS = async (): Promise<{ feeBps: number; treasury: string }> => ({

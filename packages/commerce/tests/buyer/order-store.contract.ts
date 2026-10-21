@@ -8,7 +8,7 @@ import {
   recordToShow,
 } from '../../src/buyer/order-record';
 import { type OrderBackend, OrderStore } from '../../src/buyer/order-store';
-import { nostrKey, sign } from './fixtures';
+import { EIP3009_USDC, nostrKey, sign } from './fixtures';
 
 /** A genuine signed event standing in for an order's gift wrap. */
 function signedWrap(label: string): NonNullable<OrderRecord['orderWrap']> {
@@ -568,6 +568,38 @@ export function orderStoreContract(makeBackend: () => Promise<OrderBackend>): vo
         reason: 'not_ready',
       });
     });
+
+    // Settlement gating: an `eip3009` payout is EVM, but neither Tempo's nor
+    // Solana's - no marker of either rail, no `blocked`, no `endedBy`.
+    // Every eip3009 USDC (three chains, mainnet and devnet): a gate narrowed to one
+    // chain must fail here.
+    it.each(EIP3009_USDC)(
+      'sets no marker, no blocked state and no endedBy on a $chain.chainName payout',
+      async ({ caip19 }) => {
+        const id = 'eip3009';
+        await store.add(record(id, { payout: { caip19, address: '0xabc' } }));
+        await store.update(id, 1, { state: 'ordered', paymentRequest: '{}', ...ACKNOWLEDGED });
+        const tempo: TempoMarker = { rail: 'tempo', attemptId: 't', setAt: 1, floorBlock: '1' };
+        for (const marker of [solanaMarker('s'), tempo]) {
+          expect(await store.setMarker(id, 2, marker)).toMatchObject({
+            ok: false,
+            reason: 'not_ready',
+          });
+        }
+        expect(await store.update(id, 2, { state: 'blocked' })).toMatchObject({
+          ok: false,
+          reason: 'not_ready',
+        });
+        expect(
+          await store.update(id, 2, { state: 'ended-unpaid', endedBy: 'nothing' }),
+        ).toMatchObject({ ok: false, reason: 'not_ready' });
+        expect(await store.update(id, 2, { state: 'ended-unpaid' })).toMatchObject({ ok: true });
+        expect(await store.update(id, 3, { state: 'blocked' })).toMatchObject({
+          ok: false,
+          reason: 'not_ready',
+        });
+      },
+    );
 
     it('never ends an approved Tempo bundle unpaid', async () => {
       await store.add(record('tempo', TEMPO_PAYOUT));

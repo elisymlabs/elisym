@@ -1,4 +1,4 @@
-import { PATHUSD_TEMPO } from '@elisym/pay-core';
+import { CHAINS, type ChainConfig, PATHUSD_TEMPO } from '@elisym/pay-core';
 /**
  * The wire tags that name a settlement chain, and the job history that reads
  * them back.
@@ -18,6 +18,11 @@ const TEMPO_DEVNET = 'eip155:42431';
 const RECIPIENT = '0x716ebf6bef1c3f27ea5c315ecfc60527d97041a2';
 const EVM_HASH = `0x${'c4'.repeat(32)}`;
 const SOLANA_SIG = '5'.repeat(88);
+
+/** The CAIP-2 ids of every `eip3009` chain, mainnet and devnet. */
+const EIP3009_CAIP2: readonly string[] = Object.values(CHAINS).flatMap((chain: ChainConfig) =>
+  chain.settlement === 'eip3009' ? [chain.caip2] : [],
+);
 
 function publishingPool(): NostrPool & { published: Event[] } {
   const published: Event[] = [];
@@ -138,7 +143,8 @@ describe('the chain element of a settlement tag', () => {
     expect(pool.published[2]?.tags.find((tag) => tag[0] === 'amount')?.[3]).toBe(TEMPO_DEVNET);
   });
 
-  it.each(['tempo', 'eip155:1', 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', ''])(
+  // An eip3009 chain (Ethereum, Arbitrum, Base) is a registry EVM chain, but not the Tempo rail's.
+  it.each(['tempo', 'eip155:10', ...EIP3009_CAIP2, 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', ''])(
     'throws on %j instead of writing it: the value is ours, so it is a bug',
     async (chain) => {
       const pool = publishingPool();
@@ -311,7 +317,7 @@ describe('job history over a v2 payment request', () => {
     },
   );
 
-  it.each([['eip155:1'], ['bitcoin'], ['SOLANA'], ['']])(
+  it.each([['eip155:10'], ['bitcoin'], ['SOLANA'], ['']])(
     'shows NO amount when the chain element is %j: anything but the literal solana is off Solana',
     async (chainElement) => {
       // NOT "a registry EVM chain": the rule for an amount is wider than the rule
@@ -338,10 +344,23 @@ describe('job history over a v2 payment request', () => {
     const amountTag = ['amount', '1000000'];
     const job = await historyOf(amountTag, [
       ['status', 'payment-completed'],
-      ['tx', 'anything-at-all', 'eip155:1'],
+      ['tx', 'anything-at-all', 'eip155:10'],
     ]);
     expect(job?.txHash).toBe('anything-at-all');
   });
+
+  it.each(EIP3009_CAIP2)(
+    'keeps a tx tag on the eip3009 chain %s as it was before that chain was registered',
+    async (caip2) => {
+      // Settlement gating: only a Tempo chain's hash is shape-gated here.
+      const amountTag = ['amount', '1000000'];
+      const job = await historyOf(amountTag, [
+        ['status', 'payment-completed'],
+        ['tx', 'anything-at-all', caip2],
+      ]);
+      expect(job?.txHash).toBe('anything-at-all');
+    },
+  );
 
   it.each([
     [

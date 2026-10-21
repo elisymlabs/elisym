@@ -20,7 +20,20 @@ describe('feeTermsSourceFor', () => {
   });
 
   it('refuses a chain with no fee config', () => {
-    expect(() => feeTermsSourceFor('eip155:1')).toThrow();
+    expect(() => feeTermsSourceFor('eip155:10')).toThrow();
+  });
+
+  // Settlement gating: an eip3009 chain has a paired config network, but no rail
+  // of this widget reads its fee yet - and never as Tempo's EVM treasury.
+  it.each([
+    CHAINS.ETHEREUM_MAINNET.caip2,
+    CHAINS.ETHEREUM_DEVNET.caip2,
+    CHAINS.ARBITRUM_MAINNET.caip2,
+    CHAINS.ARBITRUM_DEVNET.caip2,
+    CHAINS.BASE_MAINNET.caip2,
+    CHAINS.BASE_DEVNET.caip2,
+  ])('refuses the eip3009 chain %s', (caip2) => {
+    expect(() => feeTermsSourceFor(caip2)).toThrow(/No fee terms/);
   });
 });
 

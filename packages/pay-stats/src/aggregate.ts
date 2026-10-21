@@ -19,6 +19,11 @@
 import Decimal from 'decimal.js-light';
 import { usdDecimalsOf } from './usd';
 
+/**
+ * The rails the stats scan. The `eip3009` chains (Ethereum, Arbitrum, Base) are
+ * skipped on purpose until the checkout can pay on them: a rail is added here
+ * with its own scanner, never by widening a registry lookup.
+ */
 export type Rail = 'solana' | 'tempo';
 export type StatsNetwork = 'mainnet' | 'devnet';
 

@@ -71,6 +71,12 @@ export function receiptProblem(
 ): ReceiptProblem | undefined {
   const { medium, reference, tx } = message.payment;
   const tempo = medium.startsWith('tempo');
+  // Only Solana and Tempo receipts are verified here: an `eip3009` medium
+  // (`base`, `base-devnet`, ...) is no store's medium yet, and never one to read
+  // with the Solana rules below.
+  if (!tempo && !medium.startsWith('solana')) {
+    return 'unlisted_medium';
+  }
   const derived = deriveOrderPaymentReference({
     storePubkey: store.storePubkey,
     buyerPubkey: order.buyerPubkey,

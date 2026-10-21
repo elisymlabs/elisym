@@ -172,6 +172,46 @@ describe('the shared entry', () => {
   });
 });
 
+describe('the evm entry bundles @noble', () => {
+  // @noble 2.x is ESM only: a `require` of it from `dist/evm.cjs` throws
+  // ERR_REQUIRE_ESM before Node 20.19 and 22.12. It is bundled, so neither
+  // build of the entry may reach it, and the package must not ship it as a
+  // runtime dependency (one put back there is no longer bundled by tsup).
+  it('reaches no @noble module from either build', () => {
+    for (const name of ['dist/evm.js', 'dist/evm.cjs']) {
+      const entry = join(__dirname, '..', name);
+      expect(
+        existsSync(entry),
+        `${name} is missing - run \`bun run build --filter=@elisym/pay-core\` before this test`,
+      ).toBe(true);
+      for (const file of reachableFiles(entry)) {
+        const imports = [...readFileSync(file, 'utf8').matchAll(EXTERNAL_IMPORT)].map(
+          (match) => match[1] ?? '',
+        );
+        expect(
+          imports.filter((specifier) => specifier.startsWith('@noble/')),
+          relative(DIST, file),
+        ).toEqual([]);
+      }
+    }
+  });
+
+  it('ships no @noble runtime dependency', () => {
+    const manifest: unknown = JSON.parse(
+      readFileSync(join(__dirname, '..', 'package.json'), 'utf8'),
+    );
+    const declared =
+      typeof manifest === 'object' && manifest !== null && 'dependencies' in manifest
+        ? manifest.dependencies
+        : undefined;
+    const dependencies =
+      typeof declared === 'object' && declared !== null ? Object.keys(declared) : [];
+    // An empty read would pass vacuously: zod is a runtime dependency.
+    expect(dependencies).toContain('zod');
+    expect(dependencies.filter((name) => name.startsWith('@noble/'))).toEqual([]);
+  });
+});
+
 describe('the chain registry', () => {
   it('names the config contract that was actually deployed and read back', () => {
     // A hand-reviewed constant with a recorded code hash (DEPLOYMENTS.md). A
@@ -191,5 +231,15 @@ describe('the chain registry', () => {
         expect(isEvmWireAddress(address)).toBe(true);
       }
     }
+  });
+});
+
+describe('the evm entry', () => {
+  it('exports every export of the EIP-3009 module, since pay-core is frozen after it ships', async () => {
+    const entry = await import('../src/evm');
+    const eip3009 = await import('../src/evm/eip3009');
+    const missing = Object.keys(eip3009).filter((name) => !(name in entry));
+    expect(Object.keys(eip3009).length).toBeGreaterThan(0);
+    expect(missing).toEqual([]);
   });
 });

@@ -3,6 +3,8 @@ import type { PricedPayout } from '../../src/buyer/offer';
 import type { OrderRecord } from '../../src/buyer/order-record';
 import { MemoryOrderBackend, OrderStore } from '../../src/buyer/order-store';
 import { cancelledUnpaid, endOrder, gone, onOtherTerms } from '../../src/buyer/purchase';
+import { storedSolanaRequest } from '../../src/buyer/solana-pay';
+import { EIP3009_USDC } from './fixtures';
 import { ACKNOWLEDGED, record, solanaMarker } from './order-store.contract';
 
 const PAYOUT = {
@@ -99,6 +101,72 @@ describe('a purchase deciding about its records', () => {
     expect(await endOrder(paying, { ...DEPS_WITHOUT_RPC, store })).toMatchObject({ ended: false });
     expect((await store.get('paying'))?.state).toBe('paying');
   });
+
+  it.each(EIP3009_USDC)(
+    'ends a $chain.chainName order nothing was requested for with no endedBy, through no Tempo or Solana rule',
+    async ({ caip19 }) => {
+      const onEip3009 = { payout: { caip19, address: '0xabc' } };
+      const store = await storeWith(record('ordered', onEip3009));
+      await store.update('ordered', 1, { state: 'ordered', paymentRequest: '{}', ...ACKNOWLEDGED });
+      const ordered = await store.get('ordered');
+      if (ordered === undefined) {
+        throw new Error('missing');
+      }
+      // Neither rail's ender is handed this record, whatever clients are given.
+      const unusable = {
+        request: () => {
+          throw new Error('no rail may read for an eip3009 order');
+        },
+      };
+      const ended = await endOrder(ordered, {
+        ...DEPS_WITHOUT_RPC,
+        store,
+        rpc: {} as never,
+        tempo: unusable,
+      });
+      expect(ended).toMatchObject({ ended: true, record: { state: 'ended-unpaid' } });
+      expect(ended.record.endedBy).toBeUndefined();
+    },
+  );
+
+  it.each(EIP3009_USDC)(
+    'hands a $chain.chainName attempt to no Solana ender, however many clients are given',
+    async ({ caip19 }) => {
+      // Built by hand: PR 1's store refuses a marker on these payouts, PR 2 adds them.
+      const attempt: OrderRecord = {
+        ...record('attempt', { state: 'paying', payout: { caip19, address: '0xabc' } }),
+        // A request a Solana watcher would accept, so only the rail keeps it out.
+        paymentRequest: JSON.stringify({
+          recipient: '11111111111111111111111111111111',
+          amount: 1000,
+          reference: 'SysvarRent111111111111111111111111111111111',
+          created_at: 1_750_000_000,
+          expiry_secs: 600,
+        }),
+        marker: solanaMarker('a'),
+      };
+      expect(storedSolanaRequest(attempt)).toBeDefined();
+      const reads: PropertyKey[] = [];
+      const untouchable = new Proxy(
+        {},
+        {
+          get: (_target, key) => {
+            reads.push(key);
+            throw new Error('no rail may read for an eip3009 attempt');
+          },
+        },
+      ) as never;
+      expect(
+        await endOrder(attempt, {
+          readClient: untouchable,
+          clientFor: () => untouchable,
+          rpc: untouchable,
+          store: await storeWith(),
+        }),
+      ).toEqual({ ended: false, record: attempt });
+      expect(reads).toEqual([]);
+    },
+  );
 
   it('ends a Tempo order nothing was requested for as such, and never a Tempo attempt through a Solana RPC', async () => {
     const tempo = {

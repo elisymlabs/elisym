@@ -27,7 +27,7 @@ import {
   watchTempoPayment,
 } from '../../src/buyer/tempo-pay';
 import { deriveOrderPaymentReference } from '../../src/orders/payment-reference';
-import { MemoryRelays, NO_FEE_TERMS, NOW, inboxList, makeShop } from './fixtures';
+import { EIP3009_USDC, MemoryRelays, NO_FEE_TERMS, NOW, inboxList, makeShop } from './fixtures';
 
 /** A test may change what the composer returns (the real calls go in). */
 const composer = vi.hoisted(() => ({
@@ -391,6 +391,11 @@ describe('paying on Tempo', () => {
       record: { state: 'ended-unpaid', endedBy: 'over' },
     });
     expect(mayStillBePaid(ended.record, NOW + 60)).toBe(true);
+    // Settlement gating: the same record on any eip3009 payout is no Tempo prompt.
+    for (const { caip19 } of EIP3009_USDC) {
+      const onEip3009 = { ...ended.record, payout: { caip19, address: PAYOUT } };
+      expect(mayStillBePaid(onEip3009, NOW + 60)).toBe(false);
+    }
   });
 
   it('never ends an attempt that holds a sent hash, even when the hash never lands', async () => {
@@ -710,6 +715,21 @@ describe('paying a fee-bearing order on Tempo', () => {
       expect(storedTempoRequest(record)?.fee_address).toBeUndefined();
     }
   });
+
+  // Settlement gating: an `eip3009` payout (Ethereum, Arbitrum, Base) is EVM, never a Tempo target.
+  it.each(EIP3009_USDC)(
+    'refuses a record whose payout is $chain.chainName USDC as not_payable, asking nothing',
+    async ({ caip19 }) => {
+      const run = await world();
+      const onEip3009 = { ...run.record, payout: { caip19, address: PAYOUT } };
+      const payer = wallet(run, 'land');
+      expect(await payWithTempo(onEip3009, payer, run.fresh, run.deps)).toMatchObject({
+        ok: false,
+        reason: 'not_payable',
+      });
+      expect(payer.sent).toBe(0);
+    },
+  );
 
   it('sends nothing when the composer returns another number of calls than the legs', async () => {
     // A fee leg composed into one call: no batch of the payee leg alone.

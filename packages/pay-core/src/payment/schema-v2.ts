@@ -20,7 +20,7 @@
 import { z } from 'zod';
 import { assetKey, assetsFor } from './assets';
 import type { Asset } from './assets';
-import { chainByCaip2, isEvmWireAddress, isVirtualEvmAddress } from './chains';
+import { chainByCaip2, isEvmWireAddress, isTempoChain, isVirtualEvmAddress } from './chains';
 import { describeIssues, parsePaymentRequest } from './schema';
 import type { ParseError, ParsedPaymentRequest } from './schema';
 
@@ -52,7 +52,9 @@ export const PaymentRequestV2Schema = z
     chain: z
       .string()
       .regex(CAIP2_EVM_RE, 'must be an eip155 CAIP-2 id')
-      .refine((caip2) => chainByCaip2(caip2)?.family === 'evm', 'not a chain this SDK knows'),
+      // A v2 request is the Tempo rail's: an `eip3009` chain (Base, ...) is
+      // EVM too, and is refused here like any chain the rail cannot pay on.
+      .refine((caip2) => isTempoChain(chainByCaip2(caip2)), 'not a chain this SDK knows'),
     asset: z.string().regex(CAIP19_ERC20_RE, 'must be a CAIP-19 erc20 id'),
     recipient: evmAddressSchema,
     amount: subunitsSchema,
@@ -152,10 +154,9 @@ export function caip19ForAsset(caip2: string, asset: Asset): string {
   // reader refuses. Matched by KEY, never by identity: each SDK entry point is
   // bundled with its own copy of the registry, so an asset that came through
   // `@elisym/sdk/skills` is not `===` the root entry's constant.
-  const coin =
-    chain?.family === 'evm'
-      ? assetsFor(chain.slug, chain.network).find((known) => assetKey(known) === assetKey(asset))
-      : undefined;
+  const coin = isTempoChain(chain)
+    ? assetsFor(chain.slug, chain.network).find((known) => assetKey(known) === assetKey(asset))
+    : undefined;
   if (!coin?.mint) {
     throw new Error(`Asset ${asset.token} is not a coin of ${caip2}`);
   }

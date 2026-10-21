@@ -7,8 +7,11 @@ import {
   type UnwrappedOrderMessage,
 } from '@elisym/commerce';
 import {
+  CHAINS,
+  type ChainConfig,
   type PaymentRequestData,
   USDC_SOLANA_DEVNET,
+  assetsFor,
   buildPaymentInstructions,
   composeSolanaPaymentRequest,
   getProtocolProgramId,
@@ -35,6 +38,17 @@ import { publishTerms } from '../src/terms';
 
 export const USDC_DEVNET_CAIP19 =
   'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+/** Every `eip3009` USDC in the registry, mainnet and devnet: the gates must refuse each. */
+export const EIP3009_USDC: readonly { chain: ChainConfig; caip19: string }[] = Object.values(
+  CHAINS,
+).flatMap((chain: ChainConfig) =>
+  chain.settlement === 'eip3009'
+    ? assetsFor(chain.slug, chain.network).map((coin) => ({
+        chain,
+        caip19: `${chain.caip2}/erc20:${coin.mint}`,
+      }))
+    : [],
+);
 export const PAYOUT = address('7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU');
 export const PAYER = address('9vSzVjVGUKqs6vEk1sKc3RPCRkAQfKHDzEkqM6ErqJkz');
 export const PRICE = 1_000_000n;

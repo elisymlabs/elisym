@@ -14,7 +14,7 @@ import {
   priceInSubunits,
   wrapOrderMessage,
 } from '@elisym/commerce';
-import type { Network } from '@elisym/pay-core';
+import { type Network, settlementOf } from '@elisym/pay-core';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import {
   type EventTemplate,
@@ -183,7 +183,7 @@ export function offersNotHonoured(
       (target) =>
         (target.caip19.chain.family === 'solana'
           ? target.caip19.chain.network !== network
-          : target.caip19.chain.family !== 'evm' ||
+          : settlementOf(target.caip19.chain) !== 'tempo' ||
             tempoNetwork === undefined ||
             target.caip19.chain.network !== tempoNetwork) ||
         !standing.some(

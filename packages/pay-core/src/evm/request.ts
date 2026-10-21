@@ -18,7 +18,12 @@ import { MAX_FEE_BPS, PAYMENT_DEFAULTS } from '../constants';
 import type { Asset } from '../payment/assets';
 import { assetsFor } from '../payment/assets';
 import type { ChainConfig } from '../payment/chains';
-import { isEvmWireAddress, isVirtualEvmAddress, normalizeEvmAddress } from '../payment/chains';
+import {
+  isEvmWireAddress,
+  isTempoChain,
+  isVirtualEvmAddress,
+  normalizeEvmAddress,
+} from '../payment/chains';
 import { calculateProtocolFeeSubunits } from '../payment/fee-subunits';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { caip19ForAsset, PaymentRequestV2Schema } from '../payment/schema-v2';
@@ -79,6 +84,9 @@ export async function createTempoPaymentRequest(
   chain: ChainConfig,
   options: CreateTempoPaymentRequestOptions,
 ): Promise<TempoPaymentRequestCreation> {
+  if (!isTempoChain(chain)) {
+    throw new Error('The chain is not a Tempo chain from the registry.');
+  }
   const recipient = normalizeEvmAddress(options.recipient);
   if (recipient === undefined || isVirtualEvmAddress(recipient)) {
     throw new Error(`Not an address a payment can be issued to: ${options.recipient}`);

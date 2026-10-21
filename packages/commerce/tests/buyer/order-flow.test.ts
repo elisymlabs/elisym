@@ -24,7 +24,15 @@ import {
 import { type OrderRecord, recordToShow } from '../../src/buyer/order-record';
 import { MemoryOrderBackend, OrderStore } from '../../src/buyer/order-store';
 import type { RelayClient } from '../../src/buyer/relay-client';
-import { MemoryRelays, NOW, type Shop, inboxList, makeShop, nostrKey } from './fixtures';
+import {
+  EIP3009_USDC,
+  MemoryRelays,
+  NOW,
+  type Shop,
+  inboxList,
+  makeShop,
+  nostrKey,
+} from './fixtures';
 
 const INBOX = ['wss://inbox-a.example.com', 'wss://inbox-b.example.com'];
 const PAGE = 'https://merchant.example';
@@ -462,6 +470,46 @@ describe('the payment reference form', () => {
     const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
     const { record, reference } = await placedOn(shop, relays, ['solana']);
     expect(record.reference).toBe(reference.solana);
+  });
+
+  // Settlement gating: no buyer rail pays on an `eip3009` chain yet, so an order
+  // on one is neither stored nor sent.
+  it.each(EIP3009_USDC)(
+    'refuses to place an order on $chain.chainName USDC',
+    async ({ caip19 }) => {
+      const shop = makeShop({ caip19, payout: EVM_PAYOUT, memoMarker: true });
+      const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+      const published = relays.published.length;
+      await expect(placedOn(shop, relays, ['evm'])).rejects.toThrow(/No buyer rail/);
+      expect(relays.published.length).toBe(published);
+      // Refused FIRST, before anything else is judged or read.
+      const loaded = await loadOffer(shop.naddr, {
+        client: relays,
+        pageOrigin: PAGE,
+        families: ['evm'],
+        now: NOW,
+      });
+      if (!loaded.ok || loaded.payouts[0] === undefined) {
+        throw new Error('no payout');
+      }
+      await expect(
+        placeOrder(
+          { offer: loaded, payout: loaded.payouts[0], chainTime: NOW, deviceTime: NOW + 3600 },
+          deps(relays),
+        ),
+      ).rejects.toThrow(/No buyer rail/);
+    },
+  );
+
+  it('refuses on all six eip3009 USDC', () => {
+    expect(EIP3009_USDC.map(({ chain }) => chain.chainName)).toEqual([
+      'Ethereum',
+      'Sepolia',
+      'Arbitrum One',
+      'Arbitrum Sepolia',
+      'Base',
+      'Base Sepolia',
+    ]);
   });
 
   it('sends the receipt under the marked memo the record holds', async () => {

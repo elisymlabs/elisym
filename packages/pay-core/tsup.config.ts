@@ -23,5 +23,7 @@ export default defineConfig({
     'decimal.js-light',
     'zod',
   ],
-  noExternal: ['@elisym/config-client'],
+  // @noble 2.x ships ESM only: bundled, so the CommonJS build loads on every
+  // supported Node (a `require` of it fails before Node 20.19 and 22.12).
+  noExternal: ['@elisym/config-client', /^@noble\//],
 });

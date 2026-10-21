@@ -83,6 +83,9 @@ export {
   chainFamilyOf,
   chainFor,
   chainByCaip2,
+  settlementOf,
+  isTempoChain,
+  isTempoSlug,
   explorerTxUrl,
   isEvmAddressFormat,
   isEvmTxHashFormat,
@@ -91,7 +94,13 @@ export {
   isVirtualEvmAddress,
   normalizeEvmAddress,
 } from './payment/chains';
-export type { ChainSlug, ChainFamily, ChainConfig } from './payment/chains';
+export type {
+  ChainSlug,
+  ChainFamily,
+  ChainConfig,
+  ChainSettlement,
+  EvmSettlement,
+} from './payment/chains';
 export { ProviderPaymentAcceptor, MIN_SETTLEMENT_RETENTION_MS } from './payment/acceptor';
 export type {
   SettlementClaim,
@@ -138,6 +147,12 @@ export {
   TOKEN_2022_PROGRAM_ADDRESS_STR,
   USDCE_TEMPO_MAINNET,
   PATHUSD_TEMPO,
+  USDC_ETHEREUM_MAINNET,
+  USDC_ETHEREUM_DEVNET,
+  USDC_ARBITRUM_MAINNET,
+  USDC_ARBITRUM_DEVNET,
+  USDC_BASE_MAINNET,
+  USDC_BASE_DEVNET,
   KNOWN_ASSETS,
   EVM_ASSETS,
   ALL_ASSETS,

@@ -1,9 +1,9 @@
 import {
   type Asset,
   assetsFor,
-  chainFamilyOf,
   isChainSlug,
   isEvmWireAddress,
+  isTempoSlug,
   isVirtualEvmAddress,
 } from '@elisym/pay-core';
 import { nip19, finalizeEvent, verifyEvent, type Filter, type Event } from 'nostr-tools';
@@ -119,7 +119,7 @@ function paymentAddressProblem(chain: string, address: string): string | null {
   if (chain === 'solana') {
     return SOLANA_ADDRESS_REGEX.test(address) ? null : 'Invalid Solana address format';
   }
-  if (chainFamilyOf(chain) === 'evm') {
+  if (isTempoSlug(chain)) {
     if (!isEvmWireAddress(address)) {
       return 'Invalid EVM address format (lowercase 0x hex expected)';
     }
@@ -137,6 +137,7 @@ function paymentAddressProblem(chain: string, address: string): string | null {
 function evmCardCoin(payment: PaymentInfo): Asset | null {
   if (
     !isChainSlug(payment.chain) ||
+    !isTempoSlug(payment.chain) ||
     (payment.network !== 'mainnet' && payment.network !== 'devnet')
   ) {
     return null;
@@ -402,7 +403,10 @@ export function parseCapabilityEvent(event: Event, network: Network): Agent | nu
     card.onchain = descriptor && descriptor.network === paymentNetwork ? descriptor : undefined;
   }
 
-  if (card.payment && chainFamilyOf(card.payment.chain) === 'evm') {
+  // By settlement, not family: the agent marketplace pays EVM cards over Tempo
+  // only, so an `eip3009` chain's card (Base, ...) is read as it was before
+  // that chain was registered - a chain this SDK cannot pay on.
+  if (card.payment && isTempoSlug(card.payment.chain)) {
     const price = readEvmJobPrice(card.payment.job_price);
     const coin = evmCardCoin(card.payment);
     if (price === null || coin === null) {
@@ -1243,7 +1247,7 @@ export class DiscoveryService {
     if (addressProblem !== null) {
       throw new Error(`${addressProblem}: ${card.payment.address}`);
     }
-    const paidOnEvm = chainFamilyOf(card.payment.chain) === 'evm';
+    const paidOnEvm = isTempoSlug(card.payment.chain);
     if (paidOnEvm) {
       const price = card.payment.job_price;
       if (price === undefined || !Number.isSafeInteger(price) || price < 0) {

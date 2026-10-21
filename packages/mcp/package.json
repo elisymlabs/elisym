@@ -57,8 +57,8 @@
   },
   "dependencies": {
     "@elisym/commerce": "~0.12.0",
-    "@elisym/pay-core": "~0.3.0",
-    "@elisym/sdk": "~0.43.0",
+    "@elisym/pay-core": "~0.4.0",
+    "@elisym/sdk": "~0.44.0",
     "@modelcontextprotocol/sdk": "~1.28.0",
     "@solana-program/memo": "~0.11.0",
     "@solana-program/system": "~0.12.0",

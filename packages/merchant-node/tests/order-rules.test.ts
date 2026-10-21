@@ -91,6 +91,36 @@ describe('receiptProblem', () => {
   });
 });
 
+// Settlement gating: an `eip3009` medium is never read with the Solana rules,
+// even when a store lists it and the receipt fits them.
+describe('receiptProblem on an eip3009 medium', () => {
+  const store = key();
+  const buyer = key();
+  const reference = deriveOrderPaymentReference({
+    storePubkey: store.pubkey,
+    buyerPubkey: buyer.pubkey,
+    orderId: ORDER_ID,
+  });
+  it.each(['ethereum', 'ethereum-devnet', 'arbitrum', 'arbitrum-devnet', 'base', 'base-devnet'])(
+    'refuses %s',
+    (medium) => {
+      const rules = { storePubkey: store.pubkey, mediums: [medium] };
+      expect(
+        receiptProblem(
+          {
+            type: 'receipt',
+            storePubkey: store.pubkey,
+            orderId: ORDER_ID,
+            payment: { medium, reference: reference.solana, tx: signatureOf(1) },
+          },
+          { buyerPubkey: buyer.pubkey, orderId: ORDER_ID },
+          rules,
+        ),
+      ).toBe('unlisted_medium');
+    },
+  );
+});
+
 describe('receiptProblem with marked Tempo memos', () => {
   const store = key();
   const buyer = key();

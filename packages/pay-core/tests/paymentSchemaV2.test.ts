@@ -8,6 +8,7 @@ import {
   parseAnyPaymentRequest,
   resolveAssetFromPaymentRequestV2,
 } from '../src/payment/schema-v2';
+import { EIP3009_USDC } from './eip3009-coins';
 
 const RECIPIENT = '0x716ebf6bef1c3f27ea5c315ecfc60527d97041a2';
 const TREASURY = '0xbc9671bcbd897bf3abb27006433b95b2acd0d04b';
@@ -53,9 +54,15 @@ describe('PaymentRequestV2Schema', () => {
     ['a v1 leftover: network', { network: 'mainnet' }],
     [
       'a chain the registry does not know',
-      { chain: 'eip155:1', asset: `eip155:1/erc20:${USDCE_TEMPO_MAINNET.mint}` },
+      { chain: 'eip155:10', asset: `eip155:10/erc20:${USDCE_TEMPO_MAINNET.mint}` },
     ],
     ['a Solana chain id', { chain: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' }],
+    // Settlement gating: an eip3009 chain is in the registry and is EVM, but a
+    // v2 request is the Tempo rail's - on each of the six USDC.
+    ...EIP3009_USDC.map(({ chain, caip19 }): [string, Record<string, string>] => [
+      `an eip3009 chain (${chain.chainName ?? chain.caip2} USDC)`,
+      { chain: chain.caip2, asset: caip19 },
+    ]),
     [
       'an asset on another chain than `chain`',
       { asset: `eip155:42431/erc20:${PATHUSD_TEMPO.mint}` },
@@ -268,13 +275,17 @@ describe('the asset of a v2 request', () => {
   });
 
   it('answers undefined, not a TypeError, for a chain it does not know', () => {
-    const unknownChain = { chain: 'eip155:1', asset: `eip155:1/erc20:${PATHUSD_TEMPO.mint}` };
+    const unknownChain = { chain: 'eip155:10', asset: `eip155:10/erc20:${PATHUSD_TEMPO.mint}` };
     expect(resolveAssetFromPaymentRequestV2(unknownChain)).toBeUndefined();
   });
 
   it('builds a CAIP-19 id only for a coin of that chain and environment', () => {
     expect(() => caip19ForAsset('eip155:42431', USDCE_TEMPO_MAINNET)).toThrow(/not a coin of/);
-    expect(() => caip19ForAsset('eip155:1', PATHUSD_TEMPO)).toThrow(/not a coin of/);
+    expect(() => caip19ForAsset('eip155:10', PATHUSD_TEMPO)).toThrow(/not a coin of/);
+    // An eip3009 chain's own USDC: not a coin of the Tempo rail.
+    for (const { chain, asset } of EIP3009_USDC) {
+      expect(() => caip19ForAsset(chain.caip2, asset)).toThrow(/not a coin of/);
+    }
     expect(() =>
       caip19ForAsset('solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', USDCE_TEMPO_MAINNET),
     ).toThrow(/not a coin of/);

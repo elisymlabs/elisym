@@ -109,6 +109,12 @@ const EVM_UNPAYABLE_ADDRESSES: readonly string[] = [
   '0xfdc0000000000000000000000000000000000000', // TIP-1022 address registry
   '0x20c000000000000000000000b9537d11c60e8b50', // USDC.e contract
   '0x20c0000000000000000000000000000000000000', // pathUSD contract
+  '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC contract, Ethereum
+  '0x1c7d4b196cb0c7b01d743fbc6116a902379c7238', // USDC contract, Sepolia
+  '0xaf88d065e77c8cc2239327c5edb3a432268e5831', // USDC contract, Arbitrum One
+  '0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d', // USDC contract, Arbitrum Sepolia
+  '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC contract, Base
+  '0x036cbd53842c5426634e7929541ec2318f3dcf7e', // USDC contract, Base Sepolia
 ];
 /** TIP-1022: bytes 4..14 of a virtual address are ten 0xfd bytes. */
 const VIRTUAL_ADDRESS_MARKER = 'fd'.repeat(10);
