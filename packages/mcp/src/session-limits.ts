@@ -11,6 +11,12 @@ import {
   LSM_SOLANA_MAINNET,
   NATIVE_SOL,
   PATHUSD_TEMPO,
+  USDC_ARBITRUM_DEVNET,
+  USDC_ARBITRUM_MAINNET,
+  USDC_BASE_DEVNET,
+  USDC_BASE_MAINNET,
+  USDC_ETHEREUM_DEVNET,
+  USDC_ETHEREUM_MAINNET,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
   USDCE_TEMPO_MAINNET,
@@ -48,6 +54,12 @@ export const DEFAULT_SESSION_LIMITS: readonly DefaultLimit[] = [
   { asset: LSM_SOLANA_MAINNET, humanAmount: '1000000' },
   { asset: USDCE_TEMPO_MAINNET, humanAmount: '50' },
   { asset: PATHUSD_TEMPO, humanAmount: '50' },
+  { asset: USDC_ETHEREUM_MAINNET, humanAmount: '50' },
+  { asset: USDC_ETHEREUM_DEVNET, humanAmount: '50' },
+  { asset: USDC_ARBITRUM_MAINNET, humanAmount: '50' },
+  { asset: USDC_ARBITRUM_DEVNET, humanAmount: '50' },
+  { asset: USDC_BASE_MAINNET, humanAmount: '50' },
+  { asset: USDC_BASE_DEVNET, humanAmount: '50' },
 ];
 
 /** Materialize DEFAULT_SESSION_LIMITS into a Map<AssetKey, rawBigint>. */

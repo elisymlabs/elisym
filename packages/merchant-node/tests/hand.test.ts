@@ -8,6 +8,7 @@ import { applyHandAnswer, buildHandAnswer, planHandAnswer } from '../src/hand';
 import { intake } from '../src/intake';
 import { pruneExpiredOrders } from '../src/ledger';
 import {
+  EIP3009_USDC,
   T0,
   USDC_DEVNET_CAIP19,
   delivered,
@@ -207,6 +208,23 @@ describe('answering by hand', () => {
         payoutAssets: TWO_PAYOUTS,
       }),
     ).toMatchObject({ ok: false, problem: expect.stringMatching(/Solana/) });
+    // Settlement gating: no eip3009 coin (any of the six USDC) is a refund here
+    // yet, whatever its tx looks like - never a "Tempo" or "Solana" one.
+    for (const { caip19 } of EIP3009_USDC) {
+      for (const tx of [TEMPO_TX, signatureOf(5)]) {
+        expect(
+          planHandAnswer(several.state, several.order.key, {
+            ...refund,
+            tx,
+            asset: caip19,
+            payoutAssets: TWO_PAYOUTS,
+          }),
+        ).toMatchObject({
+          ok: false,
+          problem: expect.stringMatching(/not an asset this node knows/),
+        });
+      }
+    }
   });
 
   it('re-sends a refund as kept: no default asset, and only a conflicting --asset is refused', () => {

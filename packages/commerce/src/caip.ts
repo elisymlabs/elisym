@@ -1,10 +1,12 @@
 import {
   type Asset,
   type ChainConfig,
+  type ChainSettlement,
   assetsFor,
   chainByCaip2,
   isEvmWireAddress,
   isVirtualEvmAddress,
+  settlementOf,
 } from '@elisym/pay-core';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { base58, hex } from '@scure/base';
@@ -65,6 +67,23 @@ export function parseCaip19(id: string): Caip19 | undefined {
     return undefined;
   }
   return { id, caip2, chain, asset };
+}
+
+/**
+ * The rail a payout pays on, from its CAIP-19 id: the registry chain's
+ * `settlement` - `solana`, `tempo`, or `eip3009` (Ethereum, Arbitrum, Base),
+ * never the CAIP-2 prefix, since `eip155:` no longer means Tempo. A chain the
+ * registry does not hold keeps the rule such a record was written under
+ * (`eip155:` Tempo, anything else Solana): no live payout names one.
+ */
+export function payoutRail(caip19: string): ChainSettlement {
+  const [caip2 = ''] = caip19.split('/', 1);
+  const chain = chainByCaip2(caip2);
+  const settlement = chain === undefined ? undefined : settlementOf(chain);
+  if (settlement !== undefined) {
+    return settlement;
+  }
+  return caip19.startsWith('eip155:') ? 'tempo' : 'solana';
 }
 
 /**

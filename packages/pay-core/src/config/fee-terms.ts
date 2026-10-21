@@ -134,11 +134,18 @@ const CONFIG_NETWORK_BY_CHAIN: ReadonlyMap<string, Network> = new Map<string, Ne
   [CHAINS.SOLANA_DEVNET.caip2, 'devnet'],
   [CHAINS.TEMPO_MAINNET.caip2, 'mainnet'],
   [CHAINS.TEMPO_DEVNET.caip2, 'devnet'],
+  [CHAINS.ETHEREUM_MAINNET.caip2, 'mainnet'],
+  [CHAINS.ETHEREUM_DEVNET.caip2, 'devnet'],
+  [CHAINS.ARBITRUM_MAINNET.caip2, 'mainnet'],
+  [CHAINS.ARBITRUM_DEVNET.caip2, 'devnet'],
+  [CHAINS.BASE_MAINNET.caip2, 'mainnet'],
+  [CHAINS.BASE_DEVNET.caip2, 'devnet'],
 ]);
 
 /**
- * The config network a chain's fee is read from: a Solana chain's own, Tempo
- * mainnet -> `mainnet`, Moderato -> `devnet`. Throws for any other chain.
+ * The config network a chain's fee is read from: a Solana chain's own, an EVM
+ * chain's environment (Tempo mainnet, Ethereum, Arbitrum and Base -> `mainnet`;
+ * Moderato and the Sepolias -> `devnet`). Throws for any other chain.
  */
 export function solanaConfigNetworkFor(caip2: string): Network {
   const network = CONFIG_NETWORK_BY_CHAIN.get(caip2);

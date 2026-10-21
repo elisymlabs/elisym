@@ -190,11 +190,17 @@ describe('solanaConfigNetworkFor', () => {
     ['solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1', 'devnet'],
     ['eip155:4217', 'mainnet'],
     ['eip155:42431', 'devnet'],
+    ['eip155:1', 'mainnet'],
+    ['eip155:11155111', 'devnet'],
+    ['eip155:42161', 'mainnet'],
+    ['eip155:421614', 'devnet'],
+    ['eip155:8453', 'mainnet'],
+    ['eip155:84532', 'devnet'],
   ])('pairs %s with the %s config', (caip2, network) => {
     expect(solanaConfigNetworkFor(caip2)).toBe(network);
   });
 
-  it.each(['eip155:1', 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z', '__proto__', ''])(
+  it.each(['eip155:10', 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z', '__proto__', ''])(
     'refuses %s',
     (caip2) => {
       expect(() => solanaConfigNetworkFor(caip2)).toThrow(/No elisym fee config/);

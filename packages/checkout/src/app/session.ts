@@ -67,7 +67,7 @@ import {
   tempoLateDeadline,
   watchTempoPayment,
 } from '@elisym/commerce/buyer';
-import type { Asset, Network } from '@elisym/pay-core';
+import { type Asset, type Network, settlementOf } from '@elisym/pay-core';
 import { type Eip1193Client, readQuantity, withAbort } from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, isSignature } from '@solana/kit';
 import { hexToBytes } from 'nostr-tools/utils';
@@ -450,8 +450,14 @@ function networkOf(payout: PricedPayout): Network {
 
 export type Rail = 'solana' | 'tempo';
 
-function railOf(payout: PricedPayout): Rail {
-  return payout.target.caip19.chain.family === 'evm' ? 'tempo' : 'solana';
+/**
+ * The rail a payout pays on here, by its chain's `settlement`, never by family:
+ * `undefined` for an `eip3009` chain (Ethereum, Arbitrum, Base), which this
+ * widget does not pay on yet, so such a payout is never servable.
+ */
+function railOf(payout: PricedPayout): Rail | undefined {
+  const rail = settlementOf(payout.target.caip19.chain);
+  return rail === 'solana' || rail === 'tempo' ? rail : undefined;
 }
 
 const NO_NETWORK = 'This network is not available here yet.';
@@ -479,7 +485,9 @@ export function payoutPaying(payout: PricedPayout): Paying {
     amount: payout.amount.toString(),
     asset: payout.target.caip19.asset,
     network: networkOf(payout),
-    chain: railOf(payout),
+    // The glyph and the chain name only. An `eip3009` payout is never servable
+    // here, so it is never drawn as one to pay; payment decisions read `railOf`.
+    chain: payout.target.caip19.chain.family === 'evm' ? 'tempo' : 'solana',
   };
 }
 
@@ -1147,8 +1155,14 @@ export class CheckoutSession {
       this.showOffer({ reason: 'bad_email' });
       return;
     }
-    if (railOf(this.payout) === 'tempo') {
+    const rail = railOf(this.payout);
+    if (rail === 'tempo') {
       await this.payTempo(walletName, press, resets);
+      return;
+    }
+    // Never reached: an unservable payout is never the one a press pays.
+    if (rail !== 'solana') {
+      this.showOffer({ reason: 'failed' });
       return;
     }
     await this.guard(press, async () => {
@@ -2137,16 +2151,20 @@ export class CheckoutSession {
 
   private servable(payout: PricedPayout): boolean {
     const network = networkOf(payout);
-    return railOf(payout) === 'tempo'
-      ? this.deps.tempoFor?.(network) !== undefined
-      : this.deps.rpcFor(network) !== undefined;
+    const rail = railOf(payout);
+    if (rail === 'tempo') {
+      return this.deps.tempoFor?.(network) !== undefined;
+    }
+    return rail === 'solana' && this.deps.rpcFor(network) !== undefined;
   }
 
   /** The record's own chain is reachable from here. */
   private recordServed(record: OrderRecord): boolean {
-    return recordRail(record) === 'tempo'
-      ? this.tempoOfRecord(record) !== undefined
-      : this.rpcOfRecord(record) !== undefined;
+    const rail = recordRail(record);
+    if (rail === 'tempo') {
+      return this.tempoOfRecord(record) !== undefined;
+    }
+    return rail === 'solana' && this.rpcOfRecord(record) !== undefined;
   }
 
   private tempoOfRecord(record: OrderRecord): Eip1193Client | undefined {
@@ -2156,10 +2174,13 @@ export class CheckoutSession {
 
   private walletChoices(payout: PricedPayout): WalletChoice[] {
     const network = networkOf(payout);
-    const options =
-      railOf(payout) === 'tempo'
-        ? (this.deps.tempoWallets?.(network) ?? [])
-        : this.deps.wallets(network);
+    const rail = railOf(payout);
+    let options: readonly { name: string; icon?: string }[] = [];
+    if (rail === 'tempo') {
+      options = this.deps.tempoWallets?.(network) ?? [];
+    } else if (rail === 'solana') {
+      options = this.deps.wallets(network);
+    }
     return options.map((option) => ({
       name: option.name,
       ...(option.icon === undefined ? {} : { icon: option.icon }),
@@ -3147,7 +3168,7 @@ export class CheckoutSession {
       const ended = await endTempoOrder(watched.record, this.tempoDeps(client), holds);
       return ended.ended;
     }
-    const rpc = this.rpcOfRecord(record);
+    const rpc = recordRail(record) === 'solana' ? this.rpcOfRecord(record) : undefined;
     if (rpc === undefined) {
       return false;
     }
@@ -3930,9 +3951,14 @@ export class CheckoutSession {
     this.silent = undefined;
     this.status('ordered');
     // A Tempo request is composed at the pay press (after the checks), in the core.
-    if (recordRail(record) === 'tempo') {
+    const rail = recordRail(record);
+    if (rail === 'tempo') {
       this.listen(record);
       return record;
+    }
+    // Never reached: an order is placed only on a servable payout.
+    if (rail !== 'solana') {
+      return undefined;
     }
     const composed = await composeOrderPayment(record, this.deps.store, {
       offer: this.offer.offer,
@@ -5078,7 +5104,7 @@ export class CheckoutSession {
       }
       return watched;
     }
-    const rpc = this.rpcOfRecord(current);
+    const rpc = recordRail(current) === 'solana' ? this.rpcOfRecord(current) : undefined;
     return rpc === undefined ? undefined : await watchSolanaPayment(current, this.payDeps(rpc));
   }
 

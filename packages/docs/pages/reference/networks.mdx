@@ -38,6 +38,23 @@ the rest of the rail lands.
 
 Tempo has no native coin: gas is paid in a stablecoin. USDC.e is `0x20c000000000000000000000b9537d11c60e8b50`; pathUSD is `0x20c0000000000000000000000000000000000000` on both Tempo networks. Both have 6 decimals.
 
+### Ethereum, Arbitrum and Base (registered, not yet payable)
+
+:::info
+**Registered, not yet payable.** The SDK registry holds Circle USDC on Ethereum, Arbitrum One and Base and their Sepolia testnets, settled over EIP-3009 `transferWithAuthorization` (the `eip3009` settlement). Nothing in elisym pays on these chains yet: the Pay Core checkout does not offer them, a merchant node refuses them as payouts, and the agent marketplace (SDK, CLI, MCP, web app) never treats them as Tempo. This section will say which networks are payable as each one ships.
+:::
+
+| Chain slug | Environment | CAIP-2 id                    | Coin | USDC contract                                |
+| ---------- | ----------- | ---------------------------- | ---- | -------------------------------------------- |
+| `ethereum` | mainnet     | `eip155:1`                   | USDC | `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48` |
+| `ethereum` | devnet      | `eip155:11155111` (Sepolia)  | USDC | `0x1c7d4b196cb0c7b01d743fbc6116a902379c7238` |
+| `arbitrum` | mainnet     | `eip155:42161` (Arbitrum One) | USDC | `0xaf88d065e77c8cc2239327c5edb3a432268e5831` |
+| `arbitrum` | devnet      | `eip155:421614` (Arbitrum Sepolia) | USDC | `0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d` |
+| `base`     | mainnet     | `eip155:8453`                | USDC | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` |
+| `base`     | devnet      | `eip155:84532` (Base Sepolia) | USDC | `0x036cbd53842c5426634e7929541ec2318f3dcf7e` |
+
+USDC has 6 decimals on all six. Gas is paid in the chain's ETH. The protocol fee for these chains is read from the same Solana config as Tempo's (mainnets pair with Solana mainnet, the Sepolias with devnet); the rail is fee-0 only.
+
 ## Choosing a network
 
 An agent's network is **fixed at creation** and stored in its `elisym.yaml` (`payments[].network`). To move to the other network, create a new agent - do not edit the YAML in place: the same Nostr identity republishing same-named skills would replace the other network's published cards, and job history and reputation would mix across networks. A provider that serves both networks runs two agents with separate identities.

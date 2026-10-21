@@ -43,6 +43,18 @@ export interface Asset {
    * guaranteed by admitting token-2022 assets exclusively via `KNOWN_ASSETS`.
    */
   tokenProgram?: string;
+  /**
+   * EIP-3009 coins only: the EIP-712 domain `name` and `version` the token
+   * signs under. The name differs per chain (`USDC` on Sepolia and Base
+   * Sepolia, `USD Coin` elsewhere): never assume one.
+   */
+  eip712?: { name: string; version: string };
+  /**
+   * EIP-3009 coins only: the FiatToken implementation pinned behind the proxy
+   * (lowercase). A proxy that points elsewhere was upgraded, and stops payments
+   * on that chain until the registry is checked again.
+   */
+  implementation?: string;
 }
 
 export const NATIVE_SOL: Asset = {
@@ -113,7 +125,84 @@ export const PATHUSD_TEMPO: Asset = {
   symbol: 'pathUSD',
 };
 
-export const EVM_ASSETS: readonly Asset[] = [USDCE_TEMPO_MAINNET, PATHUSD_TEMPO];
+/**
+ * Circle USDC (FiatToken v2.2) on the `eip3009` chains. Every value was read on
+ * chain (facts file beside the plan); the domain each one reproduces was checked
+ * against the contract's own `DOMAIN_SEPARATOR()`.
+ */
+export const USDC_ETHEREUM_MAINNET: Asset = {
+  chain: 'ethereum',
+  token: 'usdc',
+  mint: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+  decimals: 6,
+  symbol: 'USDC',
+  eip712: { name: 'USD Coin', version: '2' },
+  implementation: '0x43506849d7c04f9138d1a2050bbf3a0c054402dd',
+};
+
+/** Sepolia. */
+export const USDC_ETHEREUM_DEVNET: Asset = {
+  chain: 'ethereum',
+  token: 'usdc',
+  mint: '0x1c7d4b196cb0c7b01d743fbc6116a902379c7238',
+  decimals: 6,
+  symbol: 'USDC',
+  eip712: { name: 'USDC', version: '2' },
+  implementation: '0xda317c1d3e835dd5f1be459006471acaa1289068',
+};
+
+export const USDC_ARBITRUM_MAINNET: Asset = {
+  chain: 'arbitrum',
+  token: 'usdc',
+  mint: '0xaf88d065e77c8cc2239327c5edb3a432268e5831',
+  decimals: 6,
+  symbol: 'USDC',
+  eip712: { name: 'USD Coin', version: '2' },
+  implementation: '0x86e721b43d4ecfa71119dd38c0f938a75fdb57b3',
+};
+
+/** Arbitrum Sepolia. */
+export const USDC_ARBITRUM_DEVNET: Asset = {
+  chain: 'arbitrum',
+  token: 'usdc',
+  mint: '0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d',
+  decimals: 6,
+  symbol: 'USDC',
+  eip712: { name: 'USD Coin', version: '2' },
+  implementation: '0xfbb8ee011af0f15ee171e79c0688d05a58f7f566',
+};
+
+export const USDC_BASE_MAINNET: Asset = {
+  chain: 'base',
+  token: 'usdc',
+  mint: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+  decimals: 6,
+  symbol: 'USDC',
+  eip712: { name: 'USD Coin', version: '2' },
+  implementation: '0x2ce6311ddae708829bc0784c967b7d77d19fd779',
+};
+
+/** Base Sepolia. */
+export const USDC_BASE_DEVNET: Asset = {
+  chain: 'base',
+  token: 'usdc',
+  mint: '0x036cbd53842c5426634e7929541ec2318f3dcf7e',
+  decimals: 6,
+  symbol: 'USDC',
+  eip712: { name: 'USDC', version: '2' },
+  implementation: '0xd74cc5d436923b8ba2c179b4bca2841d8a52c5b5',
+};
+
+export const EVM_ASSETS: readonly Asset[] = [
+  USDCE_TEMPO_MAINNET,
+  PATHUSD_TEMPO,
+  USDC_ETHEREUM_MAINNET,
+  USDC_ETHEREUM_DEVNET,
+  USDC_ARBITRUM_MAINNET,
+  USDC_ARBITRUM_DEVNET,
+  USDC_BASE_MAINNET,
+  USDC_BASE_DEVNET,
+];
 
 export const ALL_ASSETS: readonly Asset[] = [...KNOWN_ASSETS, ...EVM_ASSETS];
 
@@ -157,6 +246,10 @@ export function assetsFor(chain: Chain, network: Network): Asset[] {
       return [NATIVE_SOL, ...splAssetsForNetwork(network)];
     case 'tempo':
       return network === 'mainnet' ? [USDCE_TEMPO_MAINNET, PATHUSD_TEMPO] : [PATHUSD_TEMPO];
+    case 'ethereum':
+    case 'arbitrum':
+    case 'base':
+      return [defaultStablecoin(chain, network)];
     default:
       return assertNever(chain);
   }
@@ -169,6 +262,12 @@ export function defaultStablecoin(chain: Chain, network: Network): Asset {
       return resolveUsdcAsset(network);
     case 'tempo':
       return network === 'mainnet' ? USDCE_TEMPO_MAINNET : PATHUSD_TEMPO;
+    case 'ethereum':
+      return network === 'mainnet' ? USDC_ETHEREUM_MAINNET : USDC_ETHEREUM_DEVNET;
+    case 'arbitrum':
+      return network === 'mainnet' ? USDC_ARBITRUM_MAINNET : USDC_ARBITRUM_DEVNET;
+    case 'base':
+      return network === 'mainnet' ? USDC_BASE_MAINNET : USDC_BASE_DEVNET;
     default:
       return assertNever(chain);
   }

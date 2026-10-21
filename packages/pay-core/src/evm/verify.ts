@@ -18,7 +18,7 @@
  */
 
 import type { ChainConfig } from '../payment/chains';
-import { chainByCaip2 } from '../payment/chains';
+import { chainByCaip2, isTempoChain } from '../payment/chains';
 import type { ParsedPaymentRequestV2 } from '../payment/schema-v2';
 import { resolveAssetFromPaymentRequestV2 } from '../payment/schema-v2';
 import type { Eip1193Client } from './client';
@@ -278,7 +278,9 @@ export async function verifyTempoPayment(
   // exported function whose input is a `ParsedPaymentRequestV2` type, not
   // necessarily one this build parsed.
   const chain = chainByCaip2(request.chain);
-  if (chain === undefined || chain.family !== 'evm') {
+  // By `settlement`, never by family: an `eip3009` chain (Base, ...) is EVM
+  // too, and its USDC must never be read as a Tempo leg.
+  if (chain === undefined || !isTempoChain(chain)) {
     return refused('wrong_chain');
   }
   const asset = resolveAssetFromPaymentRequestV2(request);

@@ -10,6 +10,12 @@ import {
   LSM_SOLANA_MAINNET,
   assetKey,
   NATIVE_SOL,
+  USDC_ARBITRUM_DEVNET,
+  USDC_ARBITRUM_MAINNET,
+  USDC_BASE_DEVNET,
+  USDC_BASE_MAINNET,
+  USDC_ETHEREUM_DEVNET,
+  USDC_ETHEREUM_MAINNET,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
 } from '@elisym/sdk';
@@ -43,6 +49,20 @@ describe('defaultSpendLimitsMap', () => {
     expect(assetKey(USDC_SOLANA_DEVNET)).not.toBe(assetKey(USDC_SOLANA_MAINNET));
   });
 
+  it('caps USDC at 50 on each Ethereum, Arbitrum and Base network, as on Solana', () => {
+    const map = defaultSpendLimitsMap();
+    for (const asset of [
+      USDC_ETHEREUM_MAINNET,
+      USDC_ETHEREUM_DEVNET,
+      USDC_ARBITRUM_MAINNET,
+      USDC_ARBITRUM_DEVNET,
+      USDC_BASE_MAINNET,
+      USDC_BASE_DEVNET,
+    ]) {
+      expect(map.get(assetKey(asset))).toBe(50_000_000n);
+    }
+  });
+
   it('keeps native SOL as a SINGLE cap shared across networks (deliberate)', () => {
     // assetKey(NATIVE_SOL) has no mint, so there is no per-network variant:
     // in a mixed-network process devnet and mainnet SOL spends draw down one
@@ -51,9 +71,10 @@ describe('defaultSpendLimitsMap', () => {
     const solEntries = DEFAULT_SESSION_LIMITS.filter((entry) => entry.asset.token === 'sol');
     expect(solEntries).toHaveLength(1);
     expect(solEntries[0]?.asset.mint).toBeUndefined();
-    // Exactly six default entries: shared SOL + USDC per network + mainnet LSM,
-    // and on Tempo USDC.e (mainnet) + pathUSD (one address on both networks).
-    expect(defaultSpendLimitsMap().size).toBe(6);
+    // Exactly twelve default entries: shared SOL + USDC per network + mainnet LSM,
+    // on Tempo USDC.e (mainnet) + pathUSD (one address on both networks), and
+    // USDC per network on Ethereum, Arbitrum and Base.
+    expect(defaultSpendLimitsMap().size).toBe(12);
   });
 
   it('contains 1,000,000 LSM as the mainnet-only default cap', () => {

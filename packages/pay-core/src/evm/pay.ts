@@ -22,6 +22,7 @@ import {
   chainByCaip2,
   isEvmWireAddress,
   isPayable,
+  isTempoChain,
   isVirtualEvmAddress,
   normalizeEvmAddress,
 } from '../payment/chains';
@@ -134,8 +135,8 @@ export function composeTempoPaymentRequest(
   // hold its own copy of the registry.
   const chain =
     typeof options.chain?.caip2 === 'string' ? chainByCaip2(options.chain.caip2) : undefined;
-  if (chain?.family !== 'evm') {
-    throw new Error('The chain is not an EVM chain from the registry.');
+  if (!isTempoChain(chain)) {
+    throw new Error('The chain is not a Tempo chain from the registry.');
   }
   if (
     !Number.isInteger(options.createdAt) ||

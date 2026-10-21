@@ -48,7 +48,20 @@ A payment on an EVM chain uses a separate, versioned shape. It is not a wider v1
 }
 ```
 
-The schema is strict and nothing defaults. `chain` is the [CAIP-2 id](/reference/networks#chain-identifiers) of a chain the client knows and `asset` is a CAIP-19 id on that same chain; the coin's contract and decimals always come from the client's own registry, never from the request. Amounts are canonical integer **strings** of subunits (no leading zero, at most 30 digits) and `amount` is the total, as in v1. The fee fields come together or not at all, and a zero fee is written by omitting both. Addresses, the memo and hashes are lowercase hex, and a virtual address is refused. `memo` is 32 random bytes the provider picks per request - the counterpart of the Solana `reference`: the payment is found by it. A commerce order's memo is not random: it is derived from the order, and may carry the commerce marker (see [Commerce payment markers](#commerce-payment-markers)).
+The schema is strict and nothing defaults. `chain` is the [CAIP-2 id](/reference/networks#chain-identifiers) of a Tempo chain the client knows (an EIP-3009 chain is refused: see below) and `asset` is a CAIP-19 id on that same chain; the coin's contract and decimals always come from the client's own registry, never from the request. Amounts are canonical integer **strings** of subunits (no leading zero, at most 30 digits) and `amount` is the total, as in v1. The fee fields come together or not at all, and a zero fee is written by omitting both. Addresses, the memo and hashes are lowercase hex, and a virtual address is refused. `memo` is 32 random bytes the provider picks per request - the counterpart of the Solana `reference`: the payment is found by it. A commerce order's memo is not random: it is derived from the order, and may carry the commerce marker (see [Commerce payment markers](#commerce-payment-markers)).
+
+## EIP-3009 settlement (Ethereum, Arbitrum, Base)
+
+:::info
+**Registered, not yet payable.** The chains and their USDC are in the SDK registry with `settlement: 'eip3009'`, and `@elisym/pay-core/evm` holds the builders and chain readers of this settlement. Nothing in elisym pays on these chains yet: every Tempo path, the checkout and the merchant node refuse them. See [Networks](/reference/networks#ethereum-arbitrum-and-base-registered-not-yet-payable) for the chains.
+:::
+
+A payment on these chains is Circle USDC moved by EIP-3009 `transferWithAuthorization`: the payer signs an EIP-712 authorization (`buildTransferAuthorization`) and sends it to the USDC contract (`encodeTransferWithAuthorization`, the bytes-signature overload). The rail differs from Tempo's in four ways:
+
+- **The nonce binds the order.** The authorization's 32-byte `nonce` is the order's marked commerce reference (the same 32 bytes a marked Tempo memo carries). USDC lets each `(authorizer, nonce)` pair be used once, ever, so one wallet can pay one order at most once.
+- **Adjacency is the binding.** A leg counts only as an `AuthorizationUsed(authorizer, nonce)` log from the USDC contract IMMEDIATELY followed (log index + 1) by a `Transfer` from that same authorizer to the payee, of at least the price (`readEip3009Legs`). An `AuthorizationUsed` and some `Transfer` elsewhere in the receipt is not a leg.
+- **Finality per chain.** A payment is credited at the chain's `finality.credit` tag (`safe` on all six); "not paid" is only ever read at `finalized`, pinned by block hash (EIP-1898).
+- **Fee 0 only.** The protocol fee for these chains is read from the Solana config like Tempo's; with a fee above 0 these chains are not offered at all.
 
 ## The transaction
 

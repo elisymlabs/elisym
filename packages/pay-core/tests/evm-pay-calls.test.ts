@@ -14,6 +14,7 @@ import { randomTempoMemo } from '../src/evm/request';
 import { PATHUSD_TEMPO, USDC_SOLANA_DEVNET, USDCE_TEMPO_MAINNET } from '../src/payment/assets';
 import { chainFor } from '../src/payment/chains';
 import { PaymentRequestV2Schema } from '../src/payment/schema-v2';
+import { EIP3009_USDC } from './eip3009-coins';
 
 const USDCE = '0x20c000000000000000000000b9537d11c60e8b50';
 const RECIPIENT = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
@@ -267,7 +268,7 @@ describe('composeTempoPaymentRequest', () => {
         asset: USDC_SOLANA_DEVNET,
         feeBps: 0,
       }),
-    ).toThrow(/not an EVM chain/);
+    ).toThrow(/not a Tempo chain/);
     expect(() =>
       composeTempoPaymentRequest({
         ...base,
@@ -276,6 +277,19 @@ describe('composeTempoPaymentRequest', () => {
         feeBps: 0,
       }),
     ).toThrow();
+  });
+
+  // Settlement gating: an `eip3009` chain is EVM too, and its USDC must never
+  // reach a Tempo request.
+  it.each(EIP3009_USDC)('refuses an eip3009 chain ($chain.chainName USDC)', ({ chain, asset }) => {
+    expect(() =>
+      composeTempoPaymentRequest({
+        ...base,
+        chain,
+        asset,
+        feeBps: 0,
+      }),
+    ).toThrow(/not a Tempo chain/);
   });
 
   it('refuses a date in milliseconds, the likeliest slip of a browser clock', () => {

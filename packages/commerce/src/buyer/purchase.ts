@@ -1,4 +1,5 @@
 import type { Eip1193Client } from '@elisym/pay-core/evm';
+import { payoutRail } from '../caip';
 import type { PricedPayout } from './offer';
 import type { OrderRecord } from './order-record';
 import type { OrderStore } from './order-store';
@@ -76,17 +77,21 @@ export async function endOrder(
   }
   // A Tempo order ends on its own rail's rules: an attempt only once proven
   // over, and then `over` - its prompt still open.
-  if (record.payout.caip19.startsWith('eip155:') && deps.tempo !== undefined) {
+  // By the payout's `settlement`, never the CAIP-2 prefix: an `eip3009` payout
+  // (Base, ...) is EVM too, and no Tempo or Solana rule may end it.
+  const rail = payoutRail(record.payout.caip19);
+  if (rail === 'tempo' && deps.tempo !== undefined) {
     return await endTempoOrder(record, { ...deps, client: deps.tempo });
   }
-  if (deps.rpc !== undefined && !record.payout.caip19.startsWith('eip155:')) {
+  if (deps.rpc !== undefined && rail === 'solana') {
     return await endSolanaOrder(record, { ...deps, rpc: deps.rpc });
   }
   if (record.state === 'ordered' && record.marker === undefined) {
     const written = await deps.store.update(record.orderId, record.version, {
       state: 'ended-unpaid',
-      // Nothing was requested: no Tempo prompt can be open for it.
-      ...(record.payout.caip19.startsWith('eip155:') ? { endedBy: 'nothing' as const } : {}),
+      // Nothing was requested: no Tempo prompt can be open for it. The store
+      // refuses `endedBy` on any other rail.
+      ...(rail === 'tempo' ? { endedBy: 'nothing' as const } : {}),
     });
     return written.ok ? { ended: true, record: written.record } : { ended: false, record };
   }

@@ -3,6 +3,7 @@
  * verdict rests on - what makes a pass INCOMPLETE rather than empty.
  */
 import { describe, expect, it } from 'vitest';
+import { EvmRpcError } from '../src/evm/client';
 import {
   MAX_ISSUER_CLOCK_SKEW_SECS,
   RECEIVE_POLICY_SELECTOR,
@@ -548,6 +549,48 @@ describe('listTempoLogs', () => {
       onGetLogs: (call) => (call.toBlock - call.fromBlock > 50 ? rangeCapError() : undefined),
     });
     expect((await listTempoLogs(chain.client, { ...base, fromBlock: 800 })).complete).toBe(true);
+  });
+
+  // PR 1 of the eip3009 rail taught the one shared check the providers
+  // qualified for Ethereum, Arbitrum and Base (P4); the Tempo scan reads it too.
+  it.each([
+    [
+      'Tenderly, in data as a string',
+      {
+        code: -32602,
+        message: 'invalid params',
+        data: 'Block range too large for public access: 5000',
+      },
+    ],
+    ['publicnode', { code: -32701, message: 'exceed maximum block range: 50000' }],
+    ['sepolia.base.org', { code: -32614, message: 'eth_getLogs is limited to a 200 range' }],
+    ['drpc', { code: 35, message: 'ranges over 10000 blocks are not supported on free plan' }],
+  ])('halves on the P4 wording of %s', async (_label, error) => {
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      logs: [memoLog({ blockNumber: 850 })],
+      onGetLogs: (call) =>
+        call.toBlock - call.fromBlock > 50 ? new EvmRpcError('eth_getLogs', error) : undefined,
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.candidates).toHaveLength(1);
+    expect(scan.complete).toBe(true);
+  });
+
+  it('does NOT halve on a range past the head, which no smaller range cures', async () => {
+    const chain = fakeTempoChain({
+      finalized: 1_000,
+      timestamps: { 1_000: 1 },
+      onGetLogs: () =>
+        new EvmRpcError('eth_getLogs', {
+          code: -32602,
+          message: 'block range extends beyond current head block',
+        }),
+    });
+    const scan = await listTempoLogs(chain.client, { ...base, fromBlock: 800 });
+    expect(scan.complete).toBe(false);
+    expect(chain.getLogsCalls).toHaveLength(1);
   });
 
   it('does NOT retry an error that means the params are nonsense', async () => {

@@ -6,7 +6,7 @@ import {
   storedTempoRequest,
 } from '@elisym/commerce/buyer';
 import Decimal from 'decimal.js-light';
-import { openStatusOf, receiptBase, recordNetwork } from './receipts';
+import { openStatusOf, receiptBase, recordNetwork, recordRail } from './receipts';
 import { sameRef } from './ref-scope';
 import type { OpenStatus, Receipt } from './session';
 import { networkLabel, receiptField } from './ui/text';
@@ -40,9 +40,13 @@ export interface Purchase {
 
 /** The fee leg the order's stored request carries, in subunits, or none. */
 function feeOf(record: OrderRecord): bigint {
-  const request = record.payout.caip19.startsWith('eip155:')
-    ? storedTempoRequest(record)
-    : storedSolanaRequest(record);
+  const rail = recordRail(record);
+  let request: ReturnType<typeof storedTempoRequest> | ReturnType<typeof storedSolanaRequest>;
+  if (rail === 'tempo') {
+    request = storedTempoRequest(record);
+  } else if (rail === 'solana') {
+    request = storedSolanaRequest(record);
+  }
   return request === undefined ? 0n : storedFeePlan(request).amount;
 }
 

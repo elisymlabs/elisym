@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { configProblems, priceProblems, configTemplate, loadConfig } from '../src/config';
-import { PAYOUT, USDC_DEVNET_CAIP19 } from './fixtures';
+import { EIP3009_USDC, PAYOUT, USDC_DEVNET_CAIP19 } from './fixtures';
 
 const MAINNET_USDC =
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -47,6 +47,34 @@ describe('the merchant config', () => {
     ]);
     expect(configProblems({ ...valid(), payouts: [] })).toHaveLength(1);
   });
+
+  // Settlement gating: an eip3009 coin is EVM, but neither Tempo's nor verified here yet.
+  it('checks every eip3009 USDC: three chains, mainnet and devnet', () => {
+    expect(EIP3009_USDC.map(({ chain }) => chain.chainName)).toEqual([
+      'Ethereum',
+      'Sepolia',
+      'Arbitrum One',
+      'Arbitrum Sepolia',
+      'Base',
+      'Base Sepolia',
+    ]);
+  });
+
+  it.each(EIP3009_USDC)(
+    'refuses $chain.chainName USDC as a payout, even beside a Tempo block',
+    ({ chain, caip19 }) => {
+      expect(
+        configProblems({
+          ...valid(),
+          network: chain.network,
+          tempo: { network: chain.network === 'mainnet' ? 'mainnet' : 'moderato' },
+          payouts: [{ caip19, address: '0x5696da2cecea22f127948458382ac2c59bc8e4bb' }],
+        }),
+      ).toEqual([
+        `payouts.0.caip19: is a coin of ${chain.chainName}, which this node does not verify yet`,
+      ]);
+    },
+  );
 
   it('takes Tempo payouts on the configured Tempo network only, at a payable address', () => {
     const tempoPayout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';

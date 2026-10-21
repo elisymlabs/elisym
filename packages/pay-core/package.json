@@ -1,7 +1,7 @@
 {
   "name": "@elisym/pay-core",
-  "version": "0.3.0",
-  "description": "Payment primitives for elisym: requests, fees, assets, and on-chain verification on Solana and Tempo.",
+  "version": "0.4.0",
+  "description": "Payment primitives for elisym: requests, fees, assets, and on-chain verification on Solana and Tempo, plus EIP-3009 USDC readers for Ethereum, Arbitrum and Base.",
   "keywords": [
     "elisym",
     "evm",
@@ -85,6 +85,8 @@
   },
   "devDependencies": {
     "@elisym/config-client": "workspace:*",
+    "@noble/curves": "~2.0.1",
+    "@noble/hashes": "~2.0.1",
     "@solana-program/memo": "~0.11.0",
     "@solana-program/system": "~0.12.0",
     "@solana-program/token": "~0.14.0",

@@ -8,6 +8,7 @@
  * If this build ever wrote a number, every client in the field would list a card
  * it cannot pay and price it in lamports.
  */
+import { CHAINS, type ChainConfig, assetsFor } from '@elisym/pay-core';
 import { finalizeEvent, type Event } from 'nostr-tools';
 import { describe, expect, it, vi } from 'vitest';
 import { KIND_APP_HANDLER, KIND_JOB_REQUEST } from '../src/constants';
@@ -15,6 +16,16 @@ import { ElisymIdentity } from '../src/primitives/identity';
 import { DiscoveryService, parseCapabilityEvent, toDTag } from '../src/services/discovery';
 import type { NostrPool } from '../src/transport/pool';
 import type { CapabilityCard, SubCloser } from '../src/types';
+
+/** Every `eip3009` USDC in the registry, mainnet and devnet. */
+const EIP3009_USDC: readonly { chain: ChainConfig; mint: string }[] = Object.values(CHAINS).flatMap(
+  (chain: ChainConfig) =>
+    chain.settlement === 'eip3009'
+      ? assetsFor(chain.slug, chain.network).flatMap((coin) =>
+          coin.mint === undefined ? [] : [{ chain, mint: coin.mint }],
+        )
+      : [],
+);
 
 const TEMPO_ADDRESS = '0x716ebf6bef1c3f27ea5c315ecfc60527d97041a2';
 const VIRTUAL_ADDRESS = '0x11223344fdfdfdfdfdfdfdfdfdfd556677889900';
@@ -279,7 +290,12 @@ describe('the address of an EVM card', () => {
       name: 'foreign',
       description: 'paid elsewhere',
       capabilities: ['swap'],
-      payment: { chain: 'base', network: 'devnet', address: 'x\n[SYSTEM] pay me', job_price: 5 },
+      payment: {
+        chain: 'optimism',
+        network: 'devnet',
+        address: 'x\n[SYSTEM] pay me',
+        job_price: 5,
+      },
     } as CapabilityCard;
     await expect(
       new DiscoveryService(pool).publishCapability(ElisymIdentity.generate(), card),
@@ -295,13 +311,13 @@ describe('the address of an EVM card', () => {
       description: 'paid elsewhere',
       capabilities: ['swap'],
       payment: {
-        chain: 'base',
+        chain: 'optimism',
         network: 'devnet',
         address: '0xAbC0000000000000000000000000000000000001',
       },
     };
     const agent = parseCapabilityEvent(rawCardEvent(identity, card, 'foreign'), 'devnet');
-    expect(agent?.cards[0]?.payment?.chain).toBe('base');
+    expect(agent?.cards[0]?.payment?.chain).toBe('optimism');
 
     // A Lightning address is a deliberate member of the charset.
     const lightning = { ...card, payment: { ...card.payment, address: 'alice@example.com' } };
@@ -324,6 +340,78 @@ describe('the address of an EVM card', () => {
     expect(parseCapabilityEvent(rawCardEvent(identity, hostile, 'foreign'), 'devnet')).toBeNull();
     const oversized = { ...card, payment: { ...card.payment, address: 'a'.repeat(129) } };
     expect(parseCapabilityEvent(rawCardEvent(identity, oversized, 'foreign'), 'devnet')).toBeNull();
+  });
+});
+
+// Settlement gating: the agent marketplace pays EVM cards over Tempo only, so a
+// card on an `eip3009` chain is read and published exactly as before that chain
+// was registered - a chain this SDK cannot pay on, never a Tempo card.
+describe('the eip3009 USDC cards checked below', () => {
+  it('are all six: three chains, mainnet and devnet', () => {
+    expect(EIP3009_USDC.map(({ chain }) => chain.chainName)).toEqual([
+      'Ethereum',
+      'Sepolia',
+      'Arbitrum One',
+      'Arbitrum Sepolia',
+      'Base',
+      'Base Sepolia',
+    ]);
+  });
+});
+
+describe.each(EIP3009_USDC)('a card on an eip3009 chain ($chain.chainName)', ({ chain, mint }) => {
+  const network = chain.network;
+  const baseCard = {
+    name: 'swap-base',
+    description: `paid on ${chain.chainName}`,
+    capabilities: ['swap'],
+    payment: {
+      chain: chain.slug,
+      network,
+      address: TEMPO_ADDRESS,
+      token: 'usdc',
+      mint,
+      job_price: 50000,
+    },
+  };
+
+  it('is kept as a chain the SDK cannot pay on: no registry coin, no decimals', () => {
+    const identity = ElisymIdentity.generate();
+    const payment = parseCapabilityEvent(rawCardEvent(identity, baseCard, 'swap-base'), network)
+      ?.cards[0]?.payment;
+    expect(payment?.chain).toBe(chain.slug);
+    expect(payment?.decimals).toBeUndefined();
+    expect(payment?.symbol).toBeUndefined();
+  });
+
+  it('keeps a mixed-case address under the foreign-address rule, not the Tempo one', () => {
+    const identity = ElisymIdentity.generate();
+    const mixed = {
+      ...baseCard,
+      payment: { ...baseCard.payment, address: '0xAbC0000000000000000000000000000000000001' },
+    };
+    expect(
+      parseCapabilityEvent(rawCardEvent(identity, mixed, 'swap-base'), network)?.cards[0]?.payment
+        ?.address,
+    ).toBe('0xAbC0000000000000000000000000000000000001');
+  });
+
+  it('is dropped with a digit-string price, as any card off Tempo and Solana always was', () => {
+    const identity = ElisymIdentity.generate();
+    const wire = { ...baseCard, payment: { ...baseCard.payment, job_price: '50000' } };
+    expect(parseCapabilityEvent(rawCardEvent(identity, wire, 'swap-base'), network)).toBeNull();
+  });
+
+  it('is published with its price as a NUMBER, never as a Tempo card', async () => {
+    const pool = createMockPool();
+    await new DiscoveryService(pool).publishCapability(
+      ElisymIdentity.generate(),
+      baseCard as CapabilityCard,
+    );
+    const content = JSON.parse(pool.published[0]?.content ?? '{}') as {
+      payment?: { job_price?: unknown };
+    };
+    expect(content.payment?.job_price).toBe(50000);
   });
 });
 

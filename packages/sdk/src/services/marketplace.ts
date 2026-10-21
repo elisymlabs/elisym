@@ -2,6 +2,7 @@ import {
   assertLamports,
   chainByCaip2,
   isEvmWireTxHash,
+  isTempoChain,
   parseAnyPaymentRequest,
   resolveAssetFromPaymentRequestV2,
 } from '@elisym/pay-core';
@@ -79,7 +80,9 @@ function settlementChainTag(chain: string | undefined): string {
   if (chain === undefined || chain === 'solana') {
     return 'solana';
   }
-  if (chainByCaip2(chain)?.family === 'evm') {
+  // The agent marketplace settles EVM jobs over Tempo only: an `eip3009`
+  // chain (Base, ...) is not one this client ever writes.
+  if (isTempoChain(chainByCaip2(chain))) {
     return chain;
   }
   throw new Error(`Unknown settlement chain: ${chain}`);
@@ -98,8 +101,8 @@ function settlementChainOfRequest(paymentRequestJson: string): string | undefine
 }
 
 /**
- * A `tx` tag as job history may keep it. On a registry EVM chain the hash must
- * be 32 bytes of lowercase hex; any other tag is kept as it always was.
+ * A `tx` tag as job history may keep it. On a Tempo chain the hash must be
+ * 32 bytes of lowercase hex; any other tag is kept as it always was.
  */
 function readHistoryTxTag(tag: string[] | undefined): string | undefined {
   const value = tag?.[1];
@@ -107,7 +110,7 @@ function readHistoryTxTag(tag: string[] | undefined): string | undefined {
     return undefined;
   }
   const chain = tag[2];
-  if (chain !== undefined && chainByCaip2(chain)?.family === 'evm') {
+  if (chain !== undefined && isTempoChain(chainByCaip2(chain))) {
     return isEvmWireTxHash(value) ? value : undefined;
   }
   return value;

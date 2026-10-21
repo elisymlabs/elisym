@@ -17,7 +17,7 @@
  */
 
 import type { ChainConfig } from '../payment/chains';
-import { isVirtualEvmAddress } from '../payment/chains';
+import { isTempoChain, isVirtualEvmAddress } from '../payment/chains';
 import type { Eip1193Client } from './client';
 import { withAbort } from './client';
 import { checkEvmChain, WrongEvmChainError } from './config';
@@ -306,7 +306,7 @@ export async function resolveTempoTransferOutcome(
   // Not an rpc failure and not transient: a chain this rail cannot read is the
   // caller naming the wrong one, one identifier away in a dual-rail SDK, and
   // it would otherwise poll `pending` for ever with no traffic to notice.
-  if (options.chain.family !== 'evm' || options.chain.evmChainId === undefined) {
+  if (!isTempoChain(options.chain) || options.chain.evmChainId === undefined) {
     throw new Error(`resolveTempoTransferOutcome cannot read ${options.chain.caip2}.`);
   }
   // An endpoint that names another chain is a misconfiguration the caller has

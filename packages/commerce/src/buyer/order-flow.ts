@@ -1,4 +1,4 @@
-import type { ChainConfig } from '@elisym/pay-core';
+import { type ChainConfig, settlementOf } from '@elisym/pay-core';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
@@ -65,21 +65,27 @@ export function compareOffers(
 }
 
 /**
- * The reference an order is paid under on its chain. On Tempo, the marked memo
- * when the store declares `['memo-marker', '1']` (its node accepts both forms),
- * the legacy memo otherwise. Fixed once, at placing: the record keeps it for
- * its whole life, so a resumed order pays the form it was placed with whatever
- * the store's profile says later.
+ * The reference an order is paid under on its chain, by the chain's
+ * `settlement`. On Tempo, the marked memo when the store declares
+ * `['memo-marker', '1']` (its node accepts both forms), the legacy memo
+ * otherwise. Fixed once, at placing: the record keeps it for its whole life, so
+ * a resumed order pays the form it was placed with whatever the store's profile
+ * says later. An `eip3009` chain (Ethereum, Arbitrum, Base) has no buyer rail
+ * yet: `placeOrder` refuses it before this is reached.
  */
 function paymentReferenceFor(
-  family: ChainConfig['family'],
+  chain: ChainConfig,
   reference: OrderPaymentReference,
   memoMarker: boolean,
 ): string {
-  if (family === 'solana') {
+  const rail = settlementOf(chain);
+  if (rail === 'solana') {
     return reference.solana;
   }
-  return memoMarker ? reference.tempoMarked : reference.tempo;
+  if (rail === 'tempo') {
+    return memoMarker ? reference.tempoMarked : reference.tempo;
+  }
+  throw new Error('No buyer rail pays on this chain yet.');
 }
 
 export interface PlaceOrderInput {
@@ -135,6 +141,11 @@ export async function placeOrder(
   deps: OrderDeps,
 ): Promise<PlaceOrderResult> {
   const { offer, payout } = input;
+  // No buyer rail pays on an `eip3009` chain (Ethereum, Arbitrum, Base) yet:
+  // the caller never offers one, and nothing is sent or stored for it.
+  if (settlementOf(payout.target.caip19.chain) === 'eip3009') {
+    throw new Error('No buyer rail pays on this chain yet.');
+  }
   if (!clockAgrees(input.chainTime, input.deviceTime)) {
     return { ok: false, reason: 'clock_skew' };
   }
@@ -191,7 +202,7 @@ export async function placeOrder(
     payout: { caip19: payout.target.caip19.id, address: payout.target.address },
     amount: payout.amount.toString(),
     medium: mediumOf(chain),
-    reference: paymentReferenceFor(chain.family, reference, offer.offer.memoMarker),
+    reference: paymentReferenceFor(chain, reference, offer.offer.memoMarker),
     offer: offer.offer,
     ...(input.customerRef === undefined ? {} : { customerRef: input.customerRef }),
     // Kept before it is sent: a crash in between is resumed by sending the same wrap.

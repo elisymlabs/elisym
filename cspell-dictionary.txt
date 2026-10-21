@@ -213,3 +213,14 @@ nosniff
 logomark
 rdns
 SAMEORIGIN
+typehash
+zeppelinos
+undeployed
+nethermind
+halvings
+publicnode
+drpc
+predeploy
+sepolias
+mainnets
+unservable

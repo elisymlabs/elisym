@@ -1,5 +1,5 @@
 import type { CallsStatus, TempoWallet } from '@elisym/commerce/buyer';
-import type { ChainConfig } from '@elisym/pay-core';
+import { type ChainConfig, isTempoChain } from '@elisym/pay-core';
 
 /** An EIP-1193 provider, reduced to `request`. */
 export interface Eip1193Provider {
@@ -270,6 +270,11 @@ async function addChain(
   chain: ChainConfig,
   chainId: string,
 ): Promise<void> {
+  // The Tempo rail only: an `eip3009` chain (Base, ...) is EVM too, and is not
+  // added under Tempo's name and gas coin.
+  if (!isTempoChain(chain) || chain.chainName === undefined || chain.nativeCurrency === undefined) {
+    throw new TempoChainUnsupported();
+  }
   const explorer = chain.explorerTx?.split('/tx/')[0];
   try {
     await provider.request({
@@ -277,8 +282,8 @@ async function addChain(
       params: [
         {
           chainId,
-          chainName: chain.network === 'mainnet' ? 'Tempo' : 'Tempo Moderato',
-          nativeCurrency: { name: 'USD', symbol: 'USD', decimals: 18 },
+          chainName: chain.chainName,
+          nativeCurrency: { ...chain.nativeCurrency },
           rpcUrls: [...chain.rpcUrls],
           ...(explorer === undefined ? {} : { blockExplorerUrls: [explorer] }),
         },

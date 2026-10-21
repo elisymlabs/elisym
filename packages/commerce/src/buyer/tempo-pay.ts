@@ -15,6 +15,7 @@ import {
   type ParsedPaymentRequestV2,
   PaymentRequestV2Schema,
   calculateProtocolFeeSubunits,
+  isTempoChain,
 } from '@elisym/pay-core';
 import {
   EVM_LATE_PAYMENT_GRACE_SECS,
@@ -29,7 +30,7 @@ import {
   readTxHash,
   verifyTempoPayment,
 } from '@elisym/pay-core/evm';
-import { parseCaip19 } from '../caip';
+import { parseCaip19, payoutRail } from '../caip';
 import { isOfferPayout } from '../verify-offer';
 import {
   MAX_CLOCK_SKEW_SECS,
@@ -187,7 +188,8 @@ interface TempoTarget {
 function tempoTargetOf(record: OrderRecord): TempoTarget | undefined {
   const caip19 = parseCaip19(record.payout.caip19);
   const mint = caip19?.asset.mint;
-  if (caip19 === undefined || caip19.chain.family !== 'evm' || mint === undefined) {
+  // By `settlement`, not family: an `eip3009` chain (Base, ...) is EVM too.
+  if (caip19 === undefined || !isTempoChain(caip19.chain) || mint === undefined) {
     return undefined;
   }
   return { chain: caip19.chain, asset: caip19.asset, token: mint.toLowerCase() };
@@ -1138,7 +1140,7 @@ export async function endTempoOrder(
 export function mayStillBePaid(record: OrderRecord, now: number): boolean {
   return (
     record.state === 'ended-unpaid' &&
-    record.payout.caip19.startsWith('eip155:') &&
+    payoutRail(record.payout.caip19) === 'tempo' &&
     (record.endedBy === 'over' || record.endedBy === undefined) &&
     now - record.createdAt <= MERCHANT_CATCH_UP_SECS + MAX_CLOCK_SKEW_SECS
   );

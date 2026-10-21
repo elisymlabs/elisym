@@ -1,5 +1,11 @@
 export * from './constants';
-export { type Caip19, canonicalPayoutAddress, hasValidEvmChecksum, parseCaip19 } from './caip';
+export {
+  type Caip19,
+  canonicalPayoutAddress,
+  hasValidEvmChecksum,
+  parseCaip19,
+  payoutRail,
+} from './caip';
 export { eip191Hash, paytoProofMessage, verifyPaytoProof } from './wallet-proof';
 export {
   type DomainKeys,

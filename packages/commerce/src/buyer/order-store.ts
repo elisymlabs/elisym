@@ -1,3 +1,4 @@
+import { payoutRail } from '../caip';
 import { MAX_CLOCK_SKEW_SECS, MERCHANT_CATCH_UP_SECS, ORDER_ACK_TARGET } from './constants';
 import { isGenuineEvent } from './events';
 import {
@@ -124,11 +125,7 @@ function patchRefusal(current: OrderRecord, patch: RecordPatch): 'not_ready' | u
     return 'not_ready';
   }
   // Only a Tempo payment can sit with a transfer-policy guard.
-  if (
-    patch.state === 'blocked' &&
-    current.state !== 'blocked' &&
-    !current.payout.caip19.startsWith('eip155:')
-  ) {
+  if (patch.state === 'blocked' && current.state !== 'blocked' && railOf(current) !== 'tempo') {
     return 'not_ready';
   }
   // The transaction that paid is written once, together with the state it
@@ -219,9 +216,14 @@ export function storeClosed(record: Pick<OrderRecord, 'status'>): boolean {
   return record.status?.status === 'cancelled' || record.status?.status === 'completed';
 }
 
-/** The rail a record pays on, from its payout: the marker must be of the same rail. */
-function railOf(record: Pick<OrderRecord, 'payout'>): PaymentMarker['rail'] {
-  return record.payout.caip19.startsWith('eip155:') ? 'tempo' : 'solana';
+/**
+ * The rail a record pays on, from its payout's `settlement`: the marker must be
+ * of the same rail. `undefined` for an `eip3009` payout (Ethereum, Arbitrum,
+ * Base), which no marker can be set for yet.
+ */
+function railOf(record: Pick<OrderRecord, 'payout'>): PaymentMarker['rail'] | undefined {
+  const rail = payoutRail(record.payout.caip19);
+  return rail === 'eip3009' ? undefined : rail;
 }
 
 /** What a marker proves was requested: a signed transaction, a sent hash or an approved bundle. */

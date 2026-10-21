@@ -15,7 +15,7 @@ import {
 } from '../src/checks';
 import type { PublishRelay } from '../src/publish';
 import { deliveryDone } from '../src/reply';
-import { PAYOUT, T0, USDC_DEVNET_CAIP19, key } from './fixtures';
+import { EIP3009_USDC, PAYOUT, T0, USDC_DEVNET_CAIP19, key } from './fixtures';
 
 const MAINNET_USDC =
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -260,6 +260,26 @@ describe('what the relays offer that the node does not honour', () => {
       `course: ${USDC_DEVNET_CAIP19} at 1000000`,
     ]);
   });
+
+  // Settlement gating: an eip3009 payout is EVM and on the Tempo block's
+  // network, but never one this node verifies, even with terms that name it.
+  it.each(EIP3009_USDC)(
+    'is a payout on $chain.chainName, whatever the ledger records for it',
+    ({ chain, caip19 }) => {
+      const payouts = list([
+        { caip19: USDC_DEVNET_CAIP19, address: PAYOUT },
+        { caip19, address: TEMPO_PAYOUT },
+      ]);
+      const standing = [
+        ...STANDING,
+        { d: 'course', caip19, payout: TEMPO_PAYOUT, amount: '1000000' },
+      ];
+      // The Tempo block on the eip3009 chain's own network: only settlement keeps it out.
+      expect(offersNotHonoured([oneUsd], payouts, 'devnet', standing, chain.network)).toEqual([
+        `${caip19} ${TEMPO_PAYOUT}`,
+      ]);
+    },
+  );
 
   it('compares the coin too, not only the address', () => {
     const lsm =

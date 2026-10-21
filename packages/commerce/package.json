@@ -59,7 +59,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@elisym/pay-core": "~0.3.0",
+    "@elisym/pay-core": "~0.4.0",
     "@noble/curves": "~2.0.1",
     "@noble/hashes": "~2.0.1",
     "@scure/base": "~2.0.0",
