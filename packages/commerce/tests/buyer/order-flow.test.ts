@@ -472,36 +472,30 @@ describe('the payment reference form', () => {
     expect(record.reference).toBe(reference.solana);
   });
 
-  // Settlement gating: no buyer rail pays on an `eip3009` chain yet, so an order
-  // on one is neither stored nor sent.
-  it.each(EIP3009_USDC)(
-    'refuses to place an order on $chain.chainName USDC',
-    async ({ caip19 }) => {
-      const shop = makeShop({ caip19, payout: EVM_PAYOUT, memoMarker: true });
-      const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
-      const published = relays.published.length;
-      await expect(placedOn(shop, relays, ['evm'])).rejects.toThrow(/No buyer rail/);
-      expect(relays.published.length).toBe(published);
-      // Refused FIRST, before anything else is judged or read.
-      const loaded = await loadOffer(shop.naddr, {
-        client: relays,
-        pageOrigin: PAGE,
-        families: ['evm'],
-        now: NOW,
+  // A store WITHOUT `memo-marker` pays under the `eip3009` nonce (the marked
+  // form) too: the legacy form would be a nonce its node never derives. On
+  // every eip3009 USDC: a rule narrowed to one chain must fail here.
+  it.each(
+    EIP3009_USDC.flatMap(({ chain, caip19 }) =>
+      ([true, false, undefined] as const).map((memoMarker) => ({ chain, caip19, memoMarker })),
+    ),
+  )(
+    'places an order on $chain.chainName USDC under the eip3009 nonce (memoMarker $memoMarker)',
+    async ({ chain, caip19, memoMarker }) => {
+      const shop = makeShop({
+        caip19,
+        payout: EVM_PAYOUT,
+        ...(memoMarker === undefined ? {} : { memoMarker }),
       });
-      if (!loaded.ok || loaded.payouts[0] === undefined) {
-        throw new Error('no payout');
-      }
-      await expect(
-        placeOrder(
-          { offer: loaded, payout: loaded.payouts[0], chainTime: NOW, deviceTime: NOW + 3600 },
-          deps(relays),
-        ),
-      ).rejects.toThrow(/No buyer rail/);
+      const relays = new MemoryRelays([...shop.events, inboxList(shop.store, INBOX)]);
+      const { record, reference } = await placedOn(shop, relays, ['evm']);
+      expect(record.reference).toBe(reference.eip3009);
+      expect(record.reference).not.toBe(reference.tempo);
+      expect(record.medium).toBe(chain.network === 'mainnet' ? chain.slug : `${chain.slug}-devnet`);
     },
   );
 
-  it('refuses on all six eip3009 USDC', () => {
+  it('covers all six eip3009 USDC', () => {
     expect(EIP3009_USDC.map(({ chain }) => chain.chainName)).toEqual([
       'Ethereum',
       'Sepolia',

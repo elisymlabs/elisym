@@ -132,7 +132,7 @@ describe('a purchase deciding about its records', () => {
   it.each(EIP3009_USDC)(
     'hands a $chain.chainName attempt to no Solana ender, however many clients are given',
     async ({ caip19 }) => {
-      // Built by hand: PR 1's store refuses a marker on these payouts, PR 2 adds them.
+      // Built by hand: a Solana marker on these payouts, which the store refuses.
       const attempt: OrderRecord = {
         ...record('attempt', { state: 'paying', payout: { caip19, address: '0xabc' } }),
         // A request a Solana watcher would accept, so only the rail keeps it out.

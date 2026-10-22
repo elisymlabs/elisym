@@ -64,7 +64,48 @@ export type PaymentMarker =
        * longer holds the order. Written once, never cleared.
        */
       bundleFailed?: boolean;
+    }
+  | {
+      /** USDC over EIP-3009 (Ethereum, Arbitrum, Base): the authorization's nonce is the order's reference. */
+      rail: 'eip3009';
+      attemptId: string;
+      setAt: number;
+      /**
+       * The payer's authorization of this nonce was already used when the first
+       * attempt read it (signed outside the widget): frozen, the store refuses
+       * every later marker write; only a store status moves the record.
+       */
+      usedAtStart?: true;
+      /** The wallet address, lowercase; changes only by a switch (`switchProof`). */
+      authorizer: string;
+      /** Decimal string: the finalized block read before the FIRST signature; never changes. */
+      floorBlock: string;
+      /** Decimal string, epoch seconds: the LATEST `validBefore` any signature of this marker carries; only grows. */
+      validBefore: string;
+      /** Set with the first stored signature and NEVER unset: the evidence that one may land. */
+      signed?: true;
+      /** Evidence ONLY: a send uses the signature the attempt holds in memory, never this one. */
+      signature?: string;
+      /** The current attempt's transaction, once the wallet returned it. */
+      txHash?: string;
+      /** The transaction the stored receipt (`receiptWrap`) names: a different `txHash` sends a new one. */
+      receiptTx?: string;
+      /** The end proof's finalized block, on a wallet switch: past the old `validBefore`. */
+      switchProof?: Eip3009Proof;
+      /** The end proof's finalized block, written with the end. */
+      endProof?: Eip3009Proof;
     };
+
+/**
+ * A finalized block whose time is past an authorization's `validBefore`, at
+ * which `authorizationState` read false (or a cancel was found): after it the
+ * authorization can never land. The store cannot re-run the proof, but it
+ * checks that one was carried, past the CURRENT `validBefore`.
+ */
+export interface Eip3009Proof {
+  blockHash: string;
+  timestamp: number;
+}
 
 export interface OrderStatus {
   status: 'pending' | 'confirmed' | 'completed' | 'cancelled';
@@ -90,13 +131,14 @@ export interface OrderRecord {
   payout: { caip19: string; address: string };
   /** Decimal string of subunits. */
   amount: string;
-  /** The receipt's `medium`: `solana`, `solana-devnet`, `tempo`, `tempo-moderato`. */
+  /** The receipt's `medium`: `solana`, `solana-devnet`, `tempo`, `tempo-moderato`, `base`, `base-devnet`, ... */
   medium: string;
   /**
    * The derived payment reference (base58) or memo (0x hex). On Tempo it is the
    * legacy memo, or the marked one when the store declared `['memo-marker', '1']`
    * at placing; chosen once and kept for the record's life, so a resumed order
-   * pays and reports the memo it was placed with.
+   * pays and reports the memo it was placed with. On an `eip3009` chain it is
+   * the authorization nonce, always the marked form.
    */
   reference: string;
   /** The verified offer the order was placed against. */

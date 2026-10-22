@@ -23,7 +23,10 @@ import { storeRelays } from './relays';
 
 type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 
-/** The receipt `medium` of a chain: `solana`, `solana-devnet`, `tempo`, `tempo-moderato`. */
+/**
+ * The receipt `medium` of a chain: `solana`, `solana-devnet`, `tempo`, `tempo-moderato`,
+ * and `<slug>` / `<slug>-devnet` for the `eip3009` chains (`base`, `base-devnet`, ...).
+ */
 export function mediumOf(chain: Pick<ChainConfig, 'slug' | 'network'>): string {
   if (chain.network === 'mainnet') {
     return chain.slug;
@@ -68,24 +71,27 @@ export function compareOffers(
  * The reference an order is paid under on its chain, by the chain's
  * `settlement`. On Tempo, the marked memo when the store declares
  * `['memo-marker', '1']` (its node accepts both forms), the legacy memo
- * otherwise. Fixed once, at placing: the record keeps it for its whole life, so
- * a resumed order pays the form it was placed with whatever the store's profile
- * says later. An `eip3009` chain (Ethereum, Arbitrum, Base) has no buyer rail
- * yet: `placeOrder` refuses it before this is reached.
+ * otherwise. On an `eip3009` chain (Ethereum, Arbitrum, Base), ALWAYS the
+ * marked nonce, whatever the store's profile says: the legacy form there would
+ * be a nonce its node never derives - paid, never credited. Fixed once, at
+ * placing: the record keeps it for its whole life, so a resumed order pays the
+ * form it was placed with whatever the store's profile says later.
  */
 function paymentReferenceFor(
   chain: ChainConfig,
   reference: OrderPaymentReference,
   memoMarker: boolean,
 ): string {
-  const rail = settlementOf(chain);
-  if (rail === 'solana') {
-    return reference.solana;
+  switch (settlementOf(chain)) {
+    case 'solana':
+      return reference.solana;
+    case 'tempo':
+      return memoMarker ? reference.tempoMarked : reference.tempo;
+    case 'eip3009':
+      return reference.eip3009;
+    case undefined:
+      throw new Error('No buyer rail pays on this chain.');
   }
-  if (rail === 'tempo') {
-    return memoMarker ? reference.tempoMarked : reference.tempo;
-  }
-  throw new Error('No buyer rail pays on this chain yet.');
 }
 
 export interface PlaceOrderInput {
@@ -141,11 +147,6 @@ export async function placeOrder(
   deps: OrderDeps,
 ): Promise<PlaceOrderResult> {
   const { offer, payout } = input;
-  // No buyer rail pays on an `eip3009` chain (Ethereum, Arbitrum, Base) yet:
-  // the caller never offers one, and nothing is sent or stored for it.
-  if (settlementOf(payout.target.caip19.chain) === 'eip3009') {
-    throw new Error('No buyer rail pays on this chain yet.');
-  }
   if (!clockAgrees(input.chainTime, input.deviceTime)) {
     return { ok: false, reason: 'clock_skew' };
   }

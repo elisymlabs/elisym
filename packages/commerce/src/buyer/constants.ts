@@ -81,6 +81,28 @@ export const MERCHANT_CATCH_UP_SECS = 3 * 24 * 60 * 60;
 export const PAY_CUTOFF_SECS = 60 * 60;
 
 /**
+ * The EIP-3009 rail's own cutoff (Ethereum, Arbitrum, Base): no wallet request
+ * this close to the end of the merchant's catch-up. Longer than Solana's and
+ * Tempo's: an authorization lands up to 15 minutes after it is signed, and the
+ * credit tag trails the head by up to half an hour, which the node must still
+ * scan inside its catch-up.
+ */
+export const EIP3009_PAY_CUTOFF_SECS = 6 * 60 * 60;
+
+/** An EIP-3009 authorization is valid this long from the LATEST block's time (E9). */
+export const EIP3009_VALID_SECS = 15 * 60;
+
+/**
+ * No EIP-3009 send this close to the signature's `validBefore` (latest block
+ * time): sign again instead, so a send is not likely to land as an expired revert
+ * at the buyer's gas.
+ */
+export const SEND_MARGIN_SECS = 120;
+
+/** The margin on the gas a payment needs before its send (step 5.1): 1.5x, in basis points. */
+export const EIP3009_GAS_MARGIN_BPS = 15_000n;
+
+/**
  * A payment is looked for back to the order's `created_at` minus this margin
  * (the merchant's own scan margin): the order is dated by the chain, a block a
  * little behind it may hold the payment.

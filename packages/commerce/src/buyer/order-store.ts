@@ -2,6 +2,7 @@ import { payoutRail } from '../caip';
 import { MAX_CLOCK_SKEW_SECS, MERCHANT_CATCH_UP_SECS, ORDER_ACK_TARGET } from './constants';
 import { isGenuineEvent } from './events';
 import {
+  type Eip3009Proof,
   type EndedBy,
   type OrderRecord,
   type OrderState,
@@ -217,20 +218,29 @@ export function storeClosed(record: Pick<OrderRecord, 'status'>): boolean {
 }
 
 /**
- * The rail a record pays on, from its payout's `settlement`: the marker must be
- * of the same rail. `undefined` for an `eip3009` payout (Ethereum, Arbitrum,
- * Base), which no marker can be set for yet.
+ * The rail a record pays on, from its payout's `settlement` (never the CAIP-2
+ * prefix): the marker must be of the same rail.
  */
-function railOf(record: Pick<OrderRecord, 'payout'>): PaymentMarker['rail'] | undefined {
-  const rail = payoutRail(record.payout.caip19);
-  return rail === 'eip3009' ? undefined : rail;
+function railOf(record: Pick<OrderRecord, 'payout'>): PaymentMarker['rail'] {
+  return payoutRail(record.payout.caip19);
 }
 
-/** What a marker proves was requested: a signed transaction, a sent hash or an approved bundle. */
+type Eip3009Marker = Extract<PaymentMarker, { rail: 'eip3009' }>;
+
+/**
+ * What a marker proves was requested: a signed transaction, a sent hash or an
+ * approved bundle. On `eip3009`, `signed` - set with the first stored signature
+ * and never unset: an authorization that was ever signed may land.
+ */
 function markerEvidence(marker: PaymentMarker): string[] {
-  return marker.rail === 'solana'
-    ? [marker.signature ?? '', marker.signedTransaction ?? '']
-    : [marker.txHash ?? '', marker.bundleId ?? ''];
+  switch (marker.rail) {
+    case 'solana':
+      return [marker.signature ?? '', marker.signedTransaction ?? ''];
+    case 'tempo':
+      return [marker.txHash ?? '', marker.bundleId ?? ''];
+    case 'eip3009':
+      return [marker.signed === true ? 'signed' : '', marker.signature ?? '', marker.txHash ?? ''];
+  }
 }
 
 function holdsEvidence(marker: PaymentMarker): boolean {
@@ -450,15 +460,102 @@ export function judgeSetMarker(
   ) {
     return refused('not_ready');
   }
+  if (marker.rail === 'eip3009' && eip3009SetRefusal(marker)) {
+    return refused('not_ready');
+  }
   const holder = exclusionHolder(records, current);
   if (holder !== undefined) {
     return refused('exclusion', holder.orderId);
   }
-  const unconfirmed = unconfirmedOver(records, current, now);
+  // A `usedAtStart` marker asks no wallet for anything: no old prompt to confirm.
+  const asksWallet = marker.rail !== 'eip3009' || marker.usedAtStart !== true;
+  const unconfirmed = asksWallet ? unconfirmedOver(records, current, now) : [];
   if (unconfirmed.length > 0) {
     return needsConfirmation(unconfirmed);
   }
   return accepted({ ...current, marker, state: 'paying', version: current.version + 1 });
+}
+
+/**
+ * Whether a first `eip3009` marker is malformed: a `usedAtStart` one is frozen
+ * evidence (`signed`, `validBefore` "0"), any other starts unproven - no switch
+ * or end proof is set with it.
+ */
+function eip3009SetRefusal(marker: Eip3009Marker): boolean {
+  if (marker.switchProof !== undefined || marker.endProof !== undefined) {
+    return true;
+  }
+  return marker.usedAtStart === true && (marker.signed !== true || marker.validBefore !== '0');
+}
+
+function decimal(value: string): bigint | undefined {
+  return /^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : undefined;
+}
+
+/**
+ * Why an `eip3009` marker write may not apply, or `undefined` when it may.
+ * A `usedAtStart` marker takes no write at all. A retry (a new `attemptId`)
+ * is allowed only once the marker was signed (an unsigned one is cleared
+ * instead). Within an attempt the window is fixed; in any write `signed` is
+ * never unset, a signature or hash only replaced, never removed, the floor never
+ * moves and `validBefore` never goes down. The authorizer changes only on a
+ * retry that carries a `switchProof` past the CURRENT `validBefore`.
+ */
+function eip3009UpdateRefusal(
+  current: Eip3009Marker,
+  next: Eip3009Marker,
+  retry: boolean,
+): boolean {
+  if (current.usedAtStart === true || next.usedAtStart === true) {
+    return true;
+  }
+  if (retry && current.signed !== true) {
+    return true;
+  }
+  if (
+    (current.signed === true && next.signed !== true) ||
+    (current.signature !== undefined && next.signature === undefined) ||
+    (current.txHash !== undefined && next.txHash === undefined) ||
+    next.floorBlock !== current.floorBlock ||
+    next.endProof !== undefined
+  ) {
+    return true;
+  }
+  const before = decimal(current.validBefore);
+  const after = decimal(next.validBefore);
+  if (before === undefined || after === undefined || after < before) {
+    return true;
+  }
+  if (!retry && (after !== before || next.authorizer !== current.authorizer)) {
+    return true;
+  }
+  if (next.authorizer !== current.authorizer) {
+    return (
+      next.switchProof === undefined ||
+      !Number.isSafeInteger(next.switchProof.timestamp) ||
+      BigInt(next.switchProof.timestamp) <= before
+    );
+  }
+  return false;
+}
+
+/**
+ * Tempo has no in-widget retry (an old prompt would pay too); within one
+ * attempt, what the marker proves is never dropped or changed. Within one
+ * attempt its pay window is fixed too: the expiry wait (Solana) and the
+ * reconciliation floor (Tempo) are measured against what was stored.
+ */
+function windowMoved(current: PaymentMarker, next: PaymentMarker): boolean {
+  if (current.rail === 'solana' && next.rail === 'solana') {
+    return (
+      next.blockhash !== current.blockhash ||
+      next.lastValidBlockHeight !== current.lastValidBlockHeight ||
+      next.slot !== current.slot
+    );
+  }
+  return (
+    current.rail === 'tempo' && next.rail === 'tempo' && next.floorBlock !== current.floorBlock
+  );
 }
 
 /**
@@ -490,22 +587,14 @@ export function judgeUpdateMarker(
     return refused('not_ready');
   }
   const retry = next.attemptId !== attemptId;
-  // Tempo has no in-widget retry (an old prompt would pay too); within one
-  // attempt, what the marker proves is never dropped or changed.
-  // Within one attempt its pay window is fixed too: the expiry wait (Solana) and
-  // the reconciliation floor (Tempo) are measured against what was stored.
-  const windowMoved =
-    current.marker.rail === 'solana' && next.rail === 'solana'
-      ? next.blockhash !== current.marker.blockhash ||
-        next.lastValidBlockHeight !== current.marker.lastValidBlockHeight ||
-        next.slot !== current.marker.slot
-      : current.marker.rail === 'tempo' &&
-        next.rail === 'tempo' &&
-        next.floorBlock !== current.marker.floorBlock;
-  if (
+  if (current.marker.rail === 'eip3009' && next.rail === 'eip3009') {
+    if (eip3009UpdateRefusal(current.marker, next, retry)) {
+      return refused('not_ready');
+    }
+  } else if (
     (retry && next.rail === 'tempo') ||
     (!retry && !keepsEvidence(current.marker, next)) ||
-    (!retry && windowMoved) ||
+    (!retry && windowMoved(current.marker, next)) ||
     failsBundle(current.marker, next) === 'refused'
   ) {
     return refused('not_ready');
@@ -542,6 +631,7 @@ export function judgeClearMarker(
   attemptId: string,
   nextState: Extract<OrderState, 'ordered' | 'ended-unpaid'>,
   endedBy?: Exclude<EndedBy, 'nothing'>,
+  endProof?: Eip3009Proof,
 ): Judged {
   const current = records.find((record) => record.orderId === orderId);
   if (current === undefined) {
@@ -574,6 +664,13 @@ export function judgeClearMarker(
   if (endedBy !== undefined && (!tempo || nextState !== 'ended-unpaid')) {
     return refused('not_ready');
   }
+  const eip3009 = current.marker?.rail === 'eip3009' ? current.marker : undefined;
+  if (endProof !== undefined && (eip3009 === undefined || nextState !== 'ended-unpaid')) {
+    return refused('not_ready');
+  }
+  if (eip3009 !== undefined && eip3009EndRefusal(eip3009, nextState, endProof)) {
+    return refused('not_ready');
+  }
   // "Nothing was requested" is false once the marker proves a request.
   if (nextState === 'ordered' && current.marker !== undefined && holdsEvidence(current.marker)) {
     return refused('not_ready');
@@ -584,10 +681,39 @@ export function judgeClearMarker(
   }
   return accepted({
     ...current,
+    ...(eip3009 === undefined || endProof === undefined
+      ? {}
+      : { marker: { ...eip3009, endProof } }),
     state: nextState,
     ...(endedBy === undefined ? {} : { endedBy }),
     version: current.version + 1,
   });
+}
+
+/**
+ * Whether an `eip3009` attempt may NOT end here. A `usedAtStart` marker never
+ * ends (its real `validBefore` is unknown, so no proof is sound for it). A
+ * signed one ends unpaid only with an end proof past its CURRENT `validBefore`:
+ * an end without it frees the product while the signature can still land.
+ */
+function eip3009EndRefusal(
+  marker: Eip3009Marker,
+  nextState: Extract<OrderState, 'ordered' | 'ended-unpaid'>,
+  endProof: Eip3009Proof | undefined,
+): boolean {
+  if (marker.usedAtStart === true) {
+    return true;
+  }
+  if (nextState !== 'ended-unpaid' || marker.signed !== true) {
+    return false;
+  }
+  const validBefore = decimal(marker.validBefore);
+  return (
+    endProof === undefined ||
+    validBefore === undefined ||
+    !Number.isSafeInteger(endProof.timestamp) ||
+    BigInt(endProof.timestamp) <= validBefore
+  );
 }
 
 /**
@@ -697,9 +823,10 @@ export class OrderStore {
     attemptId: string,
     nextState: Extract<OrderState, 'ordered' | 'ended-unpaid'>,
     endedBy?: Exclude<EndedBy, 'nothing'>,
+    endProof?: Eip3009Proof,
   ): Promise<StoreWrite> {
     return this.judge(orderId, (records) =>
-      judgeClearMarker(records, orderId, expectedVersion, attemptId, nextState, endedBy),
+      judgeClearMarker(records, orderId, expectedVersion, attemptId, nextState, endedBy, endProof),
     );
   }
 

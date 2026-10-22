@@ -16,6 +16,7 @@ function signedWrap(label: string): NonNullable<OrderRecord['orderWrap']> {
 }
 
 type TempoMarker = Extract<PaymentMarker, { rail: 'tempo' }>;
+type Eip3009Marker = Extract<PaymentMarker, { rail: 'eip3009' }>;
 
 /** What `created -> ordered` needs: the signed order, acknowledged by the store's inbox. */
 export const ACKNOWLEDGED = {
@@ -1071,6 +1072,484 @@ export function orderStoreContract(makeBackend: () => Promise<OrderBackend>): vo
       expect(
         await store.update('one', 3, { state: 'paid', paidTx: 'Tx', paidAt: 5 }),
       ).toMatchObject({ ok: true, record: { paidAt: 5 } });
+    });
+  });
+
+  describe('the eip3009 marker', () => {
+    const NOW = 1_750_000_000 + 60;
+    const PAYER = `0x${'11'.repeat(20)}`;
+    const OTHER = `0x${'22'.repeat(20)}`;
+    const SIGNATURE = `0x${'5a'.repeat(65)}`;
+    const HASH = `0x${'ab'.repeat(32)}`;
+    const PROOF_PAST = { blockHash: `0x${'cd'.repeat(32)}`, timestamp: 1001 };
+    const PROOF_AT = { blockHash: `0x${'cd'.repeat(32)}`, timestamp: 1000 };
+    const BASE_SEPOLIA = EIP3009_USDC.find(({ chain }) => chain.caip2 === 'eip155:84532');
+    const EIP3009_PAYOUT = {
+      payout: { caip19: BASE_SEPOLIA?.caip19 ?? '', address: `0x${'33'.repeat(20)}` },
+    };
+
+    function eip3009Marker(attemptId: string, extra: Partial<Eip3009Marker> = {}): Eip3009Marker {
+      return {
+        rail: 'eip3009',
+        attemptId,
+        setAt: 1_750_000_050,
+        authorizer: PAYER,
+        floorBlock: '100',
+        validBefore: '1000',
+        ...extra,
+      };
+    }
+
+    /** An `eip3009` order paying under `attemptId` (unsigned): version 3. */
+    async function eip3009Paying(
+      orderId: string,
+      attemptId: string,
+      overrides: Partial<OrderRecord> = {},
+    ): Promise<void> {
+      await addOrdered(orderId, { ...EIP3009_PAYOUT, ...overrides });
+      const set = await store.setMarker(orderId, 2, eip3009Marker(attemptId), NOW);
+      if (!set.ok) {
+        throw new Error(set.reason);
+      }
+    }
+
+    /** The same, its signature stored with `signed`: version 4. */
+    async function eip3009Signed(
+      orderId: string,
+      attemptId: string,
+      overrides: Partial<OrderRecord> = {},
+    ): Promise<Eip3009Marker> {
+      await eip3009Paying(orderId, attemptId, overrides);
+      const marker = eip3009Marker(attemptId, { signed: true, signature: SIGNATURE });
+      const written = await store.updateMarker(orderId, 3, attemptId, marker);
+      if (!written.ok) {
+        throw new Error(written.reason);
+      }
+      return marker;
+    }
+
+    it('sets an eip3009 marker only on an eip3009 payout', async () => {
+      await eip3009Paying('one', 'a');
+      expect((await store.get('one'))?.state).toBe('paying');
+      await addOrdered('solana', { productAddress: OTHER_PRODUCT });
+      expect(await store.setMarker('solana', 2, eip3009Marker('b'))).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      await addOrdered('tempo', { ...TEMPO_PAYOUT, productAddress: `${PRODUCT}-tempo` });
+      expect(await store.setMarker('tempo', 2, eip3009Marker('c'))).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+    });
+
+    it('clears a marker that never held a signature, and never one that did', async () => {
+      await eip3009Paying('unsigned', 'a');
+      expect(await store.clearMarker('unsigned', 3, 'a', 'ordered')).toMatchObject({
+        ok: true,
+        record: { state: 'ordered' },
+      });
+      expect((await store.get('unsigned'))?.marker).toBeUndefined();
+      await store.update('unsigned', 4, { state: 'ended-unpaid' });
+      await eip3009Signed('signed', 'b');
+      expect(await store.clearMarker('signed', 4, 'b', 'ordered')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      // `signed` alone is the evidence: no signature or hash needed.
+      await store.add(record('flag', { ...EIP3009_PAYOUT, productAddress: OTHER_PRODUCT }));
+      await store.update('flag', 1, { state: 'ordered', paymentRequest: '{}', ...ACKNOWLEDGED });
+      await store.setMarker('flag', 2, eip3009Marker('c'), NOW);
+      await store.updateMarker('flag', 3, 'c', eip3009Marker('c', { signed: true }));
+      expect(await store.clearMarker('flag', 4, 'c', 'ordered')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+    });
+
+    it('retries only a signed marker, in place, keeping its evidence', async () => {
+      await eip3009Paying('unsigned', 'a');
+      expect(
+        await store.updateMarker('unsigned', 3, 'a', eip3009Marker('a2', { validBefore: '2000' })),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      const signed = await eip3009Signed('one', 'b', { productAddress: OTHER_PRODUCT });
+      const withHash = { ...signed, txHash: HASH };
+      expect(await store.updateMarker('one', 4, 'b', withHash)).toMatchObject({ ok: true });
+      const retry = { ...withHash, attemptId: 'b2', validBefore: '2000' };
+      expect(await store.updateMarker('one', 5, 'b', retry)).toMatchObject({
+        ok: true,
+        record: { state: 'paying', marker: { attemptId: 'b2', signed: true, txHash: HASH } },
+      });
+      // A retry REPLACES the signature and the hash, never removes them.
+      const replaced = {
+        ...retry,
+        signature: `0x${'6b'.repeat(65)}`,
+        txHash: `0x${'ef'.repeat(32)}`,
+      };
+      expect(await store.updateMarker('one', 6, 'b2', replaced)).toMatchObject({ ok: true });
+      const losses: Partial<Eip3009Marker>[] = [
+        { signed: undefined },
+        { signature: undefined },
+        { txHash: undefined },
+      ];
+      for (const loss of losses) {
+        for (const attemptId of ['b2', 'b3']) {
+          expect(
+            await store.updateMarker('one', 7, 'b2', { ...replaced, ...loss, attemptId }),
+          ).toMatchObject({ ok: false, reason: 'not_ready' });
+        }
+      }
+    });
+
+    it('never moves the floor, never lowers validBefore, and fixes the window within an attempt', async () => {
+      const signed = await eip3009Signed('one', 'a');
+      const refused: Eip3009Marker[] = [
+        { ...signed, attemptId: 'a2', floorBlock: '101' },
+        { ...signed, attemptId: 'a2', validBefore: '999' },
+        { ...signed, attemptId: 'a2', validBefore: 'later' },
+        // Within the attempt, neither the window nor the authorizer moves.
+        { ...signed, validBefore: '2000' },
+        { ...signed, floorBlock: '99' },
+        { ...signed, authorizer: OTHER, switchProof: PROOF_PAST },
+        // No end proof, and no `usedAtStart`, through a marker write.
+        { ...signed, attemptId: 'a2', endProof: PROOF_PAST },
+        { ...signed, attemptId: 'a2', usedAtStart: true },
+      ];
+      for (const next of refused) {
+        expect(await store.updateMarker('one', 4, 'a', next)).toMatchObject({
+          ok: false,
+          reason: 'not_ready',
+        });
+      }
+      expect(
+        await store.updateMarker('one', 4, 'a', {
+          ...signed,
+          attemptId: 'a2',
+          validBefore: '1000',
+        }),
+      ).toMatchObject({ ok: true });
+    });
+
+    it('changes the authorizer only with a switch proof past the CURRENT validBefore', async () => {
+      const signed = await eip3009Signed('one', 'a');
+      const switched = { ...signed, attemptId: 'a2', authorizer: OTHER, validBefore: '2000' };
+      for (const switchProof of [undefined, PROOF_AT, { ...PROOF_PAST, timestamp: 1000.5 }]) {
+        expect(
+          await store.updateMarker('one', 4, 'a', {
+            ...switched,
+            ...(switchProof === undefined ? {} : { switchProof }),
+          }),
+        ).toMatchObject({ ok: false, reason: 'not_ready' });
+      }
+      expect(
+        await store.updateMarker('one', 4, 'a', { ...switched, switchProof: PROOF_PAST }),
+      ).toMatchObject({
+        ok: true,
+        record: { marker: { authorizer: OTHER, signed: true, floorBlock: '100' } },
+      });
+      // The proof is judged against the marker as it is NOW: 1001 is not past 2000.
+      expect(
+        await store.updateMarker('one', 5, 'a2', {
+          ...switched,
+          attemptId: 'a3',
+          authorizer: PAYER,
+          switchProof: PROOF_PAST,
+        }),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+    });
+
+    it('ends a signed marker only with an end proof past its current validBefore, and keeps it', async () => {
+      const signed = await eip3009Signed('one', 'a');
+      for (const proof of [undefined, PROOF_AT, { ...PROOF_PAST, timestamp: Number.NaN }]) {
+        expect(
+          await store.clearMarker('one', 4, 'a', 'ended-unpaid', undefined, proof),
+        ).toMatchObject({ ok: false, reason: 'not_ready' });
+      }
+      // A retry raised validBefore: the old proof no longer covers it.
+      await store.updateMarker('one', 4, 'a', { ...signed, attemptId: 'a2', validBefore: '1500' });
+      expect(
+        await store.clearMarker('one', 5, 'a2', 'ended-unpaid', undefined, PROOF_PAST),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      const late = { blockHash: PROOF_PAST.blockHash, timestamp: 1501 };
+      expect(
+        await store.clearMarker('one', 5, 'a2', 'ended-unpaid', undefined, late),
+      ).toMatchObject({
+        ok: true,
+        record: { state: 'ended-unpaid', marker: { endProof: late, signed: true } },
+      });
+      expect((await store.get('one'))?.endedBy).toBeUndefined();
+    });
+
+    it('ends an unsigned marker without a proof, and takes a proof on no other end', async () => {
+      await eip3009Paying('unsigned', 'a');
+      expect(
+        await store.clearMarker('unsigned', 3, 'a', 'ordered', undefined, PROOF_PAST),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+      expect(await store.clearMarker('unsigned', 3, 'a', 'ended-unpaid', 'over')).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+      expect(await store.clearMarker('unsigned', 3, 'a', 'ended-unpaid')).toMatchObject({
+        ok: true,
+        record: { state: 'ended-unpaid' },
+      });
+      await addPaying('solana', 's');
+      await store.update('solana', 3, {});
+      expect(
+        await store.clearMarker('solana', 4, 's', 'ended-unpaid', undefined, PROOF_PAST),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+    });
+
+    it('rewrites an unsigned marker in place while it stays unsigned', async () => {
+      await eip3009Paying('unsigned', 'a');
+      expect(
+        await store.updateMarker('unsigned', 3, 'a', eip3009Marker('a', { setAt: 1_750_000_060 })),
+      ).toMatchObject({ ok: true, record: { marker: { attemptId: 'a' } } });
+    });
+
+    it('takes no write on a marker whose stored validBefore is not a decimal', async () => {
+      await addOrdered('odd', EIP3009_PAYOUT);
+      const set = await store.setMarker('odd', 2, eip3009Marker('o', { validBefore: 'soon' }), NOW);
+      if (!set.ok) {
+        throw new Error(set.reason);
+      }
+      for (const next of [
+        eip3009Marker('o', { validBefore: 'soon', signed: true, signature: SIGNATURE }),
+        eip3009Marker('o2', { validBefore: '2000' }),
+      ]) {
+        expect(await store.updateMarker('odd', 3, 'o', next)).toMatchObject({
+          ok: false,
+          reason: 'not_ready',
+        });
+      }
+    });
+
+    it('neither retries, switches nor ends a signed marker whose validBefore is not a decimal', async () => {
+      await addOrdered('odd-signed', EIP3009_PAYOUT);
+      const odd = eip3009Marker('s', { validBefore: 'soon', signed: true, signature: SIGNATURE });
+      const set = await store.setMarker('odd-signed', 2, odd, NOW);
+      if (!set.ok) {
+        throw new Error(set.reason);
+      }
+      for (const next of [
+        { ...odd, attemptId: 's2', validBefore: '2000' },
+        {
+          ...odd,
+          attemptId: 's2',
+          validBefore: '2000',
+          authorizer: OTHER,
+          switchProof: PROOF_PAST,
+        },
+      ]) {
+        expect(await store.updateMarker('odd-signed', 3, 's', next)).toMatchObject({
+          ok: false,
+          reason: 'not_ready',
+        });
+      }
+      expect(
+        await store.clearMarker('odd-signed', 3, 's', 'ended-unpaid', undefined, PROOF_PAST),
+      ).toMatchObject({ ok: false, reason: 'not_ready' });
+    });
+
+    it('counts a stored signature or hash as evidence on its own, without signed', async () => {
+      for (const [id, extra] of [
+        ['sig', { signature: SIGNATURE }],
+        ['hash', { txHash: HASH }],
+      ] as const) {
+        await addOrdered(id, { ...EIP3009_PAYOUT, productAddress: `${PRODUCT}-${id}` });
+        await store.setMarker(id, 2, eip3009Marker(id), NOW);
+        expect(await store.updateMarker(id, 3, id, eip3009Marker(id, extra))).toMatchObject({
+          ok: true,
+        });
+        expect(await store.clearMarker(id, 4, id, 'ordered')).toMatchObject({
+          ok: false,
+          reason: 'not_ready',
+        });
+      }
+    });
+
+    describe('a usedAtStart marker', () => {
+      const frozen = (attemptId: string): Eip3009Marker =>
+        eip3009Marker(attemptId, { usedAtStart: true, signed: true, validBefore: '0' });
+
+      it('is set only frozen: signed, with validBefore 0', async () => {
+        for (const [index, bad] of [
+          eip3009Marker('x', { usedAtStart: true, validBefore: '0' }),
+          eip3009Marker('y', { usedAtStart: true, signed: true }),
+          eip3009Marker('z', { switchProof: PROOF_PAST }),
+          eip3009Marker('w', { endProof: PROOF_PAST }),
+        ].entries()) {
+          const id = `bad-${index}`;
+          await addOrdered(id, { ...EIP3009_PAYOUT, productAddress: `${PRODUCT}-${id}` });
+          expect(await store.setMarker(id, 2, bad, NOW)).toMatchObject({
+            ok: false,
+            reason: 'not_ready',
+          });
+        }
+        await addOrdered('frozen', EIP3009_PAYOUT);
+        expect(await store.setMarker('frozen', 2, frozen('f'), NOW)).toMatchObject({
+          ok: true,
+          record: { state: 'paying' },
+        });
+      });
+
+      it('takes no retry, switch or end, even with a proof past its validBefore', async () => {
+        await addOrdered('frozen', EIP3009_PAYOUT);
+        await store.setMarker('frozen', 2, frozen('f'), NOW);
+        const marker = frozen('f');
+        for (const next of [
+          { ...marker, attemptId: 'f2', validBefore: '2000' },
+          { ...marker, attemptId: 'f2', authorizer: OTHER, switchProof: PROOF_PAST },
+          { ...marker, txHash: HASH },
+        ]) {
+          expect(await store.updateMarker('frozen', 3, 'f', next)).toMatchObject({
+            ok: false,
+            reason: 'not_ready',
+          });
+        }
+        for (const [state, proof] of [
+          ['ended-unpaid', PROOF_PAST],
+          ['ended-unpaid', undefined],
+          ['ordered', undefined],
+        ] as const) {
+          expect(await store.clearMarker('frozen', 3, 'f', state, undefined, proof)).toMatchObject({
+            ok: false,
+            reason: 'not_ready',
+          });
+        }
+        expect((await store.get('frozen'))?.state).toBe('paying');
+      });
+
+      it('stays frozen when a write drops usedAtStart: no retry, switch or in-place write', async () => {
+        await addOrdered('frozen', EIP3009_PAYOUT);
+        await store.setMarker('frozen', 2, frozen('f'), NOW);
+        const { usedAtStart: _dropped, ...unfrozen } = frozen('f');
+        for (const next of [
+          { ...unfrozen, attemptId: 'f2' },
+          { ...unfrozen, attemptId: 'f2', validBefore: '2000' },
+          { ...unfrozen, attemptId: 'f2', authorizer: OTHER, switchProof: PROOF_PAST },
+          { ...unfrozen, txHash: HASH },
+          unfrozen,
+        ]) {
+          expect(await store.updateMarker('frozen', 3, 'f', next)).toMatchObject({
+            ok: false,
+            reason: 'not_ready',
+          });
+        }
+        expect((await store.get('frozen'))?.marker).toMatchObject({ usedAtStart: true });
+      });
+
+      it('is moved by a store delivery or a refund', async () => {
+        for (const state of ['completed', 'refunded'] as const) {
+          await addOrdered(state, { ...EIP3009_PAYOUT, productAddress: `${PRODUCT}-${state}` });
+          await store.setMarker(state, 2, frozen(state), NOW);
+          expect(await store.update(state, 3, { state })).toMatchObject({
+            ok: true,
+            record: { state },
+          });
+        }
+      });
+
+      it('asks for no old-prompt confirmation: it asks no wallet for anything', async () => {
+        await tempoOverSibling();
+        await addOrdered('frozen', EIP3009_PAYOUT);
+        expect(await store.setMarker('frozen', 2, frozen('f'), NOW)).toMatchObject({ ok: true });
+      });
+    });
+
+    /** A Tempo order of the same product that ended `over`. */
+    async function tempoOverSibling(): Promise<void> {
+      await addOrdered('tempo-over', TEMPO_PAYOUT);
+      await store.setMarker(
+        'tempo-over',
+        2,
+        { rail: 'tempo', attemptId: 't', setAt: 1, floorBlock: '1' },
+        NOW,
+      );
+      const ended = await store.clearMarker('tempo-over', 3, 't', 'ended-unpaid', 'over');
+      if (!ended.ok) {
+        throw new Error(ended.reason);
+      }
+    }
+
+    // The "over" confirmation stays Tempo-only: an ended eip3009 order (no
+    // `endedBy`, which would count as `over` on Tempo) asks for none; an old
+    // Tempo prompt still asks it of an eip3009 request, first or retry.
+    it('keeps the old-prompt confirmation Tempo-only', async () => {
+      await eip3009Paying('ended', 'e');
+      await store.clearMarker('ended', 3, 'e', 'ended-unpaid');
+      await addOrdered('fresh', EIP3009_PAYOUT);
+      expect(await store.setMarker('fresh', 2, eip3009Marker('f'), NOW)).toMatchObject({
+        ok: true,
+      });
+      await store.add(record('late', { ...EIP3009_PAYOUT, productAddress: OTHER_PRODUCT }));
+      await store.update('late', 1, { state: 'ordered', paymentRequest: '{}', ...ACKNOWLEDGED });
+      await store.add(record('tempo-over', { ...TEMPO_PAYOUT, productAddress: OTHER_PRODUCT }));
+      await store.update('tempo-over', 1, {
+        state: 'ordered',
+        paymentRequest: '{}',
+        ...ACKNOWLEDGED,
+      });
+      await store.setMarker(
+        'tempo-over',
+        2,
+        { rail: 'tempo', attemptId: 't', setAt: 1, floorBlock: '1' },
+        NOW,
+      );
+      await store.clearMarker('tempo-over', 3, 't', 'ended-unpaid', 'over');
+      expect(await store.setMarker('late', 2, eip3009Marker('l'), NOW)).toMatchObject({
+        ok: false,
+        reason: 'needs_confirmation',
+        unconfirmed: ['tempo-over'],
+      });
+    });
+
+    // The general retry rules hold for an eip3009 retry too (review round 2).
+    function retryOf(signed: Eip3009Marker): Eip3009Marker {
+      return { ...signed, attemptId: `${signed.attemptId}-again`, validBefore: '2000' };
+    }
+
+    it('refuses an eip3009 retry while another order of the product holds the exclusion', async () => {
+      const signed = await eip3009Signed('retrying', 'a');
+      // Another order of the product was found paid late, meanwhile.
+      await addOrdered('late');
+      await store.update('late', 2, { state: 'paid' });
+      expect(await store.updateMarker('retrying', 4, 'a', retryOf(signed))).toMatchObject({
+        ok: false,
+        reason: 'exclusion',
+        holder: 'late',
+      });
+      expect((await store.get('retrying'))?.marker?.attemptId).toBe('a');
+    });
+
+    it('refuses an eip3009 retry on an order the store cancelled', async () => {
+      const signed = await eip3009Signed('retrying', 'a');
+      expect(
+        await store.update('retrying', 4, { status: { status: 'cancelled', at: 1 } }),
+      ).toMatchObject({ ok: true });
+      expect(await store.updateMarker('retrying', 5, 'a', retryOf(signed))).toMatchObject({
+        ok: false,
+        reason: 'not_ready',
+      });
+    });
+
+    it('asks before an eip3009 retry beside a Tempo order that ended over, as before a Solana one', async () => {
+      await tempoOverSibling();
+      // The first attempt was made when the old order was past the catch-up.
+      await addOrdered('retrying', EIP3009_PAYOUT);
+      const later = 1_750_000_000 + 3 * 24 * 60 * 60 + 5 * 60 + 1;
+      expect(await store.setMarker('retrying', 2, eip3009Marker('a'), later)).toMatchObject({
+        ok: true,
+      });
+      const signed = eip3009Marker('a', { signed: true, signature: SIGNATURE });
+      expect(await store.updateMarker('retrying', 3, 'a', signed, later)).toMatchObject({
+        ok: true,
+      });
+      expect(await store.updateMarker('retrying', 4, 'a', retryOf(signed), NOW)).toMatchObject({
+        ok: false,
+        reason: 'needs_confirmation',
+        unconfirmed: ['tempo-over'],
+      });
     });
   });
 
