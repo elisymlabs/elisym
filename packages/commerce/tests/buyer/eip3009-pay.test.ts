@@ -12,7 +12,7 @@ import {
   assetsFor,
 } from '@elisym/pay-core';
 import { hexToBytes } from '@noble/hashes/utils.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EIP3009_PAY_CUTOFF_SECS,
   EIP3009_VALID_SECS,
@@ -72,6 +72,13 @@ let store: OrderStore;
 
 beforeEach(() => {
   store = new OrderStore(new MemoryOrderBackend());
+});
+
+// The fake chain answers on microtasks only, so without this the worker never
+// reaches its event loop for the whole file and a slow CI runner times out
+// vitest's own RPC to the main process.
+afterEach(async () => {
+  await new Promise((resolve) => setImmediate(resolve));
 });
 
 interface World {
