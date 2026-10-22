@@ -29,6 +29,12 @@ export interface OrderPaymentReference {
    * purchase from public chain data, and binds the order with 224 bits.
    */
   tempoMarked: string;
+  /**
+   * USDC over EIP-3009 (Ethereum, Arbitrum, Base): the authorization's 32-byte
+   * nonce, always the marked form (`tempoMarked`, the same bytes) - a new rail
+   * has no legacy node to stay compatible with.
+   */
+  eip3009: string;
 }
 
 /**
@@ -70,7 +76,8 @@ export function deriveOrderPaymentReference(
     ),
   );
   const tempo = `0x${hex.encode(digest)}`;
-  return { solana: base58.encode(digest), tempo, tempoMarked: markTempoCommerceMemo(tempo) };
+  const tempoMarked = markTempoCommerceMemo(tempo);
+  return { solana: base58.encode(digest), tempo, tempoMarked, eip3009: tempoMarked };
 }
 
 /**

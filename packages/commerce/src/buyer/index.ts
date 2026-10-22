@@ -1,10 +1,11 @@
 /**
  * `@elisym/commerce/buyer`: the buyer's side of a direct-mode purchase - load
- * and verify the offer, place the order, pay on Solana, follow the store's
+ * and verify the offer, place the order, pay (Solana, Tempo, EIP-3009), follow the store's
  * answer - shared by the checkout widget and the elisym MCP. Order records live
  * behind an `OrderBackend`; every money rule is judged here, never in a backend.
  */
 export * from './constants';
+export * from './eip3009-pay';
 export * from './events';
 export * from './fee';
 export * from './inbox';

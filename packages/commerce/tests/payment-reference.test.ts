@@ -17,6 +17,8 @@ describe('deriveOrderPaymentReference', () => {
       tempo: '0x7e8e3a05d7b311fe99a4327022fc7f3d0990b07997a316909bdc1de60bf807fd',
       // The commerce magic, then the first 28 bytes of `tempo`.
       tempoMarked: '0xfab22e7e7e8e3a05d7b311fe99a4327022fc7f3d0990b07997a316909bdc1de6',
+      // The EIP-3009 nonce is the marked form from day one (no legacy node to serve).
+      eip3009: '0xfab22e7e7e8e3a05d7b311fe99a4327022fc7f3d0990b07997a316909bdc1de6',
     });
   });
 

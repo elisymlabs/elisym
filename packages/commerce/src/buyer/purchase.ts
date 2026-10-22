@@ -1,5 +1,6 @@
 import type { Eip1193Client } from '@elisym/pay-core/evm';
 import { payoutRail } from '../caip';
+import { endEip3009Order } from './eip3009-pay';
 import type { PricedPayout } from './offer';
 import type { OrderRecord } from './order-record';
 import type { OrderStore } from './order-store';
@@ -55,6 +56,11 @@ export type EndDeps = Pick<
   rpc: SolanaPayDeps['rpc'] | undefined;
   /** For a Tempo order: a read RPC of its own chain, or `undefined` when the caller has none. */
   tempo?: Eip1193Client;
+  /**
+   * For an `eip3009` order (Ethereum, Arbitrum, Base): the caller's RPC of its own
+   * chain, which the end proof reads, or `undefined` when the caller has none.
+   */
+  eip3009?: Eip1193Client;
   store: OrderStore;
 };
 
@@ -82,6 +88,10 @@ export async function endOrder(
   const rail = payoutRail(record.payout.caip19);
   if (rail === 'tempo' && deps.tempo !== undefined) {
     return await endTempoOrder(record, { ...deps, client: deps.tempo });
+  }
+  // A signed EIP-3009 attempt ends only through the end proof (`endEip3009Order`).
+  if (rail === 'eip3009' && deps.eip3009 !== undefined) {
+    return await endEip3009Order(record, { ...deps, client: deps.eip3009 });
   }
   if (deps.rpc !== undefined && rail === 'solana') {
     return await endSolanaOrder(record, { ...deps, rpc: deps.rpc });
