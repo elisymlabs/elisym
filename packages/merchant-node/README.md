@@ -126,6 +126,7 @@ it starts.
 | `rpcUrl`          | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                                                                                                   |
 | `feeConfigRpcUrl` | Optional. A Solana RPC (`https:`) of the node's network, to read the elisym protocol config (the fee treasuries, for both rails) from. Default: `rpcUrl`, else the network's public endpoint. It switches on no Solana payments |
 | `tempo`           | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                                                                                                             |
+| `evm`             | Optional. `{ "ethereum" \| "arbitrum" \| "base": { "rpcUrl": ..., "logRangeCap"?: ... } }`: the chains whose USDC the node verifies, see [USDC on Ethereum, Arbitrum and Base](#usdc-on-ethereum-arbitrum-and-base)             |
 | `inboxRelays`     | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                                                                                                 |
 | `payouts`         | One `{ "caip19": ..., "address": ... }` per coin, for every product, see [Tempo payouts](#tempo-payouts)                                                                                                                        |
 | `webhook`         | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook)                                                                                 |
@@ -214,6 +215,41 @@ no Solana `rpcUrl`, but it still names its network: `"network": "mainnet"` for T
 one. Upgrade
 the node before the payout list names a Tempo address, and do not downgrade it afterwards: once
 the node has seen a Tempo order, an older node refuses its ledger.
+
+### USDC on Ethereum, Arbitrum and Base
+
+The node verifies USDC paid over EIP-3009 on Ethereum, Arbitrum and Base (0.12.0 and later).
+Each chain needs an entry in the `evm` block with a server-side `rpcUrl` of that chain; its
+network follows `network` (mainnet, or the chain's Sepolia testnet on devnet). A payout on a
+chain without an entry is refused, as is one to the zero address or a coin contract, and the
+address is written in lowercase:
+
+```json
+"evm": { "base": { "rpcUrl": "https://base-sepolia.gateway.tenderly.co" } },
+"payouts": [
+  { "caip19": "<a Solana payout>", "address": "..." },
+  { "caip19": "eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e", "address": "0x..." }
+]
+```
+
+The checkout does not offer these chains yet: list such a payout after a Solana or Tempo one
+(a page opens on the network of the first payout). The node finds a payment per payout, never
+per order, by the USDC `Transfer` logs to it, binds each to an order through the
+`AuthorizationUsed` log right before it (its nonce is the order's derived reference), and
+credits it once its block reaches the chain's `safe` block, for the full price only (the
+protocol fee is 0 on these chains). No empty answer is trusted: every open order's window is
+scanned again and again, so a lagging backend's wrong `[]` heals on a later pass. Reads that
+keep failing are logged ("older payments on <chain> may be missed").
+
+At start each chain's RPC must answer a USDC transfer about three days old, the same log by
+its recipient, and its receipt. A wrong answer (a refusal, missing data, another chain, an HTTP
+4xx such as a mistyped URL or a rejected key) stops the node. A timeout, a rate limit or an HTTP
+5xx keeps that chain off (logged loudly) while the other rails run, and the check is run again
+after a pause growing from 60 seconds to 15 minutes; a wrong answer to that later check keeps
+the chain off until a restart (logged as an error). A payout on a chain that is off stays
+offered: its payments are credited once the chain is verified, or after a restart. `logRangeCap`
+(blocks per `eth_getLogs` call) defaults to the chain's minimum, Ethereum 100, Base 1000,
+Arbitrum 5000, and may only be raised. The docs' quickstart lists RPCs that passed.
 
 ## The protocol fee
 

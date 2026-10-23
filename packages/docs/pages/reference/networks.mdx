@@ -41,7 +41,7 @@ Tempo has no native coin: gas is paid in a stablecoin. USDC.e is `0x20c000000000
 ### Ethereum, Arbitrum and Base (registered, not yet payable)
 
 :::info
-**Registered, not yet payable.** The SDK registry holds Circle USDC on Ethereum, Arbitrum One and Base and their Sepolia testnets, settled over EIP-3009 `transferWithAuthorization` (the `eip3009` settlement). Nothing in elisym pays on these chains yet: the Pay Core checkout does not offer them, a merchant node refuses them as payouts, and the agent marketplace (SDK, CLI, MCP, web app) never treats them as Tempo. This section will say which networks are payable as each one ships.
+**Registered, not yet payable.** The SDK registry holds Circle USDC on Ethereum, Arbitrum One and Base and their Sepolia testnets, settled over EIP-3009 `transferWithAuthorization` (the `eip3009` settlement). The Pay Core checkout does not offer them yet. A merchant node verifies USDC payouts on them from merchant-node 0.12.0 (see [USDC on Ethereum, Arbitrum and Base](/commerce/quickstart#usdc-on-ethereum-arbitrum-and-base)); earlier nodes refuse them as payouts. The agent marketplace (SDK, CLI, MCP, web app) never treats them as Tempo. This section will say which networks are payable as each one ships.
 :::
 
 | Chain slug | Environment | CAIP-2 id                    | Coin | USDC contract                                |

@@ -251,7 +251,7 @@
     },
     "packages/merchant-node": {
       "name": "@elisym/merchant-node",
-      "version": "0.11.1",
+      "version": "0.12.0",
       "bin": {
         "elisym-merchant": "./dist/cli.js",
       },

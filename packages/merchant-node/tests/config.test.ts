@@ -5,6 +5,18 @@ import { describe, expect, it } from 'vitest';
 import { configProblems, priceProblems, configTemplate, loadConfig } from '../src/config';
 import { EIP3009_USDC, PAYOUT, USDC_DEVNET_CAIP19 } from './fixtures';
 
+const EVM_PAYOUT = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+
+function baseSepolia() {
+  const found = EIP3009_USDC.find(({ chain }) => chain.caip2 === 'eip155:84532');
+  if (found === undefined) {
+    throw new Error('no Base Sepolia USDC in the registry');
+  }
+  return found;
+}
+
+const EIP3009_BASE_SEPOLIA = baseSepolia();
+
 const MAINNET_USDC =
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const TEMPO_USDC = 'eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50';
@@ -48,7 +60,7 @@ describe('the merchant config', () => {
     expect(configProblems({ ...valid(), payouts: [] })).toHaveLength(1);
   });
 
-  // Settlement gating: an eip3009 coin is EVM, but neither Tempo's nor verified here yet.
+  // Settlement gating: an eip3009 coin is EVM, but never Tempo's: it needs an `evm` entry.
   it('checks every eip3009 USDC: three chains, mainnet and devnet', () => {
     expect(EIP3009_USDC.map(({ chain }) => chain.chainName)).toEqual([
       'Ethereum',
@@ -61,20 +73,125 @@ describe('the merchant config', () => {
   });
 
   it.each(EIP3009_USDC)(
-    'refuses $chain.chainName USDC as a payout, even beside a Tempo block',
+    'refuses $chain.chainName USDC without an evm entry, even beside a Tempo block',
     ({ chain, caip19 }) => {
       expect(
         configProblems({
           ...valid(),
           network: chain.network,
           tempo: { network: chain.network === 'mainnet' ? 'mainnet' : 'moderato' },
-          payouts: [{ caip19, address: '0x5696da2cecea22f127948458382ac2c59bc8e4bb' }],
+          payouts: [{ caip19, address: EVM_PAYOUT }],
         }),
       ).toEqual([
-        `payouts.0.caip19: is a coin of ${chain.chainName}, which this node does not verify yet`,
+        `payouts.0.caip19: is a coin of ${chain.chainName}: add "evm": { "${chain.slug}": { "rpcUrl": "https://..." } } for the node to verify it`,
       ]);
     },
   );
+
+  it.each(EIP3009_USDC)(
+    'takes $chain.chainName USDC with its evm entry, on the node network only',
+    ({ chain, caip19 }) => {
+      const config = {
+        ...valid(),
+        network: chain.network,
+        evm: { [chain.slug]: { rpcUrl: 'https://rpc.example.com' } },
+        payouts: [{ caip19, address: EVM_PAYOUT }],
+      };
+      expect(configProblems(config)).toEqual([]);
+      const other = chain.network === 'mainnet' ? 'devnet' : 'mainnet';
+      expect(configProblems({ ...config, network: other })).toEqual([
+        `payouts.0.caip19: is on ${chain.network}, the node runs on ${other}`,
+      ]);
+      // An entry for another chain does not verify this one.
+      const elsewhere = chain.slug === 'base' ? 'ethereum' : 'base';
+      expect(
+        configProblems({ ...config, evm: { [elsewhere]: { rpcUrl: 'https://rpc.example.com' } } }),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('refuses an evm entry that breaks any of its schema rules', () => {
+    const withBase = (base: unknown) => configProblems({ ...valid(), evm: { base } });
+    // A fraction, zero, a negative, a string, null: each refused on that field (a cap
+    // below the chain's minimum is refused besides, see the next test).
+    for (const logRangeCap of [1000.5, 0, -1, '1000', null]) {
+      const problems = withBase({ rpcUrl: 'https://rpc.example.com', logRangeCap });
+      expect(problems.length).toBeGreaterThan(0);
+      expect(problems.every((problem) => problem.startsWith('evm.base.logRangeCap: '))).toBe(true);
+    }
+    expect(withBase({ rpcUrl: 'https://rpc.example.com', logRangeCap: 1000.5 })).toHaveLength(1);
+    for (const rpcUrl of [
+      undefined,
+      'not a url',
+      'http://rpc.example.com',
+      'wss://rpc.example.com',
+      7,
+    ]) {
+      expect(withBase({ rpcUrl })).toHaveLength(1);
+    }
+    // Strict: an unknown field in an entry, an unknown chain, an entry that is no object.
+    expect(withBase({ rpcUrl: 'https://rpc.example.com', network: 'mainnet' })).toHaveLength(1);
+    expect(
+      configProblems({ ...valid(), evm: { optimism: { rpcUrl: 'https://rpc.example.com' } } }),
+    ).toHaveLength(1);
+    expect(withBase('https://rpc.example.com')).toHaveLength(1);
+    expect(configProblems({ ...valid(), evm: [] })).toHaveLength(1);
+    // A local http RPC is taken, as for the other rails.
+    expect(withBase({ rpcUrl: 'http://localhost:8545' })).toEqual([]);
+  });
+
+  it('refuses an eip3009 payout a payment cannot reach', () => {
+    const { chain, caip19 } = EIP3009_BASE_SEPOLIA;
+    const config = {
+      ...valid(),
+      evm: { base: { rpcUrl: 'https://rpc.example.com' } },
+    };
+    const refusal = `payouts.0.address: is not an address a payment on ${chain.chainName} can go to (lowercase 0x, not the zero address or a coin contract)`;
+    for (const address of [
+      `0x${'0'.repeat(40)}`,
+      // The USDC proxy itself, and another chain's USDC.
+      caip19.split(':').at(-1) ?? '',
+      '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      EVM_PAYOUT.toUpperCase().replace('0X', '0x'),
+      'not an address',
+    ]) {
+      expect(configProblems({ ...config, payouts: [{ caip19, address }] })).toEqual([refusal]);
+    }
+  });
+
+  it('takes an evm entry with its own log range cap, never below the registry minimum', () => {
+    const { caip19 } = EIP3009_BASE_SEPOLIA;
+    const config = (logRangeCap: number) => ({
+      ...valid(),
+      evm: { base: { rpcUrl: 'https://rpc.example.com', logRangeCap } },
+      payouts: [{ caip19, address: EVM_PAYOUT }],
+    });
+    expect(configProblems(config(1000))).toEqual([]);
+    expect(configProblems(config(10_000))).toEqual([]);
+    expect(configProblems(config(999))).toEqual([
+      'evm.base.logRangeCap: must be at least 1000 blocks on Base Sepolia',
+    ]);
+    expect(
+      configProblems({
+        ...valid(),
+        evm: { arbitrum: { rpcUrl: 'https://a.example', logRangeCap: 4999 } },
+      }),
+    ).toEqual(['evm.arbitrum.logRangeCap: must be at least 5000 blocks on Arbitrum Sepolia']);
+    expect(
+      configProblems({
+        ...valid(),
+        evm: { ethereum: { rpcUrl: 'https://e.example', logRangeCap: 99 } },
+      }),
+    ).toEqual(['evm.ethereum.logRangeCap: must be at least 100 blocks on Sepolia']);
+    // An entry needs an https RPC, and names only the three chains.
+    expect(configProblems({ ...valid(), evm: { base: {} } })).toHaveLength(1);
+    expect(
+      configProblems({ ...valid(), evm: { base: { rpcUrl: 'http://rpc.example.com' } } }),
+    ).toHaveLength(1);
+    expect(
+      configProblems({ ...valid(), evm: { tempo: { rpcUrl: 'https://rpc.example.com' } } }),
+    ).toHaveLength(1);
+  });
 
   it('takes Tempo payouts on the configured Tempo network only, at a payable address', () => {
     const tempoPayout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';

@@ -6,6 +6,17 @@ import {
   MAX_REPEATS_IN_FLIGHT,
   RESEND_EVERY_SECS,
 } from './constants';
+import {
+  type Eip3009Check,
+  type Eip3009Context,
+  type catchUpEip3009,
+  chainNameOf,
+  checkEip3009Payment,
+  eip3009ContextOf,
+  recordEip3009Check,
+  type startCheckEip3009,
+  sweepEip3009,
+} from './eip3009';
 import type { TreasuryRefresh } from './fee';
 import { type StoreIdentity, intake } from './intake';
 import {
@@ -17,7 +28,7 @@ import {
   undeliveredOrders,
 } from './ledger';
 import { SeenWraps, readSince, resumePointAfterSweep } from './listener';
-import { TEMPO_HASH_RE, orderKey } from './order-rules';
+import { TEMPO_HASH_RE, eip3009ChainOfMedium, orderKey } from './order-rules';
 import { deliveryDone } from './reply';
 import type { SelfCopies } from './self-copies';
 import {
@@ -75,6 +86,11 @@ export interface RuntimeDeps {
   tempo?: TempoContext;
   checkTempoPayment?: typeof checkTempoPayment;
   catchUpTempo?: typeof catchUpTempo;
+  /** One per chain of the `evm` config block (Ethereum, Arbitrum, Base), each behind its start check. */
+  eip3009?: Eip3009Context[];
+  checkEip3009Payment?: typeof checkEip3009Payment;
+  catchUpEip3009?: typeof catchUpEip3009;
+  startCheckEip3009?: typeof startCheckEip3009;
   /**
    * Read the elisym fee config and record its treasuries in the ledger, at the
    * start of each sweep. Without it the persisted treasuries are used as they are.
@@ -176,9 +192,27 @@ export class MerchantRuntime {
   /** Check one reported transaction now; one the RPC does not see yet is tried again soon. */
   private async checkReported(order: MerchantOrder, tx: string, attempt: number): Promise<void> {
     const { state, context, save, log } = this.deps;
-    let check: PaymentCheck | TempoCheck;
-    // Dispatched by the transaction's format: a 0x hash is Tempo's.
-    if (TEMPO_HASH_RE.test(tx)) {
+    let check: PaymentCheck | TempoCheck | Eip3009Check;
+    // Dispatched by the receipt's medium: an `eip3009` chain's hash is checked
+    // on that chain only, never on Tempo. Else by format: a 0x hash is Tempo's.
+    const medium = order.reportedMedia?.[tx];
+    if (medium !== undefined && eip3009ChainOfMedium(medium) !== undefined) {
+      const evm = eip3009ContextOf(this.deps.eip3009, medium);
+      if (evm === undefined) {
+        log(
+          `receipt ${order.key} ${tx}: a ${medium} payment, and this node has no evm entry for it`,
+        );
+        return;
+      }
+      if (evm.gate.kind !== 'verified') {
+        log(
+          `receipt ${order.key} ${tx}: the ${chainNameOf(evm)} RPC is not verified; checked once it is`,
+        );
+        return;
+      }
+      check = await (this.deps.checkEip3009Payment ?? checkEip3009Payment)(state, order, tx, evm);
+      recordEip3009Check(order, tx, check);
+    } else if (TEMPO_HASH_RE.test(tx)) {
       if (this.deps.tempo === undefined) {
         log(`receipt ${order.key} ${tx}: a Tempo payment, and this node has no tempo block`);
         return;
@@ -318,6 +352,20 @@ export class MerchantRuntime {
           run: () => (this.deps.catchUpTempo ?? catchUpTempo)(state, tempo, now()),
         });
       }
+      for (const evm of this.deps.eip3009 ?? []) {
+        rails.push({
+          rail: chainNameOf(evm),
+          run: () =>
+            sweepEip3009(state, evm, now(), log, {
+              ...(this.deps.startCheckEip3009 === undefined
+                ? {}
+                : { check: this.deps.startCheckEip3009 }),
+              ...(this.deps.catchUpEip3009 === undefined
+                ? {}
+                : { catchUp: this.deps.catchUpEip3009 }),
+            }),
+        });
+      }
       const results: CatchUpResult[] = [];
       for (const { rail, run } of rails) {
         try {
@@ -337,6 +385,9 @@ export class MerchantRuntime {
         }
         for (const unresolved of result.unresolved ?? []) {
           log(`warning: ${unresolved}: ${FEE_UNRESOLVED_NOTE}`);
+        }
+        for (const warning of result.warnings ?? []) {
+          log(`warning: ${warning}`);
         }
       }
     } finally {

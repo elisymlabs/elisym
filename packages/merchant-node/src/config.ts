@@ -6,7 +6,13 @@ import {
   priceInSubunits,
   splitNip05,
 } from '@elisym/commerce';
-import { EVM_ASSETS, type Network, settlementOf } from '@elisym/pay-core';
+import {
+  type ChainConfig,
+  EVM_ASSETS,
+  type Network,
+  chainFor,
+  settlementOf,
+} from '@elisym/pay-core';
 import { TEMPO_UNPAYABLE_ADDRESSES } from '@elisym/pay-core/evm';
 import { z } from 'zod';
 import { OLD_HOME_PROBLEM } from './ledger';
@@ -15,6 +21,19 @@ import { checkoutRelaySpelling } from './relays';
 import type { StoreConfig } from './store-events';
 
 export type TempoNetwork = 'mainnet' | 'moderato';
+
+/** The chains of the `eip3009` rail (USDC over EIP-3009), by registry slug. */
+export type Eip3009Slug = 'ethereum' | 'arbitrum' | 'base';
+
+export const EIP3009_SLUGS: readonly Eip3009Slug[] = ['ethereum', 'arbitrum', 'base'];
+
+/** One `eip3009` chain the node verifies payments on: its environment follows `network`. */
+export interface EvmChainConfig {
+  /** A server-side RPC of the chain that serves three days of logs and receipts. */
+  rpcUrl: string;
+  /** Blocks per `eth_getLogs` call: at least the registry's, which is the default. */
+  logRangeCap?: number;
+}
 
 export interface MerchantConfig extends StoreConfig {
   network: Network;
@@ -31,6 +50,8 @@ export interface MerchantConfig extends StoreConfig {
   feeConfigRpcUrl?: string;
   /** Present when the store takes Tempo payouts: the network, and a server-side RPC. */
   tempo?: { network: TempoNetwork; rpcUrl?: string };
+  /** Present when the store takes USDC on Ethereum, Arbitrum or Base: one entry per chain. */
+  evm?: Partial<Record<Eip3009Slug, EvmChainConfig>>;
   /** Where the node tells the merchant's backend about each payment it verified. */
   webhook?: WebhookConfig;
 }
@@ -90,6 +111,15 @@ export function webhookUrlProblem(value: string, allowInsecure: boolean): string
   return undefined;
 }
 
+function evmChainSchema() {
+  return z
+    .object({
+      rpcUrl: urlWith('https:', 'http:'),
+      logRangeCap: z.number().int().positive().optional(),
+    })
+    .strict();
+}
+
 const configSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
@@ -109,6 +139,15 @@ const configSchema = z
         network: z.enum(['mainnet', 'moderato']),
         rpcUrl: urlWith('https:', 'http:').optional(),
       })
+      .strict()
+      .optional(),
+    evm: z
+      .object({
+        ethereum: evmChainSchema(),
+        arbitrum: evmChainSchema(),
+        base: evmChainSchema(),
+      })
+      .partial()
       .strict()
       .optional(),
     inboxRelays: z
@@ -172,16 +211,13 @@ const configSchema = z
         return;
       }
       // By `settlement`, never by family: an `eip3009` chain (Ethereum, Arbitrum,
-      // Base) is EVM too, and this node does not verify payments there yet.
-      if (settlementOf(caip19.chain) === 'eip3009') {
-        context.addIssue({
-          code: 'custom',
-          path: [...path, 'caip19'],
-          message: `is a coin of ${caip19.chain.chainName ?? caip19.chain.caip2}, which this node does not verify yet`,
+      // Base) is EVM too, and never one the Tempo rules below read.
+      const rail = settlementOf(caip19.chain);
+      if (rail === 'eip3009') {
+        eip3009PayoutProblems(config, caip19.chain, payout.address).forEach(([field, message]) => {
+          context.addIssue({ code: 'custom', path: [...path, field], message });
         });
-        return;
-      }
-      if (caip19.chain.family === 'evm') {
+      } else if (rail === 'tempo') {
         if (config.tempo === undefined) {
           context.addIssue({
             code: 'custom',
@@ -209,7 +245,7 @@ const configSchema = z
               'is not a Tempo address a payment can go to (lowercase 0x, not a system or coin address)',
           });
         }
-      } else {
+      } else if (rail === 'solana') {
         solanaPayouts += 1;
         if (caip19.chain.network !== config.network) {
           context.addIssue({
@@ -225,6 +261,13 @@ const configSchema = z
             message: 'is not a Solana address',
           });
         }
+      } else {
+        context.addIssue({
+          code: 'custom',
+          path: [...path, 'caip19'],
+          message: 'must be a coin this node can verify',
+        });
+        return;
       }
       if (seen.has(caip19.id)) {
         context.addIssue({
@@ -247,6 +290,18 @@ const configSchema = z
         message: `is ${config.tempo.network}, the node runs on ${config.network}: use network "mainnet" with Tempo "mainnet", or network "devnet" with Tempo "moderato"`,
       });
     }
+    for (const slug of EIP3009_SLUGS) {
+      const cap = config.evm?.[slug]?.logRangeCap;
+      const chain = chainFor(slug, config.network);
+      // The recent window must fit in a few requests per payout every sweep.
+      if (cap !== undefined && chain.logRangeCap !== undefined && cap < chain.logRangeCap) {
+        context.addIssue({
+          code: 'custom',
+          path: ['evm', slug, 'logRangeCap'],
+          message: `must be at least ${chain.logRangeCap} blocks on ${chain.chainName ?? slug}`,
+        });
+      }
+    }
     if (solanaPayouts > 0 && config.rpcUrl === undefined) {
       context.addIssue({
         code: 'custom',
@@ -261,12 +316,47 @@ export function tempoRegistryNetwork(network: TempoNetwork): Network {
   return network === 'mainnet' ? 'mainnet' : 'devnet';
 }
 
+/**
+ * Why an `eip3009` payout cannot be verified, as `[field, message]` pairs: a
+ * chain of another environment, no `evm` entry for it, or an address a payment
+ * cannot go to (not lowercase 0x, the zero address, a coin's own contract).
+ */
+function eip3009PayoutProblems(
+  config: { network: Network; evm?: Partial<Record<Eip3009Slug, unknown>> },
+  chain: ChainConfig,
+  address: string,
+): ['caip19' | 'address', string][] {
+  const problems: ['caip19' | 'address', string][] = [];
+  const name = chain.chainName ?? chain.caip2;
+  if (chain.network !== config.network) {
+    problems.push(['caip19', `is on ${chain.network}, the node runs on ${config.network}`]);
+  } else if (!isEip3009Slug(chain.slug) || config.evm?.[chain.slug] === undefined) {
+    problems.push([
+      'caip19',
+      `is a coin of ${name}: add "evm": { "${chain.slug}": { "rpcUrl": "https://..." } } for the node to verify it`,
+    ]);
+  }
+  if (canonicalPayoutAddress(chain, address) !== address || isCoinContract(address)) {
+    problems.push([
+      'address',
+      `is not an address a payment on ${name} can go to (lowercase 0x, not the zero address or a coin contract)`,
+    ]);
+  }
+  return problems;
+}
+
+export function isEip3009Slug(slug: string): slug is Eip3009Slug {
+  return (EIP3009_SLUGS as readonly string[]).includes(slug);
+}
+
+/** A coin's own contract: money sent there reaches no one. */
+function isCoinContract(address: string): boolean {
+  return EVM_ASSETS.some((coin) => coin.mint?.toLowerCase() === address);
+}
+
 /** Not a Tempo system address, and not a coin's own contract: money sent there reaches no one. */
 function isPayableTempoAddress(address: string): boolean {
-  const coins = EVM_ASSETS.flatMap((coin) =>
-    coin.mint === undefined ? [] : [coin.mint.toLowerCase()],
-  );
-  return !TEMPO_UNPAYABLE_ADDRESSES.includes(address) && !coins.includes(address);
+  return !TEMPO_UNPAYABLE_ADDRESSES.includes(address) && !isCoinContract(address);
 }
 
 type ParsedConfig = { ok: true; config: MerchantConfig } | { ok: false; problems: string[] };

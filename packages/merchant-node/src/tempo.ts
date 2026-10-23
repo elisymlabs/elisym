@@ -40,6 +40,7 @@ import {
   type WebhookOutbox,
   claimPayment,
   clearFeeUnresolved,
+  isTempoReport,
   openOrders,
   recordPayment,
 } from './ledger';
@@ -97,8 +98,11 @@ export function tempoContextFor(
 /** Block timestamps kept at most (the binary search's cache). */
 const MAX_BLOCK_SAMPLES = 10_000;
 
+/** What reading block times needs: an EVM client, and the timestamps read so far. */
+export type BlockClock = Pick<TempoContext, 'client' | 'samples'>;
+
 /** The rumor may be dated up to 15 minutes ahead: the scan starts this far before it. */
-const FLOOR_MARGIN_SECS = Math.max(ORDER_SCAN_MARGIN_SECS, 900);
+export const FLOOR_MARGIN_SECS = Math.max(ORDER_SCAN_MARGIN_SECS, 900);
 
 /** The order's legacy Tempo memo. */
 export function tempoMemo(order: MerchantOrder, storePubkey: string): string {
@@ -147,7 +151,7 @@ export function orderTempoCandidates(
   );
 }
 
-async function blockTime(context: TempoContext, number: number): Promise<number | undefined> {
+export async function blockTime(context: BlockClock, number: number): Promise<number | undefined> {
   const cached = context.samples?.get(number);
   if (cached !== undefined) {
     return cached;
@@ -171,7 +175,7 @@ async function blockTime(context: TempoContext, number: number): Promise<number 
  * could not be read.
  */
 export async function blockAtTime(
-  context: TempoContext,
+  context: BlockClock,
   time: number,
 ): Promise<{ number: number; timestamp: number } | undefined> {
   const head = await readFinalizedBlock(context.client);
@@ -215,7 +219,7 @@ export async function blockAtTime(
 }
 
 /** The floor of an order's scan: the finalized block at its `created_at` less the margin. */
-export function orderFloor(context: TempoContext, order: MerchantOrder) {
+export function orderFloor(context: BlockClock, order: MerchantOrder) {
   return blockAtTime(context, order.createdAt - FLOOR_MARGIN_SECS);
 }
 
@@ -670,8 +674,10 @@ export async function catchUpTempo(
   const reported: { order: MerchantOrder; hash: string; checkedAt: number }[] = [];
   for (const order of open) {
     for (const hash of order.reportedTxs) {
+      // A hash reported for another EVM chain (Base, ...) is never Tempo's to check.
       if (
         TEMPO_HASH_RE.test(hash) &&
+        isTempoReport(order, hash) &&
         order.refusedTxs?.includes(hash) !== true &&
         order.noLegTxs?.includes(hash) !== true &&
         order.blockedTx !== hash
