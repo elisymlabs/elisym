@@ -125,14 +125,15 @@ export function intake(
     if (receiptProblem(message, order, store) !== undefined) {
       return { kind: 'ignored', reason: 'foreign_payment' };
     }
-    const { tx } = message.payment;
+    const { tx, medium } = message.payment;
     if (!order.reportedTxs.includes(tx) && order.reportedTxs.length >= MAX_RECEIPTS_PER_ORDER) {
       return { kind: 'ignored', reason: 'too_many_receipts' };
     }
     state.seenRumors[unwrapped.rumorId] = true;
     const isNew = !order.reportedTxs.includes(tx);
     if (isNew) {
-      recordReport(order, tx, now);
+      // The medium names the chain the hash is checked on (`receiptProblem` took it).
+      recordReport(order, tx, now, medium);
     }
     return { kind: 'receipt', order, tx, isNew };
   }

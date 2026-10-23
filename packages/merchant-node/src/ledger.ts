@@ -24,6 +24,11 @@ export interface MerchantOrder {
   product: string;
   /** Transactions the buyer reported (kind 17), at most `MAX_RECEIPTS_PER_ORDER`. */
   reportedTxs: string[];
+  /**
+   * The receipt medium each reported transaction came with: the chain it is
+   * checked on. A `0x` hash without one (reported before 0.12) is Tempo's.
+   */
+  reportedMedia?: Record<string, string>;
   /** Reported transactions judged finally NOT a payment for this order: never checked again. */
   refusedTxs?: string[];
   /**
@@ -243,7 +248,19 @@ export interface LedgerState {
   treasuries: Partial<Record<Network, KnownTreasuries>>;
   /** Payments of rule-3 orders closed without an answer (see `pruneExpiredOrders`). */
   unresolvedPayments: UnresolvedPayment[];
+  /**
+   * `<caip2>:<tx>:<log index>` -> what a scanned USDC transfer to a payout on an
+   * `eip3009` chain binds (the `AuthorizationUsed` at log index - 1), read once
+   * from a trusted receipt at or below the credit tag. Never a verdict about an
+   * order: every sweep matches it against the open orders' nonces.
+   */
+  eip3009Bindings: Record<string, Eip3009Binding>;
 }
+
+/** A scanned transfer's binding: its authorization's signer and nonce, or none. */
+export type Eip3009Binding =
+  | { state: 'bound'; txHash: string; blockNumber: number; authorizer: string; nonce: string }
+  | { state: 'unbound'; txHash: string; blockNumber: number };
 
 export interface ScannedTransaction {
   blockTime: number;
@@ -262,6 +279,7 @@ export function emptyLedger(): LedgerState {
     listings: {},
     treasuries: {},
     unresolvedPayments: [],
+    eip3009Bindings: {},
   };
 }
 
@@ -351,9 +369,26 @@ export function clearFeeUnresolved(order: MerchantOrder, tx: string): void {
  * recheck queue: the time it arrived. The queue then runs first in, first out,
  * so reports arriving later - free to send - never go ahead of it.
  */
-export function recordReport(order: MerchantOrder, tx: string, arrivedAt: number): void {
+export function recordReport(
+  order: MerchantOrder,
+  tx: string,
+  arrivedAt: number,
+  medium?: string,
+): void {
   order.reportedTxs.push(tx);
   order.recheckedAt = { ...order.recheckedAt, [tx]: arrivedAt };
+  if (medium !== undefined) {
+    order.reportedMedia = { ...order.reportedMedia, [tx]: medium };
+  }
+}
+
+/**
+ * Whether a reported transaction is checked on Tempo: one reported under a
+ * Tempo medium, or a `0x` hash reported before mediums were kept.
+ */
+export function isTempoReport(order: MerchantOrder, tx: string): boolean {
+  const medium = order.reportedMedia?.[tx];
+  return medium === undefined || medium.startsWith('tempo');
 }
 
 /**
@@ -405,6 +440,8 @@ export function loadLedger(path: string): LoadedLedger {
   state.listings ??= {};
   state.treasuries ??= {};
   state.unresolvedPayments ??= [];
+  // No version bump: an older node refuses an `eip3009` payout at config anyway.
+  state.eip3009Bindings ??= {};
   return { state, read: version };
 }
 

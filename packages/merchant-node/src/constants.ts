@@ -149,3 +149,36 @@ export const ALL_LISTINGS_MAX_PAGES = 8;
  * a relay caps them, and a refused one comes back silently empty.
  */
 export const MAX_SUBSCRIPTIONS_PER_RELAY = 4;
+
+/**
+ * `eth_getLogs` requests one `eip3009` chain's FULL pass may make per sweep
+ * (halvings counted): the pass reads every open order's window again, newest
+ * first, a slice per sweep. The recent window is outside it.
+ */
+export const EIP3009_SWEEP_REQUESTS = 32;
+
+/**
+ * Receipts one `eip3009` chain reads per sweep to bind scanned transfers to a
+ * nonce (log index - 1): reported hashes first, then half newest, half oldest.
+ */
+export const EIP3009_BIND_READS = 32;
+
+/**
+ * About an hour of blocks per `eip3009` chain: the recent window reaches this far
+ * below the finalized block, every sweep (Ethereum 12 s, Base 2 s, Arbitrum 0.25 s
+ * per block).
+ */
+export const EIP3009_RECENT_WINDOW_BLOCKS = {
+  ethereum: 300,
+  base: 1_800,
+  arbitrum: 14_400,
+} as const;
+
+/**
+ * Pauses before a start check that met a transport failure is run again, one
+ * per failure, growing to the last: that chain is not scanned meanwhile.
+ */
+export const EIP3009_START_CHECK_BACKOFF_SECS: readonly number[] = [60, 120, 300, 600, 900];
+
+/** A chunk or a receipt failing this many reads in a row is reported in the log. */
+export const EIP3009_FAILURES_BEFORE_WARNING = 2;

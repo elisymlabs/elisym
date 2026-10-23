@@ -362,6 +362,8 @@ export interface CatchUpResult {
   incomplete: string[];
   /** `<order key> <tx>` of each payment newly found unresolved (paid rule 3), for the log. */
   unresolved?: string[];
+  /** Whole warnings for the log (the `eip3009` rail: reads that keep failing, an implementation change). */
+  warnings?: string[];
 }
 
 /**

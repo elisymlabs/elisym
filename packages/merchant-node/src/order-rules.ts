@@ -9,11 +9,23 @@ import {
   acceptedTempoMemos,
   deriveOrderPaymentReference,
 } from '@elisym/commerce';
+import { mediumOf } from '@elisym/commerce/buyer';
+import { CHAINS, type ChainConfig, settlementOf } from '@elisym/pay-core';
 import { EARLIEST_ORDER_SECS } from './constants';
 import { isSolanaSignature } from './signature';
 
 /** A Tempo hash as the ledger keeps it: one spelling. */
 export const TEMPO_HASH_RE = /^0x[0-9a-f]{64}$/;
+
+/** An EVM transaction hash as the ledger keeps it (Tempo's spelling): 32 bytes, lowercase. */
+export const EVM_HASH_RE = TEMPO_HASH_RE;
+
+/** The registry chain an `eip3009` receipt medium names (`base`, `base-devnet`, ...), or `undefined`. */
+export function eip3009ChainOfMedium(medium: string): ChainConfig | undefined {
+  return Object.values(CHAINS).find(
+    (chain: ChainConfig) => settlementOf(chain) === 'eip3009' && mediumOf(chain) === medium,
+  );
+}
 
 /** What the rules need to know about a store. */
 export interface StoreRules {
@@ -61,8 +73,9 @@ export function isDirectOrder(
  * Why a buyer's receipt does not count for `order`, or `undefined` when it does.
  * The medium names the rail, and the rail decides the reference and the tx
  * spelling: a Tempo receipt carries one of this order's two memos (legacy or
- * marked) and a lowercase hash. The reference is derived from the order alone,
- * never taken from the buyer.
+ * marked) and a lowercase hash; an `eip3009` receipt (Ethereum, Arbitrum, Base)
+ * carries the order's EIP-3009 nonce and a lowercase hash. The reference is
+ * derived from the order alone, never taken from the buyer.
  */
 export function receiptProblem(
   message: PaymentReceipt,
@@ -71,10 +84,9 @@ export function receiptProblem(
 ): ReceiptProblem | undefined {
   const { medium, reference, tx } = message.payment;
   const tempo = medium.startsWith('tempo');
-  // Only Solana and Tempo receipts are verified here: an `eip3009` medium
-  // (`base`, `base-devnet`, ...) is no store's medium yet, and never one to read
-  // with the Solana rules below.
-  if (!tempo && !medium.startsWith('solana')) {
+  // An `eip3009` medium is never read with the Solana rules below.
+  const eip3009 = eip3009ChainOfMedium(medium) !== undefined;
+  if (!tempo && !eip3009 && !medium.startsWith('solana')) {
     return 'unlisted_medium';
   }
   const derived = deriveOrderPaymentReference({
@@ -82,14 +94,19 @@ export function receiptProblem(
     buyerPubkey: order.buyerPubkey,
     orderId: order.orderId,
   });
-  const accepted: readonly string[] = tempo ? acceptedTempoMemos(derived) : [derived.solana];
+  let accepted: readonly string[] = [derived.solana];
+  if (tempo) {
+    accepted = acceptedTempoMemos(derived);
+  } else if (eip3009) {
+    accepted = [derived.eip3009];
+  }
   if (!accepted.includes(reference)) {
     return 'wrong_reference';
   }
   if (!store.mediums.includes(medium)) {
     return 'unlisted_medium';
   }
-  if (!(tempo ? TEMPO_HASH_RE.test(tx) : isSolanaSignature(tx))) {
+  if (!(tempo || eip3009 ? EVM_HASH_RE.test(tx) : isSolanaSignature(tx))) {
     return 'bad_tx';
   }
   return undefined;

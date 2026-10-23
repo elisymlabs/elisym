@@ -32,6 +32,7 @@ import {
 } from './config';
 import { CATCH_UP_INTERVAL_MS, OFFER_RELAYS, SOLANA_MEDIUMS, WEBHOOK_TICK_MS } from './constants';
 import { deliverOrder, publishSelfCopy } from './deliver';
+import { eip3009ChainsOf, startEip3009Rail, storeMediums } from './eip3009';
 import {
   TreasuryReader,
   type TreasuryRefresh,
@@ -588,6 +589,7 @@ async function refuseOffersNotHonoured(
     config.network,
     standingTerms(state.terms),
     config.tempo === undefined ? undefined : tempoRegistryNetwork(config.tempo.network),
+    eip3009ChainsOf(config),
   );
   if (problems.length > 0) {
     throw new Error(
@@ -663,6 +665,17 @@ async function run(home: MerchantHome): Promise<void> {
       `warning: the elisym fee config could not be read (${firstRead.problem}); asked again every sweep`,
     );
   }
+  // Payments verified from now on queue their webhook in the save that records them.
+  const outbox: WebhookOutbox | undefined =
+    target === undefined ? undefined : { storePubkey, now: nowSecs };
+  // Each Ethereum, Arbitrum or Base RPC must serve three days of logs and
+  // receipts: a wrong answer stops here, a transport failure leaves that chain
+  // off (checked again after a pause) while every other rail runs.
+  const evmContexts = await startEip3009Rail(config, storePubkey, {
+    now: nowSecs(),
+    log,
+    ...(outbox === undefined ? {} : { outbox }),
+  });
   saveLedger(home.ledger, state);
   warnProfile(views, firstRead);
 
@@ -674,18 +687,16 @@ async function run(home: MerchantHome): Promise<void> {
     });
   };
 
-  // Payments verified from now on queue their webhook in the save that records them.
-  const outbox: WebhookOutbox | undefined =
-    target === undefined ? undefined : { storePubkey, now: nowSecs };
   const tempoContext = tempoContextFor(config, storePubkey);
   const tempo =
     tempoContext === undefined
       ? undefined
       : { ...tempoContext, now: nowSecs, ...(outbox === undefined ? {} : { outbox }) };
-  const mediums = [
-    ...(hasSolanaRail(config) ? [SOLANA_MEDIUMS[config.network]] : []),
-    ...(tempo === undefined ? [] : [tempo.medium]),
-  ];
+  const mediums = storeMediums(
+    hasSolanaRail(config) ? SOLANA_MEDIUMS[config.network] : undefined,
+    tempo?.medium,
+    evmContexts,
+  );
   // The store's copies of its replies go to every inbox relay, whichever took the buyer copy.
   const selfCopies = new SelfCopies({
     publish: publishSelfCopy({
@@ -716,6 +727,7 @@ async function run(home: MerchantHome): Promise<void> {
       ...(outbox === undefined ? {} : { outbox }),
     },
     ...(tempo === undefined ? {} : { tempo }),
+    eip3009: evmContexts,
     // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
     ...(hasSolanaRail(config) ? {} : { catchUp: async () => ({ paid: [], incomplete: [] }) }),
     refreshTreasuries: () => treasuries.refresh(state, nowSecs()),

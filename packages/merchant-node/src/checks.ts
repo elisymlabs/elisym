@@ -14,7 +14,7 @@ import {
   priceInSubunits,
   wrapOrderMessage,
 } from '@elisym/commerce';
-import { type Network, settlementOf } from '@elisym/pay-core';
+import { type ChainConfig, type Network, settlementOf } from '@elisym/pay-core';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import {
   type EventTemplate,
@@ -169,6 +169,8 @@ export function offersNotHonoured(
   standing: readonly OfferTerms[],
   /** The registry network of the node's Tempo block, when it has one. */
   tempoNetwork?: Network,
+  /** The CAIP-2 ids of the `eip3009` chains the node's `evm` block verifies. */
+  eip3009Chains: readonly string[] = [],
 ): string[] | undefined {
   if (listings.length === 0 && payoutList === undefined) {
     return undefined;
@@ -181,11 +183,7 @@ export function offersNotHonoured(
   const found = (onSale.length === 0 ? [] : targets)
     .filter(
       (target) =>
-        (target.caip19.chain.family === 'solana'
-          ? target.caip19.chain.network !== network
-          : settlementOf(target.caip19.chain) !== 'tempo' ||
-            tempoNetwork === undefined ||
-            target.caip19.chain.network !== tempoNetwork) ||
+        !railHonours(target.caip19.chain, network, tempoNetwork, eip3009Chains) ||
         !standing.some(
           (terms) => terms.caip19 === target.caip19.id && terms.payout === target.address,
         ),
@@ -218,6 +216,25 @@ export function offersNotHonoured(
     }
   }
   return [...new Set(found)];
+}
+
+/** Whether the node verifies payments on `chain`: by `settlement`, never by family. */
+function railHonours(
+  chain: ChainConfig,
+  network: Network,
+  tempoNetwork: Network | undefined,
+  eip3009Chains: readonly string[],
+): boolean {
+  switch (settlementOf(chain)) {
+    case 'solana':
+      return chain.network === network;
+    case 'tempo':
+      return tempoNetwork !== undefined && chain.network === tempoNetwork;
+    case 'eip3009':
+      return chain.network === network && eip3009Chains.includes(chain.caip2);
+    default:
+      return false;
+  }
 }
 
 /** How many relays of an inbox list the checkout uses (its `STORE_RELAY_CAP`). */
@@ -316,6 +333,7 @@ export function offerProblems(
   network: Network,
   standing: readonly OfferTerms[],
   tempoNetwork?: Network,
+  eip3009Chains: readonly string[] = [],
 ): { problems: string[]; served: boolean } {
   const problems = new Set<string>();
   let served = false;
@@ -329,6 +347,7 @@ export function offerProblems(
       network,
       standing,
       tempoNetwork,
+      eip3009Chains,
     );
     served ||= notHonoured !== undefined;
     for (const offer of notHonoured ?? []) {

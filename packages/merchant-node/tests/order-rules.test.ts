@@ -91,8 +91,8 @@ describe('receiptProblem', () => {
   });
 });
 
-// Settlement gating: an `eip3009` medium is never read with the Solana rules,
-// even when a store lists it and the receipt fits them.
+// An `eip3009` receipt carries the order's DERIVED nonce and a 32-byte hash; it
+// is never read with the Solana rules, even when a store lists it.
 describe('receiptProblem on an eip3009 medium', () => {
   const store = key();
   const buyer = key();
@@ -101,24 +101,55 @@ describe('receiptProblem on an eip3009 medium', () => {
     buyerPubkey: buyer.pubkey,
     orderId: ORDER_ID,
   });
+  const receipt = (medium: string, ref: string, tx: string) => ({
+    type: 'receipt' as const,
+    storePubkey: store.pubkey,
+    orderId: ORDER_ID,
+    payment: { medium, reference: ref, tx },
+  });
+  const theOrder = { buyerPubkey: buyer.pubkey, orderId: ORDER_ID };
+
   it.each(['ethereum', 'ethereum-devnet', 'arbitrum', 'arbitrum-devnet', 'base', 'base-devnet'])(
-    'refuses %s',
+    'takes %s with the order nonce, refuses every other reference',
     (medium) => {
       const rules = { storePubkey: store.pubkey, mediums: [medium] };
+      expect(receiptProblem(receipt(medium, reference.eip3009, TEMPO_TX), theOrder, rules)).toBe(
+        undefined,
+      );
+      for (const other of [reference.solana, reference.tempo, `0x${'fa'.repeat(32)}`]) {
+        expect(receiptProblem(receipt(medium, other, TEMPO_TX), theOrder, rules)).toBe(
+          'wrong_reference',
+        );
+      }
+      // Another order's nonce, though a real one.
+      const elsewhere = deriveOrderPaymentReference({
+        storePubkey: store.pubkey,
+        buyerPubkey: key().pubkey,
+        orderId: ORDER_ID,
+      }).eip3009;
+      expect(receiptProblem(receipt(medium, elsewhere, TEMPO_TX), theOrder, rules)).toBe(
+        'wrong_reference',
+      );
+      for (const tx of [signatureOf(1), TEMPO_TX.toUpperCase().replace('0X', '0x'), '0xab']) {
+        expect(receiptProblem(receipt(medium, reference.eip3009, tx), theOrder, rules)).toBe(
+          'bad_tx',
+        );
+      }
       expect(
-        receiptProblem(
-          {
-            type: 'receipt',
-            storePubkey: store.pubkey,
-            orderId: ORDER_ID,
-            payment: { medium, reference: reference.solana, tx: signatureOf(1) },
-          },
-          { buyerPubkey: buyer.pubkey, orderId: ORDER_ID },
-          rules,
-        ),
+        receiptProblem(receipt(medium, reference.eip3009, TEMPO_TX), theOrder, {
+          storePubkey: store.pubkey,
+          mediums: ['solana-devnet', 'tempo'],
+        }),
       ).toBe('unlisted_medium');
     },
   );
+
+  it('refuses a medium no registry chain names', () => {
+    const rules = { storePubkey: store.pubkey, mediums: ['optimism'] };
+    expect(receiptProblem(receipt('optimism', reference.eip3009, TEMPO_TX), theOrder, rules)).toBe(
+      'unlisted_medium',
+    );
+  });
 });
 
 describe('receiptProblem with marked Tempo memos', () => {
