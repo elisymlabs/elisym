@@ -23,17 +23,17 @@ describe('feeTermsSourceFor', () => {
     expect(() => feeTermsSourceFor('eip155:10')).toThrow();
   });
 
-  // Settlement gating: an eip3009 chain has a paired config network, but no rail
-  // of this widget reads its fee yet - and never as Tempo's EVM treasury.
+  // E7: an eip3009 chain reads only the rate of its paired network's config, never
+  // Tempo's EVM treasury (a fee above 0 must read as a rate, not "no EVM treasury").
   it.each([
-    CHAINS.ETHEREUM_MAINNET.caip2,
-    CHAINS.ETHEREUM_DEVNET.caip2,
-    CHAINS.ARBITRUM_MAINNET.caip2,
-    CHAINS.ARBITRUM_DEVNET.caip2,
-    CHAINS.BASE_MAINNET.caip2,
-    CHAINS.BASE_DEVNET.caip2,
-  ])('refuses the eip3009 chain %s', (caip2) => {
-    expect(() => feeTermsSourceFor(caip2)).toThrow(/No fee terms/);
+    [CHAINS.ETHEREUM_MAINNET.caip2, 'mainnet'],
+    [CHAINS.ETHEREUM_DEVNET.caip2, 'devnet'],
+    [CHAINS.ARBITRUM_MAINNET.caip2, 'mainnet'],
+    [CHAINS.ARBITRUM_DEVNET.caip2, 'devnet'],
+    [CHAINS.BASE_MAINNET.caip2, 'mainnet'],
+    [CHAINS.BASE_DEVNET.caip2, 'devnet'],
+  ] as const)('reads the rate alone for the eip3009 chain %s, from %s', (caip2, network) => {
+    expect(feeTermsSourceFor(caip2)).toEqual({ network, rail: 'solana', rateOnly: true });
   });
 });
 
@@ -55,6 +55,17 @@ describe('feeTermsReader', () => {
       [RPC, 'devnet', 'tempo'],
       [RPC, 'devnet', 'solana'],
     ]);
+  });
+
+  it('hands an eip3009 chain the rate with no treasury, read over the Solana rail', async () => {
+    const calls: unknown[][] = [];
+    const read = ((...args: unknown[]) => {
+      calls.push(args);
+      return Promise.resolve(TERMS);
+    }) as typeof readFeeTerms;
+    const terms = feeTermsReader(() => RPC, read);
+    await expect(terms(CHAINS.BASE_DEVNET.caip2)).resolves.toEqual({ feeBps: 100, treasury: '' });
+    expect(calls).toEqual([[RPC, 'devnet', 'solana']]);
   });
 
   it('refuses as unavailable, reading nothing, without an rpc of that network', async () => {

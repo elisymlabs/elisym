@@ -23,7 +23,7 @@ interface Props {
 export function UnansweredHint({ chain, startOverIn, unsureAt }: Props) {
   const now = useNow(true);
   const left = startOverIn === undefined ? undefined : secondsLeft(startOverIn, now);
-  const unsure = isTakingLong(now, startOverIn, unsureAt);
+  const unsure = isTakingLong(now, startOverIn, unsureAt, chain);
   let line: ComponentChildren;
   let spoken: string;
   if (unsure) {
@@ -35,7 +35,7 @@ export function UnansweredHint({ chain, startOverIn, unsureAt }: Props) {
   } else if (left > 0) {
     line = (
       <>
-        {UNANSWERED.lead} {UNANSWERED.countingLead}
+        {UNANSWERED.lead} {UNANSWERED.countingLead[chain]}
         <span class="countdown">{formatCountdown(left)}</span>.
       </>
     );
@@ -55,9 +55,18 @@ export function UnansweredHint({ chain, startOverIn, unsureAt }: Props) {
   );
 }
 
-/** The hint's "taking long" rule, shared with the session's tests. */
-export function isTakingLong(now: number, startOverIn?: Countdown, unsureAt?: number): boolean {
-  if (startOverIn === undefined) {
+/**
+ * The hint's "taking long" rule, shared with the session's tests. On EIP-3009
+ * it is the session's own moment (`unsureAt`, from the chain's waits), never
+ * the countdown's zero plus `UNSURE_AFTER_SECS`.
+ */
+export function isTakingLong(
+  now: number,
+  startOverIn?: Countdown,
+  unsureAt?: number,
+  rail?: Rail,
+): boolean {
+  if (startOverIn === undefined || rail === 'eip3009') {
     return unsureAt !== undefined && now >= unsureAt;
   }
   const reachedZeroAt = startOverIn.at + startOverIn.seconds;

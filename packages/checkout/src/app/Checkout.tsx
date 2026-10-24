@@ -32,6 +32,8 @@ export interface Actions {
   retry(walletName: string): Promise<void>;
   /** Ask the Solana wallet that failed the live attempt again, in that attempt. */
   signAgain(): Promise<void>;
+  /** EIP-3009: send again the signature the live attempt holds ("Send anyway", "Send again"). */
+  resend(): Promise<void>;
   startOver(): Promise<void>;
   /** End a press whose wallet has not answered its connect request yet. */
   cancel(): void;
@@ -469,6 +471,7 @@ export function Checkout({
               problem={problem}
               onRetry={(name) => run(() => actions.retry(name))}
               onSignAgain={() => run(() => actions.signAgain())}
+              onResend={() => run(() => actions.resend())}
               onStartOver={startOver}
               onCancel={cancel}
               hintAfterMs={hintAfterMs}

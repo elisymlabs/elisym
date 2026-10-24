@@ -53,7 +53,7 @@ The schema is strict and nothing defaults. `chain` is the [CAIP-2 id](/reference
 ## EIP-3009 settlement (Ethereum, Arbitrum, Base)
 
 :::info
-**Registered, not yet payable.** The chains and their USDC are in the SDK registry with `settlement: 'eip3009'`, and `@elisym/pay-core/evm` holds the builders and chain readers of this settlement. Every Tempo path refuses them, and the checkout does not offer them yet. A merchant node verifies USDC payouts on them from merchant-node 0.12.0 (see [USDC on Ethereum, Arbitrum and Base](/commerce/quickstart#usdc-on-ethereum-arbitrum-and-base)). See [Networks](/reference/networks#ethereum-arbitrum-and-base-registered-not-yet-payable) for the chains.
+**Payable on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base).** The chains and their USDC are in the SDK registry with `settlement: 'eip3009'`, and `@elisym/pay-core/evm` holds the builders and chain readers of this settlement. Every Tempo path refuses them. The checkout pays them on those networks (see [the widget](/commerce/widget#paying-on-ethereum-arbitrum-and-base)), and a merchant node verifies USDC payouts on them from merchant-node 0.12.0 (see [USDC on Ethereum, Arbitrum and Base](/commerce/quickstart#usdc-on-ethereum-arbitrum-and-base)).
 :::
 
 A payment on these chains is Circle USDC moved by EIP-3009 `transferWithAuthorization`: the payer signs an EIP-712 authorization (`buildTransferAuthorization`) and sends it to the USDC contract (`encodeTransferWithAuthorization`, the bytes-signature overload). The rail differs from Tempo's in four ways:

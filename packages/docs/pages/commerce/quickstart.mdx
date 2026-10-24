@@ -1,6 +1,6 @@
 # Sell with Pay Core
 
-Pay Core is elisym's stablecoin checkout: it sells digital products from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin), directly to your wallet; your backend learns of each payment from your node's signed webhook. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
+Pay Core is elisym's stablecoin checkout: it sells digital products from any web page. The buyer pays in USDC on Solana (or in a Tempo stablecoin, or in USDC on Ethereum, Arbitrum or Base on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base)), directly to your wallet; your backend learns of each payment from your node's signed webhook. No account is involved, on either side. You run a small node that holds your store's keys, and you add two lines of HTML to your page.
 
 The pieces:
 
@@ -15,10 +15,10 @@ This page takes you from nothing to a working purchase on **mainnet**, with real
 A coding agent that can run commands on your machine can do every step below for you. Paste this prompt into it:
 
 ```txt
-Add a Pay Core checkout to my website. Read https://docs.elisym.network/commerce/quickstart.md and follow it step by step: create my store node, publish my products, start the node and add the Buy button to my pages. Before you start, ask me for my store's name, my Solana wallet address and Solana RPC URL, my Tempo wallet address, and each product with its name, price and description. I may leave either wallet empty, but not both: add a payout only for each wallet I give, as the guide says, and ask for no Solana RPC URL without a Solana wallet. When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, the commands to see my orders and to add a product, and how to make a small test purchase.
+Add a Pay Core checkout to my website. Read https://docs.elisym.network/commerce/quickstart.md and follow it step by step: create my store node, publish my products, start the node and add the Buy button to my pages. Before you start, ask me for my store's name, my Solana wallet address and Solana RPC URL, my Tempo wallet address, my wallet address for USDC on Ethereum, Arbitrum and Base with an RPC URL of each of those chains I want, and each product with its name, price and description. I must give a Solana or a Tempo wallet, and may leave any other wallet empty, the one for Ethereum, Arbitrum and Base too: add a payout only for each wallet I give, as the guide says, ask for no Solana RPC URL without a Solana wallet, and list an Ethereum, Arbitrum or Base payout after a Solana or Tempo one. When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, the commands to see my orders and to add a product, and how to make a small test purchase.
 ```
 
-It asks for your store's name, your Solana and Tempo wallet addresses (leave out the one you do not use), a Solana RPC URL when you take Solana, and your products, then creates the store, publishes the products, starts the node and adds the Buy button. At the end it tells you where everything lives and which commands to run next. Read on to do it yourself, or to check what it did.
+It asks for your store's name, your Solana, Tempo and EVM wallet addresses (a Solana or a Tempo one is needed; leave out the others you do not use), a Solana RPC URL when you take Solana, an RPC URL of each of Ethereum, Arbitrum and Base you take USDC on, and your products, then creates the store, publishes the products, starts the node and adds the Buy button. At the end it tells you where everything lives and which commands to run next. Read on to do it yourself, or to check what it did.
 
 ## 1. Create the store
 
@@ -60,7 +60,7 @@ Open `$ELISYM_MERCHANT_HOME/config.json`, which holds what the whole store share
 - `rpcUrl` is your own Solana RPC endpoint that keeps the full transaction history. The public mainnet one is rate-limited and not meant for a server, and a key restricted to a browser origin does not work from a server.
 - `payouts[0].address` is the Solana wallet the money goes to, for every product. The `caip19` above is mainnet USDC.
 
-**Only one network.** A store takes payment only on the networks it lists in `payouts`, and needs at least one. Without a Tempo wallet, leave the config as above and skip [Tempo payouts](#tempo-payouts). Without a Solana wallet, remove both the Solana payout and `rpcUrl` (a `rpcUrl` alone switches Solana payments on), and take Tempo only:
+**Only one network.** A store takes payment only on the networks it lists in `payouts`, and needs at least one. List a Solana or a Tempo payout first: an Ethereum, Arbitrum or Base payout only comes in addition, since on a network where those chains are not payable yet ([Networks](/reference/networks#ethereum-arbitrum-and-base)) a store with nothing else cannot be paid. Without a Tempo wallet, leave the config as above and skip [Tempo payouts](#tempo-payouts). Without a Solana wallet, remove both the Solana payout and `rpcUrl` (a `rpcUrl` alone switches Solana payments on), and take Tempo only:
 
 ```json
 {
@@ -211,7 +211,7 @@ The buyer's page shows a choice between the store's payouts on the page's networ
 
 The node also verifies USDC paid over EIP-3009 (`transferWithAuthorization`) on Ethereum, Arbitrum and Base. It needs merchant-node 0.12.0 or later and, per chain, an `evm` entry with a server-side RPC of that chain. The chain's network follows the node's `network`: mainnet on mainnet, the chain's Sepolia testnet on devnet. A payout on a chain without an `evm` entry is refused, and so is one on the other network.
 
-**Not yet payable from the checkout.** The checkout does not offer these chains yet, on mainnet or on the testnets: a buyer on the page cannot pay them, and the node only verifies payments made to them by other means. While that holds, list such a payout **after** a Solana or Tempo payout in `payouts`, never first: the page opens on the network of the first payout.
+**Payable from the checkout on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base).** The checkout pays these chains on the testnets (Sepolia, Arbitrum Sepolia, Base Sepolia). On mainnet it does not offer them yet: a buyer on the page cannot pay them there, and the node only verifies payments made to them by other means. While that holds, list a mainnet payout on these chains **after** a Solana or Tempo payout in `payouts`, never first: the page opens on the network of the first payout. The buyer pays from MetaMask or another EIP-6963 wallet, holding the price in USDC and a little of the chain's ETH for the network fee (see [the widget](/commerce/widget#paying-on-ethereum-arbitrum-and-base)).
 
 To add a Base USDC payout to the mainnet store (stop the node first, run the export block, and put your own address, lowercase, and your own Base RPC):
 
@@ -240,9 +240,9 @@ The `evm` keys and the coins:
 | Ethereum         | `ethereum` | `mainnet`      | Not yet                   | `eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`         |
 | Arbitrum One     | `arbitrum` | `mainnet`      | Not yet                   | `eip155:42161/erc20:0xaf88d065e77c8cc2239327c5edb3a432268e5831`     |
 | Base             | `base`     | `mainnet`      | Not yet                   | `eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`      |
-| Sepolia          | `ethereum` | `devnet`       | Not yet                   | `eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238`  |
-| Arbitrum Sepolia | `arbitrum` | `devnet`       | Not yet                   | `eip155:421614/erc20:0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d`    |
-| Base Sepolia     | `base`     | `devnet`       | Not yet                   | `eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e`     |
+| Sepolia          | `ethereum` | `devnet`       | Yes                       | `eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238`  |
+| Arbitrum Sepolia | `arbitrum` | `devnet`       | Yes                       | `eip155:421614/erc20:0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d`    |
+| Base Sepolia     | `base`     | `devnet`       | Yes                       | `eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e`     |
 
 **The RPC must serve three days of history.** The node looks for a payment over the three days an order is open, by `eth_getLogs` on the USDC `Transfer` to your payout and by old receipts, and never trusts an empty answer as proof that nothing was paid: it scans every open order's window again and again. At start it checks each chain's RPC in that very shape: a USDC transfer about three days old, found again by its recipient, and its receipt. A wrong answer (old logs or receipts refused or missing, another chain, an HTTP 4xx such as a mistyped URL or a rejected key) stops the node with what failed. A timeout, a rate limit or a server error (HTTP 5xx) only keeps that chain off, with a warning in the log, and the check runs again after a pause that grows from 60 seconds to 15 minutes while the other networks keep running. A wrong answer to such a later check keeps that chain off until you restart the node, with an error in the log. A payout on a chain that is off stays offered: its payments are found and credited once the chain's check passes, or after a restart, within the three days an order is open. Most free public endpoints fail it. These passed (keyless, October 2026); a paid provider must serve at least the chain's block range (below) in one `eth_getLogs` call, and Alchemy's free tier, with 10 blocks, fails:
 
@@ -292,5 +292,7 @@ npx @elisym/merchant-node init --network devnet
 ```
 
 In `$ELISYM_MERCHANT_HOME/config.json` the template already has `"network": "devnet"`, the public devnet RPC `https://api.devnet.solana.com`, and devnet USDC `solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`: set your devnet wallet address, and fill in `products/my-product/PRODUCT.md`. Run `setup` and `run` as above, and put the `naddr` this devnet setup prints in the snippet, with `network="devnet"`. Switch the wallet to devnet (testnet mode in Phantom or Solflare). The wallet needs devnet SOL for fees ([faucet.solana.com](https://faucet.solana.com)) and devnet USDC for the price ([faucet.circle.com](https://faucet.circle.com), Solana -> Devnet).
+
+For USDC on a Sepolia testnet, add the chain's `evm` entry and payout as in [USDC on Ethereum, Arbitrum and Base](#usdc-on-ethereum-arbitrum-and-base), with that testnet's `caip19` from its table and one of its RPCs that passed. Its buyer pays from MetaMask on that testnet, holding testnet USDC ([faucet.circle.com](https://faucet.circle.com)) and a little of its ETH for the fee.
 
 For a Tempo payout on devnet, use Moderato, Tempo's testnet: the script above with `config.tempo = { network: "moderato" }` and `caip19: "eip155:42431/erc20:0x20c0000000000000000000000000000000000000"` (pathUSD). A devnet store on Tempo only drops the Solana payout and `rpcUrl` as in [Only one network](#1-create-the-store), with those two values. Its buyer pays with MetaMask on Moderato, holding a little more testnet pathUSD than the price.

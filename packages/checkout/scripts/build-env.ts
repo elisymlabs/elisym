@@ -10,7 +10,21 @@ export const PRODUCTION_ORIGIN = 'https://pay.elisym.network';
 /** Rejects requests that carry a browser `Origin`, and keeps no full history. */
 const PUBLIC_MAINNET_HOST = 'api.mainnet-beta.solana.com';
 
-export const RPC_ENV = ['VITE_SOLANA_RPC_URL_MAINNET', 'VITE_SOLANA_RPC_URL_DEVNET'] as const;
+/**
+ * Every RPC URL the build inlines: Solana per network, and the widget's own RPC
+ * of each Ethereum, Arbitrum and Base chain (`VITE_EVM_RPC_URL_<SLUG>_<NETWORK>`;
+ * a chain without one is not offered). Each must be `https:`.
+ */
+export const RPC_ENV = [
+  'VITE_SOLANA_RPC_URL_MAINNET',
+  'VITE_SOLANA_RPC_URL_DEVNET',
+  'VITE_EVM_RPC_URL_ETHEREUM_MAINNET',
+  'VITE_EVM_RPC_URL_ETHEREUM_DEVNET',
+  'VITE_EVM_RPC_URL_ARBITRUM_MAINNET',
+  'VITE_EVM_RPC_URL_ARBITRUM_DEVNET',
+  'VITE_EVM_RPC_URL_BASE_MAINNET',
+  'VITE_EVM_RPC_URL_BASE_DEVNET',
+] as const;
 
 type BuildEnv = Readonly<Record<string, string | undefined>>;
 

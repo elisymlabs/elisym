@@ -144,6 +144,10 @@ describe('network labels', () => {
     expect(networkLabel('tempo', 'mainnet')).toBe('Tempo');
     expect(networkLabel('solana', 'devnet')).toBe('Solana devnet');
     expect(networkLabel('tempo', 'devnet')).toBe('Tempo devnet');
+    expect(networkLabel('ethereum', 'mainnet')).toBe('Ethereum');
+    expect(networkLabel('arbitrum', 'mainnet')).toBe('Arbitrum');
+    expect(networkLabel('base', 'mainnet')).toBe('Base');
+    expect(networkLabel('base', 'devnet')).toBe('Base devnet');
   });
 
   it('every line that names a network uses that one label', () => {

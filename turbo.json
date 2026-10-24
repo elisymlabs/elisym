@@ -99,7 +99,13 @@
         "VERCEL_ENV",
         "VERCEL_URL",
         "VITE_SOLANA_RPC_URL_MAINNET",
-        "VITE_SOLANA_RPC_URL_DEVNET"
+        "VITE_SOLANA_RPC_URL_DEVNET",
+        "VITE_EVM_RPC_URL_ETHEREUM_MAINNET",
+        "VITE_EVM_RPC_URL_ETHEREUM_DEVNET",
+        "VITE_EVM_RPC_URL_ARBITRUM_MAINNET",
+        "VITE_EVM_RPC_URL_ARBITRUM_DEVNET",
+        "VITE_EVM_RPC_URL_BASE_MAINNET",
+        "VITE_EVM_RPC_URL_BASE_DEVNET"
       ]
     },
     "@elisym/merchant-landing#typecheck": {

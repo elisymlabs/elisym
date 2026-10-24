@@ -2,7 +2,7 @@ import type { Countdown, Problem, View } from '../session';
 import { secondsLeft, useNow } from './clock';
 import { StepHeading } from './StepHeading';
 import { Stepper } from './Stepper';
-import { STEPPER_STAGES } from './text';
+import { STEPPER_STAGES, eip3009SendWords } from './text';
 import { WaitingPayment } from './WaitingPayment';
 import { WaitingStore } from './WaitingStore';
 import { WorkingStatus } from './WorkingStatus';
@@ -15,6 +15,8 @@ interface Props {
   onRetry(name: string): void;
   /** Ask the Solana wallet that failed this attempt again. */
   onSignAgain(): void;
+  /** EIP-3009: send again the signature the attempt holds. */
+  onResend(): void;
   onStartOver(): void;
   onCancel(): void;
   hintAfterMs: number;
@@ -31,6 +33,13 @@ function activeStage(view: ProgressView): number {
     case 'working':
       return view.step === 'signing' ? 1 : 0;
     case 'waiting_payment':
+      if (view.eip3009 !== undefined) {
+        // Signed is not sent: the send is a wallet prompt too.
+        const { send, confirming, nonceUsed } = view.eip3009;
+        return !view.canRetry && (eip3009SendWords(send).walletDone || confirming || nonceUsed)
+          ? 2
+          : 1;
+      }
       // Nothing signed, and nothing seen on chain: the wallet step is still the current one.
       return view.canRetry || (!view.signed && view.seenOnChain !== true) ? 1 : 2;
     case 'waiting_store':
@@ -53,8 +62,17 @@ function heading(view: ProgressView, left: number | undefined): string {
     case 'working':
       return 'Paying';
     case 'waiting_payment':
+      if (view.eip3009?.nonceUsed === true) {
+        return 'Waiting for the store';
+      }
       if (view.canRetry) {
         return 'Payment not made';
+      }
+      if (view.eip3009 !== undefined) {
+        if (view.eip3009.confirming || view.unserved) {
+          return 'Confirming payment';
+        }
+        return eip3009SendWords(view.eip3009.send).heading;
       }
       if (!view.signed && view.tempo) {
         return 'Waiting for your wallet';
@@ -75,6 +93,7 @@ export function ProgressStep({
   problem,
   onRetry,
   onSignAgain,
+  onResend,
   onStartOver,
   onCancel,
   hintAfterMs,
@@ -108,6 +127,7 @@ export function ProgressStep({
           problem={problem}
           onRetry={onRetry}
           onSignAgain={onSignAgain}
+          onResend={onResend}
           onStartOver={onStartOver}
         />
       ) : null}

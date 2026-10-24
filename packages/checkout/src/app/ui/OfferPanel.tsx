@@ -1,12 +1,12 @@
 import { useId } from 'preact/hooks';
-import { type Problem, type View, payoutPaying } from '../session';
+import { type Problem, type View, payingChain, payingRail, payoutPaying } from '../session';
 import { ChainGlyph } from './ChainGlyph';
 import { EmailField } from './EmailField';
 import { PROBLEM_PLACE } from './panel';
 import { PayoutSelect } from './PayoutSelect';
 import { ProblemNote } from './ProblemNote';
 import { ProductBlock } from './ProductBlock';
-import { payoutLabel } from './text';
+import { EIP3009_TWO_PROMPTS, FEE_HIDES_EIP3009, gasLine, payoutLabel } from './text';
 import { WalletSection } from './WalletSection';
 
 interface Props {
@@ -52,7 +52,8 @@ export function OfferPanel({
   const checkWallet = onCheckWallet === undefined ? {} : { onCheckWallet };
   const labelId = useId();
   const paying = payoutPaying(view.payout);
-  const tempo = paying.chain === 'tempo';
+  const rail = payingRail(paying);
+  const chain = payingChain(paying);
   const emailField = view.askEmail;
   // A mistyped email shows at the field; with the wallets open, a wallet problem shows among them.
   const atEmail = emailField && problem?.reason === 'bad_email' ? problem : undefined;
@@ -84,19 +85,22 @@ export function OfferPanel({
           />
         </div>
       )}
+      {view.feeHidden === true ? <p class="note">{FEE_HIDES_EIP3009}</p> : null}
+      {rail === 'eip3009' ? (
+        <>
+          <p class="note">{EIP3009_TWO_PROMPTS}</p>
+          <p class="note">
+            {gasLine(chain.nativeCurrency?.symbol ?? 'ETH', chain.chainName ?? '')}
+          </p>
+        </>
+      ) : null}
       {view.askEmail ? <EmailField value={email} onInput={onEmail} /> : null}
-      <ProblemNote problem={atEmail} asset={paying.asset} tempo={tempo} reveal />
-      <ProblemNote
-        problem={aboveButton}
-        asset={paying.asset}
-        tempo={tempo}
-        reveal
-        {...checkWallet}
-      />
+      <ProblemNote problem={atEmail} asset={paying.asset} rail={rail} reveal />
+      <ProblemNote problem={aboveButton} asset={paying.asset} rail={rail} reveal {...checkWallet} />
       {walletsOpen ? (
         <WalletSection
           wallets={view.wallets}
-          chain={paying.chain}
+          rail={rail}
           asset={paying.asset}
           problem={inWallets}
           phone={phone}

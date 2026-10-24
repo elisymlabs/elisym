@@ -1,5 +1,5 @@
 import { tempoWalletCanBatch } from '@elisym/commerce/buyer';
-import { chainByCaip2 } from '@elisym/pay-core';
+import { CHAINS, chainByCaip2 } from '@elisym/pay-core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type Eip1193Provider,
@@ -10,6 +10,8 @@ import {
   WalletReadTimeout,
   bundleStatusReader,
   connectTempo,
+  eip3009Wallet,
+  eip3009WalletOptions,
   readAtomicCapability,
   readCallsStatus,
   sendAtomicCalls,
@@ -363,5 +365,131 @@ describe('EIP-5792: batching on Tempo', () => {
     const broken = await connectTempo(failing.provider, CHAIN, 'io.metamask');
     expect(await tempoWalletCanBatch(broken, '0xa5bf')).toBe(false);
     expect(failing.requests.map((request) => request.method)).toContain('wallet_getCapabilities');
+  });
+});
+
+describe('an EIP-6963 wallet on an eip3009 chain', () => {
+  const EIP3009_CHAINS = [
+    CHAINS.ETHEREUM_MAINNET,
+    CHAINS.ETHEREUM_DEVNET,
+    CHAINS.ARBITRUM_MAINNET,
+    CHAINS.ARBITRUM_DEVNET,
+    CHAINS.BASE_MAINNET,
+    CHAINS.BASE_DEVNET,
+  ];
+
+  it.each(EIP3009_CHAINS)(
+    'adds $chainName under its own name and ETH, never as Tempo',
+    async (chain) => {
+      const added: unknown[] = [];
+      const wallet: Eip1193Provider = {
+        async request({ method, params }) {
+          if (method === 'wallet_switchEthereumChain') {
+            throw failure(4902, 'Unrecognized chain ID');
+          }
+          if (method === 'wallet_addEthereumChain') {
+            added.push(...(Array.isArray(params) ? params : [params]));
+          }
+          return null;
+        },
+      };
+      await eip3009Wallet(wallet).switchChain(chain);
+      expect(added).toEqual([
+        {
+          chainId: `0x${chain.evmChainId.toString(16)}`,
+          chainName: chain.chainName,
+          nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+          rpcUrls: [...chain.rpcUrls],
+          blockExplorerUrls: [chain.explorerTx.split('/tx/')[0]],
+        },
+      ]);
+    },
+  );
+
+  it.each(EIP3009_CHAINS)(
+    "Tempo's connect refuses $chainName, asking the wallet nothing",
+    async (chain) => {
+      const wallet = provider({ eth_requestAccounts: [ACCOUNT] });
+      await expect(connectTempo(wallet, chain)).rejects.toBeInstanceOf(TempoChainUnsupported);
+      expect(wallet.calls).toEqual([]);
+    },
+  );
+
+  it('passes the wallet answers through as they are, the core reads their codes', async () => {
+    const declined = failure(4001, 'User rejected');
+    const wallet = eip3009Wallet(
+      provider({
+        eth_requestAccounts: [ACCOUNT, 7, '0xother'],
+        eth_chainId: '0x14a34',
+        eth_signTypedData_v4: declined,
+        eth_sendTransaction: `0x${'ab'.repeat(32)}`,
+      }),
+    );
+    await expect(wallet.requestAccounts()).resolves.toEqual([ACCOUNT, '0xother']);
+    await expect(wallet.chainId()).resolves.toBe(84532);
+    await expect(wallet.signTypedData(ACCOUNT, '{}')).rejects.toBe(declined);
+    await expect(
+      wallet.sendTransaction({ from: ACCOUNT, to: ACCOUNT, data: '0x', chainId: '0x14a34' }),
+    ).resolves.toBe(`0x${'ab'.repeat(32)}`);
+    // A switch the wallet declines or is busy with is never read as an unreachable chain.
+    for (const code of [4001, -32002]) {
+      const refusing = eip3009Wallet(provider({ wallet_switchEthereumChain: failure(code, 'no') }));
+      await expect(refusing.switchChain(CHAINS.BASE_DEVNET)).rejects.toMatchObject({ code });
+    }
+  });
+
+  it('refuses an answer that is no signature, no hash or no chain id', async () => {
+    const wallet = eip3009Wallet(
+      provider({ eth_signTypedData_v4: 7, eth_sendTransaction: null, eth_chainId: 5 }),
+    );
+    await expect(wallet.signTypedData(ACCOUNT, '{}')).rejects.toThrow('no signature');
+    await expect(
+      wallet.sendTransaction({ from: ACCOUNT, to: ACCOUNT, data: '0x', chainId: '0x1' }),
+    ).rejects.toThrow('no hash');
+    await expect(wallet.chainId()).resolves.toBeNaN();
+  });
+
+  it('offers every discovered wallet, Phantom included: one that cannot reach a chain says so for it', () => {
+    const options = eip3009WalletOptions([
+      wallet('MetaMask', 'io.metamask'),
+      wallet('Phantom', 'app.phantom'),
+    ]);
+    expect(options.map((option) => [option.name, option.rdns])).toEqual([
+      ['MetaMask', 'io.metamask'],
+      ['Phantom', 'app.phantom'],
+    ]);
+  });
+
+  it('passes the chain id in eth_sendTransaction, as the core asks', async () => {
+    const asked: unknown[] = [];
+    const wallet = eip3009Wallet({
+      async request({ method, params }) {
+        asked.push({ method, params });
+        return `0x${'ab'.repeat(32)}`;
+      },
+    });
+    await wallet.sendTransaction({ from: ACCOUNT, to: ACCOUNT, data: '0x01', chainId: '0x14a34' });
+    expect(asked).toEqual([
+      {
+        method: 'eth_sendTransaction',
+        params: [{ from: ACCOUNT, to: ACCOUNT, data: '0x01', chainId: '0x14a34' }],
+      },
+    ]);
+  });
+
+  it('passes the typed data the core built to eth_signTypedData_v4 unchanged (A10)', async () => {
+    const asked: unknown[] = [];
+    const typedData = JSON.stringify({
+      domain: { name: 'USDC', version: '2', chainId: 84532 },
+      primaryType: 'TransferWithAuthorization',
+    });
+    const wallet = eip3009Wallet({
+      async request({ method, params }) {
+        asked.push({ method, params });
+        return `0x${'cd'.repeat(65)}`;
+      },
+    });
+    await wallet.signTypedData(ACCOUNT, typedData);
+    expect(asked).toEqual([{ method: 'eth_signTypedData_v4', params: [ACCOUNT, typedData] }]);
   });
 });

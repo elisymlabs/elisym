@@ -7,7 +7,7 @@ import { WalletRow } from './WalletRow';
 
 interface Props {
   wallets: WalletChoice[];
-  chain: Rail;
+  rail: Rail;
   asset: Asset;
   /** A wallet-class problem, shown where the buyer is. */
   problem: Problem | undefined;
@@ -21,7 +21,7 @@ interface Props {
 /** The wallets that can pay the chosen payout, under the offer: the payout above stays editable. */
 export function WalletSection({
   wallets,
-  chain,
+  rail,
   asset,
   problem,
   phone,
@@ -29,18 +29,17 @@ export function WalletSection({
   onPay,
   onCheckWallet,
 }: Props) {
-  const tempo = chain === 'tempo';
   return (
     <div class="step" data-step="wallets">
       <StepHeading level={3}>Choose a wallet</StepHeading>
       <ProblemNote
         problem={problem}
         asset={asset}
-        tempo={tempo}
+        rail={rail}
         {...(onCheckWallet === undefined ? {} : { onCheckWallet })}
       />
       {wallets.length === 0 ? (
-        <NoWallet chain={chain} phone={phone} />
+        <NoWallet chain={rail} phone={phone} />
       ) : (
         <div class="wallet-list">
           {wallets.map((wallet) => (

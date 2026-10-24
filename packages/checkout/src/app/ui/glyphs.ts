@@ -31,6 +31,31 @@ export const TEMPO_GLYPH = svg(
     `<svg x="0" y="0" width="24" height="24" viewBox="0 0 40 40"><path fill="#fff" d="${TEMPO_MARK_PATH}"/></svg>`,
 );
 
+/**
+ * The Ethereum diamond (two facets per half), drawn light on the dark tile: a
+ * simplified mark, not the official file.
+ */
+export const ETHEREUM_GLYPH = svg(
+  '<circle cx="12" cy="12" r="12" fill="#1f2433"/>' +
+    '<path fill="#c9d2ff" d="M12 3.5l5.2 8.6L12 15.2 6.8 12.1z"/>' +
+    '<path fill="#8f9ce0" d="M12 3.5v11.7l-5.2-3.1z"/>' +
+    '<path fill="#c9d2ff" d="M12 16.2l5.2-3.1L12 20.5z"/>' +
+    '<path fill="#8f9ce0" d="M12 16.2v4.3l-5.2-7.4z"/>',
+);
+
+/** Arbitrum's colors (navy tile, blue strokes) with an "A": a simplified mark, not the official file. */
+export const ARBITRUM_GLYPH = svg(
+  '<circle cx="12" cy="12" r="12" fill="#213147"/>' +
+    '<path fill="none" stroke="#12aaff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M7.5 17.5L12 6.5l4.5 11"/>' +
+    '<path fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" d="M9.4 13.6h5.2"/>',
+);
+
+/** Base's blue with its square: a simplified mark, not the official file. */
+export const BASE_GLYPH = svg(
+  '<circle cx="12" cy="12" r="12" fill="#0052ff"/>' +
+    '<rect x="7" y="7" width="10" height="10" rx="1.6" fill="#fff"/>',
+);
+
 export const CHECK_GLYPH = svg(
   '<circle cx="12" cy="12" r="12" fill="#1f9d55"/>' +
     '<path fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M7 12.5l3.2 3.2L17 9"/>',

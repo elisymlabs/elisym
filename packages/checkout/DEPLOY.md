@@ -34,14 +34,18 @@ install and build run from the repository root (`cd ../..` in `vercel.json`).
 
 ## Environment variables
 
-| Name                          | Environments        | Value                                                                    |
-| ----------------------------- | ------------------- | ------------------------------------------------------------------------ |
-| `VITE_SOLANA_RPC_URL_MAINNET` | Production          | The widget's own Helius mainnet URL (see below). Required in Production. |
-| `VITE_SOLANA_RPC_URL_DEVNET`  | Production, Preview | Optional. Without it the public devnet endpoint is used.                 |
-| `CHECKOUT_ORIGIN`             | none                | Leave unset. Only local demos set it.                                    |
+| Name                                                                                                      | Environments        | Value                                                                                                                                     |
+| --------------------------------------------------------------------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_SOLANA_RPC_URL_MAINNET`                                                                             | Production          | The widget's own Helius mainnet URL (see below). Required in Production.                                                                  |
+| `VITE_SOLANA_RPC_URL_DEVNET`                                                                              | Production, Preview | Optional. Without it the public devnet endpoint is used.                                                                                  |
+| `VITE_EVM_RPC_URL_ETHEREUM_DEVNET`, `VITE_EVM_RPC_URL_ARBITRUM_DEVNET`, `VITE_EVM_RPC_URL_BASE_DEVNET`    | Production, Preview | The widget's own RPC of Sepolia, Arbitrum Sepolia and Base Sepolia (see below). Without one, that testnet's USDC payouts are not offered. |
+| `VITE_EVM_RPC_URL_ETHEREUM_MAINNET`, `VITE_EVM_RPC_URL_ARBITRUM_MAINNET`, `VITE_EVM_RPC_URL_BASE_MAINNET` | Production          | Set per chain only in that chain's mainnet step (see below). Without one, that chain's mainnet USDC payouts are not offered.              |
+| `CHECKOUT_ORIGIN`                                                                                         | none                | Leave unset. Only local demos set it.                                                                                                     |
 
-`VITE_*` values are inlined into the public JavaScript bundle. The key in the RPC URL is
-**not secret**: the only thing that protects it is the origin restriction set at Helius.
+`VITE_*` values are inlined into the public JavaScript bundle, at build time: a changed
+value takes effect only with a new build (Vercel Redeploy, or any merge to `main`). The key in
+an RPC URL is **not secret**: the only thing that protects it is the origin restriction set at
+the provider.
 
 The build fails when:
 
@@ -74,6 +78,30 @@ One full-history endpoint per network, used for both sending and finding payment
    set, its key must not be restricted to `https://pay.elisym.network`, or every preview's
    devnet purchase gets a 403. Leaving it unset uses the public devnet endpoint.
 
+## The EVM RPC of each chain (Ethereum, Arbitrum, Base)
+
+USDC on Ethereum, Arbitrum and Base (EIP-3009) is offered on a chain and network only when
+the build has that chain's own RPC: `VITE_EVM_RPC_URL_<SLUG>_<NETWORK>`, with `<SLUG>` one of
+`ETHEREUM`, `ARBITRUM`, `BASE` and `<NETWORK>` `MAINNET` (Ethereum, Arbitrum One, Base) or
+`DEVNET` (Sepolia, Arbitrum Sepolia, Base Sepolia). A chain without one is not offered,
+whatever a store publishes; no public endpoint stands in. Each value must be `https:`.
+
+1. Every read of the rail goes through it: the receipts, the nonce scan, the end proof (an
+   `eth_call` pinned by block hash to the finalized block) and the gas estimate. The provider
+   must pass, per chain, what the merchant node's own RPC must (the quick start's "RPC must
+   serve three days of history"): a receipt hours old, an `eth_getLogs` of at least the chain's
+   block range (Ethereum 100, Base 1000, Arbitrum 5000), and the pinned call. Alchemy's free
+   tier (10 blocks) fails.
+2. The testnet variables are set in Production and Preview. Their keys must NOT be restricted
+   to `https://pay.elisym.network`: previews run on `*.vercel.app`, and a key restricted to
+   production gets a 403 there, so no preview could pay.
+3. A mainnet variable is set for Production only, and only in that chain's mainnet step (Base,
+   then Arbitrum, then Ethereum): restrict its key by origin to `https://pay.elisym.network`,
+   redeploy, check that the deployed checkout offers that chain's payout, then make a small
+   real purchase. A preview then offers that chain's mainnet payout as "network not available".
+4. The protocol fee is read from the Solana config of the paired network (mainnet chains read
+   `VITE_SOLANA_RPC_URL_MAINNET`'s), and these chains are offered only at a fee of 0.
+
 ## Previews
 
 A preview's loader frames that very deployment's checkout (`https://$VERCEL_URL`), never
@@ -103,6 +131,10 @@ or use Protection Bypass for Automation and open the preview once with
 - [ ] A devnet purchase from the test store (`packages/merchant-node`) goes
       `ready -> ordered -> paying -> paid -> completed` and shows Payment complete (Buy again
       primary). No delivery shows anywhere, in the done step or Your purchases.
+- [ ] With the testnet `VITE_EVM_RPC_URL_*_DEVNET` variables set, a test store's Sepolia,
+      Arbitrum Sepolia and Base Sepolia USDC payouts are offered. A MetaMask purchase on each
+      asks to sign, then to send, shows "Confirming on <chain>" and goes
+      `ready -> ordered -> paying -> paid -> completed`.
 - [ ] After a finished purchase, closing and reopening the modal shows the first step (try the
       close button, Escape, a click on the backdrop and the checkout's own Done). The page hears
       `ready` again. An inline checkout keeps its receipt.

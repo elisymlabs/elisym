@@ -1,8 +1,24 @@
-import { type Asset, NATIVE_SOL, type Network, formatAssetAmount } from '@elisym/pay-core';
+import {
+  type Asset,
+  type ChainSlug,
+  NATIVE_SOL,
+  type Network,
+  formatAssetAmount,
+} from '@elisym/pay-core';
 import type { RefusalReason } from '../controller';
 import type { PurchaseStatus } from '../history';
 import { REF_NEEDS_VERIFIED_STORE } from '../ref-scope';
-import type { EarlierPayment, OpenStatus, Paying, Problem, Rail, Receipt, View } from '../session';
+import type {
+  Eip3009Send,
+  EarlierPayment,
+  OpenStatus,
+  Paying,
+  Problem,
+  Rail,
+  Receipt,
+  RetryBlockedCause,
+  View,
+} from '../session';
 
 export const REFUSALS: Record<RefusalReason, string> = {
   not_framed: 'This checkout only works embedded in a store page.',
@@ -26,7 +42,35 @@ export const WORKING: Record<Extract<View, { kind: 'working' }>['step'], string>
   signing: 'Confirm the payment in your wallet…',
 };
 
-export const CHAIN_NAMES: Record<Rail, string> = { solana: 'Solana', tempo: 'Tempo' };
+/** EIP-3009 asks the wallet twice: the signature, then the transaction that carries it. */
+export const EIP3009_SIGNING = 'Sign the payment in your wallet, then confirm sending it…';
+
+/** "Send again" / "Send anyway": the signature exists, the wallet only sends it. */
+export const EIP3009_SENDING = 'Confirm sending the payment in your wallet…';
+
+/**
+ * E7: this rail pays only at a protocol fee of 0, so with a fee on these chains
+ * are not offered: the line under the payouts, and the refusal when none is left.
+ */
+export const FEE_HIDES_EIP3009 =
+  'Ethereum, Arbitrum and Base are not offered while the elisym protocol fee is above 0.';
+
+/** "Sign, then confirm": said before the first of the two prompts. */
+export const EIP3009_TWO_PROMPTS =
+  'Your wallet asks twice: first sign the payment, then confirm sending it.';
+
+/** The gas line under an `eip3009` payout: "You need a little ETH on Base for the network fee." */
+export function gasLine(coin: string, chain: string): string {
+  return `You need a little ${coin} on ${chain} for the network fee.`;
+}
+
+export const CHAIN_NAMES: Record<ChainSlug, string> = {
+  solana: 'Solana',
+  tempo: 'Tempo',
+  ethereum: 'Ethereum',
+  arbitrum: 'Arbitrum',
+  base: 'Base',
+};
 
 /** At most this many characters of a store-given name stay in the DOM (the full one in `title`). */
 export const MAX_SHOWN_CHARS = 200;
@@ -54,7 +98,7 @@ export function shownText(value: string): string {
  * money is just the chain; a test network says so, so test money is never
  * mistaken for real.
  */
-export function networkLabel(chain: Rail, network: Network): string {
+export function networkLabel(chain: ChainSlug, network: Network): string {
   return network === 'mainnet' ? CHAIN_NAMES[chain] : `${CHAIN_NAMES[chain]} ${network}`;
 }
 
@@ -87,18 +131,11 @@ export const CHECK_IN_WALLET = 'Check in wallet';
  * `asset`: the coin the order is paid in, for amounts of it. `canPress`: the screen
  * offers something to press now; without it, nothing says "try again".
  */
-/** `tempo`: the payout's rail, so a wallet hint names only the network the store takes. */
-export function problemText(
-  problem: Problem,
-  asset: Asset,
-  tempo: boolean,
-  canPress = true,
-): string {
+/** `rail`: the payout's rail, so a wallet hint names only the network the store takes. */
+export function problemText(problem: Problem, asset: Asset, rail: Rail, canPress = true): string {
   switch (problem.reason) {
     case 'no_wallet':
-      return tempo
-        ? 'Connect a wallet that can pay on Tempo, such as MetaMask.'
-        : 'Connect a Solana wallet, such as Phantom or Solflare.';
+      return NO_WALLET_HINTS[rail];
     case 'tempo_unsupported':
       return 'This wallet cannot pay on Tempo. Choose another wallet.';
     case 'wallet_busy':
@@ -167,8 +204,64 @@ export function problemText(
       const line = earlierPaymentLine(problem, undefined);
       return `${line.lead}${line.tail}`;
     }
+    case 'chain_unreachable':
+      return `This wallet cannot pay on ${problem.chain}. Nothing was paid; choose another wallet.`;
+    case 'sign_failed':
+      return 'The wallet’s signature could not be used. Nothing was paid; try again.';
+    case 'no_native':
+      return `This wallet holds no ${problem.coin} on ${problem.chain} for the network fee. Add a little, then try again.`;
+    case 'insufficient_native':
+      return `There may not be enough ${problem.native.symbol} on ${problem.chain} for the network fee: about ${formatAssetAmount(problem.native, problem.needed)} needed, ${formatAssetAmount(problem.native, problem.available)} held. Top up and pay again with the same wallet, or send anyway.`;
+    case 'token_blocked':
+      return 'The coin’s issuer blocks this payment right now. Nothing was paid; contact the store.';
+    case 'payer_unsupported':
+      return 'This account cannot sign this payment (its smart-account code is not one known to work). Nothing was paid; use another account.';
+    case 'wrong_chain_after_sign':
+      return `Your wallet moved to another network after signing. Nothing was sent: send again, and the checkout asks it to switch back to ${problem.chain}.`;
+    case 'resign_needed':
+      return 'The signature is too close to its deadline to send. Nothing was sent: pay again with the same wallet to sign a new one.';
+    case 'send_declined':
+      return 'You declined sending. Nothing was sent: send again, or pay again with the same wallet.';
+    case 'send_failed':
+      return 'The network refused the payment in a test run, so nothing was sent. Pay again with the same wallet.';
+    case 'near_expiry':
+      return 'The payment was sent close to its deadline and may fail. If it does, pay again with the same wallet.';
+    case 'send_uncertain':
+      return 'The wallet reported an error while sending; the payment may have been sent and will be found if it lands. You can pay again with the same wallet.';
+    case 'retry_blocked':
+      // Too late is final for every wallet: no "another wallet can pay" there.
+      return problem.cause === 'too_late'
+        ? RETRY_BLOCKED.too_late(problem.chain)
+        : `${RETRY_BLOCKED[problem.cause](problem.chain)} ${EARLIER_MAY_ARRIVE}`;
   }
 }
+
+/** A retry of a live signed attempt was refused: what was paid before still stands. */
+export const EARLIER_MAY_ARRIVE =
+  'Your earlier payment may still arrive; another wallet can pay only once it provably expired unused.';
+
+/** Why a retry of a live signed attempt signed nothing new (`retry_blocked`), before `EARLIER_MAY_ARRIVE`. */
+const RETRY_BLOCKED: Record<RetryBlockedCause, (chain: string) => string> = {
+  chain_unreachable: (chain) => `This wallet cannot pay on ${chain}, so nothing new was signed.`,
+  payer_unsupported: () =>
+    'This account cannot sign this payment (its smart-account code is not one known to work), so nothing new was signed.',
+  token_blocked: () =>
+    'The coin’s issuer blocks this payment right now, so nothing new was signed.',
+  too_late: () =>
+    'This order is too old to pay again, so nothing new was signed. Your earlier payment may still arrive; if it does not, contact the store.',
+  offer_changed: () => 'The store changed this offer, so nothing new was signed.',
+  fee_config_unavailable: () =>
+    'The elisym fee terms could not be read, so nothing new was signed. Try again in a moment.',
+  fee_config_invalid: () =>
+    'The elisym fee configuration cannot be used right now, so nothing new was signed.',
+};
+
+/** Which wallet to connect, by the payout's rail. */
+const NO_WALLET_HINTS: Record<Rail, string> = {
+  solana: 'Connect a Solana wallet, such as Phantom or Solflare.',
+  tempo: 'Connect a wallet that can pay on Tempo, such as MetaMask.',
+  eip3009: 'Connect an Ethereum wallet, such as MetaMask or Rabby.',
+};
 
 /** The press-time line about the buyer's own earlier payment: never "contact the store". */
 export const EARLIER_PAYMENT = {
@@ -252,12 +345,18 @@ export const UNANSWERED = {
   unknown: {
     solana: 'You can start over once the request expires.',
     tempo: 'You can start over once the checkout stops waiting for it.',
+    eip3009: 'Another wallet can pay once the signature expires unused.',
   } satisfies Record<Rail, string>,
   /** Around the countdown: "You can start over in m:ss." */
-  countingLead: 'You can start over in ',
+  countingLead: {
+    solana: 'You can start over in ',
+    tempo: 'You can start over in ',
+    eip3009: 'Another wallet can pay in ',
+  } satisfies Record<Rail, string>,
   checking: {
     solana: 'Checking whether the request has expired…',
     tempo: 'Checking whether the request was approved…',
+    eip3009: 'Checking whether the signature expired unused…',
   } satisfies Record<Rail, string>,
   takingLong: 'This is taking long. If it does not resolve, contact the store.',
   reject: 'If you do not want to pay, reject the request in your wallet.',
@@ -265,7 +364,105 @@ export const UNANSWERED = {
   announce: {
     solana: 'Your wallet has not answered. Start over opens when the request expires.',
     tempo: 'Your wallet has not answered. Start over opens when the checkout stops waiting for it.',
+    eip3009:
+      'Your wallet has not answered. Another wallet can pay once the signature expires unused.',
   } satisfies Record<Rail, string>,
+} as const;
+
+/**
+ * Every word the wait says about the current attempt's send, from its send
+ * state alone (the session's `eip3009SendState`): the status lead and whether
+ * "Confirming on …" follows it, the explorer link's name, the heading, and
+ * whether the wallet's part is done (the stepper's stage).
+ */
+export function eip3009SendWords(send: Eip3009Send): {
+  lead: string;
+  confirming: boolean;
+  link: string;
+  heading: string;
+  walletDone: boolean;
+} {
+  switch (send.kind) {
+    case 'sent':
+      return {
+        lead: EIP3009_WAIT.sent,
+        confirming: true,
+        link: EIP3009_WAIT.viewTransaction,
+        heading: 'Confirming payment',
+        walletDone: true,
+      };
+    case 'not_sent':
+      return {
+        lead: send.earlier ? EIP3009_WAIT.signedEarlierSent : EIP3009_WAIT.signed,
+        confirming: false,
+        link: EIP3009_WAIT.viewEarlierTransaction,
+        heading: 'Payment not sent yet',
+        walletDone: false,
+      };
+    case 'unknown':
+      if (send.linked || send.maybe) {
+        return {
+          lead: send.linked ? EIP3009_WAIT.sentUnknown : EIP3009_WAIT.maybeSent,
+          confirming: true,
+          link: EIP3009_WAIT.viewSentTransaction,
+          heading: 'Confirming payment',
+          walletDone: true,
+        };
+      }
+      // No fact either way: no claim about sending.
+      return {
+        lead: EIP3009_WAIT.waiting,
+        confirming: false,
+        link: EIP3009_WAIT.viewSentTransaction,
+        heading: 'Waiting for the payment',
+        walletDone: false,
+      };
+  }
+}
+
+/** "about 5 minutes": a wait in whole minutes, rounded up. */
+export function aboutMinutes(seconds: number): string {
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return `about ${minutes} minute${minutes === 1 ? '' : 's'}`;
+}
+
+/** Every line of an `eip3009` wait (Ethereum, Arbitrum, Base). */
+export const EIP3009_WAIT = {
+  /** The order's nonce was used before this checkout asked: no timer, no other wallet, no end. */
+  nonceUsed: 'This order may already be paid; waiting for the store.',
+  nonceUsedNote:
+    'A payment for it was signed outside this checkout. If the store does not complete it, contact the store.',
+  over: 'The signature expired unused. Nothing was paid. Pay with another wallet, or start over.',
+  /** The same, on a page that only follows the order: no wallet is offered. */
+  overFollowOnly: 'The signature expired unused. Nothing was paid. You can start over now.',
+  sent: 'Your wallet sent the payment.',
+  signed: 'Your wallet signed the payment; it was not sent yet.',
+  /** The current attempt signed and not sent, while an earlier attempt's transaction exists. */
+  signedEarlierSent:
+    'Your wallet signed a new payment; it was not sent yet. A payment sent earlier may still arrive.',
+  viewTransaction: 'View the transaction',
+  viewEarlierTransaction: 'View the earlier transaction',
+  /** A transaction is known for the order, not which attempt sent it (after a reload, say). */
+  sentUnknown: 'A payment for this order was sent; it may still arrive.',
+  /** The wallet failed while sending: no transaction is known, one may have gone out. */
+  maybeSent: 'A payment for this order may have been sent; it will be found if it lands.',
+  viewSentTransaction: 'View the sent transaction',
+  waiting: 'Waiting for the payment…',
+  /** "Confirming on Base Sepolia, about 5 minutes." */
+  confirming: (chain: string, creditSecs: number) =>
+    `Confirming on ${chain}, ${aboutMinutes(creditSecs)}.`,
+  retryLabel: 'Pay again with the same wallet',
+  switchLabel: 'Pay with another wallet',
+  /** Around the countdown: "Another wallet can pay in about m:ss, once the signature expires unused." */
+  switchLead: 'Another wallet can pay in about ',
+  switchTail: ', once the signature expires unused.',
+  /** On a page that only follows the order: "Start over opens in about m:ss." */
+  startOverLead: 'Start over opens in about ',
+  startOverTail: '.',
+  switchChecking: 'Checking whether the signature expired unused…',
+  takingLong: 'This is taking long. If it does not resolve, contact the store.',
+  sendAnyway: 'Send anyway',
+  sendAgain: 'Send again',
 } as const;
 
 /** A start still running after `SLOW_START_MS`: never a refusal. */

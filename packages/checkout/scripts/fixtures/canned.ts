@@ -9,17 +9,23 @@ import {
   type Asset,
   PATHUSD_TEMPO,
   USDCE_TEMPO_MAINNET,
+  USDC_BASE_DEVNET,
   USDC_SOLANA_DEVNET,
   USDC_SOLANA_MAINNET,
 } from '@elisym/pay-core';
 import type { Purchase, PurchaseStatus } from '../../src/app/history';
-import { type About, type View, payoutPaying } from '../../src/app/session';
+import { type About, type Eip3009Wait, type View, payoutPaying } from '../../src/app/session';
 import { nowSeconds } from '../../src/app/ui/clock';
 import type { PurchasesSource } from '../../src/app/ui/PurchasesStep';
 
 export type ReadyOffer = Extract<LoadedOffer, { ok: true }>;
 export type OfferView = Extract<View, { kind: 'offer' }>;
-export type CannedPayout = 'solana-devnet' | 'solana-mainnet' | 'tempo-devnet' | 'tempo-mainnet';
+export type CannedPayout =
+  | 'solana-devnet'
+  | 'solana-mainnet'
+  | 'tempo-devnet'
+  | 'tempo-mainnet'
+  | 'base-devnet';
 
 const COINS: Record<CannedPayout, { caip2: string; asset: Asset; address: string }> = {
   'solana-devnet': {
@@ -42,7 +48,25 @@ const COINS: Record<CannedPayout, { caip2: string; asset: Asset; address: string
     asset: USDCE_TEMPO_MAINNET,
     address: '0x5696da2cecea22f127948458382ac2c59bc8e4bb',
   },
+  'base-devnet': {
+    caip2: 'eip155:84532',
+    asset: USDC_BASE_DEVNET,
+    address: '0x5696da2cecea22f127948458382ac2c59bc8e4bb',
+  },
 };
+
+/** A Base Sepolia payout's wait as the session draws it, before `overrides`. */
+export function eip3009Wait(overrides: Partial<Eip3009Wait> = {}): Eip3009Wait {
+  return {
+    chain: 'Base Sepolia',
+    creditSecs: 300,
+    nonceUsed: false,
+    send: { kind: 'sent' },
+    confirming: false,
+    retry: true,
+    ...overrides,
+  };
+}
 
 /** 49 of the coin, in its subunits. */
 function priced(kind: CannedPayout): PricedPayout {
@@ -279,8 +303,12 @@ export function cannedViews(): CannedView[] {
     notices: ['origin_unverifiable'],
   });
   const tempo = cannedOffer({ level: 'B', domain: 'elisym.shop', payouts: ['tempo-mainnet'] });
+  const base = cannedOffer({ payouts: ['base-devnet', 'solana-devnet'] });
   const paying = payoutPaying(priced('solana-devnet'));
   const tempoPaying = payoutPaying(priced('tempo-devnet'));
+  const basePaying = payoutPaying(priced('base-devnet'));
+  const baseWallets = [{ name: 'MetaMask' }, { name: 'Rabby' }];
+  const baseTx = 'https://sepolia.basescan.org/tx/0xabc';
   const about = aboutOf(solana, 'buyer@example.com');
   return [
     { name: 'loading', view: undefined },
@@ -466,6 +494,94 @@ export function cannedViews(): CannedView[] {
         signed: false,
         requestEndsIn: { seconds: 2400, at: now },
         unsureAt: now + 600,
+      }),
+    },
+    {
+      name: 'offer: Base Sepolia (sign, then confirm)',
+      view: offerView(base, { wallets: baseWallets }),
+    },
+    {
+      name: 'offer: Base hidden while a fee is on (E7)',
+      view: offerView(cannedOffer(), { feeHidden: true }),
+    },
+    {
+      name: 'Base: sent, confirming, same wallet at once',
+      view: waitingView(about, basePaying, {
+        explorer: baseTx,
+        wallets: baseWallets,
+        unsureAt: now + 900,
+        eip3009: eip3009Wait({ switchAt: now + 3900 }),
+      }),
+    },
+    {
+      name: 'Base: found, confirming',
+      view: waitingView(about, basePaying, {
+        explorer: baseTx,
+        unsureAt: now + 900,
+        eip3009: eip3009Wait({ confirming: true, retry: false, switchAt: now + 3900 }),
+      }),
+    },
+    {
+      name: 'Base: send declined, send again',
+      view: waitingView(about, basePaying, {
+        wallets: baseWallets,
+        problem: { reason: 'send_declined' },
+        unsureAt: now + 3900,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          resend: 'again',
+          switchAt: now + 3900,
+        }),
+      }),
+    },
+    {
+      name: 'Base: not enough ETH, send anyway',
+      view: waitingView(about, basePaying, {
+        wallets: baseWallets,
+        problem: {
+          reason: 'insufficient_native',
+          needed: 2_400_000_000_000_000n,
+          available: 1_000_000_000_000_000n,
+          native: { chain: 'base', token: 'eth', decimals: 18, symbol: 'ETH' },
+          chain: 'Base Sepolia',
+        },
+        unsureAt: now + 3900,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          resend: 'gas',
+          switchAt: now + 3900,
+        }),
+      }),
+    },
+    {
+      name: 'Base: checking the signature expired',
+      view: waitingView(about, basePaying, {
+        wallets: baseWallets,
+        unsureAt: now - 60,
+        eip3009: eip3009Wait({ send: { kind: 'not_sent', earlier: false }, switchAt: now - 1 }),
+      }),
+    },
+    {
+      name: 'Base: another wallet',
+      view: waitingView(about, basePaying, {
+        canRetry: true,
+        signed: true,
+        wallets: baseWallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          retry: false,
+          switchAt: now - 60,
+        }),
+      }),
+    },
+    {
+      name: 'Base: nonce used outside the checkout',
+      view: waitingView(about, basePaying, {
+        eip3009: eip3009Wait({
+          nonceUsed: true,
+          send: { kind: 'unknown', linked: false, maybe: false },
+          retry: false,
+        }),
       }),
     },
     {
