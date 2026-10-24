@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { Rail, View } from '../session';
-import { WORKING, slowHint } from './text';
+import { type Rail, type View, payingRail } from '../session';
+import { EIP3009_SENDING, EIP3009_SIGNING, WORKING, slowHint } from './text';
 import { UnansweredHint } from './UnansweredHint';
 
 interface Props {
@@ -31,11 +31,15 @@ export function WorkingStatus({ view, hintAfterMs, unansweredHintMs, onCancel }:
     );
     return () => clearTimeout(timer);
   }, [step, cancellable, hintAfterMs, unansweredHintMs]);
-  const chain: Rail = view.paying?.chain ?? 'solana';
+  const chain: Rail = view.paying === undefined ? 'solana' : payingRail(view.paying);
+  let status: string = WORKING[step];
+  if (step === 'signing' && chain === 'eip3009') {
+    status = view.sendOnly === true ? EIP3009_SENDING : EIP3009_SIGNING;
+  }
   return (
     <>
       <p class="status" role="status">
-        {WORKING[step]}
+        {status}
       </p>
       {slow && step === 'checking' ? <p class="note hint">{slowHint(cancellable)}</p> : null}
       {slow && step === 'signing' ? (

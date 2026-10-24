@@ -1,5 +1,5 @@
-import type { CallsStatus, TempoWallet } from '@elisym/commerce/buyer';
-import { type ChainConfig, isTempoChain } from '@elisym/pay-core';
+import type { CallsStatus, Eip3009Wallet, TempoWallet } from '@elisym/commerce/buyer';
+import { type ChainConfig, isTempoChain, settlementOf } from '@elisym/pay-core';
 
 /** An EIP-1193 provider, reduced to `request`. */
 export interface Eip1193Provider {
@@ -28,6 +28,18 @@ export interface TempoWalletOption {
   /** The wallet's EIP-6963 `rdns`, when it says: a bundle it approved is followed through it. */
   rdns?: string;
   connect(): Promise<TempoWallet>;
+}
+
+/**
+ * A wallet the checkout can offer on an `eip3009` chain (Ethereum, Arbitrum,
+ * Base). The core asks its accounts, switches it to the chain and reads its
+ * chain id itself: nothing is connected ahead.
+ */
+export interface Eip3009WalletOption {
+  name: string;
+  icon?: string;
+  rdns?: string;
+  wallet: Eip3009Wallet;
 }
 
 /**
@@ -265,14 +277,22 @@ async function switchTo(provider: Eip1193Provider, chain: ChainConfig): Promise<
   }
 }
 
+/**
+ * Add `chain` to the wallet under the registry's own name and gas coin: Tempo
+ * with its stablecoin, an `eip3009` chain (Ethereum, Arbitrum, Base) with ETH -
+ * never one under another's.
+ */
 async function addChain(
   provider: Eip1193Provider,
   chain: ChainConfig,
   chainId: string,
 ): Promise<void> {
-  // The Tempo rail only: an `eip3009` chain (Base, ...) is EVM too, and is not
-  // added under Tempo's name and gas coin.
-  if (!isTempoChain(chain) || chain.chainName === undefined || chain.nativeCurrency === undefined) {
+  const rail = settlementOf(chain);
+  if (
+    (rail !== 'tempo' && rail !== 'eip3009') ||
+    chain.chainName === undefined ||
+    chain.nativeCurrency === undefined
+  ) {
     throw new TempoChainUnsupported();
   }
   const explorer = chain.explorerTx?.split('/tx/')[0];
@@ -309,6 +329,10 @@ export async function connectTempo(
   chain: ChainConfig,
   rdns?: string,
 ): Promise<TempoWallet> {
+  // The Tempo rail only: an `eip3009` chain is EVM too, and is paid by its own rail.
+  if (!isTempoChain(chain)) {
+    throw new TempoChainUnsupported();
+  }
   const accounts = await provider.request({ method: 'eth_requestAccounts' });
   const address = Array.isArray(accounts) ? accounts[0] : undefined;
   if (typeof address !== 'string') {
@@ -356,6 +380,61 @@ export function tempoWalletOptions(
       ...(wallet.info.rdns === undefined ? {} : { rdns: wallet.info.rdns }),
       connect: () => connectTempo(wallet.provider, chain, wallet.info.rdns),
     }));
+}
+
+/**
+ * An EIP-1193 provider as one EIP-3009 payment needs it. Every refusal is the
+ * wallet's own error, untouched: the core reads its code (4001 declined,
+ * -32002 busy). A switch adds an unknown chain from the registry first.
+ */
+export function eip3009Wallet(provider: Eip1193Provider): Eip3009Wallet {
+  return {
+    async requestAccounts() {
+      const accounts = await provider.request({ method: 'eth_requestAccounts' });
+      return Array.isArray(accounts)
+        ? accounts.filter((account): account is string => typeof account === 'string')
+        : [];
+    },
+    switchChain: (chain) => switchTo(provider, chain),
+    async chainId() {
+      const answer = await provider.request({ method: 'eth_chainId' });
+      return typeof answer === 'string' ? Number.parseInt(answer, 16) : Number.NaN;
+    },
+    async signTypedData(address, typedData) {
+      const signature = await provider.request({
+        method: 'eth_signTypedData_v4',
+        params: [address, typedData],
+      });
+      if (typeof signature !== 'string') {
+        throw new Error('the wallet returned no signature');
+      }
+      return signature;
+    },
+    async sendTransaction(call) {
+      const hash = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [{ from: call.from, to: call.to, data: call.data, chainId: call.chainId }],
+      });
+      if (typeof hash !== 'string') {
+        throw new Error('the wallet returned no hash');
+      }
+      return hash;
+    },
+  };
+}
+
+/**
+ * The EIP-6963 wallets offered on an `eip3009` chain. None is left out ahead: a
+ * wallet that cannot reach the chain is told so for that chain (the core reads
+ * its chain id after the switch).
+ */
+export function eip3009WalletOptions(wallets: readonly Eip6963Wallet[]): Eip3009WalletOption[] {
+  return wallets.map((wallet) => ({
+    name: wallet.info.name,
+    ...(wallet.info.icon?.startsWith('data:') === true ? { icon: wallet.info.icon } : {}),
+    ...(wallet.info.rdns === undefined ? {} : { rdns: wallet.info.rdns }),
+    wallet: eip3009Wallet(wallet.provider),
+  }));
 }
 
 /**

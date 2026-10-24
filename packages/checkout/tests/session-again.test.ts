@@ -89,7 +89,7 @@ interface Internals {
   attemptProblem: { problem: Problem; attemptId: string | undefined } | undefined;
   watchTimer: unknown;
   retrying: boolean;
-  attemptOver: boolean;
+  overAttemptIds: Set<string>;
   followOnly: unknown;
   refusedHere: unknown;
   lateHash: unknown;
@@ -1025,7 +1025,7 @@ describe('asking the failed wallet again', () => {
       [
         'the attempt proven over',
         async (run) => {
-          internals(run.session).attemptOver = true;
+          internals(run.session).overAttemptIds.add((await markerOf(run)).attemptId);
           run.session.refresh();
         },
       ],
@@ -1100,7 +1100,7 @@ describe('asking the failed wallet again', () => {
     };
     run.session.refresh();
     expect(waiting(run)).toMatchObject({ signedNotSent: true });
-    internals(run.session).attemptOver = true;
+    internals(run.session).overAttemptIds.add((await markerOf(run)).attemptId);
     run.session.refresh();
     expect(waiting(run)).not.toHaveProperty('signedNotSent');
   });

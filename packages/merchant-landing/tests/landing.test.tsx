@@ -109,15 +109,24 @@ describe('the landing', () => {
   it('hands the agent the quickstart as markdown, and the page shows the prompt it copies', async () => {
     expect(AGENT_DOCS_URL).toBe(`${DOCS.quickstart}.md`);
     expect(AGENT_PROMPT).toContain(AGENT_DOCS_URL);
-    // Both payout wallets, each optional: a network without a wallet is left out.
+    // Every payout wallet: a Solana or a Tempo one is needed (no EVM-only store,
+    // which nobody could pay where those chains are not payable), the rest optional.
     expect(AGENT_PROMPT).toContain('my Solana wallet address');
     expect(AGENT_PROMPT).toContain('my Tempo wallet address');
-    expect(AGENT_PROMPT).toContain('I may leave either wallet empty, but not both');
+    expect(AGENT_PROMPT).toContain('my wallet address for USDC on Ethereum, Arbitrum and Base');
+    expect(AGENT_PROMPT).toContain('I must give a Solana or a Tempo wallet');
+    expect(AGENT_PROMPT).toContain(
+      'may leave any other wallet empty, the one for Ethereum, Arbitrum and Base too',
+    );
+    expect(AGENT_PROMPT).toContain(
+      'list an Ethereum, Arbitrum or Base payout after a Solana or Tempo one',
+    );
+    expect(AGENT_PROMPT).not.toContain('not all of them');
     expect(AGENT_PROMPT).toContain('add a payout only for each wallet I give');
     expect(AGENT_PROMPT).toContain('no Solana RPC URL without a Solana wallet');
     const quickstart = readFileSync(join(PACKAGES, 'docs/pages/commerce/quickstart.mdx'), 'utf8');
     expect(quickstart).toContain(
-      'your Solana and Tempo wallet addresses (leave out the one you do not use)',
+      'your Solana, Tempo and EVM wallet addresses (a Solana or a Tempo one is needed; leave out the others you do not use)',
     );
     // A Tempo-only store drops `rpcUrl` too: it alone switches Solana payments on.
     expect(quickstart).toContain('remove both the Solana payout and `rpcUrl`');

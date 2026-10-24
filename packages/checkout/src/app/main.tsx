@@ -1,7 +1,7 @@
 import './styles.css';
 import { OrderStore, readChainTime } from '@elisym/commerce/buyer';
 import { createRelayClient } from '@elisym/commerce/buyer';
-import { type Network, chainByCaip2 } from '@elisym/pay-core';
+import { type ChainConfig, type Network, chainByCaip2 } from '@elisym/pay-core';
 import { type Eip1193Client, createJsonRpcClient } from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, createSolanaRpc } from '@solana/kit';
 import { finalizeEvent } from 'nostr-tools/pure';
@@ -10,7 +10,13 @@ import { IndexedDbOrderBackend, openOrderDatabase } from '../core/order-store-id
 import { decodeCheckoutParams } from '../embed/protocol';
 import { type Actions, Checkout } from './Checkout';
 import { type Screen, loadWithPins, startWithHint } from './controller';
-import { bundleStatusReader, discoverEvmWallets, tempoWalletOptions } from './evm-wallets';
+import { eip3009RpcUrls } from './evm-rpc';
+import {
+  bundleStatusReader,
+  discoverEvmWallets,
+  eip3009WalletOptions,
+  tempoWalletOptions,
+} from './evm-wallets';
 import { feeTermsReader } from './fee-terms';
 import { acceptHandshake } from './handshake';
 import { createHeightAnimator } from './height';
@@ -45,6 +51,7 @@ const actions: Actions = {
   pay: async (name) => session?.pay(name),
   retry: async (name) => session?.retry(name),
   signAgain: async () => session?.signAgain(),
+  resend: async () => session?.resend(),
   startOver: async () => session?.startOver(),
   choosePayout: (index) => session?.choosePayout(index),
   confirmOldPrompt: async () => session?.confirmOldPrompt(),
@@ -167,6 +174,34 @@ function tempoFor(network: Network): Eip1193Client | undefined {
   return client;
 }
 
+/**
+ * The widget's own RPC of each Ethereum, Arbitrum and Base chain (build env,
+ * one variable per chain and network): a chain without one is not offered.
+ * Each name is spelled out so the build inlines it.
+ */
+const EIP3009_RPC_URLS = eip3009RpcUrls({
+  VITE_EVM_RPC_URL_ETHEREUM_MAINNET: import.meta.env.VITE_EVM_RPC_URL_ETHEREUM_MAINNET,
+  VITE_EVM_RPC_URL_ETHEREUM_DEVNET: import.meta.env.VITE_EVM_RPC_URL_ETHEREUM_DEVNET,
+  VITE_EVM_RPC_URL_ARBITRUM_MAINNET: import.meta.env.VITE_EVM_RPC_URL_ARBITRUM_MAINNET,
+  VITE_EVM_RPC_URL_ARBITRUM_DEVNET: import.meta.env.VITE_EVM_RPC_URL_ARBITRUM_DEVNET,
+  VITE_EVM_RPC_URL_BASE_MAINNET: import.meta.env.VITE_EVM_RPC_URL_BASE_MAINNET,
+  VITE_EVM_RPC_URL_BASE_DEVNET: import.meta.env.VITE_EVM_RPC_URL_BASE_DEVNET,
+});
+const eip3009Clients = new Map<string, Eip1193Client>();
+
+function eip3009For(chain: ChainConfig): Eip1193Client | undefined {
+  const url = EIP3009_RPC_URLS.get(chain.caip2);
+  if (url === undefined) {
+    return undefined;
+  }
+  let client = eip3009Clients.get(chain.caip2);
+  if (client === undefined) {
+    client = createJsonRpcClient(url);
+    eip3009Clients.set(chain.caip2, client);
+  }
+  return client;
+}
+
 async function openStore(): Promise<OrderStore | undefined> {
   try {
     backend = new IndexedDbOrderBackend(await openOrderDatabase());
@@ -206,6 +241,8 @@ async function start(pageOrigin: string): Promise<void> {
           const chain = chainByCaip2(tempoCaip2(network));
           return chain === undefined ? [] : tempoWalletOptions(evmWallets.list(), chain);
         },
+        eip3009For,
+        eip3009Wallets: () => eip3009WalletOptions(evmWallets.list()),
         onBanner: (next) => {
           banner = next;
           draw();

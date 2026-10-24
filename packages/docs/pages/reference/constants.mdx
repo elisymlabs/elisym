@@ -80,9 +80,9 @@ The program is deliberately deployed at the **same address** on both clusters (`
 
 The protocol fee rate and treasury address are **not** constants - they live on-chain in the `elisym-config` program and are read via `getProtocolConfig`. The `ELISYM_PROTOCOL_TAG` is a read-only marker that lets anyone audit elisym payment activity on-chain. `ELISYM_COMMERCE_MEMO` and `ELISYM_JOB_MEMO_PREFIX` are the SPL Memo texts of a commerce and an agent-job payment, and `TEMPO_COMMERCE_MEMO_MAGIC` starts a marked Tempo commerce memo - see [Commerce payment markers](/protocol/payments#commerce-payment-markers).
 
-## Ethereum, Arbitrum and Base (registered, not yet payable)
+## Ethereum, Arbitrum and Base
 
-Circle USDC on these chains settles over EIP-3009 (`settlement: 'eip3009'` in `CHAINS`). The chains and coins are in the registry, and a merchant node (0.12.0 and later) verifies USDC payouts on them, but the checkout does not offer them yet - see [Networks](/reference/networks#ethereum-arbitrum-and-base-registered-not-yet-payable).
+Circle USDC on these chains settles over EIP-3009 (`settlement: 'eip3009'` in `CHAINS`). The chains and coins are in the registry, a merchant node (0.12.0 and later) verifies USDC payouts on them, and the checkout pays them on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base).
 
 | Constant                                  | Value                                                                |
 | ----------------------------------------- | -------------------------------------------------------------------- |

@@ -6,12 +6,10 @@ import type { OpenStatus, Paying, Rail, Receipt } from './session';
 
 /**
  * The rail a record pays on, by its payout's `settlement`, never the CAIP-2
- * prefix: `undefined` for an `eip3009` payout (Ethereum, Arbitrum, Base), which
- * no rail of this widget watches, ends or pays yet.
+ * prefix: an `eip3009` payout (Ethereum, Arbitrum, Base) is EVM too, and never Tempo.
  */
-export function recordRail(record: OrderRecord): Rail | undefined {
-  const rail = payoutRail(record.payout.caip19);
-  return rail === 'solana' || rail === 'tempo' ? rail : undefined;
+export function recordRail(record: OrderRecord): Rail {
+  return payoutRail(record.payout.caip19);
 }
 
 /**
@@ -36,7 +34,7 @@ export function recordPaying(record: OrderRecord): Paying | undefined {
         asset: target.caip19.asset,
         network: target.caip19.chain.network,
         // The glyph and the chain name only; rail decisions read `recordRail`.
-        chain: target.caip19.chain.family === 'evm' ? 'tempo' : 'solana',
+        chain: target.caip19.chain.slug,
       };
 }
 

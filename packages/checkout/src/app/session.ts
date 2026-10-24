@@ -66,14 +66,48 @@ import {
   storedTempoRequest,
   tempoLateDeadline,
   watchTempoPayment,
+  type Eip3009EndProofState,
+  type Eip3009PayRefusal,
+  type Eip3009PayResult,
+  type Eip3009Resend,
+  type Eip3009Watch,
+  type Eip3009WatchDeps,
+  SEND_MARGIN_SECS,
+  eip3009EndProof,
+  feeRefusalOf,
+  payWithEip3009,
+  readEip3009ChainTime,
+  resendWithEip3009,
+  retryWithEip3009,
+  switchWalletWithEip3009,
+  watchEip3009Payment,
 } from '@elisym/commerce/buyer';
-import { type Asset, type Network, settlementOf } from '@elisym/pay-core';
-import { type Eip1193Client, readQuantity, withAbort } from '@elisym/pay-core/evm';
+import {
+  type Asset,
+  type ChainConfig,
+  type ChainSettlement,
+  type ChainSlug,
+  type Network,
+  chainFor,
+  settlementOf,
+} from '@elisym/pay-core';
+import {
+  type Eip1193Client,
+  readBlockAtTag,
+  readQuantity,
+  readTxHash,
+  withAbort,
+} from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, isSignature } from '@solana/kit';
 import { hexToBytes } from 'nostr-tools/utils';
 import type { CheckoutState } from '../embed/protocol';
 import type { FollowOnly, RefusedReason } from './controller';
-import { type TempoWalletOption, TempoChainUnsupported, walletErrorKind } from './evm-wallets';
+import {
+  type Eip3009WalletOption,
+  type TempoWalletOption,
+  TempoChainUnsupported,
+  walletErrorKind,
+} from './evm-wallets';
 import { type Purchase, purchaseOf, purchasesOf } from './history';
 import {
   explorerFor,
@@ -84,6 +118,7 @@ import {
   recordTarget,
 } from './receipts';
 import { REF_NEEDS_VERIFIED_STORE, sameRef } from './ref-scope';
+import { FEE_HIDES_EIP3009 } from './ui/text';
 
 export { explorerLink } from './receipts';
 
@@ -130,6 +165,16 @@ export const HELD_STATUS_READ_MS = 2_000;
  * `RELAY_PUBLISH_DEADLINE_MS` publish.
  */
 export const PLACING_WAIT_MS = 35_000;
+/**
+ * The protocol fee read at load for a page with an `eip3009` payout gives up
+ * after this long: the chains stay offered, and the press reads it again.
+ */
+export const FEE_READ_TIMEOUT_MS = 4_000;
+/**
+ * EIP-3009, after a send: "taking long" this long past the latest moment the
+ * send could have happened plus the credit wait.
+ */
+export const EIP3009_UNSURE_MARGIN_SECS = 120;
 
 /**
  * What the chain says of a sent transaction. `succeeded` and `failed` are
@@ -189,7 +234,55 @@ export type Problem =
    * waits for the store): this press asked the wallet nothing.
    */
   | EarlierPayment
-  | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint };
+  | { reason: 'insufficient_token' | 'insufficient_sol'; needed: bigint; available: bigint }
+  /** EIP-3009: the wallet cannot reach the payout's chain (`chain`: its name in wallets). */
+  | { reason: 'chain_unreachable'; chain: string }
+  /** EIP-3009: the wallet's signature could not be used; nothing was stored or sent. */
+  | { reason: 'sign_failed' }
+  /** EIP-3009: the payer holds none of the chain's gas coin (`coin`) on `chain`. */
+  | { reason: 'no_native'; coin: string; chain: string }
+  /**
+   * EIP-3009, after signing: the gas coin may not cover the fee (`needed` and
+   * `available` in the `native` coin's subunits). "Send anyway" or pay again.
+   */
+  | {
+      reason: 'insufficient_native';
+      needed: bigint;
+      available: bigint;
+      native: Asset;
+      chain: string;
+    }
+  /** EIP-3009: USDC is paused, or the payer or the payee is blocked by its issuer. */
+  | { reason: 'token_blocked' }
+  /** EIP-3009: the payer is a smart account whose signature check is not known to work. */
+  | { reason: 'payer_unsupported' }
+  /** EIP-3009, after signing: the wallet is on another network: "Send again" switches it back. */
+  | { reason: 'wrong_chain_after_sign'; chain: string }
+  /** EIP-3009, after signing: too close to the signature's end to send: sign again. */
+  | { reason: 'resign_needed' }
+  /** EIP-3009, after signing: the buyer declined the send prompt: "Send again" asks again. */
+  | { reason: 'send_declined' }
+  /** EIP-3009, after signing: the payment was refused in a dry run; nothing was sent. */
+  | { reason: 'send_failed' }
+  /** EIP-3009: sent close to the signature's end: it may fail. */
+  | { reason: 'near_expiry' }
+  /** EIP-3009: the wallet failed while sending: the payment may have gone out. */
+  | { reason: 'send_uncertain' }
+  /**
+   * EIP-3009, a retry of a live signed attempt refused before it signed:
+   * nothing new was signed, and the earlier payment may still arrive.
+   */
+  | { reason: 'retry_blocked'; cause: RetryBlockedCause; chain: string };
+
+/** What refused a retry of a live `eip3009` attempt (`retry_blocked`). */
+export type RetryBlockedCause =
+  | 'chain_unreachable'
+  | 'payer_unsupported'
+  | 'token_blocked'
+  | 'too_late'
+  | 'offer_changed'
+  | 'fee_config_unavailable'
+  | 'fee_config_invalid';
 
 /** Why a press found an earlier payment of this product in this browser, and when to try again. */
 export interface EarlierPayment {
@@ -216,7 +309,50 @@ export interface Paying {
   amount: string;
   asset: Asset;
   network: Network;
-  chain: Rail;
+  /** The chain (its glyph and name); what pays there is `payingRail`. */
+  chain: ChainSlug;
+}
+
+/**
+ * What the wait says of the current attempt's send, from facts only:
+ * - `sent`: this session saw it send; the link is that transaction;
+ * - `not_sent`: this session saw it signed and not sent; `earlier`: an earlier
+ *   attempt's transaction is linked, and may still arrive;
+ * - `unknown`: no claim either way; `linked`: a transaction known to be live is
+ *   linked (it may still arrive); `maybe`: the wallet failed while sending.
+ */
+export type Eip3009Send =
+  | { kind: 'sent' }
+  | { kind: 'not_sent'; earlier: boolean }
+  | { kind: 'unknown'; linked: boolean; maybe: boolean };
+
+/**
+ * What an `eip3009` wait shows (Ethereum, Arbitrum, Base). Its timers are not
+ * the single Solana/Tempo countdown: a same-wallet retry is offered at once,
+ * another wallet (and the end) at `validBefore` + the finalized wait, once the
+ * end proof passes.
+ */
+export interface Eip3009Wait {
+  /** The chain's name, as wallets show it ("Base Sepolia"). */
+  chain: string;
+  /** The expected wait of the credit tag (seconds): "confirming" says about how long. */
+  creditSecs: number;
+  /** The order's nonce was used before this checkout asked: no timer, no other wallet, no end. */
+  nonceUsed: boolean;
+  /** What is known of the current attempt's send (`eip3009SendState`); the link is `explorer`. */
+  send: Eip3009Send;
+  /** A payment was found below the credit tag: it is confirming. */
+  confirming: boolean;
+  /** A same-wallet retry is offered now. */
+  retry: boolean;
+  /**
+   * When another wallet (and the end) may be offered: `validBefore` + the
+   * finalized wait (unix seconds). Enabled only once the end proof passes
+   * (`canRetry` on the view).
+   */
+  switchAt?: number;
+  /** The signature this checkout holds may be sent again: why ("Send anyway" or "Send again"). */
+  resend?: 'gas' | 'again' | 'chain';
 }
 
 /** The store as the header names it. No level when it comes from an order's old snapshot. */
@@ -277,6 +413,8 @@ export type View =
       payoutIndex: number;
       wallets: WalletChoice[];
       problem?: Problem;
+      /** E7: a protocol fee is on, so this network's Ethereum, Arbitrum and Base payouts are not offered. */
+      feeHidden?: true;
       /** The merchant asks for an email (optional for the buyer). */
       askEmail: boolean;
       email: string;
@@ -292,6 +430,8 @@ export type View =
       startOverIn?: Countdown;
       /** Signing: after this (unix seconds), with no countdown left, it is taking long. */
       unsureAt?: number;
+      /** Signing on EIP-3009 by "Send again" / "Send anyway": the signature exists, the wallet only sends. */
+      sendOnly?: true;
     }
   | {
       kind: 'waiting_payment';
@@ -327,6 +467,8 @@ export type View =
       seenOnChain?: true;
       /** Solana: the wallet's last answer for this attempt was not sent. */
       signedNotSent?: true;
+      /** EIP-3009 (Ethereum, Arbitrum, Base): its own timers and actions. */
+      eip3009?: Eip3009Wait;
     }
   | {
       kind: 'waiting_store';
@@ -412,6 +554,15 @@ export interface SessionDeps {
   /** Tempo chain time (seconds): the finalized head. */
   tempoChainTime?(client: Eip1193Client): Promise<number>;
   /**
+   * EIP-3009 (Ethereum, Arbitrum, Base): the widget's own RPC of that chain,
+   * from the build, or `undefined` when the build has none: the chain is then
+   * never offered. Every read of the rail goes through it (receipts, scans,
+   * the end proof, the gas estimate).
+   */
+  eip3009For?(chain: ChainConfig): Eip1193Client | undefined;
+  /** EIP-3009: wallets (EIP-6963) that may be asked to pay on `chain`. */
+  eip3009Wallets?(chain: ChainConfig): Eip3009WalletOption[];
+  /**
    * A store answer (or a late payment found) for an order not on screen: shown
    * at once as a banner, never held back by the order that is. `undefined`
    * clears it: the modal closed and opens again at its first step.
@@ -448,16 +599,25 @@ function networkOf(payout: PricedPayout): Network {
   return payout.target.caip19.chain.network;
 }
 
-export type Rail = 'solana' | 'tempo';
+/** The rail a payment runs on: Solana, Tempo, or EIP-3009 (Ethereum, Arbitrum, Base). */
+export type Rail = ChainSettlement;
 
 /**
- * The rail a payout pays on here, by its chain's `settlement`, never by family:
- * `undefined` for an `eip3009` chain (Ethereum, Arbitrum, Base), which this
- * widget does not pay on yet, so such a payout is never servable.
+ * The rail a payout pays on here, by its chain's `settlement`, never by family
+ * or the CAIP-2 prefix: an `eip3009` chain is EVM too, and never Tempo.
  */
 function railOf(payout: PricedPayout): Rail | undefined {
-  const rail = settlementOf(payout.target.caip19.chain);
-  return rail === 'solana' || rail === 'tempo' ? rail : undefined;
+  return settlementOf(payout.target.caip19.chain);
+}
+
+/** The registry chain a payment shown runs on. */
+export function payingChain(paying: Pick<Paying, 'chain' | 'network'>): ChainConfig {
+  return chainFor(paying.chain, paying.network);
+}
+
+/** The rail a payment shown runs on (its chain's `settlement`). */
+export function payingRail(paying: Pick<Paying, 'chain' | 'network'>): Rail {
+  return settlementOf(payingChain(paying)) ?? 'solana';
 }
 
 const NO_NETWORK = 'This network is not available here yet.';
@@ -485,9 +645,8 @@ export function payoutPaying(payout: PricedPayout): Paying {
     amount: payout.amount.toString(),
     asset: payout.target.caip19.asset,
     network: networkOf(payout),
-    // The glyph and the chain name only. An `eip3009` payout is never servable
-    // here, so it is never drawn as one to pay; payment decisions read `railOf`.
-    chain: payout.target.caip19.chain.family === 'evm' ? 'tempo' : 'solana',
+    // The glyph and the chain name only; payment decisions read `railOf`.
+    chain: payout.target.caip19.chain.slug,
   };
 }
 
@@ -530,6 +689,88 @@ function connectProblem(
     case 'failed':
       return 'no_wallet';
   }
+}
+
+/**
+ * The refusals whose text before a signature ("Nothing was paid", "choose
+ * another wallet") would be false on a retry of a live signed attempt: each
+ * gets its `retry_blocked` text there instead.
+ */
+const RETRY_BLOCKED_CAUSES: Partial<Record<Eip3009PayRefusal, RetryBlockedCause>> = {
+  wrong_chain: 'chain_unreachable',
+  payer_unsupported: 'payer_unsupported',
+  token_blocked: 'token_blocked',
+  too_late: 'too_late',
+  offer_changed: 'offer_changed',
+  fee_config_unavailable: 'fee_config_unavailable',
+  fee_config_invalid: 'fee_config_invalid',
+};
+
+/** Why an `eip3009` attempt hands back its signature to send again: what the button says. */
+function resendWhy(reason: Eip3009PayRefusal): Eip3009ResendHold['why'] {
+  if (reason === 'insufficient_native') {
+    return 'gas';
+  }
+  return reason === 'wrong_chain_after_sign' ? 'chain' : 'again';
+}
+
+/** The chain an order was placed on, from its own snapshot. */
+function recordChain(record: OrderRecord): ChainConfig | undefined {
+  return recordTarget(record)?.caip19.chain;
+}
+
+/** The gas coin of an EVM chain as an amount's coin ("ETH", 18 decimals). */
+function nativeAssetOf(chain: ChainConfig | undefined): Asset {
+  const coin = chain?.nativeCurrency ?? { symbol: 'ETH', decimals: 18 };
+  return {
+    chain: chain?.slug ?? 'ethereum',
+    token: coin.symbol.toLowerCase(),
+    decimals: coin.decimals,
+    symbol: coin.symbol,
+  };
+}
+
+/** An `eip3009` marker's `validBefore` as seconds, or `undefined` when it is not one. */
+function validBeforeOf(record: OrderRecord): number | undefined {
+  const marker = record.marker;
+  if (marker?.rail !== 'eip3009' || marker.usedAtStart === true) {
+    return undefined;
+  }
+  const validBefore = Number(marker.validBefore);
+  return Number.isSafeInteger(validBefore) ? validBefore : undefined;
+}
+
+/**
+ * When another wallet (and the end) may be offered for a signed `eip3009`
+ * attempt: its `validBefore` plus the chain's finalized wait (unix seconds).
+ * None for a marker that never held a signature (it is cleared at once) or the
+ * frozen `usedAtStart` one (never).
+ */
+export function eip3009SwitchAt(record: OrderRecord): number | undefined {
+  const validBefore = validBeforeOf(record);
+  const waits = recordChain(record)?.waits;
+  if (validBefore === undefined || waits === undefined || record.marker?.rail !== 'eip3009') {
+    return undefined;
+  }
+  return record.marker.signed === true ? validBefore + waits.finalizedSecs : undefined;
+}
+
+/**
+ * When an `eip3009` attempt is "taking long". After a send: the latest moment
+ * the send could have happened (`validBefore` - `SEND_MARGIN_SECS`) plus the
+ * credit wait and a margin - every term is stored, so a reload says the same;
+ * `setAt` would say it early, since a send may come up to 780 s after it.
+ * Before a send: `validBefore` plus the finalized wait. Never for `usedAtStart`.
+ */
+export function eip3009UnsureAt(record: OrderRecord, sent: boolean): number | undefined {
+  const validBefore = validBeforeOf(record);
+  const waits = recordChain(record)?.waits;
+  if (validBefore === undefined || waits === undefined) {
+    return undefined;
+  }
+  return sent
+    ? validBefore - SEND_MARGIN_SECS + waits.creditSecs + EIP3009_UNSURE_MARGIN_SECS
+    : validBefore + waits.finalizedSecs;
 }
 
 /** A Tempo connect failure, as the buyer is told: a wallet without the chain is named as such. */
@@ -614,7 +855,83 @@ function chainIdHex(payout: PricedPayout): string {
 /** One watch pass's verdict, on either rail. */
 type Watched =
   | Awaited<ReturnType<typeof watchSolanaPayment>>
-  | Awaited<ReturnType<typeof watchTempoPayment>>;
+  | Awaited<ReturnType<typeof watchTempoPayment>>
+  | Eip3009Watch
+  /** EIP-3009: the end proof passed, so the signed attempt can never land. */
+  | { state: 'over'; record: OrderRecord };
+
+/** Who signed an `eip3009` authorization, and its `validBefore` (decimal seconds). */
+interface Eip3009Signed {
+  authorizer: string;
+  validBefore: string;
+}
+
+/** `transferWithAuthorization(address,address,uint256,uint256,uint256,bytes32,bytes)`. */
+const TRANSFER_WITH_AUTHORIZATION_SELECTOR = '0xcf092995';
+const WORD_HEX = 64;
+/** How long a switched hash the chain did not name as an authorization goes unasked. */
+const UNSIGNED_HASH_RECHECK_SECS = 60;
+
+/**
+ * The signer and `validBefore` of a transaction read on chain, when it is a
+ * `transferWithAuthorization` call (head words `from`, `to`, `value`,
+ * `validAfter`, `validBefore`); `undefined` for anything else.
+ */
+function signedOfTransaction(sent: unknown): Eip3009Signed | undefined {
+  if (typeof sent !== 'object' || sent === null || !('input' in sent)) {
+    return undefined;
+  }
+  const input = typeof sent.input === 'string' ? sent.input.toLowerCase() : '';
+  const head = TRANSFER_WITH_AUTHORIZATION_SELECTOR.length;
+  if (!input.startsWith(TRANSFER_WITH_AUTHORIZATION_SELECTOR)) {
+    return undefined;
+  }
+  const word = (index: number) =>
+    input.slice(head + index * WORD_HEX, head + (index + 1) * WORD_HEX);
+  const from = word(0);
+  const validBefore = word(4);
+  if (!/^0{24}[0-9a-f]{40}$/.test(from) || !/^[0-9a-f]{64}$/.test(validBefore)) {
+    return undefined;
+  }
+  return { authorizer: `0x${from.slice(24)}`, validBefore: BigInt(`0x${validBefore}`).toString() };
+}
+
+/** The send state of an `eip3009` attempt, from facts only (`eip3009SendState`). */
+type Eip3009SendState =
+  | { kind: 'sent'; hash: string }
+  | { kind: 'not_sent'; earlier?: string }
+  | { kind: 'unknown'; hash?: string; maybe: boolean };
+
+/** The transaction a send state may link: only one known to be live. */
+function sendHashOf(state: Eip3009SendState): string | undefined {
+  switch (state.kind) {
+    case 'sent':
+      return state.hash;
+    case 'not_sent':
+      return state.earlier;
+    case 'unknown':
+      return state.hash;
+  }
+}
+
+/** A send state as the wait shows it (the hash itself goes to the view's `explorer`). */
+function sendViewOf(state: Eip3009SendState): Eip3009Send {
+  switch (state.kind) {
+    case 'sent':
+      return { kind: 'sent' };
+    case 'not_sent':
+      return { kind: 'not_sent', earlier: state.earlier !== undefined };
+    case 'unknown':
+      return { kind: 'unknown', linked: state.hash !== undefined, maybe: state.maybe };
+  }
+}
+
+/** A signature an `eip3009` attempt holds in memory, which may be sent again, and through which wallet. */
+interface Eip3009ResendHold {
+  handle: Eip3009Resend;
+  walletName: string;
+  why: NonNullable<Eip3009Wait['resend']>;
+}
 
 /** The verdict of one watch pass, as `applyVerdict` applied it. */
 type VerdictApplied =
@@ -638,6 +955,8 @@ interface Probe {
   ticking: boolean;
   /** The countdown drawn last, so an unchanged one is not drawn again. */
   drawn: string;
+  /** An EIP-3009 resend: the wallet only sends a signature it made (`sendOnly`). */
+  sendOnly: boolean;
 }
 
 /** A background follower: another account's holder, or this account's order not on screen. */
@@ -695,8 +1014,6 @@ export class CheckoutSession {
     | undefined;
   private email = '';
   private lastStatus: CheckoutState | undefined;
-  /** The current attempt provably ended with no payment (a retry is offered). */
-  private attemptOver = false;
   /** The widget refused (no RPC, the offer refused): nothing redraws an offer over it. */
   private refused = false;
   /** The generation the running watch timer belongs to. */
@@ -751,7 +1068,11 @@ export class CheckoutSession {
    * may name it even after the pending or late hash was let go.
    */
   private readonly sentHash = new Map<string, string>();
-  /** Attempts this session proved over: their transaction never landed and is never named. */
+  /**
+   * Attempts proven over (an end proof, a watch verdict, an order seen ended):
+   * their transaction never landed and is never named. One-way per attempt: an
+   * attempt in it is over for good (`overOf`); a newer attempt is simply not in it.
+   */
   private readonly overAttemptIds = new Set<string>();
   /** The transaction each finished order's receipt may name, chosen once. */
   private readonly receiptCandidates = new Map<string, string>();
@@ -816,6 +1137,57 @@ export class CheckoutSession {
   private unanswered: Probe | undefined;
   /** The view drawn last. */
   private shownView: View | undefined;
+  /** E7: networks whose protocol fee is above 0: their `eip3009` payouts are not offered. */
+  private readonly feeOn = new Set<Network>();
+  /**
+   * EIP-3009: orders whose nonce was already used when their first attempt
+   * read it, kept without the frozen marker (another order held the product):
+   * this page never pays, switches or ends them.
+   */
+  private readonly nonceUsed = new Set<string>();
+  /**
+   * EIP-3009: orders a call of this session is signing or sending for right
+   * now, a detached one included: their marker may hold no signature yet, and
+   * is never cleared under that call.
+   */
+  private readonly eip3009Live = new Set<string>();
+  /** EIP-3009: the signature the attempt on screen holds in memory, which may be sent again. */
+  private eip3009Resend: Eip3009ResendHold | undefined;
+  /** EIP-3009: per order, the attempt whose transaction this session saw returned. */
+  private readonly eip3009SentAttempt = new Map<string, { attemptId: string; hash: string }>();
+  /**
+   * EIP-3009: per order, an attempt this session saw signed and NOT sent (a
+   * refusal after its signature): a hash on its marker is an earlier attempt's.
+   */
+  private readonly eip3009UnsentAttempt = new Map<string, string>();
+  /** EIP-3009: per order, an attempt whose wallet failed while sending: it may have gone out. */
+  private readonly eip3009MaybeSent = new Map<string, string>();
+  /** EIP-3009: the attempt each core call's own marker writes named (`eip3009Call`). */
+  private readonly eip3009CallAttempt = new WeakMap<
+    Eip3009PayResult,
+    Eip3009Signed & { attemptId: string }
+  >();
+  /**
+   * EIP-3009: who signed each known hash, and until when it was valid: seen sent
+   * by this session, or read on chain for a marker carried over a wallet switch.
+   * A switch proved every authorization valid before its proof block over, so
+   * such a hash can never land, and nothing names it (`eip3009LiveHash`).
+   */
+  private readonly eip3009HashSigned = new Map<string, Eip3009Signed>();
+  /**
+   * EIP-3009: a hash the chain answered as unknown or as no
+   * `transferWithAuthorization`, and when it may be asked again: the build RPC
+   * is not asked on every pass.
+   */
+  private readonly eip3009HashUnsigned = new Map<string, number>();
+  /**
+   * EIP-3009: per hash, what its end proof said once it was due: `over` (its
+   * authorization can never land: never named) or `used` (its nonce was spent:
+   * the watch follows that payment). Neither ever changes.
+   */
+  private readonly eip3009HashProof = new Map<string, 'over' | 'used'>();
+  /** EIP-3009: the attempt on screen whose payment was found below the credit tag. */
+  private eip3009Confirming: { orderId: string; attemptId: string } | undefined;
 
   constructor(
     offer: ReadyOffer,
@@ -826,18 +1198,67 @@ export class CheckoutSession {
     // The first payout's network is the page's: never a quiet switch to another
     // network. Among its payouts, the first this widget can pay is the default.
     const first = offer.payouts[0];
-    const payout =
-      offer.payouts.find(
-        (each) =>
-          first !== undefined && networkOf(each) === networkOf(first) && this.servable(each),
-      ) ?? first;
-    if (first === undefined || payout === undefined) {
+    if (first === undefined) {
       throw new Error('an offer without a payout');
     }
     this.network = networkOf(first);
-    this.payout = payout;
+    this.payout = this.defaultPayout(first);
     this.loadedAt = deps.now();
     this.customerRef = deps.customerRef;
+  }
+
+  /** The first payout this widget can pay on the page's network, else the first one listed. */
+  private defaultPayout(first: PricedPayout): PricedPayout {
+    return (
+      this.offer.payouts.find((each) => networkOf(each) === this.network && this.servable(each)) ??
+      first
+    );
+  }
+
+  /**
+   * E7, at load: a protocol fee above 0 on the page's network hides its
+   * `eip3009` payouts. Read only when one would be offered; the same read for
+   * every visitor, whatever they ordered. An unread fee hides nothing: the
+   * press reads it again, and the core pays these chains only at fee 0.
+   */
+  private async readEip3009Fee(): Promise<void> {
+    const payout = this.offer.payouts.find(
+      (each) =>
+        networkOf(each) === this.network && railOf(each) === 'eip3009' && this.servable(each),
+    );
+    if (payout === undefined || this.followOnly !== undefined) {
+      return;
+    }
+    const feeBps = await this.feeBpsWithin(payout.target.caip19.chain.caip2);
+    if (feeBps === undefined || feeBps === 0) {
+      return;
+    }
+    this.feeOn.add(this.network);
+    const first = this.offer.payouts[0];
+    if (!this.servable(this.payout) && first !== undefined) {
+      this.payout = this.defaultPayout(first);
+    }
+  }
+
+  /** The protocol fee rate of `caip2`, or `undefined` when unread within `FEE_READ_TIMEOUT_MS`. */
+  private feeBpsWithin(caip2: string): Promise<number | undefined> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (feeBps: number | undefined) => {
+        if (!settled) {
+          settled = true;
+          resolve(feeBps);
+        }
+      };
+      const timer = this.deps.setTimeout(() => finish(undefined), FEE_READ_TIMEOUT_MS);
+      this.deps
+        .feeTerms(caip2)
+        .then(
+          (terms) => finish(terms.feeBps),
+          () => finish(undefined),
+        )
+        .finally(() => this.deps.clearTimeout(timer));
+    });
   }
 
   /**
@@ -848,6 +1269,7 @@ export class CheckoutSession {
    * follow-only page shows exactly the order it follows.
    */
   async start(): Promise<void> {
+    await this.readEip3009Fee();
     // Two sets: every record is listened to, reconciled and resolved; only the
     // page's own account's records are shown, resumed or followed.
     const allRecords = await this.deps.store.forProduct(this.offer.productAddress);
@@ -869,7 +1291,7 @@ export class CheckoutSession {
       );
       this.followOnly = {
         reason: 'offer_refused',
-        message: NO_NETWORK,
+        message: this.hiddenForFee() ? FEE_HIDES_EIP3009 : NO_NETWORK,
         ...(stillFollowed === undefined ? {} : { orderId: stillFollowed.orderId }),
       };
     }
@@ -878,8 +1300,10 @@ export class CheckoutSession {
       await this.startFollowOnly(allRecords, records, followed);
       return;
     }
-    // Drawn before any relay or RPC round trip: the same offer, at the same moment,
-    // for a visitor with or without an order in progress.
+    // Drawn before any relay round trip or any read of this visitor's orders on
+    // chain: the same offer, at the same moment, for a visitor with or without an
+    // order in progress. (Only the fee read of an `eip3009` page came first, and it
+    // is the same for every visitor.)
     const shown = recordToShow(records);
     const continued = shown !== undefined && continuedUnpaid(shown) ? shown : undefined;
     if (continued === undefined) {
@@ -1011,7 +1435,8 @@ export class CheckoutSession {
       this.busy ||
       this.pressing ||
       !open ||
-      this.oldPrompt !== undefined
+      this.oldPrompt !== undefined ||
+      (this.record !== undefined && this.nonceUsed.has(this.record.orderId))
     ) {
       return;
     }
@@ -1158,6 +1583,10 @@ export class CheckoutSession {
     const rail = railOf(this.payout);
     if (rail === 'tempo') {
       await this.payTempo(walletName, press, resets);
+      return;
+    }
+    if (rail === 'eip3009') {
+      await this.payEip3009(walletName, press, resets);
       return;
     }
     // Never reached: an unservable payout is never the one a press pays.
@@ -1318,6 +1747,501 @@ export class CheckoutSession {
   }
 
   /**
+   * Pay with USDC over EIP-3009 (Ethereum, Arbitrum, Base): the wallet's
+   * accounts asked before anything is ordered (a cancel ends the press there),
+   * the order dated with the chain's latest block, then the core: the switch to
+   * the chain and its check, the step 2 checks, the typed-data prompt, the gas
+   * check and the send - two wallet prompts.
+   */
+  private async payEip3009(walletName: string, press: number, resets: number): Promise<void> {
+    await this.guard(press, async () => {
+      if (this.record !== undefined && this.nonceUsed.has(this.record.orderId)) {
+        // Its nonce was used outside this checkout: never another wallet on this order.
+        this.render();
+        return;
+      }
+      // Before the wallet is asked anything, not even to connect.
+      if (await this.earlierPayment(press)) {
+        return;
+      }
+      this.cancellableFor = press;
+      this.working('checking', true);
+      const chain = this.payout.target.caip19.chain;
+      const option = this.deps.eip3009Wallets?.(chain).find((each) => each.name === walletName);
+      if (option === undefined) {
+        this.cancellableFor = undefined;
+        this.showOffer({ reason: 'no_wallet' });
+        return;
+      }
+      try {
+        await option.wallet.requestAccounts();
+      } catch (error) {
+        if (this.stale(press)) {
+          // Cancelled: a late refusal draws nothing.
+          return;
+        }
+        this.cancellableFor = undefined;
+        this.showOffer({ reason: connectProblem(walletErrorKind(error)) });
+        return;
+      }
+      if (this.stale(press)) {
+        return;
+      }
+      this.cancellableFor = undefined;
+      this.working('checking');
+      const ready = await this.freshOffer(press);
+      if (ready === undefined || this.stale(press)) {
+        return;
+      }
+      const client = this.deps.eip3009For?.(chain);
+      if (client === undefined) {
+        this.showOffer({ reason: 'rpc_error' });
+        return;
+      }
+      let chainTime: number;
+      try {
+        chainTime = await readEip3009ChainTime(client);
+      } catch {
+        if (!this.stale(press)) {
+          this.showOffer({ reason: 'rpc_error' });
+        }
+        return;
+      }
+      if (this.stale(press)) {
+        return;
+      }
+      if (!clockAgrees(chainTime, this.deps.now())) {
+        this.showOffer({ reason: 'clock_skew' });
+        return;
+      }
+      const record = await this.orderFor(chainTime, press, '', () =>
+        this.eip3009FeeAllowsOrder(press),
+      );
+      if (record === undefined || this.stale(press)) {
+        return;
+      }
+      if (this.nonceUsed.has(record.orderId)) {
+        this.render();
+        return;
+      }
+      this.working('signing');
+      this.stopWatching();
+      this.generation += 1;
+      const result = await this.eip3009Call(record.orderId, () => {
+        this.startProbe(press, record);
+        return payWithEip3009(record, option.wallet, ready, {
+          ...this.eip3009Deps(client, { press, resets }),
+          feeTerms: this.deps.feeTerms,
+        });
+      });
+      this.stopProbe(press);
+      if (this.stale(press)) {
+        await this.lateEip3009Answer(result, resets, record.marker?.attemptId);
+        return;
+      }
+      await this.afterEip3009Pay(result, press, resets, walletName, record.marker?.attemptId);
+    });
+  }
+
+  /** Run one core call that may sign or send for `orderId`: its marker is never cleared meanwhile. */
+  private async eip3009Call(
+    orderId: string,
+    run: () => Promise<Eip3009PayResult>,
+  ): Promise<Eip3009PayResult> {
+    this.eip3009Live.add(orderId);
+    const markedBefore = this.marked;
+    try {
+      const result = await run();
+      // The attempt this call signed for: the marker its own writes left (another
+      // tab's writes never go through this press's store); none for a resend.
+      const marked = this.marked;
+      if (
+        marked !== markedBefore &&
+        marked?.orderId === orderId &&
+        marked.marker?.rail === 'eip3009'
+      ) {
+        this.eip3009CallAttempt.set(result, {
+          attemptId: marked.marker.attemptId,
+          authorizer: marked.marker.authorizer,
+          validBefore: marked.marker.validBefore,
+        });
+      }
+      return result;
+    } finally {
+      this.eip3009Live.delete(orderId);
+    }
+  }
+
+  /**
+   * E7, before a new `eip3009` order: the protocol fee, read fresh, must be 0.
+   * Above 0 these chains are no longer offered on this network, with the line
+   * saying why; nothing was ordered or paid.
+   */
+  private async eip3009FeeAllowsOrder(press: number): Promise<boolean> {
+    let feeBps: number;
+    try {
+      feeBps = (await this.deps.feeTerms(this.payout.target.caip19.chain.caip2)).feeBps;
+    } catch (error) {
+      if (!this.stale(press)) {
+        this.showOffer({ reason: feeRefusalOf(error) });
+      }
+      return false;
+    }
+    if (this.stale(press)) {
+      return false;
+    }
+    if (feeBps !== 0) {
+      this.hideForFee();
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * E7: the protocol fee on the page's network is above 0. Its `eip3009`
+   * payouts are dropped from the offer (another payout of the network becomes
+   * the chosen one), with the line saying why; with none left, no new payment.
+   */
+  private hideForFee(): void {
+    this.feeOn.add(this.network);
+    const payout = this.payablePayouts()[0];
+    if (payout === undefined) {
+      this.setRecord(undefined);
+      this.refuse('offer_refused', FEE_HIDES_EIP3009);
+      return;
+    }
+    this.payout = payout;
+    this.showOffer();
+  }
+
+  private eip3009Deps(client: Eip1193Client, scope?: PressScope): Eip3009WatchDeps {
+    return {
+      store: scope === undefined ? this.deps.store : this.pressStore(scope),
+      readClient: this.deps.readClient,
+      clientFor: this.deps.clientFor,
+      client,
+      now: this.deps.now,
+    };
+  }
+
+  /**
+   * What an `eip3009` pay, retry or resend answered. A refusal after a
+   * signature (`afterMarker`) never ends the order: the attempt is followed,
+   * with what the buyer can do about it. Before the marker, nothing was signed:
+   * the order stays open (or ends when it can no longer be paid as it is).
+   */
+  private async afterEip3009Pay(
+    result: Eip3009PayResult,
+    press: number,
+    resets: number,
+    walletName: string,
+    before: string | undefined,
+  ): Promise<void> {
+    this.noteEip3009Send(result, before);
+    this.eip3009Resend =
+      !result.ok && result.resend !== undefined
+        ? { handle: result.resend, walletName, why: resendWhy(result.reason) }
+        : undefined;
+    if (result.ok) {
+      this.sentHash.set(result.record.orderId, result.hash);
+    }
+    if (result.record !== undefined) {
+      // The store may have answered meanwhile: what is stored wins over the core's copy.
+      const stored = await this.deps.store.get(result.record.orderId);
+      if (this.stale(press)) {
+        await this.lateEip3009Answer(result, resets, before);
+        return;
+      }
+      this.setRecord(stored !== undefined && isTerminal(stored) ? stored : result.record);
+      if (stored !== undefined && isTerminal(stored)) {
+        await this.follow(stored);
+        return;
+      }
+    }
+    if (result.ok) {
+      this.attemptProblem = undefined;
+      if (result.nearExpiry === true) {
+        this.setAttemptProblem({ reason: 'near_expiry' }, result.record.marker?.attemptId);
+      }
+      if (result.hashUnsaved === true) {
+        this.pendingHash = { orderId: result.record.orderId, hash: result.hash };
+      }
+      await this.follow(result.record);
+      return;
+    }
+    const record = result.record ?? this.record;
+    if (result.afterMarker === true) {
+      // The signed attempt may still land: it stays live, whatever the reason. An
+      // attempt proven over stays over (`overOf`) when a switch was refused before
+      // it wrote a new one: another wallet and Start over stay.
+      const problem = this.eip3009Problem(result, record);
+      if (problem === undefined) {
+        this.attemptProblem = undefined;
+      } else {
+        this.setAttemptProblem(problem, result.attemptId);
+      }
+      if (record !== undefined) {
+        await this.follow(record);
+      }
+      return;
+    }
+    switch (result.reason) {
+      case 'nonce_used':
+        if (record !== undefined) {
+          if (record.marker === undefined) {
+            this.nonceUsed.add(record.orderId);
+          }
+          this.attemptProblem = undefined;
+          await this.follow(record);
+        }
+        return;
+      case 'rejected':
+      case 'sign_failed':
+        // Nothing was signed: the attempt was cleared and the same order may be paid again at once.
+        this.attemptProblem = undefined;
+        if (result.record !== undefined) {
+          await this.follow(result.record, undefined, { reason: result.reason });
+        } else {
+          this.showOffer({ reason: result.reason });
+        }
+        return;
+      case 'needs_confirmation':
+        await this.askOldPrompt(result.unconfirmed ?? [], press);
+        return;
+      case 'exclusion':
+        await this.metHolder(result.holder, press);
+        return;
+      case 'fee_not_zero':
+      case 'offer_changed':
+      case 'too_late':
+      case 'unpayable':
+      case 'store_outdated': {
+        // Nothing was requested: the order ends only if it provably did.
+        const current =
+          record === undefined ? undefined : await this.deps.store.get(record.orderId);
+        if (this.stale(press)) {
+          return;
+        }
+        const ended = current === undefined ? undefined : await this.endOrder(current);
+        if (this.stale(press)) {
+          return;
+        }
+        if (ended !== undefined && !ended.ended) {
+          await this.follow(ended.record);
+          return;
+        }
+        this.setRecord(undefined);
+        if (result.reason === 'fee_not_zero') {
+          this.hideForFee();
+        } else {
+          this.showOffer({
+            reason:
+              result.reason === 'unpayable' || result.reason === 'store_outdated'
+                ? 'failed'
+                : result.reason,
+          });
+        }
+        return;
+      }
+      case 'conflict':
+      case 'still_waiting':
+      case 'not_payable': {
+        const current =
+          record === undefined ? undefined : await this.deps.store.get(record.orderId);
+        if (this.stale(press)) {
+          return;
+        }
+        if (current !== undefined) {
+          await this.follow(current);
+        } else {
+          this.showOffer({ reason: 'failed' });
+        }
+        return;
+      }
+      default: {
+        // Nothing was requested: the record stays as it is for a later press or wallet.
+        const problem = this.eip3009Problem(result, record);
+        this.showOrWait(problem ?? { reason: 'failed' });
+      }
+    }
+  }
+
+  /**
+   * The facts a call leaves about the attempt it worked on (the one its own
+   * marker writes named, else `before`: a resend writes no marker): it sent a
+   * transaction; it signed and did not send (a signature held for a resend, or
+   * refused before its send); or its wallet failed while sending (maybe sent).
+   * Nothing else is noted: no fact, no claim.
+   */
+  private noteEip3009Send(result: Eip3009PayResult, before: string | undefined): void {
+    const own = this.eip3009CallAttempt.get(result);
+    const attemptId = own?.attemptId ?? before;
+    const orderId = result.record?.orderId;
+    if (attemptId === undefined || orderId === undefined) {
+      return;
+    }
+    if (result.ok) {
+      this.eip3009SentAttempt.set(orderId, { attemptId, hash: result.hash });
+      const marker = result.record.marker;
+      const signed =
+        own ?? (marker?.rail === 'eip3009' && marker.attemptId === attemptId ? marker : undefined);
+      if (signed !== undefined) {
+        this.eip3009HashSigned.set(result.hash, {
+          authorizer: signed.authorizer,
+          validBefore: signed.validBefore,
+        });
+      }
+      return;
+    }
+    if (result.afterMarker !== true) {
+      return;
+    }
+    if (result.reason === 'wallet_failed') {
+      this.eip3009MaybeSent.set(orderId, attemptId);
+      return;
+    }
+    const signedNotSent =
+      result.resend !== undefined ||
+      result.signedNotSent === true ||
+      result.reason === 'send_failed' ||
+      result.reason === 'resign_needed';
+    if (signedNotSent) {
+      this.eip3009UnsentAttempt.set(orderId, attemptId);
+    }
+  }
+
+  /**
+   * THE send state of an `eip3009` attempt on screen, from facts only; every
+   * text, heading, stage, link and "taking long" moment derives from it:
+   * - `sent`: this session saw the current attempt send `hash`;
+   * - `not_sent`: this session saw the current attempt signed and not sent;
+   *   `earlier`: a live transaction of an earlier attempt, which may still land;
+   * - `unknown`: no fact about the current attempt (a reload, a close, another
+   *   tab, a refused retry that signed nothing): no claim; `hash`: a known live
+   *   transaction for the order; `maybe`: its wallet failed while sending;
+   *   and every attempt proven over (`attemptOver`): nothing of it can land,
+   *   so nothing is named.
+   * A hash is named only while it may still land (`eip3009LiveHash`).
+   */
+  private eip3009SendState(record: OrderRecord): Eip3009SendState {
+    const marker = record.marker?.rail === 'eip3009' ? record.marker : undefined;
+    if (marker === undefined) {
+      return { kind: 'unknown', maybe: false };
+    }
+    // Proven over (as `canRetry` draws it): no transaction of this attempt can land, none is named.
+    if (this.overOf(record)) {
+      return { kind: 'unknown', maybe: false };
+    }
+    const sent = this.eip3009SentAttempt.get(record.orderId);
+    if (sent?.attemptId === marker.attemptId) {
+      return { kind: 'sent', hash: sent.hash };
+    }
+    // A transaction for the order known to be live: the stored one, else the one
+    // this session sent and could not store yet (`pendingHash`).
+    const pending =
+      this.pendingHash?.orderId === record.orderId ? this.pendingHash.hash : undefined;
+    const live = [marker.txHash, pending].find(
+      (hash) => this.eip3009LiveHash(record, hash) !== undefined,
+    );
+    if (this.eip3009UnsentAttempt.get(record.orderId) === marker.attemptId) {
+      return { kind: 'not_sent', ...(live === undefined ? {} : { earlier: live }) };
+    }
+    return {
+      kind: 'unknown',
+      ...(live === undefined ? {} : { hash: live }),
+      maybe: this.eip3009MaybeSent.get(record.orderId) === marker.attemptId,
+    };
+  }
+
+  /**
+   * The problem an `eip3009` refusal shows, or none (a watch follows it). The
+   * same codes come before the marker and, on a retry, after a signature.
+   */
+  private eip3009Problem(
+    result: Extract<Eip3009PayResult, { ok: false }>,
+    record: OrderRecord | undefined,
+  ): Problem | undefined {
+    const chain = record === undefined ? this.payout.target.caip19.chain : recordChain(record);
+    const chainName = chain?.chainName ?? '';
+    // A refusal on a retry of a live signed attempt: nothing new was signed, and
+    // the earlier payment may still arrive - never "nothing was paid".
+    const live = result.afterMarker === true && !this.attemptOver;
+    const blocked = RETRY_BLOCKED_CAUSES[result.reason];
+    if (live && blocked !== undefined) {
+      return { reason: 'retry_blocked', cause: blocked, chain: chainName };
+    }
+    switch (result.reason) {
+      case 'connect_failed': {
+        const kind = result.walletError ?? 'failed';
+        // A decline on a retry or switch of a signed attempt keeps it live: nothing new was sent.
+        return result.afterMarker === true && kind === 'rejected'
+          ? { reason: 'again_declined' }
+          : { reason: connectProblem(kind) };
+      }
+      case 'wrong_chain':
+        return { reason: 'chain_unreachable', chain: chainName };
+      case 'insufficient_token':
+        return {
+          reason: 'insufficient_token',
+          needed: result.needed ?? 0n,
+          available: result.available ?? 0n,
+        };
+      case 'no_native':
+        return {
+          reason: 'no_native',
+          coin: chain?.nativeCurrency?.symbol ?? 'ETH',
+          chain: chainName,
+        };
+      case 'insufficient_native':
+        return {
+          reason: 'insufficient_native',
+          needed: result.needed ?? 0n,
+          available: result.available ?? 0n,
+          native: nativeAssetOf(chain),
+          chain: chainName,
+        };
+      case 'other_payer': {
+        const marker = record?.marker;
+        return marker?.rail === 'eip3009'
+          ? { reason: 'other_payer', payer: marker.authorizer }
+          : { reason: 'failed' };
+      }
+      case 'sign_declined':
+        return { reason: 'again_declined' };
+      case 'wallet_failed':
+        return { reason: 'send_uncertain' };
+      case 'wrong_chain_after_sign':
+        return { reason: 'wrong_chain_after_sign', chain: chainName };
+      case 'token_blocked':
+      case 'payer_unsupported':
+      case 'resign_needed':
+      case 'send_declined':
+      case 'send_failed':
+      case 'self_payment':
+      case 'rpc_error':
+      case 'too_late':
+      case 'offer_changed':
+      case 'fee_config_unavailable':
+      case 'fee_config_invalid':
+        return { reason: result.reason };
+      case 'stale_offer':
+      case 'unpayable':
+      case 'store_outdated':
+      case 'fee_not_zero':
+      case 'not_payable':
+      case 'conflict':
+        return { reason: 'failed' };
+      case 'still_waiting':
+      case 'nonce_used':
+      case 'exclusion':
+      case 'needs_confirmation':
+      case 'rejected':
+      case 'sign_failed':
+        return undefined;
+    }
+  }
+
+  /**
    * Before a new order is placed: the protocol fee planned from fresh terms for
    * this offer and payer, and on Tempo with a fee leg, a wallet that batches.
    * A refusal is drawn on the offer (`false`): nothing was ordered or paid. An
@@ -1382,7 +2306,6 @@ export class CheckoutSession {
     }
     if (result.ok && 'bundleId' in result) {
       this.attemptProblem = undefined;
-      this.attemptOver = false;
       const hold: BundleHold = {
         orderId: result.record.orderId,
         bundleId: result.bundleId,
@@ -1407,7 +2330,6 @@ export class CheckoutSession {
     }
     if (result.ok) {
       this.attemptProblem = undefined;
-      this.attemptOver = false;
       if (result.hashUnsaved === true && result.record.state === 'ended-unpaid') {
         // Another tab ended the order while the wallet was open: the buyer approved
         // it anyway. The hash is watched until the payment is found, and said so.
@@ -1448,7 +2370,6 @@ export class CheckoutSession {
       case 'wallet_failed':
         // No hash: the attempt may still land (a queued prompt): it stays live.
         this.setAttemptProblem({ reason: 'wallet_failed' }, this.record?.marker?.attemptId);
-        this.attemptOver = false;
         if (this.record !== undefined) {
           await this.follow(this.record);
         }
@@ -1616,7 +2537,9 @@ export class CheckoutSession {
 
   /** Watch a hash approved for an ended order until it is found (or blocked): a banner then. */
   private watchLateHash(record: OrderRecord, hash: string): void {
-    const client = this.tempoOfRecord(record);
+    // Tempo only: an `eip3009` order ended through the end proof, so a hash its
+    // wallet returns since can never pay it (it reverts as expired).
+    const client = recordRail(record) === 'tempo' ? this.tempoOfRecord(record) : undefined;
     if (client === undefined || this.disposed) {
       return;
     }
@@ -1673,7 +2596,7 @@ export class CheckoutSession {
    * may find its payment. Every press is refused while it lasts.
    */
   private watchLateBundle(record: OrderRecord, hold: BundleHold): void {
-    const client = this.tempoOfRecord(record);
+    const client = recordRail(record) === 'tempo' ? this.tempoOfRecord(record) : undefined;
     if (client === undefined || this.disposed) {
       return;
     }
@@ -1878,6 +2801,36 @@ export class CheckoutSession {
     return terms === undefined ? payoutPaying(this.payout) : recordPaying(terms);
   }
 
+  /** Whether `record`'s attempt is proven over: derived from `overAttemptIds`, never set apart. */
+  private overOf(record: OrderRecord | undefined): boolean {
+    const marker = record?.marker;
+    return marker !== undefined && this.overAttemptIds.has(marker.attemptId);
+  }
+
+  /** The attempt on screen provably ended with no payment (a retry, or another wallet, is offered). */
+  private get attemptOver(): boolean {
+    return this.overOf(this.record);
+  }
+
+  /**
+   * THE way a stored version of an order is taken on screen (the listener, a
+   * late answer, a watch pass, the probe, `follow`, a close): the record, and
+   * its watch whenever it holds an attempt that may still land. A press open
+   * draws its own end (`follow`), so none is started under it.
+   */
+  private adopt(record: OrderRecord): void {
+    this.setRecord(record);
+    if (
+      record.state === 'paying' &&
+      record.marker !== undefined &&
+      !this.overOf(record) &&
+      !this.busy &&
+      !this.pressing
+    ) {
+      this.watch();
+    }
+  }
+
   /**
    * An order seen ended with nothing found, or an attempt proven over: its
    * marker's transaction never landed, so no receipt ever names it.
@@ -1890,7 +2843,7 @@ export class CheckoutSession {
 
   /**
    * The transaction a finished order's receipt may name, chosen once: the
-   * attempt's own (not one proven over), else a Tempo hash a wallet returned
+   * attempt's own (not one proven over), else an EVM hash a wallet returned
    * in this session for the order.
    */
   private receiptCandidate(record: OrderRecord): string | undefined {
@@ -1902,7 +2855,10 @@ export class CheckoutSession {
     let tx: string | undefined;
     if (marker?.rail === 'solana' && !this.overAttemptIds.has(marker.attemptId)) {
       tx = marker.signature;
-    } else if (marker?.rail === 'tempo' && !this.overAttemptIds.has(marker.attemptId)) {
+    } else if (
+      (marker?.rail === 'tempo' || marker?.rail === 'eip3009') &&
+      !this.overAttemptIds.has(marker.attemptId)
+    ) {
       tx = marker.txHash;
     }
     tx ??= this.sentHash.get(record.orderId);
@@ -2095,7 +3051,11 @@ export class CheckoutSession {
         .send({ abortSignal: AbortSignal.timeout(TX_CHECK_TIMEOUT_MS) });
       return solanaVerdict(statuses.value[0]);
     }
-    const client = this.tempoOfRecord(record);
+    if (recordRail(record) === 'eip3009') {
+      return await this.eip3009TxVerdict(record, tx);
+    }
+    // Only a Tempo record is read with the Tempo client: never another rail's chain.
+    const client = recordRail(record) === 'tempo' ? this.tempoOfRecord(record) : undefined;
     if (client === undefined) {
       return 'unknown';
     }
@@ -2107,6 +3067,45 @@ export class CheckoutSession {
       return 'unknown';
     }
     return readQuantity(receipt.status) === 1n ? 'succeeded' : 'failed';
+  }
+
+  /**
+   * An `eip3009` transaction this checkout sent, on the widget's own RPC of the
+   * record's chain: final only once its block is at the chain's credit tag
+   * (succeeded or reverted); anything else is `unknown`, never "not paid".
+   */
+  private async eip3009TxVerdict(record: OrderRecord, tx: string): Promise<TxVerdict> {
+    const client = this.eip3009OfRecord(record);
+    const chain = recordChain(record);
+    if (client === undefined || chain === undefined || readTxHash(tx) !== tx) {
+      return 'unknown';
+    }
+    const signal = AbortSignal.timeout(TX_CHECK_TIMEOUT_MS);
+    const receipt: unknown = await withAbort(
+      client.request({ method: 'eth_getTransactionReceipt', params: [tx] }),
+      signal,
+    );
+    if (
+      typeof receipt !== 'object' ||
+      receipt === null ||
+      !('status' in receipt) ||
+      !('blockNumber' in receipt)
+    ) {
+      return 'unknown';
+    }
+    const credit = await withAbort(
+      readBlockAtTag(client, chain.finality?.credit ?? 'finalized'),
+      signal,
+    );
+    const landedAt = readQuantity(receipt.blockNumber);
+    if (credit === null || landedAt === null || landedAt > BigInt(credit.number)) {
+      return 'unknown';
+    }
+    const status = readQuantity(receipt.status);
+    if (status === 1n) {
+      return 'succeeded';
+    }
+    return status === 0n ? 'failed' : 'unknown';
   }
 
   /**
@@ -2134,7 +3133,7 @@ export class CheckoutSession {
   private working(
     step: 'checking' | 'ordering' | 'signing',
     cancellable = false,
-    unanswered: { startOverIn?: Countdown; unsureAt?: number } = {},
+    unanswered: { startOverIn?: Countdown; unsureAt?: number; sendOnly?: boolean } = {},
   ): void {
     const terms = this.termsShown(step === 'signing');
     const paying = this.payingOf(terms);
@@ -2146,16 +3145,40 @@ export class CheckoutSession {
       ...(cancellable ? { cancellable: true as const } : {}),
       ...(unanswered.startOverIn === undefined ? {} : { startOverIn: unanswered.startOverIn }),
       ...(unanswered.unsureAt === undefined ? {} : { unsureAt: unanswered.unsureAt }),
+      ...(unanswered.sendOnly === true ? { sendOnly: true as const } : {}),
     });
   }
 
+  /**
+   * This widget can take a new payment on `payout` now: its rail's RPC is in
+   * the build; an `eip3009` chain only with its own build RPC for that chain
+   * and network, and only while the protocol fee is 0 there (E7).
+   */
   private servable(payout: PricedPayout): boolean {
     const network = networkOf(payout);
     const rail = railOf(payout);
     if (rail === 'tempo') {
       return this.deps.tempoFor?.(network) !== undefined;
     }
+    if (rail === 'eip3009') {
+      return (
+        this.deps.eip3009For?.(payout.target.caip19.chain) !== undefined && !this.feeOn.has(network)
+      );
+    }
     return rail === 'solana' && this.deps.rpcFor(network) !== undefined;
+  }
+
+  /** E7 hides a payout of the page's network that would be offered at fee 0. */
+  private hiddenForFee(): boolean {
+    return (
+      this.feeOn.has(this.network) &&
+      this.offer.payouts.some(
+        (payout) =>
+          networkOf(payout) === this.network &&
+          railOf(payout) === 'eip3009' &&
+          this.deps.eip3009For?.(payout.target.caip19.chain) !== undefined,
+      )
+    );
   }
 
   /** The record's own chain is reachable from here. */
@@ -2163,6 +3186,9 @@ export class CheckoutSession {
     const rail = recordRail(record);
     if (rail === 'tempo') {
       return this.tempoOfRecord(record) !== undefined;
+    }
+    if (rail === 'eip3009') {
+      return this.eip3009OfRecord(record) !== undefined;
     }
     return rail === 'solana' && this.rpcOfRecord(record) !== undefined;
   }
@@ -2172,12 +3198,22 @@ export class CheckoutSession {
     return network === undefined ? undefined : this.deps.tempoFor?.(network);
   }
 
+  /** The widget's own RPC of an `eip3009` record's chain, or `undefined` (none in the build). */
+  private eip3009OfRecord(record: OrderRecord): Eip1193Client | undefined {
+    const chain = recordChain(record);
+    return chain === undefined || settlementOf(chain) !== 'eip3009'
+      ? undefined
+      : this.deps.eip3009For?.(chain);
+  }
+
   private walletChoices(payout: PricedPayout): WalletChoice[] {
     const network = networkOf(payout);
     const rail = railOf(payout);
     let options: readonly { name: string; icon?: string }[] = [];
     if (rail === 'tempo') {
       options = this.deps.tempoWallets?.(network) ?? [];
+    } else if (rail === 'eip3009') {
+      options = this.deps.eip3009Wallets?.(payout.target.caip19.chain) ?? [];
     } else if (rail === 'solana') {
       options = this.deps.wallets(network);
     }
@@ -2196,6 +3232,12 @@ export class CheckoutSession {
   private async reconcileEnded(records: readonly OrderRecord[]): Promise<void> {
     const now = this.deps.now();
     for (const record of records) {
+      if (recordRail(record) === 'eip3009') {
+        if (!this.disposed) {
+          await this.reconcileEip3009(record);
+        }
+        continue;
+      }
       // Ended orders whose prompt may still be approved, and every paying Tempo
       // order whether or not it is the one shown: each is checked once per load.
       const eligible = mayStillBePaid(record, now) || record.state === 'paying';
@@ -2220,6 +3262,66 @@ export class CheckoutSession {
         // Unreadable now: the next load checks again.
       }
     }
+  }
+
+  /**
+   * Each load, an `eip3009` order in `paying`: a frozen `usedAtStart` marker is
+   * left to the store's answer, with no read at all; a marker that never held a
+   * signature is cleared to `ordered` (nothing it asked for can land); a signed
+   * one is watched (a payment found shows as a banner), and ends only through
+   * the end proof, which the store's end write carries (`endEip3009Order`).
+   */
+  private async reconcileEip3009(record: OrderRecord): Promise<void> {
+    const marker = record.marker;
+    if (record.state !== 'paying' || marker?.rail !== 'eip3009' || marker.usedAtStart === true) {
+      return;
+    }
+    const client = this.eip3009OfRecord(record);
+    if (client === undefined) {
+      return;
+    }
+    try {
+      if (marker.signed !== true) {
+        await this.clearUnsignedEip3009(record);
+        return;
+      }
+      const watched = await watchEip3009Payment(record, this.eip3009Deps(client));
+      if (watched.state === 'paid') {
+        this.banner(watched.record);
+        return;
+      }
+      if (watched.state === 'waiting' || watched.state === 'unsure') {
+        await this.endOrder(watched.record);
+      }
+    } catch {
+      // Unreadable now: the next load checks again.
+    }
+  }
+
+  /**
+   * An `eip3009` marker that never held a signature, of no call running in this
+   * session: cleared to `ordered` (compare-and-swap on its attempt), so another
+   * wallet or the same order may pay at once. A signature approved for it later
+   * is never stored, so never sent. The cleared record, or `undefined`.
+   */
+  private async clearUnsignedEip3009(record: OrderRecord): Promise<OrderRecord | undefined> {
+    const marker = record.marker;
+    if (
+      record.state !== 'paying' ||
+      marker?.rail !== 'eip3009' ||
+      marker.signed === true ||
+      marker.usedAtStart === true ||
+      this.eip3009Live.has(record.orderId)
+    ) {
+      return undefined;
+    }
+    const cleared = await this.deps.store.clearMarker(
+      record.orderId,
+      record.version,
+      marker.attemptId,
+      'ordered',
+    );
+    return cleared.ok ? cleared.record : undefined;
   }
 
   private banner(record: OrderRecord): void {
@@ -2247,7 +3349,9 @@ export class CheckoutSession {
       this.pressing ||
       record === undefined ||
       this.followOnly !== undefined ||
-      !this.attemptOver
+      // EIP-3009: the same wallet may sign again at once (the two authorizations
+      // exclude each other); another wallet only once the end proof passed.
+      (!this.attemptOver && !this.eip3009RetryOpen(record))
     ) {
       return;
     }
@@ -2303,6 +3407,10 @@ export class CheckoutSession {
     network: Network,
     scope: PressScope,
   ): Promise<void> {
+    if (recordRail(record) === 'eip3009') {
+      await this.retryEip3009Guarded(record, walletName, scope);
+      return;
+    }
     const press = scope.press;
     this.cancellableFor = press;
     this.working('checking', true);
@@ -2360,6 +3468,184 @@ export class CheckoutSession {
       return;
     }
     await this.afterPay(result, rpc, press, scope.resets, walletName);
+  }
+
+  /**
+   * EIP-3009, a press on a live attempt: the same wallet signs again at once
+   * (`retryWithEip3009`; another account there is `other_payer`), and once the
+   * end proof passed, any wallet (`switchWalletWithEip3009`, which proves it
+   * again). The wallet's accounts are asked first: a decline keeps the attempt.
+   */
+  private async retryEip3009Guarded(
+    record: OrderRecord,
+    walletName: string,
+    scope: PressScope,
+  ): Promise<void> {
+    const press = scope.press;
+    const chain = recordChain(record);
+    const client = this.eip3009OfRecord(record);
+    const option =
+      chain === undefined
+        ? undefined
+        : this.deps.eip3009Wallets?.(chain).find((each) => each.name === walletName);
+    if (option === undefined || client === undefined) {
+      this.render({ problem: { reason: option === undefined ? 'no_wallet' : 'rpc_error' } });
+      return;
+    }
+    // Decided at the press: an attempt proven over is another wallet's to pay.
+    const switching = this.attemptOver;
+    this.cancellableFor = press;
+    this.working('checking', true);
+    try {
+      await option.wallet.requestAccounts();
+    } catch (error) {
+      if (this.stale(press)) {
+        return;
+      }
+      this.cancellableFor = undefined;
+      const kind = walletErrorKind(error);
+      // The attempt stays live: a declined connect is no "nothing was paid".
+      this.render({
+        problem: { reason: kind === 'rejected' ? 'again_declined' : connectProblem(kind) },
+      });
+      return;
+    }
+    if (this.stale(press)) {
+      return;
+    }
+    this.cancellableFor = undefined;
+    this.working('checking');
+    const ready = await this.freshOffer(press);
+    if (ready === undefined || this.stale(press)) {
+      return;
+    }
+    const current = (await this.deps.store.get(record.orderId)) ?? record;
+    if (this.stale(press)) {
+      return;
+    }
+    if (storeClosed(current)) {
+      // The store cancelled or delivered it: never another wallet request.
+      await this.follow(current);
+      return;
+    }
+    this.working('signing');
+    this.stopWatching();
+    this.generation += 1;
+    const deps = { ...this.eip3009Deps(client, scope), feeTerms: this.deps.feeTerms };
+    const result = await this.eip3009Call(current.orderId, () => {
+      this.startProbe(press, current);
+      return switching
+        ? switchWalletWithEip3009(current, option.wallet, ready, deps)
+        : retryWithEip3009(current, option.wallet, ready, deps);
+    });
+    this.stopProbe(press);
+    if (this.stale(press)) {
+      await this.lateEip3009Answer(result, scope.resets, current.marker?.attemptId);
+      return;
+    }
+    await this.afterEip3009Pay(result, press, scope.resets, walletName, current.marker?.attemptId);
+  }
+
+  /**
+   * EIP-3009: send again the signature the attempt on screen holds in memory
+   * ("Send anyway" after the gas warning, "Send again" after a declined send or
+   * a wallet on another network). Nothing is signed; the core checks the stored
+   * attempt, the deadline and the wallet's network again before the wallet opens.
+   */
+  async resend(): Promise<void> {
+    const record = this.record;
+    const hold = this.eip3009Resend;
+    if (
+      this.busy ||
+      this.pressing ||
+      this.followOnly !== undefined ||
+      record === undefined ||
+      hold === undefined ||
+      hold.handle.orderId !== record.orderId ||
+      record.marker?.attemptId !== hold.handle.attemptId ||
+      this.attemptOver ||
+      this.eip3009ConfirmingNow(record)
+    ) {
+      return;
+    }
+    this.press += 1;
+    const press = this.press;
+    this.pressing = true;
+    try {
+      await this.guard(press, () => this.resendGuarded(record, hold, press));
+    } finally {
+      if (this.press === press) {
+        this.pressing = false;
+        this.redrawIfFreed();
+      }
+    }
+  }
+
+  private async resendGuarded(
+    record: OrderRecord,
+    hold: Eip3009ResendHold,
+    press: number,
+  ): Promise<void> {
+    const resets = this.resets;
+    const chain = recordChain(record);
+    const client = this.eip3009OfRecord(record);
+    const option =
+      chain === undefined
+        ? undefined
+        : this.deps.eip3009Wallets?.(chain).find((each) => each.name === hold.walletName);
+    if (option === undefined || client === undefined) {
+      this.render({ problem: { reason: option === undefined ? 'no_wallet' : 'rpc_error' } });
+      return;
+    }
+    // Only `working('signing')` is drawn here, which shows the order's own terms anyway;
+    // the signature exists, so the wallet is asked only to send it.
+    this.working('signing', false, { sendOnly: true });
+    this.stopWatching();
+    this.generation += 1;
+    const result = await this.eip3009Call(record.orderId, () => {
+      this.startProbe(press, record, true);
+      return resendWithEip3009(
+        hold.handle,
+        option.wallet,
+        this.eip3009Deps(client, { press, resets }),
+      );
+    });
+    this.stopProbe(press);
+    if (this.stale(press)) {
+      await this.lateEip3009Answer(result, resets, record.marker?.attemptId);
+      return;
+    }
+    await this.afterEip3009Pay(result, press, resets, hold.walletName, record.marker?.attemptId);
+  }
+
+  /**
+   * EIP-3009: the same wallet may sign again now: a live attempt that holds a
+   * signature (never the frozen `usedAtStart` one), not closed by the store,
+   * and no payment of it confirming.
+   */
+  private eip3009RetryOpen(record: OrderRecord): boolean {
+    const marker = record.marker;
+    return (
+      record.state === 'paying' &&
+      marker?.rail === 'eip3009' &&
+      marker.signed === true &&
+      marker.usedAtStart !== true &&
+      !storeClosed(record) &&
+      !this.eip3009ConfirmingNow(record) &&
+      this.followOnly === undefined &&
+      this.refusedHere === undefined &&
+      this.eip3009OfRecord(record) !== undefined
+    );
+  }
+
+  /** A payment of `record`'s live attempt was found below the credit tag. */
+  private eip3009ConfirmingNow(record: OrderRecord): boolean {
+    const confirming = this.eip3009Confirming;
+    return (
+      confirming !== undefined &&
+      confirming.orderId === record.orderId &&
+      confirming.attemptId === record.marker?.attemptId
+    );
   }
 
   /**
@@ -2655,14 +3941,14 @@ export class CheckoutSession {
       current = undefined;
     }
     if (current !== undefined && this.record !== undefined && continuedUnpaid(current)) {
-      this.record = current;
+      this.adopt(current);
       this.silent = current.orderId;
     } else {
       this.setRecord(undefined);
     }
     this.attemptProblem = undefined;
     this.againOffer = undefined;
-    this.attemptOver = false;
+    this.eip3009Resend = undefined;
     this.oldPrompt = undefined;
     this.offerProblem = undefined;
     this.noteShown = false;
@@ -2741,7 +4027,7 @@ export class CheckoutSession {
    * a countdown to when it can be proven over, and the watch's own verdicts.
    * Started after the watch stopped and the generation moved on.
    */
-  private startProbe(press: number, record: OrderRecord): void {
+  private startProbe(press: number, record: OrderRecord, sendOnly = false): void {
     this.stopProbe();
     const probe: Probe = {
       press,
@@ -2751,6 +4037,7 @@ export class CheckoutSession {
       timer: undefined,
       ticking: false,
       drawn: '',
+      sendOnly,
     };
     probe.timer = this.deps.setInterval(
       () => void this.probeTick(probe).catch(() => undefined),
@@ -2789,27 +4076,40 @@ export class CheckoutSession {
       if (this.overAttemptIds.has(stored.marker.attemptId)) {
         return;
       }
-      this.attemptOver = false;
       const shown = this.record;
       if (shown?.orderId === probe.orderId) {
         // The marker reaches the record on screen here (the press holds the pre-marker copy).
         if (stored.version > shown.version || shown.marker === undefined) {
-          this.record = stored;
+          this.adopt(stored);
         }
       }
       const marker = stored.marker;
-      const tempo = marker.rail === 'tempo';
-      if (!tempo) {
+      if (marker.rail === 'solana') {
         this.readRetryEstimate(stored, probe.generation);
       }
-      const startOverIn = tempo ? this.requestCountdown(stored) : this.retryCountdown(stored);
-      const unsureAt = marker.setAt + UNSURE_AFTER_SECS;
+      let startOverIn: Countdown | undefined;
+      let unsureAt: number | undefined;
+      if (marker.rail === 'eip3009') {
+        // Another wallet once the end proof can pass (never while a payment confirms);
+        // "taking long" from the chain's waits.
+        startOverIn = this.eip3009ConfirmingNow(stored) ? undefined : this.switchCountdown(stored);
+        // A press is open on this attempt: it sent only if this session saw it send.
+        unsureAt = eip3009UnsureAt(
+          stored,
+          this.eip3009SentAttempt.get(stored.orderId)?.attemptId === marker.attemptId,
+        );
+      } else {
+        startOverIn =
+          marker.rail === 'tempo' ? this.requestCountdown(stored) : this.retryCountdown(stored);
+        unsureAt = marker.setAt + UNSURE_AFTER_SECS;
+      }
       const key = `${startOverIn === undefined ? '' : startOverIn.at + startOverIn.seconds}/${unsureAt}`;
       if (key !== probe.drawn) {
         probe.drawn = key;
         this.working('signing', false, {
           ...(startOverIn === undefined ? {} : { startOverIn }),
-          unsureAt,
+          ...(unsureAt === undefined ? {} : { unsureAt }),
+          sendOnly: probe.sendOnly,
         });
       }
       const watched = await this.watchOnce(stored);
@@ -2893,6 +4193,45 @@ export class CheckoutSession {
     if (record === undefined) {
       return;
     }
+    await this.lateRecord(record, result.ok ? hash : undefined, bundle, pressResets, resets);
+  }
+
+  /**
+   * An `eip3009` answer to a press that is no longer the current one: as
+   * `lateAnswer`. A hash returned is remembered (`sentHash`): the background
+   * follower watches it, stored or not.
+   */
+  private async lateEip3009Answer(
+    result: Eip3009PayResult,
+    pressResets: number,
+    before: string | undefined,
+  ): Promise<void> {
+    const resets = this.resets;
+    this.noteEip3009Send(result, before);
+    const record = result.record;
+    if (result.ok) {
+      this.sentHash.set(result.record.orderId, result.hash);
+    }
+    if (record === undefined) {
+      return;
+    }
+    await this.lateRecord(
+      record,
+      result.ok ? result.hash : undefined,
+      undefined,
+      pressResets,
+      resets,
+    );
+  }
+
+  /** `lateAnswer`'s bookkeeping of the answered order, on any rail. */
+  private async lateRecord(
+    record: OrderRecord,
+    hash: string | undefined,
+    bundle: { hold: BundleHold; unsaved: boolean } | undefined,
+    pressResets: number,
+    resets: number,
+  ): Promise<void> {
     const orderId = record.orderId;
     const stored = (await this.deps.store.get(orderId)) ?? record;
     // An unsaved bundle of an order still paying holds it in this session (the
@@ -2912,7 +4251,7 @@ export class CheckoutSession {
       if (!shown && (this.resets !== pressResets || this.quiet.has(orderId))) {
         this.quiet.add(orderId);
       }
-      if (hash !== undefined && result.ok) {
+      if (hash !== undefined) {
         // Approved for an order that ended meanwhile: watched until it is found.
         this.watchLateHash(stored, hash);
       }
@@ -2933,10 +4272,7 @@ export class CheckoutSession {
     }
     if (shown) {
       // The modal stayed open (a probe verdict ended the press): its order, as stored.
-      this.record = stored;
-      if (stored.marker === undefined) {
-        this.attemptOver = false;
-      }
+      this.adopt(stored);
       this.render();
       return;
     }
@@ -3008,6 +4344,15 @@ export class CheckoutSession {
       if (fresh === undefined || !holdsPayExclusion(fresh) || watched?.state === 'closed') {
         continue;
       }
+      if (watched?.state !== 'confirming' && this.eip3009Resumable(fresh)) {
+        // EIP-3009: the same wallet may sign again at once (its two signatures
+        // exclude each other): the attempt comes back on screen with that retry,
+        // after a reload, a close or another tab alike - never a wait for the proof.
+        this.stopFollowing(fresh.orderId);
+        this.quiet.delete(fresh.orderId);
+        await this.follow(fresh, fresh.inboxRelays);
+        return true;
+      }
       const line = await this.holderLine(fresh);
       if (this.stale(press)) {
         return true;
@@ -3016,6 +4361,23 @@ export class CheckoutSession {
       return true;
     }
     return false;
+  }
+
+  /**
+   * EIP-3009: a holder of this account that the same wallet may sign again for
+   * now: a signed attempt in `paying` (a found payment is `paid`; never the
+   * frozen `usedAtStart` one), not closed by the store, on a chain this build serves.
+   */
+  private eip3009Resumable(holder: OrderRecord): boolean {
+    const marker = holder.marker;
+    return (
+      holder.state === 'paying' &&
+      marker?.rail === 'eip3009' &&
+      marker.signed === true &&
+      marker.usedAtStart !== true &&
+      !storeClosed(holder) &&
+      this.eip3009OfRecord(holder) !== undefined
+    );
   }
 
   /** The earlier-payment line for a holder of this account, from its stored record. */
@@ -3045,7 +4407,13 @@ export class CheckoutSession {
         ...(retryIn === undefined ? {} : { retryIn }),
       };
     }
-    const retryIn = marker?.rail === 'solana' ? await this.holderCountdown(holder) : undefined;
+    let retryIn: Countdown | undefined;
+    if (marker?.rail === 'solana') {
+      retryIn = await this.holderCountdown(holder);
+    } else if (marker?.rail === 'eip3009') {
+      // Until another wallet may pay: the end proof; none for a frozen `usedAtStart` one.
+      retryIn = this.switchCountdown(holder);
+    }
     return {
       reason: 'earlier_payment',
       phase: 'confirming',
@@ -3155,6 +4523,17 @@ export class CheckoutSession {
    * it no longer holds the product (an attempt proven over and ended).
    */
   private async resolveOther(record: OrderRecord): Promise<boolean> {
+    if (recordRail(record) === 'eip3009') {
+      // Its own pass: an attempt ends only once the end proof holds (`endOrder` reads it again).
+      const watched = await this.watchOnce(record);
+      if (watched === undefined) {
+        return false;
+      }
+      if (watched.state !== 'over') {
+        return !holdsPayExclusion(watched.record);
+      }
+      return (await this.endOrder(watched.record)).ended;
+    }
     if (recordRail(record) === 'tempo') {
       const client = this.tempoOfRecord(record);
       if (client === undefined) {
@@ -3527,7 +4906,12 @@ export class CheckoutSession {
     record: OrderRecord,
     options: TempoWatchOptions = {},
   ): Promise<{ ended: boolean; record: OrderRecord }> {
+    if (this.nonceUsed.has(record.orderId)) {
+      // EIP-3009: its nonce was used outside this checkout; only the store's answer settles it.
+      return Promise.resolve({ ended: false, record });
+    }
     const tempo = recordRail(record) === 'tempo' ? this.tempoOfRecord(record) : undefined;
+    const eip3009 = recordRail(record) === 'eip3009' ? this.eip3009OfRecord(record) : undefined;
     const held = options.pendingHash !== undefined || options.pendingBundleId !== undefined;
     if (tempo !== undefined && held && record.state !== 'created') {
       return endTempoOrder(record, this.tempoDeps(tempo), options);
@@ -3539,6 +4923,7 @@ export class CheckoutSession {
       now: this.deps.now,
       rpc: recordRail(record) === 'solana' ? this.rpcOfRecord(record) : undefined,
       ...(tempo === undefined ? {} : { tempo }),
+      ...(eip3009 === undefined ? {} : { eip3009 }),
     });
   }
 
@@ -3950,9 +5335,9 @@ export class CheckoutSession {
     // The press commits to this order: its store answers show from now on.
     this.silent = undefined;
     this.status('ordered');
-    // A Tempo request is composed at the pay press (after the checks), in the core.
+    // A Tempo or EIP-3009 request is composed at the pay press (after the checks), in the core.
     const rail = recordRail(record);
-    if (rail === 'tempo') {
+    if (rail === 'tempo' || rail === 'eip3009') {
       this.listen(record);
       return record;
     }
@@ -4321,7 +5706,6 @@ export class CheckoutSession {
       return;
     }
     if (result.ok) {
-      this.attemptOver = false;
       await this.follow(result.record);
       return;
     }
@@ -4356,7 +5740,6 @@ export class CheckoutSession {
         // The buyer declined: nothing was signed and the attempt was released, so the
         // same order is paid anew at once (follow also shows a store's cancellation).
         this.attemptProblem = undefined;
-        this.attemptOver = false;
         if (result.record !== undefined) {
           await this.follow(result.record, undefined, { reason: 'rejected' });
         } else {
@@ -4366,7 +5749,6 @@ export class CheckoutSession {
       case 'wallet_failed':
       case 'wallet_unsupported':
         // The attempt waits for expiry (its problem was noted as the answer came).
-        this.attemptOver = false;
         if (this.record !== undefined) {
           await this.follow(this.record);
         }
@@ -4386,8 +5768,13 @@ export class CheckoutSession {
         await this.metHolder(result.holder, press);
         return;
       default: {
-        if (result.reason === 'still_waiting' || result.reason === 'already_paid') {
-          this.attemptOver = false;
+        if (
+          (result.reason === 'still_waiting' || result.reason === 'already_paid') &&
+          this.record?.marker !== undefined
+        ) {
+          // The core's own fresh read of the chain: this attempt is not over after all
+          // (Solana: still within its window, or paid). The one retraction, from a read.
+          this.overAttemptIds.delete(this.record.marker.attemptId);
         }
         const current =
           this.record === undefined ? undefined : await this.deps.store.get(this.record.orderId);
@@ -4412,7 +5799,6 @@ export class CheckoutSession {
    * sent say so on their own line.
    */
   private async afterLiveRefusal(result: Extract<SolanaPayResult, { ok: false }>): Promise<void> {
-    this.attemptOver = false;
     const record = result.record ?? this.record;
     if (record !== undefined) {
       await this.follow(record);
@@ -4553,8 +5939,9 @@ export class CheckoutSession {
       this.stop();
       this.stopRechecks();
       this.attemptProblem = undefined;
-      this.attemptOver = false;
       this.retryEstimate = undefined;
+      this.eip3009Resend = undefined;
+      this.eip3009Confirming = undefined;
       // Silent is about one order: another one on screen is not.
       this.silent = undefined;
       this.silentAnswered = undefined;
@@ -4575,7 +5962,7 @@ export class CheckoutSession {
       void this.showPendingAnswer();
       return;
     }
-    this.setRecord(record);
+    this.adopt(record);
     if (relays !== undefined) {
       this.relays = relays;
     } else if (this.relays.length === 0) {
@@ -4600,7 +5987,12 @@ export class CheckoutSession {
       return;
     }
     if (record.state === 'created' || record.state === 'ordered') {
-      this.showOffer(problem);
+      // EIP-3009: an order whose nonce was used outside this checkout shows its wait.
+      if (this.nonceUsed.has(record.orderId)) {
+        this.render(problem === undefined ? {} : { problem });
+      } else {
+        this.showOffer(problem);
+      }
       return;
     }
     this.republishEvery();
@@ -4628,6 +6020,11 @@ export class CheckoutSession {
       this.listenToEnded([record], relays);
       this.showOffer(extra.problem);
       void this.showPendingAnswer();
+      return;
+    }
+    if (record?.state === 'ordered' && this.nonceUsed.has(record.orderId)) {
+      // EIP-3009: its nonce was used outside this checkout: never paid, switched or ended here.
+      this.showWaiting(record, extra.problem);
       return;
     }
     if (record === undefined || record.state === 'created' || record.state === 'ordered') {
@@ -4695,8 +6092,18 @@ export class CheckoutSession {
       this.show({ kind: 'cancelled', store, product });
       return;
     }
+    this.showWaiting(record, extra.problem);
+  }
+
+  /** The wait of a live attempt (or of an order that may be paid already): `render`'s last case. */
+  private showWaiting(record: OrderRecord, extraProblem: Problem | undefined): void {
+    const target = recordTarget(record);
+    const network = target?.caip19.chain.network ?? networkOf(this.payout);
+    const paying = recordPaying(record);
+    const about = this.aboutOf(record);
     const marker = record.marker;
-    const tempo = recordRail(record) === 'tempo';
+    const rail = recordRail(record);
+    const tempo = rail === 'tempo';
     let signature: string | undefined;
     let signed = false;
     if (marker?.rail === 'solana') {
@@ -4713,40 +6120,60 @@ export class CheckoutSession {
         this.pendingBundle?.orderId === record.orderId ||
         pending !== undefined;
     }
+    const sendState = marker?.rail === 'eip3009' ? this.eip3009SendState(record) : undefined;
+    if (sendState !== undefined && marker?.rail === 'eip3009') {
+      signature = sendHashOf(sendState);
+      signed = marker.signed === true || signature !== undefined;
+    }
+    const eip3009 =
+      rail === 'eip3009'
+        ? this.eip3009WaitOf(record, sendState ?? { kind: 'unknown', maybe: false })
+        : undefined;
     // A refusal by the store stays explained on every redraw while the order lives.
     const refused: Problem | undefined =
       this.refusedHere === undefined ? undefined : { reason: this.refusedHere.reason };
-    // The attempt's problem is about that attempt only: never another tab's that replaced it.
+    // The attempt's problem is about that attempt only: never another tab's that replaced it,
+    // and none while a payment of the order confirms (nothing is to be sent or paid again).
     const attemptProblem =
-      this.attemptProblem !== undefined && this.attemptProblem.attemptId === marker?.attemptId
+      this.attemptProblem !== undefined &&
+      this.attemptProblem.attemptId === marker?.attemptId &&
+      eip3009?.confirming !== true
         ? this.attemptProblem.problem
         : undefined;
-    const problem = extra.problem ?? attemptProblem ?? refused;
+    const problem = extraProblem ?? attemptProblem ?? refused;
     const retryIn = this.retryCountdown(record);
     const flags = this.flagsFor(record);
     const again = this.againFor(record);
     const requestEndsIn = tempo && !signed ? this.requestCountdown(record) : undefined;
+    let unsureAt: number | undefined;
+    if (this.attemptOver || marker === undefined) {
+      unsureAt = undefined;
+    } else if (eip3009 !== undefined) {
+      // A transaction known but not which attempt sent it: the before-send moment,
+      // `validBefore` + the finalized wait - the later one, never early, since every
+      // registry chain's finalized wait is longer than its credit wait (tested).
+      unsureAt = eip3009UnsureAt(record, eip3009.send.kind === 'sent');
+    } else {
+      unsureAt = marker.setAt + UNSURE_AFTER_SECS;
+    }
+    // Follow-only never pays: no retry is offered (start over is). Tempo has no retry;
+    // EIP-3009 offers the same wallet at once, and any wallet once proven over.
+    const retryOffered = (this.attemptOver || eip3009?.retry === true) && !tempo;
     this.show({
       kind: 'waiting_payment',
       ...(paying === undefined ? {} : { paying }),
       about,
       asset: target?.caip19.asset ?? this.payout.target.caip19.asset,
       tempo,
-      // Follow-only never pays: no retry is offered (start over is). Tempo has no retry.
       canRetry: this.attemptOver && !tempo,
       wallets:
-        this.attemptOver && !tempo && this.followOnly === undefined && target !== undefined
-          ? this.deps.wallets(network).map((option) => ({
-              name: option.name,
-              ...(option.icon === undefined ? {} : { icon: option.icon }),
-            }))
+        retryOffered && this.followOnly === undefined && target !== undefined
+          ? this.retryWalletChoices(record, network)
           : [],
       signed,
       followOnly: this.followOnly !== undefined,
       unserved: !this.recordServed(record),
-      ...(this.attemptOver || marker === undefined
-        ? {}
-        : { unsureAt: marker.setAt + UNSURE_AFTER_SECS }),
+      ...(unsureAt === undefined ? {} : { unsureAt }),
       ...(retryIn === undefined ? {} : { retryIn }),
       ...(requestEndsIn === undefined ? {} : { requestEndsIn }),
       ...(signature === undefined ? {} : { explorer: explorerFor(record, signature, network) }),
@@ -4755,7 +6182,84 @@ export class CheckoutSession {
       ...(flags?.expiring === true ? { expiring: true } : {}),
       ...(flags?.seenOnChain === true ? { seenOnChain: true } : {}),
       ...(flags?.signedNotSent === true ? { signedNotSent: true } : {}),
+      ...(eip3009 === undefined ? {} : { eip3009 }),
     });
+  }
+
+  /**
+   * The transaction an `eip3009` wait may name, as one that may still land:
+   * only a hash whose signer and `validBefore` are known (seen sent by this
+   * session, or read on chain by the watch), and whose authorization is not
+   * proven over - neither by a wallet switch (valid only before its proof
+   * block, or another wallet's) nor by its own end proof (`eip3009HashProof`).
+   * A retry, or a switch back to the same wallet, copies the marker's hash: an
+   * earlier attempt's, which this rule names only while it can still land.
+   */
+  private eip3009LiveHash(record: OrderRecord, hash: string | undefined): string | undefined {
+    const marker = record.marker;
+    if (hash === undefined || marker?.rail !== 'eip3009') {
+      return undefined;
+    }
+    const signed = this.eip3009HashSigned.get(hash);
+    if (signed === undefined || this.eip3009HashProof.get(hash) === 'over') {
+      return undefined;
+    }
+    const switchProof = marker.switchProof;
+    if (
+      switchProof !== undefined &&
+      (signed.authorizer !== marker.authorizer ||
+        BigInt(signed.validBefore) <= BigInt(switchProof.timestamp))
+    ) {
+      return undefined;
+    }
+    return hash;
+  }
+
+  /** The wallets a retry of `record` may use: its own rail's, on its own chain. */
+  private retryWalletChoices(record: OrderRecord, network: Network): WalletChoice[] {
+    const chain = recordChain(record);
+    let options: readonly { name: string; icon?: string }[];
+    if (recordRail(record) !== 'eip3009') {
+      options = this.deps.wallets(network);
+    } else {
+      options = chain === undefined ? [] : (this.deps.eip3009Wallets?.(chain) ?? []);
+    }
+    return options.map((option) => ({
+      name: option.name,
+      ...(option.icon === undefined ? {} : { icon: option.icon }),
+    }));
+  }
+
+  /** What an `eip3009` wait shows of `record` now, its send part from `eip3009SendState` only. */
+  private eip3009WaitOf(record: OrderRecord, state: Eip3009SendState): Eip3009Wait {
+    const chain = recordChain(record);
+    const marker = record.marker?.rail === 'eip3009' ? record.marker : undefined;
+    const nonceUsed = marker?.usedAtStart === true || this.nonceUsed.has(record.orderId);
+    // A payment found confirming is no attempt that may expire unused: no countdown to another wallet.
+    const switchAt =
+      nonceUsed || this.eip3009ConfirmingNow(record) ? undefined : eip3009SwitchAt(record);
+    const hold = this.eip3009Resend;
+    const resend =
+      hold !== undefined &&
+      marker !== undefined &&
+      hold.handle.orderId === record.orderId &&
+      hold.handle.attemptId === marker.attemptId &&
+      !this.attemptOver &&
+      // A payment of the order confirming: a second send would only revert on its nonce.
+      !this.eip3009ConfirmingNow(record)
+        ? hold.why
+        : undefined;
+    return {
+      chain: chain?.chainName ?? '',
+      creditSecs: chain?.waits?.creditSecs ?? 0,
+      nonceUsed,
+      send: sendViewOf(state),
+      confirming: this.eip3009ConfirmingNow(record),
+      // `eip3009RetryOpen` is false for an order whose nonce was used (frozen, or `ordered`).
+      retry: !this.attemptOver && this.eip3009RetryOpen(record),
+      ...(switchAt === undefined ? {} : { switchAt }),
+      ...(resend === undefined ? {} : { resend }),
+    };
   }
 
   /** The live Solana attempt's estimate, while it may still land and is the one estimated. */
@@ -4771,6 +6275,88 @@ export class CheckoutSession {
       return undefined;
     }
     return { seconds: estimate.seconds, at: estimate.at };
+  }
+
+  /** EIP-3009: about when another wallet may be offered, once the end proof can pass. */
+  private switchCountdown(record: OrderRecord): Countdown | undefined {
+    const switchAt = eip3009SwitchAt(record);
+    if (switchAt === undefined) {
+      return undefined;
+    }
+    // Anchored at the moment once it passed, as `requestCountdown`.
+    const at = Math.min(this.deps.now(), switchAt);
+    return { seconds: switchAt - at, at };
+  }
+
+  /**
+   * What the wait may say of the order's known hash (stored, else this
+   * session's unsaved one), read on the build RPC: its signer and `validBefore`
+   * once (`eip3009HashSigned`), then, from that `validBefore` plus the finalized
+   * wait, its end proof until it holds or the nonce reads used
+   * (`eip3009HashProof`). A failed read keeps the hash unnamed and is tried on
+   * the next pass; an answer naming no authorization, after
+   * `UNSIGNED_HASH_RECHECK_SECS`.
+   */
+  private async judgeEip3009Hash(record: OrderRecord, client: Eip1193Client): Promise<void> {
+    const marker = record.marker;
+    if (marker?.rail !== 'eip3009') {
+      return;
+    }
+    const hash =
+      marker.txHash ??
+      (this.pendingHash?.orderId === record.orderId ? this.pendingHash.hash : undefined);
+    if (hash === undefined || this.eip3009HashProof.has(hash)) {
+      return;
+    }
+    if (!this.eip3009HashSigned.has(hash)) {
+      await this.readHashSigner(hash, client);
+    }
+    const signed = this.eip3009HashSigned.get(hash);
+    const finalizedSecs = recordChain(record)?.waits?.finalizedSecs;
+    if (
+      signed === undefined ||
+      finalizedSecs === undefined ||
+      this.deps.now() < Number(signed.validBefore) + finalizedSecs
+    ) {
+      return;
+    }
+    // The end proof of that one authorization: the order's nonce, its signer and deadline.
+    const proof = await eip3009EndProof(
+      {
+        ...record,
+        marker: {
+          ...marker,
+          authorizer: signed.authorizer,
+          validBefore: signed.validBefore,
+          signed: true,
+        },
+      },
+      { client },
+    );
+    if (proof === 'over' || proof === 'used') {
+      this.eip3009HashProof.set(hash, proof);
+    }
+  }
+
+  /** The signer and `validBefore` of `hash`, read once on the build RPC (`judgeEip3009Hash`). */
+  private async readHashSigner(hash: string, client: Eip1193Client): Promise<void> {
+    if (this.deps.now() < (this.eip3009HashUnsigned.get(hash) ?? 0)) {
+      return;
+    }
+    try {
+      const sent: unknown = await client.request({
+        method: 'eth_getTransactionByHash',
+        params: [hash],
+      });
+      const signed = signedOfTransaction(sent);
+      if (signed === undefined) {
+        this.eip3009HashUnsigned.set(hash, this.deps.now() + UNSIGNED_HASH_RECHECK_SECS);
+      } else {
+        this.eip3009HashSigned.set(hash, signed);
+      }
+    } catch {
+      // Unread now: the hash stays unnamed; the next pass asks again.
+    }
   }
 
   /** A Tempo request not answered yet: about when the checkout stops waiting for it. */
@@ -4891,6 +6477,7 @@ export class CheckoutSession {
       askEmail: this.deps.collectEmail === true,
       email: this.email,
       ...(shown === undefined ? {} : { problem: shown }),
+      ...(this.hiddenForFee() ? { feeHidden: true as const } : {}),
     });
     if (this.record === undefined) {
       this.status('ready');
@@ -4971,11 +6558,12 @@ export class CheckoutSession {
     if (this.busy || generation !== this.generation || this.disposed) {
       return 'skipped';
     }
-    this.record =
-      stored !== undefined && stored.version > watched.record.version ? stored : watched.record;
+    this.adopt(
+      stored !== undefined && stored.version > watched.record.version ? stored : watched.record,
+    );
+    const adopted = this.record ?? watched.record;
     // Another tab replaced the attempt during the pass: its verdict is not this one's.
-    if (this.record.marker?.attemptId !== watched.record.marker?.attemptId) {
-      this.attemptOver = false;
+    if (adopted.marker?.attemptId !== watched.record.marker?.attemptId) {
       this.render();
       void this.showPendingAnswer();
       return 'replaced';
@@ -4984,8 +6572,7 @@ export class CheckoutSession {
       // The attempt was cleared (nothing was requested, or the buyer declined in
       // another tab): back to the offer, and the page hears the order is open again.
       this.stopWatching();
-      this.attemptOver = false;
-      const reopened = stateOf(this.record);
+      const reopened = stateOf(adopted);
       if (reopened !== undefined && reopened !== 'ended') {
         this.status(reopened);
       }
@@ -5041,7 +6628,6 @@ export class CheckoutSession {
     if (watched.state === 'over') {
       this.stopWatching();
       this.attemptProblem = undefined;
-      this.attemptOver = true;
       this.noteOver(watched.record);
       this.render();
       // The attempt provably ended: a completion already heard now shows.
@@ -5053,8 +6639,7 @@ export class CheckoutSession {
       this.render();
       return 'follow';
     }
-    // Waiting: whatever was over, a new attempt (another tab's) is live now.
-    this.attemptOver = false;
+    // Waiting: an attempt proven over stays over (the proof is one-way); a newer one is live.
     this.render();
     return 'drawn';
   }
@@ -5104,8 +6689,69 @@ export class CheckoutSession {
       }
       return watched;
     }
+    if (recordRail(current) === 'eip3009') {
+      return await this.watchEip3009Once(current, pendingHash);
+    }
     const rpc = recordRail(current) === 'solana' ? this.rpcOfRecord(current) : undefined;
     return rpc === undefined ? undefined : await watchSolanaPayment(current, this.payDeps(rpc));
+  }
+
+  /**
+   * One pass on an `eip3009` attempt. A marker that never held a signature (and
+   * no call of this session signing for it) is cleared at once: nothing it
+   * asked for can land. A signed one is watched; once `validBefore` plus the
+   * finalized wait passed with nothing found, the end proof is read, and a
+   * pass returns `over` only when it holds (another wallet or the end then).
+   */
+  private async watchEip3009Once(
+    current: OrderRecord,
+    pendingHash?: string,
+  ): Promise<Watched | undefined> {
+    const client = this.eip3009OfRecord(current);
+    if (client === undefined) {
+      return undefined;
+    }
+    const cleared = await this.clearUnsignedEip3009(current);
+    if (cleared !== undefined) {
+      return { state: 'waiting', record: cleared };
+    }
+    await this.judgeEip3009Hash(current, client);
+    const pending =
+      pendingHash ??
+      (this.pendingHash?.orderId === current.orderId ? this.pendingHash.hash : undefined);
+    const watched = await watchEip3009Payment(
+      current,
+      this.eip3009Deps(client),
+      pending === undefined ? {} : { pendingHash: pending },
+    );
+    const marker = watched.record.marker;
+    if (
+      pending !== undefined &&
+      marker?.rail === 'eip3009' &&
+      marker.txHash === pending &&
+      this.pendingHash?.orderId === current.orderId &&
+      this.pendingHash.hash === pending
+    ) {
+      this.pendingHash = undefined;
+    }
+    if (watched.state === 'confirming' && marker !== undefined) {
+      this.eip3009Confirming = { orderId: watched.record.orderId, attemptId: marker.attemptId };
+    } else if (
+      watched.state === 'waiting' &&
+      this.eip3009Confirming?.orderId === watched.record.orderId
+    ) {
+      // Found below the credit tag, and gone since (a reorg): no longer confirming.
+      this.eip3009Confirming = undefined;
+    }
+    if (watched.state !== 'waiting' && watched.state !== 'unsure') {
+      return watched;
+    }
+    const switchAt = eip3009SwitchAt(watched.record);
+    if (switchAt === undefined || this.deps.now() < switchAt) {
+      return watched;
+    }
+    const proof: Eip3009EndProofState = await eip3009EndProof(watched.record, { client });
+    return proof === 'over' ? { state: 'over', record: watched.record } : watched;
   }
 
   /** Redraw once the "no answer from the store" moment passes, while this record is shown. */
@@ -5376,7 +7022,8 @@ export class CheckoutSession {
           }
           return;
         }
-        this.record = updated;
+        // A newer attempt (another tab's) after this one was judged over: watched again.
+        this.adopt(updated);
         const state = stateOf(updated);
         if (isTerminal(updated)) {
           this.stop();
