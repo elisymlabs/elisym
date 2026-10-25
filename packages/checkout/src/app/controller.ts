@@ -38,7 +38,11 @@ export async function startWithHint(start: () => Promise<void>, onSlow: () => vo
   }
 }
 
-/** Rails the widget pays on: Solana and Tempo (an EVM chain). */
+/**
+ * Chain families the widget loads payouts of: Solana, and EVM (Tempo, and
+ * Ethereum, Arbitrum and Base over EIP-3009). Not the per-chain gate: the
+ * session's `servable` decides which payouts it offers.
+ */
 export const PAYABLE_FAMILIES = ['solana', 'evm'] as const;
 
 export type Screen =

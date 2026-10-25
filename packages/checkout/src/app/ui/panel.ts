@@ -40,6 +40,19 @@ export const PROBLEM_PLACE = {
   fee_config_unavailable: 'wallets',
   fee_config_invalid: 'wallets',
   wallet_payment_failed: 'wallets',
+  chain_unreachable: 'wallets',
+  sign_failed: 'wallets',
+  no_native: 'wallets',
+  insufficient_native: 'wallets',
+  token_blocked: 'wallets',
+  payer_unsupported: 'wallets',
+  wrong_chain_after_sign: 'wallets',
+  resign_needed: 'wallets',
+  send_declined: 'wallets',
+  send_failed: 'wallets',
+  near_expiry: 'wallets',
+  retry_blocked: 'wallets',
+  send_uncertain: 'wallets',
 } as const satisfies Record<Problem['reason'], 'offer' | 'wallets'>;
 
 /** The panel's own state over the session's views: whether the wallet section is open. */

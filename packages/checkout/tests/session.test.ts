@@ -320,6 +320,23 @@ describe('a purchase', () => {
     expect(after.reference).toBe(first.reference);
   });
 
+  it("takes back an attempt judged over when the retry's own fresh read finds it still waiting", async () => {
+    const run = await setup();
+    run.wallet.behaviour = 'throw';
+    await run.session.start();
+    await run.session.pay('Fake');
+    const live = run.chain.height;
+    run.chain.expire();
+    run.chain.nextBlockhash();
+    await run.timers.tick();
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: true });
+    // The node the retry reads lags behind: there the attempt is still within its window.
+    run.chain.height = live;
+    run.wallet.behaviour = 'sign';
+    await run.session.retry('Fake');
+    expect(run.last()).toMatchObject({ kind: 'waiting_payment', canRetry: false });
+  });
+
   it('follows an open payment in the background after a reload, behind the first step (D1c)', async () => {
     const run = await setup();
     run.chain.dropSends = true;

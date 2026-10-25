@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  ARBITRUM_GLYPH,
+  BASE_GLYPH,
   CHECK_GLYPH,
+  ETHEREUM_GLYPH,
   RETURN_GLYPH,
   SOLANA_GLYPH,
   SOLANA_MARK_GRADIENT,
@@ -22,7 +25,16 @@ function decoded(uri: string): string {
 
 describe('the bundled glyphs', () => {
   it('reference nothing outside themselves', () => {
-    for (const uri of [SOLANA_GLYPH, TEMPO_GLYPH, CHECK_GLYPH, STOP_GLYPH, RETURN_GLYPH]) {
+    for (const uri of [
+      SOLANA_GLYPH,
+      TEMPO_GLYPH,
+      ETHEREUM_GLYPH,
+      ARBITRUM_GLYPH,
+      BASE_GLYPH,
+      CHECK_GLYPH,
+      STOP_GLYPH,
+      RETURN_GLYPH,
+    ]) {
       const svg = decoded(uri);
       expect(svg).not.toMatch(/href/i);
       expect(svg).not.toMatch(/<image/i);

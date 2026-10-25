@@ -17,7 +17,7 @@ export const AGENT_DOCS_URL = `${DOCS.quickstart}.md`;
 export const AGENT_PROMPT = [
   `Add a Pay Core checkout to my website. Read ${AGENT_DOCS_URL} and follow it step by step:`,
   'create my store node, publish my products, start the node and add the Buy button to my pages.',
-  "Before you start, ask me for my store's name, my Solana wallet address and Solana RPC URL, my Tempo wallet address, and each product with its name, price and description. I may leave either wallet empty, but not both: add a payout only for each wallet I give, as the guide says, and ask for no Solana RPC URL without a Solana wallet.",
+  "Before you start, ask me for my store's name, my Solana wallet address and Solana RPC URL, my Tempo wallet address, my wallet address for USDC on Ethereum, Arbitrum and Base with an RPC URL of each of those chains I want, and each product with its name, price and description. I must give a Solana or a Tempo wallet, and may leave any other wallet empty, the one for Ethereum, Arbitrum and Base too: add a payout only for each wallet I give, as the guide says, ask for no Solana RPC URL without a Solana wallet, and list an Ethereum, Arbitrum or Base payout after a Solana or Tempo one.",
   'When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, the commands to see my orders and to add a product, and how to make a small test purchase.',
 ].join(' ');
 

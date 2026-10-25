@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import type { Problem, View } from '../session';
 import { secondsLeft, useNow } from './clock';
+import { Eip3009Waiting } from './Eip3009Waiting';
 import { ProblemNote } from './ProblemNote';
 import { AGAIN_DECLINED, formatCountdown } from './text';
 import { WalletRow } from './WalletRow';
@@ -10,6 +11,8 @@ interface Props {
   problem: Problem | undefined;
   onRetry(name: string): void;
   onSignAgain(): void;
+  /** EIP-3009: send again the signature the attempt holds. */
+  onResend(): void;
   onStartOver(): void;
 }
 
@@ -68,7 +71,25 @@ function unsignedStatus(
  * to do or about how long to wait. The ticking number is not announced; only
  * the status line, whose text changes with the state, is.
  */
-export function WaitingPayment({ view, problem, onRetry, onSignAgain, onStartOver }: Props) {
+export function WaitingPayment(props: Props) {
+  const { view, problem, onRetry, onResend, onStartOver } = props;
+  if (view.eip3009 !== undefined) {
+    return (
+      <Eip3009Waiting
+        view={view}
+        wait={view.eip3009}
+        problem={problem}
+        onRetry={onRetry}
+        onResend={onResend}
+        onStartOver={onStartOver}
+      />
+    );
+  }
+  return <CountdownWait {...props} />;
+}
+
+/** The Solana and Tempo wait: one countdown, to a retry or to the end of a request. */
+function CountdownWait({ view, problem, onRetry, onSignAgain, onStartOver }: Props) {
   const countdown = view.tempo ? view.requestEndsIn : view.retryIn;
   const ticking = countdown !== undefined || view.unsureAt !== undefined;
   const now = useNow(ticking);
@@ -175,7 +196,7 @@ export function WaitingPayment({ view, problem, onRetry, onSignAgain, onStartOve
       <ProblemNote
         problem={problemShown}
         asset={view.asset}
-        tempo={view.tempo}
+        rail={view.tempo ? 'tempo' : 'solana'}
         canPress={view.canRetry}
       />
       {view.explorer === undefined ? null : (

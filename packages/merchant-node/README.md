@@ -232,7 +232,8 @@ address is written in lowercase:
 ]
 ```
 
-The checkout does not offer these chains yet: list such a payout after a Solana or Tempo one
+The checkout offers these chains on the networks marked in the docs' Networks page (the testnets
+today); where it does not yet, list such a payout after a Solana or Tempo one
 (a page opens on the network of the first payout). The node finds a payment per payout, never
 per order, by the USDC `Transfer` logs to it, binds each to an order through the
 `AuthorizationUsed` log right before it (its nonce is the order's derived reference), and

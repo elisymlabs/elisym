@@ -20,7 +20,7 @@ Each product has its own `naddr`: to sell several, put one `<elisym-buy>` per pr
 | Attribute       | Value                          | Meaning                                                                                                                                     |
 | --------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `product`       | `naddr1...`                    | The product, as `setup` printed it. Required.                                                                                               |
-| `network`       | `mainnet` or `devnet`          | Only payouts on this network are offered (`devnet` is Tempo's Moderato on Tempo). Without it, the network of the first payout the store lists is used. |
+| `network`       | `mainnet` or `devnet`          | Only payouts on this network are offered (`devnet` is Tempo's Moderato on Tempo, and Sepolia, Arbitrum Sepolia and Base Sepolia on Ethereum, Arbitrum and Base). Without it, the network of the first payout the store lists is used. |
 | `strict-origin` | (no value)                     | Also refuse a store no domain vouches for (level C). A level A store is always refused off its domain (see [Where it sells](#where-it-sells)). |
 | `collect-email` | (no value)                     | Ask the buyer for an email (optional for them). It goes to your node with the order, and `orders` lists it. The node never sends email.     |
 | `theme`         | `auto`, `light` or `dark`      | The checkout's colors. `auto` (the default) follows the buyer's system; the snippets use `dark`.                                          |
@@ -181,6 +181,21 @@ Two cases can only be settled by hand, and the open checkout tells the buyer to 
 - a payment the store's node has not answered 30 minutes after it was found (on either rail).
 
 The store answers such an order with its node's `complete` or `refund` command (see [the quick start](/commerce/quickstart#answering-an-order-by-hand)). The checkout also re-checks, on each visit, Tempo orders that ended in the last three days: a late payment found there is stored and shows under Your purchases (on a page that shows only an existing order, as a note on whatever is on screen).
+
+## Paying on Ethereum, Arbitrum and Base
+
+A store's USDC payout on Ethereum, Arbitrum One or Base is payable on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base); on the others the checkout does not offer it (a page whose first payout is on such a network says "This network is not available here yet" when no payout of that network is payable, so list it after a Solana or Tempo payout). It is paid from an EIP-6963 wallet (MetaMask, Rabby), with USDC for the price and a little of the chain's ETH for the network fee. The checkout asks the wallet to switch to the chain (and to add it when the wallet does not know it), then reads which chain the wallet is on: a wallet that cannot reach it is named ("This wallet cannot pay on Base Sepolia"), and the buyer picks another.
+
+The wallet asks **twice**, and the checkout says so before the first: sign the payment, then confirm sending it. The signature is an EIP-3009 `transferWithAuthorization` of the price to the store's payout, valid 15 minutes, whose nonce is the order's own reference: USDC lets one wallet use it once, ever, so one wallet can pay one order at most once. Before anything is signed the checkout checks the offer, the coin (not paused, neither side blocked by its issuer, the contract the one it knows), the balance, and that the buyer holds some ETH there. After the signature it estimates the network fee: when the wallet may not hold enough ETH, it says so with the amounts, and the buyer tops up and pays again with the same wallet, or **sends anyway** (the wallet's own check decides).
+
+While the payment confirms the checkout says "Confirming on Base, about 5 minutes" (it is credited at the chain's `safe` block: about 5 minutes on Base, 15 on Ethereum, 20 on Arbitrum). The timers differ from Solana's and Tempo's:
+
+- **The same wallet, at once.** After a declined send, a dropped transaction or a closed tab, the same wallet can sign again right away: its two signatures share the nonce, so at most one can land. After a close, a reload or in another tab of the same browser, a press brings the attempt back with that retry. After a declined send, **Send again** sends the signature already made. A transaction an earlier attempt sent may still arrive until its own signature provably expired unused: until then the checkout says so and links to it, and after that it no longer names it (for example when the same wallet is picked again once its attempt expired).
+- **Another wallet, or Start over, only once the signature provably expired unused**: when a finalized block past the signature's end shows it was not used, about 40 to 65 minutes after it was made (the checkout counts down to it). A second wallet is a second nonce, the one way to pay an order twice, so nothing else opens it sooner. A request the wallet never signed (the page closed while it was open) blocks nothing: another wallet can pay at once.
+- **This is taking long**, after a send: the chain's confirming wait after the latest moment the send could have happened; before one: once the signature can be proven expired. Then contact the store.
+- **An order whose nonce was signed outside the checkout** ("This order may already be paid; waiting for the store") offers no timer, no other wallet and no Start over: the store answers it.
+
+The protocol fee on these chains is 0; while it is above 0, the checkout does not offer them, with a line saying so.
 
 ## One loader, pinned
 

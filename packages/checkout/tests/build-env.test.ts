@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { PRODUCTION_ORIGIN, buildEnvProblems, checkoutOrigin } from '../scripts/build-env';
+import { PRODUCTION_ORIGIN, RPC_ENV, buildEnvProblems, checkoutOrigin } from '../scripts/build-env';
+import { EIP3009_CHAINS, eip3009RpcEnvName } from '../src/app/evm-rpc';
 
 const WIDGET_KEY = 'https://mainnet.helius-rpc.com/?api-key=widget';
 
@@ -67,5 +69,50 @@ describe('the origin the loader frames', () => {
         VERCEL_URL: 'pay-git-x.vercel.app',
       }),
     ).toBe('http://127.0.0.1:5174');
+  });
+});
+
+describe("the build's EVM RPC variables", () => {
+  it('name one variable per eip3009 chain and network, each checked as an RPC URL', () => {
+    const names = EIP3009_CHAINS.map((chain) => eip3009RpcEnvName(chain));
+    expect(names.sort()).toEqual([
+      'VITE_EVM_RPC_URL_ARBITRUM_DEVNET',
+      'VITE_EVM_RPC_URL_ARBITRUM_MAINNET',
+      'VITE_EVM_RPC_URL_BASE_DEVNET',
+      'VITE_EVM_RPC_URL_BASE_MAINNET',
+      'VITE_EVM_RPC_URL_ETHEREUM_DEVNET',
+      'VITE_EVM_RPC_URL_ETHEREUM_MAINNET',
+    ]);
+    for (const name of names) {
+      expect(RPC_ENV).toContain(name);
+      expect(buildEnvProblems({ [name]: 'http://rpc.example.com' })).toEqual([
+        `${name} must be https:`,
+      ]);
+      expect(buildEnvProblems({ [name]: 'not a url' })).toEqual([`${name} is not a URL`]);
+      expect(buildEnvProblems({ [name]: 'https://rpc.example.com/v2/key' })).toEqual([]);
+      expect(buildEnvProblems({ [name]: '' })).toEqual([]);
+    }
+  });
+
+  it('are the same VITE_* names in RPC_ENV, the turbo build env and env.d.ts', () => {
+    const turbo = JSON.parse(readFileSync(new URL('../../../turbo.json', import.meta.url), 'utf8'));
+    const turboEnv: string[] = turbo.tasks['@elisym/checkout#build'].env;
+    const vite = (names: readonly string[]) =>
+      names.filter((name) => name.startsWith('VITE_')).sort();
+    expect(vite(turboEnv)).toEqual(vite(RPC_ENV));
+    const declared = [
+      ...readFileSync(new URL('../src/app/env.d.ts', import.meta.url), 'utf8').matchAll(
+        /readonly (VITE_[A-Z_]+)\?:/g,
+      ),
+    ].map((match) => match[1] ?? '');
+    expect(vite(declared)).toEqual(vite(RPC_ENV));
+  });
+
+  it('are each read by the app under its own name, so the build inlines it', () => {
+    const main = readFileSync(new URL('../src/app/main.tsx', import.meta.url), 'utf8');
+    for (const chain of EIP3009_CHAINS) {
+      const name = eip3009RpcEnvName(chain);
+      expect(main).toContain(`${name}: import.meta.env.${name},`);
+    }
   });
 });

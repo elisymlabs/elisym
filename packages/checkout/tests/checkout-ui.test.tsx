@@ -10,17 +10,23 @@ import {
   aboutOf,
   cannedOffer,
   cannedSource,
+  eip3009Wait,
   offerView,
   waitingView,
 } from '../scripts/fixtures/canned';
 import { type Actions, Checkout, FINISH_FILL_MS, FINISH_WAIT_MS } from '../src/app/Checkout';
 import type { Screen } from '../src/app/controller';
 import type { Banner, Paying, Problem, Receipt, View } from '../src/app/session';
-import { SOLD_OUT_GLYPH } from '../src/app/ui/glyphs';
+import { BASE_GLYPH, SOLD_OUT_GLYPH } from '../src/app/ui/glyphs';
 import { PROBLEM_PLACE } from '../src/app/ui/panel';
 import type { PurchasesSource } from '../src/app/ui/PurchasesStep';
 import {
   CHECK_IN_WALLET,
+  EIP3009_SENDING,
+  EIP3009_SIGNING,
+  EIP3009_TWO_PROMPTS,
+  EIP3009_WAIT,
+  FEE_HIDES_EIP3009,
   STEPPER_STAGES,
   receiptText as fullReceiptText,
 } from '../src/app/ui/text';
@@ -34,6 +40,7 @@ interface Calls {
   oldPromptBack: number;
   cancel: number;
   signAgain: number;
+  resend: number;
   checkWallet: number;
 }
 
@@ -92,6 +99,7 @@ function mount(view?: View, options: MountOptions = {}) {
     oldPromptBack: 0,
     cancel: 0,
     signAgain: 0,
+    resend: 0,
     checkWallet: 0,
   };
   /** What the next action resolves with; a test may hold it open. */
@@ -116,6 +124,10 @@ function mount(view?: View, options: MountOptions = {}) {
     },
     signAgain: () => {
       calls.signAgain += 1;
+      return settle;
+    },
+    resend: () => {
+      calls.resend += 1;
       return settle;
     },
     startOver: () => {
@@ -3083,5 +3095,604 @@ describe('a Solana wallet that failed, asked again', () => {
     expect(shown()).toBe(false);
     ui.draw({ view: unsigned({ again }) });
     expect(shown()).toBe(true);
+  });
+});
+
+describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const basePaying: Paying = {
+    amount: '49000000',
+    asset: { chain: 'base', token: 'usdc', decimals: 6, symbol: 'USDC' },
+    network: 'devnet',
+    chain: 'base',
+  };
+  const wallets = [{ name: 'MetaMask' }, { name: 'Rabby' }];
+  const nowSecs = () => Math.floor(Date.now() / 1000);
+  const heading = (ui: Ui) => ui.container.querySelector('[data-heading]')?.textContent;
+
+  it('explains the two prompts and the gas coin before the first, with the chain glyph', () => {
+    const ui = mount(offerView(cannedOffer({ payouts: ['base-devnet'] }), { wallets }));
+    expect(ui.text()).toContain(EIP3009_TWO_PROMPTS);
+    expect(ui.text()).toContain('You need a little ETH on Base Sepolia for the network fee.');
+    expect(ui.text()).toContain('USDC · Base devnet');
+    expect(ui.container.querySelector('img.glyph')?.getAttribute('src')).toBe(BASE_GLYPH);
+    // On a Solana payout neither line shows.
+    const solana = mount(offerView(cannedOffer()));
+    expect(solana.text()).not.toContain(EIP3009_TWO_PROMPTS);
+    expect(solana.text()).not.toContain('network fee');
+  });
+
+  it('says why these chains are not offered while a fee is on (E7)', () => {
+    const ui = mount(offerView(cannedOffer(), { feeHidden: true }));
+    expect(ui.text()).toContain(FEE_HIDES_EIP3009);
+    expect(mount(offerView(cannedOffer())).text()).not.toContain(FEE_HIDES_EIP3009);
+  });
+
+  it('asks to sign, then confirm, while the wallet is open', () => {
+    const ui = mount({ kind: 'working', step: 'signing', paying: basePaying, about });
+    expect(ui.status().join(' ')).toContain(
+      'Sign the payment in your wallet, then confirm sending it',
+    );
+  });
+
+  it('says "taking long" while the wallet is open at the chain-wait moment, not 10 minutes after the countdown', () => {
+    vi.useFakeTimers();
+    const now = nowSecs();
+    const ui = mount(
+      {
+        kind: 'working',
+        step: 'signing',
+        paying: basePaying,
+        about,
+        startOverIn: { seconds: 60, at: now },
+        unsureAt: now + 60,
+      },
+      { hintAfterMs: 0 },
+    );
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    expect(ui.text()).toContain('Another wallet can pay in');
+    act(() => {
+      vi.advanceTimersByTime(51_000);
+    });
+    expect(ui.text()).toContain('This is taking long');
+  });
+
+  it('names a wallet that cannot reach the chain, and how to connect one', () => {
+    const offer = cannedOffer({ payouts: ['base-devnet'] });
+    const ui = mount(
+      offerView(offer, {
+        wallets,
+        problem: { reason: 'chain_unreachable', chain: 'Base Sepolia' },
+      }),
+    );
+    expect(ui.alerts().join(' ')).toContain('This wallet cannot pay on Base Sepolia.');
+    ui.draw({ view: offerView(offer, { wallets, problem: { reason: 'no_wallet' } }) });
+    expect(ui.alerts().join(' ')).toContain(
+      'Connect an Ethereum wallet, such as MetaMask or Rabby.',
+    );
+    ui.draw({ view: offerView(offer, { wallets: [] }) });
+    expect(ui.text()).toContain('Rabby');
+  });
+
+  it('after a send: confirming with the credit wait, the same wallet at once, another wallet counted down', () => {
+    vi.useFakeTimers();
+    const now = nowSecs();
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        explorer: 'https://sepolia.basescan.org/tx/0xabc',
+        unsureAt: now + 900,
+        eip3009: eip3009Wait({ switchAt: now + 125 }),
+      }),
+    );
+    expect(ui.status()[0]).toBe(
+      'Your wallet sent the payment. Confirming on Base Sepolia, about 5 minutes.',
+    );
+    expect(heading(ui)).toBe('Confirming payment');
+    expect(ui.container.querySelector('.label')?.textContent).toBe(EIP3009_WAIT.retryLabel);
+    expect(ui.text()).toContain(
+      'Another wallet can pay in about 2:05, once the signature expires unused.',
+    );
+    expect(ui.buttons().some((each) => each.textContent === 'Start over')).toBe(false);
+    ui.click('Rabby');
+    expect(ui.calls.retry).toEqual(['Rabby']);
+    // At the moment: checking, not yet offered; "taking long" only at unsureAt.
+    act(() => {
+      vi.advanceTimersByTime(125_000);
+    });
+    expect(ui.text()).toContain(EIP3009_WAIT.switchChecking);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.takingLong);
+    act(() => {
+      vi.advanceTimersByTime((900 - 125) * 1000);
+    });
+    expect(ui.text()).toContain(EIP3009_WAIT.takingLong);
+  });
+
+  it('confirming: the found payment, with no retry over it', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        eip3009: eip3009Wait({ confirming: true, retry: false, switchAt: nowSecs() + 600 }),
+      }),
+    );
+    expect(ui.status()[0]).toBe('Confirming on Base Sepolia, about 5 minutes.');
+    expect(ui.text()).not.toContain(EIP3009_WAIT.retryLabel);
+    // A payment found is no attempt that may expire unused: no countdown, no check.
+    expect(ui.has('.countdown')).toBe(false);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchLead);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchChecking);
+  });
+
+  it('over: names no transaction and claims no send', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        canRetry: true,
+        // A stale "taking long" moment never shows on the over screen (M21).
+        unsureAt: nowSecs() - 10,
+        eip3009: eip3009Wait({
+          send: { kind: 'unknown', linked: false, maybe: false },
+          retry: false,
+          switchAt: nowSecs() - 1,
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe(EIP3009_WAIT.over);
+    expect(ui.container.querySelector('a[href*="basescan"]')).toBeNull();
+    for (const claim of [EIP3009_WAIT.sent, EIP3009_WAIT.sentUnknown, EIP3009_WAIT.maybeSent]) {
+      expect(ui.text()).not.toContain(claim);
+    }
+    expect(heading(ui)).toBe('Payment not made');
+    expect(ui.text()).not.toContain(EIP3009_WAIT.takingLong);
+  });
+
+  it('while a payment confirms, offers no "send again" even with a held signature', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        eip3009: eip3009Wait({ confirming: true, retry: false, resend: 'again' }),
+      }),
+    );
+    expect(ui.buttons().some((each) => each.textContent === EIP3009_WAIT.sendAgain)).toBe(false);
+  });
+
+  it('"send again" asks the wallet only to send: its own line, never the signing one', () => {
+    const ui = mount({
+      kind: 'working',
+      step: 'signing',
+      paying: basePaying,
+      about,
+      sendOnly: true,
+    });
+    expect(ui.status()[0]).toBe(EIP3009_SENDING);
+    expect(ui.text()).not.toContain(EIP3009_SIGNING);
+    ui.draw({ view: { kind: 'working', step: 'signing', paying: basePaying, about } });
+    expect(ui.status()[0]).toBe(EIP3009_SIGNING);
+  });
+
+  it('signed, not sent: "send again" or "send anyway", and the same wallet', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        problem: { reason: 'send_declined' },
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          resend: 'again',
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe(EIP3009_WAIT.signed);
+    expect(heading(ui)).toBe('Payment not sent yet');
+    ui.click(EIP3009_WAIT.sendAgain);
+    expect(ui.calls.resend).toBe(1);
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        wallets,
+        problem: {
+          reason: 'insufficient_native',
+          needed: 2_400_000_000_000_000n,
+          available: 1_000_000_000_000_000n,
+          native: { chain: 'base', token: 'eth', decimals: 18, symbol: 'ETH' },
+          chain: 'Base Sepolia',
+        },
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          resend: 'gas',
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    });
+    expect(ui.alerts().join(' ')).toContain(
+      'There may not be enough ETH on Base Sepolia for the network fee: about 0.0024 ETH needed, 0.001 ETH held.',
+    );
+    ui.click(EIP3009_WAIT.sendAnyway);
+    expect(ui.calls.resend).toBe(2);
+    ui.click('MetaMask');
+    expect(ui.calls.retry).toEqual(['MetaMask']);
+  });
+
+  it('a wallet that moved off the chain after signing: "send again" switches it back', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        problem: { reason: 'wrong_chain_after_sign', chain: 'Base Sepolia' },
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          resend: 'chain',
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    expect(ui.alerts().join(' ')).toContain(
+      'Your wallet moved to another network after signing. Nothing was sent: send again, and the checkout asks it to switch back to Base Sepolia.',
+    );
+    expect(stageStates(ui)).toEqual(['done', 'active', 'todo']);
+    ui.click(EIP3009_WAIT.sendAgain);
+    expect(ui.calls.resend).toBe(1);
+  });
+
+  it('once the signature provably expired: another wallet, and Start over', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        canRetry: true,
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          retry: false,
+          switchAt: nowSecs() - 1,
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe(EIP3009_WAIT.over);
+    expect(heading(ui)).toBe('Payment not made');
+    expect(ui.container.querySelector('.label')?.textContent).toBe(EIP3009_WAIT.switchLabel);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchChecking);
+    ui.click('Start over');
+    expect(ui.calls.startOver).toBe(1);
+  });
+
+  it('a nonce used outside the checkout: its text, and no timer, wallet or end', () => {
+    vi.useFakeTimers();
+    const ui = mount(
+      waitingView(about, basePaying, {
+        // Even a view naming wallets and a moment shows none of them here.
+        wallets,
+        unsureAt: nowSecs() - 1,
+        eip3009: eip3009Wait({
+          nonceUsed: true,
+          retry: false,
+          send: { kind: 'unknown', linked: false, maybe: false },
+          switchAt: nowSecs(),
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe('This order may already be paid; waiting for the store.');
+    expect(heading(ui)).toBe('Waiting for the store');
+    // The wallet's part is done: only the store's answer is left.
+    expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
+    expect(ui.buttons().filter((each) => !each.closest('.footer, .header'))).toEqual([]);
+    expect(ui.has('.countdown')).toBe(false);
+    act(() => {
+      vi.advanceTimersByTime(3_600_000);
+    });
+    expect(ui.text()).not.toContain(EIP3009_WAIT.takingLong);
+    expect(ui.text()).not.toContain('Another wallet');
+  });
+
+  it('a retry refused on a live attempt: what refused it, and that the earlier payment may still arrive', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        problem: { reason: 'retry_blocked', cause: 'chain_unreachable', chain: 'Base Sepolia' },
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    const alert = ui.alerts().join(' ');
+    expect(alert).toContain('This wallet cannot pay on Base Sepolia, so nothing new was signed.');
+    expect(alert).toContain('Your earlier payment may still arrive');
+    expect(alert).not.toContain('Nothing was paid');
+  });
+
+  it('a new signature not sent beside an earlier payment sent: both said, the link named for the earlier one', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        explorer: 'https://sepolia.basescan.org/tx/0xabc',
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: true },
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe(
+      'Your wallet signed a new payment; it was not sent yet. A payment sent earlier may still arrive.',
+    );
+    expect(ui.text()).toContain('View the earlier transaction');
+    expect(ui.text()).not.toContain('Your wallet sent the payment');
+  });
+
+  it('stages, heading and "try again" by what the attempt offers', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        canRetry: true,
+        wallets,
+        // A transaction was sent, yet the attempt provably expired unused: the wallet step again.
+        eip3009: eip3009Wait({ send: { kind: 'sent' }, retry: false, switchAt: nowSecs() - 1 }),
+      }),
+    );
+    expect(stageStates(ui)).toEqual(['done', 'active', 'todo']);
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        unserved: true,
+        eip3009: eip3009Wait({ send: { kind: 'not_sent', earlier: false }, retry: false }),
+      }),
+    });
+    expect(heading(ui)).toBe('Confirming payment');
+    const failed: Problem = { reason: 'failed' };
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        wallets,
+        problem: failed,
+        eip3009: eip3009Wait({ send: { kind: 'not_sent', earlier: false }, retry: true }),
+      }),
+    });
+    expect(ui.alerts().join(' ')).toContain('Something went wrong. Try again.');
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        problem: failed,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          retry: false,
+          resend: 'again',
+        }),
+      }),
+    });
+    expect(ui.alerts().join(' ')).toContain('Something went wrong. Try again.');
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        problem: failed,
+        eip3009: eip3009Wait({ send: { kind: 'not_sent', earlier: false }, retry: false }),
+      }),
+    });
+    expect(ui.alerts().join(' ')).toContain('Something went wrong in the checkout.');
+  });
+
+  it('a payment sent, not which attempt sent it: says only that, and names the link so', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        explorer: 'https://sepolia.basescan.org/tx/0xabc',
+        eip3009: eip3009Wait({
+          send: { kind: 'unknown', linked: true, maybe: false },
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe(
+      'A payment for this order was sent; it may still arrive. Confirming on Base Sepolia, about 5 minutes.',
+    );
+    expect(ui.text()).toContain('View the sent transaction');
+    expect(ui.text()).not.toContain('Your wallet sent the payment');
+    expect(heading(ui)).toBe('Confirming payment');
+    expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
+  });
+
+  it('too late on a live retry: no wallet can pay it any more, so no other-wallet promise', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        problem: { reason: 'retry_blocked', cause: 'too_late', chain: 'Base Sepolia' },
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    const alert = ui.alerts().join(' ');
+    expect(alert).toContain('This order is too old to pay again, so nothing new was signed.');
+    expect(alert).toContain('if it does not, contact the store');
+    expect(alert).not.toContain('another wallet');
+  });
+
+  it('a wallet that failed while sending: the payment may have been sent, never "not sent"', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        problem: { reason: 'send_uncertain' },
+        eip3009: eip3009Wait({
+          send: { kind: 'unknown', linked: false, maybe: true },
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe(
+      'A payment for this order may have been sent; it will be found if it lands. Confirming on Base Sepolia, about 5 minutes.',
+    );
+    expect(ui.alerts().join(' ')).toContain(
+      'The wallet reported an error while sending; the payment may have been sent and will be found if it lands. You can pay again with the same wallet.',
+    );
+    expect(ui.text()).not.toContain('not sent');
+    expect(ui.text()).not.toContain('did not sign');
+    expect(heading(ui)).toBe('Confirming payment');
+  });
+
+  it.each([
+    [
+      { kind: 'sent' } as const,
+      'Your wallet sent the payment. Confirming on Base Sepolia, about 5 minutes.',
+      EIP3009_WAIT.viewTransaction,
+      'Confirming payment',
+      ['done', 'done', 'active'],
+    ],
+    [
+      { kind: 'not_sent', earlier: false } as const,
+      EIP3009_WAIT.signed,
+      EIP3009_WAIT.viewEarlierTransaction,
+      'Payment not sent yet',
+      ['done', 'active', 'todo'],
+    ],
+    [
+      { kind: 'not_sent', earlier: true } as const,
+      EIP3009_WAIT.signedEarlierSent,
+      EIP3009_WAIT.viewEarlierTransaction,
+      'Payment not sent yet',
+      ['done', 'active', 'todo'],
+    ],
+    [
+      { kind: 'unknown', linked: true, maybe: false } as const,
+      `${EIP3009_WAIT.sentUnknown} Confirming on Base Sepolia, about 5 minutes.`,
+      EIP3009_WAIT.viewSentTransaction,
+      'Confirming payment',
+      ['done', 'done', 'active'],
+    ],
+    [
+      { kind: 'unknown', linked: false, maybe: true } as const,
+      `${EIP3009_WAIT.maybeSent} Confirming on Base Sepolia, about 5 minutes.`,
+      EIP3009_WAIT.viewSentTransaction,
+      'Confirming payment',
+      ['done', 'done', 'active'],
+    ],
+    [
+      { kind: 'unknown', linked: false, maybe: false } as const,
+      EIP3009_WAIT.waiting,
+      EIP3009_WAIT.viewSentTransaction,
+      'Waiting for the payment',
+      ['done', 'active', 'todo'],
+    ],
+  ])(
+    'derives every word of the send state %j from it alone',
+    (send, status, link, title, stages) => {
+      const ui = mount(
+        waitingView(about, basePaying, {
+          wallets,
+          explorer: 'https://sepolia.basescan.org/tx/0xabc',
+          eip3009: eip3009Wait({ send, switchAt: nowSecs() + 600 }),
+        }),
+      );
+      expect(ui.status()[0]).toBe(status);
+      expect(
+        ui.container.querySelector('a[href="https://sepolia.basescan.org/tx/0xabc"]')?.textContent,
+      ).toBe(link);
+      expect(heading(ui)).toBe(title);
+      expect(stageStates(ui)).toEqual(stages);
+    },
+  );
+
+  it('a payment found confirming is the confirm stage, whatever this page knows of the send', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'unknown', linked: false, maybe: false },
+          confirming: true,
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    expect(ui.status()[0]).toBe('Confirming on Base Sepolia, about 5 minutes.');
+    expect(heading(ui)).toBe('Confirming payment');
+    expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
+  });
+
+  it('on a chain this build cannot check, says so instead of counting down another wallet (W8)', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        unserved: true,
+        eip3009: eip3009Wait({ switchAt: nowSecs() + 600 }),
+      }),
+    );
+    expect(ui.text()).toContain(
+      'This checkout cannot check this network. If the payment does not arrive, contact the store.',
+    );
+    expect(ui.has('.countdown')).toBe(false);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchLead);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchChecking);
+  });
+
+  it('on a page that only follows the order: Start over alone, counted down, then offered', () => {
+    vi.useFakeTimers();
+    const ui = mount(
+      waitingView(about, basePaying, {
+        followOnly: true,
+        eip3009: eip3009Wait({ retry: false, switchAt: nowSecs() + 125 }),
+      }),
+    );
+    expect(ui.text()).toContain('Start over opens in about 2:05.');
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchLead);
+    expect(ui.text()).not.toContain('Another wallet');
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        followOnly: true,
+        canRetry: true,
+        eip3009: eip3009Wait({ retry: false, switchAt: nowSecs() - 1 }),
+      }),
+    });
+    expect(ui.status()[0]).toBe(
+      'The signature expired unused. Nothing was paid. You can start over now.',
+    );
+    expect(ui.text()).not.toContain('another wallet');
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchLabel);
+    expect(ui.buttons().some((each) => each.textContent === 'Start over')).toBe(true);
+  });
+
+  it('with no fact about the send, claims neither "sent" nor "not sent"', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'unknown', linked: false, maybe: false },
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    expect(ui.status()).toEqual([EIP3009_WAIT.waiting]);
+    for (const claim of [
+      EIP3009_WAIT.sent,
+      EIP3009_WAIT.signed,
+      EIP3009_WAIT.signedEarlierSent,
+      EIP3009_WAIT.sentUnknown,
+      EIP3009_WAIT.maybeSent,
+      'Payment not sent yet',
+      'Confirming payment',
+    ]) {
+      expect(ui.text()).not.toContain(claim);
+    }
+    expect(ui.container.querySelector('a[href*="basescan"]')).toBeNull();
+  });
+
+  it('offers "send again" only while the attempt is live, never once it is over (M85)', () => {
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          resend: 'again',
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    );
+    ui.click(EIP3009_WAIT.sendAgain);
+    expect(ui.calls.resend).toBe(1);
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        wallets,
+        canRetry: true,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          resend: 'again',
+          switchAt: nowSecs() - 1,
+        }),
+      }),
+    });
+    expect(ui.text()).toContain(EIP3009_WAIT.over);
+    expect(ui.buttons().some((each) => each.textContent === EIP3009_WAIT.sendAgain)).toBe(false);
+    expect(ui.buttons().some((each) => each.textContent === EIP3009_WAIT.sendAnyway)).toBe(false);
   });
 });

@@ -11,6 +11,10 @@ const INSTALL: Record<Rail, { name: string; url: string }[]> = {
     { name: 'Solflare', url: 'https://solflare.com/download' },
   ],
   tempo: [{ name: 'MetaMask', url: 'https://metamask.io/download/' }],
+  eip3009: [
+    { name: 'MetaMask', url: 'https://metamask.io/download/' },
+    { name: 'Rabby', url: 'https://rabby.io/' },
+  ],
 };
 
 /** No wallet in this browser can pay on this network. */
@@ -20,9 +24,9 @@ export function NoWallet({ chain, phone }: Props) {
       <div class="empty">
         <p>No wallet found in this browser.</p>
         <p>
-          {chain === 'tempo'
-            ? 'Open this page in MetaMask’s in-app browser.'
-            : 'Open this page in your wallet app’s browser.'}
+          {chain === 'solana'
+            ? 'Open this page in your wallet app’s browser.'
+            : 'Open this page in MetaMask’s in-app browser.'}
         </p>
       </div>
     );

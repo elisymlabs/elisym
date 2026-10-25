@@ -18,6 +18,7 @@ const NOTHING: Actions = {
   pay: async () => undefined,
   retry: async () => undefined,
   signAgain: async () => undefined,
+  resend: async () => undefined,
   startOver: async () => undefined,
   cancel: () => undefined,
   checkInWallet: async () => undefined,
