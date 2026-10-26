@@ -658,6 +658,70 @@ describe('paying from an EIP-6963 wallet', () => {
   });
 });
 
+describe('the eip3009 wallet icons', () => {
+  const META = 'data:image/svg+xml,%3Csvg%2F%3E';
+  const PHANTOM = 'data:image/png;base64,AAAA';
+  it("borrow the Solana wallet's inline icon of the same name, on the offer and on a retry", async () => {
+    const run = await setup({
+      deps: {
+        wallets: (network) =>
+          network !== 'devnet'
+            ? []
+            : [
+                {
+                  name: 'Phantom',
+                  icon: PHANTOM,
+                  connect: () => Promise.reject(new Error('unused')),
+                },
+                {
+                  name: 'MetaMask',
+                  icon: 'data:image/png;base64,BBBB',
+                  connect: () => Promise.reject(new Error('unused')),
+                },
+              ],
+      },
+    });
+    const announced = run.deps.eip3009Wallets;
+    if (announced === undefined) {
+      throw new Error('no eip3009 wallets');
+    }
+    // MetaMask announces its own inline icon; "Phantom" (the second wallet) a URL.
+    run.deps.eip3009Wallets = (chain) =>
+      announced(chain).map((each, index) =>
+        index === 0
+          ? { ...each, icon: META }
+          : { ...each, name: 'Phantom', icon: 'https://phantom.example/icon.png' },
+      );
+    await run.session.start();
+    expect(offerView(run).wallets).toEqual([
+      // Its own inline icon wins over the Solana one.
+      { name: 'MetaMask', icon: META },
+      { name: 'Phantom', icon: PHANTOM },
+    ]);
+    await signedNotSent(run);
+    expect(waiting(run).wallets).toEqual([
+      { name: 'MetaMask', icon: META },
+      { name: 'Phantom', icon: PHANTOM },
+    ]);
+  });
+
+  it('show no icon when neither the wallet nor a Solana wallet of its name has an inline one', async () => {
+    const run = await setup({
+      deps: {
+        wallets: () => [
+          {
+            name: 'Rabby',
+            icon: 'https://rabby.example/icon.png',
+            connect: () => Promise.reject(new Error('unused')),
+          },
+        ],
+      },
+    });
+    await run.session.start();
+    expect(offerView(run).wallets).toEqual([{ name: 'MetaMask' }, { name: 'Rabby' }]);
+  });
+});
+
 describe('the eip3009 timers', () => {
   it('offers the same wallet again at once after a declined send, with "send again"', async () => {
     const run = await setup();
