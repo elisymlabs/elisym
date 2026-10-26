@@ -118,6 +118,7 @@ import {
   recordTarget,
 } from './receipts';
 import { REF_NEEDS_VERIFIED_STORE, sameRef } from './ref-scope';
+import { usableIcon } from './ui/device';
 import { FEE_HIDES_EIP3009 } from './ui/text';
 
 export { explorerLink } from './receipts';
@@ -3217,10 +3218,24 @@ export class CheckoutSession {
     } else if (rail === 'solana') {
       options = this.deps.wallets(network);
     }
-    return options.map((option) => ({
-      name: option.name,
-      ...(option.icon === undefined ? {} : { icon: option.icon }),
-    }));
+    return this.choicesOf(options, network);
+  }
+
+  /**
+   * The wallets as offered, each with an icon it can show: one that announced
+   * none inline (Phantom's EIP-6963 icon is not a data: image) borrows the
+   * inline icon of the Solana wallet of the same name, the same extension.
+   */
+  private choicesOf(
+    options: readonly { name: string; icon?: string }[],
+    network: Network,
+  ): WalletChoice[] {
+    return options.map((option) => {
+      const icon =
+        usableIcon(option.icon) ??
+        usableIcon(this.deps.wallets(network).find((wallet) => wallet.name === option.name)?.icon);
+      return { name: option.name, ...(icon === undefined ? {} : { icon }) };
+    });
   }
 
   /**
@@ -6224,10 +6239,7 @@ export class CheckoutSession {
     } else {
       options = chain === undefined ? [] : (this.deps.eip3009Wallets?.(chain) ?? []);
     }
-    return options.map((option) => ({
-      name: option.name,
-      ...(option.icon === undefined ? {} : { icon: option.icon }),
-    }));
+    return this.choicesOf(options, network);
   }
 
   /** What an `eip3009` wait shows of `record` now, its send part from `eip3009SendState` only. */
