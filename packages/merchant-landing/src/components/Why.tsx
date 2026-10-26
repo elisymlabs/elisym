@@ -10,7 +10,7 @@ const POINTS: { icon: IconName; title: string; body: string }[] = [
   },
   {
     icon: 'key',
-    title: 'No platform account',
+    title: 'No account to create',
     body: 'Your store is a key and a node you run. Orders travel over Nostr relays, payments are checked on chain.',
   },
   {

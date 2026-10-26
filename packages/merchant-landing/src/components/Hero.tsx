@@ -2,7 +2,7 @@ import { DOCS, PRODUCT_NAME } from '../constants';
 import { CheckoutMock } from './CheckoutMock';
 import { Icon } from './Icon';
 
-const PROOF = ['Non-custodial', 'Open source', 'No platform account'];
+const PROOF = ['Non-custodial', 'Open source', 'Self-hosted'];
 
 export function Hero() {
   return (

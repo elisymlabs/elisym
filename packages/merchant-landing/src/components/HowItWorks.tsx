@@ -28,7 +28,7 @@ export function HowItWorks() {
     <section id="how" className="border-line bg-surface border-y">
       <div className="mx-auto max-w-1160 px-16 py-80 sm:px-24 sm:py-112">
         <SectionHeading eyebrow="How it works" title="Start selling in three steps">
-          Your store is a small node you run and a tag on your page. No platform account, no
+          Your store is a small node you run and a tag on your page. No account to create, no
           approval to wait for.
         </SectionHeading>
         <ol className="mt-48 grid gap-16 md:grid-cols-3">
