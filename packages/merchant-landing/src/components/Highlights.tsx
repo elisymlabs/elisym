@@ -12,7 +12,7 @@ export function Highlights() {
     <section aria-label="Highlights" className="border-line border-y">
       <ul className="divide-line mx-auto grid max-w-1160 grid-cols-2 lg:grid-cols-4 lg:divide-x">
         {ITEMS.map((item) => (
-          <li key={item.title} className="flex items-center gap-14 px-16 py-24 sm:px-24">
+          <li key={item.title} className="flex items-start gap-14 px-16 py-24 sm:px-24">
             <span className="rounded-12 bg-accent-soft text-accent-ink grid size-40 shrink-0 place-items-center">
               <Icon name={item.icon} />
             </span>
