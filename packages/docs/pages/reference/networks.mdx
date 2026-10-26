@@ -50,7 +50,7 @@ The SDK registry holds Circle USDC on Ethereum, Arbitrum One and Base and their 
 | `ethereum` | devnet      | `eip155:11155111` (Sepolia)  | USDC | `0x1c7d4b196cb0c7b01d743fbc6116a902379c7238` | Yes                       |
 | `arbitrum` | mainnet     | `eip155:42161` (Arbitrum One) | USDC | `0xaf88d065e77c8cc2239327c5edb3a432268e5831` | Not yet                   |
 | `arbitrum` | devnet      | `eip155:421614` (Arbitrum Sepolia) | USDC | `0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d` | Yes                       |
-| `base`     | mainnet     | `eip155:8453`                | USDC | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` | Not yet                   |
+| `base`     | mainnet     | `eip155:8453`                | USDC | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` | Yes                       |
 | `base`     | devnet      | `eip155:84532` (Base Sepolia) | USDC | `0x036cbd53842c5426634e7929541ec2318f3dcf7e` | Yes                       |
 
 USDC has 6 decimals on all six. Gas is paid in the chain's ETH. The protocol fee for these chains is read from the same Solana config as Tempo's (mainnets pair with Solana mainnet, the Sepolias with devnet); the rail is fee-0 only: while the fee is above 0, the checkout does not offer these chains. How the buyer pays is in [the widget](/commerce/widget#paying-on-ethereum-arbitrum-and-base).

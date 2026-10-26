@@ -60,7 +60,7 @@ A payment on these chains is Circle USDC moved by EIP-3009 `transferWithAuthoriz
 
 - **The nonce binds the order.** The authorization's 32-byte `nonce` is the order's marked commerce reference (the same 32 bytes a marked Tempo memo carries). USDC lets each `(authorizer, nonce)` pair be used once, ever, so one wallet can pay one order at most once.
 - **Adjacency is the binding.** A leg counts only as an `AuthorizationUsed(authorizer, nonce)` log from the USDC contract IMMEDIATELY followed (log index + 1) by a `Transfer` from that same authorizer to the payee, of at least the price (`readEip3009Legs`). An `AuthorizationUsed` and some `Transfer` elsewhere in the receipt is not a leg.
-- **Finality per chain.** A payment is credited at the chain's `finality.credit` tag (`safe` on all six); "not paid" is only ever read at `finalized`, pinned by block hash (EIP-1898).
+- **Finality per chain.** A payment is credited at the chain's `finality.credit` tag (`safe` on all six), except that a merchant node credits a payment its buyer reported as soon as its transaction is in a block, unless its config asks for `"credit": "safe"`; "not paid" is only ever read at `finalized`, pinned by block hash (EIP-1898).
 - **Fee 0 only.** The protocol fee for these chains is read from the Solana config like Tempo's; with a fee above 0 these chains are not offered at all.
 
 ## The transaction

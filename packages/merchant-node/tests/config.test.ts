@@ -120,6 +120,14 @@ describe('the merchant config', () => {
       expect(problems.every((problem) => problem.startsWith('evm.base.logRangeCap: '))).toBe(true);
     }
     expect(withBase({ rpcUrl: 'https://rpc.example.com', logRangeCap: 1000.5 })).toHaveLength(1);
+    for (const credit of ['fast', 'safe']) {
+      expect(withBase({ rpcUrl: 'https://rpc.example.com', credit })).toEqual([]);
+    }
+    for (const credit of ['latest', 'finalized', '', true, null]) {
+      const problems = withBase({ rpcUrl: 'https://rpc.example.com', credit });
+      expect(problems).toHaveLength(1);
+      expect(problems[0]?.startsWith('evm.base.credit: ')).toBe(true);
+    }
     for (const rpcUrl of [
       undefined,
       'not a url',

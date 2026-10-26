@@ -138,6 +138,32 @@ describe('checkEip3009Payment', () => {
     expect((await checkEip3009Payment(run.state, order, HASH, run.context)).kind).toBe('paid');
   });
 
+  it('with credit fast credits a leg above the credit tag, and still asks again on a leg-less one there', async () => {
+    const run = setup({ credit: 'fast' });
+    const order = orderAt(run, NOW - 3600);
+    const above = run.fake.safe + 5;
+    pay(run, order, { block: above });
+    const leglessHash = txHashOf(2);
+    plainTransfer(run.fake, {
+      hash: leglessHash,
+      from: PAYER,
+      to: EVM_PAYOUT,
+      value: PRICE,
+      block: above,
+    });
+    expect(await checkEip3009Payment(run.state, order, leglessHash, run.context)).toEqual({
+      kind: 'ask_again',
+    });
+    const check = await checkEip3009Payment(run.state, order, HASH, run.context);
+    expect(check.kind).toBe('paid');
+    expect(order.paid?.signature).toBe(HASH);
+    // The leg's block may still be reorged: its time is not cached.
+    expect(run.context.samples.has(above)).toBe(false);
+    expect(run.state.claims).toEqual({
+      [`eip155:84532:${HASH}:${nonceOf(run, order)}`]: order.key,
+    });
+  });
+
   it('asks again on an absent or unreadable receipt, never refuses', async () => {
     const run = setup();
     const order = orderAt(run, NOW - 3600);
