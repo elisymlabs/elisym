@@ -386,7 +386,7 @@ describe('the node config and offer checks for eip3009 chains', () => {
         network: 'devnet',
         evm: {
           base: { rpcUrl: 'https://base.example' },
-          arbitrum: { rpcUrl: 'https://arb.example', logRangeCap: 100_000 },
+          arbitrum: { rpcUrl: 'https://arb.example', logRangeCap: 100_000, credit: 'safe' },
         },
       },
       'a'.repeat(64),
@@ -398,10 +398,12 @@ describe('the node config and offer checks for eip3009 chains', () => {
         context.rangeCap,
         context.asset.symbol,
         context.gate.kind,
+        context.credit,
       ]),
     ).toEqual([
-      ['eip155:421614', 'arbitrum-devnet', 100_000, 'USDC', 'deferred'],
-      ['eip155:84532', 'base-devnet', 1000, 'USDC', 'deferred'],
+      ['eip155:421614', 'arbitrum-devnet', 100_000, 'USDC', 'deferred', 'safe'],
+      // No `credit`: fast.
+      ['eip155:84532', 'base-devnet', 1000, 'USDC', 'deferred', 'fast'],
     ]);
   });
 
@@ -471,6 +473,7 @@ function secondChain(run: Run, caip2: string): { fake: NodeChain; context: Eip30
       medium: mediumOf(fake.chain),
       storePubkey: run.store.pubkey,
       rangeCap: fake.chain.logRangeCap ?? 1000,
+      credit: 'safe',
       samples: new Map(),
       scan: newScanMemory(),
       gate: { kind: 'verified' },

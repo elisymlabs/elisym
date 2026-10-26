@@ -33,7 +33,15 @@ export interface EvmChainConfig {
   rpcUrl: string;
   /** Blocks per `eth_getLogs` call: at least the registry's, which is the default. */
   logRangeCap?: number;
+  /**
+   * When a payment the buyer reported counts: `fast` (the default) as soon as its
+   * transaction is in a block, `safe` once that block reaches the chain's `safe`
+   * block (minutes, but no reorg short of a deep one can undo it).
+   */
+  credit?: EvmCredit;
 }
+
+export type EvmCredit = 'fast' | 'safe';
 
 export interface MerchantConfig extends StoreConfig {
   network: Network;
@@ -116,6 +124,7 @@ function evmChainSchema() {
     .object({
       rpcUrl: urlWith('https:', 'http:'),
       logRangeCap: z.number().int().positive().optional(),
+      credit: z.enum(['fast', 'safe']).optional(),
     })
     .strict();
 }

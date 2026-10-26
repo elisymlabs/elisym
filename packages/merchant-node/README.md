@@ -118,18 +118,18 @@ it starts.
 
 ## The config
 
-| Field             | Meaning                                                                                                                                                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`            | The store's name, shown in the checkout                                                                                                                                                                                         |
-| `nip05`           | Optional. `_@your-domain.com` for level A (see below)                                                                                                                                                                           |
-| `network`         | `devnet` or `mainnet`                                                                                                                                                                                                           |
-| `rpcUrl`          | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                                                                                                   |
-| `feeConfigRpcUrl` | Optional. A Solana RPC (`https:`) of the node's network, to read the elisym protocol config (the fee treasuries, for both rails) from. Default: `rpcUrl`, else the network's public endpoint. It switches on no Solana payments |
-| `tempo`           | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                                                                                                             |
-| `evm`             | Optional. `{ "ethereum" \| "arbitrum" \| "base": { "rpcUrl": ..., "logRangeCap"?: ... } }`: the chains whose USDC the node verifies, see [USDC on Ethereum, Arbitrum and Base](#usdc-on-ethereum-arbitrum-and-base)             |
-| `inboxRelays`     | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                                                                                                 |
-| `payouts`         | One `{ "caip19": ..., "address": ... }` per coin, for every product, see [Tempo payouts](#tempo-payouts)                                                                                                                        |
-| `webhook`         | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook)                                                                                 |
+| Field             | Meaning                                                                                                                                                                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`            | The store's name, shown in the checkout                                                                                                                                                                                                          |
+| `nip05`           | Optional. `_@your-domain.com` for level A (see below)                                                                                                                                                                                            |
+| `network`         | `devnet` or `mainnet`                                                                                                                                                                                                                            |
+| `rpcUrl`          | The node's Solana RPC (`https:`). Needed with a Solana payout                                                                                                                                                                                    |
+| `feeConfigRpcUrl` | Optional. A Solana RPC (`https:`) of the node's network, to read the elisym protocol config (the fee treasuries, for both rails) from. Default: `rpcUrl`, else the network's public endpoint. It switches on no Solana payments                  |
+| `tempo`           | Optional. `{ "network": ... }` matching `network` (`moderato` on devnet), plus an optional `rpcUrl`                                                                                                                                              |
+| `evm`             | Optional. `{ "ethereum" \| "arbitrum" \| "base": { "rpcUrl": ..., "logRangeCap"?: ..., "credit"?: "fast" \| "safe" } }`: the chains whose USDC the node verifies, see [USDC on Ethereum, Arbitrum and Base](#usdc-on-ethereum-arbitrum-and-base) |
+| `inboxRelays`     | 1 to 5 relays (`wss:`) where the store reads orders and replies                                                                                                                                                                                  |
+| `payouts`         | One `{ "caip19": ..., "address": ... }` per coin, for every product, see [Tempo payouts](#tempo-payouts)                                                                                                                                         |
+| `webhook`         | Optional. `{ "url": "https://..." }`: where the node tells your backend about payments, see [Credit an account](#credit-an-account-the-webhook)                                                                                                  |
 
 The node refuses to start with a config it cannot use, and names every problem.
 
@@ -233,12 +233,16 @@ address is written in lowercase:
 ```
 
 The checkout offers these chains on the networks marked in the docs' Networks page (the testnets
-today); where it does not yet, list such a payout after a Solana or Tempo one
+and Base today); where it does not yet, list such a payout after a payout it offers
 (a page opens on the network of the first payout). The node finds a payment per payout, never
 per order, by the USDC `Transfer` logs to it, binds each to an order through the
 `AuthorizationUsed` log right before it (its nonce is the order's derived reference), and
 credits it once its block reaches the chain's `safe` block, for the full price only (the
-protocol fee is 0 on these chains). No empty answer is trusted: every open order's window is
+protocol fee is 0 on these chains). A payment the buyer reports (by its transaction hash, as the
+checkout does) is credited sooner: as soon as its transaction is in a
+block (`"credit": "fast"`, the default from 0.13.0, seconds; a reorg can still undo such a block, which is
+rare on these chains). `"credit": "safe"` in the chain's entry waits for the `safe` block there
+too. No empty answer is trusted: every open order's window is
 scanned again and again, so a lagging backend's wrong `[]` heals on a later pass. Reads that
 keep failing are logged ("older payments on <chain> may be missed").
 

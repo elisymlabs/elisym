@@ -1613,6 +1613,39 @@ describe('readEip3009Legs', () => {
     ).toBe(true);
   });
 
+  it('with paidAt latest is paid above the credit tag, and its none stays not final there', async () => {
+    const fast = { ...LEG_OPTIONS, paidAt: 'latest' as const };
+    const paid = await readEip3009Legs(
+      receiptNode({ receipt: receiptOf(pair), creditBlock: 99 }).client,
+      HASH,
+      fast,
+    );
+    expect(paid).toMatchObject({ state: 'paid', leg: { blockNumber: 100, txHash: HASH } });
+    const reverted = await readEip3009Legs(
+      receiptNode({ receipt: receiptOf(pair, { status: '0x0' }), creditBlock: 99 }).client,
+      HASH,
+      fast,
+    );
+    expect(reverted).toMatchObject({ state: 'none', final: false });
+    // The block must still be this chain's, and the chain this one.
+    const replaced = await readEip3009Legs(
+      receiptNode({
+        receipt: receiptOf(pair),
+        creditBlock: 99,
+        ownBlockHash: `0x${'aa'.repeat(32)}`,
+      }).client,
+      HASH,
+      fast,
+    );
+    expect(replaced).toEqual({ state: 'unreadable' });
+    const otherChain = await readEip3009Legs(
+      receiptNode({ receipt: receiptOf(pair), creditBlock: 99, chainId: '0x1' }).client,
+      HASH,
+      fast,
+    );
+    expect(otherChain).toEqual({ state: 'unreadable' });
+  });
+
   it('credits only the ADJACENT pair: same proxy, same authorizer, the payee, at least the value', async () => {
     const crafted: [string, ReturnType<typeof logEntry>[]][] = [
       [

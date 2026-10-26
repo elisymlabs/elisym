@@ -4,6 +4,7 @@
  */
 import { deriveOrderPaymentReference } from '@elisym/commerce';
 import { mediumOf } from '@elisym/commerce/buyer';
+import type { EvmCredit } from '../src/config';
 import { type Eip3009Context, newScanMemory } from '../src/eip3009';
 import { intake, storeIdentity, type StoreIdentity } from '../src/intake';
 import { type LedgerState, type MerchantOrder, emptyLedger } from '../src/ledger';
@@ -31,7 +32,7 @@ export interface Run {
 }
 
 export function setup(
-  options: { caip2?: string; providerCap?: number; termsFrom?: number } = {},
+  options: { caip2?: string; providerCap?: number; termsFrom?: number; credit?: EvmCredit } = {},
 ): Run {
   const fake = nodeChain({
     headTime: NOW,
@@ -56,6 +57,8 @@ export function setup(
     medium,
     storePubkey: store.pubkey,
     rangeCap: fake.chain.logRangeCap ?? 1000,
+    // The suites were written for `safe`; `fast` is asked for by name.
+    credit: options.credit ?? 'safe',
     samples: new Map(),
     scan: newScanMemory(),
     gate: { kind: 'verified' },

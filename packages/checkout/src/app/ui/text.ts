@@ -351,7 +351,7 @@ export const UNANSWERED = {
   countingLead: {
     solana: 'You can start over in ',
     tempo: 'You can start over in ',
-    eip3009: 'Another wallet can pay in ',
+    eip3009: 'If it never does, another wallet can pay in ',
   } satisfies Record<Rail, string>,
   checking: {
     solana: 'Checking whether the request has expired…',
@@ -448,14 +448,17 @@ export const EIP3009_WAIT = {
   maybeSent: 'A payment for this order may have been sent; it will be found if it lands.',
   viewSentTransaction: 'View the sent transaction',
   waiting: 'Waiting for the payment…',
-  /** "Confirming on Base Sepolia, about 5 minutes." */
+  /**
+   * "Confirming on Base Sepolia: a few seconds, up to about 5 minutes." The
+   * store's node decides (`fast` or `safe`); the checkout cannot tell which.
+   */
   confirming: (chain: string, creditSecs: number) =>
-    `Confirming on ${chain}, ${aboutMinutes(creditSecs)}.`,
+    `Confirming on ${chain}: a few seconds, up to ${aboutMinutes(creditSecs)}.`,
   retryLabel: 'Pay again with the same wallet',
   switchLabel: 'Pay with another wallet',
-  /** Around the countdown: "Another wallet can pay in about m:ss, once the signature expires unused." */
-  switchLead: 'Another wallet can pay in about ',
-  switchTail: ', once the signature expires unused.',
+  /** Around the countdown: "Or pay with another wallet in about m:ss, once this signature expires unused." */
+  switchLead: 'Or pay with another wallet in about ',
+  switchTail: ', once this signature expires unused.',
   /** On a page that only follows the order: "Start over opens in about m:ss." */
   startOverLead: 'Start over opens in about ',
   startOverTail: '.',

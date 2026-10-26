@@ -6,7 +6,8 @@
  * reference): an `AuthorizationUsed` from the USDC proxy IMMEDIATELY followed
  * by the `Transfer` it authorizes, to the payout, of at least a price. It pays
  * terms the store offered within the window before the leg's block time, lands
- * at or above the order's floor, is credited only at the chain's credit tag,
+ * at or above the order's floor, is credited at the chain's credit tag (a
+ * reported one, with `credit: 'fast'`, as soon as its block is on this chain),
  * and is claimed once.
  *
  * Catch-up finds payments per PAYOUT, never per order (anyone can post orders
@@ -32,7 +33,7 @@ import {
   readEip3009Legs,
   readImplementation,
 } from '@elisym/pay-core/evm';
-import { EIP3009_SLUGS, type MerchantConfig, isEip3009Slug } from './config';
+import { EIP3009_SLUGS, type EvmCredit, type MerchantConfig, isEip3009Slug } from './config';
 import {
   CATCH_UP_SECS,
   EIP3009_BIND_READS,
@@ -103,6 +104,8 @@ export interface Eip3009Context {
   storePubkey: string;
   /** Blocks per `eth_getLogs` call: the config's, at least the registry's. */
   rangeCap: number;
+  /** `fast`: a reported transaction counts once it is in a block; `safe`: at the credit tag. */
+  credit: EvmCredit;
   /** With a webhook configured: a payment verified here queues its `order.paid` webhook. */
   outbox?: WebhookOutbox;
   /** Block timestamps read so far (the floor's binary search). */
@@ -169,6 +172,7 @@ export function eip3009ContextsFor(
         medium: mediumOf(chain),
         storePubkey,
         rangeCap,
+        credit: entry.credit ?? 'fast',
         samples: new Map(),
         scan: newScanMemory(),
         gate: { kind: 'deferred', attempts: 0, nextAt: 0, problem: 'not checked yet' },
@@ -259,9 +263,11 @@ type TermVerdict = 'ask' | 'refused' | 'no_leg';
  * leg's block time falls in a standing period of the order's product with
  * exactly that caip19, payout and amount, and its block is not below the
  * order's floor) and the claim, taken right before the payment is recorded.
- * A leg below the credit tag, an unreadable or absent receipt, and a leg-less
- * receipt above the tag are asked again; only answers at the credit tag are
- * final (`refused`, `no_leg`). The fee is not read: this rail is fee 0 only, so
+ * A leg above the credit tag (with `credit: 'safe'`; with `fast` it is
+ * credited once its block is on this chain), an unreadable or absent receipt,
+ * and a leg-less receipt above the tag are asked again; `no_leg` is final only
+ * at the credit tag, and `refused` (the block-time guard) at whatever block
+ * the leg was read in (with `fast`, above the tag too). The fee is not read: this rail is fee 0 only, so
  * a leg below the price is never credited.
  */
 export async function checkEip3009Payment(
@@ -289,6 +295,7 @@ export async function checkEip3009Payment(
       nonce,
       to: terms.payout,
       minValue: BigInt(terms.amount),
+      ...(context.credit === 'fast' ? { paidAt: 'latest' as const } : {}),
     });
     if (legs.state === 'none') {
       verdicts.push(legs.final ? 'no_leg' : 'ask');
@@ -299,7 +306,12 @@ export async function checkEip3009Payment(
       continue;
     }
     const { leg } = legs;
-    const at = await blockTime(context, leg.blockNumber);
+    // A fast leg's block may still be reorged: its time is read, never cached
+    // (the cache is by number, and other orders' guards and anchors read it).
+    const at = await blockTime(
+      context.credit === 'fast' ? { client: context.client } : context,
+      leg.blockNumber,
+    );
     const floor = await (floorRead ??= orderFloor(context, order));
     if (at === undefined || floor === undefined) {
       verdicts.push('ask');

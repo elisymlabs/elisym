@@ -28,8 +28,18 @@ const UNSERVED =
  * and its over line name Start over alone.
  */
 export function Eip3009Waiting({ view, wait, problem, onRetry, onResend, onStartOver }: Props) {
-  // The session draws no `switchAt` for an order whose nonce was used.
-  const counting = wait.switchAt !== undefined && !view.canRetry && !wait.confirming;
+  // Every word about the send comes from its state alone.
+  const words = eip3009SendWords(wait.send);
+  // Another wallet's countdown is shown only while the page does not say the
+  // payment is confirming (sent, linked or maybe sent): never while it may be
+  // on its way (a 45-minute timer then reads as a block). A page that only follows the order counts down to
+  // Start over, its one action. The session draws no `switchAt` for an order whose nonce was
+  // used.
+  const counting =
+    wait.switchAt !== undefined &&
+    !view.canRetry &&
+    !wait.confirming &&
+    (view.followOnly || !words.confirming);
   const now = useNow(counting || view.unsureAt !== undefined);
   if (wait.nonceUsed) {
     return (
@@ -42,8 +52,6 @@ export function Eip3009Waiting({ view, wait, problem, onRetry, onResend, onStart
       </>
     );
   }
-  // Every word about the send comes from its state alone.
-  const words = eip3009SendWords(wait.send);
   const confirmingLine = EIP3009_WAIT.confirming(wait.chain, wait.creditSecs);
   let status: string;
   if (view.canRetry) {

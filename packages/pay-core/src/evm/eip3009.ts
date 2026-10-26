@@ -1115,6 +1115,13 @@ export interface ReadEip3009LegsOptions {
   to: string;
   /** The smallest value that counts, in subunits: at least 1. */
   minValue: bigint;
+  /**
+   * `latest`: a leg is `paid` as soon as its block is on this chain, without
+   * waiting for the credit tag (a reorg can still drop it). `none` stays
+   * `final` only at or below the credit tag either way. Default: the chain's
+   * credit tag.
+   */
+  paidAt?: 'latest';
 }
 
 /**
@@ -1124,7 +1131,8 @@ export interface ReadEip3009LegsOptions {
  * IMMEDIATELY followed (log index + 1, same proxy) by a `Transfer` whose `from`
  * is that authorizer, `to` the payee and value at least `minValue`. Anything
  * else in the receipt is ignored. `paid` once the block is at or below the
- * chain's credit tag, `pending` above it; `none` for a reverted transaction or
+ * chain's credit tag (with `paidAt: 'latest'`, as soon as the block is on this
+ * chain), `pending` above it; `none` for a reverted transaction or
  * one without the leg, `final` only at or below the credit tag (above it a
  * reorg can still land another transaction there); `absent` when the node has
  * no such transaction; `unreadable` for anything else. The credit tag is read
@@ -1164,7 +1172,7 @@ export async function readEip3009Legs(
   const atTag = receipt.blockNumber <= tagBlock.number;
   const leg =
     receipt.status === 1n ? matchLeg(receipt.logs, coin.mint, nonce, to, options.minValue) : null;
-  if (leg !== null && !atTag) {
+  if (leg !== null && !atTag && options.paidAt !== 'latest') {
     return { state: 'pending', leg };
   }
   if (!(await namesChain(client, coin.chain))) {

@@ -3155,7 +3155,7 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    expect(ui.text()).toContain('Another wallet can pay in');
+    expect(ui.text()).toContain('If it never does, another wallet can pay in');
     act(() => {
       vi.advanceTimersByTime(51_000);
     });
@@ -3179,7 +3179,7 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
     expect(ui.text()).toContain('Rabby');
   });
 
-  it('after a send: confirming with the credit wait, the same wallet at once, another wallet counted down', () => {
+  it('after a send: confirming with the credit wait, the same wallet at once, no countdown to another wallet', () => {
     vi.useFakeTimers();
     const now = nowSecs();
     const ui = mount(
@@ -3191,26 +3191,50 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
       }),
     );
     expect(ui.status()[0]).toBe(
-      'Your wallet sent the payment. Confirming on Base Sepolia, about 5 minutes.',
+      'Your wallet sent the payment. Confirming on Base Sepolia: a few seconds, up to about 5 minutes.',
     );
     expect(heading(ui)).toBe('Confirming payment');
     expect(ui.container.querySelector('.label')?.textContent).toBe(EIP3009_WAIT.retryLabel);
-    expect(ui.text()).toContain(
-      'Another wallet can pay in about 2:05, once the signature expires unused.',
-    );
+    // A payment on its way: a 45-minute timer would read as a block.
+    expect(ui.has('.countdown')).toBe(false);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchLead);
     expect(ui.buttons().some((each) => each.textContent === 'Start over')).toBe(false);
     ui.click('Rabby');
     expect(ui.calls.retry).toEqual(['Rabby']);
-    // At the moment: checking, not yet offered; "taking long" only at unsureAt.
+    // At the moment: nothing to check on screen; "taking long" only at unsureAt.
     act(() => {
       vi.advanceTimersByTime(125_000);
     });
-    expect(ui.text()).toContain(EIP3009_WAIT.switchChecking);
+    expect(ui.text()).not.toContain(EIP3009_WAIT.switchChecking);
     expect(ui.text()).not.toContain(EIP3009_WAIT.takingLong);
     act(() => {
       vi.advanceTimersByTime((900 - 125) * 1000);
     });
     expect(ui.text()).toContain(EIP3009_WAIT.takingLong);
+  });
+
+  it('confirming: no countdown, even on a follow-only page or over a send not known', () => {
+    for (const send of [
+      { kind: 'not_sent', earlier: false },
+      { kind: 'unknown', linked: false, maybe: false },
+    ] as const) {
+      for (const followOnly of [true, false]) {
+        const ui = mount(
+          waitingView(about, basePaying, {
+            followOnly,
+            eip3009: eip3009Wait({
+              send,
+              confirming: true,
+              retry: false,
+              switchAt: nowSecs() + 600,
+            }),
+          }),
+        );
+        expect(ui.has('.countdown')).toBe(false);
+        expect(ui.text()).not.toContain(EIP3009_WAIT.startOverLead);
+        expect(ui.text()).not.toContain(EIP3009_WAIT.switchLead);
+      }
+    }
   });
 
   it('confirming: the found payment, with no retry over it', () => {
@@ -3219,7 +3243,9 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
         eip3009: eip3009Wait({ confirming: true, retry: false, switchAt: nowSecs() + 600 }),
       }),
     );
-    expect(ui.status()[0]).toBe('Confirming on Base Sepolia, about 5 minutes.');
+    expect(ui.status()[0]).toBe(
+      'Confirming on Base Sepolia: a few seconds, up to about 5 minutes.',
+    );
     expect(ui.text()).not.toContain(EIP3009_WAIT.retryLabel);
     // A payment found is no attempt that may expire unused: no countdown, no check.
     expect(ui.has('.countdown')).toBe(false);
@@ -3271,6 +3297,67 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
     expect(ui.text()).not.toContain(EIP3009_SIGNING);
     ui.draw({ view: { kind: 'working', step: 'signing', paying: basePaying, about } });
     expect(ui.status()[0]).toBe(EIP3009_SIGNING);
+  });
+
+  it('signed, not sent: another wallet counted down, with or without a choice on screen', () => {
+    vi.useFakeTimers();
+    const now = nowSecs();
+    const ui = mount(
+      waitingView(about, basePaying, {
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          retry: false,
+          resend: 'again',
+          switchAt: now + 125,
+        }),
+      }),
+    );
+    expect(ui.text()).toContain(
+      'Or pay with another wallet in about 2:05, once this signature expires unused.',
+    );
+    act(() => {
+      vi.advanceTimersByTime(125_000);
+    });
+    expect(ui.text()).toContain(EIP3009_WAIT.switchChecking);
+    // No retry and no Send again (a refused offer, a reload): the countdown is
+    // the one way forward, so it stays.
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'not_sent', earlier: false },
+          retry: false,
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    });
+    expect(ui.has('.countdown')).toBe(true);
+    expect(ui.text()).toContain(EIP3009_WAIT.switchLead);
+    // Nothing known either way, with the same wallet's retry: counted down too.
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'unknown', linked: false, maybe: false },
+          retry: true,
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    });
+    expect(ui.has('.countdown')).toBe(true);
+    // A send known, but not which attempt sent it: on its way, no countdown.
+    ui.draw({
+      view: waitingView(about, basePaying, {
+        wallets,
+        eip3009: eip3009Wait({
+          send: { kind: 'unknown', linked: true, maybe: false },
+          retry: true,
+          switchAt: nowSecs() + 600,
+        }),
+      }),
+    });
+    expect(ui.has('.countdown')).toBe(false);
   });
 
   it('signed, not sent: "send again" or "send anyway", and the same wallet', () => {
@@ -3415,6 +3502,8 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
       'Your wallet signed a new payment; it was not sent yet. A payment sent earlier may still arrive.',
     );
     expect(ui.text()).toContain('View the earlier transaction');
+    // The current attempt is not sent: another wallet is counted down to.
+    expect(ui.has('.countdown')).toBe(true);
     expect(ui.text()).not.toContain('Your wallet sent the payment');
   });
 
@@ -3476,7 +3565,7 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
       }),
     );
     expect(ui.status()[0]).toBe(
-      'A payment for this order was sent; it may still arrive. Confirming on Base Sepolia, about 5 minutes.',
+      'A payment for this order was sent; it may still arrive. Confirming on Base Sepolia: a few seconds, up to about 5 minutes.',
     );
     expect(ui.text()).toContain('View the sent transaction');
     expect(ui.text()).not.toContain('Your wallet sent the payment');
@@ -3512,7 +3601,7 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
       }),
     );
     expect(ui.status()[0]).toBe(
-      'A payment for this order may have been sent; it will be found if it lands. Confirming on Base Sepolia, about 5 minutes.',
+      'A payment for this order may have been sent; it will be found if it lands. Confirming on Base Sepolia: a few seconds, up to about 5 minutes.',
     );
     expect(ui.alerts().join(' ')).toContain(
       'The wallet reported an error while sending; the payment may have been sent and will be found if it lands. You can pay again with the same wallet.',
@@ -3520,12 +3609,14 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
     expect(ui.text()).not.toContain('not sent');
     expect(ui.text()).not.toContain('did not sign');
     expect(heading(ui)).toBe('Confirming payment');
+    // Maybe on its way: confirming, so no countdown to another wallet.
+    expect(ui.has('.countdown')).toBe(false);
   });
 
   it.each([
     [
       { kind: 'sent' } as const,
-      'Your wallet sent the payment. Confirming on Base Sepolia, about 5 minutes.',
+      'Your wallet sent the payment. Confirming on Base Sepolia: a few seconds, up to about 5 minutes.',
       EIP3009_WAIT.viewTransaction,
       'Confirming payment',
       ['done', 'done', 'active'],
@@ -3546,14 +3637,14 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
     ],
     [
       { kind: 'unknown', linked: true, maybe: false } as const,
-      `${EIP3009_WAIT.sentUnknown} Confirming on Base Sepolia, about 5 minutes.`,
+      `${EIP3009_WAIT.sentUnknown} Confirming on Base Sepolia: a few seconds, up to about 5 minutes.`,
       EIP3009_WAIT.viewSentTransaction,
       'Confirming payment',
       ['done', 'done', 'active'],
     ],
     [
       { kind: 'unknown', linked: false, maybe: true } as const,
-      `${EIP3009_WAIT.maybeSent} Confirming on Base Sepolia, about 5 minutes.`,
+      `${EIP3009_WAIT.maybeSent} Confirming on Base Sepolia: a few seconds, up to about 5 minutes.`,
       EIP3009_WAIT.viewSentTransaction,
       'Confirming payment',
       ['done', 'done', 'active'],
@@ -3595,7 +3686,9 @@ describe('paying on Ethereum, Arbitrum and Base (EIP-3009)', () => {
         }),
       }),
     );
-    expect(ui.status()[0]).toBe('Confirming on Base Sepolia, about 5 minutes.');
+    expect(ui.status()[0]).toBe(
+      'Confirming on Base Sepolia: a few seconds, up to about 5 minutes.',
+    );
     expect(heading(ui)).toBe('Confirming payment');
     expect(stageStates(ui)).toEqual(['done', 'done', 'active']);
   });
