@@ -13,7 +13,7 @@ export function Hero() {
         <div className="flex flex-col items-start">
           <p className="border-line-2 bg-surface/60 text-13 text-text-2 flex items-center gap-8 rounded-full border px-12 py-6">
             <span className="bg-accent size-6 rounded-full" />
-            {`${PRODUCT_NAME}: stablecoin checkout on Solana and Tempo`}
+            {`${PRODUCT_NAME}: stablecoin checkout on four networks`}
           </p>
           <h1 className="text-40 sm:text-60 mt-24 max-w-720 leading-[1.05] font-semibold tracking-tight">
             Accept stablecoin payments with <span className="text-accent-ink">one tag</span>.

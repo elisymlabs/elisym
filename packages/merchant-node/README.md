@@ -2,8 +2,8 @@
 
 The self-hosted store behind Pay Core, elisym's stablecoin checkout. It publishes your products
 to Nostr, takes orders sent by the checkout widget, checks each payment on chain (USDC on
-Solana, or a stablecoin on Tempo), and completes the order. Your backend acts on each payment
-through the node's signed `order.paid` webhook.
+Solana, a stablecoin on Tempo, or USDC on Ethereum, Arbitrum or Base), and completes the order.
+Your backend acts on each payment through the node's signed `order.paid` webhook.
 
 You do not need an account or a server of ours. The node holds your store's keys and a small
 ledger on your own disk.
@@ -232,8 +232,8 @@ address is written in lowercase:
 ]
 ```
 
-The checkout offers these chains on the networks marked in the docs' Networks page (the testnets
-and Base today); where it does not yet, list such a payout after a payout it offers
+The checkout offers these chains on the networks marked in the docs' Networks page (the testnets,
+Base and Arbitrum One today); where it does not yet, list such a payout after a payout it offers
 (a page opens on the network of the first payout). The node finds a payment per payout, never
 per order, by the USDC `Transfer` logs to it, binds each to an order through the
 `AuthorizationUsed` log right before it (its nonce is the order's derived reference), and
@@ -743,8 +743,10 @@ The [admin page](#admin) shows each order's reference; the webhook state is in `
 
 ## Limits
 
-- One network per node; any number of products, each in its own directory: USDC on Solana and
-  stablecoins on Tempo (Moderato on devnet). Every product shares the store's payout list.
+- One network per node; any number of products, each in its own directory: USDC on Solana,
+  stablecoins on Tempo (Moderato on devnet), and USDC on Ethereum, Arbitrum and Base (their
+  Sepolia testnets on devnet; payable from the checkout as the docs' Networks page marks).
+  Every product shares the store's payout list.
 - The node returns nothing to the buyer: the `completed` status and its receipt only. What the
   buyer paid for is up to your backend (the `order.paid` webhook).
 - Refunds are made by hand from your wallet. `refund` reports one to the buyer of an order the

@@ -21,7 +21,7 @@ const POINTS: { icon: IconName; title: string; body: string }[] = [
   {
     icon: 'globe',
     title: 'More than one chain',
-    body: 'Take USDC on Solana, and USDC.e or pathUSD on Tempo, from the same store, and let each buyer pay on the network they already use. More networks are on the way.',
+    body: 'Take USDC on Solana, Base and Arbitrum, and USDC.e or pathUSD on Tempo, from the same store, and let each buyer pay on the network they already use. More networks are on the way.',
   },
   {
     icon: 'table',
