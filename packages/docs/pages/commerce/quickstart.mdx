@@ -211,7 +211,7 @@ The buyer's page shows a choice between the store's payouts on the page's networ
 
 The node also verifies USDC paid over EIP-3009 (`transferWithAuthorization`) on Ethereum, Arbitrum and Base. It needs merchant-node 0.12.0 or later and, per chain, an `evm` entry with a server-side RPC of that chain. The chain's network follows the node's `network`: mainnet on mainnet, the chain's Sepolia testnet on devnet. A payout on a chain without an `evm` entry is refused, and so is one on the other network.
 
-**Payable from the checkout on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base).** The checkout pays these chains on the testnets (Sepolia, Arbitrum Sepolia, Base Sepolia) and on Base. On Ethereum and Arbitrum One it does not offer them yet: a buyer on the page cannot pay them there, and the node only verifies payments made to them by other means. While that holds, list an Ethereum or Arbitrum One payout **after** a Solana, Tempo or Base payout in `payouts`, never first: the page opens on the network of the first payout. The buyer pays from MetaMask or another EIP-6963 wallet, holding the price in USDC and a little of the chain's ETH for the network fee (see [the widget](/commerce/widget#paying-on-ethereum-arbitrum-and-base)).
+**Payable from the checkout on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base).** The checkout pays these chains on the testnets (Sepolia, Arbitrum Sepolia, Base Sepolia) and on Base and Arbitrum One. On Ethereum mainnet it does not offer such a payout yet: a buyer on the page cannot pay it there, and the node only verifies payments made to it by other means. While that holds, list an Ethereum payout **after** a Solana, Tempo, Base or Arbitrum One payout in `payouts`, never first: the page opens on the network of the first payout. The buyer pays from MetaMask or another EIP-6963 wallet, holding the price in USDC and a little of the chain's ETH for the network fee (see [the widget](/commerce/widget#paying-on-ethereum-arbitrum-and-base)).
 
 To add a Base USDC payout to the mainnet store (stop the node first, run the export block, and put your own address, lowercase, and your own Base RPC):
 
@@ -238,7 +238,7 @@ The `evm` keys and the coins:
 | Chain            | `evm` key  | Node `network` | Payable from the checkout | `caip19`                                                            |
 | ---------------- | ---------- | -------------- | ------------------------- | ------------------------------------------------------------------- |
 | Ethereum         | `ethereum` | `mainnet`      | Not yet                   | `eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`         |
-| Arbitrum One     | `arbitrum` | `mainnet`      | Not yet                   | `eip155:42161/erc20:0xaf88d065e77c8cc2239327c5edb3a432268e5831`     |
+| Arbitrum One     | `arbitrum` | `mainnet`      | Yes                       | `eip155:42161/erc20:0xaf88d065e77c8cc2239327c5edb3a432268e5831`     |
 | Base             | `base`     | `mainnet`      | Yes                       | `eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`      |
 | Sepolia          | `ethereum` | `devnet`       | Yes                       | `eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238`  |
 | Arbitrum Sepolia | `arbitrum` | `devnet`       | Yes                       | `eip155:421614/erc20:0x75faf114eafb1bdbe2f0316df893fd58ce46aa4d`    |
