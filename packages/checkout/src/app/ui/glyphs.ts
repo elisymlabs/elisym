@@ -32,28 +32,36 @@ export const TEMPO_GLYPH = svg(
 );
 
 /**
- * The Ethereum diamond (two facets per half), drawn light on the dark tile: a
- * simplified mark, not the official file.
+ * The official Ethereum diamond (`logos/ethereum-diamond.svg`, ethereum.org's
+ * `eth-diamond-black-white`), inlined: black on a white tile, as the file is
+ * meant to be shown.
  */
+export const ETHEREUM_MARK =
+  '<path d="m960 730.9-539.8 245.4 539.8 319.1 539.8-319.1z" opacity=".6"/><path d="m420.2 976.3 539.8 319.1v-564.5-650.3z" opacity=".45"/><path d="m960 80.6v650.3 564.5l539.8-319.1z" opacity=".8"/><path d="m420.2 1078.7 539.8 760.7v-441.8z" opacity=".45"/><path d="m960 1397.6v441.8l540.2-760.7z" opacity=".8"/>';
+
 export const ETHEREUM_GLYPH = svg(
-  '<circle cx="12" cy="12" r="12" fill="#1f2433"/>' +
-    '<path fill="#c9d2ff" d="M12 3.5l5.2 8.6L12 15.2 6.8 12.1z"/>' +
-    '<path fill="#8f9ce0" d="M12 3.5v11.7l-5.2-3.1z"/>' +
-    '<path fill="#c9d2ff" d="M12 16.2l5.2-3.1L12 20.5z"/>' +
-    '<path fill="#8f9ce0" d="M12 16.2v4.3l-5.2-7.4z"/>',
+  '<circle cx="12" cy="12" r="12" fill="#fff"/>' +
+    `<svg x="2" y="2" width="20" height="20" viewBox="0 0 1920 1920">${ETHEREUM_MARK}</svg>`,
 );
 
-/** Arbitrum's colors (navy tile, blue strokes) with an "A": a simplified mark, not the official file. */
+/**
+ * The official Arbitrum One logomark (`logos/arbitrum-logomark.svg`, from
+ * Arbitrum's docs), inlined: its own viewBox kept, the hexagon fitted to the
+ * tile's height.
+ */
+export const ARBITRUM_MARK =
+  '<path fill="#213147" d="M41,370.4v477.7c0,30.5,16.3,58.7,42.7,73.9l413.7,238.9c26.4,15.2,58.9,15.2,85.3,0L996.4,922c26.4-15.2,42.7-43.4,42.7-73.9V370.4c0-30.5-16.3-58.7-42.7-73.9L582.7,57.6c-26.4-15.2-58.9-15.2-85.3,0L83.6,296.5C57.2,311.7,41,339.9,41,370.4z"/><path fill="#12AAFF" d="M630.3,701.9l-59,161.8c-1.6,4.5-1.6,9.4,0,13.9L672.8,1156l117.4-67.8L649.3,701.9C646.1,693,633.5,693,630.3,701.9z"/><path fill="#12AAFF" d="M748.6,429.8c-3.2-8.9-15.8-8.9-19,0l-59,161.8c-1.6,4.5-1.6,9.4,0,13.9l166.3,455.8l117.4-67.8L748.6,429.8z"/><path fill="#9DCCED" d="M540,75.5c2.9,0,5.8,0.8,8.4,2.2l447.7,258.5c5.2,3,8.4,8.6,8.4,14.5v516.9c0,6-3.2,11.5-8.4,14.5l-447.7,258.5c-2.5,1.5-5.5,2.2-8.4,2.2c-2.9,0-5.8-0.8-8.4-2.2L83.9,882.3c-5.2-3-8.4-8.6-8.4-14.5V350.8c0-6,3.2-11.5,8.4-14.5L531.6,77.8C534.2,76.3,537.1,75.5,540,75.5 M540,0c-15.9,0-31.9,4.1-46.2,12.4L46.2,270.8c-28.6,16.5-46.2,47-46.2,80v516.9c0,33,17.6,63.5,46.2,80l447.7,258.5c14.3,8.2,30.2,12.4,46.2,12.4c15.9,0,31.9-4.1,46.2-12.4l447.7-258.5c28.6-16.5,46.2-47,46.2-80V350.8c0-33-17.6-63.5-46.2-80L586.2,12.4C571.9,4.1,555.9,0,540,0L540,0z"/><polygon fill="#213147" points="243.9,1061.9 285.1,949.1 368,1018 290.5,1088.8"/><path fill="#FFFFFF" d="M502.3,313.8H388.8c-8.5,0-16.1,5.3-19,13.3l-243.3,667l117.4,67.8l267.9-734.5C514.3,320.8,509.4,313.8,502.3,313.8z"/><path fill="#FFFFFF" d="M700.9,313.8H587.4c-8.5,0-16.1,5.3-19,13.3l-277.8,761.6l117.4,67.8l302.4-829.1C712.8,320.8,707.9,313.8,700.9,313.8z"/>';
+
 export const ARBITRUM_GLYPH = svg(
-  '<circle cx="12" cy="12" r="12" fill="#213147"/>' +
-    '<path fill="none" stroke="#12aaff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M7.5 17.5L12 6.5l4.5 11"/>' +
-    '<path fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" d="M9.4 13.6h5.2"/>',
+  `<svg x="0" y="0" width="24" height="24" viewBox="0 0 1080 1218.5">${ARBITRUM_MARK}</svg>`,
 );
 
-/** Base's blue with its square: a simplified mark, not the official file. */
+/** The official Base mark, The Square (`logos/base-square.svg`, Base's brand kit), inlined. */
+export const BASE_MARK =
+  '<path fill="#0000ff" d="M0,101.12c0-34.64,0-51.95,6.53-65.28,6.25-12.76,16.56-23.07,29.32-29.32C49.17,0,66.48,0,101.12,0h1077.76c34.63,0,51.96,0,65.28,6.53,12.75,6.25,23.06,16.56,29.32,29.32,6.52,13.32,6.52,30.64,6.52,65.28v1077.76c0,34.63,0,51.96-6.52,65.28-6.26,12.75-16.57,23.06-29.32,29.32-13.32,6.52-30.65,6.52-65.28,6.52H101.12c-34.64,0-51.95,0-65.28-6.52-12.76-6.26-23.07-16.57-29.32-29.32-6.53-13.32-6.53-30.65-6.53-65.28V101.12Z"/>';
+
 export const BASE_GLYPH = svg(
-  '<circle cx="12" cy="12" r="12" fill="#0052ff"/>' +
-    '<rect x="7" y="7" width="10" height="10" rx="1.6" fill="#fff"/>',
+  `<svg x="2" y="2" width="20" height="20" viewBox="0 0 1280 1280">${BASE_MARK}</svg>`,
 );
 
 export const CHECK_GLYPH = svg(
