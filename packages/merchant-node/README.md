@@ -232,13 +232,12 @@ address is written in lowercase:
 ]
 ```
 
-The checkout offers these chains on the networks marked in the docs' Networks page (the testnets,
-Base and Arbitrum One today); where it does not yet, list such a payout after a payout it offers
-(a page opens on the network of the first payout). The node finds a payment per payout, never
-per order, by the USDC `Transfer` logs to it, binds each to an order through the
-`AuthorizationUsed` log right before it (its nonce is the order's derived reference), and
-credits it once its block reaches the chain's `safe` block, for the full price only (the
-protocol fee is 0 on these chains). A payment the buyer reports (by its transaction hash, as the
+The checkout offers these chains on the networks marked in the docs' Networks page (all of
+them today: the testnets and Ethereum, Arbitrum One and Base mainnet). The node finds a
+payment per payout, never per order, by the USDC `Transfer` logs to it, binds each to an order
+through the `AuthorizationUsed` log right before it (its nonce is the order's derived
+reference), and credits it once its block reaches the chain's `safe` block, for the full price
+only (the protocol fee is 0 on these chains). A payment the buyer reports (by its transaction hash, as the
 checkout does) is credited sooner: as soon as its transaction is in a
 block (`"credit": "fast"`, the default from 0.13.0, seconds; a reorg can still undo such a block, which is
 rare on these chains). `"credit": "safe"` in the chain's entry waits for the `safe` block there
