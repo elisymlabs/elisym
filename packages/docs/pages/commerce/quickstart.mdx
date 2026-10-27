@@ -60,7 +60,7 @@ Open `$ELISYM_MERCHANT_HOME/config.json`, which holds what the whole store share
 - `rpcUrl` is your own Solana RPC endpoint that keeps the full transaction history. The public mainnet one is rate-limited and not meant for a server, and a key restricted to a browser origin does not work from a server.
 - `payouts[0].address` is the Solana wallet the money goes to, for every product. The `caip19` above is mainnet USDC.
 
-**Only one network.** A store takes payment only on the networks it lists in `payouts`, and needs at least one. List a Solana or a Tempo payout first: an Ethereum, Arbitrum or Base payout only comes in addition, since on a network where those chains are not payable yet ([Networks](/reference/networks#ethereum-arbitrum-and-base)) a store with nothing else cannot be paid. Without a Tempo wallet, leave the config as above and skip [Tempo payouts](#tempo-payouts). Without a Solana wallet, remove both the Solana payout and `rpcUrl` (a `rpcUrl` alone switches Solana payments on), and take Tempo only:
+**Only one network.** A store takes payment only on the networks it lists in `payouts`, and needs at least one. List a Solana or a Tempo payout first: an Ethereum, Arbitrum or Base payout only comes in addition, since while the protocol fee is above 0 the checkout does not offer those chains ([Networks](/reference/networks#ethereum-arbitrum-and-base)) and a store with nothing else could not be paid. Without a Tempo wallet, leave the config as above and skip [Tempo payouts](#tempo-payouts). Without a Solana wallet, remove both the Solana payout and `rpcUrl` (a `rpcUrl` alone switches Solana payments on), and take Tempo only:
 
 ```json
 {
@@ -211,7 +211,7 @@ The buyer's page shows a choice between the store's payouts on the page's networ
 
 The node also verifies USDC paid over EIP-3009 (`transferWithAuthorization`) on Ethereum, Arbitrum and Base. It needs merchant-node 0.12.0 or later and, per chain, an `evm` entry with a server-side RPC of that chain. The chain's network follows the node's `network`: mainnet on mainnet, the chain's Sepolia testnet on devnet. A payout on a chain without an `evm` entry is refused, and so is one on the other network.
 
-**Payable from the checkout on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base).** The checkout pays these chains on the testnets (Sepolia, Arbitrum Sepolia, Base Sepolia) and on Base and Arbitrum One. On Ethereum mainnet it does not offer such a payout yet: a buyer on the page cannot pay it there, and the node only verifies payments made to it by other means. While that holds, list an Ethereum payout **after** a Solana, Tempo, Base or Arbitrum One payout in `payouts`, never first: the page opens on the network of the first payout. The buyer pays from MetaMask or another EIP-6963 wallet, holding the price in USDC and a little of the chain's ETH for the network fee (see [the widget](/commerce/widget#paying-on-ethereum-arbitrum-and-base)).
+**Payable from the checkout on the networks marked in [Networks](/reference/networks#ethereum-arbitrum-and-base).** The checkout pays these chains on the testnets (Sepolia, Arbitrum Sepolia, Base Sepolia) and on Ethereum, Arbitrum One and Base mainnet. The buyer pays from MetaMask or another EIP-6963 wallet, holding the price in USDC and a little of the chain's ETH for the network fee (see [the widget](/commerce/widget#paying-on-ethereum-arbitrum-and-base)).
 
 To add a Base USDC payout to the mainnet store (stop the node first, run the export block, and put your own address, lowercase, and your own Base RPC):
 
@@ -237,7 +237,7 @@ The `evm` keys and the coins:
 
 | Chain            | `evm` key  | Node `network` | Payable from the checkout | `caip19`                                                            |
 | ---------------- | ---------- | -------------- | ------------------------- | ------------------------------------------------------------------- |
-| Ethereum         | `ethereum` | `mainnet`      | Not yet                   | `eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`         |
+| Ethereum         | `ethereum` | `mainnet`      | Yes                       | `eip155:1/erc20:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`         |
 | Arbitrum One     | `arbitrum` | `mainnet`      | Yes                       | `eip155:42161/erc20:0xaf88d065e77c8cc2239327c5edb3a432268e5831`     |
 | Base             | `base`     | `mainnet`      | Yes                       | `eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`      |
 | Sepolia          | `ethereum` | `devnet`       | Yes                       | `eip155:11155111/erc20:0x1c7d4b196cb0c7b01d743fbc6116a902379c7238`  |
