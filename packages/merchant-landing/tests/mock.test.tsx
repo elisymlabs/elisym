@@ -3,7 +3,15 @@ import { join } from 'node:path';
 import { act } from 'react';
 import { type Root, createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  ARBITRUM_GLYPH,
+  BASE_GLYPH,
+  ETHEREUM_GLYPH,
+  SOLANA_GLYPH,
+  TEMPO_GLYPH,
+} from '../../checkout/src/app/ui/glyphs';
 import { AGENT_RUN } from '../src/components/AgentTab';
+import { ChainMark, type MockChain } from '../src/components/ChainMark';
 import { CheckoutMock, MOCK_PAYOUTS } from '../src/components/CheckoutMock';
 import { Demo } from '../src/components/Demo';
 import { copyText } from '../src/components/Snippet';
@@ -52,6 +60,84 @@ function shownPayout(page: HTMLElement): string {
   return combobox(page).textContent ?? '';
 }
 
+const CHAINS: readonly MockChain[] = ['solana', 'tempo', 'ethereum', 'arbitrum', 'base'];
+
+const CHECKOUT_GLYPHS: Record<MockChain, string> = {
+  solana: SOLANA_GLYPH,
+  tempo: TEMPO_GLYPH,
+  ethereum: ETHEREUM_GLYPH,
+  arbitrum: ARBITRUM_GLYPH,
+  base: BASE_GLYPH,
+};
+
+/** A gradient's id draws nothing and differs (`useId` vs `sol-g`). */
+const UNDRAWN_ATTRIBUTES = new Set(['id']);
+
+/** The outer `<svg>` is sized and labeled by its page (`class`, `aria-hidden`) or file (`xmlns`). */
+const UNDRAWN_ROOT_ATTRIBUTES = new Set(['id', 'xmlns', 'class', 'aria-hidden']);
+
+/**
+ * Every shape of a mark with every attribute it draws, sorted: a polygon as the
+ * path it outlines, and a `url(#id)` fill as the kind of element it resolves to
+ * inside the mark, so a broken reference shows.
+ */
+function shapesOf(mark: Element): string[] {
+  return [mark, ...mark.querySelectorAll('*')].map((shape) => {
+    const undrawn = shape === mark ? UNDRAWN_ROOT_ATTRIBUTES : UNDRAWN_ATTRIBUTES;
+    const drawn = [...shape.attributes]
+      .filter((attribute) => !undrawn.has(attribute.name))
+      .map((attribute) => {
+        if (attribute.name === 'points') {
+          return `d=M${attribute.value.split(' ').join(' L')} Z`;
+        }
+        const reference = /^url\(#(.+)\)$/.exec(attribute.value)?.[1];
+        if (reference === undefined) {
+          return `${attribute.name}=${attribute.value}`;
+        }
+        const target = mark.querySelector(`[id="${reference}"]`);
+        return `${attribute.name}=url->${target === null ? 'missing' : target.tagName}`;
+      })
+      .sort();
+    return [shape.tagName === 'polygon' ? 'path' : shape.tagName, ...drawn].join(' ');
+  });
+}
+
+function checkoutGlyph(chain: MockChain): Element {
+  const markup = decodeURIComponent(CHECKOUT_GLYPHS[chain].replace('data:image/svg+xml,', ''));
+  return new DOMParser().parseFromString(markup, 'image/svg+xml').documentElement;
+}
+
+describe('the chain marks', () => {
+  it('draw each chain as the checkout does', async () => {
+    const page = await render(
+      <>
+        {CHAINS.map((chain) => (
+          <ChainMark key={chain} chain={chain} />
+        ))}
+      </>,
+    );
+    const marks = page.querySelectorAll(':scope > svg');
+    expect(marks).toHaveLength(CHAINS.length);
+    CHAINS.forEach((chain, index) => {
+      const drawn = marks[index];
+      if (drawn === undefined) {
+        throw new Error(`no mark for ${chain}`);
+      }
+      expect(shapesOf(drawn), chain).toEqual(shapesOf(checkoutGlyph(chain)));
+    });
+  });
+
+  it('name each chain as the checkout does', () => {
+    const text = readFileSync(join(PACKAGES, 'checkout/src/app/ui/text.ts'), 'utf8');
+    const start = text.indexOf('export const CHAIN_NAMES');
+    expect(start).toBeGreaterThan(-1);
+    const names = text.slice(start, text.indexOf('};', start));
+    for (const payout of MOCK_PAYOUTS) {
+      expect(names).toContain(`  ${payout.chain}: '${payout.chainLabel}',`);
+    }
+  });
+});
+
 describe('the checkout drawing', () => {
   it('opens the Pay with list on click and picks a payout', async () => {
     const page = await render(<CheckoutMock />);
@@ -63,6 +149,9 @@ describe('the checkout drawing', () => {
       'USDC · Solana',
       'USDC.e · Tempo',
       'pathUSD · Tempo',
+      'USDC · Ethereum',
+      'USDC · Arbitrum',
+      'USDC · Base',
     ]);
     expect(options[0]?.getAttribute('aria-selected')).toBe('true');
     await act(async () => (options[2] as HTMLElement).click());
@@ -132,13 +221,15 @@ describe('the checkout drawing', () => {
     await key(box, 'ArrowDown');
     expect(activeIndex()).toBe(2);
     await key(box, 'ArrowDown');
+    expect(activeIndex()).toBe(3);
+    await key(box, 'End');
+    expect(activeIndex()).toBe(5);
+    await key(box, 'ArrowDown');
     expect(activeIndex()).toBe(0);
     await key(box, 'ArrowUp');
-    expect(activeIndex()).toBe(2);
+    expect(activeIndex()).toBe(5);
     await key(box, 'Home');
     expect(activeIndex()).toBe(0);
-    await key(box, 'End');
-    expect(activeIndex()).toBe(2);
   });
 
   it('offers only coins the payment registry knows', () => {

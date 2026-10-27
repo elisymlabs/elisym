@@ -10,11 +10,14 @@ export interface MockPayout {
   coin: string;
 }
 
-/** The payouts the drawing offers, as a store paid on both networks lists them. */
+/** The payouts the drawing offers, as a store paid on every network lists them. */
 export const MOCK_PAYOUTS: readonly MockPayout[] = [
   { id: 'solana-usdc', chain: 'solana', chainLabel: 'Solana', coin: 'USDC' },
   { id: 'tempo-usdce', chain: 'tempo', chainLabel: 'Tempo', coin: 'USDC.e' },
   { id: 'tempo-pathusd', chain: 'tempo', chainLabel: 'Tempo', coin: 'pathUSD' },
+  { id: 'ethereum-usdc', chain: 'ethereum', chainLabel: 'Ethereum', coin: 'USDC' },
+  { id: 'arbitrum-usdc', chain: 'arbitrum', chainLabel: 'Arbitrum', coin: 'USDC' },
+  { id: 'base-usdc', chain: 'base', chainLabel: 'Base', coin: 'USDC' },
 ];
 
 /**

@@ -15,7 +15,7 @@ const QUESTIONS = [
   {
     question: 'Which networks and wallets work?',
     answer:
-      'USDC on Solana, Base and Arbitrum, and USDC.e or pathUSD on Tempo. Buyers pay from a browser wallet, for example Phantom on Solana, or MetaMask on Tempo, Base or Arbitrum.',
+      'USDC on Solana, Ethereum, Base and Arbitrum, and USDC.e or pathUSD on Tempo. Buyers pay from a browser wallet, for example Phantom on Solana, or MetaMask on Tempo, Ethereum, Base or Arbitrum.',
   },
   {
     question: 'Can AI agents buy from my store?',
