@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
@@ -44,6 +45,7 @@ import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } fr
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
   type MerchantHome,
+  addOwnerKeyToHome,
   encryptHomeKeys,
   ensureHome,
   heldByRunningMerchant,
@@ -60,7 +62,9 @@ import {
   encryptedKeysLabel,
   encryptionNotes,
   hasOwnerKey,
+  isSealed,
   parseOwnerPubkey,
+  parseOwnerSecret,
   openSecret,
   openSetupKeys,
   openCheckKeys,
@@ -124,6 +128,10 @@ const USAGE = `usage: elisym-merchant <command> [--home <dir>]
   orders list the orders: paid, completed, the buyer's email, the customer
          reference, the webhook state and its event id
   check  check the inbox relays, the owner's payout list and the domain
+  add-owner-key
+         put the owner key into a store-only home (read from stdin or typed at a
+         hidden prompt, never from the command line), encrypted with the passphrase
+         when one is set; setup then signs the owner's events here again
   encrypt-keys [--owner-only]
          encrypt the keys in keys.json with $ELISYM_MERCHANT_PASSPHRASE
          (or the file $ELISYM_MERCHANT_PASSPHRASE_FILE names); both keys by default
@@ -274,6 +282,11 @@ function parseArgs(argv: readonly string[]): Args {
       args.target = arg;
     } else if (args.command === 'deliver') {
       throw new Error(DELIVER_RENAMED);
+    } else if (args.command === 'add-owner-key') {
+      // Never echoed: an argument here may be the very key, and an error lands in logs.
+      throw new Error(
+        'add-owner-key reads the key from stdin or a hidden prompt, never an argument',
+      );
     } else {
       throw new Error(`unknown argument ${arg ?? ''}`);
     }
@@ -1017,6 +1030,87 @@ async function check(home: MerchantHome): Promise<void> {
   }
 }
 
+/**
+ * A secret typed at a hidden prompt (nothing echoed), or the first line of a
+ * piped stdin: never a command-line argument, which the shell history and the
+ * process list would keep.
+ */
+async function readSecretInput(question: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    // Stops at the first line: a key typed into a piped stdin needs no Ctrl-D.
+    let text = '';
+    for await (const chunk of process.stdin) {
+      text += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      if (text.includes('\n')) {
+        break;
+      }
+    }
+    return text.split(/\r?\n/)[0] ?? '';
+  }
+  const muted = new Writable({
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+  const prompt = createInterface({ input: process.stdin, output: muted, terminal: true });
+  let answered = false;
+  // Raw mode turns Ctrl-C into an event: without a listener the hidden prompt would just freeze.
+  prompt.once('SIGINT', () => {
+    prompt.close();
+  });
+  // Ctrl-C or Ctrl-D before an answer closes the prompt and restores echo: a key typed
+  // after that would show, so the command ends there.
+  prompt.once('close', () => {
+    if (!answered) {
+      process.stderr.write('\nerror: no owner key typed\n');
+      process.exit(130);
+    }
+  });
+  // The question first, so raw mode is on (no echo) before the prompt shows: a
+  // password manager that types as soon as it sees the prompt must not be echoed.
+  const pending = prompt.question('');
+  process.stderr.write(question);
+  try {
+    const answer = await pending;
+    answered = true;
+    return answer;
+  } finally {
+    prompt.close();
+    process.stderr.write('\n');
+  }
+}
+
+/** `add-owner-key`: the owner key into a store-only home, sealed when a passphrase is set. */
+async function addOwnerKey(home: MerchantHome): Promise<void> {
+  // Everything that can refuse without the key is checked before it is asked for:
+  // the home, the passphrase (it must open a sealed store key), a running node.
+  const passphrase = readPassphrase();
+  const loaded = loadKeys(home);
+  if (hasOwnerKey(loaded)) {
+    throw new Error('this home already holds the owner key');
+  }
+  if (isSealed(loaded, 'store')) {
+    if (passphrase === undefined) {
+      throw new Error(
+        `the store key is encrypted: ${PASSPHRASE_HINT}, to encrypt the owner key too`,
+      );
+    }
+    openSecret(loaded, 'store', passphrase);
+  }
+  if (heldByRunningMerchant(home)) {
+    throw new Error('a merchant is running on this home: stop it first');
+  }
+  const ownerSecretKey = parseOwnerSecret(await readSecretInput('owner key (nsec): '));
+  addOwnerKeyToHome(home, ownerSecretKey, passphrase);
+  console.log(
+    `owner   ${loaded.ownerPubkey} (key added${passphrase === undefined ? ', plain' : ', encrypted'})`,
+  );
+  if (passphrase !== undefined && !isSealed(loaded, 'store')) {
+    console.log('note    the store key stays plain: encrypt-keys seals it');
+  }
+  console.log('next    run setup: it signs the payout list and the store authorization here');
+}
+
 /** Ask on a terminal; without one, refuse rather than wait or assume. */
 async function confirmed(question: string, yes: boolean): Promise<boolean> {
   if (yes) {
@@ -1186,6 +1280,9 @@ async function main(): Promise<void> {
   if (args.ownerOnly && args.command !== 'init' && args.command !== 'encrypt-keys') {
     throw new Error('--owner-only is for init and encrypt-keys');
   }
+  if (args.yes && args.command === 'add-owner-key') {
+    throw new Error('--yes is not for add-owner-key');
+  }
   if (args.ownerPubkey !== undefined && args.command !== 'init') {
     throw new Error('--owner-pubkey is for init');
   }
@@ -1196,6 +1293,10 @@ async function main(): Promise<void> {
       return;
     case 'encrypt-keys':
       encryptKeys(home, args.ownerOnly);
+      process.exit(0);
+      return;
+    case 'add-owner-key':
+      await addOwnerKey(home);
       process.exit(0);
       return;
     case 'store-key':

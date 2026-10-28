@@ -151,6 +151,60 @@ export function parseOwnerPubkey(value: string): string {
   throw new Error('--owner-pubkey is an npub or 64 lowercase hex characters');
 }
 
+/** An owner secret key typed in: an nsec or 64 lowercase hex, as bytes. */
+export function parseOwnerSecret(value: string): Uint8Array {
+  const trimmed = value.trim();
+  if (HEX_KEY_RE.test(trimmed)) {
+    return hexToBytes(trimmed);
+  }
+  if (trimmed.startsWith('nsec1')) {
+    try {
+      const decoded = decode(trimmed);
+      if (decoded.type === 'nsec' && decoded.data.length === 32) {
+        return decoded.data;
+      }
+    } catch {
+      // Falls through to the error below: a malformed nsec is no key.
+    }
+  }
+  throw new Error('the owner key is an nsec or 64 lowercase hex characters');
+}
+
+/**
+ * A store-only home's keys with the owner key added: it must be the owner the
+ * home names, and it is sealed when a passphrase is given (one passphrase for the
+ * whole file: a sealed store key must open with it, and is never left the only
+ * sealed key next to a plain owner key).
+ */
+export function withOwnerKey(
+  keys: LoadedKeys,
+  ownerSecretKey: Uint8Array,
+  passphrase: string | undefined,
+): KeysFile {
+  if (hasOwnerKey(keys)) {
+    throw new Error('this home already holds the owner key');
+  }
+  if (getPublicKey(ownerSecretKey) !== keys.ownerPubkey) {
+    throw new Error(`this is not the owner key of this home (its owner is ${keys.ownerPubkey})`);
+  }
+  if (isSealed(keys, 'store') && passphrase === undefined) {
+    throw new Error(`the store key is encrypted: ${PASSPHRASE_HINT}, to encrypt the owner key too`);
+  }
+  if (passphrase === undefined) {
+    return {
+      store: keys.sealed.store,
+      owner: bytesToHex(ownerSecretKey),
+      storePubkey: keys.storePubkey,
+      ownerPubkey: keys.ownerPubkey,
+    };
+  }
+  const added: LoadedKeys = {
+    ...keys,
+    sealed: { ...keys.sealed, owner: bytesToHex(ownerSecretKey) },
+  };
+  return sealKeys(added, ['owner'], passphrase);
+}
+
 /** Whether the home holds the owner's secret key (false for a store-only home). */
 export function hasOwnerKey(keys: LoadedKeys): boolean {
   return keys.sealed.owner !== undefined;

@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +15,7 @@ import { bytesToHex } from 'nostr-tools/utils';
 import { describe, expect, it } from 'vitest';
 import { HOSTED_ADMIN_URL } from '../src/constants';
 import {
+  addOwnerKeyToHome,
   createKeysFile,
   encryptHomeKeys,
   initKeys,
@@ -38,12 +40,14 @@ import {
   ownerOpensHere,
   parseKeysFile,
   parseOwnerPubkey,
+  parseOwnerSecret,
   plainKeysFile,
   readPassphrase,
   replaceKeysFile,
   sealKeys,
   storeKeyForAdmin,
   storeOnlyKeysFile,
+  withOwnerKey,
 } from '../src/keys';
 import { decryptSecret, encryptSecret } from '../src/secret-box';
 
@@ -462,5 +466,75 @@ describe('a store-only home (init --owner-pubkey)', () => {
     expect(() => parseOwnerPubkey('npub1notakey')).toThrow(/npub or 64/);
     expect(() => parseOwnerPubkey(encodeBytes('npub', new Uint8Array(33)))).toThrow(/npub or 64/);
     expect(() => parseOwnerPubkey(nsecEncode(ownerSecret))).toThrow(/npub or 64/);
+  });
+});
+
+describe('add-owner-key', () => {
+  function storeOnlyHome(passphrase?: string) {
+    const ownerSecret = generateSecretKey();
+    const home = merchantHome(mkdtempSync(join(tmpdir(), 'elisym-add-owner-')));
+    initKeys(home, passphrase, false, getPublicKey(ownerSecret));
+    return { home, ownerSecret };
+  }
+
+  it('reads an owner secret from an nsec or hex, and nothing else', () => {
+    const secret = generateSecretKey();
+    expect(bytesToHex(parseOwnerSecret(nsecEncode(secret)))).toBe(bytesToHex(secret));
+    expect(bytesToHex(parseOwnerSecret(` ${bytesToHex(secret)}\n`))).toBe(bytesToHex(secret));
+    expect(() => parseOwnerSecret(npubEncode(getPublicKey(secret)))).toThrow(/nsec or 64/);
+    expect(() => parseOwnerSecret(encodeBytes('nsec', new Uint8Array(33)))).toThrow(/nsec or 64/);
+    expect(() => parseOwnerSecret('')).toThrow(/nsec or 64/);
+  });
+
+  it('adds the owner key, plain, to a plain store-only home; setup then opens it', () => {
+    const { home, ownerSecret } = storeOnlyHome();
+    addOwnerKeyToHome(home, ownerSecret, undefined);
+    const keys = loadKeys(home);
+    expect(hasOwnerKey(keys)).toBe(true);
+    expect(isSealed(keys, 'owner')).toBe(false);
+    expect(bytesToHex(openSetupKeys(keys, undefined).ownerSecretKey)).toBe(bytesToHex(ownerSecret));
+  });
+
+  it('seals the owner key with the passphrase of a sealed home', () => {
+    const { home, ownerSecret } = storeOnlyHome(PASSPHRASE);
+    expect(() => addOwnerKeyToHome(home, ownerSecret, undefined)).toThrow(/store key is encrypted/);
+    expect(() => addOwnerKeyToHome(home, ownerSecret, 'wrong')).toThrow(/wrong passphrase/);
+    expect(hasOwnerKey(loadKeys(home))).toBe(false);
+    addOwnerKeyToHome(home, ownerSecret, PASSPHRASE);
+    const keys = loadKeys(home);
+    expect(isSealed(keys, 'owner')).toBe(true);
+    expect(() => openSecret(keys, 'owner', undefined)).toThrow(/encrypted owner key/);
+    expect(getPublicKey(openSecret(keys, 'owner', PASSPHRASE))).toBe(keys.ownerPubkey);
+  });
+
+  it('leaves no directory behind for a mistyped home', () => {
+    const missing = join(mkdtempSync(join(tmpdir(), 'elisym-add-owner-')), 'nope');
+    expect(() =>
+      addOwnerKeyToHome(merchantHome(missing), generateSecretKey(), undefined),
+    ).toThrow();
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it('seals only the owner key when the store key is plain', () => {
+    const { home, ownerSecret } = storeOnlyHome();
+    addOwnerKeyToHome(home, ownerSecret, PASSPHRASE);
+    const keys = loadKeys(home);
+    expect(isSealed(keys, 'owner')).toBe(true);
+    expect(isSealed(keys, 'store')).toBe(false);
+  });
+
+  it('refuses another key, a home that has one, and a running node', () => {
+    const { home, ownerSecret } = storeOnlyHome();
+    expect(() => addOwnerKeyToHome(home, generateSecretKey(), undefined)).toThrow(
+      /not the owner key/,
+    );
+    const release = takeLock(home);
+    expect(() => addOwnerKeyToHome(home, ownerSecret, undefined)).toThrow(/another merchant/);
+    release();
+    expect(hasOwnerKey(loadKeys(home))).toBe(false);
+    addOwnerKeyToHome(home, ownerSecret, undefined);
+    expect(() => addOwnerKeyToHome(home, ownerSecret, undefined)).toThrow(/already holds/);
+    const full = parseKeysFile(keysFileText(plainKeysFile(generateSecretKey(), ownerSecret)));
+    expect(() => withOwnerKey(full, ownerSecret, undefined)).toThrow(/already holds/);
   });
 });

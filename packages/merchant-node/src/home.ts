@@ -26,6 +26,7 @@ import {
   plainKeysFile,
   replaceKeysFile,
   storeOnlyKeysFile,
+  withOwnerKey,
   sealKeys,
 } from './keys';
 
@@ -201,6 +202,27 @@ export function encryptHomeKeys(
       replaceKeysFile(home.keys, file);
     }
     return { changed };
+  } finally {
+    release();
+  }
+}
+
+/**
+ * `add-owner-key`: put the owner key into a store-only home (an exported cloud
+ * home whose owner now self-hosts), under the run lock, by an atomic replace. The
+ * key must be the owner the home names; sealed with the passphrase when one is
+ * set (`withOwnerKey`).
+ */
+export function addOwnerKeyToHome(
+  home: MerchantHome,
+  ownerSecretKey: Uint8Array,
+  passphrase: string | undefined,
+): void {
+  // Read before the lock: a mistyped --home must not leave a new, empty directory.
+  loadKeys(home);
+  const release = takeLock(home);
+  try {
+    replaceKeysFile(home.keys, withOwnerKey(loadKeys(home), ownerSecretKey, passphrase));
   } finally {
     release();
   }
