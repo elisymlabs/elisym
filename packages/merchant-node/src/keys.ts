@@ -4,10 +4,11 @@ import { dirname, join } from 'node:path';
  * The store's keys at rest. `keys.json` holds the store key and the owner key,
  * each either 64-hex or sealed with a passphrase (`secret-box`), and the two
  * public keys in the clear, so a command that only needs them never asks for
- * the passphrase. Nothing here writes the file on load: only `init` and
- * `encrypt-keys` write it.
+ * the passphrase. A store-only home (`init --owner-pubkey`) holds no owner key,
+ * only the owner's public key: the owner signs its events elsewhere. Nothing
+ * here writes the file on load: only `init` and `encrypt-keys` write it.
  */
-import { nsecEncode } from 'nostr-tools/nip19';
+import { decode, nsecEncode } from 'nostr-tools/nip19';
 import { getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { z } from 'zod';
@@ -31,7 +32,8 @@ export type KeyName = 'store' | 'owner';
 /** `keys.json` as written: the secrets and, from 0.5.0, their public keys. */
 export interface KeysFile {
   store: string;
-  owner: string;
+  /** Absent in a store-only home: the owner key lives elsewhere. */
+  owner?: string;
   storePubkey?: string;
   ownerPubkey?: string;
 }
@@ -40,8 +42,8 @@ export interface KeysFile {
 export interface LoadedKeys {
   storePubkey: string;
   ownerPubkey: string;
-  /** Each secret as stored: 64-hex, or `encrypted:v1:`. */
-  sealed: Record<KeyName, string>;
+  /** Each secret as stored: 64-hex, or `encrypted:v1:`; no owner in a store-only home. */
+  sealed: { store: string; owner: string | undefined };
 }
 
 /**
@@ -76,7 +78,7 @@ export function readPassphrase(
 /** The shape of `keys.json`; what each value holds is checked below. */
 const KEYS_FILE_SCHEMA = z.object({
   store: z.string(),
-  owner: z.string(),
+  owner: z.string().optional(),
   storePubkey: z.string().optional(),
   ownerPubkey: z.string().optional(),
 });
@@ -114,13 +116,49 @@ export function parseKeysFile(text: string): LoadedKeys {
   const file = parsed.data;
   return {
     storePubkey: publicKeyOf('store', file.store, file.storePubkey),
-    ownerPubkey: publicKeyOf('owner', file.owner, file.ownerPubkey),
+    ownerPubkey: ownerPublicKeyOf(file.owner, file.ownerPubkey),
     sealed: { store: file.store, owner: file.owner },
   };
 }
 
+/** The owner's public key: as for the store key, or the stored one alone in a store-only home. */
+function ownerPublicKeyOf(secret: string | undefined, stored: string | undefined): string {
+  if (secret !== undefined) {
+    return publicKeyOf('owner', secret, stored);
+  }
+  if (stored === undefined || !HEX_KEY_RE.test(stored)) {
+    throw new Error('keys.json holds no owner key and no usable owner public key');
+  }
+  return stored;
+}
+
+/** `--owner-pubkey`: an npub or 64 lowercase hex, as hex. */
+export function parseOwnerPubkey(value: string): string {
+  if (HEX_KEY_RE.test(value)) {
+    return value;
+  }
+  if (value.startsWith('npub1')) {
+    try {
+      const decoded = decode(value);
+      // decode does not check an npub's length: a 33-byte one would pass as 66 hex.
+      if (decoded.type === 'npub' && HEX_KEY_RE.test(decoded.data)) {
+        return decoded.data;
+      }
+    } catch {
+      // Falls through to the error below: a malformed npub is no key.
+    }
+  }
+  throw new Error('--owner-pubkey is an npub or 64 lowercase hex characters');
+}
+
+/** Whether the home holds the owner's secret key (false for a store-only home). */
+export function hasOwnerKey(keys: LoadedKeys): boolean {
+  return keys.sealed.owner !== undefined;
+}
+
 export function isSealed(keys: LoadedKeys, name: KeyName): boolean {
-  return isEncrypted(keys.sealed[name]);
+  const sealed = keys.sealed[name];
+  return sealed !== undefined && isEncrypted(sealed);
 }
 
 /**
@@ -134,6 +172,11 @@ export function openSecret(
   passphrase: string | undefined,
 ): Uint8Array {
   const sealed = keys.sealed[name];
+  if (sealed === undefined) {
+    throw new Error(
+      `keys.json holds no ${name} key: this is a store-only home, the owner signs its events elsewhere`,
+    );
+  }
   let hex = sealed;
   if (isEncrypted(sealed)) {
     if (passphrase === undefined) {
@@ -166,8 +209,12 @@ export function sealKeys(
 ): KeysFile {
   const sealed = { ...keys.sealed };
   for (const name of ['store', 'owner'] as const) {
+    const current = sealed[name];
+    if (current === undefined) {
+      continue;
+    }
     const secret = openSecret(keys, name, passphrase);
-    if (isEncrypted(sealed[name]) || !names.includes(name)) {
+    if (isEncrypted(current) || !names.includes(name)) {
       continue;
     }
     const encrypted = encrypt(bytesToHex(secret), passphrase);
@@ -178,9 +225,21 @@ export function sealKeys(
   }
   return {
     store: sealed.store,
-    owner: sealed.owner,
+    ...(sealed.owner === undefined ? {} : { owner: sealed.owner }),
     storePubkey: keys.storePubkey,
     ownerPubkey: keys.ownerPubkey,
+  };
+}
+
+/** A store-only home's keys as a file: the store key plain, the owner's public key only. */
+export function storeOnlyKeysFile(storeSecretKey: Uint8Array, ownerPubkey: string): KeysFile {
+  if (!HEX_KEY_RE.test(ownerPubkey)) {
+    throw new Error('the owner public key is 64 lowercase hex characters');
+  }
+  return {
+    store: bytesToHex(storeSecretKey),
+    storePubkey: getPublicKey(storeSecretKey),
+    ownerPubkey,
   };
 }
 
@@ -213,12 +272,30 @@ export function replaceKeysFile(path: string, file: KeysFile): void {
   );
 }
 
+/** What `--owner-only` says on a store-only home: there is no owner key to encrypt. */
+export const OWNER_ONLY_STORE_ONLY =
+  '--owner-only encrypts the owner key: a store-only home holds none';
+
+/** Which keys an encryption sealed: `--owner-only`, a store-only home, or both. */
+export function encryptedKeysLabel(ownerOnly: boolean, storeOnlyHome: boolean): string {
+  if (ownerOnly) {
+    return 'the owner key only';
+  }
+  return storeOnlyHome ? 'the store key' : 'both keys';
+}
+
+/** What is lost with the passphrase, as a sentence fragment. */
+function lostWithPassphrase(ownerOnly: boolean, storeOnlyHome: boolean): string {
+  if (ownerOnly) {
+    return 'the owner key is lost';
+  }
+  return storeOnlyHome ? 'the store key is lost' : 'both keys are lost';
+}
+
 /** What an operator is told whenever keys are encrypted. */
-export function encryptionNotes(ownerOnly: boolean): string[] {
+export function encryptionNotes(ownerOnly: boolean, storeOnlyHome = false): string[] {
   const notes = [
-    ownerOnly
-      ? 'back up the passphrase: without it the owner key is lost'
-      : 'back up the passphrase: without it both keys are lost',
+    `back up the passphrase: without it ${lostWithPassphrase(ownerOnly, storeOnlyHome)}`,
     'the passphrase protects a copy of this home (a backup, a snapshot, a copied volume), not a host that also holds the passphrase: keep its source out of the volume and its backups',
   ];
   if (ownerOnly) {
@@ -256,6 +333,9 @@ export function storeKeyForAdmin(
  * alone, which a copy of the home could have changed.
  */
 export function ownerOpensHere(keys: LoadedKeys, passphrase: string | undefined): boolean {
+  if (!hasOwnerKey(keys)) {
+    return false;
+  }
   if (isSealed(keys, 'owner') && passphrase === undefined) {
     return false;
   }

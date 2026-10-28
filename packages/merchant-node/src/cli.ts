@@ -56,7 +56,11 @@ import { storeIdentity } from './intake';
 import {
   PASSPHRASE_HINT,
   STORE_KEY_WARNING,
+  OWNER_ONLY_STORE_ONLY,
+  encryptedKeysLabel,
   encryptionNotes,
+  hasOwnerKey,
+  parseOwnerPubkey,
   openSecret,
   openSetupKeys,
   openCheckKeys,
@@ -110,9 +114,10 @@ import { type RearmKind, orderLines, rearmWebhook } from './webhook-commands';
 
 const USAGE = `usage: elisym-merchant <command> [--home <dir>]
 
-  init [--network devnet|mainnet]
+  init [--network devnet|mainnet] [--owner-pubkey <npub or hex>]
          make the home: a config.json and products/my-product/PRODUCT.md to edit,
-         and the store's keys
+         and the store's keys (--owner-pubkey: a store-only home, no owner key here;
+         the owner signs the payout list and the store authorization elsewhere)
   setup  check the inbox relays and publish the store: every product in products/
          (one directory each), republishing only what changed
   run    take orders, verify payments, complete them
@@ -195,10 +200,12 @@ interface Args {
   port: string | undefined;
   yes: boolean;
   ownerOnly: boolean;
+  ownerPubkey: string | undefined;
 }
 
 const VALUE_FLAGS = {
   '--home': 'home',
+  '--owner-pubkey': 'ownerPubkey',
   '--network': 'network',
   '--tx': 'tx',
   '--amount': 'amount',
@@ -226,6 +233,7 @@ function parseArgs(argv: readonly string[]): Args {
     port: undefined,
     yes: false,
     ownerOnly: false,
+    ownerPubkey: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -276,9 +284,18 @@ function parseArgs(argv: readonly string[]): Args {
   return args;
 }
 
-function init(home: MerchantHome, network: string | undefined, ownerOnly: boolean): void {
+function init(
+  home: MerchantHome,
+  network: string | undefined,
+  ownerOnly: boolean,
+  ownerPubkeyFlag: string | undefined,
+): void {
   if (network !== undefined && network !== 'devnet' && network !== 'mainnet') {
     throw new Error('--network is devnet or mainnet');
+  }
+  const ownerPubkey = ownerPubkeyFlag === undefined ? undefined : parseOwnerPubkey(ownerPubkeyFlag);
+  if (ownerOnly && ownerPubkey !== undefined) {
+    throw new Error(OWNER_ONLY_STORE_ONLY);
   }
   // The passphrase is read and checked before anything is created: a failing
   // init never leaves a home with a config and no keys.
@@ -308,23 +325,24 @@ function init(home: MerchantHome, network: string | undefined, ownerOnly: boolea
     });
     console.log(`product ${join(example, PRODUCT_FILE)} (edit it: one directory per product)`);
   }
-  const { keys, created, keptPlain } = initKeys(home, passphrase, ownerOnly);
+  const { keys, created, keptPlain } = initKeys(home, passphrase, ownerOnly, ownerPubkey);
+  const storeOnly = !hasOwnerKey(keys);
   console.log(`store   ${keys.storePubkey}`);
-  console.log(`owner   ${keys.ownerPubkey}`);
+  console.log(`owner   ${keys.ownerPubkey}${storeOnly ? ' (no owner key in this home)' : ''}`);
   if (created && passphrase !== undefined) {
-    console.log(`keys    encrypted (${ownerOnly ? 'the owner key only' : 'both keys'})`);
-    for (const note of encryptionNotes(ownerOnly)) {
+    console.log(`keys    encrypted (${encryptedKeysLabel(ownerOnly, storeOnly)})`);
+    for (const note of encryptionNotes(ownerOnly, storeOnly)) {
       console.log(`note    ${note}`);
     }
   }
   if (created && passphrase === undefined) {
     console.log(
-      `keys    plain (no passphrase set; ${PASSPHRASE_HINT} before init to encrypt them)`,
+      `keys    plain (no passphrase set; ${PASSPHRASE_HINT} before init to encrypt ${storeOnly ? 'it' : 'them'})`,
     );
   }
   if (keptPlain) {
     console.log(
-      `keys    kept plain: run encrypt-keys${ownerOnly ? ' --owner-only' : ''} to encrypt them`,
+      `keys    kept plain: run encrypt-keys${ownerOnly ? ' --owner-only' : ''} to encrypt ${storeOnly ? 'it' : 'them'}`,
     );
   }
   console.log('next    edit config.json and the product, then run setup');
@@ -373,13 +391,27 @@ async function reportInboxRelays(
   return verdicts.filter((verdict) => !verdict.serves).map((verdict) => verdict.relay);
 }
 
+/** Whether `check` writes nostr.json, and why not. */
+function nostrJsonWriteOf(
+  ownerOpened: boolean,
+  ownerKeyHere: boolean,
+): 'write' | 'sealed' | 'store-only' {
+  if (ownerOpened) {
+    return 'write';
+  }
+  return ownerKeyHere ? 'sealed' : 'store-only';
+}
+
 /** Write the nostr.json a level A domain serves, and check it once; nothing for level C. */
 async function reportDomain(
   home: MerchantHome,
   config: MerchantConfig,
   nostrJson: { names: Record<string, string> },
-  /** Whether the owner key was opened here: only then is nostr.json written. */
-  write = true,
+  /**
+   * Whether nostr.json is written: only for an owner key opened here; `sealed` and
+   * `store-only` say why not (a passphrase missing, or no owner key in this home).
+   */
+  nostrJsonWrite: 'write' | 'sealed' | 'store-only' = 'write',
 ): Promise<void> {
   const split = config.nip05 === undefined ? undefined : splitNip05(config.nip05);
   if (split === undefined) {
@@ -391,10 +423,14 @@ async function reportDomain(
     console.log('level   C: a named nip05 is not domain-wide; use _@domain or a bare domain for A');
     return;
   }
-  if (write) {
+  if (nostrJsonWrite === 'write') {
     writeFileSync(home.nostrJson, `${JSON.stringify(nostrJson)}\n`);
     console.log(
       `nostr   serve ${home.nostrJson} at https://${split.domain}/.well-known/nostr.json with "Access-Control-Allow-Origin: *"`,
+    );
+  } else if (nostrJsonWrite === 'store-only') {
+    console.log(
+      'nostr   not written: this home holds no owner key (store-only); the domain must name the owner from where its key lives',
     );
   } else {
     console.log(
@@ -963,7 +999,7 @@ async function check(home: MerchantHome): Promise<void> {
       home,
       config,
       storeNostrJson(config, loaded.storePubkey, loaded.ownerPubkey),
-      writeNostrJson,
+      nostrJsonWriteOf(writeNostrJson, hasOwnerKey(loaded)),
     );
     if (offers !== undefined) {
       throw offers;
@@ -1100,8 +1136,9 @@ function encryptKeys(home: MerchantHome, ownerOnly: boolean): void {
     console.log('keys    already encrypted: nothing to do');
     return;
   }
-  console.log(`keys    encrypted (${ownerOnly ? 'the owner key only' : 'both keys'})`);
-  for (const note of encryptionNotes(ownerOnly)) {
+  const storeOnly = !hasOwnerKey(loadKeys(home));
+  console.log(`keys    encrypted (${encryptedKeysLabel(ownerOnly, storeOnly)})`);
+  for (const note of encryptionNotes(ownerOnly, storeOnly)) {
     console.log(`note    ${note}`);
   }
   console.log('note    older backups and snapshots of this home still hold the plain keys');
@@ -1149,10 +1186,13 @@ async function main(): Promise<void> {
   if (args.ownerOnly && args.command !== 'init' && args.command !== 'encrypt-keys') {
     throw new Error('--owner-only is for init and encrypt-keys');
   }
+  if (args.ownerPubkey !== undefined && args.command !== 'init') {
+    throw new Error('--owner-pubkey is for init');
+  }
   const home = merchantHome(args.home);
   switch (args.command) {
     case 'init':
-      init(home, args.network, args.ownerOnly);
+      init(home, args.network, args.ownerOnly, args.ownerPubkey);
       return;
     case 'encrypt-keys':
       encryptKeys(home, args.ownerOnly);

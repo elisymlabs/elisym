@@ -8,7 +8,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decode } from 'nostr-tools/nip19';
+import { decode, encodeBytes, npubEncode, nsecEncode } from 'nostr-tools/nip19';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from 'nostr-tools/utils';
 import { describe, expect, it } from 'vitest';
@@ -25,7 +25,11 @@ import {
   PASSPHRASE_ENV,
   PASSPHRASE_FILE_ENV,
   STORE_KEY_WARNING,
+  type KeysFile,
   type LoadedKeys,
+  encryptedKeysLabel,
+  encryptionNotes,
+  hasOwnerKey,
   isSealed,
   keysFileText,
   openSecret,
@@ -33,11 +37,13 @@ import {
   openCheckKeys,
   ownerOpensHere,
   parseKeysFile,
+  parseOwnerPubkey,
   plainKeysFile,
   readPassphrase,
   replaceKeysFile,
   sealKeys,
   storeKeyForAdmin,
+  storeOnlyKeysFile,
 } from '../src/keys';
 import { decryptSecret, encryptSecret } from '../src/secret-box';
 
@@ -48,6 +54,14 @@ const SDK_VECTOR =
 
 function freshHome() {
   return merchantHome(mkdtempSync(join(tmpdir(), 'merchant-keys-')), {});
+}
+
+/** The owner secret of a file that holds one: a test that needs it fails loudly otherwise. */
+function ownerOf(file: KeysFile): string {
+  if (file.owner === undefined) {
+    throw new Error('this file holds no owner key');
+  }
+  return file.owner;
 }
 
 function newKeys(): LoadedKeys {
@@ -146,7 +160,7 @@ describe('opening a key', () => {
   it('refuses swapped ciphertexts: store-key would otherwise print the owner key', () => {
     const sealed = sealKeys(newKeys(), ['store', 'owner'], PASSPHRASE);
     const swapped = parseKeysFile(
-      keysFileText({ ...sealed, store: sealed.owner, owner: sealed.store }),
+      keysFileText({ ...sealed, store: ownerOf(sealed), owner: sealed.store }),
     );
     expect(() => openSecret(swapped, 'store', PASSPHRASE)).toThrow(/store key does not match/);
     expect(() => openSecret(swapped, 'owner', PASSPHRASE)).toThrow(/owner key does not match/);
@@ -210,7 +224,7 @@ describe('the store key for the admin', () => {
   it('refuses swapped ciphertexts instead of printing the owner key', () => {
     const sealed = sealKeys(newKeys(), ['store', 'owner'], PASSPHRASE);
     const swapped = parseKeysFile(
-      keysFileText({ ...sealed, store: sealed.owner, owner: sealed.store }),
+      keysFileText({ ...sealed, store: ownerOf(sealed), owner: sealed.store }),
     );
     expect(() => storeKeyForAdmin(swapped, PASSPHRASE, true, false)).toThrow(/does not match/);
   });
@@ -339,5 +353,114 @@ describe('the store-key warning', () => {
   it('names where the key may be pasted: the local admin and the hosted one', () => {
     expect(STORE_KEY_WARNING).toContain('`admin`');
     expect(STORE_KEY_WARNING).toContain(HOSTED_ADMIN_URL);
+  });
+});
+
+describe('a store-only home (init --owner-pubkey)', () => {
+  const ownerSecret = generateSecretKey();
+  const ownerPubkey = getPublicKey(ownerSecret);
+
+  function tempHome() {
+    return merchantHome(mkdtempSync(join(tmpdir(), 'elisym-store-only-')));
+  }
+
+  it('keeps the owner public key and no owner secret', () => {
+    const keys = parseKeysFile(keysFileText(storeOnlyKeysFile(generateSecretKey(), ownerPubkey)));
+    expect(keys.ownerPubkey).toBe(ownerPubkey);
+    expect(hasOwnerKey(keys)).toBe(false);
+    expect(isSealed(keys, 'owner')).toBe(false);
+    expect(getPublicKey(openSecret(keys, 'store', undefined))).toBe(keys.storePubkey);
+    expect(() => openSecret(keys, 'owner', undefined)).toThrow(/store-only home/);
+    expect(() => openSetupKeys(keys, undefined)).toThrow(/store-only home/);
+    expect(ownerOpensHere(keys, undefined)).toBe(false);
+    expect(openCheckKeys(keys, undefined).writeNostrJson).toBe(false);
+  });
+
+  it('refuses a file with neither an owner key nor a usable owner public key', () => {
+    const store = bytesToHex(generateSecretKey());
+    expect(() => parseKeysFile(JSON.stringify({ store }))).toThrow(/no owner key/);
+    expect(() => parseKeysFile(JSON.stringify({ store, ownerPubkey: 'ab' }))).toThrow(
+      /no owner key/,
+    );
+    expect(() => storeOnlyKeysFile(generateSecretKey(), 'not-hex')).toThrow(/64 lowercase hex/);
+  });
+
+  it('seals only the store key, read back, and keeps no owner field', () => {
+    const plain = parseKeysFile(keysFileText(storeOnlyKeysFile(generateSecretKey(), ownerPubkey)));
+    const file = sealKeys(plain, ['store', 'owner'], PASSPHRASE);
+    expect(file.owner).toBeUndefined();
+    expect(file.ownerPubkey).toBe(ownerPubkey);
+    const sealed = parseKeysFile(keysFileText(file));
+    expect(isSealed(sealed, 'store')).toBe(true);
+    expect(getPublicKey(openSecret(sealed, 'store', PASSPHRASE))).toBe(sealed.storePubkey);
+    expect(() => openSecret(sealed, 'store', undefined)).toThrow(/encrypted store key/);
+  });
+
+  it('init makes a store-only home, sealed with a passphrase', () => {
+    const home = tempHome();
+    const { keys, created } = initKeys(home, PASSPHRASE, false, ownerPubkey);
+    expect(created).toBe(true);
+    expect(keys.ownerPubkey).toBe(ownerPubkey);
+    expect(hasOwnerKey(keys)).toBe(false);
+    expect(isSealed(loadKeys(home), 'store')).toBe(true);
+    expect(JSON.parse(readFileSync(home.keys, 'utf8'))).not.toHaveProperty('owner');
+  });
+
+  it('init again keeps the home, refuses another owner, and reports a plain store key', () => {
+    const home = tempHome();
+    initKeys(home, undefined, false, ownerPubkey);
+    const again = initKeys(home, PASSPHRASE, false, ownerPubkey);
+    expect(again.created).toBe(false);
+    expect(again.keptPlain).toBe(true);
+    const other = getPublicKey(generateSecretKey());
+    expect(() => initKeys(home, undefined, false, other)).toThrow(/this home's owner is/);
+  });
+
+  it('init again on a sealed store-only home leaves nothing plain', () => {
+    const home = tempHome();
+    initKeys(home, PASSPHRASE, false, ownerPubkey);
+    expect(initKeys(home, PASSPHRASE, false, ownerPubkey).keptPlain).toBe(false);
+  });
+
+  it('init --owner-pubkey refuses a home that holds the owner key', () => {
+    const home = tempHome();
+    const { keys } = initKeys(home, undefined, false);
+    expect(() => initKeys(home, undefined, false, keys.ownerPubkey)).toThrow(/holds the owner key/);
+  });
+
+  it('says which keys were sealed and which are lost without the passphrase', () => {
+    expect(encryptedKeysLabel(false, true)).toBe('the store key');
+    expect(encryptedKeysLabel(false, false)).toBe('both keys');
+    expect(encryptedKeysLabel(true, false)).toBe('the owner key only');
+    expect(encryptionNotes(false, true)[0]).toMatch(/the store key is lost$/);
+    expect(encryptionNotes(false, false)[0]).toMatch(/both keys are lost$/);
+    expect(encryptionNotes(true)[0]).toMatch(/the owner key is lost$/);
+  });
+
+  it('--owner-only refuses on a store-only home, in init and encrypt-keys', () => {
+    expect(() => initKeys(tempHome(), PASSPHRASE, true, ownerPubkey)).toThrow(/holds none/);
+    const home = tempHome();
+    initKeys(home, undefined, false, ownerPubkey);
+    expect(() => initKeys(home, PASSPHRASE, true)).toThrow(/holds none/);
+    expect(() => encryptHomeKeys(home, PASSPHRASE, true)).toThrow(/holds none/);
+  });
+
+  it('encrypt-keys seals the store key of a store-only home', () => {
+    const home = tempHome();
+    initKeys(home, undefined, false, ownerPubkey);
+    expect(encryptHomeKeys(home, PASSPHRASE, false).changed).toBe(true);
+    const keys = loadKeys(home);
+    expect(isSealed(keys, 'store')).toBe(true);
+    expect(hasOwnerKey(keys)).toBe(false);
+    expect(encryptHomeKeys(home, PASSPHRASE, false).changed).toBe(false);
+  });
+
+  it('reads an owner public key from an npub or hex', () => {
+    expect(parseOwnerPubkey(ownerPubkey)).toBe(ownerPubkey);
+    expect(parseOwnerPubkey(npubEncode(ownerPubkey))).toBe(ownerPubkey);
+    expect(() => parseOwnerPubkey(ownerPubkey.toUpperCase())).toThrow(/npub or 64/);
+    expect(() => parseOwnerPubkey('npub1notakey')).toThrow(/npub or 64/);
+    expect(() => parseOwnerPubkey(encodeBytes('npub', new Uint8Array(33)))).toThrow(/npub or 64/);
+    expect(() => parseOwnerPubkey(nsecEncode(ownerSecret))).toThrow(/npub or 64/);
   });
 });
