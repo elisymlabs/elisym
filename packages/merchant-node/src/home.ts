@@ -29,6 +29,7 @@ import {
   withOwnerKey,
   sealKeys,
 } from './keys';
+import { OWNER_EVENTS_FILE } from './owner-events';
 
 /**
  * Where a merchant keeps its state: `config.json` (the operator's), `products/`
@@ -43,6 +44,8 @@ export interface MerchantHome {
   ledger: string;
   lock: string;
   nostrJson: string;
+  /** A store-only home's owner events, signed elsewhere (`owner-events.json`). */
+  ownerEvents: string;
 }
 
 export const HOME_ENV = 'ELISYM_MERCHANT_HOME';
@@ -65,6 +68,7 @@ export function merchantHome(
     ledger: join(dir, 'ledger.json'),
     lock: join(dir, 'run.lock'),
     nostrJson: join(dir, 'nostr.json'),
+    ownerEvents: join(dir, OWNER_EVENTS_FILE),
   };
 }
 

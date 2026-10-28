@@ -22,6 +22,7 @@ import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
+  verifyEvent,
 } from 'nostr-tools/pure';
 import { readListingChunks } from './listing-reads';
 import { type AuthSigner, type PublishPool, publishToRelays } from './publish';
@@ -29,7 +30,7 @@ import { checkoutRelaySpelling } from './relays';
 import type { OfferTerms } from './terms';
 
 /** How long a check waits for a relay to answer a read. */
-const READ_WAIT_MS = 10_000;
+export const READ_WAIT_MS = 10_000;
 
 /** The part of nostr-tools' `SimplePool` the checks read with. */
 export interface QueryPool {
@@ -444,8 +445,11 @@ export async function newestPayoutList(
       { maxWait: READ_WAIT_MS },
     )
     .catch(() => []);
+  // Verified here too: a forged list must never read as the owner's newest.
   return newest(
-    events.filter((event) => event.pubkey === ownerPubkey && event.kind === KIND_PAYTO),
+    events.filter(
+      (event) => event.pubkey === ownerPubkey && event.kind === KIND_PAYTO && verifyEvent(event),
+    ),
   );
 }
 

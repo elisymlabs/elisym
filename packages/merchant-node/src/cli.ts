@@ -58,6 +58,7 @@ import { storeIdentity } from './intake';
 import {
   PASSPHRASE_HINT,
   STORE_KEY_WARNING,
+  type LoadedKeys,
   OWNER_ONLY_STORE_ONLY,
   encryptedKeysLabel,
   encryptionNotes,
@@ -79,6 +80,18 @@ import {
   saveLedger,
 } from './ledger';
 import { InboxListener } from './listener';
+import {
+  OWNER_REFUSAL_EXIT_CODE,
+  type OwnerEvents,
+  OwnerRefusal,
+  checkOwnerEvents,
+  payoutListRefusal,
+  readOwnerEventsFile,
+  readStoreAuthHistory,
+  revocationDate,
+  revocationRefusal,
+  supersedingAuthRefusal,
+} from './owner-events';
 import { printable } from './printable';
 import {
   PRODUCT_FILE,
@@ -93,13 +106,20 @@ import { listeningPool } from './relay-pool';
 import { MerchantRuntime } from './runtime';
 import { SelfCopies } from './self-copies';
 import {
+  clockProblem,
   historyRefusal,
   payoutListDate,
   planListings,
   publishAndRecord,
   setupClockProblems,
 } from './setup-ledger';
-import { buildStoreWideEvents, productNaddr, storeNostrJson } from './store-events';
+import {
+  type StoreKeys,
+  buildStoreWideEvents,
+  productNaddr,
+  storeNostrJson,
+  storeWideFromOwnerEvents,
+} from './store-events';
 import { tempoContextFor } from './tempo';
 import { standingTerms } from './terms';
 import {
@@ -502,6 +522,34 @@ function refuseLostHistory(state: LedgerState, products: ReadonlyMap<string, Pro
   }
 }
 
+/**
+ * What `setup` signs with: both keys (the owner's events are signed here), or,
+ * in a store-only home, the store key with the owner's events as signed
+ * elsewhere, checked against this home and `config.payouts` before anything else.
+ */
+function setupSigning(
+  home: MerchantHome,
+  loaded: LoadedKeys,
+  config: MerchantConfig,
+):
+  | { keys: StoreKeys; storeSecretKey: Uint8Array; ownerEvents: undefined }
+  | { keys: undefined; storeSecretKey: Uint8Array; ownerEvents: OwnerEvents } {
+  const passphrase = readPassphrase();
+  if (hasOwnerKey(loaded)) {
+    const keys = openSetupKeys(loaded, passphrase);
+    return { keys, storeSecretKey: keys.storeSecretKey, ownerEvents: undefined };
+  }
+  const storeSecretKey = openSecret(loaded, 'store', passphrase);
+  const ownerEvents = readOwnerEventsFile(home.ownerEvents);
+  checkOwnerEvents(ownerEvents, {
+    ownerPubkey: loaded.ownerPubkey,
+    storePubkey: loaded.storePubkey,
+    payouts: config.payouts,
+    now: nowSecs(),
+  });
+  return { keys: undefined, storeSecretKey, ownerEvents };
+}
+
 async function setup(home: MerchantHome): Promise<void> {
   // A running merchant rewrites the whole ledger from memory: new terms written
   // under it would be lost, and the old price or payout would stay payable. The
@@ -519,10 +567,12 @@ async function setup(home: MerchantHome): Promise<void> {
       `these products are still the init example: ${unedited.map((product) => product.file).join(', ')}. Set the title and description.`,
     );
   }
-  // Both secrets first, before anything is checked, signed or published: a
-  // missing or wrong passphrase must never leave a half-published store.
+  // The secrets first, before anything is checked, signed or published: a
+  // missing or wrong passphrase must never leave a half-published store. A
+  // store-only home opens the store key alone and takes the owner's events as
+  // signed elsewhere, checked here before the ledger or any relay.
   const loaded = loadKeys(home);
-  const keys = openSetupKeys(loaded, readPassphrase());
+  const signing = setupSigning(home, loaded, config);
   // Converted to this version and saved before any relay or chain is
   // contacted: from here an older node refuses this home.
   const state = openLedgerForUpgrade(home.ledger, (read) => refuseLostHistory(read, products));
@@ -540,7 +590,7 @@ async function setup(home: MerchantHome): Promise<void> {
   }
   const pool = new SimplePool();
   try {
-    const failing = await reportInboxRelays(pool, config, keys.storeSecretKey);
+    const failing = await reportInboxRelays(pool, config, signing.storeSecretKey);
     if (failing.length > 0) {
       throw new Error(
         `these inbox relays do not take and serve gift wraps for any key: ${failing.join(', ')}. Replace them in config.json.`,
@@ -557,24 +607,57 @@ async function setup(home: MerchantHome): Promise<void> {
       loaded,
       [...new Set([...products.keys(), ...Object.keys(state.listings)])],
     );
-    const paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
+    let paytoCreatedAt: number;
+    if (signing.ownerEvents === undefined) {
+      paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
+    } else {
+      // A revocation first: it is the more basic refusal of the two.
+      const authHistory = await readStoreAuthHistory(
+        pool,
+        relays,
+        loaded.ownerPubkey,
+        loaded.storePubkey,
+      );
+      revocationRefusal(signing.ownerEvents.auth, revocationDate(authHistory, loaded.storePubkey));
+      supersedingAuthRefusal(signing.ownerEvents.auth, authHistory, loaded.storePubkey, startedAt);
+      payoutListRefusal(signing.ownerEvents.payoutList, state, payouts, newestList);
+      paytoCreatedAt = signing.ownerEvents.payoutList.created_at;
+    }
     const plans = planListings(state, products.values(), config.payouts, served, startedAt);
     const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
+    // Buyers drop an AUTH dated past the skew window as they drop a payout list.
+    const authClock =
+      signing.ownerEvents === undefined
+        ? undefined
+        : clockProblem('the store authorization', signing.ownerEvents.auth.created_at, startedAt);
+    if (authClock !== undefined) {
+      clock.push(authClock);
+    }
     if (clock.length > 0) {
       throw new Error(clock.join('; '));
     }
-    const wide = buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt, declaration.declare);
+    const wide =
+      signing.ownerEvents === undefined
+        ? buildStoreWideEvents(config, signing.keys, startedAt, paytoCreatedAt, declaration.declare)
+        : storeWideFromOwnerEvents(
+            config,
+            signing.storeSecretKey,
+            loaded.ownerPubkey,
+            signing.ownerEvents,
+            startedAt,
+            declaration.declare,
+          );
     const publisher = setupPublisher(
       pool,
       relays,
       OFFER_RELAYS,
-      storeAuth(keys.storeSecretKey),
+      storeAuth(signing.storeSecretKey),
       log,
     );
     const outcomes = await publishAndRecord(state, {
       plans,
       payouts: config.payouts,
-      storeSecretKey: keys.storeSecretKey,
+      storeSecretKey: signing.storeSecretKey,
       wide,
       publish: publisher.publish,
       payoutList: { createdAt: paytoCreatedAt, payouts },
@@ -604,6 +687,7 @@ async function setup(home: MerchantHome): Promise<void> {
       home,
       config,
       storeNostrJson(config, loaded.storePubkey, loaded.ownerPubkey),
+      hasOwnerKey(loaded) ? 'write' : 'store-only',
     );
     // Buyers send orders to the inbox list: one that did not go out may leave them
     // writing to relays the node no longer reads.
@@ -1308,14 +1392,14 @@ async function main(): Promise<void> {
       return;
     case 'setup': {
       const stopRequested = deferSignals();
-      let failed = false;
+      let exitCode = 0;
       try {
         await setup(home);
       } catch (error) {
-        console.error(`error: ${errorText(error)}`);
-        failed = true;
+        exitCode = reportFailure(error);
       }
-      process.exit(stopRequested() ?? (failed ? 1 : 0));
+      // An owner refusal keeps its exit code: a deferred signal must not hide the marker.
+      process.exit(exitCode === OWNER_REFUSAL_EXIT_CODE ? exitCode : (stopRequested() ?? exitCode));
       return;
     }
     case 'run':
@@ -1344,9 +1428,22 @@ async function main(): Promise<void> {
   }
 }
 
+/**
+ * Print a failure and give its exit code. An owner-side refusal says so in a
+ * fixed first token and exit code: a control plane keys on them, never on the
+ * wording; everything else is `error:` and 1.
+ */
+function reportFailure(error: unknown): number {
+  if (error instanceof OwnerRefusal) {
+    console.error(`refused ${error.reason}: ${error.message}`);
+    return OWNER_REFUSAL_EXIT_CODE;
+  }
+  console.error(`error: ${errorText(error)}`);
+  return 1;
+}
+
 try {
   await main();
 } catch (error) {
-  console.error(`error: ${errorText(error)}`);
-  process.exit(1);
+  process.exit(reportFailure(error));
 }
