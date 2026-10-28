@@ -41,3 +41,77 @@ export interface DemoProduct {
 
 /** The live demo's product; without one the demo shows the snippet only. */
 export const DEMO_PRODUCT: DemoProduct | undefined = undefined;
+
+/**
+ * The cloud console: its own origin, never this page's (it makes the owner key).
+ * The landing only links to it; it holds no session and sends nothing.
+ */
+export const CLOUD_CONSOLE_URL = 'https://cloud.elisym.network';
+
+/** Where High-risk and White-label merchants reach us (operator-provisioned, no self-serve start). */
+export const CONTACT_URL = X_URL;
+
+export interface CloudTier {
+  /** The console's tier name: only `starter` and `business` start self-serve. */
+  id: 'starter' | 'business' | 'high-risk' | 'white-label';
+  name: string;
+  audience: string;
+  /** "from $X / month"; undefined until prices are set (a Contact us tier is priced per merchant). */
+  price: string | undefined;
+  features: string[];
+  /** Self-serve: a Start link to the console. Otherwise "Contact us". */
+  selfServe: boolean;
+}
+
+export const CLOUD_TIERS: CloudTier[] = [
+  {
+    id: 'starter',
+    name: 'Starter',
+    audience: 'For a first store',
+    price: undefined,
+    features: [
+      'Your store node, hosted and kept online',
+      'Signed order webhooks to your backend',
+      'Monthly, by card or stablecoins',
+    ],
+    selfServe: true,
+  },
+  {
+    id: 'business',
+    name: 'Business',
+    audience: 'For a store with steady sales',
+    price: undefined,
+    features: ['Everything in Starter', 'Sized for a store with more orders'],
+    selfServe: true,
+  },
+  {
+    id: 'high-risk',
+    name: 'High-risk',
+    audience: 'For gambling and other high-risk merchants',
+    price: undefined,
+    features: [
+      'Each deposit matched to a player account, for your backend to credit',
+      'On your own verified domain',
+      'Deposits only: no payouts to players',
+      'Reviewed before launch',
+    ],
+    selfServe: false,
+  },
+  {
+    id: 'white-label',
+    name: 'White-label',
+    audience: 'For platforms that onboard merchants',
+    price: undefined,
+    features: [
+      'Checkout on your own domain',
+      'Your brand, no "by Elisym"',
+      'Optionally, a dedicated relay for your stores',
+    ],
+    selfServe: false,
+  },
+];
+
+/** A tier's Start link: the console's own page, which makes the key and takes the first payment. */
+export function cloudStartUrl(tier: CloudTier['id']): string {
+  return `${CLOUD_CONSOLE_URL}/start?tier=${tier}`;
+}

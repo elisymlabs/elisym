@@ -1,4 +1,5 @@
 import { AdminTeaser } from './components/AdminTeaser';
+import { Cloud } from './components/Cloud';
 import { Demo } from './components/Demo';
 import { Faq } from './components/Faq';
 import { FinalCta } from './components/FinalCta';
@@ -21,6 +22,7 @@ export function App() {
         <HowItWorks />
         <Why />
         <AdminTeaser />
+        <Cloud />
         <Faq />
         <FinalCta />
       </main>

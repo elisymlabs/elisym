@@ -5,6 +5,7 @@ import { SignInLink } from './SignInLink';
 const NAV = [
   { href: '#demo', label: 'Integration' },
   { href: '#how', label: 'How it works' },
+  { href: '#cloud', label: 'Cloud' },
   { href: '#faq', label: 'FAQ' },
 ];
 
