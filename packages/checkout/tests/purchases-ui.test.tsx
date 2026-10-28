@@ -522,7 +522,7 @@ describe('Download CSV (N4)', () => {
 });
 
 describe('the fee line', () => {
-  it('names the elisym fee a purchase includes, and nothing when it has none', async () => {
+  it('names the network fee a purchase includes, and nothing when it has none', async () => {
     const base = purchaseOf('delivered');
     const asset = base.receipt.paying?.asset;
     if (asset === undefined) {
@@ -533,7 +533,7 @@ describe('the fee line', () => {
     await ui.openRow();
     const line = ui.detail()?.querySelector('[data-fee-line]');
     expect(line?.textContent).toBe(feeLine(asset, 490_000n));
-    expect(line?.textContent).toBe('Includes elisym fee 0.49 USDC');
+    expect(line?.textContent).toBe('Includes network fee 0.49 USDC');
     const plain = mount(counted([base]));
     await plain.open();
     await plain.openRow();

@@ -1,6 +1,7 @@
 import type { Network } from '@elisym/pay-core';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { type Brand, DEFAULT_BRAND } from './brand';
 import type { Screen } from './controller';
 import type { Banner, StoreInfo, View } from './session';
 import { BannerNote } from './ui/BannerNote';
@@ -106,6 +107,8 @@ interface Props {
   finishWaitMs?: number;
   /** How long the last stage's fill is held (the fixture page and tests). */
   finishFillMs?: number;
+  /** Who the checkout presents itself as (picked by Host); the default brand when unset. */
+  brand?: Brand;
 }
 
 /** Focus is in the purchase's content: below the header, above the footer. */
@@ -206,6 +209,7 @@ export function Checkout({
   reducedMotion = () => false,
   finishWaitMs = FINISH_WAIT_MS,
   finishFillMs = FINISH_FILL_MS,
+  brand = DEFAULT_BRAND,
 }: Props) {
   /** "Your purchases" is open over the session, which keeps running underneath. */
   const [historyOpen, setHistoryOpen] = useState(initialPurchasesOpen);
@@ -566,6 +570,7 @@ export function Checkout({
         />
         {body}
         <Footer
+          brand={brand}
           {...(view === undefined || purchases === undefined || historyShown
             ? {}
             : { onPurchases: openPurchases })}
