@@ -8,10 +8,12 @@
  *
  *   bun scripts/dev.ts fixtures
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { build, createServer } from 'vite';
+import { loaderForOrigin } from './loader-hosts';
+import { buildV4Template } from './v4-template';
 
 const APP_ORIGIN = 'http://127.0.0.1:5174';
 const PAGE_PORT = 5173;
@@ -60,22 +62,33 @@ for (const [index, config] of [
   });
 }
 
+// v4: the template baked with the local checkout origin, as a preview build does.
+mkdirSync(`${DEV_DIR}/v4`, { recursive: true });
+writeFileSync(
+  `${DEV_DIR}/v4/embed.js`,
+  loaderForOrigin(await buildV4Template(fileURLToPath(new URL('..', import.meta.url))), APP_ORIGIN),
+);
+
 const app = await createServer({
   configFile: fileURLToPath(new URL('../vite.config.ts', import.meta.url)),
   server: { host: '127.0.0.1', port: 5174, strictPort: true },
 });
 await app.listen();
 
-/** The demo page: v3 in a modal by default; `?display=inline`, `?loader=v1`, `?loader=v2`, or `?ref=` (v3). */
+/**
+ * The demo page: v3 in a modal by default; `?display=inline`, `?loader=v1`,
+ * `?loader=v2`, `?loader=v4` (as `<pay-buy>`), or `?ref=` (v3 and v4).
+ */
 function page(search: URLSearchParams): string {
   const requested = search.get('loader');
-  const loader = requested === 'v1' || requested === 'v2' ? requested : 'v3';
+  const loader = requested === 'v1' || requested === 'v2' || requested === 'v4' ? requested : 'v3';
+  const tag = loader === 'v4' ? 'pay-buy' : 'elisym-buy';
   const v1 = loader === 'v1';
   const display = v1 ? '' : ` display="${search.get('display') === 'inline' ? 'inline' : 'modal'}"`;
   // Shown on a local page only; still never written into the HTML unchecked.
   const ref = search.get('ref');
   const customerRef =
-    loader === 'v3' && ref !== null && /^[A-Za-z0-9._:@-]{0,128}$/.test(ref)
+    (loader === 'v3' || loader === 'v4') && ref !== null && /^[A-Za-z0-9._:@-]{0,128}$/.test(ref)
       ? ` customer-ref="${ref}"`
       : '';
   return `<!doctype html>
@@ -83,8 +96,8 @@ function page(search: URLSearchParams): string {
   <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Demo store</title></head>
   <body style="font-family: system-ui; max-width: 480px; margin: 40px auto">
     <h2>Demo store page</h2>
-    <p><a href="/">v3 modal</a> · <a href="/?display=inline">v3 inline</a> · <a href="/?ref=demo_user">v3 with a ref</a> · <a href="/?loader=v2">v2</a> · <a href="/?loader=v1">v1</a></p>
-    <elisym-buy product="${naddr}" network="${network}"${display}${customerRef}></elisym-buy>
+    <p><a href="/">v3 modal</a> · <a href="/?display=inline">v3 inline</a> · <a href="/?ref=demo_user">v3 with a ref</a> · <a href="/?loader=v4">v4</a> · <a href="/?loader=v2">v2</a> · <a href="/?loader=v1">v1</a></p>
+    <${tag} product="${naddr}" network="${network}"${display}${customerRef}></${tag}>
     <pre id="status"></pre>
     <script src="/${loader}/embed.js"></script>
     <script>
@@ -101,7 +114,7 @@ function page(search: URLSearchParams): string {
 
 createHttpServer((request, response) => {
   const url = new URL(request.url ?? '/', `http://localhost:${PAGE_PORT}`);
-  if (['/v1/embed.js', '/v2/embed.js', '/v3/embed.js'].includes(url.pathname)) {
+  if (['/v1/embed.js', '/v2/embed.js', '/v3/embed.js', '/v4/embed.js'].includes(url.pathname)) {
     response.writeHead(200, { 'content-type': 'text/javascript' });
     response.end(readFileSync(`${DEV_DIR}${url.pathname}`));
     return;

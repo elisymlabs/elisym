@@ -6,8 +6,11 @@ The checkout is two things served from one origin, `https://pay.elisym.network`:
   pinned by an SRI hash (`src/embed/v1.sri`, `src/embed/v2.sri`, `src/embed/v3.sri`). v1
   frames the checkout in place; v2 shows it in a modal behind a button by default
   (`display="inline"` frames it in place); v3 is v2 plus `customer-ref`, the account a payment
-  credits. Their bytes never change under their path; a changed loader ships as `/v4/embed.js`.
-- `/checkout` - the iframe app the loaders frame.
+  credits. Their bytes never change under their path; a changed loader ships under a new path.
+- `/v4/embed.js` - v3 without a brand of its own (neutral button colors the page can set,
+  `<pay-buy>` as well as `<elisym-buy>`), one frozen copy per checkout hostname (below).
+- `/checkout` - the iframe app the loaders frame. It picks its brand by Host
+  (`src/app/brand.ts`).
 
 The production bytes of the loaders are committed (`embed-prod/v1/embed.js`,
 `embed-prod/v2/embed.js`, `embed-prod/v3/embed.js`), and a production build copies them as
@@ -18,6 +21,38 @@ compare with the committed bytes.
 
 The build (`vite.config.ts`, `scripts/build-embeds.ts`, `scripts/check-size.ts`) refuses to
 produce a deployment that breaks either one.
+
+## Loader v4: one copy per hostname
+
+One deployment serves every checkout hostname, and a loader frames the origin baked into it,
+so v4 has a frozen copy per hostname (`scripts/loader-hosts.ts`):
+
+- `embed-prod/v4/embed.template.js` - v4 built with an origin placeholder;
+- `embed-prod/<host>/v4/embed.js` - the template with `https://<host>` substituted;
+- `src/embed/v4.sri` - the SRI of the template and of each host's copy.
+
+Vercel serves a static file before any rewrite, so there is no `dist/v4/embed.js`:
+`/v4/embed.js` reaches `dist/v4-hosts/<host>/embed.js` through one Host-matched rewrite per
+hostname in `vercel.json`, then a catch-all to `dist/v4-hosts/_build/embed.js`. A build for
+the production origin (production, and a plain local `bun run build`) has only the hosts'
+pinned copies (any other host gets a 404); a build for any other origin (a Vercel preview, or
+`CHECKOUT_ORIGIN` set) has only `_build`, framing itself. `/v4-hosts/<host>/embed.js` is also
+reachable directly on every hostname; merchants pin `/v4/embed.js` only. The hostnames are the brand registry's (`BRANDS` in
+`src/app/brand.ts`).
+
+Adding a hostname (a white-label partner):
+
+1. Add its brand to `BRANDS`.
+2. `bun scripts/freeze-v4.ts` writes its copy and SRI from the committed template.
+3. Add its rewrite to `vercel.json`, before the catch-all (the build says exactly what it
+   expects).
+4. Deploy.
+5. Only then add the domain to the Vercel project, and the hostname to the widget RPC key's
+   origin allowlist: before the deploy the hostname would get the default brand and a 404
+   for `/v4/embed.js`.
+
+A page that loads v4 and then v3 sees a frozen v3 log "customer-ref needs the v3 loader" even
+though v4 honours `customer-ref`: v3 cannot be changed, and one loader per page avoids it.
 
 ## The Vercel project (once)
 
@@ -55,6 +90,10 @@ The build fails when:
 - a Production build would frame any origin other than `https://pay.elisym.network`;
 - a production-origin `v1/embed.js`, `v2/embed.js` or `v3/embed.js` differs from its `.sri`, or a committed
   `embed-prod/` file does;
+- a v4 template or host copy differs from `src/embed/v4.sri`, a host's copy is not the
+  template with its own origin, a production build serves anything but the hosts' pinned
+  copies (or any other build anything but its own), or `vercel.json` does not route
+  `/v4/embed.js` by Host;
 - a frozen loader source differs from `embed-prod/frozen.sha256`;
 - the size budgets or the loaders' global-scope check fail.
 

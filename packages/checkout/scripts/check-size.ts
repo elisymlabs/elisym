@@ -8,7 +8,10 @@ import { createHash } from 'node:crypto';
  *   so their bytes never change under their path: the committed
  *   `embed-prod/vN/embed.js` matches `src/embed/vN.sri`, and a production
  *   build serves exactly those bytes. A changed loader ships under a new path;
- * - the frozen loader sources match `embed-prod/frozen.sha256`.
+ * - the frozen loader sources match `embed-prod/frozen.sha256`;
+ * - v4: the template and each loader host's copy are the pinned bytes, a
+ *   production build serves exactly those, any other build only its own copy,
+ *   and `vercel.json` routes `/v4/embed.js` by Host (`scripts/loader-hosts.ts`).
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -18,6 +21,14 @@ import { gzipSync } from 'node:zlib';
 import ts from 'typescript';
 import { PRODUCTION_ORIGIN, checkoutOrigin } from './build-env';
 import { frozenProblems } from './frozen';
+import {
+  BUILD_ENTRY,
+  LOADER_HOSTS,
+  V4_HOSTS_DIR,
+  readV4Manifest,
+  v4Problems,
+  vercelV4Problems,
+} from './loader-hosts';
 
 const PACKAGE_DIR = fileURLToPath(new URL('..', import.meta.url));
 const DIST = join(PACKAGE_DIR, 'dist');
@@ -59,7 +70,7 @@ function leaks(loader: string): string | undefined {
 }
 
 // Only what is deployed: the fixture page and other dev files stay out of the build.
-const DIST_ENTRIES: readonly string[] = ['assets', 'index.html', ...LOADERS];
+const DIST_ENTRIES: readonly string[] = ['assets', 'index.html', ...LOADERS, V4_HOSTS_DIR];
 const extra = readdirSync(DIST).filter((entry) => !DIST_ENTRIES.includes(entry));
 if (extra.length > 0) {
   problems.push(`dist/ holds more than the deployment: ${extra.join(', ')}`);
@@ -111,6 +122,46 @@ for (const version of LOADERS) {
     );
   }
 }
+
+/** A loader file over its budget or adding to the page's globals. */
+function loaderProblems(name: string, path: string): string[] {
+  const size = gzipped(path);
+  console.log(`${name}  ${(size / 1024).toFixed(1)} KB gzip (budget ${EMBED_BUDGET / 1024})`);
+  const found: string[] = [];
+  if (size > EMBED_BUDGET) {
+    found.push(`${name} is over its size budget`);
+  }
+  const leaked = leaks(readFileSync(path, 'utf8'));
+  if (leaked !== undefined) {
+    found.push(`${name} adds to the page's global scope: ${leaked}`);
+  }
+  return found;
+}
+
+// v4: the production origin serves every loader host's pinned copy, any other
+// origin only its own, so no host is ever served a copy for another origin.
+const v4Entries = readdirSync(join(DIST, V4_HOSTS_DIR)).sort();
+const v4Expected = origin === PRODUCTION_ORIGIN ? [...LOADER_HOSTS].sort() : [BUILD_ENTRY];
+if (JSON.stringify(v4Entries) !== JSON.stringify(v4Expected)) {
+  problems.push(`dist/${V4_HOSTS_DIR} holds ${v4Entries.join(', ')}, not ${v4Expected.join(', ')}`);
+}
+const v4Pinned = readV4Manifest(PACKAGE_DIR);
+for (const entry of v4Entries) {
+  const built = join(DIST, V4_HOSTS_DIR, entry, 'embed.js');
+  problems.push(...loaderProblems(`v4/embed.js for ${entry}`, built));
+  const sri = sriOf(built);
+  console.log(`v4/embed.js for ${entry}  ${sri}`);
+  const pinned = v4Pinned.get(entry);
+  if (origin === PRODUCTION_ORIGIN && sri !== pinned) {
+    problems.push(
+      `v4/embed.js for ${entry} changed (pinned ${pinned ?? 'nothing'}): merchants pin these bytes; publish a changed loader under a new path`,
+    );
+  }
+}
+problems.push(...v4Problems(PACKAGE_DIR));
+problems.push(
+  ...vercelV4Problems(JSON.parse(readFileSync(join(PACKAGE_DIR, 'vercel.json'), 'utf8'))),
+);
 
 problems.push(...frozenProblems(PACKAGE_DIR));
 if (problems.length > 0) {
