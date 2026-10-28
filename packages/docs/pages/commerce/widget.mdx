@@ -86,6 +86,8 @@ import { ElisymBuy } from '@elisym/react';
 <ElisymBuy product="naddr1..." network="mainnet" theme="dark" onStatus={(state) => console.log(state)} />;
 ```
 
+On a white-label checkout, pass its own loader and hash as `loader={{ src: 'https://<its host>/v4/embed.js', integrity: 'sha384-...' }}` from the first render (the component adds one script per document); without it the component adds the pinned v3 from `pay.elisym.network`.
+
 ## Styling
 
 The button and the modal are in the element's shadow root, styled by the loader. Your CSS can restyle them through two parts:
