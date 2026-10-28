@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
-import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
+import { type EventTemplate, type NostrEvent, finalizeEvent } from 'nostr-tools/pure';
 import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
 import {
   type RelayView,
@@ -119,6 +119,7 @@ import {
   productNaddr,
   storeNostrJson,
   storeWideFromOwnerEvents,
+  storeWideWithoutOwnerEvents,
 } from './store-events';
 import { tempoContextFor } from './tempo';
 import { standingTerms } from './terms';
@@ -531,15 +532,25 @@ function setupSigning(
   home: MerchantHome,
   loaded: LoadedKeys,
   config: MerchantConfig,
+  /** Every product off sale: a store-only home then needs no owner events at all. */
+  withdrawal: boolean,
 ):
-  | { keys: StoreKeys; storeSecretKey: Uint8Array; ownerEvents: undefined }
-  | { keys: undefined; storeSecretKey: Uint8Array; ownerEvents: OwnerEvents } {
+  | { mode: 'owner-key'; keys: StoreKeys; storeSecretKey: Uint8Array }
+  | { mode: 'pre-signed'; storeSecretKey: Uint8Array; ownerEvents: OwnerEvents }
+  | { mode: 'withdrawal'; storeSecretKey: Uint8Array } {
   const passphrase = readPassphrase();
   if (hasOwnerKey(loaded)) {
     const keys = openSetupKeys(loaded, passphrase);
-    return { keys, storeSecretKey: keys.storeSecretKey, ownerEvents: undefined };
+    return { mode: 'owner-key', keys, storeSecretKey: keys.storeSecretKey };
   }
   const storeSecretKey = openSecret(loaded, 'store', passphrase);
+  // A withdrawal publishes only store-signed events (sold-out listings, the
+  // profile, the inbox list), and a sold-out store's payout list is not judged:
+  // nothing the owner did (a revocation, a list published elsewhere, no file)
+  // can block taking a store off sale.
+  if (withdrawal) {
+    return { mode: 'withdrawal', storeSecretKey };
+  }
   const ownerEvents = readOwnerEventsFile(home.ownerEvents);
   checkOwnerEvents(ownerEvents, {
     ownerPubkey: loaded.ownerPubkey,
@@ -547,7 +558,7 @@ function setupSigning(
     payouts: config.payouts,
     now: nowSecs(),
   });
-  return { keys: undefined, storeSecretKey, ownerEvents };
+  return { mode: 'pre-signed', storeSecretKey, ownerEvents };
 }
 
 async function setup(home: MerchantHome): Promise<void> {
@@ -570,9 +581,11 @@ async function setup(home: MerchantHome): Promise<void> {
   // The secrets first, before anything is checked, signed or published: a
   // missing or wrong passphrase must never leave a half-published store. A
   // store-only home opens the store key alone and takes the owner's events as
-  // signed elsewhere, checked here before the ledger or any relay.
+  // signed elsewhere, checked here before the ledger or any relay - unless every
+  // product is off sale (a withdrawal needs no owner events).
   const loaded = loadKeys(home);
-  const signing = setupSigning(home, loaded, config);
+  const withdrawal = [...products.values()].every((product) => !product.onSale);
+  const signing = setupSigning(home, loaded, config, withdrawal);
   // Converted to this version and saved before any relay or chain is
   // contacted: from here an older node refuses this home.
   const state = openLedgerForUpgrade(home.ledger, (read) => refuseLostHistory(read, products));
@@ -607,9 +620,28 @@ async function setup(home: MerchantHome): Promise<void> {
       loaded,
       [...new Set([...products.keys(), ...Object.keys(state.listings)])],
     );
-    let paytoCreatedAt: number;
-    if (signing.ownerEvents === undefined) {
+    // The payout list's date (none in a withdrawal) and the store-wide events, by how
+    // this setup signs; built here, published only after the clock checks below.
+    let paytoCreatedAt: number | undefined;
+    let wide: { payoutList: NostrEvent | undefined; others: NostrEvent[] };
+    if (signing.mode === 'owner-key') {
       paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
+      wide = buildStoreWideEvents(
+        config,
+        signing.keys,
+        startedAt,
+        paytoCreatedAt,
+        declaration.declare,
+      );
+    } else if (signing.mode === 'withdrawal') {
+      paytoCreatedAt = undefined;
+      wide = storeWideWithoutOwnerEvents(
+        config,
+        signing.storeSecretKey,
+        loaded.ownerPubkey,
+        startedAt,
+        declaration.declare,
+      );
     } else {
       // A revocation first: it is the more basic refusal of the two.
       const authHistory = await readStoreAuthHistory(
@@ -622,31 +654,28 @@ async function setup(home: MerchantHome): Promise<void> {
       supersedingAuthRefusal(signing.ownerEvents.auth, authHistory, loaded.storePubkey, startedAt);
       payoutListRefusal(signing.ownerEvents.payoutList, state, payouts, newestList);
       paytoCreatedAt = signing.ownerEvents.payoutList.created_at;
+      wide = storeWideFromOwnerEvents(
+        config,
+        signing.storeSecretKey,
+        loaded.ownerPubkey,
+        signing.ownerEvents,
+        startedAt,
+        declaration.declare,
+      );
     }
     const plans = planListings(state, products.values(), config.payouts, served, startedAt);
     const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
     // Buyers drop an AUTH dated past the skew window as they drop a payout list.
     const authClock =
-      signing.ownerEvents === undefined
-        ? undefined
-        : clockProblem('the store authorization', signing.ownerEvents.auth.created_at, startedAt);
+      signing.mode === 'pre-signed'
+        ? clockProblem('the store authorization', signing.ownerEvents.auth.created_at, startedAt)
+        : undefined;
     if (authClock !== undefined) {
       clock.push(authClock);
     }
     if (clock.length > 0) {
       throw new Error(clock.join('; '));
     }
-    const wide =
-      signing.ownerEvents === undefined
-        ? buildStoreWideEvents(config, signing.keys, startedAt, paytoCreatedAt, declaration.declare)
-        : storeWideFromOwnerEvents(
-            config,
-            signing.storeSecretKey,
-            loaded.ownerPubkey,
-            signing.ownerEvents,
-            startedAt,
-            declaration.declare,
-          );
     const publisher = setupPublisher(
       pool,
       relays,
@@ -660,9 +689,10 @@ async function setup(home: MerchantHome): Promise<void> {
       storeSecretKey: signing.storeSecretKey,
       wide,
       publish: publisher.publish,
-      payoutList: { createdAt: paytoCreatedAt, payouts },
+      payoutList: paytoCreatedAt === undefined ? undefined : { createdAt: paytoCreatedAt, payouts },
       startedAt,
       now: nowSecs,
+      withdrawal: signing.mode === 'withdrawal',
     });
     const { missedDefaults } = publisher;
     // Orders can come from the moment the store is published: a later first run

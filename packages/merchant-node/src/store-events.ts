@@ -184,6 +184,23 @@ export function storeWideFromOwnerEvents(
   };
 }
 
+/**
+ * The store-wide events of a withdrawal in a store-only home: the store's own
+ * only. No payout list and no authorization: a sold-out store needs neither.
+ */
+export function storeWideWithoutOwnerEvents(
+  config: StoreConfig,
+  storeSecretKey: Uint8Array,
+  ownerPubkey: string,
+  createdAt: number,
+  feeSupport = false,
+): { payoutList: undefined; others: NostrEvent[] } {
+  return {
+    payoutList: undefined,
+    others: storeSignedEvents(config, storeSecretKey, ownerPubkey, createdAt, feeSupport),
+  };
+}
+
 /** The profile (naming the owner) and the inbox list, signed by the store key. */
 function storeSignedEvents(
   config: StoreConfig,

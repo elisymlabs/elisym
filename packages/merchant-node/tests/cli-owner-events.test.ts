@@ -4,7 +4,7 @@
  * and an owner-side refusal leaves nothing published and a fixed marker.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -367,5 +367,129 @@ describe('setup on a store-only home', () => {
       .map((entry) => entry.relay);
     expect(deletionRelays.some((relay) => relay.includes('inbox.harness'))).toBe(true);
     expect(deletionRelays.some((relay) => !relay.includes('inbox.harness'))).toBe(true);
+  });
+});
+
+/** The home's product taken off sale. */
+function stopSelling(store: StoreOnly): void {
+  writeFileSync(
+    join(store.home, 'products', PRODUCT_D, 'PRODUCT.md'),
+    '---\ntitle: Deposit 10 USD\npriceUsd: "10"\nonSale: false\n---\n\nAdds 10 USD to your account.\n',
+  );
+}
+
+function ledgerPayto(store: StoreOnly): { createdAt: number } | undefined {
+  return (
+    JSON.parse(readFileSync(join(store.home, 'ledger.json'), 'utf8')) as {
+      payto?: { createdAt: number };
+    }
+  ).payto;
+}
+
+describe('a withdrawal in a store-only home', () => {
+  it('needs no owner events and publishes none; a rerun with nothing changed succeeds', () => {
+    const store = storeOnlyHome();
+    const signedAt = nowSecs() - 60;
+    writeOwnerEvents(store, {
+      payoutList: payoutList(store, signedAt),
+      auth: auth(store, signedAt),
+    });
+    expect(setup(store, harness()).code).toBe(0);
+    expect(ledgerPayto(store)?.createdAt).toBe(signedAt);
+    stopSelling(store);
+    // The owner's events gone: nothing the owner holds can block taking the store off sale.
+    rmSync(join(store.home, 'owner-events.json'));
+    const run = harness();
+    const result = setup(store, run);
+    expect(result.code).toBe(0);
+    const kinds = storeEventsPublished(run).map((event) => event.kind);
+    expect(kinds).toContain(30402);
+    expect(kinds).toContain(0);
+    expect(kinds).toContain(10050);
+    expect(kinds).not.toContain(10133);
+    expect(kinds).not.toContain(30490);
+    // The payout side the ledger recorded stays as it was.
+    expect(ledgerPayto(store)?.createdAt).toBe(signedAt);
+    // Again, the relays serving what the withdrawal published: nothing to republish.
+    const served = harness(published(run));
+    const again = setup(store, served);
+    expect(again.code).toBe(0);
+    expect(storeEventsPublished(served).map((event) => event.kind)).not.toContain(30402);
+    // The profile still goes out (in the same second it is the same event, so the log, not the store, shows it).
+    expect(again.output).toMatch(/kind 0: accepted by [1-9]/);
+    // Back on sale with the same signed events: the recorded payout list still holds.
+    writeOwnerEvents(store, {
+      payoutList: payoutList(store, signedAt),
+      auth: auth(store, signedAt),
+    });
+    writeFileSync(
+      join(store.home, 'products', PRODUCT_D, 'PRODUCT.md'),
+      '---\ntitle: Deposit 10 USD\npriceUsd: "10"\n---\n\nAdds 10 USD to your account.\n',
+    );
+    const resumed = harness(published(run));
+    expect(setup(store, resumed).code).toBe(0);
+    expect(storeEventsPublished(resumed).map((event) => event.kind)).toContain(10133);
+  });
+
+  it('a store with one product still on sale is no withdrawal: it needs the owner events', () => {
+    const store = storeOnlyHome();
+    mkdirSync(join(store.home, 'products', 'stopped'), { recursive: true });
+    writeFileSync(
+      join(store.home, 'products', 'stopped', 'PRODUCT.md'),
+      '---\ntitle: Old deposit\npriceUsd: "5"\nonSale: false\n---\n\nNo longer sold.\n',
+    );
+    const result = setup(store, harness());
+    expect(result.code).toBe(1);
+    expect(result.output).toMatch(/no owner-events.json/);
+  });
+
+  it('is not blocked by a revocation or a newer payout list on the relays', () => {
+    const store = storeOnlyHome();
+    stopSelling(store);
+    const signedAt = nowSecs() - 60;
+    const revocation = finalizeEvent(
+      buildStoreRevocationEvent(store.storePubkey, signedAt + 1),
+      store.ownerSecret,
+    );
+    const run = harness([revocation, payoutList(store, signedAt + 30)]);
+    const result = setup(store, run);
+    expect(result.code).toBe(0);
+    const kinds = storeEventsPublished(run).map((event) => event.kind);
+    expect(kinds).not.toContain(10133);
+    expect(kinds).not.toContain(30490);
+    expect(ledgerPayto(store)).toBeUndefined();
+  });
+
+  it('a home with an owner key still publishes its payout list when stopping', () => {
+    const ownerSecret = generateSecretKey();
+    const home = join(mkdtempSync(join(tmpdir(), 'merchant-owner-events-')), 'home');
+    expect(
+      spawnSync('bun', [CLI, 'init', '--home', home], {
+        encoding: 'utf8',
+        env: { PATH: process.env.PATH ?? '', HOME: tmpdir() },
+      }).status,
+    ).toBe(0);
+    const store: StoreOnly = {
+      home,
+      ownerSecret,
+      ownerPubkey: getPublicKey(ownerSecret),
+      storePubkey: '',
+    };
+    mkdirSync(join(home, 'products', PRODUCT_D), { recursive: true });
+    stopSelling(store);
+    writeFileSync(
+      join(home, 'config.json'),
+      JSON.stringify({
+        name: 'Shop',
+        network: 'devnet',
+        inboxRelays: ['wss://inbox.harness'],
+        rpcUrl: 'https://solana-rpc.harness',
+        feeConfigRpcUrl: 'https://fee-rpc.harness',
+        payouts: PAYOUTS,
+      }),
+    );
+    const run = harness();
+    expect(setup(store, run).code).toBe(0);
+    expect(storeEventsPublished(run).map((event) => event.kind)).toContain(10133);
   });
 });
