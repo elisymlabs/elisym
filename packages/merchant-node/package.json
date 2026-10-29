@@ -31,6 +31,13 @@
     "LICENSE"
   ],
   "type": "module",
+  "exports": {
+    "./validate": {
+      "types": "./dist/validate.d.ts",
+      "import": "./dist/validate.js"
+    },
+    "./package.json": "./package.json"
+  },
   "publishConfig": {
     "access": "public"
   },
