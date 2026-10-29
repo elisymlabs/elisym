@@ -18,7 +18,7 @@ import {
 } from '@elisym/commerce';
 import { type NostrEvent, verifyEvent } from 'nostr-tools/pure';
 import { z } from 'zod';
-import { type QueryPool, READ_WAIT_MS, newest } from './checks';
+import { INBOX_RELAYS_EXIT_CODE, type QueryPool, READ_WAIT_MS, newest } from './checks';
 import type { LedgerState } from './ledger';
 import type { StoreConfig } from './store-events';
 
@@ -27,6 +27,17 @@ export const OWNER_EVENTS_FILE = 'owner-events.json';
 
 /** The exit code of an owner-side refusal: only the owner (the console) can resolve it. */
 export const OWNER_REFUSAL_EXIT_CODE = 3;
+
+/**
+ * The exit code of a `setup` that failed with `failure`, a stop signal (its
+ * code) received meanwhile: a marked failure keeps its code, so a control plane
+ * still reads its marker; any other failure gives way to the signal.
+ */
+export function setupExitCode(failure: number, signal: number | undefined): number {
+  return failure === OWNER_REFUSAL_EXIT_CODE || failure === INBOX_RELAYS_EXIT_CODE
+    ? failure
+    : (signal ?? failure);
+}
 
 /** What an owner-side refusal is about: re-sign the events, or re-authorize a revoked store. */
 export type OwnerRefusalReason = 'owner-resign' | 'owner-revoked';

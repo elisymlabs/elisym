@@ -14,6 +14,8 @@ import { SimplePool } from 'nostr-tools/pool';
 import { type EventTemplate, type NostrEvent, finalizeEvent } from 'nostr-tools/pure';
 import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
 import {
+  INBOX_RELAYS_EXIT_CODE,
+  InboxRelaysRefused,
   type RelayView,
   checkDomain,
   checkInboxRelays,
@@ -86,6 +88,7 @@ import {
   OwnerRefusal,
   checkOwnerEvents,
   payoutListRefusal,
+  setupExitCode,
   readOwnerEventsFile,
   readStoreAuthHistory,
   revocationDate,
@@ -605,7 +608,8 @@ async function setup(home: MerchantHome): Promise<void> {
   try {
     const failing = await reportInboxRelays(pool, config, signing.storeSecretKey);
     if (failing.length > 0) {
-      throw new Error(
+      throw new InboxRelaysRefused(
+        failing,
         `these inbox relays do not take and serve gift wraps for any key: ${failing.join(', ')}. Replace them in config.json.`,
       );
     }
@@ -1428,8 +1432,8 @@ async function main(): Promise<void> {
       } catch (error) {
         exitCode = reportFailure(error);
       }
-      // An owner refusal keeps its exit code: a deferred signal must not hide the marker.
-      process.exit(exitCode === OWNER_REFUSAL_EXIT_CODE ? exitCode : (stopRequested() ?? exitCode));
+      // A marked failure keeps its exit code: a deferred signal must not hide the marker.
+      process.exit(setupExitCode(exitCode, stopRequested()));
       return;
     }
     case 'run':
@@ -1467,6 +1471,10 @@ function reportFailure(error: unknown): number {
   if (error instanceof OwnerRefusal) {
     console.error(`refused ${error.reason}: ${error.message}`);
     return OWNER_REFUSAL_EXIT_CODE;
+  }
+  if (error instanceof InboxRelaysRefused) {
+    console.error(`relays ${JSON.stringify(error.relays)}: ${error.message}`);
+    return INBOX_RELAYS_EXIT_CODE;
   }
   console.error(`error: ${errorText(error)}`);
   return 1;

@@ -32,6 +32,25 @@ import type { OfferTerms } from './terms';
 /** How long a check waits for a relay to answer a read. */
 export const READ_WAIT_MS = 10_000;
 
+/** The exit code of a `setup` stopped by inbox relays that do not take and serve gift wraps. */
+export const INBOX_RELAYS_EXIT_CODE = 4;
+
+/**
+ * Inbox relays that do not take and serve gift wraps for any key. The CLI
+ * prints them as a stderr line `relays <JSON array>: ...` and exits with
+ * `INBOX_RELAYS_EXIT_CODE`, so a control plane can replace exactly those
+ * relays without reading the wording.
+ */
+export class InboxRelaysRefused extends Error {
+  constructor(
+    readonly relays: readonly string[],
+    message: string,
+  ) {
+    super(message);
+    this.name = 'InboxRelaysRefused';
+  }
+}
+
 /** The part of nostr-tools' `SimplePool` the checks read with. */
 export interface QueryPool {
   querySync(

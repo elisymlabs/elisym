@@ -409,8 +409,11 @@ the owner signs:
   revoked this store: authorize it again). Any other failure prints `error: ...` and exits with
   code 1 (or the code of a stop signal received meanwhile) - among them an event dated further
   in the future than the clock allows: the host's clock or the signing date is wrong, and signing
-  again with a current date fixes it. A tool that drives `setup` can tell an owner-side refusal
-  from the rest without reading the wording.
+  again with a current date fixes it. Inbox relays that do not take and serve gift wraps exit
+  with code **4** and a stderr line `relays ["wss://...", ...]: ...` naming them, each in the
+  node's own spelling (lowercase host, no trailing slash). A tool that
+  drives `setup` can tell an owner-side refusal, and the relays to replace, from the rest without
+  reading the wording.
 - Taking the store off sale needs no owner events: with every product `onSale: false`, `setup`
   publishes the sold-out listings, the store profile and the inbox list, leaves the recorded payout
   list as it is and reads no `owner-events.json`. A rerun that changes no listing succeeds once

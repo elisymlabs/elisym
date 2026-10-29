@@ -13,6 +13,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { afterEach, describe, expect, it } from 'vitest';
+import { INBOX_RELAYS_EXIT_CODE } from '../src/checks';
 import { recordTreasuryRead } from '../src/fee';
 import { PRE_FEE_LEDGER_VERSION, emptyLedger } from '../src/ledger';
 import { publishTerms } from '../src/terms';
@@ -102,7 +103,11 @@ function command(home: string, args: string[], run: Harness) {
   });
   expect(result.error).toBeUndefined();
   expect(typeof result.status).toBe('number');
-  return { code: result.status, output: `${result.stdout}${result.stderr}` };
+  return {
+    code: result.status,
+    output: `${result.stdout}${result.stderr}`,
+    stderr: result.stderr,
+  };
 }
 
 const children: ChildProcess[] = [];
@@ -279,15 +284,25 @@ describe('setup declares fee support only with treasuries it has read', () => {
 
 describe('setup saves the treasuries it read before it contacts any relay', () => {
   it('inbox relays that take no gift wrap stop setup before it publishes: the treasuries are on disk', () => {
-    const path = solanaHome();
+    const path = home({
+      rpcUrl: `https://${SOLANA_RPC_HOST}`,
+      feeConfigRpcUrl: `https://${FEE_RPC_HOST}`,
+      payouts: [{ caip19: USDC_DEVNET_CAIP19, address: PAYOUT }],
+      inboxRelays: ['wss://inbox.harness', 'wss://Second.Harness/'],
+    });
     const run = harness({
       rejectKinds: [1059],
       genesis: DEVNET_GENESIS,
       config: { treasury: TREASURY, feeBps: 0 },
     });
     const result = command(path, ['setup'], run);
-    expect(result.code).not.toBe(0);
-    expect(result.output).toMatch(/do not take and serve gift wraps/);
+    // A control plane replaces exactly those: exit code 4 (a contract with it, so the literal) and a
+    // stderr line naming every failing relay in the node's own spelling.
+    expect(result.code).toBe(4);
+    expect(INBOX_RELAYS_EXIT_CODE).toBe(4);
+    expect(result.stderr).toMatch(
+      /^relays \["wss:\/\/inbox\.harness","wss:\/\/second\.harness"\]: these inbox relays do not take and serve gift wraps/m,
+    );
     expect(profileOf(published(run), keysOf(path).storePubkey)).toBeUndefined();
     expect(ledgerOf(path).treasuries?.devnet?.latest?.solana).toBe(TREASURY);
   });
