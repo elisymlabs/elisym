@@ -224,7 +224,7 @@ await call('POST', `/tenants/${tenantId}/products`, { products });
 ```
 
 - `priceUsd` is quoted: a bare number is refused. The buyer pays it 1:1 in a stablecoin.
-- The body is the whole set: a product left out is not deleted (a published product never is), so to stop selling one, send it with `onSale: false` in its front matter.
+- The body is the whole set: a product left out is removed. Never leave out a product that was published (the store cannot start without it): to stop selling one, send it with `onSale: false` in its front matter.
 - One product is at most 4,096 bytes, measured as its text written as a JSON string (escapes count). The plan caps how many products a store has (`limits.products` of its tier).
 
 Then [wait for the save](#waiting-for-a-save) until `kept.productsDigest` is the digest of the set you sent:
