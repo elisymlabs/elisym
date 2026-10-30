@@ -1,4 +1,5 @@
-import { PRODUCT_NAME } from '../constants';
+import { CLOUD_AGENT_DOCS_URL, CLOUD_AGENT_PROMPT, PRODUCT_NAME } from '../constants';
+import { CopyButton } from './CopyButton';
 import { Icon, type IconName } from './Icon';
 import { SectionHeading } from './SectionHeading';
 
@@ -35,6 +36,7 @@ const STEPS = [
 
 /** "Run it in our cloud": what we run, what stays the merchant's, and the way in. */
 export function Cloud() {
+  const [before, after = ''] = CLOUD_AGENT_PROMPT.split(CLOUD_AGENT_DOCS_URL);
   return (
     <section id="cloud">
       <div className="mx-auto flex max-w-1160 flex-col gap-48 px-16 py-80 sm:px-24 sm:py-112">
@@ -83,6 +85,28 @@ export function Cloud() {
             </li>
           ))}
         </ol>
+        <div className="rounded-20 border-line bg-surface flex flex-col gap-12 border p-24">
+          <div className="flex items-center justify-between gap-12">
+            <h3 className="text-16 flex items-center gap-10 font-semibold">
+              <span className="text-accent-ink">
+                <Icon name="bot" className="size-18" />
+              </span>
+              Or let your AI agent set it up
+            </h3>
+            <CopyButton text={CLOUD_AGENT_PROMPT} label="Copy prompt" />
+          </div>
+          <p id="cloud-agent-prompt" className="text-14 text-text-2 leading-relaxed">
+            {before}
+            <a
+              href={CLOUD_AGENT_DOCS_URL}
+              rel="noopener noreferrer"
+              className="text-accent-ink break-all underline decoration-current/40 underline-offset-2"
+            >
+              {CLOUD_AGENT_DOCS_URL}
+            </a>
+            {after}
+          </p>
+        </div>
         <a
           href="#pricing"
           className="text-15 text-accent-ink self-start font-semibold underline-offset-4 hover:underline"

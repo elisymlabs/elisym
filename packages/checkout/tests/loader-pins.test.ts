@@ -229,6 +229,7 @@ const SNIPPET_FILES = [
   '../docs/pages/commerce/widget.mdx',
   '../docs/pages/commerce/quickstart.mdx',
   '../docs/pages/commerce/credit-an-account.mdx',
+  '../docs/pages/commerce/cloud-agents.mdx',
   '../merchant-node/README.md',
   '../../examples/demo-store/index.html',
 ];

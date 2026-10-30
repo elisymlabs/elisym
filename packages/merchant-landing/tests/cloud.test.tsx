@@ -6,7 +6,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { App } from '../src/App';
 import { Cloud } from '../src/components/Cloud';
 import { Pricing } from '../src/components/Pricing';
-import { CLOUD_CONSOLE_URL, CLOUD_TIERS, CONTACT_URL, cloudStartUrl } from '../src/constants';
+import {
+  CLOUD_AGENT_PROMPT,
+  CLOUD_CONSOLE_URL,
+  CLOUD_TIERS,
+  CONTACT_URL,
+  cloudStartUrl,
+} from '../src/constants';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -173,10 +179,34 @@ describe('the cloud section', () => {
     expect(page.querySelector('a[href="#pricing"]')?.textContent).toBe('See the plans');
   });
 
+  it('hands an AI agent the cloud runbook, linked and copyable', async () => {
+    const page = await render(<Cloud />);
+    const prompt = page.querySelector('#cloud-agent-prompt');
+    expect(prompt?.textContent).toBe(CLOUD_AGENT_PROMPT);
+    expect(prompt?.querySelector('a')?.getAttribute('href')).toBe(
+      'https://docs.elisym.network/commerce/cloud-agents.md',
+    );
+    expect(prompt?.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(CLOUD_AGENT_PROMPT).toContain('only after I agree to the terms');
+    const written: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (text: string) => void written.push(text) },
+    });
+    const button = page.querySelector('button');
+    await act(async () => button?.click());
+    expect(written).toEqual([CLOUD_AGENT_PROMPT]);
+    expect(button?.textContent).toBe('Copied');
+  });
+
   it('holds nothing: no form, no input, and the page CSP is unchanged', async () => {
     for (const section of [<Cloud key="cloud" />, <Pricing key="pricing" />]) {
       const page = await render(section);
-      expect(page.querySelector('form, input, button, iframe')).toBeNull();
+      expect(page.querySelector('form, input, iframe')).toBeNull();
+      // The only button copies the agent prompt to the clipboard: it sends nothing.
+      expect([...page.querySelectorAll('button')].map((button) => button.textContent)).toEqual(
+        section.key === 'cloud' ? ['Copy prompt'] : [],
+      );
       await act(async () => root?.unmount());
       container?.remove();
     }

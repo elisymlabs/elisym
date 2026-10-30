@@ -8,6 +8,7 @@ export const DOCS = {
   quickstart: 'https://docs.elisym.network/commerce/quickstart',
   widget: 'https://docs.elisym.network/commerce/widget',
   creditAnAccount: 'https://docs.elisym.network/commerce/credit-an-account',
+  cloudAgents: 'https://docs.elisym.network/commerce/cloud-agents',
 };
 
 /** The quickstart as plain markdown: what a coding agent reads. */
@@ -19,6 +20,16 @@ export const AGENT_PROMPT = [
   'create my store node, publish my products, start the node and add the Buy button to my pages.',
   "Before you start, ask me for my store's name, my Solana wallet address and Solana RPC URL, my Tempo wallet address, my wallet address for USDC on Ethereum, Arbitrum and Base with an RPC URL of each of those chains I want, and each product with its name, price and description. I must give a Solana or a Tempo wallet, and may leave any other wallet empty, the one for Ethereum, Arbitrum and Base too: add a payout only for each wallet I give, as the guide says, ask for no Solana RPC URL without a Solana wallet, and list an Ethereum, Arbitrum or Base payout after a Solana or Tempo one.",
   'When you are done, tell me where the store home and its passphrase file are, how to start the node again after a restart, the commands to see my orders and to add a product, and how to make a small test purchase.',
+].join(' ');
+
+/** The cloud runbook as plain markdown: what a coding agent reads to set up a cloud store. */
+export const CLOUD_AGENT_DOCS_URL = `${DOCS.cloudAgents}.md`;
+
+/** What the merchant pastes into a coding agent to set up a store in our cloud. */
+export const CLOUD_AGENT_PROMPT = [
+  `Set up my Pay Core store in elisym Cloud. Read ${CLOUD_AGENT_DOCS_URL} and follow it step by step.`,
+  "Make my owner key and save it to a file for me, let me pick a plan, and sign up only after I agree to the terms. Give me the payment link, then ask me for my store's name, the wallets I want to be paid to and my products.",
+  'When the store is live, give me the Buy button snippet for my page and tell me where my key file is.',
 ].join(' ');
 
 /** Makes a mainnet store: its home, a product to edit, and its keys. */
