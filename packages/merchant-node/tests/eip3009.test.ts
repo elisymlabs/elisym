@@ -1598,6 +1598,22 @@ describe('catchUpEip3009: the steady budget after a clean pass', () => {
     expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
   });
 
+  it('credits a payment exactly once across the switch from the full to the steady budget', async () => {
+    const run = setup();
+    const order = orderAt(run, NOW - 86_400);
+    // An unpaid order keeps the scan running after the payment is credited.
+    orderAt(run, NOW - 86_400);
+    // Below the recent window: read by the first pass at 32 and again by the steady passes.
+    pay(run, order, { block: run.fake.head - 30_000 });
+    const paid: MerchantOrder[] = [];
+    for (let sweeps = 0; sweeps < 12; sweeps += 1) {
+      paid.push(...(await sweep(run)).paid);
+    }
+    // The payment's chunk was read again on the steady budget: still credited once.
+    expect(run.context.scan.cleanPass).toBe(true);
+    expect(paid).toEqual([order]);
+  });
+
   it('keeps a clean pass across sweeps with no open order', async () => {
     const { run } = await clean();
     const orders = run.state.orders;
