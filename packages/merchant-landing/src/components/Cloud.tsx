@@ -19,18 +19,21 @@ const STAYS_YOURS: { icon: IconName; text: string }[] = [
   { icon: 'globe', text: 'Once it is live, export your store and run it yourself any time.' },
 ];
 
-const STEPS = [
+const STEPS: { title: string; body: string; icon: IconName }[] = [
   {
     title: 'Create your key',
-    body: 'Accept the terms, and the console makes your owner key in your browser. Save it: it is how you sign in.',
+    body: 'Accept the terms and the console makes your owner key in your browser. It is how you sign in.',
+    icon: 'key',
   },
   {
     title: 'Pay the first month',
-    body: 'By card or stablecoins. Your store is created as soon as the payment arrives.',
+    body: 'By card or stablecoins. Your store is ready as soon as the payment arrives.',
+    icon: 'wallet',
   },
   {
     title: 'Set up and launch',
-    body: 'Name your store, add products and choose the wallets you are paid to (your key signs them). Usually you prove your domain with one DNS record. Then press Launch.',
+    body: 'Name your store, add products and the wallets you are paid to, then press Launch.',
+    icon: 'bolt',
   },
 ];
 
@@ -72,16 +75,19 @@ export function Cloud() {
             </ul>
           </div>
         </div>
-        <ol className="grid gap-16 md:grid-cols-3">
+        <ol className="rounded-20 border-line bg-surface divide-line grid divide-y border md:grid-cols-3 md:divide-x md:divide-y-0">
           {STEPS.map((step, index) => (
-            <li key={step.title} className="flex gap-14">
-              <span className="rounded-12 bg-accent text-14 text-accent-text grid size-36 shrink-0 place-items-center font-semibold">
-                {index + 1}
-              </span>
-              <div className="flex flex-col gap-6">
-                <h3 className="text-16 font-semibold">{step.title}</h3>
-                <p className="text-15 text-text-2 leading-relaxed">{step.body}</p>
+            <li key={step.title} className="flex flex-col gap-12 p-24">
+              <div className="flex items-center justify-between gap-12">
+                <span className="text-12 text-accent-ink font-semibold tracking-wide uppercase">
+                  Step {index + 1}
+                </span>
+                <span className="rounded-12 bg-accent-soft text-accent-ink grid size-36 place-items-center">
+                  <Icon name={step.icon} className="size-18" />
+                </span>
               </div>
+              <h3 className="text-16 font-semibold">{step.title}</h3>
+              <p className="text-14 text-text-2 leading-relaxed">{step.body}</p>
             </li>
           ))}
         </ol>
