@@ -72,7 +72,7 @@ export interface CloudTier {
   id: string;
   name: string;
   audience: string;
-  /** As the catalog writes it ("$29/mo", "from $499/mo"). */
+  /** As the catalog writes it ("$29/mo", "from $499/mo", "Let's talk"). */
   price: string;
   limits: { products: number; ordersPerMonth?: number };
   /** Shown instead of a limit's number ("No cap"). */
@@ -128,11 +128,11 @@ export const CLOUD_TIERS: CloudTier[] = [
     id: 'white-label',
     name: 'White-label',
     audience: 'For platforms that onboard merchants',
-    price: 'from $499/mo',
+    price: "Let's talk",
     limits: { products: 1200 },
     display: { products: 'No cap', ordersPerMonth: 'No cap' },
     features: [
-      '10 stores included, $25 a month per extra store',
+      'Priced by the number of stores you run',
       'Checkout on your own domain',
       'Your brand, no "by Elisym"',
       'Optionally, a dedicated relay for your stores',

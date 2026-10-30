@@ -39,7 +39,7 @@ export function Cloud() {
   const [before, after = ''] = CLOUD_AGENT_PROMPT.split(CLOUD_AGENT_DOCS_URL);
   return (
     <section id="cloud">
-      <div className="mx-auto flex max-w-1160 flex-col gap-48 px-16 py-80 sm:px-24 sm:py-112">
+      <div className="mx-auto flex max-w-1160 flex-col gap-48 px-16 pt-80 pb-40 sm:px-24 sm:pt-112 sm:pb-56">
         <SectionHeading eyebrow={`${PRODUCT_NAME} in the cloud`} title="Run it in our cloud">
           Rather not run a server? We host your store node for a monthly fee. You keep your wallets
           and your key; we keep the node online.
@@ -85,34 +85,37 @@ export function Cloud() {
             </li>
           ))}
         </ol>
-        <div className="rounded-20 border-line bg-surface flex flex-col gap-12 border p-24">
-          <div className="flex items-center justify-between gap-12">
-            <h3 className="text-16 flex items-center gap-10 font-semibold">
-              <span className="text-accent-ink">
-                <Icon name="bot" className="size-18" />
-              </span>
-              Or let your AI agent set it up
-            </h3>
-            <CopyButton text={CLOUD_AGENT_PROMPT} label="Copy prompt" />
+        <div className="rounded-20 border-line bg-surface grid gap-20 border p-24 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] lg:items-center lg:gap-32">
+          <div className="flex flex-col gap-12">
+            <span className="rounded-12 bg-accent-soft text-accent-ink grid size-36 place-items-center">
+              <Icon name="bot" className="size-20" />
+            </span>
+            <h3 className="text-18 font-semibold">Or let your AI agent set it up</h3>
+            <p className="text-14 text-text-2 leading-relaxed">
+              Paste this prompt into a coding agent. It follows our guide, asks you only for your
+              plan, wallets and products, and hands you the button for your page.
+            </p>
           </div>
-          <p id="cloud-agent-prompt" className="text-14 text-text-2 leading-relaxed">
-            {before}
-            <a
-              href={CLOUD_AGENT_DOCS_URL}
-              rel="noopener noreferrer"
-              className="text-accent-ink break-all underline decoration-current/40 underline-offset-2"
+          <div className="rounded-16 border-line bg-bg flex min-w-0 flex-col gap-12 border p-16">
+            <p
+              id="cloud-agent-prompt"
+              className="text-13 text-text-2 font-mono leading-relaxed break-words"
             >
-              {CLOUD_AGENT_DOCS_URL}
-            </a>
-            {after}
-          </p>
+              {before}
+              <a
+                href={CLOUD_AGENT_DOCS_URL}
+                rel="noopener noreferrer"
+                className="text-accent-ink break-all underline decoration-current/40 underline-offset-2"
+              >
+                {CLOUD_AGENT_DOCS_URL}
+              </a>
+              {after}
+            </p>
+            <div className="flex justify-end">
+              <CopyButton text={CLOUD_AGENT_PROMPT} label="Copy prompt" />
+            </div>
+          </div>
         </div>
-        <a
-          href="#pricing"
-          className="text-15 text-accent-ink self-start font-semibold underline-offset-4 hover:underline"
-        >
-          See the plans
-        </a>
       </div>
     </section>
   );

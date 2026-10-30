@@ -93,8 +93,11 @@ describe('the cloud section', () => {
         ['Contact us', CONTACT_URL, 'noopener noreferrer'],
       ]);
       expect(links[0]?.getAttribute('aria-label')).toBe(`Contact us about ${name}`);
-      expect(tierCard(page, id).textContent).toContain('from $499/mo');
     }
+    expect(tierCard(page, 'high-risk').textContent).toContain('from $499/mo');
+    // White-label is agreed with each platform: no figure.
+    expect(tierCard(page, 'white-label').textContent).toContain("Let's talk");
+    expect(tierCard(page, 'white-label').textContent).not.toContain('$');
     expect(CLOUD_TIERS.filter((tier) => tier.selfServe).map((tier) => tier.id)).toEqual([
       'starter',
       'business',
@@ -176,7 +179,8 @@ describe('the cloud section', () => {
       'RPC endpoints, updates and monitoring',
     ]);
     expect(page.querySelector('ul[aria-label="Plans"]')).toBeNull();
-    expect(page.querySelector('a[href="#pricing"]')?.textContent).toBe('See the plans');
+    // The plans follow right below: no link to them.
+    expect(page.querySelector('a[href="#pricing"]')).toBeNull();
   });
 
   it('hands an AI agent the cloud runbook, linked and copyable', async () => {
@@ -221,7 +225,7 @@ describe('the cloud section', () => {
     );
   });
 
-  it('names the rails, each plan audience, the decided White-label terms and the own-RPC line, and how plans are billed', async () => {
+  it('names the rails, each plan audience, the White-label terms and the own-RPC line, and how plans are billed', async () => {
     const page = await render(<Pricing />);
     const text = page.textContent ?? '';
     expect(text).toContain(
@@ -237,7 +241,7 @@ describe('the cloud section', () => {
       expect(tierCard(page, tier.id).textContent).toContain(tier.audience);
     }
     expect(tierCard(page, 'white-label').textContent).toContain(
-      '10 stores included, $25 a month per extra store',
+      'Priced by the number of stores you run',
     );
     expect(tierCard(page, 'business').textContent).toContain(
       'Your own RPC on any network, if you want one',
@@ -269,7 +273,7 @@ describe('the cloud section', () => {
     expect(lines('white-label')).toEqual([
       'No cap on products',
       'No cap on orders',
-      '10 stores included, $25 a month per extra store',
+      'Priced by the number of stores you run',
       'Checkout on your own domain',
       'Your brand, no "by Elisym"',
       'Optionally, a dedicated relay for your stores',

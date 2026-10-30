@@ -27,7 +27,7 @@ interface Props {
 export function Pricing({ tiers = CLOUD_TIERS }: Props) {
   return (
     <section id="pricing">
-      <div className="mx-auto flex max-w-1160 flex-col gap-48 px-16 py-80 sm:px-24 sm:py-112">
+      <div className="mx-auto flex max-w-1160 flex-col gap-48 px-16 pt-40 pb-80 sm:px-24 sm:pt-56 sm:pb-112">
         <SectionHeading eyebrow="Pricing" title="One monthly price, every network">
           Every plan takes payments on Solana, Base, Arbitrum, Ethereum and Tempo, straight to your
           own wallets. Paste one script and a button; we run the rest.
