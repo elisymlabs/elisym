@@ -17,6 +17,8 @@ interface Props {
   source: PurchasesSource;
   /** The store's name, for the export's file name. */
   storeName?: string;
+  /** The brand's file name start (`Brand.fileSlug`). */
+  fileSlug: string;
   onBack(): void;
   /** Dev only (the fixture page): this purchase starts opened. */
   initialOpened?: string;
@@ -50,7 +52,7 @@ function saveFile(name: string, text: string): void {
  * and the frame's height says nothing of the history. It is drawn at once on
  * the click; the records fill it later.
  */
-export function PurchasesStep({ source, storeName, onBack, initialOpened }: Props) {
+export function PurchasesStep({ source, storeName, fileSlug, onBack, initialOpened }: Props) {
   // A failed read is `failed`, never an empty history: nothing is listed or saved then.
   const [pending] = useState(() => source.purchases().catch((): typeof READ_FAILED => READ_FAILED));
   const [list, setList] = useState<Purchase[] | typeof READ_FAILED | undefined>(undefined);
@@ -118,7 +120,7 @@ export function PurchasesStep({ source, storeName, onBack, initialOpened }: Prop
     if (read === READ_FAILED) {
       return;
     }
-    saveFile(csvFileName(storeName, new Date()), purchasesCsv(read));
+    saveFile(csvFileName(fileSlug, storeName, new Date()), purchasesCsv(read));
   };
 
   const detail =

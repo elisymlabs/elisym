@@ -16,7 +16,7 @@ import {
 import { type Actions, Checkout } from '../src/app/Checkout';
 import { FEE_HIDES_EIP3009, problemText } from '../src/app/ui/text';
 
-const PARTNER: Brand = { name: 'Acme Pay', poweredBy: false };
+const PARTNER: Brand = { name: 'Acme Pay', poweredBy: false, fileSlug: 'acme' };
 const REGISTRY: ReadonlyMap<string, Brand> = new Map([
   ['pay.elisym.network', DEFAULT_BRAND],
   ['pay.acme.example', PARTNER],
@@ -67,6 +67,13 @@ describe('brand by Host', () => {
     expect(BRANDS.get('pay.elisym.network')).toBe(DEFAULT_BRAND);
     expect(brandForHost('pay.elisym.network')).toBe(DEFAULT_BRAND);
     expect(brandForHost('PAY.Elisym.Network')).toBe(DEFAULT_BRAND);
+  });
+
+  it("every registered brand's file name start is a plain slug", () => {
+    for (const brand of BRANDS.values()) {
+      expect(brand.fileSlug).toMatch(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+    }
+    expect(DEFAULT_BRAND.fileSlug).toBe('elisym');
   });
 
   it('a registered partner host gets its own brand, and only that host', () => {

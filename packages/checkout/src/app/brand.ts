@@ -9,10 +9,12 @@ export interface Brand {
   name: string;
   /** The footer says "Checkout by Elisym" (false only on a paid white-label hostname). */
   poweredBy: boolean;
+  /** Starts the name of a file the buyer saves ("<fileSlug>-purchases-..."): lowercase letters, digits, dashes. */
+  fileSlug: string;
 }
 
 /** pay.elisym.network, and any host not in the registry (previews, localhost). */
-export const DEFAULT_BRAND: Brand = { name: 'Pay Core', poweredBy: true };
+export const DEFAULT_BRAND: Brand = { name: 'Pay Core', poweredBy: true, fileSlug: 'elisym' };
 
 /** Hostname (lowercase) -> brand. Adding a partner adds its hostname here. */
 export const BRANDS: ReadonlyMap<string, Brand> = new Map([['pay.elisym.network', DEFAULT_BRAND]]);

@@ -403,6 +403,7 @@ export function Checkout({
     body = (
       <PurchasesStep
         source={purchases}
+        fileSlug={brand.fileSlug}
         {...(store.current?.name === undefined ? {} : { storeName: store.current.name })}
         onBack={closePurchases}
         {...(initialOpened === undefined ? {} : { initialOpened })}
