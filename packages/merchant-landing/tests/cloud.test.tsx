@@ -5,6 +5,7 @@ import { type Root, createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App } from '../src/App';
 import { Cloud } from '../src/components/Cloud';
+import { Pricing } from '../src/components/Pricing';
 import { CLOUD_CONSOLE_URL, CLOUD_TIERS, CONTACT_URL, cloudStartUrl } from '../src/constants';
 
 declare global {
@@ -38,14 +39,26 @@ function tierCard(page: HTMLElement, id: string): HTMLElement {
 }
 
 describe('the cloud section', () => {
-  it('is on the page and in the header', async () => {
+  it('is on the page and in the header, with the pricing after it', async () => {
     const page = await render(<App />);
     expect(page.querySelector('section#cloud h2')?.textContent).toBe('Run it in our cloud');
     expect(page.querySelector('header a[href="#cloud"]')).not.toBeNull();
+    expect(page.querySelector('header a[href="#pricing"]')?.textContent).toBe('Pricing');
+    // Five section links fit one line from lg up (at md they wrapped): never wrapped, shown from lg.
+    for (const link of page.querySelectorAll('header nav a[href^="#"]')) {
+      expect(link.className).toContain('whitespace-nowrap');
+      expect(link.className).toContain('lg:inline');
+      expect(link.className).not.toContain('md:inline');
+    }
+    const signIn = [...page.querySelectorAll('header nav a')].find(
+      (link) => link.textContent === 'Sign in',
+    );
+    expect(signIn?.className).toContain('whitespace-nowrap');
+    expect(page.querySelector('section#cloud + section#pricing')).not.toBeNull();
   });
 
-  it("starts only Starter and Business, on the console's own origin, with no handle and no referrer", async () => {
-    const page = await render(<Cloud />);
+  it("starts only the self-serve plans, on the console's own origin, with no handle and no referrer", async () => {
+    const page = await render(<Pricing />);
     const starts = [...page.querySelectorAll('a')].filter((link) => link.textContent === 'Start');
     expect(starts.map((link) => link.getAttribute('href'))).toEqual([
       'https://cloud.elisym.network/start?tier=starter',
@@ -63,17 +76,18 @@ describe('the cloud section', () => {
     expect(new URL(CLOUD_CONSOLE_URL).origin).not.toBe(window.location.origin);
   });
 
-  it('sends High-risk and White-label to "Contact us", never to a Start', async () => {
-    const page = await render(<Cloud />);
-    for (const id of ['high-risk', 'white-label']) {
+  it('sends Enterprise and White-label to "Contact us", never to a Start', async () => {
+    const page = await render(<Pricing />);
+    for (const [id, name] of [
+      ['high-risk', 'Enterprise'],
+      ['white-label', 'White-label'],
+    ]) {
       const links = [...tierCard(page, id).querySelectorAll('a')];
       expect(links.map((link) => [link.textContent, link.getAttribute('href'), link.rel])).toEqual([
         ['Contact us', CONTACT_URL, 'noopener noreferrer'],
       ]);
-      expect(links[0]?.getAttribute('aria-label')).toBe(
-        `Contact us about ${id === 'high-risk' ? 'High-risk' : 'White-label'}`,
-      );
-      expect(tierCard(page, id).textContent).toContain('Custom pricing');
+      expect(links[0]?.getAttribute('aria-label')).toBe(`Contact us about ${name}`);
+      expect(tierCard(page, id).textContent).toContain('from $499/mo');
     }
     expect(CLOUD_TIERS.filter((tier) => tier.selfServe).map((tier) => tier.id)).toEqual([
       'starter',
@@ -81,7 +95,62 @@ describe('the cloud section', () => {
     ]);
   });
 
-  it("says what stays the merchant's, how it works, and a price only once one is set", async () => {
+  it("states each plan's price and limits, and highlights Business", async () => {
+    const page = await render(<Pricing />);
+    expect(page.querySelector('section#pricing h2')?.textContent).toBe(
+      'One monthly price, every network',
+    );
+    const starter = tierCard(page, 'starter').textContent ?? '';
+    expect(starter).toContain('$29/mo');
+    expect(starter).toContain('Up to 100 products');
+    expect(starter).toContain('2,000 paid orders a month included');
+    expect(starter).toContain('Solana, Base, Arbitrum, Ethereum and Tempo');
+    const business = tierCard(page, 'business');
+    expect(business.textContent).toContain('$99/mo');
+    expect(business.textContent).toContain('Up to 1,000 products');
+    expect(business.textContent).toContain('No cap on orders');
+    expect(business.textContent).toContain('Recommended');
+    const badge = [...business.querySelectorAll('span')].find(
+      (span) => span.textContent === 'Recommended',
+    );
+    expect(badge?.className).toContain('text-accent-ink');
+    expect(badge?.className).toContain('bg-accent-soft');
+    expect(business.className).toContain('border-accent-ink');
+    expect(tierCard(page, 'starter').textContent).not.toContain('Recommended');
+    const enterprise = tierCard(page, 'high-risk').textContent ?? '';
+    expect(enterprise).toContain('No cap on products');
+    expect(enterprise).toContain('No cap on orders');
+    expect(enterprise).toContain('no payouts to players');
+    expect(page.textContent).not.toContain('announced at launch');
+  });
+
+  it('states a limit by its display string when the catalog gives one', async () => {
+    const page = await render(
+      <Pricing
+        tiers={CLOUD_TIERS.map((tier) =>
+          tier.id === 'business'
+            ? { ...tier, display: { products: 'Plenty', ordersPerMonth: 'Unlimited' } }
+            : tier,
+        )}
+      />,
+    );
+    expect(tierCard(page, 'business').textContent).toContain('Plenty on products');
+    expect(tierCard(page, 'business').textContent).toContain('Unlimited on orders');
+  });
+
+  it('states an orders limit from the number when no display string is set', async () => {
+    const page = await render(
+      <Pricing
+        tiers={CLOUD_TIERS.map((tier) =>
+          tier.id === 'business' ? { ...tier, limits: { products: 5 }, display: {} } : tier,
+        )}
+      />,
+    );
+    expect(tierCard(page, 'business').textContent).toContain('No cap on orders');
+    expect(tierCard(page, 'business').textContent).toContain('Up to 5 products');
+  });
+
+  it("says what stays the merchant's and how it works, and points at the plans", async () => {
     const page = await render(<Cloud />);
     const text = page.textContent ?? '';
     expect(text).toContain('never passes through us');
@@ -100,19 +169,17 @@ describe('the cloud section', () => {
       'Signed order webhooks to your backend',
       'RPC endpoints, updates and monitoring',
     ]);
-    expect(page.querySelector('ul[aria-label="Plans"]')).not.toBeNull();
-    expect(text).toContain(
-      'Self-serve prices, and how many orders each plan includes a month, are announced at launch.',
-    );
-    expect(tierCard(page, 'high-risk').textContent).toContain('no payouts to players');
-    for (const tier of CLOUD_TIERS.filter((each) => each.selfServe)) {
-      expect(tierCard(page, tier.id).textContent).toContain(tier.price ?? 'Price at launch');
-    }
+    expect(page.querySelector('ul[aria-label="Plans"]')).toBeNull();
+    expect(page.querySelector('a[href="#pricing"]')?.textContent).toBe('See the plans');
   });
 
   it('holds nothing: no form, no input, and the page CSP is unchanged', async () => {
-    const page = await render(<Cloud />);
-    expect(page.querySelector('form, input, button, iframe')).toBeNull();
+    for (const section of [<Cloud key="cloud" />, <Pricing key="pricing" />]) {
+      const page = await render(section);
+      expect(page.querySelector('form, input, button, iframe')).toBeNull();
+      await act(async () => root?.unmount());
+      container?.remove();
+    }
     const config = JSON.parse(readFileSync(join(process.cwd(), 'vercel.json'), 'utf8')) as {
       headers: { headers: { key: string; value: string }[] }[];
     };
@@ -124,16 +191,73 @@ describe('the cloud section', () => {
     );
   });
 
-  it('shows a price once one is set', async () => {
-    const page = await render(
-      <Cloud
-        tiers={CLOUD_TIERS.map((tier) =>
-          tier.id === 'starter' ? { ...tier, price: 'from $19 / month' } : tier,
-        )}
-      />,
+  it('names the rails, each plan audience, the decided White-label terms and the own-RPC line, and how plans are billed', async () => {
+    const page = await render(<Pricing />);
+    const text = page.textContent ?? '';
+    expect(text).toContain(
+      'Every plan takes payments on Solana, Base, Arbitrum, Ethereum and Tempo, straight to your own wallets. Paste one script and a button; we run the rest.',
     );
-    expect(tierCard(page, 'starter').textContent).toContain('from $19 / month');
-    expect(tierCard(page, 'business').textContent).toContain('Price at launch');
+    expect(CLOUD_TIERS.map((tier) => tier.audience)).toEqual([
+      'For a first store',
+      'For a store with steady sales',
+      'For deposits matched to player or customer accounts',
+      'For platforms that onboard merchants',
+    ]);
+    for (const tier of CLOUD_TIERS) {
+      expect(tierCard(page, tier.id).textContent).toContain(tier.audience);
+    }
+    expect(tierCard(page, 'white-label').textContent).toContain(
+      '10 stores included, $25 a month per extra store',
+    );
+    expect(tierCard(page, 'business').textContent).toContain(
+      'Your own RPC on any network, if you want one',
+    );
+    expect(tierCard(page, 'starter').textContent).not.toMatch(/own rpc/i);
+    // Every card's lines, exactly: its limits first, then what it includes.
+    const lines = (id: string) =>
+      [...tierCard(page, id).querySelectorAll('ul li')].map((item) => item.textContent);
+    expect(lines('starter')).toEqual([
+      'Up to 100 products',
+      '2,000 paid orders a month included',
+      'Solana, Base, Arbitrum, Ethereum and Tempo',
+      'Signed order webhooks to your backend',
+      'Monthly, by card or stablecoins',
+    ]);
+    expect(lines('business')).toEqual([
+      'Up to 1,000 products',
+      'No cap on orders',
+      'Everything in Starter',
+      'Your own RPC on any network, if you want one',
+    ]);
+    expect(lines('high-risk')).toEqual([
+      'No cap on products',
+      'No cap on orders',
+      'Each deposit matched to an account, for your backend to credit',
+      'Deposits only: no payouts to players',
+      'Reviewed before launch',
+    ]);
+    expect(lines('white-label')).toEqual([
+      'No cap on products',
+      'No cap on orders',
+      '10 stores included, $25 a month per extra store',
+      'Checkout on your own domain',
+      'Your brand, no "by Elisym"',
+      'Optionally, a dedicated relay for your stores',
+    ]);
+    expect(page.querySelectorAll('section#pricing ul[aria-label="Plans"] > li')).toHaveLength(4);
+    for (const tier of CLOUD_TIERS) {
+      expect(tierCard(page, tier.id).querySelector('h3')?.textContent).toBe(tier.name);
+      // The Start or Contact button sits at the card's bottom, level across the row.
+      expect(tierCard(page, tier.id).querySelector(':scope > a')?.className).toContain('mt-auto');
+    }
+    expect(page.querySelector('section#pricing p.uppercase')?.textContent).toBe('Pricing');
+    for (const tier of CLOUD_TIERS.filter((each) => each.highlighted !== true)) {
+      expect(tierCard(page, tier.id).className).not.toContain('border-accent');
+      expect(tierCard(page, tier.id).className).toContain('border-line');
+    }
+    expect(text).toContain(
+      'Prices in US dollars. Self-serve plans are billed monthly by card or stablecoins. Buyers always pay straight to your wallets.',
+    );
   });
 
   it('the FAQ offers the hosted option', async () => {

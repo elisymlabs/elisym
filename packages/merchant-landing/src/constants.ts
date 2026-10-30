@@ -48,19 +48,29 @@ export const DEMO_PRODUCT: DemoProduct | undefined = undefined;
  */
 export const CLOUD_CONSOLE_URL = 'https://cloud.elisym.network';
 
-/** Where High-risk and White-label merchants reach us (operator-provisioned, no self-serve start). */
+/** Where Enterprise and White-label merchants reach us (operator-provisioned, no self-serve start). */
 export const CONTACT_URL = X_URL;
 
+/**
+ * A plan as the pricing section shows it: a hand copy of cloud-api's tier
+ * catalog (ids, names, prices, limits and display strings), which a test in
+ * the cloud repo compares with the catalog it ships.
+ */
 export interface CloudTier {
-  /** The console's tier name: only `starter` and `business` start self-serve. */
-  id: 'starter' | 'business' | 'high-risk' | 'white-label';
+  /** The catalog's tier id: the console's `/start?tier=` takes it for a self-serve tier. */
+  id: string;
   name: string;
   audience: string;
-  /** "from $X / month"; undefined until prices are set (a Contact us tier is priced per merchant). */
-  price: string | undefined;
+  /** As the catalog writes it ("$29/mo", "from $499/mo"). */
+  price: string;
+  limits: { products: number; ordersPerMonth?: number };
+  /** Shown instead of a limit's number ("No cap"). */
+  display: { products?: string; ordersPerMonth?: string };
   features: string[];
   /** Self-serve: a Start link to the console. Otherwise "Contact us". */
   selfServe: boolean;
+  /** The plan the section points at. */
+  highlighted?: boolean;
 }
 
 export const CLOUD_TIERS: CloudTier[] = [
@@ -68,9 +78,11 @@ export const CLOUD_TIERS: CloudTier[] = [
     id: 'starter',
     name: 'Starter',
     audience: 'For a first store',
-    price: undefined,
+    price: '$29/mo',
+    limits: { products: 100, ordersPerMonth: 2000 },
+    display: {},
     features: [
-      'Your store node, hosted and kept online',
+      'Solana, Base, Arbitrum, Ethereum and Tempo',
       'Signed order webhooks to your backend',
       'Monthly, by card or stablecoins',
     ],
@@ -80,18 +92,22 @@ export const CLOUD_TIERS: CloudTier[] = [
     id: 'business',
     name: 'Business',
     audience: 'For a store with steady sales',
-    price: undefined,
-    features: ['Everything in Starter', 'Sized for a store with more orders'],
+    price: '$99/mo',
+    limits: { products: 1000 },
+    display: { ordersPerMonth: 'No cap' },
+    features: ['Everything in Starter', 'Your own RPC on any network, if you want one'],
     selfServe: true,
+    highlighted: true,
   },
   {
     id: 'high-risk',
-    name: 'High-risk',
-    audience: 'For gambling and other high-risk merchants',
-    price: undefined,
+    name: 'Enterprise',
+    audience: 'For deposits matched to player or customer accounts',
+    price: 'from $499/mo',
+    limits: { products: 1200 },
+    display: { products: 'No cap', ordersPerMonth: 'No cap' },
     features: [
-      'Each deposit matched to a player account, for your backend to credit',
-      'On your own verified domain',
+      'Each deposit matched to an account, for your backend to credit',
       'Deposits only: no payouts to players',
       'Reviewed before launch',
     ],
@@ -101,8 +117,11 @@ export const CLOUD_TIERS: CloudTier[] = [
     id: 'white-label',
     name: 'White-label',
     audience: 'For platforms that onboard merchants',
-    price: undefined,
+    price: 'from $499/mo',
+    limits: { products: 1200 },
+    display: { products: 'No cap', ordersPerMonth: 'No cap' },
     features: [
+      '10 stores included, $25 a month per extra store',
       'Checkout on your own domain',
       'Your brand, no "by Elisym"',
       'Optionally, a dedicated relay for your stores',
@@ -112,6 +131,6 @@ export const CLOUD_TIERS: CloudTier[] = [
 ];
 
 /** A tier's Start link: the console's own page, which makes the key and takes the first payment. */
-export function cloudStartUrl(tier: CloudTier['id']): string {
+export function cloudStartUrl(tier: string): string {
   return `${CLOUD_CONSOLE_URL}/start?tier=${tier}`;
 }

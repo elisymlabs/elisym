@@ -13,6 +13,8 @@ const PAIRS: { text: string; on: string; over: string[] }[] = [
   { text: 'accent-ink', on: 'surface', over: [] },
   { text: 'accent-ink', on: 'surface-2', over: [] },
   { text: 'accent-text', on: 'accent', over: [] },
+  // The Recommended badge: text on the accent tint, over the page.
+  { text: 'accent-ink', on: 'accent-soft', over: ['bg'] },
 ];
 
 const BACKGROUNDS = ['bg', 'surface', 'surface-2'];

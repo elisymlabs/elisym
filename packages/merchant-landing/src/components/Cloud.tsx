@@ -1,10 +1,4 @@
-import {
-  CLOUD_TIERS,
-  CONTACT_URL,
-  type CloudTier,
-  PRODUCT_NAME,
-  cloudStartUrl,
-} from '../constants';
+import { PRODUCT_NAME } from '../constants';
 import { Icon, type IconName } from './Icon';
 import { SectionHeading } from './SectionHeading';
 
@@ -39,21 +33,8 @@ const STEPS = [
   },
 ];
 
-/** A self-serve tier's price once set; a Contact us tier is priced per merchant. */
-function tierPrice(tier: CloudTier): string {
-  if (tier.price !== undefined) {
-    return tier.price;
-  }
-  return tier.selfServe ? 'Price at launch' : 'Custom pricing';
-}
-
-interface Props {
-  /** The plans shown (the default list; tests pass their own). */
-  tiers?: CloudTier[];
-}
-
 /** "Run it in our cloud": what we run, what stays the merchant's, and the way in. */
-export function Cloud({ tiers = CLOUD_TIERS }: Props) {
+export function Cloud() {
   return (
     <section id="cloud">
       <div className="mx-auto flex max-w-1160 flex-col gap-48 px-16 py-80 sm:px-24 sm:py-112">
@@ -102,54 +83,12 @@ export function Cloud({ tiers = CLOUD_TIERS }: Props) {
             </li>
           ))}
         </ol>
-        <ul aria-label="Plans" className="grid gap-16 sm:grid-cols-2 lg:grid-cols-4">
-          {tiers.map((tier) => (
-            <li
-              key={tier.id}
-              data-tier={tier.id}
-              className="rounded-20 border-line bg-bg flex flex-col gap-14 border p-24"
-            >
-              <div className="flex flex-col gap-4">
-                <h3 className="text-18 font-semibold">{tier.name}</h3>
-                <p className="text-14 text-text-2">{tier.audience}</p>
-              </div>
-              <p className="text-15 font-semibold">{tierPrice(tier)}</p>
-              <ul className="flex flex-col gap-8">
-                {tier.features.map((feature) => (
-                  <li key={feature} className="text-14 flex gap-8">
-                    <span className="text-accent-ink mt-2 shrink-0">
-                      <Icon name="check" className="size-16" />
-                    </span>
-                    {feature}
-                  </li>
-                ))}
-              </ul>
-              {tier.selfServe ? (
-                <a
-                  href={cloudStartUrl(tier.id)}
-                  rel="noopener noreferrer"
-                  aria-label={`Start with ${tier.name}`}
-                  className="rounded-12 bg-accent text-15 text-accent-text mt-auto px-20 py-12 text-center font-semibold transition hover:brightness-95"
-                >
-                  Start
-                </a>
-              ) : (
-                <a
-                  href={CONTACT_URL}
-                  rel="noopener noreferrer"
-                  aria-label={`Contact us about ${tier.name}`}
-                  className="rounded-12 border-line-2 text-15 hover:bg-surface-2 mt-auto border px-20 py-12 text-center font-semibold"
-                >
-                  Contact us
-                </a>
-              )}
-            </li>
-          ))}
-        </ul>
-        <p className="text-14 text-text-2">
-          Self-serve prices, and how many orders each plan includes a month, are announced at
-          launch.
-        </p>
+        <a
+          href="#pricing"
+          className="text-15 text-accent-ink self-start font-semibold underline-offset-4 hover:underline"
+        >
+          See the plans
+        </a>
       </div>
     </section>
   );
