@@ -152,10 +152,19 @@ export const MAX_SUBSCRIPTIONS_PER_RELAY = 4;
 
 /**
  * `eth_getLogs` requests one `eip3009` chain's FULL pass may make per sweep
- * (halvings counted): the pass reads every open order's window again, newest
+ * (halvings counted) until a pass reaches its floor clean: the pass reads every open order's window again, newest
  * first, a slice per sweep. The recent window is outside it.
  */
 export const EIP3009_SWEEP_REQUESTS = 32;
+
+/**
+ * The full pass's per-sweep budget once a pass reached its floor with every
+ * read complete (`cleanPass`): the recent window still runs every sweep, so a
+ * fresh payment is found as fast; only a payment the recent window missed waits
+ * longer. Any failed read, skipped scan or sweep that threw goes back to
+ * `EIP3009_SWEEP_REQUESTS`.
+ */
+export const EIP3009_STEADY_SWEEP_REQUESTS = 8;
 
 /**
  * Receipts one `eip3009` chain reads per sweep to bind scanned transfers to a
