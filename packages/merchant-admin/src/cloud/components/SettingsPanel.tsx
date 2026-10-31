@@ -6,7 +6,7 @@ import { SettingsSection } from '../../components/SettingsSection';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
-import { type ProblemField, problemText } from '../lib/problems';
+import { type ProblemField, ownEndpointsOf, problemText } from '../lib/problems';
 import { EVM_CHAINS, type SettingsForm, choiceOf } from '../lib/settings';
 import type { KeptStore } from '../lib/use-kept-store';
 import { ProblemList } from './ProblemList';
@@ -100,7 +100,9 @@ export function SettingsPanel({ api, tenantId, kept, onSaved }: Props) {
     setError(explainAnswer(answer.body, answer.status));
   };
 
-  const shown = problems.map(problemText);
+  // A network's own endpoint as the form had it: its refusal says to switch to ours.
+  const own = ownEndpointsOf(form);
+  const shown = problems.map((line) => problemText(line, own));
   const at = (...fields: ProblemField[]) =>
     shown.filter((problem) => problem.field !== undefined && fields.includes(problem.field));
   const elsewhere = shown.filter(
@@ -168,7 +170,7 @@ export function SettingsPanel({ api, tenantId, kept, onSaved }: Props) {
           <p className="text-13 text-error">
             The last saved change was refused when it was applied:
           </p>
-          <ProblemList problems={read.refused.map(problemText)} />
+          <ProblemList problems={read.refused.map((line) => problemText(line, own))} />
         </div>
       )}
       <SettingRow label="Store name" htmlFor="store-name" help="As buyers see it in the checkout.">

@@ -102,6 +102,7 @@ export interface StoreState {
   preparing: boolean;
   /** In retention: payments close then (unix seconds). */
   payBy: number | undefined;
+  tier: 'starter' | 'business';
 }
 
 export function storeState(overrides: Partial<StoreState> = {}): StoreState {
@@ -120,6 +121,7 @@ export function storeState(overrides: Partial<StoreState> = {}): StoreState {
     network: 'mainnet',
     preparing: false,
     payBy: undefined,
+    tier: 'starter',
     ...overrides,
   };
 }
@@ -208,8 +210,8 @@ export class FakeStore {
     const { state } = this;
     return {
       tenantId: TENANT_ID,
-      tier: 'starter',
-      tierName: 'Starter',
+      tier: state.tier,
+      tierName: state.tier === 'business' ? 'Business' : 'Starter',
       network: state.network,
       activated: state.activated,
       launch: state.launch,
@@ -235,8 +237,8 @@ export class FakeStore {
     }
     return {
       tenantId: TENANT_ID,
-      tier: 'starter',
-      tierName: 'Starter',
+      tier: state.tier,
+      tierName: state.tier === 'business' ? 'Business' : 'Starter',
       effectivePaidUntil: state.paid ? NOW : null,
       storePubkey: state.paid && !state.preparing ? STORE_PUBKEY : null,
       productCount,

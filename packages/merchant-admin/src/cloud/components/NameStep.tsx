@@ -6,7 +6,7 @@ import { describedBy } from '../../lib/field';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
-import { problemText } from '../lib/problems';
+import { ownEndpointsOf, problemText } from '../lib/problems';
 import { saveVerdict } from '../lib/save-wait';
 import { choiceOf, emptyForm } from '../lib/settings';
 import type { StoreStatus } from '../lib/status';
@@ -68,6 +68,7 @@ export function NameStep({ api, tenantId, status, poll, kept, onSettled }: Props
     }
   }, [applied, sent, onSettled]);
   const shownProblems = refused ? (status.lastProblems.store ?? []) : problems;
+  const own = ownEndpointsOf(kept.read?.form);
 
   const save = async () => {
     if (inFlight.current || startForm === undefined) {
@@ -162,7 +163,7 @@ export function NameStep({ api, tenantId, status, poll, kept, onSettled }: Props
           Something failed on our side; we have been alerted.
         </p>
       ) : null}
-      <ProblemList problems={shownProblems.map(problemText)} />
+      <ProblemList problems={shownProblems.map((line) => problemText(line, own))} />
     </div>
   );
 }

@@ -4,6 +4,7 @@
  * reads which part of the store it is about and what to do, never the path.
  * The line as it came stays under "Details", for support.
  */
+import { EVM_CHAINS, type SettingsForm } from './settings';
 
 /** The part of the store a refusal is about, where the form shows it; undefined: the store as a whole. */
 export type ProblemField =
@@ -56,18 +57,19 @@ function networkOf(path: string): Network | undefined {
 }
 
 /**
- * A network's refusal as the merchant can act on it. Our side has no endpoint
- * for it: theirs to switch off, ours to fix. Their own endpoint refused: back
- * to ours (Settings has "Use ours"). Anything else about the network: its
- * settings.
+ * A network's refusal as the merchant can act on it. Their own endpoint
+ * refused (the store has one for that network): back to ours, with "Use
+ * ours" in Settings. An endpoint refused that is ours, or ours missing: ours
+ * to fix, theirs to switch the network off meanwhile. Anything else about the
+ * network: its settings.
  */
-function networkText(network: Network, problem: string): string {
+function networkText(network: Network, problem: string, own: ReadonlySet<string>): string {
   const name = NETWORK_NAMES[network];
-  if (/the cloud has no rpc/i.test(problem)) {
-    return `${name} is not available on our side yet: turn it off in Settings for now, or contact us.`;
+  if (/rpc/i.test(problem) && own.has(network) && !/the cloud has no rpc/i.test(problem)) {
+    return `Your own ${name} endpoint was refused: switch to ours in Settings (Use ours).`;
   }
   if (/rpc/i.test(problem)) {
-    return `Your own ${name} endpoint was refused: switch to ours in Settings (Use ours).`;
+    return `${name} is not available on our side yet: turn it off in Settings for now, or contact us.`;
   }
   return `${name}: this network's settings were refused. Turn it off and on again in Settings, or contact us.`;
 }
@@ -79,8 +81,31 @@ function productText(path: string): string {
     : 'One of your products: check its title, price and description.';
 }
 
-/** A refusal line as the merchant reads it. */
-export function problemText(problem: string): ProblemText {
+/** The networks a store's settings name an own endpoint for (by chain slug). */
+export function ownEndpointsOf(form: SettingsForm | undefined): Set<string> {
+  const own = new Set<string>();
+  if (form === undefined) {
+    return own;
+  }
+  if (form.solana.rpcUrl !== '') {
+    own.add('solana');
+  }
+  if (form.tempo.rpcUrl !== '') {
+    own.add('tempo');
+  }
+  for (const chain of EVM_CHAINS) {
+    if (form.evm[chain].rpcUrl !== '') {
+      own.add(chain);
+    }
+  }
+  return own;
+}
+
+/**
+ * A refusal line as the merchant reads it. `own`: the networks the store has
+ * its own endpoint for (`ownEndpointsOf`); none known, every endpoint is ours.
+ */
+export function problemText(problem: string, own: ReadonlySet<string> = new Set()): ProblemText {
   const colon = problem.indexOf(': ');
   const path = colon < 0 ? '' : problem.slice(0, colon);
   if (problem.startsWith('no products')) {
@@ -120,7 +145,7 @@ export function problemText(problem: string): ProblemText {
   }
   const network = networkOf(path);
   if (network !== undefined) {
-    return { field: network, text: networkText(network, problem), raw: problem };
+    return { field: network, text: networkText(network, problem, own), raw: problem };
   }
   return { field: undefined, text: FALLBACK, raw: problem };
 }

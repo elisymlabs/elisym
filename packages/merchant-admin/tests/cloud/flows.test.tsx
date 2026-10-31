@@ -2536,6 +2536,185 @@ describe('a cloud store, its review fixes', () => {
   );
 });
 
+describe('a cloud store, its round-2 pins', () => {
+  const statusReads = (calls: { method: string; path: string }[]) =>
+    calls.filter((call) => call.method === 'GET' && call.path.endsWith('/status')).length;
+
+  it('a step being typed in stays open when a read moves the list on, and closes once its save settles', async () => {
+    const store = new FakeStore(storeState({ paid: true }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('input#setup-store-name') !== null);
+    const body = () => host.querySelector<HTMLElement>('#step-body-name');
+    await fill(host, 'input#setup-store-name', 'Typed');
+    // Named elsewhere meanwhile: the list leads with the payouts now, the name stays open.
+    store.state.name = 'Elsewhere';
+    await click(host, 'Refresh');
+    await eventually(host, () => steps(host).find((step) => step.current)?.key === 'payouts');
+    expect(body()?.hidden).toBe(false);
+    expect(host.querySelector<HTMLInputElement>('input#setup-store-name')?.value).toBe('Typed');
+    await click(host, 'Save the name');
+    store.keep();
+    await eventually(host, () => body()?.hidden === true);
+  });
+
+  it('a save on its own page reads the status again at once: Settings and Products', async () => {
+    const store = new FakeStore(
+      storeState({ paid: true, name: 'Shop', rails: ['solana'], payoutListId: 'f'.repeat(64) }),
+    );
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-name') !== null);
+    const beforeSettings = statusReads(calls);
+    await fill(host, 'input#store-webhook', 'https://shop.example/hook');
+    await click(host, 'Save settings');
+    await eventually(host, () => statusReads(calls) > beforeSettings);
+    await openPage(host, 'Products');
+    await eventually(host, () => hasButton(host, 'Add a product'));
+    await click(host, 'Add a product');
+    const id = host.querySelector('input[id$="-title"]')?.id ?? '';
+    const product = id.replace(/-title$/, '');
+    await fill(host, `input#${product}-title`, 'Mug');
+    await fill(host, `input#${product}-price`, '5');
+    const beforeProducts = statusReads(calls);
+    await click(host, 'Save 1 change');
+    store.keep();
+    await eventually(host, () => host.textContent?.includes('Saved.') === true);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    // One read finds it kept; once kept, the page reads the status again at once (two in all).
+    expect(statusReads(calls) - beforeProducts).toBeGreaterThanOrEqual(2);
+  });
+
+  it('after a Settings save, a later read still fills the fields nothing was typed in', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-name') !== null);
+    await fill(host, 'input#store-name', 'Shop two');
+    await click(host, 'Save settings');
+    store.keep();
+    await eventually(host, () => host.textContent?.includes('Saved:') === true);
+    // Renamed elsewhere since: the next read shows it.
+    store.state.name = 'Renamed';
+    await click(host, 'Refresh');
+    await eventually(
+      host,
+      () => host.querySelector<HTMLInputElement>('input#store-name')?.value === 'Renamed',
+    );
+  });
+
+  it('the plan with its price on Plan & billing, for the plan the store is on', async () => {
+    for (const [tier, said] of [
+      ['starter', 'Starter, $29/month'],
+      ['business', 'Business, $99/month'],
+    ] as const) {
+      const store = new FakeStore(storeState({ paid: true, name: 'Shop', tier }));
+      const { host } = await admin(store.routes());
+      await signIn(host, OwnerKey.create());
+      await eventually(
+        host,
+        () => host.querySelector('#page-billing')?.textContent?.includes(`Plan${said}`) === true,
+      );
+      expect(host.querySelector('#page-overview')?.textContent).toContain(`Plan${said}`);
+      await unmount();
+    }
+  });
+
+  it('a launched store whose status cannot be read is still said live', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host } = await admin({
+      ...store.routes(),
+      [`GET /tenants/${TENANT_ID}/status`]: { status: 503, body: { error: 'internal' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () => host.querySelector('#page-overview')?.textContent?.includes('StatusLive') === true,
+    );
+    expect(host.querySelector('#page-overview')?.textContent).not.toContain('not live yet');
+  });
+
+  it('a refusal of the name marks the name field invalid', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop' }));
+    const { host } = await admin({
+      ...store.routes(),
+      [`POST /tenants/${TENANT_ID}/store`]: {
+        status: 422,
+        body: { error: 'store_refused', detail: 'name: is required' },
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-name') !== null);
+    await click(host, 'Save settings');
+    await eventually(
+      host,
+      () => host.querySelector('input#store-name')?.getAttribute('aria-invalid') === 'true',
+    );
+    expect(host.querySelector('input#store-name')?.getAttribute('aria-describedby')).toBe(
+      'store-name-help store-name-problems',
+    );
+  });
+
+  it('an own endpoint refused says to use ours; one that is ours says it is our side', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop', rails: ['solana'] }));
+    const routes = store.routes();
+    let own = true;
+    const { host } = await admin({
+      ...routes,
+      [`GET /tenants/${TENANT_ID}/store`]: () => {
+        const answer = routes[`GET /tenants/${TENANT_ID}/store`];
+        const given = typeof answer === 'function' ? answer(undefined) : answer;
+        const body = given?.body !== null && typeof given?.body === 'object' ? given.body : {};
+        const choice =
+          'choice' in body && body.choice !== null && typeof body.choice === 'object'
+            ? body.choice
+            : {};
+        return {
+          body: {
+            ...body,
+            choice: { ...choice, solana: own ? { rpcUrl: 'https://rpc.mine.example' } : {} },
+          },
+        };
+      },
+      [`POST /tenants/${TENANT_ID}/store`]: {
+        status: 422,
+        body: { error: 'store_refused', detail: 'solana.rpcUrl: resolves to a private address' },
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-name') !== null);
+    await click(host, 'Save settings');
+    await eventually(
+      host,
+      () => host.textContent?.includes('Your own Solana endpoint was refused') === true,
+    );
+    await unmount();
+    own = false;
+    const again = await admin({
+      ...routes,
+      [`POST /tenants/${TENANT_ID}/store`]: {
+        status: 422,
+        body: { error: 'store_refused', detail: 'solana.rpcUrl: resolves to a private address' },
+      },
+    });
+    await signIn(again.host, OwnerKey.create());
+    await openPage(again.host, 'Settings');
+    await eventually(again.host, () => again.host.querySelector('input#store-name') !== null);
+    await click(again.host, 'Save settings');
+    await eventually(
+      again.host,
+      () => again.host.textContent?.includes('Solana is not available on our side yet') === true,
+    );
+    expect(again.host.textContent).not.toContain('Your own Solana endpoint');
+  });
+});
+
 describe('a partner key', () => {
   it('opens the partner view', async () => {
     const { host } = await admin({

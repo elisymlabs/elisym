@@ -153,7 +153,8 @@ function Checklist({
     if (focusTo.current === 'name-field' && open === 'name') {
       focusTo.current = undefined;
       document.getElementById('setup-store-name')?.focus();
-    } else if (focusTo.current === 'next' && current !== 'name') {
+    } else if (focusTo.current === 'next') {
+      // A name settles once a status read shows it kept: the step it leads with is past it by then.
       focusTo.current = undefined;
       document.querySelector<HTMLElement>(`li[data-step="${current}"] button`)?.focus();
     }

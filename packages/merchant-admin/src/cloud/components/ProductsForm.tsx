@@ -185,7 +185,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     }
     const detail = fieldOf(answer.body, 'detail');
     if (fieldOf(answer.body, 'error') === 'store_refused' && typeof detail === 'string') {
-      setProblems(detail.split('\n').map(problemText));
+      setProblems(detail.split('\n').map((line) => problemText(line)));
       return;
     }
     setError(explainAnswer(answer.body, answer.status));
@@ -193,7 +193,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
 
   const shownProblems =
     refused && problems.length === 0
-      ? (status.lastProblems.products ?? []).map(problemText)
+      ? (status.lastProblems.products ?? []).map((line) => problemText(line))
       : problems;
   return (
     <div className="flex flex-col gap-16">
