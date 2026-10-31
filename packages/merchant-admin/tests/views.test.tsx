@@ -490,6 +490,32 @@ describe('the dashboard pages', () => {
     expect(statuses[0]?.textContent).toBe('Read 4 order messages');
     expect(byId(container, 'store-sidebar').contains(statuses[0] ?? null)).toBe(false);
     expect(container.querySelector('main')?.contains(statuses[0] ?? null)).toBe(true);
+    // Above the pages, not after them.
+    const order = (statuses[0] as Node).compareDocumentPosition(page(container, 'overview'));
+    expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('says where to look when the store could not be read', async () => {
+    mounted = await mount(
+      <Dashboard
+        state={{ pubkey: 'a'.repeat(64), status: 'Could not read', busy: false }}
+        onRefresh={() => undefined}
+        onMore={() => undefined}
+        onLogOut={() => undefined}
+      />,
+    );
+    expect(page(mounted.container, 'overview').textContent).toContain(
+      'The status above says why. Press Refresh to read it again.',
+    );
+  });
+
+  it('lets the sidebar scroll on a short window, and names the store in full on the phone bar', async () => {
+    const container = await mountDashboard();
+    expect(byId(container, 'store-sidebar').className.split(' ')).toContain('md:overflow-y-auto');
+    const phoneName = container.querySelector(
+      '[aria-controls="store-sidebar"]',
+    )?.previousElementSibling;
+    expect(phoneName?.getAttribute('title')).toBe(phoneName?.textContent ?? 'none');
   });
 
   it('counts the orders and products in the nav, and makes each page heading focusable', async () => {
@@ -652,6 +678,83 @@ describe('the frame', () => {
     await mounted.rerender(render());
     expect(page(container, 'plain').hidden).toBe(false);
     expect(document.activeElement).toBe(menu);
+  });
+
+  it('closes the phone menu, and frees the page, when the window widens past the phone layout', async () => {
+    let listener: ((event: MediaQueryListEvent) => void) | undefined;
+    const removed: unknown[] = [];
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: false,
+          media: query,
+          addEventListener: (_type: string, handler: (event: MediaQueryListEvent) => void) => {
+            listener = handler;
+          },
+          removeEventListener: (_type: string, handler: unknown) => {
+            removed.push(handler);
+          },
+        }) as unknown as MediaQueryList,
+    );
+    mounted = await mount(shell());
+    const { container } = mounted;
+    const menu = container.querySelector('[aria-controls="store-sidebar"]');
+    if (!(menu instanceof HTMLButtonElement)) {
+      throw new Error('no menu button');
+    }
+    await act(async () => menu.click());
+    expect(window.matchMedia).toHaveBeenCalledWith('(min-width: 768px)');
+    expect(container.querySelector('main')?.hasAttribute('inert')).toBe(true);
+    await act(async () => listener?.({ matches: false } as MediaQueryListEvent));
+    expect(menu.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => listener?.({ matches: true } as MediaQueryListEvent));
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('main')?.hasAttribute('inert')).toBe(false);
+    // The listener goes with the menu.
+    expect(removed).toContain(listener);
+  });
+
+  it('gives focus to the menu button only for a page chosen in the menu', async () => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    let active = 'overview';
+    const render = () => (
+      <DashboardShell
+        name="Shop"
+        unnamed="Your store"
+        identity={{ value: 'npub1' + 'q'.repeat(58), copyLabel: 'Copy' }}
+        status="Read"
+        busy={false}
+        onRefresh={() => undefined}
+        onSignOut={() => undefined}
+        signOutLabel="Sign out"
+        pages={[
+          { id: 'overview', label: 'Overview', icon: 'home', content: <h1 tabIndex={-1}>O</h1> },
+          { id: 'second', label: 'Second', icon: 'box', content: <h1 tabIndex={-1}>S</h1> },
+          { id: 'plain', label: 'Plain', icon: 'receipt', content: <p>No heading</p> },
+        ]}
+        active={active}
+        onSelect={(id) => {
+          active = id;
+        }}
+      />
+    );
+    mounted = await mount(render());
+    const { container } = mounted;
+    const menu = container.querySelector('[aria-controls="store-sidebar"]');
+    if (!(menu instanceof HTMLButtonElement)) {
+      throw new Error('no menu button');
+    }
+    // From the menu, to a page with a heading: the heading has it.
+    await act(async () => menu.click());
+    await act(async () => byId(container, 'nav-second').click());
+    await mounted.rerender(render());
+    expect(document.activeElement?.textContent).toBe('S');
+    // Then from the sidebar itself, to a page with none: focus stays where it was.
+    const nav = byId(container, 'nav-plain');
+    nav.focus();
+    await act(async () => nav.click());
+    await mounted.rerender(render());
+    expect(document.activeElement).toBe(nav);
   });
 
   it('describes a locked page once: its reason out of the button name', async () => {

@@ -1512,6 +1512,16 @@ describe('a launched cloud store', () => {
     expect(host.querySelector('#status-reported')).toBeNull();
   });
 
+  it('says a cloud store with nothing credited has nothing "by your store" yet', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('#totals') !== null);
+    expect(host.querySelector('#totals')?.textContent).toContain(
+      'nothing credited yetby your store',
+    );
+  });
+
   it('words its charts for a store in our cloud: "your store", never "your node"', async () => {
     const store = new FakeStore(
       readyState({

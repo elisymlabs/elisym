@@ -7,6 +7,9 @@ import { LogoMark } from './LogoMark';
 import { PayCoreLogo } from './PayCoreLogo';
 import { StatusLine } from './StatusLine';
 
+/** Where the sidebar stops being a phone menu (Tailwind's `md`). */
+const WIDE_LAYOUT = '(min-width: 768px)';
+
 /** One page of the store: its place in the sidebar and what it shows. */
 export interface ShellPage {
   id: string;
@@ -91,8 +94,19 @@ export function DashboardShell({
         menuButton.current?.focus();
       }
     };
+    // Widened past the phone layout, the sidebar is the page's own: the menu, and the inert page, end.
+    const wide = window.matchMedia?.(WIDE_LAYOUT);
+    const onWide = (event: MediaQueryListEvent) => {
+      if (event.matches) {
+        setMenuOpen(false);
+      }
+    };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    wide?.addEventListener('change', onWide);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      wide?.removeEventListener('change', onWide);
+    };
   }, [menuOpen]);
 
   const choose = (page: ShellPage) => {
