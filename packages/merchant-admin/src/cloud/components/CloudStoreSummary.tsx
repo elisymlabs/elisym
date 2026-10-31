@@ -1,7 +1,7 @@
 import { SettingRow } from '../../components/SettingRow';
 import { SettingsSection } from '../../components/SettingsSection';
 import type { StoreStatus } from '../lib/status';
-import { type StoreView, shownDate } from '../lib/store-view';
+import { type StoreView, shownDate, shownTime } from '../lib/store-view';
 import { RunStateLine } from './RunStateLine';
 
 interface Props {
@@ -56,8 +56,11 @@ export function CloudStoreSummary({ view, status, price, onCheckAgain }: Props) 
         </SettingRow>
       )}
       {view.payBy === undefined ? null : (
-        <SettingRow label="Pay by" help="Unpaid after this day, the store is deleted.">
-          <span className="text-14 text-error">{shownDate(view.payBy)}</span>
+        <SettingRow
+          label="Pay by"
+          help="Payments close at this time; after it the store is deleted."
+        >
+          <span className="text-14 text-error">{shownTime(view.payBy)}</span>
         </SettingRow>
       )}
       <SettingRow

@@ -17,13 +17,25 @@ interface Props {
   navigate: (url: string) => void;
   /** The view went stale (a refusal of a step it showed open): read it again. */
   onStale: () => void;
+  /** Its heading's level: `h3` in the checklist, under "Getting started". */
+  level?: 'h2' | 'h3';
 }
 
 /**
  * Paying for the store: by card (Stripe Checkout, then its portal) or by
  * crypto (the Pay Core billing page on its own domain), one rail at a time.
  */
-export function BillingPanel({ api, tenantId, view, billingUrl, navigate, onStale }: Props) {
+export function BillingPanel({
+  api,
+  tenantId,
+  view,
+  billingUrl,
+  navigate,
+  onStale,
+  level = 'h2',
+}: Props) {
+  // Its rails head one level under its own heading.
+  const Sub = level === 'h2' ? 'h3' : 'h4';
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
@@ -56,10 +68,10 @@ export function BillingPanel({ api, tenantId, view, billingUrl, navigate, onStal
 
   const cryptoOpen = view.crypto.open && billingUrl !== undefined;
   return (
-    <Card title="Billing">
+    <Card title="Billing" level={level}>
       <div className="mt-16 flex flex-col gap-16">
         <div className="flex flex-col gap-8">
-          <h3 className="text-15 font-semibold">Card</h3>
+          <Sub className="text-15 font-semibold">Card</Sub>
           {view.card.open ? (
             <Button
               disabled={busy}
@@ -81,7 +93,7 @@ export function BillingPanel({ api, tenantId, view, billingUrl, navigate, onStal
           )}
         </div>
         <div className="flex flex-col gap-8">
-          <h3 className="text-15 font-semibold">Crypto</h3>
+          <Sub className="text-15 font-semibold">Crypto</Sub>
           {cryptoOpen ? (
             <a
               href={billingPageUrl(billingUrl, tenantId)}

@@ -181,7 +181,6 @@ export function storeViewOf(body: unknown): StoreView | undefined {
   };
 }
 
-/** A unix time as the console shows it: the UTC day and minute. */
 /** A day as a person writes it: "31 Dec 2026" (UTC). */
 export function shownDate(seconds: number): string {
   return new Date(seconds * 1000).toLocaleDateString('en-GB', {
@@ -192,6 +191,7 @@ export function shownDate(seconds: number): string {
   });
 }
 
+/** A unix time as the console shows it: the UTC day and minute. */
 export function shownTime(seconds: number): string {
   return `${new Date(seconds * 1000).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }

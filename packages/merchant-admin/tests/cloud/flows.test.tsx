@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
 import type { CloudProps } from '../../src/cloud/CloudApp';
 import { OwnerKey, parseOwnerKey } from '../../src/cloud/lib/owner-key';
+import { shownTime } from '../../src/cloud/lib/store-view';
 import { short } from '../../src/lib/core';
 import { Root } from '../../src/Root';
 import { fakeDeps, relayClient, storeEvents } from '../fakes';
@@ -1364,7 +1365,7 @@ describe('a cloud store, set up step by step', () => {
     expect(steps(host).find((step) => step.key === 'name')?.badge).toContain('bg-surface-2');
     // Paying opens in its row; the steps after it cannot open yet.
     expect(openBody(host)).toContain('Billing');
-    expect(host.textContent).toContain('Opens once your store is paid.');
+    expect(host.textContent).toContain('Pay the first month to open this.');
     const nameRow = host.querySelector('li[data-step="name"]');
     expect(nameRow?.querySelector('button')).toBeNull();
   });
@@ -2277,7 +2278,7 @@ describe('a cloud store in words: its locks, its summary, its settings', () => {
     expect(host.querySelector<HTMLElement>('#page-products')?.hidden).toBe(false);
   });
 
-  it('Settings are rows with no RPC to type, and an own RPC the store keeps is sent back as it was', async () => {
+  it('Settings are rows with no RPC to type; an own endpoint is named, kept as it was, and dropped by Use ours', async () => {
     const store = new FakeStore(storeState({ paid: true, name: 'Shop', rails: ['solana'] }));
     const routes = store.routes();
     const own = 'https://rpc.merchant.example';
@@ -2299,16 +2300,20 @@ describe('a cloud store in words: its locks, its summary, its settings', () => {
     await eventually(host, () => host.querySelector('input#store-name') !== null);
     expect(host.querySelector('input[id$="-rpc"]')).toBeNull();
     expect(host.textContent).not.toContain('Advanced');
-    // Taken off and on again, Solana keeps the RPC it was saved with.
-    const solana = [...host.querySelectorAll('label')]
-      .find((label) => label.textContent === 'Solana')
-      ?.querySelector('input');
-    await act(async () => solana?.click());
-    await act(async () => solana?.click());
+    expect(host.querySelector('#page-settings')?.textContent).toContain(
+      'Uses your own network endpoint.',
+    );
     await fill(host, 'input#store-name', 'Shop two');
     await click(host, 'Save settings');
-    const saved = calls.find((call) => call.method === 'POST' && call.path.endsWith('/store'));
-    expect(saved?.body).toMatchObject({ name: 'Shop two', solana: { rpcUrl: own } });
+    const posts = () =>
+      calls.filter((call) => call.method === 'POST' && call.path.endsWith('/store'));
+    // Untouched, it goes back as it was.
+    expect(posts()[0]?.body).toMatchObject({ name: 'Shop two', solana: { rpcUrl: own } });
+    // Use ours drops it: the network runs on our endpoint.
+    await click(host, 'Use ours');
+    await click(host, 'Save settings');
+    expect(posts()[1]?.body).toMatchObject({ name: 'Shop two', solana: {} });
+    expect(JSON.stringify(posts()[1]?.body)).not.toContain(own);
   });
 
   it('a refusal is said in words at its field, the line as it came under Details', async () => {
@@ -2337,6 +2342,198 @@ describe('a cloud store in words: its locks, its summary, its settings', () => {
       'The store could not take this change',
     );
   });
+});
+
+describe('a cloud store, its review fixes', () => {
+  it('a name saved in the checklist shows in Settings, and a webhook save there keeps it and the rails', async () => {
+    const store = new FakeStore(storeState({ paid: true, rails: ['solana'] }));
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('input#setup-store-name') !== null);
+    await fill(host, 'input#setup-store-name', 'My shop');
+    await click(host, 'Save and continue');
+    store.keep();
+    await click(host, 'Refresh');
+    await eventually(
+      host,
+      () => host.querySelector<HTMLInputElement>('input#store-name')?.value === 'My shop',
+    );
+    await fill(host, 'input#store-webhook', 'https://shop.example/hook');
+    await click(host, 'Save settings');
+    const saved = calls.filter((call) => call.method === 'POST' && call.path.endsWith('/store'));
+    expect(saved.at(-1)?.body).toMatchObject({
+      name: 'My shop',
+      webhookUrl: 'https://shop.example/hook',
+      solana: {},
+    });
+  });
+
+  it('a store in retention says when payments close, to the minute, on Overview and Plan & billing', async () => {
+    const payBy = 1_900_000_000;
+    const store = new FakeStore(storeState({ payBy }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    const said = `Pay byPayments close at this time; after it the store is deleted.${shownTime(payBy)}`;
+    await eventually(
+      host,
+      () => host.querySelector('#page-overview')?.textContent?.includes(said) === true,
+    );
+    expect(host.querySelector('#page-billing')?.textContent).toContain(said);
+  });
+
+  it('a store a partner pays for says so on Plan & billing too', async () => {
+    const store = new FakeStore(readyState());
+    const routes = store.routes();
+    const { host } = await admin({
+      ...routes,
+      [`GET /tenants/${TENANT_ID}`]: () => {
+        const answer = routes[`GET /tenants/${TENANT_ID}`];
+        const given = typeof answer === 'function' ? answer(undefined) : answer;
+        const body = given?.body !== null && typeof given?.body === 'object' ? given.body : {};
+        return { body: { ...body, partner: { paidUntil: 1_900_000_000 } } };
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () =>
+        host.querySelector('#page-billing')?.textContent?.includes('Your partner pays until') ===
+        true,
+    );
+  });
+
+  it('an invited store waiting for its key says so on each step after it', async () => {
+    const store = new FakeStore(storeState({ launch: 'operator' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
+    const name = host.querySelector('li[data-step="name"]')?.textContent ?? '';
+    expect(name).toContain('We are preparing your store: this takes a minute.');
+    expect(name).not.toContain('Opens once your store is paid');
+  });
+
+  it('a row is a disclosure: its button opens it, and closes it again; paying heads under the list', async () => {
+    const store = new FakeStore(storeState());
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
+    const pay = host.querySelector<HTMLButtonElement>('li[data-step="pay"] button');
+    expect(pay?.getAttribute('aria-expanded')).toBe('true');
+    expect(host.querySelector('li[data-step="pay"] h3')?.textContent).toBe('Billing');
+    expect(host.querySelector('li[data-step="pay"] h4')?.textContent).toBe('Card');
+    await act(async () => pay?.click());
+    expect(pay?.getAttribute('aria-expanded')).toBe('false');
+    expect(host.querySelector<HTMLElement>('#step-body-pay')?.hidden).toBe(true);
+    await act(async () => pay?.click());
+    expect(host.querySelector<HTMLElement>('#step-body-pay')?.hidden).toBe(false);
+  });
+
+  it('Name your store from the payouts row puts focus in the name; a name kept moves it to the next step', async () => {
+    const store = new FakeStore(storeState({ paid: true }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('input#setup-store-name') !== null);
+    await openStep(host, 'Get paid to');
+    await click(host, 'Name your store');
+    expect(document.activeElement?.id).toBe('setup-store-name');
+    await fill(host, 'input#setup-store-name', 'My shop');
+    await click(host, 'Save and continue');
+    store.keep();
+    await eventually(host, () => steps(host).find((step) => step.current)?.key === 'payouts');
+    await eventually(
+      host,
+      () => document.activeElement === host.querySelector('li[data-step="payouts"] button'),
+    );
+  });
+
+  it('Launch: the news is in a live region there from the start, and takes the focus', async () => {
+    const store = new FakeStore(readyState());
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => hasButton(host, 'Launch the store'));
+    const live = [...host.querySelectorAll('#page-overview [role="status"]')].find(
+      (each) => each.textContent === '',
+    );
+    expect(live).not.toBeUndefined();
+    await click(host, 'Launch the store');
+    await eventually(host, () => live?.textContent?.startsWith('Your store is live') === true);
+    expect(document.activeElement).toBe(live);
+  });
+
+  it('Settings fields name their help, and a refusal at a field marks it invalid', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop' }));
+    const { host } = await admin({
+      ...store.routes(),
+      [`POST /tenants/${TENANT_ID}/store`]: {
+        status: 422,
+        body: { error: 'store_refused', detail: 'webhook.url: must be a URL' },
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-webhook') !== null);
+    const field = () => host.querySelector('input#store-webhook');
+    expect(field()?.getAttribute('aria-describedby')).toBe('store-webhook-help');
+    expect(document.getElementById('store-webhook-help')?.textContent).toContain('paid order');
+    expect(field()?.getAttribute('aria-invalid')).toBeNull();
+    await click(host, 'Save settings');
+    await eventually(host, () => field()?.getAttribute('aria-invalid') === 'true');
+    expect(field()?.getAttribute('aria-describedby')).toBe(
+      'store-webhook-help store-webhook-problems',
+    );
+    expect(document.getElementById('store-webhook-problems')?.textContent).toContain('Webhook:');
+  });
+
+  it('a status that cannot be read says so with Try again, which reads it again', async () => {
+    const store = new FakeStore(storeState());
+    let fail = true;
+    const routes = store.routes();
+    const { host, calls } = await admin({
+      ...routes,
+      [`GET /tenants/${TENANT_ID}/status`]: () => {
+        if (fail) {
+          return { status: 503, body: { error: 'internal' } };
+        }
+        const answer = routes[`GET /tenants/${TENANT_ID}/status`];
+        return typeof answer === 'function' ? answer(undefined) : (answer ?? { body: {} });
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => hasButton(host, 'Try again'));
+    fail = false;
+    const before = calls.filter((call) => call.path.endsWith('/status')).length;
+    await click(host, 'Try again');
+    await eventually(host, () => steps(host).length > 0);
+    expect(calls.filter((call) => call.path.endsWith('/status')).length).toBeGreaterThan(before);
+  });
+
+  it(
+    'before launch, a status poll that ran out offers to read it again',
+    { timeout: 20_000 },
+    async () => {
+      let skew = 0;
+      const store = new FakeStore(storeState({ paid: true }));
+      const { host, calls } = await admin(store.routes(), {
+        cloudProps: { localNow: () => Math.floor(Date.now() / 1000) + skew },
+      });
+      await signIn(host, OwnerKey.create());
+      await eventually(host, () => steps(host).length > 0);
+      expect(hasButton(host, 'Read it again')).toBe(false);
+      skew = 121;
+      for (let attempt = 0; attempt < 80 && !hasButton(host, 'Read it again'); attempt += 1) {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        });
+      }
+      expect(hasButton(host, 'Read it again')).toBe(true);
+      const before = calls.filter((call) => call.path.endsWith('/status')).length;
+      await click(host, 'Read it again');
+      await eventually(
+        host,
+        () => calls.filter((call) => call.path.endsWith('/status')).length > before,
+      );
+    },
+  );
 });
 
 describe('a partner key', () => {

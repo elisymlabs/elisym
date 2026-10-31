@@ -7,7 +7,18 @@ interface Props {
   onChange: (rail: RailForm | EvmForm) => void;
 }
 
-/** One payment network: on or off, and an EVM chain's credit. Its RPC is the cloud's. */
+/**
+ * The rail as changed: turned off or on, it runs on our endpoint (an own one
+ * it was saved with is dropped); any other change is taken as it comes.
+ */
+export function railChange<T extends RailForm>(was: T, next: T): T {
+  return next.on === was.on ? next : { ...next, rpcUrl: '' };
+}
+
+/**
+ * One payment network: on or off, and an EVM chain's credit. Its endpoint is
+ * ours; an own one it was saved with is named, with "Use ours" to drop it.
+ */
 export function RailFields({ id, label, rail, onChange }: Props) {
   return (
     <div className="border-line flex flex-col gap-8 border-t pt-12">
@@ -21,6 +32,19 @@ export function RailFields({ id, label, rail, onChange }: Props) {
       </label>
       {rail.on ? (
         <>
+          {rail.rpcUrl === '' ? null : (
+            <div className="text-13 text-text-2 flex flex-wrap items-center gap-8">
+              <span id={`${id}-own`}>Uses your own network endpoint.</span>
+              <button
+                type="button"
+                aria-describedby={`${id}-own`}
+                onClick={() => onChange({ ...rail, rpcUrl: '' })}
+                className="text-accent-ink font-medium underline underline-offset-2"
+              >
+                Use ours
+              </button>
+            </div>
+          )}
           {'credit' in rail ? (
             <label className="text-13 text-text-2 flex items-center gap-8">
               Credit a payment

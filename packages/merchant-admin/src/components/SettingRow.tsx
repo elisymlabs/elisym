@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
 
 interface Props {
-  /** The label, tied to the control by `htmlFor` when the control is one field. */
+  /**
+   * The label, tied to the control by `htmlFor` when the control is one field;
+   * the help is then `<htmlFor>-help`, for the control's `aria-describedby`.
+   */
   label: string;
   htmlFor?: string;
   help?: ReactNode;
@@ -21,7 +24,14 @@ export function SettingRow({ label, htmlFor, help, children }: Props) {
             {label}
           </label>
         )}
-        {help === undefined ? null : <span className="text-13 text-text-2">{help}</span>}
+        {help === undefined ? null : (
+          <span
+            {...(htmlFor === undefined ? {} : { id: `${htmlFor}-help` })}
+            className="text-13 text-text-2"
+          >
+            {help}
+          </span>
+        )}
       </div>
       <div className="flex min-w-0 flex-col gap-8">{children}</div>
     </div>

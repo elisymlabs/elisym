@@ -55,12 +55,21 @@ function networkOf(path: string): Network | undefined {
   return undefined;
 }
 
-/** About its RPC (in the path or the words): the network could not be reached; else its settings. */
+/**
+ * A network's refusal as the merchant can act on it. Our side has no endpoint
+ * for it: theirs to switch off, ours to fix. Their own endpoint refused: back
+ * to ours (Settings has "Use ours"). Anything else about the network: its
+ * settings.
+ */
 function networkText(network: Network, problem: string): string {
   const name = NETWORK_NAMES[network];
-  return /rpc/i.test(problem)
-    ? `${name}: we could not reach this network just now. Try again shortly.`
-    : `${name}: this network's settings were refused. Turn it off and on again, or contact us.`;
+  if (/the cloud has no rpc/i.test(problem)) {
+    return `${name} is not available on our side yet: turn it off in Settings for now, or contact us.`;
+  }
+  if (/rpc/i.test(problem)) {
+    return `Your own ${name} endpoint was refused: switch to ours in Settings (Use ours).`;
+  }
+  return `${name}: this network's settings were refused. Turn it off and on again in Settings, or contact us.`;
 }
 
 function productText(path: string): string {

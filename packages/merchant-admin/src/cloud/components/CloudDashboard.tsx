@@ -111,8 +111,14 @@ export function CloudDashboard({
   );
   // The owner confirmed its own node: the cloud's copy is gone, and this key owns nothing here.
   const [destroyed, setDestroyed] = useState(false);
-  // Launched while this page was open: said once.
+  // Launched while this page was open: said once, and focus goes to the news.
   const [justLaunched, setJustLaunched] = useState(false);
+  const liveLine = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (justLaunched) {
+      liveLine.current?.focus();
+    }
+  }, [justLaunched]);
   // The plan's price from the catalog, once read (undefined: unread, or the catalog failed).
   const [prices, setPrices] = useState<Record<string, string> | undefined>(undefined);
   const latest = useRef(0);
@@ -237,11 +243,19 @@ export function CloudDashboard({
         </p>
       )}
       {view === undefined && loading ? <p className="text-14 text-text-3">Loading...</p> : null}
-      {justLaunched && launched ? (
-        <p role="status" className="rounded-12 bg-ok-bg text-ok text-14 w-full p-16 font-medium">
-          Your store is live: buyers can pay on your site now.
-        </p>
-      ) : null}
+      {/* Mounted before it says anything, so a screen reader announces the news. */}
+      <p
+        ref={liveLine}
+        role="status"
+        tabIndex={-1}
+        className={
+          justLaunched && launched
+            ? 'rounded-12 bg-ok-bg text-ok text-14 w-full p-16 font-medium outline-none'
+            : 'sr-only'
+        }
+      >
+        {justLaunched && launched ? 'Your store is live: buyers can pay on your site now.' : ''}
+      </p>
       {view === undefined || launched ? null : (
         <GettingStarted
           api={api}

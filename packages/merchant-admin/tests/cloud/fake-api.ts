@@ -100,6 +100,8 @@ export interface StoreState {
   network: 'mainnet' | 'devnet';
   /** Paid, and its store key still being made. */
   preparing: boolean;
+  /** In retention: payments close then (unix seconds). */
+  payBy: number | undefined;
 }
 
 export function storeState(overrides: Partial<StoreState> = {}): StoreState {
@@ -117,6 +119,7 @@ export function storeState(overrides: Partial<StoreState> = {}): StoreState {
     launch: 'console',
     network: 'mainnet',
     preparing: false,
+    payBy: undefined,
     ...overrides,
   };
 }
@@ -214,7 +217,7 @@ export class FakeStore {
       storePubkey: state.paid && !state.preparing ? STORE_PUBKEY : null,
       paidUntil: state.paid ? NOW : null,
       partner: null,
-      payBy: null,
+      payBy: state.payBy ?? null,
       rails: { card: { open: true }, crypto: { open: false, refusal: { code: 'rail_off' } } },
       sale: { withdrawnAt: null, ownerWithdrawn: false, held: false, stopped: false },
       exporting: false,

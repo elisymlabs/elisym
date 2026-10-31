@@ -1,9 +1,11 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { Button } from '../../components/Button';
 import { Icon } from '../../components/Icon';
 import type { ConsoleApi } from '../lib/api';
 import type { CloudPage } from '../lib/page-locks';
 import { nip05Of } from '../lib/settings';
 import { type SetupStep, type SetupStepKey, setupSteps } from '../lib/setup-steps';
+import type { StoreStatus } from '../lib/status';
 import type { StoreView } from '../lib/store-view';
 import type { KeptStore } from '../lib/use-kept-store';
 import type { StoreStatusPoll } from '../lib/use-status';
@@ -47,7 +49,7 @@ const HINTS: Record<SetupStepKey, string> = {
   launch: 'The last checks, then your store goes live.',
 };
 
-/** Before the store exists only paying opens: its other steps say so. */
+/** Before the store exists only paying opens: its other steps say so (in the pages' own words). */
 const NOT_YET = 'Opens once your store is paid.';
 
 /** A step's state for a screen reader: the badge says it by shape and color alone. */
@@ -70,7 +72,33 @@ const BADGES: Record<SetupStep['state'], string> = {
  * other steps open their page. The first step not done is the one action
  * the list leads with.
  */
-export function GettingStarted({
+export function GettingStarted(props: Props) {
+  const { poll } = props;
+  const status = poll.status;
+  if (status === undefined) {
+    return (
+      <Card title="Getting started">
+        <div className="mt-12 flex flex-col items-start gap-8">
+          <p role={poll.error === '' ? 'status' : 'alert'} className="text-14 text-text-2">
+            {poll.error === '' ? 'Loading...' : poll.error}
+          </p>
+          {poll.error === '' ? null : (
+            <Button size="sm" onClick={poll.watch}>
+              Try again
+            </Button>
+          )}
+        </div>
+      </Card>
+    );
+  }
+  if (status.gone) {
+    return null;
+  }
+  return <Checklist {...props} status={status} />;
+}
+
+/** The checklist itself, over a status read. */
+function Checklist({
   api,
   tenantId,
   view,
@@ -82,21 +110,12 @@ export function GettingStarted({
   kept,
   locks,
   onOpen,
-}: Props) {
-  const [chosen, setChosen] = useState<SetupStepKey | undefined>(undefined);
-  const status = poll.status;
-  if (status === undefined) {
-    return (
-      <Card title="Getting started">
-        <p role={poll.error === '' ? 'status' : 'alert'} className="text-14 text-text-2 mt-12">
-          {poll.error === '' ? 'Loading...' : poll.error}
-        </p>
-      </Card>
-    );
-  }
-  if (status.gone) {
-    return null;
-  }
+  status,
+}: Props & { status: StoreStatus }) {
+  // The step open in its row: undefined follows the one the list leads with, `none` closes them.
+  const [chosen, setChosen] = useState<SetupStepKey | 'none' | undefined>(undefined);
+  // Where focus goes once the page has it: the name field asked for, or the next step after a save.
+  const focusTo = useRef<'name-field' | 'next' | undefined>(undefined);
   const invited = view.launch === 'operator';
   const steps = setupSteps(status, invited).filter(
     (step) => step.key !== 'plan' && step.key !== 'key',
@@ -112,15 +131,33 @@ export function GettingStarted({
     steps.filter((step) => !step.locked && inRow(step)).map((step) => step.key),
   );
   const fallback = inRowKeys.has(current) ? current : undefined;
-  const open = chosen !== undefined && inRowKeys.has(chosen) ? chosen : fallback;
+  let open: SetupStepKey | undefined = fallback;
+  if (chosen === 'none') {
+    open = undefined;
+  } else if (chosen !== undefined && inRowKeys.has(chosen)) {
+    open = chosen;
+  }
+  // Before the store exists, a step after paying says why it waits, in the pages' own words.
+  const waitReason = locks.settings === undefined ? NOT_YET : `${locks.settings}.`;
   // A step the merchant edits stays open until they choose another or its save is kept: an
   // advance never hides what they are typing.
   const pin = () => setChosen(open);
   // A step's save kept: its pin goes, and the steps are read again now (not at the next poll).
   const settle = (key: SetupStepKey) => {
     setChosen((was) => (was === key ? undefined : was));
+    focusTo.current = 'next';
     poll.watch();
   };
+
+  useEffect(() => {
+    if (focusTo.current === 'name-field' && open === 'name') {
+      focusTo.current = undefined;
+      document.getElementById('setup-store-name')?.focus();
+    } else if (focusTo.current === 'next' && current !== 'name') {
+      focusTo.current = undefined;
+      document.querySelector<HTMLElement>(`li[data-step="${current}"] button`)?.focus();
+    }
+  }, [open, current]);
   const read = kept.read;
 
   const bodyOf = (step: SetupStep): ReactNode => {
@@ -132,7 +169,10 @@ export function GettingStarted({
           <p className="text-14 text-text-2">{reason}: its payouts go with its name.</p>
           <button
             type="button"
-            onClick={() => setChosen('name')}
+            onClick={() => {
+              focusTo.current = 'name-field';
+              setChosen('name');
+            }}
             className="text-14 text-accent-ink font-medium underline underline-offset-2"
           >
             Name your store
@@ -156,6 +196,7 @@ export function GettingStarted({
               billingUrl={billingUrl}
               navigate={navigate}
               onStale={onStoreChanged}
+              level="h3"
             />
           </>
         );
@@ -205,6 +246,14 @@ export function GettingStarted({
           <span className="font-mono break-all">{npub}</span>.
         </p>
       ) : null}
+      {poll.expired ? (
+        <p className="text-13 text-text-2 flex flex-wrap items-center gap-8">
+          Still waiting for your store?
+          <Button size="sm" onClick={poll.watch}>
+            Read it again
+          </Button>
+        </p>
+      ) : null}
       <ol
         aria-label="Store setup"
         className="rounded-16 border-line bg-surface divide-line flex flex-col divide-y border"
@@ -235,14 +284,15 @@ export function GettingStarted({
                 {step.locked ? (
                   <div className="flex min-w-0 flex-col gap-2">
                     <span className="text-15 text-text-2 font-medium">{step.label}</span>
-                    <span className="text-13 text-text-3">{NOT_YET}</span>
+                    <span className="text-13 text-text-3">{waitReason}</span>
                   </div>
                 ) : (
                   <button
                     type="button"
                     onClick={() => {
                       if (opensHere) {
-                        setChosen(step.key);
+                        // A disclosure: the open step closes on its own button.
+                        setChosen(open === step.key ? 'none' : step.key);
                       } else if (page !== undefined) {
                         onOpen(page);
                       }

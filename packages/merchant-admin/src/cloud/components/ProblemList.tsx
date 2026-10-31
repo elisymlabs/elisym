@@ -2,15 +2,21 @@ import type { ProblemText } from '../lib/problems';
 
 interface Props {
   problems: readonly ProblemText[];
+  /** For the field it is about: its `aria-describedby` names this list. */
+  id?: string;
 }
 
 /** Refusals in words, each with the line as it came folded under Details (for support). */
-export function ProblemList({ problems }: Props) {
+export function ProblemList({ problems, id }: Props) {
   if (problems.length === 0) {
     return null;
   }
   return (
-    <ul role="alert" className="text-13 text-error flex flex-col gap-4">
+    <ul
+      {...(id === undefined ? {} : { id })}
+      role="alert"
+      className="text-13 text-error flex flex-col gap-4"
+    >
       {problems.map((problem, index) => (
         <li key={`${index}-${problem.raw}`} data-problem-field={problem.field ?? 'store'}>
           <span>{problem.text}</span>

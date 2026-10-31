@@ -1,7 +1,7 @@
 import { SettingRow } from '../../components/SettingRow';
 import { SettingsSection } from '../../components/SettingsSection';
 import type { StoreStatus } from '../lib/status';
-import { type StoreView, shownDate } from '../lib/store-view';
+import { type StoreView, shownDate, shownTime } from '../lib/store-view';
 
 interface Props {
   view: StoreView;
@@ -27,6 +27,23 @@ export function PlanSummary({ view, status, price }: Props) {
           {view.paidUntil === undefined ? 'Not paid yet' : shownDate(view.paidUntil)}
         </span>
       </SettingRow>
+      {view.partner === undefined ? null : (
+        <SettingRow label="Your partner pays until">
+          <span className="text-14">
+            {view.partner.paidUntil === undefined
+              ? 'Not paid yet'
+              : shownDate(view.partner.paidUntil)}
+          </span>
+        </SettingRow>
+      )}
+      {view.payBy === undefined ? null : (
+        <SettingRow
+          label="Pay by"
+          help="Payments close at this time; after it the store is deleted."
+        >
+          <span className="text-14 text-error">{shownTime(view.payBy)}</span>
+        </SettingRow>
+      )}
       {status === undefined ? null : (
         <SettingRow label="Paid orders this month">
           <span className="text-14">
