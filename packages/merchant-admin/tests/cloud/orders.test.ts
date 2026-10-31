@@ -37,6 +37,8 @@ describe('reading the orders', () => {
       orders: [
         {
           key: 'buyer2:o2',
+          buyer: 'buyer2',
+          orderId: 'o2',
           createdAt: 300,
           product: '30402:store:course',
           email: null,
@@ -49,6 +51,8 @@ describe('reading the orders', () => {
         },
         {
           key: 'buyer1:o1',
+          buyer: 'buyer1',
+          orderId: 'o1',
           createdAt: 200,
           product: '30402:store:course',
           email: 'a@b.test',
@@ -58,6 +62,7 @@ describe('reading the orders', () => {
             amount: '1500000',
             fee: '5000',
             asset: USDC,
+            medium: 'solana',
             paidAt: 210,
           },
           deliveredAt: 212,
@@ -105,16 +110,39 @@ describe('reading the orders', () => {
         order.email = undefined;
       },
       (order) => {
+        delete order.buyer;
+      },
+      (order) => {
+        order.orderId = 7;
+      },
+      (order) => {
+        order.payment = { signature: 's', amount: '1', fee: '0', asset: USDC, paidAt: 1 };
+      },
+      (order) => {
         order.feeUnresolved = [3];
       },
       (order) => {
-        order.payment = { signature: 's', amount: '-1', fee: '0', asset: USDC, paidAt: 1 };
+        order.payment = {
+          signature: 's',
+          amount: '-1',
+          fee: '0',
+          asset: USDC,
+          medium: 'solana',
+          paidAt: 1,
+        };
       },
       (order) => {
-        order.payment = { signature: 's', amount: '1', fee: '0', asset: USDC };
+        order.payment = { signature: 's', amount: '1', fee: '0', asset: USDC, medium: 'solana' };
       },
       (order) => {
-        order.payment = { signature: 's', amount: '1', fee: '0.5', asset: USDC, paidAt: 1 };
+        order.payment = {
+          signature: 's',
+          amount: '1',
+          fee: '0.5',
+          asset: USDC,
+          medium: 'solana',
+          paidAt: 1,
+        };
       },
       (order) => {
         order.webhook = { state: 'lost', attempts: 0, lastStatus: null, lastError: null };

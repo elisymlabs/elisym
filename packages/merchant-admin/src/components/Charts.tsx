@@ -1,4 +1,10 @@
-import { creditedCoins, orderSlices, statusParts, unchartedCredits } from '../lib/charts';
+import {
+  creditedCoins,
+  orderSlices,
+  statusParts,
+  unchartedCredits,
+  unconfirmedPayments,
+} from '../lib/charts';
 import type { OrderRow } from '../lib/core';
 import { stateCounts } from '../lib/orders';
 import { CreditedChart } from './CreditedChart';
@@ -26,7 +32,10 @@ export function Charts({ rows, nowSeconds }: Props) {
       </div>
       <div className="flex min-w-0 flex-col gap-16">
         <OrdersDonut slices={orderSlices(rows, coins)} />
-        <StatusStrip parts={statusParts(stateCounts(rows))} />
+        <StatusStrip
+          parts={statusParts(stateCounts(rows))}
+          unconfirmed={unconfirmedPayments(rows)}
+        />
       </div>
     </div>
   );

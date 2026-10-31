@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
+import { Charts } from '../../components/Charts';
+import { Totals } from '../../components/Totals';
+import { totalsOf } from '../../lib/core';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
+import { orderRowsOf } from '../lib/order-rows';
 import { type OrderCommand, type OrdersRead, ordersReadOf } from '../lib/orders';
 import { payoutAssets } from '../lib/payouts';
 import { shownTime } from '../lib/store-view';
@@ -110,6 +114,7 @@ export function OrdersPanel({ api, tenantId, network, download }: Props) {
 
   const refundAssets = payoutAssets(network, REFUND_RAILS);
   const waiting = read === undefined ? [] : waitingOn(read);
+  const rows = read === undefined ? [] : orderRowsOf(read.orders);
 
   return (
     <Card title="Orders">
@@ -146,6 +151,11 @@ export function OrdersPanel({ api, tenantId, network, download }: Props) {
       )}
       {read === undefined ? null : (
         <>
+          <section className="mt-16 flex flex-col gap-16">
+            <h3 className="text-15 font-semibold">Sales</h3>
+            <Totals history={{ rows, totals: totalsOf(rows) }} />
+            <Charts rows={rows} nowSeconds={Math.floor(Date.now() / 1000)} />
+          </section>
           {waiting.length === 0 ? null : (
             <section className="mt-16">
               <h3 className="text-15 font-semibold">Waiting for your answer</h3>

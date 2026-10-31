@@ -73,6 +73,8 @@ export interface StoreState {
   paidOrders: number;
   /** The nip05 the kept config names, if any. */
   nip05: string | undefined;
+  /** The ledger's orders, as `GET /tenants/:id/orders` serves each. */
+  orders: Record<string, unknown>[];
 }
 
 export function storeState(overrides: Partial<StoreState> = {}): StoreState {
@@ -86,6 +88,7 @@ export function storeState(overrides: Partial<StoreState> = {}): StoreState {
     runState: 'not_launched',
     paidOrders: 0,
     nip05: undefined,
+    orders: [],
     ...overrides,
   };
 }
@@ -276,7 +279,7 @@ export class FakeStore {
       [`GET ${path}/orders`]: () => ({
         body: {
           tenantId: TENANT_ID,
-          orders: [],
+          orders: this.state.orders,
           answeredByHand: [],
           closed: [],
           unresolvedPayments: [],

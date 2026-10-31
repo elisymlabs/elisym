@@ -22,6 +22,8 @@ export interface OrderPaymentRead {
   amount: string;
   fee: string;
   asset: string;
+  /** The rail the node read the payment on (`solana`, `tempo`, ...). */
+  medium: string;
   paidAt: number;
 }
 
@@ -34,6 +36,8 @@ export interface OrderWebhookRead {
 
 export interface OrderRead {
   key: string;
+  buyer: string;
+  orderId: string;
   createdAt: number;
   product: string;
   email: string | null;
@@ -122,6 +126,7 @@ function paymentOf(value: unknown): OrderPaymentRead | null {
     amount: subunits(fieldOf(value, 'amount')),
     fee: subunits(fieldOf(value, 'fee')),
     asset: text(fieldOf(value, 'asset')),
+    medium: text(fieldOf(value, 'medium')),
     paidAt: count(fieldOf(value, 'paidAt')),
   };
 }
@@ -141,6 +146,8 @@ function webhookOf(value: unknown): OrderWebhookRead | null {
 function orderOf(value: unknown): OrderRead {
   return {
     key: text(fieldOf(value, 'key')),
+    buyer: text(fieldOf(value, 'buyer')),
+    orderId: text(fieldOf(value, 'orderId')),
     createdAt: count(fieldOf(value, 'createdAt')),
     product: text(fieldOf(value, 'product')),
     email: optionalText(fieldOf(value, 'email')),

@@ -6,12 +6,13 @@ import { Icon } from './Icon';
 
 interface Props {
   parts: readonly { state: OrderState; count: number }[];
+  /** Payments reported that no credit confirms (`unconfirmedPayments`): warned about. */
+  unconfirmed: number;
 }
 
 /** Where the loaded orders stand, as one bar split by state. */
-export function StatusStrip({ parts }: Props) {
+export function StatusStrip({ parts, unconfirmed: reported }: Props) {
   const total = parts.reduce((sum, part) => sum + part.count, 0);
-  const reported = parts.find((part) => part.state === 'payment_reported')?.count ?? 0;
   let start = 0;
   const segments = parts.map((part) => {
     const width = shareOf(part.count, total) * 100;

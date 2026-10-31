@@ -10,7 +10,7 @@ import { RecentOrders } from '../src/components/RecentOrders';
 import { Stat } from '../src/components/Stat';
 import { StatusStrip } from '../src/components/StatusStrip';
 import { Totals } from '../src/components/Totals';
-import { statusParts } from '../src/lib/charts';
+import { statusParts, unconfirmedPayments } from '../src/lib/charts';
 import type { OrderRow, OrderState, Snapshot } from '../src/lib/core';
 import { countText } from '../src/lib/count';
 import { ordersCsv } from '../src/lib/csv';
@@ -348,7 +348,12 @@ describe('the overview', () => {
   });
 
   it('puts reported payments in the warn colors on the status card, only when there are some', async () => {
-    mounted = await mount(<StatusStrip parts={statusParts(stateCounts(ROWS))} />);
+    mounted = await mount(
+      <StatusStrip
+        parts={statusParts(stateCounts(ROWS))}
+        unconfirmed={unconfirmedPayments(ROWS)}
+      />,
+    );
     const line = byId(mounted.container, 'status-reported');
     expect(line.textContent).toBe('1 payment reported, not confirmed by your node');
     expect(line.className).toContain('bg-warn-bg');
@@ -356,12 +361,14 @@ describe('the overview', () => {
     await mounted.rerender(
       <StatusStrip
         parts={statusParts(stateCounts(ROWS.filter((row) => row.state !== 'payment_reported')))}
+        unconfirmed={unconfirmedPayments(ROWS.filter((row) => row.state !== 'payment_reported'))}
       />,
     );
     expect(mounted.container.querySelector('#status-reported')).toBeNull();
     await mounted.rerender(
       <StatusStrip
         parts={statusParts(stateCounts([...ROWS, row('epsilon', 'payment_reported')]))}
+        unconfirmed={unconfirmedPayments([...ROWS, row('epsilon', 'payment_reported')])}
       />,
     );
     expect(byId(mounted.container, 'status-reported').textContent).toBe(

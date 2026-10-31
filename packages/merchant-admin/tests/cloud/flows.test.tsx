@@ -24,6 +24,30 @@ declare global {
 
 const API = 'https://api.cloud.test';
 const BASE_USDC = 'eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+const USDC =
+  'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+/** One order as cloud-api serves it, placed a minute ago (the charts read the clock). */
+function servedOrder(
+  key: string,
+  payment: Record<string, unknown> | null,
+): Record<string, unknown> {
+  const [buyer = '', orderId = ''] = key.split(':');
+  return {
+    key,
+    buyer,
+    orderId,
+    createdAt: Math.floor(Date.now() / 1000) - 60,
+    product: '30402:store:course',
+    email: null,
+    customerRef: null,
+    payment,
+    deliveredAt: null,
+    webhook: null,
+    feeUnresolved: [],
+    blockedTx: null,
+  };
+}
 let mounted: { root: ReactRoot; host: HTMLElement } | undefined;
 
 async function unmount() {
@@ -805,6 +829,36 @@ describe('a launched cloud store', () => {
       () => host.textContent?.includes('Published: take it off sale') === true,
     );
     expect(hasButton(host, 'Remove course')).toBe(false);
+  });
+
+  it('charts its orders as the self-hosted overview does: credited, net of the fee', async () => {
+    const store = new FakeStore(
+      readyState({
+        activated: true,
+        runState: 'live',
+        orders: [
+          servedOrder('b1:o1', {
+            signature: 'sig1',
+            amount: '1500000',
+            fee: '5000',
+            asset: USDC,
+            medium: 'solana',
+            paidAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+          servedOrder('b2:o2', null),
+        ],
+      }),
+    );
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('#totals') !== null);
+    expect(host.querySelector('#totals')?.textContent).toContain('1.495 USDC');
+    expect(host.querySelector('#charts')).not.toBeNull();
+    // Placed a minute ago: in the chart's last days, net of the fee.
+    expect(host.querySelector('#credited-readout')?.textContent).toMatch(/^1\.495 USDC credited/);
+    expect(host.textContent).toContain('No payment credited');
+    // Paid and not completed yet: the store confirmed it, so no "not confirmed" warning.
+    expect(host.querySelector('#status-reported')).toBeNull();
   });
 
   it('taking it off sale asks once more, and Cancel brings the buttons back', async () => {
