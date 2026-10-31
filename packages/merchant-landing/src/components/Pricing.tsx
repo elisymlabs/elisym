@@ -23,7 +23,7 @@ interface Props {
   tiers?: CloudTier[];
 }
 
-/** The cloud plans: price, limits and what each includes, each starting in the console or with us. */
+/** The cloud plans: price, limits and what each includes, each starting in the admin or with us. */
 export function Pricing({ tiers = CLOUD_TIERS }: Props) {
   return (
     <section id="pricing">

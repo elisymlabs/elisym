@@ -11,7 +11,7 @@ interface Props {
   /** The tier id the `/start` link named (the catalog says whether it may be started). */
   tier: string;
   termsVersion: string;
-  /** Where the terms of service and acceptable-use policy are read. */
+  /** Where the terms of service are read. */
   termsUrl: string | undefined;
   onDone: () => void;
   /** The terms changed since they were shown: the console reads them again. */
@@ -113,7 +113,7 @@ export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsC
         <span>
           I accept the{' '}
           {termsUrl === undefined ? (
-            'terms of service and acceptable-use policy'
+            'terms of service'
           ) : (
             <a
               href={termsUrl}
@@ -121,7 +121,7 @@ export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsC
               rel="noopener noreferrer"
               className="underline underline-offset-2"
             >
-              terms of service and acceptable-use policy
+              terms of service
             </a>
           )}{' '}
           (version {termsVersion}).

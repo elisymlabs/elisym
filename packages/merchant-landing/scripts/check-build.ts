@@ -25,6 +25,7 @@ const LANDING_CSP: Record<string, string[]> = {
 
 const problems = [
   ...htmlProblems(readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8')),
+  ...htmlProblems(readFileSync(new URL('../dist/terms.html', import.meta.url), 'utf8')),
   ...cspProblems(
     cspOfEveryPath(JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'))),
     LANDING_CSP,

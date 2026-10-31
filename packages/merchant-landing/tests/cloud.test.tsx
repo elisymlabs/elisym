@@ -8,7 +8,7 @@ import { Cloud } from '../src/components/Cloud';
 import { Pricing } from '../src/components/Pricing';
 import {
   CLOUD_AGENT_PROMPT,
-  CLOUD_CONSOLE_URL,
+  ADMIN_URL,
   CLOUD_TIERS,
   CONTACT_URL,
   cloudStartUrl,
@@ -63,23 +63,23 @@ describe('the cloud section', () => {
     expect(page.querySelector('section#cloud + section#pricing')).not.toBeNull();
   });
 
-  it("starts only the self-serve plans, on the console's own origin, with no handle and no referrer", async () => {
+  it("starts only the self-serve plans, on the admin's own origin, with no handle and no referrer", async () => {
     const page = await render(<Pricing />);
     const starts = [...page.querySelectorAll('a')].filter((link) => link.textContent === 'Start');
     expect(starts.map((link) => link.getAttribute('href'))).toEqual([
-      'https://cloud.elisym.network/start?tier=starter',
-      'https://cloud.elisym.network/start?tier=business',
+      'https://admin.elisym.network/start?tier=starter',
+      'https://admin.elisym.network/start?tier=business',
     ]);
     for (const link of starts) {
       expect(link.rel).toBe('noopener noreferrer');
-      expect(new URL(link.href).origin).toBe(CLOUD_CONSOLE_URL);
+      expect(new URL(link.href).origin).toBe(ADMIN_URL);
     }
     expect(starts.map((link) => link.getAttribute('aria-label'))).toEqual([
       'Start with Starter',
       'Start with Business',
     ]);
-    expect(cloudStartUrl('starter')).toBe(`${CLOUD_CONSOLE_URL}/start?tier=starter`);
-    expect(new URL(CLOUD_CONSOLE_URL).origin).not.toBe(window.location.origin);
+    expect(cloudStartUrl('starter')).toBe(`${ADMIN_URL}/start?tier=starter`);
+    expect(new URL(ADMIN_URL).origin).not.toBe(window.location.origin);
   });
 
   it('sends Enterprise and White-label to "Contact us", never to a Start', async () => {

@@ -53,12 +53,6 @@ export interface DemoProduct {
 /** The live demo's product; without one the demo shows the snippet only. */
 export const DEMO_PRODUCT: DemoProduct | undefined = undefined;
 
-/**
- * The cloud console: its own origin, never this page's (it makes the owner key).
- * The landing only links to it; it holds no session and sends nothing.
- */
-export const CLOUD_CONSOLE_URL = 'https://cloud.elisym.network';
-
 /** Where Enterprise and White-label merchants reach us (operator-provisioned, no self-serve start). */
 export const CONTACT_URL = X_URL;
 
@@ -68,7 +62,7 @@ export const CONTACT_URL = X_URL;
  * the cloud repo compares with the catalog it ships.
  */
 export interface CloudTier {
-  /** The catalog's tier id: the console's `/start?tier=` takes it for a self-serve tier. */
+  /** The catalog's tier id: the admin's `/start?tier=` takes it for a self-serve tier. */
   id: string;
   name: string;
   audience: string;
@@ -78,7 +72,7 @@ export interface CloudTier {
   /** Shown instead of a limit's number ("No cap"). */
   display: { products?: string; ordersPerMonth?: string };
   features: string[];
-  /** Self-serve: a Start link to the console. Otherwise "Contact us". */
+  /** Self-serve: a Start link to the admin. Otherwise "Contact us". */
   selfServe: boolean;
   /** The plan the section points at. */
   highlighted?: boolean;
@@ -141,7 +135,10 @@ export const CLOUD_TIERS: CloudTier[] = [
   },
 ];
 
-/** A tier's Start link: the console's own page, which makes the key and takes the first payment. */
+/**
+ * A tier's Start link: the admin's own page, on its own origin (it makes the
+ * owner key and takes the first payment). The landing only links to it.
+ */
 export function cloudStartUrl(tier: string): string {
-  return `${CLOUD_CONSOLE_URL}/start?tier=${tier}`;
+  return `${ADMIN_URL}/start?tier=${tier}`;
 }

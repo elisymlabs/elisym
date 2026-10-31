@@ -22,7 +22,7 @@ const STAYS_YOURS: { icon: IconName; text: string }[] = [
 const STEPS: { title: string; body: string; icon: IconName }[] = [
   {
     title: 'Create your key',
-    body: 'Accept the terms and the console makes your owner key in your browser. It is how you sign in.',
+    body: 'Accept the terms and the admin makes your owner key in your browser. It is how you sign in.',
     icon: 'key',
   },
   {
