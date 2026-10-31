@@ -101,7 +101,7 @@ export function SignupForm({
         full
         className="mt-16"
       >
-        Create the store
+        Create my store
       </Button>
     </Card>
   );

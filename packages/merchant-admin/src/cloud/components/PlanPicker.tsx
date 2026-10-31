@@ -50,7 +50,9 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
   // Undefined while the catalog loads; `failed` when it could not be read.
   const [tiers, setTiers] = useState<TierCard[] | 'failed' | undefined>(undefined);
   const [loads, setLoads] = useState(0);
-  // The `/start` plan is applied once, on the first catalog read.
+  // The plan to start on is the one given at mount (a later pick never reads the catalog again),
+  // applied once, on the first catalog read.
+  const startOn = useRef(preselect);
   const preselected = useRef(false);
   const cards = useRef(new Map<string, HTMLButtonElement>());
 
@@ -64,7 +66,7 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
       setTiers(read ?? 'failed');
       if (read !== undefined && !preselected.current) {
         preselected.current = true;
-        const named = read.find((tier) => tier.id === preselect);
+        const named = read.find((tier) => tier.id === startOn.current);
         if (named !== undefined && canStart(named)) {
           onChoose(named);
         }
@@ -73,7 +75,7 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
     return () => {
       current = false;
     };
-  }, [loadTiers, loads, preselect, onChoose]);
+  }, [loadTiers, loads, onChoose]);
 
   if (tiers === undefined) {
     return (
@@ -102,10 +104,12 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
     );
   }
 
-  const named = tiers.find((tier) => tier.id === preselect);
+  const named = tiers.find((tier) => tier.id === startOn.current);
   // Said until a plan that can start is picked.
   const refused =
-    preselect !== undefined && (named === undefined || !canStart(named)) && chosen === undefined;
+    startOn.current !== undefined &&
+    (named === undefined || !canStart(named)) &&
+    chosen === undefined;
   const selfServe = tiers.filter((tier) => tier.selfServe);
   const open = selfServe.filter(canStart);
   // One stop in the tab order: the picked plan, else the first that can start.

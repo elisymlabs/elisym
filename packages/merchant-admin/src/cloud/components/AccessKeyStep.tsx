@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Button } from '../../components/Button';
 
 interface Props {
@@ -29,6 +30,14 @@ export function AccessKeyStep({
   onContinue,
   onSignIn,
 }: Props) {
+  // Once the key is made, the next thing to do is to save it: focus goes there.
+  const download = useRef<HTMLButtonElement>(null);
+  const isMade = made !== undefined;
+  useEffect(() => {
+    if (isMade) {
+      download.current?.focus();
+    }
+  }, [isMade]);
   return (
     <div className="flex flex-col gap-16">
       <p className="text-15 text-text-2 leading-relaxed">
@@ -57,7 +66,13 @@ export function AccessKeyStep({
             Your access key&apos;s public id (safe to share):
             <span className="text-text-2 mt-4 block font-mono break-all">{made.npub}</span>
           </p>
-          <Button onClick={onSave} variant={saved ? 'secondary' : 'primary'} size="lg" full>
+          <Button
+            ref={download}
+            onClick={onSave}
+            variant={saved ? 'secondary' : 'primary'}
+            size="lg"
+            full
+          >
             Download the key file
           </Button>
           <label className="text-14 flex items-start gap-8">

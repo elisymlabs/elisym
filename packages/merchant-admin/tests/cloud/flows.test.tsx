@@ -93,6 +93,8 @@ interface Options {
   relaysHang?: boolean;
   /** The relay reads cannot even start. */
   depsThrow?: boolean;
+  /** The first relay read cannot start; later ones can. */
+  depsThrowOnce?: boolean;
   /** Closing the relay client throws. */
   closeThrows?: boolean;
   /** Each `GET /owner` is answered only once what this gives for it settles. */
@@ -109,6 +111,7 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
   const cloudApi = fakeCloud({ 'GET /tiers': { body: tiersAnswer() }, ...routes });
   const relays = options.relays ?? [];
   const relayClients = { opened: 0, closed: 0 };
+  let threwOnce = false;
   const { ownerGate, signupGate } = options;
   const fetcher = async (request: Request) => {
     const path = new URL(request.url).pathname;
@@ -147,7 +150,8 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
     <Root
       ownTab={options.ownTab ?? true}
       createDeps={() => {
-        if (options.depsThrow === true) {
+        if (options.depsThrow === true || (options.depsThrowOnce === true && !threwOnce)) {
+          threwOnce = true;
           throw new Error('no relays');
         }
         relayClients.opened += 1;
@@ -328,7 +332,7 @@ describe('the front door', () => {
   it('the one sign-in says which key it takes, and Back returns to the front door', async () => {
     const { host } = await admin({});
     await click(host, 'Sign in to your store');
-    expect(host.textContent).toContain('For a store in our cloud, paste its owner key');
+    expect(host.textContent).toContain('For a store in our cloud, paste your access key');
     expect(host.textContent).toContain('We ask our cloud whether this key runs a store there');
     await click(host, 'Back');
     expect(host.textContent).toContain('Create a store in our cloud');
@@ -337,7 +341,7 @@ describe('the front door', () => {
   it('Create a store opens the plan step, and Back returns to the front door', async () => {
     const { host } = await admin({});
     await click(host, 'Create a store');
-    expect(host.querySelector('h1')?.textContent).toBe('Choose a plan');
+    expect(host.querySelector('h1')?.textContent).toBe('Create a store');
     expect(host.querySelector('ol[aria-label="Create a store"]')).not.toBeNull();
     await click(host, 'Back');
     expect(host.textContent).toContain('Create a store in our cloud');
@@ -659,7 +663,7 @@ describe('the create wizard', () => {
     expect(steps()?.querySelectorAll('button')).toHaveLength(2);
     await makeAndSaveKey(host);
     expect(document.activeElement).toBe(host.querySelector('h1'));
-    await eventually(host, () => hasButton(host, 'Create the store'));
+    await eventually(host, () => hasButton(host, 'Create my store'));
     expect(steps()?.querySelectorAll('button')).toHaveLength(3);
   });
 
@@ -689,10 +693,10 @@ describe('the create wizard', () => {
     expect(hasButton(host, 'Create my access key')).toBe(false);
     expect(button(host, 'Continue').disabled).toBe(false);
     await click(host, 'Continue');
-    await eventually(host, () => hasButton(host, 'Create the store'));
+    await eventually(host, () => hasButton(host, 'Create my store'));
     expect(host.textContent).toContain('Start a Business store');
     await act(async () => checkbox(host).click());
-    await click(host, 'Create the store');
+    await click(host, 'Create my store');
     await eventually(host, () => calls.some((call) => call.path === '/signup'));
     expect(made).toHaveBeenCalledTimes(1);
     const signers = new Set(
@@ -752,7 +756,7 @@ describe('the create wizard', () => {
     await click(host, 'Create a store');
     await toKeyStep(host);
     await makeAndSaveKey(host);
-    await eventually(host, () => hasButton(host, 'Create the store'));
+    await eventually(host, () => hasButton(host, 'Create my store'));
     expect(
       calls.filter((call) => call.path === '/owner').every((call) => call.signer !== undefined),
     ).toBe(true);
@@ -768,6 +772,142 @@ describe('the create wizard', () => {
     );
     const afterMount = signedIn.calls.filter((call) => call.path.startsWith('/tenants/'));
     expect(afterMount.every((call) => call.signer === pubkey)).toBe(true);
+  });
+});
+
+describe('the wizard, at the terms and on its way out', () => {
+  it('a terms read that fails says so; Try again reads them again, signed by the new key', async () => {
+    let reads = 0;
+    const { host, calls } = await admin({
+      'GET /owner': () => {
+        reads += 1;
+        return reads === 1
+          ? { status: 503, body: { error: 'internal' } }
+          : { body: { tenantId: null, termsVersion: 't1' } };
+      },
+    });
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await makeAndSaveKey(host);
+    await eventually(host, () => hasButton(host, 'Try again'));
+    expect(hasButton(host, 'Create my store')).toBe(false);
+    await click(host, 'Try again');
+    await eventually(host, () => hasButton(host, 'Create my store'));
+    const owners = calls.filter((call) => call.path === '/owner');
+    expect(owners).toHaveLength(2);
+    expect(owners[0]?.signer).toMatch(/^[0-9a-f]{64}$/);
+    expect(owners[1]?.signer).toBe(owners[0]?.signer);
+  });
+
+  it('a key whose store exists already goes straight to it', async () => {
+    const store = new FakeStore(storeState());
+    const { host } = await admin(store.routes());
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await makeAndSaveKey(host);
+    await eventually(host, () => hasButton(host, 'Sign out'));
+    expect(hasButton(host, 'Create my store')).toBe(false);
+  });
+
+  it('terms changed since they were shown: refused, read again, the new version to accept', async () => {
+    let version = 't1';
+    const { host } = await admin({
+      'GET /owner': () => ({ body: { tenantId: null, termsVersion: version } }),
+      'POST /signup': () => {
+        version = 't2';
+        return { status: 409, body: { error: 'terms_not_accepted' } };
+      },
+    });
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await makeAndSaveKey(host);
+    await eventually(host, () => hasButton(host, 'Create my store'));
+    await act(async () => checkbox(host).click());
+    await click(host, 'Create my store');
+    await eventually(host, () => host.textContent?.includes('(version t2)') === true);
+    expect(checkbox(host).checked).toBe(false);
+  });
+
+  it('a plan picked over the /start one is the one signed up for', async () => {
+    const { host, calls } = await admin(
+      {
+        'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+        'POST /signup': { body: { tenantId: TENANT_ID } },
+      },
+      { cloudProps: { startTier: 'starter' } },
+    );
+    await toKeyStep(host, 'business');
+    await makeAndSaveKey(host);
+    await eventually(host, () => hasButton(host, 'Create my store'));
+    await act(async () => checkbox(host).click());
+    await click(host, 'Create my store');
+    await eventually(host, () => calls.some((call) => call.path === '/signup'));
+    expect(calls.find((call) => call.path === '/signup')?.body).toEqual({
+      tier: 'business',
+      terms: 't1',
+    });
+  });
+
+  it('while the signup is on its way, the steps and Back hold still', async () => {
+    const signup = gate();
+    const { host } = await admin(
+      {
+        'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+        'POST /signup': { status: 409, body: { error: 'key_owns_a_store' } },
+      },
+      { signupGate: signup.wait },
+    );
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await makeAndSaveKey(host);
+    await eventually(host, () => hasButton(host, 'Create my store'));
+    await act(async () => checkbox(host).click());
+    await click(host, 'Create my store');
+    expect(button(host, 'Back').disabled).toBe(true);
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>(
+          'ol[aria-label="Create a store"] li[data-step="plan"] button',
+        )
+        ?.click(),
+    );
+    expect(host.querySelector('h1')?.textContent).toBe('Accept the terms and create your store');
+    await act(async () => signup.open());
+    await eventually(host, () => button(host, 'Back').disabled === false);
+  });
+
+  it('once the key is made, focus goes to saving it', async () => {
+    const { host } = await admin({});
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await click(host, 'Create my access key');
+    expect(document.activeElement).toBe(button(host, 'Download the key file'));
+  });
+
+  it('picking plans reads the catalog once', async () => {
+    const { host, calls } = await admin({});
+    await click(host, 'Create a store');
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    for (const tier of ['business', 'starter', 'business']) {
+      await act(async () =>
+        host.querySelector<HTMLButtonElement>(`button[data-tier="${tier}"]`)?.click(),
+      );
+    }
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(calls.filter((call) => call.path === '/tiers')).toHaveLength(1);
+  });
+
+  it('the card-return line is said once: Back and the sign-in again no longer show it', async () => {
+    const { host } = await admin(
+      {},
+      { cloudProps: { checkoutReturn: { tenantId: TENANT_ID, outcome: 'done' } } },
+    );
+    expect(host.textContent).toContain('Your card payment came back');
+    await click(host, 'Back');
+    await click(host, 'Sign in to your store');
+    expect(host.textContent).not.toContain('Your card payment came back');
   });
 });
 
@@ -803,6 +943,23 @@ describe('a plan picked before the sign-in', () => {
     await pasteKey(host, OwnerKey.create());
     await eventually(host, () => host.textContent?.includes('Our cloud is not answering') === true);
     answered = true;
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-checked')).toBe(
+      'true',
+    );
+  });
+
+  it('is kept across a sign-in whose reads could not even start', async () => {
+    const { host } = await admin(
+      { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+      { depsThrowOnce: true },
+    );
+    await click(host, 'Create a store');
+    await toKeyStep(host, 'business');
+    await click(host, 'sign in');
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Our cloud is not answering') === true);
     await pasteKey(host, OwnerKey.create());
     await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
     expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-checked')).toBe(
@@ -847,11 +1004,11 @@ describe('making a cloud store', () => {
     expect(downloads[0]).toMatch(/^paycore-owner-npub1/);
     await act(async () => checkbox(host).click());
     await click(host, 'Continue');
-    await eventually(host, () => hasButton(host, 'Create the store'));
+    await eventually(host, () => hasButton(host, 'Create my store'));
     expect(host.textContent).toContain('Start a Business store');
     expect(host.textContent).not.toContain('do not create a store here');
     await act(async () => checkbox(host).click());
-    await click(host, 'Create the store');
+    await click(host, 'Create my store');
     await eventually(host, () => calls.some((call) => call.path === '/signup'));
     const signup = calls.find((call) => call.path === '/signup');
     expect(signup?.body).toEqual({ tier: 'business', terms: 't1' });
@@ -879,7 +1036,7 @@ describe('making a cloud store', () => {
     expect(host.querySelector('button[data-tier] ul, button[data-tier] li')).toBeNull();
     // The catalog is read with no auth.
     expect(calls.find((call) => call.path === '/tiers')?.signer).toBeUndefined();
-    expect(hasButton(host, 'Create the store')).toBe(false);
+    expect(hasButton(host, 'Create my store')).toBe(false);
     await act(async () =>
       host.querySelector<HTMLButtonElement>('button[data-tier="starter"]')?.click(),
     );
@@ -888,7 +1045,7 @@ describe('making a cloud store', () => {
     );
     expect(host.textContent).toContain('Start a Starter store ($29/mo)');
     await act(async () => checkbox(host).click());
-    await click(host, 'Create the store');
+    await click(host, 'Create my store');
     await eventually(host, () => calls.some((call) => call.path === '/signup'));
     expect(calls.find((call) => call.path === '/signup')?.body).toEqual({
       tier: 'starter',
@@ -997,7 +1154,7 @@ describe('making a cloud store', () => {
       host.querySelector<HTMLButtonElement>('button[data-tier="starter"]')?.click(),
     );
     await act(async () => checkbox(host).click());
-    await click(host, 'Create the store');
+    await click(host, 'Create my store');
     const business = () => host.querySelector<HTMLButtonElement>('button[data-tier="business"]');
     expect(business()?.disabled).toBe(true);
     await act(async () => business()?.click());

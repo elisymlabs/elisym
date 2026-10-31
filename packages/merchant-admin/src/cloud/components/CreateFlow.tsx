@@ -38,7 +38,7 @@ type Terms =
   | { state: 'ready'; version: string };
 
 const HEADINGS: Record<CreateStage, string> = {
-  plan: 'Choose a plan',
+  plan: 'Create a store',
   key: 'Save your access key',
   signup: 'Accept the terms and create your store',
 };

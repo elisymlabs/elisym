@@ -8,7 +8,7 @@ import { TrustPanel } from './TrustPanel';
 interface Props {
   onKey: (key: StoreKey) => void;
   /**
-   * The cloud is on: the field takes a cloud store's owner key too, the answer
+   * The cloud is on: the field takes a cloud store's access key too, the answer
    * is waited on (`checking`), and why the key opened nothing is said.
    */
   cloud?: {
@@ -63,7 +63,7 @@ export function SignIn({ onKey, cloud }: Props) {
           <p className="text-15 text-text-2 mt-8">
             {cloud === undefined
               ? 'Open your orders, products and store profile with your store key.'
-              : 'For a store in our cloud, paste its owner key (the file you saved when you made it). For a store you run yourself, its store key.'}
+              : 'For a store in our cloud, paste your access key (from the file you saved when you made it). For a store you run yourself, its store key.'}
           </p>
           {cloud?.line === undefined ? null : (
             <p role="status" className="rounded-12 bg-surface-2 text-14 text-text-2 mt-12 p-12">
