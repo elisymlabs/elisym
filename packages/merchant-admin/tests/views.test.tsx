@@ -1,6 +1,7 @@
-import { act } from 'react';
+import { type ReactElement, act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { About } from '../src/components/About';
+import { Charts } from '../src/components/Charts';
 import { Dashboard } from '../src/components/Dashboard';
 import { DashboardShell } from '../src/components/DashboardShell';
 import { OrderDetails } from '../src/components/OrderDetails';
@@ -472,18 +473,40 @@ describe('the dashboard pages', () => {
     expect(page(container, 'help').querySelector('.skeleton')).toBeNull();
   });
 
-  it('keeps the store name, its npub, Refresh and Log out in the sidebar', async () => {
+  it('keeps the store name, its npub, its copy label, Refresh and Log out in the sidebar', async () => {
     const container = await mountDashboard();
     const sidebar = byId(container, 'store-sidebar');
     expect(sidebar.querySelector('#store-name')).not.toBeNull();
     expect(sidebar.querySelector('#store-pubkey')?.getAttribute('title')).toMatch(/^npub1/);
+    expect(sidebar.querySelector('[aria-label="Copy npub"]')).not.toBeNull();
     expect(sidebar.textContent).toContain('Refresh');
     expect(sidebar.textContent).toContain('Log out');
-    expect(sidebar.textContent).toContain('Read 4 order messages');
+  });
+
+  it('says the status once, outside the sidebar, so it shows at every width', async () => {
+    const container = await mountDashboard();
+    const statuses = [...container.querySelectorAll('[role="status"]')];
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]?.textContent).toBe('Read 4 order messages');
+    expect(byId(container, 'store-sidebar').contains(statuses[0] ?? null)).toBe(false);
+    expect(container.querySelector('main')?.contains(statuses[0] ?? null)).toBe(true);
+  });
+
+  it('counts the orders and products in the nav, and makes each page heading focusable', async () => {
+    const container = await mountDashboard();
+    expect(byId(container, 'nav-orders').textContent).toBe('Orders4');
+    expect(byId(container, 'nav-overview').textContent).toBe('Overview');
+    for (const id of ['overview', 'orders', 'products', 'store', 'help']) {
+      expect(page(container, id).querySelector('h1')?.getAttribute('tabindex'), id).toBe('-1');
+    }
   });
 });
 
 describe('the frame', () => {
+  function page(container: HTMLElement, name: string): HTMLElement {
+    return byId(container, `page-${name}`);
+  }
+
   function shell(onSelect: (id: string) => void = () => undefined) {
     return (
       <DashboardShell
@@ -557,10 +580,87 @@ describe('the frame', () => {
     await act(async () => byId(container, 'sidebar-backdrop').click());
     expect(menu.getAttribute('aria-expanded')).toBe('false');
     expect(document.activeElement).toBe(menu);
+    // A choice of the page already open closes the menu, focus back on its button.
     await act(async () => menu.click());
+    byId(container, 'nav-overview').focus();
     await act(async () => byId(container, 'nav-overview').click());
     expect(menu.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('#sidebar-backdrop')).toBeNull();
+    expect(document.activeElement).toBe(menu);
+  });
+
+  it('returns focus to the menu button after a click outside, from wherever it was', async () => {
+    mounted = await mount(shell());
+    const { container } = mounted;
+    const menu = container.querySelector('[aria-controls="store-sidebar"]');
+    if (!(menu instanceof HTMLButtonElement)) {
+      throw new Error('no menu button');
+    }
+    await act(async () => menu.click());
+    byId(container, 'nav-overview').focus();
+    expect(document.activeElement).toBe(byId(container, 'nav-overview'));
+    await act(async () => byId(container, 'sidebar-backdrop').click());
+    expect(document.activeElement).toBe(menu);
+  });
+
+  it('puts the page out of reach while the phone menu is open', async () => {
+    mounted = await mount(shell());
+    const { container } = mounted;
+    const main = container.querySelector('main');
+    const menu = container.querySelector('[aria-controls="store-sidebar"]');
+    if (!(menu instanceof HTMLButtonElement) || main === null) {
+      throw new Error('no frame');
+    }
+    expect(main.hasAttribute('inert')).toBe(false);
+    await act(async () => menu.click());
+    expect(main.hasAttribute('inert')).toBe(true);
+    await act(async () => menu.click());
+    expect(main.hasAttribute('inert')).toBe(false);
+  });
+
+  it('a page chosen in the menu with no heading leaves focus on the menu button', async () => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+    let active = 'overview';
+    const render = () => (
+      <DashboardShell
+        name="Shop"
+        unnamed="Your store"
+        identity={{ value: 'npub1' + 'q'.repeat(58), copyLabel: 'Copy' }}
+        status="Read"
+        busy={false}
+        onRefresh={() => undefined}
+        onSignOut={() => undefined}
+        signOutLabel="Sign out"
+        pages={[
+          { id: 'overview', label: 'Overview', icon: 'home', content: <h1 tabIndex={-1}>O</h1> },
+          { id: 'plain', label: 'Plain', icon: 'box', content: <p>No heading</p> },
+        ]}
+        active={active}
+        onSelect={(id) => {
+          active = id;
+        }}
+      />
+    );
+    mounted = await mount(render());
+    const { container } = mounted;
+    const menu = container.querySelector('[aria-controls="store-sidebar"]');
+    if (!(menu instanceof HTMLButtonElement)) {
+      throw new Error('no menu button');
+    }
+    await act(async () => menu.click());
+    await act(async () => byId(container, 'nav-plain').click());
+    await mounted.rerender(render());
+    expect(page(container, 'plain').hidden).toBe(false);
+    expect(document.activeElement).toBe(menu);
+  });
+
+  it('describes a locked page once: its reason out of the button name', async () => {
+    mounted = await mount(shell());
+    const reason = byId(mounted.container, 'nav-orders-locked');
+    expect(reason.getAttribute('aria-hidden')).toBe('true');
+    expect(byId(mounted.container, 'nav-orders').getAttribute('aria-describedby')).toBe(
+      'nav-orders-locked',
+    );
   });
 });
 
@@ -574,40 +674,69 @@ describe('the words for whose numbers they are', () => {
     expect(rowNotes(credited)).not.toContain('not confirmed by your node');
   });
 
-  it('say "your node" for a store run by the merchant, "your store" in the cloud', async () => {
+  it('say "your node" for a store run by the merchant, "your store" in the cloud, in each view', async () => {
     const reported = [row('r', 'payment_reported')];
+    const unnamedAsset = [
+      row('u', 'delivered', { credits: [{ tx: 't', amount: '7', fee: '0', medium: 'mystery' }] }),
+    ];
     for (const [source, words] of [
       ['self-hosted', 'your node'],
       ['cloud', 'your store'],
     ] as const) {
-      mounted = await mount(
-        <>
+      const text = async (node: ReactElement, id?: string) => {
+        mounted = await mount(node);
+        const shown =
+          id === undefined
+            ? (mounted.container.textContent ?? '')
+            : (byId(mounted.container, id).textContent ?? '');
+        await mounted.unmount();
+        mounted = undefined;
+        return shown;
+      };
+      expect(
+        await text(
           <Totals
             history={{ rows: [], totals: { perAsset: [], unknownAsset: [] } }}
             source={source}
-          />
-          <StatusStrip
-            parts={statusParts(stateCounts(reported))}
-            unconfirmed={unconfirmedPayments(reported)}
-            source={source}
-          />
-          <Overview snapshot={snapshot()} onTab={() => undefined} source={source} />
-          <OrdersSection
-            snapshot={snapshot()}
-            busy={false}
-            onMore={() => undefined}
-            source={source}
-          />
-        </>,
+          />,
+          'totals',
+        ),
+      ).toContain(`by ${words}`);
+      expect(
+        await text(
+          <Charts rows={unnamedAsset} nowSeconds={1_790_000_500} source={source} />,
+          'uncharted',
+        ),
+      ).toContain(`in an asset ${words} did not name`);
+      expect(
+        await text(
+          <Charts rows={reported} nowSeconds={1_790_000_500} source={source} />,
+          'status-reported',
+        ),
+      ).toBe(`1 payment reported, not confirmed by ${words}`);
+      expect(
+        await text(
+          <Charts rows={[]} nowSeconds={1_790_000_500} source={source} />,
+          'credited-empty',
+        ),
+      ).toContain(`once ${words} confirms it`);
+      expect(
+        await text(<Overview snapshot={snapshot()} onTab={() => undefined} source={source} />),
+      ).toContain(`what ${words} confirmed on chain`);
+      const orders = await text(
+        <OrdersSection
+          snapshot={snapshot()}
+          busy={false}
+          onMore={() => undefined}
+          source={source}
+        />,
       );
-      const text = mounted.container.textContent ?? '';
-      expect(text).toContain(`by ${words}`);
-      expect(text).toContain(`not confirmed by ${words}`);
-      expect(text).toContain(`what ${words} confirmed on chain`);
-      expect(text).toContain(`Credited by ${words}`);
-
-      await mounted.unmount();
-      mounted = undefined;
+      expect(orders).toContain(`Credited by ${words}`);
+      expect(orders).toContain(
+        source === 'cloud'
+          ? 'Every order of your store, with what your store credited for it.'
+          : 'Every order your inbox relays hold, with what your node credited for it.',
+      );
     }
   });
 });

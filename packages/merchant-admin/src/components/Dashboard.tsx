@@ -40,7 +40,7 @@ function NotRead({ busy }: NotReadProps) {
   return (
     <div className="rounded-16 border-line bg-surface border">
       <EmptyState icon="alert" title="Your store could not be read">
-        The status in the sidebar says why. Press Refresh to read it again.
+        The status above says why. Press Refresh to read it again.
       </EmptyState>
     </div>
   );

@@ -57,6 +57,8 @@ export function DashboardShell({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const shown = useRef(active);
+  // The page was chosen from the phone menu: with no heading to take it, focus goes back to it.
+  const fromMenu = useRef(false);
 
   // A page opened (not the first one shown): its heading takes the focus, from the top.
   useEffect(() => {
@@ -66,7 +68,12 @@ export function DashboardShell({
     shown.current = active;
     window.scrollTo?.({ top: 0 });
     const heading = document.getElementById(`page-${active}`)?.querySelector('h1');
-    heading?.focus();
+    if (heading !== null && heading !== undefined) {
+      heading.focus();
+    } else if (fromMenu.current) {
+      menuButton.current?.focus();
+    }
+    fromMenu.current = false;
   }, [active]);
 
   const closeMenu = () => {
@@ -94,6 +101,12 @@ export function DashboardShell({
     }
     if (menuOpen) {
       setMenuOpen(false);
+      if (page.id === active) {
+        // Nothing opens: the focus, in the menu that closed, goes back to its button.
+        menuButton.current?.focus();
+        return;
+      }
+      fromMenu.current = true;
     }
     onSelect(page.id);
   };
@@ -104,7 +117,9 @@ export function DashboardShell({
     <div className="min-h-screen md:flex">
       <div className="border-line/60 bg-bg/80 sticky top-0 z-20 flex h-56 items-center gap-12 border-b px-16 backdrop-blur-md md:hidden">
         <LogoMark className="size-28 shrink-0" />
-        <p className="text-15 min-w-0 flex-1 truncate font-semibold">{storeName}</p>
+        <p className="text-15 min-w-0 flex-1 truncate font-semibold" title={storeName}>
+          {storeName}
+        </p>
         <button
           ref={menuButton}
           type="button"
@@ -127,19 +142,16 @@ export function DashboardShell({
       )}
       <aside
         id="store-sidebar"
-        className={`bg-surface border-line z-40 w-240 shrink-0 flex-col gap-24 border-r px-16 py-20 md:sticky md:top-0 md:flex md:h-screen ${
+        className={`bg-surface border-line z-40 w-240 shrink-0 flex-col gap-24 border-r px-16 py-20 md:sticky md:top-0 md:flex md:h-screen md:overflow-y-auto ${
           menuOpen ? 'fixed inset-y-0 left-0 flex overflow-y-auto' : 'hidden'
         }`}
       >
         <span className="flex items-center gap-10" title={PRODUCT_NAME}>
           <PayCoreLogo className="h-28 w-auto" />
         </span>
-        <div className="flex min-w-0 flex-col gap-6">
-          <p id="store-name" className="text-15 truncate font-semibold" title={storeName}>
-            {storeName}
-          </p>
-          <StatusLine status={status} busy={busy} />
-        </div>
+        <p id="store-name" className="text-15 truncate font-semibold" title={storeName}>
+          {storeName}
+        </p>
         <nav aria-label="Store" className="flex flex-col gap-2">
           {pages.map((page) => {
             const current = page.id === active;
@@ -163,7 +175,12 @@ export function DashboardShell({
                 <span className="min-w-0 flex-1">
                   {page.label}
                   {locked && (
-                    <span id={`nav-${page.id}-locked`} className="text-12 text-text-3 block">
+                    // Out of the button's name: read once, as its description.
+                    <span
+                      id={`nav-${page.id}-locked`}
+                      aria-hidden="true"
+                      className="text-12 text-text-3 block"
+                    >
                       {page.locked}
                     </span>
                   )}
@@ -203,8 +220,10 @@ export function DashboardShell({
           </button>
         </div>
       </aside>
-      <main className="min-w-0 flex-1">
-        <div className="mx-auto w-full max-w-880 px-16 py-24 sm:px-32 sm:py-40">
+      {/* Under the open phone menu, the page is out of reach. */}
+      <main className="min-w-0 flex-1" inert={menuOpen || undefined}>
+        <div className="mx-auto flex w-full max-w-880 flex-col gap-20 px-16 py-24 sm:px-32 sm:py-40">
+          <StatusLine status={status} busy={busy} />
           {pages.map((page) => (
             <div key={page.id} id={`page-${page.id}`} hidden={page.id !== active}>
               {page.content}

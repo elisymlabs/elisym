@@ -1512,6 +1512,31 @@ describe('a launched cloud store', () => {
     expect(host.querySelector('#status-reported')).toBeNull();
   });
 
+  it('words its charts for a store in our cloud: "your store", never "your node"', async () => {
+    const store = new FakeStore(
+      readyState({
+        activated: true,
+        runState: 'live',
+        orders: [
+          servedOrder('b1:o1', {
+            signature: 'sig1',
+            amount: '7',
+            fee: '0',
+            asset: 'solana:nowhere/token:nothing',
+            medium: 'solana',
+            paidAt: Math.floor(Date.now() / 1000) - 60,
+          }),
+        ],
+      }),
+    );
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('#uncharted') !== null);
+    expect(host.querySelector('#uncharted')?.textContent).toContain(
+      'in an asset your store did not name',
+    );
+  });
+
   it('taking it off sale asks once more, and Cancel brings the buttons back', async () => {
     const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
     const { host } = await admin(store.routes());
