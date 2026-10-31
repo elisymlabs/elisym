@@ -18,7 +18,7 @@ const LIST_AT = 1_700_000_000;
 
 type Body = Record<string, unknown>;
 
-/** `GET /tiers` (served before the routes, unsigned). */
+/** `GET /tiers` (served before the routes, unsigned), in the shape of cloud-api's `tiersAnswer` for its default catalog. */
 export function tiersAnswer(): Body {
   return {
     tiers: [
@@ -41,6 +41,26 @@ export function tiersAnswer(): Body {
         display: { ordersPerMonth: 'No cap' },
         ownRpc: true,
         payable: { card: true, crypto: false },
+      },
+      {
+        id: 'high-risk',
+        name: 'Enterprise',
+        price: 'from $499/mo',
+        selfServe: false,
+        limits: { products: 1200 },
+        display: { products: 'No cap', ordersPerMonth: 'No cap' },
+        ownRpc: true,
+        payable: { card: false, crypto: false },
+      },
+      {
+        id: 'white-label',
+        name: 'White-label',
+        price: "Let's talk",
+        selfServe: false,
+        limits: { products: 1200 },
+        display: { products: 'No cap', ordersPerMonth: 'No cap' },
+        ownRpc: true,
+        payable: { card: false, crypto: false },
       },
     ],
   };

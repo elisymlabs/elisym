@@ -1,48 +1,30 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Button } from '../../components/Button';
 import type { ConsoleApi } from '../lib/api';
 import { explain } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
-import { type StartTier, startTierFrom } from '../lib/tiers';
+import { type TierCard, paidBy } from '../lib/tiers';
 import { Card } from './Card';
 
 interface Props {
   api: ConsoleApi;
-  /** The tier id the `/start` link named (the catalog says whether it may be started). */
-  tier: string;
+  /** The plan picked (a self-serve plan with a way to pay). */
+  tier: TierCard;
   termsVersion: string;
   /** Where the terms of service are read. */
   termsUrl: string | undefined;
   onDone: () => void;
-  /** The terms changed since they were shown: the console reads them again. */
+  /** The terms changed since they were shown: the admin reads them again. */
   onTermsChanged: () => void;
 }
 
-/** `/start`: this key opens a store on the chosen plan, once the terms are accepted. */
+/** This access key opens a store on the picked plan, once the terms are accepted. */
 export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsChanged }: Props) {
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   // Set before any await: a second click in the same moment sends nothing.
   const inFlight = useRef(false);
-  // Undefined while the catalog loads; `none` when it names no tier a merchant may start;
-  // `unloaded` when it could not be read (another try is offered).
-  const [plan, setPlan] = useState<StartTier | 'none' | 'unloaded' | undefined>(undefined);
-  const [loads, setLoads] = useState(0);
-
-  useEffect(() => {
-    let current = true;
-    void api.request('GET', '/tiers').then((answer) => {
-      if (current) {
-        // A 200 that is not a catalog (a proxy's page) is unreadable, not a plan the catalog refuses.
-        const catalog = answer.status === 200 && Array.isArray(fieldOf(answer.body, 'tiers'));
-        setPlan(catalog ? (startTierFrom(answer.body, tier) ?? 'none') : 'unloaded');
-      }
-    });
-    return () => {
-      current = false;
-    };
-  }, [api, tier, loads]);
 
   const signUp = async () => {
     if (inFlight.current) {
@@ -50,7 +32,7 @@ export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsC
     }
     inFlight.current = true;
     setBusy(true);
-    const answer = await api.request('POST', '/signup', { tier, terms: termsVersion });
+    const answer = await api.request('POST', '/signup', { tier: tier.id, terms: termsVersion });
     if (answer.status === 200) {
       // Stays busy: the console reloads with the store.
       onDone();
@@ -66,44 +48,13 @@ export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsC
     }
   };
 
-  if (plan === 'none') {
-    return (
-      <Card title="Start a store">
-        <p role="alert" className="text-14 text-text-2 mt-8 leading-relaxed">
-          This plan cannot be started here. Pick a plan on the pricing page, or contact us.
-        </p>
-      </Card>
-    );
-  }
-
-  if (plan === 'unloaded') {
-    return (
-      <Card title="Start a store">
-        <p role="alert" className="text-14 text-error mt-8 leading-relaxed">
-          The plans could not be loaded. Check your connection and try again.
-        </p>
-        <Button
-          onClick={() => {
-            setPlan(undefined);
-            setLoads((count) => count + 1);
-          }}
-          size="lg"
-          full
-          className="mt-16"
-        >
-          Try again
-        </Button>
-      </Card>
-    );
-  }
-
   return (
-    <Card
-      title={plan === undefined ? 'Start a store' : `Start a ${plan.name} store (${plan.price})`}
-    >
+    <Card title={`Start a ${tier.name} store (${tier.price})`}>
       <p className="text-14 text-text-2 mt-8 leading-relaxed">
-        This key becomes the store&apos;s owner. You pay after this step; nothing runs until you do.
+        This access key becomes the store&apos;s owner. You pay the first month next; nothing runs
+        until you do.
       </p>
+      <p className="text-13 text-text-3 mt-4">{paidBy(tier.payable)}</p>
       <label className="text-14 mt-16 flex items-start gap-8">
         <input
           type="checkbox"
@@ -131,7 +82,7 @@ export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsC
         {error}
       </p>
       <Button
-        disabled={!accepted || busy || plan === undefined}
+        disabled={!accepted || busy}
         onClick={() => void signUp()}
         variant="primary"
         size="lg"

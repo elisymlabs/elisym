@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Home } from './components/Home';
 import { KeyStep } from './components/KeyStep';
 import { SaveKey } from './components/SaveKey';
@@ -6,6 +6,7 @@ import { type ConsoleApi, type Fetcher, createConsoleApi } from './lib/api';
 import type { RelayQuery } from './lib/key-in-use';
 import { OwnerKey, ownerKeyFile, ownerKeyFileName } from './lib/owner-key';
 import type { CheckoutReturn } from './lib/start';
+import { fetchTiers } from './lib/tiers';
 import type { WalletProviders } from './lib/wallet';
 
 /** The cloud part's configuration and tools, as the page gives them. */
@@ -110,6 +111,9 @@ export function CloudApp({
     };
   }, [leave]);
 
+  // Stable: the plan picker reads the catalog again only when it changes.
+  const loadTiers = useCallback(() => fetchTiers(apiOrigin, fetcher), [apiOrigin, fetcher]);
+
   const hold = (key: OwnerKey) => {
     owner.current?.close();
     owner.current = key;
@@ -163,6 +167,7 @@ export function CloudApp({
       npub={stage.npub}
       pubkey={stage.pubkey}
       api={signedIn}
+      loadTiers={loadTiers}
       relayQuery={relayQuery}
       startTier={startTier}
       termsUrl={termsUrl}

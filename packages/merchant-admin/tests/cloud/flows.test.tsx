@@ -365,8 +365,11 @@ describe('one key field, routed', () => {
       'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
     });
     await signIn(host, OwnerKey.create());
-    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+    await eventually(host, () => host.textContent?.includes('Have an invite from us?') === true);
     expect(host.textContent).toContain('the relays showed nothing for this key');
+    expect(host.textContent).toContain(
+      'If this is the key of a store you run yourself, do not create a store here with it',
+    );
   });
 
   it('an operator key is refused in words, never read as a store key', async () => {
@@ -433,7 +436,7 @@ describe('one key field, routed', () => {
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
     await act(async () => owner.open());
     await pasteKey(host, OwnerKey.create());
-    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+    await eventually(host, () => host.textContent?.includes('Have an invite from us?') === true);
   });
 
   it('reads that cannot even start: said, no key kept, and the field takes another', async () => {
@@ -501,11 +504,12 @@ describe('one key field, routed', () => {
       },
     });
     await signIn(host, OwnerKey.create());
-    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+    await eventually(host, () => host.textContent?.includes('Have an invite from us?') === true);
     expect(host.textContent).toContain('the relays showed nothing');
+    await click(host, 'Use your invite');
     await fill(host, 'input#invite', 'invite-1');
     await click(host, 'Redeem');
-    await eventually(host, () => host.textContent?.includes('Redeem an invite') === false);
+    await eventually(host, () => host.textContent?.includes('Have an invite from us?') === false);
     await eventually(host, () => host.textContent?.includes('Your store') === true);
     expect(host.textContent).not.toContain('the relays showed nothing');
   });
@@ -535,7 +539,7 @@ describe('one key field, routed', () => {
     expect(field.value).toBe('typed');
     expect(probes).toBe(1);
     await act(async () => owner.open());
-    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+    await eventually(host, () => host.textContent?.includes('Have an invite from us?') === true);
   });
 
   it('a relay read that fails counts as no store: with the cloud down, nothing opens', async () => {
@@ -609,6 +613,11 @@ describe('making a cloud store', () => {
     await act(async () => checkbox(host).click());
     await click(host, 'Continue');
     await eventually(host, () => hasButton(host, 'Create the store'));
+    // Opened from a /start link, its plan is picked; no relay notice, so no self-hosted warning.
+    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(host.textContent).not.toContain('do not create a store here');
     await act(async () => checkbox(host).click());
     await click(host, 'Create the store');
     await eventually(host, () => calls.some((call) => call.path === '/signup'));
@@ -618,12 +627,107 @@ describe('making a cloud store', () => {
     expect(signup?.signer).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it('a key with no store yet is offered an invite to redeem', async () => {
+  it('a key with no store, with no /start link: the plans, then signup for the one picked', async () => {
+    const { host, calls } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+      'POST /signup': { body: { tenantId: TENANT_ID } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    // The invite comes first, the plans after it; only self-serve plans are cards.
+    const text = host.textContent ?? '';
+    expect(text.indexOf('Have an invite from us?')).toBeLessThan(text.indexOf('Choose a plan'));
+    expect(host.querySelector('button[data-tier="high-risk"]')).toBeNull();
+    expect(host.querySelector('a[href="https://x.com/elisymlabs"]')?.textContent).toBe(
+      'Talk to us',
+    );
+    // The catalog is read with no auth.
+    expect(calls.find((call) => call.path === '/tiers')?.signer).toBeUndefined();
+    expect(hasButton(host, 'Create the store')).toBe(false);
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>('button[data-tier="starter"]')?.click(),
+    );
+    expect(host.querySelector('button[data-tier="starter"]')?.getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(host.textContent).toContain('Start a Starter store ($29/mo)');
+    await act(async () => checkbox(host).click());
+    await click(host, 'Create the store');
+    await eventually(host, () => calls.some((call) => call.path === '/signup'));
+    expect(calls.find((call) => call.path === '/signup')?.body).toEqual({
+      tier: 'starter',
+      terms: 't1',
+    });
+  });
+
+  it('the invite opens in place, above the plans', async () => {
     const { host } = await admin({
       'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
     });
     await signIn(host, OwnerKey.create());
-    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+    await eventually(host, () => hasButton(host, 'Use your invite'));
+    expect(host.querySelector('input#invite')).toBeNull();
+    await click(host, 'Use your invite');
+    expect(host.querySelector('input#invite')).not.toBeNull();
+    const text = host.textContent ?? '';
+    expect(text.indexOf('Redeem an invite')).toBeLessThan(text.indexOf('Choose a plan'));
+  });
+
+  it('a /start link to a plan that cannot start here picks nothing and says so', async () => {
+    for (const tier of ['high-risk', 'nope']) {
+      const { host } = await admin(
+        { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+        { cloudProps: { startTier: tier } },
+      );
+      await click(host, 'Sign in with the key you saved');
+      await pasteKey(host, OwnerKey.create());
+      await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+      expect(host.textContent).toContain('That plan cannot be started here');
+      expect(host.querySelector('button[aria-pressed="true"]')).toBeNull();
+      expect(hasButton(host, 'Create the store')).toBe(false);
+      await unmount();
+    }
+  });
+
+  it('a plan with no way to pay yet cannot be picked', async () => {
+    const tiers = tiersAnswer();
+    const list = Array.isArray(tiers.tiers) ? tiers.tiers : [];
+    const unpaid = list.map((tier: unknown) =>
+      tier !== null && typeof tier === 'object' && 'id' in tier && tier.id === 'starter'
+        ? { ...tier, payable: { card: false, crypto: false } }
+        : tier,
+    );
+    const { host } = await admin({
+      'GET /tiers': { body: { tiers: unpaid } },
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    const starter = host.querySelector<HTMLButtonElement>('button[data-tier="starter"]');
+    expect(starter?.disabled).toBe(true);
+    expect(starter?.textContent).toContain('Not available yet');
+    expect(host.querySelector('button[data-tier="business"]')?.textContent).toContain(
+      'Pay by card',
+    );
+  });
+
+  it('a catalog that cannot be read says so, and Try again reads it again', async () => {
+    let reads = 0;
+    const { host } = await admin({
+      'GET /tiers': () => {
+        reads += 1;
+        return reads === 1 ? { status: 502, body: 'down' } : { body: tiersAnswer() };
+      },
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () => host.textContent?.includes('The plans could not be loaded') === true,
+    );
+    await click(host, 'Try again');
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    expect(reads).toBe(2);
   });
 });
 

@@ -1,22 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AuthLayout } from '../../components/AuthLayout';
 import { Button } from '../../components/Button';
-import type { ConsoleApi } from '../lib/api';
+import type { ApiAnswer, ConsoleApi } from '../lib/api';
 import { explain } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
 import { type RelayQuery, keyInUse } from '../lib/key-in-use';
 import type { OwnerTools } from '../lib/owner-tools';
 import type { CheckoutReturn } from '../lib/start';
-import { KeyInUseWarning } from './KeyInUseWarning';
+import { NoStoreYet } from './NoStoreYet';
 import { PartnerView } from './PartnerView';
-import { RedeemForm } from './RedeemForm';
-import { SignupForm } from './SignupForm';
 import { Store } from './Store';
 
 interface Props {
   npub: string;
   pubkey: string;
   api: ConsoleApi;
+  /** Reads the plan catalog (`GET /tiers`, no auth). */
+  loadTiers: () => Promise<ApiAnswer>;
   relayQuery: RelayQuery;
   /** The plan a `/start` link chose, if the console was opened from one. */
   startTier: string | undefined;
@@ -43,6 +43,7 @@ export function Home({
   npub,
   pubkey,
   api,
+  loadTiers,
   relayQuery,
   startTier,
   termsUrl,
@@ -92,11 +93,6 @@ export function Home({
   return (
     <AuthLayout owner={{ npub, onSignOut }}>
       <div className="flex w-full max-w-640 flex-col gap-16">
-        {notice === undefined || owner.state !== 'none' ? null : (
-          <p role="status" className="rounded-12 bg-surface-2 text-14 text-text-2 p-16">
-            {notice}
-          </p>
-        )}
         {owner.state === 'loading' ? <p className="text-14 text-text-3">Loading...</p> : null}
         {owner.state === 'failed' ? (
           <div className="flex flex-col items-start gap-12">
@@ -126,18 +122,18 @@ export function Home({
           />
         ) : null}
         {owner.state === 'partner' ? <PartnerView api={api} /> : null}
-        {owner.state === 'none' && inUse ? <KeyInUseWarning /> : null}
-        {owner.state === 'none' && startTier !== undefined ? (
-          <SignupForm
+        {owner.state === 'none' ? (
+          <NoStoreYet
             api={api}
-            tier={startTier}
+            loadTiers={loadTiers}
+            startTier={startTier}
             termsVersion={owner.termsVersion}
             termsUrl={termsUrl}
-            onDone={() => void load()}
-            onTermsChanged={() => void load()}
+            notice={notice}
+            inUse={inUse}
+            onStore={() => void load()}
           />
         ) : null}
-        {owner.state === 'none' ? <RedeemForm api={api} onDone={() => void load()} /> : null}
       </div>
     </AuthLayout>
   );

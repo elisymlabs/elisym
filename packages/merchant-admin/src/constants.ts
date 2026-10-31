@@ -31,3 +31,6 @@ export const QUICKSTART_URL = 'https://docs.elisym.network/commerce/quickstart';
 
 /** The cloud terms of service a signup accepts, on the landing. */
 export const TERMS_URL = 'https://paycore.elisym.network/terms';
+
+/** Where a merchant reaches us about a plan that is not self-serve. */
+export const CONTACT_URL = 'https://x.com/elisymlabs';
