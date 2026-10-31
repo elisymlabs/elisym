@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { CreateFlow } from './components/CreateFlow';
 import { Home } from './components/Home';
-import { KeyStep } from './components/KeyStep';
-import { SaveKey } from './components/SaveKey';
 import { type ConsoleApi, type Fetcher, createConsoleApi } from './lib/api';
 import type { RelayQuery } from './lib/key-in-use';
 import { OwnerKey, ownerKeyFile, ownerKeyFileName } from './lib/owner-key';
@@ -40,10 +39,10 @@ export interface CloudProps {
 interface Props extends CloudProps {
   /** Leaves the page for a new document, so nothing of the key stays reachable. */
   leave: () => void;
-  /** Back to the admin's front door, before a key is held. */
+  /** Back to the admin's front door, from the create flow (a key made there is closed first). */
   onBack?: () => void;
-  /** To the admin's one sign-in field, for a key saved before. */
-  onSignIn: () => void;
+  /** To the admin's one sign-in field, for a key saved before, with the plan picked so far. */
+  onSignIn: (tier: string | undefined) => void;
   /** An owner key the admin's sign-in already took and routed here: no key step. */
   initialKey?: OwnerKey;
   /** What the sign-in found, said on the store page. */
@@ -51,8 +50,8 @@ interface Props extends CloudProps {
 }
 
 type Stage =
-  | { name: 'key' }
-  | { name: 'save'; npub: string; pubkey: string }
+  /** Creating a store (plan, access key, terms); `made` once the key exists. */
+  | { name: 'create'; made: { npub: string } | undefined }
   | { name: 'signed-in'; npub: string; pubkey: string };
 
 /**
@@ -91,7 +90,7 @@ export function CloudApp({
   );
   const [stage, setStage] = useState<Stage>(
     initialKey === undefined
-      ? { name: 'key' }
+      ? { name: 'create', made: undefined }
       : { name: 'signed-in', npub: initialKey.npub, pubkey: initialKey.pubkey },
   );
 
@@ -125,10 +124,31 @@ export function CloudApp({
     });
   };
 
+  // The made key's store exists now: the console reads it (stable: the create flow's read waits on it).
+  const opened = useCallback(() => {
+    const key = owner.current;
+    if (key !== undefined) {
+      setStage({ name: 'signed-in', npub: key.npub, pubkey: key.pubkey });
+    }
+  }, []);
+
+  // One access key per visit: once made, the create flow never makes another.
   const create = () => {
+    if (owner.current !== undefined) {
+      return;
+    }
     const key = OwnerKey.create();
     hold(key);
-    setStage({ name: 'save', npub: key.npub, pubkey: key.pubkey });
+    setStage({ name: 'create', made: { npub: key.npub } });
+  };
+
+  // Leaving the create flow (for the sign-in, or back to the front door) closes a key made there:
+  // here, on the way out, never in an effect cleanup (StrictMode runs those on a live key).
+  const leaveFlow = (next: () => void) => {
+    owner.current?.close();
+    owner.current = undefined;
+    api.current = undefined;
+    next();
   };
 
   const save = () => {
@@ -145,22 +165,23 @@ export function CloudApp({
     leave();
   };
 
-  if (stage.name === 'key') {
-    return <KeyStep onCreate={create} onSignIn={onSignIn} onBack={onBack} />;
-  }
-  if (stage.name === 'save') {
-    return (
-      <SaveKey
-        npub={stage.npub}
-        onSave={save}
-        onContinue={() => setStage({ name: 'signed-in', npub: stage.npub, pubkey: stage.pubkey })}
-      />
-    );
-  }
   const signedIn = api.current;
   const signer = owner.current;
-  if (signedIn === undefined || signer === undefined) {
-    return <KeyStep onCreate={create} onSignIn={onSignIn} onBack={onBack} />;
+  if (stage.name === 'create' || signedIn === undefined || signer === undefined) {
+    return (
+      <CreateFlow
+        loadTiers={loadTiers}
+        preselect={startTier}
+        made={stage.name === 'create' ? stage.made : undefined}
+        api={api.current}
+        termsUrl={termsUrl}
+        onCreateKey={create}
+        onSaveKey={save}
+        onStore={opened}
+        onSignIn={(tier) => leaveFlow(() => onSignIn(tier))}
+        onBack={onBack === undefined ? undefined : () => leaveFlow(onBack)}
+      />
+    );
   }
   return (
     <Home

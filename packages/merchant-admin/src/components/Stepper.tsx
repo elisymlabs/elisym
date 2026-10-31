@@ -19,12 +19,14 @@ interface Props {
   onSelect?: (key: string) => void;
   /** The step shown now, when it is not the current one. */
   selected?: string;
+  /** What the steps are of (the list's name). */
+  label?: string;
 }
 
 /** Where the merchant is in setting up the store: each step done, current or still to come. */
-export function Stepper({ steps, onSelect, selected }: Props) {
+export function Stepper({ steps, onSelect, selected, label = 'Store setup' }: Props) {
   return (
-    <ol aria-label="Store setup" className="flex flex-col gap-4">
+    <ol aria-label={label} className="flex flex-col gap-4">
       {steps.map((step, index) => (
         <li
           key={step.key}

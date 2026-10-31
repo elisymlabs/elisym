@@ -94,7 +94,7 @@ export function parseOwnerKey(text: string): OwnerKey | undefined {
 /** The text of the file the merchant saves: the nsec, and what it is. */
 export function ownerKeyFile(key: OwnerKey): string {
   return [
-    '# Pay Core owner key. Keep this file safe and private.',
+    '# Pay Core access key (owner key). Keep this file safe and private.',
     '# It signs your payout list: anyone holding it can redirect new payments.',
     `# Store owner: ${key.npub}`,
     key.nsec(),

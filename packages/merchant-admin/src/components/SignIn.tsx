@@ -11,7 +11,13 @@ interface Props {
    * The cloud is on: the field takes a cloud store's owner key too, the answer
    * is waited on (`checking`), and why the key opened nothing is said.
    */
-  cloud?: { checking: boolean; problem: string; onBack: () => void };
+  cloud?: {
+    checking: boolean;
+    problem: string;
+    onBack: () => void;
+    /** Why the merchant is asked to sign in now (a card payment came back, say). */
+    line?: string;
+  };
 }
 
 /** The key field: a masked text field outside any form, read once and cleared. */
@@ -59,6 +65,11 @@ export function SignIn({ onKey, cloud }: Props) {
               ? 'Open your orders, products and store profile with your store key.'
               : 'For a store in our cloud, paste its owner key (the file you saved when you made it). For a store you run yourself, its store key.'}
           </p>
+          {cloud?.line === undefined ? null : (
+            <p role="status" className="rounded-12 bg-surface-2 text-14 text-text-2 mt-12 p-12">
+              {cloud.line}
+            </p>
+          )}
           {cloud === undefined ? null : (
             <p className="text-13 text-text-3 mt-8">
               We ask our cloud whether this key runs a store there, and read your relays; the key

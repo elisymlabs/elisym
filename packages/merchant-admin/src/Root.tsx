@@ -45,20 +45,28 @@ interface Held {
 /**
  * The admin's one entry: make a store in our cloud, or sign in with one key
  * field, which opens a store in our cloud, a partner's account, or a store
- * the merchant runs (plan `admin-unified.md` 2.3). A `/start` link or a card
- * payment's return goes straight to the cloud part. The pasted key is held in
+ * the merchant runs (plan `admin-unified.md` 2.3). A `/start` link opens the
+ * create flow; a card payment's return opens the sign-in (its store exists). The pasted key is held in
  * a ref only while it is routed and handed over: then by the part that opened
  * it, or zeroed. Leaving the sign-in drops a route still under way.
  */
 export function Root({ ownTab, createDeps, leave, cloud }: Props) {
-  const opensCloud =
-    cloud !== undefined && (cloud.startTier !== undefined || cloud.checkoutReturn !== undefined);
-  const [mode, setMode] = useState<Mode>(opensCloud ? { name: 'create' } : { name: 'entry' });
+  // A card payment's return signs in (its store exists: no second key); a `/start` link creates.
+  const firstMode = (): Mode => {
+    if (cloud?.checkoutReturn !== undefined) {
+      return { name: 'sign-in' };
+    }
+    return cloud?.startTier === undefined ? { name: 'entry' } : { name: 'create' };
+  };
+  const [mode, setMode] = useState<Mode>(firstMode);
+  const [cameBack, setCameBack] = useState(cloud?.checkoutReturn !== undefined);
   const [checking, setChecking] = useState(false);
   const [problem, setProblem] = useState('');
   const held = useRef<Held>({});
   // Bumped by every way out of the sign-in: a route that started before it counts for nothing.
   const attempt = useRef(0);
+  // A plan picked in the create flow before going to the sign-in: kept for the store part it opens.
+  const tier = useRef<string | undefined>(undefined);
 
   // The part opened has taken its key (its effects run before this one): Root lets go of it.
   useEffect(() => {
@@ -71,6 +79,10 @@ export function Root({ ownTab, createDeps, leave, cloud }: Props) {
     attempt.current += 1;
     setChecking(false);
     setProblem('');
+    setCameBack(false);
+    if (next.name === 'entry') {
+      tier.current = undefined;
+    }
     setMode(next);
   };
 
@@ -118,6 +130,8 @@ export function Root({ ownTab, createDeps, leave, cloud }: Props) {
     }
     setChecking(false);
     if (routed.where === 'self-hosted') {
+      // A store run by the merchant takes no plan.
+      tier.current = undefined;
       held.current = { store: routed.key };
       setMode({ name: 'self-hosted' });
     } else if (routed.where === 'unreachable') {
@@ -150,7 +164,10 @@ export function Root({ ownTab, createDeps, leave, cloud }: Props) {
         {...cloud}
         leave={leave}
         onBack={() => go({ name: 'entry' })}
-        onSignIn={() => go({ name: 'sign-in' })}
+        onSignIn={(picked) => {
+          go({ name: 'sign-in' });
+          tier.current = picked;
+        }}
       />
     );
   }
@@ -159,6 +176,7 @@ export function Root({ ownTab, createDeps, leave, cloud }: Props) {
       <CloudApp
         {...cloud}
         leave={leave}
+        startTier={tier.current ?? cloud.startTier}
         onSignIn={() => go({ name: 'sign-in' })}
         {...(held.current.owner === undefined ? {} : { initialKey: held.current.owner })}
         notice={mode.notice}
@@ -169,7 +187,16 @@ export function Root({ ownTab, createDeps, leave, cloud }: Props) {
     return (
       <SignIn
         onKey={(key) => void route(key, cloud.apiOrigin)}
-        cloud={{ checking, problem, onBack: () => go({ name: 'entry' }) }}
+        cloud={{
+          checking,
+          problem,
+          onBack: () => go({ name: 'entry' }),
+          ...(cameBack
+            ? {
+                line: 'Your card payment came back: sign in with your access key to see your store.',
+              }
+            : {}),
+        }}
       />
     );
   }

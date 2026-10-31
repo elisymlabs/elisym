@@ -1,6 +1,6 @@
 import * as nip19 from 'nostr-tools/nip19';
 import type { NostrEvent } from 'nostr-tools/pure';
-import { act } from 'react';
+import { StrictMode, act } from 'react';
 import { type Root as ReactRoot, createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
@@ -99,6 +99,8 @@ interface Options {
   ownerGate?: () => Promise<void>;
   /** `POST /signup` is answered only once this settles. */
   signupGate?: Promise<void>;
+  /** Rendered inside `<StrictMode>`, as `main.tsx` renders the page. */
+  strict?: boolean;
 }
 
 /** The admin, its cloud part answered by `routes`. */
@@ -141,39 +143,40 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
   document.body.append(host);
   const root = createRoot(host);
   mounted = { root, host };
-  await act(async () =>
-    root.render(
-      <Root
-        ownTab={options.ownTab ?? true}
-        createDeps={() => {
-          if (options.depsThrow === true) {
-            throw new Error('no relays');
-          }
-          relayClients.opened += 1;
-          const client = relayClient(
-            () => options.storeRelays ?? [],
-            () => options.relaysDown === true,
-          );
-          return fakeDeps(
-            {
-              ...client,
-              ...(options.relaysHang === true
-                ? { query: () => new Promise<never>(() => undefined) }
-                : {}),
-              close: () => {
-                if (options.closeThrows === true) {
-                  throw new Error('close failed');
-                }
-                relayClients.closed += 1;
-              },
+  const element = (
+    <Root
+      ownTab={options.ownTab ?? true}
+      createDeps={() => {
+        if (options.depsThrow === true) {
+          throw new Error('no relays');
+        }
+        relayClients.opened += 1;
+        const client = relayClient(
+          () => options.storeRelays ?? [],
+          () => options.relaysDown === true,
+        );
+        return fakeDeps(
+          {
+            ...client,
+            ...(options.relaysHang === true
+              ? { query: () => new Promise<never>(() => undefined) }
+              : {}),
+            close: () => {
+              if (options.closeThrows === true) {
+                throw new Error('close failed');
+              }
+              relayClients.closed += 1;
             },
-            [],
-          );
-        }}
-        leave={options.leave ?? (() => undefined)}
-        cloud={options.cloud === false ? undefined : cloud}
-      />,
-    ),
+          },
+          [],
+        );
+      }}
+      leave={options.leave ?? (() => undefined)}
+      cloud={options.cloud === false ? undefined : cloud}
+    />
+  );
+  await act(async () =>
+    root.render(options.strict === true ? <StrictMode>{element}</StrictMode> : element),
   );
   return { host, calls: cloudApi.calls, relayClients };
 }
@@ -284,6 +287,24 @@ function checkbox(host: HTMLElement): HTMLInputElement {
   return box;
 }
 
+/** In the create flow: picks `tier` (unless it is picked already) and goes on to the access key. */
+async function toKeyStep(host: HTMLElement, tier = 'starter') {
+  await eventually(host, () => host.querySelector(`button[data-tier="${tier}"]`) !== null);
+  const card = host.querySelector<HTMLButtonElement>(`button[data-tier="${tier}"]`);
+  if (card?.getAttribute('aria-checked') !== 'true') {
+    await act(async () => card?.click());
+  }
+  await click(host, 'Continue');
+}
+
+/** In the create flow at the access key: makes it, saves it, ticks, and goes on to the terms. */
+async function makeAndSaveKey(host: HTMLElement) {
+  await click(host, 'Create my access key');
+  await click(host, 'Download the key file');
+  await act(async () => checkbox(host).click());
+  await click(host, 'Continue');
+}
+
 describe('the front door', () => {
   it('offers a cloud store and one sign-in, under one heading', async () => {
     const { host } = await admin({});
@@ -313,10 +334,11 @@ describe('the front door', () => {
     expect(host.textContent).toContain('Create a store in our cloud');
   });
 
-  it('Create a store opens the owner key step, and Back returns to the front door', async () => {
+  it('Create a store opens the plan step, and Back returns to the front door', async () => {
     const { host } = await admin({});
     await click(host, 'Create a store');
-    expect(hasButton(host, 'Create a new owner key')).toBe(true);
+    expect(host.querySelector('h1')?.textContent).toBe('Choose a plan');
+    expect(host.querySelector('ol[aria-label="Create a store"]')).not.toBeNull();
     await click(host, 'Back');
     expect(host.textContent).toContain('Create a store in our cloud');
   });
@@ -328,13 +350,18 @@ describe('the front door', () => {
     expect(hasButton(host, 'Create a store')).toBe(false);
   });
 
-  it('a card payment returning opens the cloud part, and says so once signed in', async () => {
+  it('a card payment returning opens the sign-in, never a new key, and says so once signed in', async () => {
     const store = new FakeStore(storeState());
     const { host } = await admin(store.routes(), {
-      cloudProps: { checkoutReturn: { tenantId: TENANT_ID, outcome: 'done' } },
+      cloudProps: {
+        checkoutReturn: { tenantId: TENANT_ID, outcome: 'done' },
+        startTier: 'starter',
+      },
     });
-    expect(hasButton(host, 'Create a new owner key')).toBe(true);
-    await click(host, 'Sign in with the key you saved');
+    expect(host.textContent).toContain(
+      'Your card payment came back: sign in with your access key to see your store.',
+    );
+    expect(hasButton(host, 'Create my access key')).toBe(false);
     await pasteKey(host, OwnerKey.create());
     await eventually(host, () => host.textContent?.includes('Card payment received') === true);
   });
@@ -432,12 +459,13 @@ describe('one key field, routed', () => {
     expect(host.querySelector('[aria-busy="true"]')).not.toBeNull();
     await click(host, 'Back');
     await click(host, 'Create a store');
-    await click(host, 'Create a new owner key');
+    await toKeyStep(host);
+    await click(host, 'Create my access key');
     const made = close.mock.calls.length;
     await act(async () => owner.open());
     await eventually(host, () => close.mock.calls.length > made);
     // The route's key was closed; the key just made is still the one on screen.
-    expect(host.textContent).toContain('Save your owner key');
+    expect(hasButton(host, 'Download the key file')).toBe(true);
     expect(hasButton(host, 'Sign out')).toBe(false);
   });
 
@@ -614,6 +642,189 @@ describe('one key field, routed', () => {
   });
 });
 
+describe('the create wizard', () => {
+  it('opens a step at a time: past the current one nothing opens, and focus goes to each heading', async () => {
+    const { host } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await click(host, 'Create a store');
+    const steps = () => host.querySelector('ol[aria-label="Create a store"]');
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    // At the plan, the later steps are names, not buttons.
+    expect(steps()?.querySelectorAll('button')).toHaveLength(1);
+    expect(button(host, 'Continue').disabled).toBe(true);
+    await toKeyStep(host);
+    expect(document.activeElement).toBe(host.querySelector('h1'));
+    expect(host.querySelector('h1')?.textContent).toBe('Save your access key');
+    expect(steps()?.querySelectorAll('button')).toHaveLength(2);
+    await makeAndSaveKey(host);
+    expect(document.activeElement).toBe(host.querySelector('h1'));
+    await eventually(host, () => hasButton(host, 'Create the store'));
+    expect(steps()?.querySelectorAll('button')).toHaveLength(3);
+  });
+
+  it('makes one access key a visit: back at the plan, the key stays, and only the plan changes', async () => {
+    const { host, calls } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+      'POST /signup': { body: { tenantId: TENANT_ID } },
+    });
+    const made = vi.spyOn(OwnerKey, 'create');
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    // Before a key, a saved one can be used instead; after, that way is gone.
+    expect(hasButton(host, 'sign in')).toBe(true);
+    await click(host, 'Create my access key');
+    expect(hasButton(host, 'sign in')).toBe(false);
+    await click(host, 'Download the key file');
+    await act(async () => checkbox(host).click());
+    // Back to the plan through the steps: another plan, then on, with the same key.
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>(
+          'ol[aria-label="Create a store"] li[data-step="plan"] button',
+        )
+        ?.click(),
+    );
+    await toKeyStep(host, 'business');
+    expect(hasButton(host, 'Create my access key')).toBe(false);
+    expect(button(host, 'Continue').disabled).toBe(false);
+    await click(host, 'Continue');
+    await eventually(host, () => hasButton(host, 'Create the store'));
+    expect(host.textContent).toContain('Start a Business store');
+    await act(async () => checkbox(host).click());
+    await click(host, 'Create the store');
+    await eventually(host, () => calls.some((call) => call.path === '/signup'));
+    expect(made).toHaveBeenCalledTimes(1);
+    const signers = new Set(
+      calls.filter((call) => call.signer !== undefined).map((call) => call.signer),
+    );
+    expect(signers.size).toBe(1);
+  });
+
+  it('a plan picked over the /start one stays picked when the plan step opens again', async () => {
+    const { host } = await admin({}, { cloudProps: { startTier: 'starter' } });
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>('button[data-tier="business"]')?.click(),
+    );
+    await click(host, 'Continue');
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>(
+          'ol[aria-label="Create a store"] li[data-step="plan"] button',
+        )
+        ?.click(),
+    );
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    expect(host.querySelector('button[aria-checked="true"]')?.getAttribute('data-tier')).toBe(
+      'business',
+    );
+  });
+
+  it('Back to the front door after a key is made closes it', async () => {
+    const { host } = await admin({});
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await click(host, 'Create my access key');
+    const close = vi.spyOn(OwnerKey.prototype, 'close');
+    await click(host, 'Back');
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain('Create a store in our cloud');
+  });
+
+  it('a page back from the back/forward cache on the key step starts over', async () => {
+    const leave = vi.fn();
+    const { host } = await admin({}, { leave });
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await click(host, 'Create my access key');
+    const event = new Event('pageshow');
+    Object.defineProperty(event, 'persisted', { value: true });
+    await act(async () => window.dispatchEvent(event));
+    expect(leave).toHaveBeenCalledTimes(1);
+  });
+
+  it('in StrictMode, a key made and one signed in with both sign their requests', async () => {
+    const { host, calls } = await admin(
+      { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+      { strict: true },
+    );
+    await click(host, 'Create a store');
+    await toKeyStep(host);
+    await makeAndSaveKey(host);
+    await eventually(host, () => hasButton(host, 'Create the store'));
+    expect(
+      calls.filter((call) => call.path === '/owner').every((call) => call.signer !== undefined),
+    ).toBe(true);
+    await unmount();
+    const store = new FakeStore(storeState());
+    const signedIn = await admin(store.routes(), { strict: true });
+    const key = OwnerKey.create();
+    const pubkey = key.pubkey;
+    await signIn(signedIn.host, key);
+    await eventually(signedIn.host, () => hasButton(signedIn.host, 'Sign out'));
+    await eventually(signedIn.host, () =>
+      signedIn.calls.some((call) => call.path.startsWith('/tenants/')),
+    );
+    const afterMount = signedIn.calls.filter((call) => call.path.startsWith('/tenants/'));
+    expect(afterMount.every((call) => call.signer === pubkey)).toBe(true);
+  });
+});
+
+describe('a plan picked before the sign-in', () => {
+  it('reaches the store part the sign-in opens', async () => {
+    const { host } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await click(host, 'Create a store');
+    await toKeyStep(host, 'business');
+    const close = vi.spyOn(OwnerKey.prototype, 'close');
+    await click(host, 'sign in');
+    // Leaving for the sign-in closes nothing made (none was), and keeps the plan.
+    expect(close).not.toHaveBeenCalled();
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-checked')).toBe(
+      'true',
+    );
+  });
+
+  it('is kept across a sign-in the cloud did not answer, and the retry has it', async () => {
+    let answered = false;
+    const { host } = await admin({
+      'GET /owner': () =>
+        answered
+          ? { body: { tenantId: null, termsVersion: 't1' } }
+          : { status: 503, body: { error: 'internal' } },
+    });
+    await click(host, 'Create a store');
+    await toKeyStep(host, 'business');
+    await click(host, 'sign in');
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Our cloud is not answering') === true);
+    answered = true;
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-checked')).toBe(
+      'true',
+    );
+  });
+
+  it('is dropped when the sign-in is left', async () => {
+    const { host } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await click(host, 'Create a store');
+    await toKeyStep(host, 'business');
+    await click(host, 'sign in');
+    await click(host, 'Back');
+    await click(host, 'Sign in to your store');
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    expect(host.querySelector('button[aria-checked="true"]')).toBeNull();
+  });
+});
+
 describe('making a cloud store', () => {
   it('a /start link makes the key, has it saved, then signs up for the plan it chose', async () => {
     const downloads: string[] = [];
@@ -624,17 +835,20 @@ describe('making a cloud store', () => {
       },
       { cloudProps: { startTier: 'business' }, downloads },
     );
-    await click(host, 'Create a new owner key');
+    // Opened from a /start link, its plan is picked at once.
+    await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
+    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-checked')).toBe(
+      'true',
+    );
+    await click(host, 'Continue');
+    await click(host, 'Create my access key');
     await click(host, 'Download the key file');
     expect(downloads).toHaveLength(1);
     expect(downloads[0]).toMatch(/^paycore-owner-npub1/);
     await act(async () => checkbox(host).click());
     await click(host, 'Continue');
     await eventually(host, () => hasButton(host, 'Create the store'));
-    // Opened from a /start link, its plan is picked; no relay notice, so no self-hosted warning.
-    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-checked')).toBe(
-      'true',
-    );
+    expect(host.textContent).toContain('Start a Business store');
     expect(host.textContent).not.toContain('do not create a store here');
     await act(async () => checkbox(host).click());
     await click(host, 'Create the store');
@@ -701,12 +915,10 @@ describe('making a cloud store', () => {
         { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
         { cloudProps: { startTier: tier } },
       );
-      await click(host, 'Sign in with the key you saved');
-      await pasteKey(host, OwnerKey.create());
       await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
       expect(host.textContent).toContain('That plan cannot be started here');
       expect(host.querySelector('button[aria-checked="true"]')).toBeNull();
-      expect(hasButton(host, 'Create the store')).toBe(false);
+      expect(button(host, 'Continue').disabled).toBe(true);
       await unmount();
     }
   });
@@ -734,12 +946,10 @@ describe('making a cloud store', () => {
       },
       { cloudProps: { startTier: 'starter' } },
     );
-    await click(host, 'Sign in with the key you saved');
-    await pasteKey(host, OwnerKey.create());
     await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
     expect(host.textContent).toContain('That plan cannot be started here');
     expect(host.querySelector('button[aria-checked="true"]')).toBeNull();
-    expect(hasButton(host, 'Create the store')).toBe(false);
+    expect(button(host, 'Continue').disabled).toBe(true);
     // Picking a plan that can start clears the words.
     await act(async () =>
       host.querySelector<HTMLButtonElement>('button[data-tier="business"]')?.click(),
@@ -755,12 +965,10 @@ describe('making a cloud store', () => {
       },
       { cloudProps: { startTier: 'high-risk' } },
     );
-    await click(host, 'Sign in with the key you saved');
-    await pasteKey(host, OwnerKey.create());
     await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
     expect(host.querySelector('button[data-tier="high-risk"]')).toBeNull();
     expect(host.textContent).toContain('That plan cannot be started here');
-    expect(hasButton(host, 'Create the store')).toBe(false);
+    expect(button(host, 'Continue').disabled).toBe(true);
   });
 
   it('says so in one line when no plan can be started here', async () => {
@@ -866,7 +1074,8 @@ describe('the owner key in the page', () => {
       { files },
     );
     await click(host, 'Create a store');
-    await click(host, 'Create a new owner key');
+    await toKeyStep(host);
+    await click(host, 'Create my access key');
     const checkbox = host.querySelector('input[type="checkbox"]');
     if (!(checkbox instanceof HTMLInputElement)) {
       throw new Error('no checkbox');
@@ -886,8 +1095,10 @@ describe('the owner key in the page', () => {
     expect(checkbox.disabled).toBe(false);
     await act(async () => checkbox.click());
     await click(host, 'Continue');
+    // The terms step reads the key's own /owner, signed by the key in the file.
     await eventually(host, () => calls.some((call) => call.path === '/owner'));
     expect(calls.find((call) => call.path === '/owner')?.signer).toBe(key.pubkey);
+    expect(host.querySelector('h1')?.textContent).toBe('Accept the terms and create your store');
     // The secret is nowhere in the page.
     expect(document.documentElement.outerHTML).not.toContain(nsecLine);
   });
