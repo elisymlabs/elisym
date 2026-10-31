@@ -2035,6 +2035,83 @@ describe('the cloud store on the frame', () => {
     expect(hasButton(host, 'Download the handover')).toBe(true);
   });
 
+  it('an exported store polls no status: its timer stops', { timeout: 15_000 }, async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host, calls } = await admin({
+      ...store.routes(),
+      [`GET ${path}`]: () => ({
+        body: {
+          ...store.view(),
+          export: { exportedAt: 1_900_000_000, archiveReady: true, destroyAt: 1_900_600_000 },
+        },
+      }),
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Handover') === true);
+    const statuses = reads(calls, '/status');
+    // Past one poll's wait (5 s): no status is read again.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5_600));
+    });
+    expect(reads(calls, '/status')).toBe(statuses);
+  });
+
+  it('an exported store retries no failed read of what it keeps', { timeout: 15_000 }, async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host, calls } = await admin({
+      ...store.routes(),
+      [`GET ${path}`]: () => ({
+        body: {
+          ...store.view(),
+          export: { exportedAt: 1_900_000_000, archiveReady: true, destroyAt: 1_900_600_000 },
+        },
+      }),
+      [`GET ${path}/store`]: { status: 503, body: { error: 'internal' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Handover') === true);
+    await eventually(host, () => reads(calls, '/store') >= 1);
+    const kept = reads(calls, '/store');
+    // Past the retry's wait (2 s): nothing is read again.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2_600));
+    });
+    expect(reads(calls, '/store')).toBe(kept);
+  });
+
+  it('the Orders count goes when a later read fails', async () => {
+    const store = new FakeStore(
+      readyState({ activated: true, runState: 'live', orders: [paidOrder()] }),
+    );
+    let fails = false;
+    const routes = store.routes();
+    const served = routes[`GET ${path}/orders`];
+    const { host } = await admin({
+      ...routes,
+      [`GET ${path}/orders`]: (body) => {
+        if (fails) {
+          return { status: 503, body: { error: 'ledger_unreadable' } };
+        }
+        return typeof served === 'function' ? served(body) : (served ?? { body: {} });
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => nav(host, 'Orders').textContent === 'Orders1');
+    fails = true;
+    await click(host, 'Refresh');
+    await eventually(host, () => nav(host, 'Orders').textContent === 'Orders');
+  });
+
+  it('a store elisym holds says so, as the sale page does', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'held' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('[data-run-state="held"]') !== null);
+    expect(host.querySelector('[data-run-state="held"]')?.textContent).toContain(
+      'Held by elisym: contact elisym',
+    );
+  });
+
   it('a store gone shows no run state', async () => {
     const store = new FakeStore(readyState({ activated: true, runState: 'gone' }));
     const { host, calls } = await admin(store.routes());
