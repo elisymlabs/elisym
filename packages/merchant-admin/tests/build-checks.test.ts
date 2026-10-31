@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  REACT_WIDGET_MARKER,
   chunkProblems,
   cspOfEveryPath,
   cspProblems,
@@ -13,12 +14,24 @@ import { duplicatePackages } from '../scripts/one-copy';
 
 const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
 
+describe('the widget runtime marker', () => {
+  // The built package, as the admin's bundle would hold it.
+  const reactDist = new URL('../../react/dist/', import.meta.url);
+
+  it('is in the widget runtime and not in the constants the snippet may use', () => {
+    expect(readFileSync(new URL('index.js', reactDist), 'utf8')).toContain(REACT_WIDGET_MARKER);
+    expect(readFileSync(new URL('constants.js', reactDist), 'utf8')).not.toContain(
+      REACT_WIDGET_MARKER,
+    );
+  });
+});
+
 describe('build checks', () => {
-  it('the admin CSP on every path forbids framing, other scripts and any connection but wss', () => {
+  it('the admin CSP on every path forbids framing, other scripts and any connection but wss and cloud-api', () => {
     const csp = parseCsp(cspOfEveryPath(vercel) ?? '');
     expect(csp.get('frame-ancestors')).toEqual(["'none'"]);
     expect(csp.get('script-src')).toEqual(["'self'"]);
-    expect(csp.get('connect-src')).toEqual(['wss:']);
+    expect(csp.get('connect-src')).toEqual(['wss:', 'https://api.cloud.elisym.network']);
     expect(csp.get('default-src')).toEqual(["'none'"]);
     expect(csp.get('worker-src')).toEqual(["'none'"]);
   });

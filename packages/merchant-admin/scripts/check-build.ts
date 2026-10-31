@@ -1,10 +1,16 @@
 /**
  * Fails the build when the admin is not safe to deploy: its page loads only
- * its own files with no inline script, no chunk names the checkout's origin or
- * a Node built-in, and `vercel.json` sets the admin CSP on every path.
+ * its own files with no inline script, no chunk holds the checkout widget's
+ * runtime or a Node built-in, and `vercel.json` sets the admin CSP on every
+ * path. The loader's URL may be in a chunk as text (the snippet a cloud
+ * merchant pastes); `script-src 'self'` keeps it from running. Built for a
+ * cloud-api origin, a chunk names it; built without one (self-hosted only),
+ * no chunk names any.
  */
 import { readFileSync, readdirSync } from 'node:fs';
+import { cloudApiOriginOf } from '../src/cloud/lib/origin';
 import {
+  REACT_WIDGET_MARKER,
   chunkProblems,
   cspOfEveryPath,
   cspProblems,
@@ -13,6 +19,9 @@ import {
 } from './build-checks';
 
 const DIST = new URL('../dist/', import.meta.url);
+/** The production cloud-api: `vercel.json`'s CSP names it whatever this build's origin. */
+const PRODUCTION_API_ORIGIN = 'https://api.cloud.elisym.network';
+const apiOrigin = cloudApiOriginOf(process.env.VITE_CLOUD_API_ORIGIN);
 
 /** The admin CSP's load-bearing directives, exactly. */
 const ADMIN_CSP: Record<string, string[]> = {
@@ -20,7 +29,7 @@ const ADMIN_CSP: Record<string, string[]> = {
   'script-src': ["'self'"],
   'style-src': ["'self'"],
   'img-src': ["'self'", 'data:'],
-  'connect-src': ['wss:'],
+  'connect-src': ['wss:', PRODUCTION_API_ORIGIN],
   'frame-src': ["'none'"],
   'frame-ancestors': ["'none'"],
   'base-uri': ["'none'"],
@@ -38,15 +47,20 @@ const ADMIN_HEADERS: Record<string, string> = {
 
 const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
 
+const chunks = readdirSync(new URL('assets/', DIST))
+  .filter((name) => name.endsWith('.js'))
+  .map((name) => ({ name, code: readFileSync(new URL(`assets/${name}`, DIST), 'utf8') }));
+const named = (text: string) => chunks.some((chunk) => chunk.code.includes(text));
+function originProblems(): string[] {
+  if (apiOrigin === undefined) {
+    return named('api.cloud.') ? ['built without a cloud-api origin, yet a chunk names one'] : [];
+  }
+  return named(apiOrigin) ? [] : [`no chunk names the cloud-api origin ${apiOrigin}`];
+}
 const problems = [
   ...htmlProblems(readFileSync(new URL('index.html', DIST), 'utf8')),
-  ...readdirSync(new URL('assets/', DIST))
-    .filter((name) => name.endsWith('.js'))
-    .flatMap((name) =>
-      chunkProblems(name, readFileSync(new URL(`assets/${name}`, DIST), 'utf8'), [
-        'pay.elisym.network',
-      ]),
-    ),
+  ...chunks.flatMap((chunk) => chunkProblems(chunk.name, chunk.code, [REACT_WIDGET_MARKER])),
+  ...originProblems(),
   ...cspProblems(cspOfEveryPath(vercel), ADMIN_CSP),
   ...headerProblems(vercel, ADMIN_HEADERS),
   // The page that holds the key is never kept in a cache (nor, in most browsers, the back/forward cache).

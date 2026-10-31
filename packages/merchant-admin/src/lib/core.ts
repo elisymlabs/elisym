@@ -10,7 +10,9 @@ export {
   type NodeAmount,
   type OrderRow,
   type OrderState,
+  type Totals,
   netOf,
+  totalsOf,
   wholeUnits,
 } from '@merchant-admin-core/history';
 export {

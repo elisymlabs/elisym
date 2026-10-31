@@ -1,0 +1,66 @@
+{
+  "tenantId": "abc",
+  "orders": [
+    {
+      "key": "buyer2:o2",
+      "buyer": "buyer2",
+      "orderId": "o2",
+      "createdAt": 300,
+      "product": "30402:store:course",
+      "email": null,
+      "customerRef": null,
+      "payment": null,
+      "deliveredAt": null,
+      "webhook": null,
+      "feeUnresolved": ["tx2"],
+      "blockedTx": "tx3"
+    },
+    {
+      "key": "buyer1:o1",
+      "buyer": "buyer1",
+      "orderId": "o1",
+      "createdAt": 200,
+      "product": "30402:store:course",
+      "email": "a@b.test",
+      "customerRef": "cust-7",
+      "payment": {
+        "signature": "sig1",
+        "amount": "1500000",
+        "fee": "5000",
+        "asset": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "medium": "solana",
+        "paidAt": 210
+      },
+      "deliveredAt": 212,
+      "webhook": {
+        "eventId": "e",
+        "createdAt": 210,
+        "state": "failed",
+        "attempts": 3,
+        "lastStatus": 500,
+        "lastError": "took 3 tries",
+        "sentAt": null
+      },
+      "feeUnresolved": [],
+      "blockedTx": null
+    }
+  ],
+  "answeredByHand": [
+    {
+      "key": "buyer4:o4",
+      "kind": "refunded",
+      "tx": "sig4",
+      "amount": "700",
+      "asset": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "customerRef": null
+    }
+  ],
+  "closed": ["buyer3:o3", "buyer4:o4"],
+  "unresolvedPayments": [
+    {
+      "key": "buyer3:o3",
+      "tx": "tx9",
+      "at": 400
+    }
+  ]
+}

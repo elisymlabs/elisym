@@ -16,6 +16,9 @@
   "dependencies": {
     "@elisym/commerce": "~0.13.0",
     "@elisym/pay-core": "~0.4.0",
+    "@elisym/react": "~0.2.0",
+    "@noble/hashes": "~2.0.1",
+    "@scure/base": "~2.0.0",
     "@solana/kit": "~6.8.0",
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",
@@ -23,6 +26,7 @@
     "react-dom": "~19.2.0"
   },
   "devDependencies": {
+    "@noble/curves": "~2.0.1",
     "@tailwindcss/vite": "~4.2.0",
     "@types/node": "~25.5.0",
     "@types/react": "~19.2.0",
