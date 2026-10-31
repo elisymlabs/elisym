@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { App } from './App';
 import { CloudApp, type CloudProps } from './cloud/CloudApp';
-import { createConsoleApi } from './cloud/lib/api';
+import { UNREACHABLE, createConsoleApi } from './cloud/lib/api';
 import type { OwnerKey } from './cloud/lib/owner-key';
 import { type Routed, dropRouted, routeKey } from './cloud/lib/route-key';
+import { fetchTiers } from './cloud/lib/tiers';
 import { EntryPage } from './components/EntryPage';
 import { OwnTabNotice } from './components/OwnTabNotice';
 import { SignIn } from './components/SignIn';
@@ -63,6 +64,13 @@ export function Root({ ownTab, createDeps, leave, cloud }: Props) {
   const [checking, setChecking] = useState(false);
   const [problem, setProblem] = useState('');
   const held = useRef<Held>({});
+  // The front page's plan catalog: read with no key; a build without the cloud reads nothing.
+  const apiOrigin = cloud?.apiOrigin;
+  const fetcher = cloud?.fetcher;
+  const loadTiers = useCallback(
+    () => (apiOrigin === undefined ? Promise.resolve(UNREACHABLE) : fetchTiers(apiOrigin, fetcher)),
+    [apiOrigin, fetcher],
+  );
   // Bumped by every way out of the sign-in: a route that started before it counts for nothing.
   const attempt = useRef(0);
   // A plan picked in the create flow before going to the sign-in: kept for the store part it opens.
@@ -201,6 +209,11 @@ export function Root({ ownTab, createDeps, leave, cloud }: Props) {
     );
   }
   return (
-    <EntryPage onCreate={() => go({ name: 'create' })} onSignIn={() => go({ name: 'sign-in' })} />
+    <EntryPage
+      onCreate={() => go({ name: 'create' })}
+      onSignIn={() => go({ name: 'sign-in' })}
+      loadTiers={loadTiers}
+      termsUrl={cloud.termsUrl}
+    />
   );
 }

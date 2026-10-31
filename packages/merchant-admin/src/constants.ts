@@ -29,6 +29,12 @@ export const LANDING_URL = 'https://paycore.elisym.network';
 
 export const QUICKSTART_URL = 'https://docs.elisym.network/commerce/quickstart';
 
+/** The cloud store guide in the docs: what the front page's Docs link opens. */
+export const CLOUD_DOCS_URL = 'https://docs.elisym.network/commerce/cloud-agents';
+
+/** The landing's plans and prices. */
+export const PRICING_URL = `${LANDING_URL}/#pricing`;
+
 /** The cloud terms of service a signup accepts, on the landing. */
 export const TERMS_URL = 'https://paycore.elisym.network/terms';
 

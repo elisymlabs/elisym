@@ -139,3 +139,21 @@ export async function fetchTiers(apiOrigin: string, fetcher?: Fetcher): Promise<
     return UNREACHABLE;
   }
 }
+
+/**
+ * How the plans one can start here are paid, for the front page's first step:
+ * "by card or in stablecoins", "by card" or "in stablecoins"; undefined when
+ * the catalog is not read or no plan can start (the step then says "monthly").
+ */
+export function catalogPaidBy(tiers: readonly TierCard[] | undefined): string | undefined {
+  const open = (tiers ?? []).filter(canStart);
+  const card = open.some((tier) => tier.payable.card);
+  const crypto = open.some((tier) => tier.payable.crypto);
+  if (card && crypto) {
+    return 'by card or in stablecoins';
+  }
+  if (card) {
+    return 'by card';
+  }
+  return crypto ? 'in stablecoins' : undefined;
+}

@@ -241,7 +241,7 @@ async function pasteKey(host: HTMLElement, key: OwnerKey | string) {
 
 /** Signs in from the front door's one key field. */
 async function signIn(host: HTMLElement, key: OwnerKey | string) {
-  await click(host, 'Sign in to your store');
+  await click(host, 'Sign in');
   await pasteKey(host, key);
 }
 
@@ -312,18 +312,19 @@ async function makeAndSaveKey(host: HTMLElement) {
 describe('the front door', () => {
   it('offers a cloud store and one sign-in, under one heading', async () => {
     const { host } = await admin({});
-    expect(host.querySelector('h1')?.textContent).toBe('Pay Core admin');
+    expect(host.querySelector('h1')?.textContent).toBe('Take crypto payments on your site');
     expect([...host.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual([
-      'Create a store in our cloud',
-      'Sign in',
+      'How it works',
+      'What you need',
+      'Questions',
     ]);
     expect(hasButton(host, 'Create a store')).toBe(true);
-    expect(hasButton(host, 'Sign in to your store')).toBe(true);
+    expect(hasButton(host, 'Sign in')).toBe(true);
   });
 
   it('built with no cloud, it is the self-hosted sign-in alone, and asks no cloud', async () => {
     const { host, calls } = await admin({}, { cloud: false });
-    expect(host.textContent).not.toContain('Create a store in our cloud');
+    expect(host.textContent).not.toContain('Take crypto payments on your site');
     expect(host.querySelector('input#store-key')).not.toBeNull();
     expect(host.textContent).not.toContain('We ask our cloud');
     expect(calls).toEqual([]);
@@ -331,11 +332,11 @@ describe('the front door', () => {
 
   it('the one sign-in says which key it takes, and Back returns to the front door', async () => {
     const { host } = await admin({});
-    await click(host, 'Sign in to your store');
+    await click(host, 'Sign in');
     expect(host.textContent).toContain('For a store in our cloud, paste your access key');
     expect(host.textContent).toContain('We ask our cloud whether this key runs a store there');
     await click(host, 'Back');
-    expect(host.textContent).toContain('Create a store in our cloud');
+    expect(host.textContent).toContain('Take crypto payments on your site');
   });
 
   it('Create a store opens the plan step, and Back returns to the front door', async () => {
@@ -344,7 +345,7 @@ describe('the front door', () => {
     expect(host.querySelector('h1')?.textContent).toBe('Create a store');
     expect(host.querySelector('ol[aria-label="Create a store"]')).not.toBeNull();
     await click(host, 'Back');
-    expect(host.textContent).toContain('Create a store in our cloud');
+    expect(host.textContent).toContain('Take crypto payments on your site');
   });
 
   it('asks for no key in a tab another page opened or framed, cloud or not', async () => {
@@ -382,8 +383,13 @@ describe('one key field, routed', () => {
     await signIn(host, nip19.nsecEncode(store.secretKey));
     await eventually(host, () => host.querySelector('#store-name')?.textContent === 'Shop');
     // The cloud was asked once, by a request the key signed; nothing else of it was used.
-    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /owner']);
-    expect(calls[0]?.signer).toBe(store.pubkey);
+    // The front page read the plan catalog, with no key; the sign-in asked the cloud once.
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      'GET /tiers',
+      'GET /owner',
+    ]);
+    expect(calls[0]?.signer).toBeUndefined();
+    expect(calls[1]?.signer).toBe(store.pubkey);
   });
 
   it('a cloud that does not answer leaves a self-hosted store to its relays', async () => {
@@ -481,7 +487,7 @@ describe('one key field, routed', () => {
     );
     await signIn(host, OwnerKey.create());
     await click(host, 'Back');
-    await click(host, 'Sign in to your store');
+    await click(host, 'Sign in');
     expect(button(host, 'Open store').getAttribute('aria-disabled')).toBe('false');
     expect(host.querySelector('[aria-busy="true"]')).toBeNull();
     await act(async () => owner.open());
@@ -527,7 +533,7 @@ describe('one key field, routed', () => {
     );
     await signIn(host, OwnerKey.create());
     await click(host, 'Back');
-    await click(host, 'Sign in to your store');
+    await click(host, 'Sign in');
     await pasteKey(host, OwnerKey.create());
     await act(async () => owner.open());
     await act(async () => {
@@ -634,7 +640,7 @@ describe('one key field, routed', () => {
     await signIn(host, OwnerKey.create());
     await eventually(host, said);
     await click(host, 'Back');
-    await click(host, 'Sign in to your store');
+    await click(host, 'Sign in');
     expect(said()).toBe(false);
     await pasteKey(host, OwnerKey.create());
     await eventually(host, said);
@@ -733,7 +739,7 @@ describe('the create wizard', () => {
     const close = vi.spyOn(OwnerKey.prototype, 'close');
     await click(host, 'Back');
     expect(close).toHaveBeenCalledTimes(1);
-    expect(host.textContent).toContain('Create a store in our cloud');
+    expect(host.textContent).toContain('Take crypto payments on your site');
   });
 
   it('a page back from the back/forward cache on the key step starts over', async () => {
@@ -900,7 +906,8 @@ describe('the wizard, at the terms and on its way out', () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
-    expect(calls.filter((call) => call.path === '/tiers')).toHaveLength(1);
+    // One read by the front page, one by the plan step: none per pick.
+    expect(calls.filter((call) => call.path === '/tiers')).toHaveLength(2);
   });
 
   it('the card-return line is said once: Back and the sign-in again no longer show it', async () => {
@@ -910,7 +917,7 @@ describe('the wizard, at the terms and on its way out', () => {
     );
     expect(host.textContent).toContain('Your card payment came back');
     await click(host, 'Back');
-    await click(host, 'Sign in to your store');
+    await click(host, 'Sign in');
     expect(host.textContent).not.toContain('Your card payment came back');
   });
 });
@@ -979,7 +986,7 @@ describe('a plan picked before the sign-in', () => {
     await toKeyStep(host, 'business');
     await click(host, 'sign in');
     await click(host, 'Back');
-    await click(host, 'Sign in to your store');
+    await click(host, 'Sign in');
     await pasteKey(host, OwnerKey.create());
     await eventually(host, () => host.querySelector('button[data-tier="business"]') !== null);
     expect(host.querySelector('button[aria-checked="true"]')).toBeNull();
@@ -1194,7 +1201,8 @@ describe('making a cloud store', () => {
     const { host } = await admin({
       'GET /tiers': () => {
         reads += 1;
-        return reads === 1 ? { status: 502, body: 'down' } : { body: tiersAnswer() };
+        // The front page's read, then the plan picker's first one fails.
+        return reads === 2 ? { status: 502, body: 'down' } : { body: tiersAnswer() };
       },
       'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
     });
@@ -1205,7 +1213,7 @@ describe('making a cloud store', () => {
     );
     await click(host, 'Try again');
     await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
-    expect(reads).toBe(2);
+    expect(reads).toBe(3);
   });
 });
 
