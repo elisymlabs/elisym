@@ -790,6 +790,10 @@ describe('the wizard, at the terms and on its way out', () => {
     await toKeyStep(host);
     await makeAndSaveKey(host);
     await eventually(host, () => hasButton(host, 'Try again'));
+    // Said, and announced.
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(
+      'The cloud refused it (internal).',
+    );
     expect(hasButton(host, 'Create my store')).toBe(false);
     await click(host, 'Try again');
     await eventually(host, () => hasButton(host, 'Create my store'));
