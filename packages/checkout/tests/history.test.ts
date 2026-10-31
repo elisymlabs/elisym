@@ -362,11 +362,15 @@ describe('the export (D3)', () => {
   });
 
   it('a file name from the store and the day', () => {
-    expect(csvFileName('My Shop!', new Date('2026-10-05T12:00:00Z'))).toBe(
+    expect(csvFileName('elisym', 'My Shop!', new Date('2026-10-05T12:00:00Z'))).toBe(
       'elisym-purchases-my-shop-2026-10-05.csv',
     );
-    expect(csvFileName(undefined, new Date('2026-10-05T12:00:00Z'))).toBe(
+    expect(csvFileName('elisym', undefined, new Date('2026-10-05T12:00:00Z'))).toBe(
       'elisym-purchases-store-2026-10-05.csv',
+    );
+    // A white-label brand names the file after itself.
+    expect(csvFileName('acme', 'My Shop!', new Date('2026-10-05T12:00:00Z'))).toBe(
+      'acme-purchases-my-shop-2026-10-05.csv',
     );
   });
 });

@@ -322,11 +322,11 @@ describe('the panel rule', () => {
     ],
     [
       { reason: 'fee_config_unavailable' },
-      'The elisym fee terms could not be read. Nothing was paid; try again in a moment.',
+      'The payment fee terms could not be read. Nothing was paid; try again in a moment.',
     ],
     [
       { reason: 'fee_config_invalid' },
-      'The elisym fee configuration cannot be used right now. Nothing was paid.',
+      'The payment fee configuration cannot be used right now. Nothing was paid.',
     ],
     [
       { reason: 'wallet_payment_failed' },

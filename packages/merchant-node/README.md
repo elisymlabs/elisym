@@ -56,7 +56,7 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 
 | Command                            | What it does                                                                                                                                                                                                                                                                                                                                                             |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `init`                             | Creates the home: a `config.json` template (never overwritten), an example product in `products/my-product/PRODUCT.md`, and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest))                                                                                                                                                     |
+| `init`                             | Creates the home: a `config.json` template (never overwritten), an example product in `products/my-product/PRODUCT.md`, and the store's keys, encrypted when a passphrase is set (see [Keys at rest](#keys-at-rest)); `--owner-pubkey` makes a store-only home (see [A store-only home](#a-store-only-home))                                                             |
 | `setup`                            | Checks the inbox relays, publishes the store and the listing of every new or changed product, and records the terms it offers                                                                                                                                                                                                                                            |
 | `run`                              | Takes orders, verifies payments and completes the orders                                                                                                                                                                                                                                                                                                                 |
 | `orders`                           | Lists the orders: open, paid, completed, the product, the buyer's email, the customer reference, for a paid order the total, `net=` (what reached your wallet), `fee=` (the protocol fee), its webhook state and event id, and `feeUnresolved=` for an open order holding a payment no known elisym treasury got the rest of (see [The protocol fee](#the-protocol-fee)) |
@@ -64,6 +64,7 @@ Gift wraps stay on the relays for two days, and payments are read back from the 
 | `complete`                         | Answers an unpaid order by hand: closes it and sends `completed` (node stopped)                                                                                                                                                                                                                                                                                          |
 | `refund`                           | Answers an unpaid order by hand with a refund you already sent (node stopped); `--asset <caip19>` names the refunded coin, required when the store has several payouts; a rerun of an answer kept by an older node is sent unchanged, without an asset                                                                                                                   |
 | `encrypt-keys`                     | Encrypts the keys of an existing home with the passphrase (both by default, `--owner-only` for the owner key only); node stopped                                                                                                                                                                                                                                         |
+| `add-owner-key`                    | Puts the owner key into a store-only home (see [A store-only home](#a-store-only-home)); read from stdin or a hidden prompt, never an argument; node stopped                                                                                                                                                                                                             |
 | `store-key`                        | Prints the store's secret key (nsec), for the admin page (local, or the hosted admin): only to a terminal, or with `--yes`                                                                                                                                                                                                                                               |
 | `admin`                            | Serves the admin page on `127.0.0.1` (`--port`, default 5199): paste the store key there to see the orders (see [Admin](#admin)); reads no home                                                                                                                                                                                                                          |
 | `webhook test`                     | Sends a signed `test` event to the configured webhook; fails unless the receiver answers 2xx (see [Credit an account](#credit-an-account-the-webhook))                                                                                                                                                                                                                   |
@@ -332,7 +333,8 @@ for it. For level A:
 1. Set `"nip05": "_@your-domain.com"` and run `setup`.
 2. Serve the `nostr.json` that `setup` writes to the home at
    `https://your-domain.com/.well-known/nostr.json`, with the header
-   `Access-Control-Allow-Origin: *`.
+   `Access-Control-Allow-Origin: *` (a store-only home writes none: see
+   [A store-only home](#a-store-only-home)).
 3. Run `check`: it fetches the file and says whether the domain now vouches for the store.
 
 Only the domain-wide name `_` gives level A. A named address such as `shop@your-domain.com`
@@ -341,7 +343,8 @@ stays level C.
 ## Keys at rest
 
 `keys.json` holds two secret keys: the store key (it signs the listing, the store profile and
-every reply) and the owner key (it signs the payout list). Set a passphrase before `init` and
+every reply) and the owner key (it signs the payout list); a store-only home holds the store key
+only (see [A store-only home](#a-store-only-home)). Set a passphrase before `init` and
 both are encrypted (AES-256-GCM, a key from scrypt), with their public keys kept in the clear.
 The first line makes a random passphrase in a file of its own, once, and never overwrites it.
 Back that file up off this machine: without it the keys are lost.
@@ -378,6 +381,54 @@ without keeping the container, so the key is not kept in its log:
 `docker run --rm -it --mount type=bind,src=$HOME/.elisym-merchant-passphrase,dst=/run/secrets/merchant,readonly -e ELISYM_MERCHANT_PASSPHRASE_FILE=/run/secrets/merchant -v elisym-merchant:/data elisym-merchant store-key`.
 A logging driver that ships stdout elsewhere would keep it there too.
 
+## A store-only home
+
+`init --owner-pubkey <npub or hex>` makes a new home that holds the store key only: the owner key
+stays wherever the owner keeps it (a hosted console signs in the owner's browser, for example),
+and `keys.json` keeps only the owner's public key. It is refused on a home that already holds an
+owner key, and with `--owner-only`. Everything else works as in any home, except the two events
+the owner signs:
+
+- `setup` publishes the payout list (kind 10133) and the store authorization (kind 30490) the
+  owner signed elsewhere, from `owner-events.json` in the home:
+  `{ "payoutList": <signed event>, "auth": <signed event> }`. A missing or malformed file is an
+  ordinary failure (exit code 1). Before anything goes out it checks, in this order:
+  1. each event is signed by this home's owner, with the right kind;
+  2. the authorization names this store and is in force (not revoked, expired or malformed);
+  3. the payout list is exactly the `payouts` in `config.json` (the same tags, wallet signatures
+     included);
+  4. after the inbox relays pass their check, it reads the owner's history from the default
+     relays and the store's inbox relays, as buyers do: no revoking authorization or deletion of
+     this store dated the same second as the signed authorization or later (any date counts, as
+     for buyers); no newer authorization there that is expired or malformed (buyers would read it
+     instead); the payout list is not older than the one this node recorded (as old only with the
+     same payouts), and the relays serve no other payout list from the owner dated the same or
+     later.
+- A refusal only the owner can resolve exits with code **3** and a first line
+  `refused owner-resign: ...` (sign the events again) or `refused owner-revoked: ...` (the owner
+  revoked this store: authorize it again). Any other failure prints `error: ...` and exits with
+  code 1 (or the code of a stop signal received meanwhile) - among them an event dated further
+  in the future than the clock allows: the host's clock or the signing date is wrong, and signing
+  again with a current date fixes it. Inbox relays that do not take and serve gift wraps exit
+  with code **4** and a stderr line `relays ["wss://...", ...]: ...` naming them, each in the
+  node's own spelling (lowercase host, no trailing slash). A tool that
+  drives `setup` can tell an owner-side refusal, and the relays to replace, from the rest without
+  reading the wording.
+- Taking the store off sale needs no owner events: with every product `onSale: false`, `setup`
+  publishes the sold-out listings, the store profile and the inbox list, leaves the recorded payout
+  list as it is and reads no `owner-events.json`. A rerun that changes no listing succeeds once
+  the profile and the inbox list reach one of the default relays, as in every `setup`.
+- `encrypt-keys` encrypts the store key (`--owner-only` is refused: there is no owner key here).
+  `setup` and `check` write no `nostr.json` to the home: the domain's `nostr.json`, which names the
+  store and the owner (see [Level A](#level-a-your-domain-vouches-for-the-store)), is written
+  where the owner's key lives.
+
+`add-owner-key` (node stopped) turns it into an ordinary home: it reads the owner's secret key
+(an nsec or 64 lowercase hex characters) from stdin (the first line) or a hidden prompt, never from the
+command line, checks it is this home's owner, and stores it encrypted when a passphrase is set
+(the passphrase must open an encrypted store key). A store key left plain stays plain, and the
+command says so: `encrypt-keys` seals it. `setup` then signs the owner's events here again.
+
 ## Admin
 
 `admin` serves a page on this machine where you see the store's orders:
@@ -392,7 +443,10 @@ running `admin`. It also lists every product of the store, the store's profile, 
 payout networks, and exports the loaded orders as CSV. The key stays in that tab's memory too, but
 the page's code is served by Elisym on each visit, while the local page runs the version you
 installed. Browser extensions can read what you type into any page: use a browser profile
-without extensions you do not trust, or the local page.
+without extensions you do not trust, or the local page. The hosted admin also opens a store in
+our cloud with its owner key, in the same field, so any key pasted there also signs a request
+to our cloud, which asks whether it runs a store there: Elisym sees the store's public key, never
+the key. The local page asks no cloud.
 
 The page reads the store's inbox relays (its inbox list, or the default relays when it has
 none) with the store key and shows each order: when it was placed, its product, the total the
@@ -725,7 +779,8 @@ The [admin page](#admin) shows each order's reference; the webhook state is in `
 ## Keeping it safe
 
 - `keys.json` holds the store key and the owner key. Whoever has them can publish a different
-  payout address in your store's name. Keep the home private (the node creates it as `0700`)
+  payout address in your store's name. A store-only home holds the store key only: whoever has it
+  can still publish a store profile naming another owner, so it needs the same care. Keep the home private (the node creates it as `0700`)
   and back it up. A lost key means a new store.
 - The owner's payout list must name only payouts this node checks: on its networks, at the
   addresses its ledger records. `run` refuses to start when the published list names another

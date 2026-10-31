@@ -6,13 +6,16 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
-import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
+import { type EventTemplate, type NostrEvent, finalizeEvent } from 'nostr-tools/pure';
 import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
 import {
+  INBOX_RELAYS_EXIT_CODE,
+  InboxRelaysRefused,
   type RelayView,
   checkDomain,
   checkInboxRelays,
@@ -44,6 +47,7 @@ import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } fr
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
   type MerchantHome,
+  addOwnerKeyToHome,
   encryptHomeKeys,
   ensureHome,
   heldByRunningMerchant,
@@ -56,7 +60,14 @@ import { storeIdentity } from './intake';
 import {
   PASSPHRASE_HINT,
   STORE_KEY_WARNING,
+  type LoadedKeys,
+  OWNER_ONLY_STORE_ONLY,
+  encryptedKeysLabel,
   encryptionNotes,
+  hasOwnerKey,
+  isSealed,
+  parseOwnerPubkey,
+  parseOwnerSecret,
   openSecret,
   openSetupKeys,
   openCheckKeys,
@@ -71,6 +82,19 @@ import {
   saveLedger,
 } from './ledger';
 import { InboxListener } from './listener';
+import {
+  OWNER_REFUSAL_EXIT_CODE,
+  type OwnerEvents,
+  OwnerRefusal,
+  checkOwnerEvents,
+  payoutListRefusal,
+  setupExitCode,
+  readOwnerEventsFile,
+  readStoreAuthHistory,
+  revocationDate,
+  revocationRefusal,
+  supersedingAuthRefusal,
+} from './owner-events';
 import { printable } from './printable';
 import {
   PRODUCT_FILE,
@@ -85,13 +109,21 @@ import { listeningPool } from './relay-pool';
 import { MerchantRuntime } from './runtime';
 import { SelfCopies } from './self-copies';
 import {
+  clockProblem,
   historyRefusal,
   payoutListDate,
   planListings,
   publishAndRecord,
   setupClockProblems,
 } from './setup-ledger';
-import { buildStoreWideEvents, productNaddr, storeNostrJson } from './store-events';
+import {
+  type StoreKeys,
+  buildStoreWideEvents,
+  productNaddr,
+  storeNostrJson,
+  storeWideFromOwnerEvents,
+  storeWideWithoutOwnerEvents,
+} from './store-events';
 import { tempoContextFor } from './tempo';
 import { standingTerms } from './terms';
 import {
@@ -110,15 +142,20 @@ import { type RearmKind, orderLines, rearmWebhook } from './webhook-commands';
 
 const USAGE = `usage: elisym-merchant <command> [--home <dir>]
 
-  init [--network devnet|mainnet]
+  init [--network devnet|mainnet] [--owner-pubkey <npub or hex>]
          make the home: a config.json and products/my-product/PRODUCT.md to edit,
-         and the store's keys
+         and the store's keys (--owner-pubkey: a store-only home, no owner key here;
+         the owner signs the payout list and the store authorization elsewhere)
   setup  check the inbox relays and publish the store: every product in products/
          (one directory each), republishing only what changed
   run    take orders, verify payments, complete them
   orders list the orders: paid, completed, the buyer's email, the customer
          reference, the webhook state and its event id
   check  check the inbox relays, the owner's payout list and the domain
+  add-owner-key
+         put the owner key into a store-only home (read from stdin or typed at a
+         hidden prompt, never from the command line), encrypted with the passphrase
+         when one is set; setup then signs the owner's events here again
   encrypt-keys [--owner-only]
          encrypt the keys in keys.json with $ELISYM_MERCHANT_PASSPHRASE
          (or the file $ELISYM_MERCHANT_PASSPHRASE_FILE names); both keys by default
@@ -195,10 +232,12 @@ interface Args {
   port: string | undefined;
   yes: boolean;
   ownerOnly: boolean;
+  ownerPubkey: string | undefined;
 }
 
 const VALUE_FLAGS = {
   '--home': 'home',
+  '--owner-pubkey': 'ownerPubkey',
   '--network': 'network',
   '--tx': 'tx',
   '--amount': 'amount',
@@ -226,6 +265,7 @@ function parseArgs(argv: readonly string[]): Args {
     port: undefined,
     yes: false,
     ownerOnly: false,
+    ownerPubkey: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -266,6 +306,11 @@ function parseArgs(argv: readonly string[]): Args {
       args.target = arg;
     } else if (args.command === 'deliver') {
       throw new Error(DELIVER_RENAMED);
+    } else if (args.command === 'add-owner-key') {
+      // Never echoed: an argument here may be the very key, and an error lands in logs.
+      throw new Error(
+        'add-owner-key reads the key from stdin or a hidden prompt, never an argument',
+      );
     } else {
       throw new Error(`unknown argument ${arg ?? ''}`);
     }
@@ -276,9 +321,18 @@ function parseArgs(argv: readonly string[]): Args {
   return args;
 }
 
-function init(home: MerchantHome, network: string | undefined, ownerOnly: boolean): void {
+function init(
+  home: MerchantHome,
+  network: string | undefined,
+  ownerOnly: boolean,
+  ownerPubkeyFlag: string | undefined,
+): void {
   if (network !== undefined && network !== 'devnet' && network !== 'mainnet') {
     throw new Error('--network is devnet or mainnet');
+  }
+  const ownerPubkey = ownerPubkeyFlag === undefined ? undefined : parseOwnerPubkey(ownerPubkeyFlag);
+  if (ownerOnly && ownerPubkey !== undefined) {
+    throw new Error(OWNER_ONLY_STORE_ONLY);
   }
   // The passphrase is read and checked before anything is created: a failing
   // init never leaves a home with a config and no keys.
@@ -308,23 +362,24 @@ function init(home: MerchantHome, network: string | undefined, ownerOnly: boolea
     });
     console.log(`product ${join(example, PRODUCT_FILE)} (edit it: one directory per product)`);
   }
-  const { keys, created, keptPlain } = initKeys(home, passphrase, ownerOnly);
+  const { keys, created, keptPlain } = initKeys(home, passphrase, ownerOnly, ownerPubkey);
+  const storeOnly = !hasOwnerKey(keys);
   console.log(`store   ${keys.storePubkey}`);
-  console.log(`owner   ${keys.ownerPubkey}`);
+  console.log(`owner   ${keys.ownerPubkey}${storeOnly ? ' (no owner key in this home)' : ''}`);
   if (created && passphrase !== undefined) {
-    console.log(`keys    encrypted (${ownerOnly ? 'the owner key only' : 'both keys'})`);
-    for (const note of encryptionNotes(ownerOnly)) {
+    console.log(`keys    encrypted (${encryptedKeysLabel(ownerOnly, storeOnly)})`);
+    for (const note of encryptionNotes(ownerOnly, storeOnly)) {
       console.log(`note    ${note}`);
     }
   }
   if (created && passphrase === undefined) {
     console.log(
-      `keys    plain (no passphrase set; ${PASSPHRASE_HINT} before init to encrypt them)`,
+      `keys    plain (no passphrase set; ${PASSPHRASE_HINT} before init to encrypt ${storeOnly ? 'it' : 'them'})`,
     );
   }
   if (keptPlain) {
     console.log(
-      `keys    kept plain: run encrypt-keys${ownerOnly ? ' --owner-only' : ''} to encrypt them`,
+      `keys    kept plain: run encrypt-keys${ownerOnly ? ' --owner-only' : ''} to encrypt ${storeOnly ? 'it' : 'them'}`,
     );
   }
   console.log('next    edit config.json and the product, then run setup');
@@ -373,13 +428,27 @@ async function reportInboxRelays(
   return verdicts.filter((verdict) => !verdict.serves).map((verdict) => verdict.relay);
 }
 
+/** Whether `check` writes nostr.json, and why not. */
+function nostrJsonWriteOf(
+  ownerOpened: boolean,
+  ownerKeyHere: boolean,
+): 'write' | 'sealed' | 'store-only' {
+  if (ownerOpened) {
+    return 'write';
+  }
+  return ownerKeyHere ? 'sealed' : 'store-only';
+}
+
 /** Write the nostr.json a level A domain serves, and check it once; nothing for level C. */
 async function reportDomain(
   home: MerchantHome,
   config: MerchantConfig,
   nostrJson: { names: Record<string, string> },
-  /** Whether the owner key was opened here: only then is nostr.json written. */
-  write = true,
+  /**
+   * Whether nostr.json is written: only for an owner key opened here; `sealed` and
+   * `store-only` say why not (a passphrase missing, or no owner key in this home).
+   */
+  nostrJsonWrite: 'write' | 'sealed' | 'store-only' = 'write',
 ): Promise<void> {
   const split = config.nip05 === undefined ? undefined : splitNip05(config.nip05);
   if (split === undefined) {
@@ -391,10 +460,14 @@ async function reportDomain(
     console.log('level   C: a named nip05 is not domain-wide; use _@domain or a bare domain for A');
     return;
   }
-  if (write) {
+  if (nostrJsonWrite === 'write') {
     writeFileSync(home.nostrJson, `${JSON.stringify(nostrJson)}\n`);
     console.log(
       `nostr   serve ${home.nostrJson} at https://${split.domain}/.well-known/nostr.json with "Access-Control-Allow-Origin: *"`,
+    );
+  } else if (nostrJsonWrite === 'store-only') {
+    console.log(
+      'nostr   not written: this home holds no owner key (store-only); the domain must name the owner from where its key lives',
     );
   } else {
     console.log(
@@ -453,6 +526,44 @@ function refuseLostHistory(state: LedgerState, products: ReadonlyMap<string, Pro
   }
 }
 
+/**
+ * What `setup` signs with: both keys (the owner's events are signed here), or,
+ * in a store-only home, the store key with the owner's events as signed
+ * elsewhere, checked against this home and `config.payouts` before anything else.
+ */
+function setupSigning(
+  home: MerchantHome,
+  loaded: LoadedKeys,
+  config: MerchantConfig,
+  /** Every product off sale: a store-only home then needs no owner events at all. */
+  withdrawal: boolean,
+):
+  | { mode: 'owner-key'; keys: StoreKeys; storeSecretKey: Uint8Array }
+  | { mode: 'pre-signed'; storeSecretKey: Uint8Array; ownerEvents: OwnerEvents }
+  | { mode: 'withdrawal'; storeSecretKey: Uint8Array } {
+  const passphrase = readPassphrase();
+  if (hasOwnerKey(loaded)) {
+    const keys = openSetupKeys(loaded, passphrase);
+    return { mode: 'owner-key', keys, storeSecretKey: keys.storeSecretKey };
+  }
+  const storeSecretKey = openSecret(loaded, 'store', passphrase);
+  // A withdrawal publishes only store-signed events (sold-out listings, the
+  // profile, the inbox list), and a sold-out store's payout list is not judged:
+  // nothing the owner did (a revocation, a list published elsewhere, no file)
+  // can block taking a store off sale.
+  if (withdrawal) {
+    return { mode: 'withdrawal', storeSecretKey };
+  }
+  const ownerEvents = readOwnerEventsFile(home.ownerEvents);
+  checkOwnerEvents(ownerEvents, {
+    ownerPubkey: loaded.ownerPubkey,
+    storePubkey: loaded.storePubkey,
+    payouts: config.payouts,
+    now: nowSecs(),
+  });
+  return { mode: 'pre-signed', storeSecretKey, ownerEvents };
+}
+
 async function setup(home: MerchantHome): Promise<void> {
   // A running merchant rewrites the whole ledger from memory: new terms written
   // under it would be lost, and the old price or payout would stay payable. The
@@ -470,10 +581,14 @@ async function setup(home: MerchantHome): Promise<void> {
       `these products are still the init example: ${unedited.map((product) => product.file).join(', ')}. Set the title and description.`,
     );
   }
-  // Both secrets first, before anything is checked, signed or published: a
-  // missing or wrong passphrase must never leave a half-published store.
+  // The secrets first, before anything is checked, signed or published: a
+  // missing or wrong passphrase must never leave a half-published store. A
+  // store-only home opens the store key alone and takes the owner's events as
+  // signed elsewhere, checked here before the ledger or any relay - unless every
+  // product is off sale (a withdrawal needs no owner events).
   const loaded = loadKeys(home);
-  const keys = openSetupKeys(loaded, readPassphrase());
+  const withdrawal = [...products.values()].every((product) => !product.onSale);
+  const signing = setupSigning(home, loaded, config, withdrawal);
   // Converted to this version and saved before any relay or chain is
   // contacted: from here an older node refuses this home.
   const state = openLedgerForUpgrade(home.ledger, (read) => refuseLostHistory(read, products));
@@ -491,9 +606,10 @@ async function setup(home: MerchantHome): Promise<void> {
   }
   const pool = new SimplePool();
   try {
-    const failing = await reportInboxRelays(pool, config, keys.storeSecretKey);
+    const failing = await reportInboxRelays(pool, config, signing.storeSecretKey);
     if (failing.length > 0) {
-      throw new Error(
+      throw new InboxRelaysRefused(
+        failing,
         `these inbox relays do not take and serve gift wraps for any key: ${failing.join(', ')}. Replace them in config.json.`,
       );
     }
@@ -508,29 +624,79 @@ async function setup(home: MerchantHome): Promise<void> {
       loaded,
       [...new Set([...products.keys(), ...Object.keys(state.listings)])],
     );
-    const paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
+    // The payout list's date (none in a withdrawal) and the store-wide events, by how
+    // this setup signs; built here, published only after the clock checks below.
+    let paytoCreatedAt: number | undefined;
+    let wide: { payoutList: NostrEvent | undefined; others: NostrEvent[] };
+    if (signing.mode === 'owner-key') {
+      paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
+      wide = buildStoreWideEvents(
+        config,
+        signing.keys,
+        startedAt,
+        paytoCreatedAt,
+        declaration.declare,
+      );
+    } else if (signing.mode === 'withdrawal') {
+      paytoCreatedAt = undefined;
+      wide = storeWideWithoutOwnerEvents(
+        config,
+        signing.storeSecretKey,
+        loaded.ownerPubkey,
+        startedAt,
+        declaration.declare,
+      );
+    } else {
+      // A revocation first: it is the more basic refusal of the two.
+      const authHistory = await readStoreAuthHistory(
+        pool,
+        relays,
+        loaded.ownerPubkey,
+        loaded.storePubkey,
+      );
+      revocationRefusal(signing.ownerEvents.auth, revocationDate(authHistory, loaded.storePubkey));
+      supersedingAuthRefusal(signing.ownerEvents.auth, authHistory, loaded.storePubkey, startedAt);
+      payoutListRefusal(signing.ownerEvents.payoutList, state, payouts, newestList);
+      paytoCreatedAt = signing.ownerEvents.payoutList.created_at;
+      wide = storeWideFromOwnerEvents(
+        config,
+        signing.storeSecretKey,
+        loaded.ownerPubkey,
+        signing.ownerEvents,
+        startedAt,
+        declaration.declare,
+      );
+    }
     const plans = planListings(state, products.values(), config.payouts, served, startedAt);
     const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
+    // Buyers drop an AUTH dated past the skew window as they drop a payout list.
+    const authClock =
+      signing.mode === 'pre-signed'
+        ? clockProblem('the store authorization', signing.ownerEvents.auth.created_at, startedAt)
+        : undefined;
+    if (authClock !== undefined) {
+      clock.push(authClock);
+    }
     if (clock.length > 0) {
       throw new Error(clock.join('; '));
     }
-    const wide = buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt, declaration.declare);
     const publisher = setupPublisher(
       pool,
       relays,
       OFFER_RELAYS,
-      storeAuth(keys.storeSecretKey),
+      storeAuth(signing.storeSecretKey),
       log,
     );
     const outcomes = await publishAndRecord(state, {
       plans,
       payouts: config.payouts,
-      storeSecretKey: keys.storeSecretKey,
+      storeSecretKey: signing.storeSecretKey,
       wide,
       publish: publisher.publish,
-      payoutList: { createdAt: paytoCreatedAt, payouts },
+      payoutList: paytoCreatedAt === undefined ? undefined : { createdAt: paytoCreatedAt, payouts },
       startedAt,
       now: nowSecs,
+      withdrawal: signing.mode === 'withdrawal',
     });
     const { missedDefaults } = publisher;
     // Orders can come from the moment the store is published: a later first run
@@ -555,6 +721,7 @@ async function setup(home: MerchantHome): Promise<void> {
       home,
       config,
       storeNostrJson(config, loaded.storePubkey, loaded.ownerPubkey),
+      hasOwnerKey(loaded) ? 'write' : 'store-only',
     );
     // Buyers send orders to the inbox list: one that did not go out may leave them
     // writing to relays the node no longer reads.
@@ -963,7 +1130,7 @@ async function check(home: MerchantHome): Promise<void> {
       home,
       config,
       storeNostrJson(config, loaded.storePubkey, loaded.ownerPubkey),
-      writeNostrJson,
+      nostrJsonWriteOf(writeNostrJson, hasOwnerKey(loaded)),
     );
     if (offers !== undefined) {
       throw offers;
@@ -979,6 +1146,87 @@ async function check(home: MerchantHome): Promise<void> {
   } finally {
     pool.destroy();
   }
+}
+
+/**
+ * A secret typed at a hidden prompt (nothing echoed), or the first line of a
+ * piped stdin: never a command-line argument, which the shell history and the
+ * process list would keep.
+ */
+async function readSecretInput(question: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    // Stops at the first line: a key typed into a piped stdin needs no Ctrl-D.
+    let text = '';
+    for await (const chunk of process.stdin) {
+      text += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+      if (text.includes('\n')) {
+        break;
+      }
+    }
+    return text.split(/\r?\n/)[0] ?? '';
+  }
+  const muted = new Writable({
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+  const prompt = createInterface({ input: process.stdin, output: muted, terminal: true });
+  let answered = false;
+  // Raw mode turns Ctrl-C into an event: without a listener the hidden prompt would just freeze.
+  prompt.once('SIGINT', () => {
+    prompt.close();
+  });
+  // Ctrl-C or Ctrl-D before an answer closes the prompt and restores echo: a key typed
+  // after that would show, so the command ends there.
+  prompt.once('close', () => {
+    if (!answered) {
+      process.stderr.write('\nerror: no owner key typed\n');
+      process.exit(130);
+    }
+  });
+  // The question first, so raw mode is on (no echo) before the prompt shows: a
+  // password manager that types as soon as it sees the prompt must not be echoed.
+  const pending = prompt.question('');
+  process.stderr.write(question);
+  try {
+    const answer = await pending;
+    answered = true;
+    return answer;
+  } finally {
+    prompt.close();
+    process.stderr.write('\n');
+  }
+}
+
+/** `add-owner-key`: the owner key into a store-only home, sealed when a passphrase is set. */
+async function addOwnerKey(home: MerchantHome): Promise<void> {
+  // Everything that can refuse without the key is checked before it is asked for:
+  // the home, the passphrase (it must open a sealed store key), a running node.
+  const passphrase = readPassphrase();
+  const loaded = loadKeys(home);
+  if (hasOwnerKey(loaded)) {
+    throw new Error('this home already holds the owner key');
+  }
+  if (isSealed(loaded, 'store')) {
+    if (passphrase === undefined) {
+      throw new Error(
+        `the store key is encrypted: ${PASSPHRASE_HINT}, to encrypt the owner key too`,
+      );
+    }
+    openSecret(loaded, 'store', passphrase);
+  }
+  if (heldByRunningMerchant(home)) {
+    throw new Error('a merchant is running on this home: stop it first');
+  }
+  const ownerSecretKey = parseOwnerSecret(await readSecretInput('owner key (nsec): '));
+  addOwnerKeyToHome(home, ownerSecretKey, passphrase);
+  console.log(
+    `owner   ${loaded.ownerPubkey} (key added${passphrase === undefined ? ', plain' : ', encrypted'})`,
+  );
+  if (passphrase !== undefined && !isSealed(loaded, 'store')) {
+    console.log('note    the store key stays plain: encrypt-keys seals it');
+  }
+  console.log('next    run setup: it signs the payout list and the store authorization here');
 }
 
 /** Ask on a terminal; without one, refuse rather than wait or assume. */
@@ -1100,8 +1348,9 @@ function encryptKeys(home: MerchantHome, ownerOnly: boolean): void {
     console.log('keys    already encrypted: nothing to do');
     return;
   }
-  console.log(`keys    encrypted (${ownerOnly ? 'the owner key only' : 'both keys'})`);
-  for (const note of encryptionNotes(ownerOnly)) {
+  const storeOnly = !hasOwnerKey(loadKeys(home));
+  console.log(`keys    encrypted (${encryptedKeysLabel(ownerOnly, storeOnly)})`);
+  for (const note of encryptionNotes(ownerOnly, storeOnly)) {
     console.log(`note    ${note}`);
   }
   console.log('note    older backups and snapshots of this home still hold the plain keys');
@@ -1149,13 +1398,23 @@ async function main(): Promise<void> {
   if (args.ownerOnly && args.command !== 'init' && args.command !== 'encrypt-keys') {
     throw new Error('--owner-only is for init and encrypt-keys');
   }
+  if (args.yes && args.command === 'add-owner-key') {
+    throw new Error('--yes is not for add-owner-key');
+  }
+  if (args.ownerPubkey !== undefined && args.command !== 'init') {
+    throw new Error('--owner-pubkey is for init');
+  }
   const home = merchantHome(args.home);
   switch (args.command) {
     case 'init':
-      init(home, args.network, args.ownerOnly);
+      init(home, args.network, args.ownerOnly, args.ownerPubkey);
       return;
     case 'encrypt-keys':
       encryptKeys(home, args.ownerOnly);
+      process.exit(0);
+      return;
+    case 'add-owner-key':
+      await addOwnerKey(home);
       process.exit(0);
       return;
     case 'store-key':
@@ -1167,14 +1426,14 @@ async function main(): Promise<void> {
       return;
     case 'setup': {
       const stopRequested = deferSignals();
-      let failed = false;
+      let exitCode = 0;
       try {
         await setup(home);
       } catch (error) {
-        console.error(`error: ${errorText(error)}`);
-        failed = true;
+        exitCode = reportFailure(error);
       }
-      process.exit(stopRequested() ?? (failed ? 1 : 0));
+      // A marked failure keeps its exit code: a deferred signal must not hide the marker.
+      process.exit(setupExitCode(exitCode, stopRequested()));
       return;
     }
     case 'run':
@@ -1203,9 +1462,26 @@ async function main(): Promise<void> {
   }
 }
 
+/**
+ * Print a failure and give its exit code. An owner-side refusal says so in a
+ * fixed first token and exit code: a control plane keys on them, never on the
+ * wording; everything else is `error:` and 1.
+ */
+function reportFailure(error: unknown): number {
+  if (error instanceof OwnerRefusal) {
+    console.error(`refused ${error.reason}: ${error.message}`);
+    return OWNER_REFUSAL_EXIT_CODE;
+  }
+  if (error instanceof InboxRelaysRefused) {
+    console.error(`relays ${JSON.stringify(error.relays)}: ${error.message}`);
+    return INBOX_RELAYS_EXIT_CODE;
+  }
+  console.error(`error: ${errorText(error)}`);
+  return 1;
+}
+
 try {
   await main();
 } catch (error) {
-  console.error(`error: ${errorText(error)}`);
-  process.exit(1);
+  process.exit(reportFailure(error));
 }

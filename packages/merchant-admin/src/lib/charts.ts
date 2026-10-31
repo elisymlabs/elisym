@@ -277,6 +277,15 @@ export function statusParts(
   }));
 }
 
+/**
+ * The orders whose payment is reported but credited by nothing: what the
+ * status card warns about. A cloud order paid and not yet completed is
+ * `payment_reported` with its credit (the store confirmed it): no warning.
+ */
+export function unconfirmedPayments(rows: readonly OrderRow[]): number {
+  return rows.filter((row) => row.state === 'payment_reported' && row.credits.length === 0).length;
+}
+
 /** The share of `count` in `total`, between 0 and 1: 0 when there is nothing. */
 export function shareOf(count: number, total: number): number {
   return total <= 0 ? 0 : Math.min(Math.max(count / total, 0), 1);

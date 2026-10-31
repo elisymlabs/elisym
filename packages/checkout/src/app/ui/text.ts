@@ -53,7 +53,7 @@ export const EIP3009_SENDING = 'Confirm sending the payment in your wallet…';
  * are not offered: the line under the payouts, and the refusal when none is left.
  */
 export const FEE_HIDES_EIP3009 =
-  'Ethereum, Arbitrum and Base are not offered while the elisym protocol fee is above 0.';
+  'Ethereum, Arbitrum and Base are not offered while a fee is taken from the price.';
 
 /** "Sign, then confirm": said before the first of the two prompts. */
 export const EIP3009_TWO_PROMPTS =
@@ -119,9 +119,9 @@ export const AGAIN_DECLINED = 'You declined. Nothing new was sent.';
 export const STORE_OUTDATED_TEXT =
   'This store’s payment node must be updated before it can take payments. Nothing was paid.';
 
-/** "Includes elisym fee 0.49 USDC": the part of the price the store's payout passes on. */
+/** "Includes network fee 0.49 USDC": the part of the price the store's payout passes on (C13: the same in every brand). */
 export function feeLine(asset: Asset, feeAmount: bigint): string {
-  return `Includes elisym fee ${formatAssetAmount(asset, feeAmount)}`;
+  return `Includes network fee ${formatAssetAmount(asset, feeAmount)}`;
 }
 
 /** Under the earlier-payment line when its wallet would not answer: connect and ask it. */
@@ -183,9 +183,9 @@ export function problemText(problem: Problem, asset: Asset, rail: Rail, canPress
     case 'wallet_cannot_batch':
       return 'This wallet cannot send this payment in one step. Nothing was paid; choose another wallet.';
     case 'fee_config_unavailable':
-      return 'The elisym fee terms could not be read. Nothing was paid; try again in a moment.';
+      return 'The payment fee terms could not be read. Nothing was paid; try again in a moment.';
     case 'fee_config_invalid':
-      return 'The elisym fee configuration cannot be used right now. Nothing was paid.';
+      return 'The payment fee configuration cannot be used right now. Nothing was paid.';
     case 'wallet_payment_failed':
       return 'Your wallet reports that the payment failed. Nothing was paid.';
     case 'offer_refused':
@@ -251,9 +251,9 @@ const RETRY_BLOCKED: Record<RetryBlockedCause, (chain: string) => string> = {
     'This order is too old to pay again, so nothing new was signed. Your earlier payment may still arrive; if it does not, contact the store.',
   offer_changed: () => 'The store changed this offer, so nothing new was signed.',
   fee_config_unavailable: () =>
-    'The elisym fee terms could not be read, so nothing new was signed. Try again in a moment.',
+    'The payment fee terms could not be read, so nothing new was signed. Try again in a moment.',
   fee_config_invalid: () =>
-    'The elisym fee configuration cannot be used right now, so nothing new was signed.',
+    'The payment fee configuration cannot be used right now, so nothing new was signed.',
 };
 
 /** Which wallet to connect, by the payout's rail. */

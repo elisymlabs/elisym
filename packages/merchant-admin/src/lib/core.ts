@@ -10,7 +10,9 @@ export {
   type NodeAmount,
   type OrderRow,
   type OrderState,
+  type Totals,
   netOf,
+  totalsOf,
   wholeUnits,
 } from '@merchant-admin-core/history';
 export {
@@ -26,4 +28,4 @@ export {
   type SessionDeps,
   type Snapshot,
 } from '@merchant-admin-core/session';
-export type { ProductLine, StoreView } from '@merchant-admin-core/store';
+export { type ProductLine, type StoreView, readStore } from '@merchant-admin-core/store';

@@ -6,6 +6,17 @@ const ADMIN_STATIC_FILES = ['index.html', 'admin.css'];
 
 export default defineConfig([
   {
+    // The checks a control plane runs before writing a home (`@elisym/merchant-node/validate`).
+    entry: { validate: 'src/validate.ts' },
+    format: ['esm'],
+    target: 'node22',
+    splitting: false,
+    sourcemap: true,
+    dts: true,
+    clean: false,
+    treeshake: true,
+  },
+  {
     entry: { cli: 'src/cli.ts' },
     format: ['esm'],
     target: 'node22',

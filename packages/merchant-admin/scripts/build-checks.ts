@@ -3,6 +3,14 @@
  * and `vercel.json`: `check-build.ts` runs them after `vite build`.
  */
 
+/**
+ * Text only `@elisym/react`'s widget runtime holds, in every version so far
+ * (its loader refusal: "customer-ref needs the v3 loader" in 0.1, "... the v3
+ * or v4 loader" in 0.2), never its constants: a test pins it to the built
+ * package, so a reworded runtime fails the test rather than the check.
+ */
+export const REACT_WIDGET_MARKER = 'customer-ref needs the v3';
+
 /** A CSP as directive -> sources. */
 export function parseCsp(policy: string): Map<string, string[]> {
   const directives = new Map<string, string[]>();

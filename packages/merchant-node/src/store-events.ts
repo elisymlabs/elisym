@@ -150,8 +150,6 @@ export function buildStoreWideEvents(
 ): { payoutList: NostrEvent; others: NostrEvent[] } {
   const storePubkey = getPublicKey(keys.storeSecretKey);
   const ownerPubkey = getPublicKey(keys.ownerSecretKey);
-  const byStore = (template: Parameters<typeof finalizeEvent>[0]) =>
-    finalizeEvent(template, keys.storeSecretKey);
   const byOwner = (template: Parameters<typeof finalizeEvent>[0]) =>
     finalizeEvent(template, keys.ownerSecretKey);
   return {
@@ -159,24 +157,77 @@ export function buildStoreWideEvents(
       buildPaytoEvent({ ownerPubkey, accept: config.payouts, createdAt: paytoCreatedAt }),
     ),
     others: [
-      byStore(
-        buildStoreProfileEvent({
-          name: config.name,
-          ownerPubkey,
-          createdAt,
-          fee: feeSupport,
-          // Every node from 0.11 accepts both Tempo memo forms for every order.
-          memoMarker: true,
-          ...(config.nip05 === undefined ? {} : { nip05: config.nip05 }),
-        }),
-      ),
-      byStore({
-        kind: KIND_INBOX_RELAYS,
-        created_at: createdAt,
-        tags: config.inboxRelays.map((relay) => ['relay', relay]),
-        content: '',
-      }),
+      ...storeSignedEvents(config, keys.storeSecretKey, ownerPubkey, createdAt, feeSupport),
       byOwner(buildStoreAuthEvent({ storePubkey, mode: 'self-host', createdAt })),
     ],
   };
+}
+
+/**
+ * The store-wide events of a store-only home: the store's own, signed here, with
+ * the owner's payout list and authorization as the owner signed them elsewhere.
+ */
+export function storeWideFromOwnerEvents(
+  config: StoreConfig,
+  storeSecretKey: Uint8Array,
+  ownerPubkey: string,
+  ownerEvents: { payoutList: NostrEvent; auth: NostrEvent },
+  createdAt: number,
+  feeSupport = false,
+): { payoutList: NostrEvent; others: NostrEvent[] } {
+  return {
+    payoutList: ownerEvents.payoutList,
+    others: [
+      ...storeSignedEvents(config, storeSecretKey, ownerPubkey, createdAt, feeSupport),
+      ownerEvents.auth,
+    ],
+  };
+}
+
+/**
+ * The store-wide events of a withdrawal in a store-only home: the store's own
+ * only. No payout list and no authorization: a sold-out store needs neither.
+ */
+export function storeWideWithoutOwnerEvents(
+  config: StoreConfig,
+  storeSecretKey: Uint8Array,
+  ownerPubkey: string,
+  createdAt: number,
+  feeSupport = false,
+): { payoutList: undefined; others: NostrEvent[] } {
+  return {
+    payoutList: undefined,
+    others: storeSignedEvents(config, storeSecretKey, ownerPubkey, createdAt, feeSupport),
+  };
+}
+
+/** The profile (naming the owner) and the inbox list, signed by the store key. */
+function storeSignedEvents(
+  config: StoreConfig,
+  storeSecretKey: Uint8Array,
+  ownerPubkey: string,
+  createdAt: number,
+  feeSupport: boolean,
+): NostrEvent[] {
+  const byStore = (template: Parameters<typeof finalizeEvent>[0]) =>
+    finalizeEvent(template, storeSecretKey);
+  return [
+    byStore(
+      buildStoreProfileEvent({
+        name: config.name,
+        ownerPubkey,
+        createdAt,
+        fee: feeSupport,
+        // Every node from 0.11 accepts both Tempo memo forms for every order.
+        memoMarker: true,
+        ...(config.nip05 === undefined ? {} : { nip05: config.nip05 }),
+      }),
+    ),
+    byStore({
+      kind: KIND_INBOX_RELAYS,
+      created_at: createdAt,
+      tags: config.inboxRelays.map((relay) => ['relay', relay]),
+      content: '',
+    }),
+  ];
 }

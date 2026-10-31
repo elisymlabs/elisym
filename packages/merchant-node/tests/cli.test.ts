@@ -10,6 +10,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { encodeBytes, nsecEncode } from 'nostr-tools/nip19';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { configTemplate } from '../src/config';
 import { emptyLedger, newWebhookEntry, webhookEventId } from '../src/ledger';
@@ -19,9 +21,10 @@ const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 const PRELOAD = fileURLToPath(new URL('./harness/relay-preload.ts', import.meta.url));
 const PASSPHRASE = 'correct horse battery staple';
 
-function cli(args: string[], env: Record<string, string> = {}, timeoutMs = 20_000) {
+function cli(args: string[], env: Record<string, string> = {}, timeoutMs = 20_000, input?: string) {
   const result = spawnSync('bun', [CLI, ...args], {
     encoding: 'utf8',
+    input,
     env: { PATH: process.env.PATH ?? '', HOME: tmpdir(), ...env },
     timeout: timeoutMs,
   });
@@ -185,6 +188,21 @@ describe('the merchant CLI', () => {
     expect(run.code).not.toBe(0);
     expect(run.output).toMatch(/encrypted owner key/);
     expect(run.output).not.toMatch(/inbox relays/);
+  });
+
+  it('setup on a store-only home fails on the missing owner key before any relay or ledger', () => {
+    const home = scratchDir();
+    expect(cli(['init', '--owner-pubkey', 'd'.repeat(64), '--home', home]).code).toBe(0);
+    const config = configTemplate('devnet');
+    config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+    config.inboxRelays = ['ws://localhost:9'];
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    editProduct(home);
+    const run = cli(['setup', '--home', home]);
+    expect(run.code).not.toBe(0);
+    expect(run.output).toMatch(/store-only home/);
+    expect(run.output).not.toMatch(/inbox relays/);
+    expect(existsSync(join(home, 'ledger.json'))).toBe(false);
   });
 
   it('init scaffolds a product setup refuses until it is edited (M27), before any relay', () => {
@@ -353,6 +371,22 @@ describe('the merchant CLI', () => {
     expect(run.code).not.toBe(0);
     expect(run.output).toMatch(/refuses gift wraps/);
     expect(run.output).toMatch(/nostr {3}not written/);
+    expect(run.output).toMatch(/owner key is encrypted/);
+    expect(existsSync(join(home, 'nostr.json'))).toBe(false);
+  });
+
+  it('check on a store-only home says there is no owner key, not that it is encrypted', () => {
+    const home = scratchDir();
+    const ownerPubkey = 'c'.repeat(64);
+    expect(cli(['init', '--owner-pubkey', ownerPubkey, '--home', home]).code).toBe(0);
+    const config = configTemplate('devnet');
+    config.payouts = config.payouts.map((payout) => ({ ...payout, address: PAYOUT }));
+    config.inboxRelays = ['ws://localhost:9'];
+    config.nip05 = '_@example.com';
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    const run = offlineCli(['check', '--home', home], { HARNESS_REJECT_KINDS: '1059' });
+    expect(run.output).toMatch(/nostr {3}not written: this home holds no owner key/);
+    expect(run.output).not.toMatch(/owner key is encrypted/);
     expect(existsSync(join(home, 'nostr.json'))).toBe(false);
   });
 
@@ -554,5 +588,203 @@ describe('the merchant CLI', () => {
     } finally {
       child.kill();
     }
+  });
+});
+
+describe('init --owner-pubkey', () => {
+  const ownerPubkey = 'a'.repeat(63).concat('b');
+
+  it('makes a store-only home and prints the given owner', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-store-only-'));
+    const result = cli(['init', '--owner-pubkey', ownerPubkey, '--home', home]);
+    expect(result.code).toBe(0);
+    expect(result.output).toContain(`owner   ${ownerPubkey} (no owner key in this home)`);
+    const keys = JSON.parse(readFileSync(join(home, 'keys.json'), 'utf8'));
+    expect(keys.ownerPubkey).toBe(ownerPubkey);
+    expect(keys).not.toHaveProperty('owner');
+  });
+
+  it('says the store key was encrypted, with a passphrase', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-store-only-'));
+    const result = cli(['init', '--owner-pubkey', ownerPubkey, '--home', home], {
+      ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE,
+    });
+    expect(result.code).toBe(0);
+    expect(result.output).toContain('keys    encrypted (the store key)');
+    expect(result.output).toContain('without it the store key is lost');
+  });
+
+  it('a full home says them: two keys to encrypt', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-full-'));
+    expect(cli(['init', '--home', home]).output).toContain('to encrypt them)');
+    const again = cli(['init', '--home', home], { ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE });
+    expect(again.output).toContain('keys    kept plain: run encrypt-keys to encrypt them');
+  });
+
+  it('encrypt-keys says it sealed the store key', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-store-only-'));
+    const init = cli(['init', '--owner-pubkey', ownerPubkey, '--home', home]);
+    expect(init.output).toContain('to encrypt it)');
+    const again = cli(['init', '--owner-pubkey', ownerPubkey, '--home', home], {
+      ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE,
+    });
+    expect(again.output).toContain('keys    kept plain: run encrypt-keys to encrypt it');
+    const run = cli(['encrypt-keys', '--home', home], { ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE });
+    expect(run.code).toBe(0);
+    expect(run.output).toContain('keys    encrypted (the store key)');
+    expect(run.output).toContain('without it the store key is lost');
+  });
+
+  it('refuses a malformed key, --owner-only with it, and other commands', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-store-only-'));
+    const bad = cli(['init', '--owner-pubkey', 'nope', '--home', home]);
+    expect(bad.code).not.toBe(0);
+    expect(bad.output).toMatch(/npub or 64 lowercase hex/);
+    expect(existsSync(join(home, 'config.json'))).toBe(false);
+    const both = cli(['init', '--owner-only', '--owner-pubkey', ownerPubkey, '--home', home], {
+      ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE,
+    });
+    expect(both.code).not.toBe(0);
+    expect(both.output).toMatch(/store-only home holds none/);
+    expect(existsSync(join(home, 'config.json'))).toBe(false);
+    const longNpub = cli([
+      'init',
+      '--owner-pubkey',
+      encodeBytes('npub', new Uint8Array(33)),
+      '--home',
+      home,
+    ]);
+    expect(longNpub.code).not.toBe(0);
+    expect(longNpub.output).toMatch(/npub or 64 lowercase hex/);
+    expect(existsSync(join(home, 'config.json'))).toBe(false);
+    const other = cli(['check', '--owner-pubkey', ownerPubkey, '--home', home]);
+    expect(other.code).not.toBe(0);
+    expect(other.output).toMatch(/--owner-pubkey is for init/);
+  });
+});
+
+describe('add-owner-key', () => {
+  it('reads the owner key from stdin, never an argument, and seals it with the passphrase', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-add-owner-'));
+    const ownerSecret = generateSecretKey();
+    const env = { ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE };
+    expect(
+      cli(['init', '--owner-pubkey', getPublicKey(ownerSecret), '--home', home], env).code,
+    ).toBe(0);
+    const asArgument = cli(['add-owner-key', nsecEncode(ownerSecret), '--home', home], env);
+    expect(asArgument.code).not.toBe(0);
+    expect(asArgument.output).toMatch(/never an argument/);
+    expect(asArgument.output).not.toContain(nsecEncode(ownerSecret));
+    const wrong = cli(
+      ['add-owner-key', '--home', home],
+      env,
+      20_000,
+      nsecEncode(generateSecretKey()),
+    );
+    expect(wrong.code).not.toBe(0);
+    expect(wrong.output).toMatch(/not the owner key/);
+    const run = cli(['add-owner-key', '--home', home], env, 20_000, `${nsecEncode(ownerSecret)}\n`);
+    expect(run.code).toBe(0);
+    expect(run.output).toContain('(key added, encrypted)');
+    expect(run.output).not.toContain('stays plain');
+    expect(run.output).not.toContain(nsecEncode(ownerSecret));
+    const keys = JSON.parse(readFileSync(join(home, 'keys.json'), 'utf8'));
+    expect(keys.owner.startsWith('encrypted:v1:')).toBe(true);
+    const again = cli(['add-owner-key', '--home', home], env);
+    expect(again.code).not.toBe(0);
+    expect(again.output).toMatch(/already holds the owner key/);
+  });
+});
+
+describe('add-owner-key on a plain store-only home', () => {
+  it('refuses a sealed home without the passphrase before reading any key', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-add-owner-'));
+    const ownerSecret = generateSecretKey();
+    expect(
+      cli(['init', '--owner-pubkey', getPublicKey(ownerSecret), '--home', home], {
+        ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE,
+      }).code,
+    ).toBe(0);
+    const run = cli(['add-owner-key', '--home', home]);
+    expect(run.code).not.toBe(0);
+    expect(run.output).toMatch(/store key is encrypted/);
+    const wrong = cli(['add-owner-key', '--home', home], { ELISYM_MERCHANT_PASSPHRASE: 'wrong' });
+    expect(wrong.code).not.toBe(0);
+    expect(wrong.output).toMatch(/wrong passphrase/);
+    writeFileSync(join(home, 'run.lock'), 'another-node');
+    const locked = cli(['add-owner-key', '--home', home], {
+      ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE,
+    });
+    expect(locked.code).not.toBe(0);
+    expect(locked.output).toMatch(/a merchant is running/);
+  });
+
+  it('adds it plain, takes only the first line of stdin, and says so', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-add-owner-'));
+    const ownerSecret = generateSecretKey();
+    expect(cli(['init', '--owner-pubkey', getPublicKey(ownerSecret), '--home', home]).code).toBe(0);
+    const run = cli(
+      ['add-owner-key', '--home', home],
+      {},
+      20_000,
+      `${nsecEncode(ownerSecret)}\ngarbage\n`,
+    );
+    expect(run.code).toBe(0);
+    expect(run.output).toContain('(key added, plain)');
+    expect(run.output).not.toContain('stays plain');
+  });
+
+  it('seals only the owner key next to a plain store key, and notes it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-add-owner-'));
+    const ownerSecret = generateSecretKey();
+    expect(cli(['init', '--owner-pubkey', getPublicKey(ownerSecret), '--home', home]).code).toBe(0);
+    const run = cli(
+      ['add-owner-key', '--home', home],
+      { ELISYM_MERCHANT_PASSPHRASE: PASSPHRASE },
+      20_000,
+      nsecEncode(ownerSecret),
+    );
+    expect(run.code).toBe(0);
+    expect(run.output).toContain('the store key stays plain');
+    const keys = JSON.parse(readFileSync(join(home, 'keys.json'), 'utf8'));
+    expect(keys.owner.startsWith('encrypted:v1:')).toBe(true);
+    expect(keys.store.startsWith('encrypted:v1:')).toBe(false);
+  });
+});
+
+describe('add-owner-key on a stdin left open', () => {
+  it('stops at the first line instead of waiting for the end of stdin', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-add-owner-'));
+    const ownerSecret = generateSecretKey();
+    expect(cli(['init', '--owner-pubkey', getPublicKey(ownerSecret), '--home', home]).code).toBe(0);
+    const child = spawn('bun', [CLI, 'add-owner-key', '--home', home], {
+      env: { PATH: process.env.PATH ?? '', HOME: tmpdir() },
+    });
+    let output = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+    });
+    // The writer keeps stdin open: only the first-line stop lets the command finish.
+    child.stdin.write(`${nsecEncode(ownerSecret)}\n`);
+    const code = await new Promise<number | null>((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill();
+        resolve(null);
+      }, 10_000);
+      child.on('exit', (exitCode) => {
+        clearTimeout(timer);
+        resolve(exitCode);
+      });
+    });
+    child.stdin.end();
+    expect(code).toBe(0);
+    expect(output).toContain('(key added, plain)');
+  });
+
+  it('refuses --yes', () => {
+    const home = mkdtempSync(join(tmpdir(), 'merchant-cli-add-owner-'));
+    const run = cli(['add-owner-key', '--yes', '--home', home]);
+    expect(run.code).not.toBe(0);
+    expect(run.output).toMatch(/--yes is not for add-owner-key/);
   });
 });

@@ -142,11 +142,12 @@ export function planListings(
 export function setupClockProblems(
   state: LedgerState,
   plans: readonly ListingPlan[],
-  paytoCreatedAt: number,
+  /** Undefined: no payout list goes out (a store-only withdrawal). */
+  paytoCreatedAt: number | undefined,
   startedAt: number,
 ): string[] {
   return [
-    ...(paytoCreatedAt === state.payto?.createdAt
+    ...(paytoCreatedAt === undefined || paytoCreatedAt === state.payto?.createdAt
       ? []
       : [clockProblem('the payout list', paytoCreatedAt, startedAt)]),
     ...plans
@@ -191,7 +192,7 @@ export function recordPublished(
   state: LedgerState,
   outcomes: readonly ListingOutcome[],
   payoutListOut: boolean,
-  payoutList: { createdAt: number; payouts: string },
+  payoutList: { createdAt: number; payouts: string } | undefined,
   configuredPayouts: readonly PayoutTerms[],
   from: number,
   until: number,
@@ -224,7 +225,7 @@ export function recordPublished(
       state.listings[d] = outcome.record;
     }
   }
-  if (payoutListOut) {
+  if (payoutListOut && payoutList !== undefined) {
     state.payto = payoutList;
   }
 }
@@ -232,14 +233,14 @@ export function recordPublished(
 /**
  * Publish a setup: every changed listing (and every product's terms) is built
  * first, so no input a commerce check refuses can surface after something went
- * out; then the payout list, the changed listings, and the other store-wide
+ * out; then the payout list (if any), the changed listings, and the other store-wide
  * events, in that order. `publish` says whether any relay took an event.
  */
 export async function publishStore(
   plans: readonly ListingPlan[],
   payouts: StoreConfig['payouts'],
   storeSecretKey: Uint8Array,
-  wide: { payoutList: NostrEvent; others: readonly NostrEvent[] },
+  wide: { payoutList: NostrEvent | undefined; others: readonly NostrEvent[] },
   publish: (event: NostrEvent, name: string) => Promise<boolean>,
 ): Promise<{ payoutListOut: boolean; outcomes: ListingOutcome[] }> {
   const built = plans.map((plan) => ({
@@ -250,7 +251,8 @@ export async function publishStore(
       : undefined,
   }));
   // The payout list first: a listing is payable only with it.
-  const payoutListOut = await publish(wide.payoutList, 'the payout list');
+  const payoutListOut =
+    wide.payoutList === undefined ? false : await publish(wide.payoutList, 'the payout list');
   const outcomes: ListingOutcome[] = [];
   for (const { plan, next, event } of built) {
     const { d, onSale } = plan.product;
@@ -279,7 +281,8 @@ export async function publishStore(
  * Publish a setup (`publishStore`) and record it: new terms start just before
  * `startedAt` (a buyer may read them at once), replaced and retired ones end
  * just before the clock read after the last publish (a buyer may have read them
- * until then). Throws, leaving the ledger as it was, when nothing went out.
+ * until then). Throws, leaving the ledger as it was, when nothing went out (except
+ * a store-only withdrawal that changes no listing).
  */
 export async function publishAndRecord(
   state: LedgerState,
@@ -287,11 +290,18 @@ export async function publishAndRecord(
     plans: readonly ListingPlan[];
     payouts: StoreConfig['payouts'];
     storeSecretKey: Uint8Array;
-    wide: { payoutList: NostrEvent; others: readonly NostrEvent[] };
+    wide: { payoutList: NostrEvent | undefined; others: readonly NostrEvent[] };
     publish: (event: NostrEvent, name: string) => Promise<boolean>;
-    payoutList: { createdAt: number; payouts: string };
+    /** What `state.payto` records if the payout list goes out; none in a store-only withdrawal. */
+    payoutList: { createdAt: number; payouts: string } | undefined;
     startedAt: number;
     now: () => number;
+    /**
+     * A store-only withdrawal: with no payout list to send, a rerun that changes
+     * no listing has nothing to publish but the profile and inbox list, and is
+     * not "nothing reached a relay". A listing that failed still is.
+     */
+    withdrawal?: boolean;
   },
 ): Promise<ListingOutcome[]> {
   const { payoutListOut, outcomes } = await publishStore(
@@ -301,7 +311,9 @@ export async function publishAndRecord(
     setup.wide,
     setup.publish,
   );
-  if (nothingWentOut(payoutListOut, outcomes)) {
+  const unchangedWithdrawal =
+    setup.withdrawal === true && outcomes.every((outcome) => outcome.listing === 'unchanged');
+  if (!unchangedWithdrawal && nothingWentOut(payoutListOut, outcomes)) {
     throw new Error(
       'nothing reached a relay (no changed listing, not the payout list): the ledger is left as it was',
     );

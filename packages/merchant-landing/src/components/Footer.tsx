@@ -25,6 +25,7 @@ const COLUMNS = [
       { href: ELISYM_URL, label: 'elisym.network' },
       { href: GITHUB_URL, label: 'GitHub' },
       { href: X_URL, label: 'X' },
+      { href: '/terms', label: 'Cloud terms' },
     ],
   },
 ];

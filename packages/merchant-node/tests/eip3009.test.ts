@@ -8,12 +8,18 @@ import { describe, expect, it } from 'vitest';
 import {
   CATCH_UP_SECS,
   EIP3009_BIND_READS,
+  EIP3009_STEADY_SWEEP_REQUESTS,
   EIP3009_SWEEP_REQUESTS,
   MAX_RECHECKS_PER_SWEEP,
   ORDER_SCAN_MARGIN_SECS,
   TERMS_WINDOW_SECS,
 } from '../src/constants';
-import { catchUpEip3009, checkEip3009Payment, recordEip3009Check } from '../src/eip3009';
+import {
+  catchUpEip3009,
+  checkEip3009Payment,
+  newScanMemory,
+  recordEip3009Check,
+} from '../src/eip3009';
 import type { MerchantOrder } from '../src/ledger';
 import { FLOOR_MARGIN_SECS } from '../src/tempo';
 import { publishTerms, retireTerms } from '../src/terms';
@@ -615,28 +621,38 @@ describe('catchUpEip3009: the rescan (money rule 7)', () => {
     };
   }
 
-  it.each([
-    ['answers []', () => ({ value: [] })],
-    [
-      'fails',
-      () => {
-        throw new Error('rpc eth_getLogs answered HTTP 429');
-      },
-    ],
-  ] as const)(
-    'credits a payment on a later pass when the chunk holding it %s on pass N',
-    async (_label, answer) => {
-      const { run, order, block } = dayOld();
-      blind(run, block, answer);
-      // Pass N: two sweeps, the payment's chunk read wrongly.
+  it('credits a payment on the next pass, at the full budget, when its chunk fails on pass N', async () => {
+    const { run, order, block } = dayOld();
+    blind(run, block, () => {
+      throw new Error('rpc eth_getLogs answered HTTP 429');
+    });
+    // Pass N: two sweeps, the payment's chunk failed: the pass is not clean.
+    expect((await sweep(run)).paid).toEqual([]);
+    run.fake.script = undefined;
+    expect((await sweep(run)).paid).toEqual([]);
+    expect(run.context.scan.passChunk).toBeUndefined();
+    expect(run.context.scan.cleanPass).toBe(false);
+    // Pass N + 1 starts again from the head at 32 and reaches the chunk at once.
+    expect((await sweep(run)).paid).toEqual([order]);
+  });
+
+  it('credits a payment within the steady bound when its chunk answered [] on a clean pass N', async () => {
+    const { run, order, block } = dayOld();
+    blind(run, block, () => ({ value: [] }));
+    expect((await sweep(run)).paid).toEqual([]);
+    run.fake.script = undefined;
+    expect((await sweep(run)).paid).toEqual([]);
+    // Every read answered: pass N is clean, pass N + 1 runs on the steady budget.
+    expect(run.context.scan.cleanPass).toBe(true);
+    const cap = run.context.rangeCap;
+    const chunksDown = Math.floor(run.fake.safe / cap) - Math.floor(block / cap) + 1;
+    const sweepsNeeded = Math.ceil(chunksDown / EIP3009_STEADY_SWEEP_REQUESTS);
+    expect(sweepsNeeded).toBeGreaterThan(1);
+    for (let left = sweepsNeeded - 1; left > 0; left -= 1) {
       expect((await sweep(run)).paid).toEqual([]);
-      run.fake.script = undefined;
-      expect((await sweep(run)).paid).toEqual([]);
-      expect(run.context.scan.passChunk).toBeUndefined();
-      // Pass N + 1 starts again from the head and reaches the chunk.
-      expect((await sweep(run)).paid).toEqual([order]);
-    },
-  );
+    }
+    expect((await sweep(run)).paid).toEqual([order]);
+  });
 
   it('restarts the full pass from the credit-tag block once it reaches the floor', async () => {
     const { run } = dayOld(false);
@@ -1444,6 +1460,168 @@ describe('catchUpEip3009: the full pass budget, exactly', () => {
     );
     await sweep(run);
     expect(run.context.scan.passChunk).toBeUndefined();
+  });
+});
+
+describe('catchUpEip3009: the steady budget after a clean pass', () => {
+  /** A day-old order: a pass is ~45 chunks, two sweeps at 32; the recent window is three. */
+  const RECENT = 3;
+
+  async function logReads(run: Run, now = NOW): Promise<number> {
+    run.fake.calls.length = 0;
+    await sweep(run, now);
+    return run.fake.calls.filter(({ method }) => method === 'eth_getLogs').length;
+  }
+
+  async function clean() {
+    const run = setup();
+    const order = orderAt(run, NOW - 86_400);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
+    expect(run.context.scan.cleanPass).toBe(false);
+    await sweep(run);
+    expect(run.context.scan.passChunk).toBeUndefined();
+    expect(run.context.scan.cleanPass).toBe(true);
+    return { run, order };
+  }
+
+  /** Fail every `eth_getLogs` whose range holds `block`. */
+  function failAt(run: Run, block: number) {
+    run.fake.script = (method, params) => {
+      const filter = params[0] as { fromBlock?: string; toBlock?: string } | undefined;
+      if (
+        method === 'eth_getLogs' &&
+        Number.parseInt(filter?.fromBlock ?? '', 16) <= block &&
+        Number.parseInt(filter?.toBlock ?? '', 16) >= block
+      ) {
+        throw new Error('rpc eth_getLogs answered HTTP 429');
+      }
+      return undefined;
+    };
+  }
+
+  it('runs the pass on EIP3009_SWEEP_REQUESTS until a clean pass, then on EIP3009_STEADY_SWEEP_REQUESTS', async () => {
+    const { run } = await clean();
+    expect(await logReads(run)).toBe(RECENT + EIP3009_STEADY_SWEEP_REQUESTS);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_STEADY_SWEEP_REQUESTS);
+  });
+
+  it('goes back to the full budget after a failed pass read, until a pass started after it is clean', async () => {
+    const { run } = await clean();
+    // The first chunk below the recent window: read by the steady pass's first sweep.
+    failAt(run, run.fake.safe - 4 * run.context.rangeCap);
+    await sweep(run);
+    run.fake.script = undefined;
+    expect(run.context.scan.cleanPass).toBe(false);
+    expect(run.context.scan.passDirty).toBe(true);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
+    // That pass reaches its floor dirty: still the full budget for the next one.
+    for (let sweeps = 0; sweeps < 8 && run.context.scan.passChunk !== undefined; sweeps += 1) {
+      await sweep(run);
+    }
+    expect(run.context.scan.passChunk).toBeUndefined();
+    expect(run.context.scan.cleanPass).toBe(false);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
+    // The pass started after the failure reads every chunk: clean, back to the steady budget.
+    for (let sweeps = 0; sweeps < 8 && run.context.scan.passChunk !== undefined; sweeps += 1) {
+      await sweep(run);
+    }
+    expect(run.context.scan.cleanPass).toBe(true);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_STEADY_SWEEP_REQUESTS);
+  });
+
+  it('goes back to the full budget after a failed recent-window read', async () => {
+    const { run } = await clean();
+    failAt(run, run.fake.safe);
+    await sweep(run);
+    run.fake.script = undefined;
+    expect(run.context.scan.cleanPass).toBe(false);
+    // The pass of that sweep read the failing head chunk too: it ends dirty.
+    for (let sweeps = 0; sweeps < 8 && run.context.scan.passChunk !== undefined; sweeps += 1) {
+      await sweep(run);
+    }
+    expect(run.context.scan.cleanPass).toBe(false);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
+  });
+
+  it('gives the pass the full budget in the sweep whose recent window failed, and a pass it starts can be clean', async () => {
+    const { run } = await clean();
+    // Exactly one failure: the first recent-window read of the head chunk.
+    let failed = false;
+    run.fake.script = (method) => {
+      if (method === 'eth_getLogs' && !failed) {
+        failed = true;
+        throw new Error('rpc eth_getLogs answered HTTP 429');
+      }
+      return undefined;
+    };
+    const reads = await logReads(run);
+    run.fake.script = undefined;
+    // The failed read and the recent window, then a pass on the full budget, not the steady one.
+    expect(reads).toBeGreaterThanOrEqual(RECENT + EIP3009_SWEEP_REQUESTS);
+    expect(run.context.scan.cleanPass).toBe(false);
+    // That pass started after the failure and read the failed blocks itself: it ends clean.
+    for (let sweeps = 0; sweeps < 8 && run.context.scan.passChunk !== undefined; sweeps += 1) {
+      await sweep(run);
+    }
+    expect(run.context.scan.cleanPass).toBe(true);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_STEADY_SWEEP_REQUESTS);
+  });
+
+  it('goes back to the full budget after a sweep that could not read the head', async () => {
+    const { run } = await clean();
+    run.fake.script = (method, params) =>
+      method === 'eth_getBlockByNumber' && params[0] === 'safe' ? { value: null } : undefined;
+    expect(await logReads(run)).toBe(0);
+    run.fake.script = undefined;
+    expect(run.context.scan.cleanPass).toBe(false);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
+  });
+
+  it('goes back to the full budget after a sweep that threw', async () => {
+    const { run } = await clean();
+    const samples = run.context.samples;
+    class Broken extends Map<number, number> {
+      override get(): number | undefined {
+        throw new Error('broken samples');
+      }
+    }
+    run.context.samples = new Broken();
+    await expect(sweep(run)).rejects.toThrow('broken samples');
+    run.context.samples = samples;
+    expect(run.context.scan.cleanPass).toBe(false);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
+  });
+
+  it('starts again on the full budget after a restart', async () => {
+    const { run } = await clean();
+    run.context.scan = newScanMemory();
+    expect(await logReads(run)).toBe(RECENT + EIP3009_SWEEP_REQUESTS);
+  });
+
+  it('credits a payment exactly once across the switch from the full to the steady budget', async () => {
+    const run = setup();
+    const order = orderAt(run, NOW - 86_400);
+    // An unpaid order keeps the scan running after the payment is credited.
+    orderAt(run, NOW - 86_400);
+    // Below the recent window: read by the first pass at 32 and again by the steady passes.
+    pay(run, order, { block: run.fake.head - 30_000 });
+    const paid: MerchantOrder[] = [];
+    for (let sweeps = 0; sweeps < 12; sweeps += 1) {
+      paid.push(...(await sweep(run)).paid);
+    }
+    // The payment's chunk was read again on the steady budget: still credited once.
+    expect(run.context.scan.cleanPass).toBe(true);
+    expect(paid).toEqual([order]);
+  });
+
+  it('keeps a clean pass across sweeps with no open order', async () => {
+    const { run } = await clean();
+    const orders = run.state.orders;
+    run.state.orders = {};
+    expect(await logReads(run)).toBe(0);
+    run.state.orders = orders;
+    expect(run.context.scan.cleanPass).toBe(true);
+    expect(await logReads(run)).toBe(RECENT + EIP3009_STEADY_SWEEP_REQUESTS);
   });
 });
 

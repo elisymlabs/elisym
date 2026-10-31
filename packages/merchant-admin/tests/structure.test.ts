@@ -26,7 +26,7 @@ function files(dir: string): string[] {
 }
 
 function imports(code: string): string[] {
-  return [...code.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map(
+  return [...code.matchAll(/(?:from|import)\s*\(?\s*['"`]([^'"`]+)['"`]/g)].map(
     (match) => match[1] ?? '',
   );
 }
@@ -56,9 +56,25 @@ describe('the admin source', () => {
   });
 
   it('loads no checkout loader and renders no raw HTML', () => {
+    // The cloud snippet names the loader as text a merchant pastes: its URL and SRI constants
+    // only, never the widget runtime.
+    const snippet = join(SRC, 'cloud', 'lib', 'snippet.ts');
     for (const path of sources) {
       const code = readFileSync(path, 'utf8');
-      expect(code).not.toMatch(/@elisym\/react|pay\.elisym\.network/);
+      // The widget package by a relative path is the widget all the same.
+      for (const target of imports(code)) {
+        expect(target).not.toMatch(/(^|\/)react\/(src|dist)\b/);
+      }
+      if (path === snippet) {
+        expect(imports(code).filter((target) => target.startsWith('@elisym/react'))).toEqual([
+          '@elisym/react/constants',
+        ]);
+        // Nor named any other way (a built-up or computed specifier).
+        expect(code).not.toMatch(/@elisym\/react(?!\/constants['"`])/);
+        expect(code).not.toMatch(/['"`]@elisym\/['"`]\s*\+/);
+      } else {
+        expect(code).not.toMatch(/@elisym\/react|pay\.elisym\.network/);
+      }
       expect(code).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
       // The CSP has style-src 'self': an inline style attribute would be refused.
       expect(code).not.toMatch(/\bstyle=\{/);

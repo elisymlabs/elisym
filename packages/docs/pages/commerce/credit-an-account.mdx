@@ -52,7 +52,7 @@ Each reference has its own orders in the buyer's browser: a page for another acc
 
 ### In React
 
-[`@elisym/react`](https://www.npmjs.com/package/@elisym/react) renders the element and adds the pinned v3 loader once per document (React 18 and 19; server rendering writes the element only):
+[`@elisym/react`](https://www.npmjs.com/package/@elisym/react) renders the element and adds the pinned v3 loader once per document, or a white-label checkout's own v4 through its `loader` prop (React 18 and 19; server rendering writes the element only):
 
 ```tsx
 import { ElisymBuy } from '@elisym/react';

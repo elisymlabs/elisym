@@ -5,6 +5,7 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cannedOffer, cannedPurchases, cannedSource, offerView } from '../scripts/fixtures/canned';
+import type { Brand } from '../src/app/brand';
 import { type Actions, Checkout } from '../src/app/Checkout';
 import type { Screen } from '../src/app/controller';
 import { PURCHASE_STATUS_LABELS, type Purchase, type PurchaseStatus } from '../src/app/history';
@@ -73,7 +74,7 @@ function counted(
 
 function mount(
   source: PurchasesSource | undefined,
-  options: { view?: View; screen?: Screen; onClose?: () => void } = {},
+  options: { view?: View; screen?: Screen; onClose?: () => void; brand?: Brand } = {},
 ) {
   const container = document.createElement('div');
   document.body.append(container);
@@ -110,6 +111,7 @@ function mount(
           actions={actions}
           {...(source === undefined ? {} : { purchases: source })}
           {...(options.onClose === undefined ? {} : { onClose: options.onClose })}
+          {...(options.brand === undefined ? {} : { brand: options.brand })}
         />,
         container,
       );
@@ -522,7 +524,7 @@ describe('Download CSV (N4)', () => {
 });
 
 describe('the fee line', () => {
-  it('names the elisym fee a purchase includes, and nothing when it has none', async () => {
+  it('names the network fee a purchase includes, and nothing when it has none', async () => {
     const base = purchaseOf('delivered');
     const asset = base.receipt.paying?.asset;
     if (asset === undefined) {
@@ -533,7 +535,7 @@ describe('the fee line', () => {
     await ui.openRow();
     const line = ui.detail()?.querySelector('[data-fee-line]');
     expect(line?.textContent).toBe(feeLine(asset, 490_000n));
-    expect(line?.textContent).toBe('Includes elisym fee 0.49 USDC');
+    expect(line?.textContent).toBe('Includes network fee 0.49 USDC');
     const plain = mount(counted([base]));
     await plain.open();
     await plain.openRow();
@@ -1044,6 +1046,25 @@ describe('the download (D3)', () => {
     expect(revoke).not.toHaveBeenCalled();
     vi.advanceTimersByTime(REVOKE_DOWNLOAD_AFTER_MS);
     expect(revoke).toHaveBeenCalledWith('blob:purchases');
+  });
+
+  it("names the file after the checkout's brand", async () => {
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:purchases');
+    vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined);
+    const clicks: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
+      function (this: HTMLAnchorElement) {
+        clicks.push(this.download);
+      },
+    );
+    const ui = mount(counted(cannedPurchases(1, NOW)), {
+      brand: { name: 'Acme Pay', poweredBy: false, fileSlug: 'acme' },
+    });
+    ui.click('Your purchases');
+    await act(async () => undefined);
+    ui.click('Download CSV');
+    await act(async () => undefined);
+    expect(clicks[0]).toMatch(/^acme-purchases-.*\.csv$/);
   });
 });
 

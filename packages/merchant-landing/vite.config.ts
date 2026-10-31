@@ -11,5 +11,7 @@ export default defineConfig({
     // No inline `<script>` or data: modules: the CSP is `script-src 'self' https://pay.elisym.network`.
     modulePreload: { polyfill: false },
     assetsInlineLimit: 0,
+    // The landing and the cloud terms (`/terms`, served from terms.html by `cleanUrls`).
+    rollupOptions: { input: { main: 'index.html', terms: 'terms.html' } },
   },
 });
