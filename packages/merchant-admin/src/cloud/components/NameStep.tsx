@@ -68,7 +68,8 @@ export function NameStep({ api, tenantId, status, poll, kept, onSettled }: Props
     }
   }, [applied, sent, onSettled]);
   const shownProblems = refused ? (status.lastProblems.store ?? []) : problems;
-  const own = ownEndpointsOf(kept.read?.form);
+  // A rename sends what the store keeps (or waits to keep): its own endpoints say a refusal.
+  const own = ownEndpointsOf(kept.read?.waitingForm ?? kept.read?.form);
 
   const save = async () => {
     if (inFlight.current || startForm === undefined) {

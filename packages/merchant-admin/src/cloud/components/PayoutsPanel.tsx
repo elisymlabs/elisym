@@ -665,7 +665,9 @@ export function PayoutsPanel({
       ) : null}
       <div className="mt-12">
         <ProblemList
-          problems={problems.map((line) => problemText(line, ownEndpointsOf(kept.read?.form)))}
+          problems={problems.map((line) =>
+            problemText(line, ownEndpointsOf(kept.read?.waitingForm ?? kept.read?.form)),
+          )}
         />
       </div>
       {notice === '' ? null : (

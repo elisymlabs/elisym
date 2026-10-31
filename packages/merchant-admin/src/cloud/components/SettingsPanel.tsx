@@ -6,7 +6,7 @@ import { SettingsSection } from '../../components/SettingsSection';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
-import { type ProblemField, ownEndpointsOf, problemText } from '../lib/problems';
+import { type ProblemField, type ProblemText, ownEndpointsOf, problemText } from '../lib/problems';
 import { EVM_CHAINS, type SettingsForm, choiceOf } from '../lib/settings';
 import type { KeptStore } from '../lib/use-kept-store';
 import { ProblemList } from './ProblemList';
@@ -44,7 +44,8 @@ export function SettingsPanel({ api, tenantId, kept, onSaved }: Props) {
   const [form, setForm] = useState<SettingsForm | undefined>(undefined);
   // A save's refusal: apart from a read's failure, so a later read never hides why a save failed.
   const [error, setError] = useState('');
-  const [problems, setProblems] = useState<string[]>([]);
+  // A save's refusal, said as of the settings it was for (their own endpoints, not today's form).
+  const [problems, setProblems] = useState<ProblemText[]>([]);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
@@ -78,6 +79,7 @@ export function SettingsPanel({ api, tenantId, kept, onSaved }: Props) {
     setProblems([]);
     setError('');
     const sent = version.current;
+    const sentOwn = ownEndpointsOf(form);
     const answer = await api.request('POST', `/tenants/${tenantId}/store`, choiceOf(form));
     inFlight.current = false;
     setBusy(false);
@@ -94,15 +96,16 @@ export function SettingsPanel({ api, tenantId, kept, onSaved }: Props) {
     }
     const detail = fieldOf(answer.body, 'detail');
     if (fieldOf(answer.body, 'error') === 'store_refused' && typeof detail === 'string') {
-      setProblems(detail.split('\n'));
+      setProblems(detail.split('\n').map((line) => problemText(line, sentOwn)));
       return;
     }
     setError(explainAnswer(answer.body, answer.status));
   };
 
   // A network's own endpoint as the form had it: its refusal says to switch to ours.
-  const own = ownEndpointsOf(form);
-  const shown = problems.map((line) => problemText(line, own));
+  const shown = problems;
+  // The edit refused as it ran was the kept (or waiting) settings: their own endpoints say it.
+  const refusedOwn = ownEndpointsOf(read?.waitingForm ?? read?.form);
   const at = (...fields: ProblemField[]) =>
     shown.filter((problem) => problem.field !== undefined && fields.includes(problem.field));
   const elsewhere = shown.filter(
@@ -170,7 +173,7 @@ export function SettingsPanel({ api, tenantId, kept, onSaved }: Props) {
           <p className="text-13 text-error">
             The last saved change was refused when it was applied:
           </p>
-          <ProblemList problems={read.refused.map((line) => problemText(line, own))} />
+          <ProblemList problems={read.refused.map((line) => problemText(line, refusedOwn))} />
         </div>
       )}
       <SettingRow label="Store name" htmlFor="store-name" help="As buyers see it in the checkout.">

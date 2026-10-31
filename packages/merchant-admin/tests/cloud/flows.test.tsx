@@ -2715,6 +2715,103 @@ describe('a cloud store, its round-2 pins', () => {
   });
 });
 
+describe('a refused endpoint, said as of the settings it was for', () => {
+  const OWN = 'https://rpc.mine.example';
+  const REFUSED = 'solana.rpcUrl: resolves to a private address';
+  const SAID = 'Your own Solana endpoint was refused: switch to ours in Settings (Use ours).';
+
+  /** A store whose kept Solana runs on its own endpoint, with these routes over it. */
+  function ownEndpointStore(extra: Record<string, Answer> = {}, refused: string[] | null = null) {
+    const store = new FakeStore(
+      storeState({ paid: true, name: 'Shop', rails: ['solana'], payoutListId: 'f'.repeat(64) }),
+    );
+    const routes = store.routes();
+    return {
+      store,
+      routes: {
+        ...routes,
+        [`GET /tenants/${TENANT_ID}/store`]: () => {
+          const answer = routes[`GET /tenants/${TENANT_ID}/store`];
+          const given = typeof answer === 'function' ? answer(undefined) : answer;
+          const body = given?.body !== null && typeof given?.body === 'object' ? given.body : {};
+          const choice =
+            'choice' in body && body.choice !== null && typeof body.choice === 'object'
+              ? body.choice
+              : {};
+          return { body: { ...body, refused, choice: { ...choice, solana: { rpcUrl: OWN } } } };
+        },
+        ...extra,
+      },
+    };
+  }
+  const refusal: Answer = { status: 422, body: { error: 'store_refused', detail: REFUSED } };
+
+  it('in Settings: Use ours after the refusal leaves the refusal said as it was', async () => {
+    const { routes } = ownEndpointStore({ [`POST /tenants/${TENANT_ID}/store`]: refusal });
+    const { host } = await admin(routes);
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-name') !== null);
+    await click(host, 'Save settings');
+    const shown = () =>
+      host.querySelector('#page-settings [data-problem-field="solana"] span')?.textContent;
+    await eventually(host, () => shown() === SAID);
+    await click(host, 'Use ours');
+    expect(shown()).toBe(SAID);
+  });
+
+  it('in Settings: an edit refused as it ran is said of its own endpoint', async () => {
+    const { routes } = ownEndpointStore({}, [REFUSED]);
+    const { host } = await admin(routes);
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(
+      host,
+      () => host.textContent?.includes('refused when it was applied') === true,
+    );
+    expect(host.querySelector('#page-settings')?.textContent).toContain(SAID);
+  });
+
+  it('in the name step: a rename refused for its own endpoint says to use ours', async () => {
+    const store = new FakeStore(storeState({ paid: true }));
+    const routes = store.routes();
+    const { host } = await admin({
+      ...routes,
+      [`GET /tenants/${TENANT_ID}/store`]: () => {
+        const answer = routes[`GET /tenants/${TENANT_ID}/store`];
+        const given = typeof answer === 'function' ? answer(undefined) : answer;
+        const body = given?.body !== null && typeof given?.body === 'object' ? given.body : {};
+        return { body: { ...body, choice: { name: '', solana: { rpcUrl: OWN } } } };
+      },
+      [`POST /tenants/${TENANT_ID}/store`]: refusal,
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('input#setup-store-name') !== null);
+    await fill(host, 'input#setup-store-name', 'My shop');
+    await click(host, 'Save and continue');
+    await eventually(
+      host,
+      () => host.querySelector('#step-body-name')?.textContent?.includes(SAID) === true,
+    );
+  });
+
+  it('in the payouts: a network turned on for a payout, refused for its own endpoint, says to use ours', async () => {
+    const { routes } = ownEndpointStore({ [`POST /tenants/${TENANT_ID}/store`]: refusal });
+    const { host } = await admin(routes);
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Payouts');
+    await eventually(host, () => hasButton(host, 'Sign and save payouts'));
+    await fill(host, 'select#payout-asset', BASE_USDC);
+    await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
+    await click(host, 'Add without the wallet');
+    await click(host, 'Sign and save payouts');
+    await eventually(
+      host,
+      () => host.querySelector('#page-payouts')?.textContent?.includes(SAID) === true,
+    );
+  });
+});
+
 describe('a partner key', () => {
   it('opens the partner view', async () => {
     const { host } = await admin({
