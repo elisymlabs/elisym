@@ -6,7 +6,6 @@ import type { RelayQuery } from './lib/key-in-use';
 import { OwnerKey, ownerKeyFile, ownerKeyFileName } from './lib/owner-key';
 import type { CheckoutReturn } from './lib/start';
 import { fetchTiers } from './lib/tiers';
-import type { WalletProviders } from './lib/wallet';
 
 /** The cloud part's configuration and tools, as the page gives them. */
 export interface CloudProps {
@@ -26,8 +25,6 @@ export interface CloudProps {
   navigate: (url: string) => void;
   /** How a Stripe Checkout came back, when the console was opened from it. */
   checkoutReturn?: CheckoutReturn;
-  /** The page's wallet extensions (a payout's proof). */
-  wallets?: WalletProviders;
   /** The local clock, in seconds (a test's own). */
   localNow?: () => number;
   /** How requests reach cloud-api (the browser's fetch, or a test's in-process API). */
@@ -69,7 +66,6 @@ export function CloudApp({
   billingUrl,
   navigate,
   checkoutReturn,
-  wallets = { solana: undefined, evm: undefined },
   localNow = () => Math.floor(Date.now() / 1000),
   fetcher,
   onBack,
@@ -198,7 +194,6 @@ export function CloudApp({
       tools={{
         signer,
         relayQuery,
-        wallets,
         // The cloud's domain: the host its API answers on.
         operator: new URL(apiOrigin).hostname,
         localNow,

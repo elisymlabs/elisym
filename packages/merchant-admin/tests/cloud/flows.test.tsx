@@ -1,3 +1,6 @@
+import { paytoProofMessage } from '@elisym/commerce';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { base58 } from '@scure/base';
 import * as nip19 from 'nostr-tools/nip19';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { StrictMode, act } from 'react';
@@ -152,7 +155,6 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
     termsUrl: 'https://paycore.elisym.network/terms',
     billingUrl: undefined,
     navigate: () => undefined,
-    wallets: { solana: undefined, evm: undefined },
     fetcher,
     ...options.cloudProps,
   };
@@ -1415,7 +1417,7 @@ describe('a cloud store, set up step by step', () => {
     await eventually(host, () => hasButton(host, 'Sign and save payouts'));
     await fill(host, 'select#payout-asset', BASE_USDC);
     await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
-    await click(host, 'Add without the wallet');
+    await click(host, 'Add');
     await click(host, 'Sign and save payouts');
     await eventually(host, () => calls.some((call) => call.path.endsWith('/owner-events')));
     const storeAt = calls.findIndex(
@@ -2833,7 +2835,7 @@ describe('a refused endpoint, said as of the settings it was for', () => {
     await eventually(host, () => hasButton(host, 'Sign and save payouts'));
     await fill(host, 'select#payout-asset', BASE_USDC);
     await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
-    await click(host, 'Add without the wallet');
+    await click(host, 'Add');
     await click(host, 'Sign and save payouts');
     await eventually(
       host,
@@ -2903,7 +2905,7 @@ describe('a refused endpoint, said as of the settings it was for', () => {
     await eventually(host, () => hasButton(host, 'Sign and save payouts'));
     await fill(host, 'select#payout-asset', BASE_USDC);
     await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
-    await click(host, 'Add without the wallet');
+    await click(host, 'Add');
     await click(host, 'Sign and save payouts');
     await eventually(
       host,
@@ -3443,5 +3445,129 @@ describe('the products page', () => {
     );
     expect(prompt).toContain('Read my current products first');
     expect(prompt).toContain('the call replaces every product');
+  });
+});
+
+describe('the payouts form', () => {
+  const PROVED_STORE = () =>
+    new FakeStore(
+      storeState({ paid: true, name: 'Shop', rails: ['solana'], payoutListId: 'f'.repeat(64) }),
+    );
+
+  /** The owner's list on the relays: USDC on Solana to a wallet that proved it agreed. */
+  function provedList(owner: OwnerKey) {
+    const secret = ed25519.utils.randomSecretKey();
+    const address = base58.encode(ed25519.getPublicKey(secret));
+    const signature = base58.encode(
+      ed25519.sign(new TextEncoder().encode(paytoProofMessage(owner.pubkey, USDC)), secret),
+    );
+    const list = owner.sign({
+      kind: 10133,
+      created_at: Math.floor(Date.now() / 1000) - 3600,
+      tags: [['accept', USDC, address, signature]],
+      content: '',
+    });
+    return { list, address, signature };
+  }
+
+  function signedAccepts(calls: { method: string; path: string; body: unknown }[]): string[][] {
+    const posted = calls.filter(
+      (call) => call.method === 'POST' && call.path.endsWith('/owner-events'),
+    );
+    const body = posted.at(-1)?.body;
+    const list =
+      body !== null && typeof body === 'object' && 'payoutList' in body
+        ? (body.payoutList as NostrEvent)
+        : undefined;
+    return (list?.tags ?? []).filter((tag) => tag[0] === 'accept');
+  }
+
+  function assetOptions(host: HTMLElement): string[] {
+    return [...host.querySelectorAll<HTMLOptionElement>('select#payout-asset option')]
+      .map((option) => option.value)
+      .filter((value) => value !== '');
+  }
+
+  it('offers only the coins with no payout yet, and says what a store needs', async () => {
+    const owner = OwnerKey.create();
+    const { list } = provedList(owner);
+    const { host } = await admin(PROVED_STORE().routes(), { relays: [list] });
+    await signIn(host, owner);
+    await openPage(host, 'Payouts');
+    await eventually(host, () => host.querySelector(`[data-payout="${USDC}"]`) !== null);
+    expect(assetOptions(host)).not.toContain(USDC);
+    expect(assetOptions(host).length).toBeGreaterThan(0);
+    expect(host.textContent).toContain('A store needs a Solana or a Tempo payout');
+    // An address added for another coin takes that coin out of the list too.
+    await fill(host, 'select#payout-asset', BASE_USDC);
+    await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
+    await click(host, 'Add');
+    expect(assetOptions(host)).not.toContain(BASE_USDC);
+    expect(host.querySelector(`[data-payout="${BASE_USDC}"]`)).not.toBeNull();
+  });
+
+  it('asks no wallet for anything: no proof buttons, no proof words', async () => {
+    const owner = OwnerKey.create();
+    const { list } = provedList(owner);
+    const { host } = await admin(PROVED_STORE().routes(), { relays: [list] });
+    await signIn(host, owner);
+    await openPage(host, 'Payouts');
+    await eventually(host, () => host.querySelector(`[data-payout="${USDC}"]`) !== null);
+    const text = host.textContent ?? '';
+    expect(text).not.toContain('with its wallet');
+    expect(text).not.toContain('Prove with my wallet');
+    expect(text).not.toContain('Add without the wallet');
+    expect(text).not.toContain('verified by the wallet');
+  });
+
+  it('signs a row left as it was with its proof again', async () => {
+    const owner = OwnerKey.create();
+    const { list, address, signature } = provedList(owner);
+    const { host, calls } = await admin(PROVED_STORE().routes(), { relays: [list] });
+    await signIn(host, owner);
+    await openPage(host, 'Payouts');
+    await eventually(host, () => host.querySelector(`[data-payout="${USDC}"]`) !== null);
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => signedAccepts(calls).length > 0);
+    expect(signedAccepts(calls)).toEqual([['accept', USDC, address, signature]]);
+  });
+
+  it('Replace leaves one row for the coin, with the new address and no proof', async () => {
+    const owner = OwnerKey.create();
+    const { list } = provedList(owner);
+    const { host, calls } = await admin(PROVED_STORE().routes(), { relays: [list] });
+    await signIn(host, owner);
+    await openPage(host, 'Payouts');
+    await eventually(host, () => host.querySelector(`[data-payout="${USDC}"]`) !== null);
+    await click(host, 'Replace USDC on Solana');
+    // The coin waits for its new address, which has the focus.
+    expect(host.querySelector<HTMLSelectElement>('select#payout-asset')?.value).toBe(USDC);
+    expect(document.activeElement?.id).toBe('payout-address');
+    const fresh = base58.encode(ed25519.getPublicKey(ed25519.utils.randomSecretKey()));
+    await fill(host, 'input#payout-address', fresh);
+    await click(host, 'Add');
+    expect(host.querySelectorAll(`[data-payout="${USDC}"]`)).toHaveLength(1);
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => signedAccepts(calls).length > 0);
+    expect(signedAccepts(calls)).toEqual([['accept', USDC, fresh]]);
+  });
+
+  it('a coin with a payout cannot be added twice', async () => {
+    const owner = OwnerKey.create();
+    const { list } = provedList(owner);
+    const { host } = await admin(PROVED_STORE().routes(), { relays: [list] });
+    await signIn(host, owner);
+    await openPage(host, 'Payouts');
+    await eventually(host, () => host.querySelector(`[data-payout="${USDC}"]`) !== null);
+    // Forced past the select, as a stale form could: refused in words.
+    const select = host.querySelector<HTMLSelectElement>('select#payout-asset');
+    const option = document.createElement('option');
+    option.value = USDC;
+    select?.append(option);
+    await fill(host, 'select#payout-asset', USDC);
+    await fill(host, 'input#payout-address', base58.encode(new Uint8Array(32).fill(7)));
+    await click(host, 'Add');
+    expect(host.textContent).toContain('There is already a payout in USDC on Solana: use Replace.');
+    expect(host.querySelectorAll(`[data-payout="${USDC}"]`)).toHaveLength(1);
   });
 });

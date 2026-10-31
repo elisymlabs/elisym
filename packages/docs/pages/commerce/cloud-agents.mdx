@@ -1,6 +1,6 @@
 # Set up a cloud store with an AI agent
 
-elisym Cloud runs a Pay Core store for a merchant: the node, its keys, its RPCs and its relays are ours to keep running, and the merchant pastes a Buy button into their page. This page is a runbook for an AI agent that sets such a store up through the cloud API, top to bottom. Every step is a request the agent can make itself, except two the merchant does by hand: paying for the plan and, optionally, proving payout addresses with their wallet.
+elisym Cloud runs a Pay Core store for a merchant: the node, its keys, its RPCs and its relays are ours to keep running, and the merchant pastes a Buy button into their page. This page is a runbook for an AI agent that sets such a store up through the cloud API, top to bottom. Every step is a request the agent can make itself, except one the merchant does by hand: paying for the plan.
 
 Run it with a coding agent that can run TypeScript (Node.js 22 or newer, or Bun). The merchant can do the same in the admin at [admin.elisym.network](https://admin.elisym.network); both sign in with the same owner key.
 
@@ -218,7 +218,7 @@ await call('POST', `/tenants/${tenantId}/owner-events`, { payoutList, auth });
 - The authorization is in `hosted` mode with no expiry, naming the API's hostname as the operator.
 - A new list must be dated after the one the store keeps. Re-sign the whole list for any change.
 
-Then [wait for the save](#waiting-for-a-save) until `kept.payoutList.id` is `payoutList.id`. These payouts are not verified: the merchant can prove each address with their wallet in the admin, and the checkout then marks it verified.
+Then [wait for the save](#waiting-for-a-save) until `kept.payoutList.id` is `payoutList.id`. The admin keeps one address per coin and asks no wallet to prove it: give each address exactly as the merchant's wallet shows it.
 
 ## 7. Add the products
 

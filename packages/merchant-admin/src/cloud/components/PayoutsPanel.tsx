@@ -2,6 +2,7 @@ import type { NostrEvent } from 'nostr-tools/pure';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
+import { SettingRow } from '../../components/SettingRow';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
@@ -25,7 +26,6 @@ import { ownEndpointsOf, problemText } from '../lib/problems';
 import { ALL_RAILS, choiceOf, railsOf, withRailsOn } from '../lib/settings';
 import { shownTime } from '../lib/store-view';
 import type { KeptStore } from '../lib/use-kept-store';
-import { WalletRefused, proveWithWallet } from '../lib/wallet';
 import { Card } from './Card';
 import { ProblemList } from './ProblemList';
 
@@ -57,9 +57,10 @@ const RAIL_NAMES: Record<string, string> = {
 
 /**
  * Where the store's payments go: the owner's payout list, started from the
- * owner's own newest list on the relays (never from cloud-api), edited (each
- * new payout proved with its wallet, or pasted and shown as not verified), and
- * signed with the store's AUTH at the local clock, when the date rules allow.
+ * owner's own newest list on the relays (never from cloud-api), edited (one
+ * address per asset, as the node takes only the first; a row left as it was
+ * keeps its wallet proof, a replaced one has none), and signed with the
+ * store's AUTH at the local clock, when the date rules allow.
  * Rails follow payouts, upward only: a payout on a rail the store keeps off
  * first saves the store with that rail on, and signs once it is kept.
  */
@@ -75,7 +76,7 @@ export function PayoutsPanel({
   onStoreChanged,
   onSettled,
 }: Props) {
-  const { signer, relayQuery, wallets, operator, localNow } = tools;
+  const { signer, relayQuery, operator, localNow } = tools;
   const form = kept.read?.waitingForm ?? kept.read?.form;
   // Any coin of the network: its rail is turned on when the list is signed.
   const allowedAssets = form === undefined ? [] : payoutAssets(network, new Set(ALL_RAILS));
@@ -84,6 +85,7 @@ export function PayoutsPanel({
   const [dropped, setDropped] = useState(0);
   const [asset, setAsset] = useState('');
   const [address, setAddress] = useState('');
+  const addressField = useRef<HTMLInputElement>(null);
   const [reauthorize, setReauthorize] = useState(false);
   const [notice, setNotice] = useState('');
   const [problems, setProblems] = useState<string[]>([]);
@@ -198,10 +200,14 @@ export function PayoutsPanel({
     setDropped(started.dropped);
   }, [rows, relay, form, allowedKey, localNow]);
 
+  // One address per asset: only the assets with no payout yet can be added.
+  const open = allowedAssets.filter((each) => !rows?.some((row) => row.caip19 === each.caip19));
+
   const labelOf = (caip19: string) =>
     allowedAssets.find((each) => each.caip19 === caip19)?.label ?? caip19;
 
-  const add = async () => {
+  // A pasted address: one per asset (the node takes only the first), with no wallet proof.
+  const add = () => {
     if (inFlight.current || rows === undefined) {
       return;
     }
@@ -210,70 +216,7 @@ export function PayoutsPanel({
       return;
     }
     if (rows.some((row) => row.caip19 === asset)) {
-      setNotice(`There is already a payout in ${labelOf(asset)}: remove it first.`);
-      return;
-    }
-    inFlight.current = true;
-    setBusy(true);
-    setNotice('');
-    try {
-      const proved = await proveWithWallet(wallets, {
-        ownerPubkey: signer.pubkey,
-        caip19: asset,
-        address,
-      });
-      setRows([...rows, { caip19: asset, address: proved.address, signature: proved.signature }]);
-      setAddress('');
-      setSaved(false);
-    } catch (error) {
-      setNotice(error instanceof WalletRefused ? error.message : 'The wallet failed: try again.');
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
-  };
-
-  // An unproved row proved with its wallet: replaced by the proved one, in place.
-  const verify = async (row: PayoutRow) => {
-    if (inFlight.current || rows === undefined) {
-      return;
-    }
-    inFlight.current = true;
-    setBusy(true);
-    setNotice('');
-    try {
-      const proved = await proveWithWallet(wallets, {
-        ownerPubkey: signer.pubkey,
-        caip19: row.caip19,
-        address: row.address,
-      });
-      setRows(
-        rows.map((each) =>
-          each.caip19 === row.caip19
-            ? { caip19: row.caip19, address: proved.address, signature: proved.signature }
-            : each,
-        ),
-      );
-      setSaved(false);
-    } catch (error) {
-      setNotice(error instanceof WalletRefused ? error.message : 'The wallet failed: try again.');
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
-  };
-
-  // A pasted address, not proved by its wallet: taken, and shown as not verified.
-  const addUnproved = () => {
-    if (inFlight.current || rows === undefined) {
-      return;
-    }
-    if (asset === '') {
-      setNotice('Choose what the payout is paid in.');
-      return;
-    }
-    if (rows.some((row) => row.caip19 === asset)) {
-      setNotice(`There is already a payout in ${labelOf(asset)}: remove it first.`);
+      setNotice(`There is already a payout in ${labelOf(asset)}: use Replace.`);
       return;
     }
     const canonical = payoutAddress(asset, address);
@@ -283,9 +226,31 @@ export function PayoutsPanel({
     }
     setNotice('');
     setRows([...rows, { caip19: asset, address: canonical }]);
+    setAsset('');
     setAddress('');
     setSaved(false);
   };
+
+  // Replace: the row goes (its proof with it, bound to its address), and its asset waits for the new one.
+  const replace = (row: PayoutRow) => {
+    if (inFlight.current || rows === undefined) {
+      return;
+    }
+    setRows(rows.filter((other) => other.caip19 !== row.caip19));
+    setAsset(row.caip19);
+    setAddress('');
+    setNotice('');
+    setSaved(false);
+    setReplacing((count) => count + 1);
+  };
+
+  // After a Replace, the address field (rendered again if every asset had a payout) takes the focus.
+  const [replacing, setReplacing] = useState(0);
+  useEffect(() => {
+    if (replacing > 0) {
+      addressField.current?.focus();
+    }
+  }, [replacing]);
 
   /** `resumed`: called once the rails this list waited for are kept. */
   const sign = async (resumed = false) => {
@@ -489,8 +454,11 @@ export function PayoutsPanel({
   return (
     <Card title="Payouts">
       <p className="text-14 text-text-2 mt-8 leading-relaxed">
-        Where buyers&apos; payments go: your own wallets, signed by your owner key. Each new payout
-        is proved with its wallet before you sign.
+        Where buyers&apos; payments go: your own wallets, one per coin, signed by your access key.
+      </p>
+      <p className="text-13 text-text-2 mt-4">
+        A store needs a Solana or a Tempo payout; Ethereum, Arbitrum and Base can be added next to
+        one.
       </p>
       {relay === undefined && !relayFailed ? (
         <p className="text-14 text-text-3 mt-12">Reading your payouts from the relays...</p>
@@ -535,82 +503,78 @@ export function PayoutsPanel({
             </p>
           ) : null}
           {rows.length === 0 ? <p className="text-14 text-text-3">No payouts yet.</p> : null}
-          <ul className="flex flex-col gap-8">
-            {rows.map((row) => (
-              <li
-                key={row.caip19}
-                data-payout={row.caip19}
-                className="border-line flex flex-col gap-4 border-t pt-8"
-              >
-                <span className="text-14 font-medium">{labelOf(row.caip19)}</span>
-                <span className="text-13 font-mono break-all">{row.address}</span>
-                <span className="text-12 text-text-3">
-                  {row.signature === undefined
-                    ? 'not verified by the wallet'
-                    : 'verified by the wallet'}
-                </span>
-                {row.signature === undefined ? (
-                  <Button
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => void verify(row)}
-                    className="self-start"
-                  >
-                    Verify {labelOf(row.caip19)} with its wallet
-                  </Button>
-                ) : null}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    setRows(rows.filter((other) => other.caip19 !== row.caip19));
-                    setSaved(false);
-                  }}
-                  className="text-13 text-error self-start underline underline-offset-2"
-                >
-                  Remove {labelOf(row.caip19)}
-                </button>
-              </li>
-            ))}
-          </ul>
-          <div className="border-line flex flex-col gap-8 border-t pt-12">
-            <label htmlFor="payout-asset" className="text-14 font-medium">
-              Add a payout
-            </label>
-            <select
-              id="payout-asset"
-              value={asset}
-              onChange={(event) => setAsset(event.target.value)}
-              className="rounded-10 border-line-2 bg-bg text-14 border px-8 py-6"
-            >
-              <option value="">Paid in...</option>
-              {allowedAssets.map((each) => (
-                <option key={each.caip19} value={each.caip19}>
-                  {each.label}
-                </option>
+          {rows.length === 0 ? null : (
+            <div className="border-line rounded-12 divide-line -mx-4 divide-y border">
+              {rows.map((row) => (
+                <div key={row.caip19} data-payout={row.caip19}>
+                  <SettingRow label={labelOf(row.caip19)}>
+                    <span className="text-13 font-mono break-all">{row.address}</span>
+                    <div className="flex flex-wrap gap-12">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => replace(row)}
+                        className="text-13 text-text-2 hover:text-text underline underline-offset-2"
+                      >
+                        Replace {labelOf(row.caip19)}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          setRows(rows.filter((other) => other.caip19 !== row.caip19));
+                          setSaved(false);
+                        }}
+                        className="text-13 text-error underline underline-offset-2"
+                      >
+                        Remove {labelOf(row.caip19)}
+                      </button>
+                    </div>
+                  </SettingRow>
+                </div>
               ))}
-            </select>
-            <label htmlFor="payout-address" className="text-13 text-text-2">
-              Your wallet address
-            </label>
-            <Input
-              id="payout-address"
-              type="text"
-              value={address}
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) => setAddress(event.target.value)}
-              mono
-            />
-            <div className="flex flex-wrap gap-8">
-              <Button disabled={busy} onClick={() => void add()}>
-                Prove with my wallet and add
-              </Button>
-              <Button disabled={busy} onClick={addUnproved}>
-                Add without the wallet
+            </div>
+          )}
+          {open.length === 0 ? (
+            <p className="text-13 text-text-3">
+              Every coin has a payout: use Replace to change one.
+            </p>
+          ) : (
+            <div className="border-line flex flex-col gap-8 border-t pt-12">
+              <label htmlFor="payout-asset" className="text-14 font-medium">
+                Add a payout
+              </label>
+              <select
+                id="payout-asset"
+                value={asset}
+                onChange={(event) => setAsset(event.target.value)}
+                className="rounded-10 border-line-2 bg-bg text-14 border px-8 py-6"
+              >
+                <option value="">Paid in...</option>
+                {open.map((each) => (
+                  <option key={each.caip19} value={each.caip19}>
+                    {each.label}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="payout-address" className="text-13 text-text-2">
+                Your wallet address
+              </label>
+              <Input
+                id="payout-address"
+                ref={addressField}
+                type="text"
+                value={address}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setAddress(event.target.value)}
+                mono
+              />
+              <Button disabled={busy} onClick={add} className="self-start">
+                Add
               </Button>
             </div>
-          </div>
+          )}
           {railsWait === undefined ? null : (
             <p role="status" className="text-13 text-text-2">
               Turning on {railsWait.rails.map((rail) => RAIL_NAMES[rail] ?? rail).join(', ')} for

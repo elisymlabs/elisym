@@ -1,6 +1,5 @@
 import type { RelayQuery } from './key-in-use';
 import type { OwnerSigner } from './owner-key';
-import type { WalletProviders } from './wallet';
 
 /** What signing the owner's events needs, handed down from the signed-in console. */
 export interface OwnerTools {
@@ -8,8 +7,6 @@ export interface OwnerTools {
   signer: OwnerSigner;
   /** Reads the owner's events from the default relays. */
   relayQuery: RelayQuery;
-  /** The page's wallet extensions, for a payout's proof. */
-  wallets: WalletProviders;
   /** The cloud's domain, which the AUTH names as the store's operator. */
   operator: string;
   /** The local clock, in seconds: what owner events are dated by. */

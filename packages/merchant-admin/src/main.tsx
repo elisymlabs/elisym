@@ -6,7 +6,6 @@ import { downloadFile } from './cloud/lib/download';
 import { consoleRelayQuery } from './cloud/lib/key-in-use';
 import { billingUrlFrom, cloudApiOriginOf } from './cloud/lib/origin';
 import { checkoutReturnOf, startTierOf } from './cloud/lib/start';
-import { injectedProviders } from './cloud/lib/wallet';
 import { TERMS_URL } from './constants';
 import { createSessionDeps } from './lib/deps';
 import { claimWindow } from './lib/own-tab';
@@ -32,7 +31,6 @@ const cloud: CloudProps | undefined =
         billingUrl: billingUrlFrom(import.meta.env.VITE_BILLING_URL),
         navigate: (url) => window.location.assign(url),
         checkoutReturn,
-        wallets: injectedProviders(window),
       };
 const root = document.getElementById('root');
 if (root === null) {
