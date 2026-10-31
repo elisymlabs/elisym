@@ -13,7 +13,7 @@ export const HEADER_ROW = `${PAGE_FRAME} flex h-64 items-center justify-between 
 export const HEADER_NAV = 'text-14 flex items-center gap-4';
 /** The admin's one header link, back to the landing: the landing's link look, at every width. */
 export const HEADER_HOME_LINK =
-  'text-text-2 hover:text-text rounded-8 inline-flex items-center gap-6 px-12 py-8';
+  'text-text-2 hover:text-text rounded-8 inline-flex items-center gap-6 px-12 py-8 whitespace-nowrap';
 
 /** The product's name, everywhere the admin names it. */
 export const PRODUCT_NAME = 'Pay Core';
