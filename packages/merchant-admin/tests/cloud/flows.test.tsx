@@ -3378,6 +3378,49 @@ describe('the products page', () => {
     expect(Object.keys(products ?? {}).sort()).toEqual(['course', 'soon']);
   });
 
+  it('a waiting product opens with no clash on its own id', async () => {
+    const text = '---\ntitle: "Course"\npriceUsd: "10"\n---\n\nA course.\n';
+    const waiting = '---\ntitle: "Waiting"\npriceUsd: "3"\n---\n\nSoon.\n';
+    const { host } = await productsPage((store) => ({
+      ...store.routes(),
+      [`GET /tenants/${TENANT_ID}/store`]: () => ({
+        body: {
+          ...store.storeRead(),
+          products: {},
+          productNames: ['course'],
+          waitingProducts: { course: text, waiting },
+        },
+      }),
+    }));
+    await act(async () => editButton(host, 'Waiting').click());
+    const id = (host.querySelector('[role="dialog"] input[id$="-title"]')?.id ?? '').replace(
+      /-title$/,
+      '',
+    );
+    expect(host.querySelector(`#${id}-name-line`)?.textContent).toContain('Button id: waiting');
+    expect(host.querySelector(`#${id}-name-error`)).toBeNull();
+    expect(host.querySelector(`input#${id}-name`)).toBeNull();
+  });
+
+  it('on a store not launched, a kept product removed is saved away, with no published line', async () => {
+    const course = '---\ntitle: "Course"\npriceUsd: "10"\n---\n\nA course.\n';
+    const mug = '---\ntitle: "Mug"\npriceUsd: "5"\n---\n\nA mug.\n';
+    const store = new FakeStore(readyState({ products: { course, mug } }));
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Products');
+    await eventually(host, () => host.querySelector('[aria-label="Edit Mug"]') !== null);
+    await act(async () => editButton(host, 'Mug').click());
+    await click(host, 'Remove mug');
+    await click(host, 'Save 1 change');
+    await eventually(host, () => productPosts(calls).length === 1);
+    const body = productPosts(calls)[0]?.body;
+    const products =
+      body !== null && typeof body === 'object' && 'products' in body ? body.products : {};
+    expect(Object.keys(products ?? {})).toEqual(['course']);
+    expect(host.textContent).not.toContain('is published');
+  });
+
   it('a launched store never offers to remove a published product', async () => {
     const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
     const { host } = await admin(store.routes());
