@@ -137,6 +137,27 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     (product.key === `kept-${product.name}` || savedAs.current.get(product.key) === product.name);
   // The set a save of one product builds on: the one on its way, else the one kept.
   const base = sent !== undefined && !refused ? sent.set : start;
+  /** The name a product is saved under, if any: a kept one's own, or a new one's once saved. */
+  const ownName = (product: ProductDraft) =>
+    product.key.startsWith('kept-')
+      ? product.key.slice('kept-'.length)
+      : savedAs.current.get(product.key);
+  /**
+   * The ids another product holds: in the draft, or saved and only removed in the draft
+   * (a save of this product alone would overwrite it).
+   */
+  const takenBy = (product: ProductDraft) =>
+    new Set([
+      ...draft.filter((other) => other.key !== product.key).map((other) => other.name),
+      ...Object.keys(base).filter((name) => name !== ownName(product)),
+    ]);
+  /** The published products a set leaves out: never removed, only taken off sale. */
+  const unpublished = (next: Readonly<Record<string, string>>) =>
+    published
+      ? [...keptNames]
+          .filter((name) => next[name] === undefined)
+          .map((name) => `${name} is published: take it off sale instead of removing it.`)
+      : [];
 
   const shownProblems =
     refused && problems.length === 0
@@ -158,10 +179,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
         }
         // A new product's id follows its title until the merchant types one.
         if (!next.nameTouched && next.fields !== undefined && !isKept(product)) {
-          const taken = new Set(
-            draft.filter((other) => other.key !== key).map((other) => other.name),
-          );
-          return { ...next, name: freeSlug(next.fields.title, taken) };
+          return { ...next, name: freeSlug(next.fields.title, takenBy(product)) };
         }
         return next;
       }),
@@ -199,7 +217,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
   const add = () => {
     nextKey.current += 1;
     const key = `new-${nextKey.current}`;
-    const taken = new Set(draft.map((product) => product.name));
+    const taken = new Set([...draft.map((product) => product.name), ...Object.keys(base)]);
     setDraft([
       ...draft,
       {
@@ -235,13 +253,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     if (draft.length === 0) {
       found.push('A store sells at least one product.');
     }
-    if (published) {
-      for (const name of keptNames) {
-        if (set[name] === undefined) {
-          found.push(`${name} is published: take it off sale instead of removing it.`);
-        }
-      }
-    }
+    found.push(...unpublished(set));
     if (draft.length > status.usage.products && draft.length > keptNames.size) {
       found.push(`Your plan takes ${status.usage.products.toLocaleString('en-US')} products.`);
     }
@@ -265,9 +277,8 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     if (answer.status === 200) {
       const digest = await productsDigest(set);
       kept.reload();
-      for (const product of draft) {
-        savedAs.current.set(product.key, product.name);
-      }
+      // A new product reaches the draft only by its own save (Save product records it): this
+      // set names no product under a name not already recorded.
       setSent({ digest, seq: poll.watch(), set });
       return true;
     }
@@ -289,9 +300,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     if (inFlight.current) {
       return false;
     }
-    const before = product.key.startsWith('kept-')
-      ? product.key.slice('kept-'.length)
-      : savedAs.current.get(product.key);
+    const before = ownName(product);
     const next = { ...base };
     if (before !== undefined) {
       delete next[before];
@@ -309,6 +318,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     if (issues.length > 0) {
       found.push(`Fix this product first: ${labelOf(product)}.`);
     }
+    found.push(...unpublished(next));
     const count = Object.keys(next).length;
     if (count > status.usage.products && count > keptNames.size) {
       found.push(`Your plan takes ${status.usage.products.toLocaleString('en-US')} products.`);
@@ -499,9 +509,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
           <ProductEditor
             product={openProduct}
             nameEditable={!isKept(openProduct)}
-            nameTaken={draft.some(
-              (other) => other.key !== openProduct.key && other.name === openProduct.name,
-            )}
+            nameTaken={!isKept(openProduct) && takenBy(openProduct).has(openProduct.name)}
             refused={refusedOf(openProduct.name)}
             onChange={(next) => update(openProduct.key, next)}
           />

@@ -3285,6 +3285,99 @@ describe('the products page', () => {
     expect(host.textContent).toContain('Fix this product first: Mug.');
   });
 
+  it('a new product titled like one removed but still saved takes another id, and its typed clash shows at the id', async () => {
+    const { host, calls } = await productsPage();
+    await act(async () => editButton(host, 'Course').click());
+    await click(host, 'Remove course');
+    await click(host, 'Add product');
+    const id = (host.querySelector('[role="dialog"] input[id$="-title"]')?.id ?? '').replace(
+      /-title$/,
+      '',
+    );
+    await fill(host, `input#${id}-title`, 'Course');
+    expect(host.querySelector(`#${id}-name-line`)?.textContent).toContain('Button id: course-2');
+    await click(host, 'Change');
+    await fill(host, `input#${id}-name`, 'course');
+    expect(host.querySelector(`#${id}-name-error`)?.textContent).toBe(
+      'Another product has the button id course.',
+    );
+    expect(productPosts(calls)).toEqual([]);
+  });
+
+  /** A launched store whose waiting set leaves out `old`, a product it published. */
+  const leavesOutPublished = (store: FakeStore): Record<string, Answer> => ({
+    ...store.routes(),
+    [`GET /tenants/${TENANT_ID}/store`]: () => ({
+      body: {
+        ...store.storeRead(),
+        products: {},
+        productNames: ['course', 'old'],
+        waitingProducts: { course: '---\ntitle: "Course"\npriceUsd: "10"\n---\n\nA course.\n' },
+      },
+    }),
+  });
+
+  it('a save that would leave out a published product is refused up front: from the list', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host, calls } = await admin(leavesOutPublished(store));
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Products');
+    await eventually(host, () => host.querySelector('[aria-label="Course on sale"]') !== null);
+    await act(async () =>
+      host.querySelector<HTMLInputElement>('[aria-label="Course on sale"]')?.click(),
+    );
+    await click(host, 'Save 1 change');
+    expect(host.textContent).toContain(
+      'old is published: take it off sale instead of removing it.',
+    );
+    expect(productPosts(calls)).toEqual([]);
+  });
+
+  it('a save that would leave out a published product is refused up front: from the sheet', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host, calls } = await admin(leavesOutPublished(store));
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Products');
+    await eventually(host, () => host.querySelector('[aria-label="Edit Course"]') !== null);
+    await act(async () => editButton(host, 'Course').click());
+    const id = host.querySelector('[role="dialog"] input[id$="-price"]')?.id ?? '';
+    await fill(host, `input#${id}`, '12');
+    await click(host, 'Save product');
+    expect(dialog(host)?.textContent).toContain(
+      'old is published: take it off sale instead of removing it.',
+    );
+    expect(productPosts(calls)).toEqual([]);
+  });
+
+  it('a waiting product given a free id is saved under it alone: its old id is gone', async () => {
+    const text = '---\ntitle: "Course"\npriceUsd: "10"\n---\n\nA course.\n';
+    const waiting = '---\ntitle: "Waiting"\npriceUsd: "3"\n---\n\nSoon.\n';
+    const { host, calls } = await productsPage((store) => ({
+      ...store.routes(),
+      [`GET /tenants/${TENANT_ID}/store`]: () => ({
+        body: {
+          ...store.storeRead(),
+          products: {},
+          productNames: ['course'],
+          waitingProducts: { course: text, waiting },
+        },
+      }),
+    }));
+    await act(async () => editButton(host, 'Waiting').click());
+    const id = (host.querySelector('[role="dialog"] input[id$="-title"]')?.id ?? '').replace(
+      /-title$/,
+      '',
+    );
+    await click(host, 'Change');
+    await fill(host, `input#${id}-name`, 'soon');
+    await click(host, 'Save product');
+    await eventually(host, () => productPosts(calls).length === 1);
+    const body = productPosts(calls)[0]?.body;
+    const products =
+      body !== null && typeof body === 'object' && 'products' in body ? body.products : {};
+    expect(Object.keys(products ?? {}).sort()).toEqual(['course', 'soon']);
+  });
+
   it('a launched store never offers to remove a published product', async () => {
     const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
     const { host } = await admin(store.routes());
