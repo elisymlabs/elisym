@@ -9,6 +9,7 @@
 import { parseCaip19 } from '@elisym/commerce';
 import { explorerTxUrl } from '@elisym/pay-core';
 import type { Credit, OrderRow } from '../../lib/core';
+import type { ShownRow } from '../../lib/orders';
 import type { OrderPaymentRead, OrderRead } from './orders';
 
 function creditOf(payment: OrderPaymentRead): Credit {
@@ -31,8 +32,11 @@ function stateOf(order: OrderRead): OrderRow['state'] {
   return order.deliveredAt === null ? 'payment_reported' : 'delivered';
 }
 
-export function orderRowOf(order: OrderRead): OrderRow {
+/** One cloud order as a row; its buyer's email and reference ride on it (no order event to read). */
+export function orderRowOf(order: OrderRead): ShownRow {
   return {
+    ...(order.email === null ? {} : { email: order.email }),
+    ...(order.customerRef === null ? {} : { customerRef: order.customerRef }),
     key: order.key,
     buyerPubkey: order.buyer,
     orderId: order.orderId,
@@ -48,6 +52,6 @@ export function orderRowOf(order: OrderRead): OrderRow {
   };
 }
 
-export function orderRowsOf(orders: readonly OrderRead[]): OrderRow[] {
+export function orderRowsOf(orders: readonly OrderRead[]): ShownRow[] {
   return orders.map(orderRowOf);
 }

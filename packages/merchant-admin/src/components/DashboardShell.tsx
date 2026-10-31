@@ -31,12 +31,15 @@ interface Props {
   identity: { value: string; copyLabel: string };
   status: string;
   busy: boolean;
-  onRefresh: () => void;
+  /** Reads the store again; none, no Refresh (a store with nothing left to read). */
+  onRefresh?: () => void;
   onSignOut: () => void;
   signOutLabel: string;
   pages: readonly ShellPage[];
   active: string;
   onSelect: (id: string) => void;
+  /** Shown alone, with no pages to choose (a store that left: its handover, or its end). */
+  alone?: ReactNode;
 }
 
 /**
@@ -56,6 +59,7 @@ export function DashboardShell({
   pages,
   active,
   onSelect,
+  alone,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
@@ -167,7 +171,7 @@ export function DashboardShell({
           {storeName}
         </p>
         <nav aria-label="Store" className="flex flex-col gap-2">
-          {pages.map((page) => {
+          {(alone === undefined ? pages : []).map((page) => {
             const current = page.id === active;
             const locked = page.locked !== undefined;
             return (
@@ -215,15 +219,17 @@ export function DashboardShell({
             </span>
             <CopyButton text={identity.value} label={identity.copyLabel} />
           </p>
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={busy}
-            className="rounded-10 border-line bg-surface text-14 hover:bg-surface-2 flex items-center gap-6 border px-12 py-8 font-medium disabled:opacity-50"
-          >
-            <Icon name="refresh" className={`size-16 ${busy ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+          {onRefresh === undefined ? null : (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={busy}
+              className="rounded-10 border-line bg-surface text-14 hover:bg-surface-2 flex items-center gap-6 border px-12 py-8 font-medium disabled:opacity-50"
+            >
+              <Icon name="refresh" className={`size-16 ${busy ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          )}
           <button
             type="button"
             onClick={onSignOut}
@@ -238,11 +244,12 @@ export function DashboardShell({
       <main className="min-w-0 flex-1" inert={menuOpen || undefined}>
         <div className="mx-auto flex w-full max-w-880 flex-col gap-20 px-16 py-24 sm:px-32 sm:py-40">
           <StatusLine status={status} busy={busy} />
-          {pages.map((page) => (
-            <div key={page.id} id={`page-${page.id}`} hidden={page.id !== active}>
-              {page.content}
-            </div>
-          ))}
+          {alone ??
+            pages.map((page) => (
+              <div key={page.id} id={`page-${page.id}`} hidden={page.id !== active}>
+                {page.content}
+              </div>
+            ))}
         </div>
       </main>
     </div>

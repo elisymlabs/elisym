@@ -1,24 +1,25 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Button } from '../../components/Button';
-import { Charts } from '../../components/Charts';
-import { Totals } from '../../components/Totals';
-import { totalsOf } from '../../lib/core';
+import { OrdersSection } from '../../components/OrdersSection';
+import { Section } from '../../components/Section';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { orderRowsOf } from '../lib/order-rows';
-import { type OrderCommand, type OrdersRead, ordersReadOf } from '../lib/orders';
+import type { OrderCommand, OrdersRead } from '../lib/orders';
 import { payoutAssets } from '../lib/payouts';
 import { shownTime } from '../lib/store-view';
-import { Card } from './Card';
+import type { CloudOrders } from '../lib/use-cloud-orders';
 import { CommandConfirm } from './CommandConfirm';
 import { HandAnswer } from './HandAnswer';
 import { HandAnswered } from './HandAnswered';
-import { OrderItem } from './OrderItem';
+import { OrderActions } from './OrderActions';
 
 interface Props {
   api: ConsoleApi;
   tenantId: string;
   network: 'mainnet' | 'devnet';
+  /** The store's orders, read once for the whole page. */
+  orders: CloudOrders;
   /** Hands a file to the browser to save. */
   download: (data: string | Uint8Array<ArrayBuffer>, fileName: string) => void;
 }
@@ -58,44 +59,17 @@ function waitingOn(read: OrdersRead): Waiting[] {
 }
 
 /**
- * The store's orders, read from its ledger through cloud-api (the store key
- * stays in the cloud): open and paid orders, the ones waiting for the owner's
- * answer, orders answered by hand, and expired ones as bare keys. The owner
- * commands are confirmed before they are queued; a CSV holds the same data.
+ * The cloud store's Orders page: the shared order list over the store's
+ * ledger (read through cloud-api: the store key stays in the cloud), the
+ * orders waiting for the owner's answer above it, orders answered by hand and
+ * expired ones below it. Each order's own commands sit in its details, and
+ * are confirmed before they are queued; the CSV is the cloud's own.
  */
-export function OrdersPanel({ api, tenantId, network, download }: Props) {
-  const [read, setRead] = useState<OrdersRead | undefined>(undefined);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
+export function OrdersPanel({ api, tenantId, network, orders, download }: Props) {
   const [csvError, setCsvError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [asked, setAsked] = useState<OrderCommand | undefined>(undefined);
-  const latest = useRef(0);
-
-  const load = useCallback(async () => {
-    latest.current += 1;
-    const seq = latest.current;
-    setLoading(true);
-    const answer = await api.request('GET', `/tenants/${tenantId}/orders`);
-    if (seq !== latest.current) {
-      return;
-    }
-    setLoading(false);
-    const orders = answer.status === 200 ? ordersReadOf(answer.body) : undefined;
-    if (orders !== undefined) {
-      setRead(orders);
-      setError('');
-    } else {
-      setError(explainAnswer(answer.status === 200 ? undefined : answer.body, answer.status));
-    }
-  }, [api, tenantId]);
-
-  useEffect(() => {
-    void load();
-    return () => {
-      latest.current += 1;
-    };
-  }, [load]);
+  const { read } = orders;
 
   const exportCsv = async () => {
     if (exporting) {
@@ -115,27 +89,20 @@ export function OrdersPanel({ api, tenantId, network, download }: Props) {
   const refundAssets = payoutAssets(network, REFUND_RAILS);
   const waiting = read === undefined ? [] : waitingOn(read);
   const rows = read === undefined ? [] : orderRowsOf(read.orders);
+  const byKey = new Map((read?.orders ?? []).map((order) => [order.key, order]));
 
-  return (
-    <Card title="Orders">
-      <div className="mt-12 flex gap-8">
-        <Button disabled={loading} onClick={() => void load()}>
-          Read the orders again
-        </Button>
-        <Button disabled={exporting} onClick={() => void exportCsv()}>
-          Download CSV
-        </Button>
-      </div>
-      {read === undefined && loading ? (
-        <p className="text-14 text-text-3 mt-12">Loading...</p>
+  const before = (
+    <>
+      {read === undefined && orders.loading ? (
+        <p className="text-14 text-text-3">Loading...</p>
       ) : null}
-      {error === '' ? null : (
-        <p role="alert" className="text-14 text-error mt-12">
-          {error}
+      {orders.error === '' ? null : (
+        <p role="alert" className="text-14 text-error">
+          {orders.error}
         </p>
       )}
       {csvError === '' ? null : (
-        <p role="alert" className="text-14 text-error mt-12">
+        <p role="alert" className="text-14 text-error">
           {csvError}
         </p>
       )}
@@ -146,82 +113,104 @@ export function OrdersPanel({ api, tenantId, network, download }: Props) {
           tenantId={tenantId}
           command={asked}
           onClose={() => setAsked(undefined)}
-          onFinished={() => void load()}
+          onFinished={orders.reload}
         />
       )}
-      {read === undefined ? null : (
-        <>
-          <section className="mt-16 flex flex-col gap-16">
-            <h3 className="text-15 font-semibold">Sales</h3>
-            <Totals history={{ rows, totals: totalsOf(rows) }} source="cloud" />
-            <Charts rows={rows} nowSeconds={Math.floor(Date.now() / 1000)} source="cloud" />
-          </section>
-          {waiting.length === 0 ? null : (
-            <section className="mt-16">
-              <h3 className="text-15 font-semibold">Waiting for your answer</h3>
-              <ul>
-                {waiting.map((each) => (
-                  <HandAnswer
-                    key={each.key}
-                    orderKey={each.key}
-                    reasons={each.reasons}
-                    assets={refundAssets}
-                    onAsk={setAsked}
-                    busy={asked !== undefined}
-                  />
-                ))}
-              </ul>
-            </section>
-          )}
-          <section className="mt-16">
-            <h3 className="text-15 font-semibold">Open and paid</h3>
-            {read.orders.length === 0 ? (
-              <p className="text-14 text-text-3 mt-8">No orders yet.</p>
-            ) : (
-              <ul>
-                {read.orders.map((order) => (
-                  <OrderItem
-                    key={order.key}
-                    order={order}
-                    onAsk={setAsked}
-                    busy={asked !== undefined}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
-          {read.answeredByHand.length === 0 ? null : (
-            <section className="mt-16">
-              <h3 className="text-15 font-semibold">Answered by hand</h3>
-              <ul>
-                {read.answeredByHand.map((answer) => (
-                  <HandAnswered
-                    key={answer.key}
-                    answer={answer}
-                    onAsk={setAsked}
-                    busy={asked !== undefined}
-                  />
-                ))}
-              </ul>
-            </section>
-          )}
-          {read.closed.length === 0 ? null : (
-            <section className="mt-16">
-              <h3 className="text-15 font-semibold">Closed</h3>
-              <p className="text-13 text-text-3">
-                Unpaid orders past their life, and orders answered by hand: only the key is kept.
-              </p>
-              <ul className="text-13 text-text-2">
-                {read.closed.map((key) => (
-                  <li key={key} className="break-all">
-                    {key}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
+      {waiting.length === 0 ? null : (
+        <section className="rounded-16 border-line bg-surface border p-16">
+          <h2 className="text-15 font-semibold">Waiting for your answer</h2>
+          <ul>
+            {waiting.map((each) => (
+              <HandAnswer
+                key={each.key}
+                orderKey={each.key}
+                reasons={each.reasons}
+                assets={refundAssets}
+                onAsk={setAsked}
+                busy={asked !== undefined}
+              />
+            ))}
+          </ul>
+        </section>
       )}
-    </Card>
+    </>
+  );
+
+  const after =
+    read === undefined ? null : (
+      <>
+        {read.answeredByHand.length === 0 ? null : (
+          <section>
+            <h2 className="text-15 font-semibold">Answered by hand</h2>
+            <ul>
+              {read.answeredByHand.map((answer) => (
+                <HandAnswered
+                  key={answer.key}
+                  answer={answer}
+                  onAsk={setAsked}
+                  busy={asked !== undefined}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+        {read.closed.length === 0 ? null : (
+          <section>
+            <h2 className="text-15 font-semibold">Closed</h2>
+            <p className="text-13 text-text-3">
+              Unpaid orders past their life, and orders answered by hand: only the key is kept.
+            </p>
+            <ul className="text-13 text-text-2">
+              {read.closed.map((key) => (
+                <li key={key} className="break-all">
+                  {key}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </>
+    );
+
+  const reread = (
+    <Button disabled={orders.loading} onClick={orders.reload}>
+      Read the orders again
+    </Button>
+  );
+
+  // Not read yet (or the read failed): no list, so a failure never shows as "no orders".
+  if (read === undefined) {
+    return (
+      <Section
+        title="Orders"
+        heading="h1"
+        description="Every order of your store, with what your store credited for it."
+        actions={reread}
+      >
+        {before}
+      </Section>
+    );
+  }
+
+  return (
+    <OrdersSection
+      rows={rows}
+      busy={orders.loading}
+      source="cloud"
+      csv={{
+        title: 'Every order of your store, whatever the filters',
+        run: () => void exportCsv(),
+        busy: exporting,
+      }}
+      tools={reread}
+      before={before}
+      after={after}
+      actionsFor={(row) => {
+        const order = byKey.get(row.key);
+        return order === undefined ? null : (
+          <OrderActions order={order} onAsk={setAsked} busy={asked !== undefined} />
+        );
+      }}
+    />
   );
 }

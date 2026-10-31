@@ -1,6 +1,7 @@
 import * as nip19 from 'nostr-tools/nip19';
 import { useState } from 'react';
 import type { DashboardState } from '../App';
+import { loadedOrdersCsv } from '../lib/csv';
 import { About } from './About';
 import { DashboardShell, type ShellPage } from './DashboardShell';
 import { EmptyState } from './EmptyState';
@@ -61,7 +62,14 @@ export function Dashboard({ state, onRefresh, onMore, onLogOut }: Props) {
       case 'overview':
         return <Overview snapshot={snapshot} onTab={setPage} />;
       case 'orders':
-        return <OrdersSection snapshot={snapshot} busy={state.busy} onMore={onMore} />;
+        return (
+          <OrdersSection
+            rows={snapshot.history.rows}
+            busy={state.busy}
+            {...(snapshot.more ? { onMore } : {})}
+            csv={loadedOrdersCsv(snapshot.history.rows, snapshot.storePubkey)}
+          />
+        );
       case 'products':
         return <ProductsSection products={snapshot.allProducts} />;
       case 'store':

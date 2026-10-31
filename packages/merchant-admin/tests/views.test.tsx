@@ -16,7 +16,7 @@ import { Totals } from '../src/components/Totals';
 import { statusParts, unconfirmedPayments } from '../src/lib/charts';
 import type { OrderRow, OrderState, Snapshot } from '../src/lib/core';
 import { countText } from '../src/lib/count';
-import { ordersCsv } from '../src/lib/csv';
+import { loadedOrdersCsv, ordersCsv } from '../src/lib/csv';
 import { STATE_ORDER, filterRows, rowNotes, stateCounts } from '../src/lib/orders';
 import { type Mounted, buttonNamed, byId, mount } from './mount';
 
@@ -54,6 +54,16 @@ const ROWS: OrderRow[] = [
   row('gamma', 'delivered', { createdAt: 1_790_000_200 }),
   row('delta', 'payment_reported', { createdAt: 1_790_000_000 }),
 ];
+
+/** The self-hosted Orders page's props for a snapshot, as the dashboard passes them. */
+function ordersOf(read: Snapshot) {
+  return {
+    rows: read.history.rows,
+    busy: false,
+    ...(read.more ? { onMore: () => undefined } : {}),
+    csv: loadedOrdersCsv(read.history.rows, read.storePubkey),
+  };
+}
 
 function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
@@ -137,9 +147,7 @@ describe('order filters', () => {
   });
 
   it('the chips and the search narrow the table, and the count says so', async () => {
-    mounted = await mount(
-      <OrdersSection snapshot={snapshot()} busy={false} onMore={() => undefined} />,
-    );
+    mounted = await mount(<OrdersSection {...ordersOf(snapshot())} />);
     const { container } = mounted;
     expect(orderIds(container)).toEqual(['alpha', 'beta', 'gamma', 'delta']);
     expect(chip(container, 'Completed').textContent).toBe('Completed2');
@@ -176,9 +184,7 @@ describe('the CSV under a filter', () => {
     });
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    mounted = await mount(
-      <OrdersSection snapshot={snapshot()} busy={false} onMore={() => undefined} />,
-    );
+    mounted = await mount(<OrdersSection {...ordersOf(snapshot())} />);
     const { container } = mounted;
     await act(async () => chip(container, 'Completed').click());
     expect(orderIds(container)).toEqual(['alpha', 'gamma']);
@@ -223,9 +229,7 @@ describe('readable small text', () => {
   });
 
   it('draws chip counts in full color: text-3 on a plain chip, inherited on the pressed one', async () => {
-    mounted = await mount(
-      <OrdersSection snapshot={snapshot()} busy={false} onMore={() => undefined} />,
-    );
+    mounted = await mount(<OrdersSection {...ordersOf(snapshot())} />);
     const pressed = chip(mounted.container, 'All').querySelector('span');
     const plain = chip(mounted.container, 'Completed').querySelector('span');
     expect(plain?.className).toContain('text-text-3');
@@ -238,7 +242,7 @@ describe('readable small text', () => {
   it('draws every placeholder in text-3, never the faint browser default', async () => {
     mounted = await mount(
       <>
-        <OrdersSection snapshot={snapshot()} busy={false} onMore={() => undefined} />
+        <OrdersSection {...ordersOf(snapshot())} />
         <ProductsSection products={snapshot().allProducts} />
       </>,
     );
@@ -253,9 +257,7 @@ describe('readable small text', () => {
 describe('a filter whose orders are gone', () => {
   it('keeps the chosen state chip, pressed, at 0 after a refresh moves its orders', async () => {
     const reported = snapshot();
-    mounted = await mount(
-      <OrdersSection snapshot={reported} busy={false} onMore={() => undefined} />,
-    );
+    mounted = await mount(<OrdersSection {...ordersOf(reported)} />);
     const { container } = mounted;
     await act(async () => chip(container, 'Payment reported').click());
     expect(orderIds(container)).toEqual(['delta']);
@@ -264,9 +266,7 @@ describe('a filter whose orders are gone', () => {
     );
     await mounted.rerender(
       <OrdersSection
-        snapshot={snapshot({ history: { rows: moved, totals: reported.history.totals } })}
-        busy={false}
-        onMore={() => undefined}
+        {...ordersOf(snapshot({ history: { rows: moved, totals: reported.history.totals } }))}
       />,
     );
     const kept = chip(container, 'Payment reported');
@@ -826,14 +826,7 @@ describe('the words for whose numbers they are', () => {
       expect(
         await text(<Overview snapshot={snapshot()} onTab={() => undefined} source={source} />),
       ).toContain(`what ${words} confirmed on chain`);
-      const orders = await text(
-        <OrdersSection
-          snapshot={snapshot()}
-          busy={false}
-          onMore={() => undefined}
-          source={source}
-        />,
-      );
+      const orders = await text(<OrdersSection {...ordersOf(snapshot())} source={source} />);
       expect(orders).toContain(`Credited by ${words}`);
       expect(orders).toContain(
         source === 'cloud'

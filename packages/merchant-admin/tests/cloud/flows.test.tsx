@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
 import type { CloudProps } from '../../src/cloud/CloudApp';
 import { OwnerKey, parseOwnerKey } from '../../src/cloud/lib/owner-key';
+import { short } from '../../src/lib/core';
 import { Root } from '../../src/Root';
 import { fakeDeps, relayClient, storeEvents } from '../fakes';
 import {
@@ -1218,7 +1219,7 @@ describe('making a cloud store', () => {
 });
 
 describe('the owner key in the page', () => {
-  it('Sign out closes the key and leaves the page; the bar names the key', async () => {
+  it('Sign out closes the key and leaves the page; the sidebar names the key', async () => {
     const close = vi.spyOn(OwnerKey.prototype, 'close');
     const leave = vi.fn();
     const store = new FakeStore(storeState());
@@ -1227,9 +1228,12 @@ describe('the owner key in the page', () => {
     const npub = key.npub;
     await signIn(host, key);
     await eventually(host, () => hasButton(host, 'Sign out'));
-    const shown = host.querySelector(`header [title="${npub}"]`);
-    expect(shown?.textContent).toBe(`${npub.slice(0, 12)}...${npub.slice(-6)}`);
-    expect(shown?.className).toContain('sr-only');
+    // The store's frame names the key in its account block, by its public id only.
+    const shown = host.querySelector(`#store-sidebar [title="${npub}"]`);
+    expect(shown?.textContent).toBe(short(npub));
+    expect(
+      host.querySelector('#store-sidebar button[aria-label="Copy your public id (safe to share)"]'),
+    ).not.toBeNull();
     close.mockClear();
     await click(host, 'Sign out');
     expect(close).toHaveBeenCalled();
@@ -1566,6 +1570,206 @@ describe('a launched cloud store', () => {
     await click(host, 'Cancel');
     expect(hasButton(host, 'Take the store off sale')).toBe(true);
     expect(confirming()).toBe(false);
+  });
+});
+
+describe('the cloud store on the frame', () => {
+  const path = `/tenants/${TENANT_ID}`;
+  const reads = (calls: { method: string; path: string }[], suffix: string) =>
+    calls.filter((call) => call.method === 'GET' && call.path === `${path}${suffix}`).length;
+  const nav = (host: HTMLElement, label: string) => {
+    const found = [...host.querySelectorAll('#store-sidebar nav button')].find(
+      (candidate) => candidate.textContent?.startsWith(label) === true,
+    );
+    if (!(found instanceof HTMLButtonElement)) {
+      throw new Error(`no page ${label}`);
+    }
+    return found;
+  };
+  const paidOrder = () => ({
+    ...servedOrder('b1:o1', {
+      signature: 'sig1',
+      amount: '1500000',
+      fee: '0',
+      asset: USDC,
+      medium: 'solana',
+      paidAt: Math.floor(Date.now() / 1000) - 60,
+    }),
+    email: 'buyer@shop.test',
+    customerRef: 'cust-42',
+    deliveredAt: Math.floor(Date.now() / 1000) - 30,
+    webhook: { state: 'failed', attempts: 2, lastStatus: 500, lastError: null },
+  });
+
+  it('reads the store, its status, what it keeps and its orders once for every page', async () => {
+    const store = new FakeStore(
+      readyState({ activated: true, runState: 'live', orders: [paidOrder()] }),
+    );
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('[data-run-state="live"]') !== null);
+    await eventually(host, () => reads(calls, '/orders') === 1);
+    for (const label of [
+      'Orders',
+      'Products',
+      'Payouts',
+      'Install',
+      'Settings',
+      'Plan & billing',
+    ]) {
+      await act(async () => nav(host, label).click());
+    }
+    expect(nav(host, 'Plan & billing').getAttribute('aria-current')).toBe('page');
+    expect([
+      reads(calls, ''),
+      reads(calls, '/status'),
+      reads(calls, '/store'),
+      reads(calls, '/orders'),
+    ]).toEqual([1, 1, 1, 1]);
+    // One status for every page: the Overview's run state is the only one.
+    expect(host.querySelectorAll('[data-run-state]')).toHaveLength(1);
+  });
+
+  it('Refresh reads all four again', async () => {
+    const store = new FakeStore(
+      readyState({ activated: true, runState: 'live', orders: [paidOrder()] }),
+    );
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => reads(calls, '/orders') === 1 && reads(calls, '/store') === 1);
+    await click(host, 'Refresh');
+    await eventually(
+      host,
+      () =>
+        reads(calls, '') === 2 &&
+        reads(calls, '/status') === 2 &&
+        reads(calls, '/store') === 2 &&
+        reads(calls, '/orders') === 2,
+    );
+  });
+
+  it('a save on the Products page moves the status Overview shows', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('[data-run-state="live"]') !== null);
+    await act(async () => nav(host, 'Products').click());
+    await click(host, 'Add a product');
+    const titles = [...host.querySelectorAll('#page-products input[id$="-title"]')];
+    const id = titles.at(-1)?.id.replace(/-title$/, '') ?? '';
+    await fill(host, `input#${id}-title`, 'Lamp');
+    await fill(host, `input#${id}-price`, '12');
+    store.state.runState = 'applying';
+    const before = reads(calls, '/status');
+    await click(host, 'Save 1 change');
+    await eventually(host, () => reads(calls, '/status') > before);
+    await eventually(host, () => host.querySelector('[data-run-state="applying"]') !== null);
+  });
+
+  it('lists its orders on the shared list: contact, no claimed total, its own commands, one CSV', async () => {
+    const store = new FakeStore(
+      readyState({
+        activated: true,
+        runState: 'live',
+        orders: [paidOrder(), servedOrder('b2:o2', null)],
+      }),
+    );
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await act(async () => nav(host, 'Orders').click());
+    await eventually(host, () => host.querySelectorAll('#orders tr').length === 2);
+    const orders = host.querySelector('#page-orders');
+    expect(orders?.textContent).toContain('buyer@shop.test');
+    expect(orders?.textContent).toContain('ref cust-42');
+    expect(orders?.textContent).toContain('Credited by your store');
+    expect(
+      [...(orders?.querySelectorAll('button') ?? [])].filter(
+        (each) => each.textContent === 'Download CSV',
+      ),
+    ).toHaveLength(1);
+    // The search finds an order by its buyer's email.
+    const search = orders?.querySelector('input[type="search"]');
+    if (!(search instanceof HTMLInputElement)) {
+      throw new Error('no search');
+    }
+    await fill(host, '#page-orders input[type="search"]', 'buyer@shop');
+    expect(host.querySelectorAll('#orders tr')).toHaveLength(1);
+    const show = host.querySelector('#orders button[aria-label="Show order details"]');
+    if (!(show instanceof HTMLButtonElement)) {
+      throw new Error('no details button');
+    }
+    await act(async () => show.click());
+    const details = host.querySelector('#orders dl');
+    expect(details?.textContent).toContain('cust-42');
+    expect(details?.textContent).not.toContain("Buyer's claimed total");
+    expect(hasButton(host, 'Retry the webhook now')).toBe(true);
+  });
+
+  it('orders that cannot be read are said, never shown as no orders', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host } = await admin({
+      ...store.routes(),
+      [`GET ${path}/orders`]: { status: 503, body: { error: 'ledger_unreadable' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelectorAll('#page-overview [role="alert"]').length > 0);
+    expect(host.querySelector('#page-overview')?.textContent).not.toContain('No orders yet');
+    expect(host.querySelector('#page-orders [role="alert"]')).not.toBeNull();
+    expect(host.querySelector('#page-orders')?.textContent).not.toContain('No orders found');
+    expect(hasButton(host, 'Read the orders again')).toBe(true);
+  });
+
+  it('a store not launched holds its setup on Overview: the other pages wait', async () => {
+    const store = new FakeStore(storeState({ paid: true }));
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
+    expect(nav(host, 'Orders').getAttribute('aria-disabled')).toBe('true');
+    expect(nav(host, 'Help').getAttribute('aria-disabled')).toBeNull();
+    // No ledger to read before launch.
+    expect(reads(calls, '/orders')).toBe(0);
+  });
+
+  it('an exported store shows only its handover, with no pages to choose', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const routes = store.routes();
+    const { host } = await admin({
+      ...routes,
+      [`GET ${path}`]: () => ({
+        body: {
+          ...store.view(),
+          export: { exportedAt: 1_900_000_000, archiveReady: true, destroyAt: 1_900_600_000 },
+        },
+      }),
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Handover') === true);
+    expect(host.querySelectorAll('#store-sidebar nav button')).toHaveLength(0);
+    expect(host.querySelector('[id^="page-"]')).toBeNull();
+  });
+
+  it('a destroyed store says so alone: no pages, and nothing to read again', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host } = await admin({
+      ...store.routes(),
+      [`GET ${path}`]: () => ({
+        body: {
+          ...store.view(),
+          export: { exportedAt: 1_900_000_000, archiveReady: true, destroyAt: 1_900_600_000 },
+        },
+      }),
+      [`POST ${path}/export/confirm`]: () => ({ body: { tenantId: TENANT_ID, destroyed: true } }),
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => hasButton(host, "My own node runs: destroy the cloud's copy"));
+    expect(hasButton(host, 'Refresh')).toBe(true);
+    await click(host, "My own node runs: destroy the cloud's copy");
+    await click(host, "Confirm: destroy the cloud's copy");
+    await eventually(host, () => host.textContent?.includes('Destroyed:') === true);
+    expect(host.textContent).toContain('your access key is free');
+    expect(host.querySelectorAll('#store-sidebar nav button')).toHaveLength(0);
+    expect(hasButton(host, 'Refresh')).toBe(false);
+    expect(hasButton(host, 'Sign out')).toBe(true);
   });
 });
 

@@ -4,6 +4,7 @@
  * formula is prefixed with `'` (buyers write the email and the reference).
  */
 import { CLAIM_LABELS, type NodeAmount, type OrderRow, STATE_LABELS, wholeUnits } from './core';
+import { downloadText } from './download';
 
 export const CSV_COLUMNS = [
   'time_utc',
@@ -80,4 +81,26 @@ export function ordersCsv(rows: readonly OrderRow[]): string {
 /** `elisym-orders-<first 8 of the store pubkey>-<YYYY-MM-DD>.csv`. */
 export function csvFileName(storePubkey: string, now: Date): string {
   return `elisym-orders-${storePubkey.slice(0, 8)}-${now.toISOString().slice(0, 10)}.csv`;
+}
+
+/** A list's CSV: what makes it, and what its button says on hover. */
+export interface CsvAction {
+  run: () => void;
+  title: string;
+  /** A download under way: the button waits. */
+  busy?: boolean;
+}
+
+/** The self-hosted admin's CSV: every loaded order, made in the page, named by the store. */
+export function loadedOrdersCsv(rows: readonly OrderRow[], storePubkey: string): CsvAction {
+  return {
+    title: 'Every loaded order, whatever the filters',
+    run: () =>
+      downloadText(
+        document,
+        ordersCsv(rows),
+        csvFileName(storePubkey, new Date()),
+        'text/csv;charset=utf-8',
+      ),
+  };
 }

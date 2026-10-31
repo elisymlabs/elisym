@@ -16,8 +16,11 @@ const WEBHOOK_TEXT: Record<NonNullable<OrderRead['webhook']>['state'], string> =
   failed: 'webhook failed',
 };
 
-/** One open or paid order: what was bought, its payment and delivery, and its webhook commands. */
-export function OrderItem({ order, onAsk, busy }: Props) {
+/**
+ * One cloud order as the store's ledger has it: its payment and delivery, its
+ * webhook, and the webhook commands (shown in the order's details).
+ */
+export function OrderActions({ order, onAsk, busy }: Props) {
   const { payment, webhook } = order;
   const link = payment === null ? undefined : txLink(payment.signature, payment.asset);
   let status: string;
@@ -29,7 +32,7 @@ export function OrderItem({ order, onAsk, busy }: Props) {
     status = `Paid, delivered ${shownTime(order.deliveredAt)}`;
   }
   return (
-    <li className="border-line flex flex-col gap-4 border-b py-12">
+    <div className="rounded-12 border-line flex flex-col gap-4 border p-16">
       <p className="text-14 font-medium">
         {order.product}{' '}
         <span className="text-text-3 font-normal">{shownTime(order.createdAt)}</span>
@@ -90,6 +93,6 @@ export function OrderItem({ order, onAsk, busy }: Props) {
           )}
         </div>
       )}
-    </li>
+    </div>
   );
 }

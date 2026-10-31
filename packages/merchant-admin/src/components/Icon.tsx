@@ -24,6 +24,10 @@ const PATHS = {
   key: 'M8 20a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm2.8-6.8L20 4m-3 3 3 3m-6 0 2 2',
   menu: 'M4 7h16M4 12h16M4 17h16',
   close: 'm6 6 12 12M18 6 6 18',
+  wallet: 'M4 7h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4V7Zm0 0V6a2 2 0 0 1 2-2h10v3m0 7h.01',
+  code: 'm8 8-4 4 4 4m8-8 4 4-4 4',
+  settings: 'M4 6h16M4 12h16M4 18h16M9 4v4m6 2v4m-8 2v4',
+  card: 'M3 6h18v12H3V6Zm0 4h18M7 15h4',
 } as const;
 
 export type IconName = keyof typeof PATHS;

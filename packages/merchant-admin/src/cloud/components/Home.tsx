@@ -7,9 +7,9 @@ import { fieldOf } from '../lib/fields';
 import { type RelayQuery, keyInUse } from '../lib/key-in-use';
 import type { OwnerTools } from '../lib/owner-tools';
 import type { CheckoutReturn } from '../lib/start';
+import { CloudDashboard } from './CloudDashboard';
 import { NoStoreYet } from './NoStoreYet';
 import { PartnerView } from './PartnerView';
-import { Store } from './Store';
 
 interface Props {
   npub: string;
@@ -90,6 +90,23 @@ export function Home({
     };
   }, [relayQuery, pubkey]);
 
+  // A store opens on its own frame: its pages, with the account in the sidebar.
+  if (owner.state === 'store') {
+    return (
+      <CloudDashboard
+        api={api}
+        tenantId={owner.tenantId}
+        npub={npub}
+        pubkey={pubkey}
+        billingUrl={billingUrl}
+        navigate={navigate}
+        checkoutReturn={checkoutReturn}
+        tools={tools}
+        onSignOut={onSignOut}
+      />
+    );
+  }
+
   return (
     <AuthLayout owner={{ npub, onSignOut }}>
       <div className="flex w-full max-w-640 flex-col gap-16">
@@ -108,18 +125,6 @@ export function Home({
               Try again
             </Button>
           </div>
-        ) : null}
-        {owner.state === 'store' ? (
-          <Store
-            api={api}
-            tenantId={owner.tenantId}
-            npub={npub}
-            pubkey={pubkey}
-            billingUrl={billingUrl}
-            navigate={navigate}
-            checkoutReturn={checkoutReturn}
-            tools={tools}
-          />
         ) : null}
         {owner.state === 'partner' ? <PartnerView api={api} /> : null}
         {owner.state === 'none' ? (

@@ -6,8 +6,8 @@ import type { OwnerTools } from '../lib/owner-tools';
 import { domainOf, nip05Of } from '../lib/settings';
 import { type SetupStepKey, setupSteps } from '../lib/setup-steps';
 import type { StoreView } from '../lib/store-view';
-import { useKeptStore } from '../lib/use-kept-store';
-import { useStatus } from '../lib/use-status';
+import type { KeptStore } from '../lib/use-kept-store';
+import type { StoreStatusPoll } from '../lib/use-status';
 import { BillingPanel } from './BillingPanel';
 import { Card } from './Card';
 import { DomainPanel } from './DomainPanel';
@@ -29,6 +29,9 @@ interface Props {
   navigate: (url: string) => void;
   /** The store changed here (paid, launched, withdrawn): its view is read again. */
   onStoreChanged: () => void;
+  /** The store's status and what it keeps, read once for the whole page. */
+  poll: StoreStatusPoll;
+  kept: KeptStore;
 }
 
 /**
@@ -47,9 +50,9 @@ export function SetupFlow({
   billingUrl,
   navigate,
   onStoreChanged,
+  poll,
+  kept,
 }: Props) {
-  const poll = useStatus(api, tenantId, () => tools.localNow() * 1000);
-  const kept = useKeptStore(api, tenantId);
   const [chosen, setChosen] = useState<SetupStepKey | undefined>(undefined);
   const status = poll.status;
 
