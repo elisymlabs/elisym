@@ -1,4 +1,3 @@
-import { Input } from '../../components/Input';
 import type { EvmForm, RailForm } from '../lib/settings';
 
 interface Props {
@@ -8,7 +7,7 @@ interface Props {
   onChange: (rail: RailForm | EvmForm) => void;
 }
 
-/** One payment rail: on or off, the merchant's own RPC (or the cloud's), and an EVM chain's credit. */
+/** One payment network: on or off, and an EVM chain's credit. Its RPC is the cloud's. */
 export function RailFields({ id, label, rail, onChange }: Props) {
   return (
     <div className="border-line flex flex-col gap-8 border-t pt-12">
@@ -22,18 +21,6 @@ export function RailFields({ id, label, rail, onChange }: Props) {
       </label>
       {rail.on ? (
         <>
-          <label htmlFor={`${id}-rpc`} className="text-13 text-text-2">
-            Your own RPC (https, optional: the cloud&apos;s otherwise)
-          </label>
-          <Input
-            id={`${id}-rpc`}
-            type="text"
-            value={rail.rpcUrl}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => onChange({ ...rail, rpcUrl: event.target.value })}
-            mono
-          />
           {'credit' in rail ? (
             <label className="text-13 text-text-2 flex items-center gap-8">
               Credit a payment

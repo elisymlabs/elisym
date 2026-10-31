@@ -1,19 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
+import { SettingRow } from '../../components/SettingRow';
+import { SettingsSection } from '../../components/SettingsSection';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
+import { type ProblemField, problemText } from '../lib/problems';
 import { EVM_CHAINS, type SettingsForm, choiceOf } from '../lib/settings';
 import type { KeptStore } from '../lib/use-kept-store';
-import { Card } from './Card';
+import { ProblemList } from './ProblemList';
 import { RailFields } from './RailFields';
 
 interface Props {
   api: ConsoleApi;
   tenantId: string;
   kept: KeptStore;
+  /** A save the store took: what reads the store's progress reads it again. */
+  onSaved?: () => void;
 }
+
+/** The refusals shown under the payment networks row. */
+const NETWORKS: readonly ProblemField[] = ['solana', 'tempo', 'ethereum', 'arbitrum', 'base'];
 
 const CHAIN_NAMES: Record<(typeof EVM_CHAINS)[number], string> = {
   ethereum: 'Ethereum (USDC)',
@@ -22,11 +30,13 @@ const CHAIN_NAMES: Record<(typeof EVM_CHAINS)[number], string> = {
 };
 
 /**
- * The store's settings: name, domain, webhook and payment rails, saved through
- * cloud-api (which builds config.json and refuses what the node would). Saved
- * settings apply with the next cycle; until then the store shows what was.
+ * The store's settings as rows: name, domain, webhook and the networks it
+ * takes, saved through cloud-api (which builds config.json and refuses what
+ * the node would). A refusal is said in words at its field. The networks'
+ * RPCs are the cloud's: a store saved with its own keeps it, unseen here.
+ * Saved settings apply with the next cycle; until then the store shows what was.
  */
-export function SettingsPanel({ api, tenantId, kept }: Props) {
+export function SettingsPanel({ api, tenantId, kept, onSaved }: Props) {
   const { read, readError, readRecovers, reload } = kept;
   const [form, setForm] = useState<SettingsForm | undefined>(undefined);
   // A save's refusal: apart from a read's failure, so a later read never hides why a save failed.
@@ -71,6 +81,7 @@ export function SettingsPanel({ api, tenantId, kept }: Props) {
       setSaved(version.current === sent);
       // Read again: the edit now waits, and a new domain shows its record.
       reload();
+      onSaved?.();
       return;
     }
     const detail = fieldOf(answer.body, 'detail');
@@ -81,113 +92,34 @@ export function SettingsPanel({ api, tenantId, kept }: Props) {
     setError(explainAnswer(answer.body, answer.status));
   };
 
+  const shown = problems.map(problemText);
+  const at = (...fields: ProblemField[]) =>
+    shown.filter((problem) => problem.field !== undefined && fields.includes(problem.field));
+  const elsewhere = shown.filter(
+    (problem) =>
+      problem.field === undefined ||
+      !(['name', 'domain', 'webhook', ...NETWORKS] as const).some(
+        (field) => field === problem.field,
+      ),
+  );
+
+  if (form === undefined) {
+    return (
+      <p
+        className={`text-14 ${readError === '' ? 'text-text-3' : 'text-error'}`}
+        role={readError === '' ? undefined : 'alert'}
+      >
+        {readError === '' ? 'Loading...' : readError}
+      </p>
+    );
+  }
   return (
-    <Card title="Store settings">
-      {form === undefined ? (
-        <p
-          className={`text-14 mt-12 ${readError === '' ? 'text-text-3' : 'text-error'}`}
-          role={readError === '' ? undefined : 'alert'}
-        >
-          {readError === '' ? 'Loading...' : readError}
-        </p>
-      ) : (
-        <div className="mt-16 flex flex-col gap-12">
-          {readError === '' ? null : (
-            <p role="alert" className="text-13 text-error">
-              {readRecovers
-                ? `Could not read the store just now (trying again): ${readError}`
-                : `Could not read the store: ${readError}`}
-            </p>
-          )}
-          {read?.pending === true ? (
-            <p className="text-13 text-text-3">A saved change is being applied.</p>
-          ) : null}
-          {read?.refused === undefined ? null : (
-            <div role="alert" className="text-13 text-error">
-              <p>The last saved change was refused when it was applied:</p>
-              <ul className="list-disc pl-20">
-                {read.refused.map((problem, index) => (
-                  <li key={index}>{problem}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <label htmlFor="store-name" className="text-14 font-medium">
-            Store name
-          </label>
-          <Input
-            id="store-name"
-            type="text"
-            value={form.name}
-            onChange={(event) => change({ ...form, name: event.target.value })}
-          />
-          <label htmlFor="store-domain" className="text-14 font-medium">
-            Your domain (optional, as shop.example)
-          </label>
-          <Input
-            id="store-domain"
-            type="text"
-            value={form.domain}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => change({ ...form, domain: event.target.value })}
-            mono
-          />
-          <label htmlFor="store-webhook" className="text-14 font-medium">
-            Webhook URL (optional: paid orders are sent here)
-          </label>
-          <Input
-            id="store-webhook"
-            type="text"
-            value={form.webhookUrl}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => change({ ...form, webhookUrl: event.target.value })}
-            mono
-          />
-          <h3 className="text-15 mt-8 font-semibold">How buyers pay</h3>
-          <RailFields
-            id="rail-solana"
-            label="Solana"
-            rail={form.solana}
-            onChange={(solana) =>
-              change({ ...form, solana: { on: solana.on, rpcUrl: solana.rpcUrl } })
-            }
-          />
-          <RailFields
-            id="rail-tempo"
-            label="Tempo"
-            rail={form.tempo}
-            onChange={(tempo) => change({ ...form, tempo: { on: tempo.on, rpcUrl: tempo.rpcUrl } })}
-          />
-          {EVM_CHAINS.map((chain) => (
-            <RailFields
-              key={chain}
-              id={`rail-${chain}`}
-              label={CHAIN_NAMES[chain]}
-              rail={form.evm[chain]}
-              onChange={(rail) =>
-                change({
-                  ...form,
-                  evm: {
-                    ...form.evm,
-                    [chain]: {
-                      on: rail.on,
-                      rpcUrl: rail.rpcUrl,
-                      credit: 'credit' in rail ? rail.credit : '',
-                    },
-                  },
-                })
-              }
-            />
-          ))}
-          {problems.length === 0 ? null : (
-            <ul role="alert" className="text-13 text-error list-disc pl-20">
-              {problems.map((problem, index) => (
-                <li key={index}>{problem}</li>
-              ))}
-            </ul>
-          )}
+    <SettingsSection
+      title="Your store"
+      description="Saved changes apply to your store within a minute."
+      footer={
+        <>
+          <ProblemList problems={elsewhere} />
           {error === '' ? null : (
             <p role="alert" className="text-13 text-error">
               {error}
@@ -198,11 +130,112 @@ export function SettingsPanel({ api, tenantId, kept }: Props) {
               Saved: it applies to the store shortly.
             </p>
           ) : null}
-          <Button disabled={busy} onClick={() => void save()} variant="primary" size="lg">
+          <Button
+            disabled={busy}
+            onClick={() => void save()}
+            variant="primary"
+            className="self-start"
+          >
             Save settings
           </Button>
+        </>
+      }
+    >
+      {readError === '' ? null : (
+        <p role="alert" className="text-13 text-error px-20 py-12">
+          {readRecovers
+            ? `Could not read the store just now (trying again): ${readError}`
+            : `Could not read the store: ${readError}`}
+        </p>
+      )}
+      {read?.pending === true ? (
+        <p className="text-13 text-text-3 px-20 py-12">A saved change is being applied.</p>
+      ) : null}
+      {read?.refused === undefined ? null : (
+        <div className="flex flex-col gap-4 px-20 py-12">
+          <p className="text-13 text-error">
+            The last saved change was refused when it was applied:
+          </p>
+          <ProblemList problems={read.refused.map(problemText)} />
         </div>
       )}
-    </Card>
+      <SettingRow label="Store name" htmlFor="store-name" help="As buyers see it in the checkout.">
+        <Input
+          id="store-name"
+          type="text"
+          value={form.name}
+          onChange={(event) => change({ ...form, name: event.target.value })}
+        />
+        <ProblemList problems={at('name')} />
+      </SettingRow>
+      <SettingRow
+        label="Your domain"
+        htmlFor="store-domain"
+        help="Optional. Your own site, as shop.example: the checkout then shows it verified."
+      >
+        <Input
+          id="store-domain"
+          type="text"
+          value={form.domain}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => change({ ...form, domain: event.target.value })}
+          mono
+        />
+        <ProblemList problems={at('domain')} />
+      </SettingRow>
+      <SettingRow
+        label="Webhook"
+        htmlFor="store-webhook"
+        help="Optional. An address on your server that is told of each paid order."
+      >
+        <Input
+          id="store-webhook"
+          type="text"
+          value={form.webhookUrl}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => change({ ...form, webhookUrl: event.target.value })}
+          mono
+        />
+        <ProblemList problems={at('webhook')} />
+      </SettingRow>
+      <SettingRow label="How buyers pay" help="The networks your store takes payments on.">
+        <RailFields
+          id="rail-solana"
+          label="Solana"
+          rail={form.solana}
+          onChange={(solana) => change({ ...form, solana: { ...form.solana, on: solana.on } })}
+        />
+        <RailFields
+          id="rail-tempo"
+          label="Tempo"
+          rail={form.tempo}
+          onChange={(tempo) => change({ ...form, tempo: { ...form.tempo, on: tempo.on } })}
+        />
+        {EVM_CHAINS.map((chain) => (
+          <RailFields
+            key={chain}
+            id={`rail-${chain}`}
+            label={CHAIN_NAMES[chain]}
+            rail={form.evm[chain]}
+            onChange={(rail) =>
+              change({
+                ...form,
+                evm: {
+                  ...form.evm,
+                  [chain]: {
+                    ...form.evm[chain],
+                    on: rail.on,
+                    credit: 'credit' in rail ? rail.credit : '',
+                  },
+                },
+              })
+            }
+          />
+        ))}
+        <ProblemList problems={at(...NETWORKS)} />
+      </SettingRow>
+    </SettingsSection>
   );
 }

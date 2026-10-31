@@ -103,6 +103,7 @@ export function Home({
         checkoutReturn={checkoutReturn}
         tools={tools}
         onSignOut={onSignOut}
+        loadTiers={loadTiers}
       />
     );
   }

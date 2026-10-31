@@ -1,18 +1,21 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Charts } from '../../components/Charts';
 import { DashboardShell, type ShellPage } from '../../components/DashboardShell';
+import { EmptyState } from '../../components/EmptyState';
 import type { IconName } from '../../components/Icon';
 import { RecentOrders } from '../../components/RecentOrders';
 import { Section } from '../../components/Section';
 import { Totals } from '../../components/Totals';
 import { totalsOf } from '../../lib/core';
-import type { ConsoleApi } from '../lib/api';
+import type { ApiAnswer, ConsoleApi } from '../lib/api';
 import { explain, explainAnswer } from '../lib/errors';
 import { orderRowsOf } from '../lib/order-rows';
 import type { OwnerTools } from '../lib/owner-tools';
+import { type CloudPage, pageLocks } from '../lib/page-locks';
 import { domainOf, nip05Of } from '../lib/settings';
 import type { CheckoutReturn } from '../lib/start';
 import { type StoreView, storeViewOf } from '../lib/store-view';
+import { tierCardsFrom } from '../lib/tiers';
 import { useCloudOrders } from '../lib/use-cloud-orders';
 import { useKeptStore } from '../lib/use-kept-store';
 import { useStatus } from '../lib/use-status';
@@ -22,15 +25,16 @@ import { CloudAbout } from './CloudAbout';
 import { CloudStoreSummary } from './CloudStoreSummary';
 import { DomainPanel } from './DomainPanel';
 import { ExportPanel } from './ExportPanel';
+import { GettingStarted } from './GettingStarted';
 import { HandoverPanel } from './HandoverPanel';
 import { InstallStep } from './InstallStep';
 import { NotRead } from './NotRead';
 import { OrdersPanel } from './OrdersPanel';
 import { PayoutsPanel } from './PayoutsPanel';
+import { PlanSummary } from './PlanSummary';
 import { ProductsForm } from './ProductsForm';
 import { SalePanel } from './SalePanel';
 import { SettingsPanel } from './SettingsPanel';
-import { SetupFlow } from './SetupFlow';
 
 interface Props {
   api: ConsoleApi;
@@ -43,17 +47,11 @@ interface Props {
   checkoutReturn: CheckoutReturn | undefined;
   tools: OwnerTools;
   onSignOut: () => void;
+  /** The plan catalog (`GET /tiers`, unsigned): the plan's price in words. */
+  loadTiers: () => Promise<ApiAnswer>;
 }
 
-type Page =
-  | 'overview'
-  | 'orders'
-  | 'products'
-  | 'payouts'
-  | 'install'
-  | 'settings'
-  | 'billing'
-  | 'help';
+type Page = CloudPage;
 
 const PAGES: { id: Page; label: string; icon: IconName }[] = [
   { id: 'overview', label: 'Overview', icon: 'home' },
@@ -65,9 +63,6 @@ const PAGES: { id: Page; label: string; icon: IconName }[] = [
   { id: 'billing', label: 'Plan & billing', icon: 'card' },
   { id: 'help', label: 'Help', icon: 'help' },
 ];
-
-/** Before launch, the setup on Overview holds these: the pages open once the store is live. */
-const SET_UP_FIRST = 'Opens once your store is live: finish the setup on Overview';
 
 /** How often the store is read while an export runs. */
 const EXPORT_READ_MS = 5000;
@@ -104,6 +99,7 @@ export function CloudDashboard({
   checkoutReturn,
   tools,
   onSignOut,
+  loadTiers,
 }: Props) {
   const [view, setView] = useState<StoreView | undefined>(undefined);
   const [error, setError] = useState('');
@@ -115,7 +111,24 @@ export function CloudDashboard({
   );
   // The owner confirmed its own node: the cloud's copy is gone, and this key owns nothing here.
   const [destroyed, setDestroyed] = useState(false);
+  // Launched while this page was open: said once.
+  const [justLaunched, setJustLaunched] = useState(false);
+  // The plan's price from the catalog, once read (undefined: unread, or the catalog failed).
+  const [prices, setPrices] = useState<Record<string, string> | undefined>(undefined);
   const latest = useRef(0);
+
+  useEffect(() => {
+    let current = true;
+    void loadTiers().then((answer) => {
+      const cards = answer.status === 200 ? tierCardsFrom(answer.body) : undefined;
+      if (current && cards !== undefined) {
+        setPrices(Object.fromEntries(cards.map((card) => [card.id, card.price])));
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [loadTiers]);
 
   const load = useCallback(async () => {
     latest.current += 1;
@@ -173,6 +186,7 @@ export function CloudDashboard({
     if (wasLaunched.current === false && launched) {
       reloadKept();
       watch();
+      setJustLaunched(true);
     }
     wasLaunched.current = launched;
   }, [view, launched, reloadKept, watch]);
@@ -193,12 +207,19 @@ export function CloudDashboard({
   const rows = orders.read === undefined ? [] : orderRowsOf(orders.read.orders);
   const onStoreChanged = () => void load();
 
+  // A store found gone (handed over meanwhile) locks nothing: each page says what it could not read.
+  const locks: Partial<Record<Page, string>> =
+    view === undefined || poll.status?.gone === true
+      ? {}
+      : pageLocks({ launched, invited: view.launch === 'operator', status });
+  const price = view === undefined ? undefined : prices?.[view.tier];
+
   const summary =
     view === undefined ? null : (
       <CloudStoreSummary
-        tenantId={tenantId}
         view={view}
         status={status}
+        price={price}
         onCheckAgain={poll.expired ? poll.watch : undefined}
       />
     );
@@ -216,22 +237,27 @@ export function CloudDashboard({
         </p>
       )}
       {view === undefined && loading ? <p className="text-14 text-text-3">Loading...</p> : null}
-      {summary}
+      {justLaunched && launched ? (
+        <p role="status" className="rounded-12 bg-ok-bg text-ok text-14 w-full p-16 font-medium">
+          Your store is live: buyers can pay on your site now.
+        </p>
+      ) : null}
       {view === undefined || launched ? null : (
-        <SetupFlow
+        <GettingStarted
           api={api}
           tenantId={tenantId}
           view={view}
           npub={npub}
-          ownerPubkey={pubkey}
-          tools={tools}
           billingUrl={billingUrl}
           navigate={navigate}
           onStoreChanged={onStoreChanged}
           poll={poll}
           kept={kept}
+          locks={locks}
+          onOpen={setPage}
         />
       )}
+      {summary}
       {launched && orders.error !== '' ? (
         <p role="alert" className="text-14 text-error">
           {orders.error}
@@ -249,10 +275,19 @@ export function CloudDashboard({
   );
 
   let ordersPage: ReactNode;
-  if (network === undefined) {
+  if (network === undefined || !launched) {
     ordersPage = (
-      <Section title="Orders" heading="h1">
-        <p className="text-14 text-text-2">No orders here.</p>
+      <Section title="Orders" heading="h1" description={DESCRIPTIONS.orders}>
+        <EmptyState icon="receipt" title="No orders yet">
+          Orders show here once your store is live.{' '}
+          <button
+            type="button"
+            onClick={() => setPage('overview')}
+            className="text-accent-ink font-medium underline underline-offset-2"
+          >
+            Finish getting started
+          </button>
+        </EmptyState>
       </Section>
     );
   } else {
@@ -297,6 +332,7 @@ export function CloudDashboard({
                   status={status}
                   poll={poll}
                   published={view.activated}
+                  onSettled={poll.watch}
                 />
               )}
             </Section>
@@ -316,6 +352,7 @@ export function CloudDashboard({
                   activated={view.activated}
                   withdrawn={view.withdrawn}
                   onStoreChanged={onStoreChanged}
+                  onSettled={poll.watch}
                 />
               )}
             </Section>
@@ -335,17 +372,22 @@ export function CloudDashboard({
                   </div>
                 </Card>
               ) : (
-                <p className="text-14 text-text-2">Add a product first: its button is made here.</p>
+                <EmptyState icon="code" title="Nothing to install yet">
+                  Each product gets its own button here.{' '}
+                  <button
+                    type="button"
+                    onClick={() => setPage('products')}
+                    className="text-accent-ink font-medium underline underline-offset-2"
+                  >
+                    Add a product
+                  </button>
+                </EmptyState>
               )}
             </Section>
           ),
           settings: (
             <Section title="Settings" heading="h1" description={DESCRIPTIONS.settings}>
-              <Card title="Your store">
-                <div className="mt-16">
-                  <SettingsPanel api={api} tenantId={tenantId} kept={kept} />
-                </div>
-              </Card>
+              <SettingsPanel api={api} tenantId={tenantId} kept={kept} onSaved={poll.watch} />
               {read !== undefined && domain !== undefined ? (
                 <DomainPanel
                   api={api}
@@ -355,22 +397,28 @@ export function CloudDashboard({
                   storePubkey={read.storePubkey}
                 />
               ) : null}
-              <SalePanel
-                api={api}
-                tenantId={tenantId}
-                view={view}
-                onStoreChanged={onStoreChanged}
-              />
-              <ExportPanel
-                api={api}
-                tenantId={tenantId}
-                view={view}
-                onStoreChanged={onStoreChanged}
-              />
+              {/* Sale and export are a live store's: before launch there is nothing to take off. */}
+              {launched ? (
+                <>
+                  <SalePanel
+                    api={api}
+                    tenantId={tenantId}
+                    view={view}
+                    onStoreChanged={onStoreChanged}
+                  />
+                  <ExportPanel
+                    api={api}
+                    tenantId={tenantId}
+                    view={view}
+                    onStoreChanged={onStoreChanged}
+                  />
+                </>
+              ) : null}
             </Section>
           ),
           billing: (
             <Section title="Plan & billing" heading="h1" description={DESCRIPTIONS.billing}>
+              <PlanSummary view={view} status={status} price={price} />
               <BillingPanel
                 api={api}
                 tenantId={tenantId}
@@ -385,15 +433,15 @@ export function CloudDashboard({
         };
 
   const pages: ShellPage[] = PAGES.map((each) => {
-    // Before launch the setup on Overview holds every step; the other pages wait for it.
-    const waits = view !== undefined && !launched && each.id !== 'overview' && each.id !== 'help';
+    // A page that would only fail says why instead (the lock table).
+    const locked = locks[each.id];
     // A count only of orders read: a failed or pending read counts nothing.
     const counted = launched && orders.read !== undefined && orders.error === '';
     return {
       ...each,
       ...(each.id === 'orders' && counted ? { count: rows.length } : {}),
-      ...(waits ? { locked: SET_UP_FIRST } : {}),
-      content: waits ? null : content[each.id],
+      ...(locked === undefined ? {} : { locked }),
+      content: locked === undefined ? content[each.id] : null,
     };
   });
 

@@ -1,61 +1,81 @@
+import { SettingRow } from '../../components/SettingRow';
+import { SettingsSection } from '../../components/SettingsSection';
 import type { StoreStatus } from '../lib/status';
-import { type StoreView, shownTime } from '../lib/store-view';
-import { Card } from './Card';
+import { type StoreView, shownDate } from '../lib/store-view';
 import { RunStateLine } from './RunStateLine';
 
 interface Props {
-  tenantId: string;
   view: StoreView;
   /** The store's status, once read and not gone (its run state and this month's paid orders). */
   status: StoreStatus | undefined;
+  /** The plan's price as the catalog writes it ("$29/mo"), once read. */
+  price: string | undefined;
   /** The status poll ran out: offered to read it again. */
   onCheckAgain: (() => void) | undefined;
 }
 
-/** The store at a glance: its run state, plan, network, paid time and this month's orders. */
-export function CloudStoreSummary({ tenantId, view, status, onCheckAgain }: Props) {
+/** "$29/mo" as a person reads it. */
+function perMonth(price: string): string {
+  return price.replace(/\/mo$/, '/month');
+}
+
+/**
+ * The store at a glance, in words (plan `admin-onboarding.md` 2.6): its plan
+ * and price, whether it is live, its paid time, whether its payments are
+ * real, and this month's paid orders. Its id is in Help.
+ */
+export function CloudStoreSummary({ view, status, price, onCheckAgain }: Props) {
+  const live = view.activated && view.exported === undefined;
+  const cap = status?.usage.ordersPerMonth;
   return (
-    <Card title="Your store">
-      {status === undefined ? null : (
-        <div className="mt-12 flex w-full flex-col gap-4">
+    <SettingsSection title="Your store">
+      <SettingRow label="Plan">
+        <span className="text-14">
+          {price === undefined ? view.tierName : `${view.tierName}, ${perMonth(price)}`}
+        </span>
+      </SettingRow>
+      <SettingRow label="Status">
+        {live && status !== undefined ? (
           <RunStateLine runState={status.runState} onCheckAgain={onCheckAgain} />
-          <p className="text-13 text-text-2">
-            Paid orders this month: {status.usage.paidOrders.toLocaleString('en-US')}
-            {status.usage.ordersPerMonth === undefined
-              ? ''
-              : ` of ${status.usage.ordersPerMonth.toLocaleString('en-US')} on your plan`}
-            .
-          </p>
-        </div>
+        ) : (
+          <span className="text-14">{live ? 'Live' : 'Set up, not live yet'}</span>
+        )}
+      </SettingRow>
+      <SettingRow label="Paid until">
+        <span className="text-14">
+          {view.paidUntil === undefined ? 'Not paid yet' : shownDate(view.paidUntil)}
+        </span>
+      </SettingRow>
+      {view.partner === undefined ? null : (
+        <SettingRow label="Your partner pays until">
+          <span className="text-14">
+            {view.partner.paidUntil === undefined
+              ? 'Not paid yet'
+              : shownDate(view.partner.paidUntil)}
+          </span>
+        </SettingRow>
       )}
-      <dl className="text-14 mt-12 grid grid-cols-[auto_1fr] gap-x-16 gap-y-4">
-        <dt className="text-text-3">Store</dt>
-        <dd className="font-mono">{tenantId}</dd>
-        <dt className="text-text-3">Plan</dt>
-        <dd>{view.tierName}</dd>
-        <dt className="text-text-3">Network</dt>
-        <dd>{view.network}</dd>
-        <dt className="text-text-3">Status</dt>
-        <dd>{view.activated ? 'Activated' : 'Not activated yet'}</dd>
-        <dt className="text-text-3">Paid until</dt>
-        <dd>{view.paidUntil === undefined ? 'Not paid yet' : shownTime(view.paidUntil)}</dd>
-        {view.partner === undefined ? null : (
-          <>
-            <dt className="text-text-3">Partner pays until</dt>
-            <dd>
-              {view.partner.paidUntil === undefined
-                ? 'Not paid yet'
-                : shownTime(view.partner.paidUntil)}
-            </dd>
-          </>
-        )}
-        {view.payBy === undefined ? null : (
-          <>
-            <dt className="text-text-3">Pay by</dt>
-            <dd className="text-error">{shownTime(view.payBy)}</dd>
-          </>
-        )}
-      </dl>
-    </Card>
+      {view.payBy === undefined ? null : (
+        <SettingRow label="Pay by" help="Unpaid after this day, the store is deleted.">
+          <span className="text-14 text-error">{shownDate(view.payBy)}</span>
+        </SettingRow>
+      )}
+      <SettingRow
+        label="Payments"
+        help={view.network === 'devnet' ? 'Test money only: nothing real is paid.' : undefined}
+      >
+        <span className="text-14">
+          {view.network === 'devnet' ? 'Test payments' : 'Live payments'}
+        </span>
+      </SettingRow>
+      {status === undefined ? null : (
+        <SettingRow label="Paid orders this month">
+          <span className="text-14">
+            {status.usage.paidOrders.toLocaleString('en-US')}
+            {cap === undefined ? ', no cap' : ` of ${cap.toLocaleString('en-US')}`}
+          </span>
+        </SettingRow>
+      )}
+    </SettingsSection>
   );
 }

@@ -3,6 +3,7 @@ import { Button } from '../../components/Button';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
+import { type ProblemText, problemText } from '../lib/problems';
 import {
   MAX_PRODUCT_BYTES,
   type ProductDraft,
@@ -20,6 +21,7 @@ import { productsDigest } from '../lib/status';
 import type { StoreStatus } from '../lib/status';
 import type { KeptStore } from '../lib/use-kept-store';
 import type { StoreStatusPoll } from '../lib/use-status';
+import { ProblemList } from './ProblemList';
 import { ProductEditor } from './ProductEditor';
 
 interface Props {
@@ -45,7 +47,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
   // The set the draft started from (or was last saved as): what "changes" count against.
   const [start, setStart] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
-  const [problems, setProblems] = useState<string[]>([]);
+  const [problems, setProblems] = useState<ProblemText[]>([]);
   const [sent, setSent] = useState<{ digest: string; seq: number; set: Record<string, string> }>();
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
@@ -164,7 +166,8 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     if (draft.length > status.usage.products && draft.length > keptNames.size) {
       found.push(`Your plan takes ${status.usage.products.toLocaleString('en-US')} products.`);
     }
-    setProblems(found);
+    // The form's own findings are words already: shown as they are.
+    setProblems(found.map((text) => ({ field: 'products', text, raw: text })));
     setError('');
     if (found.length > 0) {
       return;
@@ -182,14 +185,16 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     }
     const detail = fieldOf(answer.body, 'detail');
     if (fieldOf(answer.body, 'error') === 'store_refused' && typeof detail === 'string') {
-      setProblems(detail.split('\n'));
+      setProblems(detail.split('\n').map(problemText));
       return;
     }
     setError(explainAnswer(answer.body, answer.status));
   };
 
   const shownProblems =
-    refused && problems.length === 0 ? (status.lastProblems.products ?? []) : problems;
+    refused && problems.length === 0
+      ? (status.lastProblems.products ?? []).map(problemText)
+      : problems;
   return (
     <div className="flex flex-col gap-16">
       <p className="text-13 text-text-3">
@@ -214,13 +219,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
       <Button onClick={add} className="self-start">
         Add a product
       </Button>
-      {shownProblems.length === 0 ? null : (
-        <ul role="alert" className="text-13 text-error list-disc pl-20">
-          {shownProblems.map((problem) => (
-            <li key={problem}>{problem}</li>
-          ))}
-        </ul>
-      )}
+      <ProblemList problems={shownProblems} />
       {refused && shownProblems.length === 0 ? (
         <p role="alert" className="text-13 text-error">
           Something failed on our side; we have been alerted.

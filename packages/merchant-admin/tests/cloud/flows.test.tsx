@@ -287,13 +287,40 @@ async function openStep(host: HTMLElement, label: string) {
   }
 }
 
-/** The open step's body (the others stay mounted, hidden). */
+/** What the open page shows: on Overview, the step open in the checklist; else the page. */
 function openBody(host: HTMLElement): string {
-  return (
-    [...host.querySelectorAll<HTMLElement>('ol[aria-label="Store setup"] ~ div > div')].find(
-      (each) => !each.hidden,
-    )?.textContent ?? ''
+  const page = [...host.querySelectorAll<HTMLElement>('[id^="page-"]')].find(
+    (each) => !each.hidden,
   );
+  if (page?.id === 'page-overview') {
+    return (
+      [...page.querySelectorAll<HTMLElement>('[data-step-body]')].find((each) => !each.hidden)
+        ?.textContent ?? ''
+    );
+  }
+  return page?.textContent ?? '';
+}
+
+/** A page's button in the sidebar. */
+function pageButton(host: HTMLElement, label: string): HTMLButtonElement {
+  const found = [...host.querySelectorAll('#store-sidebar nav button')].find(
+    (candidate) => candidate.textContent?.startsWith(label) === true,
+  );
+  if (!(found instanceof HTMLButtonElement)) {
+    throw new Error(`no page ${label}`);
+  }
+  return found;
+}
+
+/** Opens a page from the sidebar, once the sidebar has it. */
+async function openPage(host: HTMLElement, label: string) {
+  await eventually(host, () =>
+    [...host.querySelectorAll('#store-sidebar nav button')].some(
+      (candidate) => candidate.textContent?.startsWith(label) === true,
+    ),
+  );
+  const found = pageButton(host, label);
+  await act(async () => found.click());
 }
 
 function checkbox(host: HTMLElement): HTMLInputElement {
@@ -1318,17 +1345,28 @@ describe('the owner key in the page', () => {
 });
 
 describe('a cloud store, set up step by step', () => {
-  it('starts at paying while the store is not paid', async () => {
+  it('starts at paying while the store is not paid: the steps after it say they wait', async () => {
     const store = new FakeStore(storeState());
     const { host } = await admin(store.routes());
     await signIn(host, OwnerKey.create());
     await eventually(host, () => steps(host).some((step) => step.current));
+    expect(steps(host).map((step) => step.key)).toEqual([
+      'pay',
+      'name',
+      'payouts',
+      'products',
+      'install',
+      'launch',
+    ]);
     const current = steps(host).find((step) => step.current);
     expect(current?.key).toBe('pay');
     expect(current?.badge).toContain('bg-accent text-accent-text');
-    expect(steps(host).find((step) => step.key === 'plan')?.badge).toContain('bg-accent-soft');
     expect(steps(host).find((step) => step.key === 'name')?.badge).toContain('bg-surface-2');
-    expect(host.textContent).toContain('Billing');
+    // Paying opens in its row; the steps after it cannot open yet.
+    expect(openBody(host)).toContain('Billing');
+    expect(host.textContent).toContain('Opens once your store is paid.');
+    const nameRow = host.querySelector('li[data-step="name"]');
+    expect(nameRow?.querySelector('button')).toBeNull();
   });
 
   it('names a store never saved with its name alone, then goes on to the payouts', async () => {
@@ -1337,7 +1375,8 @@ describe('a cloud store, set up step by step', () => {
     await signIn(host, OwnerKey.create());
     await eventually(host, () => host.querySelector('input#setup-store-name') !== null);
     expect(steps(host).find((step) => step.current)?.key).toBe('name');
-    // Before a name, the payouts step asks for one.
+    // Before a name, the payouts step asks for one, and its page is shut.
+    expect(pageButton(host, 'Payouts').getAttribute('aria-disabled')).toBe('true');
     await openStep(host, 'Get paid to');
     expect(openBody(host)).toContain('Name your store first');
     await click(host, 'Name your store');
@@ -1349,10 +1388,13 @@ describe('a cloud store, set up step by step', () => {
       tempo: null,
       evm: { ethereum: null, arbitrum: null, base: null },
     });
+    await eventually(host, () => steps(host).find((step) => step.current)?.key === 'payouts');
+    // Named: the payouts step opens its page.
+    await openStep(host, 'Get paid to');
     await eventually(host, () => openBody(host).includes('Where buyers'));
   });
 
-  it('the payouts step waits for the store to be read', async () => {
+  it('the payouts page says why it cannot show the payouts when the store cannot be read', async () => {
     const store = new FakeStore(storeState({ paid: true, name: 'Shop', rails: ['solana'] }));
     const { host } = await admin({
       ...store.routes(),
@@ -1360,13 +1402,15 @@ describe('a cloud store, set up step by step', () => {
     });
     await signIn(host, OwnerKey.create());
     await eventually(host, () => steps(host).find((step) => step.current)?.key === 'payouts');
-    expect(openBody(host)).toContain('Preparing your store');
+    await openStep(host, 'Get paid to');
+    await eventually(host, () => openBody(host).includes('Try again'));
   });
 
   it('a payout on a rail the store keeps off turns it on first, then the list is signed', async () => {
     const store = new FakeStore(storeState({ paid: true, name: 'Shop', rails: ['solana'] }));
     const { host, calls } = await admin(store.routes());
     await signIn(host, OwnerKey.create());
+    await openPage(host, 'Payouts');
     await eventually(host, () => hasButton(host, 'Sign and save payouts'));
     await fill(host, 'select#payout-asset', BASE_USDC);
     await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
@@ -1378,8 +1422,8 @@ describe('a cloud store, set up step by step', () => {
     );
     expect(calls[storeAt]?.body).toMatchObject({ name: 'Shop', solana: {}, evm: { base: {} } });
     expect(storeAt).toBeLessThan(calls.findIndex((call) => call.path.endsWith('/owner-events')));
-    // Kept: the flow goes on to the products.
-    await eventually(host, () => openBody(host).includes('Add a product'));
+    // Kept: the checklist goes on to the products.
+    await eventually(host, () => steps(host).find((step) => step.current)?.key === 'products');
   });
 
   it('says how many entries of the last list it could not keep', async () => {
@@ -1402,6 +1446,7 @@ describe('a cloud store, set up step by step', () => {
       const store = new FakeStore(storeState({ paid: true, name: 'Shop', rails: ['solana'] }));
       const { host } = await admin(store.routes(), { relays: [bad(count)] });
       await signIn(host, key);
+      await openPage(host, 'Payouts');
       await eventually(host, () => host.textContent?.includes(said) === true);
       await unmount();
     }
@@ -1413,6 +1458,8 @@ describe('a cloud store, set up step by step', () => {
     );
     const { host, calls } = await admin(store.routes());
     await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).find((step) => step.current)?.key === 'products');
+    await openStep(host, 'Products');
     await eventually(host, () => openBody(host).includes('Add a product'));
     await click(host, 'Add a product');
     const id = host.querySelector('input[id$="-title"]')?.id ?? '';
@@ -1436,6 +1483,7 @@ describe('a cloud store, set up step by step', () => {
     const store = new FakeStore(readyState());
     const { host } = await admin(store.routes());
     await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
     await openStep(host, 'Install');
     await eventually(host, () => openBody(host).includes('The script, once per page'));
     const codes = [...host.querySelectorAll('code')].map((code) => code.textContent ?? '');
@@ -1443,7 +1491,7 @@ describe('a cloud store, set up step by step', () => {
     expect(codes.filter((code) => code.startsWith('<elisym-buy product="naddr1'))).toHaveLength(1);
   });
 
-  it('launch opens only when every check holds, and is the merchant’s click', async () => {
+  it('launch opens only when every check holds, is the merchant’s click, and says the store is live', async () => {
     const store = new FakeStore(readyState());
     const { host, calls } = await admin(store.routes());
     await signIn(host, OwnerKey.create());
@@ -1452,10 +1500,11 @@ describe('a cloud store, set up step by step', () => {
     expect(button(host, 'Launch the store').disabled).toBe(false);
     await click(host, 'Launch the store');
     expect(calls.filter((call) => call.path.endsWith('/launch'))).toHaveLength(1);
-    // Launched: the dashboard, with its state.
+    // Launched: the dashboard, with its state, and the news said once.
     await eventually(host, () => host.querySelector('[data-run-state]') !== null);
+    expect(host.textContent).toContain('Your store is live');
+    expect(host.querySelector('ol[aria-label="Store setup"]')).toBeNull();
   });
-
   it("a domain: its check's own reason keeps Launch closed; refusals are worded", async () => {
     const cases: [Answer, string][] = [
       [
@@ -1489,8 +1538,8 @@ describe('a launched cloud store', () => {
     const { host } = await admin(store.routes());
     await signIn(host, OwnerKey.create());
     await eventually(host, () => host.querySelector('[data-run-state="live"]') !== null);
-    expect(host.textContent).toContain('Paid orders this month: 12 of 2,000 on your plan');
-    expect(host.textContent).not.toContain('Set up your store');
+    expect(host.textContent).toContain('Paid orders this month12 of 2,000');
+    expect(host.textContent).not.toContain('Getting started');
     await eventually(
       host,
       () => host.textContent?.includes('Published: take it off sale') === true,
@@ -1731,13 +1780,23 @@ describe('the cloud store on the frame', () => {
     expect(hasButton(host, 'Read the orders again')).toBe(true);
   });
 
-  it('a store not launched holds its setup on Overview: the other pages wait', async () => {
-    const store = new FakeStore(storeState({ paid: true }));
+  it('a store paid and set up but not launched opens every page; its orders say when they come', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop' }));
     const { host, calls } = await admin(store.routes());
     await signIn(host, OwnerKey.create());
     await eventually(host, () => steps(host).length > 0);
-    expect(nav(host, 'Orders').getAttribute('aria-disabled')).toBe('true');
-    expect(nav(host, 'Help').getAttribute('aria-disabled')).toBeNull();
+    for (const label of ['Orders', 'Products', 'Payouts', 'Install', 'Settings', 'Help']) {
+      expect(nav(host, label).getAttribute('aria-disabled'), label).toBeNull();
+    }
+    // Nothing to take off sale or export before it is live.
+    const settings = host.querySelector('#page-settings')?.textContent ?? '';
+    expect(settings).toContain('Save settings');
+    expect(settings).not.toContain('Take the store off sale');
+    expect(settings).not.toContain('Leave the cloud');
+    await act(async () => nav(host, 'Orders').click());
+    expect(openBody(host)).toContain('Orders show here once your store is live.');
+    await click(host, 'Finish getting started');
+    expect(host.querySelector<HTMLElement>('#page-overview')?.hidden).toBe(false);
     // No ledger to read before launch.
     expect(reads(calls, '/orders')).toBe(0);
   });
@@ -2130,6 +2189,153 @@ describe('the cloud store on the frame', () => {
     await click(host, 'Refresh');
     await eventually(host, () => reads(calls, '/status') === 2);
     expect(reads(calls, '/orders')).toBe(0);
+  });
+});
+
+describe('a cloud store in words: its locks, its summary, its settings', () => {
+  const reasonOf = (host: HTMLElement, label: string) => {
+    const id = pageButton(host, label).getAttribute('aria-describedby') ?? '';
+    return id === '' ? '' : (document.getElementById(id)?.textContent ?? '');
+  };
+
+  it('not paid: Plan & billing opens, the other pages say to pay first', async () => {
+    const store = new FakeStore(storeState());
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
+    expect(pageButton(host, 'Plan & billing').getAttribute('aria-disabled')).toBeNull();
+    for (const label of ['Orders', 'Products', 'Payouts', 'Install', 'Settings']) {
+      expect(pageButton(host, label).getAttribute('aria-disabled'), label).toBe('true');
+      expect(reasonOf(host, label), label).toBe('Pay the first month to open this');
+    }
+  });
+
+  it('paid, its store key being made: the pages say it is being prepared', async () => {
+    const store = new FakeStore(storeState({ paid: true, preparing: true }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
+    expect(reasonOf(host, 'Products')).toBe('Paid. Preparing your store: this takes a minute');
+    expect(openBody(host)).toContain('Paid. Preparing your store');
+  });
+
+  it('invited, its key not made: no pay step, every page but Overview and Help prepared for', async () => {
+    const store = new FakeStore(storeState({ launch: 'operator' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
+    expect(steps(host).map((step) => step.key)).not.toContain('pay');
+    expect(host.textContent).toContain('We launch this store for you once it is set up');
+    for (const label of ['Plan & billing', 'Products', 'Settings']) {
+      expect(reasonOf(host, label), label).toBe('We are preparing your store: this takes a minute');
+    }
+  });
+
+  it('invited and set up: the checklist has no Launch button, we launch it', async () => {
+    const store = new FakeStore(readyState({ launch: 'operator' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).find((step) => step.current)?.key === 'launch');
+    expect(openBody(host)).toContain('We launch it with you');
+    expect(hasButton(host, 'Launch the store')).toBe(false);
+  });
+
+  it('sums the store up in words: plan with its price, its state, its payments, its orders', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () =>
+        host.querySelector('#page-overview')?.textContent?.includes('Starter, $29/month') === true,
+    );
+    const overview = host.querySelector('#page-overview')?.textContent ?? '';
+    expect(overview).toContain('StatusSet up, not live yet');
+    expect(overview).toContain('PaymentsLive payments');
+    expect(overview).toContain('Paid orders this month0 of 2,000');
+    expect(overview).not.toContain('mainnet');
+    expect(overview).not.toContain(TENANT_ID);
+    // The id is in Help, for support.
+    expect(host.querySelector('#page-help')?.textContent).toContain(TENANT_ID);
+    await unmount();
+    const test = new FakeStore(storeState({ paid: true, name: 'Shop', network: 'devnet' }));
+    const again = await admin(test.routes());
+    await signIn(again.host, OwnerKey.create());
+    await eventually(again.host, () => again.host.textContent?.includes('Test payments') === true);
+  });
+
+  it('Install with nothing to sell says so, and leads to the products', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Install');
+    expect(openBody(host)).toContain('Nothing to install yet');
+    const lead = [...(host.querySelector('#page-install')?.querySelectorAll('button') ?? [])].find(
+      (each) => each.textContent === 'Add a product',
+    );
+    await act(async () => lead?.click());
+    expect(host.querySelector<HTMLElement>('#page-products')?.hidden).toBe(false);
+  });
+
+  it('Settings are rows with no RPC to type, and an own RPC the store keeps is sent back as it was', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop', rails: ['solana'] }));
+    const routes = store.routes();
+    const own = 'https://rpc.merchant.example';
+    const { host, calls } = await admin({
+      ...routes,
+      [`GET /tenants/${TENANT_ID}/store`]: () => {
+        const answer = routes[`GET /tenants/${TENANT_ID}/store`];
+        const given = typeof answer === 'function' ? answer(undefined) : answer;
+        const body = given?.body !== null && typeof given?.body === 'object' ? given.body : {};
+        const choice =
+          'choice' in body && body.choice !== null && typeof body.choice === 'object'
+            ? body.choice
+            : {};
+        return { body: { ...body, choice: { ...choice, solana: { rpcUrl: own } } } };
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-name') !== null);
+    expect(host.querySelector('input[id$="-rpc"]')).toBeNull();
+    expect(host.textContent).not.toContain('Advanced');
+    // Taken off and on again, Solana keeps the RPC it was saved with.
+    const solana = [...host.querySelectorAll('label')]
+      .find((label) => label.textContent === 'Solana')
+      ?.querySelector('input');
+    await act(async () => solana?.click());
+    await act(async () => solana?.click());
+    await fill(host, 'input#store-name', 'Shop two');
+    await click(host, 'Save settings');
+    const saved = calls.find((call) => call.method === 'POST' && call.path.endsWith('/store'));
+    expect(saved?.body).toMatchObject({ name: 'Shop two', solana: { rpcUrl: own } });
+  });
+
+  it('a refusal is said in words at its field, the line as it came under Details', async () => {
+    const store = new FakeStore(storeState({ paid: true, name: 'Shop' }));
+    const raw = 'webhookUrl: must be an https URL on a public host, with no user name or password';
+    const { host } = await admin({
+      ...store.routes(),
+      [`POST /tenants/${TENANT_ID}/store`]: {
+        status: 422,
+        body: { error: 'store_refused', detail: `${raw}\nrelays.0: not a wss URL` },
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Settings');
+    await eventually(host, () => host.querySelector('input#store-webhook') !== null);
+    await click(host, 'Save settings');
+    await eventually(host, () => host.querySelector('[data-problem-field="webhook"]') !== null);
+    const webhookRow = host.querySelector('input#store-webhook')?.closest('div.grid');
+    const shown = webhookRow?.querySelector('[data-problem-field="webhook"]');
+    expect(shown?.querySelector('span')?.textContent).toBe(
+      'Webhook: use an https address on a public server.',
+    );
+    expect(shown?.querySelector('details')?.textContent).toContain(raw);
+    // A refusal of no field the form has: one sentence for the store, under the rows.
+    expect(host.querySelector('[data-problem-field="store"] span')?.textContent).toContain(
+      'The store could not take this change',
+    );
   });
 });
 

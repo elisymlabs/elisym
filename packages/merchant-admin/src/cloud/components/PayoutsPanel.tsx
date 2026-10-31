@@ -21,11 +21,13 @@ import {
   payoutRows,
   signOwnerEvents,
 } from '../lib/payouts';
+import { problemText } from '../lib/problems';
 import { ALL_RAILS, choiceOf, railsOf, withRailsOn } from '../lib/settings';
 import { shownTime } from '../lib/store-view';
 import type { KeptStore } from '../lib/use-kept-store';
 import { WalletRefused, proveWithWallet } from '../lib/wallet';
 import { Card } from './Card';
+import { ProblemList } from './ProblemList';
 
 interface Props {
   api: ConsoleApi;
@@ -661,13 +663,9 @@ export function PayoutsPanel({
           </Button>
         </div>
       ) : null}
-      {problems.length === 0 ? null : (
-        <ul role="alert" className="text-13 text-error mt-12 list-disc pl-20">
-          {problems.map((problem, index) => (
-            <li key={index}>{problem}</li>
-          ))}
-        </ul>
-      )}
+      <div className="mt-12">
+        <ProblemList problems={problems.map(problemText)} />
+      </div>
       {notice === '' ? null : (
         <p role="alert" className="text-13 text-error mt-12">
           {notice}

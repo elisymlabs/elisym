@@ -95,6 +95,11 @@ export interface StoreState {
   nip05: string | undefined;
   /** The ledger's orders, as `GET /tenants/:id/orders` serves each. */
   orders: Record<string, unknown>[];
+  /** Who launches it: the merchant, or the operator (an invited store). */
+  launch: 'console' | 'operator';
+  network: 'mainnet' | 'devnet';
+  /** Paid, and its store key still being made. */
+  preparing: boolean;
 }
 
 export function storeState(overrides: Partial<StoreState> = {}): StoreState {
@@ -109,6 +114,9 @@ export function storeState(overrides: Partial<StoreState> = {}): StoreState {
     paidOrders: 0,
     nip05: undefined,
     orders: [],
+    launch: 'console',
+    network: 'mainnet',
+    preparing: false,
     ...overrides,
   };
 }
@@ -199,11 +207,11 @@ export class FakeStore {
       tenantId: TENANT_ID,
       tier: 'starter',
       tierName: 'Starter',
-      network: 'mainnet',
+      network: state.network,
       activated: state.activated,
-      launch: 'console',
+      launch: state.launch,
       ownerPubkey: '2'.repeat(64),
-      storePubkey: state.paid ? STORE_PUBKEY : null,
+      storePubkey: state.paid && !state.preparing ? STORE_PUBKEY : null,
       paidUntil: state.paid ? NOW : null,
       partner: null,
       payBy: null,
@@ -227,7 +235,7 @@ export class FakeStore {
       tier: 'starter',
       tierName: 'Starter',
       effectivePaidUntil: state.paid ? NOW : null,
-      storePubkey: state.paid ? STORE_PUBKEY : null,
+      storePubkey: state.paid && !state.preparing ? STORE_PUBKEY : null,
       productCount,
       pending: this.queued.length > 0,
       kept: {
@@ -244,7 +252,7 @@ export class FakeStore {
       gates: {
         activation,
         noCyclePending: this.queued.length === 0,
-        homeReady: state.paid,
+        homeReady: state.paid && !state.preparing,
         storeSetUp:
           state.name !== undefined && state.payoutListId !== undefined && productCount > 0,
         domainSet: state.nip05 !== undefined,
@@ -264,7 +272,7 @@ export class FakeStore {
       tenantId: TENANT_ID,
       choice: choiceOf(state),
       products: state.products,
-      storePubkey: state.paid ? STORE_PUBKEY : null,
+      storePubkey: state.paid && !state.preparing ? STORE_PUBKEY : null,
       pending: this.queued.length > 0,
       refused: null,
       relayHints: ['wss://relay.elisym.network'],

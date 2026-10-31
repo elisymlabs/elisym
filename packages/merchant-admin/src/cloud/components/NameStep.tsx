@@ -6,11 +6,13 @@ import { describedBy } from '../../lib/field';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
+import { problemText } from '../lib/problems';
 import { saveVerdict } from '../lib/save-wait';
 import { choiceOf, emptyForm } from '../lib/settings';
 import type { StoreStatus } from '../lib/status';
 import type { KeptStore } from '../lib/use-kept-store';
 import type { StoreStatusPoll } from '../lib/use-status';
+import { ProblemList } from './ProblemList';
 
 interface Props {
   api: ConsoleApi;
@@ -160,13 +162,7 @@ export function NameStep({ api, tenantId, status, poll, kept, onSettled }: Props
           Something failed on our side; we have been alerted.
         </p>
       ) : null}
-      {shownProblems.length === 0 ? null : (
-        <ul role="alert" className="text-13 text-error list-disc pl-20">
-          {shownProblems.map((problem) => (
-            <li key={problem}>{problem}</li>
-          ))}
-        </ul>
-      )}
+      <ProblemList problems={shownProblems.map(problemText)} />
     </div>
   );
 }
