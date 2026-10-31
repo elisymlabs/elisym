@@ -18,6 +18,13 @@ interface Props {
 }
 
 const NUMBER = new Intl.NumberFormat('en-US');
+/** The arrow keys of a radio group: the step each takes through the plans that can start. */
+const ARROW_STEPS: Readonly<Record<string, number>> = {
+  ArrowRight: 1,
+  ArrowDown: 1,
+  ArrowLeft: -1,
+  ArrowUp: -1,
+};
 
 /** A tier's limits in words: a display string where the catalog has one. */
 function limitsOf(tier: TierCard): string[] {
@@ -118,7 +125,6 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
       cards.current.get(next.id)?.focus();
     }
   };
-  const KEYS: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
 
   return (
     <Card title="Choose a plan">
@@ -159,7 +165,7 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
               disabled={!canBegin || locked}
               onClick={() => pick(tier)}
               onKeyDown={(event) => {
-                const by = KEYS[event.key];
+                const by = ARROW_STEPS[event.key];
                 if (by !== undefined) {
                   event.preventDefault();
                   step(tier.id, by);
