@@ -5,12 +5,12 @@ const EXPLAINED: Record<string, string> = {
   invalid_invite: 'That invite is not valid: it may be mistyped, used already, or expired.',
   already_activated: 'That store is already activated: its owner key cannot change here.',
   key_owns_a_store:
-    'This key already owns a store in elisym Cloud. One key per store: create a new key for this one.',
+    'This key already owns a store in our cloud. One key per store: create a new key for this one.',
   forbidden: 'This key cannot be used here.',
   key_is_a_partner:
     'This key is already a partner key. One key per account: create a new key for this one.',
   terms_not_accepted: 'The terms changed meanwhile: read them and accept them again.',
-  unreachable: 'Could not reach elisym Cloud: check your connection and try again.',
+  unreachable: 'Could not reach our cloud: check your connection and try again.',
   bad_tier: 'That plan cannot be bought here.',
   over_limit: 'Your plan takes fewer products: remove some, or contact us to move up.',
   not_on_plan: 'Your plan runs on our RPCs: an own RPC needs a plan that takes one (contact us).',
@@ -48,7 +48,7 @@ const EXPLAINED: Record<string, string> = {
   not_withdrawn: 'The store is on sale already.',
   not_resumed: 'The store cannot be resumed now: refresh to see where it stands.',
   resume_unavailable: 'Resume cannot run right now: elisym has been told. Try again later.',
-  billing_tenant: 'This store takes elisym Cloud payments: it is never taken off sale.',
+  billing_tenant: 'This store takes the payments for cloud plans: it is never taken off sale.',
   handover_pending: 'The handover is still being packed: try again in a minute.',
   not_exported: 'The store is not exported.',
   archive_missing: 'The handover archive is gone: contact elisym.',

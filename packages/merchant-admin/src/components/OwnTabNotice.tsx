@@ -13,8 +13,8 @@ export function OwnTabNotice() {
           Open this page in its own tab
         </h1>
         <p className="text-15 text-text-2 mt-8 leading-relaxed">
-          This page was opened by another page, or inside one. It asks for your store key only in a
-          tab of its own: type its address into a new tab.
+          This page was opened by another page, or inside one. It asks for your key only in a tab of
+          its own: type its address into a new tab.
         </p>
       </div>
     </AuthLayout>

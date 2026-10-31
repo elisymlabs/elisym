@@ -444,7 +444,7 @@ describe('a decision in the merchant words', () => {
   it('says nothing to sign now; else what holds it and until when, to the second', () => {
     expect(decisionText({ kind: 'sign', createdAt: NOW })).toBeUndefined();
     expect(decisionText({ kind: 'server-time-unknown' })).toBe(
-      "The console could not read the cloud's time yet: try again in a moment.",
+      "The admin could not read the cloud's time yet: try again in a moment.",
     );
     expect(decisionText({ kind: 'fix-clock', skewSecs: -150 })).toBe(
       'Your device clock is 150 seconds off: set it right, then sign.',

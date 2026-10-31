@@ -94,7 +94,7 @@ export function parseOwnerKey(text: string): OwnerKey | undefined {
 /** The text of the file the merchant saves: the nsec, and what it is. */
 export function ownerKeyFile(key: OwnerKey): string {
   return [
-    '# elisym Cloud owner key. Keep this file safe and private.',
+    '# Pay Core owner key. Keep this file safe and private.',
     '# It signs your payout list: anyone holding it can redirect new payments.',
     `# Store owner: ${key.npub}`,
     key.nsec(),
@@ -104,5 +104,5 @@ export function ownerKeyFile(key: OwnerKey): string {
 
 /** The saved file's name: names the key by its npub's start, never by the secret. */
 export function ownerKeyFileName(key: OwnerKey): string {
-  return `elisym-cloud-owner-${key.npub.slice(0, 14)}.txt`;
+  return `paycore-owner-${key.npub.slice(0, 14)}.txt`;
 }

@@ -22,7 +22,7 @@ export const DWELL_WARNING =
 
 /** What confirming the own node destroys. */
 export const DESTROY_CONSEQUENCE =
-  "Destroy the cloud's copy of the store now: its home, its backups, the store key passphrase and the handover archive. Your owner key is freed, and this console no longer shows the store. Download the handover first: this cannot be undone.";
+  "Destroy the cloud's copy of the store now: its home, its backups, the store key passphrase and the handover archive. Your owner key is freed, and this admin no longer shows the store. Download the handover first: this cannot be undone.";
 
 /**
  * Why an export stopped and what to do: its last setup (dropping the dedicated relays) was

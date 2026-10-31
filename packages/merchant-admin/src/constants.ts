@@ -28,3 +28,6 @@ export const LOCAL_ADMIN_COMMAND = 'npx @elisym/merchant-node admin';
 export const LANDING_URL = 'https://paycore.elisym.network';
 
 export const QUICKSTART_URL = 'https://docs.elisym.network/commerce/quickstart';
+
+/** The cloud terms of service a signup accepts, on the landing. */
+export const TERMS_URL = 'https://paycore.elisym.network/terms';

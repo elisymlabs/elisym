@@ -8,7 +8,7 @@
  * no chunk names any.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { cloudApiOriginOf } from '../src/cloud/lib/origin';
+import { billingUrlFrom, cloudApiOriginOf } from '../src/cloud/lib/origin';
 import {
   REACT_WIDGET_MARKER,
   chunkProblems,
@@ -22,6 +22,8 @@ const DIST = new URL('../dist/', import.meta.url);
 /** The production cloud-api: `vercel.json`'s CSP names it whatever this build's origin. */
 const PRODUCTION_API_ORIGIN = 'https://api.cloud.elisym.network';
 const apiOrigin = cloudApiOriginOf(process.env.VITE_CLOUD_API_ORIGIN);
+// A malformed billing URL would throw as the page loads: it fails the build instead.
+billingUrlFrom(process.env.VITE_BILLING_URL);
 
 /** The admin CSP's load-bearing directives, exactly. */
 const ADMIN_CSP: Record<string, string[]> = {

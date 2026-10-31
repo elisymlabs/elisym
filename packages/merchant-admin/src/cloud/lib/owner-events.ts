@@ -169,7 +169,7 @@ export function decisionText(decision: SigningDecision): string | undefined {
     case 'sign':
       return undefined;
     case 'server-time-unknown':
-      return "The console could not read the cloud's time yet: try again in a moment.";
+      return "The admin could not read the cloud's time yet: try again in a moment.";
     case 'fix-clock':
       return `Your device clock is ${Math.abs(decision.skewSecs)} seconds off: set it right, then sign.`;
     case 'wait':

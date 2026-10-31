@@ -64,7 +64,7 @@ describe('the owner key', () => {
       key.pubkey,
     );
     const name = ownerKeyFileName(key);
-    expect(name).toBe(`elisym-cloud-owner-${key.npub.slice(0, 14)}.txt`);
+    expect(name).toBe(`paycore-owner-${key.npub.slice(0, 14)}.txt`);
     expect(name).not.toContain(key.nsec().slice(5, 12));
   });
 });
