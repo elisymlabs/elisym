@@ -31,6 +31,8 @@ writeFileSync('owner-key.txt', `${nsecEncode(secretKey)}\n`, { mode: 0o600 });
 
 Never print the key, and never send it anywhere but this file. A lost key is a lost store.
 
+If the merchant made the key in the admin instead, read the file it saved (`paycore-owner-....txt`): its lines starting with `#` are comments, and the next step skips them.
+
 ## 2. Sign each request
 
 Every request but `GET /tiers` carries a Nostr HTTP auth event (kind 27235) in its `Authorization` header. The server checks that the event:
@@ -49,7 +51,13 @@ import { buildPaytoEvent, buildStoreAuthEvent, encodeProductNaddr } from '@elisy
 import { decode } from 'nostr-tools/nip19';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 
-const decoded = decode(readFileSync('owner-key.txt', 'utf8').trim());
+// The nsec line: a key file the admin saved starts with `#` comment lines.
+const keyLine =
+  readFileSync('owner-key.txt', 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .find((line) => line !== '' && !line.startsWith('#')) ?? '';
+const decoded = decode(keyLine);
 if (decoded.type !== 'nsec') {
   throw new Error('owner-key.txt holds no nsec');
 }
@@ -216,8 +224,13 @@ Then [wait for the save](#waiting-for-a-save) until `kept.payoutList.id` is `pay
 
 Each product is a `PRODUCT.md` text under a name of lowercase letters, digits and dashes (at most 63, starting with a letter or digit). The name is the product's id: it never changes once published.
 
+Read the store's current products first, from `GET /tenants/:id/store`: `waitingProducts` while a set the merchant sent still waits to be applied (it is the newest), else `products`. Add to that set, then send it whole:
+
 ```ts
+const store = await call('GET', `/tenants/${tenantId}/store`);
+const current: Record<string, string> = store.waitingProducts ?? store.products;
 const products = {
+  ...current,
   'deposit-10': '---\ntitle: Deposit 10 USD\npriceUsd: "10"\n---\n\nAdds 10 USD to your account.\n',
 };
 await call('POST', `/tenants/${tenantId}/products`, { products });

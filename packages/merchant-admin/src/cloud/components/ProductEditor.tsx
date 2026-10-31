@@ -1,9 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Field } from '../../components/Field';
 import { Input } from '../../components/Input';
 import { describedBy } from '../../lib/field';
 import type { ProblemText } from '../lib/problems';
-import { type ProductDraft, draftText, fieldErrors, roomLeft } from '../lib/product-form';
+import {
+  type ProductDraft,
+  charactersLeft,
+  draftText,
+  fieldErrors,
+  roomLeft,
+} from '../lib/product-form';
 import { PRODUCT_NAME_RE } from '../lib/snippet';
 import { ProblemList } from './ProblemList';
 
@@ -32,7 +38,15 @@ function ids(...parts: (string | undefined)[]): string | undefined {
 export function ProductEditor({ product, nameEditable, nameTaken, refused, onChange }: Props) {
   const id = `product-${product.key}`;
   const [changingName, setChangingName] = useState(false);
-  const left = roomLeft(draftText(product));
+  const nameInput = useRef<HTMLInputElement>(null);
+  // "Change" goes away as the field opens: the focus moves into it, never to the page.
+  useEffect(() => {
+    if (changingName) {
+      nameInput.current?.focus();
+    }
+  }, [changingName]);
+  const text = draftText(product);
+  const left = roomLeft(text);
   const tooLong = left !== undefined && left < 0 ? 'Too long: shorten the description.' : undefined;
   let nameError: string | undefined;
   if (!PRODUCT_NAME_RE.test(product.name)) {
@@ -45,7 +59,7 @@ export function ProductEditor({ product, nameEditable, nameTaken, refused, onCha
   const room =
     left === undefined || left < 0 ? null : (
       <p id={`${id}-room`} className="text-13 text-warn">
-        {`Almost full: about ${left.toLocaleString('en-US')} characters left in this product.`}
+        {`Almost full: room for about ${charactersLeft(text).toLocaleString('en-US')} more characters like these.`}
       </p>
     );
   if (fields === undefined) {
@@ -116,6 +130,7 @@ export function ProductEditor({ product, nameEditable, nameTaken, refused, onCha
             {...(nameError === undefined ? {} : { error: nameError })}
           >
             <Input
+              ref={nameInput}
               id={`${id}-name`}
               value={product.name}
               mono

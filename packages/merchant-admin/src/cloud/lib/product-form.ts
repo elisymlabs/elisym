@@ -6,6 +6,7 @@
  * one per line; a PRODUCT.md it did not write that way is edited as text.
  */
 import Decimal from 'decimal.js-light';
+import { PRODUCT_NAME_RE } from './snippet';
 
 export interface ProductFields {
   title: string;
@@ -163,6 +164,20 @@ export function productBytes(text: string): number {
   return new TextEncoder().encode(JSON.stringify(text)).length;
 }
 
+/**
+ * About how many more characters like the ones it has fit in a product: the
+ * bytes left over its own bytes per character (a letter outside ASCII, or an
+ * escaped one, weighs more than one byte).
+ */
+export function charactersLeft(text: string): number {
+  const left = MAX_PRODUCT_BYTES - productBytes(text);
+  const characters = [...text].length;
+  if (left <= 0 || characters === 0) {
+    return Math.max(left, 0);
+  }
+  return Math.floor((left * characters) / productBytes(text));
+}
+
 /** A product name (its id) from its title: lowercase letters, digits and dashes. */
 export function slugOf(title: string): string {
   return (
@@ -244,4 +259,31 @@ export function changedCount(
 ): number {
   const names = new Set([...Object.keys(from), ...Object.keys(to)]);
   return [...names].filter((name) => from[name] !== to[name]).length;
+}
+
+/**
+ * Why one product cannot be saved, in words (its own fields, its id, its size).
+ * A clash of ids is the product's whose id can still change: never a kept one's.
+ */
+export function productIssues(
+  product: ProductDraft,
+  draft: readonly ProductDraft[],
+  fixed: boolean,
+): string[] {
+  const issues: string[] = [];
+  if (!PRODUCT_NAME_RE.test(product.name)) {
+    issues.push('Its button id is lowercase letters, digits and dashes.');
+  } else if (
+    !fixed &&
+    draft.some((other) => other.key !== product.key && other.name === product.name)
+  ) {
+    issues.push(`Another product has the button id ${product.name}.`);
+  }
+  if (product.fields !== undefined) {
+    issues.push(...fieldProblems(product.fields));
+  }
+  if (productBytes(draftText(product)) > MAX_PRODUCT_BYTES) {
+    issues.push('Too long: shorten the description.');
+  }
+  return issues;
 }

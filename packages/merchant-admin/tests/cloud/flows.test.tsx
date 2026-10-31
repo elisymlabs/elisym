@@ -2992,9 +2992,11 @@ describe('the products page', () => {
     expect(sheet?.getAttribute('aria-modal')).toBe('true');
     const labelledBy = sheet?.getAttribute('aria-labelledby') ?? '';
     expect(host.querySelector(`#${labelledBy}`)?.textContent).toBe('Course');
-    // Focus starts in the sheet; the page behind it is inert.
+    // Focus starts in the sheet; the page behind it and the sidebar are inert.
     expect(sheet?.contains(document.activeElement)).toBe(true);
-    expect(host.querySelector('[inert]')?.contains(opener)).toBe(true);
+    expect(opener.closest('[inert]')).not.toBeNull();
+    expect(host.querySelector('#store-sidebar')?.closest('[inert]')).not.toBeNull();
+    expect(sheet?.closest('[inert]')).toBeNull();
     // No size counter.
     expect(sheet?.textContent).not.toContain('bytes');
   });
@@ -3046,7 +3048,14 @@ describe('the products page', () => {
     expect(document.activeElement?.textContent).toBe('Keep editing');
     await click(host, 'Keep editing');
     expect(dialog(host)).not.toBeNull();
+    // Back in the sheet, on its first field: never on the page.
+    expect(document.activeElement).toBe(host.querySelector(`input#${id}`));
     expect(host.querySelector<HTMLInputElement>(`input#${id}`)?.value).toBe('Course two');
+    // Escape on the question is "keep editing" too.
+    await press(dialog(host) as HTMLElement, 'Escape');
+    await press(dialog(host) as HTMLElement, 'Escape');
+    expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(dialog(host)?.contains(document.activeElement)).toBe(true);
     await press(dialog(host) as HTMLElement, 'Escape');
     await click(host, 'Discard changes');
     expect(dialog(host)).toBeNull();
@@ -3081,6 +3090,7 @@ describe('the products page', () => {
     expect(host.querySelector(`#${id}-name-line`)?.textContent).toContain('Button id: course-2');
     expect(host.querySelector(`input#${id}-name`)).toBeNull();
     await click(host, 'Change');
+    expect(document.activeElement).toBe(host.querySelector(`input#${id}-name`));
     await fill(host, `input#${id}-name`, 'my-course');
     expect(host.querySelector(`#${id}-name-line`)?.textContent).toContain('Button id: my-course');
   });
@@ -3170,7 +3180,7 @@ describe('the products page', () => {
     expect(host.querySelector(`#${id}-room`)).toBeNull();
     await fillArea(host, `textarea#${id}-description`, 'x'.repeat(3800));
     expect(host.querySelector(`#${id}-room`)?.textContent).toMatch(
-      /^Almost full: about [\d,]+ characters left in this product\.$/,
+      /^Almost full: room for about [\d,]+ more characters like these\.$/,
     );
     await fillArea(host, `textarea#${id}-description`, 'x'.repeat(4200));
     expect(host.querySelector(`#${id}-description-error`)?.textContent).toContain(
@@ -3191,6 +3201,99 @@ describe('the products page', () => {
     const products =
       body !== null && typeof body === 'object' && 'products' in body ? body.products : undefined;
     expect(JSON.stringify(products)).toContain('onSale: false');
+  });
+
+  it('Save product saves that product alone: a toggle in the list waits for its own save', async () => {
+    const { host, calls } = await productsPage();
+    await act(async () =>
+      host.querySelector<HTMLInputElement>('[aria-label="Course on sale"]')?.click(),
+    );
+    await click(host, 'Add product');
+    const id = (host.querySelector('[role="dialog"] input[id$="-title"]')?.id ?? '').replace(
+      /-title$/,
+      '',
+    );
+    await fill(host, `input#${id}-title`, 'Mug');
+    await fill(host, `input#${id}-price`, '5');
+    await click(host, 'Save product');
+    await eventually(host, () => productPosts(calls).length === 1);
+    const body = productPosts(calls)[0]?.body;
+    const products: Record<string, string> =
+      body !== null && typeof body === 'object' && 'products' in body
+        ? (body.products as Record<string, string>)
+        : {};
+    expect(Object.keys(products).sort()).toEqual(['course', 'mug']);
+    // Course went as it is kept: still on sale.
+    expect(products.course).not.toContain('onSale: false');
+    await eventually(host, () => dialog(host) === null);
+    expect(host.textContent).toContain('1 unsaved change');
+  });
+
+  it('Save product with nothing changed sends nothing and closes', async () => {
+    const { host, calls } = await productsPage();
+    await act(async () => editButton(host, 'Course').click());
+    await click(host, 'Save product');
+    await eventually(host, () => dialog(host) === null);
+    expect(productPosts(calls)).toEqual([]);
+  });
+
+  it("a waiting product renamed to a kept product's id is a clash at its field, and nothing is sent", async () => {
+    const text = '---\ntitle: "Course"\npriceUsd: "10"\n---\n\nA course.\n';
+    const waiting = '---\ntitle: "Waiting"\npriceUsd: "3"\n---\n\nSoon.\n';
+    const { host, calls } = await productsPage((store) => ({
+      ...store.routes(),
+      [`GET /tenants/${TENANT_ID}/store`]: () => ({
+        body: {
+          ...store.storeRead(),
+          products: {},
+          productNames: ['course'],
+          waitingProducts: { course: text, waiting },
+        },
+      }),
+    }));
+    await act(async () => editButton(host, 'Waiting').click());
+    const id = (host.querySelector('[role="dialog"] input[id$="-title"]')?.id ?? '').replace(
+      /-title$/,
+      '',
+    );
+    // A product still waiting is not kept yet: its id can change.
+    await click(host, 'Change');
+    await fill(host, `input#${id}-name`, 'course');
+    expect(host.querySelector(`#${id}-name-error`)?.textContent).toBe(
+      'Another product has the button id course.',
+    );
+    await click(host, 'Save product');
+    expect(productPosts(calls)).toEqual([]);
+    expect(host.textContent).toContain('Fix this product first: Waiting.');
+  });
+
+  it('a new product given the id of one removed but not yet saved is a clash: saving it would overwrite that one', async () => {
+    const { host, calls } = await productsPage();
+    await act(async () => editButton(host, 'Course').click());
+    await click(host, 'Remove course');
+    await click(host, 'Add product');
+    const id = (host.querySelector('[role="dialog"] input[id$="-title"]')?.id ?? '').replace(
+      /-title$/,
+      '',
+    );
+    await fill(host, `input#${id}-title`, 'Mug');
+    await fill(host, `input#${id}-price`, '5');
+    await click(host, 'Change');
+    await fill(host, `input#${id}-name`, 'course');
+    await click(host, 'Save product');
+    expect(productPosts(calls)).toEqual([]);
+    expect(host.textContent).toContain('Fix this product first: Mug.');
+  });
+
+  it('a launched store never offers to remove a published product', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await openPage(host, 'Products');
+    await eventually(host, () => host.querySelector('[aria-label="Edit Course"]') !== null);
+    await act(async () => editButton(host, 'Course').click());
+    expect(dialog(host)?.textContent).toContain('Published: take it off sale to stop selling.');
+    expect(hasButton(host, 'Remove course')).toBe(false);
   });
 
   it('offers a prompt for an agent to add many products: the whole set back, and what it holds', async () => {

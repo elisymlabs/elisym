@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  type ProductDraft,
   MAX_PRODUCT_BYTES,
   changedCount,
   draftOf,
   draftSet,
   fieldProblems,
+  charactersLeft,
   freeSlug,
+  productIssues,
+  roomLeft,
   priceProblem,
   productBytes,
   productFields,
@@ -104,5 +108,45 @@ describe('changes in a draft', () => {
   it('counts each product added, removed or changed', () => {
     expect(changedCount({ a: '1', b: '2' }, { a: '1', b: '2' })).toBe(0);
     expect(changedCount({ a: '1', b: '2' }, { a: '9', c: '3' })).toBe(3);
+  });
+});
+
+describe('the room left in a product', () => {
+  it('is said only past 90% of the limit, in bytes left', () => {
+    // A text of n characters weighs n + 2 bytes as a JSON string.
+    expect(roomLeft('x'.repeat(3684))).toBeUndefined();
+    expect(roomLeft('x'.repeat(3685))).toBe(4096 - 3687);
+    expect(roomLeft('x'.repeat(5000))).toBeLessThan(0);
+  });
+
+  it('counts characters like the ones the text has: two-byte letters fit half as many', () => {
+    expect(charactersLeft('x'.repeat(3685))).toBe(Math.floor((409 * 3685) / 3687));
+    const cyrillic = 'ж'.repeat(1900);
+    const bytes = new TextEncoder().encode(JSON.stringify(cyrillic)).length;
+    expect(charactersLeft(cyrillic)).toBe(Math.floor(((4096 - bytes) * 1900) / bytes));
+    expect(charactersLeft(cyrillic)).toBeLessThan(4096 - bytes);
+    expect(charactersLeft('x'.repeat(5000))).toBe(0);
+  });
+});
+
+describe("a product's issues before a save", () => {
+  const product = (key: string, name: string): ProductDraft => ({
+    key,
+    name,
+    nameTouched: true,
+    fields: { title: 'T', priceUsd: '1', summary: '', description: '', onSale: true },
+    text: '',
+  });
+
+  it('names a clash of ids against any other product of the draft, unless its own id is fixed', () => {
+    const mug = product('new-1', 'mug');
+    const cup = product('new-2', 'mug');
+    expect(productIssues(cup, [mug, cup], false)).toEqual([
+      'Another product has the button id mug.',
+    ]);
+    expect(productIssues(cup, [mug, cup], true)).toEqual([]);
+    expect(productIssues(product('new-3', 'Bad Id'), [], false)).toEqual([
+      'Its button id is lowercase letters, digits and dashes.',
+    ]);
   });
 });

@@ -5,18 +5,15 @@ import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
 import { type ProblemText, problemText } from '../lib/problems';
 import {
-  MAX_PRODUCT_BYTES,
   type ProductDraft,
   changedCount,
   draftOf,
   draftSet,
   draftText,
-  fieldProblems,
   freeSlug,
-  productBytes,
+  productIssues,
 } from '../lib/product-form';
 import { saveVerdict } from '../lib/save-wait';
-import { PRODUCT_NAME_RE } from '../lib/snippet';
 import { productsDigest } from '../lib/status';
 import type { StoreStatus } from '../lib/status';
 import type { KeptStore } from '../lib/use-kept-store';
@@ -48,29 +45,6 @@ interface Open {
   before: ProductDraft | undefined;
 }
 
-/**
- * Why one product cannot be saved, in words (its own fields, its id, its size).
- * A clash of ids is the product's whose id can still change: never a kept one's.
- */
-function issuesOf(product: ProductDraft, draft: readonly ProductDraft[], fixed: boolean): string[] {
-  const issues: string[] = [];
-  if (!PRODUCT_NAME_RE.test(product.name)) {
-    issues.push('Its button id is lowercase letters, digits and dashes.');
-  } else if (
-    !fixed &&
-    draft.some((other) => other.key !== product.key && other.name === product.name)
-  ) {
-    issues.push(`Another product has the button id ${product.name}.`);
-  }
-  if (product.fields !== undefined) {
-    issues.push(...fieldProblems(product.fields));
-  }
-  if (productBytes(draftText(product)) > MAX_PRODUCT_BYTES) {
-    issues.push('Too long: shorten the description.');
-  }
-  return issues;
-}
-
 /** A product added with the sheet, before anything was typed in it. */
 function blankProduct(product: ProductDraft): ProductDraft {
   return {
@@ -99,13 +73,9 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
   const [problems, setProblems] = useState<ProblemText[]>([]);
   // A save was tried with products that need a fix: their rows say so.
   const [tried, setTried] = useState(false);
-  // The last set sent, and which draft products it carried (by key).
-  const [sent, setSent] = useState<{
-    digest: string;
-    seq: number;
-    set: Record<string, string>;
-    keys: ReadonlySet<string>;
-  }>();
+  const [sent, setSent] = useState<{ digest: string; seq: number; set: Record<string, string> }>();
+  // Each new product the store took a save of, by its key: the name it was saved under.
+  const savedAs = useRef(new Map<string, string>());
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<Open | undefined>(undefined);
   const inFlight = useRef(false);
@@ -160,12 +130,13 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
   const set = draftSet(draft);
   const changes = changedCount(start, set);
   // This product is the one the store keeps under its name (or a save of it is on its way):
-  // its id is fixed, and once published it is never removed. A new product given a kept
-  // product's id by hand is not: it is a clash to fix.
+  // its id is fixed, and once published it is never removed. Any other product given that id
+  // (a new one, or a waiting one renamed) is not: it is a clash to fix at its field.
   const isKept = (product: ProductDraft) =>
     keptNames.has(product.name) &&
-    (product.key.startsWith('kept-') ||
-      (sent !== undefined && !refused && sent.keys.has(product.key)));
+    (product.key === `kept-${product.name}` || savedAs.current.get(product.key) === product.name);
+  // The set a save of one product builds on: the one on its way, else the one kept.
+  const base = sent !== undefined && !refused ? sent.set : start;
 
   const shownProblems =
     refused && problems.length === 0
@@ -253,7 +224,9 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
       return false;
     }
     const found: string[] = [];
-    const broken = draft.filter((product) => issuesOf(product, draft, isKept(product)).length > 0);
+    const broken = draft.filter(
+      (product) => productIssues(product, draft, isKept(product)).length > 0,
+    );
     if (broken.length > 0) {
       found.push(
         `Fix ${broken.length === 1 ? 'this product' : 'these products'} first: ${broken.map(labelOf).join(', ')}.`,
@@ -292,12 +265,69 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     if (answer.status === 200) {
       const digest = await productsDigest(set);
       kept.reload();
-      setSent({
-        digest,
-        seq: poll.watch(),
-        set,
-        keys: new Set(draft.map((product) => product.key)),
-      });
+      for (const product of draft) {
+        savedAs.current.set(product.key, product.name);
+      }
+      setSent({ digest, seq: poll.watch(), set });
+      return true;
+    }
+    const detail = fieldOf(answer.body, 'detail');
+    if (fieldOf(answer.body, 'error') === 'store_refused' && typeof detail === 'string') {
+      setProblems(detail.split('\n').map((line) => problemText(line)));
+      return false;
+    }
+    setError(explainAnswer(answer.body, answer.status));
+    return false;
+  };
+
+  /**
+   * Saves one product: the set on its way (or kept) with this product's edit, and nothing
+   * else of the draft (a toggle or removal in the list waits for its own save). True once
+   * the store took it, or when there was nothing to save.
+   */
+  const saveOne = async (product: ProductDraft): Promise<boolean> => {
+    if (inFlight.current) {
+      return false;
+    }
+    const before = product.key.startsWith('kept-')
+      ? product.key.slice('kept-'.length)
+      : savedAs.current.get(product.key);
+    const next = { ...base };
+    if (before !== undefined) {
+      delete next[before];
+    }
+    next[product.name] = draftText(product);
+    if (changedCount(base, next) === 0) {
+      return true;
+    }
+    const fixed = isKept(product);
+    const issues = productIssues(product, draft, fixed);
+    if (!fixed && product.name !== before && base[product.name] !== undefined) {
+      issues.push(`Another product has the button id ${product.name}.`);
+    }
+    const found: string[] = [];
+    if (issues.length > 0) {
+      found.push(`Fix this product first: ${labelOf(product)}.`);
+    }
+    const count = Object.keys(next).length;
+    if (count > status.usage.products && count > keptNames.size) {
+      found.push(`Your plan takes ${status.usage.products.toLocaleString('en-US')} products.`);
+    }
+    setProblems(found.map((text) => ({ field: 'products', text, raw: text })));
+    setError('');
+    if (found.length > 0) {
+      return false;
+    }
+    inFlight.current = true;
+    setBusy(true);
+    const answer = await api.request('POST', `/tenants/${tenantId}/products`, { products: next });
+    inFlight.current = false;
+    setBusy(false);
+    if (answer.status === 200) {
+      const digest = await productsDigest(next);
+      kept.reload();
+      savedAs.current.set(product.key, product.name);
+      setSent({ digest, seq: poll.watch(), set: next });
       return true;
     }
     const detail = fieldOf(answer.body, 'detail');
@@ -338,7 +368,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
 
   return (
     <div className="flex flex-col gap-16">
-      <div inert={openProduct !== undefined || undefined} className="flex flex-col gap-16">
+      <div className="flex flex-col gap-16">
         <p className="text-13 text-text-3">
           {draft.length.toLocaleString('en-US')} of {status.usage.products.toLocaleString('en-US')}{' '}
           products on your plan.
@@ -354,7 +384,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
           <ul aria-label="Products" className="border-line rounded-16 divide-line divide-y border">
             {draft.map((product) => {
               const label = labelOf(product);
-              const issues = tried ? issuesOf(product, draft, isKept(product)) : [];
+              const issues = tried ? productIssues(product, draft, isKept(product)) : [];
               const said = refusedOf(product.name);
               const { fields } = product;
               return (
@@ -453,7 +483,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
                   variant="primary"
                   disabled={busy || waiting}
                   onClick={() => {
-                    void save().then((taken) => {
+                    void saveOne(openProduct).then((taken) => {
                       if (taken) {
                         closeSheet();
                       }

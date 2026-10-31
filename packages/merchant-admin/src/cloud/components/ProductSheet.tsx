@@ -1,4 +1,11 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { Button } from '../../components/Button';
 import { Icon } from '../../components/Icon';
 
@@ -20,22 +27,68 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
+ * Makes everything outside `element` inert while it is mounted: each sibling of
+ * it and of every ancestor up to the body (the sidebar, the rest of the page).
+ * Each one's own `inert` is put back as it was.
+ */
+function useInertOutside(element: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const changed: { node: Element; had: boolean }[] = [];
+    for (let node = element.current; node !== null && node !== document.body; ) {
+      const parent: HTMLElement | null = node.parentElement;
+      for (const sibling of parent?.children ?? []) {
+        if (sibling !== node) {
+          changed.push({ node: sibling, had: sibling.hasAttribute('inert') });
+          sibling.setAttribute('inert', '');
+        }
+      }
+      node = parent;
+    }
+    return () => {
+      for (const { node, had } of changed) {
+        if (!had) {
+          node.removeAttribute('inert');
+        }
+      }
+    };
+  }, [element]);
+}
+
+/** The first field of the sheet, else its first button: where focus goes back to. */
+function firstFocus(dialog: HTMLElement | null) {
+  const field = dialog?.querySelector<HTMLElement>('input, textarea');
+  (field ?? dialog?.querySelector<HTMLElement>('button:not([disabled])'))?.focus();
+}
+
+/**
  * One product in a side sheet: a modal dialog named by its heading. Focus
- * stays inside it; Escape and Close ask before throwing away what changed
- * since it opened. The page behind it is inert while it is open.
+ * stays inside it and never falls to the page; Escape and Close ask before
+ * throwing away what changed since it opened. Everything outside it (the
+ * page and the sidebar) is inert while it is open.
  */
 export function ProductSheet({ title, changed, onDiscard, onClose, actions, children }: Props) {
   const dialog = useRef<HTMLDivElement>(null);
+  const frame = useRef<HTMLDivElement>(null);
   const [asking, setAsking] = useState(false);
   const keep = useRef<HTMLButtonElement>(null);
+  const asked = useRef(false);
+  useInertOutside(frame);
 
-  // The first field takes the focus when the sheet opens.
-  useEffect(() => {
-    dialog.current?.querySelector<HTMLElement>('input, textarea')?.focus();
-  }, []);
+  // The first field takes the focus when the sheet opens, and again once the question is
+  // answered "keep editing" (its buttons are gone then).
   useEffect(() => {
     if (asking) {
+      asked.current = true;
       keep.current?.focus();
+    } else {
+      if (
+        asked.current ||
+        document.activeElement === document.body ||
+        !dialog.current?.contains(document.activeElement)
+      ) {
+        firstFocus(dialog.current);
+      }
+      asked.current = false;
     }
   }, [asking]);
 
@@ -76,7 +129,7 @@ export function ProductSheet({ title, changed, onDiscard, onClose, actions, chil
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
+    <div ref={frame} className="fixed inset-0 z-40 flex justify-end">
       <div aria-hidden="true" className="bg-bg/70 absolute inset-0" onClick={close} />
       <div
         ref={dialog}
