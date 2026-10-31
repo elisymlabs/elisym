@@ -442,7 +442,11 @@ describe('R-a: a close resets every state, writing nothing', () => {
     run.chain.onList = undefined;
     expect(listings).toBe(2);
     // The payment's write lands a few turns after the tick on a slow runner: waited for, bounded.
-    for (let turn = 0; turn < 20 && (await store.get(over.orderId))?.paidTx === undefined; turn += 1) {
+    for (
+      let turn = 0;
+      turn < 20 && (await store.get(over.orderId))?.paidTx === undefined;
+      turn += 1
+    ) {
       await settle();
     }
     expect(run.spy.writes.filter((write) => write.method === 'clearMarker')).toEqual([]);
