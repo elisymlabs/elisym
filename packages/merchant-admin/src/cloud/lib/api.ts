@@ -95,6 +95,11 @@ export function createConsoleApi(options: {
   signer: OwnerSigner;
   fetcher?: Fetcher;
   localNow?: () => number;
+  /**
+   * How long a request is waited for, its one retry included (none: as long as
+   * the browser waits); past it, unreachable.
+   */
+  timeoutMs?: number;
 }): ConsoleApi {
   const origin = new URL(options.apiOrigin).origin;
   const fetcher: Fetcher = options.fetcher ?? ((request) => fetch(request));
@@ -102,7 +107,13 @@ export function createConsoleApi(options: {
   let offset = 0;
   let learnedAny = false;
 
-  async function send(method: 'GET' | 'POST', path: string, body: unknown, wantBytes: boolean) {
+  async function send(
+    method: 'GET' | 'POST',
+    path: string,
+    body: unknown,
+    wantBytes: boolean,
+    timeoutMs: number | undefined,
+  ) {
     // Signed as cloud-api reads the URL it receives: the origin, the encoded path and the query.
     const parsed = new URL(path, origin);
     if (parsed.origin !== origin) {
@@ -119,13 +130,29 @@ export function createConsoleApi(options: {
         ...(bytes === undefined ? {} : { 'content-type': 'application/json' }),
       },
       ...(bytes === undefined ? {} : { body: bytes }),
+      // The race below bounds the wait; the signal also drops the request where the browser has it.
+      ...(timeoutMs === undefined || typeof AbortSignal.timeout !== 'function'
+        ? {}
+        : { signal: AbortSignal.timeout(timeoutMs) }),
     });
     let response: Response;
     let received: Uint8Array<ArrayBuffer>;
     try {
-      response = await fetcher(request);
-      // A connection lost while the body arrives is as unreachable as one never made.
-      received = new Uint8Array(await response.arrayBuffer());
+      const answered = async () => {
+        const got = await fetcher(request);
+        // A connection lost while the body arrives is as unreachable as one never made.
+        return { got, body: new Uint8Array(await got.arrayBuffer()) };
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = (limitMs: number) =>
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('timed out')), limitMs);
+        });
+      const result = await (timeoutMs === undefined
+        ? answered()
+        : Promise.race([answered(), timedOut(timeoutMs)]).finally(() => clearTimeout(timer)));
+      response = result.got;
+      received = result.body;
     } catch {
       return { ...UNREACHABLE, bytes: new Uint8Array(new ArrayBuffer(0)), learned: false };
     }
@@ -163,9 +190,17 @@ export function createConsoleApi(options: {
     if (!path.startsWith('/') || path.startsWith('//')) {
       throw new Error('a cloud-api path starts with one /');
     }
-    const first = await send(method, path, body, wantBytes);
+    const deadline = options.timeoutMs === undefined ? undefined : Date.now() + options.timeoutMs;
+    const left = () => (deadline === undefined ? undefined : deadline - Date.now());
+    const first = await send(method, path, body, wantBytes, left());
     const stale = first.status === 401 && first.learned && errorCode(first.body) === 'stale';
-    return stale ? await send(method, path, body, wantBytes) : first;
+    if (!stale) {
+      return first;
+    }
+    const remaining = left();
+    return remaining !== undefined && remaining <= 0
+      ? { ...UNREACHABLE, bytes: new Uint8Array(new ArrayBuffer(0)), learned: false }
+      : await send(method, path, body, wantBytes, remaining);
   }
 
   return {

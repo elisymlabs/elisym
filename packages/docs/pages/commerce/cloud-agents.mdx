@@ -2,17 +2,17 @@
 
 elisym Cloud runs a Pay Core store for a merchant: the node, its keys, its RPCs and its relays are ours to keep running, and the merchant pastes a Buy button into their page. This page is a runbook for an AI agent that sets such a store up through the cloud API, top to bottom. Every step is a request the agent can make itself, except two the merchant does by hand: paying for the plan and, optionally, proving payout addresses with their wallet.
 
-Run it with a coding agent that can run TypeScript (Node.js 22 or newer, or Bun). The merchant can do the same in the console at [cloud.elisym.network](https://cloud.elisym.network); both sign in with the same owner key.
+Run it with a coding agent that can run TypeScript (Node.js 22 or newer, or Bun). The merchant can do the same in the admin at [admin.elisym.network](https://admin.elisym.network); both sign in with the same owner key.
 
 ```ts
 // The constants every step below uses.
 const API = 'https://api.cloud.elisym.network';
-const TERMS_URL = 'https://cloud.elisym.network/terms';
+const TERMS_URL = 'https://paycore.elisym.network/terms';
 ```
 
 ## 1. Make the owner key
 
-The owner key is the merchant's sign-in: one key is one store, and whoever holds it controls the store. Make it once, save it to a file only the merchant can read, and give the merchant that file (the console signs in with it).
+The owner key is the merchant's sign-in: one key is one store, and whoever holds it controls the store. Make it once, save it to a file only the merchant can read, and give the merchant that file (the admin signs in with it).
 
 ```bash
 npm install nostr-tools@~2.23.0 @elisym/commerce@~0.13.0
@@ -141,7 +141,7 @@ The store is on mainnet: its buyers pay real stablecoins.
 const { url } = await call('POST', `/tenants/${tenantId}/checkout`);
 ```
 
-Give the merchant `url`: it opens the card payment. To pay in crypto instead, the merchant signs into the console with the key file and pays in its Pay step. Then poll the status every 5 seconds until the payment is in and the store key is made:
+Give the merchant `url`: it opens the card payment. To pay in crypto instead, the merchant signs into the admin with the key file and pays in its Pay step. Then poll the status every 5 seconds until the payment is in and the store key is made:
 
 ```ts
 async function status() {
@@ -210,7 +210,7 @@ await call('POST', `/tenants/${tenantId}/owner-events`, { payoutList, auth });
 - The authorization is in `hosted` mode with no expiry, naming the API's hostname as the operator.
 - A new list must be dated after the one the store keeps. Re-sign the whole list for any change.
 
-Then [wait for the save](#waiting-for-a-save) until `kept.payoutList.id` is `payoutList.id`. These payouts are not verified: the merchant can prove each address with their wallet in the console, and the checkout then marks it verified.
+Then [wait for the save](#waiting-for-a-save) until `kept.payoutList.id` is `payoutList.id`. These payouts are not verified: the merchant can prove each address with their wallet in the admin, and the checkout then marks it verified.
 
 ## 7. Add the products
 
@@ -246,7 +246,7 @@ Each save above answers at once with a `cycleId`; the store applies it a moment 
 
 - **Applied** when the kept state shows the change (as each step says), whatever `pending` says.
 - **Refused** when `pending` is false and the change is not applied. `lastProblems.store`, `lastProblems['owner-events']` or `lastProblems.products` then lists what to fix: fix it and send again. When the list is null, the failure was ours and we were alerted: wait and check again later.
-- While `pending` is true, keep polling: a save that takes long is being retried. After 10 minutes, tell the merchant to open the console: we were alerted.
+- While `pending` is true, keep polling: a save that takes long is being retried. After 10 minutes, tell the merchant to open the admin: we were alerted.
 
 ## 8. Launch
 
@@ -256,7 +256,7 @@ Poll the status until every launch gate is green: `gates.activation` is null, `g
 await call('POST', `/tenants/${tenantId}/launch`);
 ```
 
-Poll the status until `runState` is `live`. When it is `needs_resign`, sign the payouts again (step 6). When it is `could_not_start`, tell the merchant to open the console: we were alerted. `applying` and `starting` mean wait.
+Poll the status until `runState` is `live`. When it is `needs_resign`, sign the payouts again (step 6). When it is `could_not_start`, tell the merchant to open the admin: we were alerted. `applying` and `starting` mean wait.
 
 ## 9. Install the Buy button
 
@@ -287,7 +287,7 @@ and the loader script once. When `store.loader` is null, it is this one:
 
 Otherwise the store sells through a partner: use the same script with `store.loader.src` and `store.loader.integrity` in place of `src` and `integrity`.
 
-[The widget](/commerce/widget) has the button's options (`theme`, `label`, `display`, `collect-email`). When you are done, tell the merchant where the key file is, that it signs them into the console, and how to make a small test purchase.
+[The widget](/commerce/widget) has the button's options (`theme`, `label`, `display`, `collect-email`). When you are done, tell the merchant where the key file is, that it signs them into the admin, and how to make a small test purchase.
 
 ## Errors
 
@@ -304,7 +304,7 @@ Otherwise the store sells through a partner: use the same script with `store.loa
 | `card_subscription_live`, `card_from` | The plan is paid already: go on polling the status (step 4). |
 | `payment_window_closed`, `owner_unconfirmed` | The signup can no longer be paid by card: ask the merchant to contact us. |
 | `tenant_gone` | The store was handed over or destroyed: stop, and tell the merchant. |
-| `no_card_for_tier`, `card_not_set_up`, `stripe_unavailable`, `stripe_refused` | Card payment is not available now: the merchant pays in crypto in the console. |
+| `no_card_for_tier`, `card_not_set_up`, `stripe_unavailable`, `stripe_refused` | Card payment is not available now: the merchant pays in crypto in the admin. |
 | `no_store_key` | The store key is not made yet: wait for `storePubkey` in the status. |
 | `store_first` | Save the store (step 5) before the payouts. |
 | `store_refused` | `detail` lists what to fix, one problem per line. |
@@ -316,6 +316,6 @@ Otherwise the store sells through a partner: use the same script with `store.loa
 | `held`, `owner_mismatch`, `not_redeemed` | Ask the merchant to contact us. |
 | `cycle_pending` | A save is still applying: wait for `gates.noCyclePending`, then launch again. |
 | `home_not_ready`, `store_not_set_up` | Wait for `gates.homeReady`, or finish steps 5 to 7. |
-| `domain_check` | The store has a domain whose record does not name it yet: the merchant fixes it in the console. |
+| `domain_check` | The store has a domain whose record does not name it yet: the merchant fixes it in the admin. |
 | `bad_body`, `not_found` | The request is built wrong (its body is not JSON, or the path is not a route): check it against this page. |
 | `internal` | Something failed on our side: wait a minute and send it again. |

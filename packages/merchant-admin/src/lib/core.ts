@@ -28,4 +28,4 @@ export {
   type SessionDeps,
   type Snapshot,
 } from '@merchant-admin-core/session';
-export type { ProductLine, StoreView } from '@merchant-admin-core/store';
+export { type ProductLine, type StoreView, readStore } from '@merchant-admin-core/store';

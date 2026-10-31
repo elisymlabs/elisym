@@ -42,8 +42,10 @@ export function AdminTeaser() {
             <h3 className="text-18 font-semibold">Your key stays with you</h3>
           </div>
           <p className="text-15 text-text-2 leading-relaxed">
-            The admin runs on its own domain and reads your relays directly. The key lives only in
-            that tab&apos;s memory: it is never stored and never sent anywhere.
+            The admin runs on its own domain and reads your relays. Any key you paste also signs a
+            request to our cloud, which asks whether it runs a store there: we see its public key,
+            never the key. The key lives only in that tab&apos;s memory: it is never stored and
+            never sent anywhere.
           </p>
           <p className="text-15 text-text-2 leading-relaxed">
             Browser extensions can read what you type into any page. Use a browser profile without

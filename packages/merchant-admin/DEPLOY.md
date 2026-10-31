@@ -1,10 +1,11 @@
 # Deploying the store admin
 
-The hosted admin is a static page on its own origin, `https://admin.elisym.network`. A
-self-hosted merchant pastes the store key into it and the page reads the store's relays; a
-cloud merchant signs in with the owner key and the page talks to cloud-api
-(`https://api.cloud.elisym.network`) with requests that key signs. The key never leaves the
-page. It must
+The hosted admin is a static page on its own origin, `https://admin.elisym.network`. It has
+one key field: whatever key is pasted signs a `GET /owner` to cloud-api
+(`https://api.cloud.elisym.network`) while the page reads the key's store on the relays, and the
+answers decide which part opens. A self-hosted merchant's store key opens the relay admin (cloud-api
+has seen its public key, nothing more); a cloud merchant's owner key opens the cloud part, which
+talks to cloud-api with requests that key signs. The key never leaves the page. It must
 never share an origin with anything that runs third-party code (the landing page loads the
 checkout loader), so it is its own Vercel project on its own host.
 

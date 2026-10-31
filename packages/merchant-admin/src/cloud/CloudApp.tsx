@@ -32,6 +32,8 @@ export interface CloudProps {
   localNow?: () => number;
   /** How requests reach cloud-api (the browser's fetch, or a test's in-process API). */
   fetcher?: Fetcher;
+  /** How long the sign-in waits on cloud-api (a test's own; the admin's is `CLOUD_PROBE_MS`). */
+  probeMs?: number;
 }
 
 interface Props extends CloudProps {
@@ -39,6 +41,12 @@ interface Props extends CloudProps {
   leave: () => void;
   /** Back to the admin's front door, before a key is held. */
   onBack?: () => void;
+  /** To the admin's one sign-in field, for a key saved before. */
+  onSignIn: () => void;
+  /** An owner key the admin's sign-in already took and routed here: no key step. */
+  initialKey?: OwnerKey;
+  /** What the sign-in found, said on the store page. */
+  notice?: string;
 }
 
 type Stage =
@@ -65,10 +73,26 @@ export function CloudApp({
   localNow = () => Math.floor(Date.now() / 1000),
   fetcher,
   onBack,
+  onSignIn,
+  initialKey,
+  notice,
 }: Props) {
-  const owner = useRef<OwnerKey | undefined>(undefined);
-  const api = useRef<ConsoleApi | undefined>(undefined);
-  const [stage, setStage] = useState<Stage>({ name: 'key' });
+  const owner = useRef<OwnerKey | undefined>(initialKey);
+  const api = useRef<ConsoleApi | undefined>(
+    initialKey === undefined
+      ? undefined
+      : createConsoleApi({
+          apiOrigin,
+          signer: initialKey,
+          localNow,
+          ...(fetcher === undefined ? {} : { fetcher }),
+        }),
+  );
+  const [stage, setStage] = useState<Stage>(
+    initialKey === undefined
+      ? { name: 'key' }
+      : { name: 'signed-in', npub: initialKey.npub, pubkey: initialKey.pubkey },
+  );
 
   // Leaving the page zeroes the key; a page brought back from the back/forward cache starts over.
   useEffect(() => {
@@ -103,11 +127,6 @@ export function CloudApp({
     setStage({ name: 'save', npub: key.npub, pubkey: key.pubkey });
   };
 
-  const signIn = (key: OwnerKey) => {
-    hold(key);
-    setStage({ name: 'signed-in', npub: key.npub, pubkey: key.pubkey });
-  };
-
   const save = () => {
     const key = owner.current;
     if (key !== undefined) {
@@ -123,7 +142,7 @@ export function CloudApp({
   };
 
   if (stage.name === 'key') {
-    return <KeyStep onCreate={create} onKey={signIn} onBack={onBack} />;
+    return <KeyStep onCreate={create} onSignIn={onSignIn} onBack={onBack} />;
   }
   if (stage.name === 'save') {
     return (
@@ -137,7 +156,7 @@ export function CloudApp({
   const signedIn = api.current;
   const signer = owner.current;
   if (signedIn === undefined || signer === undefined) {
-    return <KeyStep onCreate={create} onKey={signIn} onBack={onBack} />;
+    return <KeyStep onCreate={create} onSignIn={onSignIn} onBack={onBack} />;
   }
   return (
     <Home
@@ -160,6 +179,7 @@ export function CloudApp({
         download,
       }}
       onSignOut={signOut}
+      {...(notice === undefined ? {} : { notice })}
     />
   );
 }

@@ -7,10 +7,15 @@ import { TrustPanel } from './TrustPanel';
 
 interface Props {
   onKey: (key: StoreKey) => void;
+  /**
+   * The cloud is on: the field takes a cloud store's owner key too, the answer
+   * is waited on (`checking`), and why the key opened nothing is said.
+   */
+  cloud?: { checking: boolean; problem: string; onBack: () => void };
 }
 
 /** The key field: a masked text field outside any form, read once and cleared. */
-export function SignIn({ onKey }: Props) {
+export function SignIn({ onKey, cloud }: Props) {
   const input = useRef<HTMLInputElement>(null);
   // Leaving by a link keeps this page in the back/forward cache: a typed key must not come back.
   useEffect(() => {
@@ -24,9 +29,11 @@ export function SignIn({ onKey }: Props) {
   }, []);
   const [error, setError] = useState('');
 
+  const checking = cloud?.checking === true;
   const submit = () => {
     const field = input.current;
-    if (field === null) {
+    // While a key is being routed, the field keeps what was typed: nothing is read twice.
+    if (field === null || checking) {
       return;
     }
     const key = parseStoreKey(field.value);
@@ -42,11 +49,22 @@ export function SignIn({ onKey }: Props) {
   return (
     <AuthLayout>
       <div className="grid w-full max-w-960 items-start gap-24 lg:grid-cols-[1.1fr_0.9fr]">
-        <div className="rounded-20 border-line bg-surface border p-24 shadow-sm sm:p-32">
+        <div
+          aria-busy={checking}
+          className="rounded-20 border-line bg-surface border p-24 shadow-sm sm:p-32"
+        >
           <h1 className="text-24 font-semibold tracking-tight">Sign in to your store</h1>
           <p className="text-15 text-text-2 mt-8">
-            Open your orders, products and store profile with your store key.
+            {cloud === undefined
+              ? 'Open your orders, products and store profile with your store key.'
+              : 'For a store in our cloud, paste its owner key (the file you saved when you made it). For a store you run yourself, its store key.'}
           </p>
+          {cloud === undefined ? null : (
+            <p className="text-13 text-text-3 mt-8">
+              We ask our cloud whether this key runs a store there, and read your relays; the key
+              itself never leaves this page.
+            </p>
+          )}
 
           <ol className="mt-28 flex flex-col gap-20">
             <li className="flex gap-12">
@@ -55,6 +73,7 @@ export function SignIn({ onKey }: Props) {
               </span>
               <div className="flex min-w-0 flex-1 flex-col gap-8">
                 <p className="text-14 font-medium">
+                  {cloud === undefined ? null : 'A store you run yourself: '}
                   On the machine that runs your node, print the store key
                 </p>
                 <CommandLine command={STORE_KEY_COMMAND} />
@@ -90,7 +109,7 @@ export function SignIn({ onKey }: Props) {
                   role="alert"
                   className="text-13 text-error min-h-18 empty:min-h-0"
                 >
-                  {error}
+                  {error === '' ? (cloud?.problem ?? '') : error}
                 </p>
               </div>
             </li>
@@ -99,10 +118,25 @@ export function SignIn({ onKey }: Props) {
           <button
             type="button"
             onClick={submit}
-            className="rounded-10 bg-ink text-15 text-ink-text mt-8 w-full py-12 font-semibold transition hover:opacity-90"
+            aria-disabled={checking}
+            className="rounded-10 bg-ink text-15 text-ink-text mt-8 w-full py-12 font-semibold transition hover:opacity-90 aria-disabled:opacity-50"
           >
-            Open store
+            {checking ? 'Opening your store...' : 'Open store'}
           </button>
+          {cloud === undefined ? null : (
+            <p role="status" className="sr-only">
+              {checking ? 'Opening your store...' : ''}
+            </p>
+          )}
+          {cloud === undefined ? null : (
+            <button
+              type="button"
+              onClick={cloud.onBack}
+              className="text-13 text-text-2 hover:text-text mt-12 w-full underline underline-offset-2"
+            >
+              Back
+            </button>
+          )}
           <p className="text-13 text-text-3 mt-16 text-center">
             No store yet?{' '}
             <a

@@ -1,10 +1,13 @@
+import * as nip19 from 'nostr-tools/nip19';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { act } from 'react';
 import { type Root as ReactRoot, createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
 import type { CloudProps } from '../../src/cloud/CloudApp';
 import { OwnerKey } from '../../src/cloud/lib/owner-key';
 import { Root } from '../../src/Root';
+import { fakeDeps, relayClient, storeEvents } from '../fakes';
 import {
   type Answer,
   FakeStore,
@@ -41,6 +44,18 @@ interface Options {
   downloads?: string[];
   leave?: () => void;
   relays?: NostrEvent[];
+  /** What the store-key reads on the relays answer (the sign-in's probe, the self-hosted admin). */
+  storeRelays?: NostrEvent[];
+  /** Every relay read fails. */
+  relaysDown?: boolean;
+  /** No relay read ever ends. */
+  relaysHang?: boolean;
+  /** The relay reads cannot even start. */
+  depsThrow?: boolean;
+  /** Closing the relay client throws. */
+  closeThrows?: boolean;
+  /** Each `GET /owner` is answered only once what this gives for it settles. */
+  ownerGate?: () => Promise<void>;
 }
 
 /** The admin, its cloud part answered by `routes`. */
@@ -48,6 +63,17 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const cloudApi = fakeCloud({ 'GET /tiers': { body: tiersAnswer() }, ...routes });
   const relays = options.relays ?? [];
+  const relayClients = { opened: 0, closed: 0 };
+  const { ownerGate } = options;
+  const fetcher =
+    ownerGate === undefined
+      ? cloudApi.fetcher
+      : async (request: Request) => {
+          if (new URL(request.url).pathname === '/owner') {
+            await ownerGate();
+          }
+          return cloudApi.fetcher(request);
+        };
   const cloud: CloudProps = {
     apiOrigin: API,
     download: (_data, fileName) => options.downloads?.push(fileName),
@@ -58,7 +84,7 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
     billingUrl: undefined,
     navigate: () => undefined,
     wallets: { solana: undefined, evm: undefined },
-    fetcher: cloudApi.fetcher,
+    fetcher,
     ...options.cloudProps,
   };
   const host = document.createElement('div');
@@ -70,14 +96,36 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
       <Root
         ownTab={options.ownTab ?? true}
         createDeps={() => {
-          throw new Error('no relay reads in these tests');
+          if (options.depsThrow === true) {
+            throw new Error('no relays');
+          }
+          relayClients.opened += 1;
+          const client = relayClient(
+            () => options.storeRelays ?? [],
+            () => options.relaysDown === true,
+          );
+          return fakeDeps(
+            {
+              ...client,
+              ...(options.relaysHang === true
+                ? { query: () => new Promise<never>(() => undefined) }
+                : {}),
+              close: () => {
+                if (options.closeThrows === true) {
+                  throw new Error('close failed');
+                }
+                relayClients.closed += 1;
+              },
+            },
+            [],
+          );
         }}
         leave={options.leave ?? (() => undefined)}
         cloud={options.cloud === false ? undefined : cloud}
       />,
     ),
   );
-  return { host, calls: cloudApi.calls };
+  return { host, calls: cloudApi.calls, relayClients };
 }
 
 async function eventually(host: HTMLElement, ready: () => boolean) {
@@ -124,19 +172,29 @@ async function fill(host: HTMLElement, selector: string, value: string) {
   });
 }
 
-function ownerKeyField(host: HTMLElement): HTMLInputElement {
-  const field = host.querySelector('input#owner-key');
+/** Pastes a key into the one key field and asks to open it. */
+async function pasteKey(host: HTMLElement, key: OwnerKey | string) {
+  const field = host.querySelector('input#store-key');
   if (!(field instanceof HTMLInputElement)) {
-    throw new Error('no owner key field');
+    throw new Error('no key field');
   }
-  return field;
+  field.value = typeof key === 'string' ? key : key.nsec();
+  await click(host, 'Open store');
 }
 
-/** Signs in to the cloud part with `key` from the front door. */
-async function signIn(host: HTMLElement, key: OwnerKey) {
-  await click(host, 'A store in our cloud');
-  ownerKeyField(host).value = key.nsec();
-  await click(host, 'Open my store');
+/** Signs in from the front door's one key field. */
+async function signIn(host: HTMLElement, key: OwnerKey | string) {
+  await click(host, 'Sign in to your store');
+  await pasteKey(host, key);
+}
+
+/** A gate the test opens: what waits on it is answered then. */
+function gate(): { wait: Promise<void>; open: () => void } {
+  let open = () => undefined as void;
+  const wait = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  return { wait, open };
 }
 
 function steps(host: HTMLElement) {
@@ -177,31 +235,32 @@ function checkbox(host: HTMLElement): HTMLInputElement {
 }
 
 describe('the front door', () => {
-  it('offers a cloud store and a sign-in to either kind of store, under one heading', async () => {
+  it('offers a cloud store and one sign-in, under one heading', async () => {
     const { host } = await admin({});
     expect(host.querySelector('h1')?.textContent).toBe('Pay Core admin');
     expect([...host.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual([
       'Create a store in our cloud',
       'Sign in',
     ]);
-    expect(button(host, 'A store in our cloud').getAttribute('aria-label')).toBe(
-      'Sign in to a store in our cloud',
-    );
-    expect(button(host, 'A store you run yourself').getAttribute('aria-label')).toBe(
-      'Sign in to a store you run yourself',
-    );
+    expect(hasButton(host, 'Create a store')).toBe(true);
+    expect(hasButton(host, 'Sign in to your store')).toBe(true);
   });
 
-  it('built with no cloud, it is the self-hosted sign-in alone', async () => {
-    const { host } = await admin({}, { cloud: false });
+  it('built with no cloud, it is the self-hosted sign-in alone, and asks no cloud', async () => {
+    const { host, calls } = await admin({}, { cloud: false });
     expect(host.textContent).not.toContain('Create a store in our cloud');
     expect(host.querySelector('input#store-key')).not.toBeNull();
+    expect(host.textContent).not.toContain('We ask our cloud');
+    expect(calls).toEqual([]);
   });
 
-  it('a store you run yourself opens the store-key sign-in', async () => {
+  it('the one sign-in says which key it takes, and Back returns to the front door', async () => {
     const { host } = await admin({});
-    await click(host, 'A store you run yourself');
-    expect(host.querySelector('input#store-key')).not.toBeNull();
+    await click(host, 'Sign in to your store');
+    expect(host.textContent).toContain('For a store in our cloud, paste its owner key');
+    expect(host.textContent).toContain('We ask our cloud whether this key runs a store there');
+    await click(host, 'Back');
+    expect(host.textContent).toContain('Create a store in our cloud');
   });
 
   it('Create a store opens the owner key step, and Back returns to the front door', async () => {
@@ -225,9 +284,279 @@ describe('the front door', () => {
       cloudProps: { checkoutReturn: { tenantId: TENANT_ID, outcome: 'done' } },
     });
     expect(hasButton(host, 'Create a new owner key')).toBe(true);
-    ownerKeyField(host).value = OwnerKey.create().nsec();
-    await click(host, 'Open my store');
+    await click(host, 'Sign in with the key you saved');
+    await pasteKey(host, OwnerKey.create());
     await eventually(host, () => host.textContent?.includes('Card payment received') === true);
+  });
+});
+
+describe('one key field, routed', () => {
+  it('a self-hosted store key opens the self-hosted admin, its store read from the relays', async () => {
+    const store = makeKey();
+    const owner = makeKey();
+    const { host, calls } = await admin(
+      { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+      { storeRelays: storeEvents(store, owner) },
+    );
+    await signIn(host, nip19.nsecEncode(store.secretKey));
+    await eventually(host, () => host.querySelector('#store-name')?.textContent === 'Shop');
+    // The cloud was asked once, by a request the key signed; nothing else of it was used.
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /owner']);
+    expect(calls[0]?.signer).toBe(store.pubkey);
+  });
+
+  it('a cloud that does not answer leaves a self-hosted store to its relays', async () => {
+    const store = makeKey();
+    const { host } = await admin(
+      { 'GET /owner': { status: 503, body: { error: 'internal' } } },
+      { storeRelays: storeEvents(store, makeKey()) },
+    );
+    await signIn(host, nip19.nsecEncode(store.secretKey));
+    await eventually(host, () => host.querySelector('#store-name')?.textContent === 'Shop');
+  });
+
+  it('nothing anywhere: said, and the field stays for another try', async () => {
+    const { host } = await admin({ 'GET /owner': { status: 503, body: { error: 'internal' } } });
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () =>
+        host.textContent?.includes('Our cloud is not answering, and the relays showed nothing') ===
+        true,
+    );
+    expect(host.querySelector('input#store-key')).not.toBeNull();
+    expect(button(host, 'Open store').getAttribute('aria-disabled')).toBe('false');
+  });
+
+  it('a key with no store anywhere opens the cloud part, saying the relays showed nothing', async () => {
+    const { host } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+    expect(host.textContent).toContain('the relays showed nothing for this key');
+  });
+
+  it('an operator key is refused in words, never read as a store key', async () => {
+    const { host, calls } = await admin({
+      'GET /owner': { status: 403, body: { error: 'forbidden' } },
+      'GET /partner': { status: 403, body: { error: 'forbidden' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () => host.textContent?.includes('This key cannot be used here.') === true,
+    );
+    expect(calls.filter((call) => call.path === '/partner')).toHaveLength(1);
+  });
+
+  it('a cloud store opens with the key the field took: no second key step', async () => {
+    const store = new FakeStore(storeState());
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => hasButton(host, 'Sign out'));
+    expect(host.querySelector('input#owner-key')).toBeNull();
+    expect(host.querySelector('input#store-key')).toBeNull();
+    expect(host.textContent).not.toContain('the relays showed nothing');
+  });
+
+  it('a cloud store opens on the cloud answer alone: the relays are not waited for', async () => {
+    const store = new FakeStore(storeState());
+    const { host, relayClients } = await admin(store.routes(), { relaysHang: true });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => hasButton(host, 'Sign out'));
+    expect(relayClients).toEqual({ opened: 1, closed: 1 });
+  });
+
+  it('Back while a key is checked drops its route: the front door stays', async () => {
+    const owner = gate();
+    const store = new FakeStore(storeState());
+    const { host } = await admin(store.routes(), { ownerGate: () => owner.wait });
+    const close = vi.spyOn(OwnerKey.prototype, 'close');
+    await signIn(host, OwnerKey.create());
+    expect(button(host, 'Opening your store...').getAttribute('aria-disabled')).toBe('true');
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('Opening your store...');
+    expect(host.querySelector('[aria-busy="true"]')).not.toBeNull();
+    await click(host, 'Back');
+    await click(host, 'Create a store');
+    await click(host, 'Create a new owner key');
+    const made = close.mock.calls.length;
+    await act(async () => owner.open());
+    await eventually(host, () => close.mock.calls.length > made);
+    // The route's key was closed; the key just made is still the one on screen.
+    expect(host.textContent).toContain('Save your owner key');
+    expect(hasButton(host, 'Sign out')).toBe(false);
+  });
+
+  it('Back while a key is checked, then the sign-in again: the field takes a key at once', async () => {
+    const owner = gate();
+    const { host } = await admin(
+      { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+      { ownerGate: () => owner.wait },
+    );
+    await signIn(host, OwnerKey.create());
+    await click(host, 'Back');
+    await click(host, 'Sign in to your store');
+    expect(button(host, 'Open store').getAttribute('aria-disabled')).toBe('false');
+    expect(host.querySelector('[aria-busy="true"]')).toBeNull();
+    await act(async () => owner.open());
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+  });
+
+  it('reads that cannot even start: said, no key kept, and the field takes another', async () => {
+    const { host } = await admin({}, { depsThrow: true });
+    const secret = makeKey().secretKey;
+    const pasted = Buffer.from(secret).toString('hex');
+    // Each array zeroed, as it was just before.
+    const zeroedFrom: string[] = [];
+    const fill = Uint8Array.prototype.fill;
+    vi.spyOn(Uint8Array.prototype, 'fill').mockImplementation(function (
+      this: Uint8Array,
+      ...args: Parameters<Uint8Array['fill']>
+    ) {
+      if (args[0] === 0) {
+        zeroedFrom.push(Buffer.from(this).toString('hex'));
+      }
+      return fill.apply(this, args);
+    });
+    await signIn(host, pasted);
+    await eventually(host, () => host.textContent?.includes('Our cloud is not answering') === true);
+    expect(button(host, 'Open store').getAttribute('aria-disabled')).toBe('false');
+    expect(zeroedFrom).toContain(pasted);
+  });
+
+  it('a route that fails after Back says nothing to the next sign-in', async () => {
+    const owner = gate();
+    const second = gate();
+    let asked = 0;
+    const { host } = await admin(
+      { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+      {
+        closeThrows: true,
+        ownerGate: () => {
+          asked += 1;
+          return asked === 1 ? owner.wait : second.wait;
+        },
+      },
+    );
+    await signIn(host, OwnerKey.create());
+    await click(host, 'Back');
+    await click(host, 'Sign in to your store');
+    await pasteKey(host, OwnerKey.create());
+    await act(async () => owner.open());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    // The second key is still being checked; the first one's failure changed nothing.
+    expect(host.textContent).not.toContain('Our cloud is not answering');
+    expect(button(host, 'Opening your store...').getAttribute('aria-disabled')).toBe('true');
+    await act(async () => second.open());
+    await eventually(host, () => host.textContent?.includes('Our cloud is not answering') === true);
+  });
+
+  it('the relays-showed-nothing note goes once the key has a store: an invite redeemed', async () => {
+    const store = new FakeStore(storeState());
+    let redeemed = false;
+    const { host } = await admin({
+      ...store.routes(),
+      'GET /owner': () => ({
+        body: { tenantId: redeemed ? TENANT_ID : null, termsVersion: 't1' },
+      }),
+      'POST /redeem': () => {
+        redeemed = true;
+        return { body: { tenantId: TENANT_ID } };
+      },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+    expect(host.textContent).toContain('the relays showed nothing');
+    await fill(host, 'input#invite', 'invite-1');
+    await click(host, 'Redeem');
+    await eventually(host, () => host.textContent?.includes('Redeem an invite') === false);
+    await eventually(host, () => host.textContent?.includes('Your store') === true);
+    expect(host.textContent).not.toContain('the relays showed nothing');
+  });
+
+  it('while a key is checked, Enter reads nothing more and the field keeps what it has', async () => {
+    const owner = gate();
+    let probes = 0;
+    const { host } = await admin(
+      { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+      {
+        ownerGate: () => {
+          probes += 1;
+          return owner.wait;
+        },
+      },
+    );
+    await signIn(host, OwnerKey.create());
+    const field = host.querySelector('input#store-key');
+    if (!(field instanceof HTMLInputElement)) {
+      throw new Error('no key field');
+    }
+    field.value = 'typed';
+    await act(async () => {
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    await click(host, 'Opening your store...');
+    expect(field.value).toBe('typed');
+    expect(probes).toBe(1);
+    await act(async () => owner.open());
+    await eventually(host, () => host.textContent?.includes('Redeem an invite') === true);
+  });
+
+  it('a relay read that fails counts as no store: with the cloud down, nothing opens', async () => {
+    const store = makeKey();
+    const { host, relayClients } = await admin(
+      { 'GET /owner': { status: 503, body: { error: 'internal' } } },
+      { storeRelays: storeEvents(store, makeKey()), relaysDown: true },
+    );
+    await signIn(host, nip19.nsecEncode(store.secretKey));
+    await eventually(host, () => host.textContent?.includes('Our cloud is not answering') === true);
+    expect(host.querySelector('#store-name')).toBeNull();
+    expect(relayClients).toEqual({ opened: 1, closed: 1 });
+  });
+
+  it('a cloud that hangs is given up on after the probe time, and the relays decide', async () => {
+    const store = makeKey();
+    const { host } = await admin(
+      {},
+      {
+        storeRelays: storeEvents(store, makeKey()),
+        ownerGate: () => new Promise<void>(() => undefined),
+        cloudProps: { probeMs: 100 },
+      },
+    );
+    await signIn(host, nip19.nsecEncode(store.secretKey));
+    await eventually(host, () => host.querySelector('#store-name')?.textContent === 'Shop');
+  });
+
+  it('what went wrong is cleared on the next try and on Back', async () => {
+    const second = gate();
+    let asked = 0;
+    const { host } = await admin(
+      { 'GET /owner': { status: 503, body: { error: 'internal' } } },
+      {
+        ownerGate: () => {
+          asked += 1;
+          return asked < 3 ? Promise.resolve() : second.wait;
+        },
+      },
+    );
+    const said = () => host.textContent?.includes('Our cloud is not answering') === true;
+    await signIn(host, OwnerKey.create());
+    await eventually(host, said);
+    await click(host, 'Back');
+    await click(host, 'Sign in to your store');
+    expect(said()).toBe(false);
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, said);
+    // A new try, while it is checked: the last one's words are gone.
+    await pasteKey(host, OwnerKey.create());
+    expect(said()).toBe(false);
+    await act(async () => second.open());
+    await eventually(host, said);
   });
 });
 

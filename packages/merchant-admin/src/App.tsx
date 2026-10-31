@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { OwnTabNotice } from './components/OwnTabNotice';
 import { SignIn } from './components/SignIn';
@@ -17,6 +17,8 @@ interface Props {
   createDeps: () => SessionDeps;
   /** Leaves the page for a new document, so nothing of the key stays reachable. */
   leave: () => void;
+  /** A store key the admin's sign-in already took: the store opens at once, with no field. */
+  initialKey?: StoreKey;
 }
 
 export interface DashboardState {
@@ -31,7 +33,7 @@ export interface DashboardState {
  * The admin. The key lives only inside the session, held in a ref: never in
  * React state, never stored, never sent (it signs the relays' AUTH only).
  */
-export function App({ ownTab, createDeps, leave }: Props) {
+export function App({ ownTab, createDeps, leave, initialKey }: Props) {
   const session = useRef<AdminSession | undefined>(undefined);
   const [state, setState] = useState<DashboardState | undefined>(undefined);
 
@@ -71,6 +73,15 @@ export function App({ ownTab, createDeps, leave }: Props) {
     void run((current) => current.open());
   };
 
+  // Opened once with the key the sign-in took (a second run finds the session open).
+  const opened = useRef(false);
+  useEffect(() => {
+    if (initialKey !== undefined && !opened.current) {
+      opened.current = true;
+      open(initialKey);
+    }
+  });
+
   const logOut = () => {
     session.current?.close();
     session.current = undefined;
@@ -81,7 +92,8 @@ export function App({ ownTab, createDeps, leave }: Props) {
     return <OwnTabNotice />;
   }
   if (state === undefined) {
-    return <SignIn onKey={open} />;
+    // A key the sign-in already took opens in the first effect: no second sign-in flashes first.
+    return initialKey === undefined ? <SignIn onKey={open} /> : null;
   }
   return (
     <Dashboard

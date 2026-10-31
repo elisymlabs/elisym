@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { UNREACHABLE, createConsoleApi, errorCode, serverOffset } from '../../src/cloud/lib/api';
 import { OwnerKey } from '../../src/cloud/lib/owner-key';
 
@@ -134,6 +134,121 @@ describe('the client, against stub answers', () => {
     await client.request('GET', '/tenants/zzzzzzzzzzzz');
     await client.requestBytes('/tenants/zzzzzzzzzzzz/export/archive');
     expect(caches).toEqual(['no-store', 'no-store']);
+  });
+});
+
+describe('a request with a time limit', () => {
+  it('is unreachable once the limit passes with no answer; an answer in time is kept', async () => {
+    const hanging = createConsoleApi({
+      apiOrigin: ORIGIN,
+      signer: OwnerKey.create(),
+      fetcher: () => new Promise<Response>(() => undefined),
+      timeoutMs: 30,
+    });
+    expect(await hanging.request('GET', '/owner')).toEqual(UNREACHABLE);
+    const quick = createConsoleApi({
+      apiOrigin: ORIGIN,
+      signer: OwnerKey.create(),
+      fetcher: async () => Response.json({ tenantId: null }),
+      timeoutMs: 1000,
+    });
+    expect(await quick.request('GET', '/owner')).toEqual({ status: 200, body: { tenantId: null } });
+  });
+
+  it('asks the browser to drop the request at the limit', async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const client = createConsoleApi({
+      apiOrigin: ORIGIN,
+      signer: OwnerKey.create(),
+      fetcher: async (request) => {
+        signals.push(request.signal);
+        return Response.json({});
+      },
+      timeoutMs: 1000,
+    });
+    await client.request('GET', '/owner');
+    expect(signals[0]?.aborted).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it('is held to its limit where the browser has no AbortSignal.timeout', async () => {
+    const original = Object.getOwnPropertyDescriptor(AbortSignal, 'timeout');
+    Object.defineProperty(AbortSignal, 'timeout', { value: undefined, configurable: true });
+    try {
+      const hanging = createConsoleApi({
+        apiOrigin: ORIGIN,
+        signer: OwnerKey.create(),
+        fetcher: () => new Promise<Response>(() => undefined),
+        timeoutMs: 30,
+      });
+      expect(await hanging.request('GET', '/owner')).toEqual(UNREACHABLE);
+    } finally {
+      if (original !== undefined) {
+        Object.defineProperty(AbortSignal, 'timeout', original);
+      }
+    }
+  });
+
+  it('holds its one retry to what is left of the same limit', async () => {
+    let calls = 0;
+    const client = createConsoleApi({
+      apiOrigin: ORIGIN,
+      signer: OwnerKey.create(),
+      fetcher: async () => {
+        calls += 1;
+        if (calls > 1) {
+          return new Promise<Response>(() => undefined);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        return Response.json(
+          { error: 'stale' },
+          { status: 401, headers: { date: new Date(SERVER_NOW * 1000).toUTCString() } },
+        );
+      },
+      localNow: () => SERVER_NOW,
+      timeoutMs: 250,
+    });
+    const started = Date.now();
+    expect(await client.request('GET', '/owner')).toEqual(UNREACHABLE);
+    expect(calls).toBe(2);
+    expect(Date.now() - started).toBeLessThan(400);
+  });
+
+  it('is unreachable without a retry when the limit passed with the stale answer', async () => {
+    let calls = 0;
+    let clock = 1_000_000;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const client = createConsoleApi({
+      apiOrigin: ORIGIN,
+      signer: OwnerKey.create(),
+      fetcher: async () => {
+        calls += 1;
+        clock += 600;
+        return Response.json(
+          { error: 'stale' },
+          { status: 401, headers: { date: new Date(SERVER_NOW * 1000).toUTCString() } },
+        );
+      },
+      localNow: () => SERVER_NOW,
+      timeoutMs: 500,
+    });
+    expect(await client.request('GET', '/owner')).toEqual(UNREACHABLE);
+    expect(calls).toBe(1);
+    now.mockRestore();
+  });
+
+  it('clears its timer once the answer is in', async () => {
+    const cleared = vi.spyOn(globalThis, 'clearTimeout');
+    const client = createConsoleApi({
+      apiOrigin: ORIGIN,
+      signer: OwnerKey.create(),
+      fetcher: async () => Response.json({ tenantId: null }),
+      timeoutMs: 1000,
+    });
+    await client.request('GET', '/owner');
+    expect(cleared).toHaveBeenCalled();
+    cleared.mockRestore();
   });
 });
 

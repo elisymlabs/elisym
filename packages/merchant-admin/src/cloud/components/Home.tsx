@@ -26,6 +26,8 @@ interface Props {
   checkoutReturn: CheckoutReturn | undefined;
   tools: OwnerTools;
   onSignOut: () => void;
+  /** What the sign-in found (the relays showed nothing, say): said while the key has no store here. */
+  notice?: string;
 }
 
 type Owner =
@@ -49,6 +51,7 @@ export function Home({
   checkoutReturn,
   tools,
   onSignOut,
+  notice,
 }: Props) {
   const [owner, setOwner] = useState<Owner>({ state: 'loading' });
   const [inUse, setInUse] = useState(false);
@@ -89,6 +92,11 @@ export function Home({
   return (
     <AuthLayout owner={{ npub, onSignOut }}>
       <div className="flex w-full max-w-640 flex-col gap-16">
+        {notice === undefined || owner.state !== 'none' ? null : (
+          <p role="status" className="rounded-12 bg-surface-2 text-14 text-text-2 p-16">
+            {notice}
+          </p>
+        )}
         {owner.state === 'loading' ? <p className="text-14 text-text-3">Loading...</p> : null}
         {owner.state === 'failed' ? (
           <div className="flex flex-col items-start gap-12">

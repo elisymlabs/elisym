@@ -443,7 +443,10 @@ running `admin`. It also lists every product of the store, the store's profile, 
 payout networks, and exports the loaded orders as CSV. The key stays in that tab's memory too, but
 the page's code is served by Elisym on each visit, while the local page runs the version you
 installed. Browser extensions can read what you type into any page: use a browser profile
-without extensions you do not trust, or the local page.
+without extensions you do not trust, or the local page. The hosted admin also opens a store in
+our cloud with its owner key, in the same field, so any key pasted there also signs a request
+to our cloud, which asks whether it runs a store there: Elisym sees the store's public key, never
+the key. The local page asks no cloud.
 
 The page reads the store's inbox relays (its inbox list, or the default relays when it has
 none) with the store key and shows each order: when it was placed, its product, the total the
