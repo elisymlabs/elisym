@@ -94,7 +94,7 @@ describe('the front page', () => {
       'A stablecoin wallet on Solana or Tempo (Ethereum, Arbitrum and Base can be added next to one).',
     );
     expect(text(host, '#entry-needs')).toContain(
-      'A website where you can add a short piece of HTML: a script and a button.',
+      'A website where you can add a short piece of HTML: a script and a button for each product.',
     );
     expect(steps[3]).toContain('paste a short snippet into your site');
   });
@@ -135,6 +135,9 @@ describe('the front page', () => {
     expect(questions[0]?.textContent).toContain('refunds are sent by you from it');
     expect(questions[0]?.textContent).toContain(
       'If the plan goes unpaid, the store goes off sale and is later deleted; we can also suspend it for a breach of the terms.',
+    );
+    expect(questions[1]?.textContent).toContain(
+      'It is your password for this admin. It is made in your browser, we never see it, and you keep it as a file.',
     );
     expect(questions[2]?.textContent).toContain(
       'We cannot restore it; without it you cannot change your payouts or sign in.',

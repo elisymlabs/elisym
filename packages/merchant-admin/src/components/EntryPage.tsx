@@ -155,7 +155,7 @@ export function EntryPage({ onCreate, onSignIn, loadTiers, termsUrl }: Props) {
             </li>
             <li className="flex gap-10">
               <Icon name="check" className="text-accent-ink mt-3 size-18 shrink-0" />A website where
-              you can add a short piece of HTML: a script and a button.
+              you can add a short piece of HTML: a script and a button for each product.
             </li>
             <li className="flex gap-10">
               <Icon name="check" className="text-accent-ink mt-3 size-18 shrink-0" />A few minutes.
