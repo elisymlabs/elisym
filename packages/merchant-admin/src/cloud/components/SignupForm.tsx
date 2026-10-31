@@ -16,10 +16,20 @@ interface Props {
   onDone: () => void;
   /** The terms changed since they were shown: the admin reads them again. */
   onTermsChanged: () => void;
+  /** A signup went out (true) or came back refused (false): the plans wait for it. */
+  onBusy: (busy: boolean) => void;
 }
 
 /** This access key opens a store on the picked plan, once the terms are accepted. */
-export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsChanged }: Props) {
+export function SignupForm({
+  api,
+  tier,
+  termsVersion,
+  termsUrl,
+  onDone,
+  onTermsChanged,
+  onBusy,
+}: Props) {
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -32,6 +42,7 @@ export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsC
     }
     inFlight.current = true;
     setBusy(true);
+    onBusy(true);
     const answer = await api.request('POST', '/signup', { tier: tier.id, terms: termsVersion });
     if (answer.status === 200) {
       // Stays busy: the console reloads with the store.
@@ -40,6 +51,7 @@ export function SignupForm({ api, tier, termsVersion, termsUrl, onDone, onTermsC
     }
     inFlight.current = false;
     setBusy(false);
+    onBusy(false);
     const code = fieldOf(answer.body, 'error');
     setError(explain(code, answer.status));
     if (code === 'terms_not_accepted') {

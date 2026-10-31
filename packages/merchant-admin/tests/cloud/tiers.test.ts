@@ -110,6 +110,12 @@ describe('the plan catalog as the admin reads it', () => {
     const unpaid: TierCard | undefined =
       starter === undefined ? undefined : { ...starter, payable: { card: false, crypto: false } };
     expect(unpaid !== undefined && canStart(unpaid)).toBe(false);
+    // Payable is not enough: a tier that is not self-serve never starts here.
+    const paidEnterprise: TierCard | undefined =
+      enterprise === undefined
+        ? undefined
+        : { ...enterprise, payable: { card: true, crypto: true } };
+    expect(paidEnterprise !== undefined && canStart(paidEnterprise)).toBe(false);
     expect(paidBy({ card: true, crypto: true })).toBe('Pay by card or in stablecoins');
     expect(paidBy({ card: true, crypto: false })).toBe('Pay by card');
     expect(paidBy({ card: false, crypto: true })).toBe('Pay in stablecoins');

@@ -40,6 +40,8 @@ export function NoStoreYet({
   const [invite, setInvite] = useState(false);
   const [chosen, setChosen] = useState<TierCard | undefined>(undefined);
   const choose = useCallback((tier: TierCard) => setChosen(tier), []);
+  // A signup on its way: kept here, since picking another plan remounts the form.
+  const [signingUp, setSigningUp] = useState(false);
 
   return (
     <>
@@ -71,6 +73,7 @@ export function NoStoreYet({
         preselect={startTier}
         chosen={chosen?.id}
         onChoose={choose}
+        locked={signingUp}
       />
       {chosen === undefined ? null : (
         <SignupForm
@@ -81,6 +84,7 @@ export function NoStoreYet({
           termsUrl={termsUrl}
           onDone={onStore}
           onTermsChanged={onStore}
+          onBusy={setSigningUp}
         />
       )}
     </>

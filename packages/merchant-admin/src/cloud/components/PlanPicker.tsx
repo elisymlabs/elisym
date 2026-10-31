@@ -13,6 +13,8 @@ interface Props {
   /** The tier picked now, if any. */
   chosen: string | undefined;
   onChoose: (tier: TierCard) => void;
+  /** A signup is on its way: no other plan can be picked until it is answered. */
+  locked: boolean;
 }
 
 const NUMBER = new Intl.NumberFormat('en-US');
@@ -37,12 +39,13 @@ function limitsOf(tier: TierCard): string[] {
  * link's plan is chosen at once when it can be, else said to be one that
  * cannot start here.
  */
-export function PlanPicker({ loadTiers, preselect, chosen, onChoose }: Props) {
+export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: Props) {
   // Undefined while the catalog loads; `failed` when it could not be read.
   const [tiers, setTiers] = useState<TierCard[] | 'failed' | undefined>(undefined);
   const [loads, setLoads] = useState(0);
   // The `/start` plan is applied once, on the first catalog read.
   const preselected = useRef(false);
+  const cards = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
     let current = true;
@@ -93,8 +96,30 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose }: Props) {
   }
 
   const named = tiers.find((tier) => tier.id === preselect);
-  const refused = preselect !== undefined && (named === undefined || !canStart(named));
+  // Said until a plan that can start is picked.
+  const refused =
+    preselect !== undefined && (named === undefined || !canStart(named)) && chosen === undefined;
   const selfServe = tiers.filter((tier) => tier.selfServe);
+  const open = selfServe.filter(canStart);
+  // One stop in the tab order: the picked plan, else the first that can start.
+  const focusable = chosen ?? open[0]?.id;
+
+  const pick = (tier: TierCard) => {
+    if (!locked && canStart(tier)) {
+      onChoose(tier);
+    }
+  };
+  // Arrow keys move between the plans that can start, and pick, as a radio group does.
+  const step = (from: string, by: number) => {
+    const at = open.findIndex((tier) => tier.id === from);
+    const next = open[(at + by + open.length) % open.length];
+    if (next !== undefined) {
+      pick(next);
+      cards.current.get(next.id)?.focus();
+    }
+  };
+  const KEYS: Record<string, number> = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
+
   return (
     <Card title="Choose a plan">
       <p className="text-14 text-text-2 mt-8 leading-relaxed">
@@ -106,36 +131,56 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose }: Props) {
           That plan cannot be started here: pick one below or talk to us.
         </p>
       ) : null}
-      <ul className="mt-16 grid gap-12 sm:grid-cols-2">
+      {open.length === 0 ? (
+        <p role="status" className="text-14 text-text-2 mt-12 leading-relaxed">
+          No plan can be started here right now: talk to us.
+        </p>
+      ) : null}
+      <div role="radiogroup" aria-label="Plans" className="mt-16 grid gap-12 sm:grid-cols-2">
         {selfServe.map((tier) => {
           const way = paidBy(tier.payable);
-          const open = canStart(tier);
+          const canBegin = canStart(tier);
           const picked = tier.id === chosen;
           return (
-            <li key={tier.id}>
-              <button
-                type="button"
-                data-tier={tier.id}
-                aria-pressed={picked}
-                disabled={!open}
-                onClick={() => onChoose(tier)}
-                className={`rounded-16 flex h-full w-full flex-col gap-8 border p-16 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                  picked ? 'border-accent-ink bg-accent-soft/40' : 'border-line hover:border-line-2'
-                }`}
-              >
-                <span className="text-16 font-semibold">{tier.name}</span>
-                <span className="text-20 font-semibold tracking-tight">{tier.price}</span>
-                <ul className="text-13 text-text-2 flex flex-col gap-4">
-                  {limitsOf(tier).map((line) => (
-                    <li key={line}>{line}</li>
-                  ))}
-                </ul>
-                <span className="text-13 text-text-3">{way ?? 'Not available yet'}</span>
-              </button>
-            </li>
+            <button
+              key={tier.id}
+              ref={(card) => {
+                if (card === null) {
+                  cards.current.delete(tier.id);
+                } else {
+                  cards.current.set(tier.id, card);
+                }
+              }}
+              type="button"
+              role="radio"
+              data-tier={tier.id}
+              aria-checked={picked}
+              tabIndex={tier.id === focusable ? 0 : -1}
+              disabled={!canBegin || locked}
+              onClick={() => pick(tier)}
+              onKeyDown={(event) => {
+                const by = KEYS[event.key];
+                if (by !== undefined) {
+                  event.preventDefault();
+                  step(tier.id, by);
+                }
+              }}
+              className={`rounded-16 flex h-full w-full flex-col gap-8 border p-16 text-left transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                picked ? 'border-accent-ink bg-accent-soft/40' : 'border-line hover:border-line-2'
+              }`}
+            >
+              <span className="text-16 font-semibold">{tier.name}</span>
+              <span className="text-20 font-semibold tracking-tight">{tier.price}</span>
+              <span className="text-13 text-text-2 flex flex-col gap-4">
+                {limitsOf(tier).map((line) => (
+                  <span key={line}>{line}</span>
+                ))}
+              </span>
+              <span className="text-13 text-text-3">{way ?? 'Not available yet'}</span>
+            </button>
           );
         })}
-      </ul>
+      </div>
       <p className="text-13 text-text-3 mt-16">
         Need more?{' '}
         <a

@@ -27,6 +27,21 @@ const BASE_USDC = 'eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
 const USDC =
   'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
+/** The fake catalog with some tiers' ways to pay set. */
+function tiersPaying(payable: Record<string, { card: boolean; crypto: boolean }>) {
+  const tiers = tiersAnswer();
+  const list = Array.isArray(tiers.tiers) ? tiers.tiers : [];
+  return {
+    tiers: list.map((tier: unknown) => {
+      const id = tier !== null && typeof tier === 'object' && 'id' in tier ? tier.id : undefined;
+      const set = typeof id === 'string' ? payable[id] : undefined;
+      return set === undefined || tier === null || typeof tier !== 'object'
+        ? tier
+        : { ...tier, payable: set };
+    }),
+  };
+}
+
 /** One order as cloud-api serves it, placed a minute ago (the charts read the clock). */
 function servedOrder(
   key: string,
@@ -82,6 +97,8 @@ interface Options {
   closeThrows?: boolean;
   /** Each `GET /owner` is answered only once what this gives for it settles. */
   ownerGate?: () => Promise<void>;
+  /** `POST /signup` is answered only once this settles. */
+  signupGate?: Promise<void>;
 }
 
 /** The admin, its cloud part answered by `routes`. */
@@ -90,16 +107,17 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
   const cloudApi = fakeCloud({ 'GET /tiers': { body: tiersAnswer() }, ...routes });
   const relays = options.relays ?? [];
   const relayClients = { opened: 0, closed: 0 };
-  const { ownerGate } = options;
-  const fetcher =
-    ownerGate === undefined
-      ? cloudApi.fetcher
-      : async (request: Request) => {
-          if (new URL(request.url).pathname === '/owner') {
-            await ownerGate();
-          }
-          return cloudApi.fetcher(request);
-        };
+  const { ownerGate, signupGate } = options;
+  const fetcher = async (request: Request) => {
+    const path = new URL(request.url).pathname;
+    if (path === '/owner' && ownerGate !== undefined) {
+      await ownerGate();
+    }
+    if (path === '/signup' && signupGate !== undefined) {
+      await signupGate;
+    }
+    return cloudApi.fetcher(request);
+  };
   const cloud: CloudProps = {
     apiOrigin: API,
     download: (data, fileName) => {
@@ -614,7 +632,7 @@ describe('making a cloud store', () => {
     await click(host, 'Continue');
     await eventually(host, () => hasButton(host, 'Create the store'));
     // Opened from a /start link, its plan is picked; no relay notice, so no self-hosted warning.
-    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-pressed')).toBe(
+    expect(host.querySelector('button[data-tier="business"]')?.getAttribute('aria-checked')).toBe(
       'true',
     );
     expect(host.textContent).not.toContain('do not create a store here');
@@ -638,16 +656,20 @@ describe('making a cloud store', () => {
     const text = host.textContent ?? '';
     expect(text.indexOf('Have an invite from us?')).toBeLessThan(text.indexOf('Choose a plan'));
     expect(host.querySelector('button[data-tier="high-risk"]')).toBeNull();
-    expect(host.querySelector('a[href="https://x.com/elisymlabs"]')?.textContent).toBe(
-      'Talk to us',
-    );
+    const talk = host.querySelector('a[href="https://x.com/elisymlabs"]');
+    expect(talk?.textContent).toBe('Talk to us');
+    expect(talk?.getAttribute('rel')).toBe('noopener noreferrer');
+    // One single-choice group of plans, its cards radios with no list inside.
+    expect(host.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Plans');
+    expect(host.querySelector('button[data-tier="starter"]')?.getAttribute('role')).toBe('radio');
+    expect(host.querySelector('button[data-tier] ul, button[data-tier] li')).toBeNull();
     // The catalog is read with no auth.
     expect(calls.find((call) => call.path === '/tiers')?.signer).toBeUndefined();
     expect(hasButton(host, 'Create the store')).toBe(false);
     await act(async () =>
       host.querySelector<HTMLButtonElement>('button[data-tier="starter"]')?.click(),
     );
-    expect(host.querySelector('button[data-tier="starter"]')?.getAttribute('aria-pressed')).toBe(
+    expect(host.querySelector('button[data-tier="starter"]')?.getAttribute('aria-checked')).toBe(
       'true',
     );
     expect(host.textContent).toContain('Start a Starter store ($29/mo)');
@@ -683,22 +705,15 @@ describe('making a cloud store', () => {
       await pasteKey(host, OwnerKey.create());
       await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
       expect(host.textContent).toContain('That plan cannot be started here');
-      expect(host.querySelector('button[aria-pressed="true"]')).toBeNull();
+      expect(host.querySelector('button[aria-checked="true"]')).toBeNull();
       expect(hasButton(host, 'Create the store')).toBe(false);
       await unmount();
     }
   });
 
   it('a plan with no way to pay yet cannot be picked', async () => {
-    const tiers = tiersAnswer();
-    const list = Array.isArray(tiers.tiers) ? tiers.tiers : [];
-    const unpaid = list.map((tier: unknown) =>
-      tier !== null && typeof tier === 'object' && 'id' in tier && tier.id === 'starter'
-        ? { ...tier, payable: { card: false, crypto: false } }
-        : tier,
-    );
     const { host } = await admin({
-      'GET /tiers': { body: { tiers: unpaid } },
+      'GET /tiers': { body: tiersPaying({ starter: { card: false, crypto: false } }) },
       'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
     });
     await signIn(host, OwnerKey.create());
@@ -709,6 +724,100 @@ describe('making a cloud store', () => {
     expect(host.querySelector('button[data-tier="business"]')?.textContent).toContain(
       'Pay by card',
     );
+  });
+
+  it('a /start link to a self-serve plan with no way to pay picks nothing and says so', async () => {
+    const { host } = await admin(
+      {
+        'GET /tiers': { body: tiersPaying({ starter: { card: false, crypto: false } }) },
+        'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+      },
+      { cloudProps: { startTier: 'starter' } },
+    );
+    await click(host, 'Sign in with the key you saved');
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    expect(host.textContent).toContain('That plan cannot be started here');
+    expect(host.querySelector('button[aria-checked="true"]')).toBeNull();
+    expect(hasButton(host, 'Create the store')).toBe(false);
+    // Picking a plan that can start clears the words.
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>('button[data-tier="business"]')?.click(),
+    );
+    expect(host.textContent).not.toContain('That plan cannot be started here');
+  });
+
+  it('a plan that is not self-serve is never a card nor started by a link, even when payable', async () => {
+    const { host } = await admin(
+      {
+        'GET /tiers': { body: tiersPaying({ 'high-risk': { card: false, crypto: true } }) },
+        'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+      },
+      { cloudProps: { startTier: 'high-risk' } },
+    );
+    await click(host, 'Sign in with the key you saved');
+    await pasteKey(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    expect(host.querySelector('button[data-tier="high-risk"]')).toBeNull();
+    expect(host.textContent).toContain('That plan cannot be started here');
+    expect(hasButton(host, 'Create the store')).toBe(false);
+  });
+
+  it('says so in one line when no plan can be started here', async () => {
+    const off = { card: false, crypto: false };
+    const { host } = await admin({
+      'GET /tiers': { body: tiersPaying({ starter: off, business: off }) },
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    expect(host.textContent).toContain('No plan can be started here right now: talk to us.');
+  });
+
+  it('while a signup is on its way, no other plan can be picked', async () => {
+    const signup = gate();
+    const { host, calls } = await admin(
+      {
+        'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+        'POST /signup': { status: 409, body: { error: 'key_owns_a_store' } },
+      },
+      { signupGate: signup.wait },
+    );
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    await act(async () =>
+      host.querySelector<HTMLButtonElement>('button[data-tier="starter"]')?.click(),
+    );
+    await act(async () => checkbox(host).click());
+    await click(host, 'Create the store');
+    const business = () => host.querySelector<HTMLButtonElement>('button[data-tier="business"]');
+    expect(business()?.disabled).toBe(true);
+    await act(async () => business()?.click());
+    expect(host.textContent).toContain('Start a Starter store');
+    await act(async () => signup.open());
+    await eventually(host, () => calls.some((call) => call.path === '/signup'));
+    // Refused: the plans open again, and only the one signup went out.
+    await eventually(host, () => business()?.disabled === false);
+    expect(calls.filter((call) => call.path === '/signup')).toHaveLength(1);
+  });
+
+  it('arrow keys move between the plans that can start, and pick', async () => {
+    const { host } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    const starter = host.querySelector<HTMLButtonElement>('button[data-tier="starter"]');
+    expect(starter?.tabIndex).toBe(0);
+    expect(host.querySelector<HTMLButtonElement>('button[data-tier="business"]')?.tabIndex).toBe(
+      -1,
+    );
+    await act(async () => {
+      starter?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    const business = host.querySelector<HTMLButtonElement>('button[data-tier="business"]');
+    expect(business?.getAttribute('aria-checked')).toBe('true');
+    expect(document.activeElement).toBe(business);
   });
 
   it('a catalog that cannot be read says so, and Try again reads it again', async () => {
