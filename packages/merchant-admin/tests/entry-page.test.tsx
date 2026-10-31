@@ -90,8 +90,13 @@ describe('the front page', () => {
     expect(steps[1]).toContain('cannot restore it');
     expect(steps[2]).toContain('Pay the first month.');
     expect(steps[3]).toContain('Set up and go live.');
-    expect(text(host, '#entry-needs')).toContain('A stablecoin wallet on Solana or Tempo');
-    expect(text(host, '#entry-needs')).toContain('one line of HTML');
+    expect(text(host, '#entry-needs')).toContain(
+      'A stablecoin wallet on Solana or Tempo (Ethereum, Arbitrum and Base can be added next to one).',
+    );
+    expect(text(host, '#entry-needs')).toContain(
+      'A website where you can add a short piece of HTML: a script and a button.',
+    );
+    expect(steps[3]).toContain('paste a short snippet into your site');
   });
 
   it('opens the two ways in: Create a store and Sign in', async () => {
@@ -128,8 +133,16 @@ describe('the front page', () => {
     ]);
     expect(questions.every((each) => !(each as HTMLDetailsElement).open)).toBe(true);
     expect(questions[0]?.textContent).toContain('refunds are sent by you from it');
-    expect(questions[0]?.textContent).toContain('We can pause the store itself');
-    expect(questions[4]?.textContent).toContain(STORE_KEY_COMMAND);
+    expect(questions[0]?.textContent).toContain(
+      'If the plan goes unpaid, the store goes off sale and is later deleted; we can also suspend it for a breach of the terms.',
+    );
+    expect(questions[2]?.textContent).toContain(
+      'We cannot restore it; without it you cannot change your payouts or sign in.',
+    );
+    expect(questions[3]?.textContent).toContain('Export the store and run it yourself.');
+    expect(questions[4]?.textContent).toContain(
+      `Sign in with the store key ${STORE_KEY_COMMAND} prints, in the Sign in field.`,
+    );
   });
 
   it('links the terms, the prices and the docs', async () => {
@@ -140,10 +153,15 @@ describe('the front page', () => {
       link.getAttribute('rel'),
     ]);
     expect(links).toEqual([
-      ['Terms', TERMS_URL, 'noopener noreferrer'],
-      ['Pricing', PRICING_URL, 'noopener noreferrer'],
-      ['Docs', CLOUD_DOCS_URL, 'noopener noreferrer'],
+      ['Terms', 'https://paycore.elisym.network/terms', 'noopener noreferrer'],
+      ['Pricing', 'https://paycore.elisym.network/#pricing', 'noopener noreferrer'],
+      [
+        'Set up with an AI agent',
+        'https://docs.elisym.network/commerce/cloud-agents',
+        'noopener noreferrer',
+      ],
     ]);
+    expect([TERMS_URL, PRICING_URL, CLOUD_DOCS_URL]).toEqual(links.map((link) => link[1]));
     await unmount();
     const other = await page(
       answered(catalog({ card: true, crypto: true })),
@@ -184,6 +202,49 @@ describe('how the first step says plans are paid', () => {
       expect(text(host, '#entry-paid-by'), JSON.stringify(answer)).toBe('Monthly.');
       await unmount();
     }
+  });
+
+  it('ignores a catalog that comes back after the page left, or after another read began', async () => {
+    let answer: (value: ApiAnswer) => void = () => undefined;
+    const late = () =>
+      new Promise<ApiAnswer>((resolve) => {
+        answer = resolve;
+      });
+    // Unmounted before the answer: setting state then would be a stale write.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await page(late);
+    await unmount();
+    await act(async () => answer({ status: 200, body: catalog({ card: true, crypto: true }) }));
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
+
+    // A newer read began: the older answer, coming last, counts for nothing.
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    const host = document.createElement('div');
+    document.body.append(host);
+    const root = createRoot(host);
+    mounted = { root, host };
+    let first: (value: ApiAnswer) => void = () => undefined;
+    const older = () =>
+      new Promise<ApiAnswer>((resolve) => {
+        first = resolve;
+      });
+    const newer = () =>
+      Promise.resolve({ status: 200, body: catalog({ card: false, crypto: true }) });
+    const render = (loadTiers: () => Promise<ApiAnswer>) =>
+      root.render(
+        <EntryPage
+          onCreate={() => undefined}
+          onSignIn={() => undefined}
+          loadTiers={loadTiers}
+          termsUrl={undefined}
+        />,
+      );
+    await act(async () => render(older));
+    await act(async () => render(newer));
+    expect(text(host, '#entry-paid-by')).toBe('Monthly, paid in stablecoins.');
+    await act(async () => first({ status: 200, body: catalog({ card: true, crypto: true }) }));
+    expect(text(host, '#entry-paid-by')).toBe('Monthly, paid in stablecoins.');
   });
 
   it('counts a plan that is not self-serve for nothing, even payable', () => {

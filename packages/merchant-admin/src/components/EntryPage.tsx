@@ -29,7 +29,7 @@ interface Question {
 const QUESTIONS: Question[] = [
   {
     q: 'Do you hold my money?',
-    a: 'No. Buyers pay your wallet, and refunds are sent by you from it. We can pause the store itself, for an unpaid plan or a breach of the terms.',
+    a: 'No. Buyers pay your wallet, and refunds are sent by you from it. If the plan goes unpaid, the store goes off sale and is later deleted; we can also suspend it for a breach of the terms.',
   },
   {
     q: 'What is the access key?',
@@ -133,8 +133,8 @@ export function EntryPage({ onCreate, onSignIn, loadTiers, termsUrl }: Props) {
               <span className={STEP_NUMBER}>4</span>
               <p className="text-15 text-text-2 leading-relaxed">
                 <span className="text-text font-medium">Set up and go live.</span> Name your store,
-                add the wallets you get paid to and your products, paste one line into your site,
-                and press Launch.
+                add the wallets you get paid to and your products, paste a short snippet into your
+                site, and press Launch.
               </p>
             </li>
           </ol>
@@ -155,7 +155,7 @@ export function EntryPage({ onCreate, onSignIn, loadTiers, termsUrl }: Props) {
             </li>
             <li className="flex gap-10">
               <Icon name="check" className="text-accent-ink mt-3 size-18 shrink-0" />A website where
-              you can paste one line of HTML.
+              you can add a short piece of HTML: a script and a button.
             </li>
             <li className="flex gap-10">
               <Icon name="check" className="text-accent-ink mt-3 size-18 shrink-0" />A few minutes.
@@ -193,7 +193,8 @@ export function EntryPage({ onCreate, onSignIn, loadTiers, termsUrl }: Props) {
                 />
               </summary>
               <p className="text-14 text-text-2 mt-8 leading-relaxed">
-                Sign in with the store key <Code>{STORE_KEY_COMMAND}</Code> prints: the same field.
+                Sign in with the store key <Code>{STORE_KEY_COMMAND}</Code> prints, in the Sign in
+                field.
               </p>
             </details>
           </div>
@@ -207,7 +208,7 @@ export function EntryPage({ onCreate, onSignIn, loadTiers, termsUrl }: Props) {
             Pricing
           </a>
           <a href={CLOUD_DOCS_URL} rel="noopener noreferrer" className="hover:text-text">
-            Docs
+            Set up with an AI agent
           </a>
         </footer>
       </div>
