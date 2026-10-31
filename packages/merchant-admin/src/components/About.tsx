@@ -31,7 +31,7 @@ const NOTES: { icon: IconName; title: string; body: ReactNode }[] = [
 
 export function About() {
   return (
-    <Section title="About this page" description="How to read what the admin shows.">
+    <Section title="Help" heading="h1" description="How to read what the admin shows.">
       <div className="grid gap-12 md:grid-cols-3">
         {NOTES.map((note) => (
           <div

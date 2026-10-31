@@ -33,6 +33,7 @@ export function ProductsSection({ products }: Props) {
   return (
     <Section
       title="Products"
+      heading="h1"
       description={
         <>
           {`${countText(lines.length, 'product')}, ${onSale} on sale. Read-only here: your node publishes them with `}

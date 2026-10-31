@@ -75,10 +75,16 @@ export function feeText(credit: Credit): string | undefined {
     : amountText({ ...credit, amount: credit.fee }, credit.medium);
 }
 
-/** The notes on a row's state, besides the state itself. */
+/**
+ * The notes on a row's state, besides the state itself. A reported payment
+ * is "not confirmed" only when no credit confirms it (as `unconfirmedPayments`
+ * counts): a cloud order paid and not yet completed carries its credit.
+ */
 export function rowNotes(row: OrderRow): string[] {
   return [
-    ...(row.state === 'payment_reported' ? ['not confirmed by your node'] : []),
+    ...(row.state === 'payment_reported' && row.credits.length === 0
+      ? ['not confirmed by your node']
+      : []),
     ...(row.state === 'expired' ? ['no payment credited within 3 days'] : []),
     ...(row.orderNotLoaded ? ['order not loaded'] : []),
     ...(row.unlistedMedium ? ['receipt in a medium the store no longer lists'] : []),

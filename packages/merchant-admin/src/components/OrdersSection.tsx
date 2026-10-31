@@ -4,6 +4,7 @@ import { countText } from '../lib/count';
 import { csvFileName, ordersCsv } from '../lib/csv';
 import { downloadText } from '../lib/download';
 import { type StateFilter, filterRows, stateCounts } from '../lib/orders';
+import { CREDITOR, type Source } from '../lib/source';
 import { EmptyState } from './EmptyState';
 import { Icon } from './Icon';
 import { OrderFilters } from './OrderFilters';
@@ -14,11 +15,23 @@ interface Props {
   snapshot: Snapshot;
   busy: boolean;
   onMore: () => void;
+  source?: Source;
 }
 
-const COLUMNS = ['Date', 'Order', 'Customer', 'Total', 'State', 'Credited by your node'];
+const DESCRIPTIONS: Readonly<Record<Source, string>> = {
+  'self-hosted': 'Every order your inbox relays hold, with what your node credited for it.',
+  cloud: 'Every order of your store, with what your store credited for it.',
+};
 
-export function OrdersSection({ snapshot, busy, onMore }: Props) {
+export function OrdersSection({ snapshot, busy, onMore, source = 'self-hosted' }: Props) {
+  const columns = [
+    'Date',
+    'Order',
+    'Customer',
+    'Total',
+    'State',
+    `Credited by ${CREDITOR[source]}`,
+  ];
   const { rows } = snapshot.history;
   const [state, setState] = useState<StateFilter>('all');
   const [query, setQuery] = useState('');
@@ -34,7 +47,8 @@ export function OrdersSection({ snapshot, busy, onMore }: Props) {
   return (
     <Section
       title="Orders"
-      description="Every order your inbox relays hold, with what your node credited for it."
+      heading="h1"
+      description={DESCRIPTIONS[source]}
       actions={
         <button
           type="button"
@@ -66,7 +80,7 @@ export function OrdersSection({ snapshot, busy, onMore }: Props) {
           <table className="text-13 w-full min-w-880 border-collapse text-left">
             <thead className="bg-surface-2/60 text-12 text-text-2">
               <tr>
-                {COLUMNS.map((column) => (
+                {columns.map((column) => (
                   <th key={column} className="px-16 py-10 font-medium whitespace-nowrap">
                     {column}
                   </th>

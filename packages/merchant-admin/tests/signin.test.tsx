@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Dashboard } from '../src/components/Dashboard';
-import { DashboardHeader } from '../src/components/DashboardHeader';
+import { DashboardShell } from '../src/components/DashboardShell';
 import { SignIn } from '../src/components/SignIn';
 import { HEADER_BAR, LOCAL_ADMIN_COMMAND, PAGE_FRAME } from '../src/constants';
 import { type Mounted, byId, mount } from './mount';
@@ -66,7 +66,7 @@ describe('the sign-in page', () => {
 });
 
 describe('the page frame', () => {
-  it('holds the sign-in header and the dashboard header', async () => {
+  it('holds the sign-in header, and the dashboard spaces its logo as the landing does', async () => {
     const tokens = PAGE_FRAME.split(' ');
     mounted = await mount(<SignIn onKey={() => undefined} />);
     const header = classesOf(mounted.container.querySelector('header > div'));
@@ -77,17 +77,21 @@ describe('the page frame', () => {
     await mounted.unmount();
 
     mounted = await mount(
-      <DashboardHeader
-        pubkey={'a'.repeat(64)}
+      <DashboardShell
+        name="Shop"
+        unnamed="(no profile name)"
+        identity={{ value: 'npub1' + 'q'.repeat(58), copyLabel: 'Copy npub' }}
         status="Read"
         busy={false}
         onRefresh={() => undefined}
-        onLogOut={() => undefined}
+        onSignOut={() => undefined}
+        signOutLabel="Log out"
+        pages={[{ id: 'overview', label: 'Overview', icon: 'home', content: null }]}
+        active="overview"
+        onSelect={() => undefined}
       />,
     );
-    const bar = classesOf(mounted.container.firstElementChild);
-    expect(bar).toEqual(expect.arrayContaining([...tokens, 'min-h-64']));
-    // One line high, so the header row stays 64 and the logo sits where the landing's does.
+    // The id line is one line high; the logo is spaced as the landing's is.
     expect(classesOf(byId(mounted.container, 'store-pubkey').parentElement)).toContain('h-18');
     expect(classesOf(mounted.container.querySelector('[title="Pay Core"]'))).toContain('gap-10');
   });
@@ -108,8 +112,8 @@ describe('the sign-in header', () => {
   });
 });
 
-describe('one bar from the landing to the dashboard', () => {
-  it('draws the landing bar on the sign-in page and on the dashboard, with the line at 64', async () => {
+describe('one bar from the landing to the sign-in', () => {
+  it('draws the landing bar on the sign-in page; the dashboard has its sidebar instead', async () => {
     const bar = HEADER_BAR.split(' ');
     mounted = await mount(<SignIn onKey={() => undefined} />);
     expect(classesOf(mounted.container.querySelector('header'))).toEqual(bar);
@@ -122,11 +126,9 @@ describe('one bar from the landing to the dashboard', () => {
         onLogOut={() => undefined}
       />,
     );
-    const header = mounted.container.querySelector('header');
-    expect(classesOf(header)).toEqual(bar);
-    expect(classesOf(header?.firstElementChild ?? null)).toEqual(['border-line/60', 'border-b']);
-    expect(classesOf(header?.firstElementChild?.firstElementChild ?? null)).toEqual(
-      expect.arrayContaining(['min-h-64', 'md:py-0']),
+    expect(mounted.container.querySelector('header')).toBeNull();
+    expect(classesOf(byId(mounted.container, 'store-sidebar'))).toEqual(
+      expect.arrayContaining(['md:sticky', 'md:flex', 'w-240']),
     );
   });
 });

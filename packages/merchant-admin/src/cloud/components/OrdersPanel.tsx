@@ -153,8 +153,8 @@ export function OrdersPanel({ api, tenantId, network, download }: Props) {
         <>
           <section className="mt-16 flex flex-col gap-16">
             <h3 className="text-15 font-semibold">Sales</h3>
-            <Totals history={{ rows, totals: totalsOf(rows) }} />
-            <Charts rows={rows} nowSeconds={Math.floor(Date.now() / 1000)} />
+            <Totals history={{ rows, totals: totalsOf(rows) }} source="cloud" />
+            <Charts rows={rows} nowSeconds={Math.floor(Date.now() / 1000)} source="cloud" />
           </section>
           {waiting.length === 0 ? null : (
             <section className="mt-16">

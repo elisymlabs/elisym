@@ -127,7 +127,7 @@ describe('the page frame', () => {
     const logo = readFileSync(join(ROOT, '../merchant-landing/src/components/Logo.tsx'), 'utf8');
     const gap = logo.match(/<a [^>]*className="flex items-center (gap-\d+)"/)?.[1];
     expect(gap).toBeDefined();
-    for (const name of ['AuthLayout.tsx', 'DashboardHeader.tsx']) {
+    for (const name of ['AuthLayout.tsx', 'DashboardShell.tsx']) {
       const code = readFileSync(join(SRC, 'components', name), 'utf8');
       expect(code).toMatch(
         new RegExp(

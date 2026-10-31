@@ -2,9 +2,11 @@ import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { About } from '../src/components/About';
 import { Dashboard } from '../src/components/Dashboard';
+import { DashboardShell } from '../src/components/DashboardShell';
 import { OrderDetails } from '../src/components/OrderDetails';
 import { OrderRowView } from '../src/components/OrderRowView';
 import { OrdersSection } from '../src/components/OrdersSection';
+import { Overview } from '../src/components/Overview';
 import { ProductsSection } from '../src/components/ProductsSection';
 import { RecentOrders } from '../src/components/RecentOrders';
 import { Stat } from '../src/components/Stat';
@@ -14,7 +16,7 @@ import { statusParts, unconfirmedPayments } from '../src/lib/charts';
 import type { OrderRow, OrderState, Snapshot } from '../src/lib/core';
 import { countText } from '../src/lib/count';
 import { ordersCsv } from '../src/lib/csv';
-import { STATE_ORDER, filterRows, stateCounts } from '../src/lib/orders';
+import { STATE_ORDER, filterRows, rowNotes, stateCounts } from '../src/lib/orders';
 import { type Mounted, buttonNamed, byId, mount } from './mount';
 
 function row(id: string, state: OrderState, overrides: Partial<OrderRow> = {}): OrderRow {
@@ -401,7 +403,7 @@ describe('the overview', () => {
   });
 });
 
-describe('the dashboard tabs', () => {
+describe('the dashboard pages', () => {
   async function mountDashboard() {
     mounted = await mount(
       <Dashboard
@@ -419,59 +421,41 @@ describe('the dashboard tabs', () => {
     return mounted.container;
   }
 
-  function panel(container: HTMLElement, name: string): HTMLElement {
-    return byId(container, `panel-${name}`);
+  function page(container: HTMLElement, name: string): HTMLElement {
+    return byId(container, `page-${name}`);
   }
 
-  it('shows one panel at a time, keeping the others mounted', async () => {
+  it('shows one page at a time, keeping the others mounted, the open one marked current', async () => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     const container = await mountDashboard();
-    expect(panel(container, 'overview').hidden).toBe(false);
-    expect(panel(container, 'orders').hidden).toBe(true);
+    expect(container.querySelector('nav[aria-label="Store"]')).not.toBeNull();
+    expect(page(container, 'overview').hidden).toBe(false);
+    expect(page(container, 'orders').hidden).toBe(true);
     expect(byId(container, 'orders').querySelectorAll('tr')).toHaveLength(4);
-    await act(async () => byId(container, 'tab-orders').click());
-    expect(panel(container, 'overview').hidden).toBe(true);
-    expect(panel(container, 'orders').hidden).toBe(false);
-    expect(byId(container, 'tab-orders').getAttribute('aria-selected')).toBe('true');
+    expect(byId(container, 'nav-overview').getAttribute('aria-current')).toBe('page');
+    await act(async () => byId(container, 'nav-orders').click());
+    expect(page(container, 'overview').hidden).toBe(true);
+    expect(page(container, 'orders').hidden).toBe(false);
+    expect(byId(container, 'nav-orders').getAttribute('aria-current')).toBe('page');
+    expect(byId(container, 'nav-overview').getAttribute('aria-current')).toBeNull();
   });
 
-  it('moves between tabs with the arrow keys and moves focus with a switch from a panel', async () => {
-    vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
+  it('moves focus to the opened page heading and to the top, from the nav or from a page', async () => {
+    const scrolled = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     const container = await mountDashboard();
-    const overview = byId(container, 'tab-overview');
-    expect(overview.tabIndex).toBe(0);
-    expect(byId(container, 'tab-orders').tabIndex).toBe(-1);
-    await act(async () => {
-      overview.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
-    });
-    expect(panel(container, 'help').hidden).toBe(false);
-    await act(async () => {
-      byId(container, 'tab-help').dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Home', bubbles: true }),
-      );
-    });
-    expect(panel(container, 'overview').hidden).toBe(false);
-    const press = async (tab: string, name: string) => {
-      await act(async () => {
-        byId(container, `tab-${tab}`).dispatchEvent(
-          new KeyboardEvent('keydown', { key: name, bubbles: true }),
-        );
-      });
-    };
-    await press('overview', 'End');
-    expect(panel(container, 'help').hidden).toBe(false);
-    await press('help', 'ArrowRight');
-    expect(panel(container, 'overview').hidden).toBe(false);
-    await press('overview', 'ArrowRight');
-    expect(panel(container, 'orders').hidden).toBe(false);
-    await press('orders', 'Home');
-    expect(panel(container, 'overview').hidden).toBe(false);
+    // Opening the dashboard takes no focus.
+    expect(scrolled).not.toHaveBeenCalled();
+    await act(async () => byId(container, 'nav-products').click());
+    expect(document.activeElement).toBe(page(container, 'products').querySelector('h1'));
+    expect(document.activeElement?.textContent).toBe('Products');
+    expect(scrolled).toHaveBeenCalledWith({ top: 0 });
+    await act(async () => byId(container, 'nav-overview').click());
     await act(async () => buttonNamed(container, 'View all').click());
-    expect(panel(container, 'orders').hidden).toBe(false);
-    expect(document.activeElement).toBe(byId(container, 'tab-orders'));
+    expect(page(container, 'orders').hidden).toBe(false);
+    expect(document.activeElement).toBe(page(container, 'orders').querySelector('h1'));
   });
 
-  it('shows the help, not a placeholder, on the Help tab before the first read', async () => {
+  it('shows the help, not a placeholder, on the Help page before the first read', async () => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     mounted = await mount(
       <Dashboard
@@ -482,21 +466,148 @@ describe('the dashboard tabs', () => {
       />,
     );
     const { container } = mounted;
-    expect(container.querySelector('.skeleton')).not.toBeNull();
-    await act(async () => byId(container, 'tab-help').click());
-    expect(container.textContent).toContain('About this page');
-    expect(container.querySelector('.skeleton')).toBeNull();
+    expect(page(container, 'overview').querySelector('.skeleton')).not.toBeNull();
+    await act(async () => byId(container, 'nav-help').click());
+    expect(page(container, 'help').textContent).toContain('How to read what the admin shows');
+    expect(page(container, 'help').querySelector('.skeleton')).toBeNull();
   });
 
-  it('points the tabs at no panel before the first read', async () => {
-    mounted = await mount(
-      <Dashboard
-        state={{ pubkey: 'a'.repeat(64), status: 'Reading the store...', busy: true }}
+  it('keeps the store name, its npub, Refresh and Log out in the sidebar', async () => {
+    const container = await mountDashboard();
+    const sidebar = byId(container, 'store-sidebar');
+    expect(sidebar.querySelector('#store-name')).not.toBeNull();
+    expect(sidebar.querySelector('#store-pubkey')?.getAttribute('title')).toMatch(/^npub1/);
+    expect(sidebar.textContent).toContain('Refresh');
+    expect(sidebar.textContent).toContain('Log out');
+    expect(sidebar.textContent).toContain('Read 4 order messages');
+  });
+});
+
+describe('the frame', () => {
+  function shell(onSelect: (id: string) => void = () => undefined) {
+    return (
+      <DashboardShell
+        name={undefined}
+        unnamed="Your store"
+        identity={{
+          value: 'npub1' + 'q'.repeat(58),
+          copyLabel: 'Copy your public id (safe to share)',
+        }}
+        status="Read"
+        busy={false}
         onRefresh={() => undefined}
-        onMore={() => undefined}
-        onLogOut={() => undefined}
-      />,
+        onSignOut={() => undefined}
+        signOutLabel="Sign out"
+        pages={[
+          {
+            id: 'overview',
+            label: 'Overview',
+            icon: 'home',
+            content: <h1 tabIndex={-1}>Overview</h1>,
+          },
+          {
+            id: 'orders',
+            label: 'Orders',
+            icon: 'receipt',
+            locked: 'Pay the first month to open this',
+            content: <h1 tabIndex={-1}>Orders</h1>,
+          },
+        ]}
+        active="overview"
+        onSelect={onSelect}
+      />
     );
-    expect(byId(mounted.container, 'tab-orders').getAttribute('aria-controls')).toBeNull();
+  }
+
+  it('shows a locked page with its reason, and does not open it', async () => {
+    const chosen: string[] = [];
+    mounted = await mount(shell((id) => chosen.push(id)));
+    const { container } = mounted;
+    const locked = byId(container, 'nav-orders');
+    expect(locked.getAttribute('aria-disabled')).toBe('true');
+    const reason = locked.getAttribute('aria-describedby') ?? '';
+    expect(byId(container, reason).textContent).toBe('Pay the first month to open this');
+    await act(async () => locked.click());
+    expect(chosen).toEqual([]);
+    await act(async () => byId(container, 'nav-overview').click());
+    expect(chosen).toEqual(['overview']);
+    expect(byId(container, 'nav-overview').getAttribute('aria-disabled')).toBeNull();
+    expect(byId(container, 'store-name').textContent).toBe('Your store');
+  });
+
+  it('on a phone, opens its menu, and closes it on Escape, outside, or a choice, focus back', async () => {
+    mounted = await mount(shell());
+    const { container } = mounted;
+    const menu = container.querySelector('[aria-controls="store-sidebar"]');
+    if (!(menu instanceof HTMLButtonElement)) {
+      throw new Error('no menu button');
+    }
+    expect(menu.getAttribute('aria-label')).toBe('Open the menu');
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(menu.getAttribute('aria-controls')).toBe('store-sidebar');
+    await act(async () => menu.click());
+    expect(menu.getAttribute('aria-expanded')).toBe('true');
+    expect(byId(container, 'store-sidebar').className).toContain('fixed');
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(menu);
+    await act(async () => menu.click());
+    await act(async () => byId(container, 'sidebar-backdrop').click());
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(menu);
+    await act(async () => menu.click());
+    await act(async () => byId(container, 'nav-overview').click());
+    expect(menu.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('#sidebar-backdrop')).toBeNull();
+  });
+});
+
+describe('the words for whose numbers they are', () => {
+  it('notes a reported payment as not confirmed only when no credit confirms it', () => {
+    const reported = row('r', 'payment_reported');
+    expect(rowNotes(reported)).toContain('not confirmed by your node');
+    const credited = row('c', 'payment_reported', {
+      credits: [{ tx: 't', amount: '1000000', fee: '0', medium: 'solana' }],
+    });
+    expect(rowNotes(credited)).not.toContain('not confirmed by your node');
+  });
+
+  it('say "your node" for a store run by the merchant, "your store" in the cloud', async () => {
+    const reported = [row('r', 'payment_reported')];
+    for (const [source, words] of [
+      ['self-hosted', 'your node'],
+      ['cloud', 'your store'],
+    ] as const) {
+      mounted = await mount(
+        <>
+          <Totals
+            history={{ rows: [], totals: { perAsset: [], unknownAsset: [] } }}
+            source={source}
+          />
+          <StatusStrip
+            parts={statusParts(stateCounts(reported))}
+            unconfirmed={unconfirmedPayments(reported)}
+            source={source}
+          />
+          <Overview snapshot={snapshot()} onTab={() => undefined} source={source} />
+          <OrdersSection
+            snapshot={snapshot()}
+            busy={false}
+            onMore={() => undefined}
+            source={source}
+          />
+        </>,
+      );
+      const text = mounted.container.textContent ?? '';
+      expect(text).toContain(`by ${words}`);
+      expect(text).toContain(`not confirmed by ${words}`);
+      expect(text).toContain(`what ${words} confirmed on chain`);
+      expect(text).toContain(`Credited by ${words}`);
+
+      await mounted.unmount();
+      mounted = undefined;
+    }
   });
 });
