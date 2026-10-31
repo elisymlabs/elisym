@@ -95,6 +95,12 @@ describe('the plans as a radio group', () => {
     expect(checked(container)).toEqual(['three']);
     expect(document.activeElement).toBe(card(container, 'three'));
 
+    // Down and Up, the keys of a single column on a phone: Down goes on, Up goes back.
+    expect(await press(container, 'three', 'ArrowDown')).toBe(true);
+    expect(checked(container)).toEqual(['one']);
+    expect(await press(container, 'one', 'ArrowUp')).toBe(true);
+    expect(checked(container)).toEqual(['three']);
+
     // Any other key is the page's own.
     expect(await press(container, 'three', 'a')).toBe(false);
     expect(checked(container)).toEqual(['three']);
