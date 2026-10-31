@@ -91,7 +91,10 @@ describe('a product id from its title', () => {
     expect(slugOf('  Deposit 10 USD!  ')).toBe('deposit-10-usd');
     expect(slugOf('Café crème')).toBe('cafe-creme');
     expect(slugOf('x'.repeat(80))).toHaveLength(63);
-    expect(freeSlug('', new Set())).toBe('product');
+    expect(freeSlug('', new Set())).toBe('product-1');
+    // A title with no Latin letter or digit: the first free product-N.
+    expect(freeSlug('Кофе', new Set(['product-1']))).toBe('product-2');
+    expect(freeSlug('🎁', new Set(['product-1', 'product-3']))).toBe('product-2');
     expect(freeSlug('A', new Set(['a', 'a-2']))).toBe('a-3');
     expect(freeSlug('x'.repeat(80), new Set(['x'.repeat(63)]))).toBe(`${'x'.repeat(61)}-2`);
   });

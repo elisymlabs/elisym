@@ -282,4 +282,28 @@ describe('the dashboard sections', () => {
     );
     expect(mounted.container.querySelector('li')?.textContent).toContain('1.5 USD');
   });
+
+  it('is read-only on a store run by the merchant: edited as files, never added here', async () => {
+    mounted = await mount(
+      <ProductsSection
+        products={{
+          lines: [
+            { address: '30402:x:d', d: 'd', title: 'Course', price: '1.5 USD', onSale: true },
+          ],
+          incomplete: false,
+        }}
+      />,
+    );
+    const link = mounted.container.querySelector<HTMLAnchorElement>('#products-as-files');
+    expect(link?.textContent).toBe('Edit them as files');
+    expect(link?.getAttribute('href')).toBe(
+      'https://docs.elisym.network/commerce/quickstart#1-create-the-store',
+    );
+    expect(link?.rel).toBe('noopener noreferrer');
+    const labels = [...mounted.container.querySelectorAll('button')].map(
+      (each) => each.textContent,
+    );
+    expect(labels).not.toContain('Add product');
+    expect(labels.some((label) => label?.startsWith('Edit'))).toBe(false);
+  });
 });

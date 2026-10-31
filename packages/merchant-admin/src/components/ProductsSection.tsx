@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PRODUCTS_AS_FILES_URL } from '../constants';
 import type { Snapshot } from '../lib/core';
 import { countText } from '../lib/count';
 import { Code } from './Code';
@@ -37,7 +38,15 @@ export function ProductsSection({ products }: Props) {
       description={
         <>
           {`${countText(lines.length, 'product')}, ${onSale} on sale. Read-only here: your node publishes them with `}
-          <Code>setup</Code>.
+          <Code>setup</Code>.{' '}
+          <a
+            id="products-as-files"
+            href={PRODUCTS_AS_FILES_URL}
+            rel="noopener noreferrer"
+            className="text-text underline underline-offset-2"
+          >
+            Edit them as files
+          </a>
         </>
       }
     >

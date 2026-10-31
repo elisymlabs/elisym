@@ -23,6 +23,8 @@ import type { KeptStore } from '../lib/use-kept-store';
 import type { StoreStatusPoll } from '../lib/use-status';
 import { ProblemList } from './ProblemList';
 import { ProductEditor } from './ProductEditor';
+import { ProductsCallout } from './ProductsCallout';
+import { ProductSheet } from './ProductSheet';
 
 interface Props {
   api: ConsoleApi;
@@ -36,10 +38,57 @@ interface Props {
   onSettled?: () => void;
 }
 
+/** The product a store refusal line is about (`products/<name>: ...`), if any. */
+const REFUSED_PRODUCT = /^products\/([a-z0-9][a-z0-9-]*)/;
+
+/** A product open in the sheet: which, and how it was when it opened. */
+interface Open {
+  key: string;
+  /** As it was when the sheet opened; undefined for one added with it. */
+  before: ProductDraft | undefined;
+}
+
 /**
- * The store's products as a form: edits collect in a draft and one save sends
- * the whole set (one change for the store). The save waits until the store
- * keeps that set (by its digest, never by a cycle id).
+ * Why one product cannot be saved, in words (its own fields, its id, its size).
+ * A clash of ids is the product's whose id can still change: never a kept one's.
+ */
+function issuesOf(product: ProductDraft, draft: readonly ProductDraft[], fixed: boolean): string[] {
+  const issues: string[] = [];
+  if (!PRODUCT_NAME_RE.test(product.name)) {
+    issues.push('Its button id is lowercase letters, digits and dashes.');
+  } else if (
+    !fixed &&
+    draft.some((other) => other.key !== product.key && other.name === product.name)
+  ) {
+    issues.push(`Another product has the button id ${product.name}.`);
+  }
+  if (product.fields !== undefined) {
+    issues.push(...fieldProblems(product.fields));
+  }
+  if (productBytes(draftText(product)) > MAX_PRODUCT_BYTES) {
+    issues.push('Too long: shorten the description.');
+  }
+  return issues;
+}
+
+/** A product added with the sheet, before anything was typed in it. */
+function blankProduct(product: ProductDraft): ProductDraft {
+  return {
+    ...product,
+    fields: { title: '', priceUsd: '', summary: '', description: '', onSale: true },
+  };
+}
+
+/** A product's name in the list: its title, else its button id. */
+function labelOf(product: ProductDraft): string {
+  return product.fields?.title.trim() || product.name;
+}
+
+/**
+ * The store's products: a list (title, price, on sale) where each opens in a
+ * side sheet to edit. Edits collect in a draft and one save sends the whole
+ * set (one change for the store); the save waits until the store keeps that
+ * set (by its digest, never by a cycle id).
  */
 export function ProductsForm({ api, tenantId, kept, status, poll, published, onSettled }: Props) {
   const { read } = kept;
@@ -48,10 +97,22 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
   const [start, setStart] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [problems, setProblems] = useState<ProblemText[]>([]);
-  const [sent, setSent] = useState<{ digest: string; seq: number; set: Record<string, string> }>();
+  // A save was tried with products that need a fix: their rows say so.
+  const [tried, setTried] = useState(false);
+  // The last set sent, and which draft products it carried (by key).
+  const [sent, setSent] = useState<{
+    digest: string;
+    seq: number;
+    set: Record<string, string>;
+    keys: ReadonlySet<string>;
+  }>();
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState<Open | undefined>(undefined);
   const inFlight = useRef(false);
   const nextKey = useRef(0);
+  // What opened the sheet: focus goes back to it when the sheet closes.
+  const opener = useRef<HTMLElement | null>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
 
   // Filled once from the first read: the set still waiting when there is one, else the kept set.
   useEffect(() => {
@@ -98,6 +159,25 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
   ]);
   const set = draftSet(draft);
   const changes = changedCount(start, set);
+  // This product is the one the store keeps under its name (or a save of it is on its way):
+  // its id is fixed, and once published it is never removed. A new product given a kept
+  // product's id by hand is not: it is a clash to fix.
+  const isKept = (product: ProductDraft) =>
+    keptNames.has(product.name) &&
+    (product.key.startsWith('kept-') ||
+      (sent !== undefined && !refused && sent.keys.has(product.key)));
+
+  const shownProblems =
+    refused && problems.length === 0
+      ? (status.lastProblems.products ?? []).map((line) => problemText(line))
+      : problems;
+  // A refusal about one product is said at that product; the rest at the page.
+  const refusedOf = (name: string) =>
+    shownProblems.filter((problem) => REFUSED_PRODUCT.exec(problem.raw)?.[1] === name);
+  const pageProblems = shownProblems.filter((problem) => {
+    const name = REFUSED_PRODUCT.exec(problem.raw)?.[1];
+    return name === undefined || !draft.some((product) => product.name === name);
+  });
 
   const update = (key: string, next: ProductDraft) => {
     setDraft(
@@ -106,7 +186,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
           return product;
         }
         // A new product's id follows its title until the merchant types one.
-        if (!next.nameTouched && next.fields !== undefined && !keptNames.has(product.name)) {
+        if (!next.nameTouched && next.fields !== undefined && !isKept(product)) {
           const taken = new Set(
             draft.filter((other) => other.key !== key).map((other) => other.name),
           );
@@ -117,41 +197,67 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     );
   };
 
+  /** Opens a product; `from` is what focus goes back to (Safari never focuses a clicked button). */
+  const openSheet = (key: string, before: ProductDraft | undefined, from: HTMLElement | null) => {
+    opener.current = from;
+    setOpen({ key, before });
+  };
+
+  const closeSheet = () => {
+    setOpen(undefined);
+    const back = opener.current;
+    // After React drops the sheet: the opener is back in a live (no longer inert) page.
+    setTimeout(() => {
+      (back?.isConnected === true ? back : addButton.current)?.focus();
+    }, 0);
+  };
+
+  const discard = () => {
+    if (open === undefined) {
+      return;
+    }
+    const { before, key } = open;
+    setDraft(
+      before === undefined
+        ? draft.filter((product) => product.key !== key)
+        : draft.map((product) => (product.key === key ? before : product)),
+    );
+    closeSheet();
+  };
+
   const add = () => {
     nextKey.current += 1;
+    const key = `new-${nextKey.current}`;
     const taken = new Set(draft.map((product) => product.name));
     setDraft([
       ...draft,
       {
-        key: `new-${nextKey.current}`,
+        key,
         name: freeSlug('', taken),
         nameTouched: false,
         fields: { title: '', priceUsd: '', summary: '', description: '', onSale: true },
         text: '',
       },
     ]);
+    openSheet(key, undefined, addButton.current);
   };
 
-  const save = async () => {
+  const remove = (key: string) => {
+    setDraft(draft.filter((product) => product.key !== key));
+    closeSheet();
+  };
+
+  /** Saves the whole set; true once the store took it to apply. */
+  const save = async (): Promise<boolean> => {
     if (inFlight.current) {
-      return;
+      return false;
     }
     const found: string[] = [];
-    const names = new Set<string>();
-    for (const product of draft) {
-      const label = product.fields?.title.trim() || product.name;
-      if (!PRODUCT_NAME_RE.test(product.name)) {
-        found.push(`${label}: its id is lowercase letters, digits and dashes.`);
-      } else if (names.has(product.name)) {
-        found.push(`${label}: another product has the id ${product.name}.`);
-      }
-      names.add(product.name);
-      if (product.fields !== undefined) {
-        found.push(...fieldProblems(product.fields).map((problem) => `${label}: ${problem}`));
-      }
-      if (productBytes(draftText(product)) > MAX_PRODUCT_BYTES) {
-        found.push(`${label}: too long (shorten its description).`);
-      }
+    const broken = draft.filter((product) => issuesOf(product, draft, isKept(product)).length > 0);
+    if (broken.length > 0) {
+      found.push(
+        `Fix ${broken.length === 1 ? 'this product' : 'these products'} first: ${broken.map(labelOf).join(', ')}.`,
+      );
     }
     if (draft.length === 0) {
       found.push('A store sells at least one product.');
@@ -168,9 +274,15 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     }
     // The form's own findings are words already: shown as they are.
     setProblems(found.map((text) => ({ field: 'products', text, raw: text })));
+    setTried(broken.length > 0);
     setError('');
     if (found.length > 0) {
-      return;
+      // The first product that needs a fix opens, its fields saying why.
+      const first = broken[0];
+      if (first !== undefined && open?.key !== first.key) {
+        openSheet(first.key, first, addButton.current);
+      }
+      return false;
     }
     inFlight.current = true;
     setBusy(true);
@@ -180,46 +292,27 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
     if (answer.status === 200) {
       const digest = await productsDigest(set);
       kept.reload();
-      setSent({ digest, seq: poll.watch(), set });
-      return;
+      setSent({
+        digest,
+        seq: poll.watch(),
+        set,
+        keys: new Set(draft.map((product) => product.key)),
+      });
+      return true;
     }
     const detail = fieldOf(answer.body, 'detail');
     if (fieldOf(answer.body, 'error') === 'store_refused' && typeof detail === 'string') {
       setProblems(detail.split('\n').map((line) => problemText(line)));
-      return;
+      return false;
     }
     setError(explainAnswer(answer.body, answer.status));
+    return false;
   };
 
-  const shownProblems =
-    refused && problems.length === 0
-      ? (status.lastProblems.products ?? []).map((line) => problemText(line))
-      : problems;
-  return (
-    <div className="flex flex-col gap-16">
-      <p className="text-13 text-text-3">
-        {draft.length.toLocaleString('en-US')} of {status.usage.products.toLocaleString('en-US')}{' '}
-        products on your plan.
-      </p>
-      {draft.length === 0 ? <p className="text-14 text-text-2">No products yet.</p> : null}
-      {draft.map((product) => (
-        <ProductEditor
-          key={product.key}
-          product={product}
-          nameEditable={!keptNames.has(product.name)}
-          published={published && keptNames.has(product.name)}
-          onChange={(next) => update(product.key, next)}
-          onRemove={
-            published && keptNames.has(product.name)
-              ? undefined
-              : () => setDraft(draft.filter((other) => other.key !== product.key))
-          }
-        />
-      ))}
-      <Button onClick={add} className="self-start">
-        Add a product
-      </Button>
-      <ProblemList problems={shownProblems} />
+  const openProduct = open === undefined ? undefined : draft.find((each) => each.key === open.key);
+  const saveLabel = `Save ${changes} change${changes === 1 ? '' : 's'}`;
+  const statusLines = (
+    <>
       {refused && shownProblems.length === 0 ? (
         <p role="alert" className="text-13 text-error">
           Something failed on our side; we have been alerted.
@@ -240,15 +333,149 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
           Saved.
         </p>
       ) : null}
-      {changes === 0 ? null : (
-        <div className="border-line bg-surface sticky bottom-0 flex items-center justify-between gap-12 border-t py-12">
-          <span className="text-14">
-            {changes} unsaved change{changes === 1 ? '' : 's'}
-          </span>
-          <Button variant="primary" disabled={busy || waiting} onClick={() => void save()}>
-            Save {changes} change{changes === 1 ? '' : 's'}
-          </Button>
-        </div>
+    </>
+  );
+
+  return (
+    <div className="flex flex-col gap-16">
+      <div inert={openProduct !== undefined || undefined} className="flex flex-col gap-16">
+        <p className="text-13 text-text-3">
+          {draft.length.toLocaleString('en-US')} of {status.usage.products.toLocaleString('en-US')}{' '}
+          products on your plan.
+        </p>
+        <ProductsCallout />
+        {draft.length === 0 ? (
+          <div className="rounded-16 border-line flex flex-col items-start gap-12 border p-20">
+            <p className="text-14 text-text-2">
+              No products yet. Add the first thing you sell: a title and a price are enough.
+            </p>
+          </div>
+        ) : (
+          <ul aria-label="Products" className="border-line rounded-16 divide-line divide-y border">
+            {draft.map((product) => {
+              const label = labelOf(product);
+              const issues = tried ? issuesOf(product, draft, isKept(product)) : [];
+              const said = refusedOf(product.name);
+              const { fields } = product;
+              return (
+                <li
+                  key={product.key}
+                  data-product={product.name}
+                  className="flex flex-col gap-8 px-16 py-12"
+                >
+                  <div className="flex flex-wrap items-center gap-12">
+                    <div className="flex min-w-0 flex-1 flex-col">
+                      <span className="text-15 truncate font-medium">{label}</span>
+                      <span className="text-13 text-text-2">
+                        {fields === undefined
+                          ? 'Written by hand'
+                          : `$${fields.priceUsd.trim() || '0'}`}
+                      </span>
+                    </div>
+                    {fields === undefined ? null : (
+                      <label className="text-13 text-text-2 flex items-center gap-6">
+                        <input
+                          type="checkbox"
+                          checked={fields.onSale}
+                          aria-label={`${label} on sale`}
+                          onChange={(event) =>
+                            update(product.key, {
+                              ...product,
+                              fields: { ...fields, onSale: event.target.checked },
+                            })
+                          }
+                        />
+                        On sale
+                      </label>
+                    )}
+                    <Button
+                      size="sm"
+                      aria-label={`Edit ${label}`}
+                      onClick={(event) => openSheet(product.key, product, event.currentTarget)}
+                    >
+                      Edit
+                    </Button>
+                  </div>
+                  {issues.length === 0 ? null : (
+                    <p className="text-13 text-error">Needs a fix: {issues.join(' ')}</p>
+                  )}
+                  <ProblemList problems={said} />
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <Button ref={addButton} onClick={add} className="self-start">
+          Add product
+        </Button>
+        <ProblemList problems={pageProblems} />
+        {statusLines}
+        {changes === 0 ? null : (
+          <div className="border-line bg-surface sticky bottom-0 flex items-center justify-between gap-12 border-t py-12">
+            <span className="text-14">
+              {changes} unsaved change{changes === 1 ? '' : 's'}
+            </span>
+            <Button variant="primary" disabled={busy || waiting} onClick={() => void save()}>
+              {saveLabel}
+            </Button>
+          </div>
+        )}
+      </div>
+      {openProduct === undefined || open === undefined ? null : (
+        <ProductSheet
+          title={
+            openProduct.fields?.title.trim() ||
+            (open.before === undefined ? 'New product' : openProduct.name)
+          }
+          changed={
+            open.before === undefined
+              ? draftText(openProduct) !== draftText(blankProduct(openProduct))
+              : draftText(open.before) !== draftText(openProduct) ||
+                open.before.name !== openProduct.name
+          }
+          onDiscard={discard}
+          onClose={open.before === undefined ? discard : closeSheet}
+          actions={
+            <>
+              {published && isKept(openProduct) ? (
+                <span className="text-12 text-text-3">
+                  Published: take it off sale to stop selling.
+                </span>
+              ) : (
+                <Button size="sm" onClick={() => remove(openProduct.key)}>
+                  Remove {openProduct.name || 'this product'}
+                </Button>
+              )}
+              <div className="flex flex-col items-end gap-6">
+                <ProblemList problems={pageProblems} />
+                {statusLines}
+                <Button
+                  variant="primary"
+                  disabled={busy || waiting}
+                  onClick={() => {
+                    void save().then((taken) => {
+                      if (taken) {
+                        closeSheet();
+                      }
+                    });
+                  }}
+                >
+                  Save product
+                </Button>
+              </div>
+            </>
+          }
+        >
+          <ProductEditor
+            product={openProduct}
+            nameEditable={!isKept(openProduct)}
+            nameTaken={draft.some(
+              (other) => other.key !== openProduct.key && other.name === openProduct.name,
+            )}
+            refused={refusedOf(openProduct.name)}
+            onChange={(next) => update(openProduct.key, next)}
+          />
+        </ProductSheet>
       )}
     </div>
   );

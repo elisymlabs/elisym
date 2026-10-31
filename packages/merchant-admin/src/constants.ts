@@ -29,6 +29,9 @@ export const LANDING_URL = 'https://paycore.elisym.network';
 
 export const QUICKSTART_URL = 'https://docs.elisym.network/commerce/quickstart';
 
+/** Where a store run by the merchant edits its products: as PRODUCT.md files, then `setup`. */
+export const PRODUCTS_AS_FILES_URL = `${QUICKSTART_URL}#1-create-the-store`;
+
 /** The cloud store guide in the docs: what the front page's Docs link opens. */
 export const CLOUD_DOCS_URL = 'https://docs.elisym.network/commerce/cloud-agents';
 

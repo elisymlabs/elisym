@@ -113,22 +113,49 @@ export function priceProblem(price: string): string | undefined {
   return undefined;
 }
 
-/** Why the fields cannot be saved (the price, a missing title, a length); empty when they can. */
-export function fieldProblems(fields: ProductFields): string[] {
-  const problems: string[] = [];
+/** Why each field cannot be saved, by the field it is about; empty when all can. */
+export interface FieldErrors {
+  title?: string;
+  price?: string;
+  summary?: string;
+}
+
+/** Why each field cannot be saved (a missing title, the price, a length), at its field. */
+export function fieldErrors(fields: ProductFields): FieldErrors {
+  const errors: FieldErrors = {};
   if (fields.title.trim() === '') {
-    problems.push('Give the product a title.');
+    errors.title = 'Give the product a title.';
   } else if (fields.title.trim().length > MAX_TITLE) {
-    problems.push(`A title is at most ${MAX_TITLE} characters.`);
+    errors.title = `A title is at most ${MAX_TITLE} characters.`;
   }
   const price = priceProblem(fields.priceUsd);
   if (price !== undefined) {
-    problems.push(price);
+    errors.price = price;
   }
   if (fields.summary.trim().length > MAX_SUMMARY) {
-    problems.push(`A summary is at most ${MAX_SUMMARY} characters.`);
+    errors.summary = `A summary is at most ${MAX_SUMMARY} characters.`;
   }
-  return problems;
+  return errors;
+}
+
+/** Why the fields cannot be saved (the price, a missing title, a length); empty when they can. */
+export function fieldProblems(fields: ProductFields): string[] {
+  const errors = fieldErrors(fields);
+  return [errors.title, errors.price, errors.summary].filter(
+    (error): error is string => error !== undefined,
+  );
+}
+
+/** Past this share of the size limit, the room left is said. */
+const ROOM_SHOWN_FROM = 0.9;
+
+/**
+ * The room left in a product, in bytes, once it is near the limit (past 90%):
+ * undefined while there is plenty, negative when it is over.
+ */
+export function roomLeft(text: string): number | undefined {
+  const bytes = productBytes(text);
+  return bytes <= MAX_PRODUCT_BYTES * ROOM_SHOWN_FROM ? undefined : MAX_PRODUCT_BYTES - bytes;
 }
 
 /** A product's weight in a save, as cloud-api measures it: its text written as a JSON string. */
@@ -151,9 +178,19 @@ export function slugOf(title: string): string {
   );
 }
 
-/** The first of `slug`, `slug-2`, `slug-3`... not taken (`product` when the title gives none). */
+/**
+ * The first of `slug`, `slug-2`, `slug-3`... not taken; a title that gives no
+ * slug (no Latin letter or digit) takes the first free `product-N`.
+ */
 export function freeSlug(title: string, taken: ReadonlySet<string>): string {
-  const base = slugOf(title) || 'product';
+  const base = slugOf(title);
+  if (base === '') {
+    for (let index = 1; ; index += 1) {
+      if (!taken.has(`product-${index}`)) {
+        return `product-${index}`;
+      }
+    }
+  }
   if (!taken.has(base)) {
     return base;
   }
