@@ -188,6 +188,9 @@ describe('the CSV under a filter', () => {
     const { container } = mounted;
     await act(async () => chip(container, 'Completed').click());
     expect(orderIds(container)).toEqual(['alpha', 'gamma']);
+    expect(buttonNamed(container, 'Download CSV').title).toBe(
+      'Every loaded order, whatever the filters',
+    );
     await act(async () => buttonNamed(container, 'Download CSV').click());
     expect(await blobs[0]?.text()).toBe(ordersCsv(ROWS));
   });
@@ -476,7 +479,7 @@ describe('the dashboard pages', () => {
   it('keeps the store name, its npub, its copy label, Refresh and Log out in the sidebar', async () => {
     const container = await mountDashboard();
     const sidebar = byId(container, 'store-sidebar');
-    expect(sidebar.querySelector('#store-name')).not.toBeNull();
+    expect(sidebar.querySelector('#shell-store-name')).not.toBeNull();
     expect(sidebar.querySelector('#store-pubkey')?.getAttribute('title')).toMatch(/^npub1/);
     expect(sidebar.querySelector('[aria-label="Copy npub"]')).not.toBeNull();
     expect(sidebar.textContent).toContain('Refresh');
@@ -581,7 +584,7 @@ describe('the frame', () => {
     await act(async () => byId(container, 'nav-overview').click());
     expect(chosen).toEqual(['overview']);
     expect(byId(container, 'nav-overview').getAttribute('aria-disabled')).toBeNull();
-    expect(byId(container, 'store-name').textContent).toBe('Your store');
+    expect(byId(container, 'shell-store-name').textContent).toBe('Your store');
   });
 
   it('on a phone, opens its menu, and closes it on Escape, outside, or a choice, focus back', async () => {

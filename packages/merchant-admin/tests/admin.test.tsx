@@ -199,7 +199,7 @@ describe('the dashboard', () => {
     expect(container.querySelector('#csv-partial')).toBeNull();
 
     expect(container.querySelector('img')).toBeNull();
-    expect(byId(container, 'store-name').textContent).toBe(HOSTILE);
+    expect(byId(container, 'shell-store-name').textContent).toBe(HOSTILE);
     const rows = byId(container, 'orders').querySelectorAll('tr');
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain(HOSTILE);
@@ -346,7 +346,7 @@ describe('the dashboard', () => {
     failing = false;
     await act(async () => refresh.click());
     await settle(() => /^Read 0 order messages/.test(statusText(container)));
-    expect(byId(container, 'store-name').textContent).toBe('Shop');
+    expect(byId(container, 'shell-store-name').textContent).toBe('Shop');
   });
 
   it('disables Refresh while a read runs, and says the CSV covers loaded orders only while history remains', async () => {

@@ -167,7 +167,7 @@ export function DashboardShell({
         <span className="flex items-center gap-10" title={PRODUCT_NAME}>
           <PayCoreLogo className="h-28 w-auto" />
         </span>
-        <p id="store-name" className="text-15 truncate font-semibold" title={storeName}>
+        <p id="shell-store-name" className="text-15 truncate font-semibold" title={storeName}>
           {storeName}
         </p>
         <nav aria-label="Store" className="flex flex-col gap-2">

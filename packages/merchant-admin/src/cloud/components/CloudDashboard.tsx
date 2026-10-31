@@ -24,6 +24,7 @@ import { DomainPanel } from './DomainPanel';
 import { ExportPanel } from './ExportPanel';
 import { HandoverPanel } from './HandoverPanel';
 import { InstallStep } from './InstallStep';
+import { NotRead } from './NotRead';
 import { OrdersPanel } from './OrdersPanel';
 import { PayoutsPanel } from './PayoutsPanel';
 import { ProductsForm } from './ProductsForm';
@@ -154,10 +155,27 @@ export function CloudDashboard({
     return () => clearInterval(timer);
   }, [exporting, load]);
 
-  const poll = useStatus(api, tenantId, () => tools.localNow() * 1000);
-  const kept = useKeptStore(api, tenantId);
+  // A store that left the cloud has nothing more to read: its status and kept store are not asked.
+  const gone = destroyed || view?.exported !== undefined;
+  const poll = useStatus(api, tenantId, () => tools.localNow() * 1000, !gone);
+  const kept = useKeptStore(api, tenantId, !gone);
   const launched = view?.activated === true && view.exported === undefined;
   const orders = useCloudOrders(api, tenantId, launched);
+
+  // Launched here: the store publishes what it keeps, so the kept store and its status are read again.
+  const wasLaunched = useRef<boolean | undefined>(undefined);
+  const { reload: reloadKept } = kept;
+  const { watch } = poll;
+  useEffect(() => {
+    if (view === undefined) {
+      return;
+    }
+    if (wasLaunched.current === false && launched) {
+      reloadKept();
+      watch();
+    }
+    wasLaunched.current = launched;
+  }, [view, launched, reloadKept, watch]);
 
   const refresh = () => {
     setNotice(undefined);
@@ -249,16 +267,19 @@ export function CloudDashboard({
     );
   }
 
+  // The store not read yet: its pages say why (or that it is loading), never that they wait for a launch.
+  const viewNotRead = <NotRead problem={error} onRetry={() => void load()} />;
+
   const content: Record<Page, ReactNode> =
     view === undefined
       ? {
           overview,
-          orders: null,
-          products: null,
-          payouts: null,
-          install: null,
-          settings: null,
-          billing: null,
+          orders: viewNotRead,
+          products: viewNotRead,
+          payouts: viewNotRead,
+          install: viewNotRead,
+          settings: viewNotRead,
+          billing: viewNotRead,
           help: <CloudAbout tenantId={tenantId} />,
         }
       : {
@@ -267,7 +288,7 @@ export function CloudDashboard({
           products: (
             <Section title="Products" heading="h1" description={DESCRIPTIONS.products}>
               {status === undefined ? (
-                <p className="text-14 text-text-3">Loading...</p>
+                <NotRead problem={poll.error} onRetry={poll.watch} />
               ) : (
                 <ProductsForm
                   api={api}
@@ -283,7 +304,7 @@ export function CloudDashboard({
           payouts: (
             <Section title="Payouts" heading="h1" description={DESCRIPTIONS.payouts}>
               {read?.storePubkey === undefined || network === undefined ? (
-                <p className="text-14 text-text-3">Loading...</p>
+                <NotRead problem={kept.readError} onRetry={kept.reload} />
               ) : (
                 <PayoutsPanel
                   api={api}
@@ -365,10 +386,12 @@ export function CloudDashboard({
 
   const pages: ShellPage[] = PAGES.map((each) => {
     // Before launch the setup on Overview holds every step; the other pages wait for it.
-    const waits = !launched && each.id !== 'overview' && each.id !== 'help';
+    const waits = view !== undefined && !launched && each.id !== 'overview' && each.id !== 'help';
+    // A count only of orders read: a failed or pending read counts nothing.
+    const counted = launched && orders.read !== undefined && orders.error === '';
     return {
       ...each,
-      ...(each.id === 'orders' && launched ? { count: rows.length } : {}),
+      ...(each.id === 'orders' && counted ? { count: rows.length } : {}),
       ...(waits ? { locked: SET_UP_FIRST } : {}),
       content: waits ? null : content[each.id],
     };

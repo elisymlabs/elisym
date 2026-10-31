@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
@@ -42,7 +42,14 @@ const STATE_TEXT: Record<CommandState['stage'], string> = {
 export function CommandConfirm({ api, tenantId, command, onClose, onFinished }: Props) {
   const [stage, setStage] = useState<Stage>({ step: 'asking' });
   const inFlight = useRef(false);
+  const box = useRef<HTMLDivElement>(null);
   const args = commandArgs(command);
+
+  // Opened: the focus moves to it (Confirm when there is one); the page gives it back on close.
+  useEffect(() => {
+    const target = box.current?.querySelector('button') ?? box.current;
+    target?.focus();
+  }, []);
   const followed = useFollowedCycle(
     api,
     tenantId,
@@ -141,7 +148,12 @@ export function CommandConfirm({ api, tenantId, command, onClose, onFinished }: 
   const closable = args === undefined || (stage.step !== 'asking' && stage.step !== 'sending');
 
   return (
-    <div className="rounded-12 bg-surface-2 mt-8 flex flex-col gap-8 p-12">
+    <div
+      ref={box}
+      tabIndex={-1}
+      aria-live="polite"
+      className="rounded-12 bg-surface-2 mt-8 flex flex-col gap-8 p-12 outline-none"
+    >
       {body}
       {closable ? (
         <Button onClick={onClose} size="sm" className="self-start">

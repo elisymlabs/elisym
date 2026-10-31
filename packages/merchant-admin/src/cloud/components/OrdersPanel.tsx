@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
 import { OrdersSection } from '../../components/OrdersSection';
 import { Section } from '../../components/Section';
@@ -70,6 +70,21 @@ export function OrdersPanel({ api, tenantId, network, orders, download }: Props)
   const [exporting, setExporting] = useState(false);
   const [asked, setAsked] = useState<OrderCommand | undefined>(undefined);
   const { read } = orders;
+  // The button that asked a command: the focus goes back to it once the confirmation closes.
+  const opener = useRef<HTMLElement | null>(null);
+  const ask = (command: OrderCommand) => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setAsked(command);
+  };
+  useEffect(() => {
+    if (asked !== undefined || opener.current === null) {
+      return;
+    }
+    if (opener.current.isConnected) {
+      opener.current.focus();
+    }
+    opener.current = null;
+  }, [asked]);
 
   const exportCsv = async () => {
     if (exporting) {
@@ -126,7 +141,7 @@ export function OrdersPanel({ api, tenantId, network, orders, download }: Props)
                 orderKey={each.key}
                 reasons={each.reasons}
                 assets={refundAssets}
-                onAsk={setAsked}
+                onAsk={ask}
                 busy={asked !== undefined}
               />
             ))}
@@ -147,7 +162,7 @@ export function OrdersPanel({ api, tenantId, network, orders, download }: Props)
                 <HandAnswered
                   key={answer.key}
                   answer={answer}
-                  onAsk={setAsked}
+                  onAsk={ask}
                   busy={asked !== undefined}
                 />
               ))}
@@ -208,7 +223,7 @@ export function OrdersPanel({ api, tenantId, network, orders, download }: Props)
       actionsFor={(row) => {
         const order = byKey.get(row.key);
         return order === undefined ? null : (
-          <OrderActions order={order} onAsk={setAsked} busy={asked !== undefined} />
+          <OrderActions order={order} onAsk={ask} busy={asked !== undefined} />
         );
       }}
     />

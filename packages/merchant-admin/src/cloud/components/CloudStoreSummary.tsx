@@ -1,4 +1,4 @@
-import type { StatusRead } from '../lib/status';
+import type { StoreStatus } from '../lib/status';
 import { type StoreView, shownTime } from '../lib/store-view';
 import { Card } from './Card';
 import { RunStateLine } from './RunStateLine';
@@ -6,8 +6,8 @@ import { RunStateLine } from './RunStateLine';
 interface Props {
   tenantId: string;
   view: StoreView;
-  /** The store's status, once read (its run state and this month's paid orders). */
-  status: StatusRead | undefined;
+  /** The store's status, once read and not gone (its run state and this month's paid orders). */
+  status: StoreStatus | undefined;
   /** The status poll ran out: offered to read it again. */
   onCheckAgain: (() => void) | undefined;
 }
@@ -16,7 +16,7 @@ interface Props {
 export function CloudStoreSummary({ tenantId, view, status, onCheckAgain }: Props) {
   return (
     <Card title="Your store">
-      {status === undefined || status.gone ? null : (
+      {status === undefined ? null : (
         <div className="mt-12 flex w-full flex-col gap-4">
           <RunStateLine runState={status.runState} onCheckAgain={onCheckAgain} />
           <p className="text-13 text-text-2">

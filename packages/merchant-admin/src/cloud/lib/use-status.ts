@@ -33,6 +33,8 @@ export function useStatus(
   tenantId: string,
   /** The page's clock in ms (a test's own). */
   nowMs: () => number = Date.now,
+  /** A store that left the cloud (exported, destroyed) has no status to read: nothing is asked. */
+  enabled = true,
 ): StoreStatusPoll {
   const [status, setStatus] = useState<StatusRead | undefined>(undefined);
   const [statusSeq, setStatusSeq] = useState(0);
@@ -66,14 +68,17 @@ export function useStatus(
   }, [api, tenantId]);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     void load();
     return () => {
       latest.current += 1;
     };
-  }, [load]);
+  }, [enabled, load]);
 
   useEffect(() => {
-    if (expired) {
+    if (expired || !enabled) {
       return;
     }
     const timer = setTimeout(() => {
@@ -84,15 +89,18 @@ export function useStatus(
       void load();
     }, STATUS_POLL_MS);
     return () => clearTimeout(timer);
-  }, [expired, reads, watchedFrom, load]);
+  }, [expired, enabled, reads, watchedFrom, load]);
 
   const watch = useCallback(() => {
+    if (!enabled) {
+      return latest.current;
+    }
     setWatchedFrom(clock.current());
     setExpired(false);
     // The read is numbered before its answer is awaited: the number is known at once.
     void load();
     return latest.current;
-  }, [load]);
+  }, [enabled, load]);
 
   return { status, error, expired, statusSeq, watch };
 }

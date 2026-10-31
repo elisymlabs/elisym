@@ -64,7 +64,7 @@ export function OrdersSection({
           <button
             type="button"
             onClick={csv.run}
-            disabled={rows.length === 0 || csv.busy === true}
+            disabled={csv.empty === true || csv.busy === true}
             title={csv.title}
             className="rounded-10 border-line bg-surface text-14 hover:bg-surface-2 flex items-center gap-6 border px-12 py-8 font-medium disabled:opacity-50"
           >

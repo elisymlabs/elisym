@@ -17,7 +17,7 @@ const SHOWN: Record<RunState, { tone: 'ok' | 'wait' | 'warn' | 'off'; text: stri
   off_sale: { tone: 'off', text: 'Off sale' },
   paused_by_owner: { tone: 'off', text: 'Paused by you' },
   paused_payment_due: { tone: 'warn', text: 'Paused: payment due' },
-  held: { tone: 'warn', text: 'Paused by us: contact us' },
+  held: { tone: 'warn', text: 'Held by elisym: contact elisym' },
   not_launched: { tone: 'off', text: 'Not launched' },
   gone: { tone: 'off', text: 'Handed over' },
 };

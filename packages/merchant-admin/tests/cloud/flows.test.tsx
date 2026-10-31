@@ -104,6 +104,8 @@ interface Options {
   signupGate?: Promise<void>;
   /** Rendered inside `<StrictMode>`, as `main.tsx` renders the page. */
   strict?: boolean;
+  /** The `nth` answer (from 1) to `GET <path>` is made at once but handed back only once this settles. */
+  hold?: { path: string; nth: number; until: Promise<void> };
 }
 
 /** The admin, its cloud part answered by `routes`. */
@@ -113,9 +115,19 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
   const relays = options.relays ?? [];
   const relayClients = { opened: 0, closed: 0 };
   let threwOnce = false;
-  const { ownerGate, signupGate } = options;
+  const { ownerGate, signupGate, hold } = options;
+  let seen = 0;
   const fetcher = async (request: Request) => {
     const path = new URL(request.url).pathname;
+    if (hold !== undefined && request.method === 'GET' && path === hold.path) {
+      seen += 1;
+      if (seen === hold.nth) {
+        // Answered as the cloud was then, landing late.
+        const answer = await cloudApi.fetcher(request);
+        await hold.until;
+        return answer;
+      }
+    }
     if (path === '/owner' && ownerGate !== undefined) {
       await ownerGate();
     }
@@ -382,7 +394,7 @@ describe('one key field, routed', () => {
       { storeRelays: storeEvents(store, owner) },
     );
     await signIn(host, nip19.nsecEncode(store.secretKey));
-    await eventually(host, () => host.querySelector('#store-name')?.textContent === 'Shop');
+    await eventually(host, () => host.querySelector('#shell-store-name')?.textContent === 'Shop');
     // The cloud was asked once, by a request the key signed; nothing else of it was used.
     // The front page read the plan catalog, with no key; the sign-in asked the cloud once.
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
@@ -400,7 +412,7 @@ describe('one key field, routed', () => {
       { storeRelays: storeEvents(store, makeKey()) },
     );
     await signIn(host, nip19.nsecEncode(store.secretKey));
-    await eventually(host, () => host.querySelector('#store-name')?.textContent === 'Shop');
+    await eventually(host, () => host.querySelector('#shell-store-name')?.textContent === 'Shop');
   });
 
   it('nothing anywhere: said, and the field stays for another try', async () => {
@@ -607,7 +619,7 @@ describe('one key field, routed', () => {
     );
     await signIn(host, nip19.nsecEncode(store.secretKey));
     await eventually(host, () => host.textContent?.includes('Our cloud is not answering') === true);
-    expect(host.querySelector('#store-name')).toBeNull();
+    expect(host.querySelector('#shell-store-name')).toBeNull();
     expect(relayClients).toEqual({ opened: 1, closed: 1 });
   });
 
@@ -622,7 +634,7 @@ describe('one key field, routed', () => {
       },
     );
     await signIn(host, nip19.nsecEncode(store.secretKey));
-    await eventually(host, () => host.querySelector('#store-name')?.textContent === 'Shop');
+    await eventually(host, () => host.querySelector('#shell-store-name')?.textContent === 'Shop');
   });
 
   it('what went wrong is cleared on the next try and on Back', async () => {
@@ -1770,6 +1782,277 @@ describe('the cloud store on the frame', () => {
     expect(host.querySelectorAll('#store-sidebar nav button')).toHaveLength(0);
     expect(hasButton(host, 'Refresh')).toBe(false);
     expect(hasButton(host, 'Sign out')).toBe(true);
+  });
+
+  it('after Launch reads what the store keeps, and its status, again', async () => {
+    const store = new FakeStore(readyState());
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => hasButton(host, 'Launch the store'));
+    const kept = reads(calls, '/store');
+    const statuses = reads(calls, '/status');
+    await click(host, 'Launch the store');
+    await eventually(host, () => host.querySelector('[data-run-state]') !== null);
+    await eventually(
+      host,
+      () => reads(calls, '/store') > kept && reads(calls, '/status') > statuses,
+    );
+  });
+
+  it('the store name field keeps its label: the sidebar names the store under its own id', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('input#store-name') !== null);
+    expect(host.querySelectorAll('#store-name')).toHaveLength(1);
+    expect(host.querySelector('label[for="store-name"]')).not.toBeNull();
+    expect(host.querySelector('#shell-store-name')?.textContent).toBe('Shop');
+  });
+
+  it('the CSV can be asked with no open or paid order: hand answers and closed ones are in it', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const routes = store.routes();
+    const { host } = await admin({
+      ...routes,
+      [`GET ${path}/orders`]: () => ({
+        body: {
+          tenantId: TENANT_ID,
+          orders: [],
+          answeredByHand: [
+            { key: 'b9:o9', kind: 'delivered', tx: null, amount: null, asset: null },
+          ],
+          closed: ['b9:o9'],
+          unresolvedPayments: [],
+        },
+      }),
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Answered by hand') === true);
+    expect(button(host, 'Download CSV').disabled).toBe(false);
+  });
+
+  it('the CSV button waits while the CSV is read', async () => {
+    let release = () => undefined as void;
+    const until = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const store = new FakeStore(
+      readyState({ activated: true, runState: 'live', orders: [paidOrder()] }),
+    );
+    const { host } = await admin(
+      { ...store.routes(), [`GET ${path}/orders.csv`]: { body: 'a,b' } },
+      { hold: { path: `${path}/orders.csv`, nth: 1, until } },
+    );
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelectorAll('#orders tr').length === 1);
+    await click(host, 'Download CSV');
+    expect(button(host, 'Download CSV').disabled).toBe(true);
+    await act(async () => release());
+    await eventually(host, () => !button(host, 'Download CSV').disabled);
+  });
+
+  it('a command asked takes the focus, and Cancel gives it back to the button that asked', async () => {
+    const store = new FakeStore(
+      readyState({ activated: true, runState: 'live', orders: [paidOrder()] }),
+    );
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await act(async () => nav(host, 'Orders').click());
+    await eventually(host, () => host.querySelectorAll('#orders tr').length === 1);
+    const show = host.querySelector('#orders button[aria-label="Show order details"]');
+    if (!(show instanceof HTMLButtonElement)) {
+      throw new Error('no details button');
+    }
+    await act(async () => show.click());
+    const ask = button(host, 'Retry the webhook now');
+    ask.focus();
+    await act(async () => ask.click());
+    expect(document.activeElement).toBe(button(host, 'Confirm'));
+    expect(button(host, 'Confirm').closest('[aria-live="polite"]')).not.toBeNull();
+    await click(host, 'Cancel');
+    expect(document.activeElement).toBe(button(host, 'Retry the webhook now'));
+  });
+
+  it('counts orders only once they are read', async () => {
+    const store = new FakeStore(
+      readyState({ activated: true, runState: 'live', orders: [paidOrder()] }),
+    );
+    const failing = await admin({
+      ...store.routes(),
+      [`GET ${path}/orders`]: { status: 503, body: { error: 'ledger_unreadable' } },
+    });
+    await signIn(failing.host, OwnerKey.create());
+    await eventually(
+      failing.host,
+      () => failing.host.querySelector('#page-orders [role="alert"]') !== null,
+    );
+    expect(nav(failing.host, 'Orders').textContent).toBe('Orders');
+    await unmount();
+    const read = await admin(store.routes());
+    await signIn(read.host, OwnerKey.create());
+    await eventually(read.host, () => nav(read.host, 'Orders').textContent === 'Orders1');
+  });
+
+  it('a page whose read failed says why and tries again; a store not read is never called unlaunched', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    let statusFails = true;
+    let keptFails = true;
+    let viewFails = true;
+    const routes = store.routes();
+    const { host } = await admin({
+      ...routes,
+      [`GET ${path}`]: () =>
+        viewFails ? { status: 503, body: { error: 'internal' } } : { body: store.view() },
+      [`GET ${path}/status`]: () =>
+        statusFails ? { status: 503, body: { error: 'internal' } } : { body: store.status() },
+      [`GET ${path}/store`]: () =>
+        keptFails ? { status: 503, body: { error: 'internal' } } : { body: store.storeRead() },
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('#page-products [role="alert"]') !== null);
+    // The view not read: no page is called waiting for a launch.
+    expect(nav(host, 'Products').getAttribute('aria-disabled')).toBeNull();
+    expect(host.textContent).not.toContain('Opens once your store is live');
+    viewFails = false;
+    statusFails = false;
+    keptFails = false;
+    await act(async () => {
+      const retry = host.querySelector('#page-products button');
+      if (retry instanceof HTMLButtonElement) {
+        retry.click();
+      }
+    });
+    // The store read: Products now waits on its own read, tried again by its own button.
+    await eventually(host, () => host.textContent?.includes('Paid until') === true);
+    expect(host.textContent).not.toContain('Opens once');
+    const retryProducts = [...host.querySelectorAll('#page-products button')].find(
+      (each) => each.textContent === 'Try again',
+    );
+    if (retryProducts instanceof HTMLButtonElement) {
+      await act(async () => retryProducts.click());
+    }
+    await eventually(host, () => host.querySelector('#page-products [role="alert"]') === null);
+  });
+
+  it('Products and Payouts say a failed read in words, with Try again', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    let statusFails = true;
+    let keptFails = true;
+    const { host } = await admin({
+      ...store.routes(),
+      [`GET ${path}/status`]: () =>
+        statusFails ? { status: 503, body: { error: 'internal' } } : { body: store.status() },
+      [`GET ${path}/store`]: () =>
+        keptFails ? { status: 503, body: { error: 'internal' } } : { body: store.storeRead() },
+    });
+    await signIn(host, OwnerKey.create());
+    const refused = (page: string) =>
+      [...host.querySelectorAll(`#page-${page} [role="alert"]`)].some(
+        (each) => each.textContent === 'The cloud refused it (internal).',
+      );
+    await eventually(host, () => refused('products') && refused('payouts'));
+    statusFails = false;
+    keptFails = false;
+    for (const page of ['products', 'payouts']) {
+      const retry = [...host.querySelectorAll(`#page-${page} button`)].find(
+        (each) => each.textContent === 'Try again',
+      );
+      if (!(retry instanceof HTMLButtonElement)) {
+        throw new Error(`no Try again on ${page}`);
+      }
+      await act(async () => retry.click());
+    }
+    await eventually(host, () => !refused('products') && !refused('payouts'));
+  });
+
+  it('an exported store reads no orders, and its status and kept store no more', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const { host, calls } = await admin({
+      ...store.routes(),
+      [`GET ${path}`]: () => ({
+        body: {
+          ...store.view(),
+          export: { exportedAt: 1_900_000_000, archiveReady: true, destroyAt: 1_900_600_000 },
+        },
+      }),
+    });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.textContent?.includes('Handover') === true);
+    const statuses = reads(calls, '/status');
+    const kept = reads(calls, '/store');
+    await click(host, 'Refresh');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(reads(calls, '/orders')).toBe(0);
+    expect([reads(calls, '/status'), reads(calls, '/store')]).toEqual([statuses, kept]);
+  });
+
+  it('only the newest read of the store counts: an older one landing late changes nothing', async () => {
+    let release = () => undefined as void;
+    const until = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    let views = 0;
+    const { host } = await admin(
+      {
+        ...store.routes(),
+        [`GET ${path}`]: () => {
+          views += 1;
+          return {
+            body: {
+              ...store.view(),
+              export: { exportedAt: 1_900_000_000, archiveReady: views >= 3, destroyAt: null },
+            },
+          };
+        },
+      },
+      { hold: { path, nth: 2, until } },
+    );
+    const handoverRefresh = () => {
+      const found = [...host.querySelectorAll('main button')].find(
+        (each) => each.textContent === 'Refresh',
+      );
+      if (!(found instanceof HTMLButtonElement)) {
+        throw new Error('no Refresh in the handover');
+      }
+      return found;
+    };
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () => host.textContent?.includes('The handover is being packed') === true,
+    );
+    // The second read is held (packed: no); the third lands first (packed: yes).
+    await act(async () => handoverRefresh().click());
+    await act(async () => handoverRefresh().click());
+    await eventually(host, () => hasButton(host, 'Download the handover'));
+    await act(async () => release());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(hasButton(host, 'Download the handover')).toBe(true);
+  });
+
+  it('a store gone shows no run state', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'gone' }));
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => reads(calls, '/status') === 1);
+    await eventually(host, () => host.textContent?.includes('Plan') === true);
+    expect(host.querySelector('[data-run-state]')).toBeNull();
+  });
+
+  it('before launch: one status read for the whole page, and Refresh reads no orders', async () => {
+    const store = new FakeStore(storeState({ paid: true }));
+    const { host, calls } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => steps(host).length > 0);
+    expect(reads(calls, '/status')).toBe(1);
+    await click(host, 'Refresh');
+    await eventually(host, () => reads(calls, '/status') === 2);
+    expect(reads(calls, '/orders')).toBe(0);
   });
 });
 

@@ -25,7 +25,12 @@ export interface KeptStore {
   readSeq: number;
 }
 
-export function useKeptStore(api: ConsoleApi, tenantId: string): KeptStore {
+export function useKeptStore(
+  api: ConsoleApi,
+  tenantId: string,
+  /** A store that left the cloud (exported, destroyed) keeps nothing to read: nothing is asked. */
+  enabled = true,
+): KeptStore {
   const [read, setRead] = useState<StoreRead | undefined>(undefined);
   const [readSeq, setReadSeq] = useState(0);
   const [readError, setReadError] = useState('');
@@ -56,28 +61,34 @@ export function useKeptStore(api: ConsoleApi, tenantId: string): KeptStore {
   }, [api, tenantId]);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
     void load();
     return () => {
       latest.current += 1;
     };
-  }, [load]);
+  }, [enabled, load]);
 
   // An edit waiting, or a setup still to run (a launch, a Resume): read again until it ran.
   const waiting = read?.pending === true || read?.publishing === true;
   // A failed read decides alone: a pending edit seen before it says nothing of a store gone since.
   const retry = readError === '' ? waiting : readRecovers;
   useEffect(() => {
-    if (!retry) {
+    if (!retry || !enabled) {
       return;
     }
     const timer = setTimeout(() => void load(), PENDING_POLL_MS);
     return () => clearTimeout(timer);
-  }, [retry, reads, load]);
+  }, [retry, enabled, reads, load]);
 
   const reload = useCallback(() => {
+    if (!enabled) {
+      return latest.current;
+    }
     // The read is numbered before its answer is awaited: the number is known at once.
     void load();
     return latest.current;
-  }, [load]);
+  }, [enabled, load]);
   return { read, readError, readRecovers, reload, readSeq };
 }

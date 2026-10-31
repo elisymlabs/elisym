@@ -89,12 +89,16 @@ export interface CsvAction {
   title: string;
   /** A download under way: the button waits. */
   busy?: boolean;
+  /** Nothing to put in it: the button is off. */
+  empty?: boolean;
 }
 
 /** The self-hosted admin's CSV: every loaded order, made in the page, named by the store. */
 export function loadedOrdersCsv(rows: readonly OrderRow[], storePubkey: string): CsvAction {
   return {
     title: 'Every loaded order, whatever the filters',
+    // Made from the loaded orders alone: none loaded, nothing to export.
+    empty: rows.length === 0,
     run: () =>
       downloadText(
         document,
