@@ -5,7 +5,7 @@ import { type Root as ReactRoot, createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
 import type { CloudProps } from '../../src/cloud/CloudApp';
-import { OwnerKey } from '../../src/cloud/lib/owner-key';
+import { OwnerKey, parseOwnerKey } from '../../src/cloud/lib/owner-key';
 import { Root } from '../../src/Root';
 import { fakeDeps, relayClient, storeEvents } from '../fakes';
 import {
@@ -66,6 +66,8 @@ interface Options {
   ownTab?: boolean;
   cloudProps?: Partial<CloudProps>;
   downloads?: string[];
+  /** Every file handed to the browser, as text. */
+  files?: { fileName: string; text: string }[];
   leave?: () => void;
   relays?: NostrEvent[];
   /** What the store-key reads on the relays answer (the sign-in's probe, the self-hosted admin). */
@@ -100,7 +102,13 @@ async function admin(routes: Record<string, Answer>, options: Options = {}) {
         };
   const cloud: CloudProps = {
     apiOrigin: API,
-    download: (_data, fileName) => options.downloads?.push(fileName),
+    download: (data, fileName) => {
+      options.downloads?.push(fileName);
+      options.files?.push({
+        fileName,
+        text: typeof data === 'string' ? data : new TextDecoder().decode(data),
+      });
+    },
     relayQuery: async (filter) =>
       relays.filter((event) => filter.kinds?.includes(event.kind) === true),
     startTier: undefined,
@@ -635,6 +643,56 @@ describe('the owner key in the page', () => {
     close.mockClear();
     await click(host, 'Sign out');
     expect(close).toHaveBeenCalled();
+    expect(leave).toHaveBeenCalledTimes(1);
+  });
+
+  it('a new key is saved before anything else, then the store part signs as it', async () => {
+    const files: { fileName: string; text: string }[] = [];
+    const { host, calls } = await admin(
+      { 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } },
+      { files },
+    );
+    await click(host, 'Create a store');
+    await click(host, 'Create a new owner key');
+    const checkbox = host.querySelector('input[type="checkbox"]');
+    if (!(checkbox instanceof HTMLInputElement)) {
+      throw new Error('no checkbox');
+    }
+    expect(button(host, 'Continue').disabled).toBe(true);
+    expect(checkbox.disabled).toBe(true);
+    await click(host, 'Download the key file');
+    expect(files).toHaveLength(1);
+    const nsecLine = files[0]?.text.split('\n').find((line) => line.startsWith('nsec1')) ?? '';
+    const key = parseOwnerKey(nsecLine);
+    if (key === undefined) {
+      throw new Error('no key in the file');
+    }
+    expect(files[0]?.fileName).toBe(`paycore-owner-${key.npub.slice(0, 14)}.txt`);
+    // Saved, not yet confirmed: still no way on.
+    expect(button(host, 'Continue').disabled).toBe(true);
+    expect(checkbox.disabled).toBe(false);
+    await act(async () => checkbox.click());
+    await click(host, 'Continue');
+    await eventually(host, () => calls.some((call) => call.path === '/owner'));
+    expect(calls.find((call) => call.path === '/owner')?.signer).toBe(key.pubkey);
+    // The secret is nowhere in the page.
+    expect(document.documentElement.outerHTML).not.toContain(nsecLine);
+  });
+
+  it('a page brought back from the back/forward cache starts over; a fresh show does not', async () => {
+    const leave = vi.fn();
+    const store = new FakeStore(storeState());
+    const { host } = await admin(store.routes(), { leave });
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => hasButton(host, 'Sign out'));
+    const shown = (persisted: boolean) => {
+      const event = new Event('pageshow');
+      Object.defineProperty(event, 'persisted', { value: persisted });
+      return event;
+    };
+    await act(async () => window.dispatchEvent(shown(false)));
+    expect(leave).not.toHaveBeenCalled();
+    await act(async () => window.dispatchEvent(shown(true)));
     expect(leave).toHaveBeenCalledTimes(1);
   });
 
