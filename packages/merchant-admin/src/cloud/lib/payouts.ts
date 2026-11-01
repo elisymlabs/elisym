@@ -128,7 +128,9 @@ export function payoutRows(list: NostrEvent | undefined, allowed: ReadonlySet<st
   return { rows, dropped };
 }
 
-/** An address as the list carries it, for this asset; undefined when it is not one. */
+/** What an EVM address looks like: 0x and 40 hex characters, in any case. */
+const EVM_ADDRESS_SHAPE = /^0x[0-9a-fA-F]{40}$/;
+
 /**
  * A mixed-case EVM address whose EIP-55 checksum is wrong: a typo. The list
  * carries addresses lowercased, so the checksum is checked here, on what the
@@ -136,7 +138,11 @@ export function payoutRows(list: NostrEvent | undefined, allowed: ReadonlySet<st
  */
 export function checksumTypo(caip19: string, address: string): boolean {
   const parsed = parseCaip19(caip19);
-  return parsed?.chain.family === 'evm' && !hasValidEvmChecksum(address.trim());
+  const typed = address.trim();
+  // Anything else is not an address at all, which `payoutAddress` says.
+  return (
+    parsed?.chain.family === 'evm' && EVM_ADDRESS_SHAPE.test(typed) && !hasValidEvmChecksum(typed)
+  );
 }
 
 /** Rails a store must have one payout on; the EVM chains come next to one. */
@@ -156,6 +162,7 @@ export function signingOrder(rows: readonly PayoutRow[]): PayoutRow[] {
   ];
 }
 
+/** An address as the list carries it, for this asset; undefined when it is not one. */
 export function payoutAddress(caip19: string, address: string): string | undefined {
   const parsed = parseCaip19(caip19);
   return parsed === undefined ? undefined : canonicalPayoutAddress(parsed.chain, address.trim());

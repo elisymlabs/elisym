@@ -3753,4 +3753,49 @@ describe('the payouts form, its review fixes', () => {
     await click(host, 'Add');
     expect(host.textContent).not.toContain('Signed and saved');
   });
+
+  it('a Tempo payout alone is enough to sign', async () => {
+    const tempo =
+      payoutAssets('mainnet', ALL).find((asset) => asset.label === 'pathUSD on Tempo')?.caip19 ??
+      '';
+    const { host, calls } = await opened(OwnerKey.create());
+    const address = `0x${'cd'.repeat(20)}`;
+    await fill(host, 'select#payout-asset', tempo);
+    await fill(host, 'input#payout-address', address);
+    await click(host, 'Add');
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => posts(calls) === 1);
+    expect(signedAccepts(calls)).toEqual([['accept', tempo, address]]);
+    expect(host.textContent).not.toContain('A store needs a Solana or a Tempo payout: add one');
+  });
+
+  it('while a replace waits, the coin and every Remove are held; a stale "signed and saved" goes', async () => {
+    const owner = OwnerKey.create();
+    const { host, calls } = await opened(owner, [
+      listOf(owner, [
+        [USDC, solanaAddress()],
+        [LSM, solanaAddress()],
+      ]),
+    ]);
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => posts(calls) === 1);
+    await eventually(host, () => host.textContent?.includes('Signed and saved') === true);
+    await click(host, 'Replace USDC on Solana');
+    expect(host.textContent).not.toContain('Signed and saved');
+    expect(host.querySelector<HTMLSelectElement>('select#payout-asset')?.disabled).toBe(true);
+    expect(button(host, 'Remove LSM on Solana').disabled).toBe(true);
+    await click(host, 'Cancel replacing USDC on Solana');
+    expect(host.querySelector<HTMLSelectElement>('select#payout-asset')?.disabled).toBe(false);
+    expect(button(host, 'Remove LSM on Solana').disabled).toBe(false);
+  });
+
+  it('what is not an address at all is said so, not called a typo', async () => {
+    const { host } = await opened(OwnerKey.create());
+    await fill(host, 'select#payout-asset', BASE_USDC);
+    await fill(host, 'input#payout-address', 'Hello World');
+    await click(host, 'Add');
+    expect(host.querySelector('#payout-address-problem')?.textContent).toBe(
+      'That is not an address USDC on Base can be paid to.',
+    );
+  });
 });
