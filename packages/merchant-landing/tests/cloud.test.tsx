@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { App } from '../src/App';
 import { Cloud } from '../src/components/Cloud';
 import { Pricing } from '../src/components/Pricing';
+import { Why } from '../src/components/Why';
 import {
   CLOUD_AGENT_DOCS_URL,
   CLOUD_AGENT_PROMPT,
@@ -164,7 +165,7 @@ describe('the cloud section', () => {
     const page = await render(<Cloud />);
     const text = page.textContent ?? '';
     expect(text).toContain('never passes through us');
-    expect(text).toContain('Your access key is made in your browser and never leaves it.');
+    expect(text).toContain('Your access key is made on your device and never sent to us.');
     expect(text).toContain('export your store and run it yourself any time');
     const steps = [...page.querySelectorAll('section#cloud ol > li h3')].map(
       (heading) => heading.textContent,
@@ -209,7 +210,7 @@ describe('the cloud section', () => {
     expect(card?.querySelector('button, a, input')?.textContent).toBe('Copy prompt');
     expect(card?.textContent).toContain('Prompt');
     expect(card?.parentElement?.textContent).toContain(
-      'Works with Claude Code, Cursor or any agent that can run TypeScript.',
+      'Works with Claude Code, Cursor or any agent that can run TypeScript (Node.js 22+ or Bun).',
     );
     // The access key is named once with the word the guide uses; the cloud keeps its name.
     expect(CLOUD_AGENT_PROMPT.split('access key (owner key)')).toHaveLength(2);
@@ -225,6 +226,10 @@ describe('the cloud section', () => {
     await act(async () => button?.click());
     expect(written).toEqual([CLOUD_AGENT_PROMPT]);
     expect(button?.textContent).toBe('Copied');
+    // Said to a screen reader too, not only shown.
+    expect(page.querySelector('[role="status"][aria-live="polite"]')?.textContent).toBe(
+      'Copied to the clipboard.',
+    );
   });
 
   it('holds nothing: no form, no input, and the page CSP is unchanged', async () => {
@@ -326,16 +331,16 @@ describe('the cloud section', () => {
   });
 });
 
-describe('the key icon', () => {
-  /** The `key` path of an Icon component's source. */
-  function keyPath(file: string): string {
-    const found = /\n  key: '([^']+)'/.exec(readFileSync(file, 'utf8'));
-    if (found?.[1] === undefined) {
-      throw new Error(`no key icon in ${file}`);
-    }
-    return found[1];
+/** The `key` path of an Icon component's source. */
+function keyPath(file: string): string {
+  const found = /\n  key: '([^']+)'/.exec(readFileSync(file, 'utf8'));
+  if (found?.[1] === undefined) {
+    throw new Error(`no key icon in ${file}`);
   }
+  return found[1];
+}
 
+describe('the key icon', () => {
   it("is the admin's own key, drawn with no tiny arcs that blur at 18 px", () => {
     const landing = keyPath(join(process.cwd(), 'src/components/Icon.tsx'));
     const admin = keyPath(join(process.cwd(), '../merchant-admin/src/components/Icon.tsx'));
@@ -347,5 +352,55 @@ describe('the key icon', () => {
       expect(Number(arc[1])).toBeGreaterThanOrEqual(2);
       expect(Number(arc[2])).toBeGreaterThanOrEqual(2);
     }
+  });
+});
+
+describe('the key icon where it is drawn', () => {
+  const KEY = keyPath(join(process.cwd(), 'src/components/Icon.tsx'));
+  const drawn = (scope: Element | null | undefined) =>
+    [...(scope?.querySelectorAll('svg path') ?? [])].map((path) => path.getAttribute('d'));
+
+  it('is the cloud step "Save your access key" and the "stays yours" line', async () => {
+    const page = await render(<Cloud />);
+    const step = [...page.querySelectorAll('section#cloud ol > li')].find(
+      (item) => item.querySelector('h3')?.textContent === 'Save your access key',
+    );
+    expect(drawn(step)).toEqual([KEY]);
+    // The steps' lines come from a 1 px gap over the line color: right at 1, 2 and 4 columns.
+    const list = step?.parentElement;
+    expect(list?.className).toContain('gap-px');
+    expect(list?.className).toContain('bg-line');
+    expect(list?.className).toContain('overflow-hidden');
+    expect(list?.className).not.toContain('divide-');
+    expect(step?.className).toContain('bg-surface');
+    const line = [...page.querySelectorAll('li')].find((item) =>
+      item.textContent?.includes('Your access key is made on your device'),
+    );
+    expect(drawn(line)).toEqual([KEY]);
+  });
+
+  it("is the self-hosted card of the landing's reasons", async () => {
+    const page = await render(<Why />);
+    expect(drawn(page)).toContain(KEY);
+  });
+});
+
+describe('copying the prompt', () => {
+  it('says when the clipboard refuses, shown and announced', async () => {
+    const page = await render(<Cloud />);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('denied');
+        },
+      },
+    });
+    const button = page.querySelector('button');
+    await act(async () => button?.click());
+    expect(button?.textContent).toBe('Copy failed');
+    expect(page.querySelector('[role="status"][aria-live="polite"]')?.textContent).toBe(
+      'Could not copy: select the text and copy it yourself.',
+    );
   });
 });

@@ -15,7 +15,7 @@ const STAYS_YOURS: { icon: IconName; text: string }[] = [
     icon: 'wallet',
     text: 'Buyers pay straight to your own wallets: the money never passes through us.',
   },
-  { icon: 'key', text: 'Your access key is made in your browser and never leaves it.' },
+  { icon: 'key', text: 'Your access key is made on your device and never sent to us.' },
   { icon: 'globe', text: 'Once it is live, export your store and run it yourself any time.' },
 ];
 
@@ -80,9 +80,9 @@ export function Cloud() {
             </ul>
           </div>
         </div>
-        <ol className="rounded-20 border-line bg-surface divide-line grid divide-y border md:grid-cols-2 md:divide-x md:divide-y-0 xl:grid-cols-4">
+        <ol className="rounded-20 border-line bg-line grid gap-px overflow-hidden border md:grid-cols-2 xl:grid-cols-4">
           {STEPS.map((step, index) => (
-            <li key={step.title} className="flex flex-col gap-12 p-24">
+            <li key={step.title} className="bg-surface flex flex-col gap-12 p-24">
               <div className="flex items-center justify-between gap-12">
                 <span className="text-12 text-accent-ink font-semibold tracking-wide uppercase">
                   Step {index + 1}
@@ -132,7 +132,8 @@ export function Cloud() {
               </p>
             </div>
             <p className="text-13 text-text-3 px-4">
-              Works with Claude Code, Cursor or any agent that can run TypeScript.
+              Works with Claude Code, Cursor or any agent that can run TypeScript (Node.js 22+ or
+              Bun).
             </p>
           </div>
         </div>
