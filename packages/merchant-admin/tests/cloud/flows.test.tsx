@@ -3929,6 +3929,19 @@ describe('the words a merchant reads', () => {
     expectNoJargon(host);
   });
 
+  it('a store on test payments, set up and live, uses none of it', async () => {
+    for (const activated of [false, true]) {
+      const store = new FakeStore(
+        readyState({ network: 'devnet', activated, runState: activated ? 'live' : 'not_launched' }),
+      );
+      const { host } = await admin(store.routes());
+      await signIn(host, OwnerKey.create());
+      await eventually(host, () => host.textContent?.includes('Test payments') === true);
+      expectNoJargon(host);
+      await unmount();
+    }
+  });
+
   it('the texts behind the confirmations, refusals and warnings use none of it', () => {
     const sale = Object.values(SALE).flatMap((value) =>
       typeof value === 'string' ? [value] : typeof value === 'object' ? Object.values(value) : [],

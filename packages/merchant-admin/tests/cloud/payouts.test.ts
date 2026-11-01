@@ -66,7 +66,7 @@ describe('the payout assets of a store', () => {
 
   it('a testnet is named as one', () => {
     const labels = payoutAssets('devnet', ALL_RAILS).map((asset) => asset.label);
-    expect(labels).toContain('USDC on Solana devnet');
+    expect(labels).toContain('USDC on Solana, test network');
     expect(labels).toContain('USDC on Base Sepolia');
     expect(labels.some((label) => label.endsWith(' on Base'))).toBe(false);
   });

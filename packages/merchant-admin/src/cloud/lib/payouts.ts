@@ -52,7 +52,7 @@ export function payoutAssets(
       continue;
     }
     const chainLabel =
-      chain.chainName ?? (chain.network === 'mainnet' ? 'Solana' : 'Solana devnet');
+      chain.chainName ?? (chain.network === 'mainnet' ? 'Solana' : 'Solana, test network');
     for (const asset of assetsFor(chain.slug, chain.network)) {
       if (asset.mint === undefined) {
         continue;
