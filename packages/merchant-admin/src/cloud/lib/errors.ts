@@ -3,7 +3,7 @@ import { fieldOf } from './fields';
 /** What the merchant reads for a cloud-api refusal (by its code); anything else names the code. */
 const EXPLAINED: Record<string, string> = {
   invalid_invite: 'That invite is not valid: it may be mistyped, used already, or expired.',
-  already_activated: 'That store is already activated: its owner key cannot change here.',
+  already_activated: 'That store is already activated: its access key cannot change here.',
   key_owns_a_store:
     'This key already owns a store in our cloud. One key per store: create a new key for this one.',
   forbidden: 'This key cannot be used here.',
@@ -22,20 +22,21 @@ const EXPLAINED: Record<string, string> = {
   cycle_pending: 'A change to the store is still being applied: try again in a minute.',
   held: 'The store is on hold: contact elisym.',
   operator_activates:
-    'The operator activates this store, after confirming your owner key with you.',
+    'The operator activates this store, after confirming your access key with you.',
   tenant_gone: 'This store was handed over or destroyed.',
   stripe_unavailable: 'Card payments could not be reached just now: try again shortly.',
   card_not_set_up: 'Card payments are not available.',
   no_card_customer: 'There is no card subscription to manage yet.',
   stripe_refused: 'Stripe refused the request: try again, or contact elisym.',
-  owner_mismatch: 'This key is no longer the store owner: sign in with the owner key.',
+  owner_mismatch:
+    "This key is no longer the store owner: sign in with this store's access key instead.",
   // A rail that closed since the page was loaded (the view reloads with the reason).
   card_from: 'Your paid time runs for a while yet: switch to card closer to its end.',
   card_subscription_live: 'Your card subscription is running: manage it in the billing portal.',
   card_status_unknown: 'The card subscription could not be read just now: try again shortly.',
   payment_window_closed: 'Payments for this store are closed.',
   no_card_for_tier: 'This plan cannot be paid by card.',
-  owner_unconfirmed: 'Card payment opens once the operator has confirmed your owner key.',
+  owner_unconfirmed: 'Card payment opens once the operator has confirmed your access key.',
   card_subscription_items: 'Your card subscription needs the operator: contact elisym.',
   store_first: 'Save the store settings first: the payouts are signed for them.',
   no_store_key: 'The store key is still being made: try again in a minute.',

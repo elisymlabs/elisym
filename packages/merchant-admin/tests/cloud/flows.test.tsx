@@ -463,20 +463,21 @@ describe('one key field, routed', () => {
     await eventually(
       host,
       () =>
-        host.textContent?.includes('Our cloud is not answering, and the relays showed nothing') ===
-        true,
+        host.textContent?.includes(
+          'Our cloud is not answering, and the network showed no store',
+        ) === true,
     );
     expect(host.querySelector('input#store-key')).not.toBeNull();
     expect(button(host, 'Open store').getAttribute('aria-disabled')).toBe('false');
   });
 
-  it('a key with no store anywhere opens the cloud part, saying the relays showed nothing', async () => {
+  it('a key with no store anywhere opens the cloud part, saying the network showed no store', async () => {
     const { host } = await admin({
       'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
     });
     await signIn(host, OwnerKey.create());
     await eventually(host, () => host.textContent?.includes('Have an invite from us?') === true);
-    expect(host.textContent).toContain('the relays showed nothing for this key');
+    expect(host.textContent).toContain('the network showed no store for this key');
     expect(host.textContent).toContain(
       'If this is the key of a store you run yourself, do not create a store here with it',
     );
@@ -502,7 +503,7 @@ describe('one key field, routed', () => {
     await eventually(host, () => hasButton(host, 'Sign out'));
     expect(host.querySelector('input#owner-key')).toBeNull();
     expect(host.querySelector('input#store-key')).toBeNull();
-    expect(host.textContent).not.toContain('the relays showed nothing');
+    expect(host.textContent).not.toContain('the network showed no store');
   });
 
   it('a cloud store opens on the cloud answer alone: the relays are not waited for', async () => {
@@ -616,13 +617,13 @@ describe('one key field, routed', () => {
     });
     await signIn(host, OwnerKey.create());
     await eventually(host, () => host.textContent?.includes('Have an invite from us?') === true);
-    expect(host.textContent).toContain('the relays showed nothing');
+    expect(host.textContent).toContain('the network showed no store');
     await click(host, 'Use your invite');
     await fill(host, 'input#invite', 'invite-1');
     await click(host, 'Redeem');
     await eventually(host, () => host.textContent?.includes('Have an invite from us?') === false);
     await eventually(host, () => host.textContent?.includes('Your store') === true);
-    expect(host.textContent).not.toContain('the relays showed nothing');
+    expect(host.textContent).not.toContain('the network showed no store');
   });
 
   it('while a key is checked, Enter reads nothing more and the field keeps what it has', async () => {
@@ -1852,9 +1853,11 @@ describe('the cloud store on the frame', () => {
       [`POST ${path}/export/confirm`]: () => ({ body: { tenantId: TENANT_ID, destroyed: true } }),
     });
     await signIn(host, OwnerKey.create());
-    await eventually(host, () => hasButton(host, "My own node runs: destroy the cloud's copy"));
+    await eventually(host, () =>
+      hasButton(host, "My own payment server runs: destroy the cloud's copy"),
+    );
     expect(hasButton(host, 'Refresh')).toBe(true);
-    await click(host, "My own node runs: destroy the cloud's copy");
+    await click(host, "My own payment server runs: destroy the cloud's copy");
     await click(host, "Confirm: destroy the cloud's copy");
     await eventually(host, () => host.textContent?.includes('Destroyed:') === true);
     expect(host.textContent).toContain('your access key is free');
@@ -3797,5 +3800,97 @@ describe('the payouts form, its review fixes', () => {
     expect(host.querySelector('#payout-address-problem')?.textContent).toBe(
       'That is not an address USDC on Base can be paid to.',
     );
+  });
+});
+
+/**
+ * The cloud screens' words (plan `admin-onboarding.md` 2.10): none of these
+ * reaches a merchant. Exceptions, stripped before the scan: the command a
+ * self-hoster runs (the "I run it myself" answer). The sign-in page is shared
+ * with self-hosted stores and keeps their words, so it is not scanned.
+ */
+const JARGON =
+  /\b(owner keys?|tenants?|nsec|npub|nodes?|rails?|chains?|payout address(es)?|relays?)\b/i;
+const SELF_HOST_COMMANDS = /npx @elisym\/merchant-node [a-z-]+/g;
+
+function jargonIn(host: HTMLElement): string | undefined {
+  const text = (host.textContent ?? '').replace(SELF_HOST_COMMANDS, '');
+  const found = JARGON.exec(text);
+  // The word with its surroundings, so a failure says where it is.
+  return found === null ? undefined : text.slice(Math.max(0, found.index - 50), found.index + 50);
+}
+
+function expectNoJargon(host: HTMLElement) {
+  const found = jargonIn(host);
+  if (found !== undefined) {
+    throw new Error(`jargon on screen: "${found}"`);
+  }
+}
+
+describe('the words a merchant reads', () => {
+  it('the front page and the create flow use none of the jargon', async () => {
+    const { host } = await admin({
+      'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
+    });
+    await eventually(host, () => host.textContent?.includes('How it works') === true);
+    expectNoJargon(host);
+    await click(host, 'Create a store');
+    await eventually(host, () => host.querySelector('button[data-tier="starter"]') !== null);
+    expectNoJargon(host);
+    await toKeyStep(host);
+    expectNoJargon(host);
+    await makeAndSaveKey(host);
+    await eventually(host, () => hasButton(host, 'Create my store'));
+    expectNoJargon(host);
+  });
+
+  it('a key with no store, a store not paid and a store set up use none of it', async () => {
+    const none = await admin({ 'GET /owner': { body: { tenantId: null, termsVersion: 't1' } } });
+    await signIn(none.host, OwnerKey.create());
+    await eventually(none.host, () => none.host.textContent?.includes('Have an invite') === true);
+    expectNoJargon(none.host);
+    await unmount();
+
+    const unpaid = new FakeStore(storeState());
+    const first = await admin(unpaid.routes());
+    await signIn(first.host, OwnerKey.create());
+    await eventually(
+      first.host,
+      () => first.host.textContent?.includes('Getting started') === true,
+    );
+    expectNoJargon(first.host);
+    await unmount();
+
+    const ready = new FakeStore(readyState());
+    const second = await admin(ready.routes());
+    await signIn(second.host, OwnerKey.create());
+    await eventually(
+      second.host,
+      () => second.host.textContent?.includes('Getting started') === true,
+    );
+    for (const page of ['Products', 'Payouts', 'Install', 'Settings', 'Plan & billing', 'Help']) {
+      await openPage(second.host, page);
+    }
+    expectNoJargon(second.host);
+  });
+
+  it('a live store, on every page, uses none of it', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live', paidOrders: 3 }));
+    const { host } = await admin(store.routes());
+    await signIn(host, OwnerKey.create());
+    await eventually(host, () => host.querySelector('[data-run-state="live"]') !== null);
+    for (const page of [
+      'Orders',
+      'Products',
+      'Payouts',
+      'Install',
+      'Settings',
+      'Plan & billing',
+      'Help',
+      'Overview',
+    ]) {
+      await openPage(host, page);
+    }
+    expectNoJargon(host);
   });
 });

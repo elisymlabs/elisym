@@ -76,13 +76,13 @@ export function HandoverPanel({
         {exported.exportedAt === undefined
           ? 'The store left our cloud.'
           : `The store left our cloud on ${shownTime(exported.exportedAt)}.`}{' '}
-        Run it on your own node with the handover: its HANDOVER.md has the steps.
+        Run it on your own payment server with the handover: its HANDOVER.md has the steps.
       </p>
       {exported.destroyAt === undefined ? null : (
         <p className="text-14 text-text-2 mt-8">
           The cloud still holds the store key (it can read the orders and, where it vouches for the
           store, name a new owner) until {shownTime(exported.destroyAt)}: it destroys its copy then,
-          or as soon as you confirm your own node runs.
+          or as soon as you confirm your own payment server runs.
         </p>
       )}
       {error === '' ? null : (
@@ -93,7 +93,7 @@ export function HandoverPanel({
       {exported.archiveReady ? (
         <>
           <p className="text-14 text-text-2 mt-8">
-            The handover holds the store key passphrase: keep it as safe as your owner key.
+            The handover holds the store key passphrase: keep it as safe as your access key.
           </p>
           {asking ? (
             <ConfirmStep
@@ -109,7 +109,7 @@ export function HandoverPanel({
                 Download the handover
               </Button>
               <Button disabled={busy} onClick={() => setAsking(true)}>
-                My own node runs: destroy the cloud&apos;s copy
+                My own payment server runs: destroy the cloud&apos;s copy
               </Button>
             </div>
           )}

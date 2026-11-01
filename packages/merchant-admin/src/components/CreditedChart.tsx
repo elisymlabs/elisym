@@ -45,7 +45,7 @@ export function CreditedChart({ rows, coins, nowSeconds, source = 'self-hosted' 
           </span>
           <p className="text-15 font-medium">Nothing credited yet</p>
           <p className="text-13 text-text-2 max-w-320">
-            {`Your first paid order shows up here once ${CREDITOR[source]} confirms it on chain and you refresh.`}
+            {`Your first paid order shows up here once ${CREDITOR[source]} confirms ${source === 'cloud' ? 'the payment' : 'it on chain'} and you refresh.`}
           </p>
         </div>
       </ChartCard>

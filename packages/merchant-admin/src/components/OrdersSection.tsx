@@ -112,8 +112,10 @@ export function OrdersSection({
         </div>
         {rows.length === 0 && (
           <EmptyState icon="receipt" title="No orders found.">
-            Orders show up here once buyers order from your store. Many relays keep private messages
-            for only about two days.
+            Orders show up here once buyers order from your store.
+            {source === 'cloud'
+              ? null
+              : ' Many relays keep private messages for only about two days.'}
           </EmptyState>
         )}
         {rows.length > 0 && shown.length === 0 && (

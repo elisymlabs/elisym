@@ -175,7 +175,7 @@ export function decisionText(decision: SigningDecision): string | undefined {
     case 'wait':
       return `A ${decision.what} of yours is dated ${at(decision.until - 1)}: you can sign from ${at(decision.until)}.`;
     case 'ahead':
-      return `A ${decision.what} of yours dated ${at(decision.date)} is on the relays and outranks anything signed before then.`;
+      return `A ${decision.what} of yours dated ${at(decision.date)} is published and outranks anything signed before then.`;
     case 'revoked':
       return `You revoked this store on ${at(decision.date)}. Re-authorize it to sign, or withdraw it.`;
   }

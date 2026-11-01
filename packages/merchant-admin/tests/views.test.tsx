@@ -825,7 +825,7 @@ describe('the words for whose numbers they are', () => {
           <Charts rows={[]} nowSeconds={1_790_000_500} source={source} />,
           'credited-empty',
         ),
-      ).toContain(`once ${words} confirms it`);
+      ).toContain(`once ${words} confirms`);
       expect(
         await text(<Overview snapshot={snapshot()} onTab={() => undefined} source={source} />),
       ).toContain(`what ${words} confirmed on chain`);

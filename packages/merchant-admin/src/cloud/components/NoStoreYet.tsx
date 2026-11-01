@@ -53,7 +53,7 @@ export function NoStoreYet({
           <p>{notice}</p>
           <p>
             If this is the key of a store you run yourself, do not create a store here with it:
-            check the key or your relays.
+            check the key, or try again later.
           </p>
         </div>
       )}

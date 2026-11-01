@@ -86,7 +86,7 @@ describe('sign in', () => {
     mounted = await mount(<App ownTab createDeps={createDeps} leave={() => undefined} />);
     await signIn(mounted.container, 'not a key');
     expect(mounted.container.querySelector('[role="alert"]')?.textContent).toMatch(
-      /not a secret key/,
+      /That is not a key: paste the line of your key file/,
     );
     expect(keyInput(mounted.container).value).toBe('');
     expect(createDeps).not.toHaveBeenCalled();

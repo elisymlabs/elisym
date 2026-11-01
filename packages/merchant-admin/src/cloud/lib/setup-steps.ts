@@ -29,7 +29,7 @@ export const EMPTY_PRODUCTS_DIGEST =
 
 const LABELS: Record<SetupStepKey, string> = {
   plan: 'Plan',
-  key: 'Your key',
+  key: 'Access key',
   pay: 'Pay',
   name: 'Name your store',
   payouts: 'Get paid to',

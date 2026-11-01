@@ -453,7 +453,7 @@ describe('a decision in the merchant words', () => {
       `A payout list of yours is dated ${at(NOW + 60)}: you can sign from ${at(NOW + 61)}.`,
     );
     expect(decisionText({ kind: 'ahead', what: 'revocation', date: NOW + 3600 })).toBe(
-      `A revocation of yours dated ${at(NOW + 3600)} is on the relays and outranks anything signed before then.`,
+      `A revocation of yours dated ${at(NOW + 3600)} is published and outranks anything signed before then.`,
     );
     expect(decisionText({ kind: 'revoked', date: NOW - 100 })).toBe(
       `You revoked this store on ${at(NOW - 100)}. Re-authorize it to sign, or withdraw it.`,

@@ -32,7 +32,7 @@ export function HandAnswer({ orderKey, reasons, assets, onAsk, busy }: Props) {
     const refundTx = refundTxOf(tx, asset);
     if (refundTx === undefined) {
       setProblem(
-        'Paste the transaction of the refund you sent, on the chain of the coin refunded (a Solana signature, or a Tempo hash).',
+        'Paste the transaction of the refund you sent, on the network of the coin refunded (a Solana signature, or a Tempo hash).',
       );
       return;
     }

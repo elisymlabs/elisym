@@ -234,7 +234,7 @@ describe('what an answer says', () => {
     );
     expect(explainAnswer({ error: 'card_from' }, 409)).toContain('closer to its end');
     expect(explainAnswer({ error: 'owner_unconfirmed' }, 409)).toContain(
-      'confirmed your owner key',
+      'confirmed your access key',
     );
   });
 });

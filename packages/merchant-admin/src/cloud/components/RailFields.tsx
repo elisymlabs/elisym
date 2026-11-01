@@ -60,7 +60,7 @@ export function RailFields({ id, label, rail, onChange }: Props) {
                 }}
                 className="rounded-10 border-line-2 bg-bg text-14 border px-8 py-4"
               >
-                <option value="">as the node does by default</option>
+                <option value="">as the store does by default</option>
                 <option value="fast">fast (on inclusion)</option>
                 <option value="safe">safe (once final)</option>
               </select>

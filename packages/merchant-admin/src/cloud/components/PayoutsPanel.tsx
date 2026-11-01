@@ -423,7 +423,7 @@ export function PayoutsPanel({
     } else if (!kept.read.pending) {
       setRailsWait(undefined);
       if (kept.read.refused === undefined) {
-        setNotice('Could not turn on the rails your payouts need: try again.');
+        setNotice('Could not turn on the networks your payouts need: try again.');
       } else {
         setProblems(kept.read.refused);
       }
@@ -485,8 +485,8 @@ export function PayoutsPanel({
   const keptAt = kept.read?.keptPayoutList?.createdAt;
   const liveText =
     signedId === expectedId || keptAt === undefined
-      ? 'Live: the relays show the payout list you signed.'
-      : `Live: the relays show the payout list the store keeps, signed ${shownTime(keptAt)}.`;
+      ? 'Live: the payouts you signed are published.'
+      : `Live: the payouts the store keeps are published, signed ${shownTime(keptAt)}.`;
 
   // Named whatever the clocks say, and whatever the console's own read shows when the node says so.
   const revoked =
@@ -503,13 +503,13 @@ export function PayoutsPanel({
         one.
       </p>
       {relay === undefined && !relayFailed ? (
-        <p className="text-14 text-text-3 mt-12">Reading your payouts from the relays...</p>
+        <p className="text-14 text-text-3 mt-12">Reading your published payouts...</p>
       ) : null}
       {relayFailed ? (
         <div role="alert" className="text-14 text-error mt-12 flex flex-col items-start gap-8">
-          <p>Could not read your payouts from the relays.</p>
+          <p>Could not read your published payouts.</p>
           <Button onClick={askRead} size="sm">
-            Read the relays again
+            Read them again
           </Button>
         </div>
       ) : null}
@@ -684,8 +684,8 @@ export function PayoutsPanel({
       {goesOut === 'missing' ? (
         <div role="alert" className="text-13 text-error mt-12 flex flex-col items-start gap-8">
           <p>
-            Your payout change did not go out: the relays show another list. Check again in a
-            minute; if it stays, contact elisym.
+            Your payout change did not go out: another list is published. Check again in a minute;
+            if it stays, contact elisym.
           </p>
           <Button onClick={askRead} size="sm">
             Check again

@@ -68,8 +68,8 @@ export function ExportPanel({ api, tenantId, view, onStoreChanged }: Props) {
   return (
     <Card title="Leave the cloud">
       <p className="text-14 text-text-2 mt-12">
-        Export hands you the store to run on your own node: its home (keys, orders, products,
-        settings) and the store key passphrase.
+        Export hands you the store to run on your own payment server: its home (keys, orders,
+        products, settings) and the store key passphrase.
       </p>
       {view.stopped ? null : (
         <p className="text-14 mt-8">

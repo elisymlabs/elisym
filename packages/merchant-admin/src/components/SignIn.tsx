@@ -45,7 +45,9 @@ export function SignIn({ onKey, cloud }: Props) {
     const key = parseStoreKey(field.value);
     field.value = '';
     if (key === undefined) {
-      setError('That is not a secret key: paste an nsec or 64 hex characters.');
+      setError(
+        'That is not a key: paste the line of your key file that starts with nsec1, or 64 hex characters.',
+      );
       return;
     }
     setError('');
@@ -72,8 +74,8 @@ export function SignIn({ onKey, cloud }: Props) {
           )}
           {cloud === undefined ? null : (
             <p className="text-13 text-text-3 mt-8">
-              We ask our cloud whether this key runs a store there, and read your relays; the key
-              itself never leaves this page.
+              We ask our cloud whether this key runs a store there, and look your store up on the
+              network; the key itself never leaves this page.
             </p>
           )}
 

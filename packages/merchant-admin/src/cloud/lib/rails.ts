@@ -22,7 +22,7 @@ export function cardRefusalText(refusal: RailRefusal): string {
     case 'card_status_unknown':
       return 'The card subscription could not be read just now: try again shortly.';
     case 'owner_unconfirmed':
-      return 'Card payment opens once the operator has confirmed your owner key.';
+      return 'Card payment opens once the operator has confirmed your access key.';
     case 'tenant_gone':
       return 'This store was handed over or destroyed.';
     case 'card_subscription_items':

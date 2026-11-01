@@ -26,9 +26,9 @@ interface Props {
 export const CLOUD_PROBE_MS = 5000;
 
 export const NOTHING_ON_RELAYS =
-  'For a store you run yourself, the relays showed nothing for this key: check the key, or sign out and try again.';
+  'For a store you run yourself, the network showed no store for this key: check the key, or sign out and try again.';
 export const NOT_ANSWERING =
-  'Our cloud is not answering, and the relays showed nothing for this key: try again.';
+  'Our cloud is not answering, and the network showed no store for this key: try again.';
 
 type Mode =
   | { name: 'entry' }
