@@ -13,7 +13,7 @@ export function PartnerMerchantItem({ merchant }: Props) {
       <p className="text-14 font-medium">
         <span className="font-mono">{merchant.tenantId}</span>{' '}
         <span className="text-text-3 font-normal">
-          {merchant.tierName}, {merchant.network}
+          {merchant.tierName}, {merchant.network === 'devnet' ? 'test payments' : 'live payments'}
         </span>
       </p>
       <p className="text-13">{STATUS_TEXT[merchant.status]}</p>

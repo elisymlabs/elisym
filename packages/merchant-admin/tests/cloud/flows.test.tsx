@@ -3818,8 +3818,10 @@ describe('the payouts form, its review fixes', () => {
  * with self-hosted stores and keeps their words, so it is not scanned.
  */
 const JARGON =
-  /\b(owner keys?|tenants?|nsec|npub|nodes?|rails?|chains?|payout address(es)?|payout lists?|relays?|RPCs?)\b/i;
+  /\b(owner keys?|tenants?|nsec|npub|nodes?|rails?|chains?|payout address(es)?|payout lists?|relays?|RPCs?|mainnet|devnet)\b/i;
 const SELF_HOST_COMMANDS = /npx @elisym\/merchant-node [a-z-]+/g;
+/** The snippet the merchant pastes is code: its attribute names the network as the widget reads it. */
+const SNIPPET_NETWORK = /network="(mainnet|devnet)"/g;
 
 function jargonIn(host: HTMLElement): string | undefined {
   // Each text node apart: textContent runs blocks together ("tenantOn"), hiding a word's end.
@@ -3828,7 +3830,7 @@ function jargonIn(host: HTMLElement): string | undefined {
   for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
     parts.push(node.textContent ?? '');
   }
-  const text = parts.join(' ').replace(SELF_HOST_COMMANDS, '');
+  const text = parts.join(' ').replace(SELF_HOST_COMMANDS, '').replace(SNIPPET_NETWORK, '');
   const found = JARGON.exec(text);
   // The word with its surroundings, so a failure says where it is.
   return found === null ? undefined : text.slice(Math.max(0, found.index - 50), found.index + 50);
