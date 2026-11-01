@@ -15,14 +15,19 @@ const STAYS_YOURS: { icon: IconName; text: string }[] = [
     icon: 'wallet',
     text: 'Buyers pay straight to your own wallets: the money never passes through us.',
   },
-  { icon: 'key', text: 'Your owner key is made in your browser and never leaves it.' },
+  { icon: 'key', text: 'Your access key is made in your browser and never leaves it.' },
   { icon: 'globe', text: 'Once it is live, export your store and run it yourself any time.' },
 ];
 
 const STEPS: { title: string; body: string; icon: IconName }[] = [
   {
-    title: 'Create your key',
-    body: 'Accept the terms and the admin makes your owner key in your browser. It is how you sign in.',
+    title: 'Choose a plan',
+    body: 'Monthly, with the limits shown below. Talk to us for anything bigger.',
+    icon: 'table',
+  },
+  {
+    title: 'Save your access key',
+    body: 'The admin makes it in your browser and you download it as a file. It is how you sign in, and we cannot restore it.',
     icon: 'key',
   },
   {
@@ -75,7 +80,7 @@ export function Cloud() {
             </ul>
           </div>
         </div>
-        <ol className="rounded-20 border-line bg-surface divide-line grid divide-y border md:grid-cols-3 md:divide-x md:divide-y-0">
+        <ol className="rounded-20 border-line bg-surface divide-line grid divide-y border md:grid-cols-2 md:divide-x md:divide-y-0 xl:grid-cols-4">
           {STEPS.map((step, index) => (
             <li key={step.title} className="flex flex-col gap-12 p-24">
               <div className="flex items-center justify-between gap-12">
@@ -102,24 +107,33 @@ export function Cloud() {
               plan, wallets and products, and hands you the button for your page.
             </p>
           </div>
-          <div className="rounded-16 border-line bg-bg flex min-w-0 flex-col gap-12 border p-16">
-            <p
-              id="cloud-agent-prompt"
-              className="text-13 text-text-2 font-mono leading-relaxed break-words"
-            >
-              {before}
-              <a
-                href={CLOUD_AGENT_DOCS_URL}
-                rel="noopener noreferrer"
-                className="text-accent-ink break-all underline decoration-current/40 underline-offset-2"
+          <div className="flex min-w-0 flex-col gap-8">
+            <div className="rounded-16 border-line bg-bg flex min-w-0 flex-col border">
+              <div className="border-line flex items-center justify-between gap-12 border-b px-16 py-10">
+                <CopyButton text={CLOUD_AGENT_PROMPT} label="Copy prompt" />
+                <span className="text-12 text-text-3 font-semibold tracking-wide uppercase">
+                  Prompt
+                </span>
+              </div>
+              <p
+                id="cloud-agent-prompt"
+                className="text-14 text-text-2 p-16 leading-relaxed break-words"
               >
-                {CLOUD_AGENT_DOCS_URL}
-              </a>
-              {after}
-            </p>
-            <div className="flex justify-end">
-              <CopyButton text={CLOUD_AGENT_PROMPT} label="Copy prompt" />
+                {before}
+                <a
+                  href={CLOUD_AGENT_DOCS_URL}
+                  title={CLOUD_AGENT_DOCS_URL}
+                  rel="noopener noreferrer"
+                  className="text-accent-ink underline decoration-current/40 underline-offset-2"
+                >
+                  the setup guide
+                </a>
+                {after}
+              </p>
             </div>
+            <p className="text-13 text-text-3 px-4">
+              Works with Claude Code, Cursor or any agent that can run TypeScript.
+            </p>
           </div>
         </div>
       </div>

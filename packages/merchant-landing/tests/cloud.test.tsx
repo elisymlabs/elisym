@@ -7,6 +7,7 @@ import { App } from '../src/App';
 import { Cloud } from '../src/components/Cloud';
 import { Pricing } from '../src/components/Pricing';
 import {
+  CLOUD_AGENT_DOCS_URL,
   CLOUD_AGENT_PROMPT,
   ADMIN_URL,
   CLOUD_TIERS,
@@ -163,12 +164,17 @@ describe('the cloud section', () => {
     const page = await render(<Cloud />);
     const text = page.textContent ?? '';
     expect(text).toContain('never passes through us');
-    expect(text).toContain('never leaves it');
+    expect(text).toContain('Your access key is made in your browser and never leaves it.');
     expect(text).toContain('export your store and run it yourself any time');
     const steps = [...page.querySelectorAll('section#cloud ol > li h3')].map(
       (heading) => heading.textContent,
     );
-    expect(steps).toEqual(['Create your key', 'Pay the first month', 'Set up and launch']);
+    expect(steps).toEqual([
+      'Choose a plan',
+      'Save your access key',
+      'Pay the first month',
+      'Set up and launch',
+    ]);
     const runCard = [...page.querySelectorAll('h3')].find(
       (heading) => heading.textContent === 'What we run',
     )?.parentElement;
@@ -186,10 +192,28 @@ describe('the cloud section', () => {
   it('hands an AI agent the cloud runbook, linked and copyable', async () => {
     const page = await render(<Cloud />);
     const prompt = page.querySelector('#cloud-agent-prompt');
-    expect(prompt?.textContent).toBe(CLOUD_AGENT_PROMPT);
+    // Shown with the guide named in words; the full URL is its href, its title and what is copied.
+    expect(prompt?.textContent).toBe(
+      CLOUD_AGENT_PROMPT.replace(CLOUD_AGENT_DOCS_URL, 'the setup guide'),
+    );
+    expect(prompt?.querySelector('a')?.textContent).toBe('the setup guide');
     expect(prompt?.querySelector('a')?.getAttribute('href')).toBe(
       'https://docs.elisym.network/commerce/cloud-agents.md',
     );
+    expect(prompt?.querySelector('a')?.getAttribute('title')).toBe(CLOUD_AGENT_DOCS_URL);
+    // Read in the body font, not as code.
+    expect(prompt?.className).not.toContain('font-mono');
+    expect(prompt?.className).toContain('text-14');
+    // The action comes first in the card, labelled "Prompt"; a line under it says which agents.
+    const card = prompt?.parentElement;
+    expect(card?.querySelector('button, a, input')?.textContent).toBe('Copy prompt');
+    expect(card?.textContent).toContain('Prompt');
+    expect(card?.parentElement?.textContent).toContain(
+      'Works with Claude Code, Cursor or any agent that can run TypeScript.',
+    );
+    // The access key is named once with the word the guide uses; the cloud keeps its name.
+    expect(CLOUD_AGENT_PROMPT.split('access key (owner key)')).toHaveLength(2);
+    expect(CLOUD_AGENT_PROMPT).toContain('elisym Cloud');
     expect(prompt?.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
     expect(CLOUD_AGENT_PROMPT).toContain('only after I agree to the terms');
     const written: string[] = [];
@@ -299,5 +323,29 @@ describe('the cloud section', () => {
     expect(page.querySelector('#faq')?.textContent).toContain(
       'or let us host it for a monthly fee (see Run it in our cloud)',
     );
+  });
+});
+
+describe('the key icon', () => {
+  /** The `key` path of an Icon component's source. */
+  function keyPath(file: string): string {
+    const found = /\n  key: '([^']+)'/.exec(readFileSync(file, 'utf8'));
+    if (found?.[1] === undefined) {
+      throw new Error(`no key icon in ${file}`);
+    }
+    return found[1];
+  }
+
+  it("is the admin's own key, drawn with no tiny arcs that blur at 18 px", () => {
+    const landing = keyPath(join(process.cwd(), 'src/components/Icon.tsx'));
+    const admin = keyPath(join(process.cwd(), '../merchant-admin/src/components/Icon.tsx'));
+    expect(landing).toBe(admin);
+    // Every arc's radii (the first two numbers after `a`/`A`) are 2 or more.
+    const arcs = [...landing.matchAll(/[aA]\s*([\d.]+)[\s,]+([\d.]+)/g)];
+    expect(arcs.length).toBeGreaterThan(0);
+    for (const arc of arcs) {
+      expect(Number(arc[1])).toBeGreaterThanOrEqual(2);
+      expect(Number(arc[2])).toBeGreaterThanOrEqual(2);
+    }
   });
 });

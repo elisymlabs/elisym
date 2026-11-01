@@ -28,7 +28,7 @@ export const CLOUD_AGENT_DOCS_URL = `${DOCS.cloudAgents}.md`;
 /** What the merchant pastes into a coding agent to set up a store in our cloud. */
 export const CLOUD_AGENT_PROMPT = [
   `Set up my Pay Core store in elisym Cloud. Read ${CLOUD_AGENT_DOCS_URL} and follow it step by step.`,
-  "Make my owner key and save it to a file for me, let me pick a plan, and sign up only after I agree to the terms. Give me the payment link, then ask me for my store's name, the wallets I want to be paid to and my products.",
+  "Make my access key (owner key) and save it to a file for me, let me pick a plan, and sign up only after I agree to the terms. Give me the payment link, then ask me for my store's name, the wallets I want to be paid to and my products.",
   'When the store is live, give me the Buy button snippet for my page and tell me where my key file is.',
 ].join(' ');
 
