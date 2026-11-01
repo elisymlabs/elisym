@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { OwnerKey } from '../../src/cloud/lib/owner-key';
 import {
   type PayoutRow,
+  checksumTypo,
   payoutAddress,
   payoutAssets,
   payoutRows,
@@ -249,5 +250,24 @@ describe('the owner events signed for the cloud', () => {
     expect(events.auth.tags.some((tag) => tag[0] === 'expiration')).toBe(false);
     expect(payoutRows(events.payoutList, ALLOWED)).toEqual({ rows, dropped: 0 });
     // That cloud-api takes them is a contract test in the cloud repo.
+  });
+});
+
+describe('a checksum typo in an EVM address', () => {
+  const BASE_USDC = 'eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+  const GOOD = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed';
+  const TYPO = '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAee';
+
+  it('is caught whatever the prefix case, and around spaces a paste brings', () => {
+    expect(checksumTypo(BASE_USDC, TYPO)).toBe(true);
+    expect(checksumTypo(BASE_USDC, `0X${TYPO.slice(2)}`)).toBe(true);
+    expect(checksumTypo(BASE_USDC, `  ${TYPO}\n`)).toBe(true);
+  });
+
+  it('lets a right checksum, an all-lowercase address and a non-EVM asset through', () => {
+    expect(checksumTypo(BASE_USDC, GOOD)).toBe(false);
+    expect(checksumTypo(BASE_USDC, `0X${GOOD.slice(2)}`)).toBe(false);
+    expect(checksumTypo(BASE_USDC, TYPO.toLowerCase())).toBe(false);
+    expect(checksumTypo(USDC_SOLANA_MAINNET, TYPO)).toBe(false);
   });
 });

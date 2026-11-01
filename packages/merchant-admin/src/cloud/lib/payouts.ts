@@ -129,7 +129,7 @@ export function payoutRows(list: NostrEvent | undefined, allowed: ReadonlySet<st
 }
 
 /** What an EVM address looks like: 0x and 40 hex characters, in any case. */
-const EVM_ADDRESS_SHAPE = /^0x[0-9a-fA-F]{40}$/;
+const EVM_ADDRESS_SHAPE = /^0[xX][0-9a-fA-F]{40}$/;
 
 /**
  * A mixed-case EVM address whose EIP-55 checksum is wrong: a typo. The list
