@@ -6,7 +6,7 @@ export const WITHDRAW_CONSEQUENCE =
 
 /** What Resume does. */
 export const RESUME_CONSEQUENCE =
-  'Put the store back on sale: its products and payouts, as you saved them, go out again, on our network endpoints.';
+  'Put the store back on sale: its products and payouts, as you saved them, go out again.';
 
 /** What an export does. */
 export const EXPORT_CONSEQUENCE =

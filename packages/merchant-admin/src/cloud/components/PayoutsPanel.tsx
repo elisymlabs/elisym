@@ -67,6 +67,12 @@ const RAIL_NAMES: Record<string, string> = {
  * Rails follow payouts, upward only: a payout on a rail the store keeps off
  * first saves the store with that rail on, and signs once it is kept.
  */
+
+/** Said while the published payouts are read. */
+export const READING_PAYOUTS = 'Reading your published payouts...';
+/** Said when the networks a new payout needs could not be turned on. */
+export const NETWORKS_NOT_ON = 'Could not turn on the networks your payouts need: try again.';
+
 export function PayoutsPanel({
   api,
   tenantId,
@@ -423,7 +429,7 @@ export function PayoutsPanel({
     } else if (!kept.read.pending) {
       setRailsWait(undefined);
       if (kept.read.refused === undefined) {
-        setNotice('Could not turn on the networks your payouts need: try again.');
+        setNotice(NETWORKS_NOT_ON);
       } else {
         setProblems(kept.read.refused);
       }
@@ -503,7 +509,7 @@ export function PayoutsPanel({
         one.
       </p>
       {relay === undefined && !relayFailed ? (
-        <p className="text-14 text-text-3 mt-12">Reading your published payouts...</p>
+        <p className="text-14 text-text-3 mt-12">{READING_PAYOUTS}</p>
       ) : null}
       {relayFailed ? (
         <div role="alert" className="text-14 text-error mt-12 flex flex-col items-start gap-8">

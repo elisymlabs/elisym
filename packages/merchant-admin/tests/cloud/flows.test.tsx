@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
 import type { CloudProps } from '../../src/cloud/CloudApp';
 import { KeyInUseWarning } from '../../src/cloud/components/KeyInUseWarning';
+import { NETWORKS_NOT_ON, READING_PAYOUTS } from '../../src/cloud/components/PayoutsPanel';
 import { EXPLAINED } from '../../src/cloud/lib/errors';
 import { decisionText } from '../../src/cloud/lib/owner-events';
 import { OwnerKey, parseOwnerKey } from '../../src/cloud/lib/owner-key';
@@ -3821,7 +3822,13 @@ const JARGON =
 const SELF_HOST_COMMANDS = /npx @elisym\/merchant-node [a-z-]+/g;
 
 function jargonIn(host: HTMLElement): string | undefined {
-  const text = (host.textContent ?? '').replace(SELF_HOST_COMMANDS, '');
+  // Each text node apart: textContent runs blocks together ("tenantOn"), hiding a word's end.
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  const parts: string[] = [];
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    parts.push(node.textContent ?? '');
+  }
+  const text = parts.join(' ').replace(SELF_HOST_COMMANDS, '');
   const found = JARGON.exec(text);
   // The word with its surroundings, so a failure says where it is.
   return found === null ? undefined : text.slice(Math.max(0, found.index - 50), found.index + 50);
@@ -3942,7 +3949,15 @@ describe('the words a merchant reads', () => {
       'name: Required',
     ].map((line) => problemText(line).text);
     const warning = renderToStaticMarkup(<KeyInUseWarning />);
-    for (const text of [...sale, ...refusals, ...decisions, ...problems, warning]) {
+    for (const text of [
+      ...sale,
+      ...refusals,
+      ...decisions,
+      ...problems,
+      warning,
+      READING_PAYOUTS,
+      NETWORKS_NOT_ON,
+    ]) {
       expect(JARGON.exec(String(text))?.[0], String(text)).toBeUndefined();
     }
   });
@@ -3973,16 +3988,39 @@ describe('the words a merchant reads', () => {
           partnerId: 'p000000000001',
           paidUntil: 1_900_000_000,
           volumeSince: 1_897_408_000,
-          volume: { orders: 0, paid: {} },
-          merchants: [],
+          volume: { orders: 2, paid: { [USDC]: '3500000' } },
+          merchants: [
+            {
+              tenantId: 'aaaaaaaaaaaa',
+              tier: 'starter',
+              tierName: 'Starter',
+              network: 'mainnet',
+              status: 'on_sale',
+              activatedAt: 1_800_000_000,
+              paidUntil: null,
+              volume: { orders: 2, paid: { [USDC]: '3500000' } },
+            },
+            {
+              tenantId: 'cccccccccccc',
+              tier: 'starter',
+              tierName: 'Starter',
+              network: 'devnet',
+              status: 'invited',
+              activatedAt: null,
+              paidUntil: null,
+              volume: null,
+            },
+          ],
         },
       },
     });
     await signIn(partner.host, OwnerKey.create());
+    // Both merchant rows are drawn, with their words.
     await eventually(
       partner.host,
-      () => partner.host.textContent?.includes('p000000000001') === true,
+      () => partner.host.textContent?.includes('cccccccccccc') === true,
     );
+    expect(partner.host.textContent).toContain('aaaaaaaaaaaa');
     expectNoJargon(partner.host);
   });
 });
