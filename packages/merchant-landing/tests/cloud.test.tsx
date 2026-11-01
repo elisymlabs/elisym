@@ -227,9 +227,16 @@ describe('the cloud section', () => {
     expect(written).toEqual([CLOUD_AGENT_PROMPT]);
     expect(button?.textContent).toBe('Copied');
     // Said to a screen reader too, not only shown.
-    expect(page.querySelector('[role="status"][aria-live="polite"]')?.textContent).toBe(
-      'Copied to the clipboard.',
-    );
+    const status = page.querySelector('[role="status"][aria-live="polite"]');
+    expect(status?.textContent).toBe('Copied to the clipboard.');
+    // Heard, not shown: it takes no room in the header row.
+    expect(status?.className).toContain('sr-only');
+    // Back to its label after a moment.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1600));
+    });
+    expect(button?.textContent).toBe('Copy prompt');
+    expect(status?.textContent).toBe('');
   });
 
   it('holds nothing: no form, no input, and the page CSP is unchanged', async () => {
