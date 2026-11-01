@@ -9,6 +9,7 @@ import {
   buildPaytoEvent,
   buildStoreAuthEvent,
   canonicalPayoutAddress,
+  hasValidEvmChecksum,
   parseCaip19,
   verifyPaytoProof,
 } from '@elisym/commerce';
@@ -128,6 +129,33 @@ export function payoutRows(list: NostrEvent | undefined, allowed: ReadonlySet<st
 }
 
 /** An address as the list carries it, for this asset; undefined when it is not one. */
+/**
+ * A mixed-case EVM address whose EIP-55 checksum is wrong: a typo. The list
+ * carries addresses lowercased, so the checksum is checked here, on what the
+ * merchant typed, or never.
+ */
+export function checksumTypo(caip19: string, address: string): boolean {
+  const parsed = parseCaip19(caip19);
+  return parsed?.chain.family === 'evm' && !hasValidEvmChecksum(address.trim());
+}
+
+/** Rails a store must have one payout on; the EVM chains come next to one. */
+const FIRST_RAILS: ReadonlySet<string> = new Set(['solana', 'tempo']);
+
+/** Whether a row's coin is on Solana or Tempo, the rails a store needs a payout on. */
+export function onFirstRail(caip19: string): boolean {
+  const parsed = parseCaip19(caip19);
+  return parsed !== undefined && FIRST_RAILS.has(parsed.chain.slug);
+}
+
+/** The rows as they are signed: Solana and Tempo ones first, each group in its own order. */
+export function signingOrder(rows: readonly PayoutRow[]): PayoutRow[] {
+  return [
+    ...rows.filter((row) => onFirstRail(row.caip19)),
+    ...rows.filter((row) => !onFirstRail(row.caip19)),
+  ];
+}
+
 export function payoutAddress(caip19: string, address: string): string | undefined {
   const parsed = parseCaip19(caip19);
   return parsed === undefined ? undefined : canonicalPayoutAddress(parsed.chain, address.trim());

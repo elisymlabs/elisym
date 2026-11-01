@@ -17,10 +17,13 @@ import {
 import type { OwnerTools } from '../lib/owner-tools';
 import {
   type PayoutRow,
+  checksumTypo,
+  onFirstRail,
   payoutAddress,
   payoutAssets,
   payoutRows,
   signOwnerEvents,
+  signingOrder,
 } from '../lib/payouts';
 import { ownEndpointsOf, problemText } from '../lib/problems';
 import { ALL_RAILS, choiceOf, railsOf, withRailsOn } from '../lib/settings';
@@ -200,13 +203,21 @@ export function PayoutsPanel({
     setDropped(started.dropped);
   }, [rows, relay, form, allowedKey, localNow]);
 
-  // One address per asset: only the assets with no payout yet can be added.
-  const open = allowedAssets.filter((each) => !rows?.some((row) => row.caip19 === each.caip19));
+  // A Replace waiting for its new address: the row stays, shown as being replaced, until Add or Cancel.
+  const [replacing, setReplacing] = useState<string | undefined>(undefined);
+  // The address field's own problem (said at it), apart from the panel's notices.
+  const [addressProblem, setAddressProblem] = useState('');
+
+  // One address per asset: only the assets with no payout yet can be added (and the one replaced).
+  const open = allowedAssets.filter(
+    (each) => each.caip19 === replacing || !rows?.some((row) => row.caip19 === each.caip19),
+  );
 
   const labelOf = (caip19: string) =>
     allowedAssets.find((each) => each.caip19 === caip19)?.label ?? caip19;
 
-  // A pasted address: one per asset (the node takes only the first), with no wallet proof.
+  // A pasted address: one per asset (the node takes only the first), with no wallet proof. While a
+  // Replace waits, it takes the replaced row's place.
   const add = () => {
     if (inFlight.current || rows === undefined) {
       return;
@@ -215,42 +226,63 @@ export function PayoutsPanel({
       setNotice('Choose what the payout is paid in.');
       return;
     }
-    if (rows.some((row) => row.caip19 === asset)) {
+    if (asset !== replacing && rows.some((row) => row.caip19 === asset)) {
       setNotice(`There is already a payout in ${labelOf(asset)}: use Replace.`);
+      return;
+    }
+    if (checksumTypo(asset, address)) {
+      setAddressProblem(
+        'This address has a typo: its capital letters do not match it. Copy it again from your wallet.',
+      );
       return;
     }
     const canonical = payoutAddress(asset, address);
     if (canonical === undefined) {
-      setNotice(`That is not an address ${labelOf(asset)} can be paid to.`);
+      setAddressProblem(`That is not an address ${labelOf(asset)} can be paid to.`);
       return;
     }
     setNotice('');
-    setRows([...rows, { caip19: asset, address: canonical }]);
+    setAddressProblem('');
+    const added = { caip19: asset, address: canonical };
+    setRows(
+      asset === replacing
+        ? rows.map((row) => (row.caip19 === asset ? added : row))
+        : [...rows, added],
+    );
+    setReplacing(undefined);
     setAsset('');
     setAddress('');
     setSaved(false);
   };
 
-  // Replace: the row goes (its proof with it, bound to its address), and its asset waits for the new one.
+  // Replace: the row waits for its new address (its proof goes with it, bound to its address).
   const replace = (row: PayoutRow) => {
     if (inFlight.current || rows === undefined) {
       return;
     }
-    setRows(rows.filter((other) => other.caip19 !== row.caip19));
+    setReplacing(row.caip19);
     setAsset(row.caip19);
     setAddress('');
+    setAddressProblem('');
     setNotice('');
     setSaved(false);
-    setReplacing((count) => count + 1);
+    setFocusAsks((count) => count + 1);
+  };
+
+  const cancelReplace = () => {
+    setReplacing(undefined);
+    setAsset('');
+    setAddress('');
+    setAddressProblem('');
   };
 
   // After a Replace, the address field (rendered again if every asset had a payout) takes the focus.
-  const [replacing, setReplacing] = useState(0);
+  const [focusAsks, setFocusAsks] = useState(0);
   useEffect(() => {
-    if (replacing > 0) {
+    if (focusAsks > 0) {
       addressField.current?.focus();
     }
-  }, [replacing]);
+  }, [focusAsks]);
 
   /** `resumed`: called once the rails this list waited for are kept. */
   const sign = async (resumed = false) => {
@@ -264,6 +296,16 @@ export function PayoutsPanel({
     }
     if (rows.length === 0) {
       setNotice('Add at least one payout: a store with none cannot be paid.');
+      return;
+    }
+    if (replacing !== undefined) {
+      setNotice(`Finish replacing ${labelOf(replacing)}, or cancel it, before you sign.`);
+      return;
+    }
+    if (!rows.some((row) => onFirstRail(row.caip19))) {
+      setNotice(
+        'A store needs a Solana or a Tempo payout: add one before you sign. Ethereum, Arbitrum and Base come next to it.',
+      );
       return;
     }
     const keptForm = kept.read?.form;
@@ -336,7 +378,7 @@ export function PayoutsPanel({
       signer,
       storePubkey,
       operator,
-      rows,
+      rows: signingOrder(rows),
       createdAt: decision.createdAt,
     });
     const answer = await api.request('POST', `/tenants/${tenantId}/owner-events`, events);
@@ -508,28 +550,40 @@ export function PayoutsPanel({
               {rows.map((row) => (
                 <div key={row.caip19} data-payout={row.caip19}>
                   <SettingRow label={labelOf(row.caip19)}>
-                    <span className="text-13 font-mono break-all">{row.address}</span>
-                    <div className="flex flex-wrap gap-12">
+                    <span className="text-13 font-mono break-all">
+                      {replacing === row.caip19 ? `Replacing: ${row.address}` : row.address}
+                    </span>
+                    {replacing === row.caip19 ? (
                       <button
                         type="button"
-                        disabled={busy}
-                        onClick={() => replace(row)}
-                        className="text-13 text-text-2 hover:text-text underline underline-offset-2"
+                        onClick={cancelReplace}
+                        className="text-13 text-text-2 hover:text-text self-start underline underline-offset-2"
                       >
-                        Replace {labelOf(row.caip19)}
+                        Cancel replacing {labelOf(row.caip19)}
                       </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => {
-                          setRows(rows.filter((other) => other.caip19 !== row.caip19));
-                          setSaved(false);
-                        }}
-                        className="text-13 text-error underline underline-offset-2"
-                      >
-                        Remove {labelOf(row.caip19)}
-                      </button>
-                    </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-12">
+                        <button
+                          type="button"
+                          disabled={busy || replacing !== undefined}
+                          onClick={() => replace(row)}
+                          className="text-13 text-text-2 hover:text-text underline underline-offset-2"
+                        >
+                          Replace {labelOf(row.caip19)}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy || replacing !== undefined}
+                          onClick={() => {
+                            setRows(rows.filter((other) => other.caip19 !== row.caip19));
+                            setSaved(false);
+                          }}
+                          className="text-13 text-error underline underline-offset-2"
+                        >
+                          Remove {labelOf(row.caip19)}
+                        </button>
+                      </div>
+                    )}
                   </SettingRow>
                 </div>
               ))}
@@ -547,6 +601,7 @@ export function PayoutsPanel({
               <select
                 id="payout-asset"
                 value={asset}
+                disabled={replacing !== undefined}
                 onChange={(event) => setAsset(event.target.value)}
                 className="rounded-10 border-line-2 bg-bg text-14 border px-8 py-6"
               >
@@ -567,11 +622,21 @@ export function PayoutsPanel({
                 value={address}
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(event) => setAddress(event.target.value)}
+                aria-invalid={addressProblem === '' ? undefined : true}
+                aria-describedby={addressProblem === '' ? undefined : 'payout-address-problem'}
+                onChange={(event) => {
+                  setAddress(event.target.value);
+                  setAddressProblem('');
+                }}
                 mono
               />
+              {addressProblem === '' ? null : (
+                <p id="payout-address-problem" role="alert" className="text-13 text-error">
+                  {addressProblem}
+                </p>
+              )}
               <Button disabled={busy} onClick={add} className="self-start">
-                Add
+                {replacing === undefined ? 'Add' : `Replace ${labelOf(replacing)}`}
               </Button>
             </div>
           )}

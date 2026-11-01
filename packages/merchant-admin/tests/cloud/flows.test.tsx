@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
 import type { CloudProps } from '../../src/cloud/CloudApp';
 import { OwnerKey, parseOwnerKey } from '../../src/cloud/lib/owner-key';
+import { payoutAssets } from '../../src/cloud/lib/payouts';
 import { shownTime } from '../../src/cloud/lib/store-view';
 import { short } from '../../src/lib/core';
 import { Root } from '../../src/Root';
@@ -316,6 +317,17 @@ function pageButton(host: HTMLElement, label: string): HTMLButtonElement {
 }
 
 /** Opens a page from the sidebar, once the sidebar has it. */
+/** A Solana payout added in the form: the one a store needs before any on an EVM chain. */
+async function addSolanaPayout(host: HTMLElement) {
+  await fill(host, 'select#payout-asset', USDC);
+  await fill(
+    host,
+    'input#payout-address',
+    base58.encode(ed25519.getPublicKey(ed25519.utils.randomSecretKey())),
+  );
+  await click(host, 'Add');
+}
+
 async function openPage(host: HTMLElement, label: string) {
   await eventually(host, () =>
     [...host.querySelectorAll('#store-sidebar nav button')].some(
@@ -1415,6 +1427,7 @@ describe('a cloud store, set up step by step', () => {
     await signIn(host, OwnerKey.create());
     await openPage(host, 'Payouts');
     await eventually(host, () => hasButton(host, 'Sign and save payouts'));
+    await addSolanaPayout(host);
     await fill(host, 'select#payout-asset', BASE_USDC);
     await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
     await click(host, 'Add');
@@ -2833,6 +2846,7 @@ describe('a refused endpoint, said as of the settings it was for', () => {
     await signIn(host, OwnerKey.create());
     await openPage(host, 'Payouts');
     await eventually(host, () => hasButton(host, 'Sign and save payouts'));
+    await addSolanaPayout(host);
     await fill(host, 'select#payout-asset', BASE_USDC);
     await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
     await click(host, 'Add');
@@ -2903,6 +2917,7 @@ describe('a refused endpoint, said as of the settings it was for', () => {
     await signIn(host, OwnerKey.create());
     await openPage(host, 'Payouts');
     await eventually(host, () => hasButton(host, 'Sign and save payouts'));
+    await addSolanaPayout(host);
     await fill(host, 'select#payout-asset', BASE_USDC);
     await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
     await click(host, 'Add');
@@ -3545,7 +3560,7 @@ describe('the payouts form', () => {
     expect(document.activeElement?.id).toBe('payout-address');
     const fresh = base58.encode(ed25519.getPublicKey(ed25519.utils.randomSecretKey()));
     await fill(host, 'input#payout-address', fresh);
-    await click(host, 'Add');
+    await click(host, 'Replace USDC on Solana');
     expect(host.querySelectorAll(`[data-payout="${USDC}"]`)).toHaveLength(1);
     await click(host, 'Sign and save payouts');
     await eventually(host, () => signedAccepts(calls).length > 0);
@@ -3569,5 +3584,173 @@ describe('the payouts form', () => {
     await click(host, 'Add');
     expect(host.textContent).toContain('There is already a payout in USDC on Solana: use Replace.');
     expect(host.querySelectorAll(`[data-payout="${USDC}"]`)).toHaveLength(1);
+  });
+});
+
+describe('the payouts form, its review fixes', () => {
+  const STORE = () =>
+    new FakeStore(
+      storeState({ paid: true, name: 'Shop', rails: ['solana'], payoutListId: 'f'.repeat(64) }),
+    );
+  const ALL = new Set(['solana', 'tempo', 'ethereum', 'arbitrum', 'base']);
+  const LSM =
+    payoutAssets('mainnet', ALL).find((asset) => asset.label === 'LSM on Solana')?.caip19 ?? '';
+  const solanaAddress = () => base58.encode(ed25519.getPublicKey(ed25519.utils.randomSecretKey()));
+
+  function proved(owner: OwnerKey, caip19: string) {
+    const secret = ed25519.utils.randomSecretKey();
+    const address = base58.encode(ed25519.getPublicKey(secret));
+    const signature = base58.encode(
+      ed25519.sign(new TextEncoder().encode(paytoProofMessage(owner.pubkey, caip19)), secret),
+    );
+    return { address, signature };
+  }
+
+  function listOf(owner: OwnerKey, accepts: string[][]) {
+    return owner.sign({
+      kind: 10133,
+      created_at: Math.floor(Date.now() / 1000) - 3600,
+      tags: accepts.map((accept) => ['accept', ...accept]),
+      content: '',
+    });
+  }
+
+  function signedAccepts(calls: { method: string; path: string; body: unknown }[]): string[][] {
+    const body = calls
+      .filter((call) => call.method === 'POST' && call.path.endsWith('/owner-events'))
+      .at(-1)?.body;
+    const list =
+      body !== null && typeof body === 'object' && 'payoutList' in body
+        ? (body.payoutList as NostrEvent)
+        : undefined;
+    return (list?.tags ?? []).filter((tag) => tag[0] === 'accept');
+  }
+
+  const posts = (calls: { method: string; path: string }[]) =>
+    calls.filter((call) => call.method === 'POST' && call.path.endsWith('/owner-events')).length;
+
+  async function opened(owner: OwnerKey, relays: NostrEvent[] = []) {
+    const opened = await admin(STORE().routes(), { relays });
+    await signIn(opened.host, owner);
+    await openPage(opened.host, 'Payouts');
+    await eventually(opened.host, () => hasButton(opened.host, 'Sign and save payouts'));
+    return opened;
+  }
+
+  it('a mixed-case EVM address with a wrong checksum is refused at the field; a right one is taken', async () => {
+    const { host } = await opened(OwnerKey.create());
+    await fill(host, 'select#payout-asset', BASE_USDC);
+    // EIP-55's own example, one letter's case changed.
+    await fill(host, 'input#payout-address', '0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed');
+    await click(host, 'Add');
+    const field = host.querySelector('input#payout-address');
+    expect(host.querySelector('#payout-address-problem')?.textContent).toContain('has a typo');
+    expect(field?.getAttribute('aria-invalid')).toBe('true');
+    expect(field?.getAttribute('aria-describedby')).toBe('payout-address-problem');
+    expect(host.querySelector(`[data-payout="${BASE_USDC}"]`)).toBeNull();
+    await fill(host, 'input#payout-address', '0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed');
+    expect(host.querySelector('#payout-address-problem')).toBeNull();
+    await click(host, 'Add');
+    expect(host.querySelector(`[data-payout="${BASE_USDC}"]`)?.textContent).toContain(
+      '0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed',
+    );
+  });
+
+  it('Replace waits in place: the old address shown, Cancel brings it back, signing waits', async () => {
+    const owner = OwnerKey.create();
+    const usdc = solanaAddress();
+    const { host, calls } = await opened(owner, [listOf(owner, [[USDC, usdc]])]);
+    await fill(host, 'input#payout-address', 'typed before');
+    await click(host, 'Replace USDC on Solana');
+    // What was typed for another payout is not carried into the new address.
+    expect(host.querySelector<HTMLInputElement>('input#payout-address')?.value).toBe('');
+    expect(host.querySelector(`[data-payout="${USDC}"]`)?.textContent).toContain(
+      `Replacing: ${usdc}`,
+    );
+    await click(host, 'Sign and save payouts');
+    expect(host.textContent).toContain('Finish replacing USDC on Solana, or cancel it');
+    expect(posts(calls)).toBe(0);
+    await click(host, 'Cancel replacing USDC on Solana');
+    expect(host.querySelector(`[data-payout="${USDC}"]`)?.textContent).not.toContain('Replacing');
+    expect(host.querySelector<HTMLSelectElement>('select#payout-asset')?.value).toBe('');
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => posts(calls) === 1);
+    expect(signedAccepts(calls)).toEqual([['accept', USDC, usdc]]);
+  });
+
+  it('Replace on one row keeps the other, its proof and its place', async () => {
+    const owner = OwnerKey.create();
+    const first = proved(owner, USDC);
+    const second = proved(owner, LSM);
+    const { host, calls } = await opened(owner, [
+      listOf(owner, [
+        [USDC, first.address, first.signature],
+        [LSM, second.address, second.signature],
+      ]),
+    ]);
+    await click(host, 'Replace USDC on Solana');
+    const fresh = solanaAddress();
+    await fill(host, 'input#payout-address', fresh);
+    await click(host, 'Replace USDC on Solana');
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => posts(calls) === 1);
+    expect(signedAccepts(calls)).toEqual([
+      ['accept', USDC, fresh],
+      ['accept', LSM, second.address, second.signature],
+    ]);
+  });
+
+  it('a list with no Solana or Tempo payout is not signed', async () => {
+    const { host, calls } = await opened(OwnerKey.create());
+    await fill(host, 'select#payout-asset', BASE_USDC);
+    await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
+    await click(host, 'Add');
+    await click(host, 'Sign and save payouts');
+    expect(host.textContent).toContain('A store needs a Solana or a Tempo payout: add one');
+    expect(posts(calls)).toBe(0);
+  });
+
+  it('signs Solana and Tempo payouts ahead of the EVM ones; after Add the coin choice resets', async () => {
+    const { host, calls } = await opened(OwnerKey.create());
+    await fill(host, 'select#payout-asset', BASE_USDC);
+    await fill(host, 'input#payout-address', `0x${'ab'.repeat(20)}`);
+    await click(host, 'Add');
+    expect(host.querySelector<HTMLSelectElement>('select#payout-asset')?.value).toBe('');
+    // Nothing chosen is nothing chosen: the last coin added is not taken again.
+    await fill(host, 'input#payout-address', solanaAddress());
+    await click(host, 'Add');
+    expect(host.textContent).toContain('Choose what the payout is paid in.');
+    const usdc = solanaAddress();
+    await fill(host, 'select#payout-asset', USDC);
+    await fill(host, 'input#payout-address', usdc);
+    await click(host, 'Add');
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => posts(calls) === 1);
+    expect(signedAccepts(calls).map((tag) => tag[1])).toEqual([USDC, BASE_USDC]);
+  });
+
+  it('every coin with a payout: no form, and how to change one', async () => {
+    const owner = OwnerKey.create();
+    const accepts = payoutAssets('mainnet', ALL).map((asset, index) => [
+      asset.caip19,
+      asset.caip19.startsWith('solana:')
+        ? solanaAddress()
+        : `0x${(index + 1).toString(16).padStart(40, '0')}`,
+    ]);
+    const { host } = await opened(owner, [listOf(owner, accepts)]);
+    expect(host.querySelector('select#payout-asset')).toBeNull();
+    expect(host.textContent).toContain('Every coin has a payout: use Replace to change one.');
+  });
+
+  it('the "signed and saved" line goes once the list is edited again', async () => {
+    const owner = OwnerKey.create();
+    const { host, calls } = await opened(owner, [listOf(owner, [[USDC, solanaAddress()]])]);
+    await click(host, 'Sign and save payouts');
+    await eventually(host, () => posts(calls) === 1);
+    await eventually(host, () => host.textContent?.includes('Signed and saved') === true);
+    await fill(host, 'select#payout-asset', LSM);
+    await fill(host, 'input#payout-address', solanaAddress());
+    await click(host, 'Add');
+    expect(host.textContent).not.toContain('Signed and saved');
   });
 });
