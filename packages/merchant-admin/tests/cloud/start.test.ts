@@ -52,7 +52,7 @@ describe('what a refusal says', () => {
     expect(explain('invalid_invite', 400)).toContain('not valid');
     expect(explain('key_owns_a_store', 409)).toContain('One key per store');
     expect(explain('over_limit', 409)).toContain('contact us to move up');
-    expect(explain('not_on_plan', 409)).toContain('an own RPC needs a plan that takes one');
+    expect(explain('not_on_plan', 409)).toContain('your own needs a plan that takes them');
     expect(explain('terms_not_accepted', 409)).toContain('accept them again');
     expect(explain('rate_limited', 429)).toContain('Too many attempts');
     expect(explain('stale', 401)).toContain('clock');

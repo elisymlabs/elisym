@@ -6,7 +6,7 @@ export const WITHDRAW_CONSEQUENCE =
 
 /** What Resume does. */
 export const RESUME_CONSEQUENCE =
-  'Put the store back on sale: its products and payouts, as you saved them, go out again. Network endpoints the withdrawal replaced stay replaced: set them again in Settings if you want yours back.';
+  'Put the store back on sale: its products and payouts, as you saved them, go out again, on our network endpoints.';
 
 /** What an export does. */
 export const EXPORT_CONSEQUENCE =
@@ -31,7 +31,7 @@ export const DESTROY_CONSEQUENCE =
  */
 export const EXPORT_STOPPED: Record<'resign' | 'revoked', string> = {
   resign:
-    'The export stopped: the store refused its payout list, which must be signed again. Sign it again in Payouts, then export again; or take the store off sale first, then export (an off-sale store needs no payout list).',
+    'The export stopped: the store refused its payouts, which must be signed again. Sign them again in Payouts, then export again; or take the store off sale first, then export (an off-sale store needs no payouts signed).',
   revoked:
     'The export stopped: you revoked this store. Re-authorize it in Payouts, then export again; or take the store off sale first, then export (an off-sale store needs no authorization).',
 };

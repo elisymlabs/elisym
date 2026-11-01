@@ -1,7 +1,7 @@
 import { fieldOf } from './fields';
 
 /** What the merchant reads for a cloud-api refusal (by its code); anything else names the code. */
-const EXPLAINED: Record<string, string> = {
+export const EXPLAINED: Readonly<Record<string, string>> = {
   invalid_invite: 'That invite is not valid: it may be mistyped, used already, or expired.',
   already_activated: 'That store is already activated: its access key cannot change here.',
   key_owns_a_store:
@@ -13,11 +13,12 @@ const EXPLAINED: Record<string, string> = {
   unreachable: 'Could not reach our cloud: check your connection and try again.',
   bad_tier: 'That plan cannot be bought here.',
   over_limit: 'Your plan takes fewer products: remove some, or contact us to move up.',
-  not_on_plan: 'Your plan runs on our RPCs: an own RPC needs a plan that takes one (contact us).',
+  not_on_plan:
+    'Your plan runs on our network endpoints: your own needs a plan that takes them (contact us).',
   rate_limited: 'Too many attempts from your network: try again in an hour.',
   stale: 'Your clock and the server disagree too far: check your device time.',
   not_paid: 'Pay for the store first: it is on sale only while its paid time runs.',
-  store_not_set_up: 'Set up the store first: its settings, products and payout list.',
+  store_not_set_up: 'Set up the store first: its settings, products and payouts.',
   home_not_ready: 'The store is still being made: try again in a minute.',
   cycle_pending: 'A change to the store is still being applied: try again in a minute.',
   held: 'The store is on hold: contact elisym.',

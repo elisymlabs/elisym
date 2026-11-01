@@ -5,11 +5,18 @@ import * as nip19 from 'nostr-tools/nip19';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { StrictMode, act } from 'react';
 import { type Root as ReactRoot, createRoot } from 'react-dom/client';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { key as makeKey } from '../../../merchant-node/tests/admin/fixtures';
 import type { CloudProps } from '../../src/cloud/CloudApp';
+import { KeyInUseWarning } from '../../src/cloud/components/KeyInUseWarning';
+import { EXPLAINED } from '../../src/cloud/lib/errors';
+import { decisionText } from '../../src/cloud/lib/owner-events';
 import { OwnerKey, parseOwnerKey } from '../../src/cloud/lib/owner-key';
 import { payoutAssets } from '../../src/cloud/lib/payouts';
+import { problemText } from '../../src/cloud/lib/problems';
+import { cardRefusalText, cryptoRefusalText } from '../../src/cloud/lib/rails';
+import * as SALE from '../../src/cloud/lib/sale';
 import { shownTime } from '../../src/cloud/lib/store-view';
 import { short } from '../../src/lib/core';
 import { Root } from '../../src/Root';
@@ -3810,7 +3817,7 @@ describe('the payouts form, its review fixes', () => {
  * with self-hosted stores and keeps their words, so it is not scanned.
  */
 const JARGON =
-  /\b(owner keys?|tenants?|nsec|npub|nodes?|rails?|chains?|payout address(es)?|relays?)\b/i;
+  /\b(owner keys?|tenants?|nsec|npub|nodes?|rails?|chains?|payout address(es)?|payout lists?|relays?|RPCs?)\b/i;
 const SELF_HOST_COMMANDS = /npx @elisym\/merchant-node [a-z-]+/g;
 
 function jargonIn(host: HTMLElement): string | undefined {
@@ -3828,6 +3835,25 @@ function expectNoJargon(host: HTMLElement) {
 }
 
 describe('the words a merchant reads', () => {
+  it('a text that is no key: the cloud names the key file, a self-hosted build the store key', async () => {
+    const cloud = await admin({});
+    await signIn(cloud.host, 'not a key');
+    expect(cloud.host.querySelector('#store-key-error')?.textContent).toBe(
+      'That is not a key: paste the line of your key file that starts with nsec1, or 64 hex characters.',
+    );
+    await unmount();
+    const alone = await admin({}, { cloud: false });
+    const field = alone.host.querySelector('input#store-key');
+    if (!(field instanceof HTMLInputElement)) {
+      throw new Error('no key field');
+    }
+    field.value = 'not a key';
+    await click(alone.host, 'Open store');
+    expect(alone.host.querySelector('#store-key-error')?.textContent).toBe(
+      'That is not a secret key: paste an nsec or 64 hex characters.',
+    );
+  });
+
   it('the front page and the create flow use none of the jargon', async () => {
     const { host } = await admin({
       'GET /owner': { body: { tenantId: null, termsVersion: 't1' } },
@@ -3892,5 +3918,71 @@ describe('the words a merchant reads', () => {
       await openPage(host, page);
     }
     expectNoJargon(host);
+  });
+
+  it('the texts behind the confirmations, refusals and warnings use none of it', () => {
+    const sale = Object.values(SALE).flatMap((value) =>
+      typeof value === 'string' ? [value] : typeof value === 'object' ? Object.values(value) : [],
+    );
+    const refusals = Object.keys(EXPLAINED).flatMap((code) => [
+      EXPLAINED[code] ?? '',
+      cardRefusalText({ code, from: 1_900_000_000 }),
+      cryptoRefusalText({ code }),
+    ]);
+    const decisions = [
+      decisionText({ kind: 'wait', what: 'payout list', until: 1_900_000_000 }),
+      decisionText({ kind: 'ahead', what: 'payout list', date: 1_900_000_000 }),
+      decisionText({ kind: 'wait', what: 'revocation', until: 1_900_000_000 }),
+      decisionText({ kind: 'ahead', what: 'revocation', date: 1_900_000_000 }),
+    ];
+    const problems = [
+      'solana.rpcUrl: resolves to a private address',
+      'solana.rpcUrl: the cloud has no RPC configured: name your own',
+      'products/course: is 5000 bytes, over 4096',
+      'name: Required',
+    ].map((line) => problemText(line).text);
+    const warning = renderToStaticMarkup(<KeyInUseWarning />);
+    for (const text of [...sale, ...refusals, ...decisions, ...problems, warning]) {
+      expect(JARGON.exec(String(text))?.[0], String(text)).toBeUndefined();
+    }
+  });
+
+  it('an invited store, a store with an EVM network on, and the partner view use none of it', async () => {
+    const invited = new FakeStore(readyState({ launch: 'operator' }));
+    const first = await admin(invited.routes());
+    await signIn(first.host, OwnerKey.create());
+    await eventually(
+      first.host,
+      () => first.host.textContent?.includes('We launch this store') === true,
+    );
+    expectNoJargon(first.host);
+    await unmount();
+
+    const evm = new FakeStore(readyState({ rails: ['solana', 'base'] }));
+    const second = await admin(evm.routes());
+    await signIn(second.host, OwnerKey.create());
+    await openPage(second.host, 'Settings');
+    await eventually(second.host, () => second.host.querySelector('select') !== null);
+    expectNoJargon(second.host);
+    await unmount();
+
+    const partner = await admin({
+      'GET /owner': { status: 403, body: { error: 'forbidden' } },
+      'GET /partner': {
+        body: {
+          partnerId: 'p000000000001',
+          paidUntil: 1_900_000_000,
+          volumeSince: 1_897_408_000,
+          volume: { orders: 0, paid: {} },
+          merchants: [],
+        },
+      },
+    });
+    await signIn(partner.host, OwnerKey.create());
+    await eventually(
+      partner.host,
+      () => partner.host.textContent?.includes('p000000000001') === true,
+    );
+    expectNoJargon(partner.host);
   });
 });

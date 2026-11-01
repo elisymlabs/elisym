@@ -60,4 +60,10 @@ describe('the cloud terms', () => {
   it('a date version, as cloud-api records the acceptance', () => {
     expect(TERMS_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
+
+  it('name the access key the admin shows, and the owner key the guides use, once', () => {
+    const keySection = TERMS.find((section) => section.title.includes('access key'));
+    expect(keySection?.title).toBe('Your access key and the store key');
+    expect(keySection?.paragraphs[0]).toContain('Your access key (also called the owner key)');
+  });
 });

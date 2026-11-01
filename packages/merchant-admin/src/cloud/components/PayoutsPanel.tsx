@@ -684,8 +684,10 @@ export function PayoutsPanel({
       {goesOut === 'missing' ? (
         <div role="alert" className="text-13 text-error mt-12 flex flex-col items-start gap-8">
           <p>
-            Your payout change did not go out: another list is published. Check again in a minute;
-            if it stays, contact elisym.
+            {relay?.read !== undefined && currentPayoutList(relay.read, localNow()) === undefined
+              ? 'Your payout change did not go out: no payouts are published.'
+              : 'Your payout change did not go out: different payouts are published.'}{' '}
+            Check again in a minute; if it stays, contact elisym.
           </p>
           <Button onClick={askRead} size="sm">
             Check again

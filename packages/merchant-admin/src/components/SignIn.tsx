@@ -5,6 +5,11 @@ import { AuthLayout } from './AuthLayout';
 import { CommandLine } from './CommandLine';
 import { TrustPanel } from './TrustPanel';
 
+/** A pasted text that is no key: self-hosted names the store key, the cloud also the key file. */
+const NOT_A_STORE_KEY = 'That is not a secret key: paste an nsec or 64 hex characters.';
+const NOT_A_KEY =
+  'That is not a key: paste the line of your key file that starts with nsec1, or 64 hex characters.';
+
 interface Props {
   onKey: (key: StoreKey) => void;
   /**
@@ -45,9 +50,7 @@ export function SignIn({ onKey, cloud }: Props) {
     const key = parseStoreKey(field.value);
     field.value = '';
     if (key === undefined) {
-      setError(
-        'That is not a key: paste the line of your key file that starts with nsec1, or 64 hex characters.',
-      );
+      setError(cloud === undefined ? NOT_A_STORE_KEY : NOT_A_KEY);
       return;
     }
     setError('');

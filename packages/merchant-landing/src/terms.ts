@@ -27,9 +27,9 @@ export const TERMS: TermsSection[] = [
     ],
   },
   {
-    title: 'Your owner key and the store key',
+    title: 'Your access key and the store key',
     paragraphs: [
-      'Your owner key is your sign-in and signs your payouts. It is made in your browser and never sent to us. Keep it safe and private: we cannot recover it, and whoever holds it controls your store.',
+      'Your access key (also called the owner key) is your sign-in and signs your payouts. It is made on your device and never sent to us. Keep it safe and private: we cannot recover it, and whoever holds it controls your store.',
       "Your store also has a store key, which we keep so the node can run: it signs the store's listings and its answers to buyers. It cannot change where payments go, which only your signed payout list decides. An export hands it to you.",
       'If your key is lost or exposed, contact us at once: we can withdraw the store from sale while it is sorted out.',
     ],

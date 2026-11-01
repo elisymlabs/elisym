@@ -161,6 +161,15 @@ export function signingDecision(input: {
   return { kind: 'sign', createdAt: localNow };
 }
 
+/** The merchant's words for what was signed last, with its verb (one list is "payouts"). */
+const SIGNED_LAST: Record<
+  'payout list' | 'revocation',
+  { name: string; is: string; outranks: string }
+> = {
+  'payout list': { name: 'The payouts you signed last', is: 'are', outranks: 'outrank' },
+  revocation: { name: 'Your last revocation', is: 'is', outranks: 'outranks' },
+};
+
 /** What the merchant reads for a decision that is not to sign now (dates in UTC, as the console shows them). */
 export function decisionText(decision: SigningDecision): string | undefined {
   const at = (seconds: number) =>
@@ -173,9 +182,9 @@ export function decisionText(decision: SigningDecision): string | undefined {
     case 'fix-clock':
       return `Your device clock is ${Math.abs(decision.skewSecs)} seconds off: set it right, then sign.`;
     case 'wait':
-      return `A ${decision.what} of yours is dated ${at(decision.until - 1)}: you can sign from ${at(decision.until)}.`;
+      return `${SIGNED_LAST[decision.what].name} ${SIGNED_LAST[decision.what].is} dated ${at(decision.until - 1)}: you can sign from ${at(decision.until)}.`;
     case 'ahead':
-      return `A ${decision.what} of yours dated ${at(decision.date)} is published and outranks anything signed before then.`;
+      return `${SIGNED_LAST[decision.what].name}, dated ${at(decision.date)}, ${SIGNED_LAST[decision.what].is} published and ${SIGNED_LAST[decision.what].outranks} anything signed before then.`;
     case 'revoked':
       return `You revoked this store on ${at(decision.date)}. Re-authorize it to sign, or withdraw it.`;
   }

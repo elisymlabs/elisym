@@ -36,7 +36,7 @@ function limitsOf(tier: TierCard): string[] {
   return [
     `Products: ${tier.display.products ?? NUMBER.format(tier.limits.products)}`,
     `Paid orders a month: ${orders}`,
-    ...(tier.ownRpc ? ['Your own network endpoints (RPC)'] : []),
+    ...(tier.ownRpc ? ['Your own network endpoints'] : []),
   ];
 }
 
