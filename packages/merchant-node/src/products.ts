@@ -66,7 +66,8 @@ export interface ProductsFs {
 }
 
 /** What an image must be: an `https://` URL, as commerce builds and reads a listing's `image`. */
-const IMAGE_RULE = 'must be an https:// link to a picture, such as "https://example.com/photo.jpg"';
+const IMAGE_RULE =
+  'must be an https:// link to a picture, at most 1,024 characters, such as "https://example.com/photo.jpg"';
 
 /** A listing image as commerce's `buildProductEvent` takes one: anything else would fail the publish. */
 const LISTING_IMAGE = z.string().url().startsWith('https://').max(LIMITS.MAX_TAG_VALUE_LENGTH);

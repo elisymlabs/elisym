@@ -237,7 +237,7 @@ await call('POST', `/tenants/${tenantId}/products`, { products });
 ```
 
 - `priceUsd` is quoted: a bare number is refused. The buyer pays it 1:1 in a stablecoin.
-- Optional: an `image: https://...` line in the front matter adds a picture the checkout shows above the product. One `https://` link; any other link is refused. Ask the merchant for it, never invent one.
+- Optional: an `image: "https://..."` line in the front matter (quoted) adds a picture the checkout shows above the product. One `https://` link of at most 1,024 characters; any other link is refused. Ask the merchant for it, never invent one.
 - The body is the whole set: a product left out is removed. Never leave out a product that was published (the store cannot start without it): to stop selling one, send it with `onSale: false` in its front matter.
 - One product is at most 4,096 bytes, measured as its text written as a JSON string (escapes count). The plan caps how many products a store has (`limits.products` of its tier).
 

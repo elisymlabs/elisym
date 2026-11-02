@@ -28,6 +28,8 @@ const MAX_TITLE = 200;
 const MAX_SUMMARY = 1024;
 /** The node's own image rule: an `https://` link, at most a listing tag's length. */
 const MAX_IMAGE = 1024;
+const IMAGE_RULE =
+  'A link to a picture that starts with https:// and is at most 1,024 characters, such as https://example.com/photo.jpg.';
 const SLUG_MAX = 63;
 
 /** The PRODUCT.md for these fields. */
@@ -129,11 +131,8 @@ export function imageProblem(image: string): string | undefined {
   if (trimmed === '') {
     return undefined;
   }
-  if (!trimmed.startsWith('https://') || !URL.canParse(trimmed)) {
-    return 'A link to a picture that starts with https://, such as https://example.com/photo.jpg.';
-  }
-  if (trimmed.length > MAX_IMAGE) {
-    return `A picture link is at most ${MAX_IMAGE} characters.`;
+  if (!trimmed.startsWith('https://') || !URL.canParse(trimmed) || trimmed.length > MAX_IMAGE) {
+    return IMAGE_RULE;
   }
   return undefined;
 }

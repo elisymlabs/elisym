@@ -1,7 +1,7 @@
 import { buildProductEvent } from '@elisym/commerce';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
-import { mergeNewestListings } from '../../src/admin/store';
+import { mergeNewestListings, productLines } from '../../src/admin/store';
 import { D, T0, USDC_DEVNET_CAIP19, type Key, key, productOf } from './fixtures';
 
 function listing(store: Key, createdAt: number, title = 'Course', d = D) {
@@ -108,5 +108,32 @@ describe('mergeNewestListings', () => {
     mergeNewestListings(new Map([[productOf(store), kept]]), [copy], store.pubkey, T0);
     // A signature check reads the content: the copy is skipped before any check.
     expect(contentReads).toBe(0);
+  });
+});
+
+describe('the product lines', () => {
+  it("carry a listing's first picture, and none for a listing without one", () => {
+    const store = key();
+    const event = (d: string, images: string[]) =>
+      finalizeEvent(
+        buildProductEvent({
+          d,
+          title: d,
+          description: '',
+          price: { amount: '1', currency: 'USD' },
+          images,
+          accept: [USDC_DEVNET_CAIP19],
+          createdAt: T0,
+        }),
+        store.secretKey,
+      );
+    const lines = productLines(
+      new Map([
+        ['30402:s:a', event('a', ['https://shop.example/a.png', 'https://shop.example/b.png'])],
+        ['30402:s:b', event('b', [])],
+      ]),
+    );
+    expect(lines.map((line) => line.image)).toEqual(['https://shop.example/a.png', undefined]);
+    expect('image' in (lines[1] ?? {})).toBe(false);
   });
 });

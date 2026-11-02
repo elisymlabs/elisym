@@ -36,9 +36,9 @@ describe('a refusal in words', () => {
       ['products/course: priceUsd: must be a decimal', 'products', 'The product "course"'],
       ['products/My_Thing: a product name is lowercase', 'products', 'One of your products'],
       [
-        'products/course: image: must be an https:// link to a picture, such as "https://example.com/photo.jpg"',
+        'products/course: image: must be an https:// link to a picture, at most 1,024 characters, such as "https://example.com/photo.jpg"',
         'products',
-        'The product "course": its picture link must start with https://.',
+        'The product "course": its picture link must start with https:// and be at most 1,024 characters.',
       ],
       ['no products: a store sells at least one', 'products', 'Add at least one product'],
       ['relays.0: not a wss URL', undefined, 'The store could not take this change'],

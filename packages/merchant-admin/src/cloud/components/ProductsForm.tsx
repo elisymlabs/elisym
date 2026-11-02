@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/Button';
+import { ProductPicture } from '../../components/ProductPicture';
 import type { ConsoleApi } from '../lib/api';
 import { explainAnswer } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
@@ -21,7 +22,6 @@ import type { KeptStore } from '../lib/use-kept-store';
 import type { StoreStatusPoll } from '../lib/use-status';
 import { ProblemList } from './ProblemList';
 import { ProductEditor } from './ProductEditor';
-import { ProductPicture } from './ProductPicture';
 import { ProductsCallout } from './ProductsCallout';
 import { ProductSheet } from './ProductSheet';
 

@@ -92,7 +92,7 @@ Adds 1 USD to your account.
 
 - `priceUsd` is paid 1:1 in USDC. Quote it: a bare number is refused.
 - The body below the second `---` is the product's description.
-- Optional: `image: https://example.com/photo.jpg` adds a picture the checkout shows above the product. One `https://` link to a picture; any other link is refused. It needs merchant-node 0.14.0 or newer.
+- Optional: `image: "https://example.com/photo.jpg"` (quoted) adds a picture the checkout shows above the product. One `https://` link to a picture, at most 1,024 characters; any other link is refused. It needs merchant-node 0.14.0 or newer.
 - `setup` refuses the product while it is still `init`'s example (its title and text unchanged).
 
 The store returns nothing to the buyer: once the node has checked the payment on chain, it completes the order and the checkout shows **Payment complete** with a receipt. What the buyer paid for happens on your side: your backend learns of each payment from the node's signed `order.paid` webhook ([below](#credit-an-account-on-your-backend)). A `PRODUCT.md` that still names a `delivery` (from a node older than 0.9.0) is refused: remove the key.

@@ -77,7 +77,7 @@ function networkText(network: Network, problem: string, own: ReadonlySet<string>
 function productText(path: string, problem: string): string {
   const name = path.slice('products/'.length);
   const what = problem.includes(': image: ')
-    ? 'its picture link must start with https://.'
+    ? 'its picture link must start with https:// and be at most 1,024 characters.'
     : 'check its title, price and description.';
   return SHOWN_PRODUCT.test(name)
     ? `The product "${name}": ${what}`

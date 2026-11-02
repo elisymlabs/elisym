@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Field } from '../../components/Field';
 import { Input } from '../../components/Input';
+import { ProductPicture } from '../../components/ProductPicture';
 import { describedBy } from '../../lib/field';
 import type { ProblemText } from '../lib/problems';
 import {
@@ -13,7 +14,6 @@ import {
 } from '../lib/product-form';
 import { PRODUCT_NAME_RE } from '../lib/snippet';
 import { ProblemList } from './ProblemList';
-import { ProductPicture } from './ProductPicture';
 
 interface Props {
   product: ProductDraft;
@@ -24,6 +24,33 @@ interface Props {
   /** What the store refused of this product on its last save, in words. */
   refused: readonly ProblemText[];
   onChange: (next: ProductDraft) => void;
+}
+
+/** How long a picture link stays unchanged before its preview loads (or the field is left). */
+export const PREVIEW_AFTER_MS = 500;
+
+/**
+ * The picture link to preview: `picture` once it has stayed the same for
+ * `PREVIEW_AFTER_MS`, or at once on `now()` (the field was left), so typing
+ * never fetches a half-typed link. A link already there when the editor opens
+ * shows at once.
+ */
+function usePreview(picture: string | undefined): {
+  preview: string | undefined;
+  now: () => void;
+} {
+  const [settled, setSettled] = useState(picture);
+  useEffect(() => {
+    if (picture === settled) {
+      return undefined;
+    }
+    const timer = setTimeout(() => setSettled(picture), PREVIEW_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [picture, settled]);
+  return {
+    preview: settled === picture ? picture : undefined,
+    now: () => setSettled(picture),
+  };
 }
 
 /** The ids a control is described by, without the ones it does not show. */
@@ -47,6 +74,9 @@ export function ProductEditor({ product, nameEditable, nameTaken, refused, onCha
       nameInput.current?.focus();
     }
   }, [changingName]);
+  const { preview, now: previewNow } = usePreview(
+    product.fields === undefined ? undefined : shownImage(product.fields),
+  );
   const text = draftText(product);
   const left = roomLeft(text);
   const tooLong = left !== undefined && left < 0 ? 'Too long: shorten the description.' : undefined;
@@ -90,7 +120,6 @@ export function ProductEditor({ product, nameEditable, nameTaken, refused, onCha
     );
   }
   const errors = fieldErrors(fields);
-  const picture = shownImage(fields);
   const set = (next: Partial<typeof fields>) =>
     onChange({ ...product, fields: { ...fields, ...next } });
   return (
@@ -193,10 +222,11 @@ export function ProductEditor({ product, nameEditable, nameTaken, refused, onCha
           aria-invalid={errors.image === undefined ? undefined : true}
           aria-describedby={describedBy(`${id}-image`, 'hint', errors.image)}
           onChange={(event) => set({ image: event.target.value })}
+          onBlur={previewNow}
         />
-        {picture === undefined ? null : (
+        {preview === undefined ? null : (
           <ProductPicture
-            src={picture}
+            src={preview}
             className="rounded-10 border-line bg-bg h-160 w-full border object-cover"
           />
         )}

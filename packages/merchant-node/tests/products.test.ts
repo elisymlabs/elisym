@@ -237,7 +237,25 @@ describe('the PRODUCT.md file', () => {
     }
     expect(
       problemsOf(VALID.replace('summary: Adds 10 USD.', 'image: http://shop.example/a.png'))[0],
-    ).toBe('image: must be an https:// link to a picture, such as "https://example.com/photo.jpg"');
+    ).toBe(
+      'image: must be an https:// link to a picture, at most 1,024 characters, such as "https://example.com/photo.jpg"',
+    );
+    // Too long: the same words, which name the length.
+    expect(
+      problemsOf(
+        VALID.replace(
+          'summary: Adds 10 USD.',
+          `image: https://shop.example/${'a'.repeat(1024)}.png`,
+        ),
+      ),
+    ).toEqual([
+      'image: must be an https:// link to a picture, at most 1,024 characters, such as "https://example.com/photo.jpg"',
+    ]);
+    // The value quoted, as the docs write it, reads the same.
+    const quoted = parseProductText(
+      VALID.replace('summary: Adds 10 USD.', 'image: "https://shop.example/deposit.png"'),
+    );
+    expect(quoted.ok && quoted.product.image).toBe('https://shop.example/deposit.png');
   });
 
   it('refuses a duplicate key', () => {

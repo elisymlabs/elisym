@@ -9,6 +9,7 @@ import {
   fieldProblems,
   charactersLeft,
   imageProblem,
+  shownImage,
   freeSlug,
   productIssues,
   roomLeft,
@@ -73,11 +74,26 @@ describe('a product as fields', () => {
     }
     const errors = fieldErrors({ ...FIELDS, image: 'http://shop.example/a.png' });
     expect(errors.image).toBe(
-      'A link to a picture that starts with https://, such as https://example.com/photo.jpg.',
+      'A link to a picture that starts with https:// and is at most 1,024 characters, such as https://example.com/photo.jpg.',
     );
+    // A link too long gets the same words, which name the length.
+    expect(imageProblem(`https://shop.example/${'a'.repeat(1024)}.png`)).toBe(errors.image);
     expect(fieldProblems({ ...FIELDS, image: 'http://shop.example/a.png' })).toEqual([
       errors.image,
     ]);
+  });
+
+  it('shows a picture only for a link the node takes, trimmed', () => {
+    expect(shownImage({ ...FIELDS, image: '' })).toBeUndefined();
+    expect(shownImage({ ...FIELDS, image: '  ' })).toBeUndefined();
+    expect(shownImage({ ...FIELDS, image: 'http://shop.example/a.png' })).toBeUndefined();
+    expect(shownImage({ ...FIELDS, image: 'https://' })).toBeUndefined();
+    expect(
+      shownImage({ ...FIELDS, image: `https://shop.example/${'a'.repeat(1024)}.png` }),
+    ).toBeUndefined();
+    expect(shownImage({ ...FIELDS, image: ' https://shop.example/a.png ' })).toBe(
+      'https://shop.example/a.png',
+    );
   });
 
   it('writes the title, summary, price and description trimmed', () => {
