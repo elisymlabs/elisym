@@ -5,8 +5,10 @@ import {
   changedCount,
   draftOf,
   draftSet,
+  fieldErrors,
   fieldProblems,
   charactersLeft,
+  imageProblem,
   freeSlug,
   productIssues,
   roomLeft,
@@ -21,6 +23,7 @@ const FIELDS = {
   title: 'Deposit "10" USD',
   priceUsd: '10',
   summary: 'Credits your account',
+  image: '',
   description: 'Adds 10 USD.\n\nOnce paid.',
   onSale: true,
 };
@@ -39,11 +42,50 @@ describe('a product as fields', () => {
     expect(productFields(off)).toEqual({ ...FIELDS, summary: '', onSale: false });
   });
 
+  it('writes a picture link after the summary, trimmed, and reads it back; none when empty', () => {
+    const picture = 'https://shop.example/a "b".png';
+    const text = productText({ ...FIELDS, image: `  ${picture}  ` });
+    expect(text).toBe(
+      `---\ntitle: "Deposit \\"10\\" USD"\npriceUsd: "10"\nsummary: "Credits your account"\nimage: ${JSON.stringify(picture)}\n---\n\nAdds 10 USD.\n\nOnce paid.\n`,
+    );
+    expect(productFields(text)).toEqual({ ...FIELDS, image: picture });
+    expect(draftOf('d', text).fields).toEqual({ ...FIELDS, image: picture });
+    expect(productText(FIELDS)).not.toContain('image');
+    // A second image line is not one the form writes: edited as text.
+    expect(
+      productFields(text.replace('image:', 'image: "https://x.example/1.png"\nimage:')),
+    ).toBeUndefined();
+  });
+
+  it('checks a picture link as the node would: optional, https only, in words at its field', () => {
+    expect(imageProblem('')).toBeUndefined();
+    expect(imageProblem('   ')).toBeUndefined();
+    expect(imageProblem('https://shop.example/a.png')).toBeUndefined();
+    for (const link of [
+      'http://shop.example/a.png',
+      'shop.example/a.png',
+      'javascript:alert(1)',
+      'data:image/png;base64,AAAA',
+      'https://',
+      `https://shop.example/${'a'.repeat(1024)}.png`,
+    ]) {
+      expect(imageProblem(link), link).toBeDefined();
+    }
+    const errors = fieldErrors({ ...FIELDS, image: 'http://shop.example/a.png' });
+    expect(errors.image).toBe(
+      'A link to a picture that starts with https://, such as https://example.com/photo.jpg.',
+    );
+    expect(fieldProblems({ ...FIELDS, image: 'http://shop.example/a.png' })).toEqual([
+      errors.image,
+    ]);
+  });
+
   it('writes the title, summary, price and description trimmed', () => {
     const text = productText({
       title: '  Course  ',
       priceUsd: ' 10 ',
       summary: '  Short  ',
+      image: '',
       description: '\n  A course.  \n\n',
       onSale: true,
     });
@@ -134,7 +176,7 @@ describe("a product's issues before a save", () => {
     key,
     name,
     nameTouched: true,
-    fields: { title: 'T', priceUsd: '1', summary: '', description: '', onSale: true },
+    fields: { title: 'T', priceUsd: '1', summary: '', image: '', description: '', onSale: true },
     text: '',
   });
 

@@ -3,7 +3,7 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { type Brand, DEFAULT_BRAND } from './brand';
 import type { Screen } from './controller';
-import type { Banner, StoreInfo, View } from './session';
+import type { About, Banner, StoreInfo, View } from './session';
 import { BannerNote } from './ui/BannerNote';
 import { ChainGlyph } from './ui/ChainGlyph';
 import { isPhone } from './ui/device';
@@ -12,7 +12,7 @@ import { EndedStep } from './ui/EndedStep';
 import { focusFallback } from './ui/focus';
 import { Footer } from './ui/Footer';
 import { RETURN_GLYPH, STOP_GLYPH } from './ui/glyphs';
-import { Header } from './ui/Header';
+import { Header, type HeaderProduct } from './ui/Header';
 import { OfferPanel } from './ui/OfferPanel';
 import { OldPromptStep } from './ui/OldPromptStep';
 import { INITIAL_PANEL, advancePanel, openWallets, shownProblem } from './ui/panel';
@@ -169,21 +169,31 @@ function storeOf(view: View | undefined): StoreInfo | undefined {
 }
 
 /** The product a view is about, when it says: the order's own once there is one. */
-function productOf(view: View | undefined): string | undefined {
+function productOf(view: View | undefined): HeaderProduct | undefined {
   if (view === undefined) {
     return undefined;
   }
   switch (view.kind) {
-    case 'offer':
-      return view.offer.offer.product.title;
+    case 'offer': {
+      const { title, images } = view.offer.offer.product;
+      return { title, ...(images[0] === undefined ? {} : { image: images[0] }) };
+    }
     case 'working':
     case 'waiting_payment':
     case 'waiting_store':
     case 'old_prompt':
-      return view.about.product.title;
+      return headerProduct(view.about.product);
     default:
-      return view.product?.title;
+      return view.product === undefined ? undefined : headerProduct(view.product);
   }
+}
+
+/** The title and picture of a progress view's product. */
+function headerProduct(product: About['product']): HeaderProduct {
+  return {
+    title: product.title,
+    ...(product.image === undefined ? {} : { image: product.image }),
+  };
 }
 
 /**
@@ -235,7 +245,7 @@ export function Checkout({
   const seen = useRef<View | undefined>(undefined);
   const email = useRef('');
   const store = useRef<StoreInfo | undefined>(undefined);
-  const product = useRef<string | undefined>(undefined);
+  const product = useRef<HeaderProduct | undefined>(undefined);
   const network = useRef<Network | undefined>(undefined);
   /** A buyer's action is running: the first view it produces takes focus. */
   const armed = useRef(false);

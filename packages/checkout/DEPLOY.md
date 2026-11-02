@@ -160,6 +160,9 @@ or use Protection Bypass for Automation and open the preview once with
       and no error.
 - [ ] `/checkout` responds with the `Content-Security-Policy`, `Referrer-Policy: no-referrer`
       and `Cache-Control: no-cache` headers.
+- [ ] A product whose `PRODUCT.md` names an `image` shows it above the title; its `img-src`
+      takes any `https:` host (a product picture is on the merchant's own host), so that host sees
+      the buyer's IP address and when the checkout opened (never the page: no referrer).
 - [ ] `/v1/embed.js`, `/v2/embed.js` and `/v3/embed.js` respond with `Access-Control-Allow-Origin: *` and the
       immutable `Cache-Control`.
 - [ ] With the preview's `/v3/embed.js`, the button opens the checkout in a modal; the close

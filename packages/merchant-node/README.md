@@ -157,6 +157,7 @@ Adds 10 USD to your account, in markdown. This body is the listing's description
 | `priceUsd` | Price in USD, quoted: `"49"` or `"0.50"`. A bare number is refused         |
 | `onSale`   | Optional, `true` by default. `false` stops selling the product (see below) |
 | `summary`  | Optional short line                                                        |
+| `image`    | Optional picture: one `https://` link (0.14.0 or newer), shown at checkout |
 
 - An unknown or misspelled key is refused: a misspelled `onSale` would otherwise leave the
   product on sale. A `delivery` (from a node older than 0.9.0) is refused by name: remove it.

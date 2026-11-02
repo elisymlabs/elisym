@@ -2062,6 +2062,37 @@ describe('store data', () => {
     expect(ui.container.querySelectorAll('img[src="x"]')).toHaveLength(0);
   });
 
+  it("shows the listing's first picture above the title, decorative, with no referrer; none without one", () => {
+    const picture = 'https://shop.example/agents-101.png';
+    const ui = mount(
+      offerView(cannedOffer({ images: [picture, 'https://shop.example/second.png'] })),
+    );
+    const images = ui.container.querySelectorAll('header img');
+    expect(images).toHaveLength(1);
+    const image = images[0];
+    expect(image?.getAttribute('src')).toBe(picture);
+    expect(image?.getAttribute('alt')).toBe('');
+    expect(image?.getAttribute('referrerpolicy')).toBe('no-referrer');
+    // Above the title: the first thing in the header.
+    expect(ui.container.querySelector('header')?.firstElementChild).toBe(image);
+    expect(ui.container.querySelector('.product-title')?.textContent).toBe('Agents 101');
+    const plain = mount(offerView(cannedOffer()));
+    expect(plain.container.querySelectorAll('header img')).toHaveLength(0);
+  });
+
+  it('keeps the picture through the order, and hides one that does not load', () => {
+    const picture = 'https://shop.example/agents-101.png';
+    const offer = cannedOffer({ images: [picture] });
+    const ui = mount(waitingView(aboutOf(offer), paying));
+    const image = ui.container.querySelector('header img');
+    expect(image?.getAttribute('src')).toBe(picture);
+    act(() => {
+      image?.dispatchEvent(new Event('error'));
+    });
+    expect(ui.container.querySelectorAll('header img')).toHaveLength(0);
+    expect(ui.container.querySelector('.product-title')?.textContent).toBe('Agents 101');
+  });
+
   it('shows a refusal before any offer', () => {
     const ui = mount(undefined, { refused: true });
     expect(ui.alerts().join(' ')).toContain('This browser blocks storage');

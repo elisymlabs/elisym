@@ -40,7 +40,7 @@ export interface StoreKeys {
 /** The product fields a listing is built from. */
 export type ListedProduct = Pick<
   Product,
-  'd' | 'title' | 'description' | 'summary' | 'priceUsd' | 'onSale'
+  'd' | 'title' | 'description' | 'summary' | 'image' | 'priceUsd' | 'onSale'
 >;
 
 /**
@@ -93,10 +93,11 @@ export function payoutTerms(
  * The content of a product's listing, never its date: sha256 of its `d`, text,
  * price and visibility, and - on sale only - its coins. A sold-out listing
  * still carries coins (a listing needs one) but offers nothing, so a coin
- * change does not republish it.
+ * change does not republish it. An image is hashed only when there is one, so
+ * a listing without one keeps the hash it had before images.
  */
 export function listingHash(product: ListedProduct, payouts: StoreConfig['payouts']): string {
-  const content = [
+  const content: unknown[] = [
     product.d,
     product.title,
     product.summary ?? null,
@@ -106,6 +107,9 @@ export function listingHash(product: ListedProduct, payouts: StoreConfig['payout
     product.onSale ? ON_SALE : SOLD_OUT,
     product.onSale ? payouts.map((payout) => payout.caip19) : [],
   ];
+  if (product.image !== undefined) {
+    content.push({ image: product.image });
+  }
   return createHash('sha256').update(JSON.stringify(content), 'utf8').digest('hex');
 }
 
@@ -122,6 +126,7 @@ export function buildListingEvent(
       title: product.title,
       description: product.description,
       ...(product.summary === undefined ? {} : { summary: product.summary }),
+      ...(product.image === undefined ? {} : { images: [product.image] }),
       price: { amount: product.priceUsd, currency: 'USD' },
       visibility: product.onSale ? ON_SALE : SOLD_OUT,
       accept: payouts.map((payout) => payout.caip19),

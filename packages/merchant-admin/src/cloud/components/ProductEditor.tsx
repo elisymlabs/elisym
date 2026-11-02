@@ -9,9 +9,11 @@ import {
   draftText,
   fieldErrors,
   roomLeft,
+  shownImage,
 } from '../lib/product-form';
 import { PRODUCT_NAME_RE } from '../lib/snippet';
 import { ProblemList } from './ProblemList';
+import { ProductPicture } from './ProductPicture';
 
 interface Props {
   product: ProductDraft;
@@ -88,6 +90,7 @@ export function ProductEditor({ product, nameEditable, nameTaken, refused, onCha
     );
   }
   const errors = fieldErrors(fields);
+  const picture = shownImage(fields);
   const set = (next: Partial<typeof fields>) =>
     onChange({ ...product, fields: { ...fields, ...next } });
   return (
@@ -172,6 +175,31 @@ export function ProductEditor({ product, nameEditable, nameTaken, refused, onCha
           aria-describedby={describedBy(`${id}-summary`, 'hint', errors.summary)}
           onChange={(event) => set({ summary: event.target.value })}
         />
+      </Field>
+      <Field
+        id={`${id}-image`}
+        label="Picture link (optional)"
+        hint="A link to the product's picture, starting with https://. Buyers see it at checkout."
+        {...(errors.image ? { error: errors.image } : {})}
+      >
+        <Input
+          id={`${id}-image`}
+          type="url"
+          inputMode="url"
+          mono
+          value={fields.image}
+          maxLength={1024}
+          spellCheck={false}
+          aria-invalid={errors.image === undefined ? undefined : true}
+          aria-describedby={describedBy(`${id}-image`, 'hint', errors.image)}
+          onChange={(event) => set({ image: event.target.value })}
+        />
+        {picture === undefined ? null : (
+          <ProductPicture
+            src={picture}
+            className="rounded-10 border-line bg-bg h-160 w-full border object-cover"
+          />
+        )}
       </Field>
       <Field
         id={`${id}-description`}

@@ -74,11 +74,14 @@ function networkText(network: Network, problem: string, own: ReadonlySet<string>
   return `${name}: this network's settings were refused. Turn it off and on again in Settings, or contact us.`;
 }
 
-function productText(path: string): string {
+function productText(path: string, problem: string): string {
   const name = path.slice('products/'.length);
+  const what = problem.includes(': image: ')
+    ? 'its picture link must start with https://.'
+    : 'check its title, price and description.';
   return SHOWN_PRODUCT.test(name)
-    ? `The product "${name}": check its title, price and description.`
-    : 'One of your products: check its title, price and description.';
+    ? `The product "${name}": ${what}`
+    : `One of your products: ${what}`;
 }
 
 /** The networks a store's settings name an own endpoint for (by chain slug). */
@@ -112,7 +115,7 @@ export function problemText(problem: string, own: ReadonlySet<string> = new Set(
     return { field: 'products', text: 'Add at least one product to sell.', raw: problem };
   }
   if (path.startsWith('products/')) {
-    return { field: 'products', text: productText(path), raw: problem };
+    return { field: 'products', text: productText(path, problem), raw: problem };
   }
   const root = path.split('.')[0] ?? '';
   if (root === 'name') {

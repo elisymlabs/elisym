@@ -12,6 +12,7 @@ import {
   draftText,
   freeSlug,
   productIssues,
+  shownImage,
 } from '../lib/product-form';
 import { saveVerdict } from '../lib/save-wait';
 import { productsDigest } from '../lib/status';
@@ -20,6 +21,7 @@ import type { KeptStore } from '../lib/use-kept-store';
 import type { StoreStatusPoll } from '../lib/use-status';
 import { ProblemList } from './ProblemList';
 import { ProductEditor } from './ProductEditor';
+import { ProductPicture } from './ProductPicture';
 import { ProductsCallout } from './ProductsCallout';
 import { ProductSheet } from './ProductSheet';
 
@@ -49,7 +51,7 @@ interface Open {
 function blankProduct(product: ProductDraft): ProductDraft {
   return {
     ...product,
-    fields: { title: '', priceUsd: '', summary: '', description: '', onSale: true },
+    fields: { title: '', priceUsd: '', summary: '', image: '', description: '', onSale: true },
   };
 }
 
@@ -224,7 +226,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
         key,
         name: freeSlug('', taken),
         nameTouched: false,
-        fields: { title: '', priceUsd: '', summary: '', description: '', onSale: true },
+        fields: { title: '', priceUsd: '', summary: '', image: '', description: '', onSale: true },
         text: '',
       },
     ]);
@@ -397,6 +399,7 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
               const issues = tried ? productIssues(product, draft, isKept(product)) : [];
               const said = refusedOf(product.name);
               const { fields } = product;
+              const picture = fields === undefined ? undefined : shownImage(fields);
               return (
                 <li
                   key={product.key}
@@ -404,6 +407,12 @@ export function ProductsForm({ api, tenantId, kept, status, poll, published, onS
                   className="flex flex-col gap-8 px-16 py-12"
                 >
                   <div className="flex flex-wrap items-center gap-12">
+                    {picture === undefined ? null : (
+                      <ProductPicture
+                        src={picture}
+                        className="rounded-8 border-line bg-bg size-40 flex-none border object-cover"
+                      />
+                    )}
                     <div className="flex min-w-0 flex-1 flex-col">
                       <span className="text-15 truncate font-medium">{label}</span>
                       <span className="text-13 text-text-2">

@@ -30,7 +30,8 @@ const ADMIN_CSP: Record<string, string[]> = {
   'default-src': ["'none'"],
   'script-src': ["'self'"],
   'style-src': ["'self'"],
-  'img-src': ["'self'", 'data:'],
+  // A product's picture is on the merchant's own host: any https one.
+  'img-src': ["'self'", 'data:', 'https:'],
   'connect-src': ['wss:', PRODUCTION_API_ORIGIN],
   'frame-src': ["'none'"],
   'frame-ancestors': ["'none'"],

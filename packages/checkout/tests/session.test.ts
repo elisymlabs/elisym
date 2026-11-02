@@ -2072,6 +2072,30 @@ describe('what a progress screen is about', () => {
     }
   });
 
+  it("carries the listing's first picture, and no picture key for a listing without one", async () => {
+    const picture = 'https://shop.example/course.png';
+    const run = await setup({
+      transform: (offer) => ({
+        ...offer,
+        offer: {
+          ...offer.offer,
+          product: { ...offer.offer.product, images: [picture, 'https://shop.example/2.png'] },
+        },
+      }),
+    });
+    await run.session.start();
+    await run.session.pay('Fake');
+    expect(run.last()).toMatchObject({
+      kind: 'waiting_payment',
+      about: { product: { image: picture } },
+    });
+    const plain = await setup();
+    await plain.session.start();
+    await plain.session.pay('Fake');
+    const view = plain.last();
+    expect(view?.kind === 'waiting_payment' && 'image' in view.about.product).toBe(false);
+  });
+
   it('names the order’s own product and price on a page that follows it, whatever the store lists now', async () => {
     const run = await setup();
     run.chain.dropSends = true;
