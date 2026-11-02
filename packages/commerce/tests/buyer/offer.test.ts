@@ -31,9 +31,7 @@ describe('loadOffer', () => {
   });
 
   it('reads from the default relays plus the usable naddr hints', async () => {
-    const shop = makeShop({
-      hints: ['wss://hint.example.com', 'ws://plain.example.com'],
-    });
+    const shop = makeShop({ hints: ['wss://hint.example.com', 'ws://plain.example.com'] });
     const client = new MemoryRelays(shop.events);
     const loaded = await loadOffer(shop.naddr, {
       client,
@@ -82,12 +80,7 @@ describe('loadOffer', () => {
     ]) {
       const client = new MemoryRelays(shop.events);
       expect(
-        await loadOffer(shop.naddr, {
-          client,
-          pageOrigin,
-          families: ['solana'],
-          now: NOW,
-        }),
+        await loadOffer(shop.naddr, { client, pageOrigin, families: ['solana'], now: NOW }),
       ).toMatchObject({
         ok: false,
         refusal: 'bad_page_origin',
@@ -128,12 +121,7 @@ describe('loadOffer', () => {
   it('offers only the rails and network the widget pays on', async () => {
     const shop = makeShop();
     const client = new MemoryRelays(shop.events);
-    const base = {
-      client,
-      pageOrigin: PAGE,
-      families: ['solana' as const],
-      now: NOW,
-    };
+    const base = { client, pageOrigin: PAGE, families: ['solana' as const], now: NOW };
     expect(await loadOffer(shop.naddr, { ...base, families: ['evm'] })).toMatchObject({
       ok: false,
       refusal: 'no_payable_payout',
@@ -143,11 +131,7 @@ describe('loadOffer', () => {
       refusal: 'no_payable_payout',
     });
     expect(
-      await loadOffer(shop.naddr, {
-        ...base,
-        families: ['solana'],
-        network: 'devnet',
-      }),
+      await loadOffer(shop.naddr, { ...base, families: ['solana'], network: 'devnet' }),
     ).toMatchObject({ ok: true });
   });
 
@@ -159,10 +143,7 @@ describe('loadOffer', () => {
       families: ['solana'],
       now: NOW,
     });
-    expect(loaded).toMatchObject({
-      ok: true,
-      confirm: ['payout_recently_changed'],
-    });
+    expect(loaded).toMatchObject({ ok: true, confirm: ['payout_recently_changed'] });
 
     const shop = makeShop();
     const pinned = await loadOffer(shop.naddr, {
@@ -173,10 +154,7 @@ describe('loadOffer', () => {
       pins: {
         pinnedOwnerPubkey: shop.owner.pubkey,
         knownPayouts: [
-          {
-            caip19: USDC_DEVNET_CAIP19,
-            address: 'SomeOtherAddress1111111111111111111111111',
-          },
+          { caip19: USDC_DEVNET_CAIP19, address: 'SomeOtherAddress1111111111111111111111111' },
         ],
       },
     });
@@ -210,12 +188,7 @@ describe('loadOffer', () => {
     const shop = makeShop({ price: '0' });
     const client = new MemoryRelays(shop.events);
     expect(
-      await loadOffer(shop.naddr, {
-        client,
-        pageOrigin: PAGE,
-        families: ['solana'],
-        now: NOW,
-      }),
+      await loadOffer(shop.naddr, { client, pageOrigin: PAGE, families: ['solana'], now: NOW }),
     ).toMatchObject({
       ok: false,
       refusal: 'no_payable_payout',
@@ -226,23 +199,13 @@ describe('loadOffer', () => {
     const shop = makeShop();
     const client = new MemoryRelays(shop.events.slice(1));
     expect(
-      await loadOffer(shop.naddr, {
-        client,
-        pageOrigin: PAGE,
-        families: ['solana'],
-        now: NOW,
-      }),
+      await loadOffer(shop.naddr, { client, pageOrigin: PAGE, families: ['solana'], now: NOW }),
     ).toMatchObject({
       ok: false,
       refusal: 'product_missing',
     });
     expect(
-      await loadOffer('naddr1bogus', {
-        client,
-        pageOrigin: PAGE,
-        families: ['solana'],
-        now: NOW,
-      }),
+      await loadOffer('naddr1bogus', { client, pageOrigin: PAGE, families: ['solana'], now: NOW }),
     ).toMatchObject({
       ok: false,
       refusal: 'bad_pointer',
