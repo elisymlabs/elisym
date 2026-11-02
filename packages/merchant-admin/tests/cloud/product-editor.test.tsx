@@ -5,6 +5,7 @@ import type { ProductDraft } from '../../src/cloud/lib/product-form';
 import { type Mounted, mount } from '../mount';
 
 const PICTURE = 'https://shop.example/course.png';
+const OTHER_PICTURE = 'https://shop.example/course-2.png';
 
 function draftWith(image: string): ProductDraft {
   return {
@@ -83,7 +84,14 @@ describe("a product's picture in its editor", () => {
     });
     expect(preview(container)?.getAttribute('src')).toBe(PICTURE);
     // A change hides it until the new link settles; a link the node refuses never shows.
+    await type(container, OTHER_PICTURE);
+    expect(preview(container)).toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(PREVIEW_AFTER_MS);
+    });
+    expect(preview(container)?.getAttribute('src')).toBe(OTHER_PICTURE);
     await type(container, 'http://shop.example/course.png');
+    expect(preview(container)).toBeNull();
     await act(async () => {
       vi.advanceTimersByTime(PREVIEW_AFTER_MS);
     });
