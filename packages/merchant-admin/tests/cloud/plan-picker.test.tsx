@@ -12,7 +12,6 @@ function tier(id: string, payable: boolean) {
     selfServe: true,
     limits: { products: 10 },
     display: {},
-    ownRpc: false,
     payable: { card: false, crypto: payable },
   };
 }

@@ -279,10 +279,10 @@ describe('the cloud section', () => {
     expect(tierCard(page, 'white-label').textContent).toContain(
       'Priced by the number of stores you run',
     );
-    expect(tierCard(page, 'business').textContent).toContain(
-      'Your own RPC on any network, if you want one',
-    );
-    expect(tierCard(page, 'starter').textContent).not.toMatch(/own rpc/i);
+    // No plan sells an own RPC: the cloud runs every store on its own.
+    for (const tier of CLOUD_TIERS) {
+      expect(tierCard(page, tier.id).textContent).not.toMatch(/\brpc\b/i);
+    }
     // Every card's lines, exactly: its limits first, then what it includes.
     const lines = (id: string) =>
       [...tierCard(page, id).querySelectorAll('ul li')].map((item) => item.textContent);
@@ -297,7 +297,6 @@ describe('the cloud section', () => {
       'Up to 1,000 products',
       'No cap on orders',
       'Everything in Starter',
-      'Your own RPC on any network, if you want one',
     ]);
     expect(lines('high-risk')).toEqual([
       'No cap on products',

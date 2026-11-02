@@ -39,7 +39,7 @@ export function tiersAnswer(): Body {
         selfServe: true,
         limits: { products: 1000 },
         display: { ordersPerMonth: 'No cap' },
-        ownRpc: true,
+        ownRpc: false,
         payable: { card: true, crypto: false },
       },
       {
@@ -49,7 +49,7 @@ export function tiersAnswer(): Body {
         selfServe: false,
         limits: { products: 1200 },
         display: { products: 'No cap', ordersPerMonth: 'No cap' },
-        ownRpc: true,
+        ownRpc: false,
         payable: { card: false, crypto: false },
       },
       {
@@ -59,7 +59,7 @@ export function tiersAnswer(): Body {
         selfServe: false,
         limits: { products: 1200 },
         display: { products: 'No cap', ordersPerMonth: 'No cap' },
-        ownRpc: true,
+        ownRpc: false,
         payable: { card: false, crypto: false },
       },
     ],

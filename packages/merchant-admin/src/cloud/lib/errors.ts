@@ -13,8 +13,7 @@ export const EXPLAINED: Readonly<Record<string, string>> = {
   unreachable: 'Could not reach our cloud: check your connection and try again.',
   bad_tier: 'That plan cannot be bought here.',
   over_limit: 'Your plan takes fewer products: remove some, or contact us to move up.',
-  not_on_plan:
-    'Your plan runs on our network endpoints: your own needs a plan that takes them (contact us).',
+  not_on_plan: 'Your store runs on our network endpoints: it cannot name its own.',
   rate_limited: 'Too many attempts from your network: try again in an hour.',
   stale: 'Your clock and the server disagree too far: check your device time.',
   not_paid: 'Pay for the store first: it is on sale only while its paid time runs.',

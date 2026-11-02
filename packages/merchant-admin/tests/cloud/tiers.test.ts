@@ -16,7 +16,6 @@ const STARTER = {
   selfServe: true,
   limits: { products: 100, ordersPerMonth: 2000 },
   display: {},
-  ownRpc: false,
   payable: { card: false, crypto: true },
 };
 const ENTERPRISE = {
@@ -26,6 +25,7 @@ const ENTERPRISE = {
   selfServe: false,
   limits: { products: 1200 },
   display: { products: 'No cap', ordersPerMonth: 'No cap' },
+  // cloud-api still sends the flag; no plan sells an own RPC, so the admin ignores it.
   ownRpc: true,
   payable: { card: false, crypto: false },
 };
@@ -40,7 +40,6 @@ describe('the plan catalog as the admin reads it', () => {
         selfServe: true,
         limits: { products: 100, ordersPerMonth: 2000 },
         display: {},
-        ownRpc: false,
         payable: { card: false, crypto: true },
       },
       {
@@ -50,7 +49,6 @@ describe('the plan catalog as the admin reads it', () => {
         selfServe: false,
         limits: { products: 1200 },
         display: { products: 'No cap', ordersPerMonth: 'No cap' },
-        ownRpc: true,
         payable: { card: false, crypto: false },
       },
     ]);
@@ -81,9 +79,6 @@ describe('the plan catalog as the admin reads it', () => {
       },
       (tier) => {
         tier.display = null;
-      },
-      (tier) => {
-        tier.ownRpc = undefined;
       },
       (tier) => {
         tier.payable = { card: true };

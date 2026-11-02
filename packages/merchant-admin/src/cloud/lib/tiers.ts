@@ -18,8 +18,6 @@ export interface TierCard {
   limits: { products: number; ordersPerMonth?: number };
   /** Strings shown instead of a limit's number ("No cap"). */
   display: { products?: string; ordersPerMonth?: string };
-  /** The merchant may set their own RPC per network. */
-  ownRpc: boolean;
   /** How the first month can be paid now: by card, in stablecoins. */
   payable: { card: boolean; crypto: boolean };
 }
@@ -83,7 +81,6 @@ function tierOf(value: unknown): TierCard {
       ...(shownProducts === undefined ? {} : { products: shownProducts }),
       ...(shownOrders === undefined ? {} : { ordersPerMonth: shownOrders }),
     },
-    ownRpc: flag(fieldOf(value, 'ownRpc')),
     payable: { card: flag(payable.card), crypto: flag(payable.crypto) },
   };
 }

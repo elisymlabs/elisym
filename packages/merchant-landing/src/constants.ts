@@ -100,7 +100,7 @@ export const CLOUD_TIERS: CloudTier[] = [
     price: '$99/mo',
     limits: { products: 1000 },
     display: { ordersPerMonth: 'No cap' },
-    features: ['Everything in Starter', 'Your own RPC on any network, if you want one'],
+    features: ['Everything in Starter'],
     selfServe: true,
     highlighted: true,
   },
