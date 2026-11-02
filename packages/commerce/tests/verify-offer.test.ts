@@ -89,7 +89,11 @@ function makeWorld(profile: { nip05?: string; withOwnerTag?: boolean } = {}): Wo
       owner,
     ),
     auth: sign(
-      buildStoreAuthEvent({ storePubkey: store.pubkey, mode: 'self-host', createdAt: T0 }),
+      buildStoreAuthEvent({
+        storePubkey: store.pubkey,
+        mode: 'self-host',
+        createdAt: T0,
+      }),
       owner,
     ),
     domainKeys: {
@@ -133,7 +137,10 @@ function evaluate(
 ): OfferVerification {
   return evaluateOffer(
     pointerOf(world),
-    { events: bundle.events ?? [world.product, world.profile, world.payto, world.auth], ...bundle },
+    {
+      events: bundle.events ?? [world.product, world.profile, world.payto, world.auth],
+      ...bundle,
+    },
     { now: NOW, ...options },
   );
 }
@@ -171,7 +178,11 @@ describe('evaluateOffer - level C (keys only)', () => {
   it('refuses without an AUTH from the owner: a store cannot adopt an owner on its own', () => {
     const world = makeWorld();
     expect(
-      expectRefusal(evaluate(world, { events: [world.product, world.profile, world.payto] })),
+      expectRefusal(
+        evaluate(world, {
+          events: [world.product, world.profile, world.payto],
+        }),
+      ),
     ).toBe('store_auth_missing');
   });
 
@@ -188,7 +199,9 @@ describe('evaluateOffer - level C (keys only)', () => {
     );
     expect(
       expectRefusal(
-        evaluate(world, { events: [world.product, world.profile, world.payto, foreignAuth] }),
+        evaluate(world, {
+          events: [world.product, world.profile, world.payto, foreignAuth],
+        }),
       ),
     ).toBe('store_auth_missing');
   });
@@ -252,7 +265,9 @@ describe('evaluateOffer - NIP-09 revocation', () => {
     for (const createdAt of [T0, T0 + 1]) {
       expect(
         expectRefusal(
-          evaluate(world, { events: [...allEvents(world), deletionOfAuth(world, createdAt)] }),
+          evaluate(world, {
+            events: [...allEvents(world), deletionOfAuth(world, createdAt)],
+          }),
         ),
       ).toBe('store_auth_revoked');
     }
@@ -267,7 +282,9 @@ describe('evaluateOffer - NIP-09 revocation', () => {
     );
     expect(
       expectRefusal(
-        evaluate(world, { events: [...allEvents(world), deletionOfAuth(world, ahead)] }),
+        evaluate(world, {
+          events: [...allEvents(world), deletionOfAuth(world, ahead)],
+        }),
       ),
     ).toBe('store_auth_revoked');
   });
@@ -352,7 +369,10 @@ describe('evaluateOffer - level A (domain)', () => {
       world.owner,
     );
     const at = (event: NostrEvent): OfferVerification =>
-      evaluate(world, { events: [...allEvents(world), event], domain: world.domainKeys });
+      evaluate(world, {
+        events: [...allEvents(world), event],
+        domain: world.domainKeys,
+      });
     expect(expectRefusal(at(bareRevocation))).toBe('store_auth_revoked');
     expect(expectRefusal(at(unreadable))).toBe('store_auth_missing');
   });
@@ -374,7 +394,9 @@ describe('evaluateOffer - level A (domain)', () => {
     const world = makeWorld({ nip05: `_@${DOMAIN}` });
     expect(
       expectRefusal(
-        evaluate(world, { domain: { ...world.domainKeys, storePubkey: 'f'.repeat(64) } }),
+        evaluate(world, {
+          domain: { ...world.domainKeys, storePubkey: 'f'.repeat(64) },
+        }),
       ),
     ).toBe('domain_mismatch');
   });
@@ -383,7 +405,9 @@ describe('evaluateOffer - level A (domain)', () => {
     const world = makeWorld({ nip05: `_@${DOMAIN}` });
     expect(
       expectRefusal(
-        evaluate(world, { domain: { ...world.domainKeys, ownerPubkey: 'f'.repeat(64) } }),
+        evaluate(world, {
+          domain: { ...world.domainKeys, ownerPubkey: 'f'.repeat(64) },
+        }),
       ),
     ).toBe('owner_mismatch');
   });
@@ -393,7 +417,11 @@ describe('evaluateOffer - level A (domain)', () => {
     // with no owner tag must not get to pick the owner.
     const world = makeWorld({ nip05: `_@${DOMAIN}`, withOwnerTag: false });
     const attacker = nostrKey();
-    const forged: DomainKeys = { ...world.domainKeys, ownerPubkey: attacker.pubkey, source: 'dns' };
+    const forged: DomainKeys = {
+      ...world.domainKeys,
+      ownerPubkey: attacker.pubkey,
+      source: 'dns',
+    };
     const attackerPayto = sign(
       buildPaytoEvent({
         accept: [{ caip19: USDC_DEVNET_CAIP19, address: solanaWallet().address }],
@@ -497,7 +525,10 @@ describe('evaluateOffer - level A (domain)', () => {
     expect(offer.level).toBe('C');
     expect(offer.ownerPubkey).toBe(withOwner.owner.pubkey);
     expect(offer.warnings).toContain('domain_unverified');
-    const noOwner = makeWorld({ nip05: 'alice@provider.example', withOwnerTag: false });
+    const noOwner = makeWorld({
+      nip05: 'alice@provider.example',
+      withOwnerTag: false,
+    });
     expect(expectRefusal(evaluate(noOwner, { domain: shared(noOwner) }))).toBe('owner_unknown');
   });
 
@@ -568,7 +599,10 @@ describe('evaluateOffer - level A (domain)', () => {
     it('refuses on another site in strict mode', () => {
       expect(
         expectRefusal(
-          evaluate(world, bundle, { pageOrigin: 'https://evil.example', strictOrigin: true }),
+          evaluate(world, bundle, {
+            pageOrigin: 'https://evil.example',
+            strictOrigin: true,
+          }),
         ),
       ).toBe('origin_mismatch');
     });
@@ -599,7 +633,10 @@ describe('evaluateOffer - level B (hosted name)', () => {
       expectRefusal(
         evaluate(
           world,
-          { events: [world.product, world.profile, world.payto], domain: hostedKeys },
+          {
+            events: [world.product, world.profile, world.payto],
+            domain: hostedKeys,
+          },
           options,
         ),
       ),
@@ -696,7 +733,11 @@ describe('evaluateOffer - the listing and the profile', () => {
       nostrKey(),
     );
     expect(
-      expectRefusal(evaluate(world, { events: [byOther, world.profile, world.payto, world.auth] })),
+      expectRefusal(
+        evaluate(world, {
+          events: [byOther, world.profile, world.payto, world.auth],
+        }),
+      ),
     ).toBe('product_missing');
     expect(
       expectRefusal(
@@ -713,7 +754,11 @@ describe('evaluateOffer - the listing and the profile', () => {
     const world = makeWorld();
     const forged = { ...world.product, content: 'tampered' };
     expect(
-      expectRefusal(evaluate(world, { events: [forged, world.profile, world.payto, world.auth] })),
+      expectRefusal(
+        evaluate(world, {
+          events: [forged, world.profile, world.payto, world.auth],
+        }),
+      ),
     ).toBe('product_missing');
   });
 
@@ -753,7 +798,11 @@ describe('evaluateOffer - the listing and the profile', () => {
         world.store,
       );
     expect(
-      expectRefusal(evaluate(world, { events: [...allEvents(world), deleteListing(T0 + 1)] })),
+      expectRefusal(
+        evaluate(world, {
+          events: [...allEvents(world), deleteListing(T0 + 1)],
+        }),
+      ),
     ).toBe('product_missing');
     expect(evaluate(world, { events: [...allEvents(world), deleteListing(T0 - 1)] }).ok).toBe(true);
     const byOwner = sign(
@@ -800,7 +849,9 @@ describe('evaluateOffer - payout addresses', () => {
       allEvents(world).map((event) => (event === from ? to : event));
     expect(
       expectRefusal(
-        evaluate(world, { events: swap(world.payto, expiring(world.payto, past, world.owner)) }),
+        evaluate(world, {
+          events: swap(world.payto, expiring(world.payto, past, world.owner)),
+        }),
       ),
     ).toBe('payto_missing');
     expect(
@@ -820,11 +871,15 @@ describe('evaluateOffer - payout addresses', () => {
     // An unreadable expiration fails closed; a future one changes nothing.
     expect(
       expectRefusal(
-        evaluate(world, { events: swap(world.payto, expiring(world.payto, 'soon', world.owner)) }),
+        evaluate(world, {
+          events: swap(world.payto, expiring(world.payto, 'soon', world.owner)),
+        }),
       ),
     ).toBe('payto_missing');
     expect(
-      evaluate(world, { events: swap(world.payto, expiring(world.payto, future, world.owner)) }).ok,
+      evaluate(world, {
+        events: swap(world.payto, expiring(world.payto, future, world.owner)),
+      }).ok,
     ).toBe(true);
   });
 
@@ -846,7 +901,9 @@ describe('evaluateOffer - payout addresses', () => {
     );
     expect(
       expectRefusal(
-        evaluate(world, { events: [world.product, world.profile, world.auth, storePayto] }),
+        evaluate(world, {
+          events: [world.product, world.profile, world.auth, storePayto],
+        }),
       ),
     ).toBe('payto_missing');
   });
@@ -862,7 +919,9 @@ describe('evaluateOffer - payout addresses', () => {
     );
     expect(
       expectRefusal(
-        evaluate(world, { events: [world.product, world.profile, world.auth, mainnetOnly] }),
+        evaluate(world, {
+          events: [world.product, world.profile, world.auth, mainnetOnly],
+        }),
       ),
     ).toBe('no_payout_for_accepted_assets');
   });
@@ -885,7 +944,9 @@ describe('evaluateOffer - payout addresses', () => {
       world.owner,
     );
     const offer = expectOffer(
-      evaluate(world, { events: [world.product, world.profile, world.auth, world.payto, newer] }),
+      evaluate(world, {
+        events: [world.product, world.profile, world.auth, world.payto, newer],
+      }),
     );
     expect(offer.payouts.map((target) => target.address)).toEqual([next.address]);
 
@@ -895,7 +956,9 @@ describe('evaluateOffer - payout addresses', () => {
       tags: [['accept', USDC_DEVNET_CAIP19, solanaWallet().address]],
     };
     const kept = expectOffer(
-      evaluate(world, { events: [world.product, world.profile, world.auth, world.payto, forged] }),
+      evaluate(world, {
+        events: [world.product, world.profile, world.auth, world.payto, forged],
+      }),
     );
     expect(kept.payouts.map((target) => target.address)).toEqual([world.wallet.address]);
   });
@@ -910,12 +973,14 @@ describe('evaluateOffer - payout addresses', () => {
       world.owner,
     );
     const offer = expectOffer(
-      evaluate(world, { events: [world.product, world.profile, world.auth, world.payto, future] }),
+      evaluate(world, {
+        events: [world.product, world.profile, world.auth, world.payto, future],
+      }),
     );
     expect(offer.payouts.map((target) => target.address)).toEqual([world.wallet.address]);
   });
 
-  it('warns about a payout event younger than the cool-down, and about an unsigned address', () => {
+  it('warns about a payout event younger than the cool-down, and never about an address with no wallet proof', () => {
     const world = makeWorld();
     const fresh = sign(
       buildPaytoEvent({
@@ -925,13 +990,12 @@ describe('evaluateOffer - payout addresses', () => {
       world.owner,
     );
     const offer = expectOffer(
-      evaluate(world, { events: [world.product, world.profile, world.auth, fresh] }),
+      evaluate(world, {
+        events: [world.product, world.profile, world.auth, fresh],
+      }),
     );
-    expect(offer.warnings).toEqual([
-      'owner_unpinned',
-      'payout_recently_changed',
-      'payout_unsigned',
-    ]);
+    expect(offer.payouts.map((target) => target.walletSigned)).toEqual([false]);
+    expect(offer.warnings).toEqual(['owner_unpinned', 'payout_recently_changed']);
   });
 
   it('is not fooled by a back-dated 10133 when the caller knows better', () => {
@@ -1132,7 +1196,9 @@ describe('verifyOffer', () => {
   });
 
   it('refuses something that is not a product naddr', async () => {
-    const result = await verifyOffer('npub1nope', { fetchEvents: async () => [] });
+    const result = await verifyOffer('npub1nope', {
+      fetchEvents: async () => [],
+    });
     expect(expectRefusal(result)).toBe('bad_pointer');
   });
 });
@@ -1151,7 +1217,9 @@ describe('evaluateOffer - store capabilities', () => {
       world.store,
     );
     const offer = expectOffer(
-      evaluate(world, { events: [world.product, marked, world.payto, world.auth] }),
+      evaluate(world, {
+        events: [world.product, marked, world.payto, world.auth],
+      }),
     );
     expect(offer.memoMarker).toBe(true);
     expect(offer.profile.memoMarker).toBe(true);
