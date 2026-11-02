@@ -261,7 +261,7 @@ describe('the cloud section', () => {
     );
   });
 
-  it('names the rails, each plan audience, the White-label terms and the own-RPC line, and how plans are billed', async () => {
+  it('names the rails, each plan audience, the White-label terms and no own RPC on any plan, and how plans are billed', async () => {
     const page = await render(<Pricing />);
     const text = page.textContent ?? '';
     expect(text).toContain(

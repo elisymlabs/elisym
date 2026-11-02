@@ -105,3 +105,24 @@ describe('the plans as a radio group', () => {
     expect(checked(container)).toEqual(['three']);
   });
 });
+
+describe('a plan card', () => {
+  it('shows its limits only, even when the catalog still flags an own RPC', async () => {
+    const business = { ...tier('business', true), name: 'Business', ownRpc: true };
+    mounted = await mount(
+      <PlanPicker
+        loadTiers={async () => ({ status: 200, body: { tiers: [business] } })}
+        preselect={undefined}
+        chosen={undefined}
+        onChoose={() => undefined}
+        locked={false}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => container.querySelector('[data-tier="business"]') !== null);
+    const text = card(container, 'business').textContent ?? '';
+    expect(text).toContain('Products: 10');
+    expect(text).toContain('Paid orders a month: No cap');
+    expect(text).not.toMatch(/own|endpoint|rpc/i);
+  });
+});
