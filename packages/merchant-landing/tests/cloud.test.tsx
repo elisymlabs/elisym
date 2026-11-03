@@ -327,6 +327,9 @@ describe('the cloud section', () => {
     expect(text).toContain(
       'Prices in US dollars. Self-serve plans are billed monthly by card or stablecoins. Buyers always pay straight to your wallets.',
     );
+    expect(text).toContain(
+      'Change plans in your admin: an upgrade starts a new month on the new plan at once, a downgrade takes effect at the end of your paid month.',
+    );
   });
 
   it('the FAQ offers the hosted option', async () => {
