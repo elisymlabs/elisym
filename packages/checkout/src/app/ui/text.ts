@@ -628,7 +628,7 @@ export const PURCHASES_TEXT = {
   backToList: 'Your purchases',
   backToListLabel: 'Back to your purchases',
   loading: 'Loading…',
-  empty: 'No purchases from this store in this browser yet.',
+  empty: 'No purchases from this store in this browser yet',
   downloadCsv: 'Download CSV',
   details: 'Purchase details',
   product: 'Product',
@@ -661,3 +661,11 @@ export const PURCHASE_STATUS_NOTES: Partial<Record<PurchaseStatus, string>> = {
   blocked: 'Payment blocked by the recipient.',
   cancelled_paid: 'Cancelled by the store (no refund stated).',
 };
+
+/** A one-sentence status subtitle has no closing full stop. */
+export function statusSubtitle(text: string): string {
+  const value = text.trim();
+  return value.endsWith('.') && (value.match(/[.!?](?=\s|$)/g)?.length ?? 0) <= 1
+    ? value.slice(0, -1)
+    : value;
+}

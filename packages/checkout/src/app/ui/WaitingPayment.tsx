@@ -111,8 +111,8 @@ function CountdownWait({ view, problem, onRetry, onSignAgain, onStartOver }: Pro
   let problemShown = problem;
   if (view.canRetry) {
     status = view.followOnly
-      ? 'The payment did not go through. Nothing was paid. You can start over now.'
-      : 'The payment did not go through. Nothing was paid. A retry is possible now.';
+      ? 'Nothing was paid. Start over to try again'
+      : 'Nothing was paid. Please try again';
   } else if (view.unserved) {
     status = 'Waiting for the payment to confirm…';
     note = UNSERVED;
@@ -189,22 +189,18 @@ function CountdownWait({ view, problem, onRetry, onSignAgain, onStartOver }: Pro
 
   return (
     <>
-      <p class="status" role="status">
-        {status}
-      </p>
-      {note === null ? null : <p class="note">{note}</p>}
-      <ProblemNote
-        problem={problemShown}
-        asset={view.asset}
-        rail={view.tempo ? 'tempo' : 'solana'}
-        canPress={view.canRetry}
-      />
+      <div class={view.canRetry ? 'payment-retry-subtitle' : 'payment-wait-note'}>
+        <p class="status" role="status">{status}</p>
+        {note === null ? null : <p class="note">{note}</p>}
+        {view.canRetry && problemShown?.reason !== 'wallet_failed' ? <ProblemNote problem={problemShown} asset={view.asset} rail={view.tempo ? 'tempo' : 'solana'} canPress /> : null}
+      </div>
+      {view.canRetry ? null : (
+        <ProblemNote problem={problemShown} asset={view.asset} rail={view.tempo ? 'tempo' : 'solana'} canPress={view.canRetry} />
+      )}
       {view.explorer === undefined ? null : (
-        <p>
-          <a href={view.explorer} target="_blank" rel="noopener noreferrer">
-            View the transaction
-          </a>
-        </p>
+        <a class="secondary transaction-action" href={view.explorer} target="_blank" rel="noopener noreferrer">
+          View the transaction <span aria-hidden="true">↗</span>
+        </a>
       )}
       {unsureNote === undefined ? null : <p class="note">{unsureNote}</p>}
       {againWallet === undefined ? null : (
@@ -214,15 +210,17 @@ function CountdownWait({ view, problem, onRetry, onSignAgain, onStartOver }: Pro
       )}
       {view.canRetry ? (
         <>
-          {view.wallets.length === 0 ? null : <p class="label">Try again with</p>}
+          {view.wallets.length === 0 ? null : <p class="label retry-label">Try again with</p>}
           <div class="wallet-list">
             {view.wallets.map((wallet) => (
               <WalletRow key={wallet.name} wallet={wallet} disabled={false} onPick={onRetry} />
             ))}
           </div>
-          <button type="button" class="secondary" onClick={onStartOver}>
-            Start over
-          </button>
+          {view.wallets.length === 0 || view.followOnly ? (
+            <button type="button" class="primary retry-start-over" onClick={onStartOver}>
+              Start over
+            </button>
+          ) : null}
         </>
       ) : null}
     </>

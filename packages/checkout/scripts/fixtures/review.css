@@ -1,0 +1,82 @@
+body {
+  background: var(--surface-hover);
+  padding: 24px;
+  min-height: 100vh;
+}
+.review-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 auto 24px;
+  color: var(--muted);
+  font: 12px system-ui;
+}
+.review-controls button,
+.review-controls select {
+  width: auto;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  background: var(--background);
+  font: 12px system-ui;
+}
+.review-window {
+  width: 420px;
+  max-width: 100%;
+  margin: auto;
+  border-radius: 28px;
+  background: var(--background);
+  overflow: hidden;
+  box-shadow: 0 20px 60px #0002;
+}
+.review-chrome {
+  height: 32px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 0 16px;
+  color: #858995;
+  font: 20px system-ui;
+}
+.review-window .card {
+  padding-top: 10px;
+}
+
+.review-chrome {
+  height: 0;
+  padding: 0;
+  position: relative;
+  z-index: 2;
+}
+.review-chrome span {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+}
+.review-window .card {
+  padding-top: 44px;
+}
+
+html[data-capture='true'] *,
+html[data-capture='true'] *::before,
+html[data-capture='true'] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+html[data-review-font='system'] body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+}
+
+/* Keep demo-only network and trust labels out of the design review. */
+.review-window .header .badge,
+.review-window .header .chip {
+  display: none;
+}

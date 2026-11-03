@@ -1352,11 +1352,13 @@ describe('the earlier-payment line (D5, R-h)', () => {
 describe('progress', () => {
   it('names the product and the exact payment, read-only, in place of the choice', () => {
     const ui = mount({ kind: 'working', step: 'signing', paying, about });
-    expect(ui.text()).toContain('Confirm the payment in your wallet');
-    expect(ui.container.querySelector('.product-title')?.textContent).toBe('Agents 101');
-    expect(ui.container.querySelector('.paying')?.textContent).toBe(
-      'Paying 55 USDC · Solana devnet',
+    expect(ui.container.querySelector('[data-heading]')?.textContent).toBe(
+      'Confirm in your wallet',
     );
+    expect(ui.container.querySelector('.progress-message .status')).toBeNull();
+    expect(ui.container.querySelector('.product-title')?.textContent).toBe('Agents 101');
+    expect(ui.container.querySelector('.summary-amount')?.textContent).toBe('55 USDC');
+    expect(ui.container.querySelector('.summary-network')?.textContent).toBe('Solana devnet');
     expect(stageName(ui.container.querySelector('[aria-current="step"]'))).toBe(
       'Confirm in wallet',
     );
@@ -1949,7 +1951,7 @@ describe('the receipt', () => {
     const block = ui.container.querySelector('.receipt');
     expect(before(heading, buyAgain)).toBe(true);
     expect(before(buyAgain, done)).toBe(true);
-    expect(done.classList.contains('secondary')).toBe(true);
+    expect(done.classList.contains('primary')).toBe(true);
     expect(before(done, block)).toBe(true);
   });
 
@@ -2101,7 +2103,7 @@ describe('focus', () => {
     (document.activeElement as HTMLElement | null)?.blur();
     ui.draw({ view: { kind: 'working', step: 'checking', about } });
     expect(document.activeElement).toBe(heading(ui));
-    expect(document.activeElement?.textContent).toBe('Paying');
+    expect(document.activeElement?.textContent).toBe('Connecting your wallet');
     (document.activeElement as HTMLElement | null)?.blur();
     ui.draw({ view: { kind: 'working', step: 'signing', about } });
     expect(ui.container.contains(document.activeElement)).toBe(false);
@@ -3080,7 +3082,7 @@ describe('a Solana wallet that failed, asked again', () => {
     (document.activeElement as HTMLElement | null)?.blur();
     ui.draw({ view: { kind: 'working', step: 'checking', about } });
     expect(document.activeElement).toBe(ui.container.querySelector('[data-heading]'));
-    expect(document.activeElement?.textContent).toBe('Paying');
+    expect(document.activeElement?.textContent).toBe('Connecting your wallet');
     await act(async () => finish());
   });
 

@@ -15,6 +15,7 @@ export interface PurchasesSource {
 
 interface Props {
   source: PurchasesSource;
+  externalHeader?: boolean;
   /** The store's name, for the export's file name. */
   storeName?: string;
   onBack(): void;
@@ -50,7 +51,13 @@ function saveFile(name: string, text: string): void {
  * and the frame's height says nothing of the history. It is drawn at once on
  * the click; the records fill it later.
  */
-export function PurchasesStep({ source, storeName, onBack, initialOpened }: Props) {
+export function PurchasesStep({
+  source,
+  storeName,
+  onBack,
+  initialOpened,
+  externalHeader = false,
+}: Props) {
   // A failed read is `failed`, never an empty history: nothing is listed or saved then.
   const [pending] = useState(() => source.purchases().catch((): typeof READ_FAILED => READ_FAILED));
   const [list, setList] = useState<Purchase[] | typeof READ_FAILED | undefined>(undefined);
@@ -68,7 +75,8 @@ export function PurchasesStep({ source, storeName, onBack, initialOpened }: Prop
       if (mounted.current) {
         const actions = region.current?.querySelector('.purchases-actions');
         refocusFailed.current =
-          read === READ_FAILED && actions?.contains(document.activeElement) === true;
+          (read === READ_FAILED || read.length === 0) &&
+          actions?.contains(document.activeElement) === true;
         setList(read);
       }
     });
@@ -87,7 +95,7 @@ export function PurchasesStep({ source, storeName, onBack, initialOpened }: Prop
       if (!loaded) {
         return;
       }
-      region.current
+      region.current?.parentElement
         ?.querySelector<HTMLElement>('[data-purchases-back]')
         ?.focus({ preventScroll: true });
       return;
@@ -137,16 +145,27 @@ export function PurchasesStep({ source, storeName, onBack, initialOpened }: Prop
           title={PURCHASES_TEXT.backToCheckout}
           onClick={onBack}
         >
-          <span aria-hidden="true">←</span>
+          <span aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M19 12H5m6-6-6 6 6 6"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
+          {externalHeader ? <span>Back</span> : null}
         </button>
-        <StepHeading>{PURCHASES_TEXT.title}</StepHeading>
+        {externalHeader ? null : <StepHeading>{PURCHASES_TEXT.title}</StepHeading>}
       </>
     );
   } else {
     nav = (
       <button
         type="button"
-        class="nav-back"
+        class={externalHeader ? 'icon-button' : 'nav-back'}
         data-purchases-back=""
         aria-label={PURCHASES_TEXT.backToListLabel}
         onClick={() => {
@@ -154,7 +173,18 @@ export function PurchasesStep({ source, storeName, onBack, initialOpened }: Prop
           setOpened(undefined);
         }}
       >
-        <span aria-hidden="true">←</span> {PURCHASES_TEXT.backToList}
+        <span aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M19 12H5m6-6-6 6 6 6"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>{' '}
+        {externalHeader ? <span>Back</span> : PURCHASES_TEXT.backToList}
       </button>
     );
   }
@@ -174,7 +204,11 @@ export function PurchasesStep({ source, storeName, onBack, initialOpened }: Prop
   } else if (detail !== undefined) {
     content = <PurchaseDetail purchase={detail} fresh={source.purchase} />;
   } else if (list.length === 0) {
-    content = <p class="note">{PURCHASES_TEXT.empty}</p>;
+    content = (
+      <p class="note purchases-empty-note" tabindex={-1} ref={failedNote}>
+        {PURCHASES_TEXT.empty}
+      </p>
+    );
   } else {
     content = (
       <ul class="purchase-list">
@@ -187,10 +221,31 @@ export function PurchasesStep({ source, storeName, onBack, initialOpened }: Prop
 
   return (
     <div class="step purchases" data-step="purchases">
-      <div class="purchases-region" data-purchases-region="" tabindex={-1} ref={region}>
-        <div class="purchases-nav">{nav}</div>
+      {externalHeader ? (
+        <header class="header purchases-header">
+          <div class="purchases-title-row">
+            {nav}
+            <h2 id="checkout-title" class="product-title" tabindex={-1} data-heading="">
+              {detail === undefined ? 'Your purchases' : 'Purchase details'}
+            </h2>
+            {detail === undefined && Array.isArray(list) && list.length > 0 ? (
+              <button type="button" class="text-button purchases-export" onClick={() => void download()}>
+                {PURCHASES_TEXT.downloadCsv}
+              </button>
+            ) : null}
+
+          </div>
+        </header>
+      ) : null}
+      <div
+        class={`purchases-region${Array.isArray(list) && list.length === 0 ? ' is-empty' : ''}`}
+        data-purchases-region=""
+        tabindex={-1}
+        ref={region}
+      >
+        {externalHeader ? null : <div class="purchases-nav">{nav}</div>}
         <div class="purchases-body">{content}</div>
-        {detail === undefined && list !== READ_FAILED ? (
+        {!externalHeader && detail === undefined && list !== READ_FAILED && (list === undefined || list.length > 0) ? (
           <div class="purchases-actions">
             <button type="button" class="text-button" onClick={() => void download()}>
               {PURCHASES_TEXT.downloadCsv}

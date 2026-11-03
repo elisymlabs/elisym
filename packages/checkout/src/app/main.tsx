@@ -335,3 +335,6 @@ draw();
 if (root !== null && typeof ResizeObserver !== 'undefined') {
   new ResizeObserver(() => heights.target(contentHeight())).observe(document.body);
 }
+
+// Local design preview shares a single top toolbar with the modal chrome.
+if (import.meta.env.MODE === 'development') document.documentElement.dataset.preview = 'true';

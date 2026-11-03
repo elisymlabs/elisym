@@ -1,6 +1,5 @@
 import { EndedStep } from './EndedStep';
 import { SOLD_OUT_GLYPH } from './glyphs';
-import { REFUSALS, SOLD_OUT_PAID_LINE } from './text';
 
 /**
  * A stopped product: information, not a warning, and never the store's own
@@ -10,8 +9,7 @@ import { REFUSALS, SOLD_OUT_PAID_LINE } from './text';
 export function SoldOutStep() {
   return (
     <EndedStep glyph={SOLD_OUT_GLYPH} title="Sold out">
-      <p>{REFUSALS.sold_out}</p>
-      <p class="note">{SOLD_OUT_PAID_LINE}</p>
+      <p class="note sold-out-subtitle">This product is currently unavailable</p>
     </EndedStep>
   );
 }

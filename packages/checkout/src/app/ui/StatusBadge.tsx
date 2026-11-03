@@ -10,7 +10,7 @@ export function StatusBadge({ status }: Props) {
   const { text, tone } = PURCHASE_BADGES[status];
   const label = PURCHASE_STATUS_LABELS[status];
   return (
-    <span class="status-badge" data-tone={tone} {...(label === text ? {} : { title: label })}>
+    <span class="status-badge" data-tone={tone} data-status={status} {...(label === text ? {} : { title: label })}>
       {text}
     </span>
   );

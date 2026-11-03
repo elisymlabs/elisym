@@ -66,28 +66,79 @@ const app = await createServer({
 });
 await app.listen();
 
-/** The demo page: v3 in a modal by default; `?display=inline`, `?loader=v1`, `?loader=v2`, or `?ref=` (v3). */
+/** Local design workspace: V3 Modal, with an explicit light or dark theme. */
 function page(search: URLSearchParams): string {
-  const requested = search.get('loader');
-  const loader = requested === 'v1' || requested === 'v2' ? requested : 'v3';
-  const v1 = loader === 'v1';
-  const display = v1 ? '' : ` display="${search.get('display') === 'inline' ? 'inline' : 'modal'}"`;
+  const theme = search.get('theme') === 'dark' ? 'dark' : 'light';
+  const loader = 'v3';
+  const display = ' display="modal"';
   // Shown on a local page only; still never written into the HTML unchecked.
   const ref = search.get('ref');
   const customerRef =
-    loader === 'v3' && ref !== null && /^[A-Za-z0-9._:@-]{0,128}$/.test(ref)
-      ? ` customer-ref="${ref}"`
-      : '';
+    ref !== null && /^[A-Za-z0-9._:@-]{0,128}$/.test(ref) ? ` customer-ref="${ref}"` : '';
   return `<!doctype html>
 <html lang="en">
-  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Demo store</title></head>
-  <body style="font-family: system-ui; max-width: 480px; margin: 40px auto">
-    <h2>Demo store page</h2>
-    <p><a href="/">v3 modal</a> · <a href="/?display=inline">v3 inline</a> · <a href="/?ref=demo_user">v3 with a ref</a> · <a href="/?loader=v2">v2</a> · <a href="/?loader=v1">v1</a></p>
-    <elisym-buy product="${naddr}" network="${network}"${display}${customerRef}></elisym-buy>
+  <head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>PayCore · V3 Modal</title>
+    <style>
+      .theme-toggle{display:inline-flex;gap:4px;padding:4px;margin:0;border:1px solid #8884;border-radius:999px;background:#8881;vertical-align:middle}
+      .theme-toggle button{display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:8px 16px;border:0;border-radius:999px;background:transparent;color:inherit;font:500 14px system-ui;cursor:pointer;transition:background 160ms,color 160ms}
+      .theme-toggle button:hover{background:#8882}
+      .theme-toggle button[aria-pressed=true]{background:#c6f432;color:#111418;box-shadow:0 1px 4px #0001}
+      .theme-toggle button:focus-visible{outline:2px solid #7a9b16;outline-offset:2px}
+    </style></head>
+  <body style="font-family: system-ui; max-width: 480px; margin: 40px auto; padding: 0 20px; background: ${theme === 'dark' ? '#09090b' : '#ffffff'}; color: ${theme === 'dark' ? '#eef1f4' : '#111418'}; color-scheme: ${theme}">
+    <h2>PayCore · V3 Modal</h2>
+    <!-- Temporary design control; outside the shipped widget. -->
+    <div class="preview-controls" style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+    <div id="theme-toggle" class="theme-toggle" role="group" aria-label="Preview theme">
+      <button type="button" data-theme="light" aria-pressed="${theme === 'light'}"><span aria-hidden="true">☀</span> Light</button>
+      <button type="button" data-theme="dark" aria-pressed="${theme === 'dark'}"><span aria-hidden="true">☾</span> Dark</button>
+    </div>
+    <elisym-buy product="${naddr}" network="${network}" theme="${theme}"${display}${customerRef}></elisym-buy>
+    </div>
     <pre id="status"></pre>
     <script src="/${loader}/embed.js"></script>
     <script>
+      customElements.whenDefined('elisym-buy').then(() => {
+        const buy = document.querySelector('elisym-buy').shadowRoot?.querySelector('.buy');
+        if (buy) Object.assign(buy.style, { background: '#c6f432', color: '#0b0b0f' });
+      });
+      // Preview the close-button color without altering the published, pinned V3 loader.
+      document.addEventListener('elisym-open', () => {
+        const widget = document.querySelector('elisym-buy');
+        const root = widget.shadowRoot;
+        if (root && !root.querySelector('#preview-chrome-palette')) {
+          const style = document.createElement('style');
+          style.id = 'preview-chrome-palette';
+          style.textContent = 'dialog{background:#ffffff!important;border-radius:28px!important}dialog[data-theme=dark]{background:#1b1d22!important;box-shadow:0 24px 64px rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.08)}';
+          root.appendChild(style);
+        }
+        const close = root?.querySelector('.close');
+        if (close) {
+          Object.assign(close.parentElement.style, { height: '0', padding: '0', position: 'relative', zIndex: '2', boxSizing: 'border-box' });
+          Object.assign(close.style, { position: 'absolute', top: '10px', right: '12px', color: '#858995', display: 'grid', placeItems: 'center', lineHeight: '0', width: '32px', height: '32px', minHeight: '32px', padding: '0', margin: '0', flex: 'none', borderRadius: '50%' });
+          close.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+        }
+      });
+      document.getElementById('theme-toggle').addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-theme]');
+        if (!button) return;
+        const theme = button.dataset.theme;
+        for (const option of document.querySelectorAll('#theme-toggle button')) {
+          option.setAttribute('aria-pressed', String(option.dataset.theme === theme));
+        }
+        document.body.style.background = theme === 'dark' ? '#09090b' : '#ffffff';
+        document.body.style.color = theme === 'dark' ? '#eef1f4' : '#111418';
+        document.body.style.colorScheme = theme;
+        document.querySelector('elisym-buy').setAttribute('theme', theme);
+        const url = new URL(location.href);
+        url.searchParams.set('theme', theme);
+        history.replaceState(null, '', url);
+        for (const link of document.querySelectorAll('a')) {
+          const target = new URL(link.href);
+          target.searchParams.set('theme', theme);
+          link.href = target.href;
+        }
+      });
       for (const type of ['elisym-status', 'elisym-open', 'elisym-close']) {
         document.addEventListener(type, (event) => {
           document.getElementById('status').textContent +=

@@ -25,6 +25,7 @@
     "preact": "~10.29.8"
   },
   "devDependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
     "@types/node": "~25.5.0",
     "fake-indexeddb": "~6.2.5",
     "happy-dom": "~20.14.5",

@@ -5,6 +5,7 @@ import { UNANSWERED, formatCountdown } from './text';
 
 interface Props {
   chain: Rail;
+  compact?: boolean;
   /** About when the request can be judged over (Start over then). */
   startOverIn?: Countdown;
   /** With no countdown: after this (unix seconds), it is taking long. */
@@ -20,7 +21,7 @@ interface Props {
  * at `unsureAt`. The ticking number is not announced: the live region speaks
  * once per phase.
  */
-export function UnansweredHint({ chain, startOverIn, unsureAt }: Props) {
+export function UnansweredHint({ chain, startOverIn, unsureAt, compact = false }: Props) {
   const now = useNow(true);
   const left = startOverIn === undefined ? undefined : secondsLeft(startOverIn, now);
   const unsure = isTakingLong(now, startOverIn, unsureAt, chain);
@@ -44,10 +45,36 @@ export function UnansweredHint({ chain, startOverIn, unsureAt }: Props) {
     line = UNANSWERED.checking[chain];
     spoken = UNANSWERED.checking[chain];
   }
-  return (
+  const options = (
     <>
       <p class="note hint">{line}</p>
       <p class="note hint">{UNANSWERED.reject}</p>
+    </>
+  );
+  return (
+    <>
+      {compact ? (
+        <div class="wallet-help">
+          <p class="wallet-wait-summary">
+            {unsure
+              ? 'Taking longer than expected'
+              : left === 0
+                ? 'Checking the request status…'
+                : 'Your wallet hasn’t responded yet'}
+          </p>
+          <details class="wallet-wait-options">
+            <summary>Options<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg></summary>
+            <div class="wallet-options-content">
+              <p class="note hint wallet-options-timing">
+                {unsure ? 'If this does not resolve, contact the store' : left === undefined ? UNANSWERED.unknown[chain] : left > 0 ? <>{UNANSWERED.countingLead[chain]}<span class="countdown">{formatCountdown(left)}</span></> : UNANSWERED.checking[chain]}
+              </p>
+              <p class="note hint">To cancel, reject the request in your wallet</p>
+            </div>
+          </details>
+        </div>
+      ) : (
+        options
+      )}
       <p class="visually-hidden" role="status" data-unanswered-status="">
         {spoken}
       </p>

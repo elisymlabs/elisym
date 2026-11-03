@@ -1,3 +1,4 @@
+import { PaymentStageIcon } from './PaymentStageIcon';
 import type { Countdown, Problem, View } from '../session';
 import { secondsLeft, useNow } from './clock';
 import { StepHeading } from './StepHeading';
@@ -60,13 +61,17 @@ function waitCountdown(view: ProgressView): Countdown | undefined {
 function heading(view: ProgressView, left: number | undefined): string {
   switch (view.kind) {
     case 'working':
-      return 'Paying';
+      return view.step === 'signing'
+        ? 'Confirm in your wallet'
+        : view.step === 'ordering'
+          ? 'Creating your order'
+          : 'Connecting your wallet';
     case 'waiting_payment':
       if (view.eip3009?.nonceUsed === true) {
         return 'Waiting for the store';
       }
       if (view.canRetry) {
-        return 'Payment not made';
+        return 'Payment failed';
       }
       if (view.eip3009 !== undefined) {
         if (view.eip3009.confirming || view.unserved) {
@@ -83,7 +88,7 @@ function heading(view: ProgressView, left: number | undefined): string {
       }
       return 'Confirming payment';
     case 'waiting_store':
-      return view.cancelled ? 'Order cancelled' : 'Paid';
+      return view.cancelled ? 'Order cancelled' : 'Paid. Now waiting for the store.';
   }
 }
 
@@ -107,31 +112,49 @@ export function ProgressStep({
   const left = countdown === undefined ? undefined : secondsLeft(countdown, now);
   return (
     <div
-      class="step"
+      class="step progress-flow"
       data-step="progress"
       {...(busy ? { inert: true, 'aria-busy': 'true' as const } : {})}
     >
-      <StepHeading level={3}>{heading(view, left)}</StepHeading>
-      <Stepper active={complete ? STEPPER_STAGES.length : activeStage(view)} />
-      {view.kind === 'working' ? (
-        <WorkingStatus
-          view={view}
-          hintAfterMs={hintAfterMs}
-          unansweredHintMs={unansweredHintMs}
-          onCancel={onCancel}
-        />
-      ) : null}
-      {view.kind === 'waiting_payment' ? (
-        <WaitingPayment
-          view={view}
-          problem={problem}
-          onRetry={onRetry}
-          onSignAgain={onSignAgain}
-          onResend={onResend}
-          onStartOver={onStartOver}
-        />
-      ) : null}
-      {view.kind === 'waiting_store' ? <WaitingStore view={view} /> : null}
+      <div
+        class="progress-symbol"
+        aria-hidden="true"
+        data-paused={
+          (view.kind === 'waiting_payment' && view.canRetry) ||
+          (view.kind === 'waiting_store' && view.cancelled)
+        }
+      >
+        <span class="progress-orbit" />
+        <PaymentStageIcon key={activeStage(view)} stage={view.kind === 'waiting_payment' && view.canRetry ? 'error' : complete || activeStage(view) >= 2 ? 'complete' : activeStage(view) === 1 ? 'wallet' : 'order'} />
+      </div>
+      <StepHeading key={heading(view, left)} level={3} live>
+        {heading(view, left)}
+      </StepHeading>
+      <div class="progress-message">
+        {view.kind === 'working' ? (
+          <WorkingStatus
+            compact
+            view={view}
+            hintAfterMs={hintAfterMs}
+            unansweredHintMs={unansweredHintMs}
+            onCancel={onCancel}
+          />
+        ) : null}
+        {view.kind === 'waiting_payment' ? (
+          <WaitingPayment
+            view={view}
+            problem={problem}
+            onRetry={onRetry}
+            onSignAgain={onSignAgain}
+            onResend={onResend}
+            onStartOver={onStartOver}
+          />
+        ) : null}
+        {view.kind === 'waiting_store' ? <WaitingStore view={view} /> : null}
+      </div>
+      {view.kind === 'waiting_payment' && view.canRetry ? null : (
+        <Stepper active={complete ? STEPPER_STAGES.length : activeStage(view)} />
+      )}
     </div>
   );
 }
