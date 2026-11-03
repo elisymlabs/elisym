@@ -312,7 +312,7 @@ const { tier, tierName, plan } = await call('GET', `/tenants/${tenantId}`);
 ```
 
 - `canChange`: whether the merchant may change the plan in the admin. When false, `reason` says why: `partner` (the partner manages it), `not_self_serve` or `billing_tenant` (changed with us), `exported` (the store left the cloud), `payments_closed`.
-- `card`, only while a card subscription runs: `open` when an upgrade can be charged to it now, else `reason`: `card_not_active` (fix the card in the billing portal), `invoice_pending` (a monthly payment is being taken: try in an hour), `owner_unconfirmed`, `card_prices_unchecked` or `card_status_unknown` (try again later).
+- `card`, only while a card subscription runs: `open` when an upgrade can be charged to it now, else `reason`: `card_not_active` (fix the card in the billing portal), `invoice_pending` (a monthly payment is being taken: try in an hour), `owner_unconfirmed` (the store's access key is not confirmed yet: ask us), `card_prices_unchecked` or `card_status_unknown` (try again later).
 - `scheduled`, a move to a smaller plan: `tier` and `at` (unix seconds, when it takes over); `keepWords` when the merchant can no longer keep the current plan, and why.
 - `request`, a card upgrade in progress or one that ended in the last week without applying: `to`, `status` (`charging`, `awaiting_confirmation`, `unknown`, `expired`, `cancelled`, `failed`), and while it waits for the merchant `payUrl` (Stripe's page to confirm the payment) and `expiresAt`. Send the merchant to the admin to confirm or cancel it.
 

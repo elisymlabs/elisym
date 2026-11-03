@@ -328,7 +328,7 @@ describe('the cloud section', () => {
       'Prices in US dollars. Self-serve plans are billed monthly by card or stablecoins. Buyers always pay straight to your wallets.',
     );
     expect(text).toContain(
-      'Change plans in your admin: an upgrade starts a new month on the new plan at once, a downgrade takes effect at the end of your paid month.',
+      'Change plans in your admin: an upgrade starts a new month on the new plan once paid, a downgrade takes effect at the end of your paid month.',
     );
   });
 

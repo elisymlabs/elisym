@@ -90,7 +90,7 @@ export function Pricing({ tiers = CLOUD_TIERS }: Props) {
           always pay straight to your wallets.
         </p>
         <p className="text-14 text-text-2">
-          Change plans in your admin: an upgrade starts a new month on the new plan at once, a
+          Change plans in your admin: an upgrade starts a new month on the new plan once paid, a
           downgrade takes effect at the end of your paid month.
         </p>
       </div>
