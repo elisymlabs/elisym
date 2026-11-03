@@ -504,6 +504,32 @@ describe('the Change plan sheet', () => {
     expect(text()).not.toContain('The billing page is not available here');
   });
 
+  it('a plan the page does not sell, with no billing reference either: one line, not two', async () => {
+    await panel(
+      { canChange: true },
+      {
+        [`POST ${PATH}/plan/preview`]: {
+          body: {
+            tier: 'starter',
+            to: 'business',
+            how: 'billing_page',
+            card: false,
+            billingPage: false,
+            forfeits: NOW + 12 * DAY,
+            fitProblems: [],
+          },
+        },
+      },
+      { noBillingRef: true },
+    );
+    await pick('business');
+    await settle(() =>
+      text().includes('Business cannot be paid in stablecoins here: contact elisym.'),
+    );
+    expect(text()).not.toContain('The billing page is not available here');
+    expect(link('Open the billing page')).toBeUndefined();
+  });
+
   it('a view with no owner-bound reference links no billing page', async () => {
     await panel(
       { canChange: true },
