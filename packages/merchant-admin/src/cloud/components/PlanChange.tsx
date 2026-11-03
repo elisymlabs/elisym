@@ -2,7 +2,7 @@ import { type ReactNode, useState } from 'react';
 import { Button } from '../../components/Button';
 import { SettingRow } from '../../components/SettingRow';
 import type { ApiAnswer, ConsoleApi } from '../lib/api';
-import { type PlanNames, planReasonText } from '../lib/plan-change';
+import { type PlanNames, type PlanNotice, planReasonText } from '../lib/plan-change';
 import type { StoreView } from '../lib/store-view';
 import type { TierCard } from '../lib/tiers';
 import { PlanChangeSheet } from './PlanChangeSheet';
@@ -22,6 +22,8 @@ interface Props {
   /** The plan moved, or may have: the store is read again. */
   onChanged: () => void;
   onOpenPage: (page: 'products' | 'settings') => void;
+  /** A top-level navigation to Stripe (a card checkout of the plan picked). */
+  navigate: (url: string) => void;
 }
 
 /** While a card request is in flight no other change is taken (plan 2.1): no Change plan then. */
@@ -43,9 +45,10 @@ export function PlanChange({
   now,
   onChanged,
   onOpenPage,
+  navigate,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [notice, setNotice] = useState<string | undefined>(undefined);
+  const [notice, setNotice] = useState<PlanNotice | undefined>(undefined);
   const { plan } = view;
   if (plan === undefined) {
     return null;
@@ -55,7 +58,7 @@ export function PlanChange({
       tiers?.find((card) => card.id === tier)?.name ?? (tier === view.tier ? view.tierName : tier),
     cents: (tier) => tiers?.find((card) => card.id === tier)?.monthlyCents,
   };
-  const changed = (said?: string) => {
+  const changed = (said?: PlanNotice) => {
     setNotice(said);
     onChanged();
   };
@@ -82,8 +85,12 @@ export function PlanChange({
     <>
       {notice === undefined ? null : (
         <SettingRow label="Plan change">
-          <p role="status" className="text-14 text-ok font-medium">
-            {notice}
+          <p
+            role="status"
+            data-tone={notice.tone}
+            className={`text-14 font-medium ${notice.tone === 'ok' ? 'text-ok' : 'text-warn'}`}
+          >
+            {notice.text}
           </p>
         </SettingRow>
       )}
@@ -116,6 +123,8 @@ export function PlanChange({
           current={view.tier}
           billingRef={view.billingRef}
           billingUrl={billingUrl}
+          cardRailOpen={view.card.open && view.card.refusal === undefined}
+          navigate={navigate}
           names={names}
           loadTiers={loadTiers}
           now={now}

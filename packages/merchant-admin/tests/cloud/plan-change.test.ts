@@ -35,6 +35,7 @@ function preview(overrides: Partial<PlanPreview>): PlanPreview {
     how: 'card',
     at: undefined,
     forfeits: undefined,
+    card: false,
     fitProblems: [],
     capWords: undefined,
     ...overrides,
@@ -101,8 +102,32 @@ describe('the sheet, for each way the server decided', () => {
         'The 12 days left on Starter are not carried over.',
         'On the billing page, choose Business, one month.',
       ],
-      action: { kind: 'billing_page' },
+      action: { kind: 'billing_page', card: false },
     });
+  });
+
+  it('a store that paid before pays for the bigger plan first: by card only where the server and the rail both offer it', () => {
+    const payFirst = preview({ how: 'pay_first', card: true });
+    expect(previewLines(payFirst, NAMES, NOW, true)).toEqual({
+      lines: [
+        'Pay for Business to move to it: on the billing page choose Business, or pay by card.',
+      ],
+      action: { kind: 'billing_page', card: true },
+    });
+    const without = {
+      lines: ['Pay for Business to move to it: on the billing page choose Business.'],
+      action: { kind: 'billing_page', card: false },
+    };
+    // The card rail closed in the view, or the server offers no checkout of it.
+    expect(previewLines(payFirst, NAMES, NOW, false)).toEqual(without);
+    expect(previewLines(payFirst, NAMES, NOW)).toEqual(without);
+    expect(previewLines(preview({ how: 'pay_first', card: false }), NAMES, NOW, true)).toEqual(
+      without,
+    );
+    // A stablecoin upgrade never offers the card, whatever it is told.
+    expect(
+      previewLines(preview({ how: 'billing_page', card: true }), NAMES, NOW, true).action,
+    ).toEqual({ kind: 'billing_page', card: false });
   });
 
   it('a downgrade: its day, the plan kept until then, its price, what will be over and the cap', () => {
@@ -194,17 +219,15 @@ describe('a refusal in the sheet', () => {
 
   it('a store that paid before pays for the bigger plan: on the billing page', () => {
     expect(refusalLines({ error: 'pay_for_upgrade' }, 409, PLANS)).toEqual({
-      lines: [
-        'Pay for Business to move to it: on the billing page choose Business, or pay by card.',
-      ],
-      action: { kind: 'billing_page' },
+      lines: ['Pay for Business to move to it: on the billing page choose Business.'],
+      action: { kind: 'billing_page', card: false },
     });
     expect(refusalLines({ error: 'pay_on_billing_page' }, 409, PLANS)).toEqual({
       lines: [
         'Business starts when your payment arrives, for a full month.',
         'On the billing page, choose Business, one month.',
       ],
-      action: { kind: 'billing_page' },
+      action: { kind: 'billing_page', card: false },
     });
   });
 
@@ -229,6 +252,7 @@ describe('a refusal in the sheet', () => {
       nothing_scheduled: 'No change of plan is scheduled any more.',
       no_such_request: 'That plan change is no longer there: refresh to see where it stands.',
       not_cancellable: 'Only a payment waiting for your confirmation can be cancelled.',
+      paid_time_left: 'Your plan is paid for now: change plan to move to another.',
       no_card_for_tier: 'This plan cannot be paid by card.',
       card_subscription_items: 'Your card subscription needs the operator: contact elisym.',
       stripe_unavailable: 'Card payments could not be reached just now: try again shortly.',
@@ -254,13 +278,11 @@ describe('a refusal in the sheet', () => {
 
   it('why the plan cannot change here', () => {
     expect(planReasonText('partner')).toBe('Your partner manages your plan.');
-    for (const reason of [
-      'not_self_serve',
-      'billing_tenant',
-      'exported',
-      'payments_closed',
-      undefined,
-    ]) {
+    expect(planReasonText('exported')).toBe('This store left the cloud: its plan cannot change.');
+    expect(planReasonText('payments_closed')).toBe(
+      'Payments for this store are closed: contact elisym.',
+    );
+    for (const reason of ['not_self_serve', 'billing_tenant', 'other', undefined]) {
       expect(planReasonText(reason), String(reason)).toBe('To change this plan, contact elisym.');
     }
   });
@@ -345,10 +367,11 @@ describe('the preview answer as the admin reads it', () => {
       how: 'scheduled',
       at: SWITCH,
       forfeits: undefined,
+      card: false,
       fitProblems: ['x'],
       capWords: 'cap',
     });
-    for (const how of ['now', 'card', 'billing_page']) {
+    for (const how of ['now', 'card', 'billing_page', 'pay_first']) {
       expect(
         planPreviewOf({ tier: 'starter', to: 'business', how, forfeits: NOW, fitProblems: [] }),
         how,
@@ -358,10 +381,20 @@ describe('the preview answer as the admin reads it', () => {
         how,
         at: undefined,
         forfeits: NOW,
+        card: false,
         fitProblems: [],
         capWords: undefined,
       });
     }
+    expect(
+      planPreviewOf({
+        tier: 'starter',
+        to: 'business',
+        how: 'pay_first',
+        card: true,
+        fitProblems: [],
+      })?.card,
+    ).toBe(true);
   });
 
   it('refuses a malformed one whole', () => {
@@ -373,6 +406,7 @@ describe('the preview answer as the admin reads it', () => {
       { ...answer, at: -1 },
       { ...answer, at: 1.5 },
       { ...answer, forfeits: 'soon' },
+      { ...answer, card: 'yes' },
       { ...answer, fitProblems: 'x' },
       { ...answer, fitProblems: [1] },
       { ...answer, capWords: 3 },

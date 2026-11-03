@@ -3,6 +3,7 @@ import { SettingRow } from '../../components/SettingRow';
 import type { ConsoleApi } from '../lib/api';
 import {
   type PlanNames,
+  type PlanNotice,
   keepRefusalText,
   planRefusalText,
   scheduledWords,
@@ -17,7 +18,7 @@ interface Props {
   names: PlanNames;
   /** The plan in force, kept until the switch. */
   current: string;
-  onChanged: (notice?: string) => void;
+  onChanged: (notice?: PlanNotice) => void;
 }
 
 /**
@@ -34,7 +35,7 @@ export function PlanScheduleRow({ api, tenantId, scheduled, names, current, onCh
     run(async () => {
       const answer = await api.request('DELETE', `/tenants/${tenantId}/plan/scheduled`);
       if (answer.status === 200) {
-        onChanged(`Your store stays on ${kept}.`);
+        onChanged({ text: `Your store stays on ${kept}.`, tone: 'ok' });
         return '';
       }
       if (answer.status === 409 || answer.status === 404) {

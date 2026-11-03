@@ -40,7 +40,11 @@ export function shownDayTime(seconds: number): string {
 }
 
 /** How a change happens, as the server decided it (`POST /tenants/:id/plan/preview`). */
-export const PLAN_HOWS = ['now', 'scheduled', 'card', 'billing_page'] as const;
+/**
+ * `pay_first`: a store that had service with nothing paid now pays for the
+ * bigger plan first (on the billing page, or by a card checkout of it).
+ */
+export const PLAN_HOWS = ['now', 'scheduled', 'card', 'billing_page', 'pay_first'] as const;
 export type PlanHow = (typeof PLAN_HOWS)[number];
 
 export interface PlanPreview {
@@ -52,6 +56,8 @@ export interface PlanPreview {
   at: number | undefined;
   /** An upgrade: the end of the paid time the plan in force has left, forfeited. */
   forfeits: number | undefined;
+  /** An upgrade paid for: whether a card checkout of the plan is open (the server's word). */
+  card: boolean;
   fitProblems: string[];
   capWords: string | undefined;
 }
@@ -67,6 +73,7 @@ export function planPreviewOf(body: unknown): PlanPreview | undefined {
   const how = fieldOf(body, 'how');
   const at = fieldOf(body, 'at');
   const forfeits = fieldOf(body, 'forfeits');
+  const card = fieldOf(body, 'card');
   const fitProblems = fieldOf(body, 'fitProblems');
   const capWords = fieldOf(body, 'capWords');
   if (
@@ -76,6 +83,7 @@ export function planPreviewOf(body: unknown): PlanPreview | undefined {
     (at !== undefined && !isTime(at)) ||
     (how === 'scheduled') !== isTime(at) ||
     (forfeits !== undefined && !isTime(forfeits)) ||
+    (card !== undefined && typeof card !== 'boolean') ||
     !Array.isArray(fitProblems) ||
     !fitProblems.every((problem) => typeof problem === 'string') ||
     (capWords !== undefined && typeof capWords !== 'string')
@@ -88,6 +96,7 @@ export function planPreviewOf(body: unknown): PlanPreview | undefined {
     how,
     at: isTime(at) ? at : undefined,
     forfeits: isTime(forfeits) ? forfeits : undefined,
+    card: card === true,
     fitProblems: fitProblems.filter((problem) => typeof problem === 'string'),
     capWords: typeof capWords === 'string' ? capWords : undefined,
   };
@@ -97,8 +106,11 @@ export function planPreviewOf(body: unknown): PlanPreview | undefined {
 export type SheetAction =
   /** Sends the change (`POST /tenants/:id/plan`), labelled. */
   | { kind: 'confirm'; label: string }
-  /** Links to the billing page, where paying the plan's product is the change. */
-  | { kind: 'billing_page' }
+  /**
+   * Links to the billing page, where paying the plan's product is the change;
+   * `card`: a card checkout of the plan is offered beside it.
+   */
+  | { kind: 'billing_page'; card: boolean }
   /** Goes to a page of the admin where what is over the plan is removed. */
   | { kind: 'page'; page: 'products' | 'settings'; label: string }
   | { kind: 'none' };
@@ -139,7 +151,13 @@ function monthly(cents: number | undefined): string {
 }
 
 /** The sheet's words and action for a change the server would take (plan 2.6). */
-export function previewLines(preview: PlanPreview, names: PlanNames, now: number): SheetLines {
+export function previewLines(
+  preview: PlanPreview,
+  names: PlanNames,
+  now: number,
+  /** The view's card rail is open (no refusal): with the server's `card`, Pay by card is offered. */
+  cardRailOpen = false,
+): SheetLines {
   const to = names.name(preview.to);
   const current = names.name(preview.tier);
   const cents = names.cents(preview.to);
@@ -157,6 +175,8 @@ export function previewLines(preview: PlanPreview, names: PlanNames, now: number
       };
     case 'billing_page':
       return billingPageLines(to, forfeitWords(preview.forfeits, now, current));
+    case 'pay_first':
+      return payFirstLines(to, preview.card && cardRailOpen);
     case 'scheduled': {
       const day = preview.at === undefined ? 'the end of your paid time' : shownDay(preview.at);
       return {
@@ -185,7 +205,23 @@ function billingPageLines(to: string, forfeit: string[]): SheetLines {
       ...forfeit,
       `On the billing page, choose ${to}, one month.`,
     ],
-    action: { kind: 'billing_page' },
+    action: { kind: 'billing_page', card: false },
+  };
+}
+
+/**
+ * A store that had service, with nothing paid now, pays for the bigger plan
+ * first: on the billing page, or by card where a checkout of it is offered
+ * (the words say "or pay by card" only then).
+ */
+function payFirstLines(to: string, card: boolean): SheetLines {
+  return {
+    lines: [
+      card
+        ? `Pay for ${to} to move to it: on the billing page choose ${to}, or pay by card.`
+        : `Pay for ${to} to move to it: on the billing page choose ${to}.`,
+    ],
+    action: { kind: 'billing_page', card },
   };
 }
 
@@ -208,6 +244,7 @@ export const PLAN_REFUSALS: Readonly<Record<string, string>> = {
   nothing_scheduled: 'No change of plan is scheduled any more.',
   no_such_request: 'That plan change is no longer there: refresh to see where it stands.',
   not_cancellable: 'Only a payment waiting for your confirmation can be cancelled.',
+  paid_time_left: 'Your plan is paid for now: change plan to move to another.',
 };
 
 /**
@@ -226,7 +263,7 @@ export function planRefusalText(
     return detail;
   }
   if (code === 'pay_for_upgrade') {
-    return `Pay for ${plans.to} to move to it: on the billing page choose ${plans.to}, or pay by card.`;
+    return `Pay for ${plans.to} to move to it: on the billing page choose ${plans.to}.`;
   }
   if (code === 'downgrade_scheduled') {
     return `Keep ${plans.current} first.`;
@@ -253,7 +290,7 @@ export function refusalLines(
   const lines = [planRefusalText(body, status, plans)];
   switch (code) {
     case 'pay_for_upgrade':
-      return { lines, action: { kind: 'billing_page' } };
+      return { lines, action: { kind: 'billing_page', card: false } };
     case 'remove_products_first':
       return { lines, action: { kind: 'page', page: 'products', label: 'Go to Products' } };
     case 'remove_own_rpc_first':
@@ -265,9 +302,10 @@ export function refusalLines(
 
 /** Why the merchant may not change the plan here, in words (plan 2.6). */
 export function planReasonText(reason: string | undefined): string {
-  return reason === 'partner'
-    ? 'Your partner manages your plan.'
-    : 'To change this plan, contact elisym.';
+  if (reason === 'partner' || reason === 'exported' || reason === 'payments_closed') {
+    return PLAN_REFUSALS[reason] ?? 'To change this plan, contact elisym.';
+  }
+  return 'To change this plan, contact elisym.';
 }
 
 /** What a card plan request row says (plan 2.6); undefined for one that applied. */
@@ -307,6 +345,12 @@ export function keepRefusalText(scheduled: PlanScheduleView): string | undefined
     return undefined;
   }
   return scheduled.keepWords ?? 'Keep is not open now: refresh to see where it stands.';
+}
+
+/** A line said once a plan step is answered: `ok` when it went through, `warn` when it needs the merchant's eye. */
+export interface PlanNotice {
+  text: string;
+  tone: 'ok' | 'warn';
 }
 
 /** What a step that applied the change says once it is done. */

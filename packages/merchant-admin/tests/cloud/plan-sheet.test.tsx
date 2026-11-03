@@ -34,10 +34,30 @@ afterEach(async () => {
   mounted = undefined;
 });
 
-function viewWith(plan: unknown, tier: 'starter' | 'business' = 'starter'): StoreView {
+interface ViewOptions {
+  tier?: 'starter' | 'business';
+  /** The view's card rail refuses (closed). */
+  cardClosed?: boolean;
+  /** The view carries no billing reference. */
+  noBillingRef?: boolean;
+}
+
+function viewWith(plan: unknown, options: ViewOptions = {}): StoreView {
+  const body = new FakeStore(
+    readyState({ tier: options.tier ?? 'starter', activated: true }),
+  ).view();
   const view = storeViewOf({
-    ...new FakeStore(readyState({ tier, activated: true })).view(),
+    ...body,
     plan,
+    ...(options.noBillingRef === true ? { billingRef: null } : {}),
+    ...(options.cardClosed === true
+      ? {
+          rails: {
+            card: { open: false, refusal: { code: 'card_subscription_live' } },
+            crypto: { open: true },
+          },
+        }
+      : {}),
   });
   if (view === undefined) {
     throw new Error('the view does not parse');
@@ -49,7 +69,7 @@ function viewWith(plan: unknown, tier: 'starter' | 'business' = 'starter'): Stor
 async function panel(
   plan: unknown,
   routes: Record<string, Answer> = {},
-  options: { tier?: 'starter' | 'business'; billingUrl?: string | undefined } = {},
+  options: ViewOptions & { billingUrl?: string | undefined } = {},
 ) {
   const cloud = fakeCloud(routes);
   const api = createConsoleApi({
@@ -57,13 +77,13 @@ async function panel(
     signer: OwnerKey.create(),
     fetcher: cloud.fetcher,
   });
-  const record = { changed: 0, pages: [] as string[] };
+  const record = { changed: 0, pages: [] as string[], navigated: [] as string[] };
   const billingUrl = 'billingUrl' in options ? options.billingUrl : BILLING_URL;
-  mounted = await mount(
+  const element = (shownPlan: unknown) => (
     <PlanChange
       api={api}
       tenantId={TENANT_ID}
-      view={viewWith(plan, options.tier)}
+      view={viewWith(shownPlan, options)}
       tiers={TIERS}
       billingUrl={billingUrl}
       loadTiers={loadTiers}
@@ -72,10 +92,14 @@ async function panel(
         record.changed += 1;
       }}
       onOpenPage={(page) => record.pages.push(page)}
-    />,
+      navigate={(url) => record.navigated.push(url)}
+    />
   );
+  mounted = await mount(element(plan));
   const host = mounted.container;
-  return { host, cloud, record };
+  /** The store read again: the panel with its new plan. */
+  const reread = async (next: unknown) => mounted?.rerender(element(next));
+  return { host, cloud, record, reread };
 }
 
 function text(): string {
@@ -84,6 +108,10 @@ function text(): string {
 
 function dialog(): HTMLElement | null {
   return document.querySelector('[role="dialog"]');
+}
+
+function link(name: string): HTMLAnchorElement | undefined {
+  return [...document.querySelectorAll('a')].find((anchor) => anchor.textContent === name);
 }
 
 function hasButton(name: string): boolean {
@@ -325,23 +353,116 @@ describe('the Change plan sheet', () => {
     expect(text()).toContain('Your store is on Business now.');
   });
 
-  it('a store that paid before is sent to pay for the bigger plan', async () => {
-    await panel(
+  it('a store that paid before pays for the bigger plan: the billing page, or a card checkout of it', async () => {
+    const { cloud, record } = await panel(
       { canChange: true },
-      { [`POST ${PATH}/plan/preview`]: { status: 409, body: { error: 'pay_for_upgrade' } } },
+      {
+        [`POST ${PATH}/plan/preview`]: {
+          body: { tier: 'starter', to: 'business', how: 'pay_first', card: true, fitProblems: [] },
+        },
+        [`POST ${PATH}/checkout`]: { body: { url: 'https://checkout.stripe.com/c/cs_test_1' } },
+      },
     );
     await pick('business');
-    await settle(() => text().includes('Pay for Business to move to it'));
+    await settle(() => hasButton('Pay by card'));
     expect(dialog()?.textContent).toContain(
       'Pay for Business to move to it: on the billing page choose Business, or pay by card.',
     );
-    expect(
-      [...document.querySelectorAll('a')].some(
-        (anchor) =>
-          anchor.textContent === 'Open the billing page' &&
-          anchor.getAttribute('href') === `${BILLING_URL}?customer_ref=${BILLING_REF}`,
-      ),
-    ).toBe(true);
+    expect(link('Open the billing page')?.getAttribute('href')).toBe(
+      `${BILLING_URL}?customer_ref=${BILLING_REF}`,
+    );
+    await act(async () => {
+      anyButton('Pay by card').click();
+      anyButton('Pay by card').click();
+    });
+    await settle(() => record.navigated.length === 1);
+    const asked = sent(cloud, 'POST', `${PATH}/checkout`);
+    expect(asked.map((call) => call.body)).toEqual([{ tier: 'business' }]);
+    expect(asked[0]?.signer).toBeDefined();
+    expect(record.navigated).toEqual(['https://checkout.stripe.com/c/cs_test_1']);
+    // Nothing changes here until the card is paid: no change sent, no store read.
+    expect(sent(cloud, 'POST', `${PATH}/plan`)).toEqual([]);
+  });
+
+  it('a card checkout answered with a page that is not Stripe is never navigated to', async () => {
+    const { record } = await panel(
+      { canChange: true },
+      {
+        [`POST ${PATH}/plan/preview`]: {
+          body: { tier: 'starter', to: 'business', how: 'pay_first', card: true, fitProblems: [] },
+        },
+        [`POST ${PATH}/checkout`]: { body: { url: 'https://evil.example/c' } },
+      },
+    );
+    await pick('business');
+    await settle(() => hasButton('Pay by card'));
+    await click(anyButton('Pay by card'));
+    await settle(() => text().includes('The cloud did not answer with a Stripe page.'));
+    expect(record.navigated).toEqual([]);
+    expect(record.changed).toBe(0);
+  });
+
+  it('a card checkout the cloud refuses: its words, and the store read again', async () => {
+    const { record } = await panel(
+      { canChange: true },
+      {
+        [`POST ${PATH}/plan/preview`]: {
+          body: { tier: 'starter', to: 'business', how: 'pay_first', card: true, fitProblems: [] },
+        },
+        [`POST ${PATH}/checkout`]: { status: 409, body: { error: 'paid_time_left' } },
+      },
+    );
+    await pick('business');
+    await settle(() => hasButton('Pay by card'));
+    await click(anyButton('Pay by card'));
+    await settle(() =>
+      text().includes('Your plan is paid for now: change plan to move to another.'),
+    );
+    expect(record.navigated).toEqual([]);
+    expect(record.changed).toBe(1);
+  });
+
+  it('no card offered (the server says so, or the card rail is closed): no word of it', async () => {
+    for (const [card, cardClosed] of [
+      [false, false],
+      [true, true],
+    ] as const) {
+      await panel(
+        { canChange: true },
+        {
+          [`POST ${PATH}/plan/preview`]: {
+            body: { tier: 'starter', to: 'business', how: 'pay_first', card, fitProblems: [] },
+          },
+        },
+        { cardClosed },
+      );
+      await pick('business');
+      await settle(() => text().includes('Pay for Business to move to it'));
+      expect(dialog()?.textContent).toContain(
+        'Pay for Business to move to it: on the billing page choose Business.',
+      );
+      expect(dialog()?.textContent).not.toContain('or pay by card');
+      expect(hasButton('Pay by card')).toBe(false);
+      expect(link('Open the billing page')).toBeDefined();
+      await mounted?.unmount();
+      mounted = undefined;
+    }
+  });
+
+  it('a view with no owner-bound reference links no billing page', async () => {
+    await panel(
+      { canChange: true },
+      {
+        [`POST ${PATH}/plan/preview`]: {
+          body: { tier: 'starter', to: 'business', how: 'pay_first', card: false, fitProblems: [] },
+        },
+      },
+      { noBillingRef: true },
+    );
+    await pick('business');
+    await settle(() => text().includes('The billing page is not available here: contact elisym.'));
+    expect(link('Open the billing page')).toBeUndefined();
+    expect(hasButton('Close')).toBe(true);
   });
 
   it("over the smaller plan's limits: the server's words, and the page that fixes it", async () => {
@@ -465,6 +586,7 @@ describe('picks in a row', () => {
         now={() => NOW}
         onChanged={() => undefined}
         onOpenPage={() => undefined}
+        navigate={() => undefined}
       />,
     );
     await pick('business');
@@ -590,9 +712,9 @@ describe('the plan rows', () => {
   });
 
   it("Cancel that finds it paid, or held for us: the server's words", async () => {
-    for (const [outcome, words] of [
-      ['already_paid', 'Your payment went through: you are on Business.'],
-      ['needs_us', 'Your plan change needs us: we will contact you.'],
+    for (const [outcome, words, tone] of [
+      ['already_paid', 'Your payment went through: you are on Business.', 'ok'],
+      ['needs_us', 'Your plan change needs us: we will contact you.', 'warn'],
     ] as const) {
       const { record } = await panel(
         {
@@ -613,7 +735,12 @@ describe('the plan rows', () => {
       );
       await click(anyButton('Cancel'));
       await settle(() => record.changed === 1);
-      expect(document.querySelector('[role="status"].text-ok')?.textContent).toBe(words);
+      const notice = document.querySelector('[role="status"][data-tone]');
+      expect(notice?.textContent).toBe(words);
+      // Held for us is no success: not said in the success colour.
+      expect(notice?.getAttribute('data-tone')).toBe(tone);
+      expect(notice?.classList.contains('text-ok')).toBe(tone === 'ok');
+      expect(notice?.classList.contains('text-warn')).toBe(tone === 'warn');
       await mounted?.unmount();
       mounted = undefined;
     }
@@ -655,6 +782,62 @@ describe('the plan rows', () => {
     });
     expect(document.querySelector('a')).toBeNull();
     expect(hasButton('Cancel')).toBe(true);
+  });
+
+  it('Check again on a request gone (404) or moved (409): the store is read again, the words said', async () => {
+    for (const [status, error, words] of [
+      [
+        404,
+        'no_such_request',
+        'That plan change is no longer there: refresh to see where it stands.',
+      ],
+      [409, 'change_in_flight', 'A plan change is already on its way: finish or cancel it first.'],
+    ] as const) {
+      const { record } = await panel(
+        { canChange: true, request: { id: REQUEST_ID, to: 'business', status: 'charging' } },
+        {
+          [`POST ${PATH}/plan/requests/${REQUEST_ID}/check`]: { status, body: { error } },
+        },
+      );
+      await click(anyButton('Check again'));
+      await settle(() => record.changed === 1);
+      expect(text()).toContain(words);
+      await mounted?.unmount();
+      mounted = undefined;
+    }
+    // Stripe not answering: said, and nothing read again (nothing moved).
+    const { record } = await panel(
+      { canChange: true, request: { id: REQUEST_ID, to: 'business', status: 'charging' } },
+      {
+        [`POST ${PATH}/plan/requests/${REQUEST_ID}/check`]: {
+          status: 503,
+          body: { error: 'stripe_unavailable' },
+        },
+      },
+    );
+    await click(anyButton('Check again'));
+    await settle(() => text().includes('Card payments could not be reached just now'));
+    expect(record.changed).toBe(0);
+  });
+
+  it("a row's words of a failed step go once the request has moved on", async () => {
+    const { reread } = await panel(
+      { canChange: true, request: { id: REQUEST_ID, to: 'business', status: 'charging' } },
+      {
+        [`POST ${PATH}/plan/requests/${REQUEST_ID}/check`]: {
+          status: 503,
+          body: { error: 'stripe_unavailable' },
+        },
+      },
+    );
+    await click(anyButton('Check again'));
+    await settle(() => text().includes('Card payments could not be reached just now'));
+    await reread({
+      canChange: true,
+      request: { id: REQUEST_ID, to: 'business', status: 'awaiting_confirmation' },
+    });
+    expect(text()).toContain('Your card needs you to confirm');
+    expect(text()).not.toContain('Card payments could not be reached just now');
   });
 
   it('a gone request (404) or one moved (409): the store is read again', async () => {

@@ -5,13 +5,15 @@ import { explain } from '../lib/errors';
 import { fieldOf } from '../lib/fields';
 import {
   type PlanNames,
+  type PlanNotice,
   type SheetLines,
+  planRefusalText,
   planPreviewOf,
   previewLines,
   refusalLines,
   switchedWords,
 } from '../lib/plan-change';
-import { billingPageUrl } from '../lib/rails';
+import { billingPageUrl, stripeSessionUrl } from '../lib/rails';
 import type { TierCard } from '../lib/tiers';
 import { usePlanStep } from '../lib/use-plan-step';
 import { PlanPicker } from './PlanPicker';
@@ -25,13 +27,17 @@ interface Props {
   /** The billing page's `customer_ref` (owner-bound), when the cloud gives one. */
   billingRef: string | undefined;
   billingUrl: string | undefined;
+  /** The view's card rail is open: a card checkout of the plan may be offered (with the server's word). */
+  cardRailOpen: boolean;
+  /** A top-level navigation to Stripe's checkout (no Stripe script runs on the console). */
+  navigate: (url: string) => void;
   names: PlanNames;
   loadTiers: () => Promise<ApiAnswer>;
   /** The server's clock now (the days left are counted on it). */
   now: () => number;
   onClose: () => void;
   /** The change was taken: the store is read again, with a line to say so, if any. */
-  onDone: (notice?: string) => void;
+  onDone: (notice?: PlanNotice) => void;
   /** The change was refused or not answered: the store is read again. */
   onStale: () => void;
   onOpenPage: (page: 'products' | 'settings') => void;
@@ -61,6 +67,8 @@ export function PlanChangeSheet({
   current,
   billingRef,
   billingUrl,
+  cardRailOpen,
+  navigate,
   names,
   loadTiers,
   now,
@@ -70,7 +78,7 @@ export function PlanChangeSheet({
   onOpenPage,
 }: Props) {
   const [asked, setAsked] = useState<Asked | undefined>(undefined);
-  const { busy, run } = usePlanStep();
+  const { busy, error, run } = usePlanStep();
   const latest = useRef(0);
 
   const choose = useCallback(
@@ -97,7 +105,7 @@ export function PlanChangeSheet({
     const preview =
       asked.answer.status === 200 && !asked.refused ? planPreviewOf(asked.answer.body) : undefined;
     if (preview !== undefined) {
-      shown = previewLines(preview, names, now());
+      shown = previewLines(preview, names, now(), cardRailOpen);
     } else if (asked.answer.status === 200) {
       shown = { lines: [explain(undefined, 200)], action: { kind: 'none' } };
     } else {
@@ -112,11 +120,11 @@ export function PlanChangeSheet({
       if (answer.status === 200) {
         const request = fieldOf(answer.body, 'request');
         const scheduled = fieldOf(answer.body, 'scheduled');
-        let notice: string | undefined;
+        let notice: PlanNotice | undefined;
         if (fieldOf(request, 'status') === 'done') {
-          notice = switchedWords(tier.name);
+          notice = { text: switchedWords(tier.name), tone: 'ok' };
         } else if (request === undefined && scheduled === undefined) {
-          notice = `Your store is on ${tier.name} now.`;
+          notice = { text: `Your store is on ${tier.name} now.`, tone: 'ok' };
         }
         onDone(notice);
         return '';
@@ -126,6 +134,34 @@ export function PlanChangeSheet({
       onStale();
       return '';
     });
+
+  // A card checkout of the plan picked (a store with nothing paid paying for it, plan 2.6a):
+  // only Stripe's own checkout page is navigated to.
+  const payByCard = (tier: TierCard) =>
+    run(async () => {
+      const answer = await api.request('POST', `/tenants/${tenantId}/checkout`, {
+        tier: tier.id,
+      });
+      const url = answer.status === 200 ? stripeSessionUrl(fieldOf(answer.body, 'url')) : undefined;
+      if (url !== undefined) {
+        navigate(url);
+        return '';
+      }
+      if (answer.status === 200) {
+        return 'The cloud did not answer with a Stripe page.';
+      }
+      onStale();
+      return planRefusalText(answer.body, answer.status, {
+        to: tier.name,
+        current: names.name(current),
+      });
+    });
+
+  // The billing page names this store by its owner-bound reference: without one, no link.
+  const billingHref =
+    billingUrl === undefined || billingRef === undefined
+      ? undefined
+      : billingPageUrl(billingUrl, tenantId, billingRef);
 
   let action = (
     <Button onClick={onClose} size="lg">
@@ -153,16 +189,26 @@ export function PlanChangeSheet({
         {label}
       </Button>
     );
-  } else if (kind === 'billing_page' && billingUrl !== undefined) {
+  } else if (shown?.action.kind === 'billing_page' && asked !== undefined) {
+    const { tier } = asked;
     action = (
-      <a
-        href={billingPageUrl(billingUrl, tenantId, billingRef)}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={LINK}
-      >
-        Open the billing page
-      </a>
+      <div className="flex flex-wrap gap-8">
+        {billingHref === undefined ? null : (
+          <a href={billingHref} target="_blank" rel="noopener noreferrer" className={LINK}>
+            Open the billing page
+          </a>
+        )}
+        {shown.action.card ? (
+          <Button size="lg" disabled={busy} onClick={() => void payByCard(tier)}>
+            Pay by card
+          </Button>
+        ) : null}
+        {billingHref === undefined && !shown.action.card ? (
+          <Button onClick={onClose} size="lg">
+            Close
+          </Button>
+        ) : null}
+      </div>
     );
   }
 
@@ -195,13 +241,16 @@ export function PlanChangeSheet({
                 {line}
               </p>
             ))}
-            {kind === 'billing_page' && billingUrl === undefined ? (
+            {kind === 'billing_page' && billingHref === undefined ? (
               <p className="text-14 leading-relaxed">
                 The billing page is not available here: contact elisym.
               </p>
             ) : null}
           </div>
         )}
+        <p role="alert" className="text-13 text-error empty:hidden">
+          {error}
+        </p>
       </div>
     </ProductSheet>
   );

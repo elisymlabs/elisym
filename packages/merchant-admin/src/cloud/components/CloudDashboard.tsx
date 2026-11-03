@@ -445,6 +445,7 @@ export function CloudDashboard({
                   now={() => api.serverNow() ?? tools.localNow()}
                   onChanged={onStoreChanged}
                   onOpenPage={setPage}
+                  navigate={navigate}
                 />
               </PlanSummary>
               <BillingPanel

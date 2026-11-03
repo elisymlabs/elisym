@@ -4056,7 +4056,7 @@ describe('the words a merchant reads', () => {
           names,
         ),
       ),
-      ...(['now', 'scheduled', 'card', 'billing_page'] as const).flatMap(
+      ...(['now', 'scheduled', 'card', 'billing_page', 'pay_first'] as const).flatMap(
         (how) =>
           previewLines(
             {
@@ -4065,11 +4065,13 @@ describe('the words a merchant reads', () => {
               how,
               at: 1_900_000_000,
               forfeits: 1_900_000_000,
+              card: true,
               fitProblems: [],
               capWords: undefined,
             },
             names,
             1_800_000_000,
+            true,
           ).lines,
       ),
     ];

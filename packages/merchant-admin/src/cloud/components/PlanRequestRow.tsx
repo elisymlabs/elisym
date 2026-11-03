@@ -2,7 +2,13 @@ import { Button } from '../../components/Button';
 import { SettingRow } from '../../components/SettingRow';
 import type { ConsoleApi } from '../lib/api';
 import { fieldOf } from '../lib/fields';
-import { type PlanNames, planRefusalText, requestWords, switchedWords } from '../lib/plan-change';
+import {
+  type PlanNames,
+  type PlanNotice,
+  planRefusalText,
+  requestWords,
+  switchedWords,
+} from '../lib/plan-change';
 import { stripeInvoiceUrl } from '../lib/rails';
 import type { PlanRequestView } from '../lib/store-view';
 import { usePlanStep } from '../lib/use-plan-step';
@@ -15,7 +21,7 @@ interface Props {
   /** The plan in force. */
   current: string;
   /** The request moved: the store is read again, with a line to say what happened, if any. */
-  onChanged: (notice?: string) => void;
+  onChanged: (notice?: PlanNotice) => void;
 }
 
 /**
@@ -42,7 +48,7 @@ export function PlanRequestRow({ api, tenantId, request, names, current, onChang
       const answer = await api.request('POST', `${path}/check`);
       if (answer.status === 200) {
         const status = fieldOf(fieldOf(answer.body, 'request'), 'status');
-        onChanged(status === 'done' ? switchedWords(to) : undefined);
+        onChanged(status === 'done' ? { text: switchedWords(to), tone: 'ok' } : undefined);
         return '';
       }
       if (answer.status === 404 || answer.status === 409) {
@@ -56,7 +62,9 @@ export function PlanRequestRow({ api, tenantId, request, names, current, onChang
       const answer = await api.request('DELETE', path);
       if (answer.status === 200) {
         const said = fieldOf(answer.body, 'words');
-        onChanged(typeof said === 'string' && said !== '' ? said : undefined);
+        // Paid after all is good news; held for us is not.
+        const tone = fieldOf(answer.body, 'outcome') === 'already_paid' ? 'ok' : 'warn';
+        onChanged(typeof said === 'string' && said !== '' ? { text: said, tone } : undefined);
         return '';
       }
       if (answer.status === 404 || answer.status === 409) {
