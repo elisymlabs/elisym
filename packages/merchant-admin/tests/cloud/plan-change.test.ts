@@ -36,6 +36,7 @@ function preview(overrides: Partial<PlanPreview>): PlanPreview {
     at: undefined,
     forfeits: undefined,
     card: false,
+    billingPage: true,
     fitProblems: [],
     capWords: undefined,
     ...overrides,
@@ -102,7 +103,7 @@ describe('the sheet, for each way the server decided', () => {
         'The 12 days left on Starter are not carried over.',
         'On the billing page, choose Business, one month.',
       ],
-      action: { kind: 'billing_page', card: false },
+      action: { kind: 'billing_page', card: false, page: true },
     });
   });
 
@@ -112,11 +113,11 @@ describe('the sheet, for each way the server decided', () => {
       lines: [
         'Pay for Business to move to it: on the billing page choose Business, or pay by card.',
       ],
-      action: { kind: 'billing_page', card: true },
+      action: { kind: 'billing_page', card: true, page: true },
     });
     const without = {
       lines: ['Pay for Business to move to it: on the billing page choose Business.'],
-      action: { kind: 'billing_page', card: false },
+      action: { kind: 'billing_page', card: false, page: true },
     };
     // The card rail closed in the view, or the server offers no checkout of it.
     expect(previewLines(payFirst, NAMES, NOW, false)).toEqual(without);
@@ -127,7 +128,66 @@ describe('the sheet, for each way the server decided', () => {
     // A stablecoin upgrade never offers the card, whatever it is told.
     expect(
       previewLines(preview({ how: 'billing_page', card: true }), NAMES, NOW, true).action,
-    ).toEqual({ kind: 'billing_page', card: false });
+    ).toEqual({ kind: 'billing_page', card: false, page: true });
+  });
+
+  it('a plan the billing page does not sell: never linked, said in words (the server knows)', () => {
+    expect(
+      previewLines(
+        preview({ how: 'billing_page', billingPage: false, forfeits: NOW + 3 * DAY }),
+        NAMES,
+        NOW,
+        true,
+      ),
+    ).toEqual({
+      lines: ['Business cannot be paid in stablecoins here: contact elisym.'],
+      action: { kind: 'billing_page', card: false, page: false },
+    });
+    expect(
+      previewLines(preview({ how: 'pay_first', billingPage: false, card: true }), NAMES, NOW, true),
+    ).toEqual({
+      lines: ['Pay for Business by card to move to it: it cannot be paid in stablecoins here.'],
+      action: { kind: 'billing_page', card: true, page: false },
+    });
+    for (const [card, rail] of [
+      [false, true],
+      [true, false],
+    ] as const) {
+      expect(
+        previewLines(preview({ how: 'pay_first', billingPage: false, card }), NAMES, NOW, rail),
+      ).toEqual({
+        lines: ['Business cannot be paid in stablecoins here: contact elisym.'],
+        action: { kind: 'billing_page', card: false, page: false },
+      });
+    }
+  });
+
+  it('a cloud that does not say what the billing page sells: linked, with the way out if it is not there', () => {
+    expect(
+      previewLines(preview({ how: 'billing_page', billingPage: undefined }), NAMES, NOW).lines,
+    ).toEqual([
+      'Business starts when your payment arrives, for a full month.',
+      'On the billing page, choose Business, one month.',
+      'If Business is not on that page, contact elisym.',
+    ]);
+    expect(
+      previewLines(
+        preview({ how: 'pay_first', billingPage: undefined, card: true }),
+        NAMES,
+        NOW,
+        true,
+      ),
+    ).toEqual({
+      lines: [
+        'Pay for Business to move to it: on the billing page choose Business, or pay by card.',
+        'If Business is not on that page, contact elisym.',
+      ],
+      action: { kind: 'billing_page', card: true, page: true },
+    });
+    // Said to sell it: no such sentence.
+    expect(previewLines(preview({ how: 'pay_first' }), NAMES, NOW).lines).toEqual([
+      'Pay for Business to move to it: on the billing page choose Business.',
+    ]);
   });
 
   it('a downgrade: its day, the plan kept until then, its price, what will be over and the cap', () => {
@@ -218,16 +278,21 @@ describe('a refusal in the sheet', () => {
   });
 
   it('a store that paid before pays for the bigger plan: on the billing page', () => {
+    // The change's own refusals do not say what the billing page sells: the way out is said.
     expect(refusalLines({ error: 'pay_for_upgrade' }, 409, PLANS)).toEqual({
-      lines: ['Pay for Business to move to it: on the billing page choose Business.'],
-      action: { kind: 'billing_page', card: false },
+      lines: [
+        'Pay for Business to move to it: on the billing page choose Business.',
+        'If Business is not on that page, contact elisym.',
+      ],
+      action: { kind: 'billing_page', card: false, page: true },
     });
     expect(refusalLines({ error: 'pay_on_billing_page' }, 409, PLANS)).toEqual({
       lines: [
         'Business starts when your payment arrives, for a full month.',
         'On the billing page, choose Business, one month.',
+        'If Business is not on that page, contact elisym.',
       ],
-      action: { kind: 'billing_page', card: false },
+      action: { kind: 'billing_page', card: false, page: true },
     });
   });
 
@@ -392,9 +457,14 @@ describe('the preview answer as the admin reads it', () => {
         to: 'business',
         how: 'pay_first',
         card: true,
+        billingPage: false,
         fitProblems: [],
-      })?.card,
-    ).toBe(true);
+      }),
+    ).toMatchObject({ card: true, billingPage: false });
+    expect(
+      planPreviewOf({ tier: 'starter', to: 'business', how: 'pay_first', fitProblems: [] })
+        ?.billingPage,
+    ).toBeUndefined();
   });
 
   it('refuses a malformed one whole', () => {
@@ -407,6 +477,8 @@ describe('the preview answer as the admin reads it', () => {
       { ...answer, at: 1.5 },
       { ...answer, forfeits: 'soon' },
       { ...answer, card: 'yes' },
+      { ...answer, billingPage: 'yes' },
+      { ...answer, billingPage: null },
       { ...answer, fitProblems: 'x' },
       { ...answer, fitProblems: [1] },
       { ...answer, capWords: 3 },

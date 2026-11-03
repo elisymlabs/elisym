@@ -58,6 +58,11 @@ export interface PlanPreview {
   forfeits: number | undefined;
   /** An upgrade paid for: whether a card checkout of the plan is open (the server's word). */
   card: boolean;
+  /**
+   * An upgrade paid for: whether the billing page sells this plan (the
+   * server's word); undefined from a cloud that does not say.
+   */
+  billingPage: boolean | undefined;
   fitProblems: string[];
   capWords: string | undefined;
 }
@@ -74,6 +79,7 @@ export function planPreviewOf(body: unknown): PlanPreview | undefined {
   const at = fieldOf(body, 'at');
   const forfeits = fieldOf(body, 'forfeits');
   const card = fieldOf(body, 'card');
+  const billingPage = fieldOf(body, 'billingPage');
   const fitProblems = fieldOf(body, 'fitProblems');
   const capWords = fieldOf(body, 'capWords');
   if (
@@ -84,6 +90,7 @@ export function planPreviewOf(body: unknown): PlanPreview | undefined {
     (how === 'scheduled') !== isTime(at) ||
     (forfeits !== undefined && !isTime(forfeits)) ||
     (card !== undefined && typeof card !== 'boolean') ||
+    (billingPage !== undefined && typeof billingPage !== 'boolean') ||
     !Array.isArray(fitProblems) ||
     !fitProblems.every((problem) => typeof problem === 'string') ||
     (capWords !== undefined && typeof capWords !== 'string')
@@ -97,6 +104,7 @@ export function planPreviewOf(body: unknown): PlanPreview | undefined {
     at: isTime(at) ? at : undefined,
     forfeits: isTime(forfeits) ? forfeits : undefined,
     card: card === true,
+    billingPage: typeof billingPage === 'boolean' ? billingPage : undefined,
     fitProblems: fitProblems.filter((problem) => typeof problem === 'string'),
     capWords: typeof capWords === 'string' ? capWords : undefined,
   };
@@ -110,7 +118,12 @@ export type SheetAction =
    * Links to the billing page, where paying the plan's product is the change;
    * `card`: a card checkout of the plan is offered beside it.
    */
-  | { kind: 'billing_page'; card: boolean }
+  | {
+      kind: 'billing_page';
+      card: boolean;
+      /** The billing page sells the plan (or the server did not say): it is linked. */
+      page: boolean;
+    }
   /** Goes to a page of the admin where what is over the plan is removed. */
   | { kind: 'page'; page: 'products' | 'settings'; label: string }
   | { kind: 'none' };
@@ -174,9 +187,15 @@ export function previewLines(
         },
       };
     case 'billing_page':
-      return billingPageLines(to, forfeitWords(preview.forfeits, now, current));
+      return preview.billingPage === false
+        ? notSoldLines(to, false)
+        : billingPageLines(
+            to,
+            forfeitWords(preview.forfeits, now, current),
+            preview.billingPage === undefined,
+          );
     case 'pay_first':
-      return payFirstLines(to, preview.card && cardRailOpen);
+      return payFirstLines(to, preview.card && cardRailOpen, preview.billingPage);
     case 'scheduled': {
       const day = preview.at === undefined ? 'the end of your paid time' : shownDay(preview.at);
       return {
@@ -198,30 +217,53 @@ export function previewLines(
   }
 }
 
-function billingPageLines(to: string, forfeit: string[]): SheetLines {
+/** When nobody said whether the billing page sells the plan: the way out if it does not. */
+function notOnPage(to: string): string {
+  return `If ${to} is not on that page, contact elisym.`;
+}
+
+/** A stablecoin upgrade on the billing page; `unsaid`: the server did not say it sells the plan. */
+function billingPageLines(to: string, forfeit: string[], unsaid: boolean): SheetLines {
   return {
     lines: [
       `${to} starts when your payment arrives, for a full month.`,
       ...forfeit,
       `On the billing page, choose ${to}, one month.`,
+      ...(unsaid ? [notOnPage(to)] : []),
     ],
-    action: { kind: 'billing_page', card: false },
+    action: { kind: 'billing_page', card: false, page: true },
+  };
+}
+
+/** The billing page sells no product of the plan: no link to it (`card`: Pay by card instead). */
+function notSoldLines(to: string, card: boolean): SheetLines {
+  return {
+    lines: [
+      card
+        ? `Pay for ${to} by card to move to it: it cannot be paid in stablecoins here.`
+        : `${to} cannot be paid in stablecoins here: contact elisym.`,
+    ],
+    action: { kind: 'billing_page', card, page: false },
   };
 }
 
 /**
  * A store that had service, with nothing paid now, pays for the bigger plan
- * first: on the billing page, or by card where a checkout of it is offered
- * (the words say "or pay by card" only then).
+ * first: on the billing page where it sells the plan, or by card where a
+ * checkout of it is offered (the words say each way only where it is offered).
  */
-function payFirstLines(to: string, card: boolean): SheetLines {
+function payFirstLines(to: string, card: boolean, billingPage: boolean | undefined): SheetLines {
+  if (billingPage === false) {
+    return notSoldLines(to, card);
+  }
   return {
     lines: [
       card
         ? `Pay for ${to} to move to it: on the billing page choose ${to}, or pay by card.`
         : `Pay for ${to} to move to it: on the billing page choose ${to}.`,
+      ...(billingPage === undefined ? [notOnPage(to)] : []),
     ],
-    action: { kind: 'billing_page', card },
+    action: { kind: 'billing_page', card, page: true },
   };
 }
 
@@ -285,12 +327,16 @@ export function refusalLines(
 ): SheetLines {
   const code = fieldOf(body, 'error');
   if (code === 'pay_on_billing_page') {
-    return billingPageLines(plans.to, []);
+    // The change's own refusal does not say what the billing page sells.
+    return billingPageLines(plans.to, [], true);
   }
   const lines = [planRefusalText(body, status, plans)];
   switch (code) {
     case 'pay_for_upgrade':
-      return { lines, action: { kind: 'billing_page', card: false } };
+      return {
+        lines: [...lines, notOnPage(plans.to)],
+        action: { kind: 'billing_page', card: false, page: true },
+      };
     case 'remove_products_first':
       return { lines, action: { kind: 'page', page: 'products', label: 'Go to Products' } };
     case 'remove_own_rpc_first':

@@ -168,7 +168,6 @@ export function PlanChangeSheet({
       Close
     </Button>
   );
-  const kind = shown?.action.kind;
   if (shown?.action.kind === 'confirm' && asked !== undefined) {
     const { tier } = asked;
     action = (
@@ -193,7 +192,7 @@ export function PlanChangeSheet({
     const { tier } = asked;
     action = (
       <div className="flex flex-wrap gap-8">
-        {billingHref === undefined ? null : (
+        {billingHref === undefined || !shown.action.page ? null : (
           <a href={billingHref} target="_blank" rel="noopener noreferrer" className={LINK}>
             Open the billing page
           </a>
@@ -203,7 +202,7 @@ export function PlanChangeSheet({
             Pay by card
           </Button>
         ) : null}
-        {billingHref === undefined && !shown.action.card ? (
+        {(billingHref === undefined || !shown.action.page) && !shown.action.card ? (
           <Button onClick={onClose} size="lg">
             Close
           </Button>
@@ -241,7 +240,9 @@ export function PlanChangeSheet({
                 {line}
               </p>
             ))}
-            {kind === 'billing_page' && billingHref === undefined ? (
+            {shown.action.kind === 'billing_page' &&
+            shown.action.page &&
+            billingHref === undefined ? (
               <p className="text-14 leading-relaxed">
                 The billing page is not available here: contact elisym.
               </p>

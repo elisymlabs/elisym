@@ -4056,6 +4056,27 @@ describe('the words a merchant reads', () => {
           names,
         ),
       ),
+      ...[false, undefined].flatMap((billingPage) =>
+        (['billing_page', 'pay_first'] as const).flatMap(
+          (how) =>
+            previewLines(
+              {
+                tier: 'starter',
+                to: 'business',
+                how,
+                at: undefined,
+                forfeits: undefined,
+                card: true,
+                billingPage,
+                fitProblems: [],
+                capWords: undefined,
+              },
+              names,
+              1_800_000_000,
+              true,
+            ).lines,
+        ),
+      ),
       ...(['now', 'scheduled', 'card', 'billing_page', 'pay_first'] as const).flatMap(
         (how) =>
           previewLines(
@@ -4066,6 +4087,7 @@ describe('the words a merchant reads', () => {
               at: 1_900_000_000,
               forfeits: 1_900_000_000,
               card: true,
+              billingPage: true,
               fitProblems: [],
               capWords: undefined,
             },

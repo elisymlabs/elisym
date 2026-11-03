@@ -449,6 +449,61 @@ describe('the Change plan sheet', () => {
     }
   });
 
+  it('a plan the billing page does not sell: no link to it, the card where offered, else ask us', async () => {
+    const { record } = await panel(
+      { canChange: true },
+      {
+        [`POST ${PATH}/plan/preview`]: {
+          body: {
+            tier: 'starter',
+            to: 'business',
+            how: 'pay_first',
+            card: true,
+            billingPage: false,
+            fitProblems: [],
+          },
+        },
+        [`POST ${PATH}/checkout`]: { body: { url: 'https://checkout.stripe.com/c/cs_test_1' } },
+      },
+    );
+    await pick('business');
+    await settle(() => hasButton('Pay by card'));
+    expect(dialog()?.textContent).toContain(
+      'Pay for Business by card to move to it: it cannot be paid in stablecoins here.',
+    );
+    expect(link('Open the billing page')).toBeUndefined();
+    expect(document.querySelector('a[href*="customer_ref"]')).toBeNull();
+    await click(anyButton('Pay by card'));
+    await settle(() => record.navigated.length === 1);
+    await mounted?.unmount();
+    mounted = undefined;
+    // A stablecoin upgrade the page does not sell: the words, and only Close.
+    await panel(
+      { canChange: true },
+      {
+        [`POST ${PATH}/plan/preview`]: {
+          body: {
+            tier: 'starter',
+            to: 'business',
+            how: 'billing_page',
+            card: false,
+            billingPage: false,
+            forfeits: NOW + 12 * DAY,
+            fitProblems: [],
+          },
+        },
+      },
+    );
+    await pick('business');
+    await settle(() =>
+      text().includes('Business cannot be paid in stablecoins here: contact elisym.'),
+    );
+    expect(link('Open the billing page')).toBeUndefined();
+    expect(hasButton('Pay by card')).toBe(false);
+    expect(hasButton('Close')).toBe(true);
+    expect(text()).not.toContain('The billing page is not available here');
+  });
+
   it('a view with no owner-bound reference links no billing page', async () => {
     await panel(
       { canChange: true },
