@@ -12,6 +12,8 @@ import { verifyEvent } from 'nostr-tools/pure';
 
 export const TENANT_ID = 'aaaaaaaaaaaa';
 export const STORE_PUBKEY = '1'.repeat(64);
+/** The owner-bound billing reference the view carries (the tenant id and a MAC, as cloud-api's `boundBillingRef`). */
+export const BILLING_REF = `${TENANT_ID}.${'M'.repeat(22)}`;
 const NOW = 1_900_000_000;
 /** When a kept payout list was signed: well in the past, as any kept list is. */
 const LIST_AT = 1_700_000_000;
@@ -27,6 +29,7 @@ export function tiersAnswer(): Body {
         name: 'Starter',
         price: '$29/mo',
         selfServe: true,
+        monthlyCents: 2900,
         limits: { products: 100, ordersPerMonth: 2000 },
         display: {},
         ownRpc: false,
@@ -37,6 +40,7 @@ export function tiersAnswer(): Body {
         name: 'Business',
         price: '$99/mo',
         selfServe: true,
+        monthlyCents: 9900,
         limits: { products: 1000 },
         display: { ordersPerMonth: 'No cap' },
         ownRpc: false,
@@ -103,6 +107,8 @@ export interface StoreState {
   /** In retention: payments close then (unix seconds). */
   payBy: number | undefined;
   tier: 'starter' | 'business';
+  /** The view's `plan` (cloud-api's `planView`), as the server computes it. */
+  plan: Body;
 }
 
 export function storeState(overrides: Partial<StoreState> = {}): StoreState {
@@ -122,6 +128,7 @@ export function storeState(overrides: Partial<StoreState> = {}): StoreState {
     preparing: false,
     payBy: undefined,
     tier: 'starter',
+    plan: { canChange: true },
     ...overrides,
   };
 }
@@ -218,9 +225,11 @@ export class FakeStore {
       ownerPubkey: '2'.repeat(64),
       storePubkey: state.paid && !state.preparing ? STORE_PUBKEY : null,
       paidUntil: state.paid ? NOW : null,
+      billingRef: BILLING_REF,
       partner: null,
       payBy: state.payBy ?? null,
       rails: { card: { open: true }, crypto: { open: false, refusal: { code: 'rail_off' } } },
+      plan: state.plan,
       sale: { withdrawnAt: null, ownerWithdrawn: false, held: false, stopped: false },
       exporting: false,
       exportStopped: null,

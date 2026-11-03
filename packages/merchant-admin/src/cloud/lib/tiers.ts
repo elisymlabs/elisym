@@ -15,6 +15,8 @@ export interface TierCard {
   price: string;
   /** Started by the merchant here; otherwise "talk to us". */
   selfServe: boolean;
+  /** A self-serve plan's monthly price in US cents, as the server charges it (none from an older cloud). */
+  monthlyCents: number | undefined;
   limits: { products: number; ordersPerMonth?: number };
   /** Strings shown instead of a limit's number ("No cap"). */
   display: { products?: string; ordersPerMonth?: string };
@@ -73,6 +75,7 @@ function tierOf(value: unknown): TierCard {
     name: text(fieldOf(value, 'name')),
     price: text(fieldOf(value, 'price')),
     selfServe: flag(fieldOf(value, 'selfServe')),
+    monthlyCents: optionalCount(fieldOf(value, 'monthlyCents')),
     limits: {
       products: count(limits.products),
       ...(ordersPerMonth === undefined ? {} : { ordersPerMonth }),

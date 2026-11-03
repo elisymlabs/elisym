@@ -15,6 +15,13 @@ interface Props {
   onChoose: (tier: TierCard) => void;
   /** A signup is on its way: no other plan can be picked until it is answered. */
   locked: boolean;
+  /**
+   * The store's plan, when the picker changes it (plan `cloud-plan-change.md`
+   * 2.6): marked, never picked, and every other self-serve plan can be picked
+   * (the server says how the change happens). Absent: a new store's plan, one
+   * payable now.
+   */
+  current?: string;
 }
 
 const NUMBER = new Intl.NumberFormat('en-US');
@@ -45,7 +52,7 @@ function limitsOf(tier: TierCard): string[] {
  * link's plan is chosen at once when it can be, else said to be one that
  * cannot start here.
  */
-export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: Props) {
+export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked, current }: Props) {
   // Undefined while the catalog loads; `failed` when it could not be read.
   const [tiers, setTiers] = useState<TierCard[] | 'failed' | undefined>(undefined);
   const [loads, setLoads] = useState(0);
@@ -55,10 +62,14 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
   const preselected = useRef(false);
   const cards = useRef(new Map<string, HTMLButtonElement>());
 
+  // A plan that can be picked here: another self-serve plan when changing, else one that can start.
+  const canPick = (tier: TierCard) =>
+    current === undefined ? canStart(tier) : tier.selfServe && tier.id !== current;
+
   useEffect(() => {
-    let current = true;
+    let live = true;
     void loadTiers().then((answer) => {
-      if (!current) {
+      if (!live) {
         return;
       }
       const read = answer.status === 200 ? tierCardsFrom(answer.body) : undefined;
@@ -72,7 +83,7 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
       }
     });
     return () => {
-      current = false;
+      live = false;
     };
   }, [loadTiers, loads, onChoose]);
 
@@ -110,12 +121,12 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
     (named === undefined || !canStart(named)) &&
     chosen === undefined;
   const selfServe = tiers.filter((tier) => tier.selfServe);
-  const open = selfServe.filter(canStart);
+  const open = selfServe.filter(canPick);
   // One stop in the tab order: the picked plan, else the first that can start.
   const focusable = chosen ?? open[0]?.id;
 
   const pick = (tier: TierCard) => {
-    if (!locked && canStart(tier)) {
+    if (!locked && canPick(tier)) {
       onChoose(tier);
     }
   };
@@ -147,8 +158,15 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
       ) : null}
       <div role="radiogroup" aria-label="Plans" className="mt-16 grid gap-12 sm:grid-cols-2">
         {selfServe.map((tier) => {
-          const way = paidBy(tier.payable);
-          const canBegin = canStart(tier);
+          const isCurrent = tier.id === current;
+          let way = paidBy(tier.payable) ?? 'Not available yet';
+          if (isCurrent) {
+            way = 'Your plan';
+          } else if (current !== undefined) {
+            // Changing: the server says how this change is paid, once it is picked.
+            way = '';
+          }
+          const canBegin = canPick(tier);
           const picked = tier.id === chosen;
           return (
             <button
@@ -163,6 +181,7 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
               type="button"
               role="radio"
               data-tier={tier.id}
+              {...(isCurrent ? { 'data-current': '' } : {})}
               aria-checked={picked}
               tabIndex={tier.id === focusable ? 0 : -1}
               disabled={!canBegin || locked}
@@ -185,7 +204,7 @@ export function PlanPicker({ loadTiers, preselect, chosen, onChoose, locked }: P
                   <span key={line}>{line}</span>
                 ))}
               </span>
-              <span className="text-13 text-text-3">{way ?? 'Not available yet'}</span>
+              {way === '' ? null : <span className="text-13 text-text-3">{way}</span>}
             </button>
           );
         })}

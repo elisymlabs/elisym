@@ -21,6 +21,9 @@ export interface ApiAnswer {
 
 export type Fetcher = (request: Request) => Promise<Response>;
 
+/** The methods cloud-api's owner routes take. */
+type Method = 'GET' | 'POST' | 'DELETE';
+
 /** The auth header for one request, dated `createdAt`. */
 export function authHeader(
   signer: OwnerSigner,
@@ -76,6 +79,8 @@ export interface BytesAnswer {
 export interface ConsoleApi {
   request(method: 'GET', path: string): Promise<ApiAnswer>;
   request(method: 'POST', path: string, body?: unknown): Promise<ApiAnswer>;
+  /** A signed DELETE, with no body (a plan's Keep, a plan request's Cancel). */
+  request(method: 'DELETE', path: string): Promise<ApiAnswer>;
   /** A GET whose answer is a file, kept as its bytes (a text decode would corrupt it). */
   requestBytes(path: string): Promise<BytesAnswer>;
   /**
@@ -108,7 +113,7 @@ export function createConsoleApi(options: {
   let learnedAny = false;
 
   async function send(
-    method: 'GET' | 'POST',
+    method: Method,
     path: string,
     body: unknown,
     wantBytes: boolean,
@@ -181,12 +186,7 @@ export function createConsoleApi(options: {
     };
   }
 
-  async function signedOnce(
-    method: 'GET' | 'POST',
-    path: string,
-    body: unknown,
-    wantBytes: boolean,
-  ) {
+  async function signedOnce(method: Method, path: string, body: unknown, wantBytes: boolean) {
     if (!path.startsWith('/') || path.startsWith('//')) {
       throw new Error('a cloud-api path starts with one /');
     }
@@ -204,7 +204,7 @@ export function createConsoleApi(options: {
   }
 
   return {
-    async request(method: 'GET' | 'POST', path: string, body?: unknown) {
+    async request(method: Method, path: string, body?: unknown) {
       const answer = await signedOnce(method, path, body, false);
       return { status: answer.status, body: answer.body };
     },

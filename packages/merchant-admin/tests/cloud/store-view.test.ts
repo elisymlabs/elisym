@@ -5,6 +5,7 @@ import {
   billingPageUrl,
   cardRefusalText,
   cryptoRefusalText,
+  stripeInvoiceUrl,
   stripeSessionUrl,
 } from '../../src/cloud/lib/rails';
 import { checkoutReturnOf } from '../../src/cloud/lib/start';
@@ -205,13 +206,40 @@ describe('the rails in the merchant words', () => {
     }
   });
 
-  it("the billing page link carries the store's id as customer_ref", () => {
-    expect(billingPageUrl('https://billing.example/pay', 'abc123abc123')).toBe(
-      'https://billing.example/pay?customer_ref=abc123abc123',
+  it("the billing page link carries the store's owner-bound reference, else its id, as customer_ref", () => {
+    const ref = 'abc123abc123.AAAAAAAAAAAAAAAAAAAAAA';
+    expect(billingPageUrl('https://billing.example/pay', 'abc123abc123', ref)).toBe(
+      `https://billing.example/pay?customer_ref=${ref}`,
     );
     expect(
-      billingPageUrl('https://billing.example/pay?x=1&customer_ref=other', 'abc123abc123'),
-    ).toBe('https://billing.example/pay?x=1&customer_ref=abc123abc123');
+      billingPageUrl('https://billing.example/pay?x=1&customer_ref=other', 'abc123abc123', ref),
+    ).toBe(`https://billing.example/pay?x=1&customer_ref=${ref}`);
+    // A cloud that gives no reference: the plain id still pays the plan in force.
+    expect(billingPageUrl('https://billing.example/pay', 'abc123abc123', undefined)).toBe(
+      'https://billing.example/pay?customer_ref=abc123abc123',
+    );
+  });
+
+  it("a plan request's pay page is linked only on Stripe's invoice host, over https", () => {
+    expect(stripeInvoiceUrl('https://invoice.stripe.com/i/acct_1/test_x')).toBe(
+      'https://invoice.stripe.com/i/acct_1/test_x',
+    );
+    for (const value of [
+      'http://invoice.stripe.com/i/x',
+      'https://checkout.stripe.com/c/cs_1',
+      'https://billing.stripe.com/p/x',
+      'https://invoice.stripe.com.evil.example/i',
+      'https://user@invoice.stripe.com/i',
+      'https://:pw@invoice.stripe.com/i',
+      'javascript:alert(1)',
+      42,
+      undefined,
+    ]) {
+      expect(stripeInvoiceUrl(value), String(value)).toBeUndefined();
+    }
+    // The session hosts never take an invoice page, and the reverse.
+    expect(stripeSessionUrl('https://invoice.stripe.com/i/x')).toBeUndefined();
+    expect(stripeSessionUrl('https://:pw@checkout.stripe.com/c')).toBeUndefined();
   });
 
   it('the billing page from config is none or https', () => {

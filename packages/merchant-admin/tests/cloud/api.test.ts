@@ -38,6 +38,37 @@ describe('the client, against stub answers', () => {
     }
   });
 
+  it('signs a DELETE for its own method and URL, with no body and no payload tag', async () => {
+    const seen: Request[] = [];
+    const client = createConsoleApi({
+      apiOrigin: ORIGIN,
+      signer: OwnerKey.create(),
+      fetcher: async (request) => {
+        seen.push(request);
+        return Response.json({ tenantId: 'zzzzzzzzzzzz', tier: 'business' });
+      },
+      localNow: () => SERVER_NOW,
+    });
+    expect(await client.request('DELETE', '/tenants/zzzzzzzzzzzz/plan/scheduled')).toEqual({
+      status: 200,
+      body: { tenantId: 'zzzzzzzzzzzz', tier: 'business' },
+    });
+    const [request] = seen;
+    expect(request?.method).toBe('DELETE');
+    expect(request?.url).toBe(`${ORIGIN}/tenants/zzzzzzzzzzzz/plan/scheduled`);
+    expect(request?.headers.get('content-type')).toBeNull();
+    expect(await request?.text()).toBe('');
+    const header = request?.headers.get('authorization') ?? '';
+    const event = JSON.parse(atob(header.slice('Nostr '.length)));
+    const tags: string[][] = event.tags;
+    expect(tags.find((tag) => tag[0] === 'method')).toEqual(['method', 'DELETE']);
+    expect(tags.find((tag) => tag[0] === 'u')).toEqual([
+      'u',
+      `${ORIGIN}/tenants/zzzzzzzzzzzz/plan/scheduled`,
+    ]);
+    expect(tags.some((tag) => tag[0] === 'payload')).toBe(false);
+  });
+
   it('dates each request by the offset the last answer brought', async () => {
     const dates: number[] = [];
     let server = SERVER_NOW + 500;

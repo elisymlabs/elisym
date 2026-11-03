@@ -15,7 +15,7 @@ import { type CloudPage, pageLocks } from '../lib/page-locks';
 import { domainOf, nip05Of } from '../lib/settings';
 import type { CheckoutReturn } from '../lib/start';
 import { type StoreView, storeViewOf } from '../lib/store-view';
-import { tierCardsFrom } from '../lib/tiers';
+import { type TierCard, tierCardsFrom } from '../lib/tiers';
 import { useCloudOrders } from '../lib/use-cloud-orders';
 import { useKeptStore } from '../lib/use-kept-store';
 import { useStatus } from '../lib/use-status';
@@ -31,6 +31,7 @@ import { InstallStep } from './InstallStep';
 import { NotRead } from './NotRead';
 import { OrdersPanel } from './OrdersPanel';
 import { PayoutsPanel } from './PayoutsPanel';
+import { PlanChange } from './PlanChange';
 import { PlanSummary } from './PlanSummary';
 import { ProductsForm } from './ProductsForm';
 import { SalePanel } from './SalePanel';
@@ -119,8 +120,8 @@ export function CloudDashboard({
       liveLine.current?.focus();
     }
   }, [justLaunched]);
-  // The plan's price from the catalog, once read (undefined: unread, or the catalog failed).
-  const [prices, setPrices] = useState<Record<string, string> | undefined>(undefined);
+  // The plan catalog, once read (undefined: unread, or the catalog failed): prices and names.
+  const [tiers, setTiers] = useState<TierCard[] | undefined>(undefined);
   const latest = useRef(0);
 
   useEffect(() => {
@@ -128,7 +129,7 @@ export function CloudDashboard({
     void loadTiers().then((answer) => {
       const cards = answer.status === 200 ? tierCardsFrom(answer.body) : undefined;
       if (current && cards !== undefined) {
-        setPrices(Object.fromEntries(cards.map((card) => [card.id, card.price])));
+        setTiers(cards);
       }
     });
     return () => {
@@ -218,7 +219,8 @@ export function CloudDashboard({
     view === undefined || poll.status?.gone === true
       ? {}
       : pageLocks({ launched, invited: view.launch === 'operator', status });
-  const price = view === undefined ? undefined : prices?.[view.tier];
+  const price =
+    view === undefined ? undefined : tiers?.find((card) => card.id === view.tier)?.price;
 
   const summary =
     view === undefined ? null : (
@@ -432,7 +434,19 @@ export function CloudDashboard({
           ),
           billing: (
             <Section title="Plan & billing" heading="h1" description={DESCRIPTIONS.billing}>
-              <PlanSummary view={view} status={status} price={price} />
+              <PlanSummary view={view} status={status} price={price}>
+                <PlanChange
+                  api={api}
+                  tenantId={tenantId}
+                  view={view}
+                  tiers={tiers}
+                  billingUrl={billingUrl}
+                  loadTiers={loadTiers}
+                  now={() => api.serverNow() ?? tools.localNow()}
+                  onChanged={onStoreChanged}
+                  onOpenPage={setPage}
+                />
+              </PlanSummary>
               <BillingPanel
                 api={api}
                 tenantId={tenantId}

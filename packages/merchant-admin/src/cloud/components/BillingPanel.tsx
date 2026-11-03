@@ -96,7 +96,7 @@ export function BillingPanel({
           <Sub className="text-15 font-semibold">Crypto</Sub>
           {cryptoOpen ? (
             <a
-              href={billingPageUrl(billingUrl, tenantId)}
+              href={billingPageUrl(billingUrl, tenantId, view.billingRef)}
               target="_blank"
               rel="noopener noreferrer"
               className="rounded-10 border-line-2 text-15 border py-10 text-center font-semibold"

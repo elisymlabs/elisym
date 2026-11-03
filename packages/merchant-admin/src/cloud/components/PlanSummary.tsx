@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { SettingRow } from '../../components/SettingRow';
 import { SettingsSection } from '../../components/SettingsSection';
 import type { StoreStatus } from '../lib/status';
@@ -8,10 +9,12 @@ interface Props {
   status: StoreStatus | undefined;
   /** The plan's price as the catalog writes it ("$29/mo"), once read. */
   price: string | undefined;
+  /** Rows under the plan's own: its change, a change on its way or scheduled. */
+  children?: ReactNode;
 }
 
 /** The plan, its paid time and this month's use of it, in words. */
-export function PlanSummary({ view, status, price }: Props) {
+export function PlanSummary({ view, status, price, children }: Props) {
   const cap = status?.usage.ordersPerMonth;
   return (
     <SettingsSection title="Your plan">
@@ -52,6 +55,7 @@ export function PlanSummary({ view, status, price }: Props) {
           </span>
         </SettingRow>
       )}
+      {children}
     </SettingsSection>
   );
 }

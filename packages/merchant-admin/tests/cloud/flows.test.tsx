@@ -15,15 +15,22 @@ import { EXPLAINED } from '../../src/cloud/lib/errors';
 import { decisionText } from '../../src/cloud/lib/owner-events';
 import { OwnerKey, parseOwnerKey } from '../../src/cloud/lib/owner-key';
 import { payoutAssets } from '../../src/cloud/lib/payouts';
+import {
+  PLAN_REFUSALS,
+  planRefusalText,
+  previewLines,
+  requestWords,
+} from '../../src/cloud/lib/plan-change';
 import { problemText } from '../../src/cloud/lib/problems';
 import { cardRefusalText, cryptoRefusalText } from '../../src/cloud/lib/rails';
 import * as SALE from '../../src/cloud/lib/sale';
-import { shownTime } from '../../src/cloud/lib/store-view';
+import { PLAN_REQUEST_STATUSES, shownTime } from '../../src/cloud/lib/store-view';
 import { short } from '../../src/lib/core';
 import { Root } from '../../src/Root';
 import { fakeDeps, relayClient, storeEvents } from '../fakes';
 import {
   type Answer,
+  BILLING_REF,
   FakeStore,
   TENANT_ID,
   fakeCloud,
@@ -2637,6 +2644,72 @@ describe('a cloud store, its round-2 pins', () => {
     );
   });
 
+  it('Plan & billing offers Change plan, links the billing page with the owner-bound reference, and a moved plan reads the store again', async () => {
+    const store = new FakeStore(readyState({ activated: true, runState: 'live' }));
+    const routes = store.routes();
+    const { host, calls } = await admin(
+      {
+        ...routes,
+        [`GET /tenants/${TENANT_ID}`]: () => {
+          const body = store.view();
+          return {
+            body: { ...body, rails: { ...Object(body.rails), crypto: { open: true } } },
+          };
+        },
+        [`POST /tenants/${TENANT_ID}/plan/preview`]: {
+          body: { tier: 'starter', to: 'business', how: 'now', fitProblems: [] },
+        },
+        [`POST /tenants/${TENANT_ID}/plan`]: () => {
+          store.state.tier = 'business';
+          return { body: { tenantId: TENANT_ID, tier: 'business', fitProblems: [] } };
+        },
+      },
+      { cloudProps: { billingUrl: 'https://billing.elisym.example/pay' } },
+    );
+    await signIn(host, OwnerKey.create());
+    await eventually(
+      host,
+      () => host.querySelector('#page-billing')?.textContent?.includes('Change plan') === true,
+    );
+    const billing = host.querySelector('#page-billing');
+    expect(
+      billing?.querySelector('a[href^="https://billing.elisym.example/"]')?.getAttribute('href'),
+    ).toBe(`https://billing.elisym.example/pay?customer_ref=${BILLING_REF}`);
+    const change = [...(billing?.querySelectorAll('button') ?? [])].find(
+      (button) => button.textContent === 'Change plan',
+    );
+    await act(async () => change?.click());
+    await eventually(host, () => document.querySelector('[data-tier="business"]') !== null);
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>('[data-tier="business"]')?.click(),
+    );
+    await eventually(
+      host,
+      () => document.body.textContent?.includes('Move to Business now') === true,
+    );
+    const reads = calls.filter((call) => call.path === `/tenants/${TENANT_ID}`).length;
+    const move = [...document.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Move to Business now',
+    );
+    await act(async () => move?.click());
+    await eventually(
+      host,
+      () =>
+        host
+          .querySelector('#page-billing')
+          ?.textContent?.includes('Your store is on Business now.') === true,
+    );
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    await eventually(
+      host,
+      () => calls.filter((call) => call.path === `/tenants/${TENANT_ID}`).length > reads,
+    );
+    await eventually(
+      host,
+      () => host.querySelector('#page-billing')?.textContent?.includes('PlanBusiness') === true,
+    );
+  });
+
   it('the plan with its price on Plan & billing, for the plan the store is on', async () => {
     for (const [tier, said] of [
       ['starter', 'Starter, $29/month'],
@@ -3964,7 +4037,44 @@ describe('the words a merchant reads', () => {
       'name: Required',
     ].map((line) => problemText(line).text);
     const warning = renderToStaticMarkup(<KeyInUseWarning />);
+    const names = { name: (tier: string) => tier, cents: () => 9900 };
+    const plan = [
+      ...Object.values(PLAN_REFUSALS),
+      ...['pay_for_upgrade', 'downgrade_scheduled'].map((error) =>
+        planRefusalText({ error }, 409, { to: 'Business', current: 'Starter' }),
+      ),
+      ...PLAN_REQUEST_STATUSES.map((status) =>
+        requestWords(
+          {
+            id: 'pr_1',
+            to: 'business',
+            status,
+            payUrl: undefined,
+            expiresAt: 1_900_000_000,
+            endedAt: undefined,
+          },
+          names,
+        ),
+      ),
+      ...(['now', 'scheduled', 'card', 'billing_page'] as const).flatMap(
+        (how) =>
+          previewLines(
+            {
+              tier: 'starter',
+              to: 'business',
+              how,
+              at: 1_900_000_000,
+              forfeits: 1_900_000_000,
+              fitProblems: [],
+              capWords: undefined,
+            },
+            names,
+            1_800_000_000,
+          ).lines,
+      ),
+    ];
     for (const text of [
+      ...plan,
       ...sale,
       ...refusals,
       ...decisions,
