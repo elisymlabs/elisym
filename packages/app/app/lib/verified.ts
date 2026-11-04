@@ -3,4 +3,5 @@ export const VERIFIED_PUBKEYS = new Set([
   // The Flux deployment agent.
   'ade661382753f9a7d261e9703925858aab53b2ed1ca12686891f04a5d2a3b94f',
   'c155013f51b89a3ff6299af97c00eec6a0080d3879bf1189de817e9033919c00',
+  'ce3134fd171717910c3eaaa60ff25b1a92c206ddff79487e575afed17b42060e',
 ]);
