@@ -79,7 +79,7 @@ function stageName(stage: Element | null | undefined): string | undefined {
 
 /** The copy button's label on screen (the others in its cell are hidden). */
 function currentLabel(ui: { container: HTMLElement }): string | undefined {
-  return ui.container.querySelector('.label-option[data-current="true"]')?.textContent ?? undefined;
+  return ui.container.querySelector('.copy-button .label-option[data-current="true"]')?.textContent ?? undefined;
 }
 
 /** Every tree mounted by a test, unmounted after it: none keeps listening into the next. */
@@ -186,7 +186,14 @@ function mount(view?: View, options: MountOptions = {}) {
     hold: (promise: Promise<void>) => {
       settle = promise;
     },
-    click: (label: string) => act(() => button(label).click()),
+    click: (label: string) => {
+      if (['Phantom', 'Solflare', 'MetaMask', 'Rabby'].includes(label) && container.querySelector('.wallet-select')) {
+        selectWallet({ container }, label);
+        act(() => container.querySelector<HTMLButtonElement>('.wallet-pay')!.click());
+        return;
+      }
+      act(() => button(label).click());
+    },
     has: (selector: string) => container.querySelector(selector) !== null,
     walletsOpen: () => container.querySelector('[data-step="wallets"]') !== null,
     text: () => container.textContent ?? '',
@@ -220,6 +227,13 @@ function withWallets(view: View): Ui {
   const ui = mount(view);
   expect(ui.walletsOpen()).toBe(true);
   return ui;
+}
+
+function selectWallet(ui: Pick<Ui, 'container'>, name: string): void {
+  act(() => ui.container.querySelector<HTMLButtonElement>('.wallet-select')!.click());
+  const option = [...ui.container.querySelectorAll<HTMLElement>('.wallet-option')].find((each) => each.textContent?.includes(name));
+  if (!option) { throw new Error('Wallet option not found: ' + name); }
+  act(() => option.click());
 }
 
 function withPrice(offer: ReadyOffer, amount: string, extra: bigint): ReadyOffer {
@@ -339,7 +353,9 @@ describe('the panel rule', () => {
       const ui = withWallets(offerView(offer));
       ui.draw({ view: { kind: 'working', step: 'checking', about } });
       ui.draw({ view: offerView(offer, { problem }) });
-      expect(ui.alerts()).toContain(text);
+      expect(ui.container.querySelector('.error-message-description')?.textContent).toBe(text);
+      expect(ui.container.querySelector('.error-message-title')?.textContent).toBeTruthy();
+      expect(ui.container.querySelector('[data-error-icon]')).not.toBeNull();
     });
   }
 
@@ -424,7 +440,7 @@ describe('the panel rule', () => {
     });
     expect(ui.walletsOpen()).toBe(true);
     // A Tempo wallet row is the wallet's name, nothing else: the wallet asks to switch itself.
-    const row = ui.container.querySelector('.wallet-row .wallet-name');
+    const row = ui.container.querySelector('.wallet-select .select-value');
     expect(row?.textContent).toBe('MetaMask');
     expect(ui.text()).not.toContain('switches to Tempo');
   });
@@ -459,6 +475,7 @@ describe('the panel rule', () => {
     ui.draw({ view: offerView(offer, { problem, wallets: [{ name: 'Backpack' }] }) });
     expect(ui.walletsOpen()).toBe(true);
     expect(ui.alerts()).toHaveLength(0);
+    act(() => ui.container.querySelector<HTMLButtonElement>('.wallet-select')!.click());
     expect(ui.text()).toContain('Backpack');
   });
 
@@ -480,8 +497,8 @@ describe('the payout dropdown', () => {
 
   it('is a label, not a control, for a single payout', () => {
     const ui = mount(offerView(cannedOffer({ payouts: ['solana-mainnet'] })));
-    expect(ui.container.querySelector('.pay-label')?.textContent).toBe('USDC · Solana');
-    expect(ui.has('[aria-haspopup="listbox"]')).toBe(false);
+    expect(ui.container.querySelector('.product-network-pill')?.textContent).toBe('USDC · Solana');
+    expect(ui.has('.product [aria-haspopup="listbox"]')).toBe(false);
   });
 
   it('names the payout chosen and opens with ArrowDown, focus in the list', () => {
@@ -604,7 +621,8 @@ describe('the payout dropdown', () => {
         finish = resolve;
       }),
     );
-    ui.click('Phantom');
+    selectWallet(ui, 'Phantom');
+    ui.click('Pay');
     expect(select(ui).getAttribute('aria-disabled')).toBe('true');
     act(() => select(ui).click());
     expect(list(ui)).toBeNull();
@@ -612,7 +630,7 @@ describe('the payout dropdown', () => {
     expect(select(ui).getAttribute('aria-disabled')).toBe('false');
     // A press that draws nothing: unlocked when it ends.
     ui.hold(Promise.resolve());
-    await act(async () => ui.button('Phantom').click());
+    await act(async () => ui.button('Pay').click());
     expect(select(ui).getAttribute('aria-disabled')).toBe('false');
     finish();
   });
@@ -624,7 +642,8 @@ describe('the payout dropdown', () => {
     expect(list(ui)).not.toBeNull();
     ui.hold(new Promise<void>(() => undefined));
     // A screen reader's click, with no pointerdown before it.
-    ui.click('Phantom');
+    selectWallet(ui, 'Phantom');
+    ui.click('Pay');
     expect(list(ui)).toBeNull();
     ui.draw({ view: offerView(offer, { problem: { reason: 'no_wallet' } }) });
     expect(select(ui).getAttribute('aria-disabled')).toBe('false');
@@ -930,9 +949,13 @@ describe('the email', () => {
 });
 
 describe('the wallets', () => {
-  it('pay with the wallet clicked', () => {
+  it('chooses a wallet without paying, then pays only on the separate action', () => {
     const ui = withWallets(offerView(cannedOffer()));
-    ui.click('Solflare');
+    act(() => ui.container.querySelector<HTMLButtonElement>('.wallet-select')!.click());
+    const option = [...ui.container.querySelectorAll<HTMLElement>('[role="option"]')].find((each) => each.textContent === 'Solflare')!;
+    act(() => option.click());
+    expect(ui.calls.pay).toEqual([]);
+    ui.click('Pay');
     expect(ui.calls.pay).toEqual(['Solflare']);
   });
 
@@ -945,11 +968,12 @@ describe('the wallets', () => {
         ],
       }),
     );
+    act(() => ui.container.querySelector<HTMLButtonElement>('.wallet-select')!.click());
     const images = [...ui.container.querySelectorAll('.wallet-icon')];
     expect(images.map((image) => image.getAttribute('src'))).toEqual([
       'data:image/png;base64,AAAA',
     ]);
-    expect(ui.container.querySelector('.monogram')?.textContent).toBe('R');
+    expect(ui.container.querySelector('.wallet-picker-icon svg')).not.toBeNull();
   });
 
   it('link the Solana wallets to install when none is found', () => {
@@ -960,7 +984,7 @@ describe('the wallets', () => {
       expect(link.getAttribute('rel')).toBe('noopener noreferrer');
       expect(link.getAttribute('target')).toBe('_blank');
     }
-    expect(ui.text()).toContain('Reload this page after installing');
+    expect(ui.text()).not.toContain('Reload this page after installing');
   });
 
   it("name only the order's network while waiting, when a wallet failed again", () => {
@@ -979,9 +1003,7 @@ describe('the wallets', () => {
     const ui = withWallets(
       offerView(offer, { wallets: [{ name: 'Other' }], problem: { reason: 'no_wallet' } }),
     );
-    expect(ui.alerts().join(' ')).toContain(
-      'Connect a Solana wallet, such as Phantom or Solflare.',
-    );
+    expect(ui.alerts().join(' ')).toContain('Connect a Solana wallet');
     expect(ui.text()).not.toMatch(/Tempo|MetaMask/);
   });
 
@@ -995,7 +1017,7 @@ describe('the wallets', () => {
       view: offerView(offer, { wallets: [{ name: 'Other' }], problem: { reason: 'no_wallet' } }),
     });
     expect(ui.alerts().join(' ')).toContain(
-      'Connect a wallet that can pay on Tempo, such as MetaMask.',
+      'Connect a wallet that can pay on Tempo, such as MetaMask',
     );
     // Named once: the hint already names MetaMask.
     expect(ui.alerts().join(' ')).not.toContain('MetaMask is known to work');
@@ -1009,9 +1031,10 @@ describe('the wallets', () => {
     });
     expect(ui.walletsOpen()).toBe(true);
     expect(ui.alerts().join(' ')).toContain(
-      'This wallet cannot pay on Tempo. Choose another wallet.',
+      'Selected wallet is not supported',
     );
-    expect(ui.alerts().join(' ')).toContain('MetaMask is known to work');
+    expect(ui.alerts().join(' ')).toContain('Choose another one.');
+    expect(ui.alerts().join(' ')).not.toContain('MetaMask');
   });
 
   it('send a phone on Tempo to MetaMask’s in-app browser', () => {
@@ -1042,12 +1065,10 @@ describe('the wallets', () => {
 /** The unanswered-wallet hint's lines, and what its live region says. */
 function unanswered(ui: Ui): { lines: string[]; spoken: string | undefined } {
   return {
-    lines: [...ui.container.querySelectorAll('p.hint')].map((line) => line.textContent ?? ''),
+    lines: [...ui.container.querySelectorAll('.wallet-wait-countdown p, p.hint')].map((line) => line.textContent ?? ''),
     spoken: ui.container.querySelector('[data-unanswered-status]')?.textContent ?? undefined,
   };
 }
-
-const REJECT_LINE = 'If you do not want to pay, reject the request in your wallet.';
 
 describe('the wallet has not answered a payment request (D7)', () => {
   afterEach(() => {
@@ -1061,38 +1082,27 @@ describe('the wallet has not answered a payment request (D7)', () => {
     act(() => {
       vi.advanceTimersByTime(9_999);
     });
-    expect(ui.has('.hint')).toBe(false);
+    expect(ui.has('.wallet-wait-countdown')).toBe(false);
     act(() => {
       vi.advanceTimersByTime(1);
     });
-    expect(unanswered(ui).lines).toEqual([
-      'Your wallet has not answered. You can start over once the request expires.',
-      REJECT_LINE,
-    ]);
+    expect(unanswered(ui).lines).toEqual(['You can start over once the request expires.']);
+    expect(ui.container.querySelector('.wallet-wait-subtitle')?.textContent).toContain('To cancel, reject the request in your wallet.');
     // The probe's countdown arrives: a redraw of the same step keeps the hint up.
     const now = Math.floor(Date.now() / 1000);
     ui.draw({
       view: { ...signing, startOverIn: { seconds: 65, at: now }, unsureAt: now + 600 },
     });
-    expect(unanswered(ui).lines).toEqual([
-      'Your wallet has not answered. You can start over in 1:05.',
-      REJECT_LINE,
-    ]);
-    expect(ui.container.querySelector('p.hint .countdown')?.textContent).toBe('1:05');
+    expect(unanswered(ui).lines).toEqual(['You can start over in 1:05.']);
+    expect(ui.container.querySelector('.wallet-wait-countdown .countdown')?.textContent).toBe('1:05');
     act(() => {
       vi.advanceTimersByTime(65_000);
     });
-    expect(unanswered(ui).lines).toEqual([
-      'Checking whether the request has expired…',
-      REJECT_LINE,
-    ]);
+    expect(unanswered(ui).lines).toEqual(['Checking whether the request has expired…']);
     act(() => {
       vi.advanceTimersByTime(600_000);
     });
-    expect(unanswered(ui).lines).toEqual([
-      'This is taking long. If it does not resolve, contact the store.',
-      REJECT_LINE,
-    ]);
+    expect(unanswered(ui).lines).toEqual(['This is taking long. If it does not resolve, contact the store.']);
     expect(ui.buttons().some((each) => each.textContent === 'Cancel')).toBe(false);
     expect(ui.text()).not.toContain('reload the page');
   });
@@ -1119,10 +1129,7 @@ describe('the wallet has not answered a payment request (D7)', () => {
     );
     const later = Math.floor(Date.now() / 1000);
     ui.draw({ view: { ...signing, startOverIn: { seconds: 29 * 60, at: later } } });
-    expect(unanswered(ui).lines).toEqual([
-      'Your wallet has not answered. You can start over in 29:00.',
-      REJECT_LINE,
-    ]);
+    expect(unanswered(ui).lines).toEqual(['You can start over in 29:00.']);
     expect(unanswered(ui).spoken).toBe(
       'Your wallet has not answered. Start over opens when the checkout stops waiting for it.',
     );
@@ -1130,10 +1137,7 @@ describe('the wallet has not answered a payment request (D7)', () => {
       vi.advanceTimersByTime(29 * 60_000);
     });
     // The countdown reached 0: the docs' sequence, countdown -> checking -> taking long.
-    expect(unanswered(ui).lines).toEqual([
-      'Checking whether the request was approved…',
-      REJECT_LINE,
-    ]);
+    expect(unanswered(ui).lines).toEqual(['Checking whether the request was approved…']);
     expect(unanswered(ui).spoken).toBe('Checking whether the request was approved…');
     act(() => {
       vi.advanceTimersByTime(600_000 - 1_000);
@@ -1170,10 +1174,7 @@ describe('the wallet has not answered a payment request (D7)', () => {
     act(() => {
       vi.advanceTimersByTime(10_000);
     });
-    expect(unanswered(ui).lines).toEqual([
-      'Checking whether the request has expired…',
-      REJECT_LINE,
-    ]);
+    expect(unanswered(ui).lines).toEqual(['Checking whether the request has expired…']);
     expect(unanswered(ui).spoken).toBe('Checking whether the request has expired…');
     act(() => {
       vi.advanceTimersByTime(289_000);
@@ -1233,7 +1234,7 @@ describe('the wallet has not answered a payment request (D7)', () => {
       vi.advanceTimersByTime(19_000);
     });
     expect(unanswered(ui).lines[0]).toBe(
-      'Your wallet has not answered. You can start over once the request expires.',
+      'You can start over once the request expires.',
     );
     act(() => {
       vi.advanceTimersByTime(1_000);
@@ -1864,12 +1865,12 @@ describe('the receipt', () => {
     const writeText = vi.fn(async () => undefined);
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
     const ui = mount({ kind: 'delivered', receipt: receipt() });
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     expect(writeText).toHaveBeenCalledWith(receiptText(ui));
     expect(receiptText(ui)).toContain(`Transaction: ${TX}`);
     await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
     expect(
-      ui.container.querySelector('.receipt .visually-hidden[role="status"]')?.textContent,
+      ui.container.querySelector('.receipt .copy > .visually-hidden[role="status"]')?.textContent,
     ).toBe('Receipt copied.');
   });
 
@@ -1886,7 +1887,7 @@ describe('the receipt', () => {
       vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
       const ui = mount({ kind: 'delivered', receipt: receipt() });
       expect(shownText(ui)).not.toContain(TX);
-      await act(async () => ui.button('Copy receipt').click());
+      await act(async () => ui.button('Copy').click());
       const block = ui.container.querySelector('.receipt-text');
       expect(block?.textContent).toBe(receiptText(ui));
       expect(window.getSelection()?.toString()).toBe(receiptText(ui));
@@ -1900,7 +1901,7 @@ describe('the receipt', () => {
     vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
     const ui = mount({ kind: 'delivered', receipt: receipt() });
     const before = shownText(ui);
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     expect(shownText(ui)).toBe(before);
   });
 
@@ -2256,14 +2257,10 @@ describe('the receipt of a transaction this checkout only sent', () => {
 });
 
 describe('copy buttons', () => {
-  it('fit every label in one cell, the inactive ones hidden from view and from the name', () => {
+  it('shows only the current copy label so the button fits its content', () => {
     const ui = mount({ kind: 'delivered', receipt: receipt() });
     const options = [...ui.container.querySelectorAll('.copy-button .label-option')];
-    expect(options.map((option) => option.getAttribute('data-current'))).toEqual([
-      'true',
-      'false',
-      'false',
-    ]);
+    expect(options.map((option) => option.getAttribute('data-current'))).toEqual(['true']);
     expect(ui.container.querySelector('.visually-hidden[role="status"]')?.textContent).toBe('');
   });
 
@@ -2273,12 +2270,14 @@ describe('copy buttons', () => {
       const writeText = vi.fn(async () => undefined);
       vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
       const ui = mount({ kind: 'delivered', receipt: receipt() });
-      await act(async () => ui.button('Copy receipt').click());
-      expect(currentLabel(ui)).toBe('✓ Copied');
+      await act(async () => ui.button('Copy').click());
+      expect(currentLabel(ui)).toBe('Copied');
+      expect(ui.container.querySelector('.copy-button [data-current="true"] .receipt-copy-icon rect')).toBeNull();
+      expect(ui.container.querySelectorAll('.copy-button [data-current="true"] .receipt-copy-icon')).toHaveLength(1);
       await act(async () => {
         vi.advanceTimersByTime(2000);
       });
-      expect(currentLabel(ui)).toBe('Copy receipt');
+      expect(currentLabel(ui)).toBe('Copy');
     } finally {
       vi.useRealTimers();
     }
@@ -2290,12 +2289,12 @@ describe('copy buttons', () => {
       const writeText = vi.fn(async () => undefined);
       vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
       const ui = mount({ kind: 'delivered', receipt: receipt() });
-      const region = ui.container.querySelector('.visually-hidden[role="status"]') as HTMLElement;
+      const region = ui.container.querySelector('.copy > .visually-hidden[role="status"]') as HTMLElement;
       const texts: string[] = [];
       const observer = new MutationObserver(() => texts.push(region.textContent ?? ''));
       observer.observe(region, { childList: true, characterData: true, subtree: true });
       for (let click = 0; click < 2; click += 1) {
-        await act(async () => ui.button('Copy receipt').click());
+        await act(async () => ui.container.querySelector<HTMLButtonElement>('.copy-button')!.click());
         await act(async () => {
           vi.advanceTimersByTime(1);
         });
@@ -2332,12 +2331,12 @@ describe('copy buttons', () => {
         });
         vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as never);
         const ui = mount({ kind: 'delivered', receipt: receipt() });
-        await act(async () => ui.button('Copy receipt').click());
+        await act(async () => ui.button('Copy').click());
         await act(async () => {
           vi.advanceTimersByTime(1);
         });
         expect(currentLabel(ui)).toBe(label);
-        expect(ui.container.querySelector('.visually-hidden[role="status"]')?.textContent).toBe(
+        expect(ui.container.querySelector('.copy > .visually-hidden[role="status"]')?.textContent).toBe(
           announcement,
         );
       } finally {

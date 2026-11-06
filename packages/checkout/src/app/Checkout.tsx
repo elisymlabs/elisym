@@ -409,9 +409,13 @@ export function Checkout({
     if (screen.kind === 'refused' && screen.reason === 'sold_out') {
       body = <SoldOutStep />;
     } else if (screen.kind === 'refused') {
+      const message = screen.message?.trim();
+      const refusalCopy = screen.reason === 'offer_refused'
+        ? message
+        : REFUSALS[screen.reason] + (message && message !== REFUSALS[screen.reason] ? ` ${message}` : '');
       body = (
         <EndedStep glyph={STOP_GLYPH} title={screen.reason === 'offer_refused' ? 'This product cannot be bought here' : 'Not available'} alert>
-          {screen.reason === 'offer_refused' ? (screen.message?.trim() ? <p>{statusSubtitle(screen.message)}</p> : null) : <p>{statusSubtitle(REFUSALS[screen.reason] + (screen.message?.trim() && screen.message.trim() !== REFUSALS[screen.reason] ? ` ${screen.message.trim()}` : ''))}</p>}
+          {refusalCopy ? <p>{statusSubtitle(refusalCopy)}</p> : null}
         </EndedStep>
       );
     } else {
@@ -484,13 +488,15 @@ export function Checkout({
       case 'old_prompt':
         body = (
           <>
-            <ProductBlock product={shown.about.product} />
-            {shown.paying === undefined ? null : (
-              <p class="pay-label">
-                <ChainGlyph chain={shown.paying.chain} />
-                <span>{payoutLabel(shown.paying)}</span>
-              </p>
-            )}
+            <ProductBlock
+              product={shown.about.product}
+              network={shown.paying === undefined ? undefined : (
+                <span class="product-network-pill">
+                  <ChainGlyph chain={shown.paying.chain} />
+                  <span>{payoutLabel(shown.paying)}</span>
+                </span>
+              )}
+            />
             <OldPromptStep
               view={shown}
               onContinue={() => run(() => actions.confirmOldPrompt())}

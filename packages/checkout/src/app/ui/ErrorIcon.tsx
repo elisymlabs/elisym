@@ -1,0 +1,9 @@
+/** Shared error artwork from the designer-supplied Error.svg. */
+interface Props { class?: string; size?: number; }
+export function ErrorIcon({ class: className = 'error-icon', size = 40 }: Props) {
+  return (
+    <svg class={className} width={size} height={size} viewBox="5 5 50 50" fill="none" aria-hidden="true" data-error-icon="">
+      <path d="M30 5C43.807 5 55 16.1929 55 30C55 43.807 43.807 55 30 55C16.1929 55 5 43.807 5 30C5 16.1929 16.1929 5 30 5ZM38.4727 21.5273C37.7697 20.8245 36.6307 20.8245 35.9277 21.5273L30 27.4541L24.0732 21.5273C23.3703 20.8244 22.2303 20.8244 21.5273 21.5273C20.8244 22.2303 20.8244 23.3703 21.5273 24.0732L27.4541 30L21.5273 35.9268C20.8244 36.6297 20.8244 37.7697 21.5273 38.4727C22.2303 39.1756 23.3703 39.1756 24.0732 38.4727L30 32.5459L35.9268 38.4727C36.6297 39.1756 37.7697 39.1756 38.4727 38.4727C39.1756 37.7697 39.1755 36.6307 38.4727 35.9277L32.5459 30L38.4727 24.0732C39.1756 23.3703 39.1756 22.2303 38.4727 21.5273Z" fill="currentColor" />
+    </svg>
+  );
+}

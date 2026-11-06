@@ -6,6 +6,7 @@ interface Props {
    * every stage is done, none current.
    */
   active: number;
+  finalLabel?: string;
 }
 
 type StageState = 'todo' | 'done' | 'active';
@@ -13,10 +14,13 @@ type StageState = 'todo' | 'done' | 'active';
 /** Said after a stage's name: its state is never told by color alone. */
 const STATE_SUFFIXES: Partial<Record<StageState, string>> = { done: ', done', active: ', current' };
 
-export function Stepper({ active }: Props) {
+export function Stepper({ active, finalLabel }: Props) {
+  const stages = STEPPER_STAGES.map((stage, index) =>
+    index === STEPPER_STAGES.length - 1 && finalLabel !== undefined ? finalLabel : stage,
+  );
   return (
     <ol class="stepper" style={{ '--progress': `${Math.min(active, 2) * 50}%` }}>
-      {STEPPER_STAGES.map((stage, index) => {
+      {stages.map((stage, index) => {
         let state: StageState = 'todo';
         if (index < active) {
           state = 'done';

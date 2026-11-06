@@ -64,7 +64,7 @@ export interface Panel {
   dismissed: Problem | undefined;
 }
 
-/** The wallets show at once: a wallet click is the whole payment gesture. */
+/** The wallet selector shows at once; the separate Pay action starts payment. */
 export const INITIAL_PANEL: Panel = {
   walletsOpen: true,
   problem: undefined,

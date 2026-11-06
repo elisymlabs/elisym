@@ -337,4 +337,6 @@ if (root !== null && typeof ResizeObserver !== 'undefined') {
 }
 
 // Local design preview shares a single top toolbar with the modal chrome.
-if (import.meta.env.MODE === 'development') document.documentElement.dataset.preview = 'true';
+if (import.meta.env.MODE === 'development') {
+  document.documentElement.dataset.preview = 'true';
+}

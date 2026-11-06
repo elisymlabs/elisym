@@ -61,7 +61,7 @@ export function ReceiptBlock({ receipt, kind }: Props) {
       <CopyText
         text={text}
         shown={shown}
-        label="Copy receipt"
+        label="Copy"
         copiedText="Receipt copied."
         textClass="receipt-text"
       />

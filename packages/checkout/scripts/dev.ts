@@ -8,7 +8,7 @@
  *
  *   bun scripts/dev.ts fixtures
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { build, createServer } from 'vite';
@@ -26,7 +26,17 @@ if (process.argv[2] === 'fixtures') {
       host: '127.0.0.1',
       port: FIXTURES_PORT,
       strictPort: true,
-      fs: { allow: [fileURLToPath(new URL('..', import.meta.url))] },
+      fs: {
+        allow: [
+          fileURLToPath(new URL('..', import.meta.url)),
+          // Bun hoists the gallery's bundled font outside the checkout package.
+          realpathSync(
+            fileURLToPath(
+              new URL('../node_modules/@fontsource-variable/manrope', import.meta.url),
+            ),
+          ),
+        ],
+      },
     },
   });
   await fixtures.listen();

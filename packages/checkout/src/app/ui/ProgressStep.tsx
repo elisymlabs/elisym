@@ -61,12 +61,14 @@ function waitCountdown(view: ProgressView): Countdown | undefined {
 function heading(view: ProgressView, left: number | undefined): string {
   switch (view.kind) {
     case 'working':
-      return view.step === 'signing'
-        ? 'Confirm in your wallet'
-        : view.step === 'ordering'
-          ? 'Creating your order'
-          : 'Connecting your wallet';
+      if (view.step === 'signing') {
+        return 'Confirm in your wallet';
+      }
+      return view.step === 'ordering' ? 'Creating your order' : 'Connecting your wallet';
     case 'waiting_payment':
+      if (view.unserved) {
+        return 'Payment status unknown';
+      }
       if (view.eip3009?.nonceUsed === true) {
         return 'Waiting for the store';
       }
@@ -110,6 +112,17 @@ export function ProgressStep({
   const countdown = waitCountdown(view);
   const now = useNow(countdown !== undefined);
   const left = countdown === undefined ? undefined : secondsLeft(countdown, now);
+  const stage = activeStage(view);
+  const failed = (view.kind === 'waiting_payment' && view.canRetry) ||
+    (view.kind === 'waiting_store' && view.cancelled);
+  let iconStage: 'error' | 'complete' | 'wallet' | 'order';
+  if (failed) {
+    iconStage = 'error';
+  } else if (complete || stage >= 2) {
+    iconStage = 'complete';
+  } else {
+    iconStage = stage === 1 ? 'wallet' : 'order';
+  }
   return (
     <div
       class="step progress-flow"
@@ -125,7 +138,7 @@ export function ProgressStep({
         }
       >
         <span class="progress-orbit" />
-        <PaymentStageIcon key={activeStage(view)} stage={view.kind === 'waiting_payment' && view.canRetry ? 'error' : complete || activeStage(view) >= 2 ? 'complete' : activeStage(view) === 1 ? 'wallet' : 'order'} />
+        <PaymentStageIcon key={stage} stage={iconStage} />
       </div>
       <StepHeading key={heading(view, left)} level={3} live>
         {heading(view, left)}
@@ -153,7 +166,10 @@ export function ProgressStep({
         {view.kind === 'waiting_store' ? <WaitingStore view={view} /> : null}
       </div>
       {view.kind === 'waiting_payment' && view.canRetry ? null : (
-        <Stepper active={complete ? STEPPER_STAGES.length : activeStage(view)} />
+      <Stepper
+        active={complete ? STEPPER_STAGES.length : activeStage(view)}
+        {...(view.kind === 'waiting_payment' && view.unserved ? { finalLabel: 'Status unknown' } : {})}
+      />
       )}
     </div>
   );

@@ -2,8 +2,8 @@ import type { ComponentChildren } from 'preact';
 import type { Eip3009Wait, Problem, View } from '../session';
 import { useNow } from './clock';
 import { ProblemNote } from './ProblemNote';
-import { EIP3009_WAIT, eip3009SendWords, formatCountdown } from './text';
-import { WalletRow } from './WalletRow';
+import { EIP3009_WAIT, eip3009SendWords, formatCountdown, statusSubtitle } from './text';
+import { WalletPicker } from './WalletPicker';
 
 interface Props {
   view: Extract<View, { kind: 'waiting_payment' }>;
@@ -14,8 +14,7 @@ interface Props {
   onStartOver(): void;
 }
 
-const UNSERVED =
-  'This checkout cannot check this network. If the payment does not arrive, contact the store.';
+const UNSERVED = 'If the payment does not appear, contact the store.';
 
 /**
  * An EIP-3009 payment that may still land (Ethereum, Arbitrum, Base). Not the
@@ -44,11 +43,11 @@ export function Eip3009Waiting({ view, wait, problem, onRetry, onResend, onStart
   if (wait.nonceUsed) {
     return (
       <>
-        <p class="status" role="status">
-          {EIP3009_WAIT.nonceUsed}
-        </p>
-        <p class="note">{EIP3009_WAIT.nonceUsedNote}</p>
-        <ProblemNote problem={problem} asset={view.asset} rail="eip3009" canPress={false} />
+        <div class="payment-wait-note eip3009-wait-note">
+          <p class="status eip3009-note-heading" role="status">{statusSubtitle(EIP3009_WAIT.nonceUsed)}</p>
+          <p class="note">{EIP3009_WAIT.nonceUsedNote}</p>
+          <ProblemNote detailOnly problem={problem} asset={view.asset} rail="eip3009" canPress={false} />
+        </div>
       </>
     );
   }
@@ -82,43 +81,54 @@ export function Eip3009Waiting({ view, wait, problem, onRetry, onResend, onStart
   const walletsShown = (wait.retry || view.canRetry) && view.wallets.length > 0;
   return (
     <>
-      <p class="status" role="status">
-        {status}
-      </p>
-      {switchNote === null ? null : <p class="note">{switchNote}</p>}
-      <ProblemNote
-        problem={problem}
-        asset={view.asset}
-        rail="eip3009"
-        canPress={view.canRetry || wait.retry || wait.resend !== undefined}
-      />
-      {view.explorer === undefined || view.explorer === '' ? null : (
-        <p>
-          <a href={view.explorer} target="_blank" rel="noopener noreferrer">
-            {words.link}
-          </a>
-        </p>
-      )}
-      {unsure ? <p class="note">{EIP3009_WAIT.takingLong}</p> : null}
-      {wait.resend === undefined || view.canRetry || wait.confirming ? null : (
-        <button type="button" class="primary" onClick={onResend}>
-          {wait.resend === 'gas' ? EIP3009_WAIT.sendAnyway : EIP3009_WAIT.sendAgain}
-        </button>
-      )}
-      {walletsShown ? (
-        <>
-          <p class="label">{view.canRetry ? EIP3009_WAIT.switchLabel : EIP3009_WAIT.retryLabel}</p>
-          <div class="wallet-list">
-            {view.wallets.map((wallet) => (
-              <WalletRow key={wallet.name} wallet={wallet} disabled={false} onPick={onRetry} />
-            ))}
+      <div class="eip3009-status-group">
+        {view.unserved ? (
+          <div class="payment-wait-note eip3009-wait-note" data-unserved="true">
+            <p class="status" role="status">{statusSubtitle('This checkout can’t check this network.')}</p>
+            <p class="note">{statusSubtitle(UNSERVED)}</p>
           </div>
-        </>
-      ) : null}
-      {view.canRetry ? (
-        <button type="button" class="secondary" onClick={onStartOver}>
-          Start over
-        </button>
+        ) : (
+          <div class="payment-wait-note eip3009-wait-note">
+            <p class="status" role="status">{statusSubtitle(status)}</p>
+            {switchNote === null ? null : <p class="note">{switchNote}</p>}
+            <ProblemNote
+              detailOnly
+              problem={problem}
+              asset={view.asset}
+              rail="eip3009"
+              canPress={view.canRetry || wait.retry || wait.resend !== undefined}
+            />
+            {unsure ? <p class="note taking-long-note">{EIP3009_WAIT.takingLong}</p> : null}
+            {wait.resend === undefined || view.canRetry || wait.confirming ? null : (
+              <button type="button" class="secondary resend-action" onClick={onResend}>
+                {wait.resend === 'gas' ? EIP3009_WAIT.sendPayment : EIP3009_WAIT.sendAgain}
+              </button>
+            )}
+          </div>
+        )}
+        {view.explorer === undefined || view.explorer === '' ? null : (
+          <a class="secondary transaction-action" href={view.explorer} target="_blank" rel="noopener noreferrer">
+            {words.link} <span aria-hidden="true">↗</span>
+          </a>
+        )}
+        {view.canRetry ? (
+          <button type="button" class="secondary" onClick={onStartOver}>
+            {EIP3009_WAIT.startNewOrder}
+          </button>
+        ) : null}
+      </div>
+      {walletsShown ? (
+        <div class="eip3009-retry-group">
+          <WalletPicker
+            wallets={view.wallets}
+            disabled={false}
+            label={view.canRetry ? EIP3009_WAIT.switchLabel : EIP3009_WAIT.retryLabel}
+            actionLabel={view.canRetry ? EIP3009_WAIT.payAgain : EIP3009_WAIT.signAgain}
+            retryFlow
+            secondaryAction={wait.resend !== undefined && !view.canRetry}
+            onPay={onRetry}
+          />
+        </div>
       ) : null}
     </>
   );

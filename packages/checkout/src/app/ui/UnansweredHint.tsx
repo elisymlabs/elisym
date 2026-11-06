@@ -51,26 +51,26 @@ export function UnansweredHint({ chain, startOverIn, unsureAt, compact = false }
       <p class="note hint">{UNANSWERED.reject}</p>
     </>
   );
+  let compactLine: ComponentChildren;
+  if (unsure) {
+    compactLine = UNANSWERED.takingLong;
+  } else if (left === undefined) {
+    compactLine = UNANSWERED.unknown[chain];
+  } else if (left > 0) {
+    compactLine = <>{UNANSWERED.countingLead[chain]}<span class="countdown">{formatCountdown(left)}</span>.</>;
+  } else {
+    compactLine = UNANSWERED.checking[chain];
+  }
   return (
     <>
       {compact ? (
-        <div class="wallet-help">
-          <p class="wallet-wait-summary">
-            {unsure
-              ? 'Taking longer than expected'
-              : left === 0
-                ? 'Checking the request status…'
-                : 'Your wallet hasn’t responded yet'}
+        <div class="wallet-wait-copy">
+          <p class="wallet-wait-subtitle">
+            The wallet hasn’t responded yet. To cancel, reject the request in your wallet.
           </p>
-          <details class="wallet-wait-options">
-            <summary>Options<svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg></summary>
-            <div class="wallet-options-content">
-              <p class="note hint wallet-options-timing">
-                {unsure ? 'If this does not resolve, contact the store' : left === undefined ? UNANSWERED.unknown[chain] : left > 0 ? <>{UNANSWERED.countingLead[chain]}<span class="countdown">{formatCountdown(left)}</span></> : UNANSWERED.checking[chain]}
-              </p>
-              <p class="note hint">To cancel, reject the request in your wallet</p>
-            </div>
-          </details>
+          <div class="pending-payment-notice wallet-wait-countdown">
+            <p>{compactLine}</p>
+          </div>
         </div>
       ) : (
         options

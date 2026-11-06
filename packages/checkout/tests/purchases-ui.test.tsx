@@ -136,7 +136,20 @@ function mount(
     hold: (promise: Promise<void>) => {
       settle = promise;
     },
-    click: (label: string) => act(() => button(label).click()),
+    click: (label: string) => {
+      if (['Phantom', 'Solflare'].includes(label) && container.querySelector('.wallet-select')) {
+        act(() => container.querySelector<HTMLButtonElement>('.wallet-select')!.click());
+        const option = [...container.querySelectorAll<HTMLElement>('.wallet-option')]
+          .find((each) => each.textContent?.includes(label));
+        if (option === undefined) {
+          throw new Error('Wallet option not found: ' + label);
+        }
+        act(() => option.click());
+        act(() => container.querySelector<HTMLButtonElement>('.wallet-pay')!.click());
+        return;
+      }
+      act(() => button(label).click());
+    },
     /** The button named `label` by its `aria-label`. */
     byLabel: (label: string) => {
       const found = [...container.querySelectorAll('button')].find(
@@ -615,7 +628,7 @@ describe('Copy receipt (N6)', () => {
       const ui = mount(counted([purchase]));
       await ui.open();
       await ui.openRow();
-      await act(async () => ui.button('Copy receipt').click());
+      await act(async () => ui.button('Copy').click());
       const copied = String(writeText.mock.calls.at(-1)?.[0] ?? '');
       expect(copied).toBe(receiptText(purchase.receipt, kindOf(status)));
       expect(copied).toContain(`Store: ${purchase.receipt.store}`);
@@ -638,7 +651,7 @@ describe('Copy receipt (N6)', () => {
     const ui = mount(counted([base], async () => sent));
     await ui.open();
     await ui.openRow();
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     expect(writeText).toHaveBeenCalledWith(receiptText(sent.receipt, 'delivered'));
     expect(String(writeText.mock.calls.at(-1)?.[0])).toContain(
       `Transaction sent: ${'5'.repeat(88)}`,
@@ -655,7 +668,7 @@ describe('Copy receipt (N6)', () => {
     await ui.open();
     await ui.openRow();
     expect(ui.detail()?.querySelector('.purchase-receipt-full')).toBeNull();
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     await flush();
     const full = ui.detail()?.querySelector('.purchase-receipt-full');
     expect(full?.textContent).toBe(receiptText(purchase.receipt, 'refunded'));
@@ -848,7 +861,7 @@ describe('the detail', () => {
     expect(ui.detail()?.querySelector('dl')?.lastElementChild?.textContent).toContain(
       tx.slice(0, 6),
     );
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     const copied = String(writeText.mock.calls.at(-1)?.[0] ?? '');
     expect(copied).not.toContain('Delivery');
     expect(copied).toContain(tx);
@@ -871,7 +884,7 @@ describe('the detail', () => {
       );
       expect(ui.detail()?.textContent).not.toContain('Delivered on');
       expect(ui.detail()?.textContent).not.toContain('Completed on');
-      await act(async () => ui.button('Copy receipt').click());
+      await act(async () => ui.button('Copy').click());
       const copied = String(writeText.mock.calls.at(-1)?.[0] ?? '');
       expect(copied).toContain(`Status: ${OPEN_STATUS_LINES[status]}`);
       expect(copied).not.toContain('Delivered on');
@@ -957,7 +970,7 @@ describe('around the purchase on screen', () => {
     await ui.open();
     await ui.openRow();
     await act(async () => ui.byLabel('Copy order number').click());
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     act(() => ui.byLabel('Back to your purchases').click());
     await act(async () => ui.button('Download CSV').click());
     await flush();

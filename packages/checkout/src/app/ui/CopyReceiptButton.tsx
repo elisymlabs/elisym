@@ -1,4 +1,5 @@
 import { copyLabels, useCopy } from './copy';
+import { CopyIcon } from './CopyIcon';
 import { PURCHASES_TEXT } from './text';
 
 interface Props {
@@ -21,11 +22,14 @@ export function CopyReceiptButton({ text }: Props) {
     <div class="purchase-copy">
       <button type="button" class="text-button" onClick={() => void copy()}>
         <span class="label-stack">
-          {copyLabels(PURCHASES_TEXT.copyReceipt).map((entry) => (
-            <span key={entry.key} class="label-option" data-current={entry.key === current}>
-              {entry.text}
-            </span>
-          ))}
+          {copyLabels(PURCHASES_TEXT.copyReceipt)
+            .filter((entry) => entry.key === current)
+            .map((entry) => (
+              <span key={entry.key} class="label-option" data-current={entry.key === current}>
+                <CopyIcon copied={entry.key === 'copied'} />
+                {entry.text}
+              </span>
+            ))}
         </span>
       </button>
       {revealed ? (

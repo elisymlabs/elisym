@@ -6,7 +6,7 @@ import { PROBLEM_PLACE } from './panel';
 import { PayoutSelect } from './PayoutSelect';
 import { ProblemNote } from './ProblemNote';
 import { ProductBlock } from './ProductBlock';
-import { EIP3009_TWO_PROMPTS, FEE_HIDES_EIP3009, gasLine, payoutLabel } from './text';
+import { EIP3009_TWO_PROMPTS, FEE_HIDES_EIP3009, gasLine, payoutLabel, statusSubtitle } from './text';
 import { WalletSection } from './WalletSection';
 
 interface Props {
@@ -64,35 +64,43 @@ export function OfferPanel({
   const aboveButton = atEmail === undefined && inWallets === undefined ? problem : undefined;
   return (
     <div class="offer-panel">
-      <ProductBlock product={view.offer.offer.product} />
-      {view.payouts.length < 2 ? (
-        <p class="pay-label">
-          <ChainGlyph chain={paying.chain} />
-          <span>{payoutLabel(paying)}</span>
-        </p>
-      ) : (
-        <div class="pay-with">
-          <p class="label" id={labelId}>
-            Pay with
-          </p>
-          <PayoutSelect
-            payouts={view.payouts}
-            selected={view.payoutIndex}
-            disabled={locked}
-            onChoose={onChoosePayout}
-            labelId={labelId}
-            initialOpen={initialListOpen}
-          />
+      <ProductBlock
+        product={view.offer.offer.product}
+        network={
+          view.payouts.length < 2 ? (
+            <span class="product-network-pill">
+              <ChainGlyph chain={paying.chain} />
+              <span>{payoutLabel(paying)}</span>
+            </span>
+          ) : (
+            <div class="product-network-selector">
+              <span class="visually-hidden" id={labelId}>
+                Pay with
+              </span>
+              <PayoutSelect
+                payouts={view.payouts}
+                selected={view.payoutIndex}
+                disabled={locked}
+                onChoose={onChoosePayout}
+                labelId={labelId}
+                initialOpen={initialListOpen}
+              />
+            </div>
+          )
+        }
+      />
+      {view.feeHidden === true || rail === 'eip3009' ? (
+        <div class="payment-wait-note eip3009-guidance">
+          {view.feeHidden === true ? <p class="note">{statusSubtitle(FEE_HIDES_EIP3009)}</p> : null}
+          {rail === 'eip3009' ? (
+            <>
+              <p class="note">{statusSubtitle(EIP3009_TWO_PROMPTS)}</p>
+              <p class="note">
+                {statusSubtitle(gasLine(chain.nativeCurrency?.symbol ?? 'ETH', chain.chainName ?? ''))}
+              </p>
+            </>
+          ) : null}
         </div>
-      )}
-      {view.feeHidden === true ? <p class="note">{FEE_HIDES_EIP3009}</p> : null}
-      {rail === 'eip3009' ? (
-        <>
-          <p class="note">{EIP3009_TWO_PROMPTS}</p>
-          <p class="note">
-            {gasLine(chain.nativeCurrency?.symbol ?? 'ETH', chain.chainName ?? '')}
-          </p>
-        </>
       ) : null}
       {view.askEmail ? <EmailField value={email} onInput={onEmail} /> : null}
       <ProblemNote problem={atEmail} asset={paying.asset} rail={rail} reveal />

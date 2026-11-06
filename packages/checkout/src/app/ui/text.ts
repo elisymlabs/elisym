@@ -137,7 +137,7 @@ export function problemText(problem: Problem, asset: Asset, rail: Rail, canPress
     case 'no_wallet':
       return NO_WALLET_HINTS[rail];
     case 'tempo_unsupported':
-      return 'This wallet cannot pay on Tempo. Choose another wallet.';
+      return 'The previously selected wallet cannot pay on Tempo. Choose another wallet.';
     case 'wallet_busy':
       return 'Your wallet already has a request open. Answer or close it, then choose again.';
     case 'clock_skew':
@@ -211,6 +211,9 @@ export function problemText(problem: Problem, asset: Asset, rail: Rail, canPress
     case 'no_native':
       return `This wallet holds no ${problem.coin} on ${problem.chain} for the network fee. Add a little, then try again.`;
     case 'insufficient_native':
+      if (rail === 'eip3009') {
+        return `Not enough ${problem.native.symbol} on ${problem.chain} for the network fee: about ${formatAssetAmount(problem.native, problem.needed)} needed, ${formatAssetAmount(problem.native, problem.available)} held. Top up your wallet, then send the signed payment.`;
+      }
       return `There may not be enough ${problem.native.symbol} on ${problem.chain} for the network fee: about ${formatAssetAmount(problem.native, problem.needed)} needed, ${formatAssetAmount(problem.native, problem.available)} held. Top up and pay again with the same wallet, or send anyway.`;
     case 'token_blocked':
       return 'The coin’s issuer blocks this payment right now. Nothing was paid; contact the store.';
@@ -221,6 +224,9 @@ export function problemText(problem: Problem, asset: Asset, rail: Rail, canPress
     case 'resign_needed':
       return 'The signature is too close to its deadline to send. Nothing was sent: pay again with the same wallet to sign a new one.';
     case 'send_declined':
+      if (rail === 'eip3009') {
+        return 'You declined the send. The signed payment is still available to send again.';
+      }
       return 'You declined sending. Nothing was sent: send again, or pay again with the same wallet.';
     case 'send_failed':
       return 'The network refused the payment in a test run, so nothing was sent. Pay again with the same wallet.';
@@ -432,9 +438,9 @@ export const EIP3009_WAIT = {
   nonceUsed: 'This order may already be paid; waiting for the store.',
   nonceUsedNote:
     'A payment for it was signed outside this checkout. If the store does not complete it, contact the store.',
-  over: 'The signature expired unused. Nothing was paid. Pay with another wallet, or start over.',
+  over: 'The signature expired unused. Nothing was paid.',
   /** The same, on a page that only follows the order: no wallet is offered. */
-  overFollowOnly: 'The signature expired unused. Nothing was paid. You can start over now.',
+  overFollowOnly: 'The signature expired unused. Nothing was paid.',
   sent: 'Your wallet sent the payment.',
   signed: 'Your wallet signed the payment; it was not sent yet.',
   /** The current attempt signed and not sent, while an earlier attempt's transaction exists. */
@@ -454,17 +460,22 @@ export const EIP3009_WAIT = {
    */
   confirming: (chain: string, creditSecs: number) =>
     `Confirming on ${chain}: a few seconds, up to ${aboutMinutes(creditSecs)}.`,
-  retryLabel: 'Pay again with the same wallet',
-  switchLabel: 'Pay with another wallet',
+  retryLabel: 'Use the same wallet to sign again',
+  switchLabel: 'Choose a wallet for this order',
   /** Around the countdown: "Or pay with another wallet in about m:ss, once this signature expires unused." */
   switchLead: 'Or pay with another wallet in about ',
-  switchTail: ', once this signature expires unused.',
+  switchTail: ', once this signature expires unused',
   /** On a page that only follows the order: "Start over opens in about m:ss." */
-  startOverLead: 'Start over opens in about ',
-  startOverTail: '.',
+  startOverLead: 'You can start a new order in about ',
+  startOverTail: '',
   switchChecking: 'Checking whether the signature expired unused…',
   takingLong: 'This is taking long. If it does not resolve, contact the store.',
-  sendAnyway: 'Send anyway',
+  signAgain: 'Sign again',
+  payAgain: 'Pay for this order',
+  startNewOrder: 'Start a new order',
+  sendPayment: 'Send payment',
+  /** Kept as a source-compatible name for consumers of the prior label. */
+  sendAnyway: 'Send payment',
   sendAgain: 'Send again',
 } as const;
 
@@ -638,9 +649,9 @@ export const PURCHASES_TEXT = {
   orderCopied: 'Order number copied.',
   transaction: 'Transaction',
   transactionSent: 'Transaction sent',
-  copyReceipt: 'Copy receipt',
+  copyReceipt: 'Copy',
   receiptCopied: 'Receipt copied.',
-  otherProduct: "Open this product's checkout to follow it.",
+  otherProduct: "To check this payment, open checkout on the product’s page.",
 } as const;
 
 /** A status badge's color: never the only signal, its text always says it. */

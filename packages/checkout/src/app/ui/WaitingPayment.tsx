@@ -4,7 +4,7 @@ import { secondsLeft, useNow } from './clock';
 import { Eip3009Waiting } from './Eip3009Waiting';
 import { ProblemNote } from './ProblemNote';
 import { AGAIN_DECLINED, formatCountdown } from './text';
-import { WalletRow } from './WalletRow';
+import { WalletPicker } from './WalletPicker';
 
 interface Props {
   view: Extract<View, { kind: 'waiting_payment' }>;
@@ -16,8 +16,7 @@ interface Props {
   onStartOver(): void;
 }
 
-const UNSERVED =
-  'This checkout cannot check this network. If the payment does not arrive, contact the store.';
+const UNSERVED = 'If the payment does not appear, contact the store.';
 const RETRY_LATER =
   'A retry opens about two minutes after the attempt, once the network confirms it expired.';
 const START_OVER_LATER =
@@ -52,7 +51,7 @@ function unsignedStatus(
   }
   if (problem?.reason === 'wallet_failed') {
     return {
-      status: problem.declined === true ? AGAIN_DECLINED : 'The wallet did not answer.',
+      status: problem.declined === true ? AGAIN_DECLINED : 'The wallet did not answer',
       saysProblem: true,
     };
   }
@@ -114,7 +113,7 @@ function CountdownWait({ view, problem, onRetry, onSignAgain, onStartOver }: Pro
       ? 'Nothing was paid. Start over to try again'
       : 'Nothing was paid. Please try again';
   } else if (view.unserved) {
-    status = 'Waiting for the payment to confirm…';
+    status = 'This checkout can’t check this network.';
     note = UNSERVED;
   } else if (view.tempo) {
     if (view.signed) {
@@ -189,13 +188,13 @@ function CountdownWait({ view, problem, onRetry, onSignAgain, onStartOver }: Pro
 
   return (
     <>
-      <div class={view.canRetry ? 'payment-retry-subtitle' : 'payment-wait-note'}>
+      <div class={view.canRetry ? 'payment-retry-subtitle' : 'payment-wait-note'} data-unserved={view.unserved ? 'true' : undefined}>
         <p class="status" role="status">{status}</p>
         {note === null ? null : <p class="note">{note}</p>}
-        {view.canRetry && problemShown?.reason !== 'wallet_failed' ? <ProblemNote problem={problemShown} asset={view.asset} rail={view.tempo ? 'tempo' : 'solana'} canPress /> : null}
+        {view.canRetry && problemShown?.reason !== 'wallet_failed' ? <ProblemNote detailOnly problem={problemShown} asset={view.asset} rail={view.tempo ? 'tempo' : 'solana'} canPress /> : null}
       </div>
       {view.canRetry ? null : (
-        <ProblemNote problem={problemShown} asset={view.asset} rail={view.tempo ? 'tempo' : 'solana'} canPress={view.canRetry} />
+        <ProblemNote detailOnly problem={problemShown} asset={view.asset} rail={view.tempo ? 'tempo' : 'solana'} canPress={view.canRetry} />
       )}
       {view.explorer === undefined ? null : (
         <a class="secondary transaction-action" href={view.explorer} target="_blank" rel="noopener noreferrer">
@@ -210,12 +209,7 @@ function CountdownWait({ view, problem, onRetry, onSignAgain, onStartOver }: Pro
       )}
       {view.canRetry ? (
         <>
-          {view.wallets.length === 0 ? null : <p class="label retry-label">Try again with</p>}
-          <div class="wallet-list">
-            {view.wallets.map((wallet) => (
-              <WalletRow key={wallet.name} wallet={wallet} disabled={false} onPick={onRetry} />
-            ))}
-          </div>
+          {view.wallets.length === 0 ? null : <div class="retry-wallet-picker"><WalletPicker wallets={view.wallets} disabled={false} label="Try again with" actionLabel="Try again" onPay={onRetry} /></div>}
           {view.wallets.length === 0 || view.followOnly ? (
             <button type="button" class="primary retry-start-over" onClick={onStartOver}>
               Start over

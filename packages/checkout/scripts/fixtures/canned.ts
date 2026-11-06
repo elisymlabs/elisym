@@ -627,7 +627,11 @@ export function cannedViews(): CannedView[] {
           product: about.product.title,
           paying: tempoPaying,
           orderId: 'b3a7c2d4-0000-4000-8000-000000000002',
-          paid: { tx: CANNED_HASH, at: now - 300 },
+          paid: {
+            tx: CANNED_HASH,
+            at: now - 300,
+            explorer: `https://explore.testnet.tempo.xyz/tx/${CANNED_HASH}`,
+          },
           answeredAt: now - 200,
         },
       },

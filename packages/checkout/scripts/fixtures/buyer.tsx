@@ -15,7 +15,7 @@ const offer = cannedOffer({
   level: 'C',
 });
 offer.offer.product.price.amount = '0.10';
-for (const payout of offer.payouts) payout.amount = 100000n;
+for (const payout of offer.payouts) {payout.amount = 100000n;}
 const about = aboutOf(offer);
 const paying = payoutPaying(offer.payouts[0]!);
 
@@ -48,13 +48,13 @@ function Buyer() {
       return current === attempt.current;
     };
     setView({ kind: 'working', step: 'checking', paying, about, cancellable: true });
-    if (!(await pause(1000))) return;
+    if (!(await pause(1000))) {return;}
     setView({ kind: 'working', step: 'signing', paying, about });
-    if (!(await pause(1500))) return;
+    if (!(await pause(1500))) {return;}
     setView(waitingView(about, paying));
-    if (!(await pause(1800))) return;
+    if (!(await pause(1800))) {return;}
     setView({ kind: 'waiting_store', paying, about, cancelled: false, noAnswer: false });
-    if (!(await pause(900))) return;
+    if (!(await pause(900))) {return;}
     setView({
       kind: 'delivered',
       store: about.store,
@@ -118,7 +118,7 @@ function Buyer() {
         class="buyer-dialog"
         onCancel={close}
         onClick={(event) => {
-          if (event.target === event.currentTarget) close();
+          if (event.target === event.currentTarget) {close();}
         }}
         aria-label="PayCore checkout"
       >

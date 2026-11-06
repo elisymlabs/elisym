@@ -1,4 +1,5 @@
 import type { Rail } from '../session';
+import { WALLET_BRAND_ICONS } from './wallet-brand-icons';
 
 interface Props {
   chain: Rail;
@@ -21,7 +22,7 @@ const INSTALL: Record<Rail, { name: string; url: string }[]> = {
 export function NoWallet({ chain, phone }: Props) {
   if (phone) {
     return (
-      <div class="empty">
+      <div class="empty no-wallet">
         <p>No wallet found in this browser.</p>
         <p>
           {chain === 'solana'
@@ -32,19 +33,24 @@ export function NoWallet({ chain, phone }: Props) {
     );
   }
   return (
-    <div class="empty">
-      <p>No wallet for this network found in this browser. Install one:</p>
+    <div class="empty no-wallet">
+      <p>
+        No wallet for this network found in this browser
+        <br />
+        Install one to continue
+      </p>
       <ul class="install">
         {INSTALL[chain].map((wallet) => (
           <li key={wallet.name}>
-            <a href={wallet.url} target="_blank" rel="noopener noreferrer">
+            <a class="secondary" href={wallet.url} target="_blank" rel="noopener noreferrer">
+              {WALLET_BRAND_ICONS[wallet.name] ? (
+                <img src={WALLET_BRAND_ICONS[wallet.name]} alt="" width="24" height="24" />
+              ) : null}
               {wallet.name}
             </a>
           </li>
         ))}
       </ul>
-      {chain === 'tempo' ? <p>MetaMask is known to work.</p> : null}
-      <p class="note">Reload this page after installing.</p>
     </div>
   );
 }

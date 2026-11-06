@@ -20,7 +20,7 @@ export function selectedHint(): { label: string; announcement: string } {
 export function copyLabels(label: string): { key: 'idle' | CopyOutcome; text: string }[] {
   return [
     { key: 'idle', text: label },
-    { key: 'copied', text: '✓ Copied' },
+    { key: 'copied', text: 'Copied' },
     { key: 'selected', text: selectedHint().label },
   ];
 }
