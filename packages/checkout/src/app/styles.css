@@ -1905,6 +1905,44 @@ html[data-theme='dark'] .payment-stage-icon { color: #8bcab6; }
 .product::before {
   display: none;
 }
+html[data-theme='dark'] .product {
+  background:
+    radial-gradient(ellipse 105% 130% at 108% -18%, rgb(198 244 50 / .34), transparent 76%),
+    radial-gradient(ellipse 95% 125% at -16% 120%, rgb(70 180 255 / .28), transparent 76%),
+    linear-gradient(125deg, #1b2027, #20242a);
+}
+html[data-theme='dark'] .product-network-pill,
+html[data-theme='dark'] .product-network-selector .select {
+  background: rgb(255 255 255 / .05);
+  border-color: rgb(255 255 255 / .07);
+  color: var(--text);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+html[data-theme='dark'] .product-network-selector .select:hover:not([aria-disabled='true']) {
+  background: rgb(255 255 255 / .08);
+  border-color: rgb(255 255 255 / .10);
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme='light']):not([data-theme='dark']) .product {
+    background:
+      radial-gradient(ellipse 105% 130% at 108% -18%, rgb(198 244 50 / .34), transparent 76%),
+      radial-gradient(ellipse 95% 125% at -16% 120%, rgb(70 180 255 / .28), transparent 76%),
+      linear-gradient(125deg, #1b2027, #20242a);
+  }
+  html:not([data-theme='light']):not([data-theme='dark']) .product-network-pill,
+  html:not([data-theme='light']):not([data-theme='dark']) .product-network-selector .select {
+    background: rgb(255 255 255 / .05);
+    border-color: rgb(255 255 255 / .07);
+    color: var(--text);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+  }
+  html:not([data-theme='light']):not([data-theme='dark']) .product-network-selector .select:hover:not([aria-disabled='true']) {
+    background: rgb(255 255 255 / .08);
+    border-color: rgb(255 255 255 / .10);
+  }
+}
 .product .amount-label { font-size: 11px; font-weight: 500; }
 .product .price { font-size: 46px; font-weight: 500; letter-spacing: -.055em; }
 .product .price-currency { font-size: 17px; font-weight: 450; color: var(--muted); margin-left: 6px; letter-spacing: -.02em; }

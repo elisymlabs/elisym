@@ -399,8 +399,8 @@ export function WalletPicker({
             aria-hidden="true"
           >
             <circle cx="8" cy="8" r="7" fill="currentColor" />
-            <circle cx="8" cy="4.7" r=".85" fill="white" />
-            <path d="M8 7.2V11.5" stroke="white" stroke-width="1.6" stroke-linecap="round" />
+            <circle cx="8" cy="4.7" r=".85" fill="var(--background)" />
+            <path d="M8 7.2V11.5" stroke="var(--background)" stroke-width="1.6" stroke-linecap="round" />
           </svg>
           <p>Selected wallet is not supported. Choose another one.</p>
         </div>
