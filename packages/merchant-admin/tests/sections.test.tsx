@@ -282,4 +282,62 @@ describe('the dashboard sections', () => {
     );
     expect(mounted.container.querySelector('li')?.textContent).toContain('1.5 USD');
   });
+
+  it("shows a listing's picture, without referrer, and the box again when it does not load", async () => {
+    const picture = 'https://shop.example/course.png';
+    mounted = await mount(
+      <ProductsSection
+        products={{
+          lines: [
+            {
+              address: '30402:x:a',
+              d: 'a',
+              title: 'Course',
+              price: '1.5 USD',
+              onSale: true,
+              image: picture,
+            },
+            { address: '30402:x:b', d: 'b', title: 'Plain', price: '1 USD', onSale: true },
+          ],
+          incomplete: false,
+        }}
+      />,
+    );
+    const [withPicture, plain] = [...mounted.container.querySelectorAll('li')];
+    const image = withPicture?.querySelector('img');
+    expect(image?.getAttribute('src')).toBe(picture);
+    expect(image?.getAttribute('alt')).toBe('');
+    expect(image?.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(plain?.querySelector('img')).toBeNull();
+    expect(plain?.querySelector('svg')).not.toBeNull();
+    await act(async () => {
+      image?.dispatchEvent(new Event('error'));
+    });
+    expect(withPicture?.querySelector('img')).toBeNull();
+    expect(withPicture?.querySelector('svg')).not.toBeNull();
+  });
+
+  it('is read-only on a store run by the merchant: edited as files, never added here', async () => {
+    mounted = await mount(
+      <ProductsSection
+        products={{
+          lines: [
+            { address: '30402:x:d', d: 'd', title: 'Course', price: '1.5 USD', onSale: true },
+          ],
+          incomplete: false,
+        }}
+      />,
+    );
+    const link = mounted.container.querySelector<HTMLAnchorElement>('#products-as-files');
+    expect(link?.textContent).toBe('Edit them as files');
+    expect(link?.getAttribute('href')).toBe(
+      'https://docs.elisym.network/commerce/quickstart#1-create-the-store',
+    );
+    expect(link?.rel).toBe('noopener noreferrer');
+    const labels = [...mounted.container.querySelectorAll('button')].map(
+      (each) => each.textContent,
+    );
+    expect(labels).not.toContain('Add product');
+    expect(labels.some((label) => label?.startsWith('Edit'))).toBe(false);
+  });
 });

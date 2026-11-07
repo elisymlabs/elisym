@@ -1,17 +1,20 @@
 import { STATE_DOTS, STATE_FILLS, shareOf } from '../lib/charts';
 import type { OrderState } from '../lib/core';
 import { STATE_SHORT } from '../lib/orders';
+import { CREDITOR, type Source } from '../lib/source';
 import { ChartCard } from './ChartCard';
 import { Icon } from './Icon';
 
 interface Props {
   parts: readonly { state: OrderState; count: number }[];
+  /** Payments reported that no credit confirms (`unconfirmedPayments`): warned about. */
+  unconfirmed: number;
+  source?: Source;
 }
 
 /** Where the loaded orders stand, as one bar split by state. */
-export function StatusStrip({ parts }: Props) {
+export function StatusStrip({ parts, unconfirmed: reported, source = 'self-hosted' }: Props) {
   const total = parts.reduce((sum, part) => sum + part.count, 0);
-  const reported = parts.find((part) => part.state === 'payment_reported')?.count ?? 0;
   let start = 0;
   const segments = parts.map((part) => {
     const width = shareOf(part.count, total) * 100;
@@ -33,7 +36,7 @@ export function StatusStrip({ parts }: Props) {
               className="rounded-10 bg-warn-bg text-warn text-13 flex items-center gap-8 px-12 py-8 font-medium"
             >
               <Icon name="alert" className="size-16 shrink-0" />
-              {`${reported} ${reported === 1 ? 'payment' : 'payments'} reported, not confirmed by your node`}
+              {`${reported} ${reported === 1 ? 'payment' : 'payments'} reported, not confirmed by ${CREDITOR[source]}`}
             </p>
           )}
           <svg

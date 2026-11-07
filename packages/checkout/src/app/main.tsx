@@ -8,6 +8,7 @@ import { finalizeEvent } from 'nostr-tools/pure';
 import { render } from 'preact';
 import { IndexedDbOrderBackend, openOrderDatabase } from '../core/order-store-idb';
 import { decodeCheckoutParams } from '../embed/protocol';
+import { brandForHost, checkoutTitle } from './brand';
 import { type Actions, Checkout } from './Checkout';
 import { type Screen, loadWithPins, startWithHint } from './controller';
 import { eip3009RpcUrls } from './evm-rpc';
@@ -28,6 +29,9 @@ import type { PurchasesSource } from './ui/PurchasesStep';
 import { discoverWallets, payingWallets, solanaChain } from './wallets';
 
 const root = document.getElementById('app');
+/** Picked by the Host the checkout was loaded from: one deployment serves every brand. */
+const brand = brandForHost(location.hostname);
+document.title = checkoutTitle(brand);
 const params = decodeCheckoutParams(location.hash);
 // Declared before discovery: a wallet may announce itself synchronously, inside
 // the discovery call, and its callback reads `session`.
@@ -109,6 +113,7 @@ function draw(): void {
         purchases={purchases}
         resetCount={resetCount}
         reducedMotion={prefersReducedMotion}
+        brand={brand}
         {...(closeModal === undefined ? {} : { onClose: closeModal })}
       />,
       root,

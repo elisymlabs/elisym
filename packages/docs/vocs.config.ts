@@ -138,6 +138,8 @@ export default defineConfig({
         { text: 'Quickstart', link: '/commerce/quickstart' },
         { text: 'The widget', link: '/commerce/widget' },
         { text: 'Credit an account', link: '/commerce/credit-an-account' },
+        { text: 'Cloud store with an AI agent', link: '/commerce/cloud-agents' },
+        { text: 'Change your cloud plan', link: '/commerce/cloud-plans' },
       ],
     },
     {

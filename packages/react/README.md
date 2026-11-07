@@ -42,6 +42,7 @@ rendering writes the element only. Allow `https://pay.elisym.network` in your pa
 | `customerRef`        | `customer-ref`  | Your own id of the account a payment credits (see below).                                |
 | `requireCustomerRef` | `customer-ref`  | With no reference yet, the button shows disabled and nothing is framed until one is set. |
 | `className`          | `class`         | The element's class.                                                                     |
+| `loader`             | -               | `{ src, integrity }` of another checkout's loader (see below). The pinned v3 by default. |
 
 A `false` boolean leaves its attribute out.
 
@@ -60,6 +61,23 @@ Server Component or a `Content-Security-Policy` header, import the plain values 
 import { V3_LOADER_INTEGRITY, V3_LOADER_SRC } from '@elisym/react/constants';
 ```
 
+### Another checkout's loader
+
+A white-label checkout serves its own loader at `https://<its host>/v4/embed.js`, with its own
+SRI hash. Pass both as `loader`, and allow that origin in `script-src` and `frame-src` instead:
+
+```tsx
+<ElisymBuy
+  product="naddr1..."
+  loader={{ src: 'https://pay.example.com/v4/embed.js', integrity: 'sha384-...' }}
+/>
+```
+
+`src` must be `https://<host>/vN/embed.js` and `integrity` a `sha384-...` hash; anything else adds
+no script and logs an error. A loader from that origin already on the page (any version) is used
+as it is. Set `loader` on the first render: the component adds one script per document, so a
+`loader` set or changed later adds nothing.
+
 Tested with React 19; the same test suite passes on React 18.3.
 
 ## Crediting an account
@@ -76,7 +94,8 @@ sends once it has verified the payment on chain. See
   do not change it while the checkout is open.
 
 One loader per page: if another loader defined `<elisym-buy>` first, the component adds no
-script and logs an error when it passes a reference, because an older loader ignores it.
+script and logs an error when it passes a reference, because a loader before v3 ignores it
+(v3 and v4 honour it).
 
 ## License
 

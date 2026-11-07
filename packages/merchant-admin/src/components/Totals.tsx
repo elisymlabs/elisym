@@ -1,15 +1,17 @@
 import type { History } from '../lib/core';
+import { CREDITOR, type Source } from '../lib/source';
 import { Stat } from './Stat';
 
 interface Props {
   history: History;
+  source?: Source;
 }
 
 /**
  * What the node credited, per coin: the history's own totals, no arithmetic here.
  * One to three coins stretch across the row; the order counts are in the charts.
  */
-export function Totals({ history }: Props) {
+export function Totals({ history, source = 'self-hosted' }: Props) {
   const { perAsset, unknownAsset } = history.totals;
   const empty = perAsset.length === 0 && unknownAsset.length === 0;
   return (
@@ -35,7 +37,9 @@ export function Totals({ history }: Props) {
           tone="accent"
         />
       ))}
-      {empty && <Stat label="Credited" value="nothing credited yet" hint="by your node" />}
+      {empty && (
+        <Stat label="Credited" value="nothing credited yet" hint={`by ${CREDITOR[source]}`} />
+      )}
     </div>
   );
 }

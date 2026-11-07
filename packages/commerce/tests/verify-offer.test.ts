@@ -867,6 +867,33 @@ describe('evaluateOffer - payout addresses', () => {
     ).toBe('no_payout_for_accepted_assets');
   });
 
+  it('marks an address its wallet proved as wallet-signed', () => {
+    const world = makeWorld();
+    const offer = expectOffer(evaluate(world));
+    expect(offer.payouts.map((target) => target.walletSigned)).toEqual([true]);
+  });
+
+  it('drops an address whose wallet proof is wrong, refusing when it was the only one', () => {
+    const world = makeWorld();
+    const anotherWalletsProof = solanaWallet().proveFor(world.owner.pubkey, USDC_DEVNET_CAIP19);
+    const wrongProof = sign(
+      {
+        kind: world.payto.kind,
+        created_at: world.payto.created_at,
+        tags: world.payto.tags.map((tag) =>
+          tag[0] === 'accept' ? [...tag.slice(0, 3), anotherWalletsProof] : tag,
+        ),
+        content: world.payto.content,
+      },
+      world.owner,
+    );
+    expect(
+      expectRefusal(
+        evaluate(world, { events: [world.product, world.profile, world.auth, wrongProof] }),
+      ),
+    ).toBe('no_payout_for_accepted_assets');
+  });
+
   it('takes the newest genuine 10133 and ignores a forged newer one', () => {
     const world = makeWorld();
     const next = solanaWallet();
@@ -915,7 +942,7 @@ describe('evaluateOffer - payout addresses', () => {
     expect(offer.payouts.map((target) => target.address)).toEqual([world.wallet.address]);
   });
 
-  it('warns about a payout event younger than the cool-down, and about an unsigned address', () => {
+  it('warns about a payout event younger than the cool-down, and never about an address with no wallet proof', () => {
     const world = makeWorld();
     const fresh = sign(
       buildPaytoEvent({
@@ -927,11 +954,8 @@ describe('evaluateOffer - payout addresses', () => {
     const offer = expectOffer(
       evaluate(world, { events: [world.product, world.profile, world.auth, fresh] }),
     );
-    expect(offer.warnings).toEqual([
-      'owner_unpinned',
-      'payout_recently_changed',
-      'payout_unsigned',
-    ]);
+    expect(offer.payouts.map((target) => target.walletSigned)).toEqual([false]);
+    expect(offer.warnings).toEqual(['owner_unpinned', 'payout_recently_changed']);
   });
 
   it('is not fooled by a back-dated 10133 when the caller knows better', () => {

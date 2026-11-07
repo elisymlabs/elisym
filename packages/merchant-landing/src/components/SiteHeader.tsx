@@ -5,6 +5,8 @@ import { SignInLink } from './SignInLink';
 const NAV = [
   { href: '#demo', label: 'Integration' },
   { href: '#how', label: 'How it works' },
+  { href: '#cloud', label: 'Cloud' },
+  { href: '#pricing', label: 'Pricing' },
   { href: '#faq', label: 'FAQ' },
 ];
 
@@ -18,7 +20,7 @@ export function SiteHeader() {
             <a
               key={item.href}
               href={item.href}
-              className="text-text-2 hover:text-text rounded-8 hidden px-12 py-8 md:inline"
+              className="text-text-2 hover:text-text rounded-8 hidden px-12 py-8 whitespace-nowrap lg:inline"
             >
               {item.label}
             </a>
@@ -29,7 +31,7 @@ export function SiteHeader() {
           >
             Docs
           </a>
-          <SignInLink className="rounded-8 border-line-2 hover:bg-surface-2 ml-8 border px-14 py-8 font-medium" />
+          <SignInLink className="rounded-8 border-line-2 hover:bg-surface-2 ml-8 border px-14 py-8 font-medium whitespace-nowrap" />
         </nav>
       </div>
     </header>

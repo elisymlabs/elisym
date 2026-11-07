@@ -12,6 +12,7 @@ import {
   sumOf,
 } from '../lib/charts';
 import type { OrderRow } from '../lib/core';
+import { CREDITOR, type Source } from '../lib/source';
 import { ChartCard } from './ChartCard';
 import { DayBars } from './DayBars';
 import { Icon } from './Icon';
@@ -20,13 +21,14 @@ interface Props {
   rows: readonly OrderRow[];
   coins: readonly CoinSeries[];
   nowSeconds: number;
+  source?: Source;
 }
 
 /**
  * What the node credited, by the date each order was placed (the order's own date,
  * UTC), one coin at a time: coins are never added together.
  */
-export function CreditedChart({ rows, coins, nowSeconds }: Props) {
+export function CreditedChart({ rows, coins, nowSeconds, source = 'self-hosted' }: Props) {
   const [chosen, setChosen] = useState<string | undefined>(undefined);
   const [active, setActive] = useState<number | undefined>(undefined);
   const series = Math.max(
@@ -43,7 +45,7 @@ export function CreditedChart({ rows, coins, nowSeconds }: Props) {
           </span>
           <p className="text-15 font-medium">Nothing credited yet</p>
           <p className="text-13 text-text-2 max-w-320">
-            Your first paid order shows up here once your node confirms it on chain and you refresh.
+            {`Your first paid order shows up here once ${CREDITOR[source]} confirms ${source === 'cloud' ? 'the payment' : 'it on chain'} and you refresh.`}
           </p>
         </div>
       </ChartCard>

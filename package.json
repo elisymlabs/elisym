@@ -14,7 +14,7 @@
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "spell": "cspell --no-progress \"packages/sdk/src/**\" \"packages/pay-core/src/**\" \"packages/pay-stats/src/**\" \"packages/commerce/src/**\" \"packages/checkout/src/**\" \"packages/merchant-node/src/**\" \"packages/mcp/src/**\" \"packages/cli/src/**\" \"packages/app/app/**\" \"packages/react/src/**\" \"packages/merchant-admin/src/**\" \"packages/merchant-landing/src/**\" \"packages/docs/pages/**\" \"*.md\" \"packages/*/README.md\" \"examples/**\"",
-    "qa": "turbo run build && turbo run test && turbo run typecheck && bun run lint && oxfmt --check . && bun run spell",
+    "qa": "VITE_CLOUD_API_ORIGIN=https://api.cloud.invalid turbo run build && turbo run test && turbo run typecheck && bun run lint && oxfmt --check . && bun run spell",
     "clean": "turbo run clean",
     "program:build": "anchor build",
     "program:test": "cargo test --package elisym-config --test config -- --test-threads=1",

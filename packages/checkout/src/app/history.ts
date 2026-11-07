@@ -197,8 +197,8 @@ export function purchasesCsv(purchases: readonly Purchase[]): string {
   return UTF8_BOM + [CSV_COLUMNS.join(','), ...purchases.map(csvRow)].join('\r\n') + '\r\n';
 }
 
-/** "elisym-purchases-my-shop-2026-10-05.csv". */
-export function csvFileName(storeName: string | undefined, now: Date): string {
+/** "elisym-purchases-my-shop-2026-10-05.csv": `fileSlug` is the brand's. */
+export function csvFileName(fileSlug: string, storeName: string | undefined, now: Date): string {
   const slug = (storeName ?? '')
     .normalize('NFKD')
     .toLowerCase()
@@ -206,5 +206,5 @@ export function csvFileName(storeName: string | undefined, now: Date): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 40);
   const date = now.toISOString().slice(0, 10);
-  return `elisym-purchases-${slug === '' ? 'store' : slug}-${date}.csv`;
+  return `${fileSlug}-purchases-${slug === '' ? 'store' : slug}-${date}.csv`;
 }

@@ -13,7 +13,7 @@ export function StatusLine({ status, busy }: Props) {
     dot = 'bg-error';
   }
   return (
-    <div className="order-last flex w-full min-w-0 items-center gap-8 md:order-none md:w-auto md:max-w-360">
+    <div className="flex min-w-0 items-center gap-8">
       <span aria-hidden="true" className={`size-8 shrink-0 rounded-full ${dot}`} />
       <p
         role="status"

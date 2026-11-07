@@ -33,6 +33,7 @@ export function StoreSection({ store, pubkey }: Props) {
   return (
     <Section
       title="Store"
+      heading="h1"
       description="What your node published for the store. Read-only: change it with your node."
     >
       <dl id="store" className="rounded-16 border-line bg-surface border">

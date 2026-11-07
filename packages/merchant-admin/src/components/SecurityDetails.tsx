@@ -12,8 +12,9 @@ export function SecurityDetails() {
       </summary>
       <ul className="text-13 text-text-2 flex flex-col gap-10 px-16 pb-16 leading-relaxed">
         <li>
-          The key stays in this tab’s memory only: never stored, never sent. It decrypts your orders
-          and signs you in to your relays. Log out or close the tab when you are done.
+          The key stays in this tab’s memory only: never stored, never sent. It decrypts your
+          orders, signs you in to your relays and signs the requests to our cloud, which sees its
+          public key, never the key. Log out or close the tab when you are done.
         </li>
         <li>
           Browser extensions can read what you type into any page. Use a browser profile without

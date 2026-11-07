@@ -25,6 +25,7 @@ import {
   ratioOf,
   spanDays,
   statusParts,
+  unconfirmedPayments,
   sumOf,
   unchartedCredits,
   utcDay,
@@ -396,7 +397,12 @@ describe('the orders ring and the status bar', () => {
   });
 
   it('splits one bar by state with a legend', async () => {
-    mounted = await mount(<StatusStrip parts={statusParts(stateCounts(ROWS))} />);
+    mounted = await mount(
+      <StatusStrip
+        parts={statusParts(stateCounts(ROWS))}
+        unconfirmed={unconfirmedPayments(ROWS)}
+      />,
+    );
     const segments = [...mounted.container.querySelectorAll('.chart-segment')];
     expect(segments.map((segment) => Number(segment.getAttribute('width')).toFixed(2))).toEqual([
       '85.71',
@@ -411,7 +417,7 @@ describe('the orders ring and the status bar', () => {
       'size-8 rounded-full bg-green',
       'size-8 rounded-full bg-chart-idle',
     ]);
-    await mounted.rerender(<StatusStrip parts={[]} />);
+    await mounted.rerender(<StatusStrip parts={[]} unconfirmed={0} />);
     expect(byId(mounted.container, 'status-empty').textContent).toBe('No orders yet.');
   });
 
@@ -422,6 +428,17 @@ describe('the orders ring and the status bar', () => {
     );
     await mounted.rerender(<Charts rows={ROWS.slice(0, 2)} nowSeconds={NOW} />);
     expect(mounted.container.querySelector('#uncharted')).toBeNull();
+  });
+
+  it('warns of a reported payment no credit confirms, and of none a credit does', async () => {
+    const reported = row('r', NOW - 60, [], 'payment_reported');
+    mounted = await mount(<Charts rows={[...ROWS, reported]} nowSeconds={NOW} />);
+    expect(byId(mounted.container, 'status-reported').textContent).toBe(
+      '1 payment reported, not confirmed by your node',
+    );
+    const credited = row('s', NOW - 60, [credit('t9', '1')], 'payment_reported');
+    await mounted.rerender(<Charts rows={[...ROWS, credited]} nowSeconds={NOW} />);
+    expect(mounted.container.querySelector('#status-reported')).toBeNull();
   });
 });
 
@@ -559,7 +576,7 @@ describe('the chart marks take their colors from the maps', () => {
       'refunded',
       'released',
     ]);
-    mounted = await mount(<StatusStrip parts={parts} />);
+    mounted = await mount(<StatusStrip parts={parts} unconfirmed={0} />);
     const segments = [...mounted.container.querySelectorAll('.chart-segment')];
     const dots = [
       ...byId(mounted.container, 'status-legend').querySelectorAll('li > span:first-child'),

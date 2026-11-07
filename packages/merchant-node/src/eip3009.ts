@@ -40,6 +40,7 @@ import {
   EIP3009_FAILURES_BEFORE_WARNING,
   EIP3009_RECENT_WINDOW_BLOCKS,
   EIP3009_START_CHECK_BACKOFF_SECS,
+  EIP3009_STEADY_SWEEP_REQUESTS,
   EIP3009_SWEEP_REQUESTS,
   MAX_RECHECKS_PER_SWEEP,
   ORDER_SCAN_MARGIN_SECS,
@@ -83,6 +84,17 @@ export interface Eip3009ScanMemory {
   /** The payouts the full pass already read in `passChunk`. */
   passDone: Set<string>;
   /**
+   * A read failed, or a sweep skipped its scan, since the current pass started:
+   * reaching the floor then does not make the pass clean. Cleared when a pass
+   * starts at the head.
+   */
+  passDirty: boolean;
+  /**
+   * A pass reached its floor clean and nothing failed since: the pass runs on
+   * `EIP3009_STEADY_SWEEP_REQUESTS`, else on `EIP3009_SWEEP_REQUESTS`.
+   */
+  cleanPass: boolean;
+  /**
    * Sweeps in a row whose read of a chunk or a hit failed, with the lowest
    * block each concerns and the sweep that last counted it.
    */
@@ -121,7 +133,14 @@ export type Eip3009Check =
   | { kind: 'no_leg' };
 
 export function newScanMemory(): Eip3009ScanMemory {
-  return { passDone: new Set(), failures: new Map(), pending: new Map(), sweeps: 0 };
+  return {
+    passDone: new Set(),
+    passDirty: false,
+    cleanPass: false,
+    failures: new Map(),
+    pending: new Map(),
+    sweeps: 0,
+  };
 }
 
 /** The receipt mediums a store takes: Solana's and Tempo's when it has them, then each `eip3009` chain's. */
@@ -443,6 +462,16 @@ function forgetBelow(state: LedgerState, context: Eip3009Context, block: number)
   }
 }
 
+/**
+ * A read failed or a scan was skipped: back to the full budget until a pass
+ * that starts after this reaches its floor clean (a pass already under way may
+ * have crossed the blocks this sweep missed).
+ */
+function markScanIncomplete(scan: Eip3009ScanMemory): void {
+  scan.passDirty = true;
+  scan.cleanPass = false;
+}
+
 interface ScanWindow {
   /** The credit-tag block: nothing above it is scanned. */
   head: { number: number; hash: string };
@@ -454,7 +483,8 @@ interface ScanWindow {
 
 /**
  * Scan the payouts: the recent window every sweep, outside any budget, then
- * the full pass by `EIP3009_SWEEP_REQUESTS`, both newest first, in chunks
+ * the full pass by `EIP3009_SWEEP_REQUESTS` (`EIP3009_STEADY_SWEEP_REQUESTS` once a pass
+ * reached its floor clean, `cleanPass`), both newest first, in chunks
  * aligned to `rangeCap` (so a chunk failing on two passes is the same chunk).
  * Every transfer of at least its payout's threshold that is not bound yet
  * waits for a binding read.
@@ -482,6 +512,8 @@ async function scanPayouts(
     );
     if (walk.complete) {
       found.push(...walk.logs);
+    } else {
+      markScanIncomplete(context.scan);
     }
     return walk.requests;
   };
@@ -500,13 +532,17 @@ async function scanPayouts(
     }
   }
   const { scan } = context;
-  let budget = EIP3009_SWEEP_REQUESTS;
-  scan.passChunk ??= Math.floor(head.number / cap);
+  let budget = scan.cleanPass ? EIP3009_STEADY_SWEEP_REQUESTS : EIP3009_SWEEP_REQUESTS;
+  if (scan.passChunk === undefined) {
+    scan.passChunk = Math.floor(head.number / cap);
+    scan.passDirty = false;
+  }
   // The pass ends in the sweep that reads its last chunk, budget left or not.
   while (scan.passChunk !== undefined) {
     const chunk: number = scan.passChunk;
     if (chunk < Math.floor(floor / cap)) {
       // The pass reached the floor: the next one starts again from the head.
+      scan.cleanPass = !scan.passDirty;
       scan.passChunk = undefined;
       scan.passDone.clear();
       break;
@@ -667,6 +703,7 @@ async function scanAndBind(
   const finalized = await readBlockAtTag(context.client, 'finalized');
   const floor = await blockAtTime(context, oldest - FLOOR_MARGIN_SECS);
   if (head === null || finalized === null || floor === undefined) {
+    markScanIncomplete(context.scan);
     warn(
       result,
       `${name}: the chain's head could not be read; payments there were not scanned this time`,
@@ -730,6 +767,23 @@ export async function catchUpEip3009(
     context.scan.passDone.clear();
     return result;
   }
+  try {
+    return await catchUpOpen(state, context, open, now, result);
+  } catch (error) {
+    // The per-rail catch is the caller's: this sweep's scan did not finish.
+    markScanIncomplete(context.scan);
+    throw error;
+  }
+}
+
+/** `catchUpEip3009` once some order is open: reported hashes, the scan, scan-bound hits. */
+async function catchUpOpen(
+  state: LedgerState,
+  context: Eip3009Context,
+  open: MerchantOrder[],
+  now: number,
+  result: CatchUpResult,
+): Promise<CatchUpResult> {
   const checked = new Set<string>();
   const judge = async (queue: { order: MerchantOrder; hash: string; checkedAt: number }[]) => {
     queue.sort((left, right) => left.checkedAt - right.checkedAt);

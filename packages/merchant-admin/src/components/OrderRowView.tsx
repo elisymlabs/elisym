@@ -1,18 +1,24 @@
-import { useId, useState } from 'react';
-import { CLAIM_LABELS, type OrderRow, amountText, dateText, short } from '../lib/core';
-import { feeText, rowNotes } from '../lib/orders';
+import { type ReactNode, useId, useState } from 'react';
+import { CLAIM_LABELS, amountText, dateText, short } from '../lib/core';
+import { type ShownRow, customerRefOf, emailOf, feeText, rowNotes } from '../lib/orders';
+import type { Source } from '../lib/source';
 import { Icon } from './Icon';
 import { OrderDetails } from './OrderDetails';
 import { StatusPill } from './StatusPill';
 import { TxLink } from './TxLink';
 
 interface Props {
-  row: OrderRow;
+  row: ShownRow;
+  source?: Source;
+  /** The owner's commands on this order, shown in its details. */
+  actions?: ReactNode;
 }
 
 /** One order, and its details on demand. Everything a buyer or a relay wrote is React text, never markup. */
-export function OrderRowView({ row }: Props) {
+export function OrderRowView({ row, source = 'self-hosted', actions }: Props) {
   const [open, setOpen] = useState(false);
+  const email = emailOf(row);
+  const customerRef = customerRefOf(row);
   const settled = [...row.credits, ...row.refunds];
   const detailsId = useId();
   return (
@@ -44,14 +50,14 @@ export function OrderRowView({ row }: Props) {
           )}
         </td>
         <td className="px-16 py-12">
-          {row.order?.email !== undefined && (
-            <div className="max-w-220 truncate" title={row.order.email}>
-              {row.order.email}
+          {email !== undefined && (
+            <div className="max-w-220 truncate" title={email}>
+              {email}
             </div>
           )}
-          {row.order?.customerRef !== undefined && (
-            <div className="text-12 text-text-2 max-w-220 truncate" title={row.order.customerRef}>
-              {`ref ${row.order.customerRef}`}
+          {customerRef !== undefined && (
+            <div className="text-12 text-text-2 max-w-220 truncate" title={customerRef}>
+              {`ref ${customerRef}`}
             </div>
           )}
           <div className="text-12 text-text-3 font-mono" title={row.buyerPubkey}>
@@ -128,7 +134,7 @@ export function OrderRowView({ row }: Props) {
       {open && (
         <tr id={detailsId} className="bg-surface-2/50">
           <td colSpan={7} className="px-16 pb-16">
-            <OrderDetails row={row} />
+            <OrderDetails row={row} source={source} actions={actions} />
           </td>
         </tr>
       )}

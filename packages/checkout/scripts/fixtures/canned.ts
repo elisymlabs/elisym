@@ -88,6 +88,8 @@ export interface CannedOfferOptions {
   name?: string;
   title?: string;
   summary?: string;
+  /** The listing's pictures; none by default. */
+  images?: string[];
   payouts?: readonly CannedPayout[];
   confirm?: OfferWarning[];
   notices?: OfferWarning[];
@@ -120,7 +122,7 @@ export function cannedOffer(options: CannedOfferOptions = {}): ReadyOffer {
           : { summary: options.summary }),
         description: 'Twelve lessons.',
         price: { amount: '49', currency: 'USD' },
-        images: [],
+        images: options.images ?? [],
         topics: [],
         visibility: 'on-sale',
         listedOnElisym: false,
@@ -170,6 +172,7 @@ export function aboutOf(offer: ReadyOffer, email?: string): About {
     product: {
       title: product.title,
       ...(product.summary === undefined ? {} : { summary: product.summary }),
+      ...(product.images[0] === undefined ? {} : { image: product.images[0] }),
       price: product.price,
     },
     ...(email === undefined ? {} : { email }),

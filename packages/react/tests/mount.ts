@@ -49,7 +49,7 @@ export function loaderScripts(): HTMLScriptElement[] {
 }
 
 export const OLDER_LOADER_WARNING =
-  'elisym: customer-ref needs the v3 loader; another loader defined <elisym-buy> first';
+  'elisym: customer-ref needs the v3 or v4 loader; another loader defined <elisym-buy> first';
 
 /** The calls that were the older-loader warning (happy-dom also logs the script it will not load). */
 export function olderLoaderWarnings(calls: unknown[][]): unknown[][] {

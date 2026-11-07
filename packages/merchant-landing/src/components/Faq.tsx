@@ -6,7 +6,7 @@ const QUESTIONS = [
   {
     question: 'Do I need a server?',
     answer:
-      'You run a small node on your laptop, a server or in Docker. It publishes your products, receives orders and confirms payments on chain. Your website itself can stay a static page.',
+      'Not necessarily. Your store is a small node: run it on your laptop, a server or in Docker, or let us host it for a monthly fee (see Run it in our cloud). It publishes your products, receives orders and confirms payments on chain. Your website itself can stay a static page.',
   },
   {
     question: 'Where does the money go?',

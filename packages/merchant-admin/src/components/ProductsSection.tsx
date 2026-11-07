@@ -1,9 +1,11 @@
 import { useState } from 'react';
+import { PRODUCTS_AS_FILES_URL } from '../constants';
 import type { Snapshot } from '../lib/core';
 import { countText } from '../lib/count';
 import { Code } from './Code';
 import { EmptyState } from './EmptyState';
 import { Icon } from './Icon';
+import { ProductPicture } from './ProductPicture';
 import { Section } from './Section';
 
 interface Props {
@@ -17,6 +19,13 @@ const FILTERS: { value: SaleFilter; label: string }[] = [
   { value: 'on', label: 'On sale' },
   { value: 'off', label: 'Sold out' },
 ];
+
+/** A product with no picture, or one that does not load. */
+const BOX_ICON = (
+  <span className="rounded-10 bg-surface-2 text-text-3 grid size-36 shrink-0 place-items-center">
+    <Icon name="box" className="size-18" />
+  </span>
+);
 
 /** Every listing of the store read so far, read-only: the node publishes them. */
 export function ProductsSection({ products }: Props) {
@@ -33,10 +42,19 @@ export function ProductsSection({ products }: Props) {
   return (
     <Section
       title="Products"
+      heading="h1"
       description={
         <>
           {`${countText(lines.length, 'product')}, ${onSale} on sale. Read-only here: your node publishes them with `}
-          <Code>setup</Code>.
+          <Code>setup</Code>.{' '}
+          <a
+            id="products-as-files"
+            href={PRODUCTS_AS_FILES_URL}
+            rel="noopener noreferrer"
+            className="text-text underline underline-offset-2"
+          >
+            Edit them as files
+          </a>
         </>
       }
     >
@@ -90,9 +108,15 @@ export function ProductsSection({ products }: Props) {
             className="rounded-16 border-line bg-surface hover:border-line-2 flex flex-col gap-12 border p-16 transition"
           >
             <div className="flex items-start justify-between gap-12">
-              <span className="rounded-10 bg-surface-2 text-text-3 grid size-36 shrink-0 place-items-center">
-                <Icon name="box" className="size-18" />
-              </span>
+              {product.image === undefined ? (
+                BOX_ICON
+              ) : (
+                <ProductPicture
+                  src={product.image}
+                  className="rounded-10 bg-surface-2 size-36 shrink-0 object-cover"
+                  fallback={BOX_ICON}
+                />
+              )}
               <span
                 className={`text-12 rounded-full px-8 py-2 font-medium ${product.onSale ? 'bg-green-bg text-green' : 'bg-surface-2 text-text-2'}`}
               >

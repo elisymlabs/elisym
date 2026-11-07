@@ -33,6 +33,7 @@
     },
     "@elisym/merchant-admin#build": {
       "dependsOn": ["^build", "generate"],
+      "env": ["VITE_CLOUD_API_ORIGIN", "VITE_BILLING_URL"],
       "outputs": ["dist/**"],
       "inputs": [
         "$TURBO_DEFAULT$",

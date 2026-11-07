@@ -14,7 +14,7 @@
     "lint": "oxlint src/ tests/ scripts/"
   },
   "dependencies": {
-    "@elisym/react": "~0.1.0",
+    "@elisym/react": "~0.2.0",
     "react": "~19.2.0",
     "react-dom": "~19.2.0"
   },
