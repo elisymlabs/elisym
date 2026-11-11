@@ -25,7 +25,7 @@ const SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
 // cspell:disable
 /** Currency words: a stem and its explicit endings only, so "buckles" or "рубашки" are not money. */
 const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
-  [/^(us\s?dollars?|u\.s\.\s?dollars?)$/i, ['USD']],
+  [/^(us[\s-]?dollars?|u\.s\.[\s-]?dollars?)$/i, ['USD']],
   [
     /^(dollars?|bucks?|dólar(es)?|доллар(а|ов|ы|ах|ам|ом|у|ами)?|долар(а|ів|и|ах|ам|ом|у)?|бакс(а|ов|ы|ах|ам)?)$/i,
     ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD'],
@@ -34,7 +34,7 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(quid|фунт(а|ов|ы)?\s+стерлинг(а|ов)?)$/i, ['GBP']],
   [/^(yen|yuan|иен(а|ы)?|юан(ь|я|ей)?|рмб)$/i, ['JPY', 'CNY']],
   [/^(руб(\.|ль|ля|лей|ли|лях|лям|лём|лем|лю|лями)?|р\.?)$/i, ['RUB']],
-  [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|гривень|гривнями|грн\.?)$/i, ['UAH']],
+  [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|гривень|грн\.?)$/i, ['UAH']],
   [/^(real|reais)$/i, ['BRL']],
   [/^(złot(y|e|ych)|zlot(y|e|ych))$/i, ['PLN']],
   [/^(rupees?|рупи(и|й|я)?)$/i, ['INR']],
@@ -43,8 +43,13 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(євро)$/i, ['EUR']],
   [/^(sterlin[ae])$/i, ['GBP']],
   [/^(pesos?)$/i, ['MXN', 'ARS', 'CLP', 'COP', 'UYU', 'PHP']],
-  [/^(franken)$/i, ['CHF']],
-  [/^(francs?)$/i, ['CHF', 'XOF', 'XAF']],
+  [
+    /^(((schweizer|швейцарск\p{L}*|швейцарськ\p{L}*)\s+)?(franken|франк\p{L}*)|franken)$/iu,
+    ['CHF'],
+  ],
+  [/^(francs?|франк(а|ов|и|ів|ах)?)$/i, ['CHF', 'XOF', 'XAF']],
+  [/^(rubel|rublos?|rubli|roebel|рублів)$/i, ['RUB']],
+  [/^(злот(ый|ых|ого|ий|их|ого))$/i, ['PLN']],
   [/^(liras?|lirası)$/i, ['TRY']],
 ];
 // cspell:enable
@@ -54,7 +59,11 @@ const FORINT_RE = /^Ft$/;
 
 /** "Fr." is a weekday abbreviation in German ("Mo.-Fr."): francs only in a CHF store. */
 const FRANC_RE = /^Fr\.?$/;
-const FRANC_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [['Fr.', ['CHF']]];
+const FRANC_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
+  ['Fr.', ['CHF']],
+  ['SFr.', ['CHF']],
+  ['SFr', ['CHF']],
+];
 /** "Mo.-Fr. 9", "Di.–Fr. 10": a weekday range, not francs. */
 const WEEKDAY_BEFORE_RE = /(?:Mo|Di|Mi|Do|Sa|So|Lu|Ma|Me|Je|Ve)\.?\s?[-–]\s?$/;
 /** "Fr. 9-18 Uhr", "Fr. 10 Uhr", "Fr. 9:30": opening hours, not francs. */
@@ -483,7 +492,12 @@ function scaled(values: readonly Decimal[], magnitude: string | undefined): Deci
 
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
-const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}(?:\s+стерлинг\p{L}*)?\.?`;
+/**
+ * A currency word: one word, or one of the fixed two-word names, on one line ("фунтов
+ * стерлингов", "Schweizer Franken", "US-Dollar"). A second word is never taken after any other
+ * word, so "1990 руб стерлинговое серебро" still reads руб.
+ */
+const WORD_PATTERN = String.raw`(?:фунт(?:а|ов|ы)?[ \t]+стерлинг(?:а|ов)?(?![\p{L}])|(?:schweizer|швейцарск\p{L}*|швейцарськ\p{L}*)[ \t]+(?:franken|франк\p{L}*)(?![\p{L}])|(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15})\.?`;
 /** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
 const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
 
@@ -1206,11 +1220,13 @@ function namedProducts(text: string, items: ReadonlyMap<string, CatalogItem>): C
   // A cheap substring test first: the word-boundary regex runs only for candidates.
   const lower = text.toLowerCase();
   const candidate = (name: string) => name.length > 2 && lower.includes(name.toLowerCase());
-  return [...items.values()].filter(
-    (item) =>
-      (candidate(item.title) && mentions(text, item.title)) ||
-      (candidate(item.d) && mentions(text, item.d)),
-  );
+  return [...items.values()].filter((item) => {
+    // The model sees titles sanitized, and its text is sanitized too: compare like with like.
+    const title = stripInvisible(item.title.normalize('NFKC'));
+    return (
+      (candidate(title) && mentions(text, title)) || (candidate(item.d) && mentions(text, item.d))
+    );
+  });
 }
 
 /**

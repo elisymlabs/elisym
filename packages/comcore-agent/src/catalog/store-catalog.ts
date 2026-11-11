@@ -7,6 +7,7 @@ import {
   productPageUrl,
 } from '@elisym/comcore';
 import Decimal from 'decimal.js-light';
+import { stripInvisible } from '../fence';
 
 export const AVAILABILITY = ['in_stock', 'pre_order', 'sold_out'] as const;
 export type Availability = (typeof AVAILABILITY)[number];
@@ -33,7 +34,10 @@ export function topAttrs(item: CatalogItem, limit: number): { name: string; valu
 const TOKEN_RE = /[\p{L}\p{N}]+/gu;
 
 export function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(TOKEN_RE) ?? []).filter((token) => token.length > 1);
+  // Catalog text and queries are normalized alike: an invisible soft hyphen never splits a term.
+  return (stripInvisible(text.normalize('NFKC')).toLowerCase().match(TOKEN_RE) ?? []).filter(
+    (token) => token.length > 1,
+  );
 }
 
 interface IndexedItem {
