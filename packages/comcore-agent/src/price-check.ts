@@ -82,7 +82,7 @@ const FRANC_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['SFr', ['CHF']],
 ];
 /** "Mo.-Fr. 9", "Di.–Fr. 10": a weekday range, not francs. */
-const WEEKDAY_BEFORE_RE = /(?:Mo|Di|Mi|Do|Sa|So|Lu|Ma|Me|Je|Ve)\.?\s?(?:[-–]|bis|à|au)\s?$/;
+const WEEKDAY_BEFORE_RE = /(?:Mo|Di|Mi|Do|Sa|So|Lu|Ma|Me|Je|Ve)\.?\s?(?:[-–]|bis)\s?$/;
 /** "Fr. 9-18 Uhr", "Fr. 10 Uhr", "Fr. 9:30": opening hours, not francs. */
 const HOURS_AFTER_RE = /^(?::\d{2}|\s*(?:[-–]\s*\d{1,2}(?:[.:]\d{2})?\s*)?(?:Uhr|h)\b)/u;
 
@@ -1259,12 +1259,18 @@ function symbolsFor(
   storeCurrency: string | undefined,
   locales: readonly string[],
 ): Array<[string, readonly string[]]> {
-  return [
+  const base: Array<[string, readonly string[]]> = [
     ...SYMBOLS,
     ...EXTRA_SYMBOLS,
     ...(storeCurrency === 'CHF' ? FRANC_SYMBOLS : []),
     ...storeCurrencyForms(storeCurrency, locales),
   ];
+  // "Rp. 15.000", "RM. 15", "S/. 15": a symbol of two or more letters is also written with a dot.
+  const dotted = base
+    .filter(([symbol]) => /^(?:\p{L}{2,}|S\/)$/u.test(symbol))
+    .map(([symbol, currencies]): [string, readonly string[]] => [`${symbol}.`, currencies])
+    .filter(([symbol]) => !base.some(([existing]) => existing === symbol));
+  return [...base, ...dotted];
 }
 
 /** Whether a token alone is a currency ("Rs.", "Fr.", "руб."), for lending it to the next sentence. */
@@ -1372,6 +1378,8 @@ export interface PriceCheckContext {
 export interface PriceViolation {
   where: string;
   text: string;
+  /** The failing amount started in a symbol lent by the previous sentence ("costs Rs." + "1500."). */
+  borrowed?: boolean;
 }
 
 function itemPrices(item: CatalogItem): Allowed[] {
@@ -1571,7 +1579,7 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
         matches(amount, policyAmounts) ||
         (visitorRuleApplies && matches(amount, visitorAmounts));
       if (!ok) {
-        violations.push({ where, text });
+        violations.push(borrows ? { where, text, borrowed: true } : { where, text });
         return;
       }
     }
@@ -1681,14 +1689,6 @@ export function cardsPointer(locale: string): string {
  * section, plan step or comparison row that fails goes entirely. When text was
  * removed, a pointer to the cards is appended.
  */
-/** A dotted token that is a currency symbol on its own ("Rs.", "Fr."): only symbols start a prefix amount. */
-function isLentSymbol(token: string): boolean {
-  const bare = token.replace(/\.$/u, '');
-  return [...SYMBOLS, ...EXTRA_SYMBOLS, ...FRANC_SYMBOLS].some(
-    ([candidate]) => candidate.replace(/\.$/u, '') === bare,
-  );
-}
-
 export function stripViolations(
   answer: Answer,
   violations: readonly PriceViolation[],
@@ -1696,25 +1696,17 @@ export function stripViolations(
 ): Answer {
   const failed = new Set(violations.map((violation) => violation.where));
   const { sentences, separators } = sentencesOf(answer.text);
-  // A removed sentence that borrowed a prefix symbol ("costs Rs." + "1500.") is one sentence
-  // with its lender, so the lender goes too, and so on back. A symbol that closes the previous
-  // sentence's own amount ("1200 Rs.") was never lent and stays.
+  // A failing sentence whose amount borrowed the previous sentence's prefix symbol ("costs Rs."
+  // + "1500.") is one sentence with that lender, so the lender goes too. Other sentences that
+  // merely end in a symbol ("Mo. bis Fr.", "All prices are in Rs.") stay.
   const removed = new Set<number>();
-  sentences.forEach((_sentence, index) => {
-    if (failed.has(`text#${index}`)) {
-      removed.add(index);
-    }
-  });
-  for (let index = sentences.length - 1; index > 0; index -= 1) {
-    const previous = sentences[index - 1];
-    if (!removed.has(index) || previous === undefined) {
-      continue;
-    }
-    const tail = DOTTED_TAIL_RE.exec(previous)?.[1];
-    const closesAmount =
-      tail !== undefined && /\d[\s:-]{0,3}$/.test(previous.slice(0, previous.length - tail.length));
-    if (tail !== undefined && isLentSymbol(tail) && !closesAmount) {
-      removed.add(index - 1);
+  for (const violation of violations) {
+    const index = /^text#(\d+)$/u.exec(violation.where)?.[1];
+    if (index !== undefined) {
+      removed.add(Number(index));
+      if (violation.borrowed) {
+        removed.add(Number(index) - 1);
+      }
     }
   }
   let removedText = false;

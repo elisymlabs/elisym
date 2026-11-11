@@ -227,8 +227,19 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         );
         violations = checkPrices(answer, checkContext());
       }
-      // A guard: should stripping ever leave something the check reads anew, fail closed with
-      // no model text, only the cards pointer.
+      // Stripping can let a kept sentence borrow a symbol it did not before ("1200 Rs." then
+      // "999 people"): strip once more.
+      if (violations.length > 0) {
+        stripped = [...stripped, ...violations];
+        const again = stripViolations(answer, violations, locale);
+        answer = fitAnswer(
+          { ...again, text: again.text.slice(0, LIMITS.ANSWER_TEXT_CHARS) },
+          input.now,
+        );
+        violations = checkPrices(answer, checkContext());
+      }
+      // A guard: should that still leave something the check reads anew, fail closed with no
+      // model text, only the cards pointer.
       if (violations.length > 0) {
         stripped = [...stripped, ...violations];
         const cleaned = stripViolations(answer, violations, locale);
