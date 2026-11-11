@@ -149,4 +149,11 @@ describe('sanitizers', () => {
     );
     expect(text).not.toMatch(/\]\(|<b>|!\[|<https/);
   });
+
+  it('leaves no angle bracket, so nested tags cannot rebuild HTML', () => {
+    const text = sanitizeAnswerText(
+      '<scr<script>ipt>alert(1)</scr</script>ipt> and <img src=x onerror=y>',
+    );
+    expect(text).not.toMatch(/[<>]/);
+  });
 });
