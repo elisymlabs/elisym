@@ -32,7 +32,8 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   ],
   [/^(euros?|евро)$/i, ['EUR']],
   [/^(quid|фунт(а|ов|ы|ів)?\s+стерл[иі]нг(а|ов|ів)?)$/i, ['GBP']],
-  [/^(yen|yuan|иен(а|ы)?|йен(а|ы)?|єн(а|и)?|юан(ь|я|ей)?|рмб)$/i, ['JPY', 'CNY']],
+  [/^(yens?|yenes|ienes|иен(а|ы)?|йен(а|ы)?|єн(а|и)?)$/i, ['JPY']],
+  [/^(yuans?|yuanes|iuanes|юан(ь|я|ей|и|ів)?|рмб)$/i, ['CNY']],
   [/^(руб(\.|ль|ля|лей|ли|лях|лям|лём|лем|лю|лями)?|р\.?)$/i, ['RUB']],
   [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|гривень|грн\.?)$/i, ['UAH']],
   [/^(real|reais)$/i, ['BRL']],
@@ -42,14 +43,17 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(dolar(y|a|ów|ach|ami)?|dollar[oi])$/i, ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD']],
   [/^(євро)$/i, ['EUR']],
   [/^(sterlin[ae])$/i, ['GBP']],
-  [/^(pesos?)$/i, ['MXN', 'ARS', 'CLP', 'COP', 'UYU', 'PHP']],
+  [/^(pesos?|песо)$/i, ['MXN', 'ARS', 'CLP', 'COP', 'UYU', 'PHP']],
   [
     /^((schweizer|swiss|zwitserse|швейцарск\p{L}*|швейцарськ\p{L}*)\s+(franken|francs?|frank|франк\p{L}*)|franken)$/iu,
     ['CHF'],
   ],
   [/^(francs?|francos?|franchi|frank(ów|i)?|франк(а|ов|и|ів|ах|ам)?)$/i, ['CHF', 'XOF', 'XAF']],
   [/^(hrywien|hrywn(a|y|ach)?)$/i, ['UAH']],
-  [/^((pounds?|pfund|livres?|libras?)\s+(sterling|esterlinas?)|britse\s+pond)$/i, ['GBP']],
+  [
+    /^((pounds?|pfund|livres?|libras?|pond)\s+(sterling|esterlinas?)|(british|britische[nr]?|britse|британск\p{L}*|британськ\p{L}*)\s+(pounds?|pfund|pond(en)?|фунт\p{L}*))$/iu,
+    ['GBP'],
+  ],
   [/^((japanese|японск\p{L}*|японськ\p{L}*)\s+(yen|иен\p{L}*|йен\p{L}*|єн\p{L}*))$/iu, ['JPY']],
   [/^((chinese|китайск\p{L}*|китайськ\p{L}*)\s+(yuan|юан\p{L}*))$/iu, ['CNY']],
   [/^(f?cfa)$/i, ['XOF', 'XAF']],
@@ -498,11 +502,12 @@ function scaled(values: readonly Decimal[], magnitude: string | undefined): Deci
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 /**
- * A currency word: one word, or one of the fixed two-word names, on one line ("фунтов
- * стерлингов", "Schweizer Franken", "US-Dollar"). A second word is never taken after any other
- * word, so "1990 руб стерлинговое серебро" still reads руб.
+ * A currency word: up to three words on one line ("Canadian dollars", "Hong Kong dollars",
+ * "фунтов стерлингов", "Schweizer Franken"), read as `currenciesForToken` says ("1990 руб
+ * стерлинговое" still reads руб).
  */
-const WORD_PATTERN = String.raw`(?:фунт(?:а|ов|ы|ів)?[ \t]+стерл[иі]нг(?:а|ов|ів)?(?![\p{L}])|(?:schweizer|swiss|zwitserse|швейцарск\p{L}*|швейцарськ\p{L}*)[ \t]+(?:franken|francs?|frank|франк\p{L}*)(?![\p{L}])|(?:pounds?|pfund|livres?|libras?)[ \t]+(?:sterling|esterlinas?)(?![\p{L}])|britse[ \t]+pond(?![\p{L}])|(?:japanese|chinese|японск\p{L}*|китайск\p{L}*|японськ\p{L}*|китайськ\p{L}*)[ \t]+(?:yen|yuan|иен\p{L}*|йен\p{L}*|єн\p{L}*|юан\p{L}*)(?![\p{L}])|(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15})\.?`;
+const MULTI_WORD_PATTERN = String.raw`[\p{L}]{1,15}(?:[ \t]+[\p{L}]{1,15}){1,2}(?![\p{L}])\.?`;
+const WORD_PATTERN = String.raw`(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15}\.?`;
 /** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
 const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
 
@@ -525,7 +530,7 @@ function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
       'gdiu',
     ),
     postfix: new RegExp(
-      String.raw`(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN})${MAGNITUDE_LINK})?${GAP_PATTERN}(?<token>${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
+      String.raw`(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN})${MAGNITUDE_LINK})?${GAP_PATTERN}(?<token>${MULTI_WORD_PATTERN}|${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
       'gdiu',
     ),
   };
@@ -598,6 +603,37 @@ function parseWith(raw: string, decimal: string): Decimal | undefined {
     return undefined;
   }
   return new Decimal(fraction === undefined ? integerDigits : `${integerDigits}.${fraction}`);
+}
+
+/**
+ * Currencies of a token of up to three words: the whole token ("pounds sterling"), else its last
+ * two words, its last word (the noun in "Canadian dollars", "канадских долларов"), its first two
+ * words ("Schweizer Franken pro Jahr") and its first word ("руб стерлинговое").
+ */
+function currenciesForToken(
+  rawToken: string,
+  number: string,
+  storeCurrency: string | undefined,
+  symbols: ReadonlyArray<[string, readonly string[]]>,
+): readonly string[] | undefined {
+  const whole = currenciesFor(rawToken, number, storeCurrency, symbols);
+  const words = rawToken.split(/[ \t]+/u);
+  if (whole !== undefined || words.length < 2) {
+    return whole;
+  }
+  const candidates = [
+    words.slice(-2).join(' '),
+    words.at(-1) ?? '',
+    words.slice(0, 2).join(' '),
+    words[0] ?? '',
+  ];
+  for (const candidate of new Set(candidates)) {
+    const found = candidate ? currenciesFor(candidate, number, storeCurrency, symbols) : undefined;
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
 }
 
 function currenciesFor(
@@ -715,7 +751,7 @@ function scan(
     const currencies =
       token === undefined || number === undefined
         ? undefined
-        : currenciesFor(token, number, storeCurrency, symbols);
+        : currenciesForToken(token, number, storeCurrency, symbols);
     const numberIndex = numberSpan?.[0] ?? match.index;
     const tokenStart = tokenSpan?.[0] ?? match.index;
     const tokenEnd = tokenSpan?.[1] ?? numberIndex;
@@ -1334,7 +1370,19 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
       tailToken !== undefined && isCurrencyToken(tailToken, context.storeCurrency, context.locales)
         ? tailToken
         : '';
-    checkString(`text#${index}`, sentence, false, lead, lead ? (previous ?? '') : '');
+    // A token that closes the previous sentence's own amount ("... 1200 Rs.") lends its symbol
+    // but not that sentence's product names: it was never a prefix of a number here.
+    const closesAmount =
+      lead !== '' &&
+      previous !== undefined &&
+      /\d[\s:-]{0,3}$/.test(previous.slice(0, previous.length - lead.length));
+    checkString(
+      `text#${index}`,
+      sentence,
+      false,
+      lead,
+      lead && !closesAmount ? (previous ?? '') : '',
+    );
   });
   answer.components.forEach((component, componentIndex) => {
     const prefix = `component#${componentIndex}`;

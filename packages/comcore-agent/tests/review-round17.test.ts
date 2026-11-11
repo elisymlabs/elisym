@@ -67,7 +67,7 @@ describe('A2-A3. every invisible character class is stripped, everywhere in the 
   });
 
   it('several separate invisibles all go', () => {
-    expect(stripInvisible('9­2​00')).toBe('9200');
+    expect(stripInvisible('9\u00ad2\u200b00')).toBe('9200');
   });
 });
 

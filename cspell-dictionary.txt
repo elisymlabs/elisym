@@ -270,3 +270,6 @@ zwitserse
 britse
 esterlinas
 pfund
+долларов
+канадских
+Jahr
