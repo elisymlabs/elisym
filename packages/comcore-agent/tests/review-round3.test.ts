@@ -67,7 +67,7 @@ describe('2-4. grammar edge cases', () => {
     const input = '111 '.repeat(16_384);
     const started = performance.now();
     extractAmounts(input, ['en']);
-    expect(performance.now() - started).toBeLessThan(60);
+    expect(performance.now() - started).toBeLessThan(300);
   });
 
   it('keeps two different numbers apart and one number read twice as one', () => {

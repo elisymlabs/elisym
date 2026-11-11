@@ -44,6 +44,10 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
 /** "Ft" reads as feet as often as forints: money only in a HUF store. */
 const FORINT_RE = /^Ft$/;
 
+/** "Fr." is a weekday abbreviation in German ("Mo.-Fr."): francs only in a CHF store. */
+const FRANC_RE = /^Fr\.?$/;
+const FRANC_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [['Fr.', ['CHF']]];
+
 /** The words for pound are weights as often as money: they count only in a GBP store. */
 // cspell:disable-next-line
 const POUND_RE = /^(pounds?|фунт(а|ов|ы)?)$/i;
@@ -259,7 +263,6 @@ const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['Rs.', ['INR', 'PKR', 'LKR', 'NPR']],
   ['Rs', ['INR', 'PKR', 'LKR', 'NPR']],
   ['원', ['KRW']],
-  ['Fr.', ['CHF']],
   ['ש"ח', ['ILS']],
   ['ש״ח', ['ILS']],
   ['บาท', ['THB']],
@@ -363,7 +366,7 @@ function symbolToPattern(symbol: string): string {
  * groups, so a long grouped run stays linear), then an optional decimal part.
  * It never starts inside another number, and "Under $120, 3 colors" reads 120.
  */
-const NUMBER_PATTERN = String.raw`(?<![\d.,'’])(?:\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
+const NUMBER_PATTERN = String.raw`(?<!\d)(?<!\d[.,'’])(?:\d{1,2}(?:,\d{2}){1,4},\d{3}(?:\.\d+)?|\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(?:[.,][-–])?`;
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}\.?`;
@@ -407,10 +410,11 @@ export interface MoneyAmount {
 
 function decimalSeparatorFor(locale: string): string {
   try {
-    return (
+    const decimal =
       new Intl.NumberFormat(locale).formatToParts(12345.6).find((part) => part.type === 'decimal')
-        ?.value ?? '.'
-    );
+        ?.value ?? '.';
+    // Arabic separators are folded to ASCII before reading (normalizeForCheck).
+    return foldSeparators(decimal);
   } catch {
     return '.';
   }
@@ -425,6 +429,12 @@ const SPACE_GROUP_SEPARATORS = [' ', ' ', ' ', "'", '’'];
  * reads 120 (a dot before two digits is not a group sign).
  */
 function parseWith(raw: string, decimal: string): Decimal | undefined {
+  // "99,-" / "99.–" (German retail): the dash says "no cents".
+  raw = raw.replace(/[.,][-–]$/, '');
+  // Indian grouping (en-IN, hi): 1,23,456 with a decimal point.
+  if (decimal === '.' && /^\d{1,2}(?:,\d{2})+,\d{3}(?:\.\d+)?$/.test(raw)) {
+    return new Decimal(raw.replace(/,/g, ''));
+  }
   const parts = raw.split(decimal);
   if (parts.length > 2) {
     return undefined;
@@ -492,6 +502,9 @@ function currenciesFor(
   if (storeCurrency === 'HUF' && FORINT_RE.test(token)) {
     return ['HUF'];
   }
+  if (storeCurrency === 'CHF' && (FRANC_RE.test(token) || FRANC_RE.test(rawToken))) {
+    return ['CHF'];
+  }
   const upper = token.toUpperCase();
   // The store's own code is always money, listed or not, word-like or not.
   if (storeCurrency !== undefined && upper === storeCurrency.toUpperCase()) {
@@ -508,8 +521,32 @@ function currenciesFor(
 }
 
 /** Normalize a string before reading amounts: NFKC folds fullwidth digits and signs. */
+/** Zero code points of decimal-digit blocks NFKC does not fold (Arabic-Indic, Persian, Indic, Thai...). */
+const DIGIT_ZEROS = [
+  0x0660, 0x06f0, 0x07c0, 0x0966, 0x09e6, 0x0a66, 0x0ae6, 0x0b66, 0x0be6, 0x0c66, 0x0ce6, 0x0d66,
+  0x0de6, 0x0e50, 0x0ed0, 0x0f20, 0x1040, 0x1090, 0x17e0, 0x1810,
+];
+
+function foldDigit(character: string): string {
+  const codePoint = character.codePointAt(0) ?? 0;
+  const zero = DIGIT_ZEROS.find((start) => codePoint >= start && codePoint <= start + 9);
+  return zero === undefined ? character : String(codePoint - zero);
+}
+
+/** The Arabic decimal and thousands signs as ASCII. */
+function foldSeparators(text: string): string {
+  return text.replace(/٫/g, '.').replace(/٬/g, ',');
+}
+
+/**
+ * Normalize a string before reading amounts: NFKC folds fullwidth digits and
+ * signs; native digits and Arabic separators become ASCII; markdown emphasis
+ * ("$**99**") is dropped, since the check text is never rendered.
+ */
 export function normalizeForCheck(text: string): string {
-  return stripInvisible(text.normalize('NFKC'));
+  return foldSeparators(
+    stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit),
+  ).replace(/[*_~`]/g, '');
 }
 
 /**
@@ -566,12 +603,36 @@ export function extractAmounts(
   storeCurrency?: string,
 ): MoneyAmount[] {
   const decimals = [...new Set(locales.map(decimalSeparatorFor))];
-  const symbols = [...SYMBOLS, ...EXTRA_SYMBOLS, ...storeCurrencyForms(storeCurrency, locales)];
+  const symbols = [
+    ...SYMBOLS,
+    ...EXTRA_SYMBOLS,
+    ...(storeCurrency === 'CHF' ? FRANC_SYMBOLS : []),
+    ...storeCurrencyForms(storeCurrency, locales),
+  ];
   const { prefix, postfix } = patternsFor(symbols);
   const normalized = normalizeForCheck(text);
   const found: MoneyAmount[] = [];
   scan(normalized, prefix, 1, 2, decimals, storeCurrency, symbols, found);
   scan(normalized, postfix, 2, 1, decimals, storeCurrency, symbols, found);
+  // A range carries its currency to the upper bound: "$90-150", "from $90 to 150".
+  const rangeTail = new RegExp(String.raw`^\s*(?:[-–]|to|bis|до|a|à)\s*(${NUMBER_PATTERN})`, 'iu');
+  for (const amount of [...found]) {
+    const rest = normalized.slice(amount.index + amount.raw.length);
+    const tail = rangeTail.exec(rest);
+    const upper = tail?.[1];
+    if (tail && upper !== undefined) {
+      const offset = amount.index + amount.raw.length + tail[0].length - upper.length;
+      found.push({
+        values: decimals
+          .map((decimal) => parseWith(upper, decimal))
+          .filter((value): value is Decimal => value !== undefined),
+        currencies: amount.currencies,
+        raw: upper,
+        index: offset,
+        numberIndex: offset,
+      });
+    }
+  }
   // One number read both ways ("$99 USD") is one amount; different numbers stay apart.
   found.sort((left, right) => left.index - right.index);
   const seenNumbers = new Set<number>();
@@ -644,8 +705,11 @@ function componentAddresses(answer: Answer): string[][] {
   });
 }
 
-/** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
-const SENTENCE_SPLIT_RE = /((?<=[.!?])[ \t]+|\n+)/;
+/**
+ * Splits sentences and keeps the separators, so stripping does not collapse
+ * markdown. Not before a digit: "Rs. 999" and "Fr. 99" keep their symbol.
+ */
+const SENTENCE_SPLIT_RE = /((?<=[.!?])[ \t]+(?!\d)|\n+)/;
 
 function sentencesOf(text: string): { sentences: string[]; separators: string[] } {
   const parts = text.split(SENTENCE_SPLIT_RE);
