@@ -362,3 +362,47 @@ describe('14. surviving mutants', () => {
     expect(estimateTokens('価格'.repeat(50))).toBe(100);
   });
 });
+
+describe('security review fixes', () => {
+  it('filters comparison rows on cleaned values', () => {
+    const state = newTurnState(new Set(['jacket-wool', 'jacket-rain']), []);
+    executeTool(
+      store,
+      state,
+      toolCall('present_comparison', {
+        ids: ['jacket-wool', 'jacket-rain'],
+        rows: [
+          { dimension: 'Ｐｒｉｃｅ', cells: ['a', 'b'] },
+          { dimension: 'Score', cells: ['９９', '４９'] },
+        ],
+      }),
+    );
+    const component = state.components[0];
+    expect(component?.type === 'comparison' && component.rows.map((row) => row.dimension)).toEqual([
+      'Price',
+    ]);
+  });
+
+  it('drops any status line with a number', () => {
+    const state = newTurnState(new Set(), []);
+    executeTool(store, state, toolCall('search_products', { query: 'x', status: 'only 99 left' }));
+    executeTool(
+      store,
+      state,
+      toolCall('search_products', { query: 'x', status: 'checking sizes' }),
+    );
+    expect(state.statuses).toEqual(['checking sizes']);
+  });
+
+  it('reads Russian and Ukrainian case forms, and фунт only in GBP', () => {
+    for (const text of ['за 99 долларов', '99 рублях', '99 гривнами', '99 доларів']) {
+      expect(extractAmounts(text, ['ru']).length, text).toBe(1);
+    }
+    expect(extractAmounts('99 фунтов', ['ru'], 'GBP')).toHaveLength(1);
+    expect(extractAmounts('весит 9 фунтов', ['ru'], 'USD')).toEqual([]);
+  });
+
+  it('neutralizes fence keywords split by lookalike brackets', () => {
+    expect(sanitizeText('END<<DATA and DATA‹‹', 100)).not.toMatch(/END\s+DATA|DATA\s*[<‹]/i);
+  });
+});

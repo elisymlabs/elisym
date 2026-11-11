@@ -27,21 +27,22 @@ const SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
 const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(us\s?dollars?|u\.s\.\s?dollars?)$/i, ['USD']],
   [
-    /^(dollars?|bucks?|dólar(es)?|доллар(а|ов|ы)?|бакс(а|ов)?)$/i,
+    /^(dollars?|bucks?|dólar(es)?|доллар(а|ов|ы|ах|ам|ом|у|ами)?|долар(а|ів|и|ах|ам|ом|у)?|бакс(а|ов|ы|ах|ам)?)$/i,
     ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD'],
   ],
   [/^(euros?|евро)$/i, ['EUR']],
-  [/^(quid|фунт(а|ов)?\s?стерлинг(а|ов)?)$/i, ['GBP']],
+  [/^(quid|фунт(а|ов|ы)?\s?стерлинг(а|ов)?)$/i, ['GBP']],
   [/^(yen|yuan|иен(а|ы)?|юан(ь|я|ей)?|рмб)$/i, ['JPY', 'CNY']],
-  [/^(руб(\.|ль|ля|лей|ли)?|р\.?)$/i, ['RUB']],
-  [/^(гривн(а|ы|я)?|гривен|грн\.?)$/i, ['UAH']],
+  [/^(руб(\.|ль|ля|лей|ли|лях|лям|лём|лем|лю|лями)?|р\.?)$/i, ['RUB']],
+  [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|грн\.?)$/i, ['UAH']],
   [/^(real|reais)$/i, ['BRL']],
   [/^(rupees?|рупи(и|й|я)?)$/i, ['INR']],
 ];
 // cspell:enable
 
-/** "pound" is a weight as often as a currency: it is money only in a GBP store. */
-const POUND_RE = /^pounds?$/i;
+/** The words for pound are weights as often as money: they count only in a GBP store. */
+// cspell:disable-next-line
+const POUND_RE = /^(pounds?|фунт(а|ов|ы)?)$/i;
 
 /** ISO codes that are also common uppercase words: read as a code only with a decimal amount. */
 const WORD_LIKE_CODES = new Set([

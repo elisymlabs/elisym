@@ -125,14 +125,14 @@ describe('presentation gates', () => {
   it('caps status lines at two per turn', () => {
     const state = newTurnState(new Set(), []);
     const store = catalog();
-    for (let index = 0; index < 4; index++) {
+    for (const word of ['first', 'second', 'third', 'fourth']) {
       executeTool(
         store,
         state,
-        toolCall('search_products', { query: 'x', status: `step ${index}` }),
+        toolCall('search_products', { query: 'x', status: `step ${word}` }),
       );
     }
-    expect(state.statuses).toEqual(['step 0', 'step 1']);
+    expect(state.statuses).toEqual(['step first', 'step second']);
   });
 });
 

@@ -11,7 +11,6 @@ import {
 } from './catalog/store-catalog';
 import { fence, sanitizeText } from './fence';
 import type { ToolSpec, ToolUseBlock } from './llm/types';
-import { extractAmounts } from './price-check';
 import { SKILL_NAMES, skillText } from './skills';
 import { sanitizeAnswerText } from './text-sanitize';
 
@@ -24,8 +23,6 @@ const MAX_POLICY_RESULTS = 3;
 const MAX_STATUS_LINES_PER_TURN = 2;
 const PRICE_DIMENSION = 'Price';
 const READ_TOOLS: readonly string[] = ['search_products', 'get_product_details', 'search_policies'];
-/** Number grammars a status line is read with: a status is short, so any reading that finds money drops it. */
-const STATUS_LOCALES = ['en', 'de', 'fr', 'ru'] as const;
 const FREQUENCY_FILTERS = ['once', 'hour', 'day', 'week', 'month', 'year'] as const;
 
 const statusProperty = {
@@ -491,7 +488,7 @@ const clean = (text: string, max: number): string => sanitizeAnswerText(text).sl
 const PRICE_DIMENSION_RE =
   /price|cost|preis|prix|precio|preço|prezzo|prijs|cena|cen[ay]|цен|стоим|ціна|вартість|価格|价格|價格|가격|fiyat/i;
 // cspell:enable
-const isBareNumber = (cell: string) => /^[\d\s.,'’]+$/.test(cell.trim());
+const isBareNumber = (cell: string) => /^[\p{Nd}\s.,'’]+$/u.test(cell.trim());
 
 function presentationResult(dropped: string[], accepted: boolean): ToolOutcome {
   if (!accepted) {
@@ -595,8 +592,9 @@ export function executeTool(
     state.statuses.length < MAX_STATUS_LINES_PER_TURN
   ) {
     const line = clean(input.status, LIMITS.STATUS_TEXT_CHARS).trim();
-    // A status goes out before any check runs: one that states an amount is dropped.
-    if (line.length > 0 && extractAmounts(line, [...STATUS_LOCALES]).length === 0) {
+    // A status goes out before any check runs, so it carries no number at all:
+    // whatever a model writes there cannot state a price.
+    if (line.length > 0 && !/\p{N}/u.test(line)) {
       state.statuses.push(line);
     }
   }
@@ -661,19 +659,20 @@ export function executeTool(
       const keptIndexes = kept.map((item) => parsed.data.ids.indexOf(item.d));
       const rows = [
         { dimension: PRICE_DIMENSION, cells: kept.map(priceCell) },
+        // Cleaned first, filtered on what will actually be shown (NFKC folds lookalikes).
         ...parsed.data.rows
-          .filter(
-            (row) =>
-              clean(row.dimension, LIMITS.TITLE_CHARS) &&
-              !PRICE_DIMENSION_RE.test(row.dimension) &&
-              !row.cells.every(isBareNumber),
-          )
           .map((row) => ({
             dimension: clean(row.dimension, LIMITS.TITLE_CHARS),
             cells: keptIndexes.map(
               (index) => clean(row.cells[index] ?? '', LIMITS.REASON_CHARS) || '-',
             ),
-          })),
+          }))
+          .filter(
+            (row) =>
+              row.dimension.length > 0 &&
+              !PRICE_DIMENSION_RE.test(row.dimension) &&
+              !row.cells.every((cell) => cell === '-' || isBareNumber(cell)),
+          ),
       ];
       const recommendedItem =
         parsed.data.recommended !== undefined

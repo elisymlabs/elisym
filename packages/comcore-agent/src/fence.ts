@@ -34,7 +34,7 @@ export function stripInvisible(text: string): string {
 /** Runs of angle brackets or lookalikes that could pose as our fence. */
 const FENCE_LOOKALIKE_RE = /[<‹«＜⟨]{2,}|[>›»＞⟩]{2,}/g;
 /** The fence keywords themselves, in any case. */
-const FENCE_KEYWORD_RE = /\bEND\s+DATA\b|\bDATA\s+source\s*=/gi;
+const FENCE_KEYWORD_RE = /\bEND\s+DATA\b|\bDATA\s+source\s*=|\bDATA(?=\s*[<‹«＜⟨>›»＞⟩])/gi;
 /** A line that poses as a chat turn ("Assistant:", "User:"...); normal prose keeps its colons. */
 const FORGED_TURN_RE = /^(\s*)(human|assistant|system|user)\s*:/gim;
 
@@ -43,6 +43,8 @@ export function sanitizeText(text: string, maxChars: number): string {
   const cleaned = stripInvisible(text.normalize('NFKC'))
     .replace(FENCE_KEYWORD_RE, 'data')
     .replace(FENCE_LOOKALIKE_RE, ' ')
+    // Again after the lookalikes are gone: "END<<DATA" must not become "END DATA".
+    .replace(FENCE_KEYWORD_RE, 'data')
     .replace(FORGED_TURN_RE, '$1$2 -');
   return cleaned.length > maxChars ? `${cleaned.slice(0, Math.max(0, maxChars - 1))}…` : cleaned;
 }
