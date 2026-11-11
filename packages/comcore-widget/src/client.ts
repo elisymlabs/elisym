@@ -123,16 +123,25 @@ function singleTag(event: NostrEvent, name: string): string | undefined {
   return matches.length === 1 ? matches[0]?.[1] : undefined;
 }
 
+/**
+ * The page as origin and path only: the agent matches nothing else, and a
+ * query or fragment can carry tokens, emails or order ids.
+ */
 function validPageUrl(url: string | undefined): string | undefined {
-  if (url === undefined || ENCODER.encode(url).length > LIMITS.PAGE_URL_BYTES) {
+  if (url === undefined) {
     return undefined;
   }
+  let page: string;
   try {
-    const protocol = new URL(url).protocol;
-    return protocol === 'https:' || protocol === 'http:' ? url : undefined;
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return undefined;
+    }
+    page = `${parsed.origin}${parsed.pathname}`;
   } catch {
     return undefined;
   }
+  return ENCODER.encode(page).length > LIMITS.PAGE_URL_BYTES ? undefined : page;
 }
 
 function validLocale(locale: string | undefined): string | undefined {

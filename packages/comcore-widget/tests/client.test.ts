@@ -189,6 +189,18 @@ describe('asking', () => {
     });
   });
 
+  it('sends the page as origin and path only, never its query or fragment', async () => {
+    const setup = await started(
+      harness({
+        pageUrl: () => 'https://shop.example/products/a?token=secret&email=v%40x.example#order-42',
+      }),
+    );
+    setup.client.ask('this one?');
+    await settle();
+    const [ask] = asksTo(setup.relay, setup.store.assistant);
+    expect(ask?.message).toMatchObject({ page: { url: 'https://shop.example/products/a' } });
+  });
+
   it('keeps one ask in flight: a second question is refused until the answer', async () => {
     const setup = await started(harness());
     setup.client.ask('first');
