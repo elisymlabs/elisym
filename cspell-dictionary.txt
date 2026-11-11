@@ -263,3 +263,10 @@ tussen
 швейцарськ
 стерл
 zwitserse
+китайск
+китайськ
+японск
+японськ
+britse
+esterlinas
+pfund

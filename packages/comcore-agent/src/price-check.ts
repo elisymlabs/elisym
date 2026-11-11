@@ -49,6 +49,10 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   ],
   [/^(francs?|francos?|franchi|frank(ów|i)?|франк(а|ов|и|ів|ах|ам)?)$/i, ['CHF', 'XOF', 'XAF']],
   [/^(hrywien|hrywn(a|y|ach)?)$/i, ['UAH']],
+  [/^((pounds?|pfund|livres?|libras?)\s+(sterling|esterlinas?)|britse\s+pond)$/i, ['GBP']],
+  [/^((japanese|японск\p{L}*|японськ\p{L}*)\s+(yen|иен\p{L}*|йен\p{L}*|єн\p{L}*))$/iu, ['JPY']],
+  [/^((chinese|китайск\p{L}*|китайськ\p{L}*)\s+(yuan|юан\p{L}*))$/iu, ['CNY']],
+  [/^(f?cfa)$/i, ['XOF', 'XAF']],
   [/^(rubel|rublos?|rubli|roebel|рублів)$/i, ['RUB']],
   [/^(злот(ый|ых|ого|ий|их|ого))$/i, ['PLN']],
   [/^(liras?|lirası)$/i, ['TRY']],
@@ -498,7 +502,7 @@ const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
  * стерлингов", "Schweizer Franken", "US-Dollar"). A second word is never taken after any other
  * word, so "1990 руб стерлинговое серебро" still reads руб.
  */
-const WORD_PATTERN = String.raw`(?:фунт(?:а|ов|ы|ів)?[ \t]+стерл[иі]нг(?:а|ов|ів)?(?![\p{L}])|(?:schweizer|swiss|zwitserse|швейцарск\p{L}*|швейцарськ\p{L}*)[ \t]+(?:franken|francs?|frank|франк\p{L}*)(?![\p{L}])|(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15})\.?`;
+const WORD_PATTERN = String.raw`(?:фунт(?:а|ов|ы|ів)?[ \t]+стерл[иі]нг(?:а|ов|ів)?(?![\p{L}])|(?:schweizer|swiss|zwitserse|швейцарск\p{L}*|швейцарськ\p{L}*)[ \t]+(?:franken|francs?|frank|франк\p{L}*)(?![\p{L}])|(?:pounds?|pfund|livres?|libras?)[ \t]+(?:sterling|esterlinas?)(?![\p{L}])|britse[ \t]+pond(?![\p{L}])|(?:japanese|chinese|японск\p{L}*|китайск\p{L}*|японськ\p{L}*|китайськ\p{L}*)[ \t]+(?:yen|yuan|иен\p{L}*|йен\p{L}*|єн\p{L}*|юан\p{L}*)(?![\p{L}])|(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15})\.?`;
 /** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
 const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
 
@@ -1299,8 +1303,10 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
       return;
     }
     // A lent symbol joins the sentence it came from ("The Jacket costs Rs." + "1200."): that
-    // sentence's product names count too, since the amount spans both.
-    const named = namedProducts(leadSentence ? `${leadSentence}\n${text}` : text, context.items);
+    // sentence's product names count too, but only when an amount here really starts in the lent
+    // symbol; "Jacket: 1200 Rs. Boots: 1200 Rs." borrows nothing.
+    const borrows = leadSentence !== '' && amounts.some((amount) => amount.index < leadLength);
+    const named = namedProducts(borrows ? `${leadSentence}\n${text}` : text, context.items);
     // A sentence that names a product may state that product's own prices.
     const allowed = [...base, ...named.flatMap(itemPrices)];
     // One figure (or one range) only: a sentence of several is not the visitor's figure repeated.
