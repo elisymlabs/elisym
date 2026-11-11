@@ -494,7 +494,7 @@ const clean = (text: string, max: number): string => sanitizeAnswerText(text).sl
 /** A price row the model wrote under any common name, or one of bare numbers: the server owns prices. */
 // cspell:disable
 const PRICE_DIMENSION_RE =
-  /(?<![\p{L}])(?:price|cost(?!ume)|preis|prix|precio|preço|prezzo|prijs|cena|cen[ay]|цен|стоим|ціна|вартість|価格|价格|價格|가격|fiyat)|価格|价格|價格|가격/iu;
+  /price|preis|prijs|prix|precio|preço|prezzo|(?<![\p{L}])(?:cost(?!ume)|cena|cen[ay]|цен|стоим|ціна|вартість|fiyat)|価格|价格|價格|가격/iu;
 // cspell:enable
 const isBareNumber = (cell: string) => /^[\p{Nd}\s.,'’]+$/u.test(cell.trim());
 

@@ -626,45 +626,91 @@ const RANGE_WORDS = ['to', 'bis', 'до'];
 const ROMANCE_RANGE_WORDS = ['a', 'à'];
 const ROMANCE_LANGUAGES = new Set(['es', 'pt', 'fr', 'it', 'ca']);
 /** Words that open a range before its lower bound whatever the separator. */
-const RANGE_OPENERS = new Set(['from', 'ab', 'от', 'desde', 'entre', 'zwischen', 'between']);
-/** Openers that also mean "of" ("lot de 3", "Set von 2"): a range only before their own closing word. */
+const RANGE_OPENERS = new Set([
+  'from',
+  'ab',
+  'от',
+  'desde',
+  'entre',
+  'zwischen',
+  'between',
+  'между',
+]);
+/**
+ * Openers whose closing word is a range separator only after them: "between
+ * $90 and 150", "de 3 a 45"; "de", "da" and "von" also mean "of" ("lot de 3").
+ */
 const PAIRED_OPENERS = new Map<string, readonly string[]>([
+  ['between', ['and']],
+  ['zwischen', ['und']],
+  ['entre', ['y', 'e', 'et']],
+  ['между', ['и']],
   ['von', ['bis']],
   ['de', ['a', 'à']],
   ['da', ['a']],
   ['du', ['à']],
 ]);
 // cspell:disable
-/** Units, counts, durations and months: a number before one of them is not money. */
-const UNIT_WORDS = [
-  String.raw`Uhr|h|hrs?|hours?|o'clock|ч|час\p{L}*`,
-  String.raw`kg|g|km|m|cm|mm|l|ml|lbs?|oz|mAh|W|kW|GB|TB`,
-  String.raw`pcs|pieces?|items?|units?|unidad\p{L}*|unités?|Stück|шт|people|persons?|personas?|pessoas?|personnes?|Personen|человек|guests?|Gäste?`,
-  String.raw`days?|weeks?|months?|years?|Tage?n?|Wochen?|Monate?n?|Jahre?n?|días?|dias?|jours?|дн\p{L}*|недел\p{L}*|месяц\p{L}*|лет|год\p{L}*|semanas?|meses|mois|semaines?|anos?|años?|ans?`,
-  String.raw`(?:jan|feb|mär|mar|apr|mai|jun|jul|aug|sep|oct|okt|nov|dec|dez|ene|abr|ago|dic|janv|févr|avr|juin|juil|août|déc|янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)\p{L}*`,
+/** Month names and standard abbreviations, exact (a stem would also match "separately" or "market"). */
+const MONTHS = [
+  'january|february|march|april|may|june|july|august|september|october|november|december',
+  'jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec',
+  'januar|februar|märz|juni|juli|oktober|dezember|mär|okt|dez',
+  'enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|ene|abr|ago|dic',
+  'janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|janv|févr|avr|juil|déc',
+  'janeiro|fevereiro|março|maio|junho|julho|setembro|outubro|novembro|dezembro',
+  'января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря|янв|фев|мар|апр|июн|июл|авг|сен|окт|ноя|дек',
 ].join('|');
-/** Before a lower bound: a size, pack or model, not money ("lot de 3 - 45 €"). */
+/** Units, counts and durations, exact. One-letter units count only glued ("150m"), never spaced. */
+const UNIT_WORDS = [
+  "Uhr|o'clock|hours?|hrs?|часов|часа|час",
+  'kg|km|cm|mm|ml|lbs?|oz|mAh|kW|GB|TB',
+  'pcs|pieces?|items?|units?|unidades?|unités?|Stück|шт|people|persons?|personas?|pessoas?|personnes?|Personen|человек|guests?|Gäste',
+  'days?|weeks?|months?|years?|Tagen?|Tage|Wochen?|Monaten?|Monate|Jahren?|Jahre|días?|dias?|jours?|дней|дня|день|недели|неделя|недель|месяцев|месяца|месяц|лет|года|год|semanas?|meses|mois|semaines?|años?|anos?',
+].join('|');
+/** Before a lower bound: a size, pack, model or article number, not money ("lot de 3 - 45 €", "Art. 900 - 1200 €"). */
 const QUANTITY_BEFORE_RE =
-  /(?:^|[^\p{L}])(?:size|größe|grösse|taille|talla|tamanho|taglia|размер|pack|lot|set|kit|paquete|confezione|model|modell|modelo|modèle|version|option|day|tag|día|dia|jour)(?:\s+(?:de|da|von|of))?\s*$/iu;
+  /(?:^|[^\p{L}])(?:size|größe|grösse|taille|talla|tamanho|taglia|размер|pack|lot|set|kit|paquete|confezione|model|modell|modelo|modèle|version|option|art|nr|no|sku|item|ref|room|day|tag|día|dia|jour)\.?(?:\s+(?:de|da|von|of))?\s*$|[#№]\s*$/iu;
+/** A year upper bound before one of these is an edition, not a price ("$1200 - 2026 edition"). */
+const EDITION_WORDS =
+  'edition|model|collection|season|Edition|Kollektion|Modell|Saison|edición|colección|temporada|édition|modèle|коллекция|модель|сезон';
 // cspell:enable
-/** After an upper bound: a percent, a glued word, a time, a date or a unit means it is not money. */
+/** After an upper bound: a glued word or sign, a time, a unit or a day-month date means it is not money. */
 const NOT_MONEY_AFTER_RE = new RegExp(
-  String.raw`^(?:\s?[%‰°]|[\p{L}\d]|:\d|\.\s*\p{L}|\s*(?:${UNIT_WORDS})(?![\p{L}]))`,
+  String.raw`^(?:\s?[%‰°]|[\p{L}\d]|:\d|\.?\s*(?:${MONTHS})\.?(?![\p{L}])|\s*(?:${UNIT_WORDS})(?![\p{L}]))`,
   'iu',
 );
-/** A year before a word ("$1200 - 2026 edition") is not an upper bound. */
 const YEAR_RE = /^(?:19|20)\d{2}$/;
-/** A lower bound this many times below the upper one, with no opener, is a model or count ("iPhone 15 - 1200 €"). */
-const HEAD_MAX_RATIO = 20;
+const EDITION_AFTER_RE = new RegExp(String.raw`^\s+(?:${EDITION_WORDS})(?![\p{L}])`, 'iu');
 /** How far before an amount a lower bound is looked for. */
 const RANGE_HEAD_CHARS = 64;
 
-function rangeSeparator(locales: readonly string[]): string {
-  const romance = locales.some((locale) =>
-    ROMANCE_LANGUAGES.has(locale.split('-')[0]?.toLowerCase() ?? ''),
-  );
-  const words = romance ? [...RANGE_WORDS, ...ROMANCE_RANGE_WORDS] : RANGE_WORDS;
-  return `([-–~〜]|${words.join('|')})`;
+function isRomance(locales: readonly string[]): boolean {
+  return locales.some((locale) => ROMANCE_LANGUAGES.has(locale.split('-')[0]?.toLowerCase() ?? ''));
+}
+
+function rangeSeparator(): string {
+  const closers = [...PAIRED_OPENERS.values()].flat();
+  const words = [...RANGE_WORDS, ...ROMANCE_RANGE_WORDS, ...closers];
+  return `([-–~〜]|${[...new Set(words)].join('|')})(?![\\p{L}])`;
+}
+
+/** The word right before a position, lowercased. */
+function wordBefore(text: string, position: number): string | undefined {
+  return /(\p{L}+)\s*$/u.exec(text.slice(Math.max(0, position - 32), position))?.[1]?.toLowerCase();
+}
+
+/** A dash, tilde or range word is a separator on its own; a paired closer ("and") only after its opener. */
+function separatorOpens(separator: string, opener: string | undefined, romance: boolean): boolean {
+  const word = separator.toLowerCase();
+  if (
+    /^[-–~〜]$/.test(word) ||
+    RANGE_WORDS.includes(word) ||
+    (romance && ROMANCE_RANGE_WORDS.includes(word))
+  ) {
+    return true;
+  }
+  return opener !== undefined && (PAIRED_OPENERS.get(opener)?.includes(word) ?? false);
 }
 
 function readValues(raw: string, decimals: readonly string[]): Decimal[] {
@@ -677,20 +723,16 @@ function isBelow(lower: readonly Decimal[], upper: readonly Decimal[]): boolean 
   return lower.some((low) => upper.some((high) => low.lessThan(high)));
 }
 
-function isNear(lower: readonly Decimal[], upper: readonly Decimal[]): boolean {
-  return lower.some((low) =>
-    upper.some((high) => low.times(HEAD_MAX_RATIO).greaterThanOrEqualTo(high)),
-  );
-}
-
 /**
  * A range shares its currency with the bound that has none: "$90-150" and
  * "from $90 to 150" carry it forward, "999-1200 USD" and "от 999 до 1200 ₽"
  * back. A false negative lets an invented price through, so a range is
- * assumed unless the shape says otherwise: the lower bound is not below the
- * upper, a unit, percent, time or date follows the upper bound, the upper
- * bound is a year before a word, or the lower bound is a size, pack or model
- * (a quantity word before it, or far below the upper with no range opener).
+ * assumed unless there is exact evidence otherwise: the lower bound is not
+ * below the upper; a glued word, sign, time, unit, count or day-month date
+ * follows the upper bound; a year upper bound comes before an edition word;
+ * the lower bound is glued to a model ("X900") or follows a size, pack,
+ * model or article word ("lot de 3", "Art. 900"), or is a year before a
+ * spaced dash ("Ski Jacket 2025 - $2400").
  */
 function addRangeBounds(
   text: string,
@@ -698,10 +740,11 @@ function addRangeBounds(
   decimals: readonly string[],
   locales: readonly string[],
 ): void {
-  const separator = rangeSeparator(locales);
+  const separator = rangeSeparator();
+  const romance = isRomance(locales);
   const tailRe = new RegExp(String.raw`(\s*${separator}\s*)(${NUMBER_PATTERN})`, 'uy');
   const headRe = new RegExp(
-    String.raw`(?<![\p{L}\d.,'’])(${NUMBER_PATTERN})\s*${separator}\s*$`,
+    String.raw`(?<![\p{L}\d.,'’])(${NUMBER_PATTERN})(\s*${separator}\s*)$`,
     'u',
   );
   const taken = new Set(found.map((amount) => amount.numberIndex));
@@ -710,17 +753,19 @@ function addRangeBounds(
     tailRe.lastIndex = end;
     const tail = tailRe.exec(text);
     const gap = tail?.[1];
+    const tailWord = tail?.[2];
     const upper = tail?.[3];
-    if (tail && gap !== undefined && upper !== undefined) {
+    if (tail && gap !== undefined && tailWord !== undefined && upper !== undefined) {
       const offset = end + gap.length;
-      const after = text.slice(offset + upper.length, offset + upper.length + 24);
+      const after = text.slice(offset + upper.length, offset + upper.length + 32);
       const values = readValues(upper, decimals);
-      const yearBeforeWord = YEAR_RE.test(upper) && /^\s+\p{L}/u.test(after);
+      const edition = YEAR_RE.test(upper) && EDITION_AFTER_RE.test(after);
       if (
         !taken.has(offset) &&
+        separatorOpens(tailWord, wordBefore(text, amount.index), romance) &&
         isBelow(amount.values, values) &&
         !NOT_MONEY_AFTER_RE.test(after) &&
-        !yearBeforeWord
+        !edition
       ) {
         taken.add(offset);
         found.push({
@@ -736,19 +781,20 @@ function addRangeBounds(
     const before = text.slice(Math.max(0, amount.index - RANGE_HEAD_CHARS), amount.index);
     const head = headRe.exec(before);
     const lower = head?.[1];
-    const word = head?.[2]?.toLowerCase();
-    if (head && lower !== undefined && word !== undefined) {
+    const headGap = head?.[2];
+    const headWord = head?.[3];
+    if (head && lower !== undefined && headGap !== undefined && headWord !== undefined) {
       const offset = amount.index - before.length + head.index;
       const preceding = text.slice(Math.max(0, offset - 32), offset);
-      const opener = /(\p{L}+)\s*$/u.exec(preceding)?.[1]?.toLowerCase();
-      const opened =
-        opener !== undefined &&
-        (RANGE_OPENERS.has(opener) || (PAIRED_OPENERS.get(opener)?.includes(word) ?? false));
+      const opener = wordBefore(text, offset);
       const values = readValues(lower, decimals);
+      const opened = opener !== undefined && RANGE_OPENERS.has(opener);
+      const yearBeforeSpacedDash = YEAR_RE.test(lower) && /\s[-–]\s/.test(headGap);
       if (
         !taken.has(offset) &&
+        separatorOpens(headWord, opener, romance) &&
         isBelow(values, amount.values) &&
-        (opened || (!QUANTITY_BEFORE_RE.test(preceding) && isNear(values, amount.values)))
+        (opened || (!QUANTITY_BEFORE_RE.test(preceding) && !yearBeforeSpacedDash))
       ) {
         taken.add(offset);
         found.push({
@@ -860,8 +906,16 @@ function componentAddresses(answer: Answer): string[][] {
   });
 }
 
+// cspell:disable
+/** Abbreviations whose dot does not end a sentence ("ca. 1200 €", "Art. 900"). */
+const ABBREVIATIONS =
+  'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|bzw|ggf|vs|stk|ref|env|aprox|прибл|ок|арт';
+// cspell:enable
 /** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
-const SENTENCE_SPLIT_RE = /((?<=[.!?])[ \t]+|\n+)/;
+const SENTENCE_SPLIT_RE = new RegExp(
+  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)[ \t]+|\n+)`,
+  'iu',
+);
 /** The last dotted token of a sentence: it may be the symbol of the next sentence's number ("Rs. 999"). */
 const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
@@ -893,7 +947,14 @@ function mentions(text: string, name: string): boolean {
 
 /** Products a string names, by title or `d` as whole words, from the whole catalog. */
 function namedProducts(text: string, items: ReadonlyMap<string, CatalogItem>): CatalogItem[] {
-  return [...items.values()].filter((item) => mentions(text, item.title) || mentions(text, item.d));
+  // A cheap substring test first: the word-boundary regex runs only for candidates.
+  const lower = text.toLowerCase();
+  const candidate = (name: string) => name.length > 2 && lower.includes(name.toLowerCase());
+  return [...items.values()].filter(
+    (item) =>
+      (candidate(item.title) && mentions(text, item.title)) ||
+      (candidate(item.d) && mentions(text, item.d)),
+  );
 }
 
 /**

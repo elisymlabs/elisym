@@ -130,12 +130,17 @@ describe('5. the lower bound of a range with the currency after it', () => {
     expect(violationsIn(currency, language, text)).toBe(1);
   });
 
+  it('a real range passes', () => {
+    expect(violationsIn('USD', 'en', 'Jacket: 1200-1200 USD')).toBe(0);
+  });
+
+  // Fail closed (round 9): a bare number before a dash and an amount is a lower
+  // bound unless exact evidence says otherwise; a model name costs a re-run.
   it.each([
     ['EUR', 'de', 'Jacket: das iPhone 15 - 1200 €'],
-    ['USD', 'en', 'Jacket: 1200-1200 USD'],
     ['USD', 'en', 'Jacket for 2 - 1200 USD'],
-  ])('%s %s: "%s" passes', (currency, language, text) => {
-    expect(violationsIn(currency, language, text)).toBe(0);
+  ])('%s %s: "%s" is read as a range', (currency, language, text) => {
+    expect(violationsIn(currency, language, text)).toBe(1);
   });
 });
 
