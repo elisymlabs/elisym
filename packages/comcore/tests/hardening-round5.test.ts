@@ -156,3 +156,47 @@ describe('setPolicy and removePolicy', () => {
     expect(again.created_at).toBe(NOW + 3);
   });
 });
+
+describe('round 6 gaps', () => {
+  it('removePolicy refuses an unauthorized key', async () => {
+    await expect(
+      removePolicy({
+        signer: catalog.secretKey,
+        store: owner.pubkey,
+        client: new MemoryRelay(),
+        slug: 'returns',
+        now: NOW,
+      }),
+    ).rejects.toThrow(/not authorized/);
+  });
+
+  it('a policy deletion does not touch a product with the same d', async () => {
+    const relay = new MemoryRelay();
+    relay.events.push(grant());
+    const run = (items: ReturnType<typeof item>[], now: number) =>
+      syncCatalog({
+        signer: catalog.secretKey,
+        store: owner.pubkey,
+        items,
+        client: relay,
+        now,
+        sleep: noSleep,
+      });
+    await run([item('a')], NOW);
+    await setPolicy({
+      signer: catalog.secretKey,
+      store: owner.pubkey,
+      client: relay,
+      policy: { slug: 'a', title: 'A', body: 'policy a' },
+      now: NOW + 1,
+    });
+    await removePolicy({
+      signer: catalog.secretKey,
+      store: owner.pubkey,
+      client: relay,
+      slug: 'a',
+      now: NOW + 2,
+    });
+    expect((await run([item('a')], NOW + 3)).unchanged).toEqual(['a']);
+  });
+});
