@@ -38,6 +38,8 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(real|reais)$/i, ['BRL']],
   [/^(złot(y|e|ych)|zlot(y|e|ych))$/i, ['PLN']],
   [/^(rupees?|рупи(и|й|я)?)$/i, ['INR']],
+  [/^(rubles?|roubles?)$/i, ['RUB']],
+  [/^(liras?|lirası)$/i, ['TRY']],
 ];
 // cspell:enable
 
@@ -328,16 +330,27 @@ function storeCurrencyForms(
   const forms = new Set<string>();
   for (const locale of languages) {
     for (const currencyDisplay of ['narrowSymbol', 'symbol', 'name'] as const) {
-      for (const sample of [1, 5, 2.5]) {
+      // Whole samples bring the plural forms ("5 korun", "5 рублей"); 2.5 the fractional one.
+      for (const sample of [1, 2, 5, 2.5]) {
         try {
           const parts = new Intl.NumberFormat(locale, {
             style: 'currency',
             currency,
             currencyDisplay,
+            ...(Number.isInteger(sample)
+              ? { minimumFractionDigits: 0, maximumFractionDigits: 0 }
+              : {}),
           }).formatToParts(sample);
           const form = parts.find((part) => part.type === 'currency')?.value.trim();
           if (form && !/^\d/.test(form)) {
-            forms.add(form.normalize('NFKC'));
+            const normalized = form.normalize('NFKC');
+            forms.add(normalized);
+            // "pesos mexicanos", "Schweizer Franken": the everyday name is one of the words.
+            for (const word of normalized.split(/\s+/u)) {
+              if (word.length >= 3 && normalized.includes(' ')) {
+                forms.add(word);
+              }
+            }
           }
         } catch {
           continue;
@@ -371,6 +384,23 @@ function symbolToPattern(symbol: string): string {
  * It never starts inside another number, and "Under $120, 3 colors" reads 120.
  */
 const NUMBER_PATTERN = String.raw`(?<!\d)(?<!\d[.,'’])(?:\d{1,2}(?:,\d{2}){1,4},\d{3}(?:\.\d+)?|\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(?:[.,][-–])?`;
+// cspell:disable
+/** A magnitude between a number and its currency: "1,5 тыс. ₽", "1.5k USD", "2 mil reais". */
+const MAGNITUDE_PATTERN = String.raw`(?:thousand|millions?|millones|milhões|миллион\p{L}*|тысяч\p{L}*|тыс|млн|Tsd|Mio|mil|k)(?![\p{L}])\.?`;
+const MAGNITUDES: ReadonlyArray<[RegExp, number]> = [
+  [/^(?:thousand|тысяч\p{L}*|тыс|tsd|mil|k)\.?$/iu, 1_000],
+  [/^(?:millions?|millones|milhões|миллион\p{L}*|млн|mio)\.?$/iu, 1_000_000],
+];
+// cspell:enable
+
+function scaled(values: readonly Decimal[], magnitude: string | undefined): Decimal[] {
+  if (magnitude === undefined) {
+    return [...values];
+  }
+  const factor = MAGNITUDES.find(([pattern]) => pattern.test(magnitude))?.[1];
+  return factor === undefined ? [] : values.map((value) => value.times(factor));
+}
+
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}\.?`;
@@ -392,11 +422,11 @@ function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
     .join('|');
   const patterns = {
     prefix: new RegExp(
-      String.raw`(${symbolPattern}|${CODE_PATTERN})${GAP_PATTERN}(${NUMBER_PATTERN})`,
+      String.raw`(?<token>${symbolPattern}|${CODE_PATTERN})${GAP_PATTERN}(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN}))?`,
       'gdiu',
     ),
     postfix: new RegExp(
-      String.raw`(${NUMBER_PATTERN})${GAP_PATTERN}(${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
+      String.raw`(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN}))?${GAP_PATTERN}(?<token>${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
       'gdiu',
     ),
   };
@@ -551,9 +581,13 @@ function foldSeparators(text: string): string {
  * never rendered; only a tilde between two digits stays ("1,500~2,000" is a range).
  */
 export function normalizeForCheck(text: string): string {
-  return foldSeparators(stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit))
-    .replace(/[*_`]+/g, '')
-    .replace(/(?<!\d)~+|~+(?!\d)/g, '');
+  return (
+    foldSeparators(stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit))
+      // Figure dash, em dash, horizontal bar and minus read as an en dash ("900—1200 ₽").
+      .replace(/[\u2012\u2014\u2015\u2212]/gu, '–')
+      .replace(/[*_`]+/g, '')
+      .replace(/(?<!\d)~+|~+(?!\d)/g, '')
+  );
 }
 
 /**
@@ -564,8 +598,7 @@ export function normalizeForCheck(text: string): string {
 function scan(
   text: string,
   pattern: RegExp,
-  tokenGroup: number,
-  numberGroup: number,
+  tokenFirst: boolean,
   decimals: readonly string[],
   storeCurrency: string | undefined,
   symbols: ReadonlyArray<[string, readonly string[]]>,
@@ -573,44 +606,43 @@ function scan(
 ): void {
   const regex = new RegExp(pattern.source, pattern.flags);
   for (let match = regex.exec(text); match !== null; match = regex.exec(text)) {
-    const token = match[tokenGroup];
-    const number = match[numberGroup];
+    const token = match.groups?.token;
+    const number = match.groups?.number;
+    const magnitude = match.groups?.magnitude;
+    const tokenSpan = match.indices?.groups?.token;
+    const numberSpan = match.indices?.groups?.number;
     const currencies =
       token === undefined || number === undefined
         ? undefined
         : currenciesFor(token, number, storeCurrency, symbols);
-    const numberIndex = match.indices?.[numberGroup]?.[0] ?? match.index;
+    const numberIndex = numberSpan?.[0] ?? match.index;
+    const tokenStart = tokenSpan?.[0] ?? match.index;
+    const tokenEnd = tokenSpan?.[1] ?? numberIndex;
+    const numberEnd = numberSpan?.[1] ?? tokenStart;
+    const matchEnd = match.index + match[0].length;
     // "1200 € - 2 Farben": a symbol that closes one number does not open the next across a dash.
-    const tokenEnd = match.indices?.[tokenGroup]?.[1] ?? numberIndex;
     const closesPrevious =
-      tokenGroup < numberGroup &&
-      /-/.test(text.slice(tokenEnd, numberIndex)) &&
+      tokenFirst &&
+      /[-–]/.test(text.slice(tokenEnd, numberIndex)) &&
       /\d[\s:]{0,3}$/.test(text.slice(Math.max(0, match.index - 4), match.index));
     const isHours =
       token !== undefined &&
       FRANC_RE.test(token) &&
       (WEEKDAY_BEFORE_RE.test(text.slice(Math.max(0, match.index - 8), match.index)) ||
-        HOURS_AFTER_RE.test(
-          text.slice(match.index + match[0].length, match.index + match[0].length + 24),
-        ));
+        HOURS_AFTER_RE.test(text.slice(matchEnd, matchEnd + 24)));
     // "model 2024 - $45": a symbol that opens the next number does not close this one across a dash.
-    const tokenStart = match.indices?.[tokenGroup]?.[0] ?? match.index;
-    const numberEnd = match.indices?.[numberGroup]?.[1] ?? tokenStart;
     const opensNext =
-      tokenGroup > numberGroup &&
-      /-/.test(text.slice(numberEnd, tokenStart)) &&
-      /^\s*\d/.test(text.slice(match.index + match[0].length, match.index + match[0].length + 4));
+      !tokenFirst &&
+      /[-–]/.test(text.slice(numberEnd, tokenStart)) &&
+      /^\s*\d/.test(text.slice(matchEnd, matchEnd + 4));
     if (!currencies || number === undefined || isHours || closesPrevious || opensNext) {
       regex.lastIndex = match.index + 1;
       continue;
     }
-    const values = decimals
-      .map((decimal) => parseWith(number, decimal))
-      .filter((value): value is Decimal => value !== undefined);
     // A currency next to a number no grammar reads ("$1,20" in ar + en) is
     // still an amount: it can match nothing, so the check fails closed.
     found.push({
-      values,
+      values: scaled(readValues(number, decimals), magnitude),
       currencies,
       raw: match[0],
       index: match.index,
@@ -621,35 +653,44 @@ function scan(
 }
 
 /** Range words that are unambiguous in any language. */
-const RANGE_WORDS = ['to', 'bis', 'до'];
+// cspell:disable
+const RANGE_WORDS = ['to', 'up to', 'bis', 'bis zu', 'до'];
 /** Range words only in Romance locales ("de $90 a 150"): in English "a" is an article. */
 const ROMANCE_RANGE_WORDS = ['a', 'à'];
 const ROMANCE_LANGUAGES = new Set(['es', 'pt', 'fr', 'it', 'ca']);
-/** Words that open a range before its lower bound whatever the separator. */
-const RANGE_OPENERS = new Set([
-  'from',
-  'ab',
-  'от',
-  'desde',
-  'entre',
-  'zwischen',
-  'between',
-  'между',
-]);
 /**
- * Openers whose closing word is a range separator only after them: "between
- * $90 and 150", "de 3 a 45"; "de", "da" and "von" also mean "of" ("lot de 3").
+ * Openers and the closing words that are a range separator only after them:
+ * "between $90 and 150", "od 900 do 1200 zł"; "de", "da" and "von" also mean
+ * "of" ("lot de 3"), so only they need their closing word to open a range.
  */
 const PAIRED_OPENERS = new Map<string, readonly string[]>([
   ['between', ['and']],
   ['zwischen', ['und']],
   ['entre', ['y', 'e', 'et']],
+  ['tra', ['e']],
+  ['fra', ['e']],
+  ['tussen', ['en']],
+  ['między', ['a']],
+  ['od', ['do']],
+  ['між', ['та', 'і']],
+  ['від', ['до']],
   ['между', ['и']],
   ['von', ['bis']],
   ['de', ['a', 'à']],
   ['da', ['a']],
   ['du', ['à']],
 ]);
+/** Openers that open a range before a lower bound whatever the separator. */
+const RANGE_OPENERS = new Set([
+  'from',
+  'ab',
+  'от',
+  'desde',
+  ...[...PAIRED_OPENERS.keys()].filter((opener) => !['von', 'de', 'da', 'du'].includes(opener)),
+]);
+/** Hedges between an opener or range word and a bound: "zwischen ca. 900 und 1200 €". */
+const HEDGE_PATTERN = String.raw`(?:(?:ca|approx|aprox|прибл|ок)\.|about|around|roughly|approximately|circa|ca|etwa|ungefähr|примерно|около|unos|unas|environ|cerca\s+de)`;
+// cspell:enable
 // cspell:disable
 /** Month names and standard abbreviations, exact (a stem would also match "separately" or "market"). */
 const MONTHS = [
@@ -670,7 +711,7 @@ const UNIT_WORDS = [
 ].join('|');
 /** Before a lower bound: a size, pack, model or article number, not money ("lot de 3 - 45 €", "Art. 900 - 1200 €"). */
 const QUANTITY_BEFORE_RE =
-  /(?:^|[^\p{L}])(?:size|größe|grösse|taille|talla|tamanho|taglia|размер|pack|lot|set|kit|paquete|confezione|model|modell|modelo|modèle|version|option|art|nr|no|sku|item|ref|room|day|tag|día|dia|jour)\.?(?:\s+(?:de|da|von|of))?\s*$|[#№]\s*$/iu;
+  /(?:^|[^\p{L}])(?:(?:size|größe|grösse|taille|talla|tamanho|taglia|размер|pack|lot|set|kit|paquete|confezione|model|modell|modelo|modèle|version|option|sku|item|room|day|tag|día|dia|jour)(?:[ \t]+(?:de|da|von|of))?|(?:art|nr|no|ref)\.?)[ \t]*$|[#№][ \t]*$/iu;
 /** A year upper bound before one of these is an edition, not a price ("$1200 - 2026 edition"). */
 const EDITION_WORDS =
   'edition|model|collection|season|Edition|Kollektion|Modell|Saison|edición|colección|temporada|édition|modèle|коллекция|модель|сезон';
@@ -691,18 +732,30 @@ function isRomance(locales: readonly string[]): boolean {
 
 function rangeSeparator(): string {
   const closers = [...PAIRED_OPENERS.values()].flat();
-  const words = [...RANGE_WORDS, ...ROMANCE_RANGE_WORDS, ...closers];
-  return `([-–~〜]|${[...new Set(words)].join('|')})(?![\\p{L}])`;
+  const words = [...new Set([...RANGE_WORDS, ...ROMANCE_RANGE_WORDS, ...closers])]
+    .sort((left, right) => right.length - left.length)
+    .map((word) => word.replace(' ', String.raw`\s+`));
+  return String.raw`(?<sep>[-–~〜]|(?:${words.join('|')})(?![\p{L}]))`;
 }
 
-/** The word right before a position, lowercased. */
-function wordBefore(text: string, position: number): string | undefined {
-  return /(\p{L}+)\s*$/u.exec(text.slice(Math.max(0, position - 32), position))?.[1]?.toLowerCase();
+const TRAILING_HEDGE_RE = new RegExp(String.raw`(?:^|[^\p{L}])${HEDGE_PATTERN}\s*$`, 'iu');
+
+/** The word right before a position, past up to two hedges ("between about 900"), lowercased. */
+function openerBefore(text: string, position: number): string | undefined {
+  let before = text.slice(Math.max(0, position - 48), position);
+  for (let skipped = 0; skipped < 2; skipped += 1) {
+    const hedge = TRAILING_HEDGE_RE.exec(before);
+    if (!hedge) {
+      break;
+    }
+    before = before.slice(0, hedge.index + (hedge[0].match(/^[^\p{L}]/u) ? 1 : 0));
+  }
+  return /(\p{L}+)\s*$/u.exec(before)?.[1]?.toLowerCase();
 }
 
 /** A dash, tilde or range word is a separator on its own; a paired closer ("and") only after its opener. */
 function separatorOpens(separator: string, opener: string | undefined, romance: boolean): boolean {
-  const word = separator.toLowerCase();
+  const word = separator.toLowerCase().replace(/\s+/gu, ' ');
   if (
     /^[-–~〜]$/.test(word) ||
     RANGE_WORDS.includes(word) ||
@@ -742,27 +795,31 @@ function addRangeBounds(
 ): void {
   const separator = rangeSeparator();
   const romance = isRomance(locales);
-  const tailRe = new RegExp(String.raw`(\s*${separator}\s*)(${NUMBER_PATTERN})`, 'uy');
+  const hedges = String.raw`(?:${HEDGE_PATTERN}\s*){0,2}`;
+  const tailRe = new RegExp(
+    String.raw`(?<gap>\s*${separator}\s*${hedges})(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN}))?`,
+    'iuy',
+  );
   const headRe = new RegExp(
-    String.raw`(?<![\p{L}\d.,'’])(${NUMBER_PATTERN})(\s*${separator}\s*)$`,
-    'u',
+    String.raw`(?<![\p{L}\d.,'’])(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN}))?(?<gap>\s*${separator}\s*${hedges})$`,
+    'iu',
   );
   const taken = new Set(found.map((amount) => amount.numberIndex));
   for (const amount of [...found]) {
     const end = amount.index + amount.raw.length;
     tailRe.lastIndex = end;
     const tail = tailRe.exec(text);
-    const gap = tail?.[1];
-    const tailWord = tail?.[2];
-    const upper = tail?.[3];
-    if (tail && gap !== undefined && tailWord !== undefined && upper !== undefined) {
-      const offset = end + gap.length;
-      const after = text.slice(offset + upper.length, offset + upper.length + 32);
-      const values = readValues(upper, decimals);
+    const tailGap = tail?.groups?.gap;
+    const tailWord = tail?.groups?.sep;
+    const upper = tail?.groups?.number;
+    if (tail && tailGap !== undefined && tailWord !== undefined && upper !== undefined) {
+      const offset = end + tailGap.length;
+      const after = text.slice(end + tail[0].length, end + tail[0].length + 32);
+      const values = scaled(readValues(upper, decimals), tail.groups?.magnitude);
       const edition = YEAR_RE.test(upper) && EDITION_AFTER_RE.test(after);
       if (
         !taken.has(offset) &&
-        separatorOpens(tailWord, wordBefore(text, amount.index), romance) &&
+        separatorOpens(tailWord, openerBefore(text, amount.index), romance) &&
         isBelow(amount.values, values) &&
         !NOT_MONEY_AFTER_RE.test(after) &&
         !edition
@@ -780,14 +837,14 @@ function addRangeBounds(
     }
     const before = text.slice(Math.max(0, amount.index - RANGE_HEAD_CHARS), amount.index);
     const head = headRe.exec(before);
-    const lower = head?.[1];
-    const headGap = head?.[2];
-    const headWord = head?.[3];
+    const lower = head?.groups?.number;
+    const headGap = head?.groups?.gap;
+    const headWord = head?.groups?.sep;
     if (head && lower !== undefined && headGap !== undefined && headWord !== undefined) {
       const offset = amount.index - before.length + head.index;
       const preceding = text.slice(Math.max(0, offset - 32), offset);
-      const opener = wordBefore(text, offset);
-      const values = readValues(lower, decimals);
+      const opener = openerBefore(text, offset);
+      const values = scaled(readValues(lower, decimals), head.groups?.magnitude);
       const opened = opener !== undefined && RANGE_OPENERS.has(opener);
       const yearBeforeSpacedDash = YEAR_RE.test(lower) && /\s[-–]\s/.test(headGap);
       if (
@@ -810,6 +867,30 @@ function addRangeBounds(
   }
 }
 
+function symbolsFor(
+  storeCurrency: string | undefined,
+  locales: readonly string[],
+): Array<[string, readonly string[]]> {
+  return [
+    ...SYMBOLS,
+    ...EXTRA_SYMBOLS,
+    ...(storeCurrency === 'CHF' ? FRANC_SYMBOLS : []),
+    ...storeCurrencyForms(storeCurrency, locales),
+  ];
+}
+
+/** Whether a token alone is a currency ("Rs.", "Fr.", "руб."), for lending it to the next sentence. */
+function isCurrencyToken(
+  token: string,
+  storeCurrency: string | undefined,
+  locales: readonly string[],
+): boolean {
+  const normalized = normalizeForCheck(token);
+  return (
+    currenciesFor(normalized, '1', storeCurrency, symbolsFor(storeCurrency, locales)) !== undefined
+  );
+}
+
 /**
  * Money amounts in a string: a currency symbol (static, plus the store
  * currency's own forms from Intl), ISO 4217 code (any case, glued or spaced)
@@ -822,17 +903,12 @@ export function extractAmounts(
   storeCurrency?: string,
 ): MoneyAmount[] {
   const decimals = [...new Set(locales.map(decimalSeparatorFor))];
-  const symbols = [
-    ...SYMBOLS,
-    ...EXTRA_SYMBOLS,
-    ...(storeCurrency === 'CHF' ? FRANC_SYMBOLS : []),
-    ...storeCurrencyForms(storeCurrency, locales),
-  ];
+  const symbols = symbolsFor(storeCurrency, locales);
   const { prefix, postfix } = patternsFor(symbols);
   const normalized = normalizeForCheck(text);
   const found: MoneyAmount[] = [];
-  scan(normalized, prefix, 1, 2, decimals, storeCurrency, symbols, found);
-  scan(normalized, postfix, 2, 1, decimals, storeCurrency, symbols, found);
+  scan(normalized, prefix, true, decimals, storeCurrency, symbols, found);
+  scan(normalized, postfix, false, decimals, storeCurrency, symbols, found);
   addRangeBounds(normalized, found, decimals, locales);
   // One number read both ways ("$99 USD") is one amount; different numbers stay apart.
   found.sort((left, right) => left.index - right.index);
@@ -1041,7 +1117,12 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
   const { sentences } = sentencesOf(answer.text);
   sentences.forEach((sentence, index) => {
     const previous = index > 0 ? sentences[index - 1] : undefined;
-    const lead = previous === undefined ? '' : (DOTTED_TAIL_RE.exec(previous)?.[1] ?? '');
+    const tailToken = previous === undefined ? undefined : DOTTED_TAIL_RE.exec(previous)?.[1];
+    // Only a currency symbol is lent ("Rs." + "999"), never a word like "size.".
+    const lead =
+      tailToken !== undefined && isCurrencyToken(tailToken, context.storeCurrency, context.locales)
+        ? tailToken
+        : '';
     checkString(`text#${index}`, sentence, false, lead);
   });
   answer.components.forEach((component, componentIndex) => {
@@ -1088,7 +1169,7 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
         component.sections.forEach((section, sectionIndex) => {
           checkString(
             `${prefix}.section#${sectionIndex}`,
-            `${section.heading} ${section.body}`,
+            `${section.heading}\n${section.body}`,
             false,
           );
         });

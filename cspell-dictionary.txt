@@ -240,3 +240,8 @@ Farben
 desde
 zwischen
 между
+korun
+рублей
+mexicanos
+Schweizer
+Franken
