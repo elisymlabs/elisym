@@ -82,7 +82,7 @@ const FRANC_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['SFr', ['CHF']],
 ];
 /** "Mo.-Fr. 9", "Di.–Fr. 10": a weekday range, not francs. */
-const WEEKDAY_BEFORE_RE = /(?:Mo|Di|Mi|Do|Sa|So|Lu|Ma|Me|Je|Ve)\.?\s?[-–]\s?$/;
+const WEEKDAY_BEFORE_RE = /(?:Mo|Di|Mi|Do|Sa|So|Lu|Ma|Me|Je|Ve)\.?\s?(?:[-–]|bis|à|au)\s?$/;
 /** "Fr. 9-18 Uhr", "Fr. 10 Uhr", "Fr. 9:30": opening hours, not francs. */
 const HOURS_AFTER_RE = /^(?::\d{2}|\s*(?:[-–]\s*\d{1,2}(?:[.:]\d{2})?\s*)?(?:Uhr|h)\b)/u;
 
@@ -282,6 +282,7 @@ const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['円', ['JPY']],
   ['元', ['CNY']],
   ['kr', ['SEK', 'NOK', 'DKK', 'ISK']],
+  ['kr.', ['SEK', 'NOK', 'DKK', 'ISK']],
   ['Kč', ['CZK']],
   ['lei', ['RON']],
   ['лв', ['BGN']],
@@ -1682,8 +1683,9 @@ export function cardsPointer(locale: string): string {
  */
 /** A dotted token that is a currency symbol on its own ("Rs.", "Fr."): only symbols start a prefix amount. */
 function isLentSymbol(token: string): boolean {
+  const bare = token.replace(/\.$/u, '');
   return [...SYMBOLS, ...EXTRA_SYMBOLS, ...FRANC_SYMBOLS].some(
-    ([candidate]) => candidate === token,
+    ([candidate]) => candidate.replace(/\.$/u, '') === bare,
   );
 }
 
@@ -1694,22 +1696,31 @@ export function stripViolations(
 ): Answer {
   const failed = new Set(violations.map((violation) => violation.where));
   const { sentences, separators } = sentencesOf(answer.text);
-  // A removed sentence takes the dotted symbol it borrowed ("costs Rs." + "1500."), so the
-  // symbol never dangles or lands before the next sentence's number.
+  // A removed sentence that borrowed a prefix symbol ("costs Rs." + "1500.") is one sentence
+  // with its lender, so the lender goes too, and so on back. A symbol that closes the previous
+  // sentence's own amount ("1200 Rs.") was never lent and stays.
+  const removed = new Set<number>();
   sentences.forEach((_sentence, index) => {
-    const previous = sentences[index - 1];
-    if (!failed.has(`text#${index}`) || previous === undefined) {
-      return;
-    }
-    const tail = DOTTED_TAIL_RE.exec(previous)?.[1];
-    if (tail !== undefined && isLentSymbol(tail)) {
-      sentences[index - 1] = previous.slice(0, previous.length - tail.length).trimEnd();
+    if (failed.has(`text#${index}`)) {
+      removed.add(index);
     }
   });
+  for (let index = sentences.length - 1; index > 0; index -= 1) {
+    const previous = sentences[index - 1];
+    if (!removed.has(index) || previous === undefined) {
+      continue;
+    }
+    const tail = DOTTED_TAIL_RE.exec(previous)?.[1];
+    const closesAmount =
+      tail !== undefined && /\d[\s:-]{0,3}$/.test(previous.slice(0, previous.length - tail.length));
+    if (tail !== undefined && isLentSymbol(tail) && !closesAmount) {
+      removed.add(index - 1);
+    }
+  }
   let removedText = false;
   let text = '';
   sentences.forEach((sentence, index) => {
-    if (failed.has(`text#${index}`)) {
+    if (removed.has(index)) {
       removedText = true;
     } else {
       text += sentence;
@@ -1719,8 +1730,9 @@ export function stripViolations(
     }
   });
   text = text.replace(/[ \t]+\n/g, '\n').trim();
-  if (removedText) {
-    text = `${text}${text.length > 0 ? ' ' : ''}${cardsPointer(locale)}`;
+  const pointer = cardsPointer(locale);
+  if (removedText && !text.endsWith(pointer)) {
+    text = `${text}${text.length > 0 ? ' ' : ''}${pointer}`;
   }
   const components = answer.components
     .map((component, componentIndex): Answer['components'][number] | undefined => {

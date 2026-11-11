@@ -9,7 +9,7 @@ import {
   ZERO_USAGE,
   addUsage,
 } from './llm/types';
-import { type PriceViolation, checkPrices, stripViolations } from './price-check';
+import { type PriceViolation, cardsPointer, checkPrices, stripViolations } from './price-check';
 import { globalBlock, sessionBlock, storeBlock } from './prompt';
 import { sanitizeAnswerText } from './text-sanitize';
 import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
@@ -18,7 +18,6 @@ import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
 export const MAX_TOOL_ROUNDS = 6;
 const DEFAULT_MAX_TOKENS = 2_048;
 const VISITOR_FENCE_CHARS = 4_000;
-const MAX_STRIP_PASSES = 3;
 
 export interface TurnInput {
   catalog: StoreCatalog;
@@ -218,10 +217,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       };
       answer = toAnswer(retry.text, retryState);
       violations = checkPrices(answer, checkContext());
-      // Strip until clean: removing a sentence can join text the check then reads anew. Each
-      // pass only removes text, so it ends; the bound is a guard.
-      for (let pass = 0; violations.length > 0 && pass < MAX_STRIP_PASSES; pass += 1) {
-        stripped = [...stripped, ...violations];
+      if (violations.length > 0) {
+        stripped = violations;
         // The appended pointer can lengthen the text: cut and fit again.
         const cleaned = stripViolations(answer, violations, locale);
         answer = fitAnswer(
@@ -229,6 +226,13 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
           input.now,
         );
         violations = checkPrices(answer, checkContext());
+      }
+      // A guard: should stripping ever leave something the check reads anew, fail closed with
+      // no model text, only the cards pointer.
+      if (violations.length > 0) {
+        stripped = [...stripped, ...violations];
+        const cleaned = stripViolations(answer, violations, locale);
+        answer = fitAnswer({ ...cleaned, text: cardsPointer(locale) }, input.now);
       }
     }
   } catch (error) {
