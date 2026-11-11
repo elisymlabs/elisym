@@ -119,6 +119,7 @@ async function main(): Promise<void> {
       providerFor: () => provider,
       price: { input: '1', cachedInput: '0.1', cacheWrite: '1.25', output: '5' },
       reserveUsd: '0.05',
+      maxTurnUsd: '0.25',
     });
   worker = makeWorker();
   await worker.start();

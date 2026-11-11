@@ -4,14 +4,18 @@ import type { GatewayRequest } from './gateway';
 const MAX_BODY_BYTES = 16 * 1024;
 
 /**
- * The client address: the socket's, or behind the proxy (Caddy overwrites the
- * header, so a client cannot spoof it) the first `x-forwarded-for` hop.
+ * The client address: the socket's, or behind our proxy the last
+ * `x-forwarded-for` hop, the one the proxy itself appended (a client can only
+ * forge hops to the left of it).
  */
-export function clientAddressOf(request: IncomingMessage, trustProxy: boolean): string {
+export function clientAddressOf(
+  request: Pick<IncomingMessage, 'headers'> & { socket: { remoteAddress?: string | undefined } },
+  trustProxy: boolean,
+): string {
   const forwarded = request.headers['x-forwarded-for'];
-  const first = typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined;
-  if (trustProxy && first) {
-    return first;
+  const last = typeof forwarded === 'string' ? forwarded.split(',').at(-1)?.trim() : undefined;
+  if (trustProxy && last) {
+    return last;
   }
   return request.socket.remoteAddress ?? 'unknown';
 }

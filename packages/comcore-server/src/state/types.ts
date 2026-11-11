@@ -77,14 +77,16 @@ export interface ServerState {
    * Re-run an ask whose record is `failed`, or `queued`/`running` under a dead
    * lease or past its deadline (5.8): in one step check the budget, reserve for
    * a new attempt and resolve what the superseded attempt still holds (`queued`
-   * releases it, `running` converts it into spend in full).
+   * releases it, `running` converts it into spend in full). A retry counts
+   * against the session quota like a new ask, so forced failures cannot buy
+   * unlimited turns.
    */
   retryAsk(
     session: SessionState,
     askId: string,
     reserveUsd: string,
     now: number,
-  ): { admitted: true; record: AskRecord } | { admitted: false; reason: 'budget' };
+  ): { admitted: true; record: AskRecord } | { admitted: false; reason: 'quota' | 'budget' };
   /** Conditional transition `queued` (attempt) to `running`; false when superseded. */
   startAsk(session: SessionState, askId: string, attemptId: string, deadline: number): boolean;
   /** Conditional transition `running` (attempt) to `answered`, settling spend to `spentUsd`. */

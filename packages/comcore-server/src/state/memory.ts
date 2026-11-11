@@ -195,16 +195,22 @@ export class MemoryState implements ServerState {
     askId: string,
     reserveUsd: string,
     now: number,
-  ): { admitted: true; record: AskRecord } | { admitted: false; reason: 'budget' } {
+  ): { admitted: true; record: AskRecord } | { admitted: false; reason: 'quota' | 'budget' } {
     const store = this.ownerOf(session);
     const previous = this.askRecord(session, askId);
     if (!store || store.status !== 'active' || !previous) {
       return { admitted: false, reason: 'budget' };
     }
+    const quotaKey = `${sessionKey(session.assistant, session.visitor)}:${utcDay(now)}`;
+    const used = this.sessionDays.get(quotaKey) ?? 0;
+    if (used >= store.tier.messagesPerSessionPerDay) {
+      return { admitted: false, reason: 'quota' };
+    }
     const attemptId = this.reserve(store, reserveUsd, now);
     if (attemptId === undefined) {
       return { admitted: false, reason: 'budget' };
     }
+    this.sessionDays.set(quotaKey, used + 1);
     if (previous.state === 'queued') {
       this.release(previous.attemptId);
     } else if (previous.state === 'running') {

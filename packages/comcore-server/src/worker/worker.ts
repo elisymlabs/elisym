@@ -12,6 +12,7 @@ import {
   costOf,
   runTurn,
 } from '@elisym/comcore-agent';
+import Decimal from 'decimal.js-light';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import type { AbstractSimplePool } from 'nostr-tools/abstract-pool';
 import type { AbstractRelay } from 'nostr-tools/abstract-relay';
@@ -30,6 +31,31 @@ import { buildStoreCatalog, keyFilters, ownerFilters, storeConfig } from './cata
 import { intakeWrap } from './intake';
 
 const KIND_GIFT_WRAP = 1059;
+/**
+ * Messages of history a session keeps (a visitor turn and the answer note per
+ * ask), so a turn's input cost stays bounded; phase 3 compacts instead (5.8).
+ */
+const MAX_HISTORY_MESSAGES = 20;
+
+/** Wrap a provider so a turn stops calling the model once its spend passes `maxUsd`. */
+export function cappedProvider(
+  provider: LlmProvider,
+  price: ModelPrice,
+  maxUsd: string,
+): LlmProvider {
+  let spent = new Decimal(0);
+  return {
+    model: provider.model,
+    async turn(request) {
+      if (spent.greaterThanOrEqualTo(maxUsd)) {
+        throw new Error('The turn reached its spend ceiling');
+      }
+      const response = await provider.turn(request);
+      spent = spent.plus(costOf(response.usage, price));
+      return response;
+    },
+  };
+}
 /** A connection that stayed up this long resets the backoff (one ping cycle, 2.4). */
 const STABLE_CONNECTION_MS = 60_000;
 
@@ -44,6 +70,12 @@ export interface WorkerDeps {
   price: ModelPrice;
   /** The estimate reserved before a turn, including one price-check re-run (5.8). */
   reserveUsd: string;
+  /**
+   * A hard ceiling on one turn's spend: once the turn's cost so far passes it,
+   * no further model call is made and the turn ends with `error`. So a store's
+   * overshoot past its daily budget is at most one model call per turn in flight.
+   */
+  maxTurnUsd: string;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -368,7 +400,11 @@ export class Worker {
     try {
       const output = await runTurn({
         catalog,
-        provider: this.deps.providerFor(store),
+        provider: cappedProvider(
+          this.deps.providerFor(store),
+          this.deps.price,
+          this.deps.maxTurnUsd,
+        ),
         history: session.history,
         askId: ask.ask_id,
         text: ask.text,
@@ -398,7 +434,7 @@ export class Worker {
         now: this.now(),
       });
       if (this.deps.state.answerAsk(session, ask.ask_id, attemptId, wrap, spent, this.now())) {
-        session.history = output.history;
+        session.history = output.history.slice(-MAX_HISTORY_MESSAGES);
         session.visitorMessages = [...session.visitorMessages, ask.text];
         session.policyPassages = [...session.policyPassages, ...output.policyPassages];
         session.allowedIds = output.allowedIds;

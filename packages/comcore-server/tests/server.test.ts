@@ -8,7 +8,7 @@ import { passesWrapPreCheck } from '../src/relay/pool';
 import { MemoryState } from '../src/state/memory';
 import { buildStoreCatalog } from '../src/worker/catalog';
 import { intakeWrap } from '../src/worker/intake';
-import { NOW, ORIGIN, askWrap, storeRecord, syntheticStore } from './fixtures';
+import { NOW, ORIGIN, askWrap, scriptedProvider, storeRecord, syntheticStore } from './fixtures';
 
 const ASK_ID = 'a'.repeat(32);
 
@@ -409,5 +409,47 @@ describe('ask records and budget (5.8)', () => {
     expect(state.session(store.assistant, 'b'.repeat(64), NOW + 60)).toBe(first);
     const later = state.session(store.assistant, 'b'.repeat(64), first.sessionEnd - 4 * 60);
     expect(later).not.toBe(first);
+  });
+});
+
+describe('security review fixes', () => {
+  it('reads the last forwarded hop behind the proxy, never a spoofed first one', async () => {
+    const { clientAddressOf } = await import('../src/gateway/http');
+    const request = {
+      headers: { 'x-forwarded-for': '198.51.100.9, 203.0.113.7' },
+      socket: { remoteAddress: '10.0.0.2' },
+    };
+    expect(clientAddressOf(request, true)).toBe('203.0.113.7');
+    expect(clientAddressOf(request, false)).toBe('10.0.0.2');
+  });
+
+  it('a retry counts against the session quota', () => {
+    const store = syntheticStore();
+    const state = new MemoryState([
+      { ...storeRecord(store), tier: { ...storeRecord(store).tier, messagesPerSessionPerDay: 1 } },
+    ]);
+    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
+    const first = state.admitAsk(session, ASK_ID, '0.01', NOW);
+    if (!first.admitted) {
+      throw new Error('not admitted');
+    }
+    state.startAsk(session, ASK_ID, first.record.attemptId, Date.now() + 60_000);
+    state.failAsk(session, ASK_ID, first.record.attemptId, '0');
+    expect(state.retryAsk(session, ASK_ID, '0.01', NOW)).toEqual({
+      admitted: false,
+      reason: 'quota',
+    });
+  });
+
+  it('a turn stops calling the model once its spend passes the ceiling', async () => {
+    const { cappedProvider } = await import('../src/worker/worker');
+    const provider = cappedProvider(
+      scriptedProvider(['x']),
+      { input: '1', cachedInput: '0', cacheWrite: '0', output: '0' },
+      '0.0001',
+    );
+    const request = { system: [], messages: [], tools: [], maxTokens: 10 };
+    await provider.turn(request);
+    await expect(provider.turn(request)).rejects.toThrow('spend ceiling');
   });
 });
