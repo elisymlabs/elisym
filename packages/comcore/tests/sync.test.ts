@@ -71,7 +71,9 @@ describe('syncCatalog', () => {
     // a updated, b hidden, b deleted.
     expect(newEvents.map((event) => event.kind)).toEqual([30402, 30402, 5]);
     const hiddenB = newEvents[1];
-    expect(hiddenB && parseCatalogItem(hiddenB, { now: NOW + 20 })).toBeUndefined();
+    expect(
+      hiddenB && parseCatalogItem(hiddenB, { now: NOW + 20, role: 'catalog' }),
+    ).toBeUndefined();
   });
 
   it('never touches another author', async () => {

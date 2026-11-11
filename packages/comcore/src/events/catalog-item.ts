@@ -143,15 +143,16 @@ function readVariants(tags: NostrEvent['tags'], options: CatalogOption[]): Catal
 export interface ParseCatalogItemOptions {
   now?: number;
   /**
-   * The role of the listing's author. A `catalog` key K never publishes
-   * payment tags (1.1), so a K listing that carries `accept` is dropped.
+   * The role of the listing's author, required so no caller can forget it: a
+   * `catalog` key K never publishes payment tags (1.1), so a K listing that
+   * carries `accept` is dropped.
    */
-  role?: CatalogKeyRole;
+  role: CatalogKeyRole;
 }
 
 export function parseCatalogItem(
   event: Pick<NostrEvent, 'kind' | 'pubkey' | 'tags' | 'content' | 'created_at'>,
-  parseOptions: ParseCatalogItemOptions = {},
+  parseOptions: ParseCatalogItemOptions,
 ): CatalogItem | undefined {
   const now = parseOptions.now ?? nowSecs();
   const product = parseProduct(event);
