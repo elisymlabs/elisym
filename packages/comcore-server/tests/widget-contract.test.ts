@@ -8,7 +8,10 @@ import { buildStoreCatalog } from '../src/worker/catalog';
 import { NOW, ORIGIN, TIER, storeRecord, syntheticStore } from './fixtures';
 
 /** The widget's own gateway client against this server's handler, as on a store's page. */
-function widgetAgainstServer(record: (store: ReturnType<typeof syntheticStore>) => StoreRecord) {
+function widgetAgainstServer(
+  record: (store: ReturnType<typeof syntheticStore>) => StoreRecord,
+  loaded = true,
+) {
   const store = syntheticStore();
   const state = new MemoryState([record(store)]);
   const catalog = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW);
@@ -17,9 +20,10 @@ function widgetAgainstServer(record: (store: ReturnType<typeof syntheticStore>) 
     gatewaySecretKey: generateSecretKey(),
     // As in main: only leased (active) stores have a cached config.
     configFor: (owner) =>
-      owner === store.owner && state.store(owner)?.status === 'active'
+      loaded && owner === store.owner && state.store(owner)?.status === 'active'
         ? catalog?.config
         : undefined,
+    isListed: () => false,
     now: () => NOW,
   });
   // A browser's cross-origin fetch: a response without our origin allowed rejects, as CORS does.
@@ -67,6 +71,12 @@ describe('widget and gateway contract (3)', () => {
     const { gateway } = widgetAgainstServer((synthetic) => storeRecord(synthetic));
     const result = await gateway.openSession('e'.repeat(64), getPublicKey(generateSecretKey()));
     expect(result).toEqual({ kind: 'unavailable' });
+  });
+
+  it('a catalog not loaded yet is an error to retry later, not the unavailable state', async () => {
+    const { store, gateway } = widgetAgainstServer((synthetic) => storeRecord(synthetic), false);
+    const result = await gateway.openSession(store.owner, getPublicKey(generateSecretKey()));
+    expect(result).toEqual({ kind: 'error' });
   });
 
   it('a rate limit is an error to retry later', async () => {

@@ -14,6 +14,7 @@ import { serveGateway } from './gateway/http';
 import { parseStoreRegistry } from './registry';
 import { createServerPool } from './relay/pool';
 import { MemoryState } from './state/memory';
+import { isListed } from './worker/catalog';
 import { Worker } from './worker/worker';
 
 function required(name: string): string {
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
     gatewaySecretKey,
     widgetScript: widgetScript(),
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
+    isListed: (owner, address) => isListed(catalogs.get(owner), address),
   });
   serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),

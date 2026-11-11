@@ -16,7 +16,7 @@ import {
 import { KIND_DELETION, buildStoreAuthEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SUBSCRIPTION_BUDGET } from '../src/constants';
 import { passesWrapPreCheck } from '../src/relay/pool';
 import { MemoryState } from '../src/state/memory';
@@ -82,6 +82,11 @@ function heldProvider(): LlmProvider & { requests: TurnRequest[]; release: () =>
 
 class CountingState extends MemoryState {
   storesCalls = 0;
+  sweepCalls = 0;
+  override sweep(now: number): void {
+    this.sweepCalls += 1;
+    super.sweep(now);
+  }
   override stores(): StoreRecord[] {
     this.storesCalls += 1;
     return super.stores();
@@ -102,12 +107,17 @@ async function harness(input: {
   provider?: LlmProvider;
   records?: StoreRecord[];
   reserveUsd?: string;
+  historyTimeoutMs?: number;
+  configurePool?: (pool: FakePool) => void;
+  /** Leave the worker unstarted (the test starts it). */
+  idle?: boolean;
 }): Promise<Harness> {
   const clock = { now: NOW };
   let worker: Worker | undefined;
   const pool = new FakePool((event) =>
     passesWrapPreCheck(event, (pubkey) => worker?.isLeased(pubkey) ?? false, clock.now),
   );
+  input.configurePool?.(pool);
   for (const store of input.stores) {
     for (const event of store.events) {
       pool.relay(RELAY).accept(event);
@@ -127,9 +137,12 @@ async function harness(input: {
     reserveUsd: input.reserveUsd ?? '0.25',
     now: () => clock.now,
     log: (message) => logs.push(message),
+    ...(input.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: input.historyTimeoutMs }),
   });
   running.push(worker);
-  await worker.start();
+  if (!input.idle) {
+    await worker.start();
+  }
   return { pool, state, worker, gatewaySecret, logs, clock };
 }
 
@@ -546,5 +559,335 @@ describe('worker catalogs (5.1, 2.4)', () => {
         ),
       );
     await waitUntil(() => setup.worker.catalogs.get(owner)?.items.size === 1);
+  });
+});
+
+/** A store on keys given by the test: its config names `catalogSecret`'s key and, when given, a separate policy key. */
+function storeOnKeys(input: {
+  catalogSecret: Uint8Array;
+  policySecret?: Uint8Array;
+  listings?: NostrEvent[];
+}): SyntheticStore {
+  const ownerSecret = generateSecretKey();
+  const assistantSecret = generateSecretKey();
+  const catalogKey = getPublicKey(input.catalogSecret);
+  const policyKey = input.policySecret ? getPublicKey(input.policySecret) : undefined;
+  const config = finalizeEvent(
+    buildConfigEvent(
+      {
+        assistant: getPublicKey(assistantSecret),
+        origins: [ORIGIN],
+        name: 'Second Shop',
+        language: 'en',
+        currency: 'USD',
+        source: { kind: 'catalog' },
+        catalogKey,
+        ...(policyKey === undefined ? {} : { policyKey }),
+        createdAt: NOW - 100,
+      },
+      ownerSecret,
+    ),
+    ownerSecret,
+  );
+  const auths = [catalogKey, ...(policyKey === undefined ? [] : [policyKey])].map((key) =>
+    finalizeEvent(buildCatalogAuth({ key, mode: 'hosted', createdAt: NOW - 100 }), ownerSecret),
+  );
+  return {
+    ownerSecret,
+    owner: getPublicKey(ownerSecret),
+    assistantSecret,
+    assistant: getPublicKey(assistantSecret),
+    catalogSecret: input.catalogSecret,
+    catalogKey,
+    events: [config, ...auths, ...(input.listings ?? [])],
+  };
+}
+
+function liveRequests(setup: Harness) {
+  return setup.pool
+    .relay(RELAY)
+    .open.filter((subscription) => subscription.filters.some((filter) => filter.limit === 0));
+}
+
+function wrapRequests(setup: Harness) {
+  return setup.pool
+    .relay(RELAY)
+    .open.filter((subscription) =>
+      subscription.filters.some((filter) => filter.kinds?.includes(1059)),
+    );
+}
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe('worker review round 2', () => {
+  it('a key two stores share reloads both of them', async () => {
+    const first = syntheticStore();
+    const second = storeOnKeys({ catalogSecret: first.catalogSecret });
+    const setup = await harness({ stores: [first, second] });
+    expect(setup.worker.catalogs.get(second.owner)?.items.size).toBe(2);
+    setup.pool.relay(RELAY).accept(listing(first.catalogSecret, 'shared', NOW - 10));
+    await waitUntil(
+      () =>
+        setup.worker.catalogs.get(first.owner)?.items.size === 3 &&
+        setup.worker.catalogs.get(second.owner)?.items.size === 3,
+    );
+  });
+
+  it('watches a catalog key apart from the policy key', async () => {
+    const catalogSecret = generateSecretKey();
+    const store = storeOnKeys({ catalogSecret, policySecret: generateSecretKey() });
+    const setup = await harness({ stores: [store] });
+    setup.pool.relay(RELAY).accept(listing(catalogSecret, 'apart', NOW - 10));
+    await waitUntil(() => setup.worker.catalogs.get(store.owner)?.items.size === 1);
+  });
+
+  it('after a dropped connection: one live and one wrap REQ come back, and every store reloads in full', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const old = setup.pool.relay(RELAY);
+    old.drop();
+    // Published while the worker was away: only a full reload sees it.
+    const fresh = setup.pool.relay(RELAY);
+    fresh.events.push(listing(store.catalogSecret, 'missed', NOW - 10));
+    await waitUntil(() => setup.worker.catalogs.get(store.owner)?.items.size === 3, 4_000);
+    await waitUntil(() => liveRequests(setup).length === 1 && wrapRequests(setup).length === 1);
+    await pause(2_500);
+    expect(liveRequests(setup)).toHaveLength(1);
+    expect(wrapRequests(setup)).toHaveLength(1);
+    expect(fresh.requests.filter((filters) => filters[0]?.limit === 0)).toHaveLength(1);
+  });
+
+  it('a re-issue closes the old REQs without starting a reconnect', async () => {
+    const store = syntheticStore();
+    const record = storeRecord(store);
+    const later = syntheticStore();
+    const laterRecord = storeRecord(later, 'pending');
+    const setup = await harness({ stores: [store, later], records: [record, laterRecord] });
+    const relay = setup.pool.relay(RELAY);
+    laterRecord.status = 'active';
+    setup.worker.refreshLeases();
+    await waitUntil(() => setup.worker.catalogs.has(later.owner));
+    await waitUntil(() =>
+      wrapRequests(setup).some((subscription) => subscription.filters[0]?.['#p']?.length === 2),
+    );
+    const reloads = ownerReloads(setup, store);
+    await pause(2_500);
+    expect(wrapRequests(setup)).toHaveLength(1);
+    expect(liveRequests(setup)).toHaveLength(1);
+    expect(ownerReloads(setup, store)).toBe(reloads);
+    expect(relay).toBe(setup.pool.relay(RELAY));
+    // The newly leased store answers.
+    const visitorSecret = generateSecretKey();
+    ask(setup, later, visitorSecret, 'a8'.repeat(16));
+    await waitUntil(() => received(setup, later, visitorSecret).length === 1);
+  });
+
+  it('a wrap REQ with no real EOSE is closed and reopened after the backoff', async () => {
+    const store = syntheticStore();
+    const setup = await harness({
+      stores: [store],
+      historyTimeoutMs: 100,
+      configurePool: (pool) => {
+        pool.relay(RELAY).holdEose = (filters) =>
+          filters.some((filter) => filter.kinds?.includes(1059));
+      },
+    });
+    const opened = () =>
+      setup.pool
+        .relay(RELAY)
+        .requests.filter((filters) => filters.some((filter) => filter.kinds?.includes(1059)))
+        .length;
+    await waitUntil(() => opened() >= 2, 4_000);
+    expect(wrapRequests(setup).length).toBeLessThanOrEqual(1);
+  });
+
+  it('a page whose connection died after its EOSE does not count: the reload runs again', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const old = setup.pool.relay(RELAY);
+    old.disconnectAfterEose = (filters) =>
+      filters.some((filter) => filter.kinds?.includes(KIND_CONFIG));
+    old.accept(listing(store.catalogSecret, 'after-drop', NOW - 10));
+    await waitUntil(() => setup.worker.catalogs.get(store.owner)?.items.size === 3, 4_000);
+    const fresh = setup.pool.relay(RELAY);
+    expect(fresh).not.toBe(old);
+    expect(
+      fresh.requests.filter((filters) =>
+        filters.some((filter) => filter.kinds?.includes(KIND_CONFIG)),
+      ).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a Pay Core store loads while one default relay is unreachable', async () => {
+    const ownerSecret = generateSecretKey();
+    const storeSecret = generateSecretKey();
+    const assistantSecret = generateSecretKey();
+    const policyKey = getPublicKey(generateSecretKey());
+    const storeKey = getPublicKey(storeSecret);
+    const config = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant: getPublicKey(assistantSecret),
+          origins: [ORIGIN],
+          name: 'Pay Core Shop',
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'paycore' },
+          catalogKey: storeKey,
+          policyKey,
+          createdAt: NOW - 100,
+        },
+        ownerSecret,
+      ),
+      ownerSecret,
+    );
+    const store: SyntheticStore = {
+      ownerSecret,
+      owner: getPublicKey(ownerSecret),
+      assistantSecret,
+      assistant: getPublicKey(assistantSecret),
+      catalogSecret: storeSecret,
+      catalogKey: storeKey,
+      events: [config, listing(storeSecret, 'paycore-item', NOW - 50)],
+    };
+    const setup = await harness({
+      stores: [store],
+      configurePool: (pool) => {
+        pool.unreachable.add('wss://relay.damus.io');
+        pool
+          .relay('wss://nos.lol')
+          .accept(
+            finalizeEvent(
+              buildStoreAuthEvent({ storePubkey: storeKey, mode: 'hosted', createdAt: NOW - 100 }),
+              ownerSecret,
+            ),
+          );
+      },
+    });
+    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(1);
+  });
+
+  it('events during a pending retry wait for it instead of reloading at once', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const relay = setup.pool.relay(RELAY);
+    relay.closeOn = (filters) => filters.some((filter) => filter.kinds?.includes(KIND_CONFIG));
+    const before = ownerReloads(setup, store);
+    relay.accept(listing(store.catalogSecret, 'retry-0', NOW - 10));
+    await waitUntil(() => ownerReloads(setup, store) === before + 1);
+    for (let index = 1; index < 6; index += 1) {
+      relay.accept(listing(store.catalogSecret, `retry-${index}`, NOW - 10));
+    }
+    await pause(100);
+    expect(ownerReloads(setup, store)).toBe(before + 1);
+  });
+
+  it('a worker stopped while starting opens nothing', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store], idle: true });
+    const started = setup.worker.start();
+    setup.worker.stop();
+    await started;
+    await pause(50);
+    expect(setup.pool.relay(RELAY).open).toHaveLength(0);
+  });
+
+  it('sweeps on an interval', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const store = syntheticStore();
+      const setup = await harness({ stores: [store] });
+      const visitor = 'b'.repeat(64);
+      const session = setup.state.session(store.assistant, visitor, NOW);
+      setup.clock.now = session.sessionEnd;
+      session.history = [{ role: 'user', content: 'hi' }];
+      setup.state.saveSession(session);
+      vi.advanceTimersByTime(60_000);
+      expect(setup.state.session(store.assistant, visitor, NOW).history).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an ask for a store with no catalog gets error and frees its reservation', async () => {
+    const store = syntheticStore();
+    const withoutConfig = { ...store, events: store.events.slice(1) };
+    const setup = await harness({ stores: [withoutConfig] });
+    expect(setup.worker.catalogs.has(store.owner)).toBe(false);
+    const visitorSecret = generateSecretKey();
+    ask(setup, store, visitorSecret, 'a9'.repeat(16));
+    await waitUntil(() => received(setup, store, visitorSecret).length === 1);
+    await setup.worker.idle();
+    expect(received(setup, store, visitorSecret)[0]?.message).toEqual({
+      type: 'unavailable',
+      ask_id: 'a9'.repeat(16),
+      reason: 'error',
+    });
+    expect(day(setup, store)).toEqual({ spent: '0', reserved: '0' });
+  });
+
+  it('a restart with a reload retry pending still reloads', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const relay = setup.pool.relay(RELAY);
+    relay.closeOn = (filters) => filters.some((filter) => filter.kinds?.includes(KIND_CONFIG));
+    const before = ownerReloads(setup, store);
+    relay.accept(listing(store.catalogSecret, 'restart', NOW - 10));
+    await waitUntil(() => ownerReloads(setup, store) === before + 1);
+    setup.worker.stop();
+    relay.closeOn = undefined;
+    await setup.worker.start();
+    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(3);
+  });
+
+  it('a relay sending events nobody asked for cannot hold the queue', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const relay = setup.pool.relay(RELAY);
+    let serial = 0;
+    relay.stray = () =>
+      Array.from({ length: 500 }, () => {
+        serial += 1;
+        return {
+          ...listing(store.catalogSecret, 'x', NOW),
+          id: serial.toString(16).padStart(64, '0'),
+          pubkey: 'f'.repeat(64),
+        };
+      });
+    const before = ownerReloads(setup, store);
+    relay.accept(listing(store.catalogSecret, 'stray', NOW - 10));
+    await waitUntil(() => setup.worker.catalogs.get(store.owner)?.items.size === 3);
+    await setup.worker.catalogsSettled();
+    expect(ownerReloads(setup, store) - before).toBeLessThanOrEqual(2);
+  });
+
+  it('a worker stopped while starting leaves no sweep running', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const store = syntheticStore();
+      const setup = await harness({ stores: [store], idle: true });
+      const started = setup.worker.start();
+      setup.worker.stop();
+      await started;
+      vi.advanceTimersByTime(120_000);
+      expect(setup.state.sweepCalls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a relay that keeps closing the live REQ meets a growing backoff, not a reload storm', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const relay = setup.pool.relay(RELAY);
+    const opens = () => relay.requests.filter((filters) => filters[0]?.limit === 0).length;
+    const before = opens();
+    relay.closeOn = (filters) => filters[0]?.limit === 0;
+    relay.open
+      .filter((subscription) => subscription.filters[0]?.limit === 0)
+      .forEach((subscription) => subscription.params.onclose?.('closed by relay'));
+    // Delays of 0.5-1 s, 1-2 s, 2-4 s: at most three reopens in 4.2 s; a reset each time allows four or more.
+    await pause(4_200);
+    expect(opens() - before).toBeLessThanOrEqual(3);
   });
 });

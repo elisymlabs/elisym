@@ -19,6 +19,7 @@ import {
   CONNECTION_TIMEOUT_MS,
   RELOAD_SLOTS,
   SUBSCRIPTION_BUDGET,
+  STABLE_CONNECTION_MS,
   SWEEP_INTERVAL_MS,
   TURN_DEADLINE_MS,
   VERIFIED_IDS_TTL_SECS,
@@ -38,8 +39,6 @@ const KIND_GIFT_WRAP = 1059;
  * ask), so a turn's input cost stays bounded; phase 3 compacts instead (5.8).
  */
 const MAX_HISTORY_MESSAGES = 20;
-/** A connection that stayed up this long resets the backoff (one ping cycle, 2.4). */
-const STABLE_CONNECTION_MS = 60_000;
 
 /** Wrap a provider so a turn stops calling the model once its spend reaches `maxUsd`. */
 export function cappedProvider(
@@ -76,6 +75,8 @@ export interface WorkerDeps {
    * its daily budget by at most the last model call of each turn in flight.
    */
   reserveUsd: string;
+  /** A history read with no real EOSE in this long fails (2.4); tests shorten it. */
+  historyTimeoutMs?: number;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -107,6 +108,7 @@ export class Worker {
       relayUrl: deps.relayUrl,
       pool: deps.pool,
       leased: () => this.leasedStores(),
+      ...(deps.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: deps.historyTimeoutMs }),
       now: this.now,
       log: this.log,
     });
@@ -163,6 +165,9 @@ export class Worker {
     this.stopped = false;
     this.loader.start();
     await this.loader.settled();
+    if (this.stopped) {
+      return;
+    }
     this.openWraps();
     this.sweepTimer = setInterval(() => this.deps.state.sweep(this.now()), SWEEP_INTERVAL_MS);
   }
@@ -234,14 +239,13 @@ export class Worker {
               (event) => this.onWrap(event),
               {
                 alreadyHaveEvent: (id) => this.alreadyHave(id),
+                ...(this.deps.historyTimeoutMs === undefined
+                  ? {}
+                  : { timeoutMs: this.deps.historyTimeoutMs }),
                 onClose: () => this.wrapsClosed(generation, opened),
               },
             );
-            void read.done.then((real) => {
-              if (!real) {
-                read.close();
-              }
-            });
+            // With no real EOSE in time, readHistory closes the REQ itself, which reopens it here.
             return read;
           });
           for (const subscription of previous) {

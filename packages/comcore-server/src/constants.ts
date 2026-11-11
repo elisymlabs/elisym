@@ -27,3 +27,11 @@ export const RUMOR_DEDUP_SECS = 24 * 60 * 60;
 export const CATALOG_PAGE_LIMIT = 500;
 /** How often ended sessions, dedup ids and past days' counters are swept (5.8). */
 export const SWEEP_INTERVAL_MS = 60_000;
+/** A connection that stayed up this long resets its backoff (one ping cycle, 2.4). */
+export const STABLE_CONNECTION_MS = 60_000;
+/** Pages read per filter at most, so no relay can hold the reload queue (5.1). */
+export const CATALOG_PAGES_PER_FILTER = 40;
+/** A third-party relay of a `paycore` source gets this long to connect and per page (5.1). */
+export const EXTRA_RELAY_TIMEOUT_MS = 5_000;
+/** ...and this long in all per reload, so a dead one holds the queue at most this (5.1). */
+export const EXTRA_RELAY_BUDGET_MS = 10_000;

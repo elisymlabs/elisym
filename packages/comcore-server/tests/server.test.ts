@@ -6,7 +6,7 @@ import { WindowLimiter, ipKey } from '../src/gateway/limits';
 import { Backoff } from '../src/relay/backoff';
 import { passesWrapPreCheck } from '../src/relay/pool';
 import { MemoryState } from '../src/state/memory';
-import { buildStoreCatalog } from '../src/worker/catalog';
+import { buildStoreCatalog, isListed } from '../src/worker/catalog';
 import { intakeWrap } from '../src/worker/intake';
 import { NOW, ORIGIN, askWrap, scriptedProvider, storeRecord, syntheticStore } from './fixtures';
 
@@ -172,6 +172,7 @@ describe('gateway (3)', () => {
       state,
       gatewaySecretKey: gatewaySecret,
       configFor: (owner) => (owner === store.owner ? catalog?.config : undefined),
+      isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
       now: () => NOW,
     });
     const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -210,6 +211,7 @@ describe('gateway (3)', () => {
       state: new MemoryState([storeRecord(store)]),
       gatewaySecretKey: generateSecretKey(),
       configFor: () => undefined,
+      isListed: () => false,
     };
     const get = () => ({
       request: new Request('http://localhost/widget.js'),

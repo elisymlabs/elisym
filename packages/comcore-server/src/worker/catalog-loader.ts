@@ -1,6 +1,14 @@
 import type { StoreCatalog } from '@elisym/comcore-agent';
 import type { Filter, NostrEvent } from 'nostr-tools';
-import { CATALOG_PAGE_LIMIT, CONNECTION_TIMEOUT_MS } from '../constants';
+import { matchFilter } from 'nostr-tools/filter';
+import {
+  CATALOG_PAGE_LIMIT,
+  CATALOG_PAGES_PER_FILTER,
+  CONNECTION_TIMEOUT_MS,
+  EXTRA_RELAY_BUDGET_MS,
+  EXTRA_RELAY_TIMEOUT_MS,
+  STABLE_CONNECTION_MS,
+} from '../constants';
 import { Backoff } from '../relay/backoff';
 import { chunkByBytes } from '../relay/chunks';
 import { readHistory } from '../relay/history';
@@ -22,6 +30,8 @@ export interface CatalogLoaderDeps {
   leased: () => StoreRecord[];
   now: () => number;
   log: (message: string) => void;
+  /** A page with no real EOSE in this long fails (2.4); tests shorten it. */
+  historyTimeoutMs?: number;
 }
 
 /**
@@ -38,13 +48,18 @@ export interface CatalogLoaderDeps {
 export class CatalogLoader {
   readonly catalogs = new Map<string, StoreCatalog>();
   private readonly dirty = new Set<string>();
+  /** Paces reload retries; reset by a reload that succeeded. */
   private readonly backoff = new Backoff();
+  /** Paces live REQ reopens; reset only by a live REQ that stayed up through one ping cycle (2.4). */
+  private readonly liveBackoff = new Backoff();
+  private liveOpenedAt = 0;
   private pumping = false;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = true;
   private liveGeneration = 0;
   private liveSubscriptions: { close: () => void }[] = [];
-  private liveAuthors = new Map<string, string>();
+  /** Author to the owners whose stores it feeds: two stores may share a key or name each other's owner. */
+  private liveAuthors = new Map<string, Set<string>>();
 
   constructor(private readonly deps: CatalogLoaderDeps) {}
 
@@ -65,6 +80,7 @@ export class CatalogLoader {
     this.stopped = true;
     this.liveGeneration += 1;
     clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
     for (const subscription of this.liveSubscriptions) {
       subscription.close();
     }
@@ -73,7 +89,10 @@ export class CatalogLoader {
 
   /** Resolves once the queue is empty and nothing is reloading (tests and start-up). */
   async settled(): Promise<void> {
-    while (this.pumping || (this.dirty.size > 0 && this.retryTimer === undefined)) {
+    while (
+      !this.stopped &&
+      (this.pumping || (this.dirty.size > 0 && this.retryTimer === undefined))
+    ) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
   }
@@ -131,22 +150,48 @@ export class CatalogLoader {
    * A page boundary is inclusive and events are kept once by id, so events
    * sharing the boundary second are not lost.
    */
-  private async readAll(url: string, filters: Filter[]): Promise<NostrEvent[] | undefined> {
+  private async readAll(
+    url: string,
+    filters: Filter[],
+    limits: { connectionTimeoutMs: number; pageTimeoutMs?: number; deadline?: number } = {
+      connectionTimeoutMs: CONNECTION_TIMEOUT_MS,
+      ...(this.deps.historyTimeoutMs === undefined
+        ? {}
+        : { pageTimeoutMs: this.deps.historyTimeoutMs }),
+    },
+  ): Promise<NostrEvent[] | undefined> {
     let relay;
     try {
-      relay = await this.deps.pool.ensureRelay(url, { connectionTimeout: CONNECTION_TIMEOUT_MS });
+      relay = await this.deps.pool.ensureRelay(url, {
+        connectionTimeout: limits.connectionTimeoutMs,
+      });
     } catch {
       return undefined;
     }
     const collected = new Map<string, NostrEvent>();
     for (const filter of filters) {
       let until: number | undefined;
-      for (;;) {
+      // A relay that keeps answering full pages cannot hold the queue: pages are capped.
+      for (let pages = 0; pages < CATALOG_PAGES_PER_FILTER; pages += 1) {
+        if (limits.deadline !== undefined && Date.now() >= limits.deadline) {
+          return undefined;
+        }
         const page: NostrEvent[] = [];
+        const pageFilter: Filter = {
+          ...filter,
+          limit: CATALOG_PAGE_LIMIT,
+          ...(until === undefined ? {} : { until }),
+        };
         const read = readHistory(
           relay,
-          [{ ...filter, limit: CATALOG_PAGE_LIMIT, ...(until === undefined ? {} : { until }) }],
-          (event) => page.push(event),
+          [pageFilter],
+          (event) => {
+            // Only what was asked for: another author's events never reach the cache.
+            if (matchFilter(pageFilter, event)) {
+              page.push(event);
+            }
+          },
+          limits.pageTimeoutMs === undefined ? {} : { timeoutMs: limits.pageTimeoutMs },
         );
         const real = await read.done;
         read.close();
@@ -169,10 +214,21 @@ export class CatalogLoader {
     return [...collected.values()];
   }
 
-  /** Best effort: what a third-party relay returns is merged; a dead one changes nothing. */
+  /**
+   * Best effort: what a third-party relay returns within its time budget is
+   * merged; a dead or slow one changes nothing and holds the queue at most
+   * that budget.
+   */
   private async readExtra(owner: string, productKey: string | undefined, relays: string[]) {
+    const deadline = Date.now() + EXTRA_RELAY_BUDGET_MS;
     const reads = await Promise.all(
-      relays.map((url) => this.readAll(url, extraFilters(owner, productKey))),
+      relays.map((url) =>
+        this.readAll(url, extraFilters(owner, productKey), {
+          connectionTimeoutMs: EXTRA_RELAY_TIMEOUT_MS,
+          pageTimeoutMs: EXTRA_RELAY_TIMEOUT_MS,
+          deadline,
+        }),
+      ),
     );
     return reads.flatMap((events) => events ?? []);
   }
@@ -215,15 +271,20 @@ export class CatalogLoader {
     return true;
   }
 
-  /** Author to owner for every leased store: the owner, and the keys its cached config names. */
-  private authors(): Map<string, string> {
-    const authors = new Map<string, string>();
+  /** Author to owners for every leased store: the owner, and the keys its cached config names. */
+  private authors(): Map<string, Set<string>> {
+    const authors = new Map<string, Set<string>>();
+    const add = (author: string, owner: string) => {
+      const owners = authors.get(author) ?? new Set<string>();
+      owners.add(owner);
+      authors.set(author, owners);
+    };
     for (const store of this.deps.leased()) {
-      authors.set(store.owner, store.owner);
+      add(store.owner, store.owner);
       const config = this.catalogs.get(store.owner)?.config;
       if (config) {
-        authors.set(config.catalogKey, store.owner);
-        authors.set(config.policyKey, store.owner);
+        add(config.catalogKey, store.owner);
+        add(config.policyKey, store.owner);
       }
     }
     return authors;
@@ -234,7 +295,14 @@ export class CatalogLoader {
     const next = this.authors();
     const same =
       next.size === this.liveAuthors.size &&
-      [...next].every(([author, owner]) => this.liveAuthors.get(author) === owner);
+      [...next].every(([author, owners]) => {
+        const current = this.liveAuthors.get(author);
+        return (
+          current !== undefined &&
+          current.size === owners.size &&
+          [...owners].every((owner) => current.has(owner))
+        );
+      });
     if (!same) {
       this.openLive();
     }
@@ -262,11 +330,11 @@ export class CatalogLoader {
           if (generation !== this.liveGeneration) {
             return;
           }
+          this.liveOpenedAt = Date.now();
           this.liveSubscriptions = chunkByBytes([...authors.keys()]).map((chunk) =>
             relay.subscribe([{ authors: chunk, limit: 0 }], {
               onevent: (event) => {
-                const owner = authors.get(event.pubkey);
-                if (owner !== undefined) {
+                for (const owner of authors.get(event.pubkey) ?? []) {
                   this.enqueue(owner);
                 }
               },
@@ -292,6 +360,10 @@ export class CatalogLoader {
       subscription.close();
     }
     this.liveSubscriptions = [];
+    if (this.liveOpenedAt !== 0 && Date.now() - this.liveOpenedAt >= STABLE_CONNECTION_MS) {
+      this.liveBackoff.reset();
+    }
+    this.liveOpenedAt = 0;
     setTimeout(() => {
       if (this.stopped) {
         return;
@@ -300,6 +372,6 @@ export class CatalogLoader {
       for (const store of this.deps.leased()) {
         this.enqueue(store.owner);
       }
-    }, this.backoff.next());
+    }, this.liveBackoff.next());
   }
 }

@@ -26,6 +26,10 @@ export class FakeRelay implements RelayLike {
   holdEose: ((filters: Filter[]) => boolean) | undefined;
   /** When set, a REQ matching it is closed by the relay right after its events. */
   closeOn: ((filters: Filter[]) => boolean) | undefined;
+  /** When set, sent to every history REQ whether it matches or not (a misbehaving relay). */
+  stray: (() => NostrEvent[]) | undefined;
+  /** When set, the socket dies right after the EOSE of a REQ matching it (no close reaches the REQ yet). */
+  disconnectAfterEose: ((filters: Filter[]) => boolean) | undefined;
 
   constructor(private readonly verify: (event: NostrEvent) => boolean) {}
 
@@ -74,12 +78,19 @@ export class FakeRelay implements RelayLike {
           this.deliver(subscription, event);
         }
       }
+      for (const event of this.stray?.() ?? []) {
+        this.deliver(subscription, event);
+      }
       if (this.closeOn?.(filters)) {
         close('relay connection closed');
         return;
       }
       if (!this.holdEose?.(filters)) {
         params.oneose?.();
+      }
+      if (this.disconnectAfterEose?.(filters)) {
+        this.disconnectAfterEose = undefined;
+        this.connected = false;
       }
       subscription.live = true;
     });
@@ -113,6 +124,8 @@ export class FakeRelay implements RelayLike {
 export class FakePool implements ServerPool {
   readonly relays = new Map<string, FakeRelay>();
   readonly published: NostrEvent[] = [];
+  /** URLs whose connection attempts fail. */
+  readonly unreachable = new Set<string>();
 
   constructor(private readonly verify: (event: NostrEvent) => boolean = () => true) {}
 
@@ -132,6 +145,9 @@ export class FakePool implements ServerPool {
   }
 
   async ensureRelay(url: string): Promise<RelayLike> {
+    if (this.unreachable.has(url)) {
+      throw new Error(`cannot connect to ${url}`);
+    }
     return this.relay(url);
   }
 

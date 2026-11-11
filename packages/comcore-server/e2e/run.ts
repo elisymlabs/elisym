@@ -21,6 +21,7 @@ import { createGateway } from '../src/gateway/gateway';
 import { serveGateway } from '../src/gateway/http';
 import { createServerPool } from '../src/relay/pool';
 import { MemoryState } from '../src/state/memory';
+import { isListed } from '../src/worker/catalog';
 import { Worker } from '../src/worker/worker';
 import { ORIGIN, scriptedProvider, storeRecord, syntheticStore } from '../tests/fixtures';
 
@@ -133,6 +134,7 @@ async function main(): Promise<void> {
       state,
       gatewaySecretKey: gatewaySecret,
       configFor: (owner) => configs.get(owner)?.config,
+      isListed: (owner, address) => isListed(configs.get(owner), address),
     }),
     { port: GATEWAY_PORT, trustProxy: false },
   );

@@ -38,6 +38,11 @@ export interface GatewayDeps {
   gatewaySecretKey: Uint8Array;
   /** The store's current config (30496), as the worker's catalog cache reads it. */
   configFor: (owner: string) => StoreConfig | undefined;
+  /**
+   * Whether an address is a listing in the store's cached catalog: only those
+   * clicks are counted, so the counter cannot be grown with made-up addresses.
+   */
+  isListed: (owner: string, address: string) => boolean;
   /** The built `widget.js`, served at `GET /widget.js`; absent means not served here. */
   widgetScript?: string;
   now?: () => number;
@@ -107,8 +112,12 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
       return json({ unavailable: true, reason: 'inactive', contact: null }, 503, requestOrigin);
     }
     const config = deps.configFor(owner);
+    if (config === undefined) {
+      // Active but its catalog is not loaded yet (a relay outage at boot): the widget retries later.
+      return json({ error: 'not_ready' }, 503, requestOrigin);
+    }
     const origin = allowedOrigin(config, request.headers.get('origin'));
-    if (config === undefined || origin === undefined) {
+    if (origin === undefined) {
       return json({ error: 'forbidden' }, 403, requestOrigin);
     }
     if (!ticketsPerStore.hit(owner, nowSecs * 1000, record.tier.ticketsPerStorePerMinute)) {
@@ -160,7 +169,9 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     if (check === 'invalid' || address === undefined) {
       return json({ error: 'forbidden' }, 403, origin);
     }
-    deps.state.countClick(owner, parsed.data.address);
+    if (deps.isListed(owner, parsed.data.address)) {
+      deps.state.countClick(owner, parsed.data.address);
+    }
     return new Response(null, {
       status: 204,
       headers: { 'access-control-allow-origin': origin, vary: 'origin' },

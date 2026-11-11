@@ -8,6 +8,7 @@ import {
   type Policy,
   type StoreConfig,
   decryptPrivateConfig,
+  parseAddress,
   parseCatalogItem,
   parseConfig,
   parsePolicy,
@@ -165,5 +166,17 @@ export function buildStoreCatalog(
     decryptPrivateConfig(config, assistantSecretKey),
     items,
     policies,
+  );
+}
+
+/** Whether `address` (`30402:<key>:<d>`) is a listing in this cached catalog. */
+export function isListed(catalog: StoreCatalog | undefined, address: string): boolean {
+  const parsed = parseAddress(address);
+  return (
+    catalog !== undefined &&
+    parsed !== undefined &&
+    parsed.kind === KIND_PRODUCT &&
+    parsed.author === catalog.config.catalogKey &&
+    catalog.items.has(parsed.d)
   );
 }

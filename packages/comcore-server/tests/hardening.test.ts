@@ -10,7 +10,7 @@ import { readHistory } from '../src/relay/history';
 import type { RelayLike } from '../src/relay/pool';
 import { MemoryState } from '../src/state/memory';
 import type { StoreRecord } from '../src/state/types';
-import { buildStoreCatalog } from '../src/worker/catalog';
+import { buildStoreCatalog, isListed } from '../src/worker/catalog';
 import { intakeWrap } from '../src/worker/intake';
 import { NOW, ORIGIN, TIER, askWrap, storeRecord, syntheticStore } from './fixtures';
 
@@ -25,7 +25,7 @@ const WRAP: NostrEvent = {
   sig: '0',
 };
 
-function gateway(record: (store: ReturnType<typeof syntheticStore>) => StoreRecord) {
+function gateway(record: (store: ReturnType<typeof syntheticStore>) => StoreRecord, loaded = true) {
   const store = syntheticStore();
   const state = new MemoryState([record(store)]);
   const gatewaySecret = generateSecretKey();
@@ -35,9 +35,10 @@ function gateway(record: (store: ReturnType<typeof syntheticStore>) => StoreReco
     gatewaySecretKey: gatewaySecret,
     // As in main: only leased (active) stores have a cached config.
     configFor: (owner) =>
-      owner === store.owner && state.store(owner)?.status === 'active'
+      loaded && owner === store.owner && state.store(owner)?.status === 'active'
         ? catalog?.config
         : undefined,
+    isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
     now: () => NOW,
   });
   const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -100,6 +101,31 @@ describe('gateway refusals (3)', () => {
     }
     expect(statuses.slice(0, 60).every((status) => status === 403)).toBe(true);
     expect(statuses[60]).toBe(429);
+  });
+});
+
+describe('gateway review round 2 (3)', () => {
+  it('an active store whose catalog is not loaded yet is a retryable 503, not a refusal', async () => {
+    const { store, post } = gateway((synthetic) => storeRecord(synthetic), false);
+    const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
+    expect(response.status).toBe(503);
+    expect(response.headers.get('access-control-allow-origin')).toBe(ORIGIN);
+    expect(await response.json()).toEqual({ error: 'not_ready' });
+  });
+
+  it('counts a click only on a listing of the store, and still under an expired ticket', async () => {
+    const { store, state, gatewaySecret, post } = gateway((synthetic) => storeRecord(synthetic));
+    const visitor = 'a'.repeat(64);
+    const expired = finalizeEvent(
+      buildTicket({ visitor, store: store.owner, now: NOW - 31 * 60 }),
+      gatewaySecret,
+    );
+    const listed = `30402:${store.catalogKey}:jacket-wool`;
+    const madeUp = `30402:${store.catalogKey}:no-such-item`;
+    expect((await post('/v1/click', { ticket: expired, address: listed })).status).toBe(204);
+    expect((await post('/v1/click', { ticket: expired, address: madeUp })).status).toBe(204);
+    expect(state.clicksFor(store.owner, listed)).toBe(1);
+    expect(state.clicksFor(store.owner, madeUp)).toBe(0);
   });
 });
 
