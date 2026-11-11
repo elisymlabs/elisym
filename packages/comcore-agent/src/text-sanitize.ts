@@ -10,8 +10,10 @@ import { stripInvisible } from './fence';
 const LOOKALIKES: Readonly<Record<string, string>> = {
   '<': '‹',
   '>': '›',
-  '[': '［',
-  ']': '］',
+  // Mathematical white square brackets: unlike fullwidth ones, NFKC leaves them as they are,
+  // so no later normalization can fold them back into a link.
+  '[': '\u27e6',
+  ']': '\u27e7',
 };
 
 export function sanitizeAnswerText(text: string): string {

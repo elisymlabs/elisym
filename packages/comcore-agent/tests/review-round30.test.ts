@@ -125,3 +125,13 @@ describe('security review: every static abbreviation also reads with a dot', () 
     ).toHaveLength(0);
   });
 });
+
+describe('deepsec: the bracket lookalikes survive NFKC', () => {
+  it('sanitized text never folds back into markdown or HTML syntax', async () => {
+    const { sanitizeAnswerText } = await import('../src/text-sanitize');
+    const cleaned = sanitizeAnswerText(
+      '[click](https://evil.example) <b>x</b> ![img](x)',
+    ).normalize('NFKC');
+    expect(cleaned).not.toMatch(/[[\]<>]/);
+  });
+});
