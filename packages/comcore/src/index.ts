@@ -78,6 +78,9 @@ export {
   type SyncCatalogOptions,
   type SyncDiff,
   type SyncRelayClient,
+  type PolicyWriteOptions,
   DEFAULT_SYNC_EVENTS_PER_SEC,
+  removePolicy,
+  setPolicy,
   syncCatalog,
 } from './sync';

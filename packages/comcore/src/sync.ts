@@ -10,7 +10,7 @@ import {
 } from '@elisym/commerce';
 import type { EventTemplate, Filter, NostrEvent } from 'nostr-tools';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
-import { COMCORE_RELAYS, KIND_CATALOG_AUTH } from './constants';
+import { COMCORE_RELAYS, KIND_CATALOG_AUTH, KIND_POLICY } from './constants';
 import { hasRole } from './events/catalog-auth';
 import {
   type CatalogItemInput,
@@ -18,6 +18,7 @@ import {
   buildCatalogItemEvent,
   catalogAddress,
 } from './events/catalog-item';
+import { type PolicyInput, PolicyInputSchema, buildPolicyEvent } from './events/policy';
 
 const KIND_PRODUCT = 30402;
 /** Default publishing pace, well under the shared relay's server-wide cap. */
@@ -85,6 +86,77 @@ function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Refuse unless the owner currently authorizes `key` as a catalog key (30497). */
+async function requireCatalogKey(
+  client: SyncRelayClient,
+  store: string,
+  key: string,
+  now: number,
+): Promise<void> {
+  const authorityEvents = (
+    await client.query(COMCORE_RELAYS, {
+      kinds: [KIND_CATALOG_AUTH, KIND_DELETION],
+      authors: [store],
+    })
+  ).filter((event) => isEventShaped(event));
+  if (!hasRole(authorityEvents, store, key, 'catalog', now)) {
+    throw new Error('This key is not authorized as a catalog key by the store owner');
+  }
+}
+
+interface OwnAddresses {
+  /** Well-shaped, genuinely signed events by `key` only. */
+  ownEvents: NostrEvent[];
+  /** Latest version of each `d` actually on the relay, however far ahead its clock was. */
+  latestAt: Map<string, number>;
+  /** Latest NIP-09 deletion of each `d`, from the kind 5s themselves. */
+  deletedAt: Map<string, number>;
+}
+
+/**
+ * `key`'s addressable events of `kind` and its deletions, cleaned: a forged,
+ * foreign or malformed relay entry must neither crash a sync nor steer its
+ * dating or its deletions. A NIP-09 relay may keep nothing of a deleted address
+ * but the deletion, so deletions are read straight from the kind 5s.
+ */
+async function readOwnAddresses(
+  client: SyncRelayClient,
+  key: string,
+  kind: number,
+): Promise<OwnAddresses> {
+  const ownEvents = (
+    await client.query(COMCORE_RELAYS, { kinds: [kind, KIND_DELETION], authors: [key] })
+  ).filter((event) => isEventShaped(event) && event.pubkey === key && isGenuineEvent(event));
+  const addressPrefix = `${kind}:${key}:`;
+  const deletedAt = new Map<string, number>();
+  const latestAt = new Map<string, number>();
+  for (const event of ownEvents) {
+    if (event.kind === KIND_DELETION) {
+      for (const address of tagValues(event.tags, 'a')) {
+        if (address.startsWith(addressPrefix)) {
+          const d = address.slice(addressPrefix.length);
+          deletedAt.set(d, Math.max(deletedAt.get(d) ?? -1, event.created_at));
+        }
+      }
+      continue;
+    }
+    const d = tagValue(event.tags, 'd');
+    if (event.kind === kind && d !== undefined) {
+      latestAt.set(d, Math.max(latestAt.get(d) ?? -1, event.created_at));
+    }
+  }
+  return { ownEvents, latestAt, deletedAt };
+}
+
+/** A date after every version and every deletion of `d`: a tie loses to the lower id (NIP-01). */
+function floorFor(addresses: OwnAddresses, d: string, now: number): number {
+  return Math.max(
+    now,
+    (addresses.latestAt.get(d) ?? -1) + 1,
+    (addresses.deletedAt.get(d) ?? -1) + 1,
+  );
+}
+
 /**
  * Bring K's listings on the relay in line with `items` (7.1): publish new and
  * changed ones, hide (and NIP-09 delete) K's own listings no longer in
@@ -95,15 +167,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const now = options.now ?? nowSecs();
   const key = getPublicKey(options.signer);
   const relays = COMCORE_RELAYS;
-  const authorityEvents = (
-    await options.client.query(relays, {
-      kinds: [KIND_CATALOG_AUTH, KIND_DELETION],
-      authors: [options.store],
-    })
-  ).filter((event) => isEventShaped(event));
-  if (!hasRole(authorityEvents, options.store, key, 'catalog', now)) {
-    throw new Error('This key is not authorized as a catalog key by the store owner');
-  }
+  await requireCatalogKey(options.client, options.store, key, now);
 
   const inputs = new Map<string, CatalogItemInput>();
   for (const input of options.items) {
@@ -114,40 +178,11 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     inputs.set(d, input);
   }
 
-  // Only genuinely signed, well-shaped events: a forged or malformed relay entry
-  // must neither crash the sync nor steer its dating or its deletions.
-  const ownEvents = (
-    await options.client.query(relays, {
-      kinds: [KIND_PRODUCT, KIND_DELETION],
-      authors: [key],
-    })
-  ).filter((event) => isEventShaped(event) && event.pubkey === key && isGenuineEvent(event));
-  // Deletions straight from K's kind 5s: a NIP-09 relay drops every version an
-  // `a` deletion covers, so a deletion may be all that is left of an address.
-  const addressPrefix = `${KIND_PRODUCT}:${key}:`;
-  const deletedAt = new Map<string, number>();
-  for (const event of ownEvents) {
-    if (event.kind !== KIND_DELETION) {
-      continue;
-    }
-    for (const address of tagValues(event.tags, 'a')) {
-      if (!address.startsWith(addressPrefix)) {
-        continue;
-      }
-      const d = address.slice(addressPrefix.length);
-      deletedAt.set(d, Math.max(deletedAt.get(d) ?? -1, event.created_at));
-    }
-  }
-  // The latest version of each address actually on the relay, however far
-  // ahead its clock was: replacements are dated after it, so none loses.
-  const latestAt = new Map<string, number>();
-  for (const event of ownEvents) {
-    const d = tagValue(event.tags, 'd');
-    if (event.kind !== KIND_PRODUCT || d === undefined) {
-      continue;
-    }
-    latestAt.set(d, Math.max(latestAt.get(d) ?? -1, event.created_at));
-  }
+  const { ownEvents, latestAt, deletedAt } = await readOwnAddresses(
+    options.client,
+    key,
+    KIND_PRODUCT,
+  );
   const current = new Map<string, NostrEvent>();
   for (const d of latestAt.keys()) {
     // Our own listings, however far ahead a clock dated them: a reader will see
@@ -158,8 +193,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
       current.set(d, newest);
     }
   }
-  const floorFor = (d: string): number =>
-    Math.max(now, (latestAt.get(d) ?? -1) + 1, (deletedAt.get(d) ?? -1) + 1);
+  const addresses = { ownEvents, latestAt, deletedAt };
 
   const diff: SyncDiff = { created: [], updated: [], hidden: [], unchanged: [] };
   const toPublish: EventTemplate[] = [];
@@ -167,7 +201,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     const listed = current.get(d);
     // Dated after every version on the relay and after any deletion of the address:
     // a tie loses to the lower id (NIP-01), and a deletion removes all up to its date.
-    const createdAt = floorFor(d);
+    const createdAt = floorFor(addresses, d, now);
     const template = buildCatalogItemEvent({ ...input, createdAt });
     if (!listed) {
       diff.created.push(d);
@@ -194,7 +228,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     }
     diff.hidden.push(d);
     // Both dated at or after the listing they replace, so neither loses to it.
-    const hiddenAt = floorFor(d);
+    const hiddenAt = floorFor(addresses, d, now);
     if (tagValue(listed.tags, 'visibility') !== 'hidden') {
       toPublish.push({
         kind: KIND_PRODUCT,
@@ -225,4 +259,53 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     await publishWithRetry(options.client, relays, finalizeEvent(template, options.signer), sleep);
   }
   return diff;
+}
+
+export interface PolicyWriteOptions {
+  /** The store's policy key: must be 30497-authorized by `store`. */
+  signer: Uint8Array;
+  store: string;
+  client: SyncRelayClient;
+  now?: number;
+}
+
+/** Publish (or replace) a policy, dated after every version and deletion of its slug. */
+export async function setPolicy(
+  options: PolicyWriteOptions & { policy: PolicyInput },
+): Promise<NostrEvent> {
+  const now = options.now ?? nowSecs();
+  const key = getPublicKey(options.signer);
+  await requireCatalogKey(options.client, options.store, key, now);
+  const { slug } = PolicyInputSchema.parse(options.policy);
+  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY);
+  const event = finalizeEvent(
+    buildPolicyEvent({ ...options.policy, createdAt: floorFor(addresses, slug, now) }),
+    options.signer,
+  );
+  await publishWithRetry(options.client, COMCORE_RELAYS, event, defaultSleep);
+  return event;
+}
+
+/** Delete a policy (NIP-09 on its address), dated at or after its latest version. */
+export async function removePolicy(
+  options: PolicyWriteOptions & { slug: string },
+): Promise<NostrEvent> {
+  const now = options.now ?? nowSecs();
+  const key = getPublicKey(options.signer);
+  await requireCatalogKey(options.client, options.store, key, now);
+  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY);
+  const event = finalizeEvent(
+    {
+      kind: KIND_DELETION,
+      created_at: floorFor(addresses, options.slug, now),
+      tags: [
+        ['a', `${KIND_POLICY}:${key}:${options.slug}`],
+        ['k', String(KIND_POLICY)],
+      ],
+      content: '',
+    },
+    options.signer,
+  );
+  await publishWithRetry(options.client, COMCORE_RELAYS, event, defaultSleep);
+  return event;
 }

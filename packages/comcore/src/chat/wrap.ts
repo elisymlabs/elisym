@@ -1,4 +1,4 @@
-import { HEX_PUBKEY_RE, isGenuineEvent, tagValue, tagsNamed } from '@elisym/commerce';
+import { HEX_PUBKEY_RE, isGenuineEvent, tagsNamed } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure';

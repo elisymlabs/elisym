@@ -3,6 +3,7 @@ import {
   KIND_STORE_AUTH,
   buildStoreAuthEvent,
   buildStoreRevocationEvent,
+  isEventShaped,
   nowSecs,
   resolveStoreAuth,
   tagValue,
@@ -67,6 +68,11 @@ export function readCatalogAuthority(
 ): Map<string, Set<CatalogKeyRole>> {
   const candidates = new Set<string>();
   for (const event of events) {
+    // A malformed relay entry is skipped, never read: one bad entry must not
+    // make the whole store's authority throw.
+    if (!isEventShaped(event)) {
+      continue;
+    }
     if (
       event.pubkey === owner &&
       (event.kind === KIND_CATALOG_AUTH || event.kind === KIND_STORE_AUTH)
