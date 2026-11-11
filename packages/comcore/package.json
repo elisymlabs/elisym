@@ -55,7 +55,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@elisym/commerce": "~0.13.0",
+    "@elisym/commerce": "~0.14.0",
     "zod": "~3.25.0"
   },
   "devDependencies": {
