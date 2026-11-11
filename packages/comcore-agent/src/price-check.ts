@@ -547,13 +547,13 @@ function foldSeparators(text: string): string {
 /**
  * Normalize a string before reading amounts: NFKC folds fullwidth digits and
  * signs; native digits and Arabic separators become ASCII; markdown emphasis
- * ("$**99**") is dropped, since the check text is never rendered; a marker
- * between two digits stays ("1,500~2,000" is a range).
+ * ("$**99**", "$1**2**00") is dropped everywhere, since the check text is
+ * never rendered; only a tilde between two digits stays ("1,500~2,000" is a range).
  */
 export function normalizeForCheck(text: string): string {
-  return foldSeparators(
-    stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit),
-  ).replace(/(?<!\d)[*_~`]+|[*_~`]+(?!\d)/g, '');
+  return foldSeparators(stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit))
+    .replace(/[*_`]+/g, '')
+    .replace(/(?<!\d)~+|~+(?!\d)/g, '');
 }
 
 /**
@@ -593,7 +593,14 @@ function scan(
         HOURS_AFTER_RE.test(
           text.slice(match.index + match[0].length, match.index + match[0].length + 24),
         ));
-    if (!currencies || number === undefined || isHours || closesPrevious) {
+    // "model 2024 - $45": a symbol that opens the next number does not close this one across a dash.
+    const tokenStart = match.indices?.[tokenGroup]?.[0] ?? match.index;
+    const numberEnd = match.indices?.[numberGroup]?.[1] ?? tokenStart;
+    const opensNext =
+      tokenGroup > numberGroup &&
+      /-/.test(text.slice(numberEnd, tokenStart)) &&
+      /^\s*\d/.test(text.slice(match.index + match[0].length, match.index + match[0].length + 4));
+    if (!currencies || number === undefined || isHours || closesPrevious || opensNext) {
       regex.lastIndex = match.index + 1;
       continue;
     }
@@ -618,23 +625,37 @@ const RANGE_WORDS = ['to', 'bis', 'до'];
 /** Range words only in Romance locales ("de $90 a 150"): in English "a" is an article. */
 const ROMANCE_RANGE_WORDS = ['a', 'à'];
 const ROMANCE_LANGUAGES = new Set(['es', 'pt', 'fr', 'it', 'ca']);
-/** Words that open a range before its lower bound ("from 999 to 1200 USD"). */
-const RANGE_OPENERS = new Set([
-  'from',
-  'von',
-  'ab',
-  'от',
-  'de',
-  'desde',
-  'entre',
-  'zwischen',
-  'between',
-  'du',
-  'da',
+/** Words that open a range before its lower bound whatever the separator. */
+const RANGE_OPENERS = new Set(['from', 'ab', 'от', 'desde', 'entre', 'zwischen', 'between']);
+/** Openers that also mean "of" ("lot de 3", "Set von 2"): a range only before their own closing word. */
+const PAIRED_OPENERS = new Map<string, readonly string[]>([
+  ['von', ['bis']],
+  ['de', ['a', 'à']],
+  ['da', ['a']],
+  ['du', ['à']],
 ]);
-/** After an upper bound: a unit, percent, time or glued word means it is not money. */
-const NOT_MONEY_AFTER_RE = /^(?:\s?[%‰°]|[\p{L}\d]|:\d|\s*(?:Uhr|h|hrs?|o'clock|ч)(?![\p{L}]))/u;
-const SPACED_DASH_RE = /\s[-–]\s/;
+// cspell:disable
+/** Units, counts, durations and months: a number before one of them is not money. */
+const UNIT_WORDS = [
+  String.raw`Uhr|h|hrs?|hours?|o'clock|ч|час\p{L}*`,
+  String.raw`kg|g|km|m|cm|mm|l|ml|lbs?|oz|mAh|W|kW|GB|TB`,
+  String.raw`pcs|pieces?|items?|units?|unidad\p{L}*|unités?|Stück|шт|people|persons?|personas?|pessoas?|personnes?|Personen|человек|guests?|Gäste?`,
+  String.raw`days?|weeks?|months?|years?|Tage?n?|Wochen?|Monate?n?|Jahre?n?|días?|dias?|jours?|дн\p{L}*|недел\p{L}*|месяц\p{L}*|лет|год\p{L}*|semanas?|meses|mois|semaines?|anos?|años?|ans?`,
+  String.raw`(?:jan|feb|mär|mar|apr|mai|jun|jul|aug|sep|oct|okt|nov|dec|dez|ene|abr|ago|dic|janv|févr|avr|juin|juil|août|déc|янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)\p{L}*`,
+].join('|');
+/** Before a lower bound: a size, pack or model, not money ("lot de 3 - 45 €"). */
+const QUANTITY_BEFORE_RE =
+  /(?:^|[^\p{L}])(?:size|größe|grösse|taille|talla|tamanho|taglia|размер|pack|lot|set|kit|paquete|confezione|model|modell|modelo|modèle|version|option|day|tag|día|dia|jour)(?:\s+(?:de|da|von|of))?\s*$/iu;
+// cspell:enable
+/** After an upper bound: a percent, a glued word, a time, a date or a unit means it is not money. */
+const NOT_MONEY_AFTER_RE = new RegExp(
+  String.raw`^(?:\s?[%‰°]|[\p{L}\d]|:\d|\.\s*\p{L}|\s*(?:${UNIT_WORDS})(?![\p{L}]))`,
+  'iu',
+);
+/** A year before a word ("$1200 - 2026 edition") is not an upper bound. */
+const YEAR_RE = /^(?:19|20)\d{2}$/;
+/** A lower bound this many times below the upper one, with no opener, is a model or count ("iPhone 15 - 1200 €"). */
+const HEAD_MAX_RATIO = 20;
 /** How far before an amount a lower bound is looked for. */
 const RANGE_HEAD_CHARS = 64;
 
@@ -643,7 +664,7 @@ function rangeSeparator(locales: readonly string[]): string {
     ROMANCE_LANGUAGES.has(locale.split('-')[0]?.toLowerCase() ?? ''),
   );
   const words = romance ? [...RANGE_WORDS, ...ROMANCE_RANGE_WORDS] : RANGE_WORDS;
-  return `(?:[-–~〜]|${words.join('|')})`;
+  return `([-–~〜]|${words.join('|')})`;
 }
 
 function readValues(raw: string, decimals: readonly string[]): Decimal[] {
@@ -656,12 +677,20 @@ function isBelow(lower: readonly Decimal[], upper: readonly Decimal[]): boolean 
   return lower.some((low) => upper.some((high) => low.lessThan(high)));
 }
 
+function isNear(lower: readonly Decimal[], upper: readonly Decimal[]): boolean {
+  return lower.some((low) =>
+    upper.some((high) => low.times(HEAD_MAX_RATIO).greaterThanOrEqualTo(high)),
+  );
+}
+
 /**
  * A range shares its currency with the bound that has none: "$90-150" and
  * "from $90 to 150" carry it forward, "999-1200 USD" and "от 999 до 1200 ₽"
- * back. Only a real range shape counts: the lower bound is below the upper,
- * no unit, time or word follows a carried upper bound, and a spaced dash next
- * to a word ("$1200 - 2026 edition", "iPhone 15 - 1200 €") is not a range.
+ * back. A false negative lets an invented price through, so a range is
+ * assumed unless the shape says otherwise: the lower bound is not below the
+ * upper, a unit, percent, time or date follows the upper bound, the upper
+ * bound is a year before a word, or the lower bound is a size, pack or model
+ * (a quantity word before it, or far below the upper with no range opener).
  */
 function addRangeBounds(
   text: string,
@@ -670,27 +699,28 @@ function addRangeBounds(
   locales: readonly string[],
 ): void {
   const separator = rangeSeparator(locales);
-  const tailRe = new RegExp(String.raw`^(\s*${separator}\s*)(${NUMBER_PATTERN})`, 'u');
+  const tailRe = new RegExp(String.raw`(\s*${separator}\s*)(${NUMBER_PATTERN})`, 'uy');
   const headRe = new RegExp(
-    String.raw`(?<![\p{L}\d.,'’])(${NUMBER_PATTERN})(\s*${separator}\s*)$`,
+    String.raw`(?<![\p{L}\d.,'’])(${NUMBER_PATTERN})\s*${separator}\s*$`,
     'u',
   );
   const taken = new Set(found.map((amount) => amount.numberIndex));
   for (const amount of [...found]) {
     const end = amount.index + amount.raw.length;
-    const tail = tailRe.exec(text.slice(end));
-    const upper = tail?.[2];
-    const gap = tail?.[1] ?? '';
-    if (tail && upper !== undefined) {
+    tailRe.lastIndex = end;
+    const tail = tailRe.exec(text);
+    const gap = tail?.[1];
+    const upper = tail?.[3];
+    if (tail && gap !== undefined && upper !== undefined) {
       const offset = end + gap.length;
-      const after = text.slice(offset + upper.length);
+      const after = text.slice(offset + upper.length, offset + upper.length + 24);
       const values = readValues(upper, decimals);
-      const wordAfter = /^\s+\p{L}/u.test(after);
+      const yearBeforeWord = YEAR_RE.test(upper) && /^\s+\p{L}/u.test(after);
       if (
         !taken.has(offset) &&
         isBelow(amount.values, values) &&
         !NOT_MONEY_AFTER_RE.test(after) &&
-        !(SPACED_DASH_RE.test(gap) && wordAfter)
+        !yearBeforeWord
       ) {
         taken.add(offset);
         found.push({
@@ -706,15 +736,19 @@ function addRangeBounds(
     const before = text.slice(Math.max(0, amount.index - RANGE_HEAD_CHARS), amount.index);
     const head = headRe.exec(before);
     const lower = head?.[1];
-    if (head && lower !== undefined) {
+    const word = head?.[2]?.toLowerCase();
+    if (head && lower !== undefined && word !== undefined) {
       const offset = amount.index - before.length + head.index;
-      const wordBefore = /(\p{L}+)\s*$/u.exec(text.slice(Math.max(0, offset - 24), offset));
-      const opener = wordBefore?.[1]?.toLowerCase();
+      const preceding = text.slice(Math.max(0, offset - 32), offset);
+      const opener = /(\p{L}+)\s*$/u.exec(preceding)?.[1]?.toLowerCase();
+      const opened =
+        opener !== undefined &&
+        (RANGE_OPENERS.has(opener) || (PAIRED_OPENERS.get(opener)?.includes(word) ?? false));
       const values = readValues(lower, decimals);
       if (
         !taken.has(offset) &&
         isBelow(values, amount.values) &&
-        !(SPACED_DASH_RE.test(head[2] ?? '') && opener !== undefined && !RANGE_OPENERS.has(opener))
+        (opened || (!QUANTITY_BEFORE_RE.test(preceding) && isNear(values, amount.values)))
       ) {
         taken.add(offset);
         found.push({
@@ -826,12 +860,10 @@ function componentAddresses(answer: Answer): string[][] {
   });
 }
 
-/**
- * Splits sentences and keeps the separators, so stripping does not collapse
- * markdown. Not between a dotted symbol and its number: "Rs. 999", "Fr. 99".
- */
-const SENTENCE_SPLIT_RE =
-  /((?<=[.!?])(?:(?<!(?:^|[^\p{L}])(?:Rs|Fr|kr|руб|р)\.)[ \t]+|[ \t]+(?!\d))|\n+)/u;
+/** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
+const SENTENCE_SPLIT_RE = /((?<=[.!?])[ \t]+|\n+)/;
+/** The last dotted token of a sentence: it may be the symbol of the next sentence's number ("Rs. 999"). */
+const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
 function sentencesOf(text: string): { sentences: string[]; separators: string[] } {
   const parts = text.split(SENTENCE_SPLIT_RE);
@@ -915,8 +947,14 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
   const visitorAmounts = allowedFrom(context.visitorMessages);
   const violations: PriceViolation[] = [];
 
-  const checkString = (where: string, text: string, carriesId: boolean) => {
-    const amounts = extractAmounts(text, context.locales, context.storeCurrency);
+  const checkString = (where: string, text: string, carriesId: boolean, lead = '') => {
+    // A lead (the previous sentence's dotted tail) only lends its symbol: amounts must start here.
+    const leadLength = lead ? normalizeForCheck(`${lead} `).length : 0;
+    const amounts = extractAmounts(
+      lead ? `${lead} ${text}` : text,
+      context.locales,
+      context.storeCurrency,
+    ).filter((amount) => amount.numberIndex >= leadLength);
     if (amounts.length === 0) {
       return;
     }
@@ -939,9 +977,12 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
     }
   };
 
-  sentencesOf(answer.text).sentences.forEach((sentence, index) =>
-    checkString(`text#${index}`, sentence, false),
-  );
+  const { sentences } = sentencesOf(answer.text);
+  sentences.forEach((sentence, index) => {
+    const previous = index > 0 ? sentences[index - 1] : undefined;
+    const lead = previous === undefined ? '' : (DOTTED_TAIL_RE.exec(previous)?.[1] ?? '');
+    checkString(`text#${index}`, sentence, false, lead);
+  });
   answer.components.forEach((component, componentIndex) => {
     const prefix = `component#${componentIndex}`;
     switch (component.type) {

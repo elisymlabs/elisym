@@ -266,6 +266,7 @@ export interface ToolOutcome {
 }
 
 const AMOUNT_INPUT_RE = /^\d{1,12}([.,]\d{1,18})?$/;
+const AMBIGUOUS_GROUP_RE = /^\d{1,3}[.,]\d{3}$/;
 
 /** A price filter: a number or a decimal string ("80", "80.5", "80,50"); `invalid` when unreadable. */
 function priceFilter(value: unknown): Decimal | undefined | 'invalid' {
@@ -274,6 +275,10 @@ function priceFilter(value: unknown): Decimal | undefined | 'invalid' {
   }
   if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
     return new Decimal(String(value));
+  }
+  // "1,000" or "1.500" is a thousands group or a decimal: ambiguous, ask for a plain number.
+  if (typeof value === 'string' && AMBIGUOUS_GROUP_RE.test(value.trim())) {
+    return 'invalid';
   }
   if (typeof value === 'string' && AMOUNT_INPUT_RE.test(value.trim())) {
     return new Decimal(value.trim().replace(',', '.'));
@@ -325,7 +330,8 @@ function searchProducts(catalog: StoreCatalog, input: Record<string, unknown>, s
   const maxPrice = priceFilter(filterRecord.max_price);
   if (minPrice === 'invalid' || maxPrice === 'invalid') {
     return {
-      error: 'min_price and max_price must be numbers in the store currency, like 80 or 79.90.',
+      error:
+        'min_price and max_price must be plain numbers in the store currency, like 80, 1000 or 79.90, without thousands separators.',
     };
   }
   const frequency = FREQUENCY_FILTERS.find((value) => value === filterRecord.frequency);
@@ -448,7 +454,9 @@ function searchPolicies(catalog: StoreCatalog, input: Record<string, unknown>, s
     .sort((left, right) => right.score - left.score)
     .slice(0, MAX_POLICY_RESULTS);
   for (const entry of ranked) {
-    state.policyPassages.push(entry.policy.body);
+    if (!state.policyPassages.includes(entry.policy.body)) {
+      state.policyPassages.push(entry.policy.body);
+    }
   }
   return {
     results: ranked.map((entry) => ({
@@ -486,7 +494,7 @@ const clean = (text: string, max: number): string => sanitizeAnswerText(text).sl
 /** A price row the model wrote under any common name, or one of bare numbers: the server owns prices. */
 // cspell:disable
 const PRICE_DIMENSION_RE =
-  /price|cost|preis|prix|precio|preço|prezzo|prijs|cena|cen[ay]|цен|стоим|ціна|вартість|価格|价格|價格|가격|fiyat/i;
+  /(?<![\p{L}])(?:price|cost(?!ume)|preis|prix|precio|preço|prezzo|prijs|cena|cen[ay]|цен|стоим|ціна|вартість|価格|价格|價格|가격|fiyat)|価格|价格|價格|가격/iu;
 // cspell:enable
 const isBareNumber = (cell: string) => /^[\p{Nd}\s.,'’]+$/u.test(cell.trim());
 
