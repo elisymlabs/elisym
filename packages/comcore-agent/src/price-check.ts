@@ -569,6 +569,7 @@ const QUALIFIED_NOUNS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^won$/i, ['KRW']],
   [/^baht$/i, ['THB']],
   [/^real$/i, ['BRL']],
+  [/^(pounds?|pfund|фунт\p{L}*)$/iu, ['GBP']],
   [/^rands?$/i, ['ZAR']],
 ];
 // cspell:enable
@@ -627,7 +628,7 @@ function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
 
 export interface MoneyAmount {
   values: Decimal[];
-  currencies: readonly string[];
+  currencies: string[];
   raw: string;
   index: number;
   /** Where the number itself starts: one number read two ways is one amount. */
@@ -888,10 +889,17 @@ function scan(
       codeName !== undefined &&
       token !== undefined &&
       number !== undefined &&
-      nounCurrencies(token, number, storeCurrency, symbols).includes(codeName)
+      nounCurrencies(token, number, storeCurrency, symbols, codeName).includes(codeName)
         ? [codeName]
         : undefined;
-    const currencies = joinedCounts ? joined : (pinned ?? alone);
+    // A known code the noun cannot be ("1200 dollars EUR") contradicts it: fail closed.
+    const contradicted =
+      codeName !== undefined &&
+      pinned === undefined &&
+      ISO_CODES.has(codeName) &&
+      alone !== undefined &&
+      alone.length > 0;
+    const currencies = joinedCounts ? joined : (pinned ?? (contradicted ? [] : alone));
     let raw = match[0];
     if (joinedCounts && postposed) {
       raw = `${match[0]}${postposed[0]}`;
@@ -926,7 +934,7 @@ function scan(
     // still an amount: it can match nothing, so the check fails closed.
     found.push({
       values: scaled(readValues(number, decimals), magnitude),
-      currencies,
+      currencies: [...currencies],
       raw,
       index: match.index,
       numberIndex,
@@ -1286,6 +1294,22 @@ export function extractAmounts(
   const found: MoneyAmount[] = [];
   scan(normalized, prefix, true, decimals, storeCurrency, symbols, found);
   scan(normalized, postfix, false, decimals, storeCurrency, symbols, found);
+  // One number read both ways ("$99 USD", "$1200 CAD") is one amount in the currencies both
+  // readings allow; an empty intersection matches nothing, so the check fails closed. Done before
+  // range bounds, which copy the amount's currencies.
+  found.sort((left, right) => left.index - right.index);
+  const byNumber = new Map<number, MoneyAmount>();
+  for (const amount of found) {
+    const first = byNumber.get(amount.numberIndex);
+    if (first === undefined) {
+      byNumber.set(amount.numberIndex, amount);
+    } else {
+      first.currencies = first.currencies.filter((currency) =>
+        amount.currencies.includes(currency),
+      );
+    }
+  }
+  found.splice(0, found.length, ...byNumber.values());
   addRangeBounds(normalized, found, decimals, locales);
   // One number read both ways ("$99 USD") is one amount; different numbers stay apart.
   found.sort((left, right) => left.index - right.index);
@@ -1378,7 +1402,9 @@ const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
 /** "U.S." ends no sentence when a lowercase word or a dollar word follows ("999 U.S. dollars"). */
 const US_TAIL_RE = /(?:^|[^\p{L}])u\.s\.$/iu;
-const US_CONTINUES_RE = /^\p{Ll}+(?![\p{Lu}\p{N}])/u;
+const US_CONTINUES_RE = /^\p{Ll}+(?![\p{Lu}\p{N}-])/u;
+/** After "999 U.S." only a dollar word continues the amount. */
+const US_DOLLAR_RE = /^dollars?(?![\p{L}])/iu;
 /** A number right before "U.S." is an amount in two parts ("999 U.S. Dollars"): keep them together. */
 const US_AMOUNT_TAIL_RE = /\d[\s:-]{0,3}u\.s\.$/iu;
 
@@ -1395,7 +1421,8 @@ function sentencesOf(text: string): { sentences: string[]; separators: string[] 
         separator !== undefined &&
         !separator.includes('\n') &&
         US_TAIL_RE.test(previous) &&
-        (US_CONTINUES_RE.test(part) || US_AMOUNT_TAIL_RE.test(previous))
+        (US_CONTINUES_RE.test(part) ||
+          (US_AMOUNT_TAIL_RE.test(previous) && US_DOLLAR_RE.test(part)))
       ) {
         sentences[sentences.length - 1] = `${previous}${separator}${part}`;
         separators.pop();

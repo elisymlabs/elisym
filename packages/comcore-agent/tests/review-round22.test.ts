@@ -142,8 +142,8 @@ describe('A6. an ISO code after the noun pins it', () => {
     expect(violationsIn(currency, language, text)).toBe(1);
   });
 
-  it('a code the noun cannot be is ignored', () => {
-    expect(violationsIn('USD', 'en', 'The Jacket is 1200 dollars EUR style.')).toBe(0);
+  it('a known code the noun cannot be contradicts it and fails closed', () => {
+    expect(violationsIn('USD', 'en', 'The Jacket is 1200 dollars EUR style.')).toBe(1);
   });
 });
 
