@@ -4,7 +4,7 @@ import { StoreCatalog } from '../src/catalog/store-catalog';
 import { checkPrices, extractAmounts } from '../src/price-check';
 import { executeTool, newTurnState } from '../src/tools';
 import { runTurn } from '../src/turn';
-import { CONFIG, NOW, catalog, item, scripted, toolCall } from './fixtures';
+import { CONFIG, NOW, catalog, item, scripted, toolCall, expectLinear } from './fixtures';
 
 const answer = (text: string): Answer => ({
   type: 'answer',
@@ -112,9 +112,9 @@ describe('4. "de", "da" and "von" open a range only before their closing word', 
 
 describe('5. the range pass is linear', () => {
   it('a long run of amounts takes milliseconds', () => {
-    const started = performance.now();
-    extractAmounts('$1 '.repeat(8_000), ['en', 'de'], 'USD');
-    expect(performance.now() - started).toBeLessThan(500);
+    expectLinear((scale) => {
+      extractAmounts('$1 '.repeat(2_000 * scale), ['en', 'de'], 'USD');
+    });
   });
 
   it('a policy returned twice is kept once', () => {

@@ -4,7 +4,16 @@ import { StoreCatalog } from '../src/catalog/store-catalog';
 import { createOpenAiCompatibleProvider } from '../src/llm/openai-compatible';
 import { checkPrices, extractAmounts } from '../src/price-check';
 import { runTurn } from '../src/turn';
-import { CATALOG_KEY, CONFIG, NOW, catalog, item, scripted, toolCall } from './fixtures';
+import {
+  CATALOG_KEY,
+  CONFIG,
+  NOW,
+  catalog,
+  item,
+  scripted,
+  toolCall,
+  expectLinear,
+} from './fixtures';
 
 const address = (d: string) => `30402:${CATALOG_KEY}:${d}`;
 const answer = (text: string, overrides: Partial<Answer> = {}): Answer => ({
@@ -50,24 +59,22 @@ describe('1. every store currency form is read', () => {
 describe('2-4. grammar edge cases', () => {
   it('stays linear on long grouped runs', () => {
     // A 16 KiB policy body of grouped digits: quadratic scanning takes seconds here.
-    const inputs = [
-      '111 '.repeat(4_096),
-      '111,'.repeat(4_096),
-      "111'".repeat(4_096),
-      '$ 111 '.repeat(2_700),
-    ];
-    const started = performance.now();
-    for (const input of inputs) {
-      extractAmounts(input, ['en', 'de']);
-    }
-    expect(performance.now() - started).toBeLessThan(200);
+    expectLinear((scale) => {
+      for (const input of [
+        '111 '.repeat(1_024 * scale),
+        '111,'.repeat(1_024 * scale),
+        "111'".repeat(1_024 * scale),
+        '$ 111 '.repeat(675 * scale),
+      ]) {
+        extractAmounts(input, ['en', 'de']);
+      }
+    });
   });
 
   it('a 16 KiB grouped run takes milliseconds (an unbounded group repetition takes 100s of ms even on V8)', () => {
-    const input = '111 '.repeat(16_384);
-    const started = performance.now();
-    extractAmounts(input, ['en']);
-    expect(performance.now() - started).toBeLessThan(300);
+    expectLinear((scale) => {
+      extractAmounts('111 '.repeat(4_096 * scale), ['en']);
+    });
   });
 
   it('keeps two different numbers apart and one number read twice as one', () => {

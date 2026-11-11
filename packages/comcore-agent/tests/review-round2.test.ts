@@ -17,6 +17,7 @@ import {
   item,
   scripted,
   toolCall,
+  expectLinear,
 } from './fixtures';
 
 const store = catalog();
@@ -59,9 +60,9 @@ describe('1. a word before a number does not swallow the amount', () => {
 
 describe('2. digit runs stay linear', () => {
   it('scans a long digit run quickly', () => {
-    const started = performance.now();
-    extractAmounts('9'.repeat(20_000), ['en']);
-    expect(performance.now() - started).toBeLessThan(500);
+    expectLinear((scale) => {
+      extractAmounts('9'.repeat(5_000 * scale), ['en']);
+    });
   });
 });
 

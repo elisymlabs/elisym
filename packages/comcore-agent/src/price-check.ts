@@ -1,4 +1,4 @@
-import { type Answer, type CatalogItem, parseAddress } from '@elisym/comcore';
+import { type Answer, type CatalogItem, LIMITS, parseAddress } from '@elisym/comcore';
 import Decimal from 'decimal.js-light';
 import { stripInvisible } from './fence';
 
@@ -1255,7 +1255,8 @@ function addRangeBounds(
   }
 }
 
-const DOTTED_ABBREVIATIONS = new Set(['Rp', 'RM', 'S/']);
+/** Static abbreviations that are also ordinary words, so get no dotted form ("Grazie a lei."). */
+const UNDOTTED_WORDS = new Set(['lei']);
 
 function symbolsFor(
   storeCurrency: string | undefined,
@@ -1267,10 +1268,11 @@ function symbolsFor(
     ...(storeCurrency === 'CHF' ? FRANC_SYMBOLS : []),
     ...storeCurrencyForms(storeCurrency, locales),
   ];
-  // "Rp. 15.000", "RM. 15", "S/. 15": these abbreviations are also written with a dot. Names
-  // and codes are not ("Prices are in dollars. 3 colors" is no amount).
-  const dotted = base
-    .filter(([symbol]) => DOTTED_ABBREVIATIONS.has(symbol))
+  // "Rp. 15.000", "Ksh. 500", "лв. 20", "S/. 15": a static abbreviation of two or more
+  // characters is also written with a dot. The store's Intl names are not, and the static lists
+  // hold no codes ("Prices are in dollars. 3 colors" is no amount).
+  const dotted = [...SYMBOLS, ...EXTRA_SYMBOLS]
+    .filter(([symbol]) => /^(?:\p{L}{2,}|S\/)$/u.test(symbol) && !UNDOTTED_WORDS.has(symbol))
     .map(([symbol, currencies]): [string, readonly string[]] => [`${symbol}.`, currencies])
     .filter(([symbol]) => !base.some(([existing]) => existing === symbol));
   return [...base, ...dotted];
@@ -1432,6 +1434,8 @@ const SENTENCE_SPLIT_RE = new RegExp(
   String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|\n+)`,
   'iu',
 );
+/** A numbered-list marker alone in its sentence ("1.", "12)"). */
+const LIST_MARKER_RE = /^\d{1,3}[.)]$/u;
 /** The last dotted token of a sentence: it may be the symbol of the next sentence's number ("Rs. 999"). */
 const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
@@ -1588,10 +1592,17 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
     }
   };
 
-  const { sentences } = sentencesOf(answer.text);
+  const { sentences, separators } = sentencesOf(answer.text);
   sentences.forEach((sentence, index) => {
     const previous = index > 0 ? sentences[index - 1] : undefined;
-    const tailToken = previous === undefined ? undefined : DOTTED_TAIL_RE.exec(previous)?.[1];
+    // A numbered-list marker on a new line ("Rs.\n1. Pick a size") borrows no symbol.
+    const listMarker =
+      LIST_MARKER_RE.test(sentence) &&
+      (separators[index - 1] ?? '').includes('\n') &&
+      separators[index] !== undefined &&
+      !separators[index].includes('\n');
+    const tailToken =
+      previous === undefined || listMarker ? undefined : DOTTED_TAIL_RE.exec(previous)?.[1];
     // Only a currency symbol is lent ("Rs." + "999"), never a word like "size.".
     const lead =
       tailToken !== undefined && isCurrencyToken(tailToken, context.storeCurrency, context.locales)
@@ -1727,7 +1738,11 @@ export function stripViolations(
   text = text.replace(/[ \t]+\n/g, '\n').trim();
   const pointer = cardsPointer(locale);
   if (removedText && !text.endsWith(pointer)) {
-    text = `${text}${text.length > 0 ? ' ' : ''}${pointer}`;
+    // Room for the whole pointer within the answer cap, so it is never cut mid-word.
+    const kept = text
+      .slice(0, Math.max(0, LIMITS.ANSWER_TEXT_CHARS - pointer.length - 1))
+      .trimEnd();
+    text = `${kept}${kept.length > 0 ? ' ' : ''}${pointer}`;
   }
   const components = answer.components
     .map((component, componentIndex): Answer['components'][number] | undefined => {

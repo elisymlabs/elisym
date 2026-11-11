@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { StoreCatalog } from '../src/catalog/store-catalog';
 import { StoreCatalog as Catalog, tokenize } from '../src/catalog/store-catalog';
 import { checkPrices, extractAmounts } from '../src/price-check';
-import { CONFIG, item } from './fixtures';
+import { CONFIG, item, expectLinear } from './fixtures';
 
 const answer = (text: string): Answer => ({
   type: 'answer',
@@ -88,9 +88,9 @@ describe('A3. search text is normalized', () => {
   });
 
   it('tokenizing 2 MB of catalog text stays fast', () => {
-    const text = 'Plain catalog text with no invisible characters. '.repeat(40_000);
-    const started = performance.now();
-    expect(tokenize(text).length).toBeGreaterThan(0);
-    expect(performance.now() - started).toBeLessThan(500);
+    expectLinear((scale) => {
+      const text = 'Plain catalog text with no invisible characters. '.repeat(10_000 * scale);
+      expect(tokenize(text).length).toBeGreaterThan(0);
+    });
   });
 });

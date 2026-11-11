@@ -6,6 +6,7 @@ import {
   parseCatalogItem,
 } from '@elisym/comcore';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { expect } from 'vitest';
 import { StoreCatalog } from '../src/catalog/store-catalog';
 import type { LlmProvider, ToolUseBlock, TurnRequest, TurnResponse } from '../src/llm/types';
 
@@ -130,4 +131,21 @@ export function scripted(steps: Array<{ text?: string; calls?: ToolUseBlock[] }>
     },
   };
   return { provider, requests };
+}
+
+/**
+ * Assert that work grows linearly with input size, independent of machine load: after a warm-up
+ * run, 4x the input may take at most about 8x the time (linear work takes ~4x, quadratic ~16x).
+ */
+export function expectLinear(run: (scale: number) => void): void {
+  run(1);
+  const timeOf = (scale: number): number => {
+    const started = performance.now();
+    run(scale);
+    return performance.now() - started;
+  };
+  // The fastest of three runs at each size filters out load spikes and GC pauses.
+  const small = Math.min(timeOf(1), timeOf(1), timeOf(1));
+  const large = Math.min(timeOf(4), timeOf(4), timeOf(4));
+  expect(large).toBeLessThan(small * 8 + 200);
 }
