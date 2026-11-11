@@ -94,7 +94,27 @@ const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
 ];
 // cspell:enable
 
+/** Caches are keyed on bounded values only and capped: locales come from visitors. */
+const MAX_CACHE_ENTRIES = 512;
 const formsCache = new Map<string, Array<[string, readonly string[]]>>();
+
+function remember<Value>(cache: Map<string, Value>, key: string, value: Value): Value {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    cache.clear();
+  }
+  cache.set(key, value);
+  return value;
+}
+
+/** A locale reduced to a supported language subtag ("pt-BR" to "pt"), or none. */
+function languageOf(locale: string): string | undefined {
+  try {
+    const language = new Intl.Locale(locale).language.toLowerCase();
+    return Intl.NumberFormat.supportedLocalesOf([language]).length > 0 ? language : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * The store currency's own written forms, from Intl (narrow symbol, symbol,
@@ -108,13 +128,21 @@ function storeCurrencyForms(
   if (currency === undefined) {
     return [];
   }
-  const key = `${currency}|${locales.join(',')}`;
+  if (!ISO_CODES.has(currency)) {
+    return [];
+  }
+  const languages = [
+    ...new Set(
+      [...locales, 'en'].map(languageOf).filter((language): language is string => !!language),
+    ),
+  ].sort();
+  const key = `${currency}|${languages.join(',')}`;
   const cached = formsCache.get(key);
   if (cached) {
     return cached;
   }
   const forms = new Set<string>();
-  for (const locale of [...locales, 'en']) {
+  for (const locale of languages) {
     for (const currencyDisplay of ['narrowSymbol', 'symbol', 'name'] as const) {
       for (const sample of [1, 5, 2.5]) {
         try {
@@ -134,8 +162,7 @@ function storeCurrencyForms(
     }
   }
   const result: Array<[string, readonly string[]]> = [...forms].map((form) => [form, [currency]]);
-  formsCache.set(key, result);
-  return result;
+  return remember(formsCache, key, result);
 }
 
 function escapeForRegExp(text: string): string {
@@ -177,8 +204,7 @@ function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
       'gdiu',
     ),
   };
-  patternsCache.set(key, patterns);
-  return patterns;
+  return remember(patternsCache, key, patterns);
 }
 
 export interface MoneyAmount {

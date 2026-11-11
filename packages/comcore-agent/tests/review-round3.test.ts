@@ -161,3 +161,12 @@ describe('cache marks on tool rounds', () => {
     expect(messages.at(-1)?.content).toBe('r');
   });
 });
+
+describe('caches stay bounded under visitor-chosen locales', () => {
+  it('handles many distinct locales without growing past the cap', () => {
+    for (let index = 0; index < 2_000; index++) {
+      extractAmounts('99 USD', [`en-x-${index.toString(36).padStart(4, 'a')}`], 'USD');
+    }
+    expect(extractAmounts('99 USD', ['en-x-zzzz'], 'USD')).toHaveLength(1);
+  });
+});
