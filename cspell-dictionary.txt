@@ -245,3 +245,7 @@ korun
 mexicanos
 Schweizer
 Franken
+złoty
+polski
+российских
+tussen

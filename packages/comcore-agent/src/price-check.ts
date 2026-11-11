@@ -314,6 +314,26 @@ function localeTags(locale: string): string[] {
  * name in singular and plural) over the given locales: whatever form the model
  * uses in the catalog's or the visitor's language, it is read as money.
  */
+/** Languages that put the currency noun before its qualifier ("pesos mexicanos", "złoty polski"). */
+const NOUN_FIRST_LANGUAGES = new Set([
+  'es',
+  'pt',
+  'fr',
+  'it',
+  'ca',
+  'ro',
+  'pl',
+  'id',
+  'ms',
+  'vi',
+  'he',
+  'ar',
+]);
+
+function localeLanguage(locale: string): string {
+  return locale.split('-')[0]?.toLowerCase() ?? '';
+}
+
 function storeCurrencyForms(
   currency: string | undefined,
   locales: readonly string[],
@@ -345,11 +365,12 @@ function storeCurrencyForms(
           if (form && !/^\d/.test(form)) {
             const normalized = form.normalize('NFKC');
             forms.add(normalized);
-            // "pesos mexicanos", "Schweizer Franken": the everyday name is one of the words.
-            for (const word of normalized.split(/\s+/u)) {
-              if (word.length >= 3 && normalized.includes(' ')) {
-                forms.add(word);
-              }
+            // "pesos mexicanos", "Schweizer Franken": the everyday name is the noun,
+            // never a qualifier ("New", "Swiss", "des", "российских").
+            const words = normalized.split(/\s+/u);
+            const noun = NOUN_FIRST_LANGUAGES.has(localeLanguage(locale)) ? words[0] : words.at(-1);
+            if (words.length > 1 && noun !== undefined && noun.length >= 3) {
+              forms.add(noun);
             }
           }
         } catch {
@@ -386,18 +407,28 @@ function symbolToPattern(symbol: string): string {
 const NUMBER_PATTERN = String.raw`(?<!\d)(?<!\d[.,'’])(?:\d{1,2}(?:,\d{2}){1,4},\d{3}(?:\.\d+)?|\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(?:[.,][-–])?`;
 // cspell:disable
 /** A magnitude between a number and its currency: "1,5 тыс. ₽", "1.5k USD", "2 mil reais". */
-const MAGNITUDE_PATTERN = String.raw`(?:thousand|millions?|millones|milhões|миллион\p{L}*|тысяч\p{L}*|тыс|млн|Tsd|Mio|mil|k)(?![\p{L}])\.?`;
+const THOUSANDS = String.raw`thousand|tausend|duizend|mille|mila|тысяч\p{L}*|тисяч\p{L}*|тыс|тис|tys|Tsd|mil|k`;
+const MILLIONS = String.raw`millions?|millionen|millones|milhões|milioni|миллион\p{L}*|мільйон\p{L}*|млн|mln|Mio`;
+const MAGNITUDE_PATTERN = String.raw`(?:${THOUSANDS}|${MILLIONS})(?![\p{L}])\.?`;
+/** "2 millones de euros", "2 milioni di euro", "2 millions d'euros". */
+const MAGNITUDE_LINK = String.raw`(?:\s+(?:de|di)(?=\s)|\s?d['’])?`;
 const MAGNITUDES: ReadonlyArray<[RegExp, number]> = [
-  [/^(?:thousand|тысяч\p{L}*|тыс|tsd|mil|k)\.?$/iu, 1_000],
-  [/^(?:millions?|millones|milhões|миллион\p{L}*|млн|mio)\.?$/iu, 1_000_000],
+  [new RegExp(String.raw`^(?:${THOUSANDS})\.?$`, 'iu'), 1_000],
+  [new RegExp(String.raw`^(?:${MILLIONS})\.?$`, 'iu'), 1_000_000],
 ];
+
+function magnitudeFactor(magnitude: string | undefined): number | undefined {
+  return magnitude === undefined
+    ? undefined
+    : MAGNITUDES.find(([pattern]) => pattern.test(magnitude))?.[1];
+}
 // cspell:enable
 
 function scaled(values: readonly Decimal[], magnitude: string | undefined): Decimal[] {
   if (magnitude === undefined) {
     return [...values];
   }
-  const factor = MAGNITUDES.find(([pattern]) => pattern.test(magnitude))?.[1];
+  const factor = magnitudeFactor(magnitude);
   return factor === undefined ? [] : values.map((value) => value.times(factor));
 }
 
@@ -426,7 +457,7 @@ function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
       'gdiu',
     ),
     postfix: new RegExp(
-      String.raw`(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN}))?${GAP_PATTERN}(?<token>${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
+      String.raw`(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN})${MAGNITUDE_LINK})?${GAP_PATTERN}(?<token>${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
       'gdiu',
     ),
   };
@@ -442,6 +473,8 @@ export interface MoneyAmount {
   numberIndex: number;
   /** The two bounds of a range share it (the other bound's numberIndex); else numberIndex. */
   group: number;
+  /** The magnitude factor written with the number ("1,5 тыс." is 1000), if any. */
+  scale?: number;
 }
 
 function decimalSeparatorFor(locale: string): string {
@@ -583,8 +616,8 @@ function foldSeparators(text: string): string {
 export function normalizeForCheck(text: string): string {
   return (
     foldSeparators(stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit))
-      // Figure dash, em dash, horizontal bar and minus read as an en dash ("900—1200 ₽").
-      .replace(/[\u2012\u2014\u2015\u2212]/gu, '–')
+      // Hyphen, non-breaking hyphen, figure dash, em dash, bar, bullet and minus read as an en dash ("900—1200 ₽").
+      .replace(/[\u2010\u2011\u2012\u2014\u2015\u2043\u2212]/gu, '–')
       .replace(/[*_`]+/g, '')
       .replace(/(?<!\d)~+|~+(?!\d)/g, '')
   );
@@ -648,13 +681,27 @@ function scan(
       index: match.index,
       numberIndex,
       group: numberIndex,
+      ...(magnitudeFactor(magnitude) === undefined ? {} : { scale: magnitudeFactor(magnitude) }),
     });
   }
 }
 
 /** Range words that are unambiguous in any language. */
 // cspell:disable
-const RANGE_WORDS = ['to', 'up to', 'bis', 'bis zu', 'до'];
+const RANGE_WORDS = [
+  'to',
+  'up to',
+  'through',
+  'thru',
+  'bis',
+  'bis zu',
+  'tot',
+  'até',
+  'hasta',
+  "jusqu'à",
+  'jusqu’à',
+  'до',
+];
 /** Range words only in Romance locales ("de $90 a 150"): in English "a" is an article. */
 const ROMANCE_RANGE_WORDS = ['a', 'à'];
 const ROMANCE_LANGUAGES = new Set(['es', 'pt', 'fr', 'it', 'ca']);
@@ -676,6 +723,9 @@ const PAIRED_OPENERS = new Map<string, readonly string[]>([
   ['від', ['до']],
   ['между', ['и']],
   ['von', ['bis']],
+  ['van', ['tot']],
+  ['dal', ['al']],
+  ['dai', ['ai']],
   ['de', ['a', 'à']],
   ['da', ['a']],
   ['du', ['à']],
@@ -686,10 +736,15 @@ const RANGE_OPENERS = new Set([
   'ab',
   'от',
   'desde',
-  ...[...PAIRED_OPENERS.keys()].filter((opener) => !['von', 'de', 'da', 'du'].includes(opener)),
+  'vanaf',
+  ...[...PAIRED_OPENERS.keys()].filter(
+    (opener) => !['von', 'van', 'de', 'da', 'du', 'dal', 'dai'].includes(opener),
+  ),
 ]);
 /** Hedges between an opener or range word and a bound: "zwischen ca. 900 und 1200 €". */
-const HEDGE_PATTERN = String.raw`(?:(?:ca|approx|aprox|прибл|ок)\.|about|around|roughly|approximately|circa|ca|etwa|ungefähr|примерно|около|unos|unas|environ|cerca\s+de)`;
+const HEDGE_PATTERN = String.raw`(?:(?:ca|approx|aprox|прибл|ок|ok)\.|about|around|roughly|approximately|circa|ca|etwa|rund|ungefähr|примерно|около|około|unos|unas|environ|cerca\s+de)`;
+/** Articles between an opener or range word and a bound: "tussen de 1000 en 1200", "tra i 1000 e i 1200". */
+const ARTICLE_PATTERN = String.raw`(?:de|het|the|i|gli|le|les|los|las|os|as)`;
 // cspell:enable
 // cspell:disable
 /** Month names and standard abbreviations, exact (a stem would also match "separately" or "market"). */
@@ -739,18 +794,46 @@ function rangeSeparator(): string {
 }
 
 const TRAILING_HEDGE_RE = new RegExp(String.raw`(?:^|[^\p{L}])${HEDGE_PATTERN}\s*$`, 'iu');
+const TRAILING_ARTICLE_RE = new RegExp(String.raw`(?:^|[^\p{L}])${ARTICLE_PATTERN}\s+$`, 'iu');
 
-/** The word right before a position, past up to two hedges ("between about 900"), lowercased. */
-function openerBefore(text: string, position: number): string | undefined {
-  let before = text.slice(Math.max(0, position - 48), position);
+function skipHedges(before: string): string {
+  let rest = before;
   for (let skipped = 0; skipped < 2; skipped += 1) {
-    const hedge = TRAILING_HEDGE_RE.exec(before);
+    const hedge = TRAILING_HEDGE_RE.exec(rest);
     if (!hedge) {
       break;
     }
-    before = before.slice(0, hedge.index + (hedge[0].match(/^[^\p{L}]/u) ? 1 : 0));
+    rest = rest.slice(0, hedge.index + (/^[^\p{L}]/u.test(hedge[0]) ? 1 : 0));
   }
-  return /(\p{L}+)\s*$/u.exec(before)?.[1]?.toLowerCase();
+  return rest;
+}
+
+function lastWord(text: string): string | undefined {
+  return /(\p{L}+)\s*$/u.exec(text)?.[1]?.toLowerCase();
+}
+
+function isOpener(word: string | undefined): boolean {
+  return word !== undefined && (RANGE_OPENERS.has(word) || PAIRED_OPENERS.has(word));
+}
+
+/**
+ * The word right before a position, past up to two hedges ("between about
+ * 900") and an article when an opener stands before it ("tussen de 1000"),
+ * lowercased. "de" itself stays an opener when no opener precedes it.
+ */
+function openerBefore(text: string, position: number): string | undefined {
+  const before = skipHedges(text.slice(Math.max(0, position - 48), position));
+  const word = lastWord(before);
+  const article = TRAILING_ARTICLE_RE.exec(before);
+  if (article) {
+    const beyond = lastWord(
+      skipHedges(before.slice(0, article.index + (/^[^\p{L}]/u.test(article[0]) ? 1 : 0))),
+    );
+    if (isOpener(beyond)) {
+      return beyond;
+    }
+  }
+  return word;
 }
 
 /** A dash, tilde or range word is a separator on its own; a paired closer ("and") only after its opener. */
@@ -795,7 +878,7 @@ function addRangeBounds(
 ): void {
   const separator = rangeSeparator();
   const romance = isRomance(locales);
-  const hedges = String.raw`(?:${HEDGE_PATTERN}\s*){0,2}`;
+  const hedges = String.raw`(?:${ARTICLE_PATTERN}\s+)?(?:${HEDGE_PATTERN}\s*){0,2}`;
   const tailRe = new RegExp(
     String.raw`(?<gap>\s*${separator}\s*${hedges})(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN}))?`,
     'iuy',
@@ -816,6 +899,11 @@ function addRangeBounds(
       const offset = end + tailGap.length;
       const after = text.slice(end + tail[0].length, end + tail[0].length + 32);
       const values = scaled(readValues(upper, decimals), tail.groups?.magnitude);
+      // "$1.2-1.5k": the upper bound's magnitude may be the lower bound's too.
+      const upperFactor = magnitudeFactor(tail.groups?.magnitude);
+      if (upperFactor !== undefined && amount.scale === undefined) {
+        amount.values.push(...amount.values.map((value) => value.times(upperFactor)));
+      }
       const edition = YEAR_RE.test(upper) && EDITION_AFTER_RE.test(after);
       if (
         !taken.has(offset) &&
@@ -845,6 +933,11 @@ function addRangeBounds(
       const preceding = text.slice(Math.max(0, offset - 32), offset);
       const opener = openerBefore(text, offset);
       const values = scaled(readValues(lower, decimals), head.groups?.magnitude);
+      // "1,2–1,5 тыс. ₽": the upper bound's magnitude may be the lower bound's too.
+      if (amount.scale !== undefined && head.groups?.magnitude === undefined) {
+        const factor = amount.scale;
+        values.push(...values.map((value) => value.times(factor)));
+      }
       const opened = opener !== undefined && RANGE_OPENERS.has(opener);
       const yearBeforeSpacedDash = YEAR_RE.test(lower) && /\s[-–]\s/.test(headGap);
       if (
@@ -985,7 +1078,7 @@ function componentAddresses(answer: Answer): string[][] {
 // cspell:disable
 /** Abbreviations whose dot does not end a sentence ("ca. 1200 €", "Art. 900"). */
 const ABBREVIATIONS =
-  'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|bzw|ggf|vs|stk|ref|env|aprox|прибл|ок|арт';
+  'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|bzw|ggf|vs|stk|ref|env|aprox|ok|прибл|ок|арт|tsd|mio|mrd|mld|mln|tys|тыс|тис|млн';
 // cspell:enable
 /** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
 const SENTENCE_SPLIT_RE = new RegExp(
