@@ -31,10 +31,10 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
     ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD'],
   ],
   [/^(euros?|евро)$/i, ['EUR']],
-  [/^(quid|фунт(а|ов|ы)?\s?стерлинг(а|ов)?)$/i, ['GBP']],
+  [/^(quid|фунт(а|ов|ы)?\s+стерлинг(а|ов)?)$/i, ['GBP']],
   [/^(yen|yuan|иен(а|ы)?|юан(ь|я|ей)?|рмб)$/i, ['JPY', 'CNY']],
   [/^(руб(\.|ль|ля|лей|ли|лях|лям|лём|лем|лю|лями)?|р\.?)$/i, ['RUB']],
-  [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|грн\.?)$/i, ['UAH']],
+  [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|гривень|гривнями|грн\.?)$/i, ['UAH']],
   [/^(real|reais)$/i, ['BRL']],
   [/^(złot(y|e|ych)|zlot(y|e|ych))$/i, ['PLN']],
   [/^(rupees?|рупи(и|й|я)?)$/i, ['INR']],
@@ -42,6 +42,9 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(dolar(y|a|ów|ach|ami)?|dollar[oi])$/i, ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD']],
   [/^(євро)$/i, ['EUR']],
   [/^(sterlin[ae])$/i, ['GBP']],
+  [/^(pesos?)$/i, ['MXN', 'ARS', 'CLP', 'COP', 'UYU', 'PHP']],
+  [/^(franken)$/i, ['CHF']],
+  [/^(francs?)$/i, ['CHF', 'XOF', 'XAF']],
   [/^(liras?|lirası)$/i, ['TRY']],
 ];
 // cspell:enable
@@ -312,11 +315,6 @@ function localeTags(locale: string): string[] {
   }
 }
 
-/**
- * The store currency's own written forms, from Intl (narrow symbol, symbol,
- * name in singular and plural) over the given locales: whatever form the model
- * uses in the catalog's or the visitor's language, it is read as money.
- */
 /** Languages that put the currency noun before its qualifier ("pesos mexicanos", "złoty polski"). */
 const NOUN_FIRST_LANGUAGES = new Set([
   'es',
@@ -380,6 +378,11 @@ function localeLanguage(locale: string): string {
   return locale.split('-')[0]?.toLowerCase() ?? '';
 }
 
+/**
+ * The store currency's own written forms, from Intl (narrow symbol, symbol,
+ * name in singular and plural) over the given locales: whatever form the model
+ * uses in the catalog's or the visitor's language, it is read as money.
+ */
 function storeCurrencyForms(
   currency: string | undefined,
   locales: readonly string[],
@@ -453,7 +456,7 @@ const NUMBER_PATTERN = String.raw`(?<!\d)(?<!\d[.,'’])(?:\d{1,2}(?:,\d{2}){1,4
 /** A magnitude between a number and its currency: "1,5 тыс. ₽", "1.5k USD", "2 mil reais". */
 const THOUSANDS = String.raw`thousand|tausend|duizend|mille|mila|тысяч\p{L}*|тисяч\p{L}*|tysi\p{L}+|тыс|тис|tys|Tsd|mil|k`;
 const MILLIONS = String.raw`millions?|millionen|millones|millón|milhões|milhão|milioni|milione|miljoen|milion\p{L}*|миллион\p{L}*|мільйон\p{L}*|млн|mln|Mill|Mio`;
-const BILLIONS = String.raw`billions?|milliarden?|milliards?|miliard\p{L}*|miljard|mil\s+millones|mil\s+milhões|bilh(?:ão|ões)|млрд|mrd|mld|bn`;
+const BILLIONS = String.raw`billions?|milliarden?|milliards?|miliard\p{L}*|miljarden|miljard|миллиард\p{L}*|мільярд\p{L}*|mil\s+millones|mil\s+milhões|bilh(?:ão|ões)|млрд|mrd|mld|bn`;
 const MAGNITUDE_PATTERN = String.raw`(?:${BILLIONS}|${THOUSANDS}|${MILLIONS})(?![\p{L}])\.?`;
 /** "2 millones de euros", "2 milioni di euro", "2 millions d'euros". */
 const MAGNITUDE_LINK = String.raw`(?:\s+(?:de|di)(?=\s)|\s?d['’])?`;
@@ -480,7 +483,7 @@ function scaled(values: readonly Decimal[], magnitude: string | undefined): Deci
 
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
-const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}\.?`;
+const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}(?:\s+стерлинг\p{L}*)?\.?`;
 /** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
 const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
 
@@ -635,7 +638,6 @@ function currenciesFor(
   return [upper];
 }
 
-/** Normalize a string before reading amounts: NFKC folds fullwidth digits and signs. */
 /** Zero code points of decimal-digit blocks NFKC does not fold (Arabic-Indic, Persian, Indic, Thai...). */
 const DIGIT_ZEROS = [
   0x0660, 0x06f0, 0x07c0, 0x0966, 0x09e6, 0x0a66, 0x0ae6, 0x0b66, 0x0be6, 0x0c66, 0x0ce6, 0x0d66,
@@ -743,6 +745,9 @@ const RANGE_WORDS = [
   'bis',
   'bis zu',
   'tot',
+  'tot en met',
+  'aż do',
+  'й до',
   'fino a',
   'fino ai',
   'и до',
@@ -887,12 +892,19 @@ function openerBefore(text: string, position: number): string | undefined {
 }
 
 /** A dash, tilde or range word is a separator on its own; a paired closer ("and") only after its opener. */
-function separatorOpens(separator: string, opener: string | undefined, romance: boolean): boolean {
+function separatorOpens(
+  separator: string,
+  opener: string | undefined,
+  romance: boolean,
+  dutch: boolean,
+): boolean {
   const word = separator.toLowerCase().replace(/\s+/gu, ' ');
   if (
     /^[-–~〜]$/.test(word) ||
     RANGE_WORDS.includes(word) ||
-    (romance && ROMANCE_RANGE_WORDS.includes(word))
+    (romance && ROMANCE_RANGE_WORDS.includes(word)) ||
+    // Dutch writes "1.000 à 1.200 euro".
+    (dutch && word === 'à')
   ) {
     return true;
   }
@@ -928,6 +940,7 @@ function addRangeBounds(
 ): void {
   const separator = rangeSeparator();
   const romance = isRomance(locales);
+  const dutch = locales.some((locale) => localeLanguage(locale) === 'nl');
   // An article after a range word only inside an opened range ("tussen de 1000 en de 1200"), never "to the".
   const hedges = String.raw`(?<article>${ARTICLE_PATTERN}\s+)?(?:${HEDGE_PATTERN}\s*){0,2}`;
   const tailRe = new RegExp(
@@ -966,7 +979,7 @@ function addRangeBounds(
       const edition = YEAR_RE.test(upper) && EDITION_AFTER_RE.test(after);
       if (
         !taken.has(offset) &&
-        separatorOpens(tailWord, opener, romance) &&
+        separatorOpens(tailWord, opener, romance, dutch) &&
         (tail.groups?.article === undefined || isOpener(opener)) &&
         isBelow(lowerReading, values) &&
         !NOT_MONEY_AFTER_RE.test(after) &&
@@ -1011,7 +1024,7 @@ function addRangeBounds(
       const yearBeforeSpacedDash = YEAR_RE.test(lower) && /\s[-–]\s/.test(headGap);
       if (
         !taken.has(offset) &&
-        separatorOpens(headWord, opener, romance) &&
+        separatorOpens(headWord, opener, romance, dutch) &&
         (head.groups?.article === undefined || isOpener(opener)) &&
         isBelow(values, amount.values) &&
         (opened || (!QUANTITY_BEFORE_RE.test(preceding) && !yearBeforeSpacedDash))

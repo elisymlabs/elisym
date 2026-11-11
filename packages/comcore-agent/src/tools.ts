@@ -484,7 +484,6 @@ function resolveIds(catalog: StoreCatalog, state: TurnState, ids: string[]) {
 
 const addressOf = (item: CatalogItem) => catalogAddress(item.author, item.d);
 
-/** Every model-written string goes through the answer sanitizer (4.3) before it is kept. */
 /**
  * Every model-written string goes through the answer sanitizer (4.3) and is
  * cut to its limit afterwards: NFKC can lengthen text past what zod checked.

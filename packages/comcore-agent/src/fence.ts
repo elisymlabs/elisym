@@ -20,11 +20,18 @@ function isInvisible(codePoint: number): boolean {
   );
 }
 
+/**
+ * Default-ignorable code points (soft hyphen, combining grapheme joiner, Hangul fillers,
+ * variation selectors, tag characters...): invisible, so they could split "9\u00ad200" in what
+ * a check reads while the visitor sees "9200", or smuggle hidden text.
+ */
+const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/u;
+
 /** Drop invisible and control characters (keeps tab and newline). */
 export function stripInvisible(text: string): string {
   let result = '';
   for (const character of text) {
-    if (!isInvisible(character.codePointAt(0) ?? 0)) {
+    if (!isInvisible(character.codePointAt(0) ?? 0) && !DEFAULT_IGNORABLE_RE.test(character)) {
       result += character;
     }
   }
