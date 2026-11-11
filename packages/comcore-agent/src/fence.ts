@@ -7,35 +7,18 @@
 const FENCE_OPEN = '<<<DATA';
 const FENCE_CLOSE = '<<<END DATA>>>';
 
-/** C0/C1 controls except tab and newline, zero-width and bidi overrides, BOM. */
-function isInvisible(codePoint: number): boolean {
-  return (
-    (codePoint <= 0x1f && codePoint !== 0x09 && codePoint !== 0x0a) ||
-    (codePoint >= 0x7f && codePoint <= 0x9f) ||
-    (codePoint >= 0x200b && codePoint <= 0x200f) ||
-    (codePoint >= 0x202a && codePoint <= 0x202e) ||
-    (codePoint >= 0x2060 && codePoint <= 0x2064) ||
-    (codePoint >= 0x2066 && codePoint <= 0x206f) ||
-    codePoint === 0xfeff
-  );
-}
-
 /**
- * Default-ignorable code points (soft hyphen, combining grapheme joiner, Hangul fillers,
- * variation selectors, tag characters...): invisible, so they could split "9\u00ad200" in what
- * a check reads while the visitor sees "9200", or smuggle hidden text.
+ * Invisible characters: C0/C1 controls except tab and newline, zero-width and bidi controls,
+ * BOM, and every default-ignorable code point (soft hyphen, combining grapheme joiner, Hangul
+ * fillers, variation selectors, tag characters...). They could split "9\u00ad200" in what a
+ * check reads while the visitor sees "9200", or smuggle hidden text.
  */
-const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/u;
+const INVISIBLE_RE =
+  /(?![\t\n])\p{Cc}|[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]|\p{Default_Ignorable_Code_Point}/gu;
 
-/** Drop invisible and control characters (keeps tab and newline). */
+/** Drop invisible and control characters (keeps tab and newline), in one pass. */
 export function stripInvisible(text: string): string {
-  let result = '';
-  for (const character of text) {
-    if (!isInvisible(character.codePointAt(0) ?? 0) && !DEFAULT_IGNORABLE_RE.test(character)) {
-      result += character;
-    }
-  }
-  return result;
+  return text.replace(INVISIBLE_RE, '');
 }
 
 /** Runs of angle brackets or lookalikes that could pose as our fence. */

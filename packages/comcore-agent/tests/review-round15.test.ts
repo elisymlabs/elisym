@@ -80,7 +80,7 @@ describe('A1. a second word only for the fixed two-word names', () => {
 });
 
 describe('A2. titles are compared like the model sees them', () => {
-  it.each(['Heart Mug ❤️', 'Super­Jacke'])('a real price of "%s" passes', (title) => {
+  it.each(['Heart Mug ❤\ufe0f', 'Super\u00adJacke'])('a real price of "%s" passes', (title) => {
     const store = storeWith(title, 'EUR', 'en');
     const shown = sanitizeText(title, 200);
     expect(
@@ -95,8 +95,10 @@ describe('A2. titles are compared like the model sees them', () => {
   });
 
   it('search finds a title with a soft hyphen', () => {
-    const store = storeWith('Winter­jacke', 'EUR', 'de');
-    expect(store.scores(sanitizeText('Winter­jacke', 200)).get('jacket') ?? 0).toBeGreaterThan(0);
+    const store = storeWith('Winter\u00adjacke', 'EUR', 'de');
+    expect(store.scores(sanitizeText('Winter\u00adjacke', 200)).get('jacket') ?? 0).toBeGreaterThan(
+      0,
+    );
   });
 });
 

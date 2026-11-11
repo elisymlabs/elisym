@@ -61,7 +61,7 @@ describe('2. only a real range shape carries the currency', () => {
     ['USD', 'en', 'Jacket is $1200 a 2000 thread count'],
     ['EUR', 'es', 'Jacket 1200 € a 3 días'],
     ['EUR', 'pt', 'Jacket 1200 € a 2 pessoas'],
-    ['RUB', 'ru', 'Jacket — 1200 ₽ до 30 ноября'],
+    ['RUB', 'ru', 'Jacket \u2014 1200 ₽ до 30 ноября'],
     ['EUR', 'de', 'Jacket 1200 € bis 24 Uhr'],
     ['EUR', 'de', 'Jacket 1200 € bis 31.12.'],
     ['USD', 'en', 'Jacket: $1200-1500%'],

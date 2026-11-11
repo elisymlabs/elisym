@@ -155,7 +155,7 @@ describe('6-7. amount grammar and currency detection', () => {
   });
 
   it('sees through zero-width characters and fullwidth digits', () => {
-    expect(extractAmounts('$​99', ['en'])).toHaveLength(1);
+    expect(extractAmounts('$\u200b99', ['en'])).toHaveLength(1);
     expect(extractAmounts('＄９９', ['en'])).toHaveLength(1);
   });
 });
@@ -196,7 +196,7 @@ describe('10-13. tools', () => {
       state,
       toolCall('present_products', {
         title: 'Top [pick](http://evil)',
-        picks: [{ id: 'jacket-wool', reason: 'warm <b>wool</b>‮' }],
+        picks: [{ id: 'jacket-wool', reason: 'warm <b>wool</b>\u202e' }],
       }),
     );
     const component = state.components[0];

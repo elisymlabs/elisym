@@ -31,8 +31,8 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
     ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD'],
   ],
   [/^(euros?|евро)$/i, ['EUR']],
-  [/^(quid|фунт(а|ов|ы)?\s+стерлинг(а|ов)?)$/i, ['GBP']],
-  [/^(yen|yuan|иен(а|ы)?|юан(ь|я|ей)?|рмб)$/i, ['JPY', 'CNY']],
+  [/^(quid|фунт(а|ов|ы|ів)?\s+стерл[иі]нг(а|ов|ів)?)$/i, ['GBP']],
+  [/^(yen|yuan|иен(а|ы)?|йен(а|ы)?|єн(а|и)?|юан(ь|я|ей)?|рмб)$/i, ['JPY', 'CNY']],
   [/^(руб(\.|ль|ля|лей|ли|лях|лям|лём|лем|лю|лями)?|р\.?)$/i, ['RUB']],
   [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|гривень|грн\.?)$/i, ['UAH']],
   [/^(real|reais)$/i, ['BRL']],
@@ -44,10 +44,11 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(sterlin[ae])$/i, ['GBP']],
   [/^(pesos?)$/i, ['MXN', 'ARS', 'CLP', 'COP', 'UYU', 'PHP']],
   [
-    /^(((schweizer|швейцарск\p{L}*|швейцарськ\p{L}*)\s+)?(franken|франк\p{L}*)|franken)$/iu,
+    /^((schweizer|swiss|zwitserse|швейцарск\p{L}*|швейцарськ\p{L}*)\s+(franken|francs?|frank|франк\p{L}*)|franken)$/iu,
     ['CHF'],
   ],
-  [/^(francs?|франк(а|ов|и|ів|ах)?)$/i, ['CHF', 'XOF', 'XAF']],
+  [/^(francs?|francos?|franchi|frank(ów|i)?|франк(а|ов|и|ів|ах|ам)?)$/i, ['CHF', 'XOF', 'XAF']],
+  [/^(hrywien|hrywn(a|y|ach)?)$/i, ['UAH']],
   [/^(rubel|rublos?|rubli|roebel|рублів)$/i, ['RUB']],
   [/^(злот(ый|ых|ого|ий|их|ого))$/i, ['PLN']],
   [/^(liras?|lirası)$/i, ['TRY']],
@@ -497,7 +498,7 @@ const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
  * стерлингов", "Schweizer Franken", "US-Dollar"). A second word is never taken after any other
  * word, so "1990 руб стерлинговое серебро" still reads руб.
  */
-const WORD_PATTERN = String.raw`(?:фунт(?:а|ов|ы)?[ \t]+стерлинг(?:а|ов)?(?![\p{L}])|(?:schweizer|швейцарск\p{L}*|швейцарськ\p{L}*)[ \t]+(?:franken|франк\p{L}*)(?![\p{L}])|(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15})\.?`;
+const WORD_PATTERN = String.raw`(?:фунт(?:а|ов|ы|ів)?[ \t]+стерл[иі]нг(?:а|ов|ів)?(?![\p{L}])|(?:schweizer|swiss|zwitserse|швейцарск\p{L}*|швейцарськ\p{L}*)[ \t]+(?:franken|francs?|frank|франк\p{L}*)(?![\p{L}])|(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15})\.?`;
 /** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
 const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
 
@@ -1280,7 +1281,13 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
   const visitorAmounts = allowedFrom(context.visitorMessages);
   const violations: PriceViolation[] = [];
 
-  const checkString = (where: string, text: string, carriesId: boolean, lead = '') => {
+  const checkString = (
+    where: string,
+    text: string,
+    carriesId: boolean,
+    lead = '',
+    leadSentence = '',
+  ) => {
     // A lead (the previous sentence's dotted tail) only lends its symbol: amounts must start here.
     const leadLength = lead ? normalizeForCheck(`${lead} `).length : 0;
     const amounts = extractAmounts(
@@ -1291,7 +1298,9 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
     if (amounts.length === 0) {
       return;
     }
-    const named = namedProducts(text, context.items);
+    // A lent symbol joins the sentence it came from ("The Jacket costs Rs." + "1200."): that
+    // sentence's product names count too, since the amount spans both.
+    const named = namedProducts(leadSentence ? `${leadSentence}\n${text}` : text, context.items);
     // A sentence that names a product may state that product's own prices.
     const allowed = [...base, ...named.flatMap(itemPrices)];
     // One figure (or one range) only: a sentence of several is not the visitor's figure repeated.
@@ -1319,7 +1328,7 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
       tailToken !== undefined && isCurrencyToken(tailToken, context.storeCurrency, context.locales)
         ? tailToken
         : '';
-    checkString(`text#${index}`, sentence, false, lead);
+    checkString(`text#${index}`, sentence, false, lead, lead ? (previous ?? '') : '');
   });
   answer.components.forEach((component, componentIndex) => {
     const prefix = `component#${componentIndex}`;

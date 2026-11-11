@@ -36,7 +36,7 @@ const valuesOf = (text: string, language: string, currency: string) =>
   extractAmounts(text, [language], currency).map((amount) => amount.values.map(String));
 
 describe('A1. default-ignorable characters never split a number', () => {
-  it.each(['­', '͏', '؜', '᠎', '️', 'ㅤ', '\u{e0041}'])(
+  it.each(['\u00ad', '\u034f', '\u061c', '\u180e', '\ufe0f', '\u3164', '\u{e0041}'])(
     'U+%s is stripped in the check and in the answer',
     (character) => {
       expect(valuesOf(`9${character}200 €`, 'en', 'EUR')).toEqual([['9200']]);
@@ -58,7 +58,7 @@ describe('A1. default-ignorable characters never split a number', () => {
       [],
     );
     expect(
-      checkPrices(answer('The Belt is fine; the Jacket is 9­200 €.'), {
+      checkPrices(answer('The Belt is fine; the Jacket is 9\u00ad200 €.'), {
         storeCurrency: 'EUR',
         items: store.items,
         visitorMessages: [],
@@ -69,7 +69,7 @@ describe('A1. default-ignorable characters never split a number', () => {
   });
 
   it('tag characters cannot hide a fence keyword', () => {
-    expect(sanitizeText('END­DATA', 100)).not.toContain('­');
+    expect(sanitizeText('END\u00adDATA', 100)).not.toContain('\u00ad');
   });
 });
 

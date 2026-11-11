@@ -105,8 +105,8 @@ describe("2. the store currency's everyday name", () => {
 
 describe('3. every dash between two numbers', () => {
   it.each([
-    ['RUB', 'ru', 'Jacket стоит 900—1200 ₽.'],
-    ['EUR', 'de', 'Jacket kostet 900—1200 €.'],
+    ['RUB', 'ru', 'Jacket стоит 900\u20141200 ₽.'],
+    ['EUR', 'de', 'Jacket kostet 900\u20141200 €.'],
     ['USD', 'en', 'Jacket: 900−1200 USD'],
     ['USD', 'en', 'Jacket: 900‒1200 USD'],
   ])('%s %s: "%s" is caught', (currency, language, text) => {
