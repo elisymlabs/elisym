@@ -151,22 +151,26 @@ describe('fitAnswer (4.2 overflow)', () => {
     expect(fitAnswer(answer, NOW)).toEqual(answer);
   });
 
-  // Within the schema caps text alone always fits (4 000 chars, at most 4 bytes each
-  // after escaping); truncation is the spec's last resort and is not reachable here.
-  it('drops components from the last backwards until it fits, then wraps', () => {
+  // Within the schema caps text alone always fits (4 000 UTF-16 units, at most 7
+  // bytes each after double escaping: 28 000 + chips + overhead < 32 000), so the
+  // truncation step is the spec's last resort and not reachable here.
+  const titled = (index: number) => ({ ...plan, title: `c${index}` });
+  const titles = (answer: Answer) =>
+    answer.components.map((component) => ('title' in component ? component.title : undefined));
+
+  it('drops exactly the last component when one drop is enough', () => {
     const answer: Answer = {
       type: 'answer',
       ask_id: newAskId(),
       session_end: NOW + 100,
       text: 'ж"'.repeat(2_000),
-      components: [plan, plan, plan, plan],
+      components: [titled(0), titled(1), titled(2), titled(3)],
       chips: [],
     };
     expect(rumorBytes(answer, NOW)).toBeGreaterThan(LIMITS.RUMOR_WORKING_BYTES);
     const fitted = fitAnswer(answer, NOW);
-    expect(rumorBytes(fitted, NOW)).toBeLessThanOrEqual(LIMITS.RUMOR_WORKING_BYTES);
-    expect(fitted.components.length).toBeLessThan(4);
-    expect(answer.text.startsWith(fitted.text)).toBe(true);
+    expect(titles(fitted)).toEqual(['c0', 'c1', 'c2']);
+    expect(fitted.text).toBe(answer.text);
     expect(() =>
       wrapChatMessage({
         message: fitted,
@@ -176,5 +180,25 @@ describe('fitAnswer (4.2 overflow)', () => {
         now: NOW,
       }),
     ).not.toThrow();
+  });
+
+  it('stops dropping as soon as the answer fits', () => {
+    const answer: Answer = {
+      type: 'answer',
+      ask_id: newAskId(),
+      session_end: NOW + 100,
+      text: '"'.repeat(4_000),
+      components: [titled(0), titled(1), titled(2), titled(3)],
+      chips: [],
+    };
+    const fitted = fitAnswer(answer, NOW);
+    expect(rumorBytes(fitted, NOW)).toBeLessThanOrEqual(LIMITS.RUMOR_WORKING_BYTES);
+    const kept = fitted.components.length;
+    expect(kept).toBeGreaterThan(0);
+    expect(titles(fitted)).toEqual(['c0', 'c1', 'c2', 'c3'].slice(0, kept));
+    // One more component would not have fit.
+    expect(
+      rumorBytes({ ...answer, components: answer.components.slice(0, kept + 1) }, NOW),
+    ).toBeGreaterThan(LIMITS.RUMOR_WORKING_BYTES);
   });
 });
