@@ -897,8 +897,8 @@ function scan(
       codeName !== undefined &&
       pinned === undefined &&
       ISO_CODES.has(codeName) &&
-      // "1200 € TOP Angebot": a word-like code needs a decimal amount, as anywhere else.
-      !(WORD_LIKE_CODES.has(codeName) && !/[.,]\d/.test(number ?? '')) &&
+      // "1200,00 € TOP Angebot": a word-like code (TOP, CUP, ALL) never contradicts a noun.
+      !WORD_LIKE_CODES.has(codeName) &&
       alone !== undefined &&
       alone.length > 0;
     const currencies = joinedCounts ? joined : (pinned ?? (contradicted ? [] : alone));
@@ -1292,9 +1292,9 @@ function restates(first: MoneyAmount, second: MoneyAmount): boolean {
   const symbol = first.raw.slice(0, first.numberIndex - first.index).trim();
   const possible = new Set([
     ...first.currencies,
-    ...SYMBOLS.filter(([candidate]) => candidate === symbol).flatMap(
-      ([, currencies]) => currencies,
-    ),
+    ...[...SYMBOLS, ...EXTRA_SYMBOLS]
+      .filter(([candidate]) => candidate.replace(/\.$/u, '') === symbol.replace(/\.$/u, ''))
+      .flatMap(([, currencies]) => currencies),
   ]);
   return possible.has(tail);
 }
