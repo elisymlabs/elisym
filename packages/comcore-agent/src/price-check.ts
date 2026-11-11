@@ -59,7 +59,6 @@ const WORD_LIKE_CODES = new Set([
   'MAD',
   'PEN',
   'TRY',
-  'CAD',
   'SAR',
   'NAD',
   'BAM',
@@ -229,6 +228,8 @@ const ISO_CODES: ReadonlySet<string> = new Set([
   'ZAR',
   'ZMW',
   'ZWG',
+  'XCG',
+  'VED',
 ]);
 // cspell:enable
 
@@ -298,9 +299,6 @@ function storeCurrencyForms(
   locales: readonly string[],
 ): Array<[string, readonly string[]]> {
   if (currency === undefined) {
-    return [];
-  }
-  if (!ISO_CODES.has(currency)) {
     return [];
   }
   const languages = [...new Set([...locales, 'en'].flatMap(localeTags))].sort();
@@ -377,7 +375,7 @@ function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
   const patterns = {
     prefix: new RegExp(
       String.raw`(${symbolPattern}|${CODE_PATTERN})${GAP_PATTERN}(${NUMBER_PATTERN})`,
-      'gdu',
+      'gdiu',
     ),
     postfix: new RegExp(
       String.raw`(${NUMBER_PATTERN})${GAP_PATTERN}(${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
@@ -423,6 +421,18 @@ function currenciesFor(
   // A word at the end of a sentence carries its punctuation ("99 dollars."): drop it.
   const token = /^\p{L}/u.test(rawToken) ? rawToken.replace(/[.!?,;:]+$/u, '') : rawToken;
   // Letter forms ("kr", "RM", "R") match case-sensitively: "rm" or "r" are not money.
+  // The store currency's own forms match in any case: its prices must never slip by.
+  const ownForm =
+    storeCurrency !== undefined &&
+    symbols.some(
+      ([candidate, currencies]) =>
+        currencies.length === 1 &&
+        currencies[0] === storeCurrency &&
+        candidate.toLowerCase() === token.toLowerCase(),
+    );
+  if (ownForm && storeCurrency !== undefined) {
+    return [storeCurrency];
+  }
   const matchingSymbols = symbols.filter(([candidate]) => candidate === token);
   if (matchingSymbols.length > 0) {
     return [...new Set(matchingSymbols.flatMap(([, currencies]) => currencies))];
@@ -438,6 +448,10 @@ function currenciesFor(
     return ['HUF'];
   }
   const upper = token.toUpperCase();
+  // The store's own code is always money, listed or not, word-like or not.
+  if (storeCurrency !== undefined && upper === storeCurrency.toUpperCase()) {
+    return [storeCurrency];
+  }
   if (token.length !== 3 || !ISO_CODES.has(upper)) {
     return undefined;
   }

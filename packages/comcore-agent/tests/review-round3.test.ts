@@ -233,3 +233,20 @@ describe('letter currency forms do not fire on ordinary words', () => {
     expect(extractAmounts('6 Ft', ['en'], 'USD')).toEqual([]);
   });
 });
+
+describe('the store currency never fails open', () => {
+  it('reads the store form in any case', () => {
+    expect(extractAmounts('1500 KR', ['sv'], 'SEK')[0]?.currencies).toEqual(['SEK']);
+    expect(extractAmounts('rm 99', ['ms'], 'MYR')[0]?.currencies).toEqual(['MYR']);
+  });
+
+  it('reads a word-like store code as money even without decimals', () => {
+    expect(extractAmounts('only 99 TRY', ['tr'], 'TRY')[0]?.currencies).toEqual(['TRY']);
+    expect(extractAmounts('99 CAD', ['en'])[0]?.currencies).toEqual(['CAD']);
+  });
+
+  it('reads a store code missing from the static list', () => {
+    expect(extractAmounts('99 VED', ['es'], 'VED')).toHaveLength(1);
+    expect(extractAmounts('99 XYZ', ['en'], 'XYZ')[0]?.currencies).toEqual(['XYZ']);
+  });
+});
