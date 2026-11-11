@@ -23,6 +23,8 @@ export interface CraftOptions {
   rumorKind?: number;
   /** Pad the seal JSON with trailing whitespace (still valid JSON) to this many chars. */
   padSealTo?: number;
+  /** Wrap `expiration` value other than now + 600. */
+  wrapExpiration?: string;
   /** Wrap `p` tags other than the recipient alone. */
   wrapRecipients?: string[];
   /** Tags on the seal (NIP-59 forbids them). */
@@ -78,7 +80,7 @@ export function craftWrap(options: CraftOptions): NostrEvent {
       created_at: options.now,
       tags: [
         ...(options.wrapRecipients ?? [options.recipient]).map((recipient) => ['p', recipient]),
-        ['expiration', String(options.now + 600)],
+        ['expiration', options.wrapExpiration ?? String(options.now + 600)],
       ],
       content: nip44.v2.encrypt(
         options.padSealTo === undefined
