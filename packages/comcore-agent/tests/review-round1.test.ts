@@ -442,3 +442,18 @@ describe('untested paths from round 1', () => {
     expect(two.answer.components).toHaveLength(1);
   });
 });
+
+describe('currency words with trailing punctuation', () => {
+  it('reads a currency word at the end of a sentence', () => {
+    for (const text of [
+      'It costs 99 dollars.',
+      'Only 99 euros!',
+      'Всего 99 руб.',
+      'Это 99 р.',
+      '99 гривен?',
+    ]) {
+      expect(extractAmounts(text, ['en', 'ru']).length).toBe(1);
+    }
+    expect(checkPrices(answer('It costs 99 dollars.'), context())).toHaveLength(1);
+  });
+});

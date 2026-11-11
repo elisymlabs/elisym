@@ -25,14 +25,14 @@ const SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
 /** Currency words, matched as whole words in any case. */
 // cspell:disable
 const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
-  [/^(dollars?|bucks?|dólar(es)?|dollar)$/i, ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD']],
-  [/^(euros?|евро)$/i, ['EUR']],
-  [/^(pounds?|quid)$/i, ['GBP']],
-  [/^(yen|yuan|рмб)$/i, ['JPY', 'CNY']],
-  [/^(руб(\.|ль|ля|лей|ли)?|р\.)$/i, ['RUB']],
-  [/^(гривн[аыя]?|грн\.?)$/i, ['UAH']],
-  [/^(reais|real)$/i, ['BRL']],
-  [/^(rupees?)$/i, ['INR']],
+  [/^(dollar|buck|dólar|доллар|бакс)/i, ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD']],
+  [/^(euro|евро)/i, ['EUR']],
+  [/^(pound|quid|фунт)/i, ['GBP']],
+  [/^(yen|yuan|иен|юан)/i, ['JPY', 'CNY']],
+  [/^(руб|р$)/i, ['RUB']],
+  [/^(гривн|гривен|грн)/i, ['UAH']],
+  [/^(real|reais)$/i, ['BRL']],
+  [/^(rupee|рупи)/i, ['INR']],
 ];
 // cspell:enable
 
@@ -97,7 +97,9 @@ function parseWith(raw: string, decimal: string): Decimal | undefined {
   return /^\d+(\.\d+)?$/.test(normalized) ? new Decimal(normalized) : undefined;
 }
 
-function currenciesFor(token: string, number: string): readonly string[] | undefined {
+function currenciesFor(rawToken: string, number: string): readonly string[] | undefined {
+  // A word at the end of a sentence carries its punctuation ("99 dollars."): match the stem.
+  const token = /^[\p{L}]/u.test(rawToken) ? rawToken.replace(/[.!?,;:]+$/u, '') : rawToken;
   const symbol = SYMBOLS.find(([candidate]) => candidate === token);
   if (symbol) {
     return symbol[1];
