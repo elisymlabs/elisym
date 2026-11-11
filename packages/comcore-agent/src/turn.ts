@@ -18,6 +18,7 @@ import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
 export const MAX_TOOL_ROUNDS = 6;
 const DEFAULT_MAX_TOKENS = 2_048;
 const VISITOR_FENCE_CHARS = 4_000;
+const MAX_STRIP_PASSES = 3;
 
 export interface TurnInput {
   catalog: StoreCatalog;
@@ -91,10 +92,10 @@ function historyNote(answer: Answer, catalog: StoreCatalog): string {
     }
   });
   const named = [...new Set(shown.map((address) => parseAddress(address)?.d ?? ''))]
-    .filter((d) => d.length > 0)
+    .filter((productId) => productId.length > 0)
     .map(
-      (d, index) =>
-        `${index + 1}. ${d} (${sanitizeText(catalog.items.get(d)?.title ?? d, LIMITS.TITLE_CHARS)})`,
+      (productId, index) =>
+        `${index + 1}. ${productId} (${sanitizeText(catalog.items.get(productId)?.title ?? productId, LIMITS.TITLE_CHARS)})`,
     );
   const shownLine = named.length > 0 ? `\n[shown, in order: ${named.join('; ')}]` : '';
   return `${answer.text || '(cards only)'}${shownLine}`;
@@ -217,14 +218,17 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       };
       answer = toAnswer(retry.text, retryState);
       violations = checkPrices(answer, checkContext());
-      if (violations.length > 0) {
-        stripped = violations;
+      // Strip until clean: removing a sentence can join text the check then reads anew. Each
+      // pass only removes text, so it ends; the bound is a guard.
+      for (let pass = 0; violations.length > 0 && pass < MAX_STRIP_PASSES; pass += 1) {
+        stripped = [...stripped, ...violations];
         // The appended pointer can lengthen the text: cut and fit again.
         const cleaned = stripViolations(answer, violations, locale);
         answer = fitAnswer(
           { ...cleaned, text: cleaned.text.slice(0, LIMITS.ANSWER_TEXT_CHARS) },
           input.now,
         );
+        violations = checkPrices(answer, checkContext());
       }
     }
   } catch (error) {

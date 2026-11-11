@@ -1387,7 +1387,7 @@ function itemsOf(
 ): CatalogItem[] {
   return addresses
     .map((address) => parseAddress(address)?.d)
-    .map((d) => (d === undefined ? undefined : items.get(d)))
+    .map((productId) => (productId === undefined ? undefined : items.get(productId)))
     .filter((item): item is CatalogItem => item !== undefined);
 }
 
@@ -1680,6 +1680,13 @@ export function cardsPointer(locale: string): string {
  * section, plan step or comparison row that fails goes entirely. When text was
  * removed, a pointer to the cards is appended.
  */
+/** A dotted token that is a currency symbol on its own ("Rs.", "Fr."): only symbols start a prefix amount. */
+function isLentSymbol(token: string): boolean {
+  return [...SYMBOLS, ...EXTRA_SYMBOLS, ...FRANC_SYMBOLS].some(
+    ([candidate]) => candidate === token,
+  );
+}
+
 export function stripViolations(
   answer: Answer,
   violations: readonly PriceViolation[],
@@ -1687,6 +1694,18 @@ export function stripViolations(
 ): Answer {
   const failed = new Set(violations.map((violation) => violation.where));
   const { sentences, separators } = sentencesOf(answer.text);
+  // A removed sentence takes the dotted symbol it borrowed ("costs Rs." + "1500."), so the
+  // symbol never dangles or lands before the next sentence's number.
+  sentences.forEach((_sentence, index) => {
+    const previous = sentences[index - 1];
+    if (!failed.has(`text#${index}`) || previous === undefined) {
+      return;
+    }
+    const tail = DOTTED_TAIL_RE.exec(previous)?.[1];
+    if (tail !== undefined && isLentSymbol(tail)) {
+      sentences[index - 1] = previous.slice(0, previous.length - tail.length).trimEnd();
+    }
+  });
   let removedText = false;
   let text = '';
   sentences.forEach((sentence, index) => {
