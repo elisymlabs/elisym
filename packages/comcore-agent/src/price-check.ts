@@ -28,7 +28,7 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(dollar|buck|dólar|доллар|бакс)/i, ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD']],
   [/^(euro|евро)/i, ['EUR']],
   [/^(pound|quid|фунт)/i, ['GBP']],
-  [/^(yen|yuan|иен|юан)/i, ['JPY', 'CNY']],
+  [/^(yen|yuan|иен|юан|рмб)/i, ['JPY', 'CNY']],
   [/^(руб|р$)/i, ['RUB']],
   [/^(гривн|гривен|грн)/i, ['UAH']],
   [/^(real|reais)$/i, ['BRL']],

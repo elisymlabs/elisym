@@ -457,3 +457,38 @@ describe('currency words with trailing punctuation', () => {
     expect(checkPrices(answer('It costs 99 dollars.'), context())).toHaveLength(1);
   });
 });
+
+describe('every currency word form the old table read is still read', () => {
+  it('covers each stem', () => {
+    for (const text of [
+      '9 dollar',
+      '9 dollars',
+      '9 bucks',
+      '9 dólares',
+      '9 euro',
+      '9 euros',
+      '9 евро',
+      '9 pound',
+      '9 pounds',
+      '9 quid',
+      '9 yen',
+      '9 yuan',
+      '9 рмб',
+      '9 руб',
+      '9 рубль',
+      '9 рубля',
+      '9 рублей',
+      '9 рубли',
+      '9 р.',
+      '9 гривна',
+      '9 гривны',
+      '9 грн',
+      '9 real',
+      '9 reais',
+      '9 rupee',
+      '9 rupees',
+    ]) {
+      expect(extractAmounts(text, ['en']).length, text).toBe(1);
+    }
+  });
+});
