@@ -40,6 +40,9 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
 ];
 // cspell:enable
 
+/** "Ft" reads as feet as often as forints: money only in a HUF store. */
+const FORINT_RE = /^Ft$/;
+
 /** The words for pound are weights as often as money: they count only in a GBP store. */
 // cspell:disable-next-line
 const POUND_RE = /^(pounds?|фунт(а|ов|ы)?)$/i;
@@ -56,17 +59,178 @@ const WORD_LIKE_CODES = new Set([
   'MAD',
   'PEN',
   'TRY',
+  'CAD',
+  'SAR',
+  'NAD',
+  'BAM',
 ]);
 
-function isoCodes(): Set<string> {
-  try {
-    return new Set(Intl.supportedValuesOf('currency'));
-  } catch {
-    return new Set();
-  }
-}
-
-const ISO_CODES = isoCodes();
+/**
+ * Active ISO 4217 codes, static: runtimes differ (Bun lists 300+ including
+ * historical codes that are ordinary words, like ARM or SIT), and a check
+ * must read the same text the same way everywhere.
+ */
+// cspell:disable
+const ISO_CODES: ReadonlySet<string> = new Set([
+  'AED',
+  'AFN',
+  'ALL',
+  'AMD',
+  'ANG',
+  'AOA',
+  'ARS',
+  'AUD',
+  'AWG',
+  'AZN',
+  'BAM',
+  'BBD',
+  'BDT',
+  'BGN',
+  'BHD',
+  'BIF',
+  'BMD',
+  'BND',
+  'BOB',
+  'BRL',
+  'BSD',
+  'BTN',
+  'BWP',
+  'BYN',
+  'BZD',
+  'CAD',
+  'CDF',
+  'CHF',
+  'CLP',
+  'CNY',
+  'COP',
+  'CRC',
+  'CUC',
+  'CUP',
+  'CVE',
+  'CZK',
+  'DJF',
+  'DKK',
+  'DOP',
+  'DZD',
+  'EGP',
+  'ERN',
+  'ETB',
+  'EUR',
+  'FJD',
+  'FKP',
+  'GBP',
+  'GEL',
+  'GHS',
+  'GIP',
+  'GMD',
+  'GNF',
+  'GTQ',
+  'GYD',
+  'HKD',
+  'HNL',
+  'HTG',
+  'HUF',
+  'IDR',
+  'ILS',
+  'INR',
+  'IQD',
+  'IRR',
+  'ISK',
+  'JMD',
+  'JOD',
+  'JPY',
+  'KES',
+  'KGS',
+  'KHR',
+  'KMF',
+  'KPW',
+  'KRW',
+  'KWD',
+  'KYD',
+  'KZT',
+  'LAK',
+  'LBP',
+  'LKR',
+  'LRD',
+  'LSL',
+  'LYD',
+  'MAD',
+  'MDL',
+  'MGA',
+  'MKD',
+  'MMK',
+  'MNT',
+  'MOP',
+  'MRU',
+  'MUR',
+  'MVR',
+  'MWK',
+  'MXN',
+  'MYR',
+  'MZN',
+  'NAD',
+  'NGN',
+  'NIO',
+  'NOK',
+  'NPR',
+  'NZD',
+  'OMR',
+  'PAB',
+  'PEN',
+  'PGK',
+  'PHP',
+  'PKR',
+  'PLN',
+  'PYG',
+  'QAR',
+  'RON',
+  'RSD',
+  'RUB',
+  'RWF',
+  'SAR',
+  'SBD',
+  'SCR',
+  'SDG',
+  'SEK',
+  'SGD',
+  'SHP',
+  'SLE',
+  'SLL',
+  'SOS',
+  'SRD',
+  'SSP',
+  'STN',
+  'SVC',
+  'SYP',
+  'SZL',
+  'THB',
+  'TJS',
+  'TMT',
+  'TND',
+  'TOP',
+  'TRY',
+  'TTD',
+  'TWD',
+  'TZS',
+  'UAH',
+  'UGX',
+  'USD',
+  'UYU',
+  'UZS',
+  'VES',
+  'VND',
+  'VUV',
+  'WST',
+  'XAF',
+  'XCD',
+  'XOF',
+  'XPF',
+  'YER',
+  'ZAR',
+  'ZMW',
+  'ZWG',
+]);
+// cspell:enable
 
 /** Common forms Intl does not give in every locale; each maps to its currencies. */
 // cspell:disable
@@ -75,7 +239,6 @@ const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['元', ['CNY']],
   ['kr', ['SEK', 'NOK', 'DKK', 'ISK']],
   ['Kč', ['CZK']],
-  ['Ft', ['HUF']],
   ['lei', ['RON']],
   ['лв', ['BGN']],
   ['Rp', ['IDR']],
@@ -175,11 +338,23 @@ function escapeForRegExp(text: string): string {
 }
 
 /**
+ * A symbol as a pattern: one that starts or ends with a cased letter may not
+ * touch another cased letter there, so "kraft", "rpm", "FORM" or "reviews"
+ * are not "kr", "Rp", "RM" or "R". Kana and Han are not cased: "1500円です" reads.
+ */
+function symbolToPattern(symbol: string): string {
+  const cased = /[\p{Lu}\p{Ll}]/u;
+  const before = cased.test(symbol.slice(0, 1)) ? String.raw`(?<![\p{Lu}\p{Ll}])` : '';
+  const after = cased.test(symbol.slice(-1)) ? String.raw`(?![\p{Lu}\p{Ll}])` : '';
+  return `${before}${escapeForRegExp(symbol)}${after}`;
+}
+
+/**
  * A number: groups of exactly three digits after a separator (at most five
  * groups, so a long grouped run stays linear), then an optional decimal part.
  * It never starts inside another number, and "Under $120, 3 colors" reads 120.
  */
-const NUMBER_PATTERN = String.raw`(?<![\d.,'’])(?:\d{1,3}(?:[   ,.'’]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
+const NUMBER_PATTERN = String.raw`(?<![\d.,'’])(?:\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}\.?`;
@@ -197,7 +372,7 @@ function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
   // Longest first, so "R$" is tried before "$".
   const symbolPattern = [...new Set(symbols.map(([symbol]) => symbol))]
     .sort((left, right) => right.length - left.length)
-    .map(escapeForRegExp)
+    .map(symbolToPattern)
     .join('|');
   const patterns = {
     prefix: new RegExp(
@@ -247,9 +422,8 @@ function currenciesFor(
 ): readonly string[] | undefined {
   // A word at the end of a sentence carries its punctuation ("99 dollars."): drop it.
   const token = /^\p{L}/u.test(rawToken) ? rawToken.replace(/[.!?,;:]+$/u, '') : rawToken;
-  const matchingSymbols = symbols.filter(
-    ([candidate]) => candidate === token || candidate.toLowerCase() === token.toLowerCase(),
-  );
+  // Letter forms ("kr", "RM", "R") match case-sensitively: "rm" or "r" are not money.
+  const matchingSymbols = symbols.filter(([candidate]) => candidate === token);
   if (matchingSymbols.length > 0) {
     return [...new Set(matchingSymbols.flatMap(([, currencies]) => currencies))];
   }
@@ -259,6 +433,9 @@ function currenciesFor(
   }
   if (storeCurrency === 'GBP' && POUND_RE.test(token)) {
     return ['GBP'];
+  }
+  if (storeCurrency === 'HUF' && FORINT_RE.test(token)) {
+    return ['HUF'];
   }
   const upper = token.toUpperCase();
   if (token.length !== 3 || !ISO_CODES.has(upper)) {

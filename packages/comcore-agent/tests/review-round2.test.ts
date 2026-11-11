@@ -228,7 +228,7 @@ describe('13. OpenAI-compatible last-message cache mark', () => {
 
 describe('14. surviving mutants', () => {
   const big = () => {
-    const many = Array.from({ length: 3_000 }, (_unused, index) =>
+    const many = Array.from({ length: 1_600 }, (_unused, index) =>
       item({
         d: `p${index}`,
         title: `Product number ${index} with a long descriptive title to fill the prompt budget`,

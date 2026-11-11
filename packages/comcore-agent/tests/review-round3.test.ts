@@ -48,11 +48,26 @@ describe('1. every store currency form is read', () => {
 });
 
 describe('2-4. grammar edge cases', () => {
-  it('stays fast on a long grouped run', () => {
+  it('stays linear on long grouped runs', () => {
+    // A 16 KiB policy body of grouped digits: quadratic scanning takes seconds here.
+    const inputs = [
+      '111 '.repeat(4_096),
+      '111,'.repeat(4_096),
+      "111'".repeat(4_096),
+      '$ 111 '.repeat(2_700),
+    ];
     const started = performance.now();
-    extractAmounts('111 '.repeat(4_000), ['en']);
-    extractAmounts('$ 111 '.repeat(2_000), ['en']);
-    expect(performance.now() - started).toBeLessThan(300);
+    for (const input of inputs) {
+      extractAmounts(input, ['en', 'de']);
+    }
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it('a 16 KiB grouped run takes milliseconds (an unbounded group repetition takes 100s of ms even on V8)', () => {
+    const input = '111 '.repeat(16_384);
+    const started = performance.now();
+    extractAmounts(input, ['en']);
+    expect(performance.now() - started).toBeLessThan(60);
   });
 
   it('keeps two different numbers apart and one number read twice as one', () => {
@@ -177,5 +192,44 @@ describe('regional currency forms', () => {
     expect(extractAmounts('cuesta $1500', ['es-MX'], 'MXN')[0]?.currencies).toContain('MXN');
     // en-CA writes CAD as "$".
     expect(extractAmounts('it is $99', ['en-CA'], 'CAD')[0]?.currencies).toContain('CAD');
+  });
+});
+
+describe('letter currency forms do not fire on ordinary words', () => {
+  const check = (text: string, currency: string, language = 'en') => {
+    const store = storeIn(currency, language);
+    return checkPrices(answer(text), {
+      storeCurrency: currency,
+      items: store.items,
+      visitorMessages: [],
+      policyPassages: [],
+      locales: [language, language],
+    });
+  };
+
+  it('in a USD store', () => {
+    for (const text of [
+      'The lamp is 6 ft tall.',
+      'The fan runs at 1200 rpm.',
+      'Comes with 2 kraft bags.',
+      'Three leis included.',
+      '100 W RMS, 5 rms.',
+      'See FORM 5 for details.',
+      'Octa-core with 8 ARM cores.',
+      'Do 20 sit-ups daily.',
+    ]) {
+      expect(check(text, 'USD'), text).toEqual([]);
+    }
+  });
+
+  it('in stores whose own form is a single letter', () => {
+    expect(check('Over 120 reviews and 2 rooms, Model HR 10.', 'ZAR')).toEqual([]);
+    expect(check('Fits 4 people.', 'BWP')).toEqual([]);
+    expect(check('It is R 1500.', 'ZAR')).toHaveLength(1);
+  });
+
+  it('reads Ft only in a HUF store', () => {
+    expect(extractAmounts('1500 Ft', ['hu'], 'HUF')[0]?.currencies).toEqual(['HUF']);
+    expect(extractAmounts('6 Ft', ['en'], 'USD')).toEqual([]);
   });
 });
