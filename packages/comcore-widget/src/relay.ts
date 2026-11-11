@@ -103,19 +103,19 @@ export function openHistoryRead(
   handlers: HistoryReadHandlers,
 ): HistoryRead {
   let gotEose = false;
-  let failed = false;
+  // Set by the relay's close, our timer and our own close alike: nothing counts after it.
   let closed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const subscription = connection.subscribe(
     filters,
     {
       onevent: (event) => {
-        if (!closed && !failed) {
+        if (!closed) {
           handlers.onevent(event);
         }
       },
       oneose: () => {
-        if (closed || failed || gotEose) {
+        if (closed || gotEose) {
           return;
         }
         gotEose = true;
@@ -130,19 +130,15 @@ export function openHistoryRead(
         clearTimeout(timer);
         if (gotEose) {
           handlers.onClosedAfterEose?.();
-        } else if (!failed) {
-          failed = true;
+        } else {
           handlers.onFail();
         }
       },
     },
     NO_EOSE_TIMEOUT_MS + EOSE_TIMEOUT_SLACK_MS,
   );
+  // Cleared by a real EOSE and by every close, so it fires only while still waiting.
   timer = setTimeout(() => {
-    if (gotEose || closed) {
-      return;
-    }
-    failed = true;
     closed = true;
     subscription.close();
     handlers.onFail();

@@ -122,19 +122,22 @@ class FakeConnection implements RelayConnection {
     this.drop();
   }
 
-  /** The socket closed: every subscription ends, then the connection's own close. */
+  /**
+   * The socket closed: the connection's own close first, then every
+   * subscription ends (the order of nostr-tools' `handleHardClose`).
+   */
   drop(): void {
     if (this.closed) {
       return;
     }
     this.closed = true;
+    this.onclose?.();
     for (const sub of this.relay.subs) {
       if (sub.connection === this && !sub.closed) {
         sub.closed = true;
         sub.handlers.onclose('connection closed');
       }
     }
-    this.onclose?.();
   }
 }
 
@@ -190,6 +193,16 @@ export class FakeRelay {
     this.events.set(url, list);
   }
 
+  /** The relay CLOSEs the open subscriptions on a URL that match `filter`; the socket stays. */
+  closeSubscriptions(url: string, which: (filters: Filter[]) => boolean): void {
+    for (const sub of this.subs) {
+      if (!sub.closed && sub.connection.url === url && which(sub.filters)) {
+        sub.closed = true;
+        sub.handlers.onclose('closed by relay');
+      }
+    }
+  }
+
   live(): FakeConnection | undefined {
     return [...this.connections].reverse().find((connection) => !connection.closed);
   }
@@ -208,6 +221,8 @@ export class FakeGateway implements Gateway {
   branding = true;
   /** Gateway clock minus local clock. */
   skewSecs = 0;
+  /** Names this key in the ticket's `p` instead of the visitor's. */
+  ticketVisitor: string | undefined;
 
   constructor(
     public gatewayKey: TestKey,
@@ -220,7 +235,11 @@ export class FakeGateway implements Gateway {
       return { kind: this.mode };
     }
     const ticket = sign(
-      buildTicket({ visitor, store, now: localSecs() + this.skewSecs }),
+      buildTicket({
+        visitor: this.ticketVisitor ?? visitor,
+        store,
+        now: localSecs() + this.skewSecs,
+      }),
       this.gatewayKey,
     );
     return {

@@ -186,6 +186,7 @@ export class ChatClient {
 
   private inbox: HistoryRead | undefined;
   private buffering = false;
+  /** Unwrapped before the real EOSE; marked seen only once the replay is processed. */
   private buffer: UnwrappedChat[] = [];
   private firstReplayDone = false;
 
@@ -642,6 +643,8 @@ export class ChatClient {
   /**
    * The accept rule (4.3): assistant messages only from a seal by the
    * config's A, ask self-copies only from a seal by V; then dedup by rumor id.
+   * A buffered rumor is not marked seen yet: a read that fails before its real
+   * EOSE drops the buffer, and the next replay must still deliver it.
    */
   private onWrap(wrap: NostrEvent): void {
     const unwrapped = unwrapChatMessage(wrap, this.visitor.secretKey);
@@ -660,12 +663,13 @@ export class ChatClient {
     if (this.seenRumors.has(unwrapped.rumorId)) {
       return;
     }
-    this.seenRumors.add(unwrapped.rumorId);
     if (this.buffering) {
+      // Replay handling is idempotent: a rumor buffered twice changes nothing.
       this.buffer.push(unwrapped);
-    } else {
-      this.handleLive(unwrapped);
+      return;
     }
+    this.seenRumors.add(unwrapped.rumorId);
+    this.handleLive(unwrapped);
   }
 
   private addTurn(askId: string, text: string, askedAt: number): void {
@@ -731,6 +735,10 @@ export class ChatClient {
   /** The history replay of one (re)subscription, after its real EOSE (4.1). */
   private processReplay(replay: UnwrappedChat[]): void {
     const now = this.now();
+    // Only now is a buffered rumor acted on, so only now is it seen (`onWrap`).
+    for (const entry of replay) {
+      this.seenRumors.add(entry.rumorId);
+    }
     // Wraps of a session ending within the margin belong to that session, not the next (4.4).
     const current = replay
       .filter(

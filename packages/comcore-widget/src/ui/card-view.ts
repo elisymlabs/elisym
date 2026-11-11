@@ -1,5 +1,7 @@
 import { type CatalogItem, type StoreConfig, productPageUrl } from '@elisym/comcore';
 import {
+  type CartButton,
+  type PickState,
   addToCartDetail,
   cartButton,
   hostAddToCartHook,
@@ -75,13 +77,18 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
   const actionBox = element(document, 'div');
   card.append(selectorsBox, actionBox);
 
-  const update = (): void => {
-    const state = pickState(item, pick);
-    price.textContent = formatPrice(item, state.variant?.price);
-    const button = cartButton(item, state, {
+  const currentButton = (state: PickState): CartButton =>
+    cartButton(item, state, {
       hook: hostAddToCartHook(),
       nativeAvailable: nativeAddToCartAvailable(context.config, context.pageOrigin),
     });
+  let renderedKind: CartButton['kind'] | undefined;
+
+  const update = (): void => {
+    const state = pickState(item, pick);
+    price.textContent = formatPrice(item, state.variant?.price);
+    const button = currentButton(state);
+    renderedKind = button.kind;
     actionBox.replaceChildren();
     if (button.kind === 'sold-out') {
       actionBox.append(element(document, 'span', 'label sold-out', STRINGS.soldOut));
@@ -147,5 +154,13 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
     selectorsBox.append(label);
   }
   update();
+  // The host may set its hook after the card rendered (6): pick it up before the visitor acts.
+  const refresh = (): void => {
+    if (currentButton(pickState(item, pick)).kind !== renderedKind) {
+      update();
+    }
+  };
+  card.addEventListener('pointerenter', refresh);
+  card.addEventListener('focusin', refresh);
   return card;
 }
