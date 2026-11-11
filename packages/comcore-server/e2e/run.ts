@@ -136,6 +136,7 @@ async function main(): Promise<void> {
       configFor: (owner) => configs.get(owner)?.config,
       isListed: (owner, address) => isListed(configs.get(owner), address),
       isUnservable: () => false,
+      reserveUsd: '0.25',
     }),
     { port: GATEWAY_PORT, trustProxy: false },
   );

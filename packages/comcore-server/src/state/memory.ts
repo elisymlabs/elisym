@@ -46,6 +46,12 @@ export class MemoryState implements ServerState {
   private readonly storeDays = new Map<string, StoreDay>();
   private readonly sessionDays = new Map<string, number>();
   private readonly reservations = new Map<string, Reservation>();
+  /**
+   * Running attempts whose session was replaced or swept, by attempt id, with
+   * their deadline (ms): the finishing turn settles them with what it spent;
+   * one that never finishes is charged its reservation once past the deadline.
+   */
+  private readonly orphans = new Map<string, number>();
   private readonly clicks = new Map<string, number>();
 
   constructor(stores: readonly StoreRecord[]) {
@@ -127,7 +133,7 @@ export class MemoryState implements ServerState {
       if (record.state === 'queued') {
         this.release(record.attemptId);
       } else if (record.state === 'running') {
-        this.settle(record.attemptId, 'reserved');
+        this.orphans.set(record.attemptId, record.deadline);
       }
     }
     this.asks.delete(key);
@@ -139,6 +145,12 @@ export class MemoryState implements ServerState {
       if (session.sessionEnd <= now) {
         this.dropAsks(key);
         this.sessions.delete(key);
+      }
+    }
+    for (const [attemptId, deadline] of this.orphans) {
+      if (deadline <= now * 1000) {
+        this.orphans.delete(attemptId);
+        this.settle(attemptId, 'reserved');
       }
     }
     const today = utcDay(now);
@@ -307,6 +319,11 @@ export class MemoryState implements ServerState {
   }
 
   failAsk(session: SessionState, askId: string, attemptId: string, spentUsd: string): boolean {
+    if (this.orphans.delete(attemptId)) {
+      // Its session is gone: settle what the turn spent, nothing to tell the visitor.
+      this.settle(attemptId, spentUsd);
+      return false;
+    }
     const record = this.askRecord(session, askId);
     if (!record || record.state !== 'running' || record.attemptId !== attemptId) {
       return false;
@@ -316,13 +333,14 @@ export class MemoryState implements ServerState {
     return true;
   }
 
-  budgetExhausted(owner: string, now: number): boolean {
+  budgetExhausted(owner: string, now: number, reserveUsd: string): boolean {
     const store = this.byOwner.get(owner);
     if (!store) {
       return true;
     }
     const day = this.storeDay(owner, now);
-    return day.spent.plus(day.reserved).greaterThanOrEqualTo(store.tier.dailyBudgetUsd);
+    // The same test `admitAsk` makes: no ticket when not even one turn's reservation fits.
+    return day.spent.plus(day.reserved).plus(reserveUsd).greaterThan(store.tier.dailyBudgetUsd);
   }
 
   countClick(owner: string, address: string): void {

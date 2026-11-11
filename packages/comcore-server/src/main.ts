@@ -7,9 +7,9 @@ import {
   createAnthropicProvider,
   createOpenAiCompatibleProvider,
 } from '@elisym/comcore-agent';
-import Decimal from 'decimal.js-light';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
+import { DEFAULT_TURN_RESERVE_USD, positiveUsd } from './config';
 import { createGateway } from './gateway/gateway';
 import { serveGateway } from './gateway/http';
 import { parseStoreRegistry } from './registry';
@@ -17,9 +17,6 @@ import { createServerPool } from './relay/pool';
 import { MemoryState } from './state/memory';
 import { isListed } from './worker/catalog';
 import { Worker } from './worker/worker';
-
-const USD_RE = /^\d{1,9}(\.\d{1,12})?$/;
-const DEFAULT_TURN_RESERVE_USD = '0.25';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -47,14 +44,6 @@ function providerFromEnv(): LlmProvider {
   });
 }
 
-/** A USD amount from the environment: a plain decimal above zero, checked at start, not on the first ask. */
-function positiveUsd(name: string, value: string): string {
-  if (!USD_RE.test(value) || new Decimal(value).lessThanOrEqualTo(0)) {
-    throw new Error(`${name} must be a decimal above zero, got ${value}`);
-  }
-  return value;
-}
-
 function priceFromEnv(): ModelPrice {
   return {
     input: positiveUsd('COMCORE_PRICE_INPUT', required('COMCORE_PRICE_INPUT')),
@@ -79,6 +68,10 @@ async function main(): Promise<void> {
     parseStoreRegistry(readFileSync(required('COMCORE_STORES_FILE'), 'utf8')),
   );
   const provider = providerFromEnv();
+  const reserveUsd = positiveUsd(
+    'COMCORE_TURN_RESERVE_USD',
+    process.env.COMCORE_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
+  );
   let worker: Worker | undefined;
   const pool = createServerPool((pubkey) => worker?.isLeased(pubkey) ?? false);
   worker = new Worker({
@@ -88,10 +81,7 @@ async function main(): Promise<void> {
     gatewayKeys: [getPublicKey(gatewaySecretKey)],
     providerFor: () => provider,
     price: priceFromEnv(),
-    reserveUsd: positiveUsd(
-      'COMCORE_TURN_RESERVE_USD',
-      process.env.COMCORE_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
-    ),
+    reserveUsd,
     log: (message) => console.error(message),
   });
   await worker.start();
@@ -103,6 +93,7 @@ async function main(): Promise<void> {
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker?.isUnservable(owner) ?? false,
+    reserveUsd,
   });
   serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),

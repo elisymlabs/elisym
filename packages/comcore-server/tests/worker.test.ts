@@ -1115,3 +1115,92 @@ describe('worker review round 3', () => {
     await waitUntil(() => live() > beforeClose, 1_500);
   });
 });
+
+describe('worker review round 4', () => {
+  it('a session replaced while its turn runs is charged what the turn spent', async () => {
+    const store = syntheticStore();
+    const provider = heldProvider();
+    const setup = await harness({ stores: [store], provider });
+    const visitorSecret = generateSecretKey();
+    ask(setup, store, visitorSecret, 'c1'.repeat(16));
+    await waitUntil(() => provider.requests.length === 1);
+    const session = setup.state.storedSession(store.assistant, getPublicKey(visitorSecret));
+    if (!session) {
+      throw new Error('no session');
+    }
+    // A resend inside the end margin starts a fresh session while the turn still runs.
+    setup.clock.now = session.sessionEnd - 200;
+    ask(setup, store, visitorSecret, 'c2'.repeat(16));
+    await waitUntil(
+      () => setup.state.storedSession(store.assistant, getPublicKey(visitorSecret)) !== session,
+    );
+    provider.release();
+    await waitUntil(() => provider.requests.length === 2);
+    provider.release();
+    await setup.worker.idle();
+    expect(setup.state.dayTotals(store.owner, NOW)).toEqual({
+      spent: costOf(SMALL_USAGE, PRICE).toString(),
+      reserved: '0',
+    });
+  });
+
+  it('a wrap REQ on a connection that stayed up resets its backoff', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store], stableConnectionMs: 300 });
+    const relay = setup.pool.relay(RELAY);
+    const opens = () =>
+      relay.requests.filter((filters) => filters.some((filter) => filter.kinds?.includes(1059)))
+        .length;
+    const closeWraps = () =>
+      wrapRequests(setup).forEach((subscription) =>
+        subscription.params.onclose?.('closed by relay'),
+      );
+    await waitUntil(() => wrapRequests(setup).length === 1);
+    relay.closeOn = (filters) => filters.some((filter) => filter.kinds?.includes(1059));
+    const base = opens();
+    closeWraps();
+    await waitUntil(() => opens() >= base + 2, 4_000);
+    relay.closeOn = undefined;
+    await waitUntil(() => wrapRequests(setup).length === 1, 5_000);
+    await pause(400);
+    const beforeClose = opens();
+    closeWraps();
+    await waitUntil(() => opens() > beforeClose, 1_500);
+  });
+
+  it('a wrap re-issue on a connection that stayed up keeps it counted as stable', async () => {
+    const store = syntheticStore();
+    const later = syntheticStore();
+    const laterRecord = storeRecord(later, 'pending');
+    const setup = await harness({
+      stores: [store, later],
+      records: [storeRecord(store), laterRecord],
+      stableConnectionMs: 300,
+    });
+    const relay = setup.pool.relay(RELAY);
+    const opens = () =>
+      relay.requests.filter((filters) => filters.some((filter) => filter.kinds?.includes(1059)))
+        .length;
+    const closeWraps = () =>
+      wrapRequests(setup).forEach((subscription) =>
+        subscription.params.onclose?.('closed by relay'),
+      );
+    await waitUntil(() => wrapRequests(setup).length === 1);
+    relay.closeOn = (filters) => filters.some((filter) => filter.kinds?.includes(1059));
+    const base = opens();
+    closeWraps();
+    await waitUntil(() => opens() >= base + 2, 4_000);
+    relay.closeOn = undefined;
+    await waitUntil(() => wrapRequests(setup).length === 1, 5_000);
+    await pause(400);
+    // A re-issue on the same connection, then a close.
+    const reissued = opens();
+    laterRecord.status = 'active';
+    setup.worker.refreshLeases();
+    await waitUntil(() => opens() > reissued);
+    await waitUntil(() => wrapRequests(setup).length === 1);
+    const beforeClose = opens();
+    closeWraps();
+    await waitUntil(() => opens() > beforeClose, 1_500);
+  });
+});

@@ -29,7 +29,7 @@ import {
 import { Backoff } from '../relay/backoff';
 import { chunkByBytes } from '../relay/chunks';
 import { readHistory } from '../relay/history';
-import type { ServerPool } from '../relay/pool';
+import type { RelayLike, ServerPool } from '../relay/pool';
 import type { ServerState, SessionState, StoreRecord } from '../state/types';
 import { CatalogLoader } from './catalog-loader';
 import { intakeWrap } from './intake';
@@ -103,6 +103,9 @@ export class Worker {
   private stopped = true;
   private wrapGeneration = 0;
   private wrapSubscriptions: { close: () => void }[] = [];
+  /** The connection the wrap REQ runs on and when it came up: re-issues on it keep that time (2.4). */
+  private wrapRelay: RelayLike | undefined;
+  private wrapRelayUpAt = 0;
   private sweepTimer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
@@ -244,13 +247,16 @@ export class Worker {
       }
       return;
     }
-    const opened = Date.now();
     void this.deps.pool
       .ensureRelay(this.deps.relayUrl, { connectionTimeout: CONNECTION_TIMEOUT_MS })
       .then(
         (relay) => {
           if (generation !== this.wrapGeneration) {
             return;
+          }
+          if (relay !== this.wrapRelay) {
+            this.wrapRelay = relay;
+            this.wrapRelayUpAt = Date.now();
           }
           this.wrapSubscriptions = chunks.map((chunk) => {
             const read = readHistory(
@@ -262,7 +268,7 @@ export class Worker {
                 ...(this.deps.historyTimeoutMs === undefined
                   ? {}
                   : { timeoutMs: this.deps.historyTimeoutMs }),
-                onClose: () => this.wrapsClosed(generation, opened),
+                onClose: () => this.wrapsClosed(generation),
               },
             );
             // With no real EOSE in time, readHistory closes the REQ itself, which reopens it here.
@@ -272,11 +278,11 @@ export class Worker {
             subscription.close();
           }
         },
-        () => this.wrapsClosed(generation, opened),
+        () => this.wrapsClosed(generation),
       );
   }
 
-  private wrapsClosed(generation: number, opened: number): void {
+  private wrapsClosed(generation: number): void {
     if (this.stopped || generation !== this.wrapGeneration) {
       return;
     }
@@ -285,9 +291,13 @@ export class Worker {
       subscription.close();
     }
     this.wrapSubscriptions = [];
-    if (Date.now() - opened >= (this.deps.stableConnectionMs ?? STABLE_CONNECTION_MS)) {
+    if (
+      this.wrapRelay !== undefined &&
+      Date.now() - this.wrapRelayUpAt >= (this.deps.stableConnectionMs ?? STABLE_CONNECTION_MS)
+    ) {
       this.backoff.reset();
     }
+    this.wrapRelay = undefined;
     setTimeout(() => this.openWraps(), this.backoff.next());
   }
 

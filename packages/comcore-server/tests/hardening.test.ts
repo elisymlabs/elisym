@@ -2,8 +2,10 @@ import { buildTicket, unwrapChatMessage } from '@elisym/comcore';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
+import { positiveUsd } from '../src/config';
 import { REQ_BYTES_CAP } from '../src/constants';
 import { createGateway } from '../src/gateway/gateway';
+import { serveGateway } from '../src/gateway/http';
 import { WindowLimiter } from '../src/gateway/limits';
 import { chunkByBytes } from '../src/relay/chunks';
 import { readHistory } from '../src/relay/history';
@@ -44,6 +46,7 @@ function gateway(
         : undefined,
     isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
     isUnservable: (owner) => unservable && owner === store.owner,
+    reserveUsd: '0.25',
     now: () => NOW,
   });
   const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -162,6 +165,81 @@ describe('gateway review round 3 (3)', () => {
     old.history = [{ role: 'user', content: 'stale' }];
     state.saveSession(old);
     expect(state.storedSession(store.assistant, 'b'.repeat(64))).toBe(fresh);
+  });
+});
+
+describe('review round 4', () => {
+  it('issues no ticket when not even one turn reservation fits the budget', async () => {
+    const { store, post } = gateway((synthetic) => ({
+      ...storeRecord(synthetic),
+      tier: { ...TIER, dailyBudgetUsd: '0.2' },
+    }));
+    const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ unavailable: true, reason: 'budget' });
+  });
+
+  it('a running attempt whose session was swept settles to what it spent when it ends', () => {
+    const store = syntheticStore();
+    const state = new MemoryState([storeRecord(store)]);
+    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
+    const admitted = state.admitAsk(session, ASK_ID, '0.25', NOW);
+    if (!admitted.admitted) {
+      throw new Error('not admitted');
+    }
+    const deadline = (session.sessionEnd + 60) * 1000;
+    state.startAsk(session, ASK_ID, admitted.record.attemptId, deadline);
+    state.sweep(session.sessionEnd);
+    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.25' });
+    expect(state.failAsk(session, ASK_ID, admitted.record.attemptId, '0.01')).toBe(false);
+    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
+  });
+
+  it('a swept attempt that never ends is charged its reservation past its deadline', () => {
+    const store = syntheticStore();
+    const state = new MemoryState([storeRecord(store)]);
+    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
+    const admitted = state.admitAsk(session, ASK_ID, '0.25', NOW);
+    if (!admitted.admitted) {
+      throw new Error('not admitted');
+    }
+    const deadline = (session.sessionEnd + 60) * 1000;
+    state.startAsk(session, ASK_ID, admitted.record.attemptId, deadline);
+    state.sweep(session.sessionEnd);
+    state.sweep(session.sessionEnd + 61);
+    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.25', reserved: '0' });
+  });
+
+  it('checks amounts from the environment', () => {
+    expect(positiveUsd('X', '0.25')).toBe('0.25');
+    expect(() => positiveUsd('X', '0')).toThrow('X must be a decimal above zero');
+    expect(() => positiveUsd('X', 'abc')).toThrow();
+    expect(() => positiveUsd('X', '-1')).toThrow();
+    expect(() => positiveUsd('X', '1e3')).toThrow();
+  });
+
+  it('serves over HTTP: a small body reaches the handler, an oversized one gets 413', async () => {
+    const server = serveGateway(async () => new Response('ok', { status: 200 }), {
+      port: 0,
+      trustProxy: false,
+    });
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    try {
+      const small = await fetch(`http://127.0.0.1:${port}/v1/session`, {
+        method: 'POST',
+        body: 'x'.repeat(100),
+      });
+      expect(small.status).toBe(200);
+      const large = await fetch(`http://127.0.0.1:${port}/v1/session`, {
+        method: 'POST',
+        body: 'x'.repeat(20 * 1024),
+      });
+      expect(large.status).toBe(413);
+    } finally {
+      server.close();
+    }
   });
 });
 

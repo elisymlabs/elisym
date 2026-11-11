@@ -21,8 +21,9 @@ export function clientAddressOf(
 }
 
 /**
- * The body, or undefined past the cap. An oversized body is drained, not
- * destroyed, so the 413 reaches the client before the connection closes.
+ * The body, or undefined past the cap. An oversized body is not destroyed at
+ * once: the 413 goes out with `connection: close`, so a client that finished
+ * sending reads it; one still sending a very large body may see a reset.
  */
 function readBody(request: IncomingMessage): Promise<string | undefined> {
   return new Promise((resolve, reject) => {

@@ -106,10 +106,14 @@ export interface ServerState {
     spentUsd: string,
     now: number,
   ): boolean;
-  /** Conditional transition `running` (attempt) to `failed`, settling spend to `spentUsd`. */
+  /**
+   * Conditional transition `running` (attempt) to `failed`, settling spend to
+   * `spentUsd`. An attempt whose session was replaced meanwhile is settled to
+   * `spentUsd` too, and false is returned (nothing to send).
+   */
   failAsk(session: SessionState, askId: string, attemptId: string, spentUsd: string): boolean;
   /** Whether a store's daily budget is spent (reserved spend counts), so no ticket is issued (3). */
-  budgetExhausted(owner: string, now: number): boolean;
+  budgetExhausted(owner: string, now: number, reserveUsd: string): boolean;
   /** Count a handoff click (advisory, 3). */
   countClick(owner: string, address: string): void;
   /**

@@ -38,6 +38,8 @@ export interface GatewayDeps {
   gatewaySecretKey: Uint8Array;
   /** The store's current config (30496), as the worker's catalog cache reads it. */
   configFor: (owner: string) => StoreConfig | undefined;
+  /** One turn's reservation: no ticket is issued once it no longer fits the budget (5.8). */
+  reserveUsd: string;
   /** An active store read in full that has nothing to serve (no config, or one naming another assistant). */
   isUnservable: (owner: string) => boolean;
   /**
@@ -128,7 +130,7 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     if (!ticketsPerStore.hit(owner, nowSecs * 1000, record.tier.ticketsPerStorePerMinute)) {
       return json({ error: 'rate_limited' }, 429, origin);
     }
-    if (deps.state.budgetExhausted(owner, nowSecs)) {
+    if (deps.state.budgetExhausted(owner, nowSecs, deps.reserveUsd)) {
       return json(
         { unavailable: true, reason: 'budget', contact: config.contact ?? null },
         503,

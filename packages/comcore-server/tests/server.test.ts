@@ -174,6 +174,7 @@ describe('gateway (3)', () => {
       configFor: (owner) => (owner === store.owner ? catalog?.config : undefined),
       isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
       isUnservable: () => false,
+      reserveUsd: '0.25',
       now: () => NOW,
     });
     const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -214,6 +215,7 @@ describe('gateway (3)', () => {
       configFor: () => undefined,
       isListed: () => false,
       isUnservable: () => false,
+      reserveUsd: '0.25',
     };
     const get = () => ({
       request: new Request('http://localhost/widget.js'),

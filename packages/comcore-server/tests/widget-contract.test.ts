@@ -25,6 +25,7 @@ function widgetAgainstServer(
         : undefined,
     isListed: () => false,
     isUnservable: () => false,
+    reserveUsd: '0.25',
     now: () => NOW,
   });
   // A browser's cross-origin fetch: a response without our origin allowed rejects, as CORS does.
