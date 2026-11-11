@@ -38,6 +38,8 @@ export interface GatewayDeps {
   gatewaySecretKey: Uint8Array;
   /** The store's current config (30496), as the worker's catalog cache reads it. */
   configFor: (owner: string) => StoreConfig | undefined;
+  /** An active store read in full that has nothing to serve (no config, or one naming another assistant). */
+  isUnservable: (owner: string) => boolean;
   /**
    * Whether an address is a listing in the store's cached catalog: only those
    * clicks are counted, so the counter cannot be grown with made-up addresses.
@@ -113,6 +115,9 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     }
     const config = deps.configFor(owner);
     if (config === undefined) {
+      if (deps.isUnservable(owner)) {
+        return json({ unavailable: true, reason: 'inactive', contact: null }, 503, requestOrigin);
+      }
       // Active but its catalog is not loaded yet (a relay outage at boot): the widget retries later.
       return json({ error: 'not_ready' }, 503, requestOrigin);
     }

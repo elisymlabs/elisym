@@ -135,6 +135,7 @@ async function main(): Promise<void> {
       gatewaySecretKey: gatewaySecret,
       configFor: (owner) => configs.get(owner)?.config,
       isListed: (owner, address) => isListed(configs.get(owner), address),
+      isUnservable: () => false,
     }),
     { port: GATEWAY_PORT, trustProxy: false },
   );

@@ -1,5 +1,6 @@
 import {
   type ChatMessage,
+  SESSION_END_MARGIN_SECS,
   STATUS_TTL_SECS,
   type UnavailableReason,
   wrapChatMessage,
@@ -77,6 +78,11 @@ export interface WorkerDeps {
   reserveUsd: string;
   /** A history read with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
+  /** Pay Core default relays' timeouts (5.1); tests shorten them. */
+  extraRelayTimeoutMs?: number;
+  extraRelayBudgetMs?: number;
+  /** How long a connection must stay up to reset a backoff (2.4); tests shorten it. */
+  stableConnectionMs?: number;
   now?: () => number;
   log?: (message: string) => void;
 }
@@ -109,6 +115,15 @@ export class Worker {
       pool: deps.pool,
       leased: () => this.leasedStores(),
       ...(deps.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: deps.historyTimeoutMs }),
+      ...(deps.extraRelayTimeoutMs === undefined
+        ? {}
+        : { extraRelayTimeoutMs: deps.extraRelayTimeoutMs }),
+      ...(deps.extraRelayBudgetMs === undefined
+        ? {}
+        : { extraRelayBudgetMs: deps.extraRelayBudgetMs }),
+      ...(deps.stableConnectionMs === undefined
+        ? {}
+        : { stableConnectionMs: deps.stableConnectionMs }),
       now: this.now,
       log: this.log,
     });
@@ -116,6 +131,11 @@ export class Worker {
 
   get catalogs(): ReadonlyMap<string, StoreCatalog> {
     return this.loader.catalogs;
+  }
+
+  /** A leased store read in full with nothing to serve (3). */
+  isUnservable(owner: string): boolean {
+    return this.loader.isUnservable(owner);
   }
 
   isLeased(assistant: string): boolean {
@@ -265,7 +285,7 @@ export class Worker {
       subscription.close();
     }
     this.wrapSubscriptions = [];
-    if (Date.now() - opened >= STABLE_CONNECTION_MS) {
+    if (Date.now() - opened >= (this.deps.stableConnectionMs ?? STABLE_CONNECTION_MS)) {
       this.backoff.reset();
     }
     setTimeout(() => this.openWraps(), this.backoff.next());
@@ -357,6 +377,15 @@ export class Worker {
     ask: { ask_id: string; text: string; page?: { url: string }; locale?: string },
   ): Promise<void> {
     const now = this.now();
+    // An ask queued behind a turn may run after its session ended or was replaced: it is not
+    // started on that session (the widget times out and asks again in a fresh one).
+    if (
+      this.deps.state.storedSession(session.assistant, session.visitor) !== session ||
+      session.sessionEnd - now <= SESSION_END_MARGIN_SECS
+    ) {
+      this.log('ask dropped: its session ended');
+      return;
+    }
     const existing = this.deps.state.askRecord(session, ask.ask_id);
     if (existing?.state === 'answered' && existing.answerWrap) {
       // The stored exact answer, same id: a widget that has it drops it (5.8).
@@ -420,6 +449,11 @@ export class Worker {
         },
       });
       const spent = costOf(output.usage, this.deps.price).toString();
+      if (session.sessionEnd <= this.now()) {
+        // The session ended during the turn: nothing can be sent, but what it spent is charged.
+        this.deps.state.failAsk(session, ask.ask_id, attemptId, spent);
+        return;
+      }
       const { wrap } = wrapChatMessage({
         message: output.answer,
         senderSecretKey: store.assistantSecretKey,

@@ -59,6 +59,9 @@ export interface ServerState {
    * when the stored one ends within the end margin (4.4).
    */
   session(assistant: string, visitor: string, now: number): SessionState;
+  /** The stored session for (A, V), if any, without starting one. */
+  storedSession(assistant: string, visitor: string): SessionState | undefined;
+  /** Store a session's new history; a no-op when another session has replaced it since. */
   saveSession(session: SessionState): void;
   /** Whether a rumor id was recorded within its TTL (5.8 dedup). */
   rumorSeen(rumorId: string, now: number): boolean;

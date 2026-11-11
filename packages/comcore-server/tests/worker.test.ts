@@ -108,6 +108,8 @@ async function harness(input: {
   records?: StoreRecord[];
   reserveUsd?: string;
   historyTimeoutMs?: number;
+  extraRelayBudgetMs?: number;
+  stableConnectionMs?: number;
   configurePool?: (pool: FakePool) => void;
   /** Leave the worker unstarted (the test starts it). */
   idle?: boolean;
@@ -138,6 +140,12 @@ async function harness(input: {
     now: () => clock.now,
     log: (message) => logs.push(message),
     ...(input.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: input.historyTimeoutMs }),
+    ...(input.extraRelayBudgetMs === undefined
+      ? {}
+      : { extraRelayBudgetMs: input.extraRelayBudgetMs, extraRelayTimeoutMs: 1_000 }),
+    ...(input.stableConnectionMs === undefined
+      ? {}
+      : { stableConnectionMs: input.stableConnectionMs }),
   });
   running.push(worker);
   if (!input.idle) {
@@ -889,5 +897,221 @@ describe('worker review round 2', () => {
     // Delays of 0.5-1 s, 1-2 s, 2-4 s: at most three reopens in 4.2 s; a reset each time allows four or more.
     await pause(4_200);
     expect(opens() - before).toBeLessThanOrEqual(3);
+  });
+});
+
+/** Junk deletions by `author`, 500 per page, each page older than the last: a relay that never runs out. */
+function endlessPages(author: string, pages: number) {
+  let serial = 0;
+  let served = 0;
+  return (filters: { authors?: string[]; kinds?: number[] }[]) => {
+    if (served >= pages || !filters.some((filter) => filter.authors?.includes(author))) {
+      return [];
+    }
+    served += 1;
+    return Array.from({ length: 500 }, () => {
+      serial += 1;
+      return {
+        id: serial.toString(16).padStart(64, '0'),
+        pubkey: author,
+        created_at: NOW - 100_000 - serial,
+        kind: KIND_DELETION,
+        tags: [],
+        content: '',
+        sig: '',
+      };
+    });
+  };
+}
+
+function paycoreStore() {
+  const ownerSecret = generateSecretKey();
+  const storeSecret = generateSecretKey();
+  const assistantSecret = generateSecretKey();
+  const storeKey = getPublicKey(storeSecret);
+  const config = finalizeEvent(
+    buildConfigEvent(
+      {
+        assistant: getPublicKey(assistantSecret),
+        origins: [ORIGIN],
+        name: 'Pay Core Shop',
+        language: 'en',
+        currency: 'USD',
+        source: { kind: 'paycore' },
+        catalogKey: storeKey,
+        policyKey: getPublicKey(generateSecretKey()),
+        createdAt: NOW - 100,
+      },
+      ownerSecret,
+    ),
+    ownerSecret,
+  );
+  const store: SyntheticStore = {
+    ownerSecret,
+    owner: getPublicKey(ownerSecret),
+    assistantSecret,
+    assistant: getPublicKey(assistantSecret),
+    catalogSecret: storeSecret,
+    catalogKey: storeKey,
+    events: [config, listing(storeSecret, 'paycore-item', NOW - 50)],
+  };
+  const storeAuth = finalizeEvent(
+    buildStoreAuthEvent({ storePubkey: storeKey, mode: 'hosted', createdAt: NOW - 100 }),
+    ownerSecret,
+  );
+  return { store, storeAuth };
+}
+
+describe('worker review round 3', () => {
+  it('a turn that ends after its session ended is charged what it spent, and a queued ask is not started', async () => {
+    const store = syntheticStore();
+    const provider = heldProvider();
+    const setup = await harness({ stores: [store], provider });
+    const visitorSecret = generateSecretKey();
+    ask(setup, store, visitorSecret, 'b1'.repeat(16));
+    await waitUntil(() => provider.requests.length === 1);
+    ask(setup, store, visitorSecret, 'b2'.repeat(16));
+    await pause(50);
+    const session = setup.state.storedSession(store.assistant, getPublicKey(visitorSecret));
+    if (!session) {
+      throw new Error('no session');
+    }
+    setup.clock.now = session.sessionEnd + 5;
+    provider.release();
+    await setup.worker.idle();
+    expect(provider.requests).toHaveLength(1);
+    // Settled into the day the reservation was made.
+    expect(setup.state.dayTotals(store.owner, NOW)).toEqual({
+      spent: costOf(SMALL_USAGE, PRICE).toString(),
+      reserved: '0',
+    });
+    expect(
+      received(setup, store, visitorSecret).some((opened) => opened.message.type === 'answer'),
+    ).toBe(false);
+  });
+
+  it('reads wraps from ten minutes back', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    await waitUntil(() => wrapRequests(setup).length === 1);
+    expect(wrapRequests(setup)[0]?.filters[0]?.since).toBe(NOW - 10 * 60);
+  });
+
+  it('a relay that keeps closing the wrap REQ meets a growing backoff', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const relay = setup.pool.relay(RELAY);
+    await waitUntil(() => wrapRequests(setup).length === 1);
+    const opens = () =>
+      relay.requests.filter((filters) => filters.some((filter) => filter.kinds?.includes(1059)))
+        .length;
+    const before = opens();
+    relay.closeOn = (filters) => filters.some((filter) => filter.kinds?.includes(1059));
+    wrapRequests(setup).forEach((subscription) => subscription.params.onclose?.('closed by relay'));
+    await pause(4_200);
+    expect(opens() - before).toBeLessThanOrEqual(3);
+  });
+
+  it('caps the pages a relay can make one reload read', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const relay = setup.pool.relay(RELAY);
+    relay.stray = endlessPages(store.owner, 60);
+    const before = ownerReloads(setup, store);
+    relay.accept(listing(store.catalogSecret, 'capped', NOW - 10));
+    await waitUntil(() => ownerReloads(setup, store) > before);
+    await setup.worker.catalogsSettled();
+    await waitUntil(() => setup.worker.catalogs.get(store.owner)?.items.size === 3);
+    expect(ownerReloads(setup, store) - before).toBe(40);
+  });
+
+  it('a slow default relay holds a Pay Core reload only for its time budget', async () => {
+    const { store, storeAuth } = paycoreStore();
+    const started = Date.now();
+    const setup = await harness({
+      stores: [store],
+      extraRelayBudgetMs: 200,
+      configurePool: (pool) => {
+        pool.relay('wss://relay.damus.io').accept(storeAuth);
+        const slow = pool.relay('wss://nos.lol');
+        slow.delayMs = 60;
+        slow.stray = endlessPages(store.owner, 1_000);
+      },
+    });
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(1);
+  });
+
+  it('a store read in full that names another assistant is unservable, not loading', async () => {
+    const store = syntheticStore();
+    const record = { ...storeRecord(store), assistantSecretKey: generateSecretKey() };
+    const setup = await harness({ stores: [store], records: [record] });
+    expect(setup.worker.catalogs.has(store.owner)).toBe(false);
+    expect(setup.worker.isUnservable(store.owner)).toBe(true);
+  });
+
+  it('a store dropped while its reload reads does not come back when the read ends', async () => {
+    const store = syntheticStore();
+    const record = storeRecord(store);
+    const setup = await harness({ stores: [store], records: [record] });
+    const relay = setup.pool.relay(RELAY);
+    relay.delayMs = 100;
+    const before = ownerReloads(setup, store);
+    relay.accept(listing(store.catalogSecret, 'dropped', NOW - 10));
+    await waitUntil(() => ownerReloads(setup, store) > before);
+    record.status = 'suspended';
+    setup.worker.refreshLeases();
+    await pause(600);
+    expect(setup.worker.catalogs.has(store.owner)).toBe(false);
+  });
+
+  it('a re-issue on a connection that stayed up keeps it counted as stable for the backoff', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store], stableConnectionMs: 300 });
+    const relay = setup.pool.relay(RELAY);
+    const live = () => relay.requests.filter((filters) => filters[0]?.limit === 0).length;
+    const closeLive = () =>
+      liveRequests(setup).forEach((subscription) =>
+        subscription.params.onclose?.('closed by relay'),
+      );
+    // Two failed reopens grow the backoff to its third step (2-4 s).
+    relay.closeOn = (filters) => filters[0]?.limit === 0;
+    const base = live();
+    closeLive();
+    await waitUntil(() => live() >= base + 2, 4_000);
+    relay.closeOn = undefined;
+    await waitUntil(() => liveRequests(setup).length === 1, 5_000);
+    await pause(400);
+    // A re-issue on the same connection, then a close: the connection was up long enough.
+    const nextSecret = generateSecretKey();
+    relay.accept(
+      finalizeEvent(
+        buildCatalogAuth({ key: getPublicKey(nextSecret), mode: 'hosted', createdAt: NOW - 20 }),
+        store.ownerSecret,
+      ),
+    );
+    relay.accept(
+      finalizeEvent(
+        buildConfigEvent(
+          {
+            assistant: store.assistant,
+            origins: [ORIGIN],
+            name: 'Example Shop',
+            language: 'en',
+            currency: 'USD',
+            source: { kind: 'catalog' },
+            catalogKey: getPublicKey(nextSecret),
+            createdAt: NOW - 20,
+          },
+          store.ownerSecret,
+        ),
+        store.ownerSecret,
+      ),
+    );
+    const reissued = live();
+    await waitUntil(() => live() > reissued);
+    const beforeClose = live();
+    closeLive();
+    await waitUntil(() => live() > beforeClose, 1_500);
   });
 });

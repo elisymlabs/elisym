@@ -88,8 +88,16 @@ export class MemoryState implements ServerState {
     return fresh;
   }
 
+  storedSession(assistant: string, visitor: string): SessionState | undefined {
+    return this.sessions.get(sessionKey(assistant, visitor));
+  }
+
   saveSession(session: SessionState): void {
-    this.sessions.set(sessionKey(session.assistant, session.visitor), session);
+    const key = sessionKey(session.assistant, session.visitor);
+    const stored = this.sessions.get(key);
+    if (stored === undefined || stored === session) {
+      this.sessions.set(key, session);
+    }
   }
 
   private pruneRumors(now: number): void {

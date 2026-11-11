@@ -12,7 +12,7 @@ import {
 import { Backoff } from '../relay/backoff';
 import { chunkByBytes } from '../relay/chunks';
 import { readHistory } from '../relay/history';
-import type { ServerPool } from '../relay/pool';
+import type { RelayLike, ServerPool } from '../relay/pool';
 import type { StoreRecord } from '../state/types';
 import {
   buildStoreCatalog,
@@ -32,6 +32,11 @@ export interface CatalogLoaderDeps {
   log: (message: string) => void;
   /** A page with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
+  /** A Pay Core default relay's connect and page timeout, and its budget per reload (5.1); tests shorten them. */
+  extraRelayTimeoutMs?: number;
+  extraRelayBudgetMs?: number;
+  /** How long a connection must stay up to reset the live backoff (2.4); tests shorten it. */
+  stableConnectionMs?: number;
 }
 
 /**
@@ -47,12 +52,15 @@ export interface CatalogLoaderDeps {
  */
 export class CatalogLoader {
   readonly catalogs = new Map<string, StoreCatalog>();
+  private readonly unservable = new Set<string>();
   private readonly dirty = new Set<string>();
   /** Paces reload retries; reset by a reload that succeeded. */
   private readonly backoff = new Backoff();
   /** Paces live REQ reopens; reset only by a live REQ that stayed up through one ping cycle (2.4). */
   private readonly liveBackoff = new Backoff();
-  private liveOpenedAt = 0;
+  /** The connection the live REQ runs on and when it came up: re-issues on it keep that time. */
+  private liveRelay: RelayLike | undefined;
+  private liveRelayUpAt = 0;
   private pumping = false;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private stopped = true;
@@ -109,6 +117,7 @@ export class CatalogLoader {
   drop(owner: string): void {
     this.dirty.delete(owner);
     this.catalogs.delete(owner);
+    this.unservable.delete(owner);
   }
 
   private async pump(): Promise<void> {
@@ -220,12 +229,13 @@ export class CatalogLoader {
    * that budget.
    */
   private async readExtra(owner: string, productKey: string | undefined, relays: string[]) {
-    const deadline = Date.now() + EXTRA_RELAY_BUDGET_MS;
+    const deadline = Date.now() + (this.deps.extraRelayBudgetMs ?? EXTRA_RELAY_BUDGET_MS);
+    const timeoutMs = this.deps.extraRelayTimeoutMs ?? EXTRA_RELAY_TIMEOUT_MS;
     const reads = await Promise.all(
       relays.map((url) =>
         this.readAll(url, extraFilters(owner, productKey), {
-          connectionTimeoutMs: EXTRA_RELAY_TIMEOUT_MS,
-          pageTimeoutMs: EXTRA_RELAY_TIMEOUT_MS,
+          connectionTimeoutMs: timeoutMs,
+          pageTimeoutMs: timeoutMs,
           deadline,
         }),
       ),
@@ -242,7 +252,7 @@ export class CatalogLoader {
     }
     const config = storeConfig(ownerEvents, store.owner, now);
     if (!config) {
-      this.catalogs.delete(store.owner);
+      this.settle(store.owner, undefined);
       return true;
     }
     const keyEvents = await this.readAll(
@@ -263,12 +273,32 @@ export class CatalogLoader {
       store.assistantSecretKey,
       this.deps.now(),
     );
-    if (catalog) {
-      this.catalogs.set(store.owner, catalog);
-    } else {
-      this.catalogs.delete(store.owner);
-    }
+    this.settle(store.owner, catalog);
     return true;
+  }
+
+  /**
+   * Write a reload's outcome, unless the store stopped being leased while it
+   * read. A store read in full with nothing servable (no config, or one naming
+   * another assistant) is marked so: the gateway answers it as unavailable,
+   * not as still loading.
+   */
+  private settle(owner: string, catalog: StoreCatalog | undefined): void {
+    if (!this.deps.leased().some((record) => record.owner === owner)) {
+      return;
+    }
+    if (catalog) {
+      this.catalogs.set(owner, catalog);
+      this.unservable.delete(owner);
+    } else {
+      this.catalogs.delete(owner);
+      this.unservable.add(owner);
+    }
+  }
+
+  /** Read in full, and nothing to serve (3). */
+  isUnservable(owner: string): boolean {
+    return this.unservable.has(owner);
   }
 
   /** Author to owners for every leased store: the owner, and the keys its cached config names. */
@@ -330,7 +360,10 @@ export class CatalogLoader {
           if (generation !== this.liveGeneration) {
             return;
           }
-          this.liveOpenedAt = Date.now();
+          if (relay !== this.liveRelay) {
+            this.liveRelay = relay;
+            this.liveRelayUpAt = Date.now();
+          }
           this.liveSubscriptions = chunkByBytes([...authors.keys()]).map((chunk) =>
             relay.subscribe([{ authors: chunk, limit: 0 }], {
               onevent: (event) => {
@@ -360,10 +393,13 @@ export class CatalogLoader {
       subscription.close();
     }
     this.liveSubscriptions = [];
-    if (this.liveOpenedAt !== 0 && Date.now() - this.liveOpenedAt >= STABLE_CONNECTION_MS) {
+    if (
+      this.liveRelay !== undefined &&
+      Date.now() - this.liveRelayUpAt >= (this.deps.stableConnectionMs ?? STABLE_CONNECTION_MS)
+    ) {
       this.liveBackoff.reset();
     }
-    this.liveOpenedAt = 0;
+    this.liveRelay = undefined;
     setTimeout(() => {
       if (this.stopped) {
         return;

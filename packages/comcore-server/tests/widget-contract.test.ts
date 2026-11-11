@@ -24,6 +24,7 @@ function widgetAgainstServer(
         ? catalog?.config
         : undefined,
     isListed: () => false,
+    isUnservable: () => false,
     now: () => NOW,
   });
   // A browser's cross-origin fetch: a response without our origin allowed rejects, as CORS does.

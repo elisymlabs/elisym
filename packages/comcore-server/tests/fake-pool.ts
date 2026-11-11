@@ -27,7 +27,9 @@ export class FakeRelay implements RelayLike {
   /** When set, a REQ matching it is closed by the relay right after its events. */
   closeOn: ((filters: Filter[]) => boolean) | undefined;
   /** When set, sent to every history REQ whether it matches or not (a misbehaving relay). */
-  stray: (() => NostrEvent[]) | undefined;
+  stray: ((filters: Filter[]) => NostrEvent[]) | undefined;
+  /** Answers each REQ this late (a slow relay). */
+  delayMs = 0;
   /** When set, the socket dies right after the EOSE of a REQ matching it (no close reaches the REQ yet). */
   disconnectAfterEose: ((filters: Filter[]) => boolean) | undefined;
 
@@ -62,7 +64,9 @@ export class FakeRelay implements RelayLike {
       open.filters.every((filter) => filter.limit !== 0),
     ).length;
     this.maxOpenHistory = Math.max(this.maxOpenHistory, historyOpen);
-    queueMicrotask(() => {
+    const answer = (run: () => void) =>
+      this.delayMs > 0 ? setTimeout(run, this.delayMs) : queueMicrotask(run);
+    answer(() => {
       if (subscription.closed) {
         return;
       }
@@ -78,7 +82,8 @@ export class FakeRelay implements RelayLike {
           this.deliver(subscription, event);
         }
       }
-      for (const event of this.stray?.() ?? []) {
+      const history = filters.every((filter) => filter.limit !== 0 && filter['#p'] === undefined);
+      for (const event of history ? (this.stray?.(filters) ?? []) : []) {
         this.deliver(subscription, event);
       }
       if (this.closeOn?.(filters)) {

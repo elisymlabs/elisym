@@ -20,18 +20,36 @@ export function clientAddressOf(
   return request.socket.remoteAddress ?? 'unknown';
 }
 
-async function readBody(request: IncomingMessage): Promise<string | undefined> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
-    size += buffer.length;
-    if (size > MAX_BODY_BYTES) {
-      return undefined;
-    }
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks).toString('utf8');
+/**
+ * The body, or undefined past the cap. An oversized body is drained, not
+ * destroyed, so the 413 reaches the client before the connection closes.
+ */
+function readBody(request: IncomingMessage): Promise<string | undefined> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let tooLarge = false;
+    request.on('data', (chunk: unknown) => {
+      if (tooLarge) {
+        return;
+      }
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      size += buffer.length;
+      if (size > MAX_BODY_BYTES) {
+        tooLarge = true;
+        chunks.length = 0;
+        resolve(undefined);
+        return;
+      }
+      chunks.push(buffer);
+    });
+    request.on('end', () => {
+      if (!tooLarge) {
+        resolve(Buffer.concat(chunks).toString('utf8'));
+      }
+    });
+    request.on('error', reject);
+  });
 }
 
 async function writeResponse(response: Response, target: ServerResponse): Promise<void> {
@@ -49,6 +67,7 @@ async function handleIncoming(
   const body = incoming.method === 'POST' ? await readBody(incoming) : undefined;
   if (incoming.method === 'POST' && body === undefined) {
     outgoing.statusCode = 413;
+    outgoing.setHeader('connection', 'close');
     outgoing.end();
     return;
   }

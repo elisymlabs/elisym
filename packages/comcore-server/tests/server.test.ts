@@ -173,6 +173,7 @@ describe('gateway (3)', () => {
       gatewaySecretKey: gatewaySecret,
       configFor: (owner) => (owner === store.owner ? catalog?.config : undefined),
       isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
+      isUnservable: () => false,
       now: () => NOW,
     });
     const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -212,6 +213,7 @@ describe('gateway (3)', () => {
       gatewaySecretKey: generateSecretKey(),
       configFor: () => undefined,
       isListed: () => false,
+      isUnservable: () => false,
     };
     const get = () => ({
       request: new Request('http://localhost/widget.js'),

@@ -25,7 +25,11 @@ const WRAP: NostrEvent = {
   sig: '0',
 };
 
-function gateway(record: (store: ReturnType<typeof syntheticStore>) => StoreRecord, loaded = true) {
+function gateway(
+  record: (store: ReturnType<typeof syntheticStore>) => StoreRecord,
+  loaded = true,
+  unservable = false,
+) {
   const store = syntheticStore();
   const state = new MemoryState([record(store)]);
   const gatewaySecret = generateSecretKey();
@@ -39,6 +43,7 @@ function gateway(record: (store: ReturnType<typeof syntheticStore>) => StoreReco
         ? catalog?.config
         : undefined,
     isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
+    isUnservable: (owner) => unservable && owner === store.owner,
     now: () => NOW,
   });
   const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -126,6 +131,37 @@ describe('gateway review round 2 (3)', () => {
     expect((await post('/v1/click', { ticket: expired, address: madeUp })).status).toBe(204);
     expect(state.clicksFor(store.owner, listed)).toBe(1);
     expect(state.clicksFor(store.owner, madeUp)).toBe(0);
+  });
+});
+
+describe('gateway review round 3 (3)', () => {
+  it('a store with nothing to serve is unavailable, not loading', async () => {
+    const { store, post } = gateway((synthetic) => storeRecord(synthetic), false, true);
+    const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ unavailable: true, reason: 'inactive', contact: null });
+  });
+
+  it('refuses a click from a site the store does not list', async () => {
+    const { store, state, gatewaySecret, post } = gateway((synthetic) => storeRecord(synthetic));
+    const ticket = finalizeEvent(
+      buildTicket({ visitor: 'a'.repeat(64), store: store.owner, now: NOW }),
+      gatewaySecret,
+    );
+    const address = `30402:${store.catalogKey}:jacket-wool`;
+    const response = await post('/v1/click', { ticket, address }, 'https://evil.example');
+    expect(response.status).toBe(403);
+    expect(state.clicksFor(store.owner, address)).toBe(0);
+  });
+
+  it('keeps a replaced session from being written back', () => {
+    const store = syntheticStore();
+    const state = new MemoryState([storeRecord(store)]);
+    const old = state.session(store.assistant, 'b'.repeat(64), NOW);
+    const fresh = state.session(store.assistant, 'b'.repeat(64), old.sessionEnd);
+    old.history = [{ role: 'user', content: 'stale' }];
+    state.saveSession(old);
+    expect(state.storedSession(store.assistant, 'b'.repeat(64))).toBe(fresh);
   });
 });
 

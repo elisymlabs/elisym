@@ -7,6 +7,7 @@ import {
   createAnthropicProvider,
   createOpenAiCompatibleProvider,
 } from '@elisym/comcore-agent';
+import Decimal from 'decimal.js-light';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createGateway } from './gateway/gateway';
@@ -16,6 +17,9 @@ import { createServerPool } from './relay/pool';
 import { MemoryState } from './state/memory';
 import { isListed } from './worker/catalog';
 import { Worker } from './worker/worker';
+
+const USD_RE = /^\d{1,9}(\.\d{1,12})?$/;
+const DEFAULT_TURN_RESERVE_USD = '0.25';
 
 function required(name: string): string {
   const value = process.env[name];
@@ -43,12 +47,20 @@ function providerFromEnv(): LlmProvider {
   });
 }
 
+/** A USD amount from the environment: a plain decimal above zero, checked at start, not on the first ask. */
+function positiveUsd(name: string, value: string): string {
+  if (!USD_RE.test(value) || new Decimal(value).lessThanOrEqualTo(0)) {
+    throw new Error(`${name} must be a decimal above zero, got ${value}`);
+  }
+  return value;
+}
+
 function priceFromEnv(): ModelPrice {
   return {
-    input: required('COMCORE_PRICE_INPUT'),
-    cachedInput: required('COMCORE_PRICE_CACHED_INPUT'),
-    cacheWrite: required('COMCORE_PRICE_CACHE_WRITE'),
-    output: required('COMCORE_PRICE_OUTPUT'),
+    input: positiveUsd('COMCORE_PRICE_INPUT', required('COMCORE_PRICE_INPUT')),
+    cachedInput: positiveUsd('COMCORE_PRICE_CACHED_INPUT', required('COMCORE_PRICE_CACHED_INPUT')),
+    cacheWrite: positiveUsd('COMCORE_PRICE_CACHE_WRITE', required('COMCORE_PRICE_CACHE_WRITE')),
+    output: positiveUsd('COMCORE_PRICE_OUTPUT', required('COMCORE_PRICE_OUTPUT')),
   };
 }
 
@@ -76,7 +88,10 @@ async function main(): Promise<void> {
     gatewayKeys: [getPublicKey(gatewaySecretKey)],
     providerFor: () => provider,
     price: priceFromEnv(),
-    reserveUsd: process.env.COMCORE_TURN_RESERVE_USD ?? '0.25',
+    reserveUsd: positiveUsd(
+      'COMCORE_TURN_RESERVE_USD',
+      process.env.COMCORE_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
+    ),
     log: (message) => console.error(message),
   });
   await worker.start();
@@ -87,6 +102,7 @@ async function main(): Promise<void> {
     widgetScript: widgetScript(),
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
+    isUnservable: (owner) => worker?.isUnservable(owner) ?? false,
   });
   serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),
