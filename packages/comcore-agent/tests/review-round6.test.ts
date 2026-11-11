@@ -97,10 +97,10 @@ describe('5. a dash for no cents', () => {
 
 describe('6. ranges carry the currency to the upper bound', () => {
   for (const text of [
-    'Jacket: $1200-150',
-    'Jacket: $1200 - 150',
-    'Jacket: from $1200 to 150',
-    'Jacket: $1200–150',
+    'Jacket: $1200-1500',
+    'Jacket: $1200 - 1500',
+    'Jacket: from $1200 to 1500',
+    'Jacket: $1200–1500',
   ]) {
     it(`the upper bound is checked: ${text}`, () => {
       expect(violationsIn('USD', 'en', text)).toHaveLength(1);

@@ -47,6 +47,10 @@ const FORINT_RE = /^Ft$/;
 /** "Fr." is a weekday abbreviation in German ("Mo.-Fr."): francs only in a CHF store. */
 const FRANC_RE = /^Fr\.?$/;
 const FRANC_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [['Fr.', ['CHF']]];
+/** "Mo.-Fr. 9", "Di.–Fr. 10": a weekday range, not francs. */
+const WEEKDAY_BEFORE_RE = /(?:Mo|Di|Mi|Do|Sa|So|Lu|Ma|Me|Je|Ve)\.?\s?[-–]\s?$/;
+/** "Fr. 9-18 Uhr", "Fr. 10 Uhr", "Fr. 9:30": opening hours, not francs. */
+const HOURS_AFTER_RE = /^(?::\d{2}|\s*(?:[-–]\s*\d{1,2}(?:[.:]\d{2})?\s*)?(?:Uhr|h)\b)/u;
 
 /** The words for pound are weights as often as money: they count only in a GBP store. */
 // cspell:disable-next-line
@@ -370,7 +374,7 @@ const NUMBER_PATTERN = String.raw`(?<!\d)(?<!\d[.,'’])(?:\d{1,2}(?:,\d{2}){1,4
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}\.?`;
-/** Between token and number: up to three spaces, colons or hyphens ("USD:99", "99  USD"). */
+/** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
 const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
 
 const patternsCache = new Map<string, { prefix: RegExp; postfix: RegExp }>();
@@ -406,6 +410,8 @@ export interface MoneyAmount {
   index: number;
   /** Where the number itself starts: one number read two ways is one amount. */
   numberIndex: number;
+  /** The two bounds of a range share it (the other bound's numberIndex); else numberIndex. */
+  group: number;
 }
 
 function decimalSeparatorFor(locale: string): string {
@@ -541,12 +547,13 @@ function foldSeparators(text: string): string {
 /**
  * Normalize a string before reading amounts: NFKC folds fullwidth digits and
  * signs; native digits and Arabic separators become ASCII; markdown emphasis
- * ("$**99**") is dropped, since the check text is never rendered.
+ * ("$**99**") is dropped, since the check text is never rendered; a marker
+ * between two digits stays ("1,500~2,000" is a range).
  */
 export function normalizeForCheck(text: string): string {
   return foldSeparators(
     stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit),
-  ).replace(/[*_~`]/g, '');
+  ).replace(/(?<!\d)[*_~`]+|[*_~`]+(?!\d)/g, '');
 }
 
 /**
@@ -572,7 +579,21 @@ function scan(
       token === undefined || number === undefined
         ? undefined
         : currenciesFor(token, number, storeCurrency, symbols);
-    if (!currencies || number === undefined) {
+    const numberIndex = match.indices?.[numberGroup]?.[0] ?? match.index;
+    // "1200 € - 2 Farben": a symbol that closes one number does not open the next across a dash.
+    const tokenEnd = match.indices?.[tokenGroup]?.[1] ?? numberIndex;
+    const closesPrevious =
+      tokenGroup < numberGroup &&
+      /-/.test(text.slice(tokenEnd, numberIndex)) &&
+      /\d[\s:]{0,3}$/.test(text.slice(Math.max(0, match.index - 4), match.index));
+    const isHours =
+      token !== undefined &&
+      FRANC_RE.test(token) &&
+      (WEEKDAY_BEFORE_RE.test(text.slice(Math.max(0, match.index - 8), match.index)) ||
+        HOURS_AFTER_RE.test(
+          text.slice(match.index + match[0].length, match.index + match[0].length + 24),
+        ));
+    if (!currencies || number === undefined || isHours || closesPrevious) {
       regex.lastIndex = match.index + 1;
       continue;
     }
@@ -586,8 +607,126 @@ function scan(
       currencies,
       raw: match[0],
       index: match.index,
-      numberIndex: match.indices?.[numberGroup]?.[0] ?? match.index,
+      numberIndex,
+      group: numberIndex,
     });
+  }
+}
+
+/** Range words that are unambiguous in any language. */
+const RANGE_WORDS = ['to', 'bis', 'до'];
+/** Range words only in Romance locales ("de $90 a 150"): in English "a" is an article. */
+const ROMANCE_RANGE_WORDS = ['a', 'à'];
+const ROMANCE_LANGUAGES = new Set(['es', 'pt', 'fr', 'it', 'ca']);
+/** Words that open a range before its lower bound ("from 999 to 1200 USD"). */
+const RANGE_OPENERS = new Set([
+  'from',
+  'von',
+  'ab',
+  'от',
+  'de',
+  'desde',
+  'entre',
+  'zwischen',
+  'between',
+  'du',
+  'da',
+]);
+/** After an upper bound: a unit, percent, time or glued word means it is not money. */
+const NOT_MONEY_AFTER_RE = /^(?:\s?[%‰°]|[\p{L}\d]|:\d|\s*(?:Uhr|h|hrs?|o'clock|ч)(?![\p{L}]))/u;
+const SPACED_DASH_RE = /\s[-–]\s/;
+/** How far before an amount a lower bound is looked for. */
+const RANGE_HEAD_CHARS = 64;
+
+function rangeSeparator(locales: readonly string[]): string {
+  const romance = locales.some((locale) =>
+    ROMANCE_LANGUAGES.has(locale.split('-')[0]?.toLowerCase() ?? ''),
+  );
+  const words = romance ? [...RANGE_WORDS, ...ROMANCE_RANGE_WORDS] : RANGE_WORDS;
+  return `(?:[-–~〜]|${words.join('|')})`;
+}
+
+function readValues(raw: string, decimals: readonly string[]): Decimal[] {
+  return decimals
+    .map((decimal) => parseWith(raw, decimal))
+    .filter((value): value is Decimal => value !== undefined);
+}
+
+function isBelow(lower: readonly Decimal[], upper: readonly Decimal[]): boolean {
+  return lower.some((low) => upper.some((high) => low.lessThan(high)));
+}
+
+/**
+ * A range shares its currency with the bound that has none: "$90-150" and
+ * "from $90 to 150" carry it forward, "999-1200 USD" and "от 999 до 1200 ₽"
+ * back. Only a real range shape counts: the lower bound is below the upper,
+ * no unit, time or word follows a carried upper bound, and a spaced dash next
+ * to a word ("$1200 - 2026 edition", "iPhone 15 - 1200 €") is not a range.
+ */
+function addRangeBounds(
+  text: string,
+  found: MoneyAmount[],
+  decimals: readonly string[],
+  locales: readonly string[],
+): void {
+  const separator = rangeSeparator(locales);
+  const tailRe = new RegExp(String.raw`^(\s*${separator}\s*)(${NUMBER_PATTERN})`, 'u');
+  const headRe = new RegExp(
+    String.raw`(?<![\p{L}\d.,'’])(${NUMBER_PATTERN})(\s*${separator}\s*)$`,
+    'u',
+  );
+  const taken = new Set(found.map((amount) => amount.numberIndex));
+  for (const amount of [...found]) {
+    const end = amount.index + amount.raw.length;
+    const tail = tailRe.exec(text.slice(end));
+    const upper = tail?.[2];
+    const gap = tail?.[1] ?? '';
+    if (tail && upper !== undefined) {
+      const offset = end + gap.length;
+      const after = text.slice(offset + upper.length);
+      const values = readValues(upper, decimals);
+      const wordAfter = /^\s+\p{L}/u.test(after);
+      if (
+        !taken.has(offset) &&
+        isBelow(amount.values, values) &&
+        !NOT_MONEY_AFTER_RE.test(after) &&
+        !(SPACED_DASH_RE.test(gap) && wordAfter)
+      ) {
+        taken.add(offset);
+        found.push({
+          values,
+          currencies: amount.currencies,
+          raw: upper,
+          index: offset,
+          numberIndex: offset,
+          group: amount.numberIndex,
+        });
+      }
+    }
+    const before = text.slice(Math.max(0, amount.index - RANGE_HEAD_CHARS), amount.index);
+    const head = headRe.exec(before);
+    const lower = head?.[1];
+    if (head && lower !== undefined) {
+      const offset = amount.index - before.length + head.index;
+      const wordBefore = /(\p{L}+)\s*$/u.exec(text.slice(Math.max(0, offset - 24), offset));
+      const opener = wordBefore?.[1]?.toLowerCase();
+      const values = readValues(lower, decimals);
+      if (
+        !taken.has(offset) &&
+        isBelow(values, amount.values) &&
+        !(SPACED_DASH_RE.test(head[2] ?? '') && opener !== undefined && !RANGE_OPENERS.has(opener))
+      ) {
+        taken.add(offset);
+        found.push({
+          values,
+          currencies: amount.currencies,
+          raw: lower,
+          index: offset,
+          numberIndex: offset,
+          group: amount.numberIndex,
+        });
+      }
+    }
   }
 }
 
@@ -614,25 +753,7 @@ export function extractAmounts(
   const found: MoneyAmount[] = [];
   scan(normalized, prefix, 1, 2, decimals, storeCurrency, symbols, found);
   scan(normalized, postfix, 2, 1, decimals, storeCurrency, symbols, found);
-  // A range carries its currency to the upper bound: "$90-150", "from $90 to 150".
-  const rangeTail = new RegExp(String.raw`^\s*(?:[-–]|to|bis|до|a|à)\s*(${NUMBER_PATTERN})`, 'iu');
-  for (const amount of [...found]) {
-    const rest = normalized.slice(amount.index + amount.raw.length);
-    const tail = rangeTail.exec(rest);
-    const upper = tail?.[1];
-    if (tail && upper !== undefined) {
-      const offset = amount.index + amount.raw.length + tail[0].length - upper.length;
-      found.push({
-        values: decimals
-          .map((decimal) => parseWith(upper, decimal))
-          .filter((value): value is Decimal => value !== undefined),
-        currencies: amount.currencies,
-        raw: upper,
-        index: offset,
-        numberIndex: offset,
-      });
-    }
-  }
+  addRangeBounds(normalized, found, decimals, locales);
   // One number read both ways ("$99 USD") is one amount; different numbers stay apart.
   found.sort((left, right) => left.index - right.index);
   const seenNumbers = new Set<number>();
@@ -707,9 +828,10 @@ function componentAddresses(answer: Answer): string[][] {
 
 /**
  * Splits sentences and keeps the separators, so stripping does not collapse
- * markdown. Not before a digit: "Rs. 999" and "Fr. 99" keep their symbol.
+ * markdown. Not between a dotted symbol and its number: "Rs. 999", "Fr. 99".
  */
-const SENTENCE_SPLIT_RE = /((?<=[.!?])[ \t]+(?!\d)|\n+)/;
+const SENTENCE_SPLIT_RE =
+  /((?<=[.!?])(?:(?<!(?:^|[^\p{L}])(?:Rs|Fr|kr|руб|р)\.)[ \t]+|[ \t]+(?!\d))|\n+)/u;
 
 function sentencesOf(text: string): { sentences: string[]; separators: string[] } {
   const parts = text.split(SENTENCE_SPLIT_RE);
@@ -801,7 +923,9 @@ export function checkPrices(answer: Answer, context: PriceCheckContext): PriceVi
     const named = namedProducts(text, context.items);
     // A sentence that names a product may state that product's own prices.
     const allowed = [...base, ...named.flatMap(itemPrices)];
-    const visitorRuleApplies = amounts.length === 1 && !carriesId && named.length === 0;
+    // One figure (or one range) only: a sentence of several is not the visitor's figure repeated.
+    const figures = new Set(amounts.map((amount) => amount.group)).size;
+    const visitorRuleApplies = figures === 1 && !carriesId && named.length === 0;
     for (const amount of amounts) {
       const inStoreCurrency = amount.currencies.includes(context.storeCurrency);
       const ok =
