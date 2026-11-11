@@ -229,3 +229,6 @@ comcore
 paycore
 unhashed
 woocommerce
+CLDR
+dealbreakers
+стоим
