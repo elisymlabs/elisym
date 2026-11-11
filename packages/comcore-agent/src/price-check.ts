@@ -67,31 +67,127 @@ function isoCodes(): Set<string> {
 }
 
 const ISO_CODES = isoCodes();
-const SYMBOL_PATTERN = SYMBOLS.map(([symbol]) => symbol.replace(/[.$]/g, '\\$&')).join('|');
+
+/** Common forms Intl does not give in every locale; each maps to its currencies. */
+// cspell:disable
+const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
+  ['円', ['JPY']],
+  ['元', ['CNY']],
+  ['kr', ['SEK', 'NOK', 'DKK', 'ISK']],
+  ['Kč', ['CZK']],
+  ['Ft', ['HUF']],
+  ['lei', ['RON']],
+  ['лв', ['BGN']],
+  ['Rp', ['IDR']],
+  ['RM', ['MYR']],
+  ['₫', ['VND']],
+  ['฿', ['THB']],
+  ['₱', ['PHP']],
+  ['₦', ['NGN']],
+  ['₾', ['GEL']],
+  ['₼', ['AZN']],
+  ['৳', ['BDT']],
+  ['₵', ['GHS']],
+  ['₲', ['PYG']],
+  ['S/', ['PEN']],
+  ['zl', ['PLN']],
+];
+// cspell:enable
+
+const formsCache = new Map<string, Array<[string, readonly string[]]>>();
+
 /**
- * A number: groups of exactly three digits after a separator, then an optional
- * decimal part. It never starts inside another number (the lookbehind keeps a
- * long digit run linear, not quadratic), and "Under $120, 3 colors" reads 120.
+ * The store currency's own written forms, from Intl (narrow symbol, symbol,
+ * name in singular and plural) over the given locales: whatever form the model
+ * uses in the catalog's or the visitor's language, it is read as money.
  */
-const NUMBER_PATTERN = String.raw`(?<![\d.,])(?:\d{1,3}(?:[   ,.'’]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
+function storeCurrencyForms(
+  currency: string | undefined,
+  locales: readonly string[],
+): Array<[string, readonly string[]]> {
+  if (currency === undefined) {
+    return [];
+  }
+  const key = `${currency}|${locales.join(',')}`;
+  const cached = formsCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const forms = new Set<string>();
+  for (const locale of [...locales, 'en']) {
+    for (const currencyDisplay of ['narrowSymbol', 'symbol', 'name'] as const) {
+      for (const sample of [1, 5, 2.5]) {
+        try {
+          const parts = new Intl.NumberFormat(locale, {
+            style: 'currency',
+            currency,
+            currencyDisplay,
+          }).formatToParts(sample);
+          const form = parts.find((part) => part.type === 'currency')?.value.trim();
+          if (form && !/^\d/.test(form)) {
+            forms.add(form.normalize('NFKC'));
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+  const result: Array<[string, readonly string[]]> = [...forms].map((form) => [form, [currency]]);
+  formsCache.set(key, result);
+  return result;
+}
+
+function escapeForRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+}
+
+/**
+ * A number: groups of exactly three digits after a separator (at most five
+ * groups, so a long grouped run stays linear), then an optional decimal part.
+ * It never starts inside another number, and "Under $120, 3 colors" reads 120.
+ */
+const NUMBER_PATTERN = String.raw`(?<![\d.,'’])(?:\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}\.?`;
-/** Prefix form: a symbol or code, then the number. Postfix: the number, then a symbol, code or word. */
-const PREFIX_RE = new RegExp(
-  String.raw`(${SYMBOL_PATTERN}|${CODE_PATTERN})\s?(${NUMBER_PATTERN})`,
-  'gu',
-);
-const POSTFIX_RE = new RegExp(
-  String.raw`(${NUMBER_PATTERN})\s?(${SYMBOL_PATTERN}|${CODE_PATTERN}|${WORD_PATTERN})`,
-  'giu',
-);
+/** Between token and number: up to three spaces, colons or hyphens ("USD:99", "99  USD"). */
+const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
+
+const patternsCache = new Map<string, { prefix: RegExp; postfix: RegExp }>();
+
+function patternsFor(symbols: ReadonlyArray<[string, readonly string[]]>) {
+  const key = symbols.map(([symbol]) => symbol).join('\u0000');
+  const cached = patternsCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  // Longest first, so "R$" is tried before "$".
+  const symbolPattern = [...new Set(symbols.map(([symbol]) => symbol))]
+    .sort((left, right) => right.length - left.length)
+    .map(escapeForRegExp)
+    .join('|');
+  const patterns = {
+    prefix: new RegExp(
+      String.raw`(${symbolPattern}|${CODE_PATTERN})${GAP_PATTERN}(${NUMBER_PATTERN})`,
+      'gdu',
+    ),
+    postfix: new RegExp(
+      String.raw`(${NUMBER_PATTERN})${GAP_PATTERN}(${symbolPattern}|${CODE_PATTERN}|${WORD_PATTERN})`,
+      'gdiu',
+    ),
+  };
+  patternsCache.set(key, patterns);
+  return patterns;
+}
 
 export interface MoneyAmount {
   values: Decimal[];
   currencies: readonly string[];
   raw: string;
   index: number;
+  /** Where the number itself starts: one number read two ways is one amount. */
+  numberIndex: number;
 }
 
 function decimalSeparatorFor(locale: string): string {
@@ -106,7 +202,7 @@ function decimalSeparatorFor(locale: string): string {
 }
 
 function parseWith(raw: string, decimal: string): Decimal | undefined {
-  const compact = raw.replace(/[\s  '’]/g, '');
+  const compact = raw.replace(/[\s  '’]/g, '');
   const otherSeparators = decimal === '.' ? /,/g : /\./g;
   const normalized = compact.replace(otherSeparators, '').replace(decimal, '.');
   return /^\d+(\.\d+)?$/.test(normalized) ? new Decimal(normalized) : undefined;
@@ -116,12 +212,15 @@ function currenciesFor(
   rawToken: string,
   number: string,
   storeCurrency: string | undefined,
+  symbols: ReadonlyArray<[string, readonly string[]]>,
 ): readonly string[] | undefined {
   // A word at the end of a sentence carries its punctuation ("99 dollars."): drop it.
   const token = /^\p{L}/u.test(rawToken) ? rawToken.replace(/[.!?,;:]+$/u, '') : rawToken;
-  const symbol = SYMBOLS.find(([candidate]) => candidate === token);
-  if (symbol) {
-    return symbol[1];
+  const matchingSymbols = symbols.filter(
+    ([candidate]) => candidate === token || candidate.toLowerCase() === token.toLowerCase(),
+  );
+  if (matchingSymbols.length > 0) {
+    return [...new Set(matchingSymbols.flatMap(([, currencies]) => currencies))];
   }
   const word = WORDS.find(([pattern]) => pattern.test(token) || pattern.test(rawToken));
   if (word) {
@@ -158,6 +257,7 @@ function scan(
   numberGroup: number,
   decimals: readonly string[],
   storeCurrency: string | undefined,
+  symbols: ReadonlyArray<[string, readonly string[]]>,
   found: MoneyAmount[],
 ): void {
   const regex = new RegExp(pattern.source, pattern.flags);
@@ -167,7 +267,7 @@ function scan(
     const currencies =
       token === undefined || number === undefined
         ? undefined
-        : currenciesFor(token, number, storeCurrency);
+        : currenciesFor(token, number, storeCurrency, symbols);
     if (!currencies || number === undefined) {
       regex.lastIndex = match.index + 1;
       continue;
@@ -176,15 +276,22 @@ function scan(
       .map((decimal) => parseWith(number, decimal))
       .filter((value): value is Decimal => value !== undefined);
     if (values.length > 0) {
-      found.push({ values, currencies, raw: match[0], index: match.index });
+      found.push({
+        values,
+        currencies,
+        raw: match[0],
+        index: match.index,
+        numberIndex: match.indices?.[numberGroup]?.[0] ?? match.index,
+      });
     }
   }
 }
 
 /**
- * Money amounts in a string: a currency symbol, ISO 4217 code (any case, glued
- * or spaced) or currency word next to a number, read with each locale's
- * decimal separator (CLDR through Intl). Bare numbers are not amounts (5.5).
+ * Money amounts in a string: a currency symbol (static, plus the store
+ * currency's own forms from Intl), ISO 4217 code (any case, glued or spaced)
+ * or currency word next to a number, read with each locale's decimal separator
+ * (CLDR through Intl). Bare numbers are not amounts (5.5).
  */
 export function extractAmounts(
   text: string,
@@ -192,21 +299,22 @@ export function extractAmounts(
   storeCurrency?: string,
 ): MoneyAmount[] {
   const decimals = [...new Set(locales.map(decimalSeparatorFor))];
+  const symbols = [...SYMBOLS, ...EXTRA_SYMBOLS, ...storeCurrencyForms(storeCurrency, locales)];
+  const { prefix, postfix } = patternsFor(symbols);
   const normalized = normalizeForCheck(text);
   const found: MoneyAmount[] = [];
-  scan(normalized, PREFIX_RE, 1, 2, decimals, storeCurrency, found);
-  scan(normalized, POSTFIX_RE, 2, 1, decimals, storeCurrency, found);
-  // One number read both ways ("$99 USD") is one amount.
+  scan(normalized, prefix, 1, 2, decimals, storeCurrency, symbols, found);
+  scan(normalized, postfix, 2, 1, decimals, storeCurrency, symbols, found);
+  // One number read both ways ("$99 USD") is one amount; different numbers stay apart.
   found.sort((left, right) => left.index - right.index);
-  return found.filter(
-    (amount, index) =>
-      !found.some(
-        (other, otherIndex) =>
-          otherIndex < index &&
-          other.index <= amount.index &&
-          amount.index < other.index + other.raw.length,
-      ),
-  );
+  const seenNumbers = new Set<number>();
+  return found.filter((amount) => {
+    if (seenNumbers.has(amount.numberIndex)) {
+      return false;
+    }
+    seenNumbers.add(amount.numberIndex);
+    return true;
+  });
 }
 
 interface Allowed {
