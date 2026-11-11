@@ -250,3 +250,56 @@ describe('the store currency never fails open', () => {
     expect(extractAmounts('99 XYZ', ['en'], 'XYZ')[0]?.currencies).toEqual(['XYZ']);
   });
 });
+
+describe('decimal-comma locales never over-read a dot', () => {
+  it('flags $1.20, $1,20 and $12,0 for the $120 jacket in every locale pair', () => {
+    const store = catalog();
+    for (const locales of [['de', 'en'], ['ru', 'en'], ['ar-SA', 'en'], ['fa-IR', 'en'], ['en']]) {
+      for (const text of [
+        'The Wool jacket is $1.20.',
+        'The Wool jacket is $1,20.',
+        'The Wool jacket is $12,0.',
+      ]) {
+        const violations = checkPrices(answer(text), {
+          storeCurrency: 'USD',
+          items: store.items,
+          visitorMessages: [],
+          policyPassages: [],
+          locales,
+        });
+        expect(violations, `${locales.join(',')} ${text}`).toHaveLength(1);
+      }
+    }
+  });
+
+  it('still reads grouped amounts', () => {
+    expect(
+      extractAmounts('1.299,00 €', ['de'])[0]?.values.map((value) => value.toString()),
+    ).toContain('1299');
+    expect(
+      extractAmounts('$1,299.00', ['en'])[0]?.values.map((value) => value.toString()),
+    ).toContain('1299');
+    expect(extractAmounts('1 299 ₽', ['ru'])[0]?.values.map((value) => value.toString())).toContain(
+      '1299',
+    );
+  });
+});
+
+describe('local everyday currency forms', () => {
+  const cases: Array<[string, string, string]> = [
+    ['TRY', 'tr', '1.499 TL'],
+    ['INR', 'en', 'Rs. 1,499'],
+    ['PKR', 'en', 'Rs 1499'],
+    ['KRW', 'ko', '39,000원'],
+    ['CHF', 'de', 'Fr. 99.50'],
+    ['PLN', 'pl', '99 złotych'],
+    ['ILS', 'he', '99 ש"ח'],
+    ['THB', 'th', '99 บาท'],
+    ['SAR', 'ar', '99 ريال'],
+  ];
+  for (const [currency, language, text] of cases) {
+    it(`${currency}: ${text}`, () => {
+      expect(extractAmounts(text, [language, 'en'], currency)[0]?.currencies).toContain(currency);
+    });
+  }
+});

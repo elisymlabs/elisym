@@ -36,6 +36,7 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(руб(\.|ль|ля|лей|ли|лях|лям|лём|лем|лю|лями)?|р\.?)$/i, ['RUB']],
   [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|грн\.?)$/i, ['UAH']],
   [/^(real|reais)$/i, ['BRL']],
+  [/^(złot(y|e|ych)|zlot(y|e|ych))$/i, ['PLN']],
   [/^(rupees?|рупи(и|й|я)?)$/i, ['INR']],
 ];
 // cspell:enable
@@ -254,6 +255,16 @@ const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['₵', ['GHS']],
   ['₲', ['PYG']],
   ['S/', ['PEN']],
+  ['TL', ['TRY']],
+  ['Rs.', ['INR', 'PKR', 'LKR', 'NPR']],
+  ['Rs', ['INR', 'PKR', 'LKR', 'NPR']],
+  ['원', ['KRW']],
+  ['Fr.', ['CHF']],
+  ['ש"ח', ['ILS']],
+  ['ש״ח', ['ILS']],
+  ['บาท', ['THB']],
+  ['ريال', ['SAR']],
+  ['ر.س', ['SAR']],
   ['zl', ['PLN']],
 ];
 // cspell:enable
@@ -405,11 +416,41 @@ function decimalSeparatorFor(locale: string): string {
   }
 }
 
+const SPACE_GROUP_SEPARATORS = [' ', ' ', ' ', "'", '’'];
+
+/**
+ * Read a number with one locale's decimal sign. Everything before it must be
+ * plain digits, or groups of exactly three digits after one consistent group
+ * separator: "1.299,00" reads 1299 with a decimal comma, but "1.20" never
+ * reads 120 (a dot before two digits is not a group sign).
+ */
 function parseWith(raw: string, decimal: string): Decimal | undefined {
-  const compact = raw.replace(/[\s  '’]/g, '');
-  const otherSeparators = decimal === '.' ? /,/g : /\./g;
-  const normalized = compact.replace(otherSeparators, '').replace(decimal, '.');
-  return /^\d+(\.\d+)?$/.test(normalized) ? new Decimal(normalized) : undefined;
+  const parts = raw.split(decimal);
+  if (parts.length > 2) {
+    return undefined;
+  }
+  const [integerPart = '', fraction] = parts;
+  if (fraction !== undefined && !/^\d+$/.test(fraction)) {
+    return undefined;
+  }
+  const otherSeparator: Readonly<Record<string, string>> = { '.': ',', ',': '.' };
+  const other = otherSeparator[decimal];
+  const groupSeparators =
+    other === undefined ? SPACE_GROUP_SEPARATORS : [...SPACE_GROUP_SEPARATORS, other];
+  let integerDigits: string | undefined;
+  if (/^\d+$/.test(integerPart)) {
+    integerDigits = integerPart;
+  } else {
+    const separator = integerPart.match(/\D/)?.[0];
+    if (separator !== undefined && groupSeparators.includes(separator)) {
+      const grouped = new RegExp(`^\\d{1,3}(?:${escapeForRegExp(separator)}\\d{3})+$`);
+      integerDigits = grouped.test(integerPart) ? integerPart.split(separator).join('') : undefined;
+    }
+  }
+  if (integerDigits === undefined) {
+    return undefined;
+  }
+  return new Decimal(fraction === undefined ? integerDigits : `${integerDigits}.${fraction}`);
 }
 
 function currenciesFor(
@@ -428,12 +469,16 @@ function currenciesFor(
       ([candidate, currencies]) =>
         currencies.length === 1 &&
         currencies[0] === storeCurrency &&
-        candidate.toLowerCase() === token.toLowerCase(),
+        (candidate.toLowerCase() === token.toLowerCase() ||
+          candidate.toLowerCase() === rawToken.toLowerCase()),
     );
   if (ownForm && storeCurrency !== undefined) {
     return [storeCurrency];
   }
-  const matchingSymbols = symbols.filter(([candidate]) => candidate === token);
+  // Symbols are matched as written too: "Fr." and "Rs." end in a dot.
+  const matchingSymbols = symbols.filter(
+    ([candidate]) => candidate === token || candidate === rawToken,
+  );
   if (matchingSymbols.length > 0) {
     return [...new Set(matchingSymbols.flatMap(([, currencies]) => currencies))];
   }
@@ -497,15 +542,15 @@ function scan(
     const values = decimals
       .map((decimal) => parseWith(number, decimal))
       .filter((value): value is Decimal => value !== undefined);
-    if (values.length > 0) {
-      found.push({
-        values,
-        currencies,
-        raw: match[0],
-        index: match.index,
-        numberIndex: match.indices?.[numberGroup]?.[0] ?? match.index,
-      });
-    }
+    // A currency next to a number no grammar reads ("$1,20" in ar + en) is
+    // still an amount: it can match nothing, so the check fails closed.
+    found.push({
+      values,
+      currencies,
+      raw: match[0],
+      index: match.index,
+      numberIndex: match.indices?.[numberGroup]?.[0] ?? match.index,
+    });
   }
 }
 
