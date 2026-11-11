@@ -897,6 +897,8 @@ function scan(
       codeName !== undefined &&
       pinned === undefined &&
       ISO_CODES.has(codeName) &&
+      // "1200 € TOP Angebot": a word-like code needs a decimal amount, as anywhere else.
+      !(WORD_LIKE_CODES.has(codeName) && !/[.,]\d/.test(number ?? '')) &&
       alone !== undefined &&
       alone.length > 0;
     const currencies = joinedCounts ? joined : (pinned ?? (contradicted ? [] : alone));
@@ -1277,6 +1279,27 @@ function isCurrencyToken(
 }
 
 /**
+ * Whether a second reading of the same number restates its currency ("$1200 CAD", "R$ 1200
+ * reais") rather than being an unrelated word after it ("$30.00 cup holder", "$1200 AMD
+ * edition"): a trailing bare code must be, as written in capitals, one of the currencies the
+ * first reading's symbol can mean (no symbol means a word-like code such as TOP or CUP).
+ */
+function restates(first: MoneyAmount, second: MoneyAmount): boolean {
+  const tail = /(?:^|[^\p{L}])([A-Za-z]{3})\.?$/u.exec(second.raw)?.[1];
+  if (tail === undefined || !ISO_CODES.has(tail.toUpperCase())) {
+    return true;
+  }
+  const symbol = first.raw.slice(0, first.numberIndex - first.index).trim();
+  const possible = new Set([
+    ...first.currencies,
+    ...SYMBOLS.filter(([candidate]) => candidate === symbol).flatMap(
+      ([, currencies]) => currencies,
+    ),
+  ]);
+  return possible.has(tail);
+}
+
+/**
  * Money amounts in a string: a currency symbol (static, plus the store
  * currency's own forms from Intl), ISO 4217 code (any case, glued or spaced)
  * or currency word next to a number, read with each locale's decimal separator
@@ -1303,7 +1326,7 @@ export function extractAmounts(
     const first = byNumber.get(amount.numberIndex);
     if (first === undefined) {
       byNumber.set(amount.numberIndex, amount);
-    } else {
+    } else if (restates(first, amount)) {
       first.currencies = first.currencies.filter((currency) =>
         amount.currencies.includes(currency),
       );
@@ -1402,7 +1425,7 @@ const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
 /** "U.S." ends no sentence when a lowercase word or a dollar word follows ("999 U.S. dollars"). */
 const US_TAIL_RE = /(?:^|[^\p{L}])u\.s\.$/iu;
-const US_CONTINUES_RE = /^\p{Ll}+(?![\p{Lu}\p{N}-])/u;
+const US_CONTINUES_RE = /^\p{Ll}+(?![\p{L}\p{N}-])/u;
 /** After "999 U.S." only a dollar word continues the amount. */
 const US_DOLLAR_RE = /^dollars?(?![\p{L}])/iu;
 /** A number right before "U.S." is an amount in two parts ("999 U.S. Dollars"): keep them together. */
