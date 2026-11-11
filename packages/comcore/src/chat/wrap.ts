@@ -59,6 +59,10 @@ export function wrapChatMessage(input: WrapInput): WrapResult {
   if (!HEX_PUBKEY_RE.test(input.recipientPubkey)) {
     throw new Error('recipientPubkey must be 64 lowercase hex characters');
   }
+  // A fractional time (local seconds plus an offset) would build a rumor every receiver refuses.
+  if (!Number.isSafeInteger(input.now) || input.now <= 0) {
+    throw new Error('now must be a unix time in whole seconds');
+  }
   if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= input.now) {
     throw new Error('expiresAt must be a unix time after now');
   }
@@ -215,8 +219,9 @@ export function unwrapChatMessage(
     if (id !== getEventHash(rumorFields)) {
       return undefined;
     }
+    // The rumor must name the same recipient as the wrap that carried it.
     const recipientPubkey = tagValue(tags, 'p');
-    if (recipientPubkey === undefined) {
+    if (recipientPubkey === undefined || recipientPubkey !== tagValue(wrap.tags, 'p')) {
       return undefined;
     }
     const parsed = ChatMessageSchema.safeParse(JSON.parse(content));

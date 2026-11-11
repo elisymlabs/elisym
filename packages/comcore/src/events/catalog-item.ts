@@ -1,4 +1,5 @@
 import { type ProductPrice, nowSecs, parseProduct, tagsNamed, tagValues } from '@elisym/commerce';
+import Decimal from 'decimal.js-light';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { z } from 'zod';
 import {
@@ -8,6 +9,7 @@ import {
   VISIBILITIES,
   type Visibility,
 } from '../constants';
+import type { CatalogKeyRole } from './catalog-auth';
 
 const KIND_PRODUCT = 30402;
 /** The `d` pattern `parseProduct` accepts; anything else is dropped by every reader. */
@@ -138,12 +140,25 @@ function readVariants(tags: NostrEvent['tags'], options: CatalogOption[]): Catal
  * unreadable by `parseProduct`, `hidden`, an unknown visibility, or expired.
  * The caller has checked the signature and that the author is authorized.
  */
+export interface ParseCatalogItemOptions {
+  now?: number;
+  /**
+   * The role of the listing's author. A `catalog` key K never publishes
+   * payment tags (1.1), so a K listing that carries `accept` is dropped.
+   */
+  role?: CatalogKeyRole;
+}
+
 export function parseCatalogItem(
   event: Pick<NostrEvent, 'kind' | 'pubkey' | 'tags' | 'content' | 'created_at'>,
-  now: number = nowSecs(),
+  parseOptions: ParseCatalogItemOptions = {},
 ): CatalogItem | undefined {
+  const now = parseOptions.now ?? nowSecs();
   const product = parseProduct(event);
   if (!product) {
+    return undefined;
+  }
+  if (parseOptions.role === 'catalog' && product.accept.length > 0) {
     return undefined;
   }
   const expiration = tagsNamed(event.tags, 'expiration');
@@ -275,6 +290,45 @@ export const CatalogItemInputSchema = z
     createdAt: z.number().int().positive().optional(),
   })
   .superRefine((input, context) => {
+    const optionNames = input.options.map((option) => option.name);
+    if (new Set(optionNames).size !== optionNames.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['options'],
+        message: 'option names must be unique',
+      });
+    }
+    const variantIds = input.variants.map((variant) => variant.id);
+    if (new Set(variantIds).size !== variantIds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['variants'],
+        message: 'variant ids must be unique',
+      });
+    }
+    // 2.1: with variants, the listing price is the lowest available variant's,
+    // or the lowest overall when none is available (and then it is sold-out).
+    if (input.variants.length > 0) {
+      const available = input.variants.filter((variant) => variant.available);
+      const pool = available.length > 0 ? available : input.variants;
+      const lowest = pool
+        .map((variant) => new Decimal(variant.price))
+        .reduce((min, price) => (price.lessThan(min) ? price : min));
+      if (!new Decimal(input.price.amount).equals(lowest)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['price', 'amount'],
+          message: 'the price must be the lowest available variant price',
+        });
+      }
+      if (available.length === 0 && input.visibility !== 'sold-out') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['visibility'],
+          message: 'a listing with no available variant is sold-out',
+        });
+      }
+    }
     input.variants.forEach((variant, variantIndex) => {
       if (variant.values.length !== input.options.length) {
         context.addIssue({

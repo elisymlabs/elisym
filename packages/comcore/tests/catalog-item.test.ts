@@ -41,7 +41,7 @@ function shirt() {
 describe('catalog items', () => {
   it('round-trips through the builder and the reader', () => {
     const event = sign(shirt(), key);
-    const item = parseCatalogItem(event, NOW);
+    const item = parseCatalogItem(event, { now: NOW });
     expect(item).toMatchObject({
       author: key.pubkey,
       d: 'shopify:123',
@@ -91,7 +91,7 @@ describe('catalog items', () => {
     const template = shirt();
     template.tags.push(['variant', 'bad', '1', '1', 'XXL', 'white']);
     template.tags.push(['variant', 'short', '1', '1', 'S']);
-    const item = parseCatalogItem(sign(template, key), NOW);
+    const item = parseCatalogItem(sign(template, key), { now: NOW });
     expect(item?.variants.map((variant) => variant.id)).toEqual(['v1', 'v2', 'v3']);
   });
 
@@ -100,13 +100,13 @@ describe('catalog items', () => {
     hidden.tags = hidden.tags.map((tag) =>
       tag[0] === 'visibility' ? ['visibility', 'hidden'] : tag,
     );
-    expect(parseCatalogItem(sign(hidden, key), NOW)).toBeUndefined();
+    expect(parseCatalogItem(sign(hidden, key), { now: NOW })).toBeUndefined();
     const odd = shirt();
     odd.tags = odd.tags.map((tag) => (tag[0] === 'visibility' ? ['visibility', 'archived'] : tag));
-    expect(parseCatalogItem(sign(odd, key), NOW)).toBeUndefined();
+    expect(parseCatalogItem(sign(odd, key), { now: NOW })).toBeUndefined();
     const expired = shirt();
     expired.tags.push(['expiration', String(NOW - 1)]);
-    expect(parseCatalogItem(sign(expired, key), NOW)).toBeUndefined();
+    expect(parseCatalogItem(sign(expired, key), { now: NOW })).toBeUndefined();
   });
 
   it('reads pre-order and sold-out as shown', () => {
@@ -114,11 +114,11 @@ describe('catalog items', () => {
     soldOut.tags = soldOut.tags.map((tag) =>
       tag[0] === 'visibility' ? ['visibility', 'sold-out'] : tag,
     );
-    expect(parseCatalogItem(sign(soldOut, key), NOW)?.visibility).toBe('sold-out');
+    expect(parseCatalogItem(sign(soldOut, key), { now: NOW })?.visibility).toBe('sold-out');
   });
 
   it('picks the product page only on an allowed origin', () => {
-    const item = parseCatalogItem(sign(shirt(), key), NOW);
+    const item = parseCatalogItem(sign(shirt(), key), { now: NOW });
     expect(item && productPageUrl(item, ['https://shop.example.com'])).toBe(
       'https://shop.example.com/products/linen-shirt',
     );
@@ -136,7 +136,7 @@ describe('catalog items', () => {
 });
 
 describe('determinedVariant', () => {
-  const item = parseCatalogItem(sign(shirt(), key), NOW);
+  const item = parseCatalogItem(sign(shirt(), key), { now: NOW });
 
   it('finds the one variant a full pick matches', () => {
     expect(item && determinedVariant(item, { size: 'S', color: 'white' })?.id).toBe('v1');
@@ -162,7 +162,7 @@ describe('determinedVariant', () => {
         }),
         key,
       ),
-      NOW,
+      { now: NOW },
     );
     expect(single && determinedVariant(single, {})?.id).toBe('only');
   });

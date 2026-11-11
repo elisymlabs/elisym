@@ -1,8 +1,15 @@
-import { KIND_DELETION, nowSecs, newestSigned, tagValue } from '@elisym/commerce';
+import {
+  KIND_DELETION,
+  NO_FUTURE_LIMIT,
+  newestDeletion,
+  newestSigned,
+  nowSecs,
+  tagValue,
+} from '@elisym/commerce';
 import type { EventTemplate, Filter, NostrEvent } from 'nostr-tools';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { COMCORE_RELAYS, KIND_CATALOG_AUTH } from './constants';
-import { catalogKeyRole } from './events/catalog-auth';
+import { hasRole } from './events/catalog-auth';
 import {
   type CatalogItemInput,
   CatalogItemInputSchema,
@@ -46,6 +53,28 @@ function sameListing(left: Pick<EventTemplate, 'tags' | 'content'>, right: Nostr
   return left.content === right.content && JSON.stringify(left.tags) === JSON.stringify(right.tags);
 }
 
+const PUBLISH_ATTEMPTS = 3;
+const RETRY_BASE_MS = 1_000;
+
+async function publishWithRetry(
+  client: SyncRelayClient,
+  relays: readonly string[],
+  event: NostrEvent,
+  sleep: (ms: number) => Promise<void>,
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await client.publish(relays, event);
+      return;
+    } catch (error) {
+      if (attempt >= PUBLISH_ATTEMPTS) {
+        throw error;
+      }
+      await sleep(RETRY_BASE_MS * 2 ** (attempt - 1));
+    }
+  }
+}
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -64,71 +93,87 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     kinds: [KIND_CATALOG_AUTH, KIND_DELETION],
     authors: [options.store],
   });
-  if (catalogKeyRole(authorityEvents, options.store, key, now) !== 'catalog') {
+  if (!hasRole(authorityEvents, options.store, key, 'catalog', now)) {
     throw new Error('This key is not authorized as a catalog key by the store owner');
   }
 
-  const desired = new Map<string, EventTemplate>();
+  const inputs = new Map<string, CatalogItemInput>();
   for (const input of options.items) {
-    const item = CatalogItemInputSchema.parse(input);
-    if (desired.has(item.d)) {
-      throw new Error(`Duplicate item d: ${item.d}`);
+    const { d } = CatalogItemInputSchema.parse(input);
+    if (inputs.has(d)) {
+      throw new Error(`Duplicate item d: ${d}`);
     }
-    desired.set(item.d, buildCatalogItemEvent({ ...input, createdAt: now }));
+    inputs.set(d, input);
   }
 
-  const existingEvents = await options.client.query(relays, {
-    kinds: [KIND_PRODUCT],
+  const ownEvents = await options.client.query(relays, {
+    kinds: [KIND_PRODUCT, KIND_DELETION],
     authors: [key],
   });
-  const existing = new Map<string, NostrEvent>();
-  for (const d of new Set(existingEvents.map((event) => tagValue(event.tags, 'd')))) {
+  const current = new Map<string, NostrEvent>();
+  const deletedAt = new Map<string, number>();
+  for (const d of new Set(ownEvents.map((event) => tagValue(event.tags, 'd')))) {
     if (d === undefined) {
       continue;
     }
-    const newest = newestSigned(existingEvents, KIND_PRODUCT, key, now, d);
-    if (newest) {
-      existing.set(d, newest);
+    const newest = newestSigned(ownEvents, KIND_PRODUCT, key, now, d);
+    if (!newest) {
+      continue;
+    }
+    // A NIP-09 deletion removes every version up to its own date.
+    const deletion = newestDeletion(ownEvents, catalogAddress(key, d), key, NO_FUTURE_LIMIT);
+    if (deletion) {
+      deletedAt.set(d, deletion.created_at);
+    }
+    if (!deletion || deletion.created_at < newest.created_at) {
+      current.set(d, newest);
     }
   }
 
   const diff: SyncDiff = { created: [], updated: [], hidden: [], unchanged: [] };
   const toPublish: EventTemplate[] = [];
-  for (const [d, template] of desired) {
-    const current = existing.get(d);
-    if (!current) {
+  for (const [d, input] of inputs) {
+    // Dated after any deletion of the address, so the deletion cannot remove it.
+    const lastDeletion = deletedAt.get(d);
+    const createdAt = lastDeletion !== undefined && lastDeletion >= now ? lastDeletion + 1 : now;
+    const template = buildCatalogItemEvent({ ...input, createdAt });
+    const listed = current.get(d);
+    if (!listed) {
       diff.created.push(d);
       toPublish.push(template);
-    } else if (sameListing(template, current)) {
+    } else if (sameListing(template, listed)) {
       diff.unchanged.push(d);
     } else {
       diff.updated.push(d);
       toPublish.push(template);
     }
   }
-  for (const [d, current] of existing) {
-    if (desired.has(d) || tagValue(current.tags, 'visibility') === 'hidden') {
+  const deletionOf = (d: string): EventTemplate => ({
+    kind: KIND_DELETION,
+    created_at: now,
+    tags: [
+      ['a', catalogAddress(key, d)],
+      ['k', String(KIND_PRODUCT)],
+    ],
+    content: '',
+  });
+  for (const [d, listed] of current) {
+    if (inputs.has(d)) {
       continue;
     }
     diff.hidden.push(d);
-    const hiddenTags = current.tags
-      .filter((tag) => tag[0] !== 'visibility')
-      .concat([['visibility', 'hidden']]);
-    toPublish.push({
-      kind: KIND_PRODUCT,
-      created_at: now,
-      tags: hiddenTags,
-      content: current.content,
-    });
-    toPublish.push({
-      kind: KIND_DELETION,
-      created_at: now,
-      tags: [
-        ['a', catalogAddress(key, d)],
-        ['k', String(KIND_PRODUCT)],
-      ],
-      content: '',
-    });
+    if (tagValue(listed.tags, 'visibility') !== 'hidden') {
+      toPublish.push({
+        kind: KIND_PRODUCT,
+        created_at: now,
+        tags: listed.tags
+          .filter((tag) => tag[0] !== 'visibility')
+          .concat([['visibility', 'hidden']]),
+        content: listed.content,
+      });
+    }
+    // Also when only the hidden version made it last time: the deletion is retried.
+    toPublish.push(deletionOf(d));
   }
 
   if (options.dryRun) {
@@ -144,7 +189,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     if (index > 0) {
       await sleep(gapMs);
     }
-    await options.client.publish(relays, finalizeEvent(template, options.signer));
+    await publishWithRetry(options.client, relays, finalizeEvent(template, options.signer), sleep);
   }
   return diff;
 }

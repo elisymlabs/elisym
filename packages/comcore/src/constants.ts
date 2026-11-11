@@ -59,7 +59,7 @@ export const LIMITS = {
   TITLE_CHARS: 80,
   GUIDE_BODY_CHARS: 600,
   PLAN_DETAIL_CHARS: 240,
-  /** Catalog listing caps (2.1). */
+  /** Catalog listing caps (2.1), in characters as zod counts them. */
   TAG_VALUE_CHARS: 1_024,
   DESCRIPTION_CHARS: 64 * 1024,
   MAX_IMAGES: 8,
@@ -74,8 +74,21 @@ export const LIMITS = {
   /** Policies (2.2). */
   POLICY_CONTENT_CHARS: 16 * 1024,
   MAX_POLICIES: 50,
-  /** Config private part (2.3). */
-  CONFIG_PRIVATE_CHARS: 16 * 1024,
+  /** Config private part (2.3): the plaintext JSON, in UTF-8 bytes. */
+  CONFIG_PRIVATE_BYTES: 16 * 1024,
+  /**
+   * The config `content` bound the reader derives from CONFIG_PRIVATE_BYTES with
+   * NIP-44 sizing: 16 384 bytes pad to 16 384, plus version, nonce, length and
+   * MAC (67 bytes), base64 of 16 451 bytes = 21 936 chars.
+   */
+  CONFIG_CONTENT_MAX_CHARS: 21_936,
+  CONFIG_VOICE_CHARS: 4_000,
+  CONFIG_INSTRUCTIONS_CHARS: 8_000,
+  CONFIG_NOTES_CHARS: 4_000,
+  MAX_ORIGINS: 20,
+  GREETING_CHARS: 280,
+  PLAN_STEP_LABEL_CHARS: 120,
+  MAX_COMPONENTS: 4,
 } as const;
 
 /** Visibilities a ComCore reader knows; anything else is absent. */

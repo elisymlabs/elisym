@@ -69,12 +69,12 @@ const hexKey = z.string().regex(HEX_PUBKEY_RE);
 
 export const StoreConfigInputSchema = z.object({
   assistant: hexKey,
-  origins: z.array(httpsOrigin).min(1).max(20),
-  linkOrigins: z.array(httpsOrigin).max(20).default([]),
+  origins: z.array(httpsOrigin).min(1).max(LIMITS.MAX_ORIGINS),
+  linkOrigins: z.array(httpsOrigin).max(LIMITS.MAX_ORIGINS).default([]),
   name: z.string().min(1).max(LIMITS.TITLE_CHARS),
   displayName: z.string().min(1).max(LIMITS.TITLE_CHARS).optional(),
   avatar: z.string().url().startsWith('https://').max(LIMITS.TAG_VALUE_CHARS).optional(),
-  greeting: z.string().min(1).max(280).optional(),
+  greeting: z.string().min(1).max(LIMITS.GREETING_CHARS).optional(),
   language: z.string().regex(LANGUAGE_RE).max(LIMITS.LOCALE_CHARS),
   currency: z.string().regex(CURRENCY_RE),
   source: z.object({
@@ -86,9 +86,9 @@ export const StoreConfigInputSchema = z.object({
   contact: z.string().url().startsWith('https://').max(LIMITS.TAG_VALUE_CHARS).optional(),
   private: z
     .object({
-      voice: z.string().max(4_000).default(''),
-      instructions: z.string().max(8_000).default(''),
-      notes: z.string().max(4_000).default(''),
+      voice: z.string().max(LIMITS.CONFIG_VOICE_CHARS).default(''),
+      instructions: z.string().max(LIMITS.CONFIG_INSTRUCTIONS_CHARS).default(''),
+      notes: z.string().max(LIMITS.CONFIG_NOTES_CHARS).default(''),
     })
     .default({}),
   createdAt: z.number().int().positive().optional(),
@@ -109,8 +109,12 @@ export function buildConfigEvent(
   if ((config.source.kind === 'connector') !== (config.source.platform !== undefined)) {
     throw new Error('A connector source names its platform, and only a connector source does');
   }
+  // A Pay Core store key S never holds the catalog role, so it cannot be the policy key (1.4).
+  if (config.source.kind === 'paycore' && config.policyKey === undefined) {
+    throw new Error('A paycore source needs an explicit policyKey (the server or a merchant K)');
+  }
   const privateJson = JSON.stringify(config.private);
-  if (privateJson.length > LIMITS.CONFIG_PRIVATE_CHARS) {
+  if (new TextEncoder().encode(privateJson).length > LIMITS.CONFIG_PRIVATE_BYTES) {
     throw new Error('The private part of the config is too large');
   }
   const conversationKey = nip44.v2.utils.getConversationKey(ownerSecretKey, config.assistant);
@@ -166,7 +170,7 @@ function single(tags: NostrEvent['tags'], name: string): string | undefined {
 }
 
 function originsFrom(values: string[]): string[] | undefined {
-  const parsed = z.array(httpsOrigin).max(20).safeParse(values);
+  const parsed = z.array(httpsOrigin).max(LIMITS.MAX_ORIGINS).safeParse(values);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -212,7 +216,7 @@ export function parseConfig(
     !origins ||
     origins.length === 0 ||
     !linkOrigins ||
-    event.content.length > LIMITS.CONFIG_PRIVATE_CHARS * 2
+    event.content.length > LIMITS.CONFIG_CONTENT_MAX_CHARS
   ) {
     return undefined;
   }
@@ -248,7 +252,7 @@ export function parseConfig(
     config.avatar = avatar;
   }
   const greeting = single(tags, 'greeting');
-  if (greeting && greeting.length <= 280) {
+  if (greeting && greeting.length <= LIMITS.GREETING_CHARS) {
     config.greeting = greeting;
   }
   const contact = single(tags, 'contact');
@@ -259,9 +263,9 @@ export function parseConfig(
 }
 
 const PrivateConfigSchema = z.object({
-  voice: z.string().max(4_000),
-  instructions: z.string().max(8_000),
-  notes: z.string().max(4_000),
+  voice: z.string().max(LIMITS.CONFIG_VOICE_CHARS),
+  instructions: z.string().max(LIMITS.CONFIG_INSTRUCTIONS_CHARS),
+  notes: z.string().max(LIMITS.CONFIG_NOTES_CHARS),
 });
 
 /** Decrypt the private part with the assistant key, or `undefined` when it does not open. */

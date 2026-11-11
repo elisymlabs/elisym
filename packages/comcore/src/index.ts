@@ -5,6 +5,7 @@ export {
   type CatalogItemInput,
   type CatalogOption,
   type CatalogVariant,
+  type ParseCatalogItemOptions,
   CatalogItemInputSchema,
   D_TAG_RE,
   buildCatalogItemEvent,
@@ -38,7 +39,7 @@ export {
   type StoreKeys,
   buildCatalogAuth,
   buildCatalogRevocation,
-  catalogKeyRole,
+  hasRole,
   readCatalogAuthority,
   resolveStoreKeys,
 } from './events/catalog-auth';

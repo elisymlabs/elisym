@@ -52,20 +52,26 @@ export const ProductsComponentSchema = z.object({
     .max(LIMITS.MAX_PRODUCT_PICKS),
 });
 
-export const ComparisonComponentSchema = z.object({
-  type: z.literal('comparison'),
-  title: title.optional(),
-  addresses: z.array(address).min(LIMITS.MIN_COMPARISON).max(LIMITS.MAX_COMPARISON),
-  rows: z
-    .array(
-      z.object({
-        dimension: z.string().min(1).max(LIMITS.TITLE_CHARS),
-        cells: z.array(z.string().max(LIMITS.REASON_CHARS)).max(LIMITS.MAX_COMPARISON),
-      }),
-    )
-    .max(LIMITS.MAX_COMPARISON_ROWS),
-  recommended: address.optional(),
-});
+export const ComparisonComponentSchema = z
+  .object({
+    type: z.literal('comparison'),
+    title: title.optional(),
+    addresses: z.array(address).min(LIMITS.MIN_COMPARISON).max(LIMITS.MAX_COMPARISON),
+    rows: z
+      .array(
+        z.object({
+          dimension: z.string().min(1).max(LIMITS.TITLE_CHARS),
+          cells: z.array(z.string().max(LIMITS.REASON_CHARS)).max(LIMITS.MAX_COMPARISON),
+        }),
+      )
+      .max(LIMITS.MAX_COMPARISON_ROWS),
+    recommended: address.optional(),
+  })
+  .refine(
+    (comparison) =>
+      comparison.rows.every((row) => row.cells.length === comparison.addresses.length),
+    'every comparison row has one cell per product',
+  );
 
 export const PlanComponentSchema = z.object({
   type: z.literal('plan'),
@@ -73,7 +79,7 @@ export const PlanComponentSchema = z.object({
   steps: z
     .array(
       z.object({
-        label: z.string().min(1).max(120),
+        label: z.string().min(1).max(LIMITS.PLAN_STEP_LABEL_CHARS),
         detail: z.string().max(LIMITS.PLAN_DETAIL_CHARS).optional(),
         addresses: z.array(address).max(LIMITS.MAX_PLAN_STEP_ADDRESSES),
       }),
@@ -96,7 +102,8 @@ export const GuideComponentSchema = z.object({
     .max(LIMITS.MAX_GUIDE_SECTIONS),
 });
 
-export const ComponentSchema = z.discriminatedUnion('type', [
+// A union, not discriminatedUnion: the comparison schema carries a refinement.
+export const ComponentSchema = z.union([
   ProductsComponentSchema,
   ComparisonComponentSchema,
   PlanComponentSchema,
@@ -108,7 +115,7 @@ export const AnswerSchema = z.object({
   ask_id: askId,
   session_end: z.number().int().positive(),
   text: z.string().max(LIMITS.ANSWER_TEXT_CHARS),
-  components: z.array(ComponentSchema).max(4),
+  components: z.array(ComponentSchema).max(LIMITS.MAX_COMPONENTS),
   chips: z.array(z.string().min(1).max(LIMITS.CHIP_CHARS)).max(LIMITS.MAX_CHIPS),
 });
 

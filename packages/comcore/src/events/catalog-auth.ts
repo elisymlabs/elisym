@@ -1,9 +1,11 @@
 import {
+  HEX_PUBKEY_RE,
   KIND_STORE_AUTH,
   buildStoreAuthEvent,
   buildStoreRevocationEvent,
   nowSecs,
   resolveStoreAuth,
+  tagValue,
 } from '@elisym/commerce';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { KIND_CATALOG_AUTH } from '../constants';
@@ -40,39 +42,52 @@ export function buildCatalogRevocation(key: string, createdAt?: number): EventTe
   return buildStoreRevocationEvent(key, createdAt, KIND_CATALOG_AUTH);
 }
 
-/**
- * The role `key` currently holds for `owner`, from the events a reader holds
- * (30490, 30497 and kind 5 of the owner), or `undefined` when it holds none.
- * Pay Core's semantics exactly: newest wins, revocations and NIP-09 deletions
- * stand, expiry lapses, a malformed newest word fails closed.
- */
-export function catalogKeyRole(
+/** Whether `key` currently holds `role` for `owner`, with Pay Core's semantics exactly. */
+export function hasRole(
   events: readonly NostrEvent[],
   owner: string,
   key: string,
+  role: CatalogKeyRole,
   now: number = nowSecs(),
-): CatalogKeyRole | undefined {
-  if (resolveStoreAuth(events, owner, key, now, KIND_CATALOG_AUTH).status === 'active') {
-    return 'catalog';
-  }
-  if (resolveStoreAuth(events, owner, key, now, KIND_STORE_AUTH).status === 'active') {
-    return 'paycore';
-  }
-  return undefined;
+): boolean {
+  const kind = role === 'catalog' ? KIND_CATALOG_AUTH : KIND_STORE_AUTH;
+  return resolveStoreAuth(events, owner, key, now, kind).status === 'active';
 }
 
-/** Every candidate key that currently holds a role, with that role. */
+/**
+ * Every key the owner currently authorizes, with its roles (spec 1.2): the
+ * `d` of each of the owner's 30490 and 30497 events is a candidate, checked
+ * with full revocation, deletion and expiry semantics. A key can hold both
+ * roles. The relay admission allowlist is built from the `catalog` keys.
+ */
 export function readCatalogAuthority(
   events: readonly NostrEvent[],
   owner: string,
-  candidates: readonly string[],
   now: number = nowSecs(),
-): Map<string, CatalogKeyRole> {
-  const authority = new Map<string, CatalogKeyRole>();
-  for (const key of new Set(candidates)) {
-    const role = catalogKeyRole(events, owner, key, now);
-    if (role !== undefined) {
-      authority.set(key, role);
+): Map<string, Set<CatalogKeyRole>> {
+  const candidates = new Set<string>();
+  for (const event of events) {
+    if (
+      event.pubkey === owner &&
+      (event.kind === KIND_CATALOG_AUTH || event.kind === KIND_STORE_AUTH)
+    ) {
+      const key = tagValue(event.tags, 'd');
+      if (key !== undefined && HEX_PUBKEY_RE.test(key)) {
+        candidates.add(key);
+      }
+    }
+  }
+  const authority = new Map<string, Set<CatalogKeyRole>>();
+  for (const key of candidates) {
+    const roles = new Set<CatalogKeyRole>();
+    if (resolveStoreAuth(events, owner, key, now, KIND_CATALOG_AUTH).status === 'active') {
+      roles.add('catalog');
+    }
+    if (resolveStoreAuth(events, owner, key, now, KIND_STORE_AUTH).status === 'active') {
+      roles.add('paycore');
+    }
+    if (roles.size > 0) {
+      authority.set(key, roles);
     }
   }
   return authority;
@@ -97,20 +112,13 @@ export function resolveStoreKeys(
   events: readonly NostrEvent[],
   now: number = nowSecs(),
 ): StoreKeys {
-  const authority = readCatalogAuthority(
-    events,
-    config.owner,
-    [config.catalogKey, config.policyKey],
-    now,
-  );
   const keys: StoreKeys = {};
-  const productRole = authority.get(config.catalogKey);
   const neededRole: CatalogKeyRole = config.source.kind === 'paycore' ? 'paycore' : 'catalog';
-  if (productRole === neededRole) {
+  if (hasRole(events, config.owner, config.catalogKey, neededRole, now)) {
     keys.productKey = config.catalogKey;
-    keys.productRole = productRole;
+    keys.productRole = neededRole;
   }
-  if (authority.get(config.policyKey) === 'catalog') {
+  if (hasRole(events, config.owner, config.policyKey, 'catalog', now)) {
     keys.policyKey = config.policyKey;
   }
   return keys;

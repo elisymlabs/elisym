@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCatalogAuth,
   buildCatalogRevocation,
-  catalogKeyRole,
+  hasRole,
+  readCatalogAuthority,
   resolveStoreKeys,
 } from '../src/events/catalog-auth';
 import {
@@ -106,9 +107,17 @@ describe('catalog key authority', () => {
       owner,
     );
     const events = [catalogAuth, payCoreAuth];
-    expect(catalogKeyRole(events, owner.pubkey, catalog.pubkey, NOW)).toBe('catalog');
-    expect(catalogKeyRole(events, owner.pubkey, store.pubkey, NOW)).toBe('paycore');
-    expect(catalogKeyRole(events, testKey().pubkey, catalog.pubkey, NOW)).toBeUndefined();
+    expect(hasRole(events, owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(true);
+    expect(hasRole(events, owner.pubkey, catalog.pubkey, 'paycore', NOW)).toBe(false);
+    expect(hasRole(events, owner.pubkey, store.pubkey, 'paycore', NOW)).toBe(true);
+    expect(hasRole(events, owner.pubkey, store.pubkey, 'catalog', NOW)).toBe(false);
+    expect(readCatalogAuthority(events, owner.pubkey, NOW)).toEqual(
+      new Map([
+        [catalog.pubkey, new Set(['catalog'])],
+        [store.pubkey, new Set(['paycore'])],
+      ]),
+    );
+    expect(hasRole(events, testKey().pubkey, catalog.pubkey, 'catalog', NOW)).toBe(false);
   });
 
   it('ignores a 30497 signed by someone other than the owner', () => {
@@ -116,7 +125,8 @@ describe('catalog key authority', () => {
       buildCatalogAuth({ key: catalog.pubkey, mode: 'self-host', createdAt: NOW - 10 }),
       catalog,
     );
-    expect(catalogKeyRole([forged], owner.pubkey, catalog.pubkey, NOW)).toBeUndefined();
+    expect(hasRole([forged], owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(false);
+    expect(readCatalogAuthority([forged], owner.pubkey, NOW).size).toBe(0);
   });
 
   it('a Pay Core revocation does not revoke a catalog key, a catalog revocation does', () => {
@@ -125,11 +135,11 @@ describe('catalog key authority', () => {
       owner,
     );
     const payCoreRevoke = sign(buildStoreRevocationEvent(catalog.pubkey, NOW - 5), owner);
-    expect(catalogKeyRole([grant, payCoreRevoke], owner.pubkey, catalog.pubkey, NOW)).toBe(
-      'catalog',
+    expect(hasRole([grant, payCoreRevoke], owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(
+      true,
     );
     const revoke = sign(buildCatalogRevocation(catalog.pubkey, NOW - 5), owner);
-    expect(catalogKeyRole([grant, revoke], owner.pubkey, catalog.pubkey, NOW)).toBeUndefined();
+    expect(hasRole([grant, revoke], owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(false);
   });
 
   it('resolves product and policy keys by the role the source needs', () => {
