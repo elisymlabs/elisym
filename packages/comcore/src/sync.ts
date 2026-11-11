@@ -1,6 +1,7 @@
 import {
   KIND_DELETION,
   NO_FUTURE_LIMIT,
+  isEventShaped,
   isGenuineEvent,
   newestSigned,
   nowSecs,
@@ -94,10 +95,12 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const now = options.now ?? nowSecs();
   const key = getPublicKey(options.signer);
   const relays = COMCORE_RELAYS;
-  const authorityEvents = await options.client.query(relays, {
-    kinds: [KIND_CATALOG_AUTH, KIND_DELETION],
-    authors: [options.store],
-  });
+  const authorityEvents = (
+    await options.client.query(relays, {
+      kinds: [KIND_CATALOG_AUTH, KIND_DELETION],
+      authors: [options.store],
+    })
+  ).filter((event) => isEventShaped(event));
   if (!hasRole(authorityEvents, options.store, key, 'catalog', now)) {
     throw new Error('This key is not authorized as a catalog key by the store owner');
   }
@@ -111,16 +114,20 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     inputs.set(d, input);
   }
 
-  const ownEvents = await options.client.query(relays, {
-    kinds: [KIND_PRODUCT, KIND_DELETION],
-    authors: [key],
-  });
+  // Only genuinely signed, well-shaped events: a forged or malformed relay entry
+  // must neither crash the sync nor steer its dating or its deletions.
+  const ownEvents = (
+    await options.client.query(relays, {
+      kinds: [KIND_PRODUCT, KIND_DELETION],
+      authors: [key],
+    })
+  ).filter((event) => isEventShaped(event) && event.pubkey === key && isGenuineEvent(event));
   // Deletions straight from K's kind 5s: a NIP-09 relay drops every version an
   // `a` deletion covers, so a deletion may be all that is left of an address.
   const addressPrefix = `${KIND_PRODUCT}:${key}:`;
   const deletedAt = new Map<string, number>();
   for (const event of ownEvents) {
-    if (event.kind !== KIND_DELETION || event.pubkey !== key || !isGenuineEvent(event)) {
+    if (event.kind !== KIND_DELETION) {
       continue;
     }
     for (const address of tagValues(event.tags, 'a')) {
@@ -136,12 +143,10 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const latestAt = new Map<string, number>();
   for (const event of ownEvents) {
     const d = tagValue(event.tags, 'd');
-    if (event.kind !== KIND_PRODUCT || event.pubkey !== key || d === undefined) {
+    if (event.kind !== KIND_PRODUCT || d === undefined) {
       continue;
     }
-    if (isGenuineEvent(event)) {
-      latestAt.set(d, Math.max(latestAt.get(d) ?? -1, event.created_at));
-    }
+    latestAt.set(d, Math.max(latestAt.get(d) ?? -1, event.created_at));
   }
   const current = new Map<string, NostrEvent>();
   for (const d of latestAt.keys()) {

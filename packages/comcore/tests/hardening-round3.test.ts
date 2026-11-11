@@ -136,3 +136,73 @@ describe('remaining untested paths', () => {
     ).toThrow(/not|sold-out|available/);
   });
 });
+
+describe('forged and malformed relay entries', () => {
+  function broken<Event extends { sig: string }>(event: Event): Event {
+    const last = event.sig.slice(-1) === '0' ? '1' : '0';
+    return { ...event, sig: event.sig.slice(0, -1) + last };
+  }
+
+  it('ignores a deletion by K with a broken signature', async () => {
+    const relay = grantOn(new MemoryRelay());
+    await sync(relay, [item('a')], NOW);
+    relay.events.push(
+      broken(
+        sign(
+          {
+            kind: 5,
+            created_at: NOW + 5,
+            tags: [['a', `30402:${catalog.pubkey}:a`]],
+            content: '',
+          },
+          catalog,
+        ),
+      ),
+    );
+    expect((await sync(relay, [item('a')], NOW + 10)).unchanged).toEqual(['a']);
+    expect((await sync(relay, [], NOW + 20)).hidden).toEqual(['a']);
+  });
+
+  it('ignores a far-future listing by K with a broken signature', async () => {
+    const relay = grantOn(new MemoryRelay());
+    await sync(relay, [item('a')], NOW);
+    const forged = broken(
+      sign(
+        {
+          kind: 30402,
+          created_at: NOW + 100_000_000,
+          tags: [
+            ['d', 'a'],
+            ['title', 'a'],
+            ['price', '1', 'USD'],
+          ],
+          content: '',
+        },
+        catalog,
+      ),
+    );
+    relay.events.push(forged);
+    const before = relay.published.length;
+    await sync(relay, [{ ...item('a'), title: 'renamed' }], NOW + 10);
+    expect(relay.published[before]?.created_at).toBe(NOW + 10);
+  });
+
+  it('skips malformed entries instead of crashing', async () => {
+    const relay = grantOn(new MemoryRelay());
+    const malformed = [null, { kind: 30402, tags: null }, { kind: 5, tags: [null] }];
+    const client = {
+      query: async (relays: readonly string[], filter: Parameters<MemoryRelay['query']>[1]) =>
+        [...(await relay.query(relays, filter)), ...malformed] as never[],
+      publish: relay.publish.bind(relay),
+    };
+    const diff = await syncCatalog({
+      signer: catalog.secretKey,
+      store: owner.pubkey,
+      items: [item('a')],
+      client,
+      now: NOW,
+      sleep: noSleep,
+    });
+    expect(diff.created).toEqual(['a']);
+  });
+});
