@@ -330,6 +330,49 @@ const NOUN_FIRST_LANGUAGES = new Set([
   'ar',
 ]);
 
+/** Languages that put the currency noun after its qualifier ("Swiss francs", "российский рубль"). */
+const NOUN_LAST_LANGUAGES = new Set([
+  'en',
+  'de',
+  'nl',
+  'ru',
+  'uk',
+  'cs',
+  'sv',
+  'da',
+  'nb',
+  'hu',
+  'bg',
+  'ko',
+  'hi',
+]);
+/** An acronym or bracketed qualifier is never the noun ("дирхам ОАЭ", "US dollars"). */
+const QUALIFIER_RE = /^(?:[\p{Lu}\p{N}.]+|\(.*\))$/u;
+
+/**
+ * The everyday noun of a multi-word currency name: "pesos mexicanos" → pesos,
+ * "Schweizer Franken" → Franken, "дирхам ОАЭ" → дирхам. A language of unknown
+ * word order fails closed: every word that is not a qualifier.
+ */
+function currencyNouns(name: string, language: string): string[] {
+  const words = name.split(/\s+/u).filter((word) => word.length >= 3 && !QUALIFIER_RE.test(word));
+  if (!name.includes(' ') || words.length === 0) {
+    return [];
+  }
+  const allWords = name.split(/\s+/u);
+  let ordered: string[] | undefined;
+  if (NOUN_FIRST_LANGUAGES.has(language)) {
+    ordered = allWords;
+  } else if (NOUN_LAST_LANGUAGES.has(language)) {
+    ordered = [...allWords].reverse();
+  }
+  if (ordered === undefined) {
+    return words;
+  }
+  const noun = ordered.find((word) => word.length >= 3 && !QUALIFIER_RE.test(word));
+  return noun === undefined ? [] : [noun];
+}
+
 function localeLanguage(locale: string): string {
   return locale.split('-')[0]?.toLowerCase() ?? '';
 }
@@ -367,9 +410,7 @@ function storeCurrencyForms(
             forms.add(normalized);
             // "pesos mexicanos", "Schweizer Franken": the everyday name is the noun,
             // never a qualifier ("New", "Swiss", "des", "российских").
-            const words = normalized.split(/\s+/u);
-            const noun = NOUN_FIRST_LANGUAGES.has(localeLanguage(locale)) ? words[0] : words.at(-1);
-            if (words.length > 1 && noun !== undefined && noun.length >= 3) {
+            for (const noun of currencyNouns(normalized, localeLanguage(locale))) {
               forms.add(noun);
             }
           }
@@ -407,14 +448,16 @@ function symbolToPattern(symbol: string): string {
 const NUMBER_PATTERN = String.raw`(?<!\d)(?<!\d[.,'’])(?:\d{1,2}(?:,\d{2}){1,4},\d{3}(?:\.\d+)?|\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)(?:[.,][-–])?`;
 // cspell:disable
 /** A magnitude between a number and its currency: "1,5 тыс. ₽", "1.5k USD", "2 mil reais". */
-const THOUSANDS = String.raw`thousand|tausend|duizend|mille|mila|тысяч\p{L}*|тисяч\p{L}*|тыс|тис|tys|Tsd|mil|k`;
-const MILLIONS = String.raw`millions?|millionen|millones|milhões|milioni|миллион\p{L}*|мільйон\p{L}*|млн|mln|Mio`;
-const MAGNITUDE_PATTERN = String.raw`(?:${THOUSANDS}|${MILLIONS})(?![\p{L}])\.?`;
+const THOUSANDS = String.raw`thousand|tausend|duizend|mille|mila|тысяч\p{L}*|тисяч\p{L}*|tysi\p{L}+|тыс|тис|tys|Tsd|mil|k`;
+const MILLIONS = String.raw`millions?|millionen|millones|millón|milhões|milhão|milioni|milione|miljoen|milion\p{L}*|миллион\p{L}*|мільйон\p{L}*|млн|mln|Mio`;
+const BILLIONS = String.raw`billions?|milliarden?|miliardi?|miljard|mil\s+millones|млрд|mrd|bn`;
+const MAGNITUDE_PATTERN = String.raw`(?:${BILLIONS}|${THOUSANDS}|${MILLIONS})(?![\p{L}])\.?`;
 /** "2 millones de euros", "2 milioni di euro", "2 millions d'euros". */
 const MAGNITUDE_LINK = String.raw`(?:\s+(?:de|di)(?=\s)|\s?d['’])?`;
 const MAGNITUDES: ReadonlyArray<[RegExp, number]> = [
   [new RegExp(String.raw`^(?:${THOUSANDS})\.?$`, 'iu'), 1_000],
   [new RegExp(String.raw`^(?:${MILLIONS})\.?$`, 'iu'), 1_000_000],
+  [new RegExp(String.raw`^(?:${BILLIONS})\.?$`, 'iu'), 1_000_000_000],
 ];
 
 function magnitudeFactor(magnitude: string | undefined): number | undefined {
@@ -616,8 +659,9 @@ function foldSeparators(text: string): string {
 export function normalizeForCheck(text: string): string {
   return (
     foldSeparators(stripInvisible(text.normalize('NFKC')).replace(/\p{Nd}/gu, foldDigit))
-      // Hyphen, non-breaking hyphen, figure dash, em dash, bar, bullet and minus read as an en dash ("900—1200 ₽").
-      .replace(/[\u2010\u2011\u2012\u2014\u2015\u2043\u2212]/gu, '–')
+      // Hyphen (NFKC folds the non-breaking one into it), figure dash, em dash,
+      // bar, hyphen bullet and minus read as an en dash ("900\u20141200 ₽").
+      .replace(/[\u2010\u2012\u2014\u2015\u2043\u2212]/gu, '–')
       .replace(/[*_`]+/g, '')
       .replace(/(?<!\d)~+|~+(?!\d)/g, '')
   );
@@ -723,7 +767,6 @@ const PAIRED_OPENERS = new Map<string, readonly string[]>([
   ['від', ['до']],
   ['между', ['и']],
   ['von', ['bis']],
-  ['van', ['tot']],
   ['dal', ['al']],
   ['dai', ['ai']],
   ['de', ['a', 'à']],
@@ -738,13 +781,13 @@ const RANGE_OPENERS = new Set([
   'desde',
   'vanaf',
   ...[...PAIRED_OPENERS.keys()].filter(
-    (opener) => !['von', 'van', 'de', 'da', 'du', 'dal', 'dai'].includes(opener),
+    (opener) => !['von', 'de', 'da', 'du', 'dal', 'dai'].includes(opener),
   ),
 ]);
 /** Hedges between an opener or range word and a bound: "zwischen ca. 900 und 1200 €". */
 const HEDGE_PATTERN = String.raw`(?:(?:ca|approx|aprox|прибл|ок|ok)\.|about|around|roughly|approximately|circa|ca|etwa|rund|ungefähr|примерно|около|około|unos|unas|environ|cerca\s+de)`;
 /** Articles between an opener or range word and a bound: "tussen de 1000 en 1200", "tra i 1000 e i 1200". */
-const ARTICLE_PATTERN = String.raw`(?:de|het|the|i|gli|le|les|los|las|os|as)`;
+const ARTICLE_PATTERN = String.raw`(?:de|den|het|the|i|gli|le|la|les|el|los|las|os|as)`;
 // cspell:enable
 // cspell:disable
 /** Month names and standard abbreviations, exact (a stem would also match "separately" or "market"). */
@@ -878,7 +921,8 @@ function addRangeBounds(
 ): void {
   const separator = rangeSeparator();
   const romance = isRomance(locales);
-  const hedges = String.raw`(?:${ARTICLE_PATTERN}\s+)?(?:${HEDGE_PATTERN}\s*){0,2}`;
+  // An article after a range word only inside an opened range ("tussen de 1000 en de 1200"), never "to the".
+  const hedges = String.raw`(?<article>${ARTICLE_PATTERN}\s+)?(?:${HEDGE_PATTERN}\s*){0,2}`;
   const tailRe = new RegExp(
     String.raw`(?<gap>\s*${separator}\s*${hedges})(?<number>${NUMBER_PATTERN})(?:\s?(?<magnitude>${MAGNITUDE_PATTERN}))?`,
     'iuy',
@@ -898,21 +942,31 @@ function addRangeBounds(
     if (tail && tailGap !== undefined && tailWord !== undefined && upper !== undefined) {
       const offset = end + tailGap.length;
       const after = text.slice(end + tail[0].length, end + tail[0].length + 32);
-      const values = scaled(readValues(upper, decimals), tail.groups?.magnitude);
-      // "$1.2-1.5k": the upper bound's magnitude may be the lower bound's too.
+      const upperRead = readValues(upper, decimals);
+      const values = scaled(upperRead, tail.groups?.magnitude);
+      const opener = openerBefore(text, amount.index);
+      // "$1.2-1.5k": one reading only. The upper bound's magnitude is the lower
+      // bound's too when the written lower number is below the written upper one.
       const upperFactor = magnitudeFactor(tail.groups?.magnitude);
-      if (upperFactor !== undefined && amount.scale === undefined) {
-        amount.values.push(...amount.values.map((value) => value.times(upperFactor)));
-      }
+      const shared =
+        upperFactor !== undefined &&
+        amount.scale === undefined &&
+        isBelow(amount.values, upperRead);
+      const lowerReading =
+        shared && upperFactor !== undefined
+          ? amount.values.map((value) => value.times(upperFactor))
+          : amount.values;
       const edition = YEAR_RE.test(upper) && EDITION_AFTER_RE.test(after);
       if (
         !taken.has(offset) &&
-        separatorOpens(tailWord, openerBefore(text, amount.index), romance) &&
-        isBelow(amount.values, values) &&
+        separatorOpens(tailWord, opener, romance) &&
+        (tail.groups?.article === undefined || isOpener(opener)) &&
+        isBelow(lowerReading, values) &&
         !NOT_MONEY_AFTER_RE.test(after) &&
         !edition
       ) {
         taken.add(offset);
+        amount.values.splice(0, amount.values.length, ...lowerReading);
         found.push({
           values,
           currencies: amount.currencies,
@@ -932,17 +986,26 @@ function addRangeBounds(
       const offset = amount.index - before.length + head.index;
       const preceding = text.slice(Math.max(0, offset - 32), offset);
       const opener = openerBefore(text, offset);
-      const values = scaled(readValues(lower, decimals), head.groups?.magnitude);
-      // "1,2–1,5 тыс. ₽": the upper bound's magnitude may be the lower bound's too.
-      if (amount.scale !== undefined && head.groups?.magnitude === undefined) {
-        const factor = amount.scale;
-        values.push(...values.map((value) => value.times(factor)));
-      }
+      const lowerRead = readValues(lower, decimals);
+      // "1,2–1,5 тыс. ₽": one reading only, as on the tail side.
+      const factor = amount.scale;
+      const shared =
+        factor !== undefined &&
+        head.groups?.magnitude === undefined &&
+        isBelow(
+          lowerRead,
+          amount.values.map((value) => value.div(factor)),
+        );
+      const values =
+        shared && factor !== undefined
+          ? lowerRead.map((value) => value.times(factor))
+          : scaled(lowerRead, head.groups?.magnitude);
       const opened = opener !== undefined && RANGE_OPENERS.has(opener);
       const yearBeforeSpacedDash = YEAR_RE.test(lower) && /\s[-–]\s/.test(headGap);
       if (
         !taken.has(offset) &&
         separatorOpens(headWord, opener, romance) &&
+        (head.groups?.article === undefined || isOpener(opener)) &&
         isBelow(values, amount.values) &&
         (opened || (!QUANTITY_BEFORE_RE.test(preceding) && !yearBeforeSpacedDash))
       ) {
@@ -1078,11 +1141,15 @@ function componentAddresses(answer: Answer): string[][] {
 // cspell:disable
 /** Abbreviations whose dot does not end a sentence ("ca. 1200 €", "Art. 900"). */
 const ABBREVIATIONS =
-  'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|bzw|ggf|vs|stk|ref|env|aprox|ok|прибл|ок|арт|tsd|mio|mrd|mld|mln|tys|тыс|тис|млн';
+  'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|bzw|ggf|vs|stk|ref|env|aprox|прибл|ок|арт';
+/** Magnitude abbreviations end no sentence right after a number ("1,5 тыс. ₽", "2 Mio. €"). */
+const MAGNITUDE_ABBREVIATIONS = 'tsd|mio|mrd|mld|mln|tys|тыс|тис|млн|млрд';
+/** Words whose dot ends a sentence ("It fits ok.") unless a number follows ("ok. 999 zł"). */
+const HEDGE_ABBREVIATIONS = 'ok';
 // cspell:enable
 /** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
 const SENTENCE_SPLIT_RE = new RegExp(
-  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)[ \t]+|\n+)`,
+  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d\s?(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|\n+)`,
   'iu',
 );
 /** The last dotted token of a sentence: it may be the symbol of the next sentence's number ("Rs. 999"). */
