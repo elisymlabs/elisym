@@ -17,6 +17,8 @@ export interface CraftOptions {
   rumorSig?: string;
   /** Rumor `p` tag other than the recipient. */
   rumorRecipient?: string;
+  /** Extra tags on the rumor. */
+  rumorExtraTags?: string[][];
   /** Tags on the seal (NIP-59 forbids them). */
   sealTags?: string[][];
   /** Break the seal signature after signing. */
@@ -43,7 +45,7 @@ export function craftWrap(options: CraftOptions): NostrEvent {
     pubkey: rumorPubkey,
     created_at: options.now,
     kind: KIND_CHAT_MESSAGE,
-    tags: [['p', options.rumorRecipient ?? options.recipient]],
+    tags: [['p', options.rumorRecipient ?? options.recipient], ...(options.rumorExtraTags ?? [])],
     content,
   };
   const rumor: Record<string, unknown> = { ...fields, id: options.rumorId ?? getEventHash(fields) };

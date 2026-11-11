@@ -307,7 +307,8 @@ export const CatalogItemInputSchema = z
       });
     }
     // 2.1: with variants, the listing price is the lowest available variant's,
-    // or the lowest overall when none is available (and then it is sold-out).
+    // or the lowest overall when none is available (then not on-sale: sold-out,
+    // pre-order or hidden).
     if (input.variants.length > 0) {
       const available = input.variants.filter((variant) => variant.available);
       const pool = available.length > 0 ? available : input.variants;

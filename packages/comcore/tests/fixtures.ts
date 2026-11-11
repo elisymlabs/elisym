@@ -42,3 +42,38 @@ export class MemoryRelay implements SyncRelayClient {
     this.events.push(event);
   }
 }
+
+/**
+ * A relay that behaves like a NIP-09 / NIP-01 one: a newer version of an
+ * addressable event replaces the older, and a kind 5 removes every version of
+ * an `a` address up to its own date.
+ */
+export class PurgingRelay extends MemoryRelay {
+  override async publish(relays: readonly string[], event: NostrEvent): Promise<void> {
+    await super.publish(relays, event);
+    const kept = this.events.filter((stored) => {
+      if (stored === event) {
+        return true;
+      }
+      if (event.kind === 5) {
+        const covered = event.tags.some(
+          (tag) =>
+            tag[0] === 'a' &&
+            tag[1] ===
+              `${stored.kind}:${stored.pubkey}:${stored.tags.find((storedTag) => storedTag[0] === 'd')?.[1]}` &&
+            stored.created_at <= event.created_at,
+        );
+        return !covered;
+      }
+      const sameAddress =
+        stored.kind === event.kind &&
+        stored.pubkey === event.pubkey &&
+        event.kind >= 30000 &&
+        stored.tags.find((tag) => tag[0] === 'd')?.[1] ===
+          event.tags.find((tag) => tag[0] === 'd')?.[1];
+      return !(sameAddress && stored.created_at <= event.created_at);
+    });
+    this.events.length = 0;
+    this.events.push(...kept);
+  }
+}

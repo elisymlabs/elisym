@@ -1,10 +1,11 @@
 import {
   KIND_DELETION,
   NO_FUTURE_LIMIT,
-  newestDeletion,
+  isGenuineEvent,
   newestSigned,
   nowSecs,
   tagValue,
+  tagValues,
 } from '@elisym/commerce';
 import type { EventTemplate, Filter, NostrEvent } from 'nostr-tools';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
@@ -114,33 +115,54 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     kinds: [KIND_PRODUCT, KIND_DELETION],
     authors: [key],
   });
-  const current = new Map<string, NostrEvent>();
+  // Deletions straight from K's kind 5s: a NIP-09 relay drops every version an
+  // `a` deletion covers, so a deletion may be all that is left of an address.
+  const addressPrefix = `${KIND_PRODUCT}:${key}:`;
   const deletedAt = new Map<string, number>();
-  for (const d of new Set(ownEvents.map((event) => tagValue(event.tags, 'd')))) {
-    if (d === undefined) {
+  for (const event of ownEvents) {
+    if (event.kind !== KIND_DELETION || event.pubkey !== key || !isGenuineEvent(event)) {
       continue;
     }
-    const newest = newestSigned(ownEvents, KIND_PRODUCT, key, now, d);
-    if (!newest) {
+    for (const address of tagValues(event.tags, 'a')) {
+      if (!address.startsWith(addressPrefix)) {
+        continue;
+      }
+      const d = address.slice(addressPrefix.length);
+      deletedAt.set(d, Math.max(deletedAt.get(d) ?? -1, event.created_at));
+    }
+  }
+  // The latest version of each address actually on the relay, however far
+  // ahead its clock was: replacements are dated after it, so none loses.
+  const latestAt = new Map<string, number>();
+  for (const event of ownEvents) {
+    const d = tagValue(event.tags, 'd');
+    if (event.kind !== KIND_PRODUCT || event.pubkey !== key || d === undefined) {
       continue;
     }
-    // A NIP-09 deletion removes every version up to its own date.
-    const deletion = newestDeletion(ownEvents, catalogAddress(key, d), key, NO_FUTURE_LIMIT);
-    if (deletion) {
-      deletedAt.set(d, deletion.created_at);
+    if (isGenuineEvent(event)) {
+      latestAt.set(d, Math.max(latestAt.get(d) ?? -1, event.created_at));
     }
-    if (!deletion || deletion.created_at < newest.created_at) {
+  }
+  const current = new Map<string, NostrEvent>();
+  for (const d of latestAt.keys()) {
+    // Our own listings, however far ahead a clock dated them: a reader will see
+    // such a version once real time catches up, so it is replaced or hidden now.
+    const newest = newestSigned(ownEvents, KIND_PRODUCT, key, NO_FUTURE_LIMIT, d);
+    const lastDeletion = deletedAt.get(d);
+    if (newest && (lastDeletion === undefined || lastDeletion < newest.created_at)) {
       current.set(d, newest);
     }
   }
+  const floorFor = (d: string): number =>
+    Math.max(now, (latestAt.get(d) ?? -1) + 1, (deletedAt.get(d) ?? -1) + 1);
 
   const diff: SyncDiff = { created: [], updated: [], hidden: [], unchanged: [] };
   const toPublish: EventTemplate[] = [];
   for (const [d, input] of inputs) {
     const listed = current.get(d);
-    // Dated after the version it replaces and after any deletion of the address:
+    // Dated after every version on the relay and after any deletion of the address:
     // a tie loses to the lower id (NIP-01), and a deletion removes all up to its date.
-    const createdAt = Math.max(now, (listed?.created_at ?? 0) + 1, (deletedAt.get(d) ?? -1) + 1);
+    const createdAt = floorFor(d);
     const template = buildCatalogItemEvent({ ...input, createdAt });
     if (!listed) {
       diff.created.push(d);
@@ -167,7 +189,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     }
     diff.hidden.push(d);
     // Both dated at or after the listing they replace, so neither loses to it.
-    const hiddenAt = Math.max(now, listed.created_at + 1);
+    const hiddenAt = floorFor(d);
     if (tagValue(listed.tags, 'visibility') !== 'hidden') {
       toPublish.push({
         kind: KIND_PRODUCT,
