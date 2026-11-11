@@ -38,7 +38,11 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|гривень|грн\.?)$/i, ['UAH']],
   // Singular "real" is an ordinary word ("real leather"); a BRL store still reads it as its own form.
   [/^(reais)$/i, ['BRL']],
-  [/^(kron(or|er|e|a|ur))$/i, ['SEK', 'NOK', 'DKK', 'ISK']],
+  [/^(kron(or|er|e|a|ur|en))$/i, ['SEK', 'NOK', 'DKK', 'ISK']],
+  [/^(korun[ay]?|korunas)$/i, ['CZK']],
+  [/^(rupiah)$/i, ['IDR']],
+  [/^(ringgit)$/i, ['MYR']],
+  [/^(renminbi)$/i, ['CNY']],
   [/^(forints?)$/i, ['HUF']],
   [/^(shekels?|schekel)$/i, ['ILS']],
   [/^(złot(y|e|ych)|zlot(y|e|ych))$/i, ['PLN']],
@@ -563,8 +567,9 @@ const POSTPOSED_QUALIFIERS: ReadonlyArray<[string, string]> = [
 /** Nouns that are money only after a qualifier ("South Korean won", not "the team won"). */
 const QUALIFIED_NOUNS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^won$/i, ['KRW']],
-  [/^rand$/i, ['ZAR']],
   [/^baht$/i, ['THB']],
+  [/^real$/i, ['BRL']],
+  [/^rands?$/i, ['ZAR']],
 ];
 // cspell:enable
 const QUALIFIER_PATTERN = QUALIFIERS.map(([pattern]) => pattern).join('|');
@@ -573,6 +578,8 @@ const QUALIFIER_RES: ReadonlyArray<[RegExp, string]> = QUALIFIERS.map(([pattern,
   currency,
 ]);
 const POSTPOSED_PATTERN = POSTPOSED_QUALIFIERS.map(([pattern]) => pattern).join('|');
+/** An all-caps ISO code right after a postfix currency word ("1200 dollars CAD"). */
+const CODE_AFTER_RE = /^[ \t]+([A-Z]{3})(?![\p{L}])/u;
 const POSTPOSED_AFTER_RE = new RegExp(
   String.raw`^[ \t]+(?:${POSTPOSED_PATTERN})(?![\p{L}])\.?`,
   'iu',
@@ -695,12 +702,19 @@ function nounCurrencies(
   number: string,
   storeCurrency: string | undefined,
   symbols: ReadonlyArray<[string, readonly string[]]>,
+  qualifierCurrency?: string,
 ): string[] {
   const token = noun.replace(/[.!?,;:]+$/u, '');
-  const qualified = QUALIFIED_NOUNS.find(([pattern]) => pattern.test(token))?.[1] ?? [];
+  // A qualifier-only noun counts for its own qualifier alone ("Brazilian real", not "Chinese real silk").
+  const qualified = (QUALIFIED_NOUNS.find(([pattern]) => pattern.test(token))?.[1] ?? []).filter(
+    (currency) => currency === qualifierCurrency,
+  );
   const listed = WORDS.find(([pattern]) => pattern.test(token))?.[1] ?? [];
+  const staticSymbols = SYMBOLS.filter(([candidate]) => candidate === token).flatMap(
+    ([, currencies]) => currencies,
+  );
   const read = currenciesFor(noun, number, storeCurrency, symbols) ?? [];
-  return [...new Set([...qualified, ...listed, ...read])];
+  return [...new Set([...qualified, ...listed, ...staticSymbols, ...read])];
 }
 
 /**
@@ -727,10 +741,12 @@ function currenciesForToken(
     return undefined;
   }
   const noun = rawToken.replace(qualifier[0], '');
-  const named = nounCurrencies(noun, number, storeCurrency, symbols);
+  const named = nounCurrencies(noun, number, storeCurrency, symbols, qualifier[1]);
   if (named.length === 0) {
     return undefined;
   }
+  // A qualifier the noun cannot be fails closed ("Indian dollars"); after a store noun matched as
+  // a symbol, `scan` then reads the token alone ("19 € Suisse" is a shipping row).
   return named.includes(qualifier[1]) ? [qualifier[1]] : [];
 }
 
@@ -854,12 +870,34 @@ function scan(
             text.slice(match.index + match[0].length, match.index + match[0].length + 32),
           )
         : null;
-    const fullToken = postposed && token !== undefined ? `${token}${postposed[0]}` : token;
-    const currencies =
-      fullToken === undefined || number === undefined
+    const joined =
+      postposed && token !== undefined && number !== undefined
+        ? currenciesForToken(`${token}${postposed[0]}`, number, storeCurrency, symbols)
+        : undefined;
+    // The joined reading counts only when it names a currency; otherwise the token alone does.
+    const joinedCounts = joined !== undefined && joined.length > 0;
+    const alone =
+      token === undefined || number === undefined
         ? undefined
-        : currenciesForToken(fullToken, number, storeCurrency, symbols);
-    const raw = postposed ? `${match[0]}${postposed[0]}` : match[0];
+        : currenciesForToken(token, number, storeCurrency, symbols);
+    // "1200 dollars CAD": an ISO code after the noun pins it when the noun can be that currency.
+    const after = text.slice(match.index + match[0].length, match.index + match[0].length + 8);
+    const code = !tokenFirst && !joinedCounts ? CODE_AFTER_RE.exec(after) : null;
+    const codeName = code?.[1];
+    const pinned =
+      codeName !== undefined &&
+      token !== undefined &&
+      number !== undefined &&
+      nounCurrencies(token, number, storeCurrency, symbols).includes(codeName)
+        ? [codeName]
+        : undefined;
+    const currencies = joinedCounts ? joined : (pinned ?? alone);
+    let raw = match[0];
+    if (joinedCounts && postposed) {
+      raw = `${match[0]}${postposed[0]}`;
+    } else if (pinned && code) {
+      raw = `${match[0]}${code[0]}`;
+    }
     const numberIndex = numberSpan?.[0] ?? match.index;
     const tokenStart = tokenSpan?.[0] ?? match.index;
     const tokenEnd = tokenSpan?.[1] ?? numberIndex;
@@ -1340,7 +1378,9 @@ const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
 /** "U.S." ends no sentence when a lowercase word or a dollar word follows ("999 U.S. dollars"). */
 const US_TAIL_RE = /(?:^|[^\p{L}])u\.s\.$/iu;
-const US_CONTINUES_RE = /^(?:dollars?(?![\p{L}])|\p{Ll})/u;
+const US_CONTINUES_RE = /^\p{Ll}+(?![\p{Lu}\p{N}])/u;
+/** A number right before "U.S." is an amount in two parts ("999 U.S. Dollars"): keep them together. */
+const US_AMOUNT_TAIL_RE = /\d[\s:-]{0,3}u\.s\.$/iu;
 
 function sentencesOf(text: string): { sentences: string[]; separators: string[] } {
   const parts = text.split(SENTENCE_SPLIT_RE);
@@ -1355,7 +1395,7 @@ function sentencesOf(text: string): { sentences: string[]; separators: string[] 
         separator !== undefined &&
         !separator.includes('\n') &&
         US_TAIL_RE.test(previous) &&
-        US_CONTINUES_RE.test(part)
+        (US_CONTINUES_RE.test(part) || US_AMOUNT_TAIL_RE.test(previous))
       ) {
         sentences[sentences.length - 1] = `${previous}${separator}${part}`;
         separators.pop();
