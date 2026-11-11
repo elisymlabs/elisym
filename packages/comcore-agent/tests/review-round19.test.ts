@@ -83,7 +83,9 @@ describe('A3. the stated currency wins over a later currency word', () => {
 describe('security review: two currencies in one token fail closed', () => {
   it('a qualifier pair whose words disagree matches nothing', () => {
     // "Swiss" is no currency; "Indian dollars" reads the noun; a sterling pair reads the noun.
-    expect(extractAmounts('1200 Indian dollars', ['en'], 'EUR')[0]?.currencies).toContain('USD');
+    // A qualifier pins its currency, and a noun that cannot be that currency is no money.
+    expect(extractAmounts('1200 Canadian dollars', ['en'], 'EUR')[0]?.currencies).toEqual(['CAD']);
+    expect(extractAmounts('1200 Indian dollars', ['en'], 'EUR')).toHaveLength(0);
     expect(extractAmounts('1200 pounds sterling', ['en'], 'EUR')[0]?.currencies).toEqual(['GBP']);
   });
 });

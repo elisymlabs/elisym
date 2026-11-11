@@ -80,7 +80,7 @@ describe('B1. a nationality adjective before the currency noun', () => {
   });
 
   it.each([
-    ['EUR', 'de', 'Das sind etwa 1150 englische Pfund Sterling.'],
+    ['EUR', 'de', 'Das sind etwa 1150 britische Pfund Sterling.'],
     ['EUR', 'de', 'Das sind 1500 Schweizer Franken pro Jahr.'],
   ])('%s %s: a known pair inside three words "%s" is read', (currency, language, text) => {
     expect(violationsIn(currency, language, text)).toBe(1);
