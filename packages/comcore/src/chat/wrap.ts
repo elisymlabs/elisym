@@ -3,7 +3,7 @@ import type { NostrEvent } from 'nostr-tools';
 import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getEventHash, getPublicKey } from 'nostr-tools/pure';
 import { KIND_CHAT_MESSAGE, LIMITS } from '../constants';
-import { type ChatMessage, ChatMessageSchema } from './messages';
+import { type Answer, type ChatMessage, ChatMessageSchema } from './messages';
 
 const KIND_SEAL = 13;
 const KIND_GIFT_WRAP = 1059;
@@ -109,6 +109,49 @@ export function wrapChatMessage(input: WrapInput): WrapResult {
     ephemeralKey,
   );
   return { wrap, rumorId: rumor.id };
+}
+
+const PLACEHOLDER_HEX = '0'.repeat(64);
+
+/** The serialized rumor size a message would have: what the working cap applies to. */
+export function rumorBytes(message: ChatMessage, createdAt: number): number {
+  return byteLength(
+    JSON.stringify({
+      pubkey: PLACEHOLDER_HEX,
+      created_at: createdAt,
+      kind: KIND_CHAT_MESSAGE,
+      tags: [['p', PLACEHOLDER_HEX]],
+      content: JSON.stringify(message),
+      id: PLACEHOLDER_HEX,
+    }),
+  );
+}
+
+/**
+ * Fit an answer under the senders' working cap (4.2 overflow rule): drop
+ * components from the last one backwards, then truncate the text.
+ */
+export function fitAnswer(answer: Answer, createdAt: number): Answer {
+  const fits = (candidate: Answer): boolean =>
+    rumorBytes(candidate, createdAt) <= LIMITS.RUMOR_WORKING_BYTES;
+  let fitted: Answer = answer;
+  while (!fits(fitted) && fitted.components.length > 0) {
+    fitted = { ...fitted, components: fitted.components.slice(0, -1) };
+  }
+  if (fits(fitted)) {
+    return fitted;
+  }
+  let low = 0;
+  let high = fitted.text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits({ ...fitted, text: fitted.text.slice(0, middle) })) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return { ...fitted, text: fitted.text.slice(0, low) };
 }
 
 export interface UnwrappedChat {

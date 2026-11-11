@@ -19,6 +19,12 @@ export interface CraftOptions {
   rumorRecipient?: string;
   /** Extra tags on the rumor. */
   rumorExtraTags?: string[][];
+  /** Rumor kind other than the chat kind. */
+  rumorKind?: number;
+  /** Pad the seal JSON with trailing whitespace (still valid JSON) to this many chars. */
+  padSealTo?: number;
+  /** Wrap `p` tags other than the recipient alone. */
+  wrapRecipients?: string[];
   /** Tags on the seal (NIP-59 forbids them). */
   sealTags?: string[][];
   /** Break the seal signature after signing. */
@@ -44,7 +50,7 @@ export function craftWrap(options: CraftOptions): NostrEvent {
   const fields = {
     pubkey: rumorPubkey,
     created_at: options.now,
-    kind: KIND_CHAT_MESSAGE,
+    kind: options.rumorKind ?? KIND_CHAT_MESSAGE,
     tags: [['p', options.rumorRecipient ?? options.recipient], ...(options.rumorExtraTags ?? [])],
     content,
   };
@@ -71,11 +77,13 @@ export function craftWrap(options: CraftOptions): NostrEvent {
       kind: 1059,
       created_at: options.now,
       tags: [
-        ['p', options.recipient],
+        ...(options.wrapRecipients ?? [options.recipient]).map((recipient) => ['p', recipient]),
         ['expiration', String(options.now + 600)],
       ],
       content: nip44.v2.encrypt(
-        JSON.stringify(seal),
+        options.padSealTo === undefined
+          ? JSON.stringify(seal)
+          : JSON.stringify(seal).padEnd(options.padSealTo, ' '),
         nip44.v2.utils.getConversationKey(ephemeral, options.recipient),
       ),
     },

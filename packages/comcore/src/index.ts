@@ -64,6 +64,8 @@ export {
   type UnwrappedChat,
   type WrapInput,
   type WrapResult,
+  fitAnswer,
+  rumorBytes,
   unwrapChatMessage,
   wrapChatMessage,
 } from './chat/wrap';
