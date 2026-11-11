@@ -24,8 +24,9 @@ export type Intake =
 /**
  * The 5.8 drop order after the wrap pre-check and the wrap signature (both in
  * the pool's `verifyEvent`): decrypt and seal checks (`unwrapChatMessage`), an
- * ask from a fresh rumor, a first sighting of its id, a ticket signed by a
- * known G for this store and issued to the seal's author; an expired but
+ * ask from a fresh rumor, an id not seen yet, a ticket signed by a known G
+ * for this store and issued to the seal's author (only then is the id
+ * recorded, so junk without a valid ticket never fills the dedup set); an expired but
  * otherwise valid ticket is refused with `unavailable: expired`. Everything
  * earlier is silent. The `ask_id` check and the quota and budget transaction
  * follow in the worker.
@@ -53,7 +54,7 @@ export function intakeWrap(
   if (chat.createdAt < now - MAX_RUMOR_AGE_SECS) {
     return { action: 'drop' };
   }
-  if (!state.firstSighting(chat.rumorId, now)) {
+  if (state.rumorSeen(chat.rumorId, now)) {
     return { action: 'drop' };
   }
   const ask = chat.message;
@@ -66,6 +67,7 @@ export function intakeWrap(
   if (check === 'invalid') {
     return { action: 'drop' };
   }
+  state.recordRumor(chat.rumorId, now);
   const session = state.session(chat.recipientPubkey, chat.senderPubkey, now);
   if (check === 'expired') {
     return {

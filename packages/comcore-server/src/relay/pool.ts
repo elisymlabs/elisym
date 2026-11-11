@@ -1,5 +1,5 @@
 import { EXPIRATION_ADMISSION_SLACK_SECS, LIMITS, SESSION_TTL_SECS } from '@elisym/comcore';
-import type { NostrEvent, VerifiedEvent } from 'nostr-tools';
+import type { Filter, NostrEvent, VerifiedEvent } from 'nostr-tools';
 import { AbstractSimplePool } from 'nostr-tools/abstract-pool';
 import { verifyEvent } from 'nostr-tools/pure';
 import WebSocket from 'ws';
@@ -39,6 +39,27 @@ export function passesWrapPreCheck(
   const recipients = event.tags.filter((tag) => tag[0] === 'p');
   const recipient = recipients.length === 1 ? recipients[0]?.[1] : undefined;
   return recipient !== undefined && isLeasedAssistant(recipient);
+}
+
+/** What the server needs of a relay connection: nostr-tools' `AbstractRelay` fits, and so does a test fake. */
+export interface RelayLike {
+  readonly connected: boolean;
+  subscribe(
+    filters: Filter[],
+    params: {
+      onevent?: (event: NostrEvent) => void;
+      oneose?: () => void;
+      onclose?: (reason: string) => void;
+      eoseTimeout?: number;
+      alreadyHaveEvent?: (id: string) => boolean;
+    },
+  ): { close: (reason?: string) => void };
+}
+
+/** What the server needs of its pool: nostr-tools' `AbstractSimplePool` fits, and so does a test fake. */
+export interface ServerPool {
+  ensureRelay(url: string, params?: { connectionTimeout?: number }): Promise<RelayLike>;
+  publish(relays: string[], event: NostrEvent): Promise<string>[];
 }
 
 /**

@@ -1,4 +1,5 @@
 import {
+  COMCORE_RELAYS,
   CONFIG_D_TAG,
   type CatalogItem,
   KIND_CATALOG_AUTH,
@@ -13,13 +14,43 @@ import {
   resolveStoreKeys,
 } from '@elisym/comcore';
 import { StoreCatalog } from '@elisym/comcore-agent';
-import { KIND_DELETION, KIND_PRODUCT, newestDeletion, newestSigned } from '@elisym/commerce';
+import {
+  KIND_DELETION,
+  KIND_PRODUCT,
+  KIND_STORE_AUTH,
+  NO_FUTURE_LIMIT,
+  newestDeletion,
+  newestSigned,
+} from '@elisym/commerce';
+import { DEFAULT_RELAYS } from '@elisym/commerce/buyer';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
 
-/** The owner's events a store needs first: its config, authority and deletions. */
+const AUTHORITY_KINDS: readonly number[] = [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_DELETION];
+
+/** The owner's events a store needs first: its config, authority (30497 and Pay Core's 30490) and deletions. */
 export function ownerFilters(owner: string): Filter[] {
-  return [{ kinds: [KIND_CONFIG, KIND_CATALOG_AUTH, KIND_DELETION], authors: [owner] }];
+  return [{ kinds: [KIND_CONFIG, ...AUTHORITY_KINDS], authors: [owner] }];
+}
+
+/**
+ * Relays a `paycore` source is also read from (2.4): commerce's
+ * `DEFAULT_RELAYS`, where Pay Core publishes, best effort next to the ComCore
+ * relay; none for any other source.
+ */
+export function extraRelaysFor(config: Pick<StoreConfig, 'source'>): string[] {
+  return config.source.kind === 'paycore'
+    ? DEFAULT_RELAYS.filter((relay) => !COMCORE_RELAYS.includes(relay))
+    : [];
+}
+
+/** On an extra relay: the owner's 30490/kind 5 and the source key's listings. */
+export function extraFilters(owner: string, productKey: string | undefined): Filter[] {
+  const filters: Filter[] = [{ kinds: [KIND_STORE_AUTH, KIND_DELETION], authors: [owner] }];
+  if (productKey !== undefined) {
+    filters.push({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [productKey] });
+  }
+  return filters;
 }
 
 /** The keys' events once the config names them: listings, policies and their deletions. */
@@ -71,14 +102,23 @@ function newestPerAddress(
   return kept;
 }
 
-/** The store's config (30496) from the owner's events, when genuine and parseable. */
+/** The store's config (30496) from the owner's events, when genuine, parseable and not deleted (NIP-09). */
 export function storeConfig(
   events: readonly NostrEvent[],
   owner: string,
   now: number,
 ): StoreConfig | undefined {
   const event = newestSigned(events, KIND_CONFIG, owner, now, CONFIG_D_TAG);
-  return event ? parseConfig(event) : undefined;
+  if (!event) {
+    return undefined;
+  }
+  const deletion = newestDeletion(
+    events,
+    `${KIND_CONFIG}:${owner}:${CONFIG_D_TAG}`,
+    owner,
+    NO_FUTURE_LIMIT,
+  );
+  return deletion && deletion.created_at >= event.created_at ? undefined : parseConfig(event);
 }
 
 /**
@@ -98,8 +138,7 @@ export function buildStoreCatalog(
     return undefined;
   }
   const authority = events.filter(
-    (event) =>
-      event.pubkey === owner && (event.kind === KIND_CATALOG_AUTH || event.kind === KIND_DELETION),
+    (event) => event.pubkey === owner && AUTHORITY_KINDS.includes(event.kind),
   );
   const keys = resolveStoreKeys(config, authority, now);
   const items: CatalogItem[] = [];

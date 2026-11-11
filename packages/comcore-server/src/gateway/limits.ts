@@ -37,12 +37,20 @@ export class WindowLimiter {
     private readonly windowMs: number,
   ) {}
 
-  /** Count a hit; false when the key is over its limit in the current window. */
+  /**
+   * Count a hit; false when the key is over its limit in the current window.
+   * Windows are created in time order and share one length, so pruning stops
+   * at the first live one.
+   */
   hit(key: string, nowMs: number, limit: number = this.limit): boolean {
+    if (limit <= 0) {
+      return false;
+    }
     for (const [stored, window] of this.windows) {
-      if (nowMs - window.start >= this.windowMs) {
-        this.windows.delete(stored);
+      if (nowMs - window.start < this.windowMs) {
+        break;
       }
+      this.windows.delete(stored);
     }
     const window = this.windows.get(key);
     if (!window) {

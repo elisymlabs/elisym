@@ -25,3 +25,5 @@ export const TURN_DEADLINE_MS = 2 * 60 * 1_000;
 export const RUMOR_DEDUP_SECS = 24 * 60 * 60;
 /** Catalog reads page backwards in windows of this many events. */
 export const CATALOG_PAGE_LIMIT = 500;
+/** How often ended sessions, dedup ids and past days' counters are swept (5.8). */
+export const SWEEP_INTERVAL_MS = 60_000;

@@ -41,6 +41,7 @@ export class MemoryState implements ServerState {
   private readonly byAssistant = new Map<string, StoreRecord>();
   private readonly sessions = new Map<string, SessionState>();
   private readonly asks = new Map<string, Map<string, AskRecord>>();
+  /** Rumor id to expiry; insertion order is expiry order (one TTL), so pruning stops at the first live one. */
   private readonly rumors = new Map<string, number>();
   private readonly storeDays = new Map<string, StoreDay>();
   private readonly sessionDays = new Map<string, number>();
@@ -73,7 +74,7 @@ export class MemoryState implements ServerState {
       return existing;
     }
     // A session ends 24 h after its first message and is deleted with its history (5.8).
-    this.asks.delete(key);
+    this.dropAsks(key);
     const fresh: SessionState = {
       assistant,
       visitor,
@@ -91,17 +92,59 @@ export class MemoryState implements ServerState {
     this.sessions.set(sessionKey(session.assistant, session.visitor), session);
   }
 
-  firstSighting(rumorId: string, now: number): boolean {
+  private pruneRumors(now: number): void {
     for (const [id, expiresAt] of this.rumors) {
-      if (expiresAt <= now) {
-        this.rumors.delete(id);
+      if (expiresAt > now) {
+        return;
+      }
+      this.rumors.delete(id);
+    }
+  }
+
+  rumorSeen(rumorId: string, now: number): boolean {
+    this.pruneRumors(now);
+    return this.rumors.has(rumorId);
+  }
+
+  recordRumor(rumorId: string, now: number): void {
+    this.pruneRumors(now);
+    if (!this.rumors.has(rumorId)) {
+      this.rumors.set(rumorId, now + RUMOR_DEDUP_SECS);
+    }
+  }
+
+  /** Delete a session's ask records, resolving what their attempts still hold (as `retryAsk` does). */
+  private dropAsks(key: string): void {
+    for (const record of this.asks.get(key)?.values() ?? []) {
+      if (record.state === 'queued') {
+        this.release(record.attemptId);
+      } else if (record.state === 'running') {
+        this.settle(record.attemptId, 'reserved');
       }
     }
-    if (this.rumors.has(rumorId)) {
-      return false;
+    this.asks.delete(key);
+  }
+
+  sweep(now: number): void {
+    this.pruneRumors(now);
+    for (const [key, session] of this.sessions) {
+      if (session.sessionEnd <= now) {
+        this.dropAsks(key);
+        this.sessions.delete(key);
+      }
     }
-    this.rumors.set(rumorId, now + RUMOR_DEDUP_SECS);
-    return true;
+    const today = utcDay(now);
+    for (const key of this.sessionDays.keys()) {
+      if (Number(key.slice(key.lastIndexOf(':') + 1)) < today) {
+        this.sessionDays.delete(key);
+      }
+    }
+    for (const key of this.storeDays.keys()) {
+      // Yesterday's counter stays while a reservation made then may still settle into it.
+      if (Number(key.slice(key.lastIndexOf(':') + 1)) < today - 1) {
+        this.storeDays.delete(key);
+      }
+    }
   }
 
   askRecord(session: SessionState, askId: string): AskRecord | undefined {

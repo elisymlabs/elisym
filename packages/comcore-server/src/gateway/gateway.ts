@@ -92,22 +92,34 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
       return json({ error: 'bad_request' }, 400);
     }
     const { store: owner, visitor } = parsed.data;
-    const config = deps.configFor(owner);
-    const origin = allowedOrigin(config, request.headers.get('origin'));
-    const record = deps.state.store(owner);
-    if (config === undefined || record === undefined || origin === undefined) {
-      return json({ error: 'forbidden' }, 403);
-    }
+    // Refusals are readable by the page (no data, no credentials), so the widget shows its unavailable state instead of retrying.
+    const requestOrigin = request.headers.get('origin') ?? undefined;
     const nowSecs = now();
     if (!ticketsPerIp.hit(ipKey(clientAddress), nowSecs * 1000)) {
-      return json({ error: 'rate_limited' }, 429, origin);
+      return json({ error: 'rate_limited' }, 429, requestOrigin);
+    }
+    const record = deps.state.store(owner);
+    if (record === undefined) {
+      return json({ error: 'forbidden' }, 403, requestOrigin);
+    }
+    // Only active stores are leased, so a store that is not has no config here (3, 4.1).
+    if (record.status !== 'active') {
+      return json({ unavailable: true, reason: 'inactive', contact: null }, 503, requestOrigin);
+    }
+    const config = deps.configFor(owner);
+    const origin = allowedOrigin(config, request.headers.get('origin'));
+    if (config === undefined || origin === undefined) {
+      return json({ error: 'forbidden' }, 403, requestOrigin);
     }
     if (!ticketsPerStore.hit(owner, nowSecs * 1000, record.tier.ticketsPerStorePerMinute)) {
       return json({ error: 'rate_limited' }, 429, origin);
     }
-    if (record.status !== 'active' || deps.state.budgetExhausted(owner, nowSecs)) {
-      const reason = record.status === 'active' ? 'budget' : 'inactive';
-      return json({ unavailable: true, reason, contact: config.contact ?? null }, 503, origin);
+    if (deps.state.budgetExhausted(owner, nowSecs)) {
+      return json(
+        { unavailable: true, reason: 'budget', contact: config.contact ?? null },
+        503,
+        origin,
+      );
     }
     const ticket = finalizeEvent(
       buildTicket({ visitor, store: owner, now: nowSecs }),
@@ -133,6 +145,11 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     if (owner === undefined || visitor === undefined || origin === undefined) {
       return json({ error: 'forbidden' }, 403);
     }
+    // The limit runs before the signature check, so the gateway's CPU is bounded per IP too.
+    if (!clicksPerIp.hit(ipKey(clientAddress), now() * 1000)) {
+      return json({ error: 'rate_limited' }, 429, origin);
+    }
+    // An expired ticket still counts: a visitor may click a card long after the last ask, and clicks are advisory.
     const check = checkTicket(ticket, {
       gatewayKeys: [gatewayKey],
       store: owner,
@@ -142,9 +159,6 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     const address = parseAddress(parsed.data.address);
     if (check === 'invalid' || address === undefined) {
       return json({ error: 'forbidden' }, 403, origin);
-    }
-    if (!clicksPerIp.hit(ipKey(clientAddress), now() * 1000)) {
-      return json({ error: 'rate_limited' }, 429, origin);
     }
     deps.state.countClick(owner, parsed.data.address);
     return new Response(null, {

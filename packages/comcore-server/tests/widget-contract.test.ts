@@ -15,13 +15,22 @@ function widgetAgainstServer(record: (store: ReturnType<typeof syntheticStore>) 
   const handler = createGateway({
     state,
     gatewaySecretKey: generateSecretKey(),
-    configFor: (owner) => (owner === store.owner ? catalog?.config : undefined),
+    // As in main: only leased (active) stores have a cached config.
+    configFor: (owner) =>
+      owner === store.owner && state.store(owner)?.status === 'active'
+        ? catalog?.config
+        : undefined,
     now: () => NOW,
   });
+  // A browser's cross-origin fetch: a response without our origin allowed rejects, as CORS does.
   const fetchFromPage: typeof fetch = async (input, init) => {
     const request = new Request(input, init);
     request.headers.set('origin', ORIGIN);
-    return handler({ request, clientAddress: '203.0.113.7' });
+    const response = await handler({ request, clientAddress: '203.0.113.7' });
+    if (response.headers.get('access-control-allow-origin') !== ORIGIN) {
+      throw new TypeError('Failed to fetch');
+    }
+    return response;
   };
   return { store, gateway: httpGateway('http://localhost', fetchFromPage) };
 }
@@ -51,6 +60,12 @@ describe('widget and gateway contract (3)', () => {
       storeRecord(synthetic, 'suspended'),
     );
     const result = await gateway.openSession(store.owner, getPublicKey(generateSecretKey()));
+    expect(result).toEqual({ kind: 'unavailable' });
+  });
+
+  it('a store this server does not know is the unavailable state too', async () => {
+    const { gateway } = widgetAgainstServer((synthetic) => storeRecord(synthetic));
+    const result = await gateway.openSession('e'.repeat(64), getPublicKey(generateSecretKey()));
     expect(result).toEqual({ kind: 'unavailable' });
   });
 

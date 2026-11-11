@@ -75,8 +75,7 @@ async function main(): Promise<void> {
     gatewayKeys: [getPublicKey(gatewaySecretKey)],
     providerFor: () => provider,
     price: priceFromEnv(),
-    reserveUsd: process.env.COMCORE_RESERVE_USD ?? '0.05',
-    maxTurnUsd: process.env.COMCORE_MAX_TURN_USD ?? '0.25',
+    reserveUsd: process.env.COMCORE_TURN_RESERVE_USD ?? '0.25',
     log: (message) => console.error(message),
   });
   await worker.start();

@@ -1,6 +1,6 @@
 import type { Filter, NostrEvent } from 'nostr-tools';
-import type { AbstractRelay } from 'nostr-tools/abstract-relay';
 import { EOSE_TIMEOUT_MS, LIBRARY_EOSE_TIMEOUT_MS } from '../constants';
+import type { RelayLike } from './pool';
 
 export interface HistoryRead {
   /** Resolves `true` after a real EOSE, `false` on a close, a timeout or a refused REQ. */
@@ -18,7 +18,7 @@ export interface HistoryRead {
  * reported as failed, so the caller reopens it after the backoff.
  */
 export function readHistory(
-  relay: AbstractRelay,
+  relay: RelayLike,
   filters: Filter[],
   onEvent: (event: NostrEvent) => void,
   options: {

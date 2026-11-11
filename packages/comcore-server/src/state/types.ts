@@ -40,7 +40,7 @@ export type AskState = 'queued' | 'running' | 'answered' | 'failed';
 export interface AskRecord {
   state: AskState;
   attemptId: string;
-  /** Unix milliseconds. */
+  /** Unix milliseconds; 0 while `queued` (admission and start are one step in phase 2). */
   deadline: number;
   /** The exact answer rumor's wrap, re-published for a repeated `answered` ask (5.8). */
   answerWrap?: NostrEvent;
@@ -60,8 +60,13 @@ export interface ServerState {
    */
   session(assistant: string, visitor: string, now: number): SessionState;
   saveSession(session: SessionState): void;
-  /** True the first time a rumor id is seen within its TTL (5.8 dedup). */
-  firstSighting(rumorId: string, now: number): boolean;
+  /** Whether a rumor id was recorded within its TTL (5.8 dedup). */
+  rumorSeen(rumorId: string, now: number): boolean;
+  /**
+   * Record a rumor id for its TTL. Called only once the ask's ticket checked
+   * out, so junk without a valid ticket never fills the dedup set (5.8).
+   */
+  recordRumor(rumorId: string, now: number): void;
   askRecord(session: SessionState, askId: string): AskRecord | undefined;
   /**
    * Admit a new ask in one step (5.8): the quota and budget check, the
@@ -104,4 +109,10 @@ export interface ServerState {
   budgetExhausted(owner: string, now: number): boolean;
   /** Count a handoff click (advisory, 3). */
   countClick(owner: string, address: string): void;
+  /**
+   * Delete what has ended (5.8, K14): sessions past their end with their
+   * history and ask records (resolving what their attempts still hold),
+   * expired dedup ids, and past days' quota and spend counters.
+   */
+  sweep(now: number): void;
 }
