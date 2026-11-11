@@ -27,6 +27,7 @@
     "zod": "~3.25.0"
   },
   "devDependencies": {
+    "@elisym/comcore-widget": "~0.1.0",
     "@types/node": "~25.5.0",
     "@types/ws": "~8.18.1",
     "tsup": "~8.4.0",

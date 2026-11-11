@@ -11,6 +11,8 @@ const TICKETS_PER_IP_PER_MINUTE = 20;
 const CLICKS_PER_IP_PER_MINUTE = 60;
 const MINUTE_MS = 60_000;
 const MAX_BODY_BYTES = 16 * 1024;
+/** Short, so a widget release reaches every store's site within minutes. */
+const WIDGET_MAX_AGE_SECS = 300;
 
 const SessionRequestSchema = z.object({
   store: z.string().regex(HEX_PUBKEY_RE),
@@ -36,6 +38,8 @@ export interface GatewayDeps {
   gatewaySecretKey: Uint8Array;
   /** The store's current config (30496), as the worker's catalog cache reads it. */
   configFor: (owner: string) => StoreConfig | undefined;
+  /** The built `widget.js`, served at `GET /widget.js`; absent means not served here. */
+  widgetScript?: string;
   now?: () => number;
 }
 
@@ -102,13 +106,18 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
       return json({ error: 'rate_limited' }, 429, origin);
     }
     if (record.status !== 'active' || deps.state.budgetExhausted(owner, nowSecs)) {
-      return json({ unavailable: 'budget', contact: config.contact ?? null }, 503, origin);
+      const reason = record.status === 'active' ? 'budget' : 'inactive';
+      return json({ unavailable: true, reason, contact: config.contact ?? null }, 503, origin);
     }
     const ticket = finalizeEvent(
       buildTicket({ visitor, store: owner, now: nowSecs }),
       deps.gatewaySecretKey,
     );
-    return json({ ticket, assistant: config.assistant }, 200, origin);
+    return json(
+      { ticket, assistant: config.assistant, branding: record.tier.branding },
+      200,
+      origin,
+    );
   };
 
   const click = async ({ request, clientAddress }: GatewayRequest): Promise<Response> => {
@@ -155,6 +164,17 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
           'access-control-allow-methods': 'POST',
           'access-control-allow-headers': 'content-type',
           'access-control-max-age': '600',
+        },
+      });
+    }
+    if (input.request.method === 'GET' && url.pathname === '/widget.js' && deps.widgetScript) {
+      return new Response(deps.widgetScript, {
+        status: 200,
+        headers: {
+          'content-type': 'text/javascript; charset=utf-8',
+          'cache-control': `public, max-age=${WIDGET_MAX_AGE_SECS}`,
+          'cross-origin-resource-policy': 'cross-origin',
+          'x-content-type-options': 'nosniff',
         },
       });
     }

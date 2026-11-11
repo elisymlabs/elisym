@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { COMCORE_RELAYS, type StoreConfig } from '@elisym/comcore';
 import {
   type LlmProvider,
@@ -50,6 +51,14 @@ function priceFromEnv(): ModelPrice {
   };
 }
 
+/** The built widget, from `COMCORE_WIDGET_FILE` or the workspace's `@elisym/comcore-widget`. */
+function widgetScript(): string {
+  const path =
+    process.env.COMCORE_WIDGET_FILE ??
+    createRequire(import.meta.url).resolve('@elisym/comcore-widget/widget.js');
+  return readFileSync(path, 'utf8');
+}
+
 async function main(): Promise<void> {
   const relayUrl = process.env.COMCORE_RELAY_URL ?? COMCORE_RELAYS[0] ?? '';
   const gatewaySecretKey = hexToBytes(required('COMCORE_GATEWAY_SECRET'));
@@ -75,6 +84,7 @@ async function main(): Promise<void> {
   const handler = createGateway({
     state,
     gatewaySecretKey,
+    widgetScript: widgetScript(),
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
   });
   serveGateway(handler, {

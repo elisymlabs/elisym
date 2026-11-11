@@ -195,11 +195,31 @@ describe('gateway (3)', () => {
     const body = (await response.json()) as {
       ticket: { pubkey: string; tags: string[][] };
       assistant: string;
+      branding: boolean;
     };
     expect(body.assistant).toBe(store.assistant);
+    expect(body.branding).toBe(true);
     expect(body.ticket.pubkey).toBe(getPublicKey(gatewaySecret));
     expect(body.ticket.tags).toContainEqual(['p', visitor]);
     expect(body.ticket.tags).toContainEqual(['store', store.owner]);
+  });
+
+  it('serves the widget script when configured, and nothing otherwise', async () => {
+    const store = syntheticStore();
+    const deps = {
+      state: new MemoryState([storeRecord(store)]),
+      gatewaySecretKey: generateSecretKey(),
+      configFor: () => undefined,
+    };
+    const get = () => ({
+      request: new Request('http://localhost/widget.js'),
+      clientAddress: '203.0.113.7',
+    });
+    const served = await createGateway({ ...deps, widgetScript: '/* widget */' })(get());
+    expect(served.status).toBe(200);
+    expect(served.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+    expect(await served.text()).toBe('/* widget */');
+    expect((await createGateway(deps)(get())).status).toBe(404);
   });
 
   it('refuses an origin the config does not list', async () => {
@@ -216,6 +236,7 @@ describe('gateway (3)', () => {
     const { store, post } = setup('suspended');
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
     expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ unavailable: true, reason: 'inactive', contact: null });
   });
 
   it('limits tickets per IP, sharing an IPv6 /64', async () => {
