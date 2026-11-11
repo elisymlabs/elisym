@@ -31,10 +31,11 @@ describe('determinedVariant with a single variant', () => {
       { now: NOW, role: 'catalog' },
     );
 
-  it('is determined without a pick, whatever the pick says', () => {
+  it('is determined without a pick or by a matching one, never by a contradicting one', () => {
     const item = read(['M']);
     expect(item && determinedVariant(item, {})?.id).toBe('only');
-    expect(item && determinedVariant(item, { size: 'L' })?.id).toBe('only');
+    expect(item && determinedVariant(item, { size: 'M' })?.id).toBe('only');
+    expect(item && determinedVariant(item, { size: 'L' })).toBeUndefined();
   });
 
   it('is never determined when it carries *', () => {

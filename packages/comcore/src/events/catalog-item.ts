@@ -422,15 +422,22 @@ export function buildCatalogItemEvent(input: CatalogItemInput): EventTemplate {
 /**
  * The single variant a card pick determines, or none (7.4): exactly one kept
  * variant matches the picked values, and it has no `*`. A product with one
- * variant needs no pick.
+ * variant needs no pick, unless the pick contradicts it.
  */
 export function determinedVariant(
   item: Pick<CatalogItem, 'options' | 'variants'>,
   pick: Readonly<Record<string, string>>,
 ): CatalogVariant | undefined {
+  // One variant needs no pick, but a pick that names a different value than it
+  // has (an option value no variant uses) determines nothing.
   const candidates =
     item.variants.length === 1
-      ? item.variants
+      ? item.variants.filter((variant) =>
+          item.options.every((option, index) => {
+            const picked = pick[option.name];
+            return picked === undefined || picked === variant.values[index];
+          }),
+        )
       : item.variants.filter((variant) =>
           item.options.every((option, index) => {
             const picked = pick[option.name];
