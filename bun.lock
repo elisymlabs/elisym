@@ -110,11 +110,31 @@
         "vitest": "~3.2.6",
       },
     },
+    "packages/comcore": {
+      "name": "@elisym/comcore",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elisym/commerce": "~0.13.0",
+        "zod": "~3.25.0",
+      },
+      "devDependencies": {
+        "@types/node": "~25.5.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+      "peerDependencies": {
+        "decimal.js-light": "~2.5.0",
+        "nostr-tools": "~2.23.0",
+      },
+    },
     "packages/commerce": {
       "name": "@elisym/commerce",
       "version": "0.13.0",
       "dependencies": {
-        "@elisym/pay-core": "~0.3.0",
+        "@elisym/pay-core": "~0.4.0",
         "@noble/curves": "~2.0.1",
         "@noble/hashes": "~2.0.1",
         "@scure/base": "~2.0.0",
@@ -251,7 +271,7 @@
     },
     "packages/merchant-node": {
       "name": "@elisym/merchant-node",
-      "version": "0.12.0",
+      "version": "0.13.0",
       "bin": {
         "elisym-merchant": "./dist/cli.js",
       },
@@ -277,7 +297,7 @@
     },
     "packages/pay-core": {
       "name": "@elisym/pay-core",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "dependencies": {
         "zod": "~3.25.0",
       },
@@ -605,6 +625,8 @@
     "@elisym/checkout": ["@elisym/checkout@workspace:packages/checkout"],
 
     "@elisym/cli": ["@elisym/cli@workspace:packages/cli"],
+
+    "@elisym/comcore": ["@elisym/comcore@workspace:packages/comcore"],
 
     "@elisym/commerce": ["@elisym/commerce@workspace:packages/commerce"],
 

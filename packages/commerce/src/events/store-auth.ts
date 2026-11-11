@@ -1,6 +1,8 @@
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { KIND_STORE_AUTH } from '../constants';
+import { NO_FUTURE_LIMIT, newestDeletion, newestSigned } from '../newest';
 import { HEX_PUBKEY_RE, expirationState, nowSecs, tagValue, tagsNamed } from '../tags';
+import { isEventShaped } from '../verify';
 
 export type StoreAuthMode = 'self-host' | 'hosted' | 'revoked';
 
@@ -20,11 +22,21 @@ export interface StoreAuthInput {
   /** Unix seconds (NIP-40). Short windows limit the damage of a stolen store key. */
   expiresAt?: number;
   createdAt?: number;
+  /**
+   * The authorization kind. Pay Core's is 30490; another protocol built on the
+   * same tag set (ComCore's catalog keys) passes its own, so Pay Core never
+   * reads that authorization as a store key.
+   */
+  kind?: number;
 }
 
 /** `<kind>:<owner>:<store>`, the address a NIP-09 deletion names to revoke an AUTH. */
-export function storeAuthAddress(ownerPubkey: string, storePubkey: string): string {
-  return `${KIND_STORE_AUTH}:${ownerPubkey}:${storePubkey}`;
+export function storeAuthAddress(
+  ownerPubkey: string,
+  storePubkey: string,
+  kind: number = KIND_STORE_AUTH,
+): string {
+  return `${kind}:${ownerPubkey}:${storePubkey}`;
 }
 
 /** Build the owner's authorization of a store key. The caller signs it with the OWNER key. */
@@ -53,16 +65,25 @@ export function buildStoreAuthEvent(input: StoreAuthInput): EventTemplate {
     }
     tags.push(['expiration', String(input.expiresAt)]);
   }
-  return { kind: KIND_STORE_AUTH, created_at: input.createdAt ?? nowSecs(), tags, content: '' };
+  return {
+    kind: input.kind ?? KIND_STORE_AUTH,
+    created_at: input.createdAt ?? nowSecs(),
+    tags,
+    content: '',
+  };
 }
 
 /** Revoke a store key: the same address (`d`), `mode` revoked. Newest wins. */
-export function buildStoreRevocationEvent(storePubkey: string, createdAt?: number): EventTemplate {
+export function buildStoreRevocationEvent(
+  storePubkey: string,
+  createdAt?: number,
+  kind: number = KIND_STORE_AUTH,
+): EventTemplate {
   if (!HEX_PUBKEY_RE.test(storePubkey)) {
     throw new Error('storePubkey must be 64 lowercase hex characters');
   }
   return {
-    kind: KIND_STORE_AUTH,
+    kind,
     created_at: createdAt ?? nowSecs(),
     tags: [
       ['d', storePubkey],
@@ -88,9 +109,10 @@ export function readStoreAuth(
   event: Pick<NostrEvent, 'kind' | 'tags'>,
   storePubkey: string,
   now: number = nowSecs(),
+  kind: number = KIND_STORE_AUTH,
 ): StoreAuthState {
   const tags = event.tags;
-  if (event.kind !== KIND_STORE_AUTH || tagValue(tags, 'd') !== storePubkey) {
+  if (event.kind !== kind || tagValue(tags, 'd') !== storePubkey) {
     return { status: 'malformed' };
   }
   const modeTags = tagsNamed(tags, 'mode');
@@ -120,4 +142,48 @@ export function readStoreAuth(
   }
   const operator = modeTag?.[2];
   return operator === undefined ? { status: 'active', mode } : { status: 'active', mode, operator };
+}
+
+/** The owner's word on a store key, from every event a reader holds. `none`: never authorized. */
+export type ResolvedStoreAuth = StoreAuthState | { status: 'none' };
+
+/**
+ * What the owner currently says about `storePubkey`, from the events a reader
+ * holds (any mix of kinds and authors; only the owner's genuine ones count).
+ * The newest authorization wins, but a revocation - a newer `mode` revoked, or
+ * a NIP-09 deletion naming the address - stands even when dated past the
+ * future-skew window, since it can only refuse. A malformed newest word is
+ * reported as such, so a caller can fail closed on it.
+ */
+export function resolveStoreAuth(
+  events: readonly NostrEvent[],
+  ownerPubkey: string,
+  storePubkey: string,
+  now: number = nowSecs(),
+  kind: number = KIND_STORE_AUTH,
+): ResolvedStoreAuth {
+  const authEvent = newestSigned(events, kind, ownerPubkey, now, storePubkey);
+  const auth = authEvent ? readStoreAuth(authEvent, storePubkey, now, kind) : undefined;
+  const deletion = newestDeletion(
+    events,
+    storeAuthAddress(ownerPubkey, storePubkey, kind),
+    ownerPubkey,
+    NO_FUTURE_LIMIT,
+  );
+  const revocation = newestSigned(
+    events.filter(
+      (event) =>
+        isEventShaped(event) && readStoreAuth(event, storePubkey, now, kind).status === 'revoked',
+    ),
+    kind,
+    ownerPubkey,
+    NO_FUTURE_LIMIT,
+    storePubkey,
+  );
+  const revokedAfter = (event: NostrEvent | undefined): boolean =>
+    event !== undefined && (!authEvent || event.created_at >= authEvent.created_at);
+  if (auth?.status === 'revoked' || revokedAfter(deletion) || revokedAfter(revocation)) {
+    return { status: 'revoked' };
+  }
+  return auth ?? { status: 'none' };
 }

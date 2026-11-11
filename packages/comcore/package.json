@@ -1,0 +1,65 @@
+{
+  "name": "@elisym/comcore",
+  "version": "0.1.0",
+  "description": "ComCore protocol: catalog, policy and assistant config events on Nostr, catalog-key authority, encrypted assistant chat, session tickets and catalog sync.",
+  "keywords": [
+    "commerce",
+    "nip-17",
+    "nip-59",
+    "nip-99",
+    "nostr",
+    "shopping-assistant",
+    "typescript"
+  ],
+  "homepage": "https://github.com/elisymlabs/elisym",
+  "license": "MIT",
+  "author": "elisym labs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elisymlabs/elisym.git",
+    "directory": "packages/comcore"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@elisym/commerce": "~0.13.0",
+    "zod": "~3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "~25.5.0",
+    "decimal.js-light": "~2.5.1",
+    "nostr-tools": "~2.23.0",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.2.6"
+  },
+  "peerDependencies": {
+    "decimal.js-light": "~2.5.0",
+    "nostr-tools": "~2.23.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

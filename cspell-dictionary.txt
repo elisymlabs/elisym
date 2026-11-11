@@ -225,3 +225,7 @@ sepolias
 mainnets
 unservable
 rabby
+comcore
+paycore
+unhashed
+woocommerce
