@@ -106,13 +106,22 @@ function remember<Value>(cache: Map<string, Value>, key: string, value: Value): 
   return value;
 }
 
-/** A locale reduced to a supported language subtag ("pt-BR" to "pt"), or none. */
-function languageOf(locale: string): string | undefined {
+/**
+ * A locale reduced to bounded, supported tags: language-script-region (forms
+ * differ by region, e.g. "$" in en-CA) and the bare language. Extensions and
+ * private-use subtags are dropped, so the key space stays bounded.
+ */
+function localeTags(locale: string): string[] {
   try {
-    const language = new Intl.Locale(locale).language.toLowerCase();
-    return Intl.NumberFormat.supportedLocalesOf([language]).length > 0 ? language : undefined;
+    const parsed = new Intl.Locale(locale);
+    const full = [parsed.language, parsed.script, parsed.region]
+      .filter((part): part is string => !!part)
+      .join('-');
+    return [full, parsed.language].filter(
+      (tag) => Intl.NumberFormat.supportedLocalesOf([tag]).length > 0,
+    );
   } catch {
-    return undefined;
+    return [];
   }
 }
 
@@ -131,11 +140,7 @@ function storeCurrencyForms(
   if (!ISO_CODES.has(currency)) {
     return [];
   }
-  const languages = [
-    ...new Set(
-      [...locales, 'en'].map(languageOf).filter((language): language is string => !!language),
-    ),
-  ].sort();
+  const languages = [...new Set([...locales, 'en'].flatMap(localeTags))].sort();
   const key = `${currency}|${languages.join(',')}`;
   const cached = formsCache.get(key);
   if (cached) {
@@ -174,7 +179,7 @@ function escapeForRegExp(text: string): string {
  * groups, so a long grouped run stays linear), then an optional decimal part.
  * It never starts inside another number, and "Under $120, 3 colors" reads 120.
  */
-const NUMBER_PATTERN = String.raw`(?<![\d.,'’])(?:\d{1,3}(?:[   ,.'’]\d{3}){1,5}(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
+const NUMBER_PATTERN = String.raw`(?<![\d.,'’])(?:\d{1,3}(?:[   ,.'’]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 const WORD_PATTERN = String.raw`(?:u\.?s\.?\s?)?[\p{L}]{1,15}\.?`;

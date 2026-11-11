@@ -170,3 +170,12 @@ describe('caches stay bounded under visitor-chosen locales', () => {
     expect(extractAmounts('99 USD', ['en-x-zzzz'], 'USD')).toHaveLength(1);
   });
 });
+
+describe('regional currency forms', () => {
+  it('reads the region-specific form of the store currency', () => {
+    // es-MX writes MXN as "$", es-ES as "MXN": a MXN store answering es-MX is read.
+    expect(extractAmounts('cuesta $1500', ['es-MX'], 'MXN')[0]?.currencies).toContain('MXN');
+    // en-CA writes CAD as "$".
+    expect(extractAmounts('it is $99', ['en-CA'], 'CAD')[0]?.currencies).toContain('CAD');
+  });
+});
