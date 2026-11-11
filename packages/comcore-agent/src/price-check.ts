@@ -51,7 +51,7 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(francs?|francos?|franchi|frank(ów|i)?|франк(а|ов|и|ів|ах|ам)?)$/i, ['CHF', 'XOF', 'XAF']],
   [/^(hrywien|hrywn(a|y|ach)?)$/i, ['UAH']],
   [
-    /^((pounds?|pfund|livres?|libras?|pond)\s+(sterling|esterlinas?)|(british|britische[nr]?|britse|британск\p{L}*|британськ\p{L}*)\s+(pounds?|pfund|pond(en)?|фунт\p{L}*))$/iu,
+    /^((pounds?|pfund|livres?|libras?|pond)\s+(sterling|esterlinas?)|(british|britische[nr]?|britse|english|englische[nr]?|engelse|британск\p{L}*|британськ\p{L}*|английск\p{L}*|англійськ\p{L}*)\s+(pounds?|pfund|pond(en)?|фунт\p{L}*))$/iu,
     ['GBP'],
   ],
   [/^((japanese|японск\p{L}*|японськ\p{L}*)\s+(yen|иен\p{L}*|йен\p{L}*|єн\p{L}*))$/iu, ['JPY']],
@@ -501,12 +501,21 @@ function scaled(values: readonly Decimal[], magnitude: string | undefined): Deci
 
 /** A 3-letter code glued or spaced to the number: "USD99", "USD 99", "99usd". */
 const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
+/** A single currency word ("dollars", "руб", "US-Dollar"). */
+// cspell:disable
 /**
- * A currency word: up to three words on one line ("Canadian dollars", "Hong Kong dollars",
- * "фунтов стерлингов", "Schweizer Franken"), read as `currenciesForToken` says ("1990 руб
- * стерлинговое" still reads руб).
+ * Words that qualify a currency noun ("Canadian dollars", "Hong Kong dollars", "канадских
+ * долларов"): nationality and place stems, at a word start. Only these may precede the noun.
  */
-const MULTI_WORD_PATTERN = String.raw`[\p{L}]{1,15}(?:[ \t]+[\p{L}]{1,15}){1,2}(?![\p{L}])\.?`;
+const QUALIFIER_PATTERN = String.raw`(?:us|u\.s\.|new|zealand|hong|kong|south|saudi|(?:canad|kanad|americ|amerik|austral|brit|engl|swiss|schweiz|zwitser|japan|japon|chin|mexic|mexik|argentin|chilen|colombi|kolumbi|brazil|brasil|indi|russ|ukrain|pol|czech|tschech|tsjech|swed|schwed|zweed|norw|dan|dän|deen|hungar|ungar|hongaar|turk|türk|israel|korea|singap|thai|indones|philip|malays|канад|америк|австрал|британ|англ|швейцар|япон|китай|мексик|гонконг|новозеланд|сингапур|индий|індій|российск|україн|украин|польск|польськ|чешск|чеськ|шведск|шведськ|норвеж|датск|датськ|турецк|турецьк|израил|ізраїл|корей)\p{L}*)`;
+// cspell:enable
+/**
+ * A multi-word currency token: up to two qualifiers then the noun ("Hong Kong dollars"), or a
+ * fixed pound-sterling pair ("pounds sterling", "фунтов стерлингов"). Ordinary words after a
+ * number never join a token, so "4.99 EUR for all orders" stays EUR and "900 euros to 5000"
+ * keeps its range word outside the token.
+ */
+const MULTI_WORD_PATTERN = String.raw`(?:(?:${QUALIFIER_PATTERN})[ \t]+){1,2}[\p{L}]{1,15}(?![\p{L}])\.?|(?:pounds?|pfund|livres?|libras?|pond|фунт\p{L}*)[ \t]+(?:sterling|esterlinas?|стерл[иі]нг(?:а|ов|ів)?)(?![\p{L}])\.?`;
 const WORD_PATTERN = String.raw`(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15}\.?`;
 /** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
 const GAP_PATTERN = String.raw`[\s:-]{0,3}`;
@@ -606,9 +615,10 @@ function parseWith(raw: string, decimal: string): Decimal | undefined {
 }
 
 /**
- * Currencies of a token of up to three words: the whole token ("pounds sterling"), else its last
- * two words, its last word (the noun in "Canadian dollars", "канадских долларов"), its first two
- * words ("Schweizer Franken pro Jahr") and its first word ("руб стерлинговое").
+ * Currencies of a multi-word token (`MULTI_WORD_PATTERN`): the whole token ("pounds sterling"),
+ * else its last word (the noun after qualifiers), else its first word (the noun of a sterling
+ * pair). By construction at most one side is a currency word (a qualifier never is, nor is
+ * "sterling"), so the order cannot pick a currency over the one the token names.
  */
 function currenciesForToken(
   rawToken: string,
@@ -621,19 +631,12 @@ function currenciesForToken(
   if (whole !== undefined || words.length < 2) {
     return whole;
   }
-  const candidates = [
-    words.slice(-2).join(' '),
-    words.at(-1) ?? '',
-    words.slice(0, 2).join(' '),
-    words[0] ?? '',
-  ];
-  for (const candidate of new Set(candidates)) {
-    const found = candidate ? currenciesFor(candidate, number, storeCurrency, symbols) : undefined;
-    if (found !== undefined) {
-      return found;
-    }
-  }
-  return undefined;
+  const lastWord = words.at(-1) ?? '';
+  const firstWord = words[0] ?? '';
+  return (
+    currenciesFor(lastWord, number, storeCurrency, symbols) ??
+    currenciesFor(firstWord, number, storeCurrency, symbols)
+  );
 }
 
 function currenciesFor(
