@@ -206,6 +206,7 @@ export function parseConfig(
     name.length > LIMITS.TITLE_CHARS ||
     language === undefined ||
     !LANGUAGE_RE.test(language) ||
+    language.length > LIMITS.LOCALE_CHARS ||
     currency === undefined ||
     !CURRENCY_RE.test(currency) ||
     catalogKey === undefined ||
@@ -248,7 +249,7 @@ export function parseConfig(
     config.displayName = displayName;
   }
   const avatar = single(tags, 'avatar');
-  if (avatar?.startsWith('https://')) {
+  if (avatar?.startsWith('https://') && avatar.length <= LIMITS.TAG_VALUE_CHARS) {
     config.avatar = avatar;
   }
   const greeting = single(tags, 'greeting');
@@ -256,7 +257,7 @@ export function parseConfig(
     config.greeting = greeting;
   }
   const contact = single(tags, 'contact');
-  if (contact?.startsWith('https://')) {
+  if (contact?.startsWith('https://') && contact.length <= LIMITS.TAG_VALUE_CHARS) {
     config.contact = contact;
   }
   return config;

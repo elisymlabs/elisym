@@ -71,6 +71,11 @@ export const ComparisonComponentSchema = z
     (comparison) =>
       comparison.rows.every((row) => row.cells.length === comparison.addresses.length),
     'every comparison row has one cell per product',
+  )
+  .refine(
+    (comparison) =>
+      comparison.recommended === undefined || comparison.addresses.includes(comparison.recommended),
+    'the recommended product is one of the compared ones',
   );
 
 export const PlanComponentSchema = z.object({

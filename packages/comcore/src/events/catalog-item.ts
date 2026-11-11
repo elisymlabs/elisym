@@ -275,7 +275,6 @@ export const CatalogItemInputSchema = z
       currency: z.string().regex(CURRENCY_RE),
       frequency: z.enum(FREQUENCIES).optional(),
     }),
-    priceFrom: z.boolean().default(false),
     images: z
       .array(z.string().url().startsWith('https://').max(LIMITS.TAG_VALUE_CHARS))
       .max(LIMITS.MAX_IMAGES)
@@ -322,7 +321,8 @@ export const CatalogItemInputSchema = z
           message: 'the price must be the lowest available variant price',
         });
       }
-      if (available.length === 0 && input.visibility !== 'sold-out') {
+      // Only on-sale is wrong with nothing available: hidden and pre-order stay allowed.
+      if (available.length === 0 && input.visibility === 'on-sale') {
         context.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['visibility'],
@@ -372,7 +372,11 @@ export function buildCatalogItemEvent(input: CatalogItemInput): EventTemplate {
       ? ['price', item.price.amount, item.price.currency]
       : ['price', item.price.amount, item.price.currency, item.price.frequency],
   );
-  if (item.priceFrom) {
+  // Derived, never taken from input: "from $X" exactly when variants differ in price (2.1).
+  const variantPrices = new Set(
+    item.variants.map((variant) => new Decimal(variant.price).toString()),
+  );
+  if (variantPrices.size > 1) {
     tags.push(['price-from', '1']);
   }
   for (const image of item.images) {

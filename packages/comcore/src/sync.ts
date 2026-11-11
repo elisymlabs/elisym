@@ -23,6 +23,10 @@ export const DEFAULT_SYNC_EVENTS_PER_SEC = 10;
 
 /** The relay access `syncCatalog` needs; the SDK's pool or a test double. */
 export interface SyncRelayClient {
+  /**
+   * Every matching event, paged as needed: a result truncated by a relay's
+   * limit would make the sync re-create existing listings and miss stale ones.
+   */
   query(relays: readonly string[], filter: Filter): Promise<NostrEvent[]>;
   publish(relays: readonly string[], event: NostrEvent): Promise<void>;
 }
@@ -133,11 +137,11 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const diff: SyncDiff = { created: [], updated: [], hidden: [], unchanged: [] };
   const toPublish: EventTemplate[] = [];
   for (const [d, input] of inputs) {
-    // Dated after any deletion of the address, so the deletion cannot remove it.
-    const lastDeletion = deletedAt.get(d);
-    const createdAt = lastDeletion !== undefined && lastDeletion >= now ? lastDeletion + 1 : now;
-    const template = buildCatalogItemEvent({ ...input, createdAt });
     const listed = current.get(d);
+    // Dated after the version it replaces and after any deletion of the address:
+    // a tie loses to the lower id (NIP-01), and a deletion removes all up to its date.
+    const createdAt = Math.max(now, (listed?.created_at ?? 0) + 1, (deletedAt.get(d) ?? -1) + 1);
+    const template = buildCatalogItemEvent({ ...input, createdAt });
     if (!listed) {
       diff.created.push(d);
       toPublish.push(template);
@@ -148,9 +152,9 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
       toPublish.push(template);
     }
   }
-  const deletionOf = (d: string): EventTemplate => ({
+  const deletionOf = (d: string, at: number): EventTemplate => ({
     kind: KIND_DELETION,
-    created_at: now,
+    created_at: at,
     tags: [
       ['a', catalogAddress(key, d)],
       ['k', String(KIND_PRODUCT)],
@@ -162,10 +166,12 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
       continue;
     }
     diff.hidden.push(d);
+    // Both dated at or after the listing they replace, so neither loses to it.
+    const hiddenAt = Math.max(now, listed.created_at + 1);
     if (tagValue(listed.tags, 'visibility') !== 'hidden') {
       toPublish.push({
         kind: KIND_PRODUCT,
-        created_at: now,
+        created_at: hiddenAt,
         tags: listed.tags
           .filter((tag) => tag[0] !== 'visibility')
           .concat([['visibility', 'hidden']]),
@@ -173,15 +179,15 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
       });
     }
     // Also when only the hidden version made it last time: the deletion is retried.
-    toPublish.push(deletionOf(d));
+    toPublish.push(deletionOf(d, hiddenAt));
   }
 
-  if (options.dryRun) {
-    return diff;
-  }
   const pace = options.pace ?? DEFAULT_SYNC_EVENTS_PER_SEC;
   if (!(pace > 0)) {
     throw new Error('pace must be positive');
+  }
+  if (options.dryRun) {
+    return diff;
   }
   const sleep = options.sleep ?? defaultSleep;
   const gapMs = Math.ceil(1000 / pace);

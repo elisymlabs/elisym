@@ -18,7 +18,6 @@ function shirt() {
     summary: 'Breathable',
     description: 'A shirt.',
     price: { amount: '49.90', currency: 'USD' },
-    priceFrom: true,
     images: ['https://cdn.example.com/a.jpg'],
     topics: ['shirts'],
     url: 'https://shop.example.com/products/linen-shirt',

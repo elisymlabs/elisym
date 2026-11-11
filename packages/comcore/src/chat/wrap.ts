@@ -219,11 +219,21 @@ export function unwrapChatMessage(
     if (id !== getEventHash(rumorFields)) {
       return undefined;
     }
-    // The rumor must name the same recipient as the wrap that carried it.
-    const recipientPubkey = tagValue(tags, 'p');
-    if (recipientPubkey === undefined || recipientPubkey !== tagValue(wrap.tags, 'p')) {
+    // Bound to this recipient: exactly one `p` on the wrap and on the rumor,
+    // both our own key. A second `p` would let a sender address relay rules
+    // (admission, expiration) at someone else while the wrap still reaches us.
+    const ownPubkey = getPublicKey(recipientSecretKey);
+    const wrapRecipients = tagsNamed(wrap.tags, 'p');
+    const rumorRecipients = tags.filter((tag) => tag[0] === 'p');
+    if (
+      wrapRecipients.length !== 1 ||
+      wrapRecipients[0]?.[1] !== ownPubkey ||
+      rumorRecipients.length !== 1 ||
+      rumorRecipients[0]?.[1] !== ownPubkey
+    ) {
       return undefined;
     }
+    const recipientPubkey = ownPubkey;
     const parsed = ChatMessageSchema.safeParse(JSON.parse(content));
     if (!parsed.success) {
       return undefined;
