@@ -39,6 +39,9 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(złot(y|e|ych)|zlot(y|e|ych))$/i, ['PLN']],
   [/^(rupees?|рупи(и|й|я)?)$/i, ['INR']],
   [/^(rubles?|roubles?)$/i, ['RUB']],
+  [/^(dolar(y|a|ów|ach|ami)?|dollar[oi])$/i, ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD']],
+  [/^(євро)$/i, ['EUR']],
+  [/^(sterlin[ae])$/i, ['GBP']],
   [/^(liras?|lirası)$/i, ['TRY']],
 ];
 // cspell:enable
@@ -449,8 +452,8 @@ const NUMBER_PATTERN = String.raw`(?<!\d)(?<!\d[.,'’])(?:\d{1,2}(?:,\d{2}){1,4
 // cspell:disable
 /** A magnitude between a number and its currency: "1,5 тыс. ₽", "1.5k USD", "2 mil reais". */
 const THOUSANDS = String.raw`thousand|tausend|duizend|mille|mila|тысяч\p{L}*|тисяч\p{L}*|tysi\p{L}+|тыс|тис|tys|Tsd|mil|k`;
-const MILLIONS = String.raw`millions?|millionen|millones|millón|milhões|milhão|milioni|milione|miljoen|milion\p{L}*|миллион\p{L}*|мільйон\p{L}*|млн|mln|Mio`;
-const BILLIONS = String.raw`billions?|milliarden?|miliardi?|miljard|mil\s+millones|млрд|mrd|bn`;
+const MILLIONS = String.raw`millions?|millionen|millones|millón|milhões|milhão|milioni|milione|miljoen|milion\p{L}*|миллион\p{L}*|мільйон\p{L}*|млн|mln|Mill|Mio`;
+const BILLIONS = String.raw`billions?|milliarden?|milliards?|miliard\p{L}*|miljard|mil\s+millones|mil\s+milhões|bilh(?:ão|ões)|млрд|mrd|mld|bn`;
 const MAGNITUDE_PATTERN = String.raw`(?:${BILLIONS}|${THOUSANDS}|${MILLIONS})(?![\p{L}])\.?`;
 /** "2 millones de euros", "2 milioni di euro", "2 millions d'euros". */
 const MAGNITUDE_LINK = String.raw`(?:\s+(?:de|di)(?=\s)|\s?d['’])?`;
@@ -740,6 +743,10 @@ const RANGE_WORDS = [
   'bis',
   'bis zu',
   'tot',
+  'fino a',
+  'fino ai',
+  'и до',
+  'і до',
   'até',
   'hasta',
   "jusqu'à",
@@ -1143,13 +1150,13 @@ function componentAddresses(answer: Answer): string[][] {
 const ABBREVIATIONS =
   'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|bzw|ggf|vs|stk|ref|env|aprox|прибл|ок|арт';
 /** Magnitude abbreviations end no sentence right after a number ("1,5 тыс. ₽", "2 Mio. €"). */
-const MAGNITUDE_ABBREVIATIONS = 'tsd|mio|mrd|mld|mln|tys|тыс|тис|млн|млрд';
+const MAGNITUDE_ABBREVIATIONS = 'tsd|mio|mill|mrd|mld|mln|tys|тыс|тис|млн|млрд';
 /** Words whose dot ends a sentence ("It fits ok.") unless a number follows ("ok. 999 zł"). */
 const HEDGE_ABBREVIATIONS = 'ok';
 // cspell:enable
 /** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
 const SENTENCE_SPLIT_RE = new RegExp(
-  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d\s?(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|\n+)`,
+  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|\n+)`,
   'iu',
 );
 /** The last dotted token of a sentence: it may be the symbol of the next sentence's number ("Rs. 999"). */
