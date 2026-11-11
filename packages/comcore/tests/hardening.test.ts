@@ -400,3 +400,37 @@ describe('syncCatalog resilience', () => {
     expect(republished?.created_at).toBe(NOW + 11);
   });
 });
+
+describe('wrap backdating (2.4)', () => {
+  it('wraps to an assistant key stay within ASSISTANT_WRAP_BACKDATE_SECS', async () => {
+    const { ASSISTANT_WRAP_BACKDATE_SECS, wrapChatMessage } = await import('../src');
+    const { generateSecretKey, getPublicKey } = await import('nostr-tools/pure');
+    const now = 1_800_000_000;
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      const { wrap } = wrapChatMessage({
+        message: { type: 'status', ask_id: 'a'.repeat(32), text: 'x' },
+        senderSecretKey: generateSecretKey(),
+        recipientPubkey: getPublicKey(generateSecretKey()),
+        expiresAt: now + 60,
+        now,
+        maxBackdateSecs: ASSISTANT_WRAP_BACKDATE_SECS,
+      });
+      expect(wrap.created_at).toBeLessThanOrEqual(now);
+      expect(wrap.created_at).toBeGreaterThanOrEqual(now - ASSISTANT_WRAP_BACKDATE_SECS);
+    }
+  });
+
+  it('refuses a negative or fractional backdate', async () => {
+    const { wrapChatMessage } = await import('../src');
+    const { generateSecretKey, getPublicKey } = await import('nostr-tools/pure');
+    const base = {
+      message: { type: 'status' as const, ask_id: 'a'.repeat(32), text: 'x' },
+      senderSecretKey: generateSecretKey(),
+      recipientPubkey: getPublicKey(generateSecretKey()),
+      expiresAt: 1_800_000_060,
+      now: 1_800_000_000,
+    };
+    expect(() => wrapChatMessage({ ...base, maxBackdateSecs: -1 })).toThrow();
+    expect(() => wrapChatMessage({ ...base, maxBackdateSecs: 1.5 })).toThrow();
+  });
+});

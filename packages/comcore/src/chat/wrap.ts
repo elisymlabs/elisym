@@ -8,13 +8,16 @@ import { type Answer, type ChatMessage, ChatMessageSchema } from './messages';
 const KIND_SEAL = 13;
 const KIND_GIFT_WRAP = 1059;
 /** NIP-59: seal and wrap `created_at` are randomized up to two days into the past. */
-const BACKDATE_WINDOW_SECS = 2 * 24 * 60 * 60;
+const DEFAULT_BACKDATE_SECS = 2 * 24 * 60 * 60;
 const ENCODER = new TextEncoder();
 
-function randomBackdate(now: number): number {
+function randomBackdate(now: number, maxBackdateSecs: number): number {
+  if (maxBackdateSecs <= 0) {
+    return now;
+  }
   const random = new Uint32Array(1);
   crypto.getRandomValues(random);
-  return now - ((random[0] ?? 0) % BACKDATE_WINDOW_SECS);
+  return now - ((random[0] ?? 0) % (maxBackdateSecs + 1));
 }
 
 function byteLength(text: string): number {
@@ -42,6 +45,12 @@ export interface WrapInput {
    * derives from it.
    */
   now: number;
+  /**
+   * How far seal and wrap `created_at` may be randomized into the past: two
+   * days by default (NIP-59); `ASSISTANT_WRAP_BACKDATE_SECS` for wraps to an
+   * assistant key, which the worker reads with a 10-minute `since` (2.4).
+   */
+  maxBackdateSecs?: number;
 }
 
 export interface WrapResult {
@@ -68,6 +77,10 @@ export function wrapChatMessage(input: WrapInput): WrapResult {
   }
   const message = ChatMessageSchema.parse(input.message);
   const senderPubkey = getPublicKey(input.senderSecretKey);
+  const maxBackdateSecs = input.maxBackdateSecs ?? DEFAULT_BACKDATE_SECS;
+  if (!Number.isSafeInteger(maxBackdateSecs) || maxBackdateSecs < 0) {
+    throw new Error('maxBackdateSecs must be a whole number of seconds');
+  }
   const unhashed = {
     pubkey: senderPubkey,
     created_at: input.now,
@@ -83,7 +96,7 @@ export function wrapChatMessage(input: WrapInput): WrapResult {
   const seal = finalizeEvent(
     {
       kind: KIND_SEAL,
-      created_at: randomBackdate(input.now),
+      created_at: randomBackdate(input.now, maxBackdateSecs),
       tags: [],
       content: nip44.v2.encrypt(
         rumorJson,
@@ -96,7 +109,7 @@ export function wrapChatMessage(input: WrapInput): WrapResult {
   const wrap = finalizeEvent(
     {
       kind: KIND_GIFT_WRAP,
-      created_at: randomBackdate(input.now),
+      created_at: randomBackdate(input.now, maxBackdateSecs),
       tags: [
         ['p', input.recipientPubkey],
         ['expiration', String(input.expiresAt)],

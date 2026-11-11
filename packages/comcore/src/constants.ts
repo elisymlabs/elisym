@@ -33,6 +33,8 @@ export const STATUS_TTL_SECS = 60;
 export const TICKET_TTL_SECS = 30 * 60;
 /** Slack the relay admission grants over a session end when checking a wrap's `expiration`. */
 export const EXPIRATION_ADMISSION_SLACK_SECS = 10 * 60;
+/** Wraps to an assistant key are backdated at most this far: the worker reads them with a 10-minute `since` (2.4). */
+export const ASSISTANT_WRAP_BACKDATE_SECS = 2 * 60;
 
 export const LIMITS = {
   /** Senders keep a serialized rumor event within this. */
