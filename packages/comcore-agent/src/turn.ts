@@ -18,6 +18,7 @@ import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
 export const MAX_TOOL_ROUNDS = 6;
 const DEFAULT_MAX_TOKENS = 2_048;
 const VISITOR_FENCE_CHARS = 4_000;
+const MAX_STRIP_PASSES = 32;
 
 export interface TurnInput {
   catalog: StoreCatalog;
@@ -217,8 +218,11 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       };
       answer = toAnswer(retry.text, retryState);
       violations = checkPrices(answer, checkContext());
-      if (violations.length > 0) {
-        stripped = violations;
+      // Strip until the check passes: removing a sentence can let a kept one borrow a symbol it
+      // did not before ("1200 Rs." then "999 people"), and removing a component removes the
+      // items it cited. Every pass removes at least one string, so this ends; the bound guards.
+      for (let pass = 0; violations.length > 0 && pass < MAX_STRIP_PASSES; pass += 1) {
+        stripped = [...stripped, ...violations];
         // The appended pointer can lengthen the text: cut and fit again.
         const cleaned = stripViolations(answer, violations, locale);
         answer = fitAnswer(
@@ -227,23 +231,13 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         );
         violations = checkPrices(answer, checkContext());
       }
-      // Stripping can let a kept sentence borrow a symbol it did not before ("1200 Rs." then
-      // "999 people"): strip once more.
+      // Fail closed should the bound ever be reached: no model-written text at all.
       if (violations.length > 0) {
         stripped = [...stripped, ...violations];
-        const again = stripViolations(answer, violations, locale);
         answer = fitAnswer(
-          { ...again, text: again.text.slice(0, LIMITS.ANSWER_TEXT_CHARS) },
+          { ...answer, text: cardsPointer(locale), components: [], chips: [] },
           input.now,
         );
-        violations = checkPrices(answer, checkContext());
-      }
-      // A guard: should that still leave something the check reads anew, fail closed with no
-      // model text, only the cards pointer.
-      if (violations.length > 0) {
-        stripped = [...stripped, ...violations];
-        const cleaned = stripViolations(answer, violations, locale);
-        answer = fitAnswer({ ...cleaned, text: cardsPointer(locale) }, input.now);
       }
     }
   } catch (error) {

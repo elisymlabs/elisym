@@ -1255,6 +1255,8 @@ function addRangeBounds(
   }
 }
 
+const DOTTED_ABBREVIATIONS = new Set(['Rp', 'RM', 'S/']);
+
 function symbolsFor(
   storeCurrency: string | undefined,
   locales: readonly string[],
@@ -1265,9 +1267,10 @@ function symbolsFor(
     ...(storeCurrency === 'CHF' ? FRANC_SYMBOLS : []),
     ...storeCurrencyForms(storeCurrency, locales),
   ];
-  // "Rp. 15.000", "RM. 15", "S/. 15": a symbol of two or more letters is also written with a dot.
+  // "Rp. 15.000", "RM. 15", "S/. 15": these abbreviations are also written with a dot. Names
+  // and codes are not ("Prices are in dollars. 3 colors" is no amount).
   const dotted = base
-    .filter(([symbol]) => /^(?:\p{L}{2,}|S\/)$/u.test(symbol))
+    .filter(([symbol]) => DOTTED_ABBREVIATIONS.has(symbol))
     .map(([symbol, currencies]): [string, readonly string[]] => [`${symbol}.`, currencies])
     .filter(([symbol]) => !base.some(([existing]) => existing === symbol));
   return [...base, ...dotted];
