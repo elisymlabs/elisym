@@ -273,3 +273,7 @@ pfund
 долларов
 канадских
 Jahr
+canadienses
+dólares
+postposed
+POSTPOSED

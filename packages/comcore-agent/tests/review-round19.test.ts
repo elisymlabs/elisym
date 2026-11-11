@@ -85,7 +85,8 @@ describe('security review: two currencies in one token fail closed', () => {
     // "Swiss" is no currency; "Indian dollars" reads the noun; a sterling pair reads the noun.
     // A qualifier pins its currency, and a noun that cannot be that currency is no money.
     expect(extractAmounts('1200 Canadian dollars', ['en'], 'EUR')[0]?.currencies).toEqual(['CAD']);
-    expect(extractAmounts('1200 Indian dollars', ['en'], 'EUR')).toHaveLength(0);
+    // Money that cannot be the qualifier's currency matches nothing: it fails closed.
+    expect(extractAmounts('1200 Indian dollars', ['en'], 'EUR')[0]?.currencies).toEqual([]);
     expect(extractAmounts('1200 pounds sterling', ['en'], 'EUR')[0]?.currencies).toEqual(['GBP']);
   });
 });

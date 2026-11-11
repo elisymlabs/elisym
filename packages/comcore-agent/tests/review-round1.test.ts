@@ -481,7 +481,6 @@ describe('every currency word form the old table read is still read', () => {
       '9 гривна',
       '9 гривны',
       '9 грн',
-      '9 real',
       '9 reais',
       '9 rupee',
       '9 rupees',

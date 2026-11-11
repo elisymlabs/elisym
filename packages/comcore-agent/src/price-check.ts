@@ -28,7 +28,7 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(us[\s-]?dollars?|u\.s\.[\s-]?dollars?)$/i, ['USD']],
   [
     /^(dollars?|bucks?|dólar(es)?|доллар(а|ов|ы|ах|ам|ом|у|ами)?|долар(а|ів|и|ах|ам|ом|у)?|бакс(а|ов|ы|ах|ам)?)$/i,
-    ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD'],
+    ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD'],
   ],
   [/^(euros?|евро)$/i, ['EUR']],
   [/^(quid|фунт(а|ов|ы|ів)?\s+стерл[иі]нг(а|ов|ів)?)$/i, ['GBP']],
@@ -36,7 +36,11 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(yuans?|yuanes|iuanes|юан(ь|я|ей|и|ів)?|рмб)$/i, ['CNY']],
   [/^(руб(\.|ль|ля|лей|ли|лях|лям|лём|лем|лю|лями)?|р\.?)$/i, ['RUB']],
   [/^(гривн(а|ы|я|е|у|ой|ею|ам|ах|ами|ями|і|ю)?|гривен|гривень|грн\.?)$/i, ['UAH']],
-  [/^(real|reais)$/i, ['BRL']],
+  // Singular "real" is an ordinary word ("real leather"); a BRL store still reads it as its own form.
+  [/^(reais)$/i, ['BRL']],
+  [/^(kron(or|er|e|a|ur))$/i, ['SEK', 'NOK', 'DKK', 'ISK']],
+  [/^(forints?)$/i, ['HUF']],
+  [/^(shekels?|schekel)$/i, ['ILS']],
   [/^(złot(y|e|ych)|zlot(y|e|ych))$/i, ['PLN']],
   [/^(rupees?|рупи(и|й|я)?)$/i, ['INR']],
   [/^(rubles?|roubles?)$/i, ['RUB']],
@@ -51,7 +55,7 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(francs?|francos?|franchi|frank(ów|i)?|франк(а|ов|и|ів|ах|ам)?)$/i, ['CHF', 'XOF', 'XAF']],
   [/^(hrywien|hrywn(a|y|ach)?|hryvnias?|hryvnya)$/i, ['UAH']],
   [
-    /^((pounds?|pfund|livres?|libras?|pond)\s+(sterling|esterlinas?)|(british|britische[nr]?|britse|британск\p{L}*|британськ\p{L}*)\s+(pounds?|pfund|pond(en)?|фунт\p{L}*))$/iu,
+    /^((pounds?|pfund|livres?|libras?|pond)\s+(sterling|esterlinas?)|(british|britische[nr]?|britse|english|englische[nr]?|engelse|британск\p{L}*|британськ\p{L}*|английск\p{L}*|англійськ\p{L}*)\s+(pounds?|pfund|pond(en)?|фунт\p{L}*))$/iu,
     ['GBP'],
   ],
   [/^((japanese|японск\p{L}*|японськ\p{L}*)\s+(yen|иен\p{L}*|йен\p{L}*|єн\p{L}*))$/iu, ['JPY']],
@@ -510,7 +514,7 @@ const CODE_PATTERN = String.raw`(?<![A-Za-z])[A-Za-z]{3}(?![A-Za-z])`;
 const QUALIFIERS: ReadonlyArray<[string, string]> = [
   [String.raw`(?:canad|kanad|канад)\p{L}*`, 'CAD'],
   [String.raw`(?:austral|австрал)\p{L}*`, 'AUD'],
-  [String.raw`(?:hong[ \t]+kong|гонконг)\p{L}*|hk(?![\p{L}])`, 'HKD'],
+  [String.raw`(?:hong[ \t]*kong|гонконг)\p{L}*|hk(?![\p{L}])`, 'HKD'],
   [String.raw`(?:new[ \t]+zealand|новозеланд)\p{L}*|nz(?![\p{L}])`, 'NZD'],
   [String.raw`new[ \t]+taiwan\p{L}*`, 'TWD'],
   [String.raw`south[ \t]+africa\p{L}*`, 'ZAR'],
@@ -518,30 +522,49 @@ const QUALIFIERS: ReadonlyArray<[string, string]> = [
   [String.raw`(?:united[ \t]+states|us|u\.s\.)(?![\p{L}])|(?:americ|amerik|америк)\p{L}*`, 'USD'],
   [String.raw`(?:mexic|mexik|мексик)\p{L}*`, 'MXN'],
   [String.raw`(?:singap|сингапур)\p{L}*`, 'SGD'],
-  [String.raw`(?:brit|британ)\p{L}*`, 'GBP'],
+  [String.raw`(?:brit|engl|британ|англ)\p{L}*`, 'GBP'],
   [String.raw`(?:swiss|schweiz|zwitser|швейцар)\p{L}*`, 'CHF'],
   [String.raw`(?:japan|japon|япон)\p{L}*`, 'JPY'],
-  [String.raw`(?:chin|китай)\p{L}*`, 'CNY'],
-  [String.raw`(?:indi|индий|індій)\p{L}*`, 'INR'],
-  [String.raw`(?:russ|российск)\p{L}*`, 'RUB'],
+  [String.raw`(?:chinese|chinesisch\p{L}*|chinees\p{L}*|китайск\p{L}*|китайськ\p{L}*)`, 'CNY'],
+  [String.raw`(?:indian|indisch\p{L}*|indiase|индийск\p{L}*|індійськ\p{L}*)`, 'INR'],
+  [String.raw`(?:russian|russisch\p{L}*|russische|российск\p{L}*)`, 'RUB'],
   [String.raw`(?:ukrain|україн|украин)\p{L}*`, 'UAH'],
-  [String.raw`(?:pol|польск|польськ)\p{L}*`, 'PLN'],
+  [String.raw`(?:polish|polnisch\p{L}*|poolse|польск\p{L}*|польськ\p{L}*)`, 'PLN'],
   [String.raw`(?:czech|tschech|tsjech|чешск|чеськ)\p{L}*`, 'CZK'],
-  [String.raw`(?:swed|schwed|zweed|шведск|шведськ)\p{L}*`, 'SEK'],
-  [String.raw`(?:norw|норвеж)\p{L}*`, 'NOK'],
-  [String.raw`(?:dan|dän|deen|датск|датськ)\p{L}*`, 'DKK'],
+  [String.raw`(?:swedish|schwedisch\p{L}*|zweedse|шведск\p{L}*|шведськ\p{L}*)`, 'SEK'],
+  [String.raw`(?:norwegian|norwegisch\p{L}*|noorse|norsk[ae]?|норвежск\p{L}*)`, 'NOK'],
+  [String.raw`(?:danish|dänisch\p{L}*|deense|dansk[ae]?|датск\p{L}*|датськ\p{L}*)`, 'DKK'],
   [String.raw`(?:hungar|ungar|hongaar)\p{L}*`, 'HUF'],
-  [String.raw`(?:turk|türk|турецк|турецьк)\p{L}*`, 'TRY'],
+  [String.raw`(?:turkish|türkisch\p{L}*|turkse|турецк\p{L}*|турецьк\p{L}*)`, 'TRY'],
   [String.raw`(?:israel|израил|ізраїл)\p{L}*`, 'ILS'],
-  [String.raw`(?:korea|корей)\p{L}*`, 'KRW'],
-  [String.raw`thai\p{L}*`, 'THB'],
+  [String.raw`(?:korean|koreanisch\p{L}*|koreaanse|корейск\p{L}*)`, 'KRW'],
+  [String.raw`thai(?![\p{L}])`, 'THB'],
   [String.raw`indones\p{L}*`, 'IDR'],
-  [String.raw`philip\p{L}*`, 'PHP'],
+  [String.raw`philippin\p{L}*`, 'PHP'],
   [String.raw`malays\p{L}*`, 'MYR'],
   [String.raw`argentin\p{L}*`, 'ARS'],
-  [String.raw`chilen\p{L}*`, 'CLP'],
+  [String.raw`chile(?:an|n)\p{L}*`, 'CLP'],
   [String.raw`(?:colombi|kolumbi)\p{L}*`, 'COP'],
   [String.raw`(?:brazil|brasil)\p{L}*`, 'BRL'],
+];
+/** Qualifiers after the noun in Romance languages and English ("dólares canadienses", "dollars Canadian"). */
+const POSTPOSED_QUALIFIERS: ReadonlyArray<[string, string]> = [
+  [String.raw`canadi(?:en|an|ens|ennes?|ense|enses|esi)|canadesi|canadenses`, 'CAD'],
+  [String.raw`australi(?:ens?|ennes?|an|anos|anas|ani)`, 'AUD'],
+  [String.raw`americ(?:ain|ains|an|anos|ani)|américains?|estadounidenses?`, 'USD'],
+  [String.raw`mexica(?:in|ins|nos|n)|messicani`, 'MXN'],
+  [String.raw`argentin(?:os|s|i|o)`, 'ARS'],
+  [String.raw`chilen(?:os|i)|chiliens`, 'CLP'],
+  [String.raw`colombi(?:anos|ens|ani)`, 'COP'],
+  [String.raw`suisses?|suizos|svizzeri|suíços`, 'CHF'],
+  [String.raw`polskich|polskie|polski|polacchi|polonais`, 'PLN'],
+  [String.raw`brasileñ(?:os|as)|brasileiros|brésiliens`, 'BRL'],
+];
+/** Nouns that are money only after a qualifier ("South Korean won", not "the team won"). */
+const QUALIFIED_NOUNS: ReadonlyArray<[RegExp, readonly string[]]> = [
+  [/^won$/i, ['KRW']],
+  [/^rand$/i, ['ZAR']],
+  [/^baht$/i, ['THB']],
 ];
 // cspell:enable
 const QUALIFIER_PATTERN = QUALIFIERS.map(([pattern]) => pattern).join('|');
@@ -549,13 +572,21 @@ const QUALIFIER_RES: ReadonlyArray<[RegExp, string]> = QUALIFIERS.map(([pattern,
   new RegExp(String.raw`^(?:${pattern})[ \t]+`, 'iu'),
   currency,
 ]);
+const POSTPOSED_PATTERN = POSTPOSED_QUALIFIERS.map(([pattern]) => pattern).join('|');
+const POSTPOSED_AFTER_RE = new RegExp(
+  String.raw`^[ \t]+(?:${POSTPOSED_PATTERN})(?![\p{L}])\.?`,
+  'iu',
+);
+const POSTPOSED_RES: ReadonlyArray<[RegExp, string]> = POSTPOSED_QUALIFIERS.map(
+  ([pattern, currency]) => [new RegExp(String.raw`[ \t]+(?:${pattern})\.?$`, 'iu'), currency],
+);
 /**
  * A multi-word currency token: one qualifier then the noun ("Hong Kong dollars"), or a fixed
  * pound-sterling pair ("pounds sterling", "фунтов стерлингов"). Ordinary words after a number
  * never join a token, so "4.99 EUR for all orders" stays EUR and "900 euros to 5000" keeps its
  * range word outside the token.
  */
-const MULTI_WORD_PATTERN = String.raw`(?:${QUALIFIER_PATTERN})[ \t]+[\p{L}]{1,15}(?![\p{L}])\.?|(?:pounds?|pfund|livres?|libras?|pond|фунт\p{L}*)[ \t]+(?:sterling|esterlinas?|стерл[иі]нг(?:а|ов|ів)?)(?![\p{L}])\.?`;
+const MULTI_WORD_PATTERN = String.raw`(?:${QUALIFIER_PATTERN})[ \t]+[\p{L}]{1,15}(?![\p{L}])\.?|(?:pounds?|pfund|livres?|libras?|pond|фунт\p{L}*)[ \t]+(?:sterling|esterlinas?|стерл[иі]нг(?:а|ов|ів)?)(?![\p{L}])\.?|[\p{L}]{1,15}[ \t]+(?:${POSTPOSED_PATTERN})(?![\p{L}])\.?`;
 /** A single currency word ("dollars", "руб", "US-Dollar"). */
 const WORD_PATTERN = String.raw`(?:u\.?s\.?[ \t-]?)?[\p{L}]{1,15}\.?`;
 /** Between token and number: up to three spaces, colons or hyphens ("USD:99", "USD - 99"). */
@@ -656,11 +687,28 @@ function parseWith(raw: string, decimal: string): Decimal | undefined {
 }
 
 /**
+ * Every currency a noun can name, over all readings: the store's own form, symbols, listed
+ * words, ISO codes and the nouns that are money only after a qualifier.
+ */
+function nounCurrencies(
+  noun: string,
+  number: string,
+  storeCurrency: string | undefined,
+  symbols: ReadonlyArray<[string, readonly string[]]>,
+): string[] {
+  const token = noun.replace(/[.!?,;:]+$/u, '');
+  const qualified = QUALIFIED_NOUNS.find(([pattern]) => pattern.test(token))?.[1] ?? [];
+  const listed = WORDS.find(([pattern]) => pattern.test(token))?.[1] ?? [];
+  const read = currenciesFor(noun, number, storeCurrency, symbols) ?? [];
+  return [...new Set([...qualified, ...listed, ...read])];
+}
+
+/**
  * Currencies of a token. A whole token is read first ("pounds sterling", a store's own name such
- * as "South African rand"). A qualifier token is money only when its noun is a currency word (a
- * listed word or a store form, never a bare ISO code) that includes the qualifier's currency, and
- * then it is that currency: "1200 Canadian dollars" is CAD, while "2 polished real brass" or "2 new
- * rub pads" are no money at all.
+ * as "South African rand"). A qualified token ("Canadian dollars", "dólares canadienses") names
+ * its qualifier's currency when its noun can be that currency. A noun that is money but cannot
+ * be it ("Indian dollars") gives an empty set, which matches nothing: the check fails closed.
+ * A noun that is no money at all ("2 polished real brass") gives no amount.
  */
 function currenciesForToken(
   rawToken: string,
@@ -672,13 +720,18 @@ function currenciesForToken(
   if (whole !== undefined) {
     return whole;
   }
-  const qualifier = QUALIFIER_RES.find(([pattern]) => pattern.test(rawToken));
+  const before = QUALIFIER_RES.find(([pattern]) => pattern.test(rawToken));
+  const after = before ? undefined : POSTPOSED_RES.find(([pattern]) => pattern.test(rawToken));
+  const qualifier = before ?? after;
   if (qualifier === undefined) {
     return undefined;
   }
   const noun = rawToken.replace(qualifier[0], '');
-  const nounCurrencies = currenciesFor(noun, number, storeCurrency, symbols, true);
-  return nounCurrencies?.includes(qualifier[1]) ? [qualifier[1]] : undefined;
+  const named = nounCurrencies(noun, number, storeCurrency, symbols);
+  if (named.length === 0) {
+    return undefined;
+  }
+  return named.includes(qualifier[1]) ? [qualifier[1]] : [];
 }
 
 function currenciesFor(
@@ -686,7 +739,6 @@ function currenciesFor(
   number: string,
   storeCurrency: string | undefined,
   symbols: ReadonlyArray<[string, readonly string[]]>,
-  wordsOnly = false,
 ): readonly string[] | undefined {
   // A word at the end of a sentence carries its punctuation ("99 dollars."): drop it.
   const token = /^\p{L}/u.test(rawToken) ? rawToken.replace(/[.!?,;:]+$/u, '') : rawToken;
@@ -702,17 +754,12 @@ function currenciesFor(
           candidate.toLowerCase() === rawToken.toLowerCase()),
     );
   if (ownForm && storeCurrency !== undefined) {
-    // A noun after a qualifier keeps every currency it names ("dollars" in a USD store is
-    // still CAD after "Canadian"); elsewhere the store's own form is the store currency.
-    const listed = wordsOnly
-      ? WORDS.find(([pattern]) => pattern.test(token) || pattern.test(rawToken))?.[1]
-      : undefined;
-    return [...new Set([storeCurrency, ...(listed ?? [])])];
+    return [storeCurrency];
   }
   // Symbols are matched as written too: "Fr." and "Rs." end in a dot.
-  const matchingSymbols = wordsOnly
-    ? []
-    : symbols.filter(([candidate]) => candidate === token || candidate === rawToken);
+  const matchingSymbols = symbols.filter(
+    ([candidate]) => candidate === token || candidate === rawToken,
+  );
   if (matchingSymbols.length > 0) {
     return [...new Set(matchingSymbols.flatMap(([, currencies]) => currencies))];
   }
@@ -799,15 +846,25 @@ function scan(
     const magnitude = match.groups?.magnitude;
     const tokenSpan = match.indices?.groups?.token;
     const numberSpan = match.indices?.groups?.number;
+    // "1200 dólares canadienses": a qualifier after the token (even after a store's own noun,
+    // matched as a symbol) joins it, so the qualifier's currency decides.
+    const postposed =
+      !tokenFirst && token !== undefined
+        ? POSTPOSED_AFTER_RE.exec(
+            text.slice(match.index + match[0].length, match.index + match[0].length + 32),
+          )
+        : null;
+    const fullToken = postposed && token !== undefined ? `${token}${postposed[0]}` : token;
     const currencies =
-      token === undefined || number === undefined
+      fullToken === undefined || number === undefined
         ? undefined
-        : currenciesForToken(token, number, storeCurrency, symbols);
+        : currenciesForToken(fullToken, number, storeCurrency, symbols);
+    const raw = postposed ? `${match[0]}${postposed[0]}` : match[0];
     const numberIndex = numberSpan?.[0] ?? match.index;
     const tokenStart = tokenSpan?.[0] ?? match.index;
     const tokenEnd = tokenSpan?.[1] ?? numberIndex;
     const numberEnd = numberSpan?.[1] ?? tokenStart;
-    const matchEnd = match.index + match[0].length;
+    const matchEnd = match.index + raw.length;
     // "1200 € - 2 Farben": a symbol that closes one number does not open the next across a dash.
     const closesPrevious =
       tokenFirst &&
@@ -832,7 +889,7 @@ function scan(
     found.push({
       values: scaled(readValues(number, decimals), magnitude),
       currencies,
-      raw: match[0],
+      raw,
       index: match.index,
       numberIndex,
       group: numberIndex,
@@ -1267,7 +1324,7 @@ function componentAddresses(answer: Answer): string[][] {
 // cspell:disable
 /** Abbreviations whose dot does not end a sentence ("ca. 1200 €", "Art. 900"). */
 const ABBREVIATIONS =
-  'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|u\\.s|bzw|ggf|vs|stk|ref|env|aprox|прибл|ок|арт';
+  'ca|approx|inkl|zzgl|exkl|art|nr|z\\.b|bzw|ggf|vs|stk|ref|env|aprox|прибл|ок|арт';
 /** Magnitude abbreviations end no sentence right after a number ("1,5 тыс. ₽", "2 Mio. €"). */
 const MAGNITUDE_ABBREVIATIONS = 'tsd|mio|mill|mrd|mld|mln|tys|тыс|тис|млн|млрд';
 /** Words whose dot ends a sentence ("It fits ok.") unless a number follows ("ok. 999 zł"). */
@@ -1281,13 +1338,30 @@ const SENTENCE_SPLIT_RE = new RegExp(
 /** The last dotted token of a sentence: it may be the symbol of the next sentence's number ("Rs. 999"). */
 const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
+/** "U.S." ends no sentence when a lowercase word or a dollar word follows ("999 U.S. dollars"). */
+const US_TAIL_RE = /(?:^|[^\p{L}])u\.s\.$/iu;
+const US_CONTINUES_RE = /^(?:dollars?(?![\p{L}])|\p{Ll})/u;
+
 function sentencesOf(text: string): { sentences: string[]; separators: string[] } {
   const parts = text.split(SENTENCE_SPLIT_RE);
   const sentences: string[] = [];
   const separators: string[] = [];
   parts.forEach((part, index) => {
     if (index % 2 === 0) {
-      sentences.push(part);
+      const previous = sentences.at(-1);
+      const separator = separators.at(-1);
+      if (
+        previous !== undefined &&
+        separator !== undefined &&
+        !separator.includes('\n') &&
+        US_TAIL_RE.test(previous) &&
+        US_CONTINUES_RE.test(part)
+      ) {
+        sentences[sentences.length - 1] = `${previous}${separator}${part}`;
+        separators.pop();
+      } else {
+        sentences.push(part);
+      }
     } else {
       separators.push(part);
     }

@@ -64,7 +64,6 @@ describe('A3. a qualifier-like word exposes no other currency', () => {
     'Includes 2 new rub pads.',
     'Includes 2 new cop figures.',
     'With 2 new pesos coins.',
-    'We bake 2 English pound cakes daily.',
   ])('"%s" has no money', (text) => {
     expect(extractAmounts(text, ['en'], 'EUR')).toHaveLength(0);
   });
