@@ -12,6 +12,7 @@ import {
 import { fence, sanitizeText } from './fence';
 import type { ToolSpec, ToolUseBlock } from './llm/types';
 import { SKILL_NAMES, skillText } from './skills';
+import { sanitizeAnswerText } from './text-sanitize';
 
 export const MAX_SEARCH_RESULTS = 12;
 const DEFAULT_SEARCH_RESULTS = 8;
@@ -21,6 +22,8 @@ const POLICY_FENCE_CHARS = 3_000;
 const MAX_POLICY_RESULTS = 3;
 const MAX_STATUS_LINES_PER_TURN = 2;
 const PRICE_DIMENSION = 'Price';
+const READ_TOOLS: readonly string[] = ['search_products', 'get_product_details', 'search_policies'];
+const FREQUENCY_FILTERS = ['once', 'hour', 'day', 'week', 'month', 'year'] as const;
 
 const statusProperty = {
   status: {
@@ -54,11 +57,17 @@ export const TOOL_SPECS: ToolSpec[] = [
         filters: {
           type: 'object',
           properties: {
-            min_price: { type: 'string', description: 'Decimal, in the store currency.' },
-            max_price: { type: 'string', description: 'Decimal, in the store currency.' },
+            min_price: { type: ['number', 'string'], description: 'In the store currency.' },
+            max_price: { type: ['number', 'string'], description: 'In the store currency.' },
             topics: { type: 'array', items: { type: 'string' } },
             attrs: { type: 'object', additionalProperties: { type: 'string' } },
             availability: { type: 'string', enum: [...AVAILABILITY] },
+            frequency: {
+              type: 'string',
+              enum: [...FREQUENCY_FILTERS],
+              description:
+                'once for one-off prices (the default with price limits), or a subscription period.',
+            },
             sort: { type: 'string', enum: ['relevance', 'price_asc', 'price_desc'] },
           },
           additionalProperties: false,
@@ -238,14 +247,17 @@ export interface TurnState {
   policyPassages: string[];
 }
 
-export function newTurnState(snapshotIds: Iterable<string>, policyPassages: string[]): TurnState {
-  return {
-    allowedIds: new Set(snapshotIds),
-    components: [],
-    chips: [],
-    statuses: [],
-    policyPassages,
-  };
+/**
+ * A fresh state for one model loop. `allowedIds` and `statuses` are passed in
+ * by the turn (and the session), so a corrective re-run keeps what the first
+ * loop earned and the two-status cap holds for the whole turn.
+ */
+export function newTurnState(
+  allowedIds: Set<string>,
+  policyPassages: string[],
+  statuses: string[] = [],
+): TurnState {
+  return { allowedIds, components: [], chips: [], statuses, policyPassages };
 }
 
 export interface ToolOutcome {
@@ -253,11 +265,20 @@ export interface ToolOutcome {
   isError?: boolean;
 }
 
-function decimalOrUndefined(value: unknown): Decimal | undefined {
-  if (typeof value !== 'string' || !/^\d{1,12}(\.\d{1,18})?$/.test(value)) {
+const AMOUNT_INPUT_RE = /^\d{1,12}([.,]\d{1,18})?$/;
+
+/** A price filter: a number or a decimal string ("80", "80.5", "80,50"); `invalid` when unreadable. */
+function priceFilter(value: unknown): Decimal | undefined | 'invalid' {
+  if (value === undefined || value === null || value === '') {
     return undefined;
   }
-  return new Decimal(value);
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return new Decimal(String(value));
+  }
+  if (typeof value === 'string' && AMOUNT_INPUT_RE.test(value.trim())) {
+    return new Decimal(value.trim().replace(',', '.'));
+  }
+  return 'invalid';
 }
 
 function stringRecord(value: unknown): Record<string, string> {
@@ -289,7 +310,7 @@ function summarize(catalog: StoreCatalog, item: CatalogItem) {
     ...(item.price.frequency ? { frequency: item.price.frequency } : {}),
     availability: availabilityOf(item),
     attrs: topAttrs(item, TOP_ATTRS).map(
-      (attr) => `${attr.name}: ${sanitizeText(attr.value, 128)}`,
+      (attr) => `${sanitizeText(attr.name, 32)}: ${sanitizeText(attr.value, 128)}`,
     ),
     ...(catalog.pageUrl(item) ? {} : { no_page_link: true }),
   };
@@ -300,8 +321,14 @@ function searchProducts(catalog: StoreCatalog, input: Record<string, unknown>, s
   const filters =
     typeof input.filters === 'object' && input.filters !== null ? { ...input.filters } : {};
   const filterRecord: Record<string, unknown> = filters;
-  const minPrice = decimalOrUndefined(filterRecord.min_price);
-  const maxPrice = decimalOrUndefined(filterRecord.max_price);
+  const minPrice = priceFilter(filterRecord.min_price);
+  const maxPrice = priceFilter(filterRecord.max_price);
+  if (minPrice === 'invalid' || maxPrice === 'invalid') {
+    return {
+      error: 'min_price and max_price must be numbers in the store currency, like 80 or 79.90.',
+    };
+  }
+  const frequency = FREQUENCY_FILTERS.find((value) => value === filterRecord.frequency);
   const topics = stringArray(filterRecord.topics).map((topic) => topic.toLowerCase());
   const attrs = stringRecord(filterRecord.attrs);
   const availability = AVAILABILITY.find((value) => value === filterRecord.availability);
@@ -313,8 +340,14 @@ function searchProducts(catalog: StoreCatalog, input: Record<string, unknown>, s
   const limit = Math.min(Math.max(requested, 1), MAX_SEARCH_RESULTS);
   const scores = catalog.scores(query);
   const hasQueryTerms = tokenize(query).length > 0;
+  const pricedFilter = minPrice !== undefined || maxPrice !== undefined;
   let matches = [...catalog.items.values()].filter((item) => {
     const price = priceOf(item);
+    // Price limits compare like with like (5.2): one-off prices unless a frequency is asked for.
+    const itemFrequency = item.price.frequency ?? 'once';
+    if ((frequency !== undefined || pricedFilter) && itemFrequency !== (frequency ?? 'once')) {
+      return false;
+    }
     if (minPrice && price.lessThan(minPrice)) {
       return false;
     }
@@ -364,11 +397,12 @@ function searchProducts(catalog: StoreCatalog, input: Record<string, unknown>, s
       return priceOf(left).comparedTo(priceOf(right)) * direction;
     });
   }
+  const total = matches.length;
   matches = matches.slice(0, limit);
   for (const item of matches) {
     state.allowedIds.add(item.d);
   }
-  return { results: matches.map((item) => summarize(catalog, item)), total: matches.length };
+  return { results: matches.map((item) => summarize(catalog, item)), total };
 }
 
 function productDetails(
@@ -390,11 +424,14 @@ function productDetails(
       ...summarize(catalog, item),
       summary: item.summary ? sanitizeText(item.summary, 1_000) : undefined,
       description: fence('product', item.description, DESCRIPTION_FENCE_CHARS),
-      options: item.options,
+      options: item.options.map((option) => ({
+        name: sanitizeText(option.name, 32),
+        values: option.values.map((value) => sanitizeText(value, 128)),
+      })),
       variants: item.variants.map((variant) => ({
         price: variant.price,
         available: variant.available,
-        values: variant.values,
+        values: variant.values.map((value) => sanitizeText(value, 128)),
       })),
     }),
   };
@@ -438,6 +475,9 @@ function resolveIds(catalog: StoreCatalog, state: TurnState, ids: string[]) {
 }
 
 const addressOf = (item: CatalogItem) => catalogAddress(item.author, item.d);
+
+/** Every model-written string goes through the answer sanitizer (4.3) before it is kept. */
+const clean = (text: string): string => sanitizeAnswerText(text);
 
 function presentationResult(dropped: string[], accepted: boolean): ToolOutcome {
   if (!accepted) {
@@ -534,7 +574,12 @@ export function executeTool(
   call: ToolUseBlock,
 ): ToolOutcome {
   const input = call.input;
-  if (typeof input.status === 'string' && state.statuses.length < MAX_STATUS_LINES_PER_TURN) {
+  // Status lines only from the read tools (5.2), at most two per turn (4.2).
+  if (
+    READ_TOOLS.includes(call.name) &&
+    typeof input.status === 'string' &&
+    state.statuses.length < MAX_STATUS_LINES_PER_TURN
+  ) {
     const line = sanitizeText(input.status, LIMITS.STATUS_TEXT_CHARS).trim();
     if (line.length > 0) {
       state.statuses.push(line);
@@ -570,13 +615,15 @@ export function executeTool(
           const item = catalog.items.get(pick.id);
           return {
             address: item ? addressOf(item) : '',
-            ...(pick.reason ? { reason: pick.reason } : {}),
+            ...(pick.reason && clean(pick.reason) ? { reason: clean(pick.reason) } : {}),
           };
         });
       if (picks.length > 0) {
         state.components.push({
           type: 'products',
-          ...(parsed.data.title ? { title: parsed.data.title } : {}),
+          ...(parsed.data.title && clean(parsed.data.title)
+            ? { title: clean(parsed.data.title) }
+            : {}),
           picks,
         });
       }
@@ -587,20 +634,21 @@ export function executeTool(
       if (!parsed.success) {
         return invalid(parsed.error);
       }
-      const { kept, dropped } = resolveIds(catalog, state, parsed.data.ids);
+      // A product compared with itself is no comparison: duplicates count once.
+      const uniqueIds = [...new Set(parsed.data.ids)];
+      const { kept, dropped } = resolveIds(catalog, state, uniqueIds);
       if (kept.length < LIMITS.MIN_COMPARISON) {
         return presentationResult([...dropped, ...kept.map((item) => item.d)], false);
       }
-      const keptIndexes = parsed.data.ids
-        .map((id, index) => (kept.some((item) => item.d === id) ? index : -1))
-        .filter((index) => index >= 0);
+      // Each kept product's cell is the one at its first position in the model's ids.
+      const keptIndexes = kept.map((item) => parsed.data.ids.indexOf(item.d));
       const rows = [
         { dimension: PRICE_DIMENSION, cells: kept.map(priceCell) },
         ...parsed.data.rows
-          .filter((row) => !/price|cost|цен|стоим/i.test(row.dimension))
+          .filter((row) => clean(row.dimension) && !/price|cost|цен|стоим/i.test(row.dimension))
           .map((row) => ({
-            dimension: row.dimension,
-            cells: keptIndexes.map((index) => row.cells[index] ?? ''),
+            dimension: clean(row.dimension),
+            cells: keptIndexes.map((index) => clean(row.cells[index] ?? '') || '-'),
           })),
       ];
       const recommendedItem =
@@ -609,7 +657,9 @@ export function executeTool(
           : undefined;
       state.components.push({
         type: 'comparison',
-        ...(parsed.data.title ? { title: parsed.data.title } : {}),
+        ...(parsed.data.title && clean(parsed.data.title)
+          ? { title: clean(parsed.data.title) }
+          : {}),
         addresses: kept.map(addressOf),
         rows,
         ...(recommendedItem ? { recommended: addressOf(recommendedItem) } : {}),
@@ -622,16 +672,21 @@ export function executeTool(
         return invalid(parsed.error);
       }
       const allDropped: string[] = [];
-      const steps = parsed.data.steps.map((step) => {
+      const steps = parsed.data.steps.map((step, stepIndex) => {
         const { kept, dropped } = resolveIds(catalog, state, step.ids);
         allDropped.push(...dropped);
+        const detail = step.detail ? clean(step.detail) : '';
         return {
-          label: step.label,
-          ...(step.detail ? { detail: step.detail } : {}),
+          label: clean(step.label) || `${stepIndex + 1}`,
+          ...(detail ? { detail } : {}),
           addresses: kept.map(addressOf),
         };
       });
-      state.components.push({ type: 'plan', title: parsed.data.title, steps });
+      state.components.push({
+        type: 'plan',
+        title: clean(parsed.data.title) || '-',
+        steps,
+      });
       return presentationResult(allDropped, true);
     }
     case 'present_guide': {
@@ -639,11 +694,13 @@ export function executeTool(
       if (!parsed.success) {
         return invalid(parsed.error);
       }
-      state.components.push({
-        type: 'guide',
-        title: parsed.data.title,
-        sections: parsed.data.sections,
-      });
+      const sections = parsed.data.sections
+        .map((section) => ({ heading: clean(section.heading), body: clean(section.body) }))
+        .filter((section) => section.heading && section.body);
+      if (sections.length === 0) {
+        return { content: JSON.stringify({ error: 'Every section was empty.' }), isError: true };
+      }
+      state.components.push({ type: 'guide', title: clean(parsed.data.title) || '-', sections });
       return { content: JSON.stringify({ shown: true }) };
     }
     case 'present_suggestions': {
@@ -652,7 +709,7 @@ export function executeTool(
         return invalid(parsed.error);
       }
       state.chips = parsed.data.chips
-        .map((chip) => sanitizeText(chip, LIMITS.CHIP_CHARS).trim())
+        .map((chip) => clean(chip).slice(0, LIMITS.CHIP_CHARS))
         .filter((chip) => chip.length > 0)
         .slice(0, LIMITS.MAX_CHIPS);
       return { content: JSON.stringify({ shown: true }) };

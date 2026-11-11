@@ -68,6 +68,21 @@ function toOpenAiMessages(messages: LlmMessage[]): Record<string, unknown>[] {
   return converted;
 }
 
+/** A message's text, whether a string or an array of text parts. */
+function textOf(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((part) => recordOf(part))
+    .filter((part) => part.type === 'text' && typeof part.text === 'string')
+    .map((part) => String(part.text))
+    .join('');
+}
+
 function parseArguments(raw: unknown): Record<string, unknown> {
   if (typeof raw !== 'string') {
     return recordOf(raw);
@@ -146,16 +161,18 @@ export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig): 
       const usage = recordOf(json.usage);
       const details = recordOf(usage.prompt_tokens_details);
       const promptTokens = numberOr(usage.prompt_tokens, 0);
-      const cached = numberOr(details.cached_tokens, 0);
+      // OpenAI and OpenRouter report cached_tokens; direct DeepSeek reports prompt_cache_hit_tokens.
+      const cached = numberOr(details.cached_tokens, numberOr(usage.prompt_cache_hit_tokens, 0));
+      const cacheWrites = numberOr(details.cache_write_tokens, 0);
       return {
-        text: typeof message.content === 'string' ? message.content : '',
+        text: textOf(message.content),
         toolCalls,
         stopReason: typeof first.finish_reason === 'string' ? first.finish_reason : 'unknown',
         usage: {
-          // OpenAI-style prompt_tokens include the cached part; split it out.
-          inputTokens: Math.max(0, promptTokens - cached),
+          // prompt_tokens include cached reads and cache writes; each is priced on its own.
+          inputTokens: Math.max(0, promptTokens - cached - cacheWrites),
           cachedInputTokens: cached,
-          cacheWriteTokens: numberOr(details.cache_write_tokens, 0),
+          cacheWriteTokens: cacheWrites,
           outputTokens: numberOr(usage.completion_tokens, 0),
         },
       };

@@ -232,3 +232,4 @@ woocommerce
 CLDR
 dealbreakers
 стоим
+fullwidth

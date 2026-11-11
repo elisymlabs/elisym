@@ -32,12 +32,20 @@ export {
   type MoneyAmount,
   type PriceCheckContext,
   type PriceViolation,
+  cardsPointer,
   checkPrices,
   extractAmounts,
+  normalizeForCheck,
   stripViolations,
 } from './price-check';
-export { CATALOG_IN_PROMPT_TOKENS, globalBlock, sessionBlock, storeBlock } from './prompt';
+export {
+  CATALOG_IN_PROMPT_TOKENS,
+  estimateTokens,
+  globalBlock,
+  sessionBlock,
+  storeBlock,
+} from './prompt';
 export { SKILL_NAMES, skillIndex, skillText } from './skills';
 export { sanitizeAnswerText } from './text-sanitize';
 export { MAX_SEARCH_RESULTS, TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
-export { MAX_TOOL_ROUNDS, type TurnInput, type TurnOutput, runTurn } from './turn';
+export { MAX_TOOL_ROUNDS, TurnError, type TurnInput, type TurnOutput, runTurn } from './turn';

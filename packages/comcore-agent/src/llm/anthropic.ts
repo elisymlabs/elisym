@@ -37,6 +37,23 @@ function toAnthropicMessage(message: LlmMessage): Record<string, unknown> {
   return { role: message.role, content: message.content.map(toAnthropicContent) };
 }
 
+/** Mark the last content block of the last message as a cache breakpoint. */
+function withLastMessageCached(
+  messages: Record<string, unknown>[],
+  enabled: boolean,
+): Record<string, unknown>[] {
+  const last = messages.at(-1);
+  if (!enabled || !last || !Array.isArray(last.content) || last.content.length === 0) {
+    return messages;
+  }
+  const content = [...last.content];
+  const lastBlock = content.at(-1);
+  if (typeof lastBlock === 'object' && lastBlock !== null) {
+    content[content.length - 1] = { ...lastBlock, cache_control: { type: 'ephemeral' } };
+  }
+  return [...messages.slice(0, -1), { ...last, content }];
+}
+
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
@@ -59,7 +76,10 @@ export function createAnthropicProvider(config: AnthropicConfig): LlmProvider {
           text: block.text,
           ...(block.cache ? { cache_control: { type: 'ephemeral' } } : {}),
         })),
-        messages: request.messages.map(toAnthropicMessage),
+        messages: withLastMessageCached(
+          request.messages.map(toAnthropicMessage),
+          request.cacheLastMessage === true,
+        ),
         tools: request.tools.map((tool) => ({
           name: tool.name,
           description: tool.description,

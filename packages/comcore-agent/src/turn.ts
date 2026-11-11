@@ -1,4 +1,4 @@
-import { type Answer, fitAnswer } from '@elisym/comcore';
+import { type Answer, LIMITS, fitAnswer, parseAddress } from '@elisym/comcore';
 import type { StoreCatalog } from './catalog/store-catalog';
 import { fence } from './fence';
 import {
@@ -12,7 +12,7 @@ import {
 import { type PriceViolation, checkPrices, stripViolations } from './price-check';
 import { globalBlock, sessionBlock, storeBlock } from './prompt';
 import { sanitizeAnswerText } from './text-sanitize';
-import { TOOL_SPECS, executeTool, newTurnState } from './tools';
+import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
 
 /** Tool rounds per turn before a forced no-tool round (5.5). */
 export const MAX_TOOL_ROUNDS = 6;
@@ -36,6 +36,8 @@ export interface TurnInput {
   earlierVisitorMessages: readonly string[];
   /** Policy passages returned earlier in the session. */
   earlierPolicyPassages: readonly string[];
+  /** Ids tools returned earlier in the session: still presentable (5.5). */
+  earlierAllowedIds?: readonly string[];
   maxTokens?: number;
   signal?: AbortSignal;
   /** Called with each status line as tools produce it (at most 2 per turn, 4.2). */
@@ -47,17 +49,52 @@ export interface TurnOutput {
   usage: Usage;
   /** Model calls made, including the price-check re-run. */
   modelCalls: number;
-  /** The history to keep for the next turn: this turn's ask and final answer text. */
+  /** The history to keep for the next turn: this turn's ask and a note of the answer. */
   history: LlmMessage[];
   /** Policy passages returned this turn, to add to the session's. */
   policyPassages: string[];
+  /** Ids tools returned this turn (and earlier), to keep for the session. */
+  allowedIds: string[];
   /** What the price check removed after the re-run, if anything. */
   stripped: PriceViolation[];
 }
 
+/** A turn that ended without an answer; carries what it already spent (5.8 settles it). */
+export class TurnError extends Error {
+  constructor(
+    readonly reason: unknown,
+    readonly usage: Usage,
+    readonly modelCalls: number,
+  ) {
+    super(reason instanceof Error ? reason.message : 'The turn failed');
+    this.name = 'TurnError';
+  }
+}
+
 function correctionMessage(violations: readonly PriceViolation[]): string {
   const quoted = violations.map((violation) => `- "${violation.text.slice(0, 200)}"`).join('\n');
-  return `Your answer stated amounts that are not prices of the products you showed, a sum or difference of them, a policy amount or the visitor's own figure:\n${quoted}\nRewrite the answer without those amounts. Do not convert currencies or estimate prices; the cards show the prices.`;
+  return `Your answer stated amounts that are not prices of the products you showed or named, a sum or difference of them, a policy amount or the visitor's own figure:\n${quoted}\nRewrite the answer without those amounts. Keep the cards you already showed unless they were wrong. Do not convert currencies or estimate prices; the cards show the prices.`;
+}
+
+/** The assistant history entry: the text plus which products were shown, so "the second one" resolves. */
+function historyNote(answer: Answer, catalog: StoreCatalog): string {
+  const shown = answer.components.flatMap((component) => {
+    switch (component.type) {
+      case 'products':
+        return component.picks.map((pick) => pick.address);
+      case 'comparison':
+        return component.addresses;
+      case 'plan':
+        return component.steps.flatMap((step) => step.addresses);
+      case 'guide':
+        return [];
+    }
+  });
+  const named = [...new Set(shown.map((address) => parseAddress(address)?.d ?? ''))]
+    .filter((d) => d.length > 0)
+    .map((d, index) => `${index + 1}. ${d} (${catalog.items.get(d)?.title ?? d})`);
+  const shownLine = named.length > 0 ? `\n[shown, in order: ${named.join('; ')}]` : '';
+  return `${answer.text || '(cards only)'}${shownLine}`;
 }
 
 /**
@@ -73,13 +110,18 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     content: [{ type: 'text', text: fence('visitor', input.text, VISITOR_FENCE_CHARS) }],
   };
   const maxTokens = input.maxTokens ?? DEFAULT_MAX_TOKENS;
+  const locale = input.locale ?? 'en';
   let usage = ZERO_USAGE;
   let modelCalls = 0;
   const policyPassages: string[] = [];
+  // Turn-scoped: the re-run keeps the ids the first loop earned, and the status cap spans both.
+  const allowedIds = new Set<string>([...snapshotIds, ...(input.earlierAllowedIds ?? [])]);
+  const statuses: string[] = [];
+  let reportedStatuses = 0;
 
-  const runLoop = async (messages: LlmMessage[]) => {
-    const state = newTurnState(snapshotIds, policyPassages);
-    let reportedStatuses = 0;
+  const runLoop = async (start: LlmMessage[]) => {
+    const state = newTurnState(allowedIds, policyPassages, statuses);
+    let messages = start;
     for (let round = 0; ; round++) {
       const forceText = round >= MAX_TOOL_ROUNDS;
       const response = await input.provider.turn({
@@ -88,10 +130,12 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         tools: TOOL_SPECS,
         toolChoice: forceText ? 'none' : 'auto',
         maxTokens,
+        cacheLastMessage: true,
         ...(input.signal ? { signal: input.signal } : {}),
       });
       modelCalls += 1;
       usage = addUsage(usage, response.usage);
+      // A model that still calls tools on the forced round is not obeyed: its text is the answer.
       if (response.toolCalls.length === 0 || forceText) {
         return { text: response.text, state, messages };
       }
@@ -104,8 +148,8 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
           ...(outcome.isError ? { isError: true } : {}),
         };
       });
-      while (reportedStatuses < state.statuses.length) {
-        const line = state.statuses[reportedStatuses];
+      while (reportedStatuses < statuses.length) {
+        const line = statuses[reportedStatuses];
         reportedStatuses += 1;
         if (line !== undefined) {
           input.onStatus?.(line);
@@ -125,14 +169,14 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     }
   };
 
-  const toAnswer = (text: string, state: ReturnType<typeof newTurnState>): Answer =>
+  const toAnswer = (text: string, state: TurnState): Answer =>
     fitAnswer(
       {
         type: 'answer',
         ask_id: input.askId,
         session_end: input.sessionEnd,
-        text: sanitizeAnswerText(text).slice(0, 4_000),
-        components: state.components.slice(0, 4),
+        text: sanitizeAnswerText(text).slice(0, LIMITS.ANSWER_TEXT_CHARS),
+        components: state.components.slice(0, LIMITS.MAX_COMPONENTS),
         chips: state.chips,
       },
       input.now,
@@ -143,25 +187,35 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     items: input.catalog.items,
     visitorMessages: [...input.earlierVisitorMessages, input.text],
     policyPassages: [...input.earlierPolicyPassages, ...policyPassages],
-    locales: [input.locale ?? 'en', input.catalog.config.language],
+    locales: [locale, input.catalog.config.language],
   });
 
-  const first = await runLoop([...input.history, visitorMessage]);
-  let answer = toAnswer(first.text, first.state);
-  let violations = checkPrices(answer, checkContext());
+  let answer: Answer;
   let stripped: PriceViolation[] = [];
-  if (violations.length > 0) {
-    const retry = await runLoop([
-      ...first.messages,
-      { role: 'assistant', content: [{ type: 'text', text: first.text || '(no text)' }] },
-      { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
-    ]);
-    answer = toAnswer(retry.text, retry.state);
-    violations = checkPrices(answer, checkContext());
+  try {
+    const first = await runLoop([...input.history, visitorMessage]);
+    answer = toAnswer(first.text, first.state);
+    let violations = checkPrices(answer, checkContext());
     if (violations.length > 0) {
-      stripped = violations;
-      answer = stripViolations(answer, violations);
+      const retry = await runLoop([
+        ...first.messages,
+        { role: 'assistant', content: [{ type: 'text', text: first.text || '(no text)' }] },
+        { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
+      ]);
+      // A re-run that only rewrites its text keeps the cards it showed the first time.
+      const retryState: TurnState =
+        retry.state.components.length > 0 || retry.state.chips.length > 0
+          ? retry.state
+          : first.state;
+      answer = toAnswer(retry.text, retryState);
+      violations = checkPrices(answer, checkContext());
+      if (violations.length > 0) {
+        stripped = violations;
+        answer = stripViolations(answer, violations, locale);
+      }
     }
+  } catch (error) {
+    throw new TurnError(error, usage, modelCalls);
   }
   return {
     answer,
@@ -170,9 +224,10 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     history: [
       ...input.history,
       visitorMessage,
-      { role: 'assistant', content: [{ type: 'text', text: answer.text || '(shown cards)' }] },
+      { role: 'assistant', content: [{ type: 'text', text: historyNote(answer, input.catalog) }] },
     ],
     policyPassages,
+    allowedIds: [...allowedIds],
     stripped,
   };
 }

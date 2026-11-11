@@ -75,7 +75,9 @@ describe('runTurn', () => {
     // First loop: 2 calls; re-run loop: present again then the same text.
     expect(requests.length).toBeGreaterThan(2);
     expect(JSON.stringify(requests.at(-1)?.messages)).toContain('not prices of the products');
-    expect(output.answer.text).toBe('Great choice.');
+    expect(output.answer.text).toBe('Great choice. See the cards for prices.');
+    // The re-run only rewrote text: the cards from the first loop are kept.
+    expect(output.answer.components).toHaveLength(1);
     expect(output.stripped).toHaveLength(1);
   });
 });

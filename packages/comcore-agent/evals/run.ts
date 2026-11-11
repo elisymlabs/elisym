@@ -22,6 +22,7 @@ import {
   StoreCatalog,
   checkPrices,
   createAnthropicProvider,
+  fence,
   createOpenAiCompatibleProvider,
   runTurn,
 } from '../src';
@@ -110,12 +111,15 @@ for (const testCase of cases) {
   const output = await runTurn({
     catalog,
     provider,
-    history: (testCase.history ?? []).flatMap((text, index) => [
-      {
-        role: index % 2 === 0 ? ('user' as const) : ('assistant' as const),
-        content: [{ type: 'text' as const, text }],
-      },
-    ]),
+    // History visitor messages are fenced exactly as runTurn fences live ones.
+    history: (testCase.history ?? []).map((text, index) =>
+      index % 2 === 0
+        ? {
+            role: 'user' as const,
+            content: [{ type: 'text' as const, text: fence('visitor', text, 4_000) }],
+          }
+        : { role: 'assistant' as const, content: [{ type: 'text' as const, text }] },
+    ),
     askId: '0'.repeat(32),
     text: testCase.message,
     ...(testCase.page ? { pageUrl: testCase.page } : {}),
@@ -163,8 +167,11 @@ for (const testCase of cases) {
   const residual = checkPrices(output.answer, {
     storeCurrency: catalog.config.currency,
     items: catalog.items,
-    visitorMessages: [testCase.message],
-    policyPassages: store.policies.map((policy) => policy.body),
+    visitorMessages: [
+      ...(testCase.history ?? []).filter((_text, index) => index % 2 === 0),
+      testCase.message,
+    ],
+    policyPassages: output.policyPassages,
     locales: [testCase.locale ?? 'en', catalog.config.language],
   });
   if (residual.length > 0) {

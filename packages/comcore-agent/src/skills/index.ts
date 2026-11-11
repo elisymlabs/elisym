@@ -50,7 +50,7 @@ The visitor wants a set of items toward a goal (an outfit, a trip, a room, a gif
 
 - Break the goal into the parts it needs; search each part in the same round.
 - Build the plan with present_plan: one step per part, the chosen product ids on each step, a one-line detail on why.
-- Fit the budget using the prices tool results returned; when the cheapest workable set is over budget, say by how much and which part to drop or downgrade. Never invent a total you did not compute from results.
+- Fit the budget using the prices tool results returned; when the cheapest workable set is over budget, say so and which part to drop or downgrade, without stating the difference. Never state a total or a difference you did not read from results.
 - Mark parts the catalog cannot supply as gaps; do not fill them with products from elsewhere.
 - Offer chips to swap a part, raise or lower the budget, or see alternatives for one step.`;
 

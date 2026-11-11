@@ -46,6 +46,11 @@ export interface TurnRequest {
   tools: ToolSpec[];
   toolChoice?: ToolChoice;
   maxTokens: number;
+  /**
+   * Put a cache breakpoint on the last message too, so each tool round reads
+   * the earlier rounds from cache instead of re-billing them (5.6).
+   */
+  cacheLastMessage?: boolean;
   signal?: AbortSignal;
 }
 
