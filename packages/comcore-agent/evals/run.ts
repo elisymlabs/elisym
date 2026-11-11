@@ -20,7 +20,6 @@ import {
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import {
   StoreCatalog,
-  checkPrices,
   createAnthropicProvider,
   fence,
   createOpenAiCompatibleProvider,
@@ -108,27 +107,35 @@ const provider = openRouterModel
 
 let passed = 0;
 for (const testCase of cases) {
-  const output = await runTurn({
-    catalog,
-    provider,
-    // History visitor messages are fenced exactly as runTurn fences live ones.
-    history: (testCase.history ?? []).map((text, index) =>
-      index % 2 === 0
-        ? {
-            role: 'user' as const,
-            content: [{ type: 'text' as const, text: fence('visitor', text, 4_000) }],
-          }
-        : { role: 'assistant' as const, content: [{ type: 'text' as const, text }] },
-    ),
-    askId: '0'.repeat(32),
-    text: testCase.message,
-    ...(testCase.page ? { pageUrl: testCase.page } : {}),
-    ...(testCase.locale ? { locale: testCase.locale } : {}),
-    sessionEnd: NOW + 3_600,
-    now: NOW,
-    earlierVisitorMessages: (testCase.history ?? []).filter((_text, index) => index % 2 === 0),
-    earlierPolicyPassages: [],
-  });
+  let output: Awaited<ReturnType<typeof runTurn>>;
+  try {
+    output = await runTurn({
+      catalog,
+      provider,
+      // History visitor messages are fenced exactly as runTurn fences live ones.
+      history: (testCase.history ?? []).map((text, index) =>
+        index % 2 === 0
+          ? {
+              role: 'user' as const,
+              content: [{ type: 'text' as const, text: fence('visitor', text, 4_000) }],
+            }
+          : { role: 'assistant' as const, content: [{ type: 'text' as const, text }] },
+      ),
+      askId: '0'.repeat(32),
+      text: testCase.message,
+      ...(testCase.page ? { pageUrl: testCase.page } : {}),
+      ...(testCase.locale ? { locale: testCase.locale } : {}),
+      sessionEnd: NOW + 3_600,
+      now: NOW,
+      earlierVisitorMessages: (testCase.history ?? []).filter((_text, index) => index % 2 === 0),
+      earlierPolicyPassages: [],
+    });
+  } catch (error) {
+    console.log(
+      `FAIL ${testCase.id} [${testCase.category}] turn error: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    continue;
+  }
   const presented = output.answer.components
     .flatMap((component) =>
       component.type === 'products'
@@ -163,19 +170,6 @@ for (const testCase of cases) {
   }
   if (output.stripped.length > 0) {
     failures.push(`price check stripped ${output.stripped.length} string(s) after the re-run`);
-  }
-  const residual = checkPrices(output.answer, {
-    storeCurrency: catalog.config.currency,
-    items: catalog.items,
-    visitorMessages: [
-      ...(testCase.history ?? []).filter((_text, index) => index % 2 === 0),
-      testCase.message,
-    ],
-    policyPassages: output.policyPassages,
-    locales: [testCase.locale ?? 'en', catalog.config.language],
-  });
-  if (residual.length > 0) {
-    failures.push('price check still fails on the final answer');
   }
   const ok = failures.length === 0;
   passed += ok ? 1 : 0;

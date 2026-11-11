@@ -68,6 +68,24 @@ function toOpenAiMessages(messages: LlmMessage[]): Record<string, unknown>[] {
   return converted;
 }
 
+/** On cache-mark routes, mark the last user message so tool rounds read earlier ones from cache. */
+function withLastUserCached(
+  messages: Record<string, unknown>[],
+  enabled: boolean,
+): Record<string, unknown>[] {
+  const last = messages.at(-1);
+  if (!enabled || !last || last.role !== 'user' || typeof last.content !== 'string') {
+    return messages;
+  }
+  return [
+    ...messages.slice(0, -1),
+    {
+      ...last,
+      content: [{ type: 'text', text: last.content, cache_control: { type: 'ephemeral' } }],
+    },
+  ];
+}
+
 /** A message's text, whether a string or an array of text parts. */
 function textOf(content: unknown): string {
   if (typeof content === 'string') {
@@ -114,7 +132,10 @@ export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig): 
         max_tokens: request.maxTokens,
         messages: [
           { role: 'system', content: systemContent },
-          ...toOpenAiMessages(request.messages),
+          ...withLastUserCached(
+            toOpenAiMessages(request.messages),
+            config.passCacheMarks === true && request.cacheLastMessage === true,
+          ),
         ],
         tools: request.tools.map((tool) => ({
           type: 'function',

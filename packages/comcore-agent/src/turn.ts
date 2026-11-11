@@ -1,6 +1,6 @@
 import { type Answer, LIMITS, fitAnswer, parseAddress } from '@elisym/comcore';
 import type { StoreCatalog } from './catalog/store-catalog';
-import { fence } from './fence';
+import { fence, sanitizeText } from './fence';
 import {
   type LlmMessage,
   type LlmProvider,
@@ -92,7 +92,10 @@ function historyNote(answer: Answer, catalog: StoreCatalog): string {
   });
   const named = [...new Set(shown.map((address) => parseAddress(address)?.d ?? ''))]
     .filter((d) => d.length > 0)
-    .map((d, index) => `${index + 1}. ${d} (${catalog.items.get(d)?.title ?? d})`);
+    .map(
+      (d, index) =>
+        `${index + 1}. ${d} (${sanitizeText(catalog.items.get(d)?.title ?? d, LIMITS.TITLE_CHARS)})`,
+    );
   const shownLine = named.length > 0 ? `\n[shown, in order: ${named.join('; ')}]` : '';
   return `${answer.text || '(cards only)'}${shownLine}`;
 }
@@ -118,12 +121,14 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   const allowedIds = new Set<string>([...snapshotIds, ...(input.earlierAllowedIds ?? [])]);
   const statuses: string[] = [];
   let reportedStatuses = 0;
+  // Tool rounds are counted per turn, across the corrective re-run (5.5).
+  let toolRounds = 0;
 
   const runLoop = async (start: LlmMessage[]) => {
     const state = newTurnState(allowedIds, policyPassages, statuses);
     let messages = start;
-    for (let round = 0; ; round++) {
-      const forceText = round >= MAX_TOOL_ROUNDS;
+    for (;;) {
+      const forceText = toolRounds >= MAX_TOOL_ROUNDS;
       const response = await input.provider.turn({
         system,
         messages,
@@ -139,6 +144,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       if (response.toolCalls.length === 0 || forceText) {
         return { text: response.text, state, messages };
       }
+      toolRounds += 1;
       const results: ToolResultBlock[] = response.toolCalls.map((call) => {
         const outcome = executeTool(input.catalog, state, call);
         return {
@@ -202,16 +208,23 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         { role: 'assistant', content: [{ type: 'text', text: first.text || '(no text)' }] },
         { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
       ]);
-      // A re-run that only rewrites its text keeps the cards it showed the first time.
-      const retryState: TurnState =
-        retry.state.components.length > 0 || retry.state.chips.length > 0
-          ? retry.state
-          : first.state;
+      // A re-run that only rewrites its text keeps what it did not redo, field by field.
+      const retryState: TurnState = {
+        ...retry.state,
+        components:
+          retry.state.components.length > 0 ? retry.state.components : first.state.components,
+        chips: retry.state.chips.length > 0 ? retry.state.chips : first.state.chips,
+      };
       answer = toAnswer(retry.text, retryState);
       violations = checkPrices(answer, checkContext());
       if (violations.length > 0) {
         stripped = violations;
-        answer = stripViolations(answer, violations, locale);
+        // The appended pointer can lengthen the text: cut and fit again.
+        const cleaned = stripViolations(answer, violations, locale);
+        answer = fitAnswer(
+          { ...cleaned, text: cleaned.text.slice(0, LIMITS.ANSWER_TEXT_CHARS) },
+          input.now,
+        );
       }
     }
   } catch (error) {

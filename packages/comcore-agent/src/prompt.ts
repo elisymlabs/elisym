@@ -6,18 +6,25 @@ import { skillIndex } from './skills';
 
 /** The whole catalog goes into the prompt below this many estimated tokens (K15). */
 export const CATALOG_IN_PROMPT_TOKENS = 40_000;
-/** A conservative token estimate: about 4 chars per token for Latin text, 1.5 for other scripts. */
+/**
+ * A conservative token estimate: about 4 chars per token for Latin text, 1.5
+ * for other alphabets, and a full token per CJK character.
+ */
 export function estimateTokens(text: string): number {
   let latin = 0;
-  let other = 0;
+  let alphabetic = 0;
+  let ideographic = 0;
   for (const character of text) {
-    if ((character.codePointAt(0) ?? 0) < 0x0250) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint < 0x0250) {
       latin += 1;
+    } else if (codePoint >= 0x2e80) {
+      ideographic += 1;
     } else {
-      other += 1;
+      alphabetic += 1;
     }
   }
-  return Math.ceil(latin / 4 + other / 1.5);
+  return Math.ceil(latin / 4 + alphabetic / 1.5 + ideographic);
 }
 const MAX_CATALOG_CHARS = CATALOG_IN_PROMPT_TOKENS * 4;
 const PRIVATE_FENCE_CHARS = 16_000;
@@ -96,7 +103,10 @@ export function storeBlock(catalog: StoreCatalog): StoreBlockResult {
   }
   if (catalog.policies.length > 0) {
     parts.push(
-      `Policies (search_policies reads them): ${catalog.policies.map((policy) => `${policy.slug} (${sanitizeText(policy.title, 80)})`).join(', ')}.`,
+      `Policies (search_policies reads them): ${[...catalog.policies]
+        .sort((left, right) => left.slug.localeCompare(right.slug, 'en'))
+        .map((policy) => `${policy.slug} (${sanitizeText(policy.title, 80)})`)
+        .join(', ')}.`,
     );
   }
   const lines = catalogLines(catalog);

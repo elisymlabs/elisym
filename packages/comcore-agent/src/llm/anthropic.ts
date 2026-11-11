@@ -114,7 +114,7 @@ export function createAnthropicProvider(config: AnthropicConfig): LlmProvider {
       for (const entry of content) {
         const block = recordOf(entry);
         if (block.type === 'text' && typeof block.text === 'string') {
-          text += block.text;
+          text += text.length > 0 ? `\n\n${block.text}` : block.text;
         } else if (
           block.type === 'tool_use' &&
           typeof block.id === 'string' &&

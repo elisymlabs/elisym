@@ -34,7 +34,7 @@ export function stripInvisible(text: string): string {
 /** Runs of angle brackets or lookalikes that could pose as our fence. */
 const FENCE_LOOKALIKE_RE = /[<‹«＜⟨]{2,}|[>›»＞⟩]{2,}/g;
 /** The fence keywords themselves, in any case. */
-const FENCE_KEYWORD_RE = /\b(END\s+)?DATA\b(?=\s*(source|[>›»＞⟩]))/gi;
+const FENCE_KEYWORD_RE = /\bEND\s+DATA\b|\bDATA\s+source\s*=/gi;
 /** A line that poses as a chat turn ("Assistant:", "User:"...); normal prose keeps its colons. */
 const FORGED_TURN_RE = /^(\s*)(human|assistant|system|user)\s*:/gim;
 

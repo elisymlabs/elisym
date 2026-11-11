@@ -11,6 +11,7 @@ import {
 } from './catalog/store-catalog';
 import { fence, sanitizeText } from './fence';
 import type { ToolSpec, ToolUseBlock } from './llm/types';
+import { extractAmounts } from './price-check';
 import { SKILL_NAMES, skillText } from './skills';
 import { sanitizeAnswerText } from './text-sanitize';
 
@@ -23,6 +24,8 @@ const MAX_POLICY_RESULTS = 3;
 const MAX_STATUS_LINES_PER_TURN = 2;
 const PRICE_DIMENSION = 'Price';
 const READ_TOOLS: readonly string[] = ['search_products', 'get_product_details', 'search_policies'];
+/** Number grammars a status line is read with: a status is short, so any reading that finds money drops it. */
+const STATUS_LOCALES = ['en', 'de', 'fr', 'ru'] as const;
 const FREQUENCY_FILTERS = ['once', 'hour', 'day', 'week', 'month', 'year'] as const;
 
 const statusProperty = {
@@ -477,7 +480,18 @@ function resolveIds(catalog: StoreCatalog, state: TurnState, ids: string[]) {
 const addressOf = (item: CatalogItem) => catalogAddress(item.author, item.d);
 
 /** Every model-written string goes through the answer sanitizer (4.3) before it is kept. */
-const clean = (text: string): string => sanitizeAnswerText(text);
+/**
+ * Every model-written string goes through the answer sanitizer (4.3) and is
+ * cut to its limit afterwards: NFKC can lengthen text past what zod checked.
+ */
+const clean = (text: string, max: number): string => sanitizeAnswerText(text).slice(0, max);
+
+/** A price row the model wrote under any common name, or one of bare numbers: the server owns prices. */
+// cspell:disable
+const PRICE_DIMENSION_RE =
+  /price|cost|preis|prix|precio|preço|prezzo|prijs|cena|cen[ay]|цен|стоим|ціна|вартість|価格|价格|價格|가격|fiyat/i;
+// cspell:enable
+const isBareNumber = (cell: string) => /^[\d\s.,'’]+$/.test(cell.trim());
 
 function presentationResult(dropped: string[], accepted: boolean): ToolOutcome {
   if (!accepted) {
@@ -580,8 +594,9 @@ export function executeTool(
     typeof input.status === 'string' &&
     state.statuses.length < MAX_STATUS_LINES_PER_TURN
   ) {
-    const line = sanitizeText(input.status, LIMITS.STATUS_TEXT_CHARS).trim();
-    if (line.length > 0) {
+    const line = clean(input.status, LIMITS.STATUS_TEXT_CHARS).trim();
+    // A status goes out before any check runs: one that states an amount is dropped.
+    if (line.length > 0 && extractAmounts(line, [...STATUS_LOCALES]).length === 0) {
       state.statuses.push(line);
     }
   }
@@ -615,14 +630,16 @@ export function executeTool(
           const item = catalog.items.get(pick.id);
           return {
             address: item ? addressOf(item) : '',
-            ...(pick.reason && clean(pick.reason) ? { reason: clean(pick.reason) } : {}),
+            ...(pick.reason && clean(pick.reason, LIMITS.REASON_CHARS)
+              ? { reason: clean(pick.reason, LIMITS.REASON_CHARS) }
+              : {}),
           };
         });
       if (picks.length > 0) {
         state.components.push({
           type: 'products',
-          ...(parsed.data.title && clean(parsed.data.title)
-            ? { title: clean(parsed.data.title) }
+          ...(parsed.data.title && clean(parsed.data.title, LIMITS.TITLE_CHARS)
+            ? { title: clean(parsed.data.title, LIMITS.TITLE_CHARS) }
             : {}),
           picks,
         });
@@ -645,10 +662,17 @@ export function executeTool(
       const rows = [
         { dimension: PRICE_DIMENSION, cells: kept.map(priceCell) },
         ...parsed.data.rows
-          .filter((row) => clean(row.dimension) && !/price|cost|цен|стоим/i.test(row.dimension))
+          .filter(
+            (row) =>
+              clean(row.dimension, LIMITS.TITLE_CHARS) &&
+              !PRICE_DIMENSION_RE.test(row.dimension) &&
+              !row.cells.every(isBareNumber),
+          )
           .map((row) => ({
-            dimension: clean(row.dimension),
-            cells: keptIndexes.map((index) => clean(row.cells[index] ?? '') || '-'),
+            dimension: clean(row.dimension, LIMITS.TITLE_CHARS),
+            cells: keptIndexes.map(
+              (index) => clean(row.cells[index] ?? '', LIMITS.REASON_CHARS) || '-',
+            ),
           })),
       ];
       const recommendedItem =
@@ -657,8 +681,8 @@ export function executeTool(
           : undefined;
       state.components.push({
         type: 'comparison',
-        ...(parsed.data.title && clean(parsed.data.title)
-          ? { title: clean(parsed.data.title) }
+        ...(parsed.data.title && clean(parsed.data.title, LIMITS.TITLE_CHARS)
+          ? { title: clean(parsed.data.title, LIMITS.TITLE_CHARS) }
           : {}),
         addresses: kept.map(addressOf),
         rows,
@@ -675,16 +699,16 @@ export function executeTool(
       const steps = parsed.data.steps.map((step, stepIndex) => {
         const { kept, dropped } = resolveIds(catalog, state, step.ids);
         allDropped.push(...dropped);
-        const detail = step.detail ? clean(step.detail) : '';
+        const detail = step.detail ? clean(step.detail, LIMITS.PLAN_DETAIL_CHARS) : '';
         return {
-          label: clean(step.label) || `${stepIndex + 1}`,
+          label: clean(step.label, LIMITS.PLAN_STEP_LABEL_CHARS) || `${stepIndex + 1}`,
           ...(detail ? { detail } : {}),
           addresses: kept.map(addressOf),
         };
       });
       state.components.push({
         type: 'plan',
-        title: clean(parsed.data.title) || '-',
+        title: clean(parsed.data.title, LIMITS.TITLE_CHARS) || '-',
         steps,
       });
       return presentationResult(allDropped, true);
@@ -695,12 +719,19 @@ export function executeTool(
         return invalid(parsed.error);
       }
       const sections = parsed.data.sections
-        .map((section) => ({ heading: clean(section.heading), body: clean(section.body) }))
+        .map((section) => ({
+          heading: clean(section.heading, LIMITS.TITLE_CHARS),
+          body: clean(section.body, LIMITS.GUIDE_BODY_CHARS),
+        }))
         .filter((section) => section.heading && section.body);
       if (sections.length === 0) {
         return { content: JSON.stringify({ error: 'Every section was empty.' }), isError: true };
       }
-      state.components.push({ type: 'guide', title: clean(parsed.data.title) || '-', sections });
+      state.components.push({
+        type: 'guide',
+        title: clean(parsed.data.title, LIMITS.TITLE_CHARS) || '-',
+        sections,
+      });
       return { content: JSON.stringify({ shown: true }) };
     }
     case 'present_suggestions': {
@@ -709,7 +740,7 @@ export function executeTool(
         return invalid(parsed.error);
       }
       state.chips = parsed.data.chips
-        .map((chip) => clean(chip).slice(0, LIMITS.CHIP_CHARS))
+        .map((chip) => clean(chip, LIMITS.CHIP_CHARS))
         .filter((chip) => chip.length > 0)
         .slice(0, LIMITS.MAX_CHIPS);
       return { content: JSON.stringify({ shown: true }) };

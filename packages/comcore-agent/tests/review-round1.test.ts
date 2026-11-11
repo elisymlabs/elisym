@@ -468,8 +468,6 @@ describe('every currency word form the old table read is still read', () => {
       '9 euro',
       '9 euros',
       '9 евро',
-      '9 pound',
-      '9 pounds',
       '9 quid',
       '9 yen',
       '9 yuan',
@@ -490,5 +488,12 @@ describe('every currency word form the old table read is still read', () => {
     ]) {
       expect(extractAmounts(text, ['en']).length, text).toBe(1);
     }
+  });
+});
+
+describe('pound is money only in a GBP store', () => {
+  it('reads pounds in GBP and not elsewhere', () => {
+    expect(extractAmounts('costs 9 pounds', ['en'], 'GBP')[0]?.currencies).toEqual(['GBP']);
+    expect(extractAmounts('holds 50 pounds', ['en'], 'USD')).toEqual([]);
   });
 });
