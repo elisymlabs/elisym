@@ -1,0 +1,56 @@
+# nostr-rs-relay config - elisym PRODUCTION relay (relay.elisym.network).
+# Schema = github.com/scsibug/nostr-rs-relay v0.10.0. A relay has no secrets, so this file is
+# static and committed; only Caddy's RELAY_DOMAIN / ACME_EMAIL live in .env.
+#
+# IMPORTANT: relay_url below MUST match RELAY_DOMAIN in .env (the deploy script asserts this).
+# nostr-rs-relay does not interpolate env vars into TOML, so the domain is hard-coded here.
+
+[info]
+relay_url = "ws://localhost:7447/"
+name = "elisym relay (ComCore e2e copy)"
+description = "Dedicated Nostr relay for the elisym agent marketplace - NIP-89 discovery, NIP-90 jobs, agent policies."
+contact = "mailto:ops@elisym.network"
+# pubkey = ""   # optional admin pubkey (hex), surfaced in NIP-11
+
+[database]
+engine = "sqlite"
+# NOTE: data_directory is intentionally NOT set. The image CMD launches the relay as
+# `./nostr-rs-relay --db /usr/src/app/db`, and that --db flag fixes the SQLite directory
+# (the relay creates nostr.db inside it). The named volume is mounted there in docker-compose.
+
+[network]
+address = "0.0.0.0"
+port = 8080
+
+[options]
+# Reject events whose created_at is more than this many seconds in the future.
+# MUST live under [options] - a misplaced copy under [limits] is valid TOML but silently ignored.
+reject_future_seconds = 900
+
+[limits]
+# messages_per_sec is SERVER-WIDE (across all clients), NOT per-connection. It is the main lever
+# bounding total write rate -> disk-growth rate. 10 would throttle the whole marketplace; start at
+# 100 and tune from logs. There is no per-IP/per-connection event cap in nostr-rs-relay.
+messages_per_sec = 100
+
+# All three already DEFAULT to 262144 (256 KiB) in 0.10.0; pinned explicitly to guard against a
+# future image default change. 256 KiB comfortably fits the SDK's largest inline NIP-44 job
+# (MAX_ENCRYPTED_INLINE_BYTES = 60_000 plaintext -> ~80 KB base64 + tags). Larger payloads spill
+# to iroh/Blossom, not the relay.
+max_event_bytes = 262144
+max_ws_message_bytes = 262144
+max_ws_frame_bytes = 262144
+
+# Keep FALSE. The SDK's relay-connectivity probe is `{ kinds:[0], limit:1 }` (author-less,
+# precision score 1); `limit_scrapers = true` would reject it and break the SDK's probe.
+limit_scrapers = false
+
+# Open to ANY pubkey + all elisym kinds, but drop the social firehose so this public relay is not a
+# generic spam sink: 1 = text notes, 7 = reactions, 6 = reposts. elisym never uses these (its kinds
+# are 0, 5000-6999, 7000, 20200/20201, 30023, 31990 - no collision with 1/6/7). Tune from logs if
+# other noisy kinds appear. See prod/DEPLOY.md "Limits & abuse".
+event_kind_blacklist = [1, 7, 6]
+
+# No [authorization] block => OPEN writes (any pubkey may publish). A pubkey whitelist would break
+# the marketplace (job requests/results come from arbitrary keys). nip42_auth is NOT used: the
+# elisym SDK (nostr-tools SimplePool) has no NIP-42 AUTH support and would break.
