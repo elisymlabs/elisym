@@ -114,6 +114,26 @@ describe('syncConnector: Shopify', () => {
     expect(web.urls.some((url) => url.includes('/policies/'))).toBe(false);
   });
 
+  it('refuses a shop whose origin the config does not list, before any read', async () => {
+    const keys = storeKeys();
+    const web = shopifyWeb(keys);
+    const result = await syncConnector(options(keys, web, { origins: ['https://other.example'] }));
+    expect(result).toEqual({
+      status: 'verification_failed',
+      failures: [{ origin: SHOP, reason: 'not_configured' }],
+    });
+    expect(web.urls).toEqual([]);
+  });
+
+  it('syncs nothing when the catalog is over the tier', async () => {
+    const keys = storeKeys();
+    const result = await syncConnector(options(keys, shopifyWeb(keys), { maxItems: 2 }));
+    expect(result).toEqual({ status: 'error', message: "3 products, over the tier's 2" });
+    expect(keys.relay.published).toHaveLength(0);
+    const exact = await syncConnector(options(keys, shopifyWeb(keys), { maxItems: 3 }));
+    expect(exact.status).toBe('ok');
+  });
+
   it('fails verification without the meta tag, and reads no product', async () => {
     const keys = storeKeys();
     const web = shopifyWeb(keys).route(`${SHOP}/`, { body: '<html><head></head></html>' });

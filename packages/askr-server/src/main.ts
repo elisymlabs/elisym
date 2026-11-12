@@ -12,6 +12,8 @@ import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
 import { runCli } from './cli';
 import { DEFAULT_TURN_RESERVE_USD, positiveUsd } from './config';
+import { ShopRateLimiter } from './connectors/http';
+import { ConnectorService } from './connectors/service';
 import type { Db } from './db/db';
 import { STORES_CHANNEL } from './db/db';
 import { KeyVault } from './db/keys';
@@ -104,6 +106,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const startedWorker = worker;
   const shutdown = () => {
     // Give the leases up so another instance takes the stores at once (5.8).
+    connectors.stop();
     void startedWorker
       .shutdown()
       .finally(() => db.close())
@@ -117,15 +120,28 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     relayUrl,
     log: (message) => console.error(message),
   });
+  const catalogs = worker.catalogs;
+  const syncClient = poolSyncClient(pool, relayUrl);
+  const connectors = new ConnectorService({
+    directory,
+    holder: startedWorker.holderId,
+    client: syncClient,
+    configFor: (owner) => catalogs.get(owner)?.config,
+    limiter: new ShopRateLimiter(),
+    log: (message) => console.error(message),
+  });
   const onStoresChanged = () => {
-    // Serve a newly active store first, then publish its stored events (7.3).
-    void worker?.refreshLeases().then(() => publisher.run());
+    // Serve a newly active store first, then publish its stored events (7.3) and sync its connector.
+    void startedWorker
+      .refreshLeases()
+      .then(() => publisher.run())
+      .then(() => connectors.refresh());
   };
   await db.listen(STORES_CHANNEL, onStoresChanged);
   // The poll covers a notify missed while the listening connection was down (7.3).
   setInterval(onStoresChanged, STORE_POLL_MS);
   onStoresChanged();
-  const catalogs = worker.catalogs;
+  await connectors.start();
   const gateway = createGateway({
     state,
     gatewaySecretKey,
@@ -138,8 +154,9 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const admin = createAdminApi({
     directory,
     publicBase: process.env.ASKR_PUBLIC_BASE ?? ASKR_API_BASE,
-    syncClient: poolSyncClient(pool, relayUrl),
+    syncClient,
     storeEventsChanged: onStoresChanged,
+    connectors,
   });
   const handler = async (input: GatewayRequest): Promise<Response> =>
     (await admin(input)) ?? gateway(input);

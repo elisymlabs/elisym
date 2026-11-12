@@ -155,6 +155,11 @@ export class Worker {
     return this.leases.has(assistant);
   }
 
+  /** This worker's lease holder id (5.8). */
+  get holderId(): string {
+    return this.holder;
+  }
+
   /** The leased store of an assistant key, if this worker holds its lease. */
   leaseOf(assistant: string): LeasedStore | undefined {
     return this.leases.get(assistant);

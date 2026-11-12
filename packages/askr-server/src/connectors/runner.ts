@@ -68,6 +68,8 @@ export interface ConnectorSyncOptions {
   /** Shopify: import the refund/shipping/privacy/terms pages as policies (default true). */
   importPolicies?: boolean;
   dryRun?: boolean;
+  /** The tier's products indexed at most (9): a larger catalog is not synced. */
+  maxItems?: number;
   /** Unix seconds. */
   now?: number;
   pace?: number;
@@ -225,8 +227,9 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
     if (options.platform === 'google') {
       catalog = await fetchGoogle(http, url.toString(), nowSecs * 1000);
     } else {
-      // Shopify/Woo: the shop's own origin, verified before anything is read.
-      const failures = await verifyOrigins(http, [url.origin], [url.origin], options.owner);
+      // Shopify/Woo: the shop's own origin, one of the config's (its product pages are the
+      // listings' links, K12) and verified before anything is read.
+      const failures = await verifyOrigins(http, [url.origin], configured, options.owner);
       if (failures.length > 0) {
         return { status: 'verification_failed', failures };
       }
@@ -236,6 +239,12 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
           : await fetchWoo(http, shopBase(options.platform, url), url.origin);
     }
     const { items, truncated, skipped } = fitAll(catalog);
+    if (options.maxItems !== undefined && items.length > options.maxItems) {
+      return {
+        status: 'error',
+        message: `${items.length} products, over the tier's ${options.maxItems}`,
+      };
+    }
     if (options.platform === 'google') {
       // A feed: every product link origin must be a configured, verified origin.
       const linkOrigins = items

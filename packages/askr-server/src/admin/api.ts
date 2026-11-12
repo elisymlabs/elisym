@@ -1,4 +1,5 @@
 import {
+  CONNECTOR_PLATFORMS,
   type CatalogItemInput,
   CatalogItemInputSchema,
   KIND_CATALOG_AUTH,
@@ -15,6 +16,7 @@ import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
 import { z } from 'zod';
+import type { ConnectorService } from '../connectors/service';
 import type { GatewayRequest } from '../gateway/gateway';
 import type { StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
@@ -49,6 +51,16 @@ const CatalogRequestSchema = z.object({
 
 const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
 
+const ConnectorRequestSchema = z.object({
+  platform: z.enum(CONNECTOR_PLATFORMS),
+  url: z.string().url().max(2048),
+  currency: z
+    .string()
+    .regex(/^[A-Z]{3}$/)
+    .optional(),
+  importPolicies: z.boolean().optional(),
+});
+
 export interface AdminDeps {
   directory: StoreDirectory;
   /** The configured public base, e.g. `https://api.askr.elisym.network`: NIP-98 `u` is compared with it (7.3). */
@@ -56,6 +68,7 @@ export interface AdminDeps {
   syncClient: SyncRelayClient;
   /** Called after O-signed events were stored, so an active store's are published at once. */
   storeEventsChanged: () => void;
+  connectors: ConnectorService;
   now?: () => number;
   /** Publishing pace for catalog syncs; tests raise it. */
   syncPace?: number;
@@ -145,6 +158,7 @@ export function createAdminApi(
     catalogKey: store.catalogKey,
     usage: await deps.directory.usage(store.owner, store.assistant, now()),
     catalogSync: syncs.get(store.owner) ?? null,
+    connector: (await deps.directory.connector(store.owner)) ?? null,
   });
 
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -286,6 +300,49 @@ export function createAdminApi(
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);
+    }
+    if (route === 'PUT /v1/admin/connector') {
+      const parsed = ConnectorRequestSchema.safeParse(parseJson(body));
+      if (!parsed.success) {
+        return json({ error: 'bad_request' }, 400);
+      }
+      await deps.directory.setConnector(owner, {
+        platform: parsed.data.platform,
+        url: parsed.data.url,
+        ...(parsed.data.currency === undefined ? {} : { currency: parsed.data.currency }),
+        importPolicies: parsed.data.importPolicies ?? true,
+      });
+      await deps.connectors.refresh();
+      return json({ connector: await deps.directory.connector(owner) }, 200);
+    }
+    if (route === 'DELETE /v1/admin/connector') {
+      await deps.directory.removeConnector(owner);
+      await deps.connectors.refresh();
+      return json({ connector: null }, 200);
+    }
+    const connectorAction =
+      route === 'POST /v1/admin/connector/preview' || route === 'POST /v1/admin/connector/enable';
+    if (connectorAction) {
+      // Only an active store is synced by connectors (K19).
+      if (store.status !== 'active' || store.tier === undefined) {
+        return json({ error: 'inactive' }, 409);
+      }
+      const connector = await deps.directory.connector(owner);
+      if (connector === undefined) {
+        return json({ error: 'no_connector' }, 404);
+      }
+      if (route === 'POST /v1/admin/connector/enable') {
+        await deps.directory.enableConnector(owner);
+        await deps.connectors.refresh();
+        deps.connectors.runNow(owner);
+        return json({ connector: await deps.directory.connector(owner) }, 200);
+      }
+      // The first import's preview (7.4): what a sync would publish, nothing published.
+      const result = await deps.connectors.sync(store, connector, {
+        dryRun: true,
+        maxProducts: store.tier.maxProducts,
+      });
+      return json({ result }, 200);
     }
     const policyPath = POLICY_PATH_RE.exec(url.pathname);
     const isWrite =

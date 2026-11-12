@@ -10,6 +10,8 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import { describe, expect, it } from 'vitest';
 import { createAdminApi } from '../src/admin/api';
 import { KIND_HTTP_AUTH, checkNip98, sha256Hex } from '../src/admin/nip98';
+import { ShopRateLimiter } from '../src/connectors/http';
+import { ConnectorService } from '../src/connectors/service';
 import { HOLDER, NOW, ORIGIN, stateWith, storeRecord, syntheticStore } from './fixtures';
 
 const BASE = 'https://api.askr.test';
@@ -68,6 +70,13 @@ async function setup(status: 'pending' | 'active' = 'active', clock = { now: NOW
     publicBase: BASE,
     syncClient: relay,
     storeEventsChanged: () => changed.push('changed'),
+    connectors: new ConnectorService({
+      directory: seeded.directory,
+      holder: HOLDER,
+      client: relay,
+      configFor: () => undefined,
+      limiter: new ShopRateLimiter(0),
+    }),
     now: () => clock.now,
     syncPace: 1_000,
   });

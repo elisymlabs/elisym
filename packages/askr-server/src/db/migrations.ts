@@ -111,6 +111,19 @@ create table clicks (
   primary key (owner, address)
 );
 
+-- One platform connector per store (7.4); synced on the tier's interval once enabled after the preview.
+create table connectors (
+  owner text primary key references stores (owner) on delete cascade,
+  platform text not null check (platform in ('shopify', 'woocommerce', 'google')),
+  url text not null,
+  currency text,
+  import_policies boolean not null,
+  enabled boolean not null default false,
+  last_status jsonb,
+  last_run_at bigint,
+  next_run_at bigint
+);
+
 create table admin_auth_ids (
   id text primary key,
   expires_at bigint not null

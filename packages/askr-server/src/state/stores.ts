@@ -1,4 +1,4 @@
-import { KIND_CONFIG, parseConfig } from '@elisym/askr';
+import { type ConnectorPlatform, KIND_CONFIG, parseConfig } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -6,6 +6,55 @@ import { type Db, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import { STORE_SELECT, monthStartDay, storeOf, utcDay } from './pg-state';
 import type { StoreRecord, StoreStatus, Tier } from './types';
+
+export interface ConnectorSettings {
+  platform: ConnectorPlatform;
+  url: string;
+  /** Overrides the Shopify shop currency. */
+  currency?: string;
+  importPolicies: boolean;
+}
+
+export interface ConnectorRecord extends ConnectorSettings {
+  owner: string;
+  enabled: boolean;
+  lastStatus: unknown;
+  /** Unix ms. */
+  lastRunAt: number | null;
+  nextRunAt: number | null;
+}
+
+export interface ScheduledConnector extends ConnectorRecord {
+  storeId: string;
+  intervalMs: number;
+  maxProducts: number;
+}
+
+interface ConnectorRow extends Record<string, unknown> {
+  owner: string;
+  platform: ConnectorPlatform;
+  url: string;
+  currency: string | null;
+  import_policies: boolean;
+  enabled: boolean;
+  last_status: unknown;
+  last_run_at: number | null;
+  next_run_at: number | null;
+}
+
+function connectorOf(row: ConnectorRow): ConnectorRecord {
+  return {
+    owner: row.owner,
+    platform: row.platform,
+    url: row.url,
+    ...(row.currency === null ? {} : { currency: row.currency }),
+    importPolicies: row.import_policies,
+    enabled: row.enabled,
+    lastStatus: row.last_status,
+    lastRunAt: row.last_run_at,
+    nextRunAt: row.next_run_at,
+  };
+}
 
 /**
  * Stores, tiers and the O-signed events awaiting publication (7.3, K18, K19):
@@ -217,5 +266,72 @@ export class StoreDirectory {
 
   async markPublished(id: string): Promise<void> {
     await this.db.query('update store_events set published = true where id = $1', [id]);
+  }
+
+  /** Save a connector's settings (7.4); a changed source is disabled until previewed again. */
+  async setConnector(owner: string, settings: ConnectorSettings): Promise<void> {
+    await this.db.query(
+      `insert into connectors (owner, platform, url, currency, import_policies)
+       values ($1, $2, $3, $4, $5)
+       on conflict (owner) do update set
+         enabled = connectors.enabled and connectors.platform = $2 and connectors.url = $3,
+         platform = $2, url = $3, currency = $4, import_policies = $5`,
+      [owner, settings.platform, settings.url, settings.currency ?? null, settings.importPolicies],
+    );
+  }
+
+  async connector(owner: string): Promise<ConnectorRecord | undefined> {
+    const [row] = await this.db.query<ConnectorRow>('select * from connectors where owner = $1', [
+      owner,
+    ]);
+    return row ? connectorOf(row) : undefined;
+  }
+
+  async enableConnector(owner: string): Promise<boolean> {
+    const rows = await this.db.query(
+      'update connectors set enabled = true where owner = $1 returning 1',
+      [owner],
+    );
+    return rows.length > 0;
+  }
+
+  async removeConnector(owner: string): Promise<void> {
+    await this.db.query('delete from connectors where owner = $1', [owner]);
+  }
+
+  /**
+   * Enabled connectors of active stores `holder` leases, with the tier's
+   * interval and product cap (K19): one instance syncs a store, the one
+   * whose worker has its config.
+   */
+  async scheduledConnectors(holder: string, now: number): Promise<ScheduledConnector[]> {
+    const rows = await this.db.query<
+      ConnectorRow & { sync_interval_minutes: number; max_products: number }
+    >(
+      `select c.*, t.sync_interval_minutes, t.max_products from connectors c
+       join stores s on s.owner = c.owner join tiers t on t.name = s.tier
+       join leases l on l.owner = c.owner
+       where c.enabled and s.status = 'active' and l.holder = $1 and l.expires_at > $2`,
+      [holder, now],
+    );
+    return rows.map((row) => ({
+      ...connectorOf(row),
+      storeId: row.owner,
+      intervalMs: row.sync_interval_minutes * 60_000,
+      maxProducts: row.max_products,
+    }));
+  }
+
+  async saveConnectorStatus(
+    owner: string,
+    status: unknown,
+    at: number,
+    nextRunAt: number | null,
+  ): Promise<void> {
+    await this.db.query(
+      `update connectors set last_status = ($2::text)::jsonb, last_run_at = $3, next_run_at = $4
+       where owner = $1`,
+      [owner, JSON.stringify(status), at, nextRunAt],
+    );
   }
 }
