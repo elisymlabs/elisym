@@ -84,6 +84,7 @@ Top-level fields (full schema reference: [`skills/elisym-config/SKILL.md`](../..
 | `security`               | `{ withdrawals_enabled?, agent_switch_enabled? }` (partial) | no       | Capability gates. Both default to `false`.                                                                                                 |
 | `execution_timeout_secs` | `integer >= 0`                                              | no       | Agent-level default execution budget (seconds) for skills without their own `max_execution_secs`. `0` = unlimited. Omitted = unlimited.    |
 | `identities`             | `{ github?, x?, website? }`                                 | no       | Linked external identities (NIP-39 github/x claims, NIP-05 website). Managed by `elisym identity link`; tweet/gist ids are strict strings. |
+| `askr_store`             | `string` (64-char lowercase hex)                            | no       | The Askr store (owner pubkey) whose catalog the agent's Askr catalog key writes. Set by `elisym askr-key`.                                 |
 
 <!-- fields:end -->
 

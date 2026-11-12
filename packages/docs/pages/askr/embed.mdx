@@ -1,0 +1,52 @@
+# Embed the widget
+
+One script tag with your store's owner npub puts the assistant on a page:
+
+```html
+<script src="https://api.askr.elisym.network/widget.js" data-store="npub1..." async></script>
+```
+
+The script adds an `<askr-chat>` element to the page: a chat button that opens the assistant. It runs in a shadow root, so your page's styles do not leak into it. Set `data-theme="light"` or `data-theme="dark"` to fix its colors; without it, it follows the visitor's system.
+
+To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` where it should go and load the script without `data-store`.
+
+The page must be on one of the origins in your store's config: the server issues a chat session only to those.
+
+## Add to cart
+
+Each product card links to the product page. The add-to-cart button, in order of precedence:
+
+1. **Your hook**, when the page defines one. It receives the product and the visitor's pick:
+
+   ```html
+   <script>
+     window.Askr = window.Askr || {};
+     window.Askr.onAddToCart = function (detail) {
+       // detail.d: the product id as published
+       // detail.sku: the SKU, when the listing has one
+       // detail.variant: the variant id, when the pick determines one
+       // detail.options: { "Size": "M", ... }, whenever a selector is set
+     };
+   </script>
+   ```
+
+2. **Native add-to-cart** for a Shopify or WooCommerce connector, on the shop's own site only, once the visitor's pick determines one variant.
+3. Otherwise no button: the card opens the product page.
+
+A sold-out product, or a sold-out variant, shows a label instead of the button.
+
+## Content Security Policy
+
+If your site sends a CSP, allow:
+
+| Directive     | Source                                                         | Why                                                               |
+| ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `script-src`  | `https://api.askr.elisym.network`                              | `widget.js`                                                       |
+| `connect-src` | `https://api.askr.elisym.network` `wss://relay.elisym.network` | the chat session and the chat itself                              |
+| `img-src`     | `https:`                                                       | product images and the assistant's avatar, wherever you host them |
+
+The widget adds no inline scripts or styles, so a strict `script-src` and `style-src` hold.
+
+## What the widget can see
+
+It runs in your page, like any script you embed. It keeps the visitor's chat key in the page's local storage, and scripts on your page can read it. It sends the assistant the page's origin and path, never its query string.

@@ -1,0 +1,8 @@
+@elisym/askr-agent
+
+The skills in src/skills/ are adapted from the shopping-agent skills of
+"Claude for commerce" (https://github.com/anthropics/commerce-agents),
+Copyright 2026 Anthropic PBC, licensed under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0). Changes: cart, checkout, memory,
+profile and web-search guidance removed; tool and component names adapted to
+Askr.

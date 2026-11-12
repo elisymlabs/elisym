@@ -7,7 +7,7 @@ import {
   writeFileSync,
   existsSync,
 } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -87,6 +87,11 @@ describe('ElisymYamlSchema', () => {
 
   it('rejects unknown fields (strict)', () => {
     expect(() => ElisymYamlSchema.parse({ description: 'hi', extra: 1 })).toThrow();
+    const owner = 'a'.repeat(64);
+    expect(ElisymYamlSchema.parse({ askr_store: owner }).askr_store).toBe(owner);
+    for (const askrStore of ['A'.repeat(64), 'a'.repeat(63), `npub1${'q'.repeat(58)}`, '']) {
+      expect(() => ElisymYamlSchema.parse({ askr_store: askrStore })).toThrow(/askr_store/);
+    }
   });
 
   it('accepts a mainnet payment entry', () => {
@@ -679,6 +684,43 @@ describe('writeYaml + loadAgent round-trip', () => {
     // Encrypted delegate key must be reported as an encrypted field.
     expect(loaded.encrypted).toBe(true);
   }, 60_000); // scrypt (N=2^17) takes seconds on a shared CI runner.
+
+  it('encrypts every secret field at rest and loads each back', async () => {
+    // Walks the schema, so a secret field added later and missed by the writer
+    // or the loader fails here instead of landing on disk in plain text.
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    await writeYaml(dir, yaml);
+    const values: Record<string, unknown> = {};
+    for (const field of Object.keys(SecretsSchema.shape)) {
+      values[field] = field === 'llm_api_keys' ? { anthropic: 'sk-all' } : `${field}-value`;
+    }
+    const all = SecretsSchema.parse(values);
+    await writeSecrets(dir, all, 'correct horse battery staple');
+    const raw: Record<string, unknown> = JSON.parse(
+      await readFile(join(dir, '.secrets.json'), 'utf-8'),
+    );
+    for (const field of Object.keys(SecretsSchema.shape)) {
+      const stored = raw[field];
+      const plain = typeof stored === 'string' ? [stored] : Object.values(stored ?? {});
+      expect(plain.length, field).toBeGreaterThan(0);
+      for (const value of plain) {
+        expect(value, field).toMatch(/^encrypted:v1:/);
+      }
+    }
+    const loaded = await loadAgent('Bob', work, 'correct horse battery staple');
+    expect(loaded.secrets).toEqual(all);
+  }, 60_000); // scrypt (N=2^17) per field takes seconds on a shared CI runner.
+
+  it('an encrypted catalog key alone still needs the passphrase to load', async () => {
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    await writeYaml(dir, yaml);
+    await writeSecrets(dir, { ...secrets, askr_catalog_secret_key: 'c'.repeat(64) }, 'pw');
+    const path = join(dir, '.secrets.json');
+    const raw = JSON.parse(await readFile(path, 'utf-8'));
+    // Only the catalog key stays encrypted.
+    await writeFile(path, JSON.stringify({ ...raw, nostr_secret_key: 'a'.repeat(64) }), 'utf-8');
+    await expect(loadAgent('Bob', work)).rejects.toThrow(/askr_catalog_secret_key/);
+  }, 60_000);
 
   it('loads project-local agent when .elisym/ is present', async () => {
     mkdirSync(join(work, 'proj', '.git'), { recursive: true });

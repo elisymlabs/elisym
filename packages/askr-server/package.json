@@ -1,0 +1,44 @@
+{
+  "name": "@elisym/askr-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Askr server: gateway session tickets, agent workers over the relay, and (from phase 3) the database, connectors and admin API.",
+  "license": "MIT",
+  "author": "elisym labs",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@elisym/askr": "~0.1.0",
+    "@elisym/askr-agent": "~0.1.0",
+    "@elisym/commerce": "~0.14.0",
+    "decimal.js-light": "~2.5.1",
+    "nostr-tools": "~2.23.0",
+    "pg": "~8.23.1",
+    "ws": "~8.20.0",
+    "zod": "~3.25.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "~0.5.13",
+    "@elisym/askr-admin": "~0.1.0",
+    "@elisym/askr-widget": "~0.1.0",
+    "@types/node": "~25.5.0",
+    "@types/pg": "~8.23.1",
+    "@types/ws": "~8.18.1",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~3.2.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

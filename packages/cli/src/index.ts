@@ -16,6 +16,7 @@ import { listAgents, loadAgent } from '@elisym/sdk/agent-store';
 process.removeAllListeners('warning');
 import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
+import { type AskrKeyOptions, cmdAskrKey } from './commands/askr-key';
 import { cmdDelegateKey, type DelegateKeyOptions } from './commands/delegate-key.js';
 import { cmdIdentityLink, cmdIdentityStatus, cmdIdentityUnlink } from './commands/identity.js';
 import { cmdInit, type InitOptions } from './commands/init.js';
@@ -141,6 +142,21 @@ program
   .action(
     safe(async (name: string | undefined, options: DelegateKeyOptions) => {
       await cmdDelegateKey(name, options);
+    }),
+  );
+
+// Askr catalog key (a store's products and policies through the MCP tools)
+program
+  .command('askr-key <name>')
+  .description(
+    "Generate, show, or rotate the agent's Askr catalog key for one store; prints only its pubkey",
+  )
+  .option('--store <owner>', 'The store owner npub (or hex pubkey) whose catalog the key writes')
+  .option('--show', 'Print the existing catalog key pubkey and store only')
+  .option('--rotate', 'Replace the key (and the store, if --store names another)')
+  .action(
+    safe(async (name: string, options: AskrKeyOptions) => {
+      await cmdAskrKey(name, options);
     }),
   );
 
