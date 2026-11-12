@@ -19,6 +19,7 @@ import type { ConnectorRecord, ConnectorSyncResult } from '../src/lib/types';
 import {
   ASSISTANT,
   NOW,
+  NIP44_STUB,
   OWNER,
   OWNER_KEY,
   SERVER_KEY,
@@ -225,6 +226,7 @@ describe('the session', () => {
     const api = runningApi();
     const signer = await extensionSigner({
       getPublicKey: async () => OWNER,
+      nip44: NIP44_STUB,
       signEvent: async (template) => secretKeySigner(OWNER_KEY).signEvent(template),
     });
     const reads = await storeReadsDuringSync(
@@ -258,17 +260,19 @@ describe('the connector', () => {
       previewConnector: vi.fn(async () => ({ result: OK_PREVIEW })),
       putConnector: vi.fn(async () => ({ connector: CONNECTOR })),
     });
-    mounted = await mount(
+    const deps = sessionDeps(api, fakeReader([]));
+    const render = (connector: ConnectorRecord) => (
       <ConnectorSection
-        deps={sessionDeps(api, fakeReader([]))}
-        view={storeView({ connector: CONNECTOR })}
+        deps={deps}
+        view={storeView({ connector })}
         config={adminConfig({
           source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
         })}
         reload={async () => undefined}
-      />,
+      />
     );
-    return { api, container: mounted.container };
+    mounted = await mount(render(CONNECTOR));
+    return { api, container: mounted.container, render };
   }
 
   it('turns syncing on only after an ok preview of the connector as saved', async () => {
@@ -307,12 +311,11 @@ describe('the connector', () => {
     const { container } = await mountConnector();
     await click(buttonNamed(container, 'Preview first import'));
     await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
-    await typeInto(byId(container, 'connector-url'), 'https://other.example');
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
-
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
     await typeInto(byId(container, 'connector-currency'), 'EUR');
+    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+    // Back to what is saved: a new preview is still needed.
+    await typeInto(byId(container, 'connector-currency'), '');
+    expect(buttonNamed(container, 'Preview first import').disabled).toBe(false);
     expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
 
     await click(buttonNamed(container, 'Preview first import'));
@@ -320,6 +323,33 @@ describe('the connector', () => {
     await click(buttonNamed(container, 'Save connector'));
     await settle(() => (container.textContent ?? '').includes('Connector saved'));
     expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+  });
+
+  it('turns syncing off when the saved connector changes elsewhere after a preview', async () => {
+    const { container, render } = await mountConnector();
+    await click(buttonNamed(container, 'Preview first import'));
+    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
+    await mounted?.rerender(render({ ...CONNECTOR, url: 'https://other.example' }));
+    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+  });
+
+  it('previews only the saved connector: unsaved edits need a save first, and the preview names its address', async () => {
+    const { api, container, render } = await mountConnector();
+    await typeInto(byId(container, 'connector-url'), 'https://other.example');
+    expect(buttonNamed(container, 'Preview first import').disabled).toBe(true);
+    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+    expect(container.textContent).toContain('Save the connector to preview these settings');
+    await click(buttonNamed(container, 'Preview first import'));
+    expect(api.previewConnector).not.toHaveBeenCalled();
+
+    await click(buttonNamed(container, 'Save connector'));
+    await settle(() => vi.mocked(api.putConnector).mock.calls.length === 1);
+    await mounted?.rerender(render({ ...CONNECTOR, url: 'https://other.example' }));
+    expect(buttonNamed(container, 'Preview first import').disabled).toBe(false);
+    await click(buttonNamed(container, 'Preview first import'));
+    await settle(() =>
+      (container.textContent ?? '').includes('Of https://other.example, as saved'),
+    );
   });
 });
 

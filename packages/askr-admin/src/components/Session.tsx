@@ -26,22 +26,39 @@ export function Session({ deps, onSignOut }: Props) {
   const [config, setConfig] = useState<StoreConfig>();
   const [configError, setConfigError] = useState('');
   const [configRead, setConfigRead] = useState(false);
+  /** The date of a newest config that does not parse: a new one must be dated after it. */
+  const [unreadableAt, setUnreadableAt] = useState<number>();
+  const [reloadWarning, setReloadWarning] = useState('');
 
   const reload = useCallback(async () => {
     try {
-      setLoad({ state: 'ready', view: await deps.api.store() });
+      const view = await deps.api.store();
+      setLoad({ state: 'ready', view });
+      setReloadWarning('');
     } catch (error) {
-      if (error instanceof ApiError && error.code === 'no_store') {
-        setLoad({ state: 'missing' });
-        return;
-      }
-      setLoad({ state: 'failed', error: errorMessage(error) });
+      const missing = error instanceof ApiError && error.code === 'no_store';
+      // Only the first load may fail the page: later, the last view stays with a warning, so a
+      // failed poll or a reload after an action never wipes the dashboard or unsaved edits.
+      setLoad((previous) => {
+        if (previous.state === 'ready') {
+          return previous;
+        }
+        return missing ? { state: 'missing' } : { state: 'failed', error: errorMessage(error) };
+      });
+      setReloadWarning(`The store could not be refreshed: ${errorMessage(error)}`);
     }
   }, [deps]);
 
   const reloadConfig = useCallback(async () => {
     try {
-      setConfig(await readConfig(deps.reader, deps.signer.pubkey, deps.now()));
+      const read = await readConfig(deps.reader, deps.signer.pubkey, deps.now());
+      if (read.state === 'unreadable') {
+        setConfig(read.fallback);
+        setUnreadableAt(read.newestAt);
+      } else {
+        setConfig(read.state === 'ok' ? read.config : undefined);
+        setUnreadableAt(undefined);
+      }
       setConfigError('');
     } catch {
       setConfigError('The relay could not be read, so the published settings are not shown.');
@@ -85,7 +102,11 @@ export function Session({ deps, onSignOut }: Props) {
   // Nothing signed yet: no config on the relay and none waiting on the server.
   const view = load.state === 'ready' ? load.view : undefined;
   const needsSetup =
-    view === undefined || (config === undefined && configError === '' && view.events.pending === 0);
+    view === undefined ||
+    (config === undefined &&
+      configError === '' &&
+      unreadableAt === undefined &&
+      view.events.pending === 0);
   if (needsSetup) {
     return (
       <Onboarding
@@ -106,6 +127,8 @@ export function Session({ deps, onSignOut }: Props) {
       view={view}
       config={config}
       configError={configError}
+      configUnreadableAt={unreadableAt}
+      reloadWarning={reloadWarning}
       reload={reload}
       reloadConfig={reloadConfig}
       onSignOut={onSignOut}

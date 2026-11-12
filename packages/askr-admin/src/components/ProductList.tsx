@@ -32,12 +32,18 @@ export function ProductList({ items, onEdit, onRemove }: Props) {
               </td>
               <td className="py-6 pr-12">{(item.visibility ?? 'on-sale').replace('-', ' ')}</td>
               <td className="py-6 text-right whitespace-nowrap">
-                <button type="button" className="btn text-13 mr-4" onClick={() => onEdit(item.d)}>
+                <button
+                  type="button"
+                  className="btn text-13 mr-4"
+                  aria-label={`Edit ${item.title}`}
+                  onClick={() => onEdit(item.d)}
+                >
                   Edit
                 </button>
                 <button
                   type="button"
                   className="btn btn-danger text-13"
+                  aria-label={`Remove ${item.title}`}
                   onClick={() => onRemove(item.d)}
                 >
                   Remove

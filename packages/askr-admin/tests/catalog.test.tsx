@@ -88,7 +88,15 @@ describe('the catalog helpers', () => {
   });
 
   it('read a listing back into the input that rebuilds the same listing, so an untouched product is unchanged', () => {
-    for (const input of [MUG, TEAPOT, CUP]) {
+    // A connector listing: its platform id, and price-from stated though the listed variant prices agree.
+    const SYNCED: CatalogItemInput = {
+      d: 'shopify:42',
+      title: 'Kettle',
+      price: { amount: '20', currency: 'USD' },
+      sourceId: '42',
+      priceFrom: true,
+    };
+    for (const input of [MUG, TEAPOT, CUP, SYNCED]) {
       const event = listing(input);
       const item = parseCatalogItem(event, { role: 'catalog' });
       if (item === undefined) {
@@ -364,7 +372,7 @@ describe('a review in flight', () => {
     await act(async () => {
       pending.answer({ ...EMPTY_DIFF, hidden: ['teapot'] });
     });
-    expect(container.textContent).not.toContain('Hidden: 1');
+    expect(container.textContent).not.toContain('Removed: 1');
     expect(buttonNamed(container, 'Publish').disabled).toBe(true);
   });
 
@@ -417,7 +425,7 @@ describe('the CSV import', () => {
 
   it('replacing the catalog with a file that has bad rows needs an explicit acknowledgement', async () => {
     const onImport = vi.fn();
-    mounted = await mount(<CsvImport currency="USD" onImport={onImport} />);
+    mounted = await mount(<CsvImport currency="USD" current={[]} onImport={onImport} />);
     const { container } = mounted;
     await chooseFile(container, 'd,title,price\na,A,1\nb,B,oops\n');
     await settle(() => (container.textContent ?? '').includes('1 product read'));
@@ -440,7 +448,7 @@ describe('the CSV import', () => {
   });
 
   it('refuses a file larger than the server takes, without reading it', async () => {
-    mounted = await mount(<CsvImport currency="USD" onImport={() => undefined} />);
+    mounted = await mount(<CsvImport currency="USD" current={[]} onImport={() => undefined} />);
     const { container } = mounted;
     await chooseFile(container, 'x'.repeat(MAX_CSV_BYTES + 1));
     await settle(() => (container.textContent ?? '').includes('larger than 8 MB'));

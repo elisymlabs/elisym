@@ -34,7 +34,11 @@ export function PoliciesSection({ deps, view, config }: Props) {
       setPolicies(await readPolicies(deps.reader, config.policyKey, deps.now()));
       setReadError('');
     } catch {
-      setReadError('The policies could not be read from the relay.');
+      setPolicies(undefined);
+      setEditing(undefined);
+      setReadError(
+        'The policies could not be read from the relay, so none can be added or changed until they are.',
+      );
     }
   }, [deps, config]);
 
@@ -67,7 +71,8 @@ export function PoliciesSection({ deps, view, config }: Props) {
   }
 
   let editor: ReactNode = null;
-  if (editable) {
+  // A new policy must not reuse a published slug, which only a whole read can tell.
+  if (editable && policies !== undefined) {
     editor =
       editing === undefined ? (
         <div>
@@ -79,7 +84,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
         <PolicyEditor
           key={editing.mode === 'edit' ? editing.policy.slug : 'new'}
           initial={editing.mode === 'edit' ? editing.policy : undefined}
-          takenSlugs={(policies ?? []).map((existing) => existing.slug)}
+          takenSlugs={policies.map((existing) => existing.slug)}
           onCancel={() => setEditing(undefined)}
           onSave={async (policy) => {
             await deps.api.putPolicy(policy.slug, { title: policy.title, body: policy.body });
@@ -96,7 +101,14 @@ export function PoliciesSection({ deps, view, config }: Props) {
       description="Shipping, returns, sizing and other answers the assistant may quote."
     >
       {note === '' ? null : <Notice tone="info">{note}</Notice>}
-      {readError === '' ? null : <Notice tone="error">{readError}</Notice>}
+      {readError === '' ? null : (
+        <Notice tone="error">
+          {readError}{' '}
+          <button type="button" className="underline" onClick={() => void read()}>
+            Retry
+          </button>
+        </Notice>
+      )}
       {policies === undefined ? null : (
         <ul className="flex flex-col gap-8">
           {policies.length === 0 ? <li className="text-14 text-text-2">No policies yet.</li> : null}

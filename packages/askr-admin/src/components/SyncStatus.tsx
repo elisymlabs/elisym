@@ -20,7 +20,7 @@ export function SyncStatus({ sync }: Props) {
     <div className="text-14 flex flex-col gap-4">
       <p className={sync.state === 'failed' ? 'text-error' : ''}>{STATES[sync.state]}</p>
       <p className="text-text-2">
-        {diff.created.length} new, {diff.updated.length} updated, {diff.hidden.length} hidden,{' '}
+        {diff.created.length} new, {diff.updated.length} updated, {diff.hidden.length} removed,{' '}
         {diff.unchanged.length} unchanged
       </p>
       {sync.state === 'failed' ? <p className="text-text-2">Reason: {sync.error}</p> : null}

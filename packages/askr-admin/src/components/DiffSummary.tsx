@@ -9,7 +9,8 @@ const MAX_LISTED = 20;
 const GROUPS: readonly { key: keyof SyncDiff; label: string }[] = [
   { key: 'created', label: 'New' },
   { key: 'updated', label: 'Updated' },
-  { key: 'hidden', label: 'Hidden' },
+  // A sync deletes these (a hidden version and a NIP-09 deletion): they cannot be shown again.
+  { key: 'hidden', label: 'Removed' },
   { key: 'unchanged', label: 'Unchanged' },
 ];
 

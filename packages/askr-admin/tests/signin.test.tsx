@@ -3,6 +3,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SignIn } from '../src/components/SignIn';
 import type { Nip07Provider, Signer } from '../src/lib/signer';
+import { NIP44_STUB } from './fakes';
 import { type Mounted, buttonNamed, byId, click, mount } from './mount';
 
 let mounted: Mounted | undefined;
@@ -47,6 +48,7 @@ describe('sign-in', () => {
     const pubkey = getPublicKey(generateSecretKey());
     const extension: Nip07Provider = {
       getPublicKey: async () => pubkey,
+      nip44: NIP44_STUB,
       signEvent: async () => {
         throw new Error('not used');
       },

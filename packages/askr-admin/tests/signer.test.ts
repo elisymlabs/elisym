@@ -4,11 +4,16 @@ import { describe, expect, it } from 'vitest';
 import { apiBase } from '../src/constants';
 import { syncPollMs } from '../src/lib/deps';
 import { type Nip07Provider, extensionSigner } from '../src/lib/signer';
+import { NIP44_STUB } from './fakes';
 
 const TEMPLATE: EventTemplate = { kind: 27235, created_at: 1_800_000_000, tags: [], content: '' };
 
 function provider(sign: (template: EventTemplate) => NostrEvent, pubkey: string): Nip07Provider {
-  return { getPublicKey: async () => pubkey, signEvent: async (template) => sign(template) };
+  return {
+    getPublicKey: async () => pubkey,
+    signEvent: async (template) => sign(template),
+    nip44: NIP44_STUB,
+  };
 }
 
 describe('the extension signer', () => {

@@ -2,7 +2,7 @@ import type { CatalogItemInput } from '@elisym/askr';
 
 /**
  * The whole catalog after one change. `POST /v1/admin/catalog` replaces the
- * catalog: whatever is not in the list it gets is hidden, so every change
+ * catalog: whatever is not in the list it gets is deleted, so every change
  * here returns the full list.
  */
 export function upsertItem(

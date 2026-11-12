@@ -1,5 +1,5 @@
 import type { CatalogItemInput, StoreConfig, SyncDiff } from '@elisym/askr';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_CURRENCY } from '../constants';
 import { importItems, removeItem, upsertItem } from '../lib/catalog';
 import type { SessionDeps } from '../lib/deps';
@@ -42,7 +42,9 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const [reviewed, setReviewed] = useState<Reviewed>();
   const [busy, setBusy] = useState(false);
   /** What the last publish sent: offered back if that sync fails and the list is read again. */
-  const [lastSent, setLastSent] = useState<CatalogItemInput[]>();
+  const [lastSent, setLastSent] = useState<{ items: CatalogItemInput[]; readsBefore: number }>();
+  /** Whole reads of the catalog so far: tells whether the list was read again after a publish. */
+  const [reads, setReads] = useState(0);
   // The draft as it is now, for a dry-run answer to check it is still about the current list.
   const draftNow = useRef(draft);
   draftNow.current = draft;
@@ -56,6 +58,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
         const listings = await readListings(deps.reader, view.catalogKey, deps.now());
         if (isCurrent()) {
           setDraft(listings.sort((left, right) => left.d.localeCompare(right.d)));
+          setReads((count) => count + 1);
           setReadError('');
         }
       } catch {
@@ -90,6 +93,14 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
       current = false;
     };
   }, [isAdminSource, running, read]);
+
+  // A publish that went through needs no restore offer.
+  const syncState = view.catalogSync?.state;
+  useEffect(() => {
+    if (syncState === 'done') {
+      setLastSent(undefined);
+    }
+  }, [syncState]);
 
   if (!isAdminSource) {
     return (
@@ -144,7 +155,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     setIssues([]);
     try {
       await deps.api.catalog(reviewed.items, false);
-      setLastSent(reviewed.items);
+      setLastSent({ items: reviewed.items, readsBefore: reads });
       setReviewed(undefined);
       setNotice('Publishing started. Progress shows below.');
       await reload();
@@ -156,6 +167,25 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     }
   };
 
+  let failedNotice: ReactNode = null;
+  if (view.catalogSync?.state === 'failed' && lastSent !== undefined && draft !== undefined) {
+    failedNotice =
+      reads > lastSent.readsBefore ? (
+        <Notice tone="warn">
+          The last publish failed, so the list below was read again from the relay and may miss
+          changes that did not go out.{' '}
+          <button type="button" className="underline" onClick={() => change(lastSent.items)}>
+            Restore the list you tried to publish
+          </button>
+        </Notice>
+      ) : (
+        <Notice tone="warn">
+          The last publish failed. The list below is the one you tried to publish: review and
+          publish it again.
+        </Notice>
+      );
+  }
+
   const currency = config?.currency ?? DEFAULT_CURRENCY;
   const maxProducts = view.tier?.maxProducts;
 
@@ -163,7 +193,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     <div className="flex flex-col gap-16">
       <Section
         title="Products"
-        description="Changes stay here until you review and publish them. Publishing replaces your whole catalog: a product you remove here is hidden from the assistant."
+        description="Changes stay here until you review and publish them. Publishing replaces your whole catalog: a product you remove here is deleted for good when you publish. To take one off sale for a while, set its availability to hidden instead."
       >
         {running ? (
           <Notice tone="info">
@@ -178,21 +208,13 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
             </button>
           </Notice>
         )}
-        {view.catalogSync?.state === 'failed' && lastSent !== undefined && draft !== undefined ? (
-          <Notice tone="warn">
-            The last publish failed, so the list below was read again from the relay and may miss
-            changes that did not go out.{' '}
-            <button type="button" className="underline" onClick={() => change(lastSent)}>
-              Restore the list you tried to publish
-            </button>
-          </Notice>
-        ) : null}
+        {failedNotice}
         {draft === undefined ? null : (
           <fieldset disabled={busy} className="contents">
             <p className="text-13 text-text-2">
               {draft.length} product{draft.length === 1 ? '' : 's'}
-              {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Hidden
-              products stay listed here so you can show them again; remove one to stop counting it.
+              {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Products set
+              to hidden stay listed so you can show them again; removing one deletes it.
             </p>
             <ProductList
               items={draft}
@@ -223,6 +245,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
             )}
             <CsvImport
               currency={currency}
+              current={draft}
               onImport={(items, mode) => change(importItems(draft, items, mode))}
             />
           </fieldset>

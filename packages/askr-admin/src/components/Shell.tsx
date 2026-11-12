@@ -20,12 +20,26 @@ interface Props {
   /** The published config, if the relay has one. */
   config: StoreConfig | undefined;
   configError: string;
+  /** Set when the relay's newest config does not parse: its date (`config` is then an older one). */
+  configUnreadableAt: number | undefined;
+  /** A later refresh failed: the view shown is the last one read. */
+  reloadWarning: string;
   reload: () => Promise<void>;
   reloadConfig: () => Promise<void>;
   onSignOut: () => void;
 }
 
-export function Shell({ deps, view, config, configError, reload, reloadConfig, onSignOut }: Props) {
+export function Shell({
+  deps,
+  view,
+  config,
+  configError,
+  configUnreadableAt,
+  reloadWarning,
+  reload,
+  reloadConfig,
+  onSignOut,
+}: Props) {
   const [tab, setTab] = useState<TabId>('overview');
   const refresh = async () => {
     await reload();
@@ -41,6 +55,7 @@ export function Shell({ deps, view, config, configError, reload, reloadConfig, o
         view={view}
         config={config}
         configError={configError}
+        configUnreadableAt={configUnreadableAt}
         onRetry={reloadConfig}
         onSaved={refresh}
       />
@@ -57,7 +72,11 @@ export function Shell({ deps, view, config, configError, reload, reloadConfig, o
         deps={deps}
         view={view}
         config={config}
-        configError={configError}
+        configError={
+          configError === '' && configUnreadableAt !== undefined
+            ? 'Your newest settings could not be read. Save them again in Settings before rotating.'
+            : configError
+        }
         onRetry={reloadConfig}
         onChanged={refresh}
       />
@@ -88,6 +107,20 @@ export function Shell({ deps, view, config, configError, reload, reloadConfig, o
           <button type="button" className="underline" onClick={() => void reloadConfig()}>
             Retry
           </button>
+        </Notice>
+      )}
+      {reloadWarning === '' ? null : (
+        <Notice tone="warn">
+          {reloadWarning} What is shown is the last state read.{' '}
+          <button type="button" className="underline" onClick={() => void reload()}>
+            Retry
+          </button>
+        </Notice>
+      )}
+      {configUnreadableAt === undefined ? null : (
+        <Notice tone="error">
+          Your newest published settings could not be read, so the assistant may not answer. Open
+          Settings and save them again.
         </Notice>
       )}
       {content}

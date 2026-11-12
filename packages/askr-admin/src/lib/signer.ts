@@ -52,29 +52,43 @@ export function secretKeySigner(secretKey: Uint8Array): Signer {
  * right author, the right kind, a valid signature.
  */
 export async function extensionSigner(provider: Nip07Provider): Promise<Signer> {
+  // The private instructions are sealed and read with NIP-44: an extension without it could sign
+  // in but never save settings or rotate the assistant.
+  const nip44 = provider.nip44;
+  if (nip44 === undefined) {
+    throw new Error(
+      'This browser extension does not support NIP-44 encryption, which your private assistant instructions need. Update the extension, use another one, or paste your key.',
+    );
+  }
   const pubkey = (await provider.getPublicKey()).toLowerCase();
   if (!HEX_KEY_RE.test(pubkey)) {
     throw new Error('The extension did not give a valid public key');
   }
-  const nip44Of = () => {
-    if (provider.nip44 === undefined) {
-      throw new Error('The extension does not support NIP-44 encryption');
-    }
-    return provider.nip44;
-  };
   return {
     pubkey,
     kind: 'extension',
     async signEvent(template) {
       const event = await provider.signEvent(template);
-      if (event.pubkey !== pubkey || event.kind !== template.kind || !verifyEvent(event)) {
+      if (!isSignedTemplate(event, template, pubkey)) {
         throw new Error('The extension returned an event that is not signed by your key');
       }
       return event;
     },
-    encrypt: (plaintext, peer) => nip44Of().encrypt(peer, plaintext),
-    decrypt: (ciphertext, peer) => nip44Of().decrypt(peer, ciphertext),
+    encrypt: (plaintext, peer) => nip44.encrypt(peer, plaintext),
+    decrypt: (ciphertext, peer) => nip44.decrypt(peer, ciphertext),
   };
+}
+
+/** Whether `event` is exactly `template`, by `pubkey`, with a valid signature. */
+function isSignedTemplate(event: NostrEvent, template: EventTemplate, pubkey: string): boolean {
+  return (
+    event.pubkey === pubkey &&
+    event.kind === template.kind &&
+    event.created_at === template.created_at &&
+    event.content === template.content &&
+    JSON.stringify(event.tags) === JSON.stringify(template.tags) &&
+    verifyEvent(event)
+  );
 }
 
 /** A secret key from an nsec or 64 hex characters, or undefined. */

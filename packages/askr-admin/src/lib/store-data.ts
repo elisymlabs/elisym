@@ -79,19 +79,49 @@ function deleted(event: NostrEvent, deletions: readonly NostrEvent[]): boolean {
   );
 }
 
-/** The owner's newest config (30496), or undefined when there is none or it does not parse. */
+/**
+ * The owner's config as the relay holds it: none, the newest one, or a newest
+ * one that does not parse (then the newest that does, if the relay kept one).
+ */
+export type ConfigRead =
+  | { state: 'none' }
+  | { state: 'ok'; config: StoreConfig }
+  | { state: 'unreadable'; newestAt: number; fallback: StoreConfig | undefined };
+
 export async function readConfig(
   reader: RelayReader,
   owner: string,
   now: number = nowSecs(),
-): Promise<StoreConfig | undefined> {
+): Promise<ConfigRead> {
   const events = await reader.query({
     kinds: [KIND_CONFIG],
     authors: [owner],
     '#d': [CONFIG_D_TAG],
   });
   const [newest] = newestByD(events, KIND_CONFIG, owner, now);
-  return newest === undefined ? undefined : parseConfig(newest);
+  if (newest === undefined) {
+    return { state: 'none' };
+  }
+  const config = parseConfig(newest);
+  if (config !== undefined) {
+    return { state: 'ok', config };
+  }
+  const older = events
+    .filter((event) => event.id !== newest.id && event.created_at <= newest.created_at)
+    .sort((left, right) => right.created_at - left.created_at || left.id.localeCompare(right.id));
+  let fallback: StoreConfig | undefined;
+  for (const event of newestByDAll(older, owner, now)) {
+    fallback = parseConfig(event);
+    if (fallback !== undefined) {
+      break;
+    }
+  }
+  return { state: 'unreadable', newestAt: newest.created_at, fallback };
+}
+
+/** Signed configs of `owner`, newest first, each passing the same checks as `newestByD`. */
+function newestByDAll(events: readonly NostrEvent[], owner: string, now: number): NostrEvent[] {
+  return events.filter((event) => newestByD([event], KIND_CONFIG, owner, now).length === 1);
 }
 
 export interface AuthorityRead {

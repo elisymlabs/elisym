@@ -5,6 +5,13 @@ const VERIFICATION_REASONS: Readonly<Record<string, string>> = {
   fetch_failed: 'could not be read',
 };
 
+const DIFF_WORDS: readonly (readonly [string, string])[] = [
+  ['created', 'new'],
+  ['updated', 'updated'],
+  ['hidden', 'removed'],
+  ['unchanged', 'unchanged'],
+];
+
 function field(value: unknown, name: string): unknown {
   return typeof value === 'object' && value !== null ? Reflect.get(value, name) : undefined;
 }
@@ -18,9 +25,8 @@ export function connectorResultSentence(result: unknown): string {
   const status = field(result, 'status');
   if (status === 'ok') {
     const diff = field(result, 'diff');
-    const counts = ['created', 'updated', 'hidden', 'unchanged'].map(
-      (name) => `${list(field(diff, name)).length} ${name}`,
-    );
+    // A sync deletes a listing no longer in the source (a hidden version and a NIP-09 deletion).
+    const counts = DIFF_WORDS.map(([name, word]) => `${list(field(diff, name)).length} ${word}`);
     return `Products read: ${counts.join(', ')}.`;
   }
   if (status === 'verification_failed') {

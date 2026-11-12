@@ -29,7 +29,8 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
   const [url, setUrl] = useState(saved?.url ?? config?.source.shopUrl ?? '');
   const [currency, setCurrency] = useState(saved?.currency ?? '');
   const [importPolicies, setImportPolicies] = useState(saved?.importPolicies ?? true);
-  const [preview, setPreview] = useState<ConnectorSyncResult>();
+  /** The last preview, with the saved address it was of. */
+  const [preview, setPreview] = useState<{ result: ConnectorSyncResult; url: string }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
@@ -73,7 +74,7 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
     run(async () => {
       setPreview(undefined);
       const { result } = await deps.api.previewConnector();
-      setPreview(result);
+      setPreview({ result, url: saved?.url ?? '' });
       return '';
     });
 
@@ -91,6 +92,14 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
       await reload();
       return 'Connector removed. Products already published stay until you change them.';
     });
+
+  // Preview and syncing act on the saved connector: while the form differs, it must be saved first.
+  const unsaved =
+    saved === null ||
+    platform !== saved.platform ||
+    url.trim() !== saved.url ||
+    currency.trim().toUpperCase() !== (saved.currency ?? '') ||
+    importPolicies !== saved.importPolicies;
 
   const sourceMismatch =
     config !== undefined &&
@@ -159,6 +168,9 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
         </div>
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
         {done === '' ? null : <Notice tone="success">{done}</Notice>}
+        {saved !== null && unsaved ? (
+          <Notice tone="info">Save the connector to preview these settings.</Notice>
+        ) : null}
         <div className="flex flex-wrap gap-8">
           <button
             type="button"
@@ -171,7 +183,7 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
           <button
             type="button"
             className="btn"
-            disabled={busy || saved === null}
+            disabled={busy || unsaved}
             onClick={() => void runPreview()}
           >
             Preview first import
@@ -179,7 +191,9 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
           <button
             type="button"
             className="btn"
-            disabled={busy || saved === null || saved.enabled || preview?.status !== 'ok'}
+            disabled={
+              busy || unsaved || saved === null || saved.enabled || preview?.result.status !== 'ok'
+            }
             onClick={() => void enable()}
           >
             Turn on syncing
@@ -195,8 +209,11 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
         </div>
       </Section>
       {preview === undefined ? null : (
-        <Section title="First import preview" description="Nothing is published yet.">
-          <PreviewResult result={preview} />
+        <Section
+          title="First import preview"
+          description={`Of ${preview.url}, as saved. Nothing is published yet.`}
+        >
+          <PreviewResult result={preview.result} />
         </Section>
       )}
     </div>

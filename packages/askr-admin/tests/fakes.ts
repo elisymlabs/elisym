@@ -116,3 +116,9 @@ export function sessionDeps(
 ): SessionDeps {
   return { signer, api, reader, now: () => NOW, journal: new SignedJournal() };
 }
+
+/** A NIP-44 capability for a test extension that never encrypts anything real. */
+export const NIP44_STUB = {
+  encrypt: async (_pubkey: string, plaintext: string) => plaintext,
+  decrypt: async (_pubkey: string, ciphertext: string) => ciphertext,
+};

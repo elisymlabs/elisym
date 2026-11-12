@@ -21,6 +21,7 @@ export function PolicyRow({ policy, editable, busy, onEdit, onDelete }: Props) {
           type="button"
           className="btn btn-danger text-13"
           disabled={busy}
+          aria-label={`Delete ${policy.title} for good`}
           onClick={() => {
             setConfirming(false);
             void onDelete();
@@ -36,13 +37,20 @@ export function PolicyRow({ policy, editable, busy, onEdit, onDelete }: Props) {
   } else if (editable) {
     actions = (
       <div className="flex gap-4">
-        <button type="button" className="btn text-13" disabled={busy} onClick={onEdit}>
+        <button
+          type="button"
+          className="btn text-13"
+          disabled={busy}
+          aria-label={`Edit ${policy.title}`}
+          onClick={onEdit}
+        >
           Edit
         </button>
         <button
           type="button"
           className="btn btn-danger text-13"
           disabled={busy}
+          aria-label={`Delete ${policy.title}`}
           onClick={() => setConfirming(true)}
         >
           Delete
