@@ -110,6 +110,7 @@ nsec
 onauth
 oneose
 oneshot
+oninvalidevent
 onevent
 openclaw
 oxfmt

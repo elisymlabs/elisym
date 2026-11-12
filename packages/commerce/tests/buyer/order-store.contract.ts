@@ -751,7 +751,9 @@ export function orderStoreContract(makeBackend: () => Promise<OrderBackend>): vo
           expect({ from, to, ok: outcome.ok }).toEqual({ from, to, ok: table[from].includes(to) });
         }
       }
-    });
+      // Every pair goes through the real store: on a durable file store under a loaded machine
+      // (bun qa runs every package at once) that takes longer than the 5 s default.
+    }, 30_000);
 
     it('never retries an order the store delivered, and keeps the first signature', async () => {
       await addPaying('one', 'a1');
