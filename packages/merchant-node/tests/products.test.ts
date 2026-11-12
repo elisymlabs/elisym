@@ -163,6 +163,24 @@ describe('the PRODUCT.md file', () => {
     ]);
   });
 
+  it('takes an https page link as url, and refuses any other link', () => {
+    const withUrl = parseProductText(
+      VALID.replace('summary: Adds 10 USD.', 'url: https://shop.example/deposit-10'),
+    );
+    expect(withUrl).toMatchObject({
+      ok: true,
+      product: { url: 'https://shop.example/deposit-10' },
+    });
+    const without = parseProductText(VALID);
+    expect(without.ok && 'url' in without.product).toBe(false);
+    for (const url of ['http://shop.example/a', 'shop.example/a', 'javascript:alert(1)', '42']) {
+      const problems = problemsOf(VALID.replace('summary: Adds 10 USD.', `url: "${url}"`));
+      expect(problems.join(' ')).toContain('url: must be an https link');
+    }
+    const long = `url: https://shop.example/${'a'.repeat(1_100)}`;
+    expect(problemsOf(VALID.replace('summary: Adds 10 USD.', long)).join(' ')).toContain('url:');
+  });
+
   it('M29: refuses an unknown or misspelled key', () => {
     for (const key of ['onsale: false', 'on_sale: false', 'pricUsd: "1"']) {
       expect(problemsOf(VALID.replace('summary: Adds 10 USD.', key)).join(' ')).toContain(
