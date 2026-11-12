@@ -53,7 +53,9 @@ describe('the admin pages', () => {
   });
 
   it('serves nothing it did not load: a missing file, another type, a way out of the directory', () => {
-    expect(get('/admin/assets/missing.js')?.status).toBe(404);
+    const missing = get('/admin/assets/missing.js');
+    expect(missing?.status).toBe(404);
+    expect(missing?.headers.get('x-content-type-options')).toBe('nosniff');
     expect(get('/admin/notes.exe')?.status).toBe(404);
     expect(get('/admin/../package.json')).toBeUndefined();
     // Dot segments, also percent-encoded, resolve before routing: they leave /admin/ altogether.
@@ -77,8 +79,14 @@ describe('the admin pages', () => {
   it('refuses a directory that is not the admin build', () => {
     const empty = mkdtempSync(join(tmpdir(), 'askr-admin-empty-'));
     expect(() => loadAdminFiles(empty)).toThrow(/index.html/);
+    // Exactly at the cap loads: the build's 4 files of a served type plus 496 pages.
+    const atCap = build();
+    for (let index = 0; index < 496; index++) {
+      writeFileSync(join(atCap, `page-${index}.html`), '<!doctype html>');
+    }
+    expect(loadAdminFiles(atCap).size).toBe(500);
     const huge = build();
-    for (let index = 0; index < 500; index++) {
+    for (let index = 0; index < 497; index++) {
       writeFileSync(join(huge, `page-${index}.html`), '<!doctype html>');
     }
     expect(() => loadAdminFiles(huge)).toThrow(/more than 500 files/);

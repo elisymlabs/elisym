@@ -361,4 +361,18 @@ describe('Askr catalog tools', () => {
     await teardownRegistry(run.ctx);
     expect(key?.every((byte) => byte === 0)).toBe(true);
   });
+
+  it("a relay's own refusal is not mistaken for a missing authorization", async () => {
+    const run = world();
+    run.relay.publish = async () => {
+      throw new Error('restricted: not authorized to write here');
+    };
+    const result = await tools(run.relay)('askr_upsert_products').handler(run.ctx, {
+      products: [SOCKS],
+      dry_run: false,
+    });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toMatch(/^Askr: restricted: not authorized/);
+    expect(text(result)).not.toMatch(/Authorize it in the Askr admin/);
+  });
 });

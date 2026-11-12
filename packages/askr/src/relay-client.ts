@@ -25,6 +25,8 @@ export interface SyncRelayConnection {
     filters: Filter[],
     params: {
       onevent: (event: NostrEvent) => void;
+      /** nostr-tools hands an event that fails its signature check or the filter here, not to `onevent`. */
+      oninvalidevent: (event: unknown) => void;
       oneose: () => void;
       onclose: (reason: string) => void;
       eoseTimeout: number;
@@ -71,6 +73,11 @@ function readPage(
         // Only what was asked for: another author's events never reach the caller.
         if (matchFilter(filter, event)) {
           page.push(event);
+        }
+      },
+      oninvalidevent: () => {
+        if (!settled) {
+          received += 1;
         }
       },
       oneose: () => settle(page),

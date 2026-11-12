@@ -191,4 +191,51 @@ describe('syncCatalog', () => {
       }),
     ).rejects.toThrow(/Duplicate/);
   });
+
+  it("one product's future date never moves another's", async () => {
+    const relay = relayWithGrant();
+    const base = { signer: catalog.secretKey, store: owner.pubkey, client: relay, sleep: noSleep };
+    // `a` was last signed by a clock two hours fast.
+    await syncCatalog({ ...base, items: [item('a')], now: NOW + 7_200 });
+    const before = relay.published.length;
+    await syncCatalog({
+      ...base,
+      mode: 'upsert',
+      items: [item('a', '11'), item('b'), item('c')],
+      now: NOW,
+    });
+    const dates = relay.published.slice(before).map((event) => event.created_at - NOW);
+    expect(dates).toEqual([7_201, 0, 0]);
+  });
+
+  it('dates each event by the clock as it is published, and a given past now as is', async () => {
+    const relay = relayWithGrant();
+    const base = { signer: catalog.secretKey, store: owner.pubkey, client: relay, sleep: noSleep };
+    let tick = NOW;
+    await syncCatalog({
+      ...base,
+      items: [item('a'), item('b'), item('c')],
+      now: NOW,
+      clock: () => tick++,
+    });
+    expect(relay.published.map((event) => event.created_at - NOW)).toEqual([0, 1, 2]);
+    // Before real time: a given `now` dates the events, not the wall clock.
+    const past = 1_600_000_000;
+    const old = new MemoryRelay();
+    old.events.push(
+      sign(
+        buildCatalogAuth({ key: catalog.pubkey, mode: 'self-host', createdAt: past - 100 }),
+        owner,
+      ),
+    );
+    await syncCatalog({
+      signer: catalog.secretKey,
+      store: owner.pubkey,
+      client: old,
+      sleep: noSleep,
+      items: [item('a')],
+      now: past,
+    });
+    expect(old.published.at(-1)?.created_at).toBe(past);
+  });
 });

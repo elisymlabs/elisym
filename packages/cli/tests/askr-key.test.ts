@@ -41,7 +41,8 @@ describe('elisym askr-key', () => {
     expect(parseStoreOwner(nip19.npubEncode(OWNER))).toBe(OWNER);
     expect(parseStoreOwner(` ${OWNER} `)).toBe(OWNER);
     const secret = generateSecretKey();
-    for (const value of ['', 'npub1nope', OWNER.toUpperCase(), nip19.nsecEncode(secret)]) {
+    expect(parseStoreOwner(OWNER.toUpperCase())).toBe(OWNER);
+    for (const value of ['', 'npub1nope', `${OWNER}0`, nip19.nsecEncode(secret)]) {
       expect(() => parseStoreOwner(value)).toThrow(/--store/);
     }
   });

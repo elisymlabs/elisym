@@ -49,7 +49,9 @@ export class FakeRelay implements RelayLike {
     if (subscription.params.alreadyHaveEvent?.(event.id)) {
       return;
     }
-    if (!this.verify(event)) {
+    // As nostr-tools does: an event failing the signature check or the filters goes to `oninvalidevent`.
+    if (!this.verify(event) || !matchFilters(subscription.filters, event)) {
+      subscription.params.oninvalidevent?.(event);
       return;
     }
     this.delivered.push(event.id);

@@ -27,6 +27,9 @@ type Ending = 'eose' | 'close' | 'silent';
 class FakeConnection implements SyncRelayConnection {
   connected = true;
   requests: Filter[] = [];
+  eoseTimeouts: number[] = [];
+  /** Drop the connection right after the next EOSE. */
+  dropAfterEose = false;
   published: NostrEvent[] = [];
   constructor(
     readonly events: NostrEvent[],
@@ -40,11 +43,13 @@ class FakeConnection implements SyncRelayConnection {
     filters: Filter[],
     params: {
       onevent: (event: NostrEvent) => void;
+      oninvalidevent: (event: unknown) => void;
       oneose: () => void;
       onclose: (reason: string) => void;
       eoseTimeout: number;
     },
   ) {
+    this.eoseTimeouts.push(params.eoseTimeout);
     if (!this.connected) {
       throw new Error('subscribe on a closed connection');
     }
@@ -59,11 +64,22 @@ class FakeConnection implements SyncRelayConnection {
       .slice(0, Math.min(filter.limit ?? Number.POSITIVE_INFINITY, this.pageCap));
     let closed = false;
     queueMicrotask(() => {
-      for (const candidate of [...matching, ...this.extra]) {
+      for (const candidate of matching) {
         params.onevent(candidate);
+      }
+      // As nostr-tools does: an event outside the filter never reaches `onevent`.
+      for (const candidate of this.extra) {
+        if (matchFilter(filter, candidate)) {
+          params.onevent(candidate);
+        } else {
+          params.oninvalidevent(candidate);
+        }
       }
       const ending = this.ending(request);
       if (ending === 'eose') {
+        if (this.dropAfterEose) {
+          this.connected = false;
+        }
         params.oneose();
       } else if (ending === 'close' && !closed) {
         params.onclose('relay closed');
@@ -199,4 +215,16 @@ describe('relaySyncClient', () => {
     const read = await syncCatalog({ ...base, items: [], now: NOW + 1, dryRun: true });
     expect(read).toEqual({ created: [], updated: [], hidden: [], unchanged: [] });
   }, 60_000);
+
+  it('a connection that drops right after an EOSE does not make the page whole', async () => {
+    const relay = new FakeConnection([event(1, 1_000)]);
+    relay.dropAfterEose = true;
+    await expect(relaySyncClient(relay).query([], FILTER)).rejects.toThrow(/whole read/);
+  });
+
+  it("sets the library's own EOSE timer well past the page timeout", async () => {
+    const relay = new FakeConnection([event(1, 1_000)]);
+    await relaySyncClient(relay, { pageTimeoutMs: 40_000 }).query([], FILTER);
+    expect(relay.eoseTimeouts.every((timeout) => timeout >= 40_000 + 10_000)).toBe(true);
+  });
 });

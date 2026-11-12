@@ -60,7 +60,12 @@ export async function readAllPages(
             page.push(event);
           }
         },
-        limits.pageTimeoutMs === undefined ? {} : { timeoutMs: limits.pageTimeoutMs },
+        {
+          onInvalidEvent: () => {
+            received += 1;
+          },
+          ...(limits.pageTimeoutMs === undefined ? {} : { timeoutMs: limits.pageTimeoutMs }),
+        },
       );
       const real = await read.done;
       read.close();

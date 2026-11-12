@@ -7,7 +7,7 @@ import {
   writeFileSync,
   existsSync,
 } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -710,6 +710,17 @@ describe('writeYaml + loadAgent round-trip', () => {
     const loaded = await loadAgent('Bob', work, 'correct horse battery staple');
     expect(loaded.secrets).toEqual(all);
   }, 60_000); // scrypt (N=2^17) per field takes seconds on a shared CI runner.
+
+  it('an encrypted catalog key alone still needs the passphrase to load', async () => {
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    await writeYaml(dir, yaml);
+    await writeSecrets(dir, { ...secrets, askr_catalog_secret_key: 'c'.repeat(64) }, 'pw');
+    const path = join(dir, '.secrets.json');
+    const raw = JSON.parse(await readFile(path, 'utf-8'));
+    // Only the catalog key stays encrypted.
+    await writeFile(path, JSON.stringify({ ...raw, nostr_secret_key: 'a'.repeat(64) }), 'utf-8');
+    await expect(loadAgent('Bob', work)).rejects.toThrow(/askr_catalog_secret_key/);
+  }, 60_000);
 
   it('loads project-local agent when .elisym/ is present', async () => {
     mkdirSync(join(work, 'proj', '.git'), { recursive: true });

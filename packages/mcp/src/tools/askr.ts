@@ -25,8 +25,15 @@ import type { AgentInstance } from '../context.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, errorResult, textResult } from './types.js';
 
-/** Products per call: publishing is paced (10 events a second), a call stays well inside a client timeout. */
+/**
+ * Products per call. Publishing is paced at 10 events a second, so a call of
+ * 200 updates takes about 20 s, and hiding 200 (two events each) about 40 s:
+ * split larger changes into several calls.
+ */
 const MAX_PRODUCTS_PER_CALL = 200;
+
+/** `syncCatalog`'s refusal when the owner has not authorized the key (exactly; a relay's own refusal reads otherwise). */
+const NOT_AUTHORIZED = 'This key is not authorized as a catalog key by the store owner';
 
 const NO_KEY =
   'This agent has no Askr catalog key. Run `elisym askr-key <agent> --store <owner npub>` in a ' +
@@ -176,7 +183,7 @@ async function withCatalogKey(
     return textResult(await work(key, client));
   } catch (error) {
     const message = messageOf(error);
-    if (/not authorized/.test(message)) {
+    if (message === NOT_AUTHORIZED) {
       return errorResult(
         `The store owner has not authorized this agent's catalog key (${nip19.npubEncode(publicKeyOf(key))}). ` +
           'Authorize it in the Askr admin, then retry.',

@@ -30,8 +30,9 @@ const HEX_PUBKEY_RE = /^[0-9a-f]{64}$/;
 /** The owner pubkey (hex) from an npub or a hex key; throws on anything else. */
 export function parseStoreOwner(value: string): string {
   const trimmed = value.trim();
-  if (HEX_PUBKEY_RE.test(trimmed)) {
-    return trimmed;
+  const lowered = trimmed.toLowerCase();
+  if (HEX_PUBKEY_RE.test(lowered)) {
+    return lowered;
   }
   try {
     const decoded = nip19.decode(trimmed);
@@ -102,14 +103,15 @@ export async function runAskrKey(
     throw new Error('--store <owner npub> is required: the store whose catalog this key writes');
   }
   const secret = bytesToHex(generateSecretKey());
-  // The yaml goes first. A run stopped between the two writes leaves the old key on the new
-  // store, where it is refused until authorized; the next run with --rotate replaces it.
-  await writeYaml(loaded.dir, { ...loaded.yaml, askr_store: target });
+  // The key goes first. A run stopped between the two writes leaves the new key on the old
+  // store, which never authorized it; a rotation away from a leaked key never ends with that
+  // key shown as the new store's.
   await writeSecrets(
     loaded.dir,
     { ...loaded.secrets, askr_catalog_secret_key: secret },
     passphrase,
   );
+  await writeYaml(loaded.dir, { ...loaded.yaml, askr_store: target });
   return {
     status: existing === undefined ? 'created' : 'rotated',
     pubkey: getPublicKey(hexToBytes(secret)),

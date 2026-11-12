@@ -223,7 +223,8 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const addresses = { ownEvents, latestAt, deletedAt };
 
   const diff: SyncDiff = { created: [], updated: [], hidden: [], unchanged: [] };
-  const toPublish: EventTemplate[] = [];
+  /** Each event with the `d` it is about: dating keeps one product's events in order. */
+  const toPublish: { d: string; template: EventTemplate }[] = [];
   for (const [d, input] of inputs) {
     const listed = current.get(d);
     // Dated after every version on the relay and after any deletion of the address:
@@ -232,12 +233,12 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     const template = buildCatalogItemEvent({ ...input, createdAt });
     if (!listed) {
       diff.created.push(d);
-      toPublish.push(template);
+      toPublish.push({ d, template });
     } else if (sameListing(template, listed)) {
       diff.unchanged.push(d);
     } else {
       diff.updated.push(d);
-      toPublish.push(template);
+      toPublish.push({ d, template });
     }
   }
   const deletionOf = (d: string, at: number): EventTemplate => ({
@@ -258,16 +259,19 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     const hiddenAt = floorFor(addresses, d, now);
     if (tagValue(listed.tags, 'visibility') !== 'hidden') {
       toPublish.push({
-        kind: KIND_PRODUCT,
-        created_at: hiddenAt,
-        tags: listed.tags
-          .filter((tag) => tag[0] !== 'visibility')
-          .concat([['visibility', 'hidden']]),
-        content: listed.content,
+        d,
+        template: {
+          kind: KIND_PRODUCT,
+          created_at: hiddenAt,
+          tags: listed.tags
+            .filter((tag) => tag[0] !== 'visibility')
+            .concat([['visibility', 'hidden']]),
+          content: listed.content,
+        },
       });
     }
     // Also when only the hidden version made it last time: the deletion is retried.
-    toPublish.push(deletionOf(d, hiddenAt));
+    toPublish.push({ d, template: deletionOf(d, hiddenAt) });
   }
 
   const pace = options.pace ?? DEFAULT_SYNC_EVENTS_PER_SEC;
@@ -280,21 +284,22 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const sleep = options.sleep ?? defaultSleep;
   const clock = options.clock ?? (options.now === undefined ? nowSecs : () => now);
   const gapMs = Math.ceil(1000 / pace);
-  // Each event is dated as it goes out, never before its floor nor before the
-  // event ahead of it (a deletion stays at or after the hidden version it
-  // follows), and no second holds more than MAX_EVENTS_PER_SECOND.
-  let lastAt = -1;
-  let atLast = 0;
-  for (const [index, template] of toPublish.entries()) {
+  // Each event is dated as it goes out: never before its floor, never before
+  // an earlier event about the same product (a deletion stays at or after the
+  // hidden version it follows), and never in a second that already holds
+  // MAX_EVENTS_PER_SECOND events. One product's date never moves another's.
+  const lastAtOf = new Map<string, number>();
+  const countAt = new Map<number, number>();
+  for (const [index, { d, template }] of toPublish.entries()) {
     if (index > 0) {
       await sleep(gapMs);
     }
-    let createdAt = Math.max(template.created_at, clock(), lastAt);
-    if (createdAt === lastAt && atLast >= MAX_EVENTS_PER_SECOND) {
-      createdAt = lastAt + 1;
+    let createdAt = Math.max(template.created_at, clock(), lastAtOf.get(d) ?? -1);
+    while ((countAt.get(createdAt) ?? 0) >= MAX_EVENTS_PER_SECOND) {
+      createdAt += 1;
     }
-    atLast = createdAt === lastAt ? atLast + 1 : 1;
-    lastAt = createdAt;
+    countAt.set(createdAt, (countAt.get(createdAt) ?? 0) + 1);
+    lastAtOf.set(d, createdAt);
     const event = finalizeEvent({ ...template, created_at: createdAt }, options.signer);
     await publishWithRetry(options.client, relays, event, sleep);
   }
