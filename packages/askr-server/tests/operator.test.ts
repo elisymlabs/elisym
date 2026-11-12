@@ -8,7 +8,7 @@ import { positiveUsd, publicBaseOf } from '../src/config';
 import { STORES_CHANNEL } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
 import { StoreEventPublisher } from '../src/publisher';
-import type { ServerPool } from '../src/relay/pool';
+import type { RelayLike, ServerPool } from '../src/relay/pool';
 import {
   MAX_PUBLISH_ATTEMPTS,
   MAX_STORED_EVENTS,
@@ -162,18 +162,51 @@ describe('store directory (7.3)', () => {
   });
 });
 
+/**
+ * How the fake relay answers a publish: `refuse` is its OK false; the others
+ * are no answer at all (no connection, a connection dropped mid-publish, no
+ * OK in time), as nostr-tools reports them.
+ */
+type RelayMode = 'answer' | 'unreachable' | 'dropped' | 'silent';
+
 function fakePool(accept: (event: NostrEvent) => boolean): {
-  pool: Pick<ServerPool, 'publish'>;
+  pool: Pick<ServerPool, 'ensureRelay'>;
   published: string[];
+  control: { mode: RelayMode };
 } {
   const published: string[] = [];
-  const pool = {
-    publish(_relays: string[], event: NostrEvent) {
-      published.push(event.id);
-      return [accept(event) ? Promise.resolve('ok') : Promise.reject(new Error('blocked'))];
+  const control: { mode: RelayMode } = { mode: 'answer' };
+  const pool: Pick<ServerPool, 'ensureRelay'> = {
+    async ensureRelay(): Promise<RelayLike> {
+      if (control.mode === 'unreachable') {
+        throw new Error('connection failed');
+      }
+      let connected = true;
+      return {
+        get connected() {
+          return connected;
+        },
+        subscribe() {
+          throw new Error('not used');
+        },
+        async publish(event: NostrEvent) {
+          published.push(event.id);
+          if (control.mode === 'dropped') {
+            connected = false;
+            throw new Error('relay connection closed');
+          }
+          if (control.mode === 'silent') {
+            throw new Error('publish timed out');
+          }
+          if (!accept(event)) {
+            throw new Error('blocked: not on this relay');
+          }
+          return '';
+        },
+      };
     },
   };
-  return { pool, published };
+  return { pool, published, control };
 }
 
 describe('publishing stored events on activation (7.3)', () => {
@@ -204,7 +237,7 @@ describe('publishing stored events on activation (7.3)', () => {
     });
     await publisher.run();
     expect(published.sort()).toEqual([config.id, auth.id].sort());
-    expect(logs).toEqual([`relay refused store event ${auth.id}`]);
+    expect(logs).toEqual([`relay refused store event ${auth.id}: blocked: not on this relay`]);
     refuseAuth = false;
     published.length = 0;
     // Backed off: not retried before its time.
@@ -295,11 +328,19 @@ describe('server core review: stored events', () => {
     }
     expect(published).toHaveLength(MAX_PUBLISH_ATTEMPTS);
     expect(logs.at(-1)).toBe(
-      `relay refused store event ${config.id} ${MAX_PUBLISH_ATTEMPTS} times: no longer retried`,
+      `relay refused store event ${config.id} ${MAX_PUBLISH_ATTEMPTS} times (blocked: not on this relay): no longer retried`,
     );
     expect(await directory.eventStatus(store.owner)).toEqual({
       pending: 1,
-      failing: [{ id: config.id, kind: 30496, failures: MAX_PUBLISH_ATTEMPTS, stopped: true }],
+      failing: [
+        {
+          id: config.id,
+          kind: 30496,
+          failures: MAX_PUBLISH_ATTEMPTS,
+          attempts: MAX_PUBLISH_ATTEMPTS,
+          stopped: true,
+        },
+      ],
     });
     expect(await directory.addEvents(store.owner, [config])).toEqual({ ok: true });
     await publisher.run();
@@ -387,7 +428,10 @@ describe('server core review: stored events', () => {
     });
     expect((await state.store(store.owner))?.assistant).toBe(store.assistant);
     expect((await directory.eventStatus(store.owner)).pending).toBe(1);
-    expect(await directory.addEvents(store.owner, [configAt(NOW + 1, next)])).toEqual({ ok: true });
+    const rotation = configAt(NOW + 1, next);
+    expect(await directory.addEvents(store.owner, [rotation])).toEqual({ ok: true });
+    expect((await state.store(store.owner))?.assistant).toBe(store.assistant);
+    await directory.markPublished(rotation.id);
     expect((await state.store(store.owner))?.assistant).toBe(next);
   });
 });

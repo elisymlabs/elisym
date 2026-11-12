@@ -15,7 +15,7 @@ import type { Db } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
 import { PgState } from '../src/state/pg-state';
 import { StoreDirectory } from '../src/state/stores';
-import type { StoreStatus, Tier } from '../src/state/types';
+import type { SessionState, StoreStatus, Tier } from '../src/state/types';
 import { freshDb } from './pglite-db';
 
 export const NOW = Math.floor(Date.now() / 1000);
@@ -157,6 +157,19 @@ export async function stateWith(
     );
   }
   return { db, vault, state: new PgState(db, vault), directory };
+}
+
+/** Seed a stored session's history (what answered asks leave), straight in the database. */
+export async function seedHistory(db: Db, session: SessionState): Promise<void> {
+  await db.query('update sessions set data = ($2::text)::jsonb where id = $1', [
+    session.id,
+    JSON.stringify({
+      history: session.history,
+      visitorMessages: session.visitorMessages,
+      policyPassages: session.policyPassages,
+      allowedIds: session.allowedIds,
+    }),
+  ]);
 }
 
 /** Take the leases as `HOLDER` and return the epoch of the store with this assistant key. */

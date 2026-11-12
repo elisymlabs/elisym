@@ -102,8 +102,6 @@ export interface ServerState {
   session(owner: string, assistant: string, visitor: string, now: number): Promise<SessionState>;
   /** The stored session for (A, V), if any, without starting one. */
   storedSession(assistant: string, visitor: string): Promise<SessionState | undefined>;
-  /** Store a session's new history; a no-op when another session has replaced it since. */
-  saveSession(session: SessionState): Promise<void>;
   /** Whether a rumor id was recorded within its TTL (5.8 dedup). */
   rumorSeen(rumorId: string, now: number): Promise<boolean>;
   /**

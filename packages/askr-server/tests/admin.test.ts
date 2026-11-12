@@ -67,40 +67,56 @@ async function setup(status: 'pending' | 'active' = 'active', clock = { now: NOW
   const seeded = await stateWith([{ ...storeRecord(store), status }]);
   const relay = memoryRelay();
   const changed: string[] = [];
-  const api = createAdminApi({
-    directory: seeded.directory,
-    publicBase: BASE,
-    syncClient: relay,
-    storeEventsChanged: () => changed.push('changed'),
-    connectors: new ConnectorService({
+  /** An instance's admin API over the shared database and relay. */
+  const instance = () =>
+    createAdminApi({
       directory: seeded.directory,
-      holder: HOLDER,
-      client: relay,
-      configFor: () => undefined,
-      limiter: new ShopRateLimiter(0),
-    }),
-    now: () => clock.now,
-    syncPace: 1_000,
-  });
-  const call = async (
-    method: string,
-    path: string,
-    body?: unknown,
-    secret: Uint8Array = store.ownerSecret,
-  ) => {
-    const text = body === undefined ? '' : JSON.stringify(body);
-    const request = new Request(`http://internal:8787${path}`, {
-      method,
-      headers: { authorization: authHeader({ secret, method, url: `${BASE}${path}`, body: text }) },
-      ...(text ? { body: text } : {}),
+      publicBase: BASE,
+      syncClient: relay,
+      storeEventsChanged: () => changed.push('changed'),
+      connectors: new ConnectorService({
+        directory: seeded.directory,
+        holder: HOLDER,
+        client: relay,
+        configFor: () => undefined,
+        limiter: new ShopRateLimiter(0),
+      }),
+      now: () => clock.now,
+      syncPace: 1_000,
     });
-    const response = await api({ request, clientAddress: '203.0.113.9' });
-    if (!response) {
-      throw new Error('not an admin path');
-    }
-    return { status: response.status, body: await response.json() };
-  };
-  return { store, relay, changed, call, api, ...seeded };
+  const api = instance();
+  const callOn =
+    (target: ReturnType<typeof createAdminApi>) =>
+    async (
+      method: string,
+      path: string,
+      body?: unknown,
+      secret: Uint8Array = store.ownerSecret,
+    ) => {
+      const text = body === undefined ? '' : JSON.stringify(body);
+      const request = new Request(`http://internal:8787${path}`, {
+        method,
+        headers: {
+          authorization: authHeader({
+            secret,
+            method,
+            url: `${BASE}${path}`,
+            body: text,
+            createdAt: clock.now,
+          }),
+        },
+        ...(text ? { body: text } : {}),
+      });
+      const response = await target({ request, clientAddress: '203.0.113.9' });
+      if (!response) {
+        throw new Error('not an admin path');
+      }
+      return { status: response.status, body: await response.json() };
+    };
+  const call = callOn(api);
+  /** The same calls on a second instance. */
+  const callOther = callOn(instance());
+  return { store, relay, changed, call, callOther, api, ...seeded };
 }
 
 describe('NIP-98 check (7.3)', () => {
@@ -359,8 +375,8 @@ describe('admin API (7.3)', () => {
     expect((await call('POST', '/v1/admin/store/events', { events: [] })).status).toBe(400);
   });
 
-  it('rotating A: a config naming the new A completes the rotation', async () => {
-    const { call, store, state } = await setup();
+  it('rotating A: a config naming the new A completes the rotation once the relay accepted it', async () => {
+    const { call, store, state, directory } = await setup();
     const started = await call('POST', '/v1/admin/store/assistant/rotate');
     const next: string = started.body.nextAssistant;
     expect(next).toMatch(/^[0-9a-f]{64}$/);
@@ -382,6 +398,34 @@ describe('admin API (7.3)', () => {
       store.ownerSecret,
     );
     expect((await call('POST', '/v1/admin/store/events', { events: [config] })).status).toBe(200);
+    // Stored, not yet accepted by the relay: the old A is still the store's, leased and served.
+    expect((await state.store(store.owner))?.assistant).toBe(store.assistant);
+    expect((await call('GET', '/v1/admin/store')).body.nextAssistant).toBe(next);
+    expect(
+      (await state.acquireLeases(HOLDER, NOW, 60)).map((lease) => lease.store.assistant),
+    ).toEqual([store.assistant]);
+    // A config naming the old A again would leave the relay naming a key the rotation discards.
+    const back = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant: store.assistant,
+          origins: [ORIGIN],
+          name: 'Example Shop',
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'catalog' },
+          catalogKey: store.catalogKey,
+          createdAt: NOW + 1,
+        },
+        store.ownerSecret,
+      ),
+      store.ownerSecret,
+    );
+    expect(await call('POST', '/v1/admin/store/events', { events: [back] })).toEqual({
+      status: 400,
+      body: { error: 'bad_event', reason: 'config_assistant', id: back.id },
+    });
+    await directory.markPublished(config.id);
     const rotated = await state.store(store.owner);
     expect(rotated?.assistant).toBe(next);
     expect(rotated && getPublicKey(rotated.assistantSecretKey)).toBe(next);
@@ -683,5 +727,111 @@ describe('server core review: admin over HTTP and stored events (7.3)', () => {
       owner: store.owner,
       events: { pending: 0, failing: [] },
     });
+  });
+});
+
+describe('server core review 2: one catalog sync per store across instances (7.3)', () => {
+  const ITEM = {
+    d: 'mug',
+    title: 'Mug',
+    description: 'A mug.',
+    price: { amount: '12.50', currency: 'USD' },
+  };
+
+  async function authorized(input: Awaited<ReturnType<typeof setup>>) {
+    const server = await input.state.store(input.store.owner);
+    if (!server) {
+      throw new Error('store missing');
+    }
+    await input.relay.publish(
+      [],
+      finalizeEvent(
+        buildCatalogAuth({ key: server.catalogKey, mode: 'hosted', createdAt: NOW - 10 }),
+        input.store.ownerSecret,
+      ),
+    );
+  }
+
+  it('a sync running on one instance refuses another on every instance, which all show its status', async () => {
+    const context = await setup();
+    const { call, callOther, relay } = context;
+    await authorized(context);
+    // Publishing waits until the test lets it go, so the sync stays running.
+    let letGo: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      letGo = resolve;
+    });
+    const publish = relay.publish.bind(relay);
+    relay.publish = async (relays, event) => {
+      await gate;
+      return publish(relays, event);
+    };
+    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
+    expect(await callOther('POST', '/v1/admin/catalog', { items: [ITEM] })).toEqual({
+      status: 409,
+      body: { error: 'sync_running' },
+    });
+    expect(
+      (await callOther('POST', '/v1/admin/catalog', { items: [ITEM], dryRun: true })).status,
+    ).toBe(409);
+    expect((await callOther('GET', '/v1/admin/store')).body.catalogSync).toEqual({
+      state: 'running',
+      diff: { created: ['mug'], updated: [], hidden: [], unchanged: [] },
+    });
+    letGo();
+    await expect
+      .poll(async () => (await callOther('GET', '/v1/admin/store')).body.catalogSync?.state)
+      .toBe('done');
+    expect((await callOther('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
+  });
+
+  it('a sync whose instance died shows as interrupted once its hold lapses, and frees the store', async () => {
+    const clock = { now: NOW };
+    const context = await setup('active', clock);
+    const { call, directory, store } = context;
+    await authorized(context);
+    const diff = { created: ['mug'], updated: [], hidden: [], unchanged: [] };
+    expect(await directory.claimCatalogSync(store.owner, 'dead', NOW, 120)).toBe(true);
+    await directory.startCatalogSync(store.owner, 'dead', diff, NOW);
+    clock.now = NOW + 119;
+    expect((await call('GET', '/v1/admin/store')).body.catalogSync).toEqual({
+      state: 'running',
+      diff,
+    });
+    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(409);
+    clock.now = NOW + 120;
+    expect((await call('GET', '/v1/admin/store')).body.catalogSync).toEqual({
+      state: 'failed',
+      diff,
+      error: 'The sync was interrupted',
+    });
+    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
+    // The dead holder can no longer renew or release what is now another's.
+    expect(await directory.renewCatalogSync(store.owner, 'dead', NOW + 120, 120)).toBe(false);
+  });
+
+  it('a failed sync keeps its error for every instance', async () => {
+    const context = await setup();
+    const { call, callOther, relay } = context;
+    await authorized(context);
+    // A preview's reads, counted; the real sync repeats them after its own preview, and fails there.
+    const query = relay.query.bind(relay);
+    let reads = 0;
+    let failAfter = Number.POSITIVE_INFINITY;
+    relay.query = async (relays, filter) => {
+      reads += 1;
+      if (reads > failAfter) {
+        throw new Error('relay said no');
+      }
+      return query(relays, filter);
+    };
+    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM], dryRun: true })).status).toBe(
+      200,
+    );
+    failAfter = 2 * reads;
+    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
+    await expect
+      .poll(async () => (await callOther('GET', '/v1/admin/store')).body.catalogSync)
+      .toMatchObject({ state: 'failed', error: expect.stringContaining('relay said no') });
   });
 });

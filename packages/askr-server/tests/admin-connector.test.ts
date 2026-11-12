@@ -4,13 +4,18 @@ import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { createAdminApi } from '../src/admin/api';
 import { KIND_HTTP_AUTH, sha256Hex } from '../src/admin/nip98';
+import type { FetchGuardDeps } from '../src/connectors/fetch-guard';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
+import type { ConnectorRecord } from '../src/state/stores';
+import { readStoreConfig } from '../src/worker/config-read';
 import { FakeWeb, MemoryRelay, fixture, fixtureJson } from './connectors/helpers';
+import { FakePool } from './fake-pool';
 import { HOLDER, NOW, stateWith, storeRecord, syntheticStore } from './fixtures';
 
 const BASE = 'https://api.askr.test';
 const SHOP = 'https://shop.example';
+const RELAY = 'wss://relay.test';
 
 function header(secret: Uint8Array, method: string, path: string, body: string): string {
   const event = finalizeEvent(
@@ -39,6 +44,8 @@ async function setup(
     shopUrl?: string | null;
     origins?: string[];
     linkOrigins?: string[];
+    /** False: this instance's catalog cache lacks the config (it does not lease the store). */
+    cached?: boolean;
   } = {},
 ) {
   const platform = options.platform ?? 'shopify';
@@ -78,6 +85,9 @@ async function setup(
     store.ownerSecret,
   );
   const config: StoreConfig | undefined = parseConfig(configEvent);
+  // The relay the instance reads the config from when its cache lacks it.
+  const relayPool = new FakePool();
+  relayPool.relay(RELAY).accept(configEvent);
   const web = new FakeWeb()
     .route(`${SHOP}/`, {
       headers: { 'content-type': 'text/html' },
@@ -88,39 +98,65 @@ async function setup(
       body: fixture('shopify-products.json'),
     })
     .json(`${SHOP}/meta.json`, fixtureJson('shopify-meta.json'));
-  const connectors = new ConnectorService({
-    directory: seeded.directory,
-    holder: HOLDER,
-    client: relay,
-    configFor: () => config,
-    limiter: new ShopRateLimiter(0),
-    fetch: web.deps(),
-    pace: 1_000,
-  });
-  const api = createAdminApi({
-    directory: seeded.directory,
-    publicBase: BASE,
-    syncClient: relay,
-    storeEventsChanged: () => undefined,
-    connectors,
-    now: () => NOW,
-  });
-  const call = async (method: string, path: string, body?: unknown) => {
-    const text = body === undefined ? '' : JSON.stringify(body);
-    const response = await api({
-      request: new Request(`http://internal${path}`, {
-        method,
-        headers: { authorization: header(store.ownerSecret, method, path, text) },
-        ...(text ? { body: text } : {}),
-      }),
-      clientAddress: '203.0.113.9',
+  const newConnectors = () =>
+    new ConnectorService({
+      directory: seeded.directory,
+      holder: HOLDER,
+      client: relay,
+      configFor: () => (options.cached === false ? undefined : config),
+      readConfig: (owner) => readStoreConfig(relayPool, RELAY, owner, NOW),
+      limiter: new ShopRateLimiter(0),
+      fetch: web.deps(),
+      pace: 1_000,
     });
-    if (!response) {
-      throw new Error('not an admin path');
-    }
-    return { status: response.status, body: await response.json() };
+  const connectors = newConnectors();
+  /** An instance's admin API over the shared database. */
+  const instance = (instanceConnectors: ConnectorService) =>
+    createAdminApi({
+      directory: seeded.directory,
+      publicBase: BASE,
+      syncClient: relay,
+      storeEventsChanged: () => undefined,
+      connectors: instanceConnectors,
+      now: () => NOW,
+    });
+  const callOn =
+    (api: ReturnType<typeof createAdminApi>) =>
+    async (method: string, path: string, body?: unknown) => {
+      const text = body === undefined ? '' : JSON.stringify(body);
+      const response = await api({
+        request: new Request(`http://internal${path}`, {
+          method,
+          headers: { authorization: header(store.ownerSecret, method, path, text) },
+          ...(text ? { body: text } : {}),
+        }),
+        clientAddress: '203.0.113.9',
+      });
+      if (!response) {
+        throw new Error('not an admin path');
+      }
+      return { status: response.status, body: await response.json() };
+    };
+  const call = callOn(instance(connectors));
+  /** The same calls on a second instance. */
+  const callOther = callOn(instance(newConnectors()));
+  return { store, relay, relayPool, web, call, callOther, connectors, config, ...seeded };
+}
+
+/** The shop answers each request only after `delayMs`. */
+function slowWeb(web: FakeWeb, delayMs: number): FetchGuardDeps {
+  const deps = web.deps();
+  const transport = deps.transport;
+  if (transport === undefined) {
+    throw new Error('the fake web has no transport');
+  }
+  return {
+    ...deps,
+    transport: async (request) => {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      return transport(request);
+    },
   };
-  return { store, relay, web, call, connectors, ...seeded };
 }
 
 describe('admin connector setup (7.3, 7.4)', () => {
@@ -274,5 +310,134 @@ describe('admin connector setup (7.3, 7.4)', () => {
       .poll(async () => (await directory.connector(store.owner))?.lastStatus, { timeout: 5_000 })
       .toMatchObject({ status: 'ok' });
     expect(relay.published.filter((event) => event.kind === 30402)).toHaveLength(3);
+  });
+});
+
+describe('server core review 2: connector preview on any instance (7.3, 7.4)', () => {
+  it('an instance whose cache lacks the config reads it from the relay', async () => {
+    const { call } = await setup({ cached: false });
+    await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
+    const preview = await call('POST', '/v1/admin/connector/preview');
+    expect(preview.body.result.status).toBe('ok');
+  });
+
+  it('one preview per store at a time across instances, and none while a catalog sync holds it', async () => {
+    const { call, callOther, relayPool, directory, store } = await setup({ cached: false });
+    await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
+    // The config read is slow, so the second preview arrives while the first runs.
+    relayPool.relay(RELAY).delayMs = 100;
+    const results = await Promise.all([
+      call('POST', '/v1/admin/connector/preview'),
+      callOther('POST', '/v1/admin/connector/preview'),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect(results.find((result) => result.status === 409)?.body).toEqual({
+      error: 'sync_running',
+    });
+    // The guard is free again once the preview ended.
+    expect((await callOther('POST', '/v1/admin/connector/preview')).status).toBe(200);
+    expect(await directory.claimCatalogSync(store.owner, 'elsewhere', NOW, 120)).toBe(true);
+    expect((await call('POST', '/v1/admin/connector/preview')).body).toEqual({
+      error: 'sync_running',
+    });
+    await directory.releaseCatalogSync(store.owner, 'elsewhere');
+    expect((await call('POST', '/v1/admin/connector/preview')).status).toBe(200);
+  });
+
+  it("a preview is bounded by its own deadline, not the scheduled sync's", async () => {
+    const { call, directory, store, relay, web, config } = await setup();
+    await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
+    const record = await directory.store(store.owner);
+    const connector: ConnectorRecord | undefined = await directory.connector(store.owner);
+    if (record === undefined || connector === undefined) {
+      throw new Error('store or connector missing');
+    }
+    const service = (deadlines: { syncDeadlineMs?: number; previewDeadlineMs?: number }) =>
+      new ConnectorService({
+        directory,
+        holder: HOLDER,
+        client: relay,
+        configFor: () => config,
+        limiter: new ShopRateLimiter(0),
+        fetch: slowWeb(web, 100),
+        pace: 1_000,
+        ...deadlines,
+      });
+    const options = { dryRun: true, maxProducts: 1_000 };
+    // A short sync deadline does not cut a preview, which has its own (two minutes by default).
+    expect((await service({ syncDeadlineMs: 50 }).sync(record, connector, options)).status).toBe(
+      'ok',
+    );
+    expect(
+      await service({ syncDeadlineMs: 60_000, previewDeadlineMs: 50 }).sync(
+        record,
+        connector,
+        options,
+      ),
+    ).toEqual({ status: 'error', message: 'The sync took longer than its deadline' });
+  });
+});
+
+describe('server core review 2: the config read from the relay (7.3)', () => {
+  it('takes the newest config, unless a deletion as new names its address', async () => {
+    const store = syntheticStore();
+    const pool = new FakePool();
+    const relay = pool.relay(RELAY);
+    const configAt = (createdAt: number, name: string) =>
+      finalizeEvent(
+        buildConfigEvent(
+          {
+            assistant: store.assistant,
+            origins: [SHOP],
+            name,
+            language: 'en',
+            currency: 'USD',
+            source: { kind: 'catalog' },
+            catalogKey: store.catalogKey,
+            createdAt,
+          },
+          store.ownerSecret,
+        ),
+        store.ownerSecret,
+      );
+    const deletionAt = (createdAt: number) =>
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: createdAt,
+          tags: [['a', `30496:${store.owner}:askr`]],
+          content: '',
+        },
+        store.ownerSecret,
+      );
+    expect(await readStoreConfig(pool, RELAY, store.owner, NOW)).toBeUndefined();
+    relay.accept(configAt(NOW - 300, 'Old'));
+    relay.accept(configAt(NOW - 100, 'New'));
+    // Another author's config of the same address is not the store's.
+    const other = syntheticStore();
+    relay.accept(
+      finalizeEvent(
+        buildConfigEvent(
+          {
+            assistant: other.assistant,
+            origins: [SHOP],
+            name: 'Forged',
+            language: 'en',
+            currency: 'USD',
+            source: { kind: 'catalog' },
+            catalogKey: other.catalogKey,
+            createdAt: NOW,
+          },
+          other.ownerSecret,
+        ),
+        other.ownerSecret,
+      ),
+    );
+    relay.accept(deletionAt(NOW - 200));
+    expect((await readStoreConfig(pool, RELAY, store.owner, NOW))?.name).toBe('New');
+    relay.accept(deletionAt(NOW - 100));
+    expect(await readStoreConfig(pool, RELAY, store.owner, NOW)).toBeUndefined();
+    pool.unreachable.add(RELAY);
+    expect(await readStoreConfig(pool, RELAY, store.owner, NOW)).toBeUndefined();
   });
 });

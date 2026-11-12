@@ -28,6 +28,7 @@ import { poolSyncClient } from './relay/sync-client';
 import { PgState } from './state/pg-state';
 import { StoreDirectory } from './state/stores';
 import { isListed } from './worker/catalog';
+import { readStoreConfig } from './worker/config-read';
 import { Worker } from './worker/worker';
 
 const STORE_POLL_MS = 60_000;
@@ -113,6 +114,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     holder: worker.holderId,
     client: syncClient,
     configFor: (owner) => catalogs.get(owner)?.config,
+    readConfig: (owner) => readStoreConfig(pool, relayUrl, owner, Math.floor(Date.now() / 1000)),
     limiter: new ShopRateLimiter(),
     log,
   });
@@ -188,6 +190,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     syncClient,
     storeEventsChanged: onStoresChanged,
     connectors,
+    log,
   });
   const handler = async (input: GatewayRequest): Promise<Response> =>
     (await admin(input)) ?? gateway(input);

@@ -32,6 +32,7 @@ import {
   type SyntheticStore,
   askWrap,
   scriptedProvider,
+  seedHistory,
   stateWith,
   storeRecord,
   syntheticStore,
@@ -103,9 +104,28 @@ class CountingState extends PgState {
     }
     return super.rumorSeen(rumorId, now);
   }
-  override acquireLeases(holder: string, now: number, ttlSecs: number): Promise<LeasedStore[]> {
+  /** When set, lease reads wait for it before they reach the database. */
+  leaseGate: Promise<void> | undefined;
+  leaseGateEntered = false;
+  override async acquireLeases(
+    holder: string,
+    now: number,
+    ttlSecs: number,
+  ): Promise<LeasedStore[]> {
     this.leaseCalls += 1;
+    if (this.leaseGate !== undefined) {
+      this.leaseGateEntered = true;
+      await this.leaseGate;
+    }
     return super.acquireLeases(holder, now, ttlSecs);
+  }
+  /** When set, the answer's step fails as a database error would. */
+  answerFails = false;
+  override answerAsk(...args: Parameters<PgState['answerAsk']>): Promise<boolean> {
+    if (this.answerFails) {
+      return Promise.reject(new Error('connection lost'));
+    }
+    return super.answerAsk(...args);
   }
 }
 
@@ -852,7 +872,7 @@ describe('worker review round 2', () => {
       const session = await setup.state.session(store.owner, store.assistant, visitor, NOW);
       setup.clock.now = session.sessionEnd;
       session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
-      await setup.state.saveSession(session);
+      await seedHistory(setup.db, session);
       vi.advanceTimersByTime(60_000);
       expect(setup.state.sweepCalls).toBeGreaterThan(0);
       await setup.state.lastSweep;
@@ -1340,5 +1360,46 @@ describe('server core review: worker', () => {
     const taken = await setup.state.acquireLeases('other', setup.clock.now, 60);
     expect(taken.map((lease) => lease.store.owner)).toEqual([store.owner]);
     provider.release();
+  });
+});
+
+describe('server core review 2: worker', () => {
+  it('a turn whose answer step fails after its model calls settles what they spent', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    setup.state.answerFails = true;
+    const visitorSecret = generateSecretKey();
+    const askId = 'a7'.repeat(16);
+    ask(setup, store, visitorSecret, askId);
+    await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+    await setup.worker.idle();
+    expect(received(setup, store, visitorSecret).map((opened) => opened.message)).toContainEqual({
+      type: 'unavailable',
+      ask_id: askId,
+      reason: 'error',
+    });
+    expect(await day(setup, store)).toEqual({
+      spent: costOf(SMALL_USAGE, PRICE).toString(),
+      reserved: '0',
+    });
+  });
+
+  it('a shutdown waits for a lease renewal in flight before giving the leases up', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    let openGate: () => void = () => undefined;
+    setup.state.leaseGate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const renewal = setup.worker.refreshLeases();
+    await waitUntil(() => setup.state.leaseGateEntered);
+    const shutdown = setup.worker.shutdown(100);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    openGate();
+    await shutdown;
+    await renewal;
+    setup.state.leaseGate = undefined;
+    const taken = await setup.state.acquireLeases('other', setup.clock.now, 60);
+    expect(taken.map((lease) => lease.store.owner)).toEqual([store.owner]);
   });
 });

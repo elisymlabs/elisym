@@ -112,6 +112,11 @@ export class FakeRelay implements RelayLike {
     }
   }
 
+  async publish(event: NostrEvent): Promise<string> {
+    this.accept(event);
+    return '';
+  }
+
   /** The connection drops: every REQ closes. */
   drop(): void {
     this.connected = false;

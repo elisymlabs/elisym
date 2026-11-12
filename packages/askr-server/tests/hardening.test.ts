@@ -24,6 +24,7 @@ import {
   stateWith,
   storeRecord,
   syntheticStore,
+  seedHistory,
 } from './fixtures';
 
 const ASK_ID = 'd'.repeat(32);
@@ -169,18 +170,6 @@ describe('gateway review round 3 (3)', () => {
     expect(response.status).toBe(403);
     expect(await state.clicksFor(store.owner, address)).toBe(0);
   });
-
-  it('keeps a replaced session from being written back', async () => {
-    const store = syntheticStore();
-    const { state } = await stateWith([storeRecord(store)]);
-    const old = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
-    const fresh = await state.session(store.owner, store.assistant, 'b'.repeat(64), old.sessionEnd);
-    old.history = [{ role: 'user', content: [{ type: 'text', text: 'stale' }] }];
-    await state.saveSession(old);
-    const stored = await state.storedSession(store.assistant, 'b'.repeat(64));
-    expect(stored?.id).toBe(fresh.id);
-    expect(stored?.history).toEqual([]);
-  });
 });
 
 describe('review round 4', () => {
@@ -313,12 +302,12 @@ describe('dedup and sweep (5.8)', () => {
 
   it('sweeps an ended session: its history goes, a running attempt is charged, a queued one released', async () => {
     const store = syntheticStore();
-    const { state } = await stateWith([storeRecord(store)]);
+    const { state, db } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
     const visitor = 'b'.repeat(64);
     const session = await state.session(store.owner, store.assistant, visitor, NOW);
     session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
-    await state.saveSession(session);
+    await seedHistory(db, session);
     const running = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     const queued = await state.admitAsk(session, 'e'.repeat(32), '0.05', epoch, NOW);
     if (!running.admitted || !queued.admitted) {
@@ -349,10 +338,10 @@ describe('dedup and sweep (5.8)', () => {
 
   it('keeps a session that has not ended', async () => {
     const store = syntheticStore();
-    const { state } = await stateWith([storeRecord(store)]);
+    const { state, db } = await stateWith([storeRecord(store)]);
     const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
     session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
-    await state.saveSession(session);
+    await seedHistory(db, session);
     await state.sweep(NOW + 60);
     expect(
       (await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW + 60)).history,
@@ -404,6 +393,9 @@ function scriptedRelay() {
           }
         },
       };
+    },
+    async publish() {
+      return '';
     },
   };
   return {

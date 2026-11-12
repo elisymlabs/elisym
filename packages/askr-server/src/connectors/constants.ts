@@ -26,6 +26,8 @@ export const WOO_VARIATION_BATCH = 100;
  * the slots other stores wait for.
  */
 export const SYNC_DEADLINE_MS = 15 * 60 * 1000;
+/** The same limit on a preview, which an admin request waits for (7.4). */
+export const PREVIEW_DEADLINE_MS = 2 * 60 * 1000;
 /** Requests one sync may make to a shop, variation reads and redirect hops included. */
 export const MAX_REQUESTS_PER_SYNC = 2_000;
 

@@ -54,6 +54,8 @@ export interface RelayLike {
       alreadyHaveEvent?: (id: string) => boolean;
     },
   ): { close: (reason?: string) => void };
+  /** Resolves once the relay accepted the event (OK true); rejects with its reason otherwise. */
+  publish(event: NostrEvent): Promise<string>;
 }
 
 /** What the server needs of its pool: nostr-tools' `AbstractSimplePool` fits, and so does a test fake. */

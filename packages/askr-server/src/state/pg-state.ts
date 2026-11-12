@@ -180,6 +180,15 @@ const SUPERSEDED: Admission = { admitted: false, reason: 'superseded' };
  * The server state on Postgres (9). Money is read as `numeric` text, added
  * with `decimal.js-light` and written back under the store's day row lock, so
  * reservations of one store are serialized and the budget stays a bound.
+ *
+ * Lock order: every transaction that touches a session's rows takes them in
+ * one order, so two of them never wait on each other in a cycle: the
+ * `sessions` row first (`lockSession`, or the `for update` of `session()` and
+ * the sweep), then its `asks` rows, then `reservations` and `store_days`
+ * (`settle`, `reserveAttempt`, which also takes the store, lease and quota
+ * rows after the session's). A transaction whose session is gone takes the
+ * reservation directly (`failAsk`, the orphan sweep): nothing holds a later
+ * row while waiting for an earlier one.
  */
 export class PgState implements ServerState {
   constructor(
@@ -288,13 +297,6 @@ export class PgState implements ServerState {
     return row ? sessionOf(row) : undefined;
   }
 
-  async saveSession(session: SessionState): Promise<void> {
-    await this.db.query('update sessions set data = ($2::text)::jsonb where id = $1', [
-      session.id,
-      sessionData(session),
-    ]);
-  }
-
   async rumorSeen(rumorId: string, now: number): Promise<boolean> {
     const rows = await this.db.query('select 1 from rumors where id = $1 and expires_at > $2', [
       rumorId,
@@ -321,9 +323,15 @@ export class PgState implements ServerState {
     return row ? askOf(row) : undefined;
   }
 
-  /** A session's ask records are deleted with it; what their attempts hold is resolved first (5.8). */
+  /**
+   * A session's ask records are deleted with it; what their attempts hold is
+   * resolved first (5.8). The caller holds the session row; its asks are
+   * locked next, before any reservation (the lock order above).
+   */
   private async dropSession(tx: Queryable, sessionId: string): Promise<void> {
-    const asks = await tx.query<AskRow>('select * from asks where session_id = $1', [sessionId]);
+    const asks = await tx.query<AskRow>('select * from asks where session_id = $1 for update', [
+      sessionId,
+    ]);
     for (const ask of asks) {
       if (ask.state === 'queued') {
         await this.settle(tx, ask.attempt_id, '0');
@@ -599,6 +607,10 @@ export class PgState implements ServerState {
     now: number,
   ): Promise<boolean> {
     return this.db.transaction(async (tx) => {
+      // The session row first: a drop of this session (a new session, the sweep) holds it before the asks.
+      if (!(await this.lockSession(tx, session))) {
+        return false;
+      }
       const rows = await tx.query(
         `update asks set state = 'answered', answer_wrap = ($1::text)::jsonb
          where session_id = $2 and ask_id = $3 and state = 'running'
@@ -636,27 +648,30 @@ export class PgState implements ServerState {
     spentUsd: string,
   ): Promise<boolean> {
     return this.db.transaction(async (tx) => {
+      if (await this.lockSession(tx, session)) {
+        const rows = await tx.query(
+          `update asks set state = 'failed'
+           where session_id = $1 and ask_id = $2 and state = 'running'
+             and attempt_id = $3 and lease_epoch = $4 and ${epochIsCurrent('$5', '$4')}
+           returning 1`,
+          [session.id, askId, attemptId, epoch, session.owner],
+        );
+        if (rows.length === 0) {
+          return false;
+        }
+        await this.settle(tx, attemptId, spentUsd);
+        return true;
+      }
+      // Its session is gone (only a drop marks a reservation orphaned): settle what the turn spent,
+      // nothing to tell the visitor.
       const [reservation] = await tx.query<{ orphan_deadline: number | null }>(
         'select orphan_deadline from reservations where attempt_id = $1 for update',
         [attemptId],
       );
       if (reservation && reservation.orphan_deadline !== null) {
-        // Its session is gone: settle what the turn spent, nothing to tell the visitor.
         await this.settle(tx, attemptId, spentUsd);
-        return false;
       }
-      const rows = await tx.query(
-        `update asks set state = 'failed'
-         where session_id = $1 and ask_id = $2 and state = 'running'
-           and attempt_id = $3 and lease_epoch = $4 and ${epochIsCurrent('$5', '$4')}
-         returning 1`,
-        [session.id, askId, attemptId, epoch, session.owner],
-      );
-      if (rows.length === 0) {
-        return false;
-      }
-      await this.settle(tx, attemptId, spentUsd);
-      return true;
+      return false;
     });
   }
 
@@ -700,6 +715,13 @@ export class PgState implements ServerState {
     );
     for (const { session_id: sessionId, ask_id: askId } of abandoned) {
       await this.db.transaction(async (tx) => {
+        // The session row before its ask (the lock order above); a session dropped meanwhile resolved it.
+        const sessions = await tx.query('select 1 from sessions where id = $1 for update', [
+          sessionId,
+        ]);
+        if (sessions.length === 0) {
+          return;
+        }
         const [ask] = await tx.query<
           AskRow & { current_epoch: number | null; lease_expires_at: number | null }
         >(

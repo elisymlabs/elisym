@@ -304,20 +304,25 @@ describe('dedup and sessions (5.8)', () => {
     expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
   });
 
-  it('saving a replaced session changes nothing', async () => {
+  it('an answer on a replaced session stores nothing', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
     const old = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const attemptId = await runningAttempt(state, old, ASK_ID, epoch, (NOW + 600) * 1000);
     const fresh = await state.session(store.owner, store.assistant, VISITOR, old.sessionEnd);
     expect(fresh.id).not.toBe(old.id);
-    await state.saveSession({ ...old, visitorMessages: ['stale'] });
+    const stale = { ...old, visitorMessages: ['stale'] };
+    expect(await state.answerAsk(stale, ASK_ID, attemptId, epoch, WRAP, '0.01', NOW)).toBe(false);
     expect(await state.storedSession(store.assistant, VISITOR)).toEqual(fresh);
   });
 
   it('a history round-trips through the database', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
     const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const attemptId = await runningAttempt(state, session, ASK_ID, epoch, (NOW + 600) * 1000);
     const saved = {
       ...session,
       history: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
@@ -325,7 +330,7 @@ describe('dedup and sessions (5.8)', () => {
       policyPassages: ['p'],
       allowedIds: ['jacket-wool'],
     };
-    await state.saveSession(saved);
+    expect(await state.answerAsk(saved, ASK_ID, attemptId, epoch, WRAP, '0.01', NOW)).toBe(true);
     expect(await state.storedSession(store.assistant, VISITOR)).toEqual(saved);
   });
 });
@@ -348,7 +353,7 @@ async function runningAttempt(
   return admitted.record.attemptId;
 }
 
-/** O signs a config naming `assistant` and stores it: the rotation completes (1.5). */
+/** O signs a config naming `assistant`, stores it and the relay accepts it: the rotation completes (1.5). */
 async function rotateTo(directory: StoreDirectory, store: SyntheticStore, assistant: string) {
   const config = finalizeEvent(
     buildConfigEvent(
@@ -367,6 +372,7 @@ async function rotateTo(directory: StoreDirectory, store: SyntheticStore, assist
     store.ownerSecret,
   );
   expect(await directory.addEvents(store.owner, [config])).toEqual({ ok: true });
+  await directory.markPublished(config.id);
 }
 
 describe('server core review: admission under lease handover (5.8)', () => {

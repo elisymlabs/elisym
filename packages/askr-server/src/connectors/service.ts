@@ -1,6 +1,7 @@
 import type { StoreConfig, SyncRelayClient } from '@elisym/askr';
 import type { ConnectorRecord, ScheduledConnector, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
+import { PREVIEW_DEADLINE_MS } from './constants';
 import type { FetchGuardDeps } from './fetch-guard';
 import type { ShopRateLimiter } from './http';
 import { type ConnectorSyncResult, syncConnector } from './runner';
@@ -13,6 +14,11 @@ export interface ConnectorServiceDeps {
   client: SyncRelayClient;
   /** The store's current config (30496), as the worker's catalog cache reads it. */
   configFor: (owner: string) => StoreConfig | undefined;
+  /**
+   * The store's config read from the relay, when the cache does not have it:
+   * the instance an admin call reaches may not lease the store (7.3).
+   */
+  readConfig?: (owner: string) => Promise<StoreConfig | undefined>;
   /** One per process, so the per-shop limit holds across stores (7.4). */
   limiter: ShopRateLimiter;
   fetch?: FetchGuardDeps;
@@ -21,6 +27,8 @@ export interface ConnectorServiceDeps {
   pace?: number;
   /** Wall-clock limit on one sync's shop reads (default `SYNC_DEADLINE_MS`). */
   syncDeadlineMs?: number;
+  /** ...and on a preview's, which runs inside an admin request (default `PREVIEW_DEADLINE_MS`). */
+  previewDeadlineMs?: number;
   log?: (message: string) => void;
 }
 
@@ -95,7 +103,7 @@ export class ConnectorService {
     if (store.status !== 'active') {
       return { status: 'error', message: 'The store is not active' };
     }
-    const config = this.deps.configFor(store.owner);
+    const config = this.deps.configFor(store.owner) ?? (await this.deps.readConfig?.(store.owner));
     const refusal = configRefusal(config, store, connector);
     if (refusal !== undefined || config === undefined) {
       return { status: 'error', message: refusal ?? 'The store config is not loaded yet' };
@@ -114,9 +122,16 @@ export class ConnectorService {
       ...(connector.currency === undefined ? {} : { currency: connector.currency }),
       ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
       ...(this.deps.pace === undefined ? {} : { pace: this.deps.pace }),
-      ...(this.deps.syncDeadlineMs === undefined ? {} : { deadlineMs: this.deps.syncDeadlineMs }),
+      ...this.deadline(options.dryRun),
       ...(options.dryRun ? { dryRun: true } : {}),
     });
+  }
+
+  private deadline(dryRun: boolean): { deadlineMs?: number } {
+    if (dryRun) {
+      return { deadlineMs: this.deps.previewDeadlineMs ?? PREVIEW_DEADLINE_MS };
+    }
+    return this.deps.syncDeadlineMs === undefined ? {} : { deadlineMs: this.deps.syncDeadlineMs };
   }
 
   private async syncScheduled(connector: ScheduledConnector): Promise<ConnectorSyncResult> {

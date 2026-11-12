@@ -246,6 +246,8 @@ export class Worker {
    */
   async shutdown(maxWaitMs: number = SHUTDOWN_WAIT_MS): Promise<void> {
     this.stop();
+    // A renewal already running would take the leases again after the release below.
+    await this.leaseRefresh;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const waited = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, maxWaitMs);
@@ -532,6 +534,8 @@ export class Worker {
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TURN_DEADLINE_MS);
+    // Set once the model calls are done, so a failure after them (wrapping, the answer's step) still settles it.
+    let spent: string | undefined;
     try {
       const output = await runTurn({
         catalog,
@@ -560,7 +564,7 @@ export class Worker {
           );
         },
       });
-      const spent = costOf(output.usage, this.deps.price).toString();
+      spent = costOf(output.usage, this.deps.price).toString();
       if (session.sessionEnd <= this.now()) {
         // The session ended during the turn: nothing can be sent, but what it spent is charged.
         await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, spent);
@@ -597,9 +601,10 @@ export class Worker {
         await this.refuse(store, session, ask.ask_id, 'error');
       }
     } catch (error) {
-      const spent =
-        error instanceof TurnError ? costOf(error.usage, this.deps.price).toString() : '0';
-      if (await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, spent)) {
+      const charged =
+        spent ??
+        (error instanceof TurnError ? costOf(error.usage, this.deps.price).toString() : '0');
+      if (await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, charged)) {
         await this.refuse(store, session, ask.ask_id, 'error');
       }
     } finally {

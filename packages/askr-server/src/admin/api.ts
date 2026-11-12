@@ -19,7 +19,8 @@ import { z } from 'zod';
 import { publicBaseOf } from '../config';
 import type { ConnectorService } from '../connectors/service';
 import type { GatewayRequest } from '../gateway/gateway';
-import type { StoreDirectory } from '../state/stores';
+import { randomId } from '../state/pg-state';
+import type { CatalogSyncStatus, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
@@ -30,6 +31,13 @@ const MAX_EVENT_BYTES = 64 * 1024;
 /** A stored event may be dated at most this far ahead (clock skew of the signer). */
 const MAX_AHEAD_SECS = 10 * 60;
 const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
+/**
+ * A catalog sync or connector preview holds its store's guard this long past
+ * its last renewal, so one whose instance died frees the store soon (7.3).
+ */
+const SYNC_HOLD_SECS = 2 * 60;
+/** ...and renews it this often while it runs. */
+const SYNC_RENEW_MS = 30_000;
 
 const EventSchema = z.object({
   id: z.string(),
@@ -73,12 +81,8 @@ export interface AdminDeps {
   now?: () => number;
   /** Publishing pace for catalog syncs; tests raise it. */
   syncPace?: number;
+  log?: (message: string) => void;
 }
-
-type SyncStatus =
-  | { state: 'running'; diff: SyncDiff }
-  | { state: 'done'; diff: SyncDiff }
-  | { state: 'failed'; diff: SyncDiff; error: string };
 
 function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {
@@ -149,8 +153,51 @@ export function createAdminApi(
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
   // `https://api.askr.elisym.network/` and without the slash name the same base.
   const publicBase = publicBaseOf(deps.publicBase);
-  const syncs = new Map<string, SyncStatus>();
-  const previewing = new Set<string>();
+  const log = deps.log ?? (() => undefined);
+
+  /**
+   * Run `work` holding the store's catalog sync guard, shared by every
+   * instance through the database (7.3, 7.4): one catalog sync or connector
+   * preview per store at a time. Undefined when another holds it. `work`
+   * gets the guard's holder id and gives the guard up through `release`.
+   */
+  const withSyncGuard = async (
+    owner: string,
+    work: (
+      holder: string,
+      release: (ended?: CatalogSyncStatus) => Promise<void>,
+    ) => Promise<Response>,
+  ): Promise<Response | undefined> => {
+    const holder = randomId();
+    if (!(await deps.directory.claimCatalogSync(owner, holder, now(), SYNC_HOLD_SECS))) {
+      return undefined;
+    }
+    const renewal = setInterval(() => {
+      deps.directory.renewCatalogSync(owner, holder, now(), SYNC_HOLD_SECS).then(
+        (held) => {
+          if (!held) {
+            log(`catalog sync guard of ${owner} was lost while its sync ran`);
+          }
+        },
+        (error: unknown) => log(`catalog sync guard renewal failed: ${errorText(error)}`),
+      );
+    }, SYNC_RENEW_MS);
+    let released = false;
+    const release = async (ended?: CatalogSyncStatus) => {
+      if (released) {
+        return;
+      }
+      released = true;
+      clearInterval(renewal);
+      await deps.directory.releaseCatalogSync(owner, holder, ended);
+    };
+    try {
+      return await work(holder, release);
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  };
 
   const view = async (store: StoreRecord) => ({
     owner: store.owner,
@@ -160,7 +207,7 @@ export function createAdminApi(
     nextAssistant: (await deps.directory.nextAssistant(store.owner)) ?? null,
     catalogKey: store.catalogKey,
     usage: await deps.directory.usage(store.owner, store.assistant, now()),
-    catalogSync: syncs.get(store.owner) ?? null,
+    catalogSync: await deps.directory.catalogSync(store.owner, now()),
     connector: (await deps.directory.connector(store.owner)) ?? null,
     events: await deps.directory.eventStatus(store.owner),
   });
@@ -180,9 +227,9 @@ export function createAdminApi(
     }
     const added = await deps.directory.addEvents(store.owner, events);
     if (!added.ok) {
-      return added.reason === 'stale_config'
-        ? json({ error: 'bad_event', reason: 'stale_config', id: added.id }, 400)
-        : json({ error: 'too_many_events' }, 409);
+      return added.reason === 'too_many_events'
+        ? json({ error: 'too_many_events' }, 409)
+        : json({ error: 'bad_event', reason: added.reason, id: added.id }, 400);
     }
     deps.storeEventsChanged();
     return json({ stored: events.map((event) => event.id) }, 200);
@@ -200,22 +247,19 @@ export function createAdminApi(
     if (store.tier !== undefined && items.data.length > store.tier.maxProducts) {
       return json({ error: 'too_many_products', max: store.tier.maxProducts }, 400);
     }
-    if (syncs.get(store.owner)?.state === 'running' || previewing.has(store.owner)) {
-      return json({ error: 'sync_running' }, 409);
-    }
-    // Held across the preview's await, so two calls cannot both start a sync.
-    previewing.add(store.owner);
-    try {
-      return await startSync(store, items.data, parsed.data.dryRun === true);
-    } finally {
-      previewing.delete(store.owner);
-    }
+    const dryRun = parsed.data.dryRun === true;
+    const started = await withSyncGuard(store.owner, (holder, release) =>
+      startSync(store, items.data, dryRun, holder, release),
+    );
+    return started ?? json({ error: 'sync_running' }, 409);
   };
 
   const startSync = async (
     store: StoreRecord,
     items: CatalogItemInput[],
     dryRun: boolean,
+    holder: string,
+    release: (ended?: CatalogSyncStatus) => Promise<void>,
   ): Promise<Response> => {
     const options = {
       signer: store.catalogSecretKey,
@@ -228,18 +272,22 @@ export function createAdminApi(
     try {
       diff = await syncCatalog({ ...options, dryRun: true });
     } catch (error) {
+      await release();
       return json({ error: 'sync_refused', message: errorText(error) }, 409);
     }
     if (dryRun) {
+      await release();
       return json({ diff }, 200);
     }
-    // Publishing is paced (2.4), so a large catalog outlasts a request: it runs on, its status in GET /store.
-    syncs.set(store.owner, { state: 'running', diff });
-    void syncCatalog(options).then(
-      (done) => syncs.set(store.owner, { state: 'done', diff: done }),
-      (error: unknown) =>
-        syncs.set(store.owner, { state: 'failed', diff, error: errorText(error) }),
-    );
+    // Publishing is paced (2.4), so a large catalog outlasts a request: it runs on, still holding
+    // the guard, its status in GET /store on any instance.
+    await deps.directory.startCatalogSync(store.owner, holder, diff, now());
+    void syncCatalog(options)
+      .then(
+        (done) => release({ state: 'done', diff: done }),
+        (error: unknown) => release({ state: 'failed', diff, error: errorText(error) }),
+      )
+      .catch((error: unknown) => log(`catalog sync status not saved: ${errorText(error)}`));
     return json({ diff, started: true }, 202);
   };
 
@@ -346,12 +394,21 @@ export function createAdminApi(
         deps.connectors.runNow(owner);
         return json({ connector: await deps.directory.connector(owner) }, 200);
       }
-      // The first import's preview (7.4): what a sync would publish, nothing published.
-      const result = await deps.connectors.sync(store, connector, {
-        dryRun: true,
-        maxProducts: store.tier.maxProducts,
+      // The first import's preview (7.4): what a sync would publish, nothing published; one per
+      // store at a time on any instance, under the catalog sync's guard.
+      const { maxProducts } = store.tier;
+      const previewed = await withSyncGuard(owner, async (_holder, release) => {
+        try {
+          const result = await deps.connectors.sync(store, connector, {
+            dryRun: true,
+            maxProducts,
+          });
+          return json({ result }, 200);
+        } finally {
+          await release();
+        }
       });
-      return json({ result }, 200);
+      return previewed ?? json({ error: 'sync_running' }, 409);
     }
     const policyPath = POLICY_PATH_RE.exec(url.pathname);
     const isWrite =

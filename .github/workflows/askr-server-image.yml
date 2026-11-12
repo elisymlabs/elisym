@@ -17,6 +17,14 @@ on:
 # per-commit tag is always pushed. GitHub keeps one pending run per group, so
 # a burst of merges may skip a middle commit's image; :latest still ends on
 # the newest one.
+#
+# Accepted lag: when a green commit's run finds main already moved on and
+# the newer commit then fails CI, :latest stays on an older image until the
+# next green commit at main's head moves it (the green commit's own
+# :<version>-<sha> tag is pushed all the same). Moving :latest by ancestry
+# instead would need the current :latest's revision label and a history
+# walk, for a tag nothing deploys from automatically: a deploy names the
+# per-commit tag it wants.
 concurrency:
   group: askr-server-image
   cancel-in-progress: false

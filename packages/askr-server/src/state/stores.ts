@@ -1,4 +1,10 @@
-import { KIND_CATALOG_AUTH, type ConnectorPlatform, KIND_CONFIG, parseConfig } from '@elisym/askr';
+import {
+  KIND_CATALOG_AUTH,
+  type ConnectorPlatform,
+  KIND_CONFIG,
+  type SyncDiff,
+  parseConfig,
+} from '@elisym/askr';
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -11,22 +17,46 @@ import type { StoreRecord, StoreStatus, Tier } from './types';
 export const MAX_UNPUBLISHED_EVENTS = 50;
 /** Stored events per store at most; published configs and authorizations a newer one replaced do not count. */
 export const MAX_STORED_EVENTS = 1_000;
-/** A stored event the relay refused this many times is no longer retried until it is stored again. */
+/**
+ * A stored event the relay explicitly refused this many times is no longer
+ * retried until it is stored again. An unreachable relay never counts: its
+ * events keep being retried at the backoff's interval.
+ */
 export const MAX_PUBLISH_ATTEMPTS = 8;
-const PUBLISH_BACKOFF_BASE_SECS = 60;
-const PUBLISH_BACKOFF_MAX_SECS = 60 * 60;
+export const PUBLISH_BACKOFF_BASE_SECS = 60;
+export const PUBLISH_BACKOFF_MAX_SECS = 60 * 60;
 
 export type AddEventsResult =
   | { ok: true }
   | { ok: false; reason: 'too_many_events' }
-  | { ok: false; reason: 'stale_config'; id: string };
+  | { ok: false; reason: 'stale_config' | 'config_assistant'; id: string };
 
 export interface StoreEventStatus {
   /** Events waiting for the relay, retried or not. */
   pending: number;
-  /** Events the relay refused at least once; `stopped` once no longer retried. */
-  failing: { id: string; kind: number; failures: number; stopped: boolean }[];
+  /**
+   * Events whose publish failed at least once: `failures` the relay's
+   * refusals, `attempts` every failed publish; `stopped` once no longer retried.
+   */
+  failing: { id: string; kind: number; failures: number; attempts: number; stopped: boolean }[];
 }
+
+/** The last catalog sync of a store the admin started, on whichever instance (7.3). */
+export type CatalogSyncStatus =
+  | { state: 'running'; diff: SyncDiff }
+  | { state: 'done'; diff: SyncDiff }
+  | { state: 'failed'; diff: SyncDiff; error: string };
+
+interface CatalogSyncRow extends Record<string, unknown> {
+  holder: string | null;
+  expires_at: number;
+  state: 'running' | 'done' | 'failed' | null;
+  diff: SyncDiff | null;
+  error: string | null;
+}
+
+/** What a catalog sync whose instance stopped holding it (a crash) shows. */
+export const SYNC_INTERRUPTED = 'The sync was interrupted';
 
 /** The `d` tag of a stored event, in SQL. */
 function dTagOf(alias: string): string {
@@ -214,17 +244,22 @@ export class StoreDirectory {
   /**
    * Store O-signed events to publish once the store is active (7.3); a known
    * id is kept as is, except that one no longer retried is retried again. A
-   * config naming the rotation's new A completes the rotation in the same
-   * step (1.5), and the running server is notified. All or nothing: a new
-   * config not newer than the store's newest stored one is refused (the relay
-   * would keep the newer one while A switched here), and so is a batch past
-   * the per-store caps.
+   * config naming the rotation's new A completes the rotation only once the
+   * relay accepted it (`markPublished`, 1.5), so the old A is served until
+   * then; and once such a config is stored, a config naming the old A again
+   * is refused (`config_assistant`): it would leave the relay naming a key the
+   * rotation then discards. The running server is notified. All or nothing: a
+   * new config not newer than the store's newest stored one is refused (the
+   * relay would keep the newer one), and so is a batch past the per-store caps.
    */
   async addEvents(owner: string, events: readonly NostrEvent[]): Promise<AddEventsResult> {
     return this.db.transaction(async (tx) => {
       // One writer per store at a time, so the caps and the config order hold.
-      const stores = await tx.query('select 1 from stores where owner = $1 for update', [owner]);
-      if (stores.length === 0) {
+      const [store] = await tx.query<{ assistant: string; next_assistant: string | null }>(
+        'select assistant, next_assistant from stores where owner = $1 for update',
+        [owner],
+      );
+      if (store === undefined) {
         throw new Error('no such store');
       }
       const ids = events.map((event) => event.id);
@@ -245,6 +280,16 @@ export class StoreDirectory {
         [owner, KIND_CONFIG],
       );
       let newestConfig = newest?.created_at ?? null;
+      const next = store.next_assistant;
+      const pendingConfigs =
+        next === null
+          ? []
+          : await tx.query<{ event: NostrEvent }>(
+              `select event from store_events
+               where owner = $1 and not published and (event->>'kind')::int = $2`,
+              [owner, KIND_CONFIG],
+            );
+      let rotating = pendingConfigs.some((row) => parseConfig(row.event)?.assistant === next);
       for (const event of fresh) {
         if (event.kind !== KIND_CONFIG) {
           continue;
@@ -253,6 +298,12 @@ export class StoreDirectory {
           return { ok: false, reason: 'stale_config', id: event.id };
         }
         newestConfig = event.created_at;
+        const named = parseConfig(event)?.assistant;
+        if (next !== null && named === next) {
+          rotating = true;
+        } else if (rotating) {
+          return { ok: false, reason: 'config_assistant', id: event.id };
+        }
       }
       await tx.query(PRUNE_REPLACED_SQL, [owner]);
       const [counts] = await tx.query<{ unpublished: number; total: number }>(
@@ -267,22 +318,13 @@ export class StoreDirectory {
         return { ok: false, reason: 'too_many_events' };
       }
       for (const event of fresh) {
-        const named = event.kind === KIND_CONFIG ? parseConfig(event)?.assistant : undefined;
-        if (named !== undefined) {
-          await tx.query(
-            `update stores set assistant = next_assistant, assistant_key = next_assistant_key,
-               next_assistant = null, next_assistant_key = null
-             where owner = $1 and next_assistant = $2`,
-            [owner, named],
-          );
-        }
         await tx.query(
           'insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)',
           [event.id, owner, JSON.stringify(event)],
         );
       }
       await tx.query(
-        `update store_events set publish_failures = 0, next_attempt_at = 0
+        `update store_events set publish_failures = 0, publish_attempts = 0, next_attempt_at = 0
          where owner = $1 and id = any($2::text[]) and publish_failures >= $3`,
         [owner, ids, MAX_PUBLISH_ATTEMPTS],
       );
@@ -376,39 +418,184 @@ export class StoreDirectory {
     );
   }
 
-  /** Count a refused or failed publish and back off; returns the failures so far. */
-  async markPublishFailed(id: string, now: number): Promise<number> {
+  /**
+   * Count a failed publish and back off, the interval doubling per failed
+   * attempt up to the maximum; only a refusal (`refused`) counts toward the
+   * stop. Returns the refusals so far.
+   */
+  async markPublishFailed(id: string, now: number, refused: boolean): Promise<number> {
     const [row] = await this.db.query<{ publish_failures: number }>(
-      `update store_events set publish_failures = publish_failures + 1,
-         next_attempt_at = $2 + least($3 * (1 << least(publish_failures, 16)), $4)
+      `update store_events set
+         publish_failures = publish_failures + case when $5::boolean then 1 else 0 end,
+         publish_attempts = publish_attempts + 1,
+         next_attempt_at = $2::bigint
+           + least($3::bigint * (1::bigint << least(publish_attempts, 16)), $4::bigint)
        where id = $1 returning publish_failures`,
-      [id, now, PUBLISH_BACKOFF_BASE_SECS, PUBLISH_BACKOFF_MAX_SECS],
+      [id, now, PUBLISH_BACKOFF_BASE_SECS, PUBLISH_BACKOFF_MAX_SECS, refused],
     );
     return row?.publish_failures ?? 0;
   }
 
   /** What the admin shows about a store's stored events (7.3). */
   async eventStatus(owner: string): Promise<StoreEventStatus> {
-    const rows = await this.db.query<{ id: string; kind: number; publish_failures: number }>(
-      `select id, (event->>'kind')::int8 as kind, publish_failures from store_events
+    const rows = await this.db.query<{
+      id: string;
+      kind: number;
+      publish_failures: number;
+      publish_attempts: number;
+    }>(
+      `select id, (event->>'kind')::int8 as kind, publish_failures, publish_attempts from store_events
        where owner = $1 and not published order by (event->>'created_at')::bigint, id`,
       [owner],
     );
     return {
       pending: rows.length,
       failing: rows
-        .filter((row) => row.publish_failures > 0)
+        .filter((row) => row.publish_attempts > 0)
         .map((row) => ({
           id: row.id,
           kind: row.kind,
           failures: row.publish_failures,
+          attempts: row.publish_attempts,
           stopped: row.publish_failures >= MAX_PUBLISH_ATTEMPTS,
         })),
     };
   }
 
+  /**
+   * The relay accepted a stored event. A config naming the rotation's new A
+   * completes the rotation in the same step (1.5): only now does the store
+   * switch to it, and the running server is notified.
+   */
   async markPublished(id: string): Promise<void> {
-    await this.db.query('update store_events set published = true where id = $1', [id]);
+    await this.db.transaction(async (tx) => {
+      const [stored] = await tx.query<{ owner: string }>(
+        'select owner from store_events where id = $1',
+        [id],
+      );
+      if (stored === undefined) {
+        return;
+      }
+      // The store row before its events, as `addEvents` takes them.
+      await tx.query('select 1 from stores where owner = $1 for update', [stored.owner]);
+      const [row] = await tx.query<{ event: NostrEvent }>(
+        'update store_events set published = true where id = $1 and not published returning event',
+        [id],
+      );
+      const named =
+        row !== undefined && row.event.kind === KIND_CONFIG
+          ? parseConfig(row.event)?.assistant
+          : undefined;
+      if (named === undefined) {
+        return;
+      }
+      const swapped = await tx.query(
+        `update stores set assistant = next_assistant, assistant_key = next_assistant_key,
+           next_assistant = null, next_assistant_key = null
+         where owner = $1 and next_assistant = $2
+         returning 1`,
+        [stored.owner, named],
+      );
+      if (swapped.length > 0) {
+        await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, stored.owner]);
+      }
+    });
+  }
+
+  /**
+   * Take a store's catalog sync guard as `holder` until `now + holdSecs`;
+   * false while another instance holds it (7.3, 7.4).
+   */
+  async claimCatalogSync(
+    owner: string,
+    holder: string,
+    now: number,
+    holdSecs: number,
+  ): Promise<boolean> {
+    const rows = await this.db.query(
+      `insert into catalog_syncs (owner, holder, expires_at) values ($1, $2, $3::bigint + $4::bigint)
+       on conflict (owner) do update set holder = $2, expires_at = excluded.expires_at
+       where catalog_syncs.holder is null or catalog_syncs.expires_at <= $3::bigint
+       returning 1`,
+      [owner, holder, now, holdSecs],
+    );
+    return rows.length > 0;
+  }
+
+  /** Keep holding the guard while the work runs; false once it is no longer `holder`'s. */
+  async renewCatalogSync(
+    owner: string,
+    holder: string,
+    now: number,
+    holdSecs: number,
+  ): Promise<boolean> {
+    const rows = await this.db.query(
+      `update catalog_syncs set expires_at = $3::bigint + $4::bigint
+       where owner = $1 and holder = $2 returning 1`,
+      [owner, holder, now, holdSecs],
+    );
+    return rows.length > 0;
+  }
+
+  /** Record that `holder`'s catalog sync started publishing, with its preview's diff. */
+  async startCatalogSync(
+    owner: string,
+    holder: string,
+    diff: SyncDiff,
+    now: number,
+  ): Promise<void> {
+    await this.db.query(
+      `update catalog_syncs set state = 'running', diff = ($3::text)::jsonb, error = null, started_at = $4
+       where owner = $1 and holder = $2`,
+      [owner, holder, JSON.stringify(diff), now],
+    );
+  }
+
+  /** Give the guard up, recording how the catalog sync ended when it ran one. */
+  async releaseCatalogSync(
+    owner: string,
+    holder: string,
+    ended?: CatalogSyncStatus,
+  ): Promise<void> {
+    if (ended === undefined) {
+      await this.db.query(
+        'update catalog_syncs set holder = null, expires_at = 0 where owner = $1 and holder = $2',
+        [owner, holder],
+      );
+      return;
+    }
+    await this.db.query(
+      `update catalog_syncs set holder = null, expires_at = 0,
+         state = $3, diff = ($4::text)::jsonb, error = $5
+       where owner = $1 and holder = $2`,
+      [
+        owner,
+        holder,
+        ended.state,
+        JSON.stringify(ended.diff),
+        ended.state === 'failed' ? ended.error : null,
+      ],
+    );
+  }
+
+  /** The store's last catalog sync; one still marked running that nobody holds was interrupted. */
+  async catalogSync(owner: string, now: number): Promise<CatalogSyncStatus | null> {
+    const [row] = await this.db.query<CatalogSyncRow>(
+      'select holder, expires_at, state, diff, error from catalog_syncs where owner = $1',
+      [owner],
+    );
+    if (row === undefined || row.state === null || row.diff === null) {
+      return null;
+    }
+    if (row.state === 'running') {
+      const held = row.holder !== null && row.expires_at > now;
+      return held
+        ? { state: 'running', diff: row.diff }
+        : { state: 'failed', diff: row.diff, error: SYNC_INTERRUPTED };
+    }
+    return row.state === 'done'
+      ? { state: 'done', diff: row.diff }
+      : { state: 'failed', diff: row.diff, error: row.error ?? 'unknown error' };
   }
 
   /** Save a connector's settings (7.4); a changed source is disabled until previewed again. */

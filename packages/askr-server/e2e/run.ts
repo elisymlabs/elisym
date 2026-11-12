@@ -17,6 +17,7 @@ import {
   unwrapChatMessage,
   wrapChatMessage,
 } from '@elisym/askr';
+import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -187,6 +188,95 @@ async function races(db: Db, vault: KeyVault, directory: StoreDirectory): Promis
   );
 
   await handoverRace(db, vault, state);
+  await answerDropRace(db, vault, state);
+}
+
+const RACE_WRAP: NostrEvent = {
+  id: 'f'.repeat(64),
+  pubkey: 'e'.repeat(64),
+  created_at: 0,
+  kind: 1059,
+  tags: [],
+  content: '',
+  sig: '0'.repeat(128),
+};
+
+/**
+ * A turn answering or failing while its session is dropped (5.8): a first
+ * message past the session's end replaces it, or the sweep ends it, at the
+ * same moment. Repeated: no transaction fails (a deadlock is an error), and
+ * every attempt is charged what its turn spent, once.
+ */
+async function answerDropRace(db: Db, vault: KeyVault, state: PgState): Promise<void> {
+  const store = syntheticStore(nowSecs());
+  await insertPending(db, vault, store);
+  await db.query(`update stores set status = 'active', tier = 'tight' where owner = $1`, [
+    store.owner,
+  ]);
+  const now = nowSecs();
+  const [lease] = (await state.acquireLeases('instance-c', now, 600)).filter(
+    (held) => held.store.owner === store.owner,
+  );
+  const epoch = lease?.epoch ?? 0;
+  const rounds = 40;
+  const spentPerTurn = '0.004';
+  const errors: string[] = [];
+  for (let round = 0; round < rounds; round += 1) {
+    const visitor = getPublicKey(generateSecretKey());
+    const session = await state.session(store.owner, store.assistant, visitor, now);
+    const askId = round.toString(16).padStart(32, '0');
+    const admitted = await state.admitAsk(session, askId, '0.01', epoch, now);
+    if (!admitted.admitted) {
+      errors.push(`round ${round}: not admitted`);
+      continue;
+    }
+    const { attemptId } = admitted.record;
+    // Past the sweep below, so the sweep never charges the attempt in full itself.
+    await state.startAsk(session, askId, attemptId, epoch, (session.sessionEnd + 600) * 1000);
+    const answering = round % 2 === 0;
+    const finish = answering
+      ? state.answerAsk(
+          { ...session, visitorMessages: ['hi'] },
+          askId,
+          attemptId,
+          epoch,
+          RACE_WRAP,
+          spentPerTurn,
+          now,
+        )
+      : state.failAsk(session, askId, attemptId, epoch, spentPerTurn);
+    const drop =
+      round % 4 < 2
+        ? state.session(store.owner, store.assistant, visitor, session.sessionEnd)
+        : state.sweep(session.sessionEnd);
+    const [finished, dropped] = await Promise.allSettled([finish, drop]);
+    for (const outcome of [finished, dropped]) {
+      if (outcome.status === 'rejected') {
+        errors.push(
+          `round ${round}: ${outcome.reason instanceof Error ? outcome.reason.message : 'unknown'}`,
+        );
+      }
+    }
+    if (answering && finished.status === 'fulfilled' && !finished.value) {
+      // What the worker does when its answer lost to the drop: settle what the turn spent.
+      await state.failAsk(session, askId, attemptId, epoch, spentPerTurn);
+    }
+  }
+  const totals = await state.dayTotals(store.owner, now);
+  const [held] = await db.query<{ count: number }>(
+    'select count(*)::int8 as count from reservations where owner = $1',
+    [store.owner],
+  );
+  if (errors.length > 0) {
+    console.error(errors.slice(0, 5).join('\n'));
+  }
+  check(
+    'answers and failures racing session drops: no deadlock, each turn charged once',
+    errors.length === 0 &&
+      totals.spent === new Decimal(spentPerTurn).times(rounds).toString() &&
+      totals.reserved === '0' &&
+      held?.count === 0,
+  );
 }
 
 /**

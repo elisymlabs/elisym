@@ -17,7 +17,9 @@ export interface PageLimits {
  * A page boundary is inclusive and events are kept once by id, so events
  * sharing the boundary second are not lost. A relay that keeps answering
  * full pages cannot hold a caller: pages are capped per filter, and
- * `complete` says whether every filter ended before the cap.
+ * `complete` says whether every filter ended before the cap. A full page
+ * that adds nothing new (more than a page of events in one second) ends the
+ * read too, not complete.
  */
 export async function readAllPages(
   pool: Pick<ServerPool, 'ensureRelay'>,
@@ -69,8 +71,13 @@ export async function readAllPages(
           added += 1;
         }
       }
-      if (page.length < CATALOG_PAGE_LIMIT || added === 0) {
+      if (page.length < CATALOG_PAGE_LIMIT) {
         ended = true;
+        break;
+      }
+      if (added === 0) {
+        // A full page of events already read: more than a page share one second, which an
+        // inclusive `until` cannot step past. Whatever lies before it is unread.
         break;
       }
       until = Math.min(...page.map((event) => event.created_at));

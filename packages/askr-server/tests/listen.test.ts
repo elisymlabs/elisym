@@ -5,11 +5,16 @@ class FakeConnection implements ListenConnection {
   readonly queries: string[] = [];
   released: boolean | undefined;
   failQuery = false;
+  /** When set, the connection is lost while its LISTEN query runs. */
+  loseInQuery = false;
   private notification: ((channel: string) => void) | undefined;
   private lost: ((error: Error | undefined) => void) | undefined;
 
   async query(sql: string): Promise<void> {
     this.queries.push(sql);
+    if (this.loseInQuery) {
+      this.lose(new Error('terminating connection'));
+    }
     if (this.failQuery) {
       throw new Error('connection refused');
     }
@@ -107,6 +112,30 @@ describe('LISTEN that comes back (7.3)', () => {
     expect(logs.filter((message) => message.startsWith('listen reconnect failed'))).toHaveLength(2);
     expect(connections.slice(1, 3).map((connection) => connection.released)).toEqual([true, true]);
     await stop();
+  });
+
+  it('a connection lost while its LISTEN runs is replaced by another one', async () => {
+    const { connections, notified, logs, options } = setup();
+    let connects = 0;
+    const stop = await listenWithReconnect({
+      ...options,
+      connect: async () => {
+        connects += 1;
+        const connection = await options.connect();
+        connection.loseInQuery = connects === 2;
+        return connection;
+      },
+    });
+    connections[0]?.lose();
+    await waitUntil(() => connections.length === 3 && notified.length === 1);
+    expect(connections[1]?.released).toBe(true);
+    expect(logs).toContain('listen reconnect failed: the connection was lost while listening');
+    // Only the third one listens.
+    connections[1]?.notify('askr_stores');
+    connections[2]?.notify('askr_stores');
+    expect(notified).toEqual(['notify', 'notify']);
+    await stop();
+    expect(connections[2]?.released).toBe(false);
   });
 
   it('a stop while reconnecting leaves nothing listening', async () => {

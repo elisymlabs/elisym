@@ -41,8 +41,10 @@ create table store_events (
   owner text not null references stores (owner) on delete cascade,
   event jsonb not null,
   published boolean not null default false,
-  -- Publish attempts the relay refused or that failed; past the limit the event is no longer retried.
+  -- Publishes the relay explicitly refused (OK false); past the limit the event is no longer retried.
   publish_failures integer not null default 0,
+  -- Failed publishes of any kind, the relay unreachable included: they set the backoff, never the stop.
+  publish_attempts integer not null default 0,
   -- Unix seconds before which a failed event is not retried (backoff).
   next_attempt_at bigint not null default 0
 );
@@ -131,6 +133,19 @@ create table connectors (
   last_status jsonb,
   last_run_at bigint,
   next_run_at bigint
+);
+
+-- The admin's catalog sync and connector preview of a store, one at a time across instances (7.3, 7.4):
+-- held while holder is set and expires_at (unix seconds, renewed while it runs) is ahead; the last
+-- catalog sync's status for GET /store on any instance.
+create table catalog_syncs (
+  owner text primary key references stores (owner) on delete cascade,
+  holder text,
+  expires_at bigint not null default 0,
+  state text check (state in ('running', 'done', 'failed')),
+  diff jsonb,
+  error text,
+  started_at bigint
 );
 
 create table admin_auth_ids (
