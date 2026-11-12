@@ -54,19 +54,58 @@ export function extraFilters(owner: string, productKey: string | undefined): Fil
   return filters;
 }
 
-/** The keys' events once the config names them: listings, policies and their deletions. */
+/**
+ * The keys' events once the config names them: listings and policies. Their
+ * deletions are read apart, for the addresses read here only
+ * (`deletionFilters`): a key's kind 5s only grow, and read whole they would
+ * crowd listings out of the page cap.
+ */
 export function keyFilters(
   productKey: string | undefined,
   policyKey: string | undefined,
 ): Filter[] {
   const filters: Filter[] = [];
   if (productKey !== undefined) {
-    filters.push({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [productKey] });
+    filters.push({ kinds: [KIND_PRODUCT], authors: [productKey] });
   }
-  if (policyKey !== undefined && policyKey !== productKey) {
-    filters.push({ kinds: [KIND_POLICY, KIND_DELETION], authors: [policyKey] });
-  } else if (policyKey !== undefined) {
+  if (policyKey !== undefined) {
     filters.push({ kinds: [KIND_POLICY], authors: [policyKey] });
+  }
+  return filters;
+}
+
+/** Addresses per deletion filter: keeps each REQ well under the relay's message size limit. */
+const DELETION_ADDRESSES_PER_FILTER = 100;
+
+/** The deletions of the listings and policies in `events`, by their own authors only. */
+export function deletionFilters(
+  events: readonly NostrEvent[],
+  productKey: string | undefined,
+  policyKey: string | undefined,
+): Filter[] {
+  const byAuthor = new Map<string, Set<string>>();
+  for (const event of events) {
+    const kindOk =
+      (event.kind === KIND_PRODUCT && event.pubkey === productKey) ||
+      (event.kind === KIND_POLICY && event.pubkey === policyKey);
+    const d = tagValue(event, 'd');
+    if (!kindOk || d === undefined) {
+      continue;
+    }
+    const addresses = byAuthor.get(event.pubkey) ?? new Set<string>();
+    addresses.add(`${event.kind}:${event.pubkey}:${d}`);
+    byAuthor.set(event.pubkey, addresses);
+  }
+  const filters: Filter[] = [];
+  for (const [author, addresses] of byAuthor) {
+    const list = [...addresses];
+    for (let start = 0; start < list.length; start += DELETION_ADDRESSES_PER_FILTER) {
+      filters.push({
+        kinds: [KIND_DELETION],
+        authors: [author],
+        '#a': list.slice(start, start + DELETION_ADDRESSES_PER_FILTER),
+      });
+    }
   }
   return filters;
 }
