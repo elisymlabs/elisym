@@ -3,7 +3,12 @@ import { matchFilter } from 'nostr-tools/filter';
 import { Relay } from 'nostr-tools/relay';
 import type { SyncRelayClient } from './sync';
 
-/** One page of a history read; the relay caps its own page size below this at most. */
+/**
+ * One page of a history read. A shorter page ends the read, which holds only
+ * on a relay that serves a whole page: the Askr relay (nostr-rs-relay 0.10
+ * with the production config) answered limits of 500, 1 000 and 5 000 in full
+ * (checked 2026-11-12). A relay that cut pages shorter would end a read early.
+ */
 const PAGE_LIMIT = 500;
 /** Pages per filter before a read gives up as incomplete (20 000 events). */
 const PAGES_PER_FILTER = 40;
