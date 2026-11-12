@@ -175,6 +175,14 @@ describe('stdio MCP integration', { timeout: TEST_TIMEOUT_MS }, () => {
     expect(names).toContain('submit_and_pay_job_from_file');
     expect(names).toContain('submit_diff_review');
     expect(names).toContain('get_agent_policies');
+    for (const askrTool of [
+      'askr_upsert_products',
+      'askr_hide_products',
+      'askr_preview_diff',
+      'askr_set_policy',
+    ]) {
+      expect(names).toContain(askrTool);
+    }
     expect(names).not.toContain('ping_agent');
     // Every tool must have a JSON Schema.
     for (const tool of result.tools) {

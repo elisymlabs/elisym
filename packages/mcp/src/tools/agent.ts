@@ -13,6 +13,7 @@ import {
   getBase58Encoder,
 } from '@solana/kit';
 import { generateSecretKey, nip19 } from 'nostr-tools';
+import { hexToBytes } from 'nostr-tools/utils';
 import { z } from 'zod';
 import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
 import { DEFAULT_NETWORK } from '../context.js';
@@ -70,6 +71,8 @@ export async function buildAgentInstance(
   config: {
     nostrSecretKey: string;
     solanaSecretKey?: string;
+    askrCatalogSecretKey?: string;
+    askrStore?: string;
     relays?: string[];
     network: SolanaNetwork;
     security?: AgentSecurityFlags;
@@ -108,6 +111,18 @@ export async function buildAgentInstance(
     }
   }
 
+  let askr: AgentInstance['askr'];
+  if (config.askrCatalogSecretKey !== undefined && config.askrStore !== undefined) {
+    if (/^[0-9a-f]{64}$/.test(config.askrCatalogSecretKey)) {
+      askr = { secretKey: hexToBytes(config.askrCatalogSecretKey), store: config.askrStore };
+    } else {
+      logger.warn(
+        { event: 'invalid_askr_key', agent: name },
+        'invalid Askr catalog key - Askr tools disabled',
+      );
+    }
+  }
+
   const resolved = resolveAgent(name, process.cwd());
   return {
     client,
@@ -115,6 +130,7 @@ export async function buildAgentInstance(
     name,
     network: config.network,
     solanaKeypair,
+    ...(askr === undefined ? {} : { askr }),
     security: config.security ?? {},
     agentDir: resolved?.dir,
   };
@@ -155,6 +171,7 @@ export async function scrubAgent(ctx: AgentContext, agent: AgentInstance): Promi
   if (agent.solanaKeypair) {
     agent.solanaKeypair.secretKey.fill(0);
   }
+  agent.askr?.secretKey.fill(0);
   agent.identity.scrub();
   ctx.registry.delete(agent.name);
 }
