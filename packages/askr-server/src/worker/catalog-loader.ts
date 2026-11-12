@@ -1,9 +1,6 @@
 import type { StoreCatalog } from '@elisym/askr-agent';
 import type { Filter, NostrEvent } from 'nostr-tools';
-import { matchFilter } from 'nostr-tools/filter';
 import {
-  CATALOG_PAGE_LIMIT,
-  CATALOG_PAGES_PER_FILTER,
   CONNECTION_TIMEOUT_MS,
   EXTRA_RELAY_BUDGET_MS,
   EXTRA_RELAY_TIMEOUT_MS,
@@ -11,8 +8,8 @@ import {
 } from '../constants';
 import { Backoff } from '../relay/backoff';
 import { chunkByBytes } from '../relay/chunks';
-import { readHistory } from '../relay/history';
 import type { RelayLike, ServerPool } from '../relay/pool';
+import { type PageLimits, readAllPages } from '../relay/read-all';
 import type { StoreRecord } from '../state/types';
 import {
   buildStoreCatalog,
@@ -153,74 +150,18 @@ export class CatalogLoader {
     }
   }
 
-  /**
-   * Read every page of a filter set backwards in time on one connection.
-   * Undefined unless every page ended in a real EOSE on the same connection.
-   * A page boundary is inclusive and events are kept once by id, so events
-   * sharing the boundary second are not lost.
-   */
   private async readAll(
     url: string,
     filters: Filter[],
-    limits: { connectionTimeoutMs: number; pageTimeoutMs?: number; deadline?: number } = {
+    limits: PageLimits = {
       connectionTimeoutMs: CONNECTION_TIMEOUT_MS,
       ...(this.deps.historyTimeoutMs === undefined
         ? {}
         : { pageTimeoutMs: this.deps.historyTimeoutMs }),
     },
   ): Promise<NostrEvent[] | undefined> {
-    let relay;
-    try {
-      relay = await this.deps.pool.ensureRelay(url, {
-        connectionTimeout: limits.connectionTimeoutMs,
-      });
-    } catch {
-      return undefined;
-    }
-    const collected = new Map<string, NostrEvent>();
-    for (const filter of filters) {
-      let until: number | undefined;
-      // A relay that keeps answering full pages cannot hold the queue: pages are capped.
-      for (let pages = 0; pages < CATALOG_PAGES_PER_FILTER; pages += 1) {
-        if (limits.deadline !== undefined && Date.now() >= limits.deadline) {
-          return undefined;
-        }
-        const page: NostrEvent[] = [];
-        const pageFilter: Filter = {
-          ...filter,
-          limit: CATALOG_PAGE_LIMIT,
-          ...(until === undefined ? {} : { until }),
-        };
-        const read = readHistory(
-          relay,
-          [pageFilter],
-          (event) => {
-            // Only what was asked for: another author's events never reach the cache.
-            if (matchFilter(pageFilter, event)) {
-              page.push(event);
-            }
-          },
-          limits.pageTimeoutMs === undefined ? {} : { timeoutMs: limits.pageTimeoutMs },
-        );
-        const real = await read.done;
-        read.close();
-        if (!real || !relay.connected) {
-          return undefined;
-        }
-        let added = 0;
-        for (const event of page) {
-          if (!collected.has(event.id)) {
-            collected.set(event.id, event);
-            added += 1;
-          }
-        }
-        if (page.length < CATALOG_PAGE_LIMIT || added === 0) {
-          break;
-        }
-        until = Math.min(...page.map((event) => event.created_at));
-      }
-    }
-    return [...collected.values()];
+    // The page cap returns what it read (5.1).
+    return (await readAllPages(this.deps.pool, url, filters, limits))?.events;
   }
 
   /**

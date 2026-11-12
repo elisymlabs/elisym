@@ -287,6 +287,13 @@ export const CatalogItemInputSchema = z
     options: z.array(optionSchema).max(LIMITS.MAX_OPTIONS).default([]),
     variants: z.array(variantSchema).max(LIMITS.MAX_VARIANTS).default([]),
     visibility: z.enum(VISIBILITIES).default('on-sale'),
+    /**
+     * Prices differ over all the product's variants, not only the ones listed
+     * (a connector that had to cut the variant of the other price, 7.4). Only
+     * `true` adds anything: `price-from` is set anyway when the listed variants
+     * differ, and `false` never takes it away.
+     */
+    priceFrom: z.boolean().optional(),
     createdAt: z.number().int().positive().optional(),
   })
   .superRefine((input, context) => {
@@ -373,11 +380,12 @@ export function buildCatalogItemEvent(input: CatalogItemInput): EventTemplate {
       ? ['price', item.price.amount, item.price.currency]
       : ['price', item.price.amount, item.price.currency, item.price.frequency],
   );
-  // Derived, never taken from input: "from $X" exactly when variants differ in price (2.1).
+  // "from $X" when variants differ in price (2.1): derived from the listed variants, or
+  // stated by a caller that listed only some of them (an explicit `priceFrom: true`).
   const variantPrices = new Set(
     item.variants.map((variant) => new Decimal(variant.price).toString()),
   );
-  if (variantPrices.size > 1) {
+  if (variantPrices.size > 1 || item.priceFrom === true) {
     tags.push(['price-from', '1']);
   }
   for (const image of item.images) {

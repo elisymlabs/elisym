@@ -282,3 +282,7 @@ reais
 Grazie
 UNDOTTED
 OPENROUTER
+bytea
+xact
+timestamptz
+unlisten

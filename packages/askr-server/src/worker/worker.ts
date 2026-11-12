@@ -15,10 +15,12 @@ import {
 } from '@elisym/askr-agent';
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
-import { getPublicKey } from 'nostr-tools/pure';
 import {
   CONNECTION_TIMEOUT_MS,
+  LEASE_RENEW_MS,
+  LEASE_TTL_SECS,
   RELOAD_SLOTS,
+  SHUTDOWN_WAIT_MS,
   SUBSCRIPTION_BUDGET,
   STABLE_CONNECTION_MS,
   SWEEP_INTERVAL_MS,
@@ -30,7 +32,9 @@ import { Backoff } from '../relay/backoff';
 import { chunkByBytes } from '../relay/chunks';
 import { readHistory } from '../relay/history';
 import type { RelayLike, ServerPool } from '../relay/pool';
-import type { ServerState, SessionState, StoreRecord } from '../state/types';
+import { publishToRelay } from '../relay/publish';
+import { randomId } from '../state/pg-state';
+import type { LeasedStore, ServerState, SessionState, StoreRecord } from '../state/types';
 import { CatalogLoader } from './catalog-loader';
 import { intakeWrap } from './intake';
 
@@ -65,6 +69,8 @@ export interface WorkerDeps {
   relayUrl: string;
   state: ServerState;
   pool: ServerPool;
+  /** This worker's lease holder id (5.8); a fresh one per process unless given. */
+  holder?: string;
   /** The gateway keys (G) whose tickets this worker accepts. */
   gatewayKeys: readonly string[];
   providerFor: (store: StoreRecord) => LlmProvider;
@@ -88,19 +94,26 @@ export interface WorkerDeps {
 }
 
 /**
- * One worker (5.8): it reads every leased store's catalog (5.1), listens for
- * wraps to their assistant keys (2.4) and answers asks one turn at a time per
- * session. Phase 2 leases every active store of the state to this worker.
+ * One worker (5.8): it holds leases on active stores, reads every leased
+ * store's catalog (5.1), listens for wraps to their assistant keys (2.4) and
+ * answers asks one turn at a time per session.
  */
 export class Worker {
   private readonly loader: CatalogLoader;
   /** Wrap id to expiry; insertion order is expiry order (one TTL). */
   private readonly verifiedIds = new Map<string, number>();
   private readonly sessionQueues = new Map<string, Promise<void>>();
+  /** Intake per assistant key (A), in arrival order. */
+  private readonly intakeQueues = new Map<string, Promise<void>>();
   private readonly backoff = new Backoff();
-  /** Leased A (hex) to its store's owner; the pre-check reads it on every wrap. */
-  private leases = new Map<string, string>();
+  /** Leased A (hex) to its store and lease epoch; the pre-check reads it on every wrap. */
+  private leases = new Map<string, LeasedStore>();
+  private leaseRefresh: Promise<void> = Promise.resolve();
+  private leaseTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly holder: string;
   private stopped = true;
+  /** Set by `stop()`: a lease refresh still queued then takes nothing. */
+  private halted = false;
   private wrapGeneration = 0;
   private wrapSubscriptions: { close: () => void }[] = [];
   /** The connection the wrap REQ runs on and when it came up: re-issues on it keep that time (2.4). */
@@ -113,6 +126,7 @@ export class Worker {
   constructor(private readonly deps: WorkerDeps) {
     this.now = deps.now ?? (() => Math.floor(Date.now() / 1000));
     this.log = deps.log ?? (() => undefined);
+    this.holder = deps.holder ?? randomId();
     this.loader = new CatalogLoader({
       relayUrl: deps.relayUrl,
       pool: deps.pool,
@@ -145,22 +159,42 @@ export class Worker {
     return this.leases.has(assistant);
   }
 
+  /** This worker's lease holder id (5.8). */
+  get holderId(): string {
+    return this.holder;
+  }
+
+  /** The leased store of an assistant key, if this worker holds its lease. */
+  leaseOf(assistant: string): LeasedStore | undefined {
+    return this.leases.get(assistant);
+  }
+
   private leasedStores(): StoreRecord[] {
-    return [...this.leases.values()].flatMap((owner) => this.deps.state.store(owner) ?? []);
+    return [...this.leases.values()].map((lease) => lease.store);
   }
 
   /**
-   * Recompute the leased set from the state (start, and whenever a store's
-   * status changes). A newly leased A joins before its wrap REQ is
-   * re-issued, so its replay is not dropped (2.4); its catalog is queued.
+   * Take and renew leases (5.8) and apply the leased set: on start, on the
+   * renewal timer (which also covers a missed store notify, 7.3) and on a
+   * store notify. A newly leased A joins before its wrap REQ is re-issued, so
+   * its replay is not dropped (2.4); its catalog is queued. Calls are
+   * serialized; a failed read keeps the current set until the next one.
    */
-  refreshLeases(): void {
-    const next = new Map<string, string>();
-    for (const store of this.deps.state.stores()) {
-      if (store.status === 'active') {
-        next.set(getPublicKey(store.assistantSecretKey), store.owner);
-      }
+  refreshLeases(): Promise<void> {
+    this.leaseRefresh = this.leaseRefresh.then(() =>
+      this.applyLeases().catch((error: unknown) => {
+        this.log(`lease refresh failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      }),
+    );
+    return this.leaseRefresh;
+  }
+
+  private async applyLeases(): Promise<void> {
+    if (this.halted) {
+      return;
     }
+    const held = await this.deps.state.acquireLeases(this.holder, this.now(), LEASE_TTL_SECS);
+    const next = new Map(held.map((lease) => [lease.store.assistant, lease]));
     const previous = this.leases;
     this.leases = next;
     const changed =
@@ -168,14 +202,14 @@ export class Worker {
     if (!changed || this.stopped) {
       return;
     }
-    for (const [assistant, owner] of previous) {
+    for (const [assistant, lease] of previous) {
       if (!next.has(assistant)) {
-        this.loader.drop(owner);
+        this.loader.drop(lease.store.owner);
       }
     }
-    for (const [assistant, owner] of next) {
+    for (const [assistant, lease] of next) {
       if (!previous.has(assistant)) {
-        this.loader.enqueue(owner);
+        this.loader.enqueue(lease.store.owner);
       }
     }
     this.loader.reissueLiveIfChanged();
@@ -184,7 +218,12 @@ export class Worker {
 
   async start(): Promise<void> {
     this.leases = new Map();
-    this.refreshLeases();
+    this.halted = false;
+    await this.refreshLeases();
+    // A stop() during the lease read wins: nothing starts.
+    if (this.halted) {
+      return;
+    }
     this.stopped = false;
     this.loader.start();
     await this.loader.settled();
@@ -192,11 +231,37 @@ export class Worker {
       return;
     }
     this.openWraps();
-    this.sweepTimer = setInterval(() => this.deps.state.sweep(this.now()), SWEEP_INTERVAL_MS);
+    this.leaseTimer = setInterval(() => void this.refreshLeases(), LEASE_RENEW_MS);
+    this.sweepTimer = setInterval(() => {
+      this.deps.state.sweep(this.now()).catch((error: unknown) => {
+        this.log(`sweep failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      });
+    }, SWEEP_INTERVAL_MS);
+  }
+
+  /**
+   * Stop and give up this worker's leases, so another worker can take them at
+   * once. Turns in flight get up to `maxWaitMs` (inside Docker's 10 s stop
+   * grace); one still running then is resolved like any attempt of a dead
+   * lease (5.8).
+   */
+  async shutdown(maxWaitMs: number = SHUTDOWN_WAIT_MS): Promise<void> {
+    this.stop();
+    // A renewal already running would take the leases again after the release below.
+    await this.leaseRefresh;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, maxWaitMs);
+    });
+    await Promise.race([this.idle(), waited]);
+    clearTimeout(timer);
+    await this.deps.state.releaseLeases(this.holder);
   }
 
   stop(): void {
     this.stopped = true;
+    this.halted = true;
+    clearInterval(this.leaseTimer);
     this.wrapGeneration += 1;
     for (const subscription of this.wrapSubscriptions) {
       subscription.close();
@@ -206,8 +271,9 @@ export class Worker {
     clearInterval(this.sweepTimer);
   }
 
-  /** Settle every queued turn (tests and shutdown). */
+  /** Settle every intake and queued turn (tests and shutdown). */
   async idle(): Promise<void> {
+    await Promise.all([...this.intakeQueues.values()]);
     await Promise.all([...this.sessionQueues.values()]);
   }
 
@@ -310,7 +376,34 @@ export class Worker {
       this.verifiedIds.delete(id);
     }
     this.verifiedIds.set(wrap.id, now + VERIFIED_IDS_TTL_SECS);
-    const intake = intakeWrap(wrap, this.deps.state, this.deps.gatewayKeys, now);
+    // Intake is a few awaited steps (decrypt, dedup, session), so two asks of one session read
+    // back to back could enter their session's turn queue in the wrong order. The sender is
+    // known only after decrypt, so intake is chained per recipient A (the pre-check ensured
+    // exactly one `p`): arrival order holds within a store, stores still run in parallel, and a
+    // flood to one A delays only that store. The turns themselves stay queued per session.
+    const recipient = wrap.tags.find((tag) => tag[0] === 'p')?.[1] ?? '';
+    const previous = this.intakeQueues.get(recipient) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.takeWrap(wrap, now))
+      .catch((error: unknown) => {
+        this.log(`intake failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      })
+      .finally(() => {
+        if (this.intakeQueues.get(recipient) === next) {
+          this.intakeQueues.delete(recipient);
+        }
+      });
+    this.intakeQueues.set(recipient, next);
+  }
+
+  private async takeWrap(wrap: NostrEvent, now: number): Promise<void> {
+    const intake = await intakeWrap(
+      wrap,
+      (assistant) => this.leases.get(assistant),
+      this.deps.state,
+      this.deps.gatewayKeys,
+      now,
+    );
     if (intake.action === 'drop') {
       return;
     }
@@ -326,7 +419,7 @@ export class Worker {
     const key = `${intake.session.assistant}:${intake.session.visitor}`;
     const previous = this.sessionQueues.get(key) ?? Promise.resolve();
     const next = previous
-      .then(() => this.handleAsk(intake.store, intake.session, intake.ask))
+      .then(() => this.handleAsk(intake.store, intake.epoch, intake.session, intake.ask))
       .catch((error: unknown) => {
         this.log(`turn failed: ${error instanceof Error ? error.message : 'unknown'}`);
       })
@@ -359,11 +452,14 @@ export class Worker {
     return wrap;
   }
 
+  /**
+   * Best effort: an answer not delivered is stored (5.8) and re-published when
+   * the widget asks again; a status or refusal is not worth a retry.
+   */
   private async publish(wrap: NostrEvent): Promise<void> {
-    try {
-      await Promise.any(this.deps.pool.publish([this.deps.relayUrl], wrap));
-    } catch {
-      this.log('publish failed');
+    const outcome = await publishToRelay(this.deps.pool, this.deps.relayUrl, wrap);
+    if (outcome.status !== 'accepted') {
+      this.log(`publish ${outcome.status}: ${outcome.reason}`);
     }
   }
 
@@ -383,20 +479,19 @@ export class Worker {
 
   private async handleAsk(
     store: StoreRecord,
-    session: SessionState,
+    epoch: number,
+    queued: SessionState,
     ask: { ask_id: string; text: string; page?: { url: string }; locale?: string },
   ): Promise<void> {
     const now = this.now();
     // An ask queued behind a turn may run after its session ended or was replaced: it is not
     // started on that session (the widget times out and asks again in a fresh one).
-    if (
-      this.deps.state.storedSession(session.assistant, session.visitor) !== session ||
-      session.sessionEnd - now <= SESSION_END_MARGIN_SECS
-    ) {
+    const session = await this.deps.state.storedSession(queued.assistant, queued.visitor);
+    if (session?.id !== queued.id || session.sessionEnd - now <= SESSION_END_MARGIN_SECS) {
       this.log('ask dropped: its session ended');
       return;
     }
-    const existing = this.deps.state.askRecord(session, ask.ask_id);
+    const existing = await this.deps.state.askRecord(session, ask.ask_id);
     if (existing?.state === 'answered' && existing.answerWrap) {
       // The stored exact answer, same id: a widget that has it drops it (5.8).
       await this.publish(existing.answerWrap);
@@ -405,31 +500,46 @@ export class Worker {
     const live =
       existing &&
       (existing.state === 'queued' || existing.state === 'running') &&
+      existing.leaseEpoch === epoch &&
       existing.deadline > now * 1000;
     if (live) {
       return;
     }
     const admitted = existing
-      ? this.deps.state.retryAsk(session, ask.ask_id, this.deps.reserveUsd, now)
-      : this.deps.state.admitAsk(session, ask.ask_id, this.deps.reserveUsd, now);
+      ? await this.deps.state.retryAsk(
+          session,
+          ask.ask_id,
+          existing.attemptId,
+          this.deps.reserveUsd,
+          epoch,
+          now,
+        )
+      : await this.deps.state.admitAsk(session, ask.ask_id, this.deps.reserveUsd, epoch, now);
     if (!admitted.admitted) {
+      if (admitted.reason === 'superseded') {
+        // Our lease moved on or another attempt owns the ask: its holder answers, we stay silent.
+        this.log('ask dropped: superseded');
+        return;
+      }
       await this.refuse(store, session, ask.ask_id, admitted.reason);
       return;
     }
     const catalog = this.catalogs.get(store.owner);
     const deadline = now * 1000 + TURN_DEADLINE_MS;
     const { attemptId } = admitted.record;
-    if (!this.deps.state.startAsk(session, ask.ask_id, attemptId, deadline)) {
+    if (!(await this.deps.state.startAsk(session, ask.ask_id, attemptId, epoch, deadline))) {
       return;
     }
     if (catalog === undefined) {
-      if (this.deps.state.failAsk(session, ask.ask_id, attemptId, '0')) {
+      if (await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, '0')) {
         await this.refuse(store, session, ask.ask_id, 'error');
       }
       return;
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TURN_DEADLINE_MS);
+    // Set once the model calls are done, so a failure after them (wrapping, the answer's step) still settles it.
+    let spent: string | undefined;
     try {
       const output = await runTurn({
         catalog,
@@ -458,10 +568,10 @@ export class Worker {
           );
         },
       });
-      const spent = costOf(output.usage, this.deps.price).toString();
+      spent = costOf(output.usage, this.deps.price).toString();
       if (session.sessionEnd <= this.now()) {
         // The session ended during the turn: nothing can be sent, but what it spent is charged.
-        this.deps.state.failAsk(session, ask.ask_id, attemptId, spent);
+        await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, spent);
         return;
       }
       const { wrap } = wrapChatMessage({
@@ -471,21 +581,34 @@ export class Worker {
         expiresAt: session.sessionEnd,
         now: this.now(),
       });
-      if (this.deps.state.answerAsk(session, ask.ask_id, attemptId, wrap, spent, this.now())) {
-        session.history = output.history.slice(-MAX_HISTORY_MESSAGES);
-        session.visitorMessages = [...session.visitorMessages, ask.text];
-        session.policyPassages = [...session.policyPassages, ...output.policyPassages];
-        session.allowedIds = output.allowedIds;
-        this.deps.state.saveSession(session);
+      const answered: SessionState = {
+        ...session,
+        history: output.history.slice(-MAX_HISTORY_MESSAGES),
+        visitorMessages: [...session.visitorMessages, ask.text],
+        policyPassages: [...session.policyPassages, ...output.policyPassages],
+        allowedIds: output.allowedIds,
+      };
+      if (
+        await this.deps.state.answerAsk(
+          answered,
+          ask.ask_id,
+          attemptId,
+          epoch,
+          wrap,
+          spent,
+          this.now(),
+        )
+      ) {
         await this.publish(wrap);
-      } else if (this.deps.state.failAsk(session, ask.ask_id, attemptId, spent)) {
+      } else if (await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, spent)) {
         // Past the deadline: the visitor was told to retry, so the late answer is dropped, its spend kept.
         await this.refuse(store, session, ask.ask_id, 'error');
       }
     } catch (error) {
-      const spent =
-        error instanceof TurnError ? costOf(error.usage, this.deps.price).toString() : '0';
-      if (this.deps.state.failAsk(session, ask.ask_id, attemptId, spent)) {
+      const charged =
+        spent ??
+        (error instanceof TurnError ? costOf(error.usage, this.deps.price).toString() : '0');
+      if (await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, charged)) {
         await this.refuse(store, session, ask.ask_id, 'error');
       }
     } finally {

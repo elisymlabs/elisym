@@ -10,11 +10,22 @@ import { WindowLimiter } from '../src/gateway/limits';
 import { chunkByBytes } from '../src/relay/chunks';
 import { readHistory } from '../src/relay/history';
 import type { RelayLike } from '../src/relay/pool';
-import { MemoryState } from '../src/state/memory';
-import type { StoreRecord } from '../src/state/types';
+import type { LeasedStore } from '../src/state/types';
 import { buildStoreCatalog, isListed } from '../src/worker/catalog';
 import { intakeWrap } from '../src/worker/intake';
-import { NOW, ORIGIN, TIER, askWrap, storeRecord, syntheticStore } from './fixtures';
+import {
+  HOLDER,
+  NOW,
+  ORIGIN,
+  type StoreSpec,
+  TIER,
+  askWrap,
+  leaseEpoch,
+  stateWith,
+  storeRecord,
+  syntheticStore,
+  seedHistory,
+} from './fixtures';
 
 const ASK_ID = 'd'.repeat(32);
 const WRAP: NostrEvent = {
@@ -27,23 +38,21 @@ const WRAP: NostrEvent = {
   sig: '0',
 };
 
-function gateway(
-  record: (store: ReturnType<typeof syntheticStore>) => StoreRecord,
+async function gateway(
+  record: (store: ReturnType<typeof syntheticStore>) => StoreSpec,
   loaded = true,
   unservable = false,
 ) {
   const store = syntheticStore();
-  const state = new MemoryState([record(store)]);
+  const { state } = await stateWith([record(store)]);
+  const active = (await state.store(store.owner))?.status === 'active';
   const gatewaySecret = generateSecretKey();
   const catalog = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW);
   const handler = createGateway({
     state,
     gatewaySecretKey: gatewaySecret,
     // As in main: only leased (active) stores have a cached config.
-    configFor: (owner) =>
-      loaded && owner === store.owner && state.store(owner)?.status === 'active'
-        ? catalog?.config
-        : undefined,
+    configFor: (owner) => (loaded && owner === store.owner && active ? catalog?.config : undefined),
     isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
     isUnservable: (owner) => unservable && owner === store.owner,
     reserveUsd: '0.25',
@@ -63,12 +72,13 @@ function gateway(
 
 describe('gateway refusals (3)', () => {
   it('refuses a ticket once the budget is spent, with the store contact', async () => {
-    const { store, state, post } = gateway((synthetic) => ({
+    const { store, state, post } = await gateway((synthetic) => ({
       ...storeRecord(synthetic),
       tier: { ...TIER, dailyBudgetUsd: '0.05' },
     }));
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    expect(state.admitAsk(session, ASK_ID, '0.05', NOW).admitted).toBe(true);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
+    expect((await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).admitted).toBe(true);
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
     expect(response.status).toBe(503);
     expect(response.headers.get('access-control-allow-origin')).toBe(ORIGIN);
@@ -76,14 +86,14 @@ describe('gateway refusals (3)', () => {
   });
 
   it('a store that is not active is readable as unavailable, with no config needed', async () => {
-    const { store, post } = gateway((synthetic) => storeRecord(synthetic, 'suspended'));
+    const { store, post } = await gateway((synthetic) => storeRecord(synthetic, 'suspended'));
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
     expect(response.status).toBe(503);
     expect(response.headers.get('access-control-allow-origin')).toBe(ORIGIN);
   });
 
   it('an unknown store or a foreign origin gets a 403 the page can read', async () => {
-    const { store, post } = gateway((synthetic) => storeRecord(synthetic));
+    const { store, post } = await gateway((synthetic) => storeRecord(synthetic));
     const unknown = await post('/v1/session', { store: 'e'.repeat(64), visitor: 'a'.repeat(64) });
     expect(unknown.status).toBe(403);
     expect(unknown.headers.get('access-control-allow-origin')).toBe(ORIGIN);
@@ -97,7 +107,7 @@ describe('gateway refusals (3)', () => {
   });
 
   it('limits clicks per IP before checking the ticket signature', async () => {
-    const { store, post } = gateway((synthetic) => storeRecord(synthetic));
+    const { store, post } = await gateway((synthetic) => storeRecord(synthetic));
     const forged = finalizeEvent(
       buildTicket({ visitor: 'a'.repeat(64), store: store.owner, now: NOW }),
       generateSecretKey(),
@@ -114,7 +124,7 @@ describe('gateway refusals (3)', () => {
 
 describe('gateway review round 2 (3)', () => {
   it('an active store whose catalog is not loaded yet is a retryable 503, not a refusal', async () => {
-    const { store, post } = gateway((synthetic) => storeRecord(synthetic), false);
+    const { store, post } = await gateway((synthetic) => storeRecord(synthetic), false);
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
     expect(response.status).toBe(503);
     expect(response.headers.get('access-control-allow-origin')).toBe(ORIGIN);
@@ -122,7 +132,9 @@ describe('gateway review round 2 (3)', () => {
   });
 
   it('counts a click only on a listing of the store, and still under an expired ticket', async () => {
-    const { store, state, gatewaySecret, post } = gateway((synthetic) => storeRecord(synthetic));
+    const { store, state, gatewaySecret, post } = await gateway((synthetic) =>
+      storeRecord(synthetic),
+    );
     const visitor = 'a'.repeat(64);
     const expired = finalizeEvent(
       buildTicket({ visitor, store: store.owner, now: NOW - 31 * 60 }),
@@ -132,21 +144,23 @@ describe('gateway review round 2 (3)', () => {
     const madeUp = `30402:${store.catalogKey}:no-such-item`;
     expect((await post('/v1/click', { ticket: expired, address: listed })).status).toBe(204);
     expect((await post('/v1/click', { ticket: expired, address: madeUp })).status).toBe(204);
-    expect(state.clicksFor(store.owner, listed)).toBe(1);
-    expect(state.clicksFor(store.owner, madeUp)).toBe(0);
+    expect(await state.clicksFor(store.owner, listed)).toBe(1);
+    expect(await state.clicksFor(store.owner, madeUp)).toBe(0);
   });
 });
 
 describe('gateway review round 3 (3)', () => {
   it('a store with nothing to serve is unavailable, not loading', async () => {
-    const { store, post } = gateway((synthetic) => storeRecord(synthetic), false, true);
+    const { store, post } = await gateway((synthetic) => storeRecord(synthetic), false, true);
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ unavailable: true, reason: 'inactive', contact: null });
   });
 
   it('refuses a click from a site the store does not list', async () => {
-    const { store, state, gatewaySecret, post } = gateway((synthetic) => storeRecord(synthetic));
+    const { store, state, gatewaySecret, post } = await gateway((synthetic) =>
+      storeRecord(synthetic),
+    );
     const ticket = finalizeEvent(
       buildTicket({ visitor: 'a'.repeat(64), store: store.owner, now: NOW }),
       gatewaySecret,
@@ -154,23 +168,13 @@ describe('gateway review round 3 (3)', () => {
     const address = `30402:${store.catalogKey}:jacket-wool`;
     const response = await post('/v1/click', { ticket, address }, 'https://evil.example');
     expect(response.status).toBe(403);
-    expect(state.clicksFor(store.owner, address)).toBe(0);
-  });
-
-  it('keeps a replaced session from being written back', () => {
-    const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
-    const old = state.session(store.assistant, 'b'.repeat(64), NOW);
-    const fresh = state.session(store.assistant, 'b'.repeat(64), old.sessionEnd);
-    old.history = [{ role: 'user', content: 'stale' }];
-    state.saveSession(old);
-    expect(state.storedSession(store.assistant, 'b'.repeat(64))).toBe(fresh);
+    expect(await state.clicksFor(store.owner, address)).toBe(0);
   });
 });
 
 describe('review round 4', () => {
   it('issues no ticket when not even one turn reservation fits the budget', async () => {
-    const { store, post } = gateway((synthetic) => ({
+    const { store, post } = await gateway((synthetic) => ({
       ...storeRecord(synthetic),
       tier: { ...TIER, dailyBudgetUsd: '0.2' },
     }));
@@ -179,35 +183,39 @@ describe('review round 4', () => {
     expect(await response.json()).toMatchObject({ unavailable: true, reason: 'budget' });
   });
 
-  it('a running attempt whose session was swept settles to what it spent when it ends', () => {
+  it('a running attempt whose session was swept settles to what it spent when it ends', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    const admitted = state.admitAsk(session, ASK_ID, '0.25', NOW);
+    const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
+    const admitted = await state.admitAsk(session, ASK_ID, '0.25', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
     }
     const deadline = (session.sessionEnd + 60) * 1000;
-    state.startAsk(session, ASK_ID, admitted.record.attemptId, deadline);
-    state.sweep(session.sessionEnd);
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.25' });
-    expect(state.failAsk(session, ASK_ID, admitted.record.attemptId, '0.01')).toBe(false);
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
+    await state.startAsk(session, ASK_ID, admitted.record.attemptId, epoch, deadline);
+    await state.sweep(session.sessionEnd);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.25' });
+    expect(await state.failAsk(session, ASK_ID, admitted.record.attemptId, epoch, '0.01')).toBe(
+      false,
+    );
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
   });
 
-  it('a swept attempt that never ends is charged its reservation past its deadline', () => {
+  it('a swept attempt that never ends is charged its reservation past its deadline', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    const admitted = state.admitAsk(session, ASK_ID, '0.25', NOW);
+    const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
+    const admitted = await state.admitAsk(session, ASK_ID, '0.25', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
     }
     const deadline = (session.sessionEnd + 60) * 1000;
-    state.startAsk(session, ASK_ID, admitted.record.attemptId, deadline);
-    state.sweep(session.sessionEnd);
-    state.sweep(session.sessionEnd + 61);
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.25', reserved: '0' });
+    await state.startAsk(session, ASK_ID, admitted.record.attemptId, epoch, deadline);
+    await state.sweep(session.sessionEnd);
+    await state.sweep(session.sessionEnd + 61);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.25', reserved: '0' });
   });
 
   it('checks amounts from the environment', () => {
@@ -244,9 +252,13 @@ describe('review round 4', () => {
 });
 
 describe('dedup and sweep (5.8)', () => {
-  it('records a rumor id only once its ticket checked out', () => {
+  it('records a rumor id only once its ticket checked out', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
+    const { state } = await stateWith([storeRecord(store)]);
+    const leases = new Map<string, LeasedStore>(
+      (await state.acquireLeases(HOLDER, NOW, 60)).map((lease) => [lease.store.assistant, lease]),
+    );
+    const leaseOf = (assistant: string) => leases.get(assistant);
     const gatewaySecret = generateSecretKey();
     const junk = askWrap({
       store,
@@ -255,10 +267,12 @@ describe('dedup and sweep (5.8)', () => {
       askId: ASK_ID,
       text: 'junk',
     });
-    expect(intakeWrap(junk, state, [getPublicKey(gatewaySecret)], NOW).action).toBe('drop');
+    expect(
+      (await intakeWrap(junk, leaseOf, state, [getPublicKey(gatewaySecret)], NOW)).action,
+    ).toBe('drop');
     const junkRumor = unwrapChatMessage(junk, store.assistantSecret)?.rumorId ?? '';
     expect(junkRumor).not.toBe('');
-    expect(state.rumorSeen(junkRumor, NOW)).toBe(false);
+    expect(await state.rumorSeen(junkRumor, NOW)).toBe(false);
     const good = askWrap({
       store,
       visitorSecret: generateSecretKey(),
@@ -266,57 +280,72 @@ describe('dedup and sweep (5.8)', () => {
       askId: ASK_ID,
       text: 'hi',
     });
-    const intake = intakeWrap(good, state, [getPublicKey(gatewaySecret)], NOW);
+    const intake = await intakeWrap(good, leaseOf, state, [getPublicKey(gatewaySecret)], NOW);
     if (intake.action !== 'ask') {
       throw new Error('not admitted');
     }
-    expect(state.rumorSeen(intake.chat.rumorId, NOW)).toBe(true);
+    expect(await state.rumorSeen(intake.chat.rumorId, NOW)).toBe(true);
     // The junk one was never recorded: the same rumor with a valid ticket would still pass.
-    expect(intakeWrap(good, state, [getPublicKey(gatewaySecret)], NOW).action).toBe('drop');
+    expect(
+      (await intakeWrap(good, leaseOf, state, [getPublicKey(gatewaySecret)], NOW)).action,
+    ).toBe('drop');
   });
 
-  it('forgets a rumor id after its TTL', () => {
-    const state = new MemoryState([]);
-    state.recordRumor('r1', NOW);
-    state.recordRumor('r2', NOW + 10);
-    expect(state.rumorSeen('r1', NOW + 24 * 60 * 60 - 1)).toBe(true);
-    expect(state.rumorSeen('r1', NOW + 24 * 60 * 60)).toBe(false);
-    expect(state.rumorSeen('r2', NOW + 24 * 60 * 60)).toBe(true);
+  it('forgets a rumor id after its TTL', async () => {
+    const { state } = await stateWith([]);
+    expect(await state.recordRumor('r1', NOW)).toBe(true);
+    expect(await state.recordRumor('r2', NOW + 10)).toBe(true);
+    expect(await state.rumorSeen('r1', NOW + 24 * 60 * 60 - 1)).toBe(true);
+    expect(await state.rumorSeen('r1', NOW + 24 * 60 * 60)).toBe(false);
+    expect(await state.rumorSeen('r2', NOW + 24 * 60 * 60)).toBe(true);
   });
 
-  it('sweeps an ended session: its history goes, a running attempt is charged, a queued one released', () => {
+  it('sweeps an ended session: its history goes, a running attempt is charged, a queued one released', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
+    const { state, db } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
     const visitor = 'b'.repeat(64);
-    const session = state.session(store.assistant, visitor, NOW);
-    session.history = [{ role: 'user', content: 'hi' }];
-    state.saveSession(session);
-    const running = state.admitAsk(session, ASK_ID, '0.05', NOW);
-    const queued = state.admitAsk(session, 'e'.repeat(32), '0.05', NOW);
+    const session = await state.session(store.owner, store.assistant, visitor, NOW);
+    session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
+    await seedHistory(db, session);
+    const running = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
+    const queued = await state.admitAsk(session, 'e'.repeat(32), '0.05', epoch, NOW);
     if (!running.admitted || !queued.admitted) {
       throw new Error('not admitted');
     }
-    state.startAsk(session, ASK_ID, running.record.attemptId, NOW * 1000 + 60_000);
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.1' });
-    state.sweep(session.sessionEnd);
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0' });
-    expect(state.askRecord(session, ASK_ID)).toBeUndefined();
+    await state.startAsk(session, ASK_ID, running.record.attemptId, epoch, NOW * 1000 + 60_000);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.1' });
+    await state.sweep(session.sessionEnd);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0' });
+    expect(await state.askRecord(session, ASK_ID)).toBeUndefined();
     // The late answer of the swept attempt settles nothing more.
-    expect(state.answerAsk(session, ASK_ID, running.record.attemptId, WRAP, '0.2', NOW + 60)).toBe(
-      false,
-    );
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0' });
-    expect(state.session(store.assistant, visitor, session.sessionEnd).history).toEqual([]);
+    expect(
+      await state.answerAsk(
+        session,
+        ASK_ID,
+        running.record.attemptId,
+        epoch,
+        WRAP,
+        '0.2',
+        NOW + 60,
+      ),
+    ).toBe(false);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0' });
+    expect(
+      (await state.session(store.owner, store.assistant, visitor, session.sessionEnd)).history,
+    ).toEqual([]);
   });
 
-  it('keeps a session that has not ended', () => {
+  it('keeps a session that has not ended', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    session.history = [{ role: 'user', content: 'hi' }];
-    state.saveSession(session);
-    state.sweep(NOW + 60);
-    expect(state.session(store.assistant, 'b'.repeat(64), NOW + 60).history).toHaveLength(1);
+    const { state, db } = await stateWith([storeRecord(store)]);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
+    session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
+    await seedHistory(db, session);
+    await state.sweep(NOW + 60);
+    expect(
+      (await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW + 60)).history,
+    ).toHaveLength(1);
   });
 });
 
@@ -364,6 +393,9 @@ function scriptedRelay() {
           }
         },
       };
+    },
+    async publish() {
+      return '';
     },
   };
   return {

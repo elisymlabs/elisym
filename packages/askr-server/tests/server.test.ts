@@ -5,12 +5,24 @@ import { createGateway } from '../src/gateway/gateway';
 import { WindowLimiter, ipKey } from '../src/gateway/limits';
 import { Backoff } from '../src/relay/backoff';
 import { passesWrapPreCheck } from '../src/relay/pool';
-import { MemoryState } from '../src/state/memory';
+import type { LeasedStore } from '../src/state/types';
 import { buildStoreCatalog, isListed } from '../src/worker/catalog';
 import { intakeWrap } from '../src/worker/intake';
-import { NOW, ORIGIN, askWrap, scriptedProvider, storeRecord, syntheticStore } from './fixtures';
+import {
+  HOLDER,
+  NOW,
+  ORIGIN,
+  TIER,
+  askWrap,
+  leaseEpoch,
+  scriptedProvider,
+  stateWith,
+  storeRecord,
+  syntheticStore,
+} from './fixtures';
 
 const ASK_ID = 'a'.repeat(32);
+const VISITOR = 'b'.repeat(64);
 
 describe('wrap pre-check (2.4)', () => {
   const assistant = 'f'.repeat(64);
@@ -163,9 +175,9 @@ describe('catalog build (5.1)', () => {
 });
 
 describe('gateway (3)', () => {
-  function setup(status: 'active' | 'suspended' = 'active') {
+  async function setup(status: 'active' | 'suspended' = 'active') {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store, status)]);
+    const { state } = await stateWith([storeRecord(store, status)]);
     const gatewaySecret = generateSecretKey();
     const catalog = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW);
     const handler = createGateway({
@@ -190,7 +202,7 @@ describe('gateway (3)', () => {
   }
 
   it('issues a ticket signed by G for the visitor, with the assistant key', async () => {
-    const { store, gatewaySecret, post } = setup();
+    const { store, gatewaySecret, post } = await setup();
     const visitor = getPublicKey(generateSecretKey());
     const response = await post('/v1/session', { store: store.owner, visitor });
     expect(response.status).toBe(200);
@@ -209,8 +221,9 @@ describe('gateway (3)', () => {
 
   it('serves the widget script when configured, and nothing otherwise', async () => {
     const store = syntheticStore();
+    const { state } = await stateWith([storeRecord(store)]);
     const deps = {
-      state: new MemoryState([storeRecord(store)]),
+      state,
       gatewaySecretKey: generateSecretKey(),
       configFor: () => undefined,
       isListed: () => false,
@@ -229,7 +242,7 @@ describe('gateway (3)', () => {
   });
 
   it('refuses an origin the config does not list', async () => {
-    const { store, post } = setup();
+    const { store, post } = await setup();
     const response = await post(
       '/v1/session',
       { store: store.owner, visitor: 'a'.repeat(64) },
@@ -239,14 +252,14 @@ describe('gateway (3)', () => {
   });
 
   it('refuses a store that is not active', async () => {
-    const { store, post } = setup('suspended');
+    const { store, post } = await setup('suspended');
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ unavailable: true, reason: 'inactive', contact: null });
   });
 
   it('limits tickets per IP, sharing an IPv6 /64', async () => {
-    const { store, post } = setup();
+    const { store, post } = await setup();
     const statuses: number[] = [];
     for (let index = 0; index < 21; index += 1) {
       const response = await post(
@@ -262,14 +275,14 @@ describe('gateway (3)', () => {
   });
 
   it('counts a click under a valid ticket only', async () => {
-    const { store, state, post } = setup();
+    const { store, state, post } = await setup();
     const visitor = getPublicKey(generateSecretKey());
     const session = (await (await post('/v1/session', { store: store.owner, visitor })).json()) as {
       ticket: unknown;
     };
     const address = `30402:${store.catalogKey}:jacket-wool`;
     expect((await post('/v1/click', { ticket: session.ticket, address })).status).toBe(204);
-    expect(state.clicksFor(store.owner, address)).toBe(1);
+    expect(await state.clicksFor(store.owner, address)).toBe(1);
     const forged = finalizeEvent(
       {
         kind: 27495,
@@ -288,15 +301,19 @@ describe('gateway (3)', () => {
 });
 
 describe('intake drop order (5.8)', () => {
-  function setup() {
+  async function setup() {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
+    const { state } = await stateWith([storeRecord(store)]);
+    const leases = new Map<string, LeasedStore>(
+      (await state.acquireLeases(HOLDER, NOW, 60)).map((lease) => [lease.store.assistant, lease]),
+    );
+    const leaseOf = (assistant: string) => leases.get(assistant);
     const gatewaySecret = generateSecretKey();
-    return { store, state, gatewaySecret, gatewayKeys: [getPublicKey(gatewaySecret)] };
+    return { store, state, leaseOf, gatewaySecret, gatewayKeys: [getPublicKey(gatewaySecret)] };
   }
 
-  it('admits a fresh ask with a valid ticket', () => {
-    const { store, state, gatewaySecret, gatewayKeys } = setup();
+  it('admits a fresh ask with a valid ticket', async () => {
+    const { store, state, leaseOf, gatewaySecret, gatewayKeys } = await setup();
     const wrap = askWrap({
       store,
       visitorSecret: generateSecretKey(),
@@ -304,15 +321,15 @@ describe('intake drop order (5.8)', () => {
       askId: ASK_ID,
       text: 'hi',
     });
-    expect(intakeWrap(wrap, state, gatewayKeys, NOW).action).toBe('ask');
+    expect((await intakeWrap(wrap, leaseOf, state, gatewayKeys, NOW)).action).toBe('ask');
   });
 
-  it('drops a replayed rumor, a stale rumor and an unknown gateway silently', () => {
-    const { store, state, gatewaySecret, gatewayKeys } = setup();
+  it('drops a replayed rumor, a stale rumor and an unknown gateway silently', async () => {
+    const { store, state, leaseOf, gatewaySecret, gatewayKeys } = await setup();
     const visitorSecret = generateSecretKey();
     const wrap = askWrap({ store, visitorSecret, gatewaySecret, askId: ASK_ID, text: 'hi' });
-    expect(intakeWrap(wrap, state, gatewayKeys, NOW).action).toBe('ask');
-    expect(intakeWrap(wrap, state, gatewayKeys, NOW).action).toBe('drop');
+    expect((await intakeWrap(wrap, leaseOf, state, gatewayKeys, NOW)).action).toBe('ask');
+    expect((await intakeWrap(wrap, leaseOf, state, gatewayKeys, NOW)).action).toBe('drop');
     const stale = askWrap({
       store,
       visitorSecret,
@@ -321,7 +338,7 @@ describe('intake drop order (5.8)', () => {
       text: 'old',
       now: NOW - 6 * 60,
     });
-    expect(intakeWrap(stale, state, gatewayKeys, NOW).action).toBe('drop');
+    expect((await intakeWrap(stale, leaseOf, state, gatewayKeys, NOW)).action).toBe('drop');
     const foreign = askWrap({
       store,
       visitorSecret,
@@ -329,11 +346,11 @@ describe('intake drop order (5.8)', () => {
       askId: ASK_ID,
       text: 'x',
     });
-    expect(intakeWrap(foreign, state, gatewayKeys, NOW).action).toBe('drop');
+    expect((await intakeWrap(foreign, leaseOf, state, gatewayKeys, NOW)).action).toBe('drop');
   });
 
-  it('answers an expired but otherwise valid ticket with unavailable: expired', () => {
-    const { store, state, gatewaySecret, gatewayKeys } = setup();
+  it('answers an expired but otherwise valid ticket with unavailable: expired', async () => {
+    const { store, state, leaseOf, gatewaySecret, gatewayKeys } = await setup();
     const wrap = askWrap({
       store,
       visitorSecret: generateSecretKey(),
@@ -342,11 +359,11 @@ describe('intake drop order (5.8)', () => {
       text: 'hi',
       ticketNow: NOW - 31 * 60,
     });
-    expect(intakeWrap(wrap, state, gatewayKeys, NOW).action).toBe('unavailable');
+    expect((await intakeWrap(wrap, leaseOf, state, gatewayKeys, NOW)).action).toBe('unavailable');
   });
 
-  it('drops a ticket issued to someone else', () => {
-    const { store, state, gatewaySecret, gatewayKeys } = setup();
+  it('drops a ticket issued to someone else', async () => {
+    const { store, state, leaseOf, gatewaySecret, gatewayKeys } = await setup();
     const victim = getPublicKey(generateSecretKey());
     const ticket = finalizeEvent(
       buildTicket({ visitor: victim, store: store.owner, now: NOW }),
@@ -359,43 +376,44 @@ describe('intake drop order (5.8)', () => {
       expiresAt: NOW + 3_600,
       now: NOW,
     });
-    expect(intakeWrap(wrap, state, gatewayKeys, NOW).action).toBe('drop');
+    expect((await intakeWrap(wrap, leaseOf, state, gatewayKeys, NOW)).action).toBe('drop');
   });
 });
 
 describe('ask records and budget (5.8)', () => {
-  it('admits, answers once and refuses past the quota', () => {
+  it('admits, answers once and refuses past the quota', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([
-      { ...storeRecord(store), tier: { ...storeRecord(store).tier, messagesPerSessionPerDay: 1 } },
+    const { state } = await stateWith([
+      { ...storeRecord(store), tier: { ...TIER, messagesPerSessionPerDay: 1 } },
     ]);
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    const first = state.admitAsk(session, ASK_ID, '0.05', NOW);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const first = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     expect(first.admitted).toBe(true);
-    expect(state.admitAsk(session, 'c'.repeat(32), '0.05', NOW)).toEqual({
+    expect(await state.admitAsk(session, 'c'.repeat(32), '0.05', epoch, NOW)).toEqual({
       admitted: false,
       reason: 'quota',
     });
   });
 
-  it('reserves, settles to actual spend and refuses past the budget', () => {
+  it('reserves, settles to actual spend and refuses past the budget', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([
-      { ...storeRecord(store), tier: { ...storeRecord(store).tier, dailyBudgetUsd: '0.1' } },
+    const { state } = await stateWith([
+      { ...storeRecord(store), tier: { ...TIER, dailyBudgetUsd: '0.1' } },
     ]);
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    const admitted = state.admitAsk(session, ASK_ID, '0.06', NOW);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const admitted = await state.admitAsk(session, ASK_ID, '0.06', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
     }
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.06' });
-    expect(state.admitAsk(session, 'c'.repeat(32), '0.06', NOW)).toEqual({
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.06' });
+    expect(await state.admitAsk(session, 'c'.repeat(32), '0.06', epoch, NOW)).toEqual({
       admitted: false,
       reason: 'budget',
     });
-    expect(state.startAsk(session, ASK_ID, admitted.record.attemptId, Date.now() + 60_000)).toBe(
-      true,
-    );
+    const { attemptId } = admitted.record;
+    expect(await state.startAsk(session, ASK_ID, attemptId, epoch, NOW * 1000 + 60_000)).toBe(true);
     const wrap = {
       id: '0',
       pubkey: '0',
@@ -405,37 +423,41 @@ describe('ask records and budget (5.8)', () => {
       content: '',
       sig: '0',
     };
-    expect(state.answerAsk(session, ASK_ID, admitted.record.attemptId, wrap, '0.01', NOW)).toBe(
-      true,
-    );
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
+    expect(await state.answerAsk(session, ASK_ID, attemptId, epoch, wrap, '0.01', NOW)).toBe(true);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
     // A superseded attempt cannot answer twice.
-    expect(state.answerAsk(session, ASK_ID, admitted.record.attemptId, wrap, '0.01', NOW)).toBe(
-      false,
-    );
+    expect(await state.answerAsk(session, ASK_ID, attemptId, epoch, wrap, '0.01', NOW)).toBe(false);
   });
 
-  it('a retry charges a running attempt in full and releases a queued one', () => {
+  it('a retry charges a running attempt in full and releases a queued one', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    const first = state.admitAsk(session, ASK_ID, '0.05', NOW);
+    const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const first = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     if (!first.admitted) {
       throw new Error('not admitted');
     }
-    state.startAsk(session, ASK_ID, first.record.attemptId, Date.now() - 1);
-    const retry = state.retryAsk(session, ASK_ID, '0.05', NOW);
+    await state.startAsk(session, ASK_ID, first.record.attemptId, epoch, NOW * 1000 - 1);
+    const retry = await state.retryAsk(session, ASK_ID, first.record.attemptId, '0.05', epoch, NOW);
     expect(retry.admitted).toBe(true);
-    expect(state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0.05' });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0.05' });
   });
 
-  it('starts a new session within the end margin', () => {
+  it('starts a new session within the end margin', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([storeRecord(store)]);
-    const first = state.session(store.assistant, 'b'.repeat(64), NOW);
-    expect(state.session(store.assistant, 'b'.repeat(64), NOW + 60)).toBe(first);
-    const later = state.session(store.assistant, 'b'.repeat(64), first.sessionEnd - 4 * 60);
-    expect(later).not.toBe(first);
+    const { state } = await stateWith([storeRecord(store)]);
+    const first = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect((await state.session(store.owner, store.assistant, VISITOR, NOW + 60)).id).toBe(
+      first.id,
+    );
+    const later = await state.session(
+      store.owner,
+      store.assistant,
+      VISITOR,
+      first.sessionEnd - 4 * 60,
+    );
+    expect(later.id).not.toBe(first.id);
   });
 });
 
@@ -450,24 +472,26 @@ describe('security review fixes', () => {
     expect(clientAddressOf(request, false)).toBe('10.0.0.2');
   });
 
-  it('a retry counts against the session quota', () => {
+  it('a retry counts against the session quota', async () => {
     const store = syntheticStore();
-    const state = new MemoryState([
-      { ...storeRecord(store), tier: { ...storeRecord(store).tier, messagesPerSessionPerDay: 1 } },
+    const { state } = await stateWith([
+      { ...storeRecord(store), tier: { ...TIER, messagesPerSessionPerDay: 1 } },
     ]);
-    const session = state.session(store.assistant, 'b'.repeat(64), NOW);
-    const first = state.admitAsk(session, ASK_ID, '0.01', NOW);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const first = await state.admitAsk(session, ASK_ID, '0.01', epoch, NOW);
     if (!first.admitted) {
       throw new Error('not admitted');
     }
-    state.startAsk(session, ASK_ID, first.record.attemptId, Date.now() + 60_000);
-    state.failAsk(session, ASK_ID, first.record.attemptId, '0');
-    expect(state.retryAsk(session, ASK_ID, '0.01', NOW)).toEqual({
+    await state.startAsk(session, ASK_ID, first.record.attemptId, epoch, NOW * 1000 + 60_000);
+    await state.failAsk(session, ASK_ID, first.record.attemptId, epoch, '0');
+    expect(
+      await state.retryAsk(session, ASK_ID, first.record.attemptId, '0.01', epoch, NOW),
+    ).toEqual({
       admitted: false,
       reason: 'quota',
     });
   });
-
   it('a turn stops calling the model once its spend passes the ceiling', async () => {
     const { cappedProvider } = await import('../src/worker/worker');
     const provider = cappedProvider(

@@ -1,12 +1,16 @@
-import { type CatalogItem, type StoreConfig, productPageUrl } from '@elisym/askr';
+import {
+  type CatalogItem,
+  type CatalogVariant,
+  type StoreConfig,
+  productPageUrl,
+} from '@elisym/askr';
+import { type NativeCartPlatform, nativeAddToCart, nativeCartPlatform } from '../native-cart';
 import {
   type CartButton,
   type PickState,
   addToCartDetail,
   cartButton,
   hostAddToCartHook,
-  nativeAddToCartAvailable,
-  nativeAddToCartPhase3Stub,
   pickState,
 } from '../variant';
 import { element, httpsUrl } from './dom';
@@ -80,9 +84,49 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
   const currentButton = (state: PickState): CartButton =>
     cartButton(item, state, {
       hook: hostAddToCartHook(),
-      nativeAvailable: nativeAddToCartAvailable(context.config, context.pageOrigin),
+      native: nativeCartPlatform(context.config, context.pageOrigin),
     });
   let renderedKind: CartButton['kind'] | undefined;
+
+  const addNatively = async (
+    add: HTMLButtonElement,
+    platform: NativeCartPlatform,
+    variant: CatalogVariant,
+  ): Promise<void> => {
+    const shopUrl = context.config.source.shopUrl;
+    if (shopUrl === undefined) {
+      return;
+    }
+    context.reportClick(item.address);
+    add.disabled = true;
+    add.textContent = STRINGS.adding;
+    add.setAttribute('aria-busy', 'true');
+    const added = await nativeAddToCart(platform, shopUrl, variant);
+    // The card was re-rendered meanwhile (another pick): this button and its answer are stale.
+    if (!actionBox.contains(add)) {
+      return;
+    }
+    add.removeAttribute('aria-busy');
+    if (added) {
+      add.disabled = false;
+      add.textContent = STRINGS.added;
+      return;
+    }
+    const failed = element(document, 'span', 'label cart-failed', STRINGS.addFailed);
+    failed.setAttribute('role', 'status');
+    if (pageUrl === undefined) {
+      add.disabled = false;
+      add.textContent = STRINGS.addToCart;
+      actionBox.append(failed);
+      return;
+    }
+    // No window.open here: the add answered long after the click, outside the user
+    // gesture, so a popup blocker would eat it. The visible link is the handoff.
+    actionBox.replaceChildren(
+      failed,
+      productLink(context, item, pageUrl, 'view', STRINGS.viewProduct),
+    );
+  };
 
   const update = (): void => {
     const state = pickState(item, pick);
@@ -111,13 +155,12 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
       });
       actionBox.append(add);
     } else if (button.kind === 'native') {
-      const variant = button.variant;
+      const { platform, variant } = button;
       if (variant) {
         const add = element(document, 'button', 'cart', STRINGS.addToCart);
         add.type = 'button';
         add.addEventListener('click', () => {
-          context.reportClick(item.address);
-          void nativeAddToCartPhase3Stub(variant);
+          void addNatively(add, platform, variant);
         });
         actionBox.append(add);
       } else if (pageUrl !== undefined) {

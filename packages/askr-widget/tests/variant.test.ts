@@ -20,9 +20,9 @@ function item(overrides: Partial<CatalogItem> = {}): CatalogItem {
       { name: 'Color', values: ['Red', 'Blue'] },
     ],
     variants: [
-      { id: 'v1', price: '20', available: true, values: ['S', 'Red'] },
-      { id: 'v2', price: '22', available: false, values: ['M', 'Red'] },
-      { id: 'v3', price: '20', available: true, values: ['S', 'Blue'] },
+      { id: '101', price: '20', available: true, values: ['S', 'Red'] },
+      { id: '102', price: '22', available: false, values: ['M', 'Red'] },
+      { id: '103', price: '20', available: true, values: ['S', 'Blue'] },
     ],
     visibility: 'on-sale',
     hasAccept: false,
@@ -31,7 +31,7 @@ function item(overrides: Partial<CatalogItem> = {}): CatalogItem {
   };
 }
 
-const HOOK = { hook: () => undefined, nativeAvailable: false };
+const HOOK = { hook: () => undefined, native: undefined };
 
 describe('selectorsFor', () => {
   it('shows one selector per option', () => {
@@ -71,7 +71,7 @@ describe('the add-to-cart hook', () => {
     expect(button).toEqual({
       kind: 'hook',
       enabled: true,
-      detail: { d: 'shopify:42', variant: 'v3', options: { Size: 'S', Color: 'Blue' } },
+      detail: { d: 'shopify:42', variant: '103', options: { Size: 'S', Color: 'Blue' } },
     });
   });
 
@@ -117,19 +117,77 @@ describe('sold out and precedence', () => {
 
   it('hook first, then native (product page until a variant is determined), else no button', () => {
     const state = pickState(item(), { Size: 'S' });
-    expect(cartButton(item(), state, { hook: undefined, nativeAvailable: true })).toEqual({
+    expect(cartButton(item(), state, { hook: undefined, native: 'shopify' })).toEqual({
       kind: 'native',
+      platform: 'shopify',
     });
     const determined = pickState(item(), { Size: 'S', Color: 'Red' });
-    expect(
-      cartButton(item(), determined, { hook: undefined, nativeAvailable: true }),
-    ).toMatchObject({
+    expect(cartButton(item(), determined, { hook: undefined, native: 'woocommerce' })).toEqual({
       kind: 'native',
-      variant: { id: 'v1' },
+      platform: 'woocommerce',
+      variant: item().variants[0],
     });
-    expect(cartButton(item(), state, { hook: undefined, nativeAvailable: false })).toEqual({
+    expect(cartButton(item(), determined, { hook: () => undefined, native: 'shopify' }).kind).toBe(
+      'hook',
+    );
+    expect(cartButton(item(), state, { hook: undefined, native: undefined })).toEqual({
       kind: 'none',
     });
+  });
+
+  it('native never carries a * variant or a non-numeric id: the card opens the product page', () => {
+    const any = item({
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [{ id: '201', price: '20', available: true, values: ['*'] }],
+    });
+    expect(
+      cartButton(any, pickState(any, { Size: 'M' }), { hook: undefined, native: 'woocommerce' }),
+    ).toEqual({
+      kind: 'native',
+      platform: 'woocommerce',
+    });
+    const single = item({
+      options: [{ name: 'Title', values: ['Default Title'] }],
+      variants: [{ id: 'gid-7', price: '20', available: true, values: ['Default Title'] }],
+    });
+    expect(
+      cartButton(single, pickState(single, {}), { hook: undefined, native: 'shopify' }),
+    ).toEqual({
+      kind: 'native',
+      platform: 'shopify',
+    });
+  });
+
+  it('a single variant without selectors is native at once', () => {
+    const single = item({
+      options: [{ name: 'Title', values: ['Default Title'] }],
+      variants: [{ id: '301', price: '20', available: true, values: ['Default Title'] }],
+    });
+    expect(
+      cartButton(single, pickState(single, {}), { hook: undefined, native: 'shopify' }),
+    ).toMatchObject({
+      kind: 'native',
+      variant: { id: '301' },
+    });
+  });
+
+  it('a pick matching several variants determines none', () => {
+    const shared = item({
+      options: [
+        { name: 'Size', values: ['S'] },
+        { name: 'Color', values: ['Red'] },
+      ],
+      variants: [
+        { id: '401', price: '20', available: true, values: ['S', 'Red'] },
+        { id: '402', price: '20', available: true, values: ['S', '*'] },
+      ],
+    });
+    expect(
+      cartButton(shared, pickState(shared, { Size: 'S', Color: 'Red' }), {
+        hook: undefined,
+        native: 'shopify',
+      }),
+    ).toEqual({ kind: 'native', platform: 'shopify' });
   });
 
   it('reads window.Askr.onAddToCart at call time and calls it on its namespace', () => {

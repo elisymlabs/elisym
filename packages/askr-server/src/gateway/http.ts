@@ -2,6 +2,34 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import type { GatewayRequest } from './gateway';
 
 const MAX_BODY_BYTES = 16 * 1024;
+/** Other admin calls: at most 20 O-signed events of 64 KiB each (7.3). */
+const MAX_ADMIN_BODY_BYTES = 2 * 1024 * 1024;
+/** `POST /v1/admin/catalog` carries a whole catalog (7.3). */
+const MAX_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
+const ADMIN_PATH_PREFIX = '/v1/admin/';
+const CATALOG_PATH = '/v1/admin/catalog';
+const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'DELETE']);
+/** The shape of a NIP-98 header; checked before an admin body is read, the signature after. */
+const NOSTR_AUTH_RE = /^Nostr [A-Za-z0-9+/=]+$/;
+
+/**
+ * The body cap for a request, by its normalized path (the one the handlers
+ * route on, so `/v1/admin/../v1/session` is the gateway's), or `unauthorized`
+ * for an admin body without a NIP-98 header, which is never read.
+ */
+export function bodyLimitOf(
+  method: string,
+  path: string,
+  authorization: string | undefined,
+): number | 'unauthorized' {
+  if (!path.startsWith(ADMIN_PATH_PREFIX)) {
+    return MAX_BODY_BYTES;
+  }
+  if (authorization === undefined || !NOSTR_AUTH_RE.test(authorization)) {
+    return 'unauthorized';
+  }
+  return method === 'POST' && path === CATALOG_PATH ? MAX_CATALOG_BODY_BYTES : MAX_ADMIN_BODY_BYTES;
+}
 
 /**
  * The client address: the socket's, or behind our proxy the last
@@ -25,7 +53,7 @@ export function clientAddressOf(
  * once: the 413 goes out with `connection: close`, so a client that finished
  * sending reads it; one still sending a very large body may see a reset.
  */
-function readBody(request: IncomingMessage): Promise<string | undefined> {
+function readBody(request: IncomingMessage, maxBytes: number): Promise<string | undefined> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -36,7 +64,7 @@ function readBody(request: IncomingMessage): Promise<string | undefined> {
       }
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
       size += buffer.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         tooLarge = true;
         chunks.length = 0;
         resolve(undefined);
@@ -65,8 +93,20 @@ async function handleIncoming(
   handler: (input: GatewayRequest) => Promise<Response>,
   trustProxy: boolean,
 ): Promise<void> {
-  const body = incoming.method === 'POST' ? await readBody(incoming) : undefined;
-  if (incoming.method === 'POST' && body === undefined) {
+  const method = incoming.method ?? 'GET';
+  const hasBody = METHODS_WITH_BODY.has(method);
+  // Parsed as the handler's Request parses it, so the cap follows the path that is routed.
+  const url = new URL(`http://localhost${incoming.url ?? '/'}`);
+  const limit = bodyLimitOf(method, url.pathname, incoming.headers.authorization);
+  if (hasBody && limit === 'unauthorized') {
+    outgoing.statusCode = 401;
+    outgoing.setHeader('content-type', 'application/json');
+    outgoing.setHeader('connection', 'close');
+    outgoing.end(JSON.stringify({ error: 'unauthorized', reason: 'missing' }));
+    return;
+  }
+  const body = hasBody && limit !== 'unauthorized' ? await readBody(incoming, limit) : undefined;
+  if (hasBody && body === undefined) {
     outgoing.statusCode = 413;
     outgoing.setHeader('connection', 'close');
     outgoing.end();
@@ -78,8 +118,8 @@ async function handleIncoming(
       headers.set(name, value);
     }
   }
-  const request = new Request(`http://localhost${incoming.url ?? '/'}`, {
-    method: incoming.method ?? 'GET',
+  const request = new Request(url, {
+    method,
     headers,
     ...(body === undefined ? {} : { body }),
   });

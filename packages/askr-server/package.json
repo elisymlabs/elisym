@@ -23,12 +23,15 @@
     "@elisym/commerce": "~0.14.0",
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",
+    "pg": "~8.23.1",
     "ws": "~8.20.0",
     "zod": "~3.25.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "~0.5.13",
     "@elisym/askr-widget": "~0.1.0",
     "@types/node": "~25.5.0",
+    "@types/pg": "~8.23.1",
     "@types/ws": "~8.18.1",
     "tsup": "~8.4.0",
     "typescript": "~5.7.0",
