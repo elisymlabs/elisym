@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": { "deploymentEnabled": { "**": false, "main": true } },
   "installCommand": "cd ../.. && bun install --frozen-lockfile",
   "buildCommand": "cd ../.. && bunx turbo run build --filter=@elisym/merchant-landing...",
   "outputDirectory": "dist",
