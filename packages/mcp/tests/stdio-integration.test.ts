@@ -146,14 +146,14 @@ describe('stdio MCP integration', { timeout: TEST_TIMEOUT_MS }, () => {
     await rm(tmpHome, { recursive: true, force: true });
   });
 
-  it('initializes and exposes exactly 38 tools', async () => {
+  it('initializes and exposes exactly 42 tools', async () => {
     harness = new McpHarness(tmpHome);
     await harness.initialize();
 
     const response = await harness.send('tools/list', {});
     expect(response.error).toBeUndefined();
     const result = response.result as { tools: Array<{ name: string; inputSchema: unknown }> };
-    expect(result.tools).toHaveLength(38);
+    expect(result.tools).toHaveLength(42);
     const names = result.tools.map((t) => t.name).sort();
     expect(names).toContain('sign_onchain_call');
     expect(names).toContain('buy_product');
