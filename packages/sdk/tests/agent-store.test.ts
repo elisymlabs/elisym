@@ -680,6 +680,32 @@ describe('writeYaml + loadAgent round-trip', () => {
     expect(loaded.encrypted).toBe(true);
   }, 60_000); // scrypt (N=2^17) takes seconds on a shared CI runner.
 
+  it('encrypts every secret field at rest and loads each back', async () => {
+    // Walks the schema, so a secret field added later and missed by the writer
+    // or the loader fails here instead of landing on disk in plain text.
+    const { dir } = await createAgentDir({ target: 'home', name: 'Bob', cwd: work });
+    await writeYaml(dir, yaml);
+    const values: Record<string, unknown> = {};
+    for (const field of Object.keys(SecretsSchema.shape)) {
+      values[field] = field === 'llm_api_keys' ? { anthropic: 'sk-all' } : `${field}-value`;
+    }
+    const all = SecretsSchema.parse(values);
+    await writeSecrets(dir, all, 'correct horse battery staple');
+    const raw: Record<string, unknown> = JSON.parse(
+      await readFile(join(dir, '.secrets.json'), 'utf-8'),
+    );
+    for (const field of Object.keys(SecretsSchema.shape)) {
+      const stored = raw[field];
+      const plain = typeof stored === 'string' ? [stored] : Object.values(stored ?? {});
+      expect(plain.length, field).toBeGreaterThan(0);
+      for (const value of plain) {
+        expect(value, field).toMatch(/^encrypted:v1:/);
+      }
+    }
+    const loaded = await loadAgent('Bob', work, 'correct horse battery staple');
+    expect(loaded.secrets).toEqual(all);
+  }, 60_000); // scrypt (N=2^17) per field takes seconds on a shared CI runner.
+
   it('loads project-local agent when .elisym/ is present', async () => {
     mkdirSync(join(work, 'proj', '.git'), { recursive: true });
     const cwd = join(work, 'proj');
