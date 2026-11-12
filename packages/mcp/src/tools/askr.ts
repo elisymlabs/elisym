@@ -30,8 +30,8 @@ const MAX_PRODUCTS_PER_CALL = 200;
 
 const NO_KEY =
   'This agent has no Askr catalog key. Run `elisym askr-key <agent> --store <owner npub>` in a ' +
-  'terminal, authorize the printed key in the Askr admin, then switch_agent to this agent again ' +
-  'to load it.';
+  'terminal, authorize the printed key in the Askr admin, then restart the MCP server so it ' +
+  'loads the key.';
 
 const ProductsSchema = z
   .array(CatalogItemInputSchema)
@@ -65,7 +65,8 @@ const PreviewSchema = z.object({
     .default(false)
     .describe(
       'true: `products` is the whole catalog, and every listed product missing from it would be ' +
-        'hidden. false: only these products are compared.',
+        `hidden (a call takes at most ${MAX_PRODUCTS_PER_CALL} products, so a larger catalog ` +
+        'cannot be previewed as a replace). false: only these products are compared.',
     ),
 });
 
@@ -110,11 +111,17 @@ async function configWarning(
   key: string,
   role: 'products' | 'policies',
 ): Promise<string | undefined> {
-  const events = await client.query(ASKR_RELAYS, {
-    kinds: [KIND_CONFIG],
-    authors: [store],
-    '#d': [CONFIG_D_TAG],
-  });
+  // Runs after the write succeeded: a failed read is a warning, never the call's result.
+  let events: Awaited<ReturnType<SyncRelayClient['query']>>;
+  try {
+    events = await client.query(ASKR_RELAYS, {
+      kinds: [KIND_CONFIG],
+      authors: [store],
+      '#d': [CONFIG_D_TAG],
+    });
+  } catch {
+    return 'Could not read the store config to check that visitors will see this.';
+  }
   const newest = newestSigned(events, KIND_CONFIG, store, nowSecs(), CONFIG_D_TAG);
   const config = newest === undefined ? undefined : parseConfig(newest);
   if (config === undefined) {

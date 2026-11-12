@@ -10,6 +10,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import { bytesToHex } from 'nostr-tools/utils';
 import { describe, expect, it } from 'vitest';
 import { AgentContext, type AgentInstance } from '../src/context.js';
+import { teardownRegistry } from '../src/server.js';
 import { buildAgentInstance, scrubAgent } from '../src/tools/agent.js';
 import { createAskrTools } from '../src/tools/askr.js';
 import type { ToolResult } from '../src/tools/types.js';
@@ -41,7 +42,13 @@ interface World {
 }
 
 function world(
-  options: { authorize?: boolean; config?: 'this-key' | 'other-key' | 'none'; key?: boolean } = {},
+  options: {
+    authorize?: boolean;
+    config?: 'this-key' | 'other-key' | 'none';
+    key?: boolean;
+    otherPolicyKey?: boolean;
+    configAt?: number;
+  } = {},
 ): World {
   const owner = generateSecretKey();
   const catalog = generateSecretKey();
@@ -70,8 +77,9 @@ function world(
             currency: 'USD',
             source: { kind: 'catalog' },
             catalogKey: named,
+            ...(options.otherPolicyKey ? { policyKey: getPublicKey(generateSecretKey()) } : {}),
             private: {},
-            createdAt: NOW - 50,
+            createdAt: options.configAt ?? NOW - 50,
           },
           owner,
         ),
@@ -275,5 +283,82 @@ describe('Askr catalog tools', () => {
     for (const agent of [malformed, storeless]) {
       agent.client.close();
     }
+  });
+
+  it('a dry run publishes nothing, for an upsert and a hide alike', async () => {
+    const run = world();
+    const tool = tools(run.relay);
+    await tool('askr_upsert_products').handler(run.ctx, { products: [SOCKS], dry_run: false });
+    const published = run.relay.published.length;
+    const upsert = await tool('askr_upsert_products').handler(run.ctx, {
+      products: [HAT, { ...SOCKS, price: { amount: '99', currency: 'USD' } }],
+      dry_run: true,
+    });
+    expect(JSON.parse(text(upsert))).toMatchObject({
+      dry_run: true,
+      created: ['hat'],
+      updated: ['socks'],
+    });
+    const hide = await tool('askr_hide_products').handler(run.ctx, {
+      ids: ['socks'],
+      dry_run: true,
+    });
+    expect(JSON.parse(text(hide))).toMatchObject({ dry_run: true, hidden: ['socks'] });
+    expect(run.relay.published).toHaveLength(published);
+  });
+
+  it("warns about policies by the config's policy key, not its catalog key", async () => {
+    const run = world({ otherPolicyKey: true });
+    const tool = tools(run.relay);
+    const products = await tool('askr_upsert_products').handler(run.ctx, {
+      products: [SOCKS],
+      dry_run: false,
+    });
+    expect(JSON.parse(text(products))).not.toHaveProperty('warning');
+    const policy = await tool('askr_set_policy').handler(run.ctx, {
+      slug: 'returns',
+      title: 'Returns',
+      body: '30 days.',
+    });
+    expect(JSON.parse(text(policy)).warning).toMatch(/policies from another key/);
+  });
+
+  it('a config dated in the future does not count yet', async () => {
+    const run = world({ configAt: NOW + 3_600 });
+    const result = await tools(run.relay)('askr_upsert_products').handler(run.ctx, {
+      products: [SOCKS],
+      dry_run: false,
+    });
+    expect(JSON.parse(text(result)).warning).toMatch(/no published config/);
+  });
+
+  it('a config that cannot be read after a successful write is a warning, not a failure', async () => {
+    const run = world();
+    let reads = 0;
+    const query = run.relay.query.bind(run.relay);
+    run.relay.query = async (relays, filter) => {
+      if (filter.kinds?.includes(30496)) {
+        reads += 1;
+        throw new Error('relay hiccup');
+      }
+      return query(relays, filter);
+    };
+    const result = await tools(run.relay)('askr_upsert_products').handler(run.ctx, {
+      products: [SOCKS],
+      dry_run: false,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(reads).toBe(1);
+    expect(JSON.parse(text(result))).toMatchObject({ created: ['socks'] });
+    expect(JSON.parse(text(result)).warning).toMatch(/Could not read the store config/);
+  });
+
+  it('server teardown zeroes the catalog key', async () => {
+    const run = world();
+    const key = run.agent.askr?.secretKey;
+    run.agent.client = { close: () => undefined } as never;
+    run.agent.identity = { scrub: () => undefined } as never;
+    await teardownRegistry(run.ctx);
+    expect(key?.every((byte) => byte === 0)).toBe(true);
   });
 });
