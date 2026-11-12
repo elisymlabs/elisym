@@ -89,6 +89,10 @@ export interface HtmlTag {
 
 const ATTR_RE = /([^\s=/>"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gu;
 const RAW_TEXT_TAGS = new Set(['script', 'style', 'noscript', 'template', 'iframe', 'svg']);
+/** Escapable raw text: their content is text, never tags (a `<meta>` written in a title is text). */
+const ESCAPABLE_TEXT_TAGS = new Set(['title', 'textarea']);
+/** Only a foreign element closes itself with `/>`; `<script/>` still opens a script in HTML. */
+const SELF_CLOSING_RAW_TAGS = new Set(['svg']);
 
 function parseAttrs(source: string): Map<string, string> {
   const attrs = new Map<string, string>();
@@ -104,9 +108,41 @@ function parseAttrs(source: string): Map<string, string> {
 type HtmlToken = { kind: 'text'; text: string } | { kind: 'tag'; tag: HtmlTag };
 
 /**
+ * The `>` that ends the tag opened before `from`, skipping a quoted attribute
+ * value (`content="a>b"`), or -1. Linear: each character is looked at once.
+ */
+function tagEnd(html: string, from: number): number {
+  let position = from;
+  while (position < html.length) {
+    const char = html[position];
+    if (char === '>') {
+      return position;
+    }
+    if (char === '=') {
+      position += 1;
+      while (position < html.length && /\s/u.test(html[position] ?? '')) {
+        position += 1;
+      }
+      const quote = html[position];
+      if (quote === '"' || quote === "'") {
+        const close = html.indexOf(quote, position + 1);
+        if (close === -1) {
+          return -1;
+        }
+        position = close + 1;
+      }
+      continue;
+    }
+    position += 1;
+  }
+  return -1;
+}
+
+/**
  * A linear HTML tokenizer (indexOf scanning, no backtracking): text runs and
  * tags. Comments, DOCTYPE declarations and the bodies of script/style-like elements are
- * skipped. Good enough for stripping and for finding a meta tag; not a DOM.
+ * skipped; the bodies of `<title>` and `<textarea>` are text only. Good enough
+ * for stripping and for finding a meta tag; not a DOM.
  */
 export function* htmlTokens(html: string): Generator<HtmlToken> {
   const lower = html.toLowerCase();
@@ -136,7 +172,7 @@ export function* htmlTokens(html: string): Generator<HtmlToken> {
       }
       continue;
     }
-    const end = html.indexOf('>', open);
+    const end = tagEnd(html, open + nameMatch[0].length);
     if (end === -1) {
       return;
     }
@@ -151,10 +187,14 @@ export function* htmlTokens(html: string): Generator<HtmlToken> {
       },
     };
     position = end + 1;
-    if (!closing && RAW_TEXT_TAGS.has(name) && !attrSource.trimEnd().endsWith('/')) {
+    const selfClosed = SELF_CLOSING_RAW_TAGS.has(name) && attrSource.trimEnd().endsWith('/');
+    if (!closing && (RAW_TEXT_TAGS.has(name) || ESCAPABLE_TEXT_TAGS.has(name)) && !selfClosed) {
       const close = lower.indexOf(`</${name}`, position);
       if (close === -1) {
         return;
+      }
+      if (ESCAPABLE_TEXT_TAGS.has(name) && close > position) {
+        yield { kind: 'text', text: html.slice(position, close) };
       }
       const closeEnd = html.indexOf('>', close);
       position = closeEnd === -1 ? html.length : closeEnd + 1;

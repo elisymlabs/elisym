@@ -151,6 +151,32 @@ describe('Shopify /products.json (real, trimmed responses)', () => {
     ]);
     expect(fitted.listing.visibility).toBe('sold-out');
   });
+
+  it('an option genuinely named "Title" with other values stays an option', () => {
+    const base = {
+      option2: null,
+      option3: null,
+      sku: null,
+      available: true,
+      price: '9.00',
+    };
+    const product: ShopifyProduct = {
+      ...shopifyProduct('6635123015735'),
+      options: [{ name: 'Title', values: ['Default Title', 'Signed'] }],
+      variants: [
+        { ...base, id: '1', option1: 'Default Title' },
+        { ...base, id: '2', option1: 'Signed' },
+      ],
+    };
+    const fitted = listing(fitDraft(mapShopifyProduct(product, SHOP)));
+    expect(fitted.listing.options).toEqual([
+      { name: 'Title', values: ['Default Title', 'Signed'] },
+    ]);
+    expect(fitted.listing.variants?.map((variant) => variant.values)).toEqual([
+      ['Default Title'],
+      ['Signed'],
+    ]);
+  });
 });
 
 describe('WooCommerce Store API (real, trimmed responses)', () => {
@@ -162,6 +188,81 @@ describe('WooCommerce Store API (real, trimmed responses)', () => {
     expect(
       wooAmount({ price: '-1', currency_code: 'USD', currency_minor_unit: 2 }),
     ).toBeUndefined();
+  });
+
+  it('never rounds a price with more than 20 significant digits', () => {
+    expect(
+      wooAmount({
+        price: '123456789012345678901234567890',
+        currency_code: 'USD',
+        currency_minor_unit: 18,
+      }),
+    ).toBe('123456789012.34567890123456789');
+    expect(wooAmount({ price: '1'.repeat(30), currency_code: 'USD', currency_minor_unit: 2 })).toBe(
+      `${'1'.repeat(28)}.11`,
+    );
+    expect(
+      wooAmount({ price: '1'.repeat(31), currency_code: 'USD', currency_minor_unit: 2 }),
+    ).toBeUndefined();
+  });
+
+  it('a price too large for a listing skips the product instead of rounding it', () => {
+    const { products, variations } = wooFixtures();
+    const simple = products.find((candidate) => candidate.type === 'simple');
+    if (!simple) {
+      throw new Error('fixture');
+    }
+    const mapped = mapWooProduct(
+      { ...simple, prices: { ...simple.prices, price: '1'.repeat(25) } },
+      variations,
+      'https://woocommerce.com',
+    );
+    if (!mapped.ok) {
+      throw new Error(mapped.reason);
+    }
+    expect(fitDraft(mapped.draft).ok).toBe(false);
+  });
+
+  it('an external (affiliate) product is listed with its stock, with no variant', () => {
+    const { products, variations } = wooFixtures();
+    const simple = products.find((candidate) => candidate.type === 'simple');
+    if (!simple) {
+      throw new Error('fixture');
+    }
+    const affiliate: WooProduct = {
+      ...simple,
+      type: 'external',
+      sku: 'AFF-1',
+      is_purchasable: false,
+      is_in_stock: true,
+    };
+    const mapped = mapWooProduct(affiliate, variations, 'https://woocommerce.com');
+    if (!mapped.ok) {
+      throw new Error(mapped.reason);
+    }
+    const fitted = listing(fitDraft(mapped.draft));
+    expect(fitted.listing).toMatchObject({
+      price: { amount: '59' },
+      visibility: 'on-sale',
+      variants: [],
+      sku: 'AFF-1',
+    });
+    const event = buildCatalogItemEvent(fitted.listing);
+    expect(event.tags.filter((tag) => tag[0] === 'variant')).toEqual([]);
+    const outOfStock = mapWooProduct(
+      { ...affiliate, is_in_stock: false },
+      variations,
+      'https://woocommerce.com',
+    );
+    expect(outOfStock.ok && listing(fitDraft(outOfStock.draft)).listing.visibility).toBe(
+      'sold-out',
+    );
+    const unpriced = mapWooProduct(
+      { ...affiliate, prices: { ...affiliate.prices, price: '' } },
+      variations,
+      'https://woocommerce.com',
+    );
+    expect(unpriced.ok).toBe(false);
   });
 
   it('"Any" variations: * values, the option offers the attribute terms', () => {

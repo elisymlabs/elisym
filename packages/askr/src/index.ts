@@ -31,6 +31,7 @@ export {
   assistantDisplayName,
   buildConfigEvent,
   decryptPrivateConfig,
+  normalizeShopUrl,
   parseConfig,
 } from './events/config';
 export {

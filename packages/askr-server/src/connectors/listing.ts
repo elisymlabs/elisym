@@ -48,7 +48,7 @@ export interface ProductDraft {
   attrs: CatalogAttr[];
   options: DraftOption[];
   variants: DraftVariant[];
-  /** Only without variants (Google feed): the item's own price, visibility and id-as-SKU. */
+  /** Only without variants (a Google feed item, a Woo external product): its own price, visibility and SKU. */
   price?: string;
   visibility?: Visibility;
   sku?: string;
@@ -172,6 +172,34 @@ function lowest(variants: readonly DraftVariant[]): DraftVariant | undefined {
   return best;
 }
 
+function highest(variants: readonly DraftVariant[]): DraftVariant | undefined {
+  let best: DraftVariant | undefined;
+  for (const variant of variants) {
+    if (!best || new Decimal(variant.price).greaterThan(best.price)) {
+      best = variant;
+    }
+  }
+  return best;
+}
+
+/**
+ * A variant priced differently from `anchor`, when any is: the highest-priced,
+ * else the lowest-priced one. Kept next to the anchor so the builder, which
+ * derives `price-from` from the kept variants, sees the prices differ when
+ * they differ over all variants (7.4 step 1).
+ */
+function priceContrast(
+  variants: readonly DraftVariant[],
+  anchor: DraftVariant,
+): DraftVariant | undefined {
+  for (const candidate of [highest(variants), lowest(variants)]) {
+    if (candidate && !new Decimal(candidate.price).equals(anchor.price)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 function dropPositions(variants: DraftVariant[], keep: readonly number[]): DraftVariant[] {
   return variants.map((variant) => ({
     ...variant,
@@ -179,11 +207,58 @@ function dropPositions(variants: DraftVariant[], keep: readonly number[]): Draft
   }));
 }
 
+/** Variants with no `*` in any of `positions`: deleting those positions would hide the `*`. */
+function withoutAnyAt(variants: DraftVariant[], positions: readonly number[]): DraftVariant[] {
+  return variants.filter((variant) =>
+    positions.every((index) => variant.values[index] !== ANY_OPTION_VALUE),
+  );
+}
+
+/** Values only the dropped variants used go (terms behind a `*` stay). */
+function usedValues(optionValues: string[][], kept: readonly DraftVariant[]): string[][] {
+  return optionValues.map((values, index) => {
+    if (kept.some((variant) => variant.values[index] === ANY_OPTION_VALUE)) {
+      return values;
+    }
+    return values.filter((value) => kept.some((variant) => variant.values[index] === value));
+  });
+}
+
+/**
+ * Up to 10 values; values the protected variants use are swapped in for the
+ * last unprotected ones, so those variants survive the cut.
+ */
+function capValues(values: readonly string[], protectedValues: readonly string[]): string[] {
+  const keptValues = values.slice(0, LIMITS.MAX_OPTION_VALUES);
+  let slot = keptValues.length - 1;
+  for (const value of protectedValues) {
+    if (keptValues.includes(value)) {
+      continue;
+    }
+    while (slot >= 0 && protectedValues.includes(keptValues[slot] ?? '')) {
+      slot -= 1;
+    }
+    if (slot < 0) {
+      break;
+    }
+    keptValues[slot] = value;
+    slot -= 1;
+  }
+  return keptValues;
+}
+
 /**
  * Steps (1) to (5) of the 7.4 caps order. The price-defining variant (the
  * lowest available, else the lowest) is ordered first and never dropped:
  * the builder requires `price` to equal the lowest kept variant's price, and
  * (1) computes it over all variants, so the variant behind it must survive.
+ * Next to it a variant of another price is kept too, so `price-from` holds.
+ *
+ * A `*` never disappears from a variant (7.4: a variant containing `*` is
+ * never determined): an option some kept variant has `*` in is never the one
+ * cut, and when one must go anyway its `*` variants go with it. When that
+ * would lose the price-defining variant, the listing goes out with no
+ * variants at all (no native add-to-cart; the hook still gets `options`).
  */
 function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | undefined {
   const variants = cleanVariants(draft, fitting);
@@ -193,8 +268,10 @@ function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | un
   if (!anchor) {
     return undefined;
   }
+  const contrast = priceContrast(variants, anchor);
+  const pinned = contrast === undefined ? [anchor] : [anchor, contrast];
   const visibility: Visibility = available.length > 0 ? 'on-sale' : 'sold-out';
-  // (2) up to 100 variants, available first.
+  // (2) up to 100 variants, available first; the price-defining one and its contrast always.
   const ordered = [
     anchor,
     ...available.filter((variant) => variant !== anchor),
@@ -203,8 +280,23 @@ function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | un
   let kept = ordered.slice(0, LIMITS.MAX_VARIANTS);
   if (kept.length < ordered.length) {
     fitting.truncated = true;
+    if (contrast !== undefined && !kept.includes(contrast)) {
+      kept[kept.length - 1] = contrast;
+    }
   }
-  // (3) at most 5 options, preferring those whose values differ across the kept variants.
+  let withoutVariants = false;
+  const anchorId = anchor.id;
+  const keepUnlessAnchorLost = (survivors: DraftVariant[]): void => {
+    if (survivors.length < kept.length) {
+      fitting.truncated = true;
+    }
+    if (survivors.some((variant) => variant.id === anchorId)) {
+      kept = survivors;
+    } else {
+      withoutVariants = true;
+    }
+  };
+  // (3) at most 5 options: those a kept variant has `*` in first, then those whose values differ.
   let options = draft.options.map((option) => ({
     name: clip(option.name.trim(), LIMITS.ATTR_NAME_CHARS),
     values: option.values.map((value) => clip(value.trim(), LIMITS.ATTR_VALUE_CHARS)),
@@ -220,20 +312,26 @@ function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | un
     return [index];
   });
   if (positions.length > LIMITS.MAX_OPTIONS) {
+    const hasAny = (index: number): boolean =>
+      kept.some((variant) => variant.values[index] === ANY_OPTION_VALUE);
     const differs = (index: number): boolean =>
       new Set(kept.map((variant) => variant.values[index])).size > 1;
     const preferred = [
-      ...positions.filter((index) => differs(index)),
-      ...positions.filter((index) => !differs(index)),
+      ...positions.filter((index) => hasAny(index)),
+      ...positions.filter((index) => !hasAny(index) && differs(index)),
+      ...positions.filter((index) => !hasAny(index) && !differs(index)),
     ].slice(0, LIMITS.MAX_OPTIONS);
     positions = positions.filter((index) => preferred.includes(index));
   }
   if (positions.length < options.length) {
     fitting.truncated = true;
+    const dropped = options
+      .map((_option, index) => index)
+      .filter((index) => !positions.includes(index));
+    keepUnlessAnchorLost(withoutAnyAt(kept, dropped));
   }
   options = positions.map((index) => options[index] ?? { name: '', values: [], terms: [] });
   kept = dropPositions(kept, positions);
-  const anchorId = anchor.id;
 
   // (4) option values from what the kept variants use; `*` takes the attribute's terms.
   const valuesFor = (index: number): string[] => {
@@ -251,20 +349,19 @@ function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | un
   let optionValues = options.map((_option, index) => valuesFor(index));
 
   // (5) at most 10 values per option; variants using a cut value are dropped.
+  const pinnedIds = pinned.map((variant) => variant.id);
   optionValues = optionValues.map((values, index) => {
     if (values.length <= LIMITS.MAX_OPTION_VALUES) {
       return values;
     }
     fitting.truncated = true;
-    const keptValues = values.slice(0, LIMITS.MAX_OPTION_VALUES);
-    const anchorValue = kept.find((variant) => variant.id === anchorId)?.values[index];
-    if (
-      anchorValue !== undefined &&
-      anchorValue !== ANY_OPTION_VALUE &&
-      !keptValues.includes(anchorValue)
-    ) {
-      keptValues[keptValues.length - 1] = anchorValue;
-    }
+    const protectedValues = uniqueStrings(
+      kept
+        .filter((variant) => pinnedIds.includes(variant.id))
+        .map((variant) => variant.values[index] ?? ANY_OPTION_VALUE)
+        .filter((value) => value !== ANY_OPTION_VALUE),
+    );
+    const keptValues = capValues(values, protectedValues);
     const before = kept.length;
     kept = kept.filter((variant) => {
       const value = variant.values[index] ?? ANY_OPTION_VALUE;
@@ -275,19 +372,20 @@ function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | un
     }
     return keptValues;
   });
-  // Values only the dropped variants used go too (terms behind a `*` stay).
-  optionValues = optionValues.map((values, index) => {
-    if (kept.some((variant) => variant.values[index] === ANY_OPTION_VALUE)) {
-      return values;
-    }
-    return values.filter((value) => kept.some((variant) => variant.values[index] === value));
-  });
-  // An option left with no values (only `*`, no terms) cannot be offered: drop it.
+  optionValues = usedValues(optionValues, kept);
+  // An option left with no values (only `*`, no terms) cannot be offered: it goes,
+  // and so does every variant with `*` in it (that `*` must not vanish).
   const live = optionValues
     .map((values, index) => ({ values, index }))
     .filter((entry) => entry.values.length > 0);
   if (live.length < optionValues.length) {
     fitting.truncated = true;
+    const dead = optionValues
+      .map((values, index) => ({ values, index }))
+      .filter((entry) => entry.values.length === 0)
+      .map((entry) => entry.index);
+    // A dead option is one every kept variant has `*` in: the listing goes without variants.
+    keepUnlessAnchorLost(withoutAnyAt(kept, dead));
     kept = dropPositions(
       kept,
       live.map((entry) => entry.index),
@@ -298,12 +396,14 @@ function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | un
       name: options[entry.index]?.name ?? '',
       values: entry.values,
     })),
-    variants: kept.map((variant) => ({
-      id: variant.id,
-      price: variant.price,
-      available: variant.available,
-      values: variant.values,
-    })),
+    variants: withoutVariants
+      ? []
+      : kept.map((variant) => ({
+          id: variant.id,
+          price: variant.price,
+          available: variant.available,
+          values: variant.values,
+        })),
     price: anchor.price,
     visibility,
   };

@@ -50,13 +50,34 @@ export class RequestBudgetError extends Error {
   }
 }
 
+/** The sync ran past its overall deadline: nothing it read is used. */
+export class SyncDeadlineError extends Error {
+  constructor() {
+    super('The sync took longer than its deadline');
+    this.name = 'SyncDeadlineError';
+  }
+}
+
 export interface ShopHttpDeps {
   fetch?: FetchGuardDeps;
   limiter?: ShopRateLimiter;
   maxRequests?: number;
+  /** The sync's overall deadline: once aborted, every request in flight or to come fails. */
+  signal?: AbortSignal;
 }
 
-/** Guarded, rate-limited GETs for one sync, with a request budget. */
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Guarded, rate-limited GETs for one sync, with a request budget and an
+ * overall deadline. Every request counts, redirect hops included.
+ */
 export class ShopHttp {
   private requests = 0;
   private readonly limiter: ShopRateLimiter;
@@ -71,19 +92,38 @@ export class ShopHttp {
     return this.requests;
   }
 
-  async get(url: string, request: GuardedRequest): Promise<GuardedResponse> {
+  private checkDeadline(): void {
+    if (this.deps.signal?.aborted) {
+      throw new SyncDeadlineError();
+    }
+  }
+
+  /** Count one request against the budget and wait for its origin's slot. */
+  private async take(origin: string): Promise<void> {
+    this.checkDeadline();
     this.requests += 1;
     if (this.requests > this.maxRequests) {
       throw new RequestBudgetError();
     }
-    let origin: string;
-    try {
-      origin = new URL(url).origin;
-    } catch {
-      origin = url;
-    }
     await this.limiter.acquire(origin);
-    return guardedFetch(url, request, this.deps.fetch);
+  }
+
+  async get(url: string, request: GuardedRequest): Promise<GuardedResponse> {
+    await this.take(originOf(url));
+    try {
+      return await guardedFetch(
+        url,
+        {
+          ...request,
+          ...(this.deps.signal ? { signal: this.deps.signal } : {}),
+          beforeRedirect: (next) => this.take(next.origin),
+        },
+        this.deps.fetch,
+      );
+    } catch (error) {
+      this.checkDeadline();
+      throw error;
+    }
   }
 }
 

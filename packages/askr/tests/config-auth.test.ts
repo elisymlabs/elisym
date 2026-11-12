@@ -11,6 +11,7 @@ import {
   assistantDisplayName,
   buildConfigEvent,
   decryptPrivateConfig,
+  normalizeShopUrl,
   parseConfig,
 } from '../src/events/config';
 import { buildPolicyEvent, parsePolicy } from '../src/events/policy';
@@ -79,6 +80,100 @@ describe('config', () => {
     expect(() => config({ source: { kind: 'connector' } })).toThrow();
     const parsed = parseConfig(config({ source: { kind: 'connector', platform: 'shopify' } }));
     expect(parsed?.source).toEqual({ kind: 'connector', platform: 'shopify' });
+  });
+
+  it('carries the connected shop URL as a third source value, in canonical form', () => {
+    const event = config({
+      source: {
+        kind: 'connector',
+        platform: 'woocommerce',
+        shopUrl: 'https://Shop.Example.com/shop/',
+      },
+    });
+    expect(event.tags).toContainEqual([
+      'source',
+      'connector',
+      'woocommerce',
+      'https://shop.example.com/shop',
+    ]);
+    expect(parseConfig(event)?.source).toEqual({
+      kind: 'connector',
+      platform: 'woocommerce',
+      shopUrl: 'https://shop.example.com/shop',
+    });
+    const root = parseConfig(
+      config({
+        source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://shop.example.com' },
+      }),
+    );
+    expect(root?.source.shopUrl).toBe('https://shop.example.com');
+  });
+
+  it('refuses to build a shop URL off the origins, malformed, or on a non-connector source', () => {
+    for (const shopUrl of [
+      'https://other.example.com/shop',
+      'http://shop.example.com',
+      'https://user:pw@shop.example.com',
+      'https://shop.example.com/?a=1',
+      'https://shop.example.com/#x',
+      'not a url',
+    ]) {
+      expect(() =>
+        config({ source: { kind: 'connector', platform: 'shopify', shopUrl } }),
+      ).toThrow();
+    }
+    expect(() =>
+      config({ source: { kind: 'catalog', shopUrl: 'https://shop.example.com' } }),
+    ).toThrow();
+  });
+
+  it('fails closed on a malformed or foreign shop URL in the source tag', () => {
+    const event = config({ source: { kind: 'connector', platform: 'shopify' } });
+    const withShop = (value: string[]) => ({
+      ...event,
+      tags: event.tags.map((tag) => (tag[0] === 'source' ? value : tag)),
+    });
+    for (const shopUrl of [
+      'https://other.example.com',
+      'http://shop.example.com',
+      'https://shop.example.com/',
+      'https://SHOP.example.com',
+      'https://shop.example.com/a?b=1',
+      'https://shop.example.com#a',
+      'https://u@shop.example.com',
+      'garbage',
+      '',
+    ]) {
+      expect(parseConfig(withShop(['source', 'connector', 'shopify', shopUrl]))).toBeUndefined();
+    }
+    expect(
+      parseConfig(
+        withShop(['source', 'connector', 'shopify', 'https://shop.example.com', 'extra']),
+      ),
+    ).toBeUndefined();
+    expect(
+      parseConfig(withShop(['source', 'connector', 'shopify', 'https://shop.example.com/a']))
+        ?.source.shopUrl,
+    ).toBe('https://shop.example.com/a');
+  });
+
+  it('normalizeShopUrl gives the canonical form or nothing', () => {
+    expect(normalizeShopUrl('https://shop.example.com//')).toBe('https://shop.example.com');
+    expect(normalizeShopUrl('https://shop.example.com:443/a/b/')).toBe(
+      'https://shop.example.com/a/b',
+    );
+    expect(normalizeShopUrl('https://shop.example.com?')).toBeUndefined();
+    for (const value of [
+      'http://shop.example.com',
+      'https://user:pw@shop.example.com',
+      'https://user@shop.example.com',
+      'https://shop.example.com/a?b=1',
+      'https://shop.example.com/a#b',
+      'not a url',
+    ]) {
+      expect(normalizeShopUrl(value)).toBeUndefined();
+    }
+    expect(normalizeShopUrl(`https://shop.example.com/${'a'.repeat(1100)}`)).toBeUndefined();
   });
 });
 

@@ -5,7 +5,7 @@ import {
   type SyncRelayClient,
   syncCatalog,
 } from '@elisym/askr';
-import { SHOPIFY_POLICY_SLUGS } from './constants';
+import { SHOPIFY_POLICY_SLUGS, SYNC_DEADLINE_MS } from './constants';
 import { type FetchGuardDeps, FetchGuardError, checkUrl } from './fetch-guard';
 import { fetchGoogleFeed, mapGoogleItem } from './google-feed';
 import { ShopHttp, type ShopRateLimiter, SourceClosedError } from './http';
@@ -63,6 +63,8 @@ export interface ConnectorSyncOptions {
   /** Share one across syncs: the per-shop rate limit. */
   limiter?: ShopRateLimiter;
   maxRequests?: number;
+  /** Wall-clock limit on the sync's shop reads (default `SYNC_DEADLINE_MS`). */
+  deadlineMs?: number;
   /** Overrides the Shopify shop currency read from `/meta.json`. */
   currency?: string;
   /** Shopify: import the refund/shipping/privacy/terms pages as policies (default true). */
@@ -214,10 +216,13 @@ function errorMessage(error: unknown): string {
  * run). Nothing is published unless the whole catalog was read and verified.
  */
 export async function syncConnector(options: ConnectorSyncOptions): Promise<ConnectorSyncResult> {
+  const deadline = new AbortController();
+  const deadlineTimer = setTimeout(() => deadline.abort(), options.deadlineMs ?? SYNC_DEADLINE_MS);
   const http = new ShopHttp({
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.limiter ? { limiter: options.limiter } : {}),
     ...(options.maxRequests === undefined ? {} : { maxRequests: options.maxRequests }),
+    signal: deadline.signal,
   });
   const nowSecs = options.now ?? Math.floor(Date.now() / 1000);
   try {
@@ -304,5 +309,7 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
       return { status: 'error', message: `${error.code}: ${error.message}` };
     }
     return { status: 'error', message: errorMessage(error) };
+  } finally {
+    clearTimeout(deadlineTimer);
   }
 }

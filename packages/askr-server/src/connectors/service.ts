@@ -19,7 +19,19 @@ export interface ConnectorServiceDeps {
   timers?: SchedulerTimers;
   now?: () => number;
   pace?: number;
+  /** Wall-clock limit on one sync's shop reads (default `SYNC_DEADLINE_MS`). */
+  syncDeadlineMs?: number;
   log?: (message: string) => void;
+}
+
+/** `{origin}{path}` without a trailing slash, query or fragment: how a shop URL compares. */
+function shopIdentity(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/u, '')}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Why the store's config does not let this connector sync, or undefined when it does (1.4). */
@@ -36,6 +48,11 @@ function configRefusal(
   }
   if (config.catalogKey !== store.catalogKey) {
     return "The store config does not name the server's catalog key";
+  }
+  // The widget adds to the cart of the shop the config names (6, 7.4): it must be this one.
+  const shopUrl = config.source.shopUrl;
+  if (shopUrl !== undefined && shopIdentity(shopUrl) !== shopIdentity(connector.url)) {
+    return 'The store config names another shop URL than the connector';
   }
   return undefined;
 }
@@ -93,6 +110,7 @@ export class ConnectorService {
       ...(connector.currency === undefined ? {} : { currency: connector.currency }),
       ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
       ...(this.deps.pace === undefined ? {} : { pace: this.deps.pace }),
+      ...(this.deps.syncDeadlineMs === undefined ? {} : { deadlineMs: this.deps.syncDeadlineMs }),
       ...(options.dryRun ? { dryRun: true } : {}),
     });
   }

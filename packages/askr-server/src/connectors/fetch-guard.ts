@@ -66,6 +66,14 @@ export interface GuardedRequest {
   /** For the whole request, redirects included. */
   timeoutMs: number;
   accept?: string;
+  /** Cancels the request from outside (a sync's overall deadline); reported as `timeout`. */
+  signal?: AbortSignal;
+  /**
+   * Called before each redirect hop is requested, with the hop's checked URL:
+   * a hop is a request, so the caller's budget and rate limit count it. What it
+   * throws ends the fetch and is rethrown as is.
+   */
+  beforeRedirect?: (next: URL) => Promise<void>;
 }
 
 export interface GuardedResponse {
@@ -237,47 +245,61 @@ function flatHeaders(response: IncomingMessage): Record<string, string | undefin
   return headers;
 }
 
+export interface NodeTransportOptions {
+  /**
+   * Trust anchors replacing the system CAs. Tests only (a local TLS server with
+   * a fixture certificate); production never sets it and keeps the system store.
+   */
+  ca?: string;
+}
+
 /**
- * The default transport: Node https with the connection pinned to the checked
- * address through a custom `lookup`, so the DNS answer that passed the check is
- * the one connected to (no rebinding between check and connect). TLS still
- * verifies the certificate against the URL's hostname (SNI is the hostname).
+ * The Node https transport: the connection is pinned to the checked address
+ * through a custom `lookup`, so the DNS answer that passed the check is the one
+ * connected to (no rebinding between check and connect). TLS still verifies the
+ * certificate against the URL's hostname (SNI is the hostname).
  */
-export const nodeTransport: Transport = (request) =>
-  new Promise((resolve, reject) => {
-    const pinned = request.address;
-    const lookup: LookupFunction = (_hostname, options, callback) => {
-      if (options.all) {
-        callback(null, [pinned]);
-      } else {
-        callback(null, pinned.address, pinned.family);
-      }
-    };
-    const outgoing = httpsRequest(
-      request.url,
-      {
-        method: 'GET',
-        headers: request.headers,
-        signal: request.signal,
-        agent: false,
-        lookup,
-      },
-      (response) => {
-        const body = decodedBody(response);
-        resolve({
-          status: response.statusCode ?? 0,
-          headers: flatHeaders(response),
-          body,
-          discard: () => {
-            body.destroy();
-            response.destroy();
-          },
-        });
-      },
-    );
-    outgoing.on('error', reject);
-    outgoing.end();
-  });
+export function createNodeTransport(options: NodeTransportOptions = {}): Transport {
+  return (request) =>
+    new Promise((resolve, reject) => {
+      const pinned = request.address;
+      const lookup: LookupFunction = (_hostname, lookupOptions, callback) => {
+        if (lookupOptions.all) {
+          callback(null, [pinned]);
+        } else {
+          callback(null, pinned.address, pinned.family);
+        }
+      };
+      const outgoing = httpsRequest(
+        request.url,
+        {
+          method: 'GET',
+          headers: request.headers,
+          signal: request.signal,
+          agent: false,
+          lookup,
+          ...(options.ca === undefined ? {} : { ca: options.ca }),
+        },
+        (response) => {
+          const body = decodedBody(response);
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: flatHeaders(response),
+            body,
+            discard: () => {
+              body.destroy();
+              response.destroy();
+            },
+          });
+        },
+      );
+      outgoing.on('error', reject);
+      outgoing.end();
+    });
+}
+
+/** The default transport: system trust store, pinned connection. */
+export const nodeTransport: Transport = createNodeTransport();
 
 function abortError(): FetchGuardError {
   return new FetchGuardError('timeout', 'The request took too long');
@@ -358,6 +380,14 @@ export async function guardedFetch(
   const transport = deps.transport ?? nodeTransport;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), request.timeoutMs);
+  const outer = request.signal;
+  const abortFromOutside = (): void => controller.abort();
+  if (outer?.aborted) {
+    controller.abort();
+  } else {
+    outer?.addEventListener('abort', abortFromOutside, { once: true });
+  }
+  let callerError: unknown;
   try {
     let url = checkUrl(rawUrl);
     for (let hop = 0; ; hop++) {
@@ -388,6 +418,14 @@ export async function guardedFetch(
           throw new FetchGuardError('invalid_url', 'The redirect target is not a valid URL');
         }
         url = checkUrl(next);
+        if (request.beforeRedirect) {
+          try {
+            await request.beforeRedirect(url);
+          } catch (error) {
+            callerError = error;
+            throw error;
+          }
+        }
         continue;
       }
       const body = await readCapped(response, request.maxBytes, controller.signal);
@@ -400,7 +438,7 @@ export async function guardedFetch(
       };
     }
   } catch (error) {
-    if (error instanceof FetchGuardError) {
+    if (error instanceof FetchGuardError || (callerError !== undefined && error === callerError)) {
       throw error;
     }
     if (controller.signal.aborted) {
@@ -412,5 +450,6 @@ export async function guardedFetch(
     );
   } finally {
     clearTimeout(timer);
+    outer?.removeEventListener('abort', abortFromOutside);
   }
 }

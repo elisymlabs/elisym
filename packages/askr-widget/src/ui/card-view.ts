@@ -93,15 +93,16 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
     platform: NativeCartPlatform,
     variant: CatalogVariant,
   ): Promise<void> => {
-    const origin = context.pageOrigin;
-    if (origin === undefined) {
+    const shopUrl = context.config.source.shopUrl;
+    if (shopUrl === undefined) {
       return;
     }
     context.reportClick(item.address);
     add.disabled = true;
     add.textContent = STRINGS.adding;
     add.setAttribute('aria-busy', 'true');
-    const added = await nativeAddToCart(platform, origin, variant);
+    const added = await nativeAddToCart(platform, shopUrl, variant);
+    // The card was re-rendered meanwhile (another pick): this button and its answer are stale.
     if (!actionBox.contains(add)) {
       return;
     }
@@ -119,11 +120,12 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
       actionBox.append(failed);
       return;
     }
+    // No window.open here: the add answered long after the click, outside the user
+    // gesture, so a popup blocker would eat it. The visible link is the handoff.
     actionBox.replaceChildren(
       failed,
       productLink(context, item, pageUrl, 'view', STRINGS.viewProduct),
     );
-    document.defaultView?.open(pageUrl, '_blank', 'noopener,noreferrer');
   };
 
   const update = (): void => {

@@ -1,6 +1,12 @@
 import { KIND_POLICY, parseCatalogItem, parsePolicy } from '@elisym/askr';
 import { describe, expect, it } from 'vitest';
-import { ShopHttp, ShopRateLimiter } from '../../src/connectors/http';
+import type { TransportResponse } from '../../src/connectors/fetch-guard';
+import {
+  RequestBudgetError,
+  ShopHttp,
+  ShopRateLimiter,
+  SyncDeadlineError,
+} from '../../src/connectors/http';
 import { type ConnectorSyncOptions, syncConnector } from '../../src/connectors/runner';
 import { verifyOrigin } from '../../src/connectors/verification';
 import { FakeWeb, NOW, type StoreKeys, fixture, fixtureJson, noSleep, storeKeys } from './helpers';
@@ -231,6 +237,20 @@ describe('verifyOrigin', () => {
     expect(web.urls).toEqual([`${SHOP}/.well-known/askr`]);
   });
 
+  it('accepts the npub only as a whole token, not inside a longer one', async () => {
+    const keys = storeKeys();
+    for (const body of [`x${keys.ownerNpub}`, `${keys.ownerNpub}x`, `npub:${keys.ownerNpub}`]) {
+      const web = new FakeWeb().route(`${SHOP}/.well-known/askr`, { body });
+      const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
+      expect(await verifyOrigin(http, SHOP, keys.owner)).toBe('not_found');
+    }
+    const web = new FakeWeb().route(`${SHOP}/.well-known/askr`, {
+      body: `owner\t${keys.ownerNpub}\r\n`,
+    });
+    const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
+    expect(await verifyOrigin(http, SHOP, keys.owner)).toBeUndefined();
+  });
+
   it('does not accept a proof served after a redirect to another origin', async () => {
     const keys = storeKeys();
     const web = new FakeWeb()
@@ -445,5 +465,139 @@ describe('ShopRateLimiter', () => {
     await syncConnector({ ...options(keys, web), limiter, dryRun: true, importPolicies: false });
     // Every request but the first to the shop origin waited its turn.
     expect(waits.length).toBe(web.requests.length - 1);
+  });
+});
+
+describe('a sync deadline', () => {
+  function stallOn(web: FakeWeb, stalledUrl: string): FakeWeb {
+    const deps = web.deps();
+    const transport = deps.transport;
+    web.deps = () => ({
+      ...deps,
+      transport: (request) =>
+        request.url.toString() === stalledUrl || transport === undefined
+          ? new Promise<TransportResponse>(() => undefined)
+          : transport(request),
+    });
+    return web;
+  }
+
+  it('ends a sync stuck on a slow shop as an error long before the per-request cap', async () => {
+    const keys = storeKeys();
+    const web = stallOn(shopifyWeb(keys), PRODUCTS_URL);
+    const started = Date.now();
+    const result = await syncConnector(options(keys, web, { deadlineMs: 100 }));
+    expect(result).toEqual({ status: 'error', message: 'The sync took longer than its deadline' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(keys.relay.published).toHaveLength(0);
+  });
+
+  it('a deadline during verification is an error, not a failed verification', async () => {
+    const keys = storeKeys();
+    const web = stallOn(stallOn(shopifyWeb(keys), `${SHOP}/.well-known/askr`), `${SHOP}/`);
+    const result = await syncConnector(options(keys, web, { deadlineMs: 100 }));
+    expect(result.status).toBe('error');
+  });
+
+  it('makes no request once the deadline passed', async () => {
+    const web = new FakeWeb().route(`${SHOP}/a`, { body: 'a' });
+    const deadline = new AbortController();
+    const http = new ShopHttp({
+      fetch: web.deps(),
+      limiter: new ShopRateLimiter(0),
+      signal: deadline.signal,
+    });
+    expect((await http.get(`${SHOP}/a`, { maxBytes: 100, timeoutMs: 1_000 })).body).toBe('a');
+    deadline.abort();
+    await expect(http.get(`${SHOP}/a`, { maxBytes: 100, timeoutMs: 1_000 })).rejects.toBeInstanceOf(
+      SyncDeadlineError,
+    );
+    expect(web.requests).toHaveLength(1);
+    // Nothing is counted or queued for a sync that is over.
+    expect(http.requestCount).toBe(1);
+  });
+
+  it('defaults to a finite deadline', async () => {
+    const { SYNC_DEADLINE_MS } = await import('../../src/connectors/constants');
+    expect(SYNC_DEADLINE_MS).toBe(15 * 60 * 1000);
+  });
+});
+
+describe('the request budget and rate limit', () => {
+  const LIMIT = { maxBytes: 100, timeoutMs: 1_000 };
+
+  it('allows exactly maxRequests requests', async () => {
+    const web = new FakeWeb().route(`${SHOP}/a`, { body: 'a' });
+    const http = new ShopHttp({
+      fetch: web.deps(),
+      limiter: new ShopRateLimiter(0),
+      maxRequests: 2,
+    });
+    await http.get(`${SHOP}/a`, LIMIT);
+    await http.get(`${SHOP}/a`, LIMIT);
+    expect(http.requestCount).toBe(2);
+    await expect(http.get(`${SHOP}/a`, LIMIT)).rejects.toBeInstanceOf(RequestBudgetError);
+    expect(web.requests).toHaveLength(2);
+  });
+
+  it('counts every redirect hop as a request', async () => {
+    const web = new FakeWeb()
+      .route(`${SHOP}/1`, { status: 301, headers: { location: '/2' } })
+      .route(`${SHOP}/2`, { status: 302, headers: { location: '/3' } })
+      .route(`${SHOP}/3`, { body: 'end' });
+    const enough = new ShopHttp({
+      fetch: web.deps(),
+      limiter: new ShopRateLimiter(0),
+      maxRequests: 3,
+    });
+    expect((await enough.get(`${SHOP}/1`, LIMIT)).body).toBe('end');
+    expect(enough.requestCount).toBe(3);
+    const short = new ShopHttp({
+      fetch: web.deps(),
+      limiter: new ShopRateLimiter(0),
+      maxRequests: 2,
+    });
+    await expect(short.get(`${SHOP}/1`, LIMIT)).rejects.toBeInstanceOf(RequestBudgetError);
+  });
+
+  it('spaces redirect hops by the per-shop limit of the hop origin', async () => {
+    let clock = 0;
+    const waits: number[] = [];
+    const limiter = new ShopRateLimiter(
+      500,
+      () => clock,
+      async (ms) => {
+        waits.push(ms);
+        clock += ms;
+      },
+    );
+    const web = new FakeWeb()
+      .route(`${SHOP}/1`, { status: 301, headers: { location: '/2' } })
+      .route(`${SHOP}/2`, { status: 302, headers: { location: 'https://cdn.example/3' } })
+      .route('https://cdn.example/3', { body: 'end' });
+    const http = new ShopHttp({ fetch: web.deps(), limiter });
+    await http.get(`${SHOP}/1`, LIMIT);
+    // The same-origin hop waited its turn; the hop to another origin did not.
+    expect(waits).toEqual([500]);
+    await limiter.acquire('https://cdn.example');
+    expect(waits).toEqual([500, 500]);
+  });
+
+  it('a 404 on a later Shopify page is an error, not a closed source', async () => {
+    const keys = storeKeys();
+    const full = {
+      products: Array.from({ length: 250 }, (_unused, index) => ({
+        id: index + 1,
+        title: `P${index}`,
+        handle: `p${index}`,
+        variants: [{ id: index + 1000, price: '1.00', available: true }],
+      })),
+    };
+    const web = shopifyWeb(keys).json(PRODUCTS_URL, full);
+    const result = await syncConnector(options(keys, web));
+    expect(result).toEqual({
+      status: 'error',
+      message: `HTTP 404 from ${SHOP}/products.json?limit=250&page=2`,
+    });
   });
 });

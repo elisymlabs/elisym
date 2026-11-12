@@ -208,6 +208,61 @@ describe('(1) price and visibility over all variants', () => {
   });
 });
 
+describe('(1) price-from over all variants, whatever the cuts keep', () => {
+  it('keeps a variant of another price even past the 100 cut', () => {
+    // 120 available at 10, then one unavailable at 99: the cut keeps only 10s without the rule.
+    const variants: DraftVariant[] = Array.from({ length: 120 }, (_unused, index) =>
+      variant(`v${index}`, '10', true, ['x']),
+    );
+    variants.push(variant('dear', '99', false, ['x']));
+    const result = fitted(fitDraft(draft({ options: [{ name: 'N', values: [] }], variants })));
+    expect(result.listing.variants).toHaveLength(100);
+    expect(result.listing.variants?.map((entry) => entry.id)).toContain('dear');
+    expect(result.listing.price.amount).toBe('10');
+    expect(buildCatalogItemEvent(result.listing).tags).toContainEqual(['price-from', '1']);
+  });
+
+  it('keeps a cheaper unavailable variant when the highest is the price itself', () => {
+    const variants: DraftVariant[] = Array.from({ length: 120 }, (_unused, index) =>
+      variant(`v${index}`, '20', true, ['x']),
+    );
+    variants.push(variant('cheap', '5', false, ['x']));
+    const result = fitted(fitDraft(draft({ options: [{ name: 'N', values: [] }], variants })));
+    expect(result.listing.variants?.map((entry) => entry.id)).toContain('cheap');
+    expect(result.listing.price.amount).toBe('20');
+    expect(buildCatalogItemEvent(result.listing).tags).toContainEqual(['price-from', '1']);
+  });
+
+  it('keeps the other price through the 10-value cut', () => {
+    const sizes = Array.from({ length: 13 }, (_unused, index) => String(index + 1));
+    const result = fitted(
+      fitDraft(
+        draft({
+          options: [{ name: 'Size', values: sizes }],
+          variants: sizes.map((size) =>
+            variant(`v${size}`, size === '13' ? '80' : '50', true, [size]),
+          ),
+        }),
+      ),
+    );
+    expect(result.listing.options?.[0]?.values).toHaveLength(10);
+    expect(result.listing.variants?.map((entry) => entry.id)).toContain('v13');
+    expect(buildCatalogItemEvent(result.listing).tags).toContainEqual(['price-from', '1']);
+  });
+
+  it('equal prices: no price-from', () => {
+    const result = fitted(
+      fitDraft(
+        draft({
+          options: [{ name: 'Size', values: ['S', 'M'] }],
+          variants: [variant('s', '5', true, ['S']), variant('m', '5.0', false, ['M'])],
+        }),
+      ),
+    );
+    expect(buildCatalogItemEvent(result.listing).tags).not.toContainEqual(['price-from', '1']);
+  });
+});
+
 describe('(2) at most 100 variants, available first', () => {
   it('keeps available ones first and the price-defining one always', () => {
     const options = [{ name: 'N', values: [] }];
@@ -263,6 +318,73 @@ describe('(3) at most 5 options, preferring those that differ', () => {
     );
     expect(result.listing.options?.map((option) => option.name)).toEqual(['A', 'B', 'C', 'D', 'E']);
   });
+  it('never cuts an option a kept variant has * in; ranks those first', () => {
+    // Seven named options; G is constant except for a * on v2. Without the rule
+    // G would be cut (it does not differ), and v2 would lose its * and look determined.
+    const options = ['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((name) => ({
+      name,
+      values: [],
+      terms: ['g1', 'g2'],
+    }));
+    const result = fitted(
+      fitDraft(
+        draft({
+          platform: 'woocommerce',
+          options,
+          variants: [
+            variant('1', '5', true, ['a1', 'b1', 'c1', 'd1', 'e1', 'f1', 'g1']),
+            variant('2', '5', true, ['a2', 'b2', 'c2', 'd2', 'e2', 'f2', '']),
+          ],
+        }),
+      ),
+    );
+    expect(result.listing.options?.map((option) => option.name)).toEqual(['A', 'B', 'C', 'D', 'G']);
+    expect(result.listing.variants?.find((entry) => entry.id === '2')?.values).toContain('*');
+    expect(result.truncated).toBe(true);
+  });
+
+  it('when more options than 5 carry *, the * variants of a cut option go with it', () => {
+    // Six options with * (on v2 at F); v1 defines the price and has no *.
+    const names = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const options = names.map((name) => ({ name, values: [], terms: ['t1', 't2'] }));
+    const result = fitted(
+      fitDraft(
+        draft({
+          platform: 'woocommerce',
+          options,
+          variants: [
+            variant('1', '5', true, ['t1', 't1', 't1', 't1', 't1', 't1']),
+            variant('2', '6', true, ['', '', '', '', '', '']),
+            variant('3', '7', true, ['t2', 't2', 't2', 't2', 't2', 't2']),
+          ],
+        }),
+      ),
+    );
+    expect(result.listing.options?.map((option) => option.name)).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(result.listing.variants?.map((entry) => entry.id)).toEqual(['1', '3']);
+  });
+
+  it('publishes no variants when the cut would take the price-defining * variant', () => {
+    const names = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const options = names.map((name) => ({ name, values: [], terms: ['t1', 't2'] }));
+    const result = fitted(
+      fitDraft(
+        draft({
+          platform: 'woocommerce',
+          options,
+          variants: [
+            variant('1', '5', true, ['t1', 't1', 't1', 't1', 't1', '']),
+            variant('2', '6', true, ['', '', '', '', '', 't2']),
+          ],
+        }),
+      ),
+    );
+    expect(result.listing.variants).toEqual([]);
+    expect(result.listing.price.amount).toBe('5');
+    expect(result.listing.options).toHaveLength(5);
+    expect(result.truncated).toBe(true);
+  });
+
   it('drops an unnamed option or a repeated option name', () => {
     const result = fitted(
       fitDraft(
@@ -321,10 +443,13 @@ describe('(4) option values from the kept variants', () => {
     ]);
   });
 
-  it('drops an option that is only * with no terms to offer', () => {
+  it('drops an option that is only * with no terms, and the * variants with it', () => {
+    // Deleting the Engraving position would leave variant 1 looking determined
+    // (numeric id, no *), and native add-to-cart would send it without the attribute.
     const result = fitted(
       fitDraft(
         draft({
+          platform: 'woocommerce',
           options: [
             { name: 'Engraving', values: [] },
             { name: 'Color', values: ['Black'] },
@@ -334,8 +459,36 @@ describe('(4) option values from the kept variants', () => {
       ),
     );
     expect(result.listing.options).toEqual([{ name: 'Color', values: ['Black'] }]);
-    expect(result.listing.variants?.[0]?.values).toEqual(['Black']);
+    expect(result.listing.variants).toEqual([]);
+    expect(result.listing.price.amount).toBe('10');
+    expect(result.listing.visibility).toBe('on-sale');
     expect(result.truncated).toBe(true);
+    const tags = buildCatalogItemEvent(result.listing).tags;
+    expect(tags.filter((tag) => tag[0] === 'variant')).toEqual([]);
+  });
+
+  it('never leaves a variant that had * looking determined', () => {
+    // Engraving is `*` (no terms) on variant 2 only; the option has values from variant 1,
+    // so it stays, and variant 2 keeps its *.
+    const result = fitted(
+      fitDraft(
+        draft({
+          platform: 'woocommerce',
+          options: [
+            { name: 'Engraving', values: ['Yes'] },
+            { name: 'Color', values: ['Black', 'Red'] },
+          ],
+          variants: [
+            variant('1', '10', true, ['Yes', 'Black']),
+            variant('2', '10', true, ['', 'Red']),
+          ],
+        }),
+      ),
+    );
+    expect(result.listing.variants?.map((entry) => entry.values)).toEqual([
+      ['Yes', 'Black'],
+      ['*', 'Red'],
+    ]);
   });
 });
 

@@ -1,4 +1,4 @@
-import type { CatalogAttr } from '@elisym/askr';
+import type { CatalogAttr, Visibility } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
 import { z } from 'zod';
 import {
@@ -13,6 +13,11 @@ import { type ShopHttp, SourceClosedError, getJson } from './http';
 import type { DraftOption, DraftVariant, ProductDraft } from './listing';
 
 const named = z.object({ name: z.string() }).passthrough();
+
+/** Digits a Store API price may have: kept whole, never rounded (the default precision is 20). */
+const MAX_PRICE_DIGITS = 30;
+const PRICE_DECIMAL = Decimal.clone({ precision: MAX_PRICE_DIGITS + 10 });
+const PRICE_DIGITS_RE = new RegExp(`^\\d{1,${MAX_PRICE_DIGITS}}$`, 'u');
 
 const wooPricesSchema = z.object({
   price: z.string(),
@@ -77,10 +82,12 @@ export function parseWooVariation(raw: unknown): WooVariation | undefined {
 
 /** Store API minor units to a decimal string: `17500` with unit 2 is `175`. */
 export function wooAmount(prices: z.infer<typeof wooPricesSchema>): string | undefined {
-  if (!/^\d{1,30}$/u.test(prices.price)) {
+  if (!PRICE_DIGITS_RE.test(prices.price)) {
     return undefined;
   }
-  return new Decimal(prices.price).div(new Decimal(10).pow(prices.currency_minor_unit)).toFixed();
+  return new PRICE_DECIMAL(prices.price)
+    .div(new PRICE_DECIMAL(10).pow(prices.currency_minor_unit))
+    .toFixed();
 }
 
 function isAvailable(entry: { is_in_stock?: boolean | null; is_purchasable?: boolean | null }) {
@@ -106,7 +113,8 @@ export type WooMapResult =
 
 /**
  * A Store API product as a draft listing (7.4). A simple product is its own
- * single variant (its id is what `?add-to-cart=` takes); a variable product
+ * single variant (its id is what `?add-to-cart=` takes); an external
+ * (affiliate) product has none; a variable product
  * has one variant per variation, priced and stocked from the variation reads,
  * with an "Any" attribute written as `*` and the attribute's terms kept for it.
  */
@@ -124,7 +132,16 @@ export function mapWooProduct(
   let options: DraftOption[] = [];
   const variants: DraftVariant[] = [];
   let missingVariations = 0;
-  if (product.type === 'variable') {
+  let external: { price: string; visibility: Visibility } | undefined;
+  if (product.type === 'external') {
+    // An affiliate product is bought on another site: listed, never purchasable here,
+    // so no variant (no native add-to-cart) and availability from its stock flag.
+    const price = wooAmount(product.prices);
+    if (price === undefined) {
+      return { ok: false, sourceId, reason: 'no valid price' };
+    }
+    external = { price, visibility: product.is_in_stock === true ? 'on-sale' : 'sold-out' };
+  } else if (product.type === 'variable') {
     options = variationAttributes.map((attribute) => {
       const terms = (attribute.terms ?? []).map((term) => decodeHtmlEntities(term.name));
       return { name: decodeHtmlEntities(attribute.name), values: terms, terms };
@@ -201,6 +218,13 @@ export function mapWooProduct(
     options,
     variants,
   };
+  if (external) {
+    draft.price = external.price;
+    draft.visibility = external.visibility;
+    if (product.sku) {
+      draft.sku = product.sku;
+    }
+  }
   const summary = htmlToText(product.short_description ?? '');
   if (summary !== '') {
     draft.summary = summary;

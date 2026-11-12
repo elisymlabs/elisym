@@ -135,11 +135,46 @@ describe('html', () => {
     expect(metaContents(page, 'askr-verification')).toEqual(['npub1abc', 'npub1def']);
   });
 
+  it('reads a quoted > inside a meta attribute value as part of the value', () => {
+    const page = `<head>
+      <meta data-note="a > b" name="askr-verification" content="npub1abc">
+      <meta name='askr-verification' content='x>y'>
+    </head>`;
+    expect(metaContents(page, 'askr-verification')).toEqual(['npub1abc', 'x>y']);
+  });
+
+  it.each(['title', 'textarea', 'script', 'style', 'TITLE'])(
+    'never counts a meta tag written inside <%s> as proof',
+    (tag) => {
+      const page = `<head><${tag}><meta name="askr-verification" content="npub1evil"></${tag}></head>`;
+      expect(metaContents(page, 'askr-verification')).toEqual([]);
+    },
+  );
+
+  it('keeps title and textarea text as text', () => {
+    expect(htmlToText('<title>A &amp; <b>B</b></title><p>x</p>')).toBe('A & <b>B</b>\n\nx');
+  });
+
+  it('a self-closing svg ends there; a self-closing script does not', () => {
+    const svg = '<svg/><meta name="askr-verification" content="npub1ok">';
+    expect(metaContents(svg, 'askr-verification')).toEqual(['npub1ok']);
+    const script = '<script/><meta name="askr-verification" content="npub1evil"></script>';
+    expect(metaContents(script, 'askr-verification')).toEqual([]);
+  });
+
+  it('leaves names of Object.prototype members undecoded', () => {
+    expect(decodeHtmlEntities('&constructor; &toString; &hasOwnProperty; &amp;')).toBe(
+      '&constructor; &toString; &hasOwnProperty; &',
+    );
+  });
+
   it('is linear on hostile input', () => {
     const hostile = '<script>'.repeat(50_000);
     const started = Date.now();
     htmlToText(hostile);
     metaContents(`${'<meta '.repeat(20_000)}`, 'x');
+    metaContents(`${'<meta a="b" c=\'d\' e=f '.repeat(20_000)}`, 'x');
+    metaContents(`${'<title>'.repeat(20_000)}`, 'x');
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
@@ -196,6 +231,26 @@ describe('Google feed', () => {
     expect(before.ok && before.draft.price).toBe('10');
     const during = mapGoogleItem(item, Date.parse('2026-12-10T00:00:00Z'));
     expect(during.ok && during.draft.price).toBe('8');
+    const atStart = mapGoogleItem(item, Date.parse('2026-12-01T00:00:00Z'));
+    expect(atStart.ok && atStart.draft.price).toBe('8');
+    // The end is exclusive: at that instant the sale is over.
+    const lastMoment = mapGoogleItem(item, Date.parse('2026-12-31T00:00:00Z') - 1);
+    expect(lastMoment.ok && lastMoment.draft.price).toBe('8');
+    const atEnd = mapGoogleItem(item, Date.parse('2026-12-31T00:00:00Z'));
+    expect(atEnd.ok && atEnd.draft.price).toBe('10');
+  });
+
+  it('ignores a sale price in another currency', () => {
+    const mapped = mapGoogleItem(
+      new Map([
+        ['id', ['A']],
+        ['title', ['A']],
+        ['price', ['10 USD']],
+        ['sale_price', ['8 EUR']],
+      ]),
+      NOW_MS,
+    );
+    expect(mapped.ok && mapped.draft).toMatchObject({ price: '10', currency: 'USD' });
   });
 
   it('maps availability, unknown values to sold-out', () => {

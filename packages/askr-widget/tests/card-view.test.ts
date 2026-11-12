@@ -48,8 +48,11 @@ function catalogItem(overrides: Partial<CatalogItem> = {}): CatalogItem {
   return { ...item, ...overrides };
 }
 
-function connectorConfig(platform: ConnectorPlatform): StoreConfig {
-  const store = makeStore({ source: { kind: 'connector', platform } });
+function connectorConfig(platform: ConnectorPlatform, shopUrl: string | null = SHOP): StoreConfig {
+  const store = makeStore({
+    source:
+      shopUrl === null ? { kind: 'connector', platform } : { kind: 'connector', platform, shopUrl },
+  });
   const config = parseConfig(
     sign(buildConfigEvent(store.configInput, store.owner.secretKey), store.owner),
   );
@@ -256,7 +259,21 @@ describe('card native add-to-cart', () => {
     card.remove();
   });
 
-  it('a failed add opens the product page and leaves its link with a notice', async () => {
+  it('WooCommerce under a path: adds on the shop path', async () => {
+    const { fetchMock, answer } = pendingFetch();
+    const card = renderCard(
+      context(connectorConfig('woocommerce', `${SHOP}/store`)),
+      catalogItem(SIZED),
+    );
+    document.body.append(card);
+    pick(card, 'S');
+    cartButtonOf(card).click();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://shop.example/store/?add-to-cart=101');
+    await answer(200);
+    card.remove();
+  });
+
+  it('a failed add leaves the product link with a notice, opening no window', async () => {
     const { answer } = pendingFetch();
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
     const ctx = context(connectorConfig('shopify'));
@@ -270,12 +287,31 @@ describe('card native add-to-cart', () => {
     expect(card.querySelector<HTMLAnchorElement>('a.view')?.href).toBe(
       'https://shop.example/p/scarf',
     );
-    expect(open).toHaveBeenCalledWith(
-      'https://shop.example/p/scarf',
-      '_blank',
-      'noopener,noreferrer',
-    );
+    // The answer came long after the click: a window opened now would be popup-blocked.
+    expect(open).not.toHaveBeenCalled();
     expect(ctx.clicks).toEqual([item.address]);
+    card.remove();
+  });
+
+  it('an answer for a button the card replaced meanwhile changes nothing', async () => {
+    const { fetchMock, answer } = pendingFetch();
+    const card = renderCard(context(connectorConfig('woocommerce')), catalogItem(SIZED));
+    document.body.append(card);
+    pick(card, 'M');
+    const stale = cartButtonOf(card);
+    stale.click();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // The visitor picks another size while the first add is in flight.
+    pick(card, 'S');
+    const fresh = cartButtonOf(card);
+    expect(fresh).not.toBe(stale);
+    await answer(500);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(card.querySelector('.cart-failed')).toBeNull();
+    expect(card.querySelector('a.view')).toBeNull();
+    expect(cartButtonOf(card)).toBe(fresh);
+    expect(fresh.textContent).toBe('Add to cart');
+    expect(fresh.disabled).toBe(false);
     card.remove();
   });
 
@@ -325,6 +361,8 @@ describe('card native add-to-cart', () => {
     const item = catalogItem(SINGLE);
     for (const ctx of [
       context(connectorConfig('shopify'), 'https://other.example'),
+      // A config naming no shop URL (the old two-value source): native stays off.
+      context(connectorConfig('shopify', null)),
       { ...context(connectorConfig('shopify')), pageOrigin: undefined },
       context(connectorConfig('google')),
       context(storeConfig()),

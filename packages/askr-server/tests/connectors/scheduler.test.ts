@@ -210,6 +210,89 @@ describe('ConnectorScheduler', () => {
     expect(peak).toBe(2);
   });
 
+  it('never syncs one store twice at once, even when it is removed and re-added mid-sync', async () => {
+    const clock = new FakeClock();
+    let active = 0;
+    let peak = 0;
+    let starts = 0;
+    const releases: Array<() => void> = [];
+    let stores: Store[] = [{ storeId: 'a', intervalMs: 1_000 }];
+    const saved: string[] = [];
+    const scheduler = new ConnectorScheduler<Store>({
+      loadStores: async () => stores,
+      sync: async () => {
+        starts += 1;
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+        return OK;
+      },
+      saveStatus: async (store) => {
+        saved.push(store.storeId);
+      },
+      timers: clock,
+      now: () => clock.now,
+      random: () => 0,
+      maxConcurrent: 2,
+    });
+    running.push(scheduler);
+    await scheduler.start();
+    await clock.advance(0);
+    expect(active).toBe(1);
+    stores = [];
+    await scheduler.refresh();
+    stores = [{ storeId: 'a', intervalMs: 1_000 }];
+    await scheduler.refresh();
+    scheduler.runNow('a');
+    await clock.advance(0);
+    expect(active).toBe(1);
+    expect(starts).toBe(1);
+    // The first sync ends: the re-added store's due run starts then, not before.
+    releases.shift()?.();
+    await settle();
+    expect(starts).toBe(2);
+    expect(peak).toBe(1);
+    releases.shift()?.();
+    await settle();
+    expect(saved).toEqual(['a']);
+    expect(clock.timerCount).toBe(1);
+  });
+
+  it('a stop and start while a store syncs does not start a second sync of it', async () => {
+    const clock = new FakeClock();
+    let active = 0;
+    let peak = 0;
+    const releases: Array<() => void> = [];
+    const scheduler = new ConnectorScheduler<Store>({
+      loadStores: async () => [{ storeId: 'a', intervalMs: 1_000 }],
+      sync: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+        return OK;
+      },
+      saveStatus: async () => undefined,
+      timers: clock,
+      now: () => clock.now,
+      random: () => 0,
+      maxConcurrent: 2,
+    });
+    running.push(scheduler);
+    await scheduler.start();
+    await clock.advance(0);
+    scheduler.stop();
+    await scheduler.start();
+    await clock.advance(0);
+    expect(peak).toBe(1);
+    releases.splice(0).forEach((release) => release());
+    await settle();
+    releases.splice(0).forEach((release) => release());
+    await settle();
+    expect(peak).toBe(1);
+  });
+
   it('picks up added stores, drops removed ones and applies a new interval', async () => {
     const test = harness([{ storeId: 'a', intervalMs: 1_000 }]);
     await test.scheduler.start();

@@ -77,6 +77,14 @@ function realTimers(): SchedulerTimers {
 export class ConnectorScheduler<Store extends ScheduledStore> {
   private readonly entries = new Map<string, Entry<Store>>();
   private readonly waiting: string[] = [];
+  /**
+   * Stores with a sync in flight, by id, outliving their entry: a store removed
+   * and re-added (or a stop and start) while it syncs gets a fresh entry, which
+   * must not start a second sync of the same store until the first one ends.
+   */
+  private readonly syncing = new Set<string>();
+  /** Fresh entries that came due while their store still synced: run when it ends. */
+  private readonly deferred = new Set<string>();
   private readonly timers: SchedulerTimers;
   private readonly now: () => number;
   private readonly random: () => number;
@@ -184,13 +192,19 @@ export class ConnectorScheduler<Store extends ScheduledStore> {
       if (!entry || entry.running) {
         continue;
       }
+      if (this.syncing.has(storeId)) {
+        this.deferred.add(storeId);
+        continue;
+      }
       void this.run(entry);
     }
   }
 
   private async run(entry: Entry<Store>): Promise<void> {
+    const { storeId } = entry.store;
     this.active += 1;
     entry.running = true;
+    this.syncing.add(storeId);
     let result: ConnectorSyncResult;
     try {
       result = await this.deps.sync(entry.store);
@@ -202,7 +216,11 @@ export class ConnectorScheduler<Store extends ScheduledStore> {
     }
     entry.running = false;
     this.active -= 1;
-    if (this.stopped || this.entries.get(entry.store.storeId) !== entry) {
+    this.syncing.delete(storeId);
+    if (this.stopped || this.entries.get(storeId) !== entry) {
+      if (this.deferred.delete(storeId)) {
+        this.enqueue(storeId);
+      }
       this.drain();
       return;
     }

@@ -4,8 +4,8 @@ import { nativeAddToCart, nativeCartPlatform, nativeCartVariantId } from '../src
 
 const SHOP = 'https://shop.example';
 
-function config(source: ProductSource, origins: string[] = [SHOP, 'https://www.shop.example']) {
-  return { source, origins };
+function config(source: ProductSource) {
+  return { source };
 }
 
 function respond(status: number) {
@@ -25,26 +25,42 @@ function requestOf(fetchImpl: ReturnType<typeof respond>): [string, RequestInit]
 }
 
 describe('nativeCartPlatform', () => {
-  it('is the connector platform on one of the connected origins', () => {
-    expect(nativeCartPlatform(config({ kind: 'connector', platform: 'shopify' }), SHOP)).toBe(
-      'shopify',
-    );
+  it("is the connector platform on the connected shop's own origin", () => {
+    expect(
+      nativeCartPlatform(config({ kind: 'connector', platform: 'shopify', shopUrl: SHOP }), SHOP),
+    ).toBe('shopify');
     expect(
       nativeCartPlatform(
-        config({ kind: 'connector', platform: 'woocommerce' }),
+        config({
+          kind: 'connector',
+          platform: 'woocommerce',
+          shopUrl: 'https://www.shop.example/store',
+        }),
         'https://www.shop.example',
       ),
     ).toBe('woocommerce');
   });
 
-  it('is none on another origin, an unknown page origin, or without a connector cart', () => {
-    const shopify = config({ kind: 'connector', platform: 'shopify' });
-    for (const origin of ['https://other.example', 'http://shop.example', 'null', undefined]) {
+  it("is none on any origin but the shop's, even another configured one", () => {
+    const shopify = config({ kind: 'connector', platform: 'shopify', shopUrl: SHOP });
+    for (const origin of [
+      'https://www.shop.example',
+      'https://other.example',
+      'http://shop.example',
+      'null',
+      undefined,
+    ]) {
       expect(nativeCartPlatform(shopify, origin)).toBeUndefined();
     }
-    expect(nativeCartPlatform(config({ kind: 'connector', platform: 'google' }), SHOP)).toBe(
+  });
+
+  it('is none without a shop URL (an old two-value source) or without a connector cart', () => {
+    expect(nativeCartPlatform(config({ kind: 'connector', platform: 'shopify' }), SHOP)).toBe(
       undefined,
     );
+    expect(
+      nativeCartPlatform(config({ kind: 'connector', platform: 'google', shopUrl: SHOP }), SHOP),
+    ).toBe(undefined);
     for (const kind of ['paycore', 'catalog', 'admin'] as const) {
       expect(nativeCartPlatform(config({ kind }), SHOP)).toBeUndefined();
     }
@@ -94,6 +110,18 @@ describe('nativeAddToCart', () => {
     expect(init.method).toBe('GET');
     expect(init.credentials).toBe('same-origin');
     expect(init.body).toBeUndefined();
+  });
+
+  it('WooCommerce under a path: ?add-to-cart= on the shop path, not the origin root', async () => {
+    const fetchImpl = respond(200);
+    await nativeAddToCart('woocommerce', `${SHOP}/store`, { id: '77', values: [] }, fetchImpl);
+    expect(requestOf(fetchImpl)[0]).toBe('https://shop.example/store/?add-to-cart=77');
+  });
+
+  it('Shopify: the cart is at the origin whatever path the shop URL has', async () => {
+    const fetchImpl = respond(200);
+    await nativeAddToCart('shopify', `${SHOP}/en`, { id: '1', values: [] }, fetchImpl);
+    expect(requestOf(fetchImpl)[0]).toBe('https://shop.example/cart/add.js');
   });
 
   it('WooCommerce: 2xx and 3xx succeed, anything else fails', async () => {

@@ -31,7 +31,11 @@ function header(secret: Uint8Array, method: string, path: string, body: string):
 }
 
 async function setup(
-  options: { status?: 'active' | 'pending'; source?: 'connector' | 'catalog' } = {},
+  options: {
+    status?: 'active' | 'pending';
+    source?: 'connector' | 'catalog';
+    shopUrl?: string;
+  } = {},
 ) {
   const store = syntheticStore();
   const seeded = await stateWith([{ ...storeRecord(store), status: options.status ?? 'active' }]);
@@ -53,7 +57,11 @@ async function setup(
         source:
           options.source === 'catalog'
             ? { kind: 'catalog' }
-            : { kind: 'connector', platform: 'shopify' },
+            : {
+                kind: 'connector',
+                platform: 'shopify',
+                ...(options.shopUrl === undefined ? {} : { shopUrl: options.shopUrl }),
+              },
         catalogKey: store.catalogKey,
         createdAt: NOW - 50,
       },
@@ -183,6 +191,29 @@ describe('admin connector setup (7.3, 7.4)', () => {
       message: 'The store config does not name the shopify connector as its product source',
     });
     expect(other.web.requests).toEqual([]);
+  });
+
+  it("syncs only the shop the config's source names, compared by origin and path", async () => {
+    const named = await setup({ shopUrl: SHOP });
+    await named.call('PUT', '/v1/admin/connector', { platform: 'shopify', url: `${SHOP}/` });
+    expect((await named.call('POST', '/v1/admin/connector/preview')).body.result.status).toBe('ok');
+
+    const elsewhere = await setup({ shopUrl: `${SHOP}/store` });
+    await elsewhere.call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
+    expect((await elsewhere.call('POST', '/v1/admin/connector/preview')).body.result).toEqual({
+      status: 'error',
+      message: 'The store config names another shop URL than the connector',
+    });
+    expect(elsewhere.web.requests).toEqual([]);
+
+    const pathed = await setup({ shopUrl: `${SHOP}/store` });
+    await pathed.call('PUT', '/v1/admin/connector', {
+      platform: 'shopify',
+      url: `${SHOP}/store/?utm=x`,
+    });
+    expect((await pathed.call('POST', '/v1/admin/connector/preview')).body.result.status).toBe(
+      'ok',
+    );
   });
 
   it('a scheduled sync saves its status', async () => {

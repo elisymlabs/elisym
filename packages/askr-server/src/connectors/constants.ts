@@ -20,7 +20,13 @@ export const WOO_PAGE_SIZE = 100;
 export const WOO_MAX_PAGES = 100;
 /** Variations read per Store API request (`type=variation&include=...`). */
 export const WOO_VARIATION_BATCH = 100;
-/** Requests one sync may make to a shop, variation reads included. */
+/**
+ * Wall-clock limit on reading one shop (every request of one sync): past it the
+ * sync ends as an error and frees its scheduler slot, so a slow shop cannot hold
+ * the slots other stores wait for.
+ */
+export const SYNC_DEADLINE_MS = 15 * 60 * 1000;
+/** Requests one sync may make to a shop, variation reads and redirect hops included. */
 export const MAX_REQUESTS_PER_SYNC = 2_000;
 
 /** Default gap between two requests to the same shop origin (per-shop rate limit). */

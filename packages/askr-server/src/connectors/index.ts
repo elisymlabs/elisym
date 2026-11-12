@@ -30,6 +30,7 @@ export {
   ShopHttp,
   ShopRateLimiter,
   SourceClosedError,
+  SyncDeadlineError,
 } from './http';
 export {
   type DraftOption,

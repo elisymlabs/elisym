@@ -15,22 +15,31 @@ const VARIANT_ID_RE = /^\d+$/;
 const HTTP_STATUS_OK_MIN = 200;
 const HTTP_STATUS_REDIRECT_MAX = 399;
 
+function originOf(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Native add-to-cart applies only on a Shopify or WooCommerce connector store,
- * and only when the widget runs on the connected domain (one of the config's
- * `origin` entries), since the cart lives in that domain's session (7.4).
+ * Native add-to-cart applies only on a Shopify or WooCommerce connector store
+ * whose config names the connected shop (`source` shop URL), and only when the
+ * widget runs on that shop's own origin, since the cart lives in that domain's
+ * session (7.4). Any other configured origin (a blog, a second domain) gets none.
  */
 export function nativeCartPlatform(
-  config: Pick<StoreConfig, 'source' | 'origins'>,
+  config: Pick<StoreConfig, 'source'>,
   pageOrigin: string | undefined,
 ): NativeCartPlatform | undefined {
-  if (config.source.kind !== 'connector' || pageOrigin === undefined) {
+  const { kind, platform, shopUrl } = config.source;
+  if (kind !== 'connector' || pageOrigin === undefined || shopUrl === undefined) {
     return undefined;
   }
-  if (!config.origins.includes(pageOrigin)) {
+  if (originOf(shopUrl) !== pageOrigin) {
     return undefined;
   }
-  const platform = config.source.platform;
   return platform === 'shopify' || platform === 'woocommerce' ? platform : undefined;
 }
 
@@ -48,9 +57,10 @@ export function nativeCartVariantId(
   return VARIANT_ID_RE.test(variant.id) ? variant.id : undefined;
 }
 
-function shopifyRequest(origin: string, variantId: string): [string, RequestInit] {
+/** Shopify's cart lives at the shop origin, whatever path the shop URL has. */
+function shopifyRequest(shopUrl: string, variantId: string): [string, RequestInit] {
   return [
-    `${origin}/cart/add.js`,
+    `${originOf(shopUrl) ?? shopUrl}/cart/add.js`,
     {
       method: 'POST',
       credentials: 'same-origin',
@@ -67,8 +77,9 @@ function shopifyRequest(origin: string, variantId: string): [string, RequestInit
  * (it queues a notice for the next page view instead), so success here means
  * the request went through, not that the cart surely holds the item.
  */
-function wooRequest(origin: string, variantId: string): [string, RequestInit] {
-  return [`${origin}/?add-to-cart=${variantId}`, { method: 'GET', credentials: 'same-origin' }];
+function wooRequest(shopUrl: string, variantId: string): [string, RequestInit] {
+  // A Woo shop may live under a path (`https://host/shop`): its front end answers there.
+  return [`${shopUrl}/?add-to-cart=${variantId}`, { method: 'GET', credentials: 'same-origin' }];
 }
 
 function succeeded(platform: NativeCartPlatform, response: Response): boolean {
@@ -79,13 +90,13 @@ function succeeded(platform: NativeCartPlatform, response: Response): boolean {
 }
 
 /**
- * Add one unit of a determined variant to the host store's cart. Resolves
- * `false` on any refusal, network error or timeout; the caller then hands off
- * to the product page.
+ * Add one unit of a determined variant to the host store's cart, at the shop
+ * URL the config names (no trailing slash). Resolves `false` on any refusal,
+ * network error or timeout; the caller then shows the product page link.
  */
 export async function nativeAddToCart(
   platform: NativeCartPlatform,
-  origin: string,
+  shopUrl: string,
   variant: Pick<CatalogVariant, 'id' | 'values'>,
   fetchImpl: typeof fetch = fetch,
 ): Promise<boolean> {
@@ -94,7 +105,7 @@ export async function nativeAddToCart(
     return false;
   }
   const [url, init] =
-    platform === 'shopify' ? shopifyRequest(origin, variantId) : wooRequest(origin, variantId);
+    platform === 'shopify' ? shopifyRequest(shopUrl, variantId) : wooRequest(shopUrl, variantId);
   try {
     const response = await fetchImpl(url, {
       ...init,

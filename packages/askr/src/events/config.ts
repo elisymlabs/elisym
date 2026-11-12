@@ -19,6 +19,12 @@ export interface ProductSource {
   kind: ProductSourceKind;
   /** Only for `connector`. */
   platform?: ConnectorPlatform;
+  /**
+   * Only for `connector`: the connected shop (`https://host` or `https://host/shop`),
+   * in the form `normalizeShopUrl` gives. Its origin is one of the config's
+   * `origin` entries. Without it the widget never adds to the cart natively.
+   */
+  shopUrl?: string;
 }
 
 export interface StoreConfig {
@@ -67,6 +73,33 @@ const httpsOrigin = z
 
 const hexKey = z.string().regex(HEX_PUBKEY_RE);
 
+/**
+ * A connected shop URL in its one canonical form: https, no credentials, query
+ * or fragment, `{origin}{path}` with no trailing slash (`https://host/shop`).
+ * Undefined when the value is not such a URL.
+ */
+export function normalizeShopUrl(value: string): string | undefined {
+  if (value.length > LIMITS.TAG_VALUE_CHARS) {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username !== '' ||
+    url.password !== '' ||
+    value.includes('?') ||
+    value.includes('#')
+  ) {
+    return undefined;
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/u, '')}`;
+}
+
 export const StoreConfigInputSchema = z.object({
   assistant: hexKey,
   origins: z.array(httpsOrigin).min(1).max(LIMITS.MAX_ORIGINS),
@@ -80,6 +113,10 @@ export const StoreConfigInputSchema = z.object({
   source: z.object({
     kind: z.enum(PRODUCT_SOURCES),
     platform: z.enum(CONNECTOR_PLATFORMS).optional(),
+    shopUrl: z
+      .string()
+      .refine((value) => normalizeShopUrl(value) !== undefined, 'an https shop URL')
+      .optional(),
   }),
   catalogKey: hexKey,
   policyKey: hexKey.optional(),
@@ -113,6 +150,14 @@ export function buildConfigEvent(
   if (config.source.kind === 'paycore' && config.policyKey === undefined) {
     throw new Error('A paycore source needs an explicit policyKey (the server or a merchant K)');
   }
+  const shopUrl =
+    config.source.shopUrl === undefined ? undefined : normalizeShopUrl(config.source.shopUrl);
+  if (config.source.shopUrl !== undefined && config.source.kind !== 'connector') {
+    throw new Error('Only a connector source names a shop URL');
+  }
+  if (shopUrl !== undefined && !config.origins.includes(new URL(shopUrl).origin)) {
+    throw new Error("The shop URL's origin must be one of the config's origins");
+  }
   const privateJson = JSON.stringify(config.private);
   if (new TextEncoder().encode(privateJson).length > LIMITS.CONFIG_PRIVATE_BYTES) {
     throw new Error('The private part of the config is too large');
@@ -124,9 +169,7 @@ export function buildConfigEvent(
     ['name', config.name],
     ['language', config.language],
     ['currency', config.currency],
-    config.source.platform === undefined
-      ? ['source', config.source.kind]
-      : ['source', config.source.kind, config.source.platform],
+    sourceTagOf(config.source.kind, config.source.platform, shopUrl),
     ['catalog-key', config.catalogKey],
     ['policy-key', config.policyKey ?? config.catalogKey],
   ];
@@ -154,6 +197,17 @@ export function buildConfigEvent(
     tags,
     content: nip44.v2.encrypt(privateJson, conversationKey),
   };
+}
+
+function sourceTagOf(
+  kind: ProductSourceKind,
+  platform: ConnectorPlatform | undefined,
+  shopUrl: string | undefined,
+): string[] {
+  if (platform === undefined) {
+    return ['source', kind];
+  }
+  return shopUrl === undefined ? ['source', kind, platform] : ['source', kind, platform, shopUrl];
 }
 
 function isProductSourceKind(value: string | undefined): value is ProductSourceKind {
@@ -194,9 +248,11 @@ export function parseConfig(
   const catalogKey = single(tags, 'catalog-key');
   const policyKey = single(tags, 'policy-key');
   const sourceTags = tagsNamed(tags, 'source');
-  const sourceTag = sourceTags.length === 1 ? sourceTags[0] : undefined;
+  const sourceTag =
+    sourceTags.length === 1 && (sourceTags[0]?.length ?? 0) <= 4 ? sourceTags[0] : undefined;
   const sourceKind = sourceTag?.[1];
   const sourcePlatform = sourceTag?.[2];
+  const sourceShopUrl = sourceTag?.[3];
   const origins = originsFrom(tagValues(tags, 'origin'));
   const linkOrigins = originsFrom(tagValues(tags, 'link-origin'));
   if (
@@ -227,6 +283,16 @@ export function parseConfig(
       return undefined;
     }
     source.platform = sourcePlatform;
+    if (sourceShopUrl !== undefined) {
+      // Fail closed: a shop URL that is not canonical, or off the config's origins, voids the config.
+      if (
+        normalizeShopUrl(sourceShopUrl) !== sourceShopUrl ||
+        !origins.includes(new URL(sourceShopUrl).origin)
+      ) {
+        return undefined;
+      }
+      source.shopUrl = sourceShopUrl;
+    }
   } else if (sourcePlatform !== undefined) {
     return undefined;
   }

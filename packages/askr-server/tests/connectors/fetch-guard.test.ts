@@ -40,7 +40,12 @@ describe('isPublicAddress', () => {
     '224.0.0.1',
     '255.255.255.255',
     '192.0.2.10',
+    '192.0.0.8',
+    '192.88.99.1',
     '198.18.0.1',
+    '198.19.255.255',
+    '198.51.100.7',
+    '203.0.113.5',
     '::',
     '::1',
     'fe80::1',
@@ -53,18 +58,35 @@ describe('isPublicAddress', () => {
     '64:ff9b::7f00:1',
     '2002:7f00:1::1',
     '2001:db8::1',
+    '2001::1',
+    '2001:0:4136:e378:8000:63bf:3fff:fdd2',
+    '2001:2::1',
+    '2001:10::1',
+    '2001:1f:ffff::1',
+    '2001:20::1',
+    '2001:2f::1',
+    '3fff::1',
+    '3fff:fff:ffff::1',
     'ff02::1',
     'not-an-ip',
   ])('refuses %s', (address) => {
     expect(isPublicAddress(address)).toBe(false);
   });
 
-  it.each(['93.184.216.34', '8.8.8.8', '172.32.0.1', '100.128.0.1', '2606:4700::6810:84e5'])(
-    'allows %s',
-    (address) => {
-      expect(isPublicAddress(address)).toBe(true);
-    },
-  );
+  it.each([
+    '93.184.216.34',
+    '8.8.8.8',
+    '172.32.0.1',
+    '100.128.0.1',
+    '192.0.1.1',
+    '198.20.0.1',
+    '2606:4700::6810:84e5',
+    '2001:4860:4860::8888',
+    '2001:30::1',
+    '3fff:1000::1',
+  ])('allows %s', (address) => {
+    expect(isPublicAddress(address)).toBe(true);
+  });
 });
 
 describe('checkUrl', () => {
@@ -262,6 +284,15 @@ describe('guardedFetch', () => {
     expect(
       await refusal(guardedFetch('https://slow.example/', { maxBytes: 10, timeoutMs: 50 }, deps)),
     ).toBe('timeout');
+  });
+
+  it('makes no request when the outer signal was already aborted', async () => {
+    const web = new FakeWeb().route('https://shop.example/', { body: 'x' });
+    const signal = AbortSignal.abort();
+    expect(
+      await refusal(guardedFetch('https://shop.example/', { ...LIMITS, signal }, web.deps())),
+    ).toBe('timeout');
+    expect(web.requests).toHaveLength(0);
   });
 
   it('reports a transport failure as a network error', async () => {
