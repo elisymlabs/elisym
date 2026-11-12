@@ -13,6 +13,7 @@ export function SelectField({ id, label, value, options, onChange, hint }: Props
       <span className="field-label">{label}</span>
       <select
         id={id}
+        aria-describedby={hint === undefined ? undefined : `${id}-hint`}
         className="input"
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -23,7 +24,11 @@ export function SelectField({ id, label, value, options, onChange, hint }: Props
           </option>
         ))}
       </select>
-      {hint === undefined ? null : <span className="field-hint">{hint}</span>}
+      {hint === undefined ? null : (
+        <span id={`${id}-hint`} className="field-hint">
+          {hint}
+        </span>
+      )}
     </label>
   );
 }

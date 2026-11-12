@@ -47,8 +47,17 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
     }
   };
 
+  // A preview is of the saved connector: any change means a new preview before syncing turns on.
+  const edited =
+    <Value,>(set: (value: Value) => void) =>
+    (value: Value) => {
+      set(value);
+      setPreview(undefined);
+    };
+
   const save = () =>
     run(async () => {
+      setPreview(undefined);
       const trimmedCurrency = currency.trim().toUpperCase();
       await deps.api.putConnector({
         platform,
@@ -107,7 +116,7 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
           label="Platform"
           value={platform}
           options={PLATFORM_OPTIONS}
-          onChange={(value) => setPlatform(platformOf(value) ?? platform)}
+          onChange={edited((value: string) => setPlatform(platformOf(value) ?? platform))}
         />
         <TextField
           id="connector-url"
@@ -116,21 +125,21 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
           placeholder={
             platform === 'google' ? 'https://shop.example/feed.xml' : 'https://shop.example'
           }
-          onChange={setUrl}
+          onChange={edited(setUrl)}
         />
         <TextField
           id="connector-currency"
           label="Currency override (optional)"
           value={currency}
           hint="Only if the shop reports another currency than it sells in."
-          onChange={setCurrency}
+          onChange={edited(setCurrency)}
         />
         {platform === 'shopify' ? (
           <label className="text-14 flex items-center gap-8">
             <input
               type="checkbox"
               checked={importPolicies}
-              onChange={(event) => setImportPolicies(event.target.checked)}
+              onChange={(event) => edited(setImportPolicies)(event.target.checked)}
             />
             Import the shop's refund, shipping, privacy and terms pages as policies
           </label>

@@ -20,12 +20,12 @@ const BAD_EVENT_REASONS: Readonly<Record<string, string>> = {
   future:
     "One of the signed events is dated in the future. Check your computer's clock and sign again.",
   config_assistant:
-    "The store settings name another assistant than the server's. Reload the page and save again.",
+    "The store settings name another assistant than the server's. Press Refresh at the top, then save again.",
   auth_key: 'A catalog key authorization does not name a valid key.',
   deletion_target: 'A deletion may only remove this store owner settings or key authorizations.',
   kind: 'The server does not store this kind of event.',
   stale_config:
-    'Newer store settings are already saved. Reload the page to see them, then make your change again.',
+    'Newer store settings are already saved. Press Refresh at the top to see them, then make your change again.',
 };
 
 const CODES: Readonly<Record<string, string>> = {

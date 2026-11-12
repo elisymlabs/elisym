@@ -14,13 +14,18 @@ export function TextAreaField({ id, label, value, onChange, hint, placeholder, r
       <span className="field-label">{label}</span>
       <textarea
         id={id}
+        aria-describedby={hint === undefined ? undefined : `${id}-hint`}
         className="input"
         rows={rows}
         value={value}
         placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
       />
-      {hint === undefined ? null : <span className="field-hint">{hint}</span>}
+      {hint === undefined ? null : (
+        <span id={`${id}-hint`} className="field-hint">
+          {hint}
+        </span>
+      )}
     </label>
   );
 }

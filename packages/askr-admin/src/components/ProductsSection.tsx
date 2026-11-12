@@ -5,7 +5,7 @@ import { importItems, removeItem, upsertItem } from '../lib/catalog';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage, invalidItemIssues } from '../lib/errors';
 import { SOURCE_LABELS } from '../lib/labels';
-import { inputOfListing, readListings } from '../lib/store-data';
+import { readListings } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
 import { CsvImport } from './CsvImport';
 import { DiffSummary } from './DiffSummary';
@@ -39,25 +39,45 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const [issues, setIssues] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
 
-  const read = useCallback(async () => {
-    try {
-      const listings = await readListings(deps.reader, view.catalogKey);
-      setDraft(listings.map(inputOfListing).sort((left, right) => left.d.localeCompare(right.d)));
-      setReadError('');
-    } catch {
-      setDraft(undefined);
-      setReadError(
-        'Your current products could not be read from the relay. Nothing can be changed until they are, since a save replaces the whole catalog.',
-      );
-    }
-  }, [deps, view.catalogKey]);
+  const read = useCallback(
+    async (isCurrent: () => boolean = () => true) => {
+      try {
+        const listings = await readListings(deps.reader, view.catalogKey, deps.now());
+        if (isCurrent()) {
+          setDraft(listings.sort((left, right) => left.d.localeCompare(right.d)));
+          setReadError('');
+        }
+      } catch {
+        if (isCurrent()) {
+          setDraft(undefined);
+          setReadError(
+            'Your current products could not be read from the relay. Nothing can be changed until they are, since a save replaces the whole catalog.',
+          );
+        }
+      }
+    },
+    [deps, view.catalogKey],
+  );
 
   const isAdminSource = config?.source.kind === 'admin';
+  const running = view.catalogSync?.state === 'running';
+  // While a sync publishes, the relay holds a half-written catalog: a draft read from it would
+  // hide the rest on the next publish. Read only once no sync runs, and again after each one.
   useEffect(() => {
-    if (isAdminSource) {
-      void read();
+    if (!isAdminSource) {
+      return undefined;
     }
-  }, [isAdminSource, read]);
+    setDraft(undefined);
+    setDiff(undefined);
+    if (running) {
+      return undefined;
+    }
+    let current = true;
+    void read(() => current);
+    return () => {
+      current = false;
+    };
+  }, [isAdminSource, running, read]);
 
   if (!isAdminSource) {
     return (
@@ -101,7 +121,6 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     }
   };
 
-  const running = view.catalogSync?.state === 'running';
   const currency = config?.currency ?? DEFAULT_CURRENCY;
   const maxProducts = view.tier?.maxProducts;
 
@@ -111,6 +130,11 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
         title="Products"
         description="Changes stay here until you review and publish them. Publishing replaces your whole catalog: a product you remove here is hidden from the assistant."
       >
+        {running ? (
+          <Notice tone="info">
+            Products are being published. The editor opens again once that is done.
+          </Notice>
+        ) : null}
         {readError === '' ? null : (
           <Notice tone="error">
             {readError}{' '}
@@ -123,7 +147,8 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           <>
             <p className="text-13 text-text-2">
               {draft.length} product{draft.length === 1 ? '' : 's'}
-              {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}
+              {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Hidden
+              products stay listed here so you can show them again; remove one to stop counting it.
             </p>
             <ProductList
               items={draft}

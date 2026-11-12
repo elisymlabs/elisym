@@ -6,6 +6,7 @@ import { readPolicies } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
 import { Notice } from './Notice';
 import { PolicyEditor } from './PolicyEditor';
+import { PolicyRow } from './PolicyRow';
 import { Section } from './Section';
 
 interface Props {
@@ -22,6 +23,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
   const [readError, setReadError] = useState('');
   const [editing, setEditing] = useState<Editing>();
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const editable = config !== undefined && config.policyKey === view.catalogKey;
 
   const read = useCallback(async () => {
@@ -29,7 +31,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
       return;
     }
     try {
-      setPolicies(await readPolicies(deps.reader, config.policyKey));
+      setPolicies(await readPolicies(deps.reader, config.policyKey, deps.now()));
       setReadError('');
     } catch {
       setReadError('The policies could not be read from the relay.');
@@ -41,12 +43,18 @@ export function PoliciesSection({ deps, view, config }: Props) {
   }, [read]);
 
   const remove = async (slug: string) => {
+    if (busy) {
+      return;
+    }
+    setBusy(true);
     setError('');
     try {
       await deps.api.deletePolicy(slug);
       await read();
     } catch (failure) {
       setError(errorMessage(failure));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -92,33 +100,14 @@ export function PoliciesSection({ deps, view, config }: Props) {
         <ul className="flex flex-col gap-8">
           {policies.length === 0 ? <li className="text-14 text-text-2">No policies yet.</li> : null}
           {policies.map((policy) => (
-            <li
+            <PolicyRow
               key={policy.slug}
-              className="border-line rounded-10 flex flex-wrap items-center justify-between gap-8 border p-12"
-            >
-              <div className="flex min-w-0 flex-col">
-                <span className="text-14 font-medium">{policy.title}</span>
-                <span className="text-12 text-text-3 font-mono">{policy.slug}</span>
-              </div>
-              {editable ? (
-                <div className="flex gap-4">
-                  <button
-                    type="button"
-                    className="btn text-13"
-                    onClick={() => setEditing({ mode: 'edit', policy })}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-danger text-13"
-                    onClick={() => void remove(policy.slug)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              ) : null}
-            </li>
+              policy={policy}
+              editable={editable}
+              busy={busy}
+              onEdit={() => setEditing({ mode: 'edit', policy })}
+              onDelete={() => remove(policy.slug)}
+            />
           ))}
         </ul>
       )}

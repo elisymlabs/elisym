@@ -13,6 +13,7 @@ export function TextField({ id, label, value, onChange, hint, placeholder }: Pro
       <span className="field-label">{label}</span>
       <input
         id={id}
+        aria-describedby={hint === undefined ? undefined : `${id}-hint`}
         className="input"
         type="text"
         value={value}
@@ -21,7 +22,11 @@ export function TextField({ id, label, value, onChange, hint, placeholder }: Pro
         spellCheck={false}
         onChange={(event) => onChange(event.target.value)}
       />
-      {hint === undefined ? null : <span className="field-hint">{hint}</span>}
+      {hint === undefined ? null : (
+        <span id={`${id}-hint`} className="field-hint">
+          {hint}
+        </span>
+      )}
     </label>
   );
 }

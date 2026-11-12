@@ -6,12 +6,12 @@ const POINTS: { icon: IconName; title: string; body: string }[] = [
   {
     icon: 'tag',
     title: 'Prices from your signed catalog',
-    body: 'A product card always shows the price from the listing you signed, never one the model wrote. A price check gates every answer before a visitor sees it.',
+    body: 'A product card always shows the price from the listing signed for your store, never one the model wrote. A price check gates every answer before a visitor sees it.',
   },
   {
     icon: 'key',
     title: 'Your keys',
-    body: "Your catalog, policies and settings are public signed Nostr events. Your owner key is the store's identity and decides which catalog keys may write your products. Revoke one at any time.",
+    body: "Your catalog, policies and the public part of your settings are signed Nostr events; the assistant's instructions are encrypted to it. Your owner key is the store's identity and decides which catalog keys may write your products. Revoke one at any time.",
   },
   {
     icon: 'plug',

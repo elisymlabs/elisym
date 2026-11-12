@@ -1,6 +1,6 @@
 import type { CatalogItemInput, ConnectorPlatform, SyncDiff } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
-import { API_BASE } from '../constants';
+import { apiBase } from '../constants';
 import { nip98Header } from './nip98';
 import type { Signer } from './signer';
 import type { ConnectorRecord, ConnectorSyncResult, StoreView } from './types';
@@ -58,7 +58,7 @@ export class AdminApi {
 
   constructor(options: AdminApiOptions) {
     this.signer = options.signer;
-    this.base = options.base ?? API_BASE;
+    this.base = options.base ?? apiBase();
     this.fetcher = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   }
 

@@ -1,22 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { parseCsv, productsFromCsv } from '../src/lib/csv';
+import { MAX_CSV_BYTES, csvSizeProblem, parseCsv, productsFromCsv } from '../src/lib/csv';
 
 describe('parseCsv', () => {
   it('reads quoted fields with commas, quotes and line breaks, CRLF and a BOM', () => {
     const text =
-      '﻿d,title,description\r\na-1,"Mug, large","He said ""hi""\nthen left"\r\nb-2,Plate,\n';
-    expect(parseCsv(text)).toEqual([
-      ['d', 'title', 'description'],
-      ['a-1', 'Mug, large', 'He said "hi"\nthen left'],
-      ['b-2', 'Plate', ''],
-    ]);
+      '\uFEFFd,title,description\r\na-1,"Mug, large","He said ""hi""\r\nthen left"\r\nb-2,Plate,\n';
+    expect(parseCsv(text)).toEqual({
+      rows: [
+        { line: 1, cells: ['d', 'title', 'description'] },
+        { line: 2, cells: ['a-1', 'Mug, large', 'He said "hi"\nthen left'] },
+        { line: 4, cells: ['b-2', 'Plate', ''] },
+      ],
+    });
   });
 
-  it('drops blank lines and keeps a last row without a newline', () => {
-    expect(parseCsv('a,b\n\n1,2')).toEqual([
-      ['a', 'b'],
-      ['1', '2'],
-    ]);
+  it('drops blank lines, keeps the line numbers, and keeps a last row without a newline', () => {
+    expect(parseCsv('a,b\n\n\n1,2')).toEqual({
+      rows: [
+        { line: 1, cells: ['a', 'b'] },
+        { line: 4, cells: ['1', '2'] },
+      ],
+    });
+  });
+
+  it('reports a quote that never closes, with the line it opens on', () => {
+    expect(parseCsv('d,title\na,"one\nb,two').unclosedQuoteLine).toBe(2);
   });
 });
 
@@ -82,5 +90,28 @@ describe('productsFromCsv', () => {
     expect(productsFromCsv('d,title,price,color\na,A,1,red', 'USD').ignoredColumns).toEqual([
       'color',
     ]);
+  });
+
+  it('uses nothing from a file with an unclosed quote', () => {
+    const result = productsFromCsv(
+      'd,title,price,summary\na,A,1,"oops\nb,B,2,fine\nc,C,3,fine',
+      'USD',
+    );
+    expect(result.items).toEqual([]);
+    expect(result.fileErrors).toEqual([
+      'The file has an unclosed quote starting at line 2, so nothing was read. Close the quote and import it again.',
+    ]);
+  });
+
+  it('names the file line of a bad row after a multi-line cell and blank lines', () => {
+    const text = 'd,title,price,description\na,A,1,"two\nlines"\n\nb,B,not-a-price,\n';
+    const result = productsFromCsv(text, 'USD');
+    expect(result.items.map((item) => item.d)).toEqual(['a']);
+    expect(result.errors.map((error) => error.line)).toEqual([5]);
+  });
+
+  it('refuses a file over the server catalog cap', () => {
+    expect(csvSizeProblem(MAX_CSV_BYTES)).toBeUndefined();
+    expect(csvSizeProblem(MAX_CSV_BYTES + 1)).toContain('larger than 8 MB');
   });
 });

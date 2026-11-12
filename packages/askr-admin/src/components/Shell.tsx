@@ -35,7 +35,16 @@ export function Shell({ deps, view, config, configError, reload, reloadConfig, o
   if (tab === 'overview') {
     content = <Overview view={view} config={config} />;
   } else if (tab === 'settings') {
-    content = <SettingsSection deps={deps} view={view} config={config} onSaved={refresh} />;
+    content = (
+      <SettingsSection
+        deps={deps}
+        view={view}
+        config={config}
+        configError={configError}
+        onRetry={reloadConfig}
+        onSaved={refresh}
+      />
+    );
   } else if (tab === 'products') {
     content = <ProductsSection deps={deps} view={view} config={config} reload={reload} />;
   } else if (tab === 'policies') {
@@ -43,7 +52,16 @@ export function Shell({ deps, view, config, configError, reload, reloadConfig, o
   } else if (tab === 'connector') {
     content = <ConnectorSection deps={deps} view={view} config={config} reload={reload} />;
   } else if (tab === 'keys') {
-    content = <KeysSection deps={deps} view={view} config={config} onChanged={refresh} />;
+    content = (
+      <KeysSection
+        deps={deps}
+        view={view}
+        config={config}
+        configError={configError}
+        onRetry={reloadConfig}
+        onChanged={refresh}
+      />
+    );
   } else {
     content = <EmbedSection owner={view.owner} config={config} />;
   }

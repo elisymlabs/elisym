@@ -34,26 +34,64 @@ function tagOf(event: NostrEvent | undefined, name: string): string | undefined 
   return event?.tags.find((tag) => tag[0] === name)?.[1];
 }
 
+function signedAuth(key: string, createdAt: number): NostrEvent {
+  return finalizeEvent(
+    {
+      ...buildCatalogAuth({ key, mode: key === SERVER_KEY ? 'hosted' : 'self-host' }),
+      created_at: createdAt,
+    },
+    OWNER_KEY,
+  );
+}
+
+function signedConfig(name: string, createdAt: number, privatePart = PRIVATE_PART): NostrEvent {
+  return finalizeEvent(
+    {
+      ...buildConfigEvent(
+        {
+          assistant: ASSISTANT,
+          origins: ['https://tea.example'],
+          name,
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'admin' },
+          catalogKey: SERVER_KEY,
+          private: privatePart,
+        },
+        OWNER_KEY,
+      ),
+      created_at: createdAt,
+    },
+    OWNER_KEY,
+  );
+}
+
+const PRIVATE_PART = { voice: 'calm', instructions: 'Be brief.', notes: '' };
+
+function configOf(event: NostrEvent) {
+  const config = parseConfig(event);
+  if (config === undefined) {
+    throw new Error('config does not parse');
+  }
+  return config;
+}
+
+async function mountKeys(events: NostrEvent[], api = fakeApi()) {
+  mounted = await mount(
+    <CatalogKeys
+      deps={sessionDeps(api, fakeReader(events))}
+      view={storeView()}
+      config={undefined}
+    />,
+  );
+  const { container } = mounted;
+  await settle(() => (container.textContent ?? '').includes(nip19.npubEncode(SERVER_KEY)));
+  return { api, container };
+}
+
 describe('catalog keys', () => {
-  it('lists the keys O authorizes, authorizes a pasted npub self-host and revokes one', async () => {
-    const serverAuth = finalizeEvent(
-      // Dated by the real clock: the authority reader ignores an authorization from the future.
-      {
-        ...buildCatalogAuth({ key: SERVER_KEY, mode: 'hosted' }),
-        created_at: Math.floor(Date.now() / 1000) - 10,
-      },
-      OWNER_KEY,
-    );
-    const api = fakeApi();
-    mounted = await mount(
-      <CatalogKeys
-        deps={sessionDeps(api, fakeReader([serverAuth]))}
-        view={storeView()}
-        config={undefined}
-      />,
-    );
-    const { container } = mounted;
-    await settle(() => (container.textContent ?? '').includes(nip19.npubEncode(SERVER_KEY)));
+  it('lists the keys O authorizes and authorizes a pasted merchant npub self-host', async () => {
+    const { api, container } = await mountKeys([signedAuth(SERVER_KEY, NOW - 10)]);
     expect(container.textContent).toContain('the server key of this admin');
 
     const merchantKey = getPublicKey(generateSecretKey());
@@ -65,54 +103,78 @@ describe('catalog keys', () => {
     expect(authorization?.pubkey).toBe(OWNER);
     expect(tagOf(authorization, 'd')).toBe(merchantKey);
     expect(tagOf(authorization, 'mode')).toBe('self-host');
+  });
+
+  it('authorizes the server K pasted back as hosted', async () => {
+    const { api, container } = await mountKeys([signedAuth(SERVER_KEY, NOW - 10)]);
+    await typeInto(byId(container, 'authorize-key'), SERVER_KEY);
+    await click(buttonNamed(container, 'Sign and authorize'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
+    const [authorization] = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
+    expect(tagOf(authorization, 'mode')).toBe('hosted');
+    expect(authorization?.created_at).toBe(NOW);
+  });
+
+  it('asks before revoking, louder for a key the store relies on, and only then signs', async () => {
+    const { api, container } = await mountKeys([signedAuth(SERVER_KEY, NOW - 10)]);
+    await click(buttonNamed(container, 'Revoke'));
+    expect(api.storeEvents).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('This key is the server key of this admin');
+    await click(buttonNamed(container, 'Keep it'));
+    expect(container.textContent).not.toContain('This key is');
+    expect(api.storeEvents).not.toHaveBeenCalled();
 
     await click(buttonNamed(container, 'Revoke'));
-    await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 2);
-    const [revocation] = vi.mocked(api.storeEvents).mock.calls[1]?.[0] ?? [];
+    await click(buttonNamed(container, 'Revoke this key'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
+    const [revocation] = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
     expect(tagOf(revocation, 'd')).toBe(SERVER_KEY);
     expect(tagOf(revocation, 'mode')).toBe('revoked');
+  });
+
+  it('dates a revocation after an authorization dated ahead of now, so it wins', async () => {
+    const { api, container } = await mountKeys([
+      signedAuth(SERVER_KEY, NOW - 10),
+      signedAuth(SERVER_KEY, NOW + 30),
+    ]);
+    await click(buttonNamed(container, 'Revoke'));
+    await click(buttonNamed(container, 'Revoke this key'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
+    const [revocation] = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
+    expect(revocation?.created_at).toBe(NOW + 31);
   });
 });
 
 describe('assistant rotation', () => {
-  it('re-signs the published config naming the next assistant, private part sealed to it', async () => {
-    const privatePart = { voice: 'calm', instructions: 'Be brief.', notes: '' };
-    const published = finalizeEvent(
-      {
-        ...buildConfigEvent(
-          {
-            assistant: ASSISTANT,
-            origins: ['https://tea.example'],
-            name: 'Tea Shop',
-            language: 'en',
-            currency: 'USD',
-            source: { kind: 'admin' },
-            catalogKey: SERVER_KEY,
-            private: privatePart,
-          },
-          OWNER_KEY,
-        ),
-        created_at: NOW - 100,
-      },
-      OWNER_KEY,
+  async function mountRotate(options: {
+    config: ReturnType<typeof configOf> | undefined;
+    configError?: string;
+    api?: ReturnType<typeof fakeApi>;
+    deps?: ReturnType<typeof sessionDeps>;
+    onRetry?: () => Promise<void>;
+  }) {
+    const api = options.api ?? fakeApi();
+    const deps = options.deps ?? sessionDeps(api, fakeReader([]));
+    mounted = await mount(
+      <RotateAssistant
+        deps={deps}
+        view={storeView()}
+        config={options.config}
+        configError={options.configError ?? ''}
+        onRetry={options.onRetry ?? (async () => undefined)}
+        onChanged={async () => undefined}
+      />,
     );
-    const config = parseConfig(published);
-    if (config === undefined) {
-      throw new Error('config does not parse');
-    }
+    return { api, container: mounted.container };
+  }
+
+  it('re-signs the published config naming the next assistant, private part sealed to it', async () => {
+    const config = configOf(signedConfig('Tea Shop', NOW - 100));
     const nextKey = generateSecretKey();
     const next = getPublicKey(nextKey);
     const api = fakeApi({ rotateAssistant: vi.fn(async () => ({ nextAssistant: next })) });
-    const onChanged = vi.fn(async () => undefined);
-    mounted = await mount(
-      <RotateAssistant
-        deps={sessionDeps(api, fakeReader([published]))}
-        view={storeView()}
-        config={config}
-        onChanged={onChanged}
-      />,
-    );
-    await click(buttonNamed(mounted.container, 'Rotate assistant key'));
+    const { container } = await mountRotate({ config, api });
+    await click(buttonNamed(container, 'Rotate assistant key'));
     await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
 
     const events = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
@@ -122,8 +184,50 @@ describe('assistant rotation', () => {
     expect(rotated?.name).toBe('Tea Shop');
     expect(rotated?.createdAt).toBeGreaterThan(config.createdAt);
     expect(rotated === undefined ? undefined : decryptPrivateConfig(rotated, nextKey)).toEqual(
-      privatePart,
+      PRIVATE_PART,
     );
-    expect(mounted.container.textContent).toContain('current assistant keeps answering');
+    expect(container.textContent).toContain('current assistant keeps answering');
+  });
+
+  it('signs from a newer config this session saved but the relay does not show yet', async () => {
+    const api = fakeApi({
+      rotateAssistant: vi.fn(async () => ({ nextAssistant: getPublicKey(generateSecretKey()) })),
+    });
+    const deps = sessionDeps(api, fakeReader([]));
+    const saved = signedConfig('Tea Shop renamed', NOW + 5);
+    deps.journal.note([saved]);
+    const { container } = await mountRotate({
+      config: configOf(signedConfig('Tea Shop', NOW - 100)),
+      api,
+      deps,
+    });
+    await click(buttonNamed(container, 'Rotate assistant key'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
+    const [rotated] = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
+    expect(rotated === undefined ? undefined : parseConfig(rotated)?.name).toBe('Tea Shop renamed');
+    expect(rotated?.created_at).toBe(NOW + 6);
+  });
+
+  it('refuses before rotating when the private part cannot be decrypted', async () => {
+    const config = { ...configOf(signedConfig('Tea Shop', NOW - 100)), privateContent: 'garbage' };
+    const { api, container } = await mountRotate({ config });
+    await click(buttonNamed(container, 'Rotate assistant key'));
+    await settle(() => (container.textContent ?? '').includes('could not be decrypted'));
+    expect(api.rotateAssistant).not.toHaveBeenCalled();
+    expect(api.storeEvents).not.toHaveBeenCalled();
+  });
+
+  it('does not start while the config could not be read, and offers a retry', async () => {
+    const onRetry = vi.fn(async () => undefined);
+    const { api, container } = await mountRotate({
+      config: undefined,
+      configError: 'The relay could not be read.',
+      onRetry,
+    });
+    expect(buttonNamed(container, 'Rotate assistant key').disabled).toBe(true);
+    await click(buttonNamed(container, 'Rotate assistant key'));
+    expect(api.rotateAssistant).not.toHaveBeenCalled();
+    await click(buttonNamed(container, 'Retry'));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });

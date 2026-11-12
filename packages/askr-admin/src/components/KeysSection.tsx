@@ -8,14 +8,23 @@ interface Props {
   deps: SessionDeps;
   view: StoreView;
   config: StoreConfig | undefined;
+  configError: string;
+  onRetry: () => Promise<void>;
   onChanged: () => Promise<void>;
 }
 
-export function KeysSection({ deps, view, config, onChanged }: Props) {
+export function KeysSection({ deps, view, config, configError, onRetry, onChanged }: Props) {
   return (
     <div className="flex flex-col gap-16">
       <CatalogKeys deps={deps} view={view} config={config} />
-      <RotateAssistant deps={deps} view={view} config={config} onChanged={onChanged} />
+      <RotateAssistant
+        deps={deps}
+        view={view}
+        config={config}
+        configError={configError}
+        onRetry={onRetry}
+        onChanged={onChanged}
+      />
     </div>
   );
 }

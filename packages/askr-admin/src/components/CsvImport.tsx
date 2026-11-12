@@ -1,6 +1,11 @@
 import type { CatalogItemInput } from '@elisym/askr';
 import { useState } from 'react';
-import { CSV_COLUMNS, type CsvImport as CsvResult, productsFromCsv } from '../lib/csv';
+import {
+  CSV_COLUMNS,
+  type CsvImport as CsvResult,
+  csvSizeProblem,
+  productsFromCsv,
+} from '../lib/csv';
 import { Notice } from './Notice';
 
 interface Props {
@@ -14,9 +19,20 @@ const MAX_SHOWN_ERRORS = 50;
 export function CsvImport({ currency, onImport }: Props) {
   const [result, setResult] = useState<CsvResult>();
   const [mode, setMode] = useState<'merge' | 'replace'>('merge');
+  const [acknowledged, setAcknowledged] = useState(false);
 
   const read = async (file: File | undefined) => {
-    setResult(file === undefined ? undefined : productsFromCsv(await file.text(), currency));
+    setAcknowledged(false);
+    if (file === undefined) {
+      setResult(undefined);
+      return;
+    }
+    const tooLarge = csvSizeProblem(file.size);
+    setResult(
+      tooLarge === undefined
+        ? productsFromCsv(await file.text(), currency)
+        : { items: [], errors: [], fileErrors: [tooLarge], ignoredColumns: [] },
+    );
   };
 
   return (
@@ -81,11 +97,26 @@ export function CsvImport({ currency, onImport }: Props) {
               Replace all my products with this file
             </label>
           </fieldset>
+          {mode === 'replace' && result.errors.length > 0 ? (
+            <label className="text-14 text-error flex items-center gap-8">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(event) => setAcknowledged(event.target.checked)}
+              />
+              I understand that the {result.errors.length} row
+              {result.errors.length === 1 ? '' : 's'} with problems are left out, so those products
+              are hidden when I publish.
+            </label>
+          ) : null}
           <div>
             <button
               type="button"
               className="btn btn-primary"
-              disabled={result.items.length === 0}
+              disabled={
+                result.items.length === 0 ||
+                (mode === 'replace' && result.errors.length > 0 && !acknowledged)
+              }
               onClick={() => {
                 onImport(result.items, mode);
                 setResult(undefined);

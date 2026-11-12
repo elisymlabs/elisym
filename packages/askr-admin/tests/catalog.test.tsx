@@ -1,7 +1,10 @@
 import { type CatalogItemInput, buildCatalogItemEvent, parseCatalogItem } from '@elisym/askr';
+import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { CsvImport } from '../src/components/CsvImport';
 import { ProductsSection } from '../src/components/ProductsSection';
 import { importItems, removeItem, upsertItem } from '../src/lib/catalog';
+import { MAX_CSV_BYTES } from '../src/lib/csv';
 import { inputOfListing } from '../src/lib/store-data';
 import {
   adminConfig,
@@ -45,6 +48,18 @@ const HIDDEN: CatalogItemInput = {
   price: { amount: '1', currency: 'USD' },
   visibility: 'hidden',
 };
+
+const EMPTY_DIFF = { created: [], updated: [], hidden: [], unchanged: [] };
+
+function rowButton(container: HTMLElement, label: string, row: string): HTMLButtonElement {
+  const found = [...container.querySelectorAll('button')].find(
+    (button) => button.textContent === label && button.closest('tr')?.textContent?.includes(row),
+  );
+  if (found === undefined) {
+    throw new Error(`no ${label} button in the ${row} row`);
+  }
+  return found;
+}
 
 let mounted: Mounted | undefined;
 afterEach(async () => {
@@ -113,7 +128,8 @@ describe('the product editor', () => {
     const calls = vi.mocked(api.catalog).mock.calls;
     expect(calls.map((call) => call[1])).toEqual([true, false]);
     for (const [items] of calls) {
-      expect(items.map((item) => item.d).sort()).toEqual(['cup', 'mug', 'teapot']);
+      expect(items.map((item) => item.d).sort()).toEqual(['cup', 'mug', 'old', 'teapot']);
+      expect(items.find((item) => item.d === 'old')?.visibility).toBe('hidden');
       const mug = items.find((item) => item.d === 'mug');
       expect(mug).toMatchObject({
         title: 'Big mug',
@@ -178,5 +194,140 @@ describe('the product editor', () => {
     );
     expect(mounted.container.textContent).toContain('Your products come from');
     expect(mounted.container.querySelector('table')).toBeNull();
+  });
+
+  it('reads nothing while a sync publishes, and reads again once it is done', async () => {
+    const api = fakeApi();
+    const reader = fakeReader([listing(MUG), listing(TEAPOT)]);
+    const query = vi.spyOn(reader, 'query');
+    const deps = sessionDeps(api, reader);
+    const running = storeView({ catalogSync: { state: 'running', diff: EMPTY_DIFF } });
+    const done = storeView({ catalogSync: { state: 'done', diff: EMPTY_DIFF } });
+    const section = (view: ReturnType<typeof storeView>) => (
+      <ProductsSection
+        deps={deps}
+        view={view}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />
+    );
+    mounted = await mount(section(running));
+    const { container } = mounted;
+    expect(query).not.toHaveBeenCalled();
+    expect(buttonNamed(container, 'Review changes').disabled).toBe(true);
+    expect(container.textContent).toContain('Products are being published');
+    expect(container.querySelector('table')).toBeNull();
+
+    await mounted.rerender(section(done));
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(buttonNamed(container, 'Review changes').disabled).toBe(false);
+  });
+
+  it('an edit after a review drops the reviewed diff, so the old one cannot be published', async () => {
+    const api = fakeApi();
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG), listing(TEAPOT)]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(buttonNamed(container, 'Publish').disabled).toBe(false);
+    await click(rowButton(container, 'Remove', 'Teapot'));
+    expect(buttonNamed(container, 'Publish').disabled).toBe(true);
+  });
+
+  it('refuses a new product with an ID already in use', async () => {
+    const api = fakeApi();
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG)]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Mug'));
+    await click(buttonNamed(container, 'Add a product'));
+    await typeInto(byId(container, 'product-d'), 'mug');
+    await typeInto(byId(container, 'product-title'), 'Other mug');
+    await typeInto(byId(container, 'product-price'), '3');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(container.textContent).toContain('another product already uses "mug"');
+    await click(buttonNamed(container, 'Cancel'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(vi.mocked(api.catalog).mock.calls[0]?.[0].map((item) => item.title)).toEqual(['Mug']);
+  });
+
+  it('keeps the ID of a product being edited', async () => {
+    const api = fakeApi();
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG)]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Mug'));
+    await click(rowButton(container, 'Edit', 'Mug'));
+    await typeInto(byId(container, 'product-d'), 'renamed');
+    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(vi.mocked(api.catalog).mock.calls[0]?.[0].map((item) => item.d)).toEqual(['mug']);
+  });
+});
+
+describe('the CSV import', () => {
+  async function chooseFile(container: HTMLElement, text: string) {
+    const input = container.querySelector('input[type="file"]');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('no file input');
+    }
+    Object.defineProperty(input, 'files', {
+      value: [new File([text], 'products.csv', { type: 'text/csv' })],
+      configurable: true,
+    });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  it('replacing the catalog with a file that has bad rows needs an explicit acknowledgement', async () => {
+    const onImport = vi.fn();
+    mounted = await mount(<CsvImport currency="USD" onImport={onImport} />);
+    const { container } = mounted;
+    await chooseFile(container, 'd,title,price\na,A,1\nb,B,oops\n');
+    await settle(() => (container.textContent ?? '').includes('1 product read'));
+    const use = buttonNamed(container, 'Use these 1 products');
+    expect(use.disabled).toBe(false);
+    const replace = [...container.querySelectorAll('input[type="radio"]')][1];
+    if (!(replace instanceof HTMLInputElement)) {
+      throw new Error('no replace option');
+    }
+    await click(replace);
+    expect(use.disabled).toBe(true);
+    const acknowledge = container.querySelector('input[type="checkbox"]');
+    if (!(acknowledge instanceof HTMLInputElement)) {
+      throw new Error('no acknowledgement');
+    }
+    await click(acknowledge);
+    expect(use.disabled).toBe(false);
+    await click(use);
+    expect(onImport).toHaveBeenCalledWith([expect.objectContaining({ d: 'a' })], 'replace');
+  });
+
+  it('refuses a file larger than the server takes, without reading it', async () => {
+    mounted = await mount(<CsvImport currency="USD" onImport={() => undefined} />);
+    const { container } = mounted;
+    await chooseFile(container, 'x'.repeat(MAX_CSV_BYTES + 1));
+    await settle(() => (container.textContent ?? '').includes('larger than 8 MB'));
   });
 });

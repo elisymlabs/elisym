@@ -6,12 +6,13 @@ import {
 } from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { ASKR_KEY_COMMAND } from '../constants';
-import type { SessionDeps } from '../lib/deps';
+import { type SessionDeps, postSigned } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
-import { savedMessage } from '../lib/save';
+import { nextAuthDate, savedMessage } from '../lib/save';
 import { npubOf, parsePublicKey } from '../lib/signer';
-import { readAuthority } from '../lib/store-data';
+import { type AuthorityRead, readAuthority } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
+import { KeyRow } from './KeyRow';
 import { Notice } from './Notice';
 import { Section } from './Section';
 import { TextField } from './TextField';
@@ -29,7 +30,7 @@ const ROLE_NAMES: Readonly<Record<CatalogKeyRole, string>> = {
 
 /** Authorize or revoke catalog keys K with O-signed 30497 events (1.1). */
 export function CatalogKeys({ deps, view, config }: Props) {
-  const [keys, setKeys] = useState<[string, Set<CatalogKeyRole>][]>();
+  const [authority, setAuthority] = useState<AuthorityRead>();
   const [readError, setReadError] = useState('');
   const [pasted, setPasted] = useState('');
   const [busy, setBusy] = useState(false);
@@ -39,7 +40,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
 
   const read = useCallback(async () => {
     try {
-      setKeys([...(await readAuthority(deps.reader, deps.signer.pubkey))]);
+      setAuthority(await readAuthority(deps.reader, deps.signer.pubkey, deps.now()));
       setReadError('');
     } catch {
       setReadError('The relay could not be read, so the authorized keys are not shown.');
@@ -72,17 +73,18 @@ export function CatalogKeys({ deps, view, config }: Props) {
         throw new Error('Paste the catalog key as an npub or 64 hex characters.');
       }
       const mode = key === view.catalogKey ? 'hosted' : 'self-host';
-      const event = await deps.signer.signEvent(
-        buildCatalogAuth({ key, mode, createdAt: deps.now() }),
-      );
-      await deps.api.storeEvents([event]);
+      const createdAt = nextAuthDate(key, deps.now(), authority?.newestAt, deps.journal);
+      const event = await deps.signer.signEvent(buildCatalogAuth({ key, mode, createdAt }));
+      await postSigned(deps, [event]);
       setPasted('');
     });
 
   const revoke = (key: string) =>
     submit(async () => {
-      const event = await deps.signer.signEvent(buildCatalogRevocation(key, deps.now()));
-      await deps.api.storeEvents([event]);
+      // Dated after the key's newest authorization, which may be dated ahead of now.
+      const createdAt = nextAuthDate(key, deps.now(), authority?.newestAt, deps.journal);
+      const event = await deps.signer.signEvent(buildCatalogRevocation(key, createdAt));
+      await postSigned(deps, [event]);
     });
 
   const labelsOf = (key: string): string[] => {
@@ -99,6 +101,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
     return labels;
   };
 
+  const keys = authority === undefined ? undefined : [...authority.keys];
   let list: ReactNode = null;
   if (keys !== undefined && keys.length === 0) {
     list = <p className="text-14 text-text-2">No key is authorized on the relay yet.</p>;
@@ -106,27 +109,15 @@ export function CatalogKeys({ deps, view, config }: Props) {
     list = (
       <ul className="flex flex-col gap-8">
         {keys.map(([key, roles]) => (
-          <li
+          <KeyRow
             key={key}
-            className="border-line rounded-10 flex flex-wrap items-center justify-between gap-8 border p-12"
-          >
-            <div className="flex min-w-0 flex-col gap-2">
-              <span className="text-13 truncate font-mono">{npubOf(key)}</span>
-              <span className="text-12 text-text-3">
-                {[...[...roles].map((role) => ROLE_NAMES[role]), ...labelsOf(key)].join(', ')}
-              </span>
-            </div>
-            {roles.has('catalog') ? (
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={busy}
-                onClick={() => void revoke(key)}
-              >
-                Revoke
-              </button>
-            ) : null}
-          </li>
+            npub={npubOf(key)}
+            roles={[...roles].map((role) => ROLE_NAMES[role])}
+            uses={labelsOf(key)}
+            revocable={roles.has('catalog')}
+            busy={busy}
+            onRevoke={() => revoke(key)}
+          />
         ))}
       </ul>
     );

@@ -1,8 +1,7 @@
 import type { StoreConfig } from '@elisym/askr';
 import { useCallback, useEffect, useState } from 'react';
-import { SYNC_POLL_MS } from '../constants';
 import { ApiError } from '../lib/api';
-import type { SessionDeps } from '../lib/deps';
+import { type SessionDeps, syncPollMs } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { readConfig } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
@@ -42,7 +41,7 @@ export function Session({ deps, onSignOut }: Props) {
 
   const reloadConfig = useCallback(async () => {
     try {
-      setConfig(await readConfig(deps.reader, deps.signer.pubkey));
+      setConfig(await readConfig(deps.reader, deps.signer.pubkey, deps.now()));
       setConfigError('');
     } catch {
       setConfigError('The relay could not be read, so the published settings are not shown.');
@@ -61,9 +60,9 @@ export function Session({ deps, onSignOut }: Props) {
     if (!syncRunning) {
       return undefined;
     }
-    const timer = setInterval(() => void reload(), SYNC_POLL_MS);
+    const timer = setInterval(() => void reload(), syncPollMs(deps.signer));
     return () => clearInterval(timer);
-  }, [syncRunning, reload]);
+  }, [syncRunning, reload, deps]);
 
   if (load.state === 'loading' || (load.state === 'ready' && !configRead)) {
     return <p className="text-14 text-text-2 p-24">Loading your store...</p>;

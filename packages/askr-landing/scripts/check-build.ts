@@ -4,12 +4,7 @@
  * on every path, admitting no other origin (the page runs no widget and no demo).
  */
 import { readFileSync } from 'node:fs';
-import {
-  cspOfEveryPath,
-  cspProblems,
-  headerProblems,
-  htmlProblems,
-} from '../../merchant-admin/scripts/build-checks';
+import { cspOfEveryPath, cspProblems, headerProblems, htmlProblems } from './build-checks';
 
 const LANDING_CSP: Record<string, string[]> = {
   'default-src': ["'none'"],

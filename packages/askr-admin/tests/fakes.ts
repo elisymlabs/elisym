@@ -5,8 +5,9 @@ import { matchFilter } from 'nostr-tools/filter';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { vi } from 'vitest';
 import type { AdminClient, SessionDeps } from '../src/lib/deps';
+import { SignedJournal } from '../src/lib/journal';
 import type { RelayReader } from '../src/lib/relay';
-import { secretKeySigner } from '../src/lib/signer';
+import { type Signer, secretKeySigner } from '../src/lib/signer';
 import type { StoreView } from '../src/lib/types';
 
 export const OWNER_KEY = generateSecretKey();
@@ -108,6 +109,10 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
   };
 }
 
-export function sessionDeps(api: AdminClient, reader: RelayReader): SessionDeps {
-  return { signer: secretKeySigner(OWNER_KEY), api, reader, now: () => NOW };
+export function sessionDeps(
+  api: AdminClient,
+  reader: RelayReader,
+  signer: Signer = secretKeySigner(OWNER_KEY),
+): SessionDeps {
+  return { signer, api, reader, now: () => NOW, journal: new SignedJournal() };
 }

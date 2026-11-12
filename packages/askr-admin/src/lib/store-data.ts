@@ -15,6 +15,7 @@ import {
 } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
+import { MAX_FUTURE_SKEW_SECS } from '../constants';
 import type { RelayReader } from './relay';
 
 const KIND_PRODUCT = 30402;
@@ -33,16 +34,31 @@ function isNewer(candidate: NostrEvent, current: NostrEvent): boolean {
   );
 }
 
-/** Signed events of `author` of `kind`, newest per `d`. */
+function nowSecs(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/**
+ * Signed events of `author` of `kind`, newest per `d`. An event dated further
+ * ahead than clock skew explains is left out, so a future-dated one cannot
+ * shadow the real newest.
+ */
 export function newestByD(
   events: readonly NostrEvent[],
   kind: number,
   author: string,
+  now: number = nowSecs(),
 ): NostrEvent[] {
   const newest = new Map<string, NostrEvent>();
   for (const event of events) {
     const d = dOf(event);
-    if (event.kind !== kind || event.pubkey !== author || d === undefined || !verifyEvent(event)) {
+    if (
+      event.kind !== kind ||
+      event.pubkey !== author ||
+      d === undefined ||
+      event.created_at > now + MAX_FUTURE_SKEW_SECS ||
+      !verifyEvent(event)
+    ) {
       continue;
     }
     const current = newest.get(d);
@@ -70,45 +86,92 @@ function deleted(event: NostrEvent, deletions: readonly NostrEvent[]): boolean {
 export async function readConfig(
   reader: RelayReader,
   owner: string,
+  now: number = nowSecs(),
 ): Promise<StoreConfig | undefined> {
   const events = await reader.query({
     kinds: [KIND_CONFIG],
     authors: [owner],
     '#d': [CONFIG_D_TAG],
   });
-  const [newest] = newestByD(events, KIND_CONFIG, owner);
+  const [newest] = newestByD(events, KIND_CONFIG, owner, now);
   return newest === undefined ? undefined : parseConfig(newest);
 }
 
-/** The keys the owner authorizes now, with their roles (1.2). */
+export interface AuthorityRead {
+  /** The keys the owner authorizes now, with their roles (1.2). */
+  keys: Map<string, Set<CatalogKeyRole>>;
+  /** The date of the newest 30497 per key: a new one for that key must be dated after it. */
+  newestAt: Map<string, number>;
+}
+
+/** The owner's authorizations, signature checked (the shared reader does not check signatures). */
 export async function readAuthority(
   reader: RelayReader,
   owner: string,
-): Promise<Map<string, Set<CatalogKeyRole>>> {
-  const events = await reader.query({
-    kinds: [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_DELETION],
-    authors: [owner],
-  });
-  return readCatalogAuthority(
-    events.filter((event) => verifyEvent(event)),
-    owner,
+  now: number = nowSecs(),
+): Promise<AuthorityRead> {
+  const events = (
+    await reader.query({
+      kinds: [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_DELETION],
+      authors: [owner],
+    })
+  ).filter((event) => verifyEvent(event));
+  const newestAt = new Map<string, number>();
+  for (const event of newestByD(events, KIND_CATALOG_AUTH, owner, now)) {
+    const key = dOf(event);
+    if (key !== undefined) {
+      newestAt.set(key, event.created_at);
+    }
+  }
+  return { keys: readCatalogAuthority(events, owner, now), newestAt };
+}
+
+/** Keys holding the catalog role now. */
+export function catalogKeysOf(authority: AuthorityRead): Set<string> {
+  return new Set(
+    [...authority.keys].filter(([, roles]) => roles.has('catalog')).map(([key]) => key),
   );
 }
 
-/** The listings a catalog key shows now (hidden ones are left out). */
-export async function readListings(reader: RelayReader, key: string): Promise<CatalogItem[]> {
+function isHidden(event: NostrEvent): boolean {
+  return event.tags.some((tag) => tag[0] === 'visibility' && tag[1] === 'hidden');
+}
+
+/**
+ * Every listing of a catalog key as the editor holds it, hidden ones included
+ * (marked `hidden`), so a hidden product can be shown again. The reader drops
+ * hidden listings, so a hidden one is read as on sale and marked back.
+ */
+export async function readListings(
+  reader: RelayReader,
+  key: string,
+  now: number = nowSecs(),
+): Promise<CatalogItemInput[]> {
   const events = await reader.query({ kinds: [KIND_PRODUCT], authors: [key] });
-  return newestByD(events, KIND_PRODUCT, key).flatMap((event) => {
-    const item = parseCatalogItem(event, { role: 'catalog' });
-    return item === undefined ? [] : [item];
+  return newestByD(events, KIND_PRODUCT, key, now).flatMap((event) => {
+    const hidden = isHidden(event);
+    const readable = hidden
+      ? {
+          ...event,
+          tags: event.tags.map((tag) =>
+            tag[0] === 'visibility' ? ['visibility', 'on-sale'] : tag,
+          ),
+        }
+      : event;
+    const item = parseCatalogItem(readable, { role: 'catalog', now });
+    return item === undefined ? [] : [inputOfListing(item, hidden)];
   });
 }
 
 /** The policies a policy key shows now, by slug. */
-export async function readPolicies(reader: RelayReader, key: string): Promise<Policy[]> {
+export async function readPolicies(
+  reader: RelayReader,
+  key: string,
+  now: number = nowSecs(),
+): Promise<Policy[]> {
   const events = await reader.query({ kinds: [KIND_POLICY, KIND_DELETION], authors: [key] });
   const deletions = events.filter((event) => event.kind === KIND_DELETION);
-  return newestByD(events, KIND_POLICY, key)
+  return newestByD(events, KIND_POLICY, key, now)
     .filter((event) => !deleted(event, deletions))
     .flatMap((event) => {
       const policy = parsePolicy(event);
@@ -118,7 +181,7 @@ export async function readPolicies(reader: RelayReader, key: string): Promise<Po
 }
 
 /** A listing as the catalog API takes it back, so a re-sent catalog keeps it as it is. */
-export function inputOfListing(item: CatalogItem): CatalogItemInput {
+export function inputOfListing(item: CatalogItem, hidden = false): CatalogItemInput {
   const input: CatalogItemInput = {
     d: item.d,
     title: item.title,
@@ -133,7 +196,7 @@ export function inputOfListing(item: CatalogItem): CatalogItemInput {
     attrs: item.attrs,
     options: item.options,
     variants: item.variants,
-    visibility: item.visibility,
+    visibility: hidden ? 'hidden' : item.visibility,
   };
   if (item.summary !== undefined) {
     input.summary = item.summary;
