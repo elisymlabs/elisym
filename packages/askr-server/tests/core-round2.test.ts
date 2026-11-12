@@ -450,6 +450,40 @@ describe('server core review 2: reading pages (2.4)', () => {
     ).rejects.toThrow('Could not read every matching event');
   });
 
+  it('a full page is full by what the relay sent, also events the filter drops', async () => {
+    const pool = new FakePool();
+    const relay = pool.relay(RELAY);
+    const author = 'c'.repeat(64);
+    for (let index = 0; index < 700; index += 1) {
+      relay.accept({
+        id: index.toString(16).padStart(64, '0'),
+        pubkey: author,
+        created_at: NOW - index,
+        kind: 30402,
+        tags: [['d', `item-${index}`]],
+        content: '',
+        sig: '0'.repeat(128),
+      });
+    }
+    // Each page: 490 matching events and 10 another author's: a full page, not the last one.
+    relay.pageCap = CATALOG_PAGE_LIMIT - 10;
+    relay.stray = () =>
+      Array.from({ length: 10 }, (_unused, index) => ({
+        id: (90_000 + index).toString(16).padStart(64, '0'),
+        pubkey: 'd'.repeat(64),
+        created_at: NOW,
+        kind: 30402,
+        tags: [['d', `stray-${index}`]],
+        content: '',
+        sig: '0'.repeat(128),
+      }));
+    const read = await readAllPages(pool, RELAY, [{ kinds: [30402], authors: [author] }], {
+      connectionTimeoutMs: 1_000,
+    });
+    expect(read).toMatchObject({ complete: true });
+    expect(read?.events).toHaveLength(700);
+  });
+
   it('a page short of the limit ends a complete read', async () => {
     const pool = new FakePool();
     const relay = pool.relay(RELAY);

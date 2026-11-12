@@ -28,6 +28,8 @@ export class FakeRelay implements RelayLike {
   closeOn: ((filters: Filter[]) => boolean) | undefined;
   /** When set, sent to every history REQ whether it matches or not (a misbehaving relay). */
   stray: ((filters: Filter[]) => NostrEvent[]) | undefined;
+  /** Matching events a page holds at most, below the filter's limit (a relay that counts strays in). */
+  pageCap: number | undefined;
   /** Answers each REQ this late (a slow relay). */
   delayMs = 0;
   /** When set, the socket dies right after the EOSE of a REQ matching it (no close reaches the REQ yet). */
@@ -81,7 +83,7 @@ export class FakeRelay implements RelayLike {
         const matching = this.events
           .filter((event) => matchFilters([filter], event))
           .sort((left, right) => right.created_at - left.created_at)
-          .slice(0, filter.limit ?? Number.MAX_SAFE_INTEGER);
+          .slice(0, Math.min(filter.limit ?? Number.MAX_SAFE_INTEGER, this.pageCap ?? Infinity));
         for (const event of matching) {
           this.deliver(subscription, event);
         }

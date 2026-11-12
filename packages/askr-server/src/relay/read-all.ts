@@ -43,6 +43,8 @@ export async function readAllPages(
         return undefined;
       }
       const page: NostrEvent[] = [];
+      // Everything the relay sent, matching or not: what tells a full page from the last one.
+      let received = 0;
       const pageFilter: Filter = {
         ...filter,
         limit: CATALOG_PAGE_LIMIT,
@@ -52,6 +54,7 @@ export async function readAllPages(
         relay,
         [pageFilter],
         (event) => {
+          received += 1;
           // Only what was asked for: another author's events never reach the caller.
           if (matchFilter(pageFilter, event)) {
             page.push(event);
@@ -71,11 +74,11 @@ export async function readAllPages(
           added += 1;
         }
       }
-      if (page.length < CATALOG_PAGE_LIMIT) {
+      if (received < CATALOG_PAGE_LIMIT) {
         ended = true;
         break;
       }
-      if (added === 0) {
+      if (added === 0 || page.length === 0) {
         // A full page of events already read: more than a page share one second, which an
         // inclusive `until` cannot step past. Whatever lies before it is unread.
         break;
