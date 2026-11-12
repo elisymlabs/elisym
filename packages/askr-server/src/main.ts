@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
 import {
   type LlmProvider,
@@ -11,6 +12,7 @@ import {
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
+import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { runCli } from './cli';
 import { DEFAULT_TURN_RESERVE_USD, positiveUsd, publicBaseOf } from './config';
 import { ShopRateLimiter } from './connectors/http';
@@ -74,6 +76,26 @@ function widgetScript(): string {
     process.env.ASKR_WIDGET_FILE ??
     createRequire(import.meta.url).resolve('@elisym/askr-widget/widget.js');
   return readFileSync(path, 'utf8');
+}
+
+/**
+ * The built admin app (7.3), from `ASKR_ADMIN_DIR` or the workspace's
+ * `@elisym/askr-admin`; none means the admin is not served here.
+ */
+function adminFiles(log: (message: string) => void): Map<string, AdminFile> | undefined {
+  let dir = process.env.ASKR_ADMIN_DIR;
+  if (dir === undefined) {
+    try {
+      dir = join(
+        dirname(createRequire(import.meta.url).resolve('@elisym/askr-admin/package.json')),
+        'dist',
+      );
+    } catch {
+      log('the admin app is not installed: /admin/ is not served');
+      return undefined;
+    }
+  }
+  return loadAdminFiles(dir);
 }
 
 /** The master key (9) from a Docker secret file or the environment, never from the database. */
@@ -192,8 +214,10 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     connectors,
     log,
   });
+  const files = adminFiles(log);
+  const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
   const handler = async (input: GatewayRequest): Promise<Response> =>
-    (await admin(input)) ?? gateway(input);
+    adminPages?.(input) ?? (await admin(input)) ?? gateway(input);
   server = serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),
     trustProxy: process.env.ASKR_TRUST_PROXY === '1',
