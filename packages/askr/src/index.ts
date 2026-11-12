@@ -87,3 +87,4 @@ export {
   setPolicy,
   syncCatalog,
 } from './sync';
+export { type SyncRelayConnection, connectSyncClient, relaySyncClient } from './relay-client';

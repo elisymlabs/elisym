@@ -76,6 +76,47 @@ describe('syncCatalog', () => {
     ).toBeUndefined();
   });
 
+  it('upsert touches only its items and the listings it hides', async () => {
+    const relay = relayWithGrant();
+    const base = { signer: catalog.secretKey, store: owner.pubkey, client: relay, sleep: noSleep };
+    await syncCatalog({ ...base, items: [item('a'), item('b'), item('c')], now: NOW });
+    const upserted = await syncCatalog({
+      ...base,
+      mode: 'upsert',
+      items: [item('a', '12'), item('d')],
+      now: NOW + 10,
+    });
+    expect(upserted).toEqual({ created: ['d'], updated: ['a'], hidden: [], unchanged: [] });
+    const before = relay.published.length;
+    const hidden = await syncCatalog({
+      ...base,
+      mode: 'upsert',
+      items: [],
+      hide: ['b', 'missing'],
+      now: NOW + 20,
+    });
+    expect(hidden).toEqual({ created: [], updated: [], hidden: ['b'], unchanged: [] });
+    expect(relay.published.slice(before).map((event) => event.kind)).toEqual([30402, 5]);
+    // A replace afterwards still sees c and d, untouched by either upsert.
+    const replaced = await syncCatalog({
+      ...base,
+      items: [item('a', '12'), item('c'), item('d')],
+      dryRun: true,
+      now: NOW + 30,
+    });
+    expect(replaced).toEqual({ created: [], updated: [], hidden: [], unchanged: ['a', 'c', 'd'] });
+  });
+
+  it('refuses hide outside upsert, and an item both published and hidden', async () => {
+    const relay = relayWithGrant();
+    const base = { signer: catalog.secretKey, store: owner.pubkey, client: relay, now: NOW };
+    await expect(syncCatalog({ ...base, items: [], hide: ['a'] })).rejects.toThrow(/upsert/);
+    await expect(
+      syncCatalog({ ...base, mode: 'upsert', items: [item('a')], hide: ['a'] }),
+    ).rejects.toThrow(/also be hidden/);
+    expect(relay.published).toEqual([]);
+  });
+
   it('never touches another author', async () => {
     const relay = relayWithGrant();
     const stranger = testKey();

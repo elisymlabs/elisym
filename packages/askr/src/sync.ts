@@ -40,6 +40,14 @@ export interface SyncCatalogOptions {
   /** The store owner O. */
   store: string;
   items: readonly CatalogItemInput[];
+  /**
+   * `replace` (default): `items` is the whole catalog, and K's listings missing
+   * from it are hidden. `upsert`: only `items` and the listings named in `hide`
+   * are touched, every other listing of K stays as it is.
+   */
+  mode?: 'replace' | 'upsert';
+  /** `upsert` only: `d`s of K's listings to hide (one not listed is skipped). */
+  hide?: readonly string[];
   client: SyncRelayClient;
   dryRun?: boolean;
   /** Events per second while publishing. */
@@ -167,7 +175,10 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const now = options.now ?? nowSecs();
   const key = getPublicKey(options.signer);
   const relays = ASKR_RELAYS;
-  await requireCatalogKey(options.client, options.store, key, now);
+  const upsert = options.mode === 'upsert';
+  if (!upsert && options.hide !== undefined) {
+    throw new Error('hide is for the upsert mode: a replace hides every listing not in items');
+  }
 
   const inputs = new Map<string, CatalogItemInput>();
   for (const input of options.items) {
@@ -177,6 +188,13 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     }
     inputs.set(d, input);
   }
+  const toHide = new Set(options.hide ?? []);
+  for (const d of toHide) {
+    if (inputs.has(d)) {
+      throw new Error(`An item to publish cannot also be hidden: ${d}`);
+    }
+  }
+  await requireCatalogKey(options.client, options.store, key, now);
 
   const { ownEvents, latestAt, deletedAt } = await readOwnAddresses(
     options.client,
@@ -223,7 +241,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     content: '',
   });
   for (const [d, listed] of current) {
-    if (inputs.has(d)) {
+    if (inputs.has(d) || (upsert && !toHide.has(d))) {
       continue;
     }
     diff.hidden.push(d);
