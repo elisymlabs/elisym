@@ -1,5 +1,5 @@
 import type { CatalogItemInput, StoreConfig, SyncDiff } from '@elisym/askr';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_CURRENCY } from '../constants';
 import { importItems, removeItem, upsertItem } from '../lib/catalog';
 import type { SessionDeps } from '../lib/deps';
@@ -24,6 +24,12 @@ interface Props {
 
 type Editing = { mode: 'new' } | { mode: 'edit'; item: CatalogItemInput } | undefined;
 
+/** A dry run's answer, with exactly the list it was for: Publish sends that list. */
+interface Reviewed {
+  items: CatalogItemInput[];
+  diff: SyncDiff;
+}
+
 /**
  * The catalog of the server K (source `admin`). The catalog API replaces the
  * whole catalog, so the draft starts from every listing K shows on the relay
@@ -33,8 +39,13 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const [draft, setDraft] = useState<CatalogItemInput[]>();
   const [readError, setReadError] = useState('');
   const [editing, setEditing] = useState<Editing>();
-  const [diff, setDiff] = useState<SyncDiff>();
+  const [reviewed, setReviewed] = useState<Reviewed>();
   const [busy, setBusy] = useState(false);
+  /** What the last publish sent: offered back if that sync fails and the list is read again. */
+  const [lastSent, setLastSent] = useState<CatalogItemInput[]>();
+  // The draft as it is now, for a dry-run answer to check it is still about the current list.
+  const draftNow = useRef(draft);
+  draftNow.current = draft;
   const [error, setError] = useState('');
   const [issues, setIssues] = useState<string[]>([]);
   const [notice, setNotice] = useState('');
@@ -68,7 +79,8 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
       return undefined;
     }
     setDraft(undefined);
-    setDiff(undefined);
+    setReviewed(undefined);
+    setEditing(undefined);
     if (running) {
       return undefined;
     }
@@ -92,27 +104,50 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   }
 
   const change = (next: CatalogItemInput[]) => {
+    // No edit while a review or publish is in flight: its answer is about the list it was sent.
+    if (busy) {
+      return;
+    }
     setDraft(next);
-    setDiff(undefined);
+    setReviewed(undefined);
     setNotice('');
   };
 
-  const send = async (dryRun: boolean) => {
-    if (draft === undefined) {
+  const review = async () => {
+    const sent = draft;
+    if (sent === undefined) {
       return;
     }
     setBusy(true);
     setError('');
     setIssues([]);
     try {
-      const result = await deps.api.catalog(draft, dryRun);
-      if (dryRun) {
-        setDiff(result.diff);
-      } else {
-        setDiff(undefined);
-        setNotice('Publishing started. Progress shows below.');
-        await reload();
+      const result = await deps.api.catalog(sent, true);
+      // An answer about a list that has changed since is dropped, never shown as this one's.
+      if (draftNow.current === sent) {
+        setReviewed({ items: sent, diff: result.diff });
       }
+    } catch (failure) {
+      setError(errorMessage(failure));
+      setIssues(invalidItemIssues(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const publish = async () => {
+    if (reviewed === undefined) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setIssues([]);
+    try {
+      await deps.api.catalog(reviewed.items, false);
+      setLastSent(reviewed.items);
+      setReviewed(undefined);
+      setNotice('Publishing started. Progress shows below.');
+      await reload();
     } catch (failure) {
       setError(errorMessage(failure));
       setIssues(invalidItemIssues(failure));
@@ -143,8 +178,17 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
             </button>
           </Notice>
         )}
+        {view.catalogSync?.state === 'failed' && lastSent !== undefined && draft !== undefined ? (
+          <Notice tone="warn">
+            The last publish failed, so the list below was read again from the relay and may miss
+            changes that did not go out.{' '}
+            <button type="button" className="underline" onClick={() => change(lastSent)}>
+              Restore the list you tried to publish
+            </button>
+          </Notice>
+        ) : null}
         {draft === undefined ? null : (
-          <>
+          <fieldset disabled={busy} className="contents">
             <p className="text-13 text-text-2">
               {draft.length} product{draft.length === 1 ? '' : 's'}
               {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Hidden
@@ -181,13 +225,13 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
               currency={currency}
               onImport={(items, mode) => change(importItems(draft, items, mode))}
             />
-          </>
+          </fieldset>
         )}
       </Section>
 
       <Section title="Publish">
         <SyncStatus sync={view.catalogSync} />
-        {diff === undefined ? null : <DiffSummary diff={diff} />}
+        {reviewed === undefined ? null : <DiffSummary diff={reviewed.diff} />}
         {error === '' ? null : (
           <Notice tone="error">
             {error}
@@ -206,15 +250,15 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
             type="button"
             className="btn"
             disabled={busy || running || draft === undefined}
-            onClick={() => void send(true)}
+            onClick={() => void review()}
           >
             Review changes
           </button>
           <button
             type="button"
             className="btn btn-primary"
-            disabled={busy || running || diff === undefined}
-            onClick={() => void send(false)}
+            disabled={busy || running || reviewed === undefined}
+            onClick={() => void publish()}
           >
             Publish
           </button>

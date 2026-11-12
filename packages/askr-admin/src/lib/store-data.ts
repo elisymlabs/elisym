@@ -13,14 +13,11 @@ import {
   parsePolicy,
   readCatalogAuthority,
 } from '@elisym/askr';
+import { KIND_DELETION, KIND_PRODUCT, KIND_STORE_AUTH } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
 import { MAX_FUTURE_SKEW_SECS } from '../constants';
 import type { RelayReader } from './relay';
-
-const KIND_PRODUCT = 30402;
-const KIND_STORE_AUTH = 30490;
-const KIND_DELETION = 5;
 
 function dOf(event: NostrEvent): string | undefined {
   return event.tags.find((tag) => tag[0] === 'd')?.[1];
@@ -147,20 +144,24 @@ export async function readListings(
   key: string,
   now: number = nowSecs(),
 ): Promise<CatalogItemInput[]> {
-  const events = await reader.query({ kinds: [KIND_PRODUCT], authors: [key] });
-  return newestByD(events, KIND_PRODUCT, key, now).flatMap((event) => {
-    const hidden = isHidden(event);
-    const readable = hidden
-      ? {
-          ...event,
-          tags: event.tags.map((tag) =>
-            tag[0] === 'visibility' ? ['visibility', 'on-sale'] : tag,
-          ),
-        }
-      : event;
-    const item = parseCatalogItem(readable, { role: 'catalog', now });
-    return item === undefined ? [] : [inputOfListing(item, hidden)];
-  });
+  const events = await reader.query({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [key] });
+  const deletions = events.filter((event) => event.kind === KIND_DELETION);
+  // A deleted listing is gone, not hidden: it must not come back, count or be re-created.
+  return newestByD(events, KIND_PRODUCT, key, now)
+    .filter((event) => !deleted(event, deletions))
+    .flatMap((event) => {
+      const hidden = isHidden(event);
+      const readable = hidden
+        ? {
+            ...event,
+            tags: event.tags.map((tag) =>
+              tag[0] === 'visibility' ? ['visibility', 'on-sale'] : tag,
+            ),
+          }
+        : event;
+      const item = parseCatalogItem(readable, { role: 'catalog', now });
+      return item === undefined ? [] : [inputOfListing(item, hidden)];
+    });
 }
 
 /** The policies a policy key shows now, by slug. */

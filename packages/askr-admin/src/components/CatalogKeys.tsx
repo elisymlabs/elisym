@@ -43,7 +43,10 @@ export function CatalogKeys({ deps, view, config }: Props) {
       setAuthority(await readAuthority(deps.reader, deps.signer.pubkey, deps.now()));
       setReadError('');
     } catch {
-      setReadError('The relay could not be read, so the authorized keys are not shown.');
+      setAuthority(undefined);
+      setReadError(
+        'The relay could not be read, so the authorized keys are not shown and none can be authorized or revoked until they are.',
+      );
     }
   }, [deps]);
 
@@ -128,7 +131,14 @@ export function CatalogKeys({ deps, view, config }: Props) {
       title="Catalog keys"
       description="A catalog key publishes your products and policies. Authorize your own key to publish from your backend, the SDK or an AI agent, and revoke a key you no longer use."
     >
-      {readError === '' ? null : <Notice tone="warn">{readError}</Notice>}
+      {readError === '' ? null : (
+        <Notice tone="warn">
+          {readError}{' '}
+          <button type="button" className="underline" onClick={() => void read()}>
+            Retry
+          </button>
+        </Notice>
+      )}
       {list}
       <div className="flex flex-col gap-8">
         <TextField
@@ -143,7 +153,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
           <button
             type="button"
             className="btn btn-primary"
-            disabled={busy || pasted.trim() === ''}
+            disabled={busy || authority === undefined || pasted.trim() === ''}
             onClick={() => void authorize()}
           >
             Sign and authorize

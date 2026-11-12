@@ -79,6 +79,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         id="product-d"
         label="ID"
         value={d}
+        readOnly={initial !== undefined}
         hint={
           initial === undefined
             ? 'Your SKU or another short ID: letters, digits, . _ : -'

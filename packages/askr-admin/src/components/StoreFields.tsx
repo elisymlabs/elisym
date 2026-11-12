@@ -1,5 +1,6 @@
 import { ASKR_KEY_COMMAND } from '../constants';
 import { PLATFORM_OPTIONS, SOURCE_OPTIONS, platformOf, sourceKindOf } from '../lib/labels';
+import { npubOf } from '../lib/signer';
 import type { StoreForm } from '../lib/store-form';
 import { SelectField } from './SelectField';
 import { TextAreaField } from './TextAreaField';
@@ -100,6 +101,12 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
           options={SOURCE_OPTIONS}
           onChange={(value) => set('source', sourceKindOf(value) ?? form.source)}
         />
+        {form.keptPolicy !== undefined && form.keptPolicy.source !== form.source ? (
+          <p className="text-13 text-warn">
+            Your policies are read from {npubOf(form.keptPolicy.policyKey)}. With another product
+            source they are read from that source's default key instead.
+          </p>
+        ) : null}
         {form.source === 'connector' ? (
           <>
             <SelectField

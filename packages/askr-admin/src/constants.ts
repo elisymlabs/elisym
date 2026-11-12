@@ -31,7 +31,7 @@ export const WIDGET_SCRIPT_URL = `${PUBLIC_API_BASE}/widget.js`;
 export const WIDGET_ELEMENT = 'askr-chat';
 
 /** The CLI command that prints a merchant catalog key K for this store. */
-export const ASKR_KEY_COMMAND = 'elisym askr-key <agent> --store';
+export const ASKR_KEY_COMMAND = 'npx @elisym/cli askr-key <agent> --store';
 
 /** How often the dashboard re-reads the store while a catalog sync runs. */
 export const SYNC_POLL_MS = 3_000;

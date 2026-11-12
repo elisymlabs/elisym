@@ -8,11 +8,13 @@ import { TextField } from './TextField';
 interface Props {
   /** The policy being edited, or undefined for a new one. */
   initial: Policy | undefined;
+  /** Slugs already published: a new policy needs its own, or it would replace one. */
+  takenSlugs: readonly string[];
   onSave: (policy: { slug: string; title: string; body: string }) => Promise<void>;
   onCancel: () => void;
 }
 
-export function PolicyEditor({ initial, onSave, onCancel }: Props) {
+export function PolicyEditor({ initial, takenSlugs, onSave, onCancel }: Props) {
   const [slug, setSlug] = useState(initial?.slug ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
   const [body, setBody] = useState(initial?.body ?? '');
@@ -24,6 +26,12 @@ export function PolicyEditor({ initial, onSave, onCancel }: Props) {
     if (!checked.success) {
       setError(
         checked.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
+      );
+      return;
+    }
+    if (initial === undefined && takenSlugs.includes(checked.data.slug)) {
+      setError(
+        `Short name: a policy named "${checked.data.slug}" already exists. Edit that one, or pick another name.`,
       );
       return;
     }
@@ -44,6 +52,7 @@ export function PolicyEditor({ initial, onSave, onCancel }: Props) {
         id="policy-slug"
         label="Short name"
         value={slug}
+        readOnly={initial !== undefined}
         hint={
           initial === undefined
             ? 'Lowercase letters, digits and hyphens, like returns or shipping'

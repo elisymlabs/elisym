@@ -97,6 +97,33 @@ describe('readListings', () => {
   });
 });
 
+describe('readListings and deletions', () => {
+  it('leaves out a product deleted at or after it: it neither comes back hidden nor counts', async () => {
+    const productDeletion = (d: string, createdAt: number) =>
+      finalizeEvent(
+        {
+          kind: KIND_DELETION,
+          created_at: createdAt,
+          tags: [['a', `30402:${SERVER_KEY}:${d}`]],
+          content: '',
+        },
+        SERVER_KEY_SECRET,
+      );
+    const items = await readListings(
+      fakeReader([
+        listing({ ...ITEM, d: 'gone', visibility: 'hidden' }, NOW - 20),
+        productDeletion('gone', NOW - 20),
+        listing({ ...ITEM, d: 'back' }, NOW - 5),
+        productDeletion('back', NOW - 6),
+        listing(ITEM, NOW - 5),
+      ]),
+      SERVER_KEY,
+      NOW,
+    );
+    expect(items.map((item) => item.d).sort()).toEqual(['back', 'mug']);
+  });
+});
+
 describe('readPolicies', () => {
   it('leaves out a policy deleted at or after it, keeps one republished after its deletion', async () => {
     const policies = await readPolicies(

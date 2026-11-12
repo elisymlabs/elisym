@@ -1,4 +1,9 @@
-import { type CatalogItemInput, buildCatalogItemEvent, parseCatalogItem } from '@elisym/askr';
+import {
+  type CatalogItemInput,
+  type SyncDiff,
+  buildCatalogItemEvent,
+  parseCatalogItem,
+} from '@elisym/askr';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CsvImport } from '../src/components/CsvImport';
@@ -49,7 +54,7 @@ const HIDDEN: CatalogItemInput = {
   visibility: 'hidden',
 };
 
-const EMPTY_DIFF = { created: [], updated: [], hidden: [], unchanged: [] };
+const EMPTY_DIFF: SyncDiff = { created: [], updated: [], hidden: [], unchanged: [] };
 
 function rowButton(container: HTMLElement, label: string, row: string): HTMLButtonElement {
   const found = [...container.querySelectorAll('button')].find(
@@ -282,6 +287,116 @@ describe('the product editor', () => {
     await click(buttonNamed(container, 'Keep this product'));
     await click(buttonNamed(container, 'Review changes'));
     expect(vi.mocked(api.catalog).mock.calls[0]?.[0].map((item) => item.d)).toEqual(['mug']);
+  });
+});
+
+describe('a review in flight', () => {
+  function pendingCatalog() {
+    let answer: (diff: typeof EMPTY_DIFF) => void = () => undefined;
+    const catalog = vi.fn((_items: readonly CatalogItemInput[], dryRun: boolean) =>
+      dryRun
+        ? new Promise<{ diff: typeof EMPTY_DIFF }>((resolve) => {
+            answer = (diff) => resolve({ diff });
+          })
+        : Promise.resolve({ diff: EMPTY_DIFF, started: true }),
+    );
+    return { catalog, answer: (diff: typeof EMPTY_DIFF) => answer(diff) };
+  }
+
+  it('edit during the review: the list cannot change, and Publish sends exactly the reviewed list', async () => {
+    const pending = pendingCatalog();
+    const api = fakeApi({ catalog: pending.catalog });
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG), listing(TEAPOT)]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(buttonNamed(container, 'Review changes'));
+    // Every editing control is switched off while the review is out.
+    expect(rowButton(container, 'Remove', 'Teapot').closest('fieldset')?.disabled).toBe(true);
+    await click(rowButton(container, 'Remove', 'Teapot'));
+    await act(async () => {
+      pending.answer({ ...EMPTY_DIFF, unchanged: ['mug', 'teapot'] });
+    });
+    expect(container.textContent).toContain('Teapot');
+    await click(buttonNamed(container, 'Publish'));
+    expect(
+      pending.catalog.mock.calls.map((call) => [call[0].map((item) => item.d), call[1]]),
+    ).toEqual([
+      [['mug', 'teapot'], true],
+      [['mug', 'teapot'], false],
+    ]);
+  });
+
+  it('drops the answer of a review whose list was replaced meanwhile, and closes the editor', async () => {
+    const pending = pendingCatalog();
+    const api = fakeApi({ catalog: pending.catalog });
+    const deps = sessionDeps(api, fakeReader([listing(MUG), listing(TEAPOT)]));
+    const section = (view: ReturnType<typeof storeView>) => (
+      <ProductsSection
+        deps={deps}
+        view={view}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />
+    );
+    mounted = await mount(section(storeView()));
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(rowButton(container, 'Edit', 'Mug'));
+    expect(container.querySelector('#product-title')).not.toBeNull();
+    await click(buttonNamed(container, 'Review changes'));
+    // A sync starts elsewhere: the draft is dropped while the review is still out.
+    await mounted.rerender(
+      section(storeView({ catalogSync: { state: 'running', diff: EMPTY_DIFF } })),
+    );
+    expect(container.querySelector('#product-title')).toBeNull();
+    await mounted.rerender(
+      section(storeView({ catalogSync: { state: 'done', diff: EMPTY_DIFF } })),
+    );
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    expect(container.querySelector('#product-title')).toBeNull();
+    await act(async () => {
+      pending.answer({ ...EMPTY_DIFF, hidden: ['teapot'] });
+    });
+    expect(container.textContent).not.toContain('Hidden: 1');
+    expect(buttonNamed(container, 'Publish').disabled).toBe(true);
+  });
+
+  it('after a failed publish, says the list was read again and offers the one it tried', async () => {
+    const api = fakeApi();
+    const deps = sessionDeps(api, fakeReader([listing(MUG), listing(TEAPOT)]));
+    const section = (view: ReturnType<typeof storeView>) => (
+      <ProductsSection
+        deps={deps}
+        view={view}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />
+    );
+    mounted = await mount(section(storeView()));
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(rowButton(container, 'Remove', 'Teapot'));
+    await click(buttonNamed(container, 'Review changes'));
+    await click(buttonNamed(container, 'Publish'));
+    await mounted.rerender(
+      section(storeView({ catalogSync: { state: 'running', diff: EMPTY_DIFF } })),
+    );
+    await mounted.rerender(
+      section(
+        storeView({ catalogSync: { state: 'failed', diff: EMPTY_DIFF, error: 'relay down' } }),
+      ),
+    );
+    await settle(() => (container.textContent ?? '').includes('The last publish failed'));
+    expect(container.textContent).toContain('Teapot');
+    await click(buttonNamed(container, 'Restore the list you tried to publish'));
+    expect(container.textContent).not.toContain('Teapot');
   });
 });
 

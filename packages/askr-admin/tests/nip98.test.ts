@@ -88,7 +88,8 @@ describe('the NIP-98 authorization', () => {
 
 describe('the API client', () => {
   it('signs every call over the exact body and URL it sends, reads included', async () => {
-    const seen: { method: string; url: string; ok: boolean }[] = [];
+    const seen: { method: string; url: string; ok: boolean; cache: RequestCache | undefined }[] =
+      [];
     const fakeFetch: typeof fetch = async (input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
@@ -101,7 +102,7 @@ describe('the API client', () => {
         body,
         now: Math.floor(Date.now() / 1000),
       });
-      seen.push({ method, url, ok: result.ok });
+      seen.push({ method, url, ok: result.ok, cache: init?.cache });
       return new Response(
         JSON.stringify({ diff: { created: [], updated: [], hidden: [], unchanged: [] } }),
         {
@@ -115,10 +116,16 @@ describe('the API client', () => {
     await api.deletePolicy('returns');
     await api.rotateAssistant();
     expect(seen).toEqual([
-      { method: 'GET', url: `${BASE}/v1/admin/store`, ok: true },
-      { method: 'POST', url: `${BASE}/v1/admin/catalog`, ok: true },
-      { method: 'DELETE', url: `${BASE}/v1/admin/policies/returns`, ok: true },
-      { method: 'POST', url: `${BASE}/v1/admin/store/assistant/rotate`, ok: true },
+      // Never answered from a cache: every read is the store as it is now.
+      { method: 'GET', url: `${BASE}/v1/admin/store`, ok: true, cache: 'no-store' },
+      { method: 'POST', url: `${BASE}/v1/admin/catalog`, ok: true, cache: 'no-store' },
+      { method: 'DELETE', url: `${BASE}/v1/admin/policies/returns`, ok: true, cache: 'no-store' },
+      {
+        method: 'POST',
+        url: `${BASE}/v1/admin/store/assistant/rotate`,
+        ok: true,
+        cache: 'no-store',
+      },
     ]);
   });
 

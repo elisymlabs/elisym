@@ -82,7 +82,14 @@ export function Shell({ deps, view, config, configError, reload, reloadConfig, o
         </div>
       </header>
       <TabBar active={tab} onSelect={setTab} />
-      {configError === '' ? null : <Notice tone="warn">{configError}</Notice>}
+      {configError === '' ? null : (
+        <Notice tone="warn">
+          {configError}{' '}
+          <button type="button" className="underline" onClick={() => void reloadConfig()}>
+            Retry
+          </button>
+        </Notice>
+      )}
       {content}
     </main>
   );

@@ -1,5 +1,6 @@
 import type { StoreConfig } from '@elisym/askr';
 import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
+import { KIND_DELETION } from '@elisym/commerce';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { usd } from '../lib/usage';
 import { ConnectorStatus } from './ConnectorStatus';
@@ -23,7 +24,7 @@ const STATUS_TEXT: Readonly<Record<StoreStatus, string>> = {
 const KIND_NAMES: Readonly<Record<number, string>> = {
   [KIND_CONFIG]: 'store settings',
   [KIND_CATALOG_AUTH]: 'catalog key authorization',
-  5: 'deletion',
+  [KIND_DELETION]: 'deletion',
 };
 
 const TOP_CLICKS = 10;

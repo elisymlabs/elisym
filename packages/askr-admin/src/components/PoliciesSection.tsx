@@ -79,6 +79,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
         <PolicyEditor
           key={editing.mode === 'edit' ? editing.policy.slug : 'new'}
           initial={editing.mode === 'edit' ? editing.policy : undefined}
+          takenSlugs={(policies ?? []).map((existing) => existing.slug)}
           onCancel={() => setEditing(undefined)}
           onSave={async (policy) => {
             await deps.api.putPolicy(policy.slug, { title: policy.title, body: policy.body });

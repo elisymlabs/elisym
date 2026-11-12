@@ -38,6 +38,18 @@ export interface StoreForm {
   voice: string;
   instructions: string;
   notes: string;
+  /**
+   * A policy key the read config names other than its source's default (a
+   * Pay Core store reading policies from a merchant K): kept as long as the
+   * source and its key stay the same.
+   */
+  keptPolicy?: KeptPolicy;
+}
+
+export interface KeptPolicy {
+  source: ProductSourceKind;
+  catalogKey: string;
+  policyKey: string;
 }
 
 /** The server's keys for this store, from `POST`/`GET /v1/admin/store`. */
@@ -131,6 +143,19 @@ function keyOf(value: string, label: string): string {
 
 /** Which key holds the products and which the policies, for the chosen source (1.4). */
 export function sourceKeysOf(
+  form: Pick<StoreForm, 'source' | 'merchantKey' | 'paycoreKey' | 'keptPolicy'>,
+  serverKey: string,
+): { catalogKey: string; policyKey: string } {
+  const defaults = defaultSourceKeysOf(form, serverKey);
+  const kept = form.keptPolicy;
+  return kept !== undefined &&
+    kept.source === form.source &&
+    kept.catalogKey === defaults.catalogKey
+    ? { catalogKey: defaults.catalogKey, policyKey: kept.policyKey }
+    : defaults;
+}
+
+function defaultSourceKeysOf(
   form: Pick<StoreForm, 'source' | 'merchantKey' | 'paycoreKey'>,
   serverKey: string,
 ): { catalogKey: string; policyKey: string } {
@@ -151,7 +176,7 @@ export function authorizationOf(
   serverKey: string,
 ): Pick<CatalogAuthInput, 'key' | 'mode'> {
   if (form.source === 'catalog') {
-    return { key: sourceKeysOf(form, serverKey).catalogKey, mode: 'self-host' };
+    return { key: defaultSourceKeysOf(form, serverKey).catalogKey, mode: 'self-host' };
   }
   return { key: serverKey, mode: 'hosted' };
 }
@@ -224,6 +249,8 @@ export interface SignOptions {
   previousCreatedAt?: number;
   /** Keys already authorized with the catalog role: their 30497 is not signed again. */
   authorized?: ReadonlySet<string>;
+  /** The date of a 30497 signed here: after the key's newest one (default: the config's date). */
+  authCreatedAt?: number;
 }
 
 /**
@@ -245,7 +272,11 @@ export async function signStoreEvents(options: SignOptions): Promise<NostrEvent[
   const events = [await options.signer.signEvent(template)];
   const authorization = authorizationOf(options.form, options.keys.serverKey);
   if (options.authorized?.has(authorization.key) !== true) {
-    events.push(await options.signer.signEvent(buildCatalogAuth({ ...authorization, createdAt })));
+    events.push(
+      await options.signer.signEvent(
+        buildCatalogAuth({ ...authorization, createdAt: options.authCreatedAt ?? createdAt }),
+      ),
+    );
   }
   return events;
 }
@@ -256,7 +287,7 @@ export function formOfConfig(
   privatePart: StorePrivateConfig | undefined,
 ): StoreForm {
   const platform = config.source.platform ?? EMPTY_FORM.platform;
-  return {
+  const form: StoreForm = {
     name: config.name,
     language: config.language,
     currency: config.currency,
@@ -275,4 +306,12 @@ export function formOfConfig(
     instructions: privatePart?.instructions ?? '',
     notes: privatePart?.notes ?? '',
   };
+  // The read config's policy key stays while the source and its key do: a key other than the
+  // default (a Pay Core store reading policies from a merchant K) is never rewritten by a save.
+  form.keptPolicy = {
+    source: config.source.kind,
+    catalogKey: config.catalogKey,
+    policyKey: config.policyKey,
+  };
+  return form;
 }

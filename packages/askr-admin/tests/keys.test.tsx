@@ -1,6 +1,7 @@
 import {
   KIND_CATALOG_AUTH,
   buildCatalogAuth,
+  buildCatalogRevocation,
   buildConfigEvent,
   decryptPrivateConfig,
   parseConfig,
@@ -17,6 +18,7 @@ import {
   OWNER,
   OWNER_KEY,
   SERVER_KEY,
+  failingReader,
   fakeApi,
   fakeReader,
   sessionDeps,
@@ -142,6 +144,40 @@ describe('catalog keys', () => {
     await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
     const [revocation] = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
     expect(revocation?.created_at).toBe(NOW + 31);
+  });
+});
+
+describe('authorizing', () => {
+  it('re-authorizes a key after a revocation dated ahead of now, so the new one wins', async () => {
+    const merchant = getPublicKey(generateSecretKey());
+    const revocation = finalizeEvent(
+      { ...buildCatalogRevocation(merchant), created_at: NOW + 30 },
+      OWNER_KEY,
+    );
+    const { api, container } = await mountKeys([signedAuth(SERVER_KEY, NOW - 10), revocation]);
+    await typeInto(byId(container, 'authorize-key'), merchant);
+    await click(buttonNamed(container, 'Sign and authorize'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
+    const [authorization] = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
+    expect(tagOf(authorization, 'mode')).toBe('self-host');
+    expect(authorization?.created_at).toBe(NOW + 31);
+  });
+
+  it('is not offered while the authorizations could not be read', async () => {
+    const api = fakeApi();
+    mounted = await mount(
+      <CatalogKeys
+        deps={sessionDeps(api, failingReader())}
+        view={storeView()}
+        config={undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('could not be read'));
+    await typeInto(byId(container, 'authorize-key'), SERVER_KEY);
+    expect(buttonNamed(container, 'Sign and authorize').disabled).toBe(true);
+    await click(buttonNamed(container, 'Sign and authorize'));
+    expect(api.storeEvents).not.toHaveBeenCalled();
   });
 });
 

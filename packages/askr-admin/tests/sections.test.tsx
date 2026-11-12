@@ -24,6 +24,7 @@ import {
   SERVER_KEY,
   SERVER_KEY_SECRET,
   adminConfig,
+  failingReader,
   fakeApi,
   fakeReader,
   sessionDeps,
@@ -170,6 +171,19 @@ describe('the session', () => {
     expect(container.textContent).toContain('2 signed changes waiting for activation');
   });
 
+  it('never onboards over a config it could not read: an error and a retry instead', async () => {
+    const api = fakeApi();
+    const reader = failingReader();
+    const query = vi.spyOn(reader, 'query');
+    mounted = await mount(<Session deps={sessionDeps(api, reader)} onSignOut={() => undefined} />);
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    expect(container.textContent).not.toContain('Set up your assistant');
+    const calls = query.mock.calls.length;
+    await click(buttonNamed(container, 'Retry'));
+    await settle(() => query.mock.calls.length > calls);
+  });
+
   it('onboards a store with nothing signed yet', async () => {
     const api = fakeApi({
       store: vi.fn(async () => storeView({ status: 'pending', tier: null })),
@@ -266,6 +280,29 @@ describe('the connector', () => {
     expect(api.enableConnector).toHaveBeenCalledTimes(1);
   });
 
+  it('does not turn syncing on after a preview that failed verification', async () => {
+    const api = fakeApi({
+      previewConnector: vi.fn(async () => ({
+        result: {
+          status: 'verification_failed' as const,
+          failures: [{ origin: 'https://tea.example', reason: 'not_found' as const }],
+        },
+      })),
+    });
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(api, fakeReader([]))}
+        view={storeView({ connector: CONNECTOR })}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await click(buttonNamed(container, 'Preview first import'));
+    await settle(() => (container.textContent ?? '').includes('could not be verified'));
+    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+  });
+
   it('drops the preview on any edit and on a save, so another shop is never turned on unseen', async () => {
     const { container } = await mountConnector();
     await click(buttonNamed(container, 'Preview first import'));
@@ -318,6 +355,26 @@ describe('policies', () => {
     await settle(() => (mounted?.container.textContent ?? '').includes('Returns'));
     expect(buttonNamed(mounted.container, 'Add a policy')).toBeDefined();
     expect(buttonNamed(mounted.container, 'Delete')).toBeDefined();
+  });
+
+  it('refuses a new policy whose short name is taken, instead of replacing that one', async () => {
+    const api = fakeApi();
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(api, fakeReader([RETURNS]))}
+        view={storeView()}
+        config={adminConfig()}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Returns'));
+    await click(buttonNamed(container, 'Add a policy'));
+    await typeInto(byId(container, 'policy-slug'), 'returns');
+    await typeInto(byId(container, 'policy-title'), 'New returns');
+    await typeInto(byId(container, 'policy-body'), '14 days');
+    await click(buttonNamed(container, 'Publish'));
+    expect(container.textContent).toContain('a policy named "returns" already exists');
+    expect(api.putPolicy).not.toHaveBeenCalled();
   });
 
   it('asks before deleting, and sends one delete however often it is clicked', async () => {

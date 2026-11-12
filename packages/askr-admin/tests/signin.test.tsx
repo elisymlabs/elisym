@@ -87,3 +87,12 @@ describe('sign-in', () => {
     }
   });
 });
+
+describe('the key field', () => {
+  it('is cleared when the page is hidden, so the back/forward cache does not keep it', async () => {
+    mounted = await mount(<SignIn onSigner={() => undefined} findExtension={() => undefined} />);
+    const field = setKey(mounted.container, nip19.nsecEncode(generateSecretKey()));
+    window.dispatchEvent(new Event('pagehide'));
+    expect(field.value).toBe('');
+  });
+});

@@ -5,9 +5,11 @@ interface Props {
   onChange: (value: string) => void;
   hint?: string;
   placeholder?: string;
+  /** Shown but not editable (an ID that cannot change). */
+  readOnly?: boolean;
 }
 
-export function TextField({ id, label, value, onChange, hint, placeholder }: Props) {
+export function TextField({ id, label, value, onChange, hint, placeholder, readOnly }: Props) {
   return (
     <label className="field" htmlFor={id}>
       <span className="field-label">{label}</span>
@@ -17,6 +19,7 @@ export function TextField({ id, label, value, onChange, hint, placeholder }: Pro
         className="input"
         type="text"
         value={value}
+        readOnly={readOnly}
         placeholder={placeholder}
         autoComplete="off"
         spellCheck={false}

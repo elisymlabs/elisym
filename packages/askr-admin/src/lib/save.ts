@@ -7,7 +7,7 @@ import {
 } from '@elisym/askr';
 import { type SessionDeps, postSigned } from './deps';
 import type { SignedJournal } from './journal';
-import { type ServerKeys, type StoreForm, signStoreEvents } from './store-form';
+import { type ServerKeys, type StoreForm, authorizationOf, signStoreEvents } from './store-form';
 import type { StoreView } from './types';
 
 /** The assistant a new config names: the next A while a rotation is under way (1.5). */
@@ -22,21 +22,44 @@ export interface SaveInput {
   view: StoreView;
   form: StoreForm;
   previousCreatedAt?: number;
+  /** Keys the relay shows with the catalog role. */
   authorized?: ReadonlySet<string>;
+  /** The newest 30497 per key on the relay, so a new one is dated after it. */
+  relayNewestAt?: ReadonlyMap<string, number>;
+}
+
+/** Whether this session's newest 30497 for `key` revokes it. */
+function revokedHere(journal: SignedJournal, key: string): boolean {
+  return (
+    journal
+      .latest(KIND_CATALOG_AUTH, key)
+      ?.tags.some((tag) => tag[0] === 'mode' && tag[1] === 'revoked') === true
+  );
+}
+
+/** Keys authorized on the relay, less those this session revoked since. */
+export function authorizedNow(relay: ReadonlySet<string>, journal: SignedJournal): Set<string> {
+  return new Set([...relay].filter((key) => !revokedHere(journal, key)));
 }
 
 /** Sign the config (and the source key's authorization when needed) and store it on the server. */
 export async function saveSettings(input: SaveInput): Promise<void> {
+  const { journal } = input.deps;
+  const now = input.deps.now();
+  const authKey = authorizationOf(input.form, input.view.catalogKey).key;
   const events = await signStoreEvents({
     form: input.form,
     keys: keysOfView(input.view),
     signer: input.deps.signer,
-    now: input.deps.now(),
+    now,
     previousCreatedAt: Math.max(
       input.previousCreatedAt ?? 0,
       input.deps.journal.latest(KIND_CONFIG, CONFIG_D_TAG)?.created_at ?? 0,
     ),
-    ...(input.authorized === undefined ? {} : { authorized: input.authorized }),
+    ...(input.authorized === undefined
+      ? {}
+      : { authorized: authorizedNow(input.authorized, journal) }),
+    authCreatedAt: nextAuthDate(authKey, now, input.relayNewestAt, journal),
   });
   await postSigned(input.deps, events);
 }

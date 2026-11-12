@@ -1,4 +1,5 @@
 import {
+  buildConfigEvent,
   CONFIG_D_TAG,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
@@ -7,7 +8,7 @@ import {
   parseConfig,
 } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
-import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { npubOf, secretKeySigner } from '../src/lib/signer';
 import {
@@ -47,7 +48,7 @@ function tag(event: NostrEvent, name: string): string[] | undefined {
 
 async function sign(
   form: StoreForm,
-  extra: { previousCreatedAt?: number; authorized?: Set<string> } = {},
+  extra: { previousCreatedAt?: number; authorized?: Set<string>; authCreatedAt?: number } = {},
 ) {
   return signStoreEvents({ form, keys: { assistant, serverKey }, signer, now: NOW, ...extra });
 }
@@ -214,6 +215,84 @@ describe('the onboarding events', () => {
       throw new Error('config does not parse');
     }
     const privatePart = await decryptPrivateConfigWith(parsed, signer.decrypt);
-    expect(formOfConfig(parsed, privatePart)).toEqual(form);
+    expect(formOfConfig(parsed, privatePart)).toEqual({
+      ...form,
+      keptPolicy: { source: 'catalog', catalogKey: merchantKey, policyKey: merchantKey },
+    });
+  });
+
+  it('keeps a non-default policy key through a read and a save, while the source stays', async () => {
+    // A Pay Core store reading its policies from a merchant K, not the server K default.
+    const event = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant,
+          origins: ['https://tea.example'],
+          name: 'Tea Shop',
+          language: 'en',
+          currency: 'EUR',
+          source: { kind: 'paycore' },
+          catalogKey: paycoreKey,
+          policyKey: merchantKey,
+        },
+        ownerKey,
+      ),
+      ownerKey,
+    );
+    const parsed = parseConfig(event);
+    if (parsed === undefined) {
+      throw new Error('config does not parse');
+    }
+    const form = formOfConfig(parsed, { voice: '', instructions: '', notes: '' });
+    const [saved] = await sign({ ...form, greeting: 'Hello' });
+    expect(saved === undefined ? undefined : tag(saved, 'policy-key')).toEqual([
+      'policy-key',
+      merchantKey,
+    ]);
+    const [moved] = await sign({ ...form, source: 'admin' });
+    expect(moved === undefined ? undefined : tag(moved, 'policy-key')).toEqual([
+      'policy-key',
+      serverKey,
+    ]);
+  });
+
+  it('moves policies to the default key when the source changes, even onto the same key', async () => {
+    // An admin store reading policies from a merchant K; admin and connector both use the server K.
+    const event = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant,
+          origins: ['https://tea.example'],
+          name: 'Tea Shop',
+          language: 'en',
+          currency: 'EUR',
+          source: { kind: 'admin' },
+          catalogKey: serverKey,
+          policyKey: merchantKey,
+        },
+        ownerKey,
+      ),
+      ownerKey,
+    );
+    const parsed = parseConfig(event);
+    if (parsed === undefined) {
+      throw new Error('config does not parse');
+    }
+    const form = formOfConfig(parsed, { voice: '', instructions: '', notes: '' });
+    const [kept] = await sign(form);
+    expect(kept === undefined ? undefined : tag(kept, 'policy-key')).toEqual([
+      'policy-key',
+      merchantKey,
+    ]);
+    const [moved] = await sign({ ...form, source: 'connector', platform: 'google' });
+    expect(moved === undefined ? undefined : tag(moved, 'policy-key')).toEqual([
+      'policy-key',
+      serverKey,
+    ]);
+  });
+
+  it('dates the authorization it signs with the date it is given', async () => {
+    const [, auth] = await sign(BASE_FORM, { authCreatedAt: NOW + 77 });
+    expect(auth?.created_at).toBe(NOW + 77);
   });
 });
