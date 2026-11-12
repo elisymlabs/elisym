@@ -4,10 +4,16 @@ export { WindowLimiter, ipKey } from './gateway/limits';
 export { Backoff } from './relay/backoff';
 export { type HistoryRead, readHistory } from './relay/history';
 export { createServerPool, passesWrapPreCheck } from './relay/pool';
-export { parseStoreRegistry } from './registry';
-export { MemoryState } from './state/memory';
+export { type Db, type Queryable, STORES_CHANNEL } from './db/db';
+export { KeyVault, type KeyPurpose } from './db/keys';
+export { MIGRATIONS, migrate } from './db/migrations';
+export { createPgDb } from './db/pg';
+export { PgState } from './state/pg-state';
+export { StoreDirectory } from './state/stores';
 export type {
+  Admission,
   AskRecord,
+  LeasedStore,
   AskState,
   ServerState,
   SessionState,

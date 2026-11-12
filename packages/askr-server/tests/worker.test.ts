@@ -18,17 +18,21 @@ import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SUBSCRIPTION_BUDGET } from '../src/constants';
+import type { Db } from '../src/db/db';
 import { passesWrapPreCheck } from '../src/relay/pool';
-import { MemoryState } from '../src/state/memory';
-import type { StoreRecord } from '../src/state/types';
+import { PgState } from '../src/state/pg-state';
+import type { LeasedStore, StoreStatus } from '../src/state/types';
 import { Worker } from '../src/worker/worker';
 import { FakePool } from './fake-pool';
 import {
+  HOLDER,
   NOW,
   ORIGIN,
+  type StoreSpec,
   type SyntheticStore,
   askWrap,
   scriptedProvider,
+  stateWith,
   storeRecord,
   syntheticStore,
 } from './fixtures';
@@ -50,9 +54,9 @@ afterEach(() => {
   }
 });
 
-async function waitUntil(check: () => boolean, ms = 5_000): Promise<void> {
+async function waitUntil(check: () => boolean | Promise<boolean>, ms = 5_000): Promise<void> {
   const end = Date.now() + ms;
-  while (!check()) {
+  while (!(await check())) {
     if (Date.now() > end) {
       throw new Error('condition not reached');
     }
@@ -80,20 +84,24 @@ function heldProvider(): LlmProvider & { requests: TurnRequest[]; release: () =>
   };
 }
 
-class CountingState extends MemoryState {
-  storesCalls = 0;
+class CountingState extends PgState {
+  leaseCalls = 0;
   sweepCalls = 0;
-  override sweep(now: number): void {
+  /** The last sweep the timer started, so a test can wait for it. */
+  lastSweep: Promise<void> = Promise.resolve();
+  override sweep(now: number): Promise<void> {
     this.sweepCalls += 1;
-    super.sweep(now);
+    this.lastSweep = super.sweep(now);
+    return this.lastSweep;
   }
-  override stores(): StoreRecord[] {
-    this.storesCalls += 1;
-    return super.stores();
+  override acquireLeases(holder: string, now: number, ttlSecs: number): Promise<LeasedStore[]> {
+    this.leaseCalls += 1;
+    return super.acquireLeases(holder, now, ttlSecs);
   }
 }
 
 interface Harness {
+  db: Db;
   pool: FakePool;
   state: CountingState;
   worker: Worker;
@@ -105,7 +113,7 @@ interface Harness {
 async function harness(input: {
   stores: SyntheticStore[];
   provider?: LlmProvider;
-  records?: StoreRecord[];
+  records?: StoreSpec[];
   reserveUsd?: string;
   historyTimeoutMs?: number;
   extraRelayBudgetMs?: number;
@@ -125,7 +133,9 @@ async function harness(input: {
       pool.relay(RELAY).accept(event);
     }
   }
-  const state = new CountingState(input.records ?? input.stores.map((store) => storeRecord(store)));
+  const seeded = await stateWith(input.records ?? input.stores.map((store) => storeRecord(store)));
+  const { db } = seeded;
+  const state = new CountingState(db, seeded.vault);
   const gatewaySecret = generateSecretKey();
   const logs: string[] = [];
   const provider = input.provider ?? scriptedProvider(['Here.']);
@@ -136,6 +146,7 @@ async function harness(input: {
     gatewayKeys: [getPublicKey(gatewaySecret)],
     providerFor: () => provider,
     price: PRICE,
+    holder: HOLDER,
     reserveUsd: input.reserveUsd ?? '0.25',
     now: () => clock.now,
     log: (message) => logs.push(message),
@@ -151,7 +162,7 @@ async function harness(input: {
   if (!input.idle) {
     await worker.start();
   }
-  return { pool, state, worker, gatewaySecret, logs, clock };
+  return { db, pool, state, worker, gatewaySecret, logs, clock };
 }
 
 function ask(setup: Harness, store: SyntheticStore, visitorSecret: Uint8Array, askId: string) {
@@ -179,6 +190,11 @@ function day(setup: Harness, store: SyntheticStore) {
   return setup.state.dayTotals(store.owner, setup.clock.now);
 }
 
+/** An operator changing a store's state in the database (7.3). */
+async function setStatus(setup: Harness, store: SyntheticStore, status: StoreStatus) {
+  await setup.db.query('update stores set status = $2 where owner = $1', [store.owner, status]);
+}
+
 describe('worker turns (5.8)', () => {
   it('answers an ask and settles the reservation to the actual spend', async () => {
     const store = syntheticStore();
@@ -189,7 +205,7 @@ describe('worker turns (5.8)', () => {
     await setup.worker.idle();
     const [answer] = received(setup, store, visitorSecret);
     expect(answer?.message).toMatchObject({ type: 'answer', ask_id: 'a1'.repeat(16) });
-    expect(day(setup, store)).toEqual({
+    expect(await day(setup, store)).toEqual({
       spent: costOf(SMALL_USAGE, PRICE).toString(),
       reserved: '0',
     });
@@ -271,7 +287,10 @@ describe('worker turns (5.8)', () => {
       ask_id: 'a4'.repeat(16),
       reason: 'error',
     });
-    expect(day(setup, store)).toEqual({ spent: costOf(heavy, PRICE).toString(), reserved: '0' });
+    expect(await day(setup, store)).toEqual({
+      spent: costOf(heavy, PRICE).toString(),
+      reserved: '0',
+    });
   });
 
   it('an answer that comes past the deadline is not sent; its spend is kept and the visitor gets error', async () => {
@@ -291,7 +310,7 @@ describe('worker turns (5.8)', () => {
       ask_id: 'a5'.repeat(16),
       reason: 'error',
     });
-    expect(day(setup, store)).toEqual({
+    expect(await day(setup, store)).toEqual({
       spent: costOf(SMALL_USAGE, PRICE).toString(),
       reserved: '0',
     });
@@ -308,6 +327,8 @@ describe('worker turns (5.8)', () => {
       gatewayKeys: [getPublicKey(setup.gatewaySecret)],
       providerFor: () => provider,
       price: PRICE,
+      // The same holder: the lease (and its epoch) carries over, as on a restart within the TTL.
+      holder: HOLDER,
       reserveUsd: '0.25',
       now: () => setup.clock.now,
     });
@@ -333,7 +354,7 @@ describe('worker turns (5.8)', () => {
       await waitUntil(() => received(setup, store, visitorSecret).length === index + 1);
       await setup.worker.idle();
     }
-    const session = setup.state.session(store.assistant, getPublicKey(visitorSecret), NOW);
+    const session = await setup.state.session(store.assistant, getPublicKey(visitorSecret), NOW);
     expect(session.history.length).toBeGreaterThan(0);
     expect(session.history.length).toBeLessThanOrEqual(20);
   });
@@ -343,13 +364,13 @@ describe('worker wraps (2.4)', () => {
   it('reads leases from a set, not by deriving keys per wrap', async () => {
     const store = syntheticStore();
     const setup = await harness({ stores: [store] });
-    const before = setup.state.storesCalls;
+    const before = setup.state.leaseCalls;
     for (let index = 0; index < 100; index += 1) {
       setup.worker.isLeased(store.assistant);
     }
     expect(setup.worker.isLeased(store.assistant)).toBe(true);
     expect(setup.worker.isLeased(getPublicKey(generateSecretKey()))).toBe(false);
-    expect(setup.state.storesCalls).toBe(before);
+    expect(setup.state.leaseCalls).toBe(before);
   });
 
   it('a resubscription skips wraps already verified', async () => {
@@ -389,11 +410,10 @@ describe('worker wraps (2.4)', () => {
 
   it('a store that stops being active is no longer leased, and its catalog is dropped', async () => {
     const store = syntheticStore();
-    const record = storeRecord(store);
-    const setup = await harness({ stores: [store], records: [record] });
+    const setup = await harness({ stores: [store] });
     expect(setup.worker.catalogs.has(store.owner)).toBe(true);
-    record.status = 'suspended';
-    setup.worker.refreshLeases();
+    await setStatus(setup, store, 'suspended');
+    await setup.worker.refreshLeases();
     expect(setup.worker.isLeased(store.assistant)).toBe(false);
     expect(setup.worker.catalogs.has(store.owner)).toBe(false);
   });
@@ -631,7 +651,15 @@ describe('worker review round 2', () => {
   it('a key two stores share reloads both of them', async () => {
     const first = syntheticStore();
     const second = storeOnKeys({ catalogSecret: first.catalogSecret });
-    const setup = await harness({ stores: [first, second] });
+    // Each row keeps its own server K (unique in the database); the configs name the shared key.
+    const ownKey = generateSecretKey();
+    const setup = await harness({
+      stores: [first, second],
+      records: [
+        storeRecord(first),
+        storeRecord({ ...second, catalogSecret: ownKey, catalogKey: getPublicKey(ownKey) }),
+      ],
+    });
     expect(setup.worker.catalogs.get(second.owner)?.items.size).toBe(2);
     setup.pool.relay(RELAY).accept(listing(first.catalogSecret, 'shared', NOW - 10));
     await waitUntil(
@@ -667,13 +695,14 @@ describe('worker review round 2', () => {
 
   it('a re-issue closes the old REQs without starting a reconnect', async () => {
     const store = syntheticStore();
-    const record = storeRecord(store);
     const later = syntheticStore();
-    const laterRecord = storeRecord(later, 'pending');
-    const setup = await harness({ stores: [store, later], records: [record, laterRecord] });
+    const setup = await harness({
+      stores: [store, later],
+      records: [storeRecord(store), storeRecord(later, 'pending')],
+    });
     const relay = setup.pool.relay(RELAY);
-    laterRecord.status = 'active';
-    setup.worker.refreshLeases();
+    await setStatus(setup, later, 'active');
+    await setup.worker.refreshLeases();
     await waitUntil(() => setup.worker.catalogs.has(later.owner));
     await waitUntil(() =>
       wrapRequests(setup).some((subscription) => subscription.filters[0]?.['#p']?.length === 2),
@@ -806,12 +835,14 @@ describe('worker review round 2', () => {
       const store = syntheticStore();
       const setup = await harness({ stores: [store] });
       const visitor = 'b'.repeat(64);
-      const session = setup.state.session(store.assistant, visitor, NOW);
+      const session = await setup.state.session(store.assistant, visitor, NOW);
       setup.clock.now = session.sessionEnd;
-      session.history = [{ role: 'user', content: 'hi' }];
-      setup.state.saveSession(session);
+      session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
+      await setup.state.saveSession(session);
       vi.advanceTimersByTime(60_000);
-      expect(setup.state.session(store.assistant, visitor, NOW).history).toEqual([]);
+      expect(setup.state.sweepCalls).toBeGreaterThan(0);
+      await setup.state.lastSweep;
+      expect((await setup.state.session(store.assistant, visitor, NOW)).history).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
@@ -831,7 +862,7 @@ describe('worker review round 2', () => {
       ask_id: 'a9'.repeat(16),
       reason: 'error',
     });
-    expect(day(setup, store)).toEqual({ spent: '0', reserved: '0' });
+    expect(await day(setup, store)).toEqual({ spent: '0', reserved: '0' });
   });
 
   it('a restart with a reload retry pending still reloads', async () => {
@@ -972,7 +1003,7 @@ describe('worker review round 3', () => {
     await waitUntil(() => provider.requests.length === 1);
     ask(setup, store, visitorSecret, 'b2'.repeat(16));
     await pause(50);
-    const session = setup.state.storedSession(store.assistant, getPublicKey(visitorSecret));
+    const session = await setup.state.storedSession(store.assistant, getPublicKey(visitorSecret));
     if (!session) {
       throw new Error('no session');
     }
@@ -981,7 +1012,7 @@ describe('worker review round 3', () => {
     await setup.worker.idle();
     expect(provider.requests).toHaveLength(1);
     // Settled into the day the reservation was made.
-    expect(setup.state.dayTotals(store.owner, NOW)).toEqual({
+    expect(await setup.state.dayTotals(store.owner, NOW)).toEqual({
       spent: costOf(SMALL_USAGE, PRICE).toString(),
       reserved: '0',
     });
@@ -1044,7 +1075,13 @@ describe('worker review round 3', () => {
 
   it('a store read in full that names another assistant is unservable, not loading', async () => {
     const store = syntheticStore();
-    const record = { ...storeRecord(store), assistantSecretKey: generateSecretKey() };
+    // The database holds another assistant key than the one the config names.
+    const otherAssistant = generateSecretKey();
+    const record = storeRecord({
+      ...store,
+      assistantSecret: otherAssistant,
+      assistant: getPublicKey(otherAssistant),
+    });
     const setup = await harness({ stores: [store], records: [record] });
     expect(setup.worker.catalogs.has(store.owner)).toBe(false);
     expect(setup.worker.isUnservable(store.owner)).toBe(true);
@@ -1052,15 +1089,14 @@ describe('worker review round 3', () => {
 
   it('a store dropped while its reload reads does not come back when the read ends', async () => {
     const store = syntheticStore();
-    const record = storeRecord(store);
-    const setup = await harness({ stores: [store], records: [record] });
+    const setup = await harness({ stores: [store] });
     const relay = setup.pool.relay(RELAY);
     relay.delayMs = 100;
     const before = ownerReloads(setup, store);
     relay.accept(listing(store.catalogSecret, 'dropped', NOW - 10));
     await waitUntil(() => ownerReloads(setup, store) > before);
-    record.status = 'suspended';
-    setup.worker.refreshLeases();
+    await setStatus(setup, store, 'suspended');
+    await setup.worker.refreshLeases();
     await pause(600);
     expect(setup.worker.catalogs.has(store.owner)).toBe(false);
   });
@@ -1124,7 +1160,7 @@ describe('worker review round 4', () => {
     const visitorSecret = generateSecretKey();
     ask(setup, store, visitorSecret, 'c1'.repeat(16));
     await waitUntil(() => provider.requests.length === 1);
-    const session = setup.state.storedSession(store.assistant, getPublicKey(visitorSecret));
+    const session = await setup.state.storedSession(store.assistant, getPublicKey(visitorSecret));
     if (!session) {
       throw new Error('no session');
     }
@@ -1132,13 +1168,15 @@ describe('worker review round 4', () => {
     setup.clock.now = session.sessionEnd - 200;
     ask(setup, store, visitorSecret, 'c2'.repeat(16));
     await waitUntil(
-      () => setup.state.storedSession(store.assistant, getPublicKey(visitorSecret)) !== session,
+      async () =>
+        (await setup.state.storedSession(store.assistant, getPublicKey(visitorSecret)))?.id !==
+        session.id,
     );
     provider.release();
     await waitUntil(() => provider.requests.length === 2);
     provider.release();
     await setup.worker.idle();
-    expect(setup.state.dayTotals(store.owner, NOW)).toEqual({
+    expect(await setup.state.dayTotals(store.owner, NOW)).toEqual({
       spent: costOf(SMALL_USAGE, PRICE).toString(),
       reserved: '0',
     });
@@ -1171,10 +1209,9 @@ describe('worker review round 4', () => {
   it('a wrap re-issue on a connection that stayed up keeps it counted as stable', async () => {
     const store = syntheticStore();
     const later = syntheticStore();
-    const laterRecord = storeRecord(later, 'pending');
     const setup = await harness({
       stores: [store, later],
-      records: [storeRecord(store), laterRecord],
+      records: [storeRecord(store), storeRecord(later, 'pending')],
       stableConnectionMs: 300,
     });
     const relay = setup.pool.relay(RELAY);
@@ -1195,8 +1232,8 @@ describe('worker review round 4', () => {
     await pause(400);
     // A re-issue on the same connection, then a close.
     const reissued = opens();
-    laterRecord.status = 'active';
-    setup.worker.refreshLeases();
+    await setStatus(setup, later, 'active');
+    await setup.worker.refreshLeases();
     await waitUntil(() => opens() > reissued);
     await waitUntil(() => wrapRequests(setup).length === 1);
     const beforeClose = opens();

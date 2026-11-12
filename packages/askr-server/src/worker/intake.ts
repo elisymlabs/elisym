@@ -6,8 +6,7 @@ import {
   unwrapChatMessage,
 } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
-import { getPublicKey } from 'nostr-tools/pure';
-import type { ServerState, SessionState, StoreRecord } from '../state/types';
+import type { LeasedStore, ServerState, SessionState, StoreRecord } from '../state/types';
 
 export type Intake =
   | { action: 'drop' }
@@ -19,42 +18,48 @@ export type Intake =
       askId: string;
       sessionEnd: number;
     }
-  | { action: 'ask'; store: StoreRecord; session: SessionState; ask: Ask; chat: UnwrappedChat };
+  | {
+      action: 'ask';
+      store: StoreRecord;
+      epoch: number;
+      session: SessionState;
+      ask: Ask;
+      chat: UnwrappedChat;
+    };
 
 /**
  * The 5.8 drop order after the wrap pre-check and the wrap signature (both in
  * the pool's `verifyEvent`): decrypt and seal checks (`unwrapChatMessage`), an
  * ask from a fresh rumor, an id not seen yet, a ticket signed by a known G
  * for this store and issued to the seal's author (only then is the id
- * recorded, so junk without a valid ticket never fills the dedup set); an expired but
+ * recorded, so junk without a valid ticket never fills the dedup set, and a
+ * copy whose id another intake recorded first is dropped); an expired but
  * otherwise valid ticket is refused with `unavailable: expired`. Everything
  * earlier is silent. The `ask_id` check and the quota and budget transaction
  * follow in the worker.
  */
-export function intakeWrap(
+export async function intakeWrap(
   wrap: NostrEvent,
+  leaseOf: (assistant: string) => LeasedStore | undefined,
   state: ServerState,
   gatewayKeys: readonly string[],
   now: number,
-): Intake {
+): Promise<Intake> {
   const recipient = wrap.tags.find((tag) => tag[0] === 'p')?.[1];
-  const store = recipient === undefined ? undefined : state.storeByAssistant(recipient);
-  if (!store || store.status !== 'active') {
+  const lease = recipient === undefined ? undefined : leaseOf(recipient);
+  if (!lease) {
     return { action: 'drop' };
   }
+  const { store, epoch } = lease;
   const chat = unwrapChatMessage(wrap, store.assistantSecretKey);
-  if (
-    !chat ||
-    chat.message.type !== 'ask' ||
-    chat.recipientPubkey !== getPublicKey(store.assistantSecretKey)
-  ) {
+  if (!chat || chat.message.type !== 'ask' || chat.recipientPubkey !== store.assistant) {
     return { action: 'drop' };
   }
   // Replays after a restart are never answered (4.1): the rumor's own time is not backdated.
   if (chat.createdAt < now - MAX_RUMOR_AGE_SECS) {
     return { action: 'drop' };
   }
-  if (state.rumorSeen(chat.rumorId, now)) {
+  if (await state.rumorSeen(chat.rumorId, now)) {
     return { action: 'drop' };
   }
   const ask = chat.message;
@@ -67,8 +72,10 @@ export function intakeWrap(
   if (check === 'invalid') {
     return { action: 'drop' };
   }
-  state.recordRumor(chat.rumorId, now);
-  const session = state.session(chat.recipientPubkey, chat.senderPubkey, now);
+  if (!(await state.recordRumor(chat.rumorId, now))) {
+    return { action: 'drop' };
+  }
+  const session = await state.session(chat.recipientPubkey, chat.senderPubkey, now);
   if (check === 'expired') {
     return {
       action: 'unavailable',
@@ -79,5 +86,5 @@ export function intakeWrap(
       sessionEnd: session.sessionEnd,
     };
   }
-  return { action: 'ask', store, session, ask, chat };
+  return { action: 'ask', store, epoch, session, ask, chat };
 }

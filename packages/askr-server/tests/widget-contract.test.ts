@@ -2,27 +2,31 @@ import { httpGateway } from '@elisym/askr-widget';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { createGateway } from '../src/gateway/gateway';
-import { MemoryState } from '../src/state/memory';
-import type { StoreRecord } from '../src/state/types';
 import { buildStoreCatalog } from '../src/worker/catalog';
-import { NOW, ORIGIN, TIER, storeRecord, syntheticStore } from './fixtures';
+import {
+  NOW,
+  ORIGIN,
+  type StoreSpec,
+  TIER,
+  stateWith,
+  storeRecord,
+  syntheticStore,
+} from './fixtures';
 
 /** The widget's own gateway client against this server's handler, as on a store's page. */
-function widgetAgainstServer(
-  record: (store: ReturnType<typeof syntheticStore>) => StoreRecord,
+async function widgetAgainstServer(
+  record: (store: ReturnType<typeof syntheticStore>) => StoreSpec,
   loaded = true,
 ) {
   const store = syntheticStore();
-  const state = new MemoryState([record(store)]);
+  const { state } = await stateWith([record(store)]);
+  const active = (await state.store(store.owner))?.status === 'active';
   const catalog = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW);
   const handler = createGateway({
     state,
     gatewaySecretKey: generateSecretKey(),
     // As in main: only leased (active) stores have a cached config.
-    configFor: (owner) =>
-      loaded && owner === store.owner && state.store(owner)?.status === 'active'
-        ? catalog?.config
-        : undefined,
+    configFor: (owner) => (loaded && owner === store.owner && active ? catalog?.config : undefined),
     isListed: () => false,
     isUnservable: () => false,
     reserveUsd: '0.25',
@@ -43,7 +47,7 @@ function widgetAgainstServer(
 
 describe('widget and gateway contract (3)', () => {
   it('a grant carries the ticket, A and the branding flag', async () => {
-    const { store, gateway } = widgetAgainstServer((synthetic) => storeRecord(synthetic));
+    const { store, gateway } = await widgetAgainstServer((synthetic) => storeRecord(synthetic));
     const visitor = getPublicKey(generateSecretKey());
     const result = await gateway.openSession(store.owner, visitor);
     expect(result).toMatchObject({
@@ -53,7 +57,7 @@ describe('widget and gateway contract (3)', () => {
   });
 
   it('a tier without branding reaches the widget as such', async () => {
-    const { store, gateway } = widgetAgainstServer((synthetic) => ({
+    const { store, gateway } = await widgetAgainstServer((synthetic) => ({
       ...storeRecord(synthetic),
       tier: { ...TIER, branding: false },
     }));
@@ -62,7 +66,7 @@ describe('widget and gateway contract (3)', () => {
   });
 
   it('a store that is not active is the unavailable state, not an error', async () => {
-    const { store, gateway } = widgetAgainstServer((synthetic) =>
+    const { store, gateway } = await widgetAgainstServer((synthetic) =>
       storeRecord(synthetic, 'suspended'),
     );
     const result = await gateway.openSession(store.owner, getPublicKey(generateSecretKey()));
@@ -70,19 +74,22 @@ describe('widget and gateway contract (3)', () => {
   });
 
   it('a store this server does not know is the unavailable state too', async () => {
-    const { gateway } = widgetAgainstServer((synthetic) => storeRecord(synthetic));
+    const { gateway } = await widgetAgainstServer((synthetic) => storeRecord(synthetic));
     const result = await gateway.openSession('e'.repeat(64), getPublicKey(generateSecretKey()));
     expect(result).toEqual({ kind: 'unavailable' });
   });
 
   it('a catalog not loaded yet is an error to retry later, not the unavailable state', async () => {
-    const { store, gateway } = widgetAgainstServer((synthetic) => storeRecord(synthetic), false);
+    const { store, gateway } = await widgetAgainstServer(
+      (synthetic) => storeRecord(synthetic),
+      false,
+    );
     const result = await gateway.openSession(store.owner, getPublicKey(generateSecretKey()));
     expect(result).toEqual({ kind: 'error' });
   });
 
   it('a rate limit is an error to retry later', async () => {
-    const { store, gateway } = widgetAgainstServer((synthetic) => ({
+    const { store, gateway } = await widgetAgainstServer((synthetic) => ({
       ...storeRecord(synthetic),
       tier: { ...TIER, ticketsPerStorePerMinute: 1 },
     }));

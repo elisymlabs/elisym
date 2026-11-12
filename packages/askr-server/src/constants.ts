@@ -35,3 +35,7 @@ export const CATALOG_PAGES_PER_FILTER = 40;
 export const EXTRA_RELAY_TIMEOUT_MS = 5_000;
 /** ...and this long in all per reload, so a dead one holds the queue at most this (5.1). */
 export const EXTRA_RELAY_BUDGET_MS = 10_000;
+/** A worker's lease on a store lasts this long unless renewed (5.8). */
+export const LEASE_TTL_SECS = 60;
+/** Leases are renewed (and store states re-read) this often, well inside the TTL. */
+export const LEASE_RENEW_MS = 20_000;

@@ -2,6 +2,10 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import type { GatewayRequest } from './gateway';
 
 const MAX_BODY_BYTES = 16 * 1024;
+/** Admin calls carry whole catalogs (7.3). */
+const MAX_ADMIN_BODY_BYTES = 8 * 1024 * 1024;
+const ADMIN_PATH_PREFIX = '/v1/admin/';
+const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'DELETE']);
 
 /**
  * The client address: the socket's, or behind our proxy the last
@@ -25,7 +29,7 @@ export function clientAddressOf(
  * once: the 413 goes out with `connection: close`, so a client that finished
  * sending reads it; one still sending a very large body may see a reset.
  */
-function readBody(request: IncomingMessage): Promise<string | undefined> {
+function readBody(request: IncomingMessage, maxBytes: number): Promise<string | undefined> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -36,7 +40,7 @@ function readBody(request: IncomingMessage): Promise<string | undefined> {
       }
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
       size += buffer.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         tooLarge = true;
         chunks.length = 0;
         resolve(undefined);
@@ -65,8 +69,12 @@ async function handleIncoming(
   handler: (input: GatewayRequest) => Promise<Response>,
   trustProxy: boolean,
 ): Promise<void> {
-  const body = incoming.method === 'POST' ? await readBody(incoming) : undefined;
-  if (incoming.method === 'POST' && body === undefined) {
+  const hasBody = METHODS_WITH_BODY.has(incoming.method ?? '');
+  const maxBytes = (incoming.url ?? '').startsWith(ADMIN_PATH_PREFIX)
+    ? MAX_ADMIN_BODY_BYTES
+    : MAX_BODY_BYTES;
+  const body = hasBody ? await readBody(incoming, maxBytes) : undefined;
+  if (hasBody && body === undefined) {
     outgoing.statusCode = 413;
     outgoing.setHeader('connection', 'close');
     outgoing.end();

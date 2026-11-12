@@ -1,0 +1,287 @@
+import {
+  CatalogItemInputSchema,
+  KIND_CATALOG_AUTH,
+  KIND_CONFIG,
+  PolicyInputSchema,
+  type SyncDiff,
+  type SyncRelayClient,
+  parseConfig,
+  removePolicy,
+  setPolicy,
+  syncCatalog,
+} from '@elisym/askr';
+import { HEX_PUBKEY_RE } from '@elisym/commerce';
+import type { NostrEvent } from 'nostr-tools';
+import { verifyEvent } from 'nostr-tools/pure';
+import { z } from 'zod';
+import type { GatewayRequest } from '../gateway/gateway';
+import type { StoreDirectory } from '../state/stores';
+import type { StoreRecord } from '../state/types';
+import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
+
+export const ADMIN_PREFIX = '/v1/admin/';
+const KIND_DELETION = 5;
+const MAX_EVENTS_PER_REQUEST = 20;
+const MAX_EVENT_BYTES = 64 * 1024;
+/** A stored event may be dated at most this far ahead (clock skew of the signer). */
+const MAX_AHEAD_SECS = 10 * 60;
+const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
+
+const EventSchema = z.object({
+  id: z.string(),
+  pubkey: z.string(),
+  created_at: z.number().int(),
+  kind: z.number().int(),
+  tags: z.array(z.array(z.string())),
+  content: z.string(),
+  sig: z.string(),
+});
+
+const EventsRequestSchema = z.object({
+  events: z.array(EventSchema).min(1).max(MAX_EVENTS_PER_REQUEST),
+});
+
+const CatalogRequestSchema = z.object({
+  items: z.array(z.unknown()),
+  dryRun: z.boolean().optional(),
+});
+
+const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
+
+export interface AdminDeps {
+  directory: StoreDirectory;
+  /** The configured public base, e.g. `https://api.askr.elisym.network`: NIP-98 `u` is compared with it (7.3). */
+  publicBase: string;
+  syncClient: SyncRelayClient;
+  /** Called after O-signed events were stored, so an active store's are published at once. */
+  storeEventsChanged: () => void;
+  now?: () => number;
+  /** Publishing pace for catalog syncs; tests raise it. */
+  syncPace?: number;
+}
+
+type SyncStatus =
+  | { state: 'running'; diff: SyncDiff }
+  | { state: 'done'; diff: SyncDiff }
+  | { state: 'failed'; diff: SyncDiff; error: string };
+
+function json(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+  });
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : 'unknown error';
+}
+
+/** Why an event O wants stored is refused, or undefined when it may be stored (7.3). */
+function refusal(
+  event: NostrEvent,
+  store: StoreRecord,
+  nextAssistant: string | undefined,
+  now: number,
+): string | undefined {
+  if (JSON.stringify(event).length > MAX_EVENT_BYTES) {
+    return 'too_large';
+  }
+  if (event.pubkey !== store.owner || !verifyEvent(event)) {
+    return 'signature';
+  }
+  if (event.created_at > now + MAX_AHEAD_SECS) {
+    return 'future';
+  }
+  if (event.kind === KIND_CONFIG) {
+    const assistant = parseConfig(event)?.assistant;
+    return assistant === store.assistant || (assistant !== undefined && assistant === nextAssistant)
+      ? undefined
+      : 'config_assistant';
+  }
+  if (event.kind === KIND_CATALOG_AUTH) {
+    const key = event.tags.find((tag) => tag[0] === 'd')?.[1];
+    return key !== undefined && HEX_PUBKEY_RE.test(key) ? undefined : 'auth_key';
+  }
+  if (event.kind === KIND_DELETION) {
+    const ours = [`${KIND_CONFIG}:${store.owner}:`, `${KIND_CATALOG_AUTH}:${store.owner}:`];
+    const addresses = event.tags.filter((tag) => tag[0] === 'a');
+    const onlyOurs =
+      addresses.length > 0 &&
+      event.tags.every((tag) => tag[0] !== 'e') &&
+      addresses.every((tag) => ours.some((prefix) => tag[1]?.startsWith(prefix) === true));
+    return onlyOurs ? undefined : 'deletion_target';
+  }
+  return 'kind';
+}
+
+/**
+ * The admin API (7.3): every call, reads included, carries a NIP-98
+ * authorization by O, accepted once within the window; it acts only on O's
+ * own store. Catalog and policy writes are signed by the store's server K
+ * and only for an `active` store (K19). Returns undefined for other paths.
+ */
+export function createAdminApi(
+  deps: AdminDeps,
+): (input: GatewayRequest) => Promise<Response | undefined> {
+  const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
+  const syncs = new Map<string, SyncStatus>();
+
+  const view = async (store: StoreRecord) => ({
+    owner: store.owner,
+    status: store.status,
+    tier: store.tier ?? null,
+    assistant: store.assistant,
+    nextAssistant: (await deps.directory.nextAssistant(store.owner)) ?? null,
+    catalogKey: store.catalogKey,
+    usage: await deps.directory.usage(store.owner, store.assistant, now()),
+    catalogSync: syncs.get(store.owner) ?? null,
+  });
+
+  const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
+    const parsed = EventsRequestSchema.safeParse(parseJson(body));
+    if (!parsed.success) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    const nextAssistant = await deps.directory.nextAssistant(store.owner);
+    const events: NostrEvent[] = parsed.data.events;
+    for (const event of events) {
+      const reason = refusal(event, store, nextAssistant, now());
+      if (reason !== undefined) {
+        return json({ error: 'bad_event', reason, id: event.id }, 400);
+      }
+    }
+    await deps.directory.addEvents(store.owner, events);
+    deps.storeEventsChanged();
+    return json({ stored: events.map((event) => event.id) }, 200);
+  };
+
+  const catalog = async (store: StoreRecord, body: string): Promise<Response> => {
+    const parsed = CatalogRequestSchema.safeParse(parseJson(body));
+    if (!parsed.success) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    const items = z.array(CatalogItemInputSchema).safeParse(parsed.data.items);
+    if (!items.success) {
+      return json({ error: 'invalid_items', issues: items.error.issues.slice(0, 20) }, 400);
+    }
+    if (store.tier !== undefined && items.data.length > store.tier.maxProducts) {
+      return json({ error: 'too_many_products', max: store.tier.maxProducts }, 400);
+    }
+    if (syncs.get(store.owner)?.state === 'running') {
+      return json({ error: 'sync_running' }, 409);
+    }
+    const options = {
+      signer: store.catalogSecretKey,
+      store: store.owner,
+      items: items.data,
+      client: deps.syncClient,
+      ...(deps.syncPace === undefined ? {} : { pace: deps.syncPace }),
+    };
+    let diff: SyncDiff;
+    try {
+      diff = await syncCatalog({ ...options, dryRun: true });
+    } catch (error) {
+      return json({ error: 'sync_refused', message: errorText(error) }, 409);
+    }
+    if (parsed.data.dryRun === true) {
+      return json({ diff }, 200);
+    }
+    // Publishing is paced (2.4), so a large catalog outlasts a request: it runs on, its status in GET /store.
+    syncs.set(store.owner, { state: 'running', diff });
+    void syncCatalog(options).then(
+      (done) => syncs.set(store.owner, { state: 'done', diff: done }),
+      (error: unknown) =>
+        syncs.set(store.owner, { state: 'failed', diff, error: errorText(error) }),
+    );
+    return json({ diff, started: true }, 202);
+  };
+
+  const policy = async (
+    store: StoreRecord,
+    method: string,
+    slug: string,
+    body: string,
+  ): Promise<Response> => {
+    const options = { signer: store.catalogSecretKey, store: store.owner, client: deps.syncClient };
+    try {
+      if (method === 'DELETE') {
+        const event = await removePolicy({ ...options, slug });
+        return json({ id: event.id }, 200);
+      }
+      const parsed = PolicyRequestSchema.safeParse(parseJson(body));
+      const input = parsed.success
+        ? PolicyInputSchema.safeParse({ slug, ...parsed.data })
+        : undefined;
+      if (!input?.success) {
+        return json({ error: 'bad_request' }, 400);
+      }
+      const event = await setPolicy({ ...options, policy: input.data });
+      return json({ id: event.id }, 200);
+    } catch (error) {
+      return json({ error: 'publish_refused', message: errorText(error) }, 409);
+    }
+  };
+
+  return async ({ request }) => {
+    const url = new URL(request.url);
+    if (!url.pathname.startsWith(ADMIN_PREFIX)) {
+      return undefined;
+    }
+    const body = request.method === 'GET' ? '' : await request.text();
+    const auth = checkNip98({
+      header: request.headers.get('authorization'),
+      method: request.method,
+      publicUrl: `${deps.publicBase}${url.pathname}${url.search}`,
+      body,
+      now: now(),
+    });
+    if (!auth.ok) {
+      return json({ error: 'unauthorized', reason: auth.reason }, 401);
+    }
+    if (!(await deps.directory.recordAuthId(auth.event.id, now() + 2 * AUTH_WINDOW_SECS))) {
+      return json({ error: 'unauthorized', reason: 'replay' }, 401);
+    }
+    const owner = auth.pubkey;
+    const route = `${request.method} ${url.pathname}`;
+    if (route === 'POST /v1/admin/store') {
+      // Onboarding (7.3): anyone may create a store, which starts pending (K19).
+      return json(await view(await deps.directory.createStore(owner, now())), 200);
+    }
+    const store = await deps.directory.store(owner);
+    if (store === undefined) {
+      return json({ error: 'no_store' }, 404);
+    }
+    if (route === 'GET /v1/admin/store') {
+      return json(await view(store), 200);
+    }
+    if (route === 'POST /v1/admin/store/events') {
+      return storeEvents(store, body);
+    }
+    if (route === 'POST /v1/admin/store/assistant/rotate') {
+      return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);
+    }
+    const policyPath = POLICY_PATH_RE.exec(url.pathname);
+    const isWrite =
+      route === 'POST /v1/admin/catalog' ||
+      (policyPath !== null && (request.method === 'PUT' || request.method === 'DELETE'));
+    if (!isWrite) {
+      return json({ error: 'not_found' }, 404);
+    }
+    // Only an active store publishes through the server K (K19).
+    if (store.status !== 'active') {
+      return json({ error: 'inactive' }, 409);
+    }
+    if (policyPath?.[1] !== undefined) {
+      return policy(store, request.method, policyPath[1], body);
+    }
+    return catalog(store, body);
+  };
+}

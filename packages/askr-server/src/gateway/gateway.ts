@@ -107,12 +107,12 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     if (!ticketsPerIp.hit(ipKey(clientAddress), nowSecs * 1000)) {
       return json({ error: 'rate_limited' }, 429, requestOrigin);
     }
-    const record = deps.state.store(owner);
+    const record = await deps.state.store(owner);
     if (record === undefined) {
       return json({ error: 'forbidden' }, 403, requestOrigin);
     }
     // Only active stores are leased, so a store that is not has no config here (3, 4.1).
-    if (record.status !== 'active') {
+    if (record.status !== 'active' || record.tier === undefined) {
       return json({ unavailable: true, reason: 'inactive', contact: null }, 503, requestOrigin);
     }
     const config = deps.configFor(owner);
@@ -130,7 +130,7 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     if (!ticketsPerStore.hit(owner, nowSecs * 1000, record.tier.ticketsPerStorePerMinute)) {
       return json({ error: 'rate_limited' }, 429, origin);
     }
-    if (deps.state.budgetExhausted(owner, nowSecs, deps.reserveUsd)) {
+    if (await deps.state.budgetExhausted(owner, nowSecs, deps.reserveUsd)) {
       return json(
         { unavailable: true, reason: 'budget', contact: config.contact ?? null },
         503,
@@ -177,7 +177,7 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
       return json({ error: 'forbidden' }, 403, origin);
     }
     if (deps.isListed(owner, parsed.data.address)) {
-      deps.state.countClick(owner, parsed.data.address);
+      await deps.state.countClick(owner, parsed.data.address);
     }
     return new Response(null, {
       status: 204,
