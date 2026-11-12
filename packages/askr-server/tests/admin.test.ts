@@ -58,7 +58,7 @@ function authHeader(input: {
   return `Nostr ${Buffer.from(JSON.stringify(event)).toString('base64')}`;
 }
 
-async function setup(status: 'pending' | 'active' = 'active') {
+async function setup(status: 'pending' | 'active' = 'active', clock = { now: NOW }) {
   const store = syntheticStore();
   const seeded = await stateWith([{ ...storeRecord(store), status }]);
   const relay = memoryRelay();
@@ -68,7 +68,7 @@ async function setup(status: 'pending' | 'active' = 'active') {
     publicBase: BASE,
     syncClient: relay,
     storeEventsChanged: () => changed.push('changed'),
-    now: () => NOW,
+    now: () => clock.now,
     syncPace: 1_000,
   });
   const call = async (
@@ -177,6 +177,61 @@ describe('admin API (7.3)', () => {
       clientAddress: '203.0.113.9',
     });
     expect(other).toBeUndefined();
+  });
+
+  it('an authorization id outlives the last second it is valid in, across a sweep', async () => {
+    const clock = { now: NOW };
+    const { store, api, state } = await setup('active', clock);
+    const path = '/v1/admin/store';
+    const header = authHeader({ secret: store.ownerSecret, method: 'GET', url: `${BASE}${path}` });
+    const send = () =>
+      api({
+        request: new Request(`http://internal${path}`, { headers: { authorization: header } }),
+        clientAddress: '203.0.113.9',
+      });
+    expect((await send())?.status).toBe(200);
+    clock.now = NOW + 60;
+    await state.sweep(clock.now);
+    expect(await (await send())?.json()).toEqual({ error: 'unauthorized', reason: 'replay' });
+    clock.now = NOW + 61;
+    await state.sweep(clock.now);
+    expect(await (await send())?.json()).toEqual({ error: 'unauthorized', reason: 'stale' });
+  });
+
+  it('two catalog calls at once start one sync', async () => {
+    const { call, store, relay, state } = await setup();
+    const server = await state.store(store.owner);
+    if (!server) {
+      throw new Error('store missing');
+    }
+    await relay.publish(
+      [],
+      finalizeEvent(
+        buildCatalogAuth({ key: server.catalogKey, mode: 'hosted', createdAt: NOW - 10 }),
+        store.ownerSecret,
+      ),
+    );
+    const item = {
+      d: 'mug',
+      title: 'Mug',
+      description: 'A mug.',
+      price: { amount: '12.50', currency: 'USD' },
+    };
+    // Reads take a while, so the second call arrives while the first one's preview reads.
+    const query = relay.query.bind(relay);
+    relay.query = async (relays, filter) => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return query(relays, filter);
+    };
+    const results = await Promise.all([
+      call('POST', '/v1/admin/catalog', { items: [item] }),
+      call('POST', '/v1/admin/catalog', { items: [item] }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([202, 409]);
+    await expect
+      .poll(async () => (await call('GET', '/v1/admin/store')).body.catalogSync?.state)
+      .toBe('done');
+    expect(relay.events.filter((event) => event.kind === 30402)).toHaveLength(1);
   });
 
   it('onboarding creates a pending store once, and each owner sees only its own', async () => {

@@ -123,6 +123,19 @@ function sessionOf(row: SessionRow): SessionState {
   };
 }
 
+function newSession(assistant: string, visitor: string, now: number): SessionState {
+  return {
+    id: randomId(),
+    assistant,
+    visitor,
+    sessionEnd: now + SESSION_TTL_SECS,
+    history: [],
+    visitorMessages: [],
+    policyPassages: [],
+    allowedIds: [],
+  };
+}
+
 function sessionData(session: SessionState): string {
   return JSON.stringify({
     history: session.history,
@@ -207,6 +220,8 @@ export class PgState implements ServerState {
 
   async session(assistant: string, visitor: string, now: number): Promise<SessionState> {
     return this.db.transaction(async (tx) => {
+      // Two first messages at once: one insert wins, the other waits for it and reads its row.
+      await this.insertSession(tx, newSession(assistant, visitor, now), 'do nothing');
       const [existing] = await tx.query<SessionRow>(
         'select * from sessions where assistant = $1 and visitor = $2 for update',
         [assistant, visitor],
@@ -218,23 +233,23 @@ export class PgState implements ServerState {
       if (existing) {
         await this.dropSession(tx, existing.id);
       }
-      const fresh: SessionState = {
-        id: randomId(),
-        assistant,
-        visitor,
-        sessionEnd: now + SESSION_TTL_SECS,
-        history: [],
-        visitorMessages: [],
-        policyPassages: [],
-        allowedIds: [],
-      };
-      await tx.query(
-        `insert into sessions (assistant, visitor, id, session_end, data)
-         values ($1, $2, $3, $4, ($5::text)::jsonb)`,
-        [assistant, visitor, fresh.id, fresh.sessionEnd, sessionData(fresh)],
-      );
+      const fresh = newSession(assistant, visitor, now);
+      await this.insertSession(tx, fresh, 'fail');
       return fresh;
     });
+  }
+
+  private async insertSession(
+    tx: Queryable,
+    session: SessionState,
+    onConflict: 'do nothing' | 'fail',
+  ): Promise<void> {
+    await tx.query(
+      `insert into sessions (assistant, visitor, id, session_end, data)
+       values ($1, $2, $3, $4, ($5::text)::jsonb)
+       ${onConflict === 'do nothing' ? 'on conflict (assistant, visitor) do nothing' : ''}`,
+      [session.assistant, session.visitor, session.id, session.sessionEnd, sessionData(session)],
+    );
   }
 
   async storedSession(assistant: string, visitor: string): Promise<SessionState | undefined> {

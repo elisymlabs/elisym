@@ -1,4 +1,5 @@
 import {
+  type CatalogItemInput,
   CatalogItemInputSchema,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
@@ -133,6 +134,7 @@ export function createAdminApi(
 ): (input: GatewayRequest) => Promise<Response | undefined> {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
   const syncs = new Map<string, SyncStatus>();
+  const previewing = new Set<string>();
 
   const view = async (store: StoreRecord) => ({
     owner: store.owner,
@@ -175,13 +177,27 @@ export function createAdminApi(
     if (store.tier !== undefined && items.data.length > store.tier.maxProducts) {
       return json({ error: 'too_many_products', max: store.tier.maxProducts }, 400);
     }
-    if (syncs.get(store.owner)?.state === 'running') {
+    if (syncs.get(store.owner)?.state === 'running' || previewing.has(store.owner)) {
       return json({ error: 'sync_running' }, 409);
     }
+    // Held across the preview's await, so two calls cannot both start a sync.
+    previewing.add(store.owner);
+    try {
+      return await startSync(store, items.data, parsed.data.dryRun === true);
+    } finally {
+      previewing.delete(store.owner);
+    }
+  };
+
+  const startSync = async (
+    store: StoreRecord,
+    items: CatalogItemInput[],
+    dryRun: boolean,
+  ): Promise<Response> => {
     const options = {
       signer: store.catalogSecretKey,
       store: store.owner,
-      items: items.data,
+      items,
       client: deps.syncClient,
       ...(deps.syncPace === undefined ? {} : { pace: deps.syncPace }),
     };
@@ -191,7 +207,7 @@ export function createAdminApi(
     } catch (error) {
       return json({ error: 'sync_refused', message: errorText(error) }, 409);
     }
-    if (parsed.data.dryRun === true) {
+    if (dryRun) {
       return json({ diff }, 200);
     }
     // Publishing is paced (2.4), so a large catalog outlasts a request: it runs on, its status in GET /store.
@@ -246,7 +262,13 @@ export function createAdminApi(
     if (!auth.ok) {
       return json({ error: 'unauthorized', reason: auth.reason }, 401);
     }
-    if (!(await deps.directory.recordAuthId(auth.event.id, now() + 2 * AUTH_WINDOW_SECS))) {
+    // Kept past the last second the authorization is valid in (created_at + window), so it is never accepted twice.
+    if (
+      !(await deps.directory.recordAuthId(
+        auth.event.id,
+        auth.event.created_at + AUTH_WINDOW_SECS + 1,
+      ))
+    ) {
       return json({ error: 'unauthorized', reason: 'replay' }, 401);
     }
     const owner = auth.pubkey;
