@@ -151,25 +151,32 @@ export function scripted(steps: Array<{ text?: string; calls?: ToolUseBlock[] }>
 }
 
 /**
- * Assert that work grows linearly with input size, independent of machine load: after a warm-up
- * run, 4x the input may take at most about 8x the time (linear work takes ~4x, quadratic ~16x).
+ * The work `run(scale)` does grows linearly with `scale`: 8x the input may
+ * take at most 24x the time (linear work takes about 8x, quadratic 64x). Time
+ * is this process's CPU time, not the wall clock: vitest runs each test file
+ * in its own process, so other packages' tests loading the machine do not
+ * count. The fastest of several runs at each size filters out GC pauses.
  */
 const LINEAR_ROUNDS = 5;
+const LINEAR_SCALE = 8;
+
+function cpuMs(): number {
+  const usage = process.cpuUsage();
+  return (usage.user + usage.system) / 1000;
+}
 
 export function expectLinear(run: (scale: number) => void): void {
   run(1);
   const timeOf = (scale: number): number => {
-    const started = performance.now();
+    const started = cpuMs();
     run(scale);
-    return performance.now() - started;
+    return cpuMs() - started;
   };
-  // Sizes alternate, so a stretch of load (other packages' tests run alongside)
-  // slows both alike; the fastest run at each size filters out spikes and GC pauses.
   let small = Number.POSITIVE_INFINITY;
   let large = Number.POSITIVE_INFINITY;
   for (let round = 0; round < LINEAR_ROUNDS; round++) {
     small = Math.min(small, timeOf(1));
-    large = Math.min(large, timeOf(4));
+    large = Math.min(large, timeOf(LINEAR_SCALE));
   }
-  expect(large).toBeLessThan(small * 8 + 200);
+  expect(large).toBeLessThan(small * LINEAR_SCALE * 3 + 50);
 }
