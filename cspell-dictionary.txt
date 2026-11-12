@@ -225,7 +225,7 @@ sepolias
 mainnets
 unservable
 rabby
-comcore
+askr
 paycore
 unhashed
 woocommerce

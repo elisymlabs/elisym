@@ -1,0 +1,10 @@
+# The marketplace relay as deployed (elisym-infra/relay/prod), unchanged but for its URL (2.4).
+name: askr-e2e
+services:
+  relay:
+    image: scsibug/nostr-rs-relay:0.10.0
+    platform: linux/amd64
+    ports:
+      - '7447:8080'
+    volumes:
+      - ./relay-config.toml:/usr/src/app/config.toml:ro

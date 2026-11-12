@@ -54,6 +54,84 @@
         "vitest": "~3.2.6",
       },
     },
+    "packages/askr": {
+      "name": "@elisym/askr",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elisym/commerce": "~0.14.0",
+        "zod": "~3.25.0",
+      },
+      "devDependencies": {
+        "@types/node": "~25.5.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+      "peerDependencies": {
+        "decimal.js-light": "~2.5.0",
+        "nostr-tools": "~2.23.0",
+      },
+    },
+    "packages/askr-agent": {
+      "name": "@elisym/askr-agent",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elisym/askr": "~0.1.0",
+        "decimal.js-light": "~2.5.1",
+        "zod": "~3.25.0",
+      },
+      "devDependencies": {
+        "@types/node": "~25.5.0",
+        "nostr-tools": "~2.23.0",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+      "peerDependencies": {
+        "nostr-tools": "~2.23.0",
+      },
+    },
+    "packages/askr-server": {
+      "name": "@elisym/askr-server",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elisym/askr": "~0.1.0",
+        "@elisym/askr-agent": "~0.1.0",
+        "@elisym/commerce": "~0.14.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+        "ws": "~8.20.0",
+        "zod": "~3.25.0",
+      },
+      "devDependencies": {
+        "@elisym/askr-widget": "~0.1.0",
+        "@types/node": "~25.5.0",
+        "@types/ws": "~8.18.1",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+    },
+    "packages/askr-widget": {
+      "name": "@elisym/askr-widget",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elisym/askr": "~0.1.0",
+        "@elisym/commerce": "~0.14.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+        "zod": "~3.25.0",
+      },
+      "devDependencies": {
+        "@types/node": "~25.5.0",
+        "happy-dom": "~20.14.5",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~3.2.6",
+      },
+    },
     "packages/checkout": {
       "name": "@elisym/checkout",
       "version": "0.0.1",
@@ -105,84 +183,6 @@
       },
       "devDependencies": {
         "@types/node": "~22.0.0",
-        "tsup": "~8.4.0",
-        "typescript": "~5.7.0",
-        "vitest": "~3.2.6",
-      },
-    },
-    "packages/comcore": {
-      "name": "@elisym/comcore",
-      "version": "0.1.0",
-      "dependencies": {
-        "@elisym/commerce": "~0.14.0",
-        "zod": "~3.25.0",
-      },
-      "devDependencies": {
-        "@types/node": "~25.5.0",
-        "decimal.js-light": "~2.5.1",
-        "nostr-tools": "~2.23.0",
-        "tsup": "~8.4.0",
-        "typescript": "~5.7.0",
-        "vitest": "~3.2.6",
-      },
-      "peerDependencies": {
-        "decimal.js-light": "~2.5.0",
-        "nostr-tools": "~2.23.0",
-      },
-    },
-    "packages/comcore-agent": {
-      "name": "@elisym/comcore-agent",
-      "version": "0.1.0",
-      "dependencies": {
-        "@elisym/comcore": "~0.1.0",
-        "decimal.js-light": "~2.5.1",
-        "zod": "~3.25.0",
-      },
-      "devDependencies": {
-        "@types/node": "~25.5.0",
-        "nostr-tools": "~2.23.0",
-        "tsup": "~8.4.0",
-        "typescript": "~5.7.0",
-        "vitest": "~3.2.6",
-      },
-      "peerDependencies": {
-        "nostr-tools": "~2.23.0",
-      },
-    },
-    "packages/comcore-server": {
-      "name": "@elisym/comcore-server",
-      "version": "0.1.0",
-      "dependencies": {
-        "@elisym/comcore": "~0.1.0",
-        "@elisym/comcore-agent": "~0.1.0",
-        "@elisym/commerce": "~0.14.0",
-        "decimal.js-light": "~2.5.1",
-        "nostr-tools": "~2.23.0",
-        "ws": "~8.20.0",
-        "zod": "~3.25.0",
-      },
-      "devDependencies": {
-        "@elisym/comcore-widget": "~0.1.0",
-        "@types/node": "~25.5.0",
-        "@types/ws": "~8.18.1",
-        "tsup": "~8.4.0",
-        "typescript": "~5.7.0",
-        "vitest": "~3.2.6",
-      },
-    },
-    "packages/comcore-widget": {
-      "name": "@elisym/comcore-widget",
-      "version": "0.1.0",
-      "dependencies": {
-        "@elisym/comcore": "~0.1.0",
-        "@elisym/commerce": "~0.14.0",
-        "decimal.js-light": "~2.5.1",
-        "nostr-tools": "~2.23.0",
-        "zod": "~3.25.0",
-      },
-      "devDependencies": {
-        "@types/node": "~25.5.0",
-        "happy-dom": "~20.14.5",
         "tsup": "~8.4.0",
         "typescript": "~5.7.0",
         "vitest": "~3.2.6",
@@ -680,17 +680,17 @@
 
     "@elisym/app": ["@elisym/app@workspace:packages/app"],
 
+    "@elisym/askr": ["@elisym/askr@workspace:packages/askr"],
+
+    "@elisym/askr-agent": ["@elisym/askr-agent@workspace:packages/askr-agent"],
+
+    "@elisym/askr-server": ["@elisym/askr-server@workspace:packages/askr-server"],
+
+    "@elisym/askr-widget": ["@elisym/askr-widget@workspace:packages/askr-widget"],
+
     "@elisym/checkout": ["@elisym/checkout@workspace:packages/checkout"],
 
     "@elisym/cli": ["@elisym/cli@workspace:packages/cli"],
-
-    "@elisym/comcore": ["@elisym/comcore@workspace:packages/comcore"],
-
-    "@elisym/comcore-agent": ["@elisym/comcore-agent@workspace:packages/comcore-agent"],
-
-    "@elisym/comcore-server": ["@elisym/comcore-server@workspace:packages/comcore-server"],
-
-    "@elisym/comcore-widget": ["@elisym/comcore-widget@workspace:packages/comcore-widget"],
 
     "@elisym/commerce": ["@elisym/commerce@workspace:packages/commerce"],
 

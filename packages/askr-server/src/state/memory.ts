@@ -1,0 +1,360 @@
+import { SESSION_END_MARGIN_SECS, SESSION_TTL_SECS } from '@elisym/askr';
+import Decimal from 'decimal.js-light';
+import type { NostrEvent } from 'nostr-tools';
+import { getPublicKey } from 'nostr-tools/pure';
+import { RUMOR_DEDUP_SECS } from '../constants';
+import type { AskRecord, ServerState, SessionState, StoreRecord } from './types';
+
+const SECS_PER_DAY = 24 * 60 * 60;
+
+interface Reservation {
+  owner: string;
+  day: number;
+  amount: Decimal;
+}
+
+interface StoreDay {
+  spent: Decimal;
+  reserved: Decimal;
+}
+
+function utcDay(now: number): number {
+  return Math.floor(now / SECS_PER_DAY);
+}
+
+function sessionKey(assistant: string, visitor: string): string {
+  return `${assistant}:${visitor}`;
+}
+
+function newAttemptId(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * The server state in memory (phase 2). Every method is one synchronous step,
+ * which is what a transaction gives the Postgres version (phase 3).
+ */
+export class MemoryState implements ServerState {
+  private readonly byOwner = new Map<string, StoreRecord>();
+  private readonly byAssistant = new Map<string, StoreRecord>();
+  private readonly sessions = new Map<string, SessionState>();
+  private readonly asks = new Map<string, Map<string, AskRecord>>();
+  /** Rumor id to expiry; insertion order is expiry order (one TTL), so pruning stops at the first live one. */
+  private readonly rumors = new Map<string, number>();
+  private readonly storeDays = new Map<string, StoreDay>();
+  private readonly sessionDays = new Map<string, number>();
+  private readonly reservations = new Map<string, Reservation>();
+  /**
+   * Running attempts whose session was replaced or swept, by attempt id, with
+   * their deadline (ms): the finishing turn settles them with what it spent;
+   * one that never finishes is charged its reservation once past the deadline.
+   */
+  private readonly orphans = new Map<string, number>();
+  private readonly clicks = new Map<string, number>();
+
+  constructor(stores: readonly StoreRecord[]) {
+    for (const store of stores) {
+      this.byOwner.set(store.owner, store);
+      this.byAssistant.set(getPublicKey(store.assistantSecretKey), store);
+    }
+  }
+
+  stores(): StoreRecord[] {
+    return [...this.byOwner.values()];
+  }
+
+  store(owner: string): StoreRecord | undefined {
+    return this.byOwner.get(owner);
+  }
+
+  storeByAssistant(assistant: string): StoreRecord | undefined {
+    return this.byAssistant.get(assistant);
+  }
+
+  session(assistant: string, visitor: string, now: number): SessionState {
+    const key = sessionKey(assistant, visitor);
+    const existing = this.sessions.get(key);
+    if (existing && existing.sessionEnd - now > SESSION_END_MARGIN_SECS) {
+      return existing;
+    }
+    // A session ends 24 h after its first message and is deleted with its history (5.8).
+    this.dropAsks(key);
+    const fresh: SessionState = {
+      assistant,
+      visitor,
+      sessionEnd: now + SESSION_TTL_SECS,
+      history: [],
+      visitorMessages: [],
+      policyPassages: [],
+      allowedIds: [],
+    };
+    this.sessions.set(key, fresh);
+    return fresh;
+  }
+
+  storedSession(assistant: string, visitor: string): SessionState | undefined {
+    return this.sessions.get(sessionKey(assistant, visitor));
+  }
+
+  saveSession(session: SessionState): void {
+    const key = sessionKey(session.assistant, session.visitor);
+    const stored = this.sessions.get(key);
+    if (stored === undefined || stored === session) {
+      this.sessions.set(key, session);
+    }
+  }
+
+  private pruneRumors(now: number): void {
+    for (const [id, expiresAt] of this.rumors) {
+      if (expiresAt > now) {
+        return;
+      }
+      this.rumors.delete(id);
+    }
+  }
+
+  rumorSeen(rumorId: string, now: number): boolean {
+    this.pruneRumors(now);
+    return this.rumors.has(rumorId);
+  }
+
+  recordRumor(rumorId: string, now: number): void {
+    this.pruneRumors(now);
+    if (!this.rumors.has(rumorId)) {
+      this.rumors.set(rumorId, now + RUMOR_DEDUP_SECS);
+    }
+  }
+
+  /** Delete a session's ask records, resolving what their attempts still hold (as `retryAsk` does). */
+  private dropAsks(key: string): void {
+    for (const record of this.asks.get(key)?.values() ?? []) {
+      if (record.state === 'queued') {
+        this.release(record.attemptId);
+      } else if (record.state === 'running') {
+        this.orphans.set(record.attemptId, record.deadline);
+      }
+    }
+    this.asks.delete(key);
+  }
+
+  sweep(now: number): void {
+    this.pruneRumors(now);
+    for (const [key, session] of this.sessions) {
+      if (session.sessionEnd <= now) {
+        this.dropAsks(key);
+        this.sessions.delete(key);
+      }
+    }
+    for (const [attemptId, deadline] of this.orphans) {
+      if (deadline <= now * 1000) {
+        this.orphans.delete(attemptId);
+        this.settle(attemptId, 'reserved');
+      }
+    }
+    const today = utcDay(now);
+    for (const key of this.sessionDays.keys()) {
+      if (Number(key.slice(key.lastIndexOf(':') + 1)) < today) {
+        this.sessionDays.delete(key);
+      }
+    }
+    for (const key of this.storeDays.keys()) {
+      // Yesterday's counter stays while a reservation made then may still settle into it.
+      if (Number(key.slice(key.lastIndexOf(':') + 1)) < today - 1) {
+        this.storeDays.delete(key);
+      }
+    }
+  }
+
+  askRecord(session: SessionState, askId: string): AskRecord | undefined {
+    return this.asks.get(sessionKey(session.assistant, session.visitor))?.get(askId);
+  }
+
+  private records(session: SessionState): Map<string, AskRecord> {
+    const key = sessionKey(session.assistant, session.visitor);
+    const existing = this.asks.get(key);
+    if (existing) {
+      return existing;
+    }
+    const created = new Map<string, AskRecord>();
+    this.asks.set(key, created);
+    return created;
+  }
+
+  private storeDay(owner: string, now: number): StoreDay {
+    const key = `${owner}:${utcDay(now)}`;
+    const existing = this.storeDays.get(key);
+    if (existing) {
+      return existing;
+    }
+    const created: StoreDay = { spent: new Decimal(0), reserved: new Decimal(0) };
+    this.storeDays.set(key, created);
+    return created;
+  }
+
+  private ownerOf(session: SessionState): StoreRecord | undefined {
+    return this.byAssistant.get(session.assistant);
+  }
+
+  private reserve(store: StoreRecord, reserveUsd: string, now: number): string | undefined {
+    const day = this.storeDay(store.owner, now);
+    const amount = new Decimal(reserveUsd);
+    if (day.spent.plus(day.reserved).plus(amount).greaterThan(store.tier.dailyBudgetUsd)) {
+      return undefined;
+    }
+    day.reserved = day.reserved.plus(amount);
+    const attemptId = newAttemptId();
+    this.reservations.set(attemptId, { owner: store.owner, day: utcDay(now), amount });
+    return attemptId;
+  }
+
+  /** Settle an attempt's reservation to actual spend; a no-op once resolved. */
+  private settle(attemptId: string, spentUsd: string | 'reserved'): void {
+    const reservation = this.reservations.get(attemptId);
+    if (!reservation) {
+      return;
+    }
+    this.reservations.delete(attemptId);
+    const day = this.storeDays.get(`${reservation.owner}:${reservation.day}`);
+    if (!day) {
+      return;
+    }
+    day.reserved = day.reserved.minus(reservation.amount);
+    day.spent = day.spent.plus(spentUsd === 'reserved' ? reservation.amount : spentUsd);
+  }
+
+  private release(attemptId: string): void {
+    this.settle(attemptId, '0');
+  }
+
+  admitAsk(
+    session: SessionState,
+    askId: string,
+    reserveUsd: string,
+    now: number,
+  ): { admitted: true; record: AskRecord } | { admitted: false; reason: 'quota' | 'budget' } {
+    const store = this.ownerOf(session);
+    if (!store || store.status !== 'active') {
+      return { admitted: false, reason: 'budget' };
+    }
+    const quotaKey = `${sessionKey(session.assistant, session.visitor)}:${utcDay(now)}`;
+    const used = this.sessionDays.get(quotaKey) ?? 0;
+    if (used >= store.tier.messagesPerSessionPerDay) {
+      return { admitted: false, reason: 'quota' };
+    }
+    const attemptId = this.reserve(store, reserveUsd, now);
+    if (attemptId === undefined) {
+      return { admitted: false, reason: 'budget' };
+    }
+    this.sessionDays.set(quotaKey, used + 1);
+    const record: AskRecord = { state: 'queued', attemptId, deadline: 0 };
+    this.records(session).set(askId, record);
+    return { admitted: true, record };
+  }
+
+  retryAsk(
+    session: SessionState,
+    askId: string,
+    reserveUsd: string,
+    now: number,
+  ): { admitted: true; record: AskRecord } | { admitted: false; reason: 'quota' | 'budget' } {
+    const store = this.ownerOf(session);
+    const previous = this.askRecord(session, askId);
+    if (!store || store.status !== 'active' || !previous) {
+      return { admitted: false, reason: 'budget' };
+    }
+    const quotaKey = `${sessionKey(session.assistant, session.visitor)}:${utcDay(now)}`;
+    const used = this.sessionDays.get(quotaKey) ?? 0;
+    if (used >= store.tier.messagesPerSessionPerDay) {
+      return { admitted: false, reason: 'quota' };
+    }
+    const attemptId = this.reserve(store, reserveUsd, now);
+    if (attemptId === undefined) {
+      return { admitted: false, reason: 'budget' };
+    }
+    this.sessionDays.set(quotaKey, used + 1);
+    if (previous.state === 'queued') {
+      this.release(previous.attemptId);
+    } else if (previous.state === 'running') {
+      // Real usage is unknown: the superseded attempt is charged in full.
+      this.settle(previous.attemptId, 'reserved');
+    }
+    const record: AskRecord = { state: 'queued', attemptId, deadline: 0 };
+    this.records(session).set(askId, record);
+    return { admitted: true, record };
+  }
+
+  startAsk(session: SessionState, askId: string, attemptId: string, deadline: number): boolean {
+    const record = this.askRecord(session, askId);
+    if (!record || record.state !== 'queued' || record.attemptId !== attemptId) {
+      return false;
+    }
+    record.state = 'running';
+    record.deadline = deadline;
+    return true;
+  }
+
+  answerAsk(
+    session: SessionState,
+    askId: string,
+    attemptId: string,
+    answerWrap: NostrEvent,
+    spentUsd: string,
+    now: number,
+  ): boolean {
+    const record = this.askRecord(session, askId);
+    if (
+      !record ||
+      record.state !== 'running' ||
+      record.attemptId !== attemptId ||
+      record.deadline <= now * 1000
+    ) {
+      return false;
+    }
+    record.state = 'answered';
+    record.answerWrap = answerWrap;
+    this.settle(attemptId, spentUsd);
+    return true;
+  }
+
+  failAsk(session: SessionState, askId: string, attemptId: string, spentUsd: string): boolean {
+    if (this.orphans.delete(attemptId)) {
+      // Its session is gone: settle what the turn spent, nothing to tell the visitor.
+      this.settle(attemptId, spentUsd);
+      return false;
+    }
+    const record = this.askRecord(session, askId);
+    if (!record || record.state !== 'running' || record.attemptId !== attemptId) {
+      return false;
+    }
+    record.state = 'failed';
+    this.settle(attemptId, spentUsd);
+    return true;
+  }
+
+  budgetExhausted(owner: string, now: number, reserveUsd: string): boolean {
+    const store = this.byOwner.get(owner);
+    if (!store) {
+      return true;
+    }
+    const day = this.storeDay(owner, now);
+    // The same test `admitAsk` makes: no ticket when not even one turn's reservation fits.
+    return day.spent.plus(day.reserved).plus(reserveUsd).greaterThan(store.tier.dailyBudgetUsd);
+  }
+
+  countClick(owner: string, address: string): void {
+    const key = `${owner}:${address}`;
+    this.clicks.set(key, (this.clicks.get(key) ?? 0) + 1);
+  }
+
+  /** Test and admin view: a store's spend and reservations today. */
+  dayTotals(owner: string, now: number): { spent: string; reserved: string } {
+    const day = this.storeDay(owner, now);
+    return { spent: day.spent.toString(), reserved: day.reserved.toString() };
+  }
+
+  clicksFor(owner: string, address: string): number {
+    return this.clicks.get(`${owner}:${address}`) ?? 0;
+  }
+}
