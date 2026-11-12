@@ -1,0 +1,34 @@
+# Askr: a shopping assistant for your site
+
+Askr puts a chat assistant on your store's site. It answers visitors from your own catalog and policies, shows product cards with prices taken from the catalog (never from the model), and hands off to the product page or your cart. It sells nothing itself and takes no payments.
+
+Your catalog, policies and the assistant's settings live on Nostr, signed by keys you control. The Askr server runs the assistant: it reads what you published, answers visitors, and keeps the budget your plan allows.
+
+## The keys
+
+| Key                  | Who holds it                                                                      | What it signs                                                             |
+| -------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Owner key            | You. It is the store's identity: the embed snippet names its npub.                | The store config and which catalog keys may write your products.          |
+| Catalog key (server) | The Askr server, one per store.                                                   | Products and policies you edit in the admin, or that a connector imports. |
+| Catalog key (yours)  | Your backend, CI or agent ([Catalog from an agent](/askr/catalog-from-an-agent)). | Products and policies you publish yourself.                               |
+| Assistant key        | The Askr server, one per store.                                                   | The assistant's replies.                                                  |
+
+A catalog key writes products only once the owner key authorizes it. The owner can revoke it at any time in the admin, and a leaked catalog key never touches payments: listings it signs can never carry payment terms.
+
+## Product sources
+
+A store reads its products from exactly one source, chosen in the admin:
+
+- **Admin**: import a CSV or edit products in the admin. They are signed by the server's catalog key.
+- **Your catalog key**: publish from your own code with the SDK, or from an agent with the MCP tools.
+- **Connector**: Shopify, WooCommerce or a Google product feed, imported on a schedule. Only public endpoints are read: no store token is needed. Shopify and WooCommerce also get native add-to-cart on the shop's own site.
+- **Pay Core**: an existing [Pay Core](/commerce/quickstart) store's listings, read as they are. Give each product a `url` on one of the store's origins or link origins, so its card links to the product page.
+
+## Onboarding
+
+1. Open the admin at `https://api.askr.elisym.network/admin/` and sign in with your owner key: paste an nsec, use a NIP-07 browser extension, or let the admin generate one (save it: it is your store).
+2. Create the store. Fill in its name, language, currency, the origins your site runs on, the product source, and the assistant's voice and instructions. One signing step stores the config and the catalog key authorization.
+3. The store stays pending until it is activated on a plan. Once active, the server publishes what you signed and the assistant starts answering.
+4. [Embed the widget](/askr/embed) on your site.
+
+From the admin you can later edit the settings, manage catalog keys, import products, edit policies, set up a connector, see usage against your plan, and rotate the assistant key.

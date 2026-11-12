@@ -1,0 +1,50 @@
+# Catalog from an agent
+
+With the product source set to **your catalog key**, you publish the store's products and policies yourself: from an agent through the elisym MCP server, or from your own code with the `@elisym/askr` SDK. Either way the key that signs them is yours, and the store owner authorizes it once.
+
+## Give an agent a catalog key
+
+```bash
+npx @elisym/cli askr-key my-agent --store npub1...
+```
+
+`--store` is the store owner's npub. The command generates a catalog key, keeps it with the agent's other secrets (encrypted when `ELISYM_PASSPHRASE` is set), writes the store into the agent's `elisym.yaml`, and prints only the key's npub. It never prints the secret.
+
+Then authorize that npub in the admin, under catalog keys, signed by the owner key. Until then the store refuses what the key signs.
+
+- `--show` prints the key and store again.
+- An agent writes one store. To move it to another store, or to replace a key that may have leaked, run it again with `--rotate`, then revoke the old key in the admin.
+
+## MCP tools
+
+Restart the MCP server so it loads the key (also after `--rotate`: until then it keeps the old one). The agent then has:
+
+| Tool                   | What it does                                                                                                                                                    |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `askr_upsert_products` | Publishes or updates the given products. Every other product stays as it is, and an unchanged product is not republished. `dry_run` reports without publishing. |
+| `askr_hide_products`   | Hides products by their `d` ids.                                                                                                                                |
+| `askr_preview_diff`    | Compares products with what the store lists and reports what would be created, updated and, with `replace`, hidden. Publishes nothing.                          |
+| `askr_set_policy`      | Publishes or replaces a policy (returns, shipping, warranty, FAQ) the assistant can quote.                                                                      |
+
+Each product has a `d` id (unique in the store), a `title` and a `price` (`amount` as a decimal string, `currency`), and optionally `summary`, `description`, `images` and `url` (https), `topics`, `attrs`, `options`, `variants` and `visibility`. A product's `url` must be on one of the origins or link origins in the store's config: a link anywhere else is not shown. A call takes at most 200 products. The tools only ever touch listings signed by this agent's key, and report a warning when the store's config reads its products or policies from another key.
+
+## From your own code
+
+```ts
+import { connectSyncClient, syncCatalog } from '@elisym/askr';
+
+const client = await connectSyncClient('wss://relay.elisym.network');
+try {
+  const diff = await syncCatalog({
+    signer: catalogSecretKey, // your catalog key, 32 bytes
+    store: ownerPubkey, // the store owner's hex pubkey
+    items: products,
+    client,
+  });
+  console.log(diff); // { created, updated, hidden, unchanged }
+} finally {
+  client.close();
+}
+```
+
+By default `items` is the whole catalog: products you no longer list are hidden. Pass `mode: 'upsert'` to change only the given products, with `hide: [...]` for the ones to hide. `dryRun: true` reports without publishing. `setPolicy` and `removePolicy` write policies the same way.

@@ -18,6 +18,7 @@ import { markAgentsScrubbed, shutdownIrohTransport } from './iroh.js';
 import { logger } from './logger.js';
 import { buildEffectiveLimits } from './session-limits.js';
 import { agentTools } from './tools/agent.js';
+import { askrTools } from './tools/askr.js';
 import { commerceTools } from './tools/commerce.js';
 import { customerTools } from './tools/customer.js';
 import { dashboardTools } from './tools/dashboard.js';
@@ -37,6 +38,7 @@ const allTools: ToolDefinition[] = [
   ...discoveryTools,
   ...customerTools,
   ...commerceTools,
+  ...askrTools,
   ...walletTools,
   ...onchainTools,
   ...dashboardTools,
@@ -176,6 +178,7 @@ export async function teardownRegistry(ctx: AgentContext): Promise<void> {
     if (agent.solanaKeypair) {
       agent.solanaKeypair.secretKey.fill(0);
     }
+    agent.askr?.secretKey.fill(0);
     agent.identity.scrub();
   }
 }

@@ -40,7 +40,7 @@ export interface StoreKeys {
 /** The product fields a listing is built from. */
 export type ListedProduct = Pick<
   Product,
-  'd' | 'title' | 'description' | 'summary' | 'priceUsd' | 'onSale'
+  'd' | 'title' | 'description' | 'summary' | 'url' | 'priceUsd' | 'onSale'
 >;
 
 /**
@@ -91,7 +91,7 @@ export function payoutTerms(
 
 /**
  * The content of a product's listing, never its date: sha256 of its `d`, text,
- * price and visibility, and - on sale only - its coins. A sold-out listing
+ * price, visibility, page link and - on sale only - its coins. A sold-out listing
  * still carries coins (a listing needs one) but offers nothing, so a coin
  * change does not republish it.
  */
@@ -105,30 +105,36 @@ export function listingHash(product: ListedProduct, payouts: StoreConfig['payout
     'USD',
     product.onSale ? ON_SALE : SOLD_OUT,
     product.onSale ? payouts.map((payout) => payout.caip19) : [],
+    // Only when set: a node upgrade leaves the hash of a listing without a link as it was.
+    ...(product.url === undefined ? [] : [product.url]),
   ];
   return createHash('sha256').update(JSON.stringify(content), 'utf8').digest('hex');
 }
 
-/** A product's listing (kind 30402), signed by the store key at `createdAt`. */
+/**
+ * A product's listing (kind 30402), signed by the store key at `createdAt`. A
+ * product `url` becomes an `r` tag: the page a shopping assistant links to.
+ */
 export function buildListingEvent(
   product: ListedProduct,
   payouts: StoreConfig['payouts'],
   storeSecretKey: Uint8Array,
   createdAt: number,
 ): NostrEvent {
-  return finalizeEvent(
-    buildProductEvent({
-      d: product.d,
-      title: product.title,
-      description: product.description,
-      ...(product.summary === undefined ? {} : { summary: product.summary }),
-      price: { amount: product.priceUsd, currency: 'USD' },
-      visibility: product.onSale ? ON_SALE : SOLD_OUT,
-      accept: payouts.map((payout) => payout.caip19),
-      createdAt,
-    }),
-    storeSecretKey,
-  );
+  const template = buildProductEvent({
+    d: product.d,
+    title: product.title,
+    description: product.description,
+    ...(product.summary === undefined ? {} : { summary: product.summary }),
+    price: { amount: product.priceUsd, currency: 'USD' },
+    visibility: product.onSale ? ON_SALE : SOLD_OUT,
+    accept: payouts.map((payout) => payout.caip19),
+    createdAt,
+  });
+  if (product.url !== undefined) {
+    template.tags.push(['r', product.url]);
+  }
+  return finalizeEvent(template, storeSecretKey);
 }
 
 /** The naddr a page embeds for product `d`, with relay hints. */

@@ -1,5 +1,5 @@
 import { KIND_POLICY, parseCatalogItem, parsePolicy } from '@elisym/askr';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { TransportResponse } from '../../src/connectors/fetch-guard';
 import {
   RequestBudgetError,
@@ -51,6 +51,34 @@ function options(keys: StoreKeys, web: FakeWeb, overrides: Partial<ConnectorSync
     ...overrides,
   };
 }
+
+describe('syncConnector: the clock it dates by', () => {
+  it('without a fixed now, dates each event by the time it is published', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW * 1_000);
+    try {
+      const keys = storeKeys();
+      const web = shopifyWeb(keys);
+      const advance = async () => {
+        vi.setSystemTime(Date.now() + 1_000);
+      };
+      const result = await syncConnector({
+        ...options(keys, web),
+        now: undefined,
+        sleep: advance,
+        importPolicies: false,
+      });
+      expect(result.status).toBe('ok');
+      const dates = keys.relay.published
+        .filter((event) => event.kind === 30402)
+        .map((event) => event.created_at - NOW);
+      expect(dates.length).toBeGreaterThan(1);
+      expect(new Set(dates).size).toBe(dates.length);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('syncConnector: Shopify', () => {
   it('previews on a dry run, then publishes, then leaves an unchanged shop alone', async () => {

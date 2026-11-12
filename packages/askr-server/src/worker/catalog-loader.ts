@@ -15,6 +15,7 @@ import {
   buildStoreCatalog,
   extraFilters,
   extraRelaysFor,
+  deletionFilters,
   keyFilters,
   ownerFilters,
   storeConfig,
@@ -203,9 +204,15 @@ export class CatalogLoader {
     if (!keyEvents) {
       return false;
     }
+    const deletions = deletionFilters(keyEvents, config.catalogKey, config.policyKey);
+    const deletionEvents =
+      deletions.length === 0 ? [] : await this.readAll(this.deps.relayUrl, deletions);
+    if (!deletionEvents) {
+      return false;
+    }
     const extra = await this.readExtra(store.owner, config.catalogKey, extraRelaysFor(config));
     const byId = new Map<string, NostrEvent>();
-    for (const event of [...ownerEvents, ...keyEvents, ...extra]) {
+    for (const event of [...ownerEvents, ...keyEvents, ...deletionEvents, ...extra]) {
       byId.set(event.id, event);
     }
     const catalog = buildStoreCatalog(

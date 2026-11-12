@@ -27,10 +27,13 @@ export {
   type StoreConfig,
   type StoreConfigInput,
   type StorePrivateConfig,
+  type PrivateConfigEncrypt,
   StoreConfigInputSchema,
   assistantDisplayName,
   buildConfigEvent,
+  buildConfigEventWith,
   decryptPrivateConfig,
+  decryptPrivateConfigWith,
   normalizeShopUrl,
   parseConfig,
 } from './events/config';
@@ -87,3 +90,9 @@ export {
   setPolicy,
   syncCatalog,
 } from './sync';
+export {
+  type ConnectableRelay,
+  type SyncRelayConnection,
+  connectSyncClient,
+  relaySyncClient,
+} from './relay-client';

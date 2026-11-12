@@ -23,6 +23,8 @@ export function readHistory(
   onEvent: (event: NostrEvent) => void,
   options: {
     alreadyHaveEvent?: (id: string) => boolean;
+    /** An event the library refused (signature or filter): still sent by the relay. */
+    onInvalidEvent?: () => void;
     timeoutMs?: number;
     /** Called on every close, also after the EOSE (a live REQ that dropped). */
     onClose?: () => void;
@@ -49,6 +51,7 @@ export function readHistory(
     },
     eoseTimeout: LIBRARY_EOSE_TIMEOUT_MS,
     ...(options.alreadyHaveEvent ? { alreadyHaveEvent: options.alreadyHaveEvent } : {}),
+    ...(options.onInvalidEvent ? { oninvalidevent: options.onInvalidEvent } : {}),
   });
   const timer = setTimeout(() => {
     settle(false);

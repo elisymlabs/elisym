@@ -503,6 +503,38 @@ describe('worker catalogs (5.1, 2.4)', () => {
     expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(602);
   });
 
+  it("drops a deleted listing, and a key's many old deletions never crowd its listings out", async () => {
+    const store = syntheticStore();
+    const catalogKey = getPublicKey(store.catalogSecret);
+    const kept = listing(store.catalogSecret, 'kept', NOW - 20);
+    const gone = listing(store.catalogSecret, 'gone', NOW - 20);
+    const deletion = finalizeEvent(
+      {
+        kind: KIND_DELETION,
+        created_at: NOW - 10,
+        tags: [['a', `30402:${catalogKey}:gone`]],
+        content: '',
+      },
+      store.catalogSecret,
+    );
+    // 21 000 deletions of long-gone listings: read whole with the listings, past the page cap.
+    const old = Array.from({ length: 21_000 }, (_unused, index) => ({
+      id: (1_000_000 + index).toString(16).padStart(64, '0'),
+      pubkey: catalogKey,
+      created_at: NOW - 5 - (index % 3),
+      kind: KIND_DELETION,
+      tags: [['a', `30402:${catalogKey}:old-${index}`]],
+      content: '',
+      sig: '0'.repeat(128),
+    }));
+    const setup = await harness({
+      stores: [{ ...store, events: [...store.events, kept, gone, deletion, ...old] }],
+    });
+    const items = setup.worker.catalogs.get(store.owner)?.items;
+    expect(items?.has('kept')).toBe(true);
+    expect(items?.has('gone')).toBe(false);
+  }, 60_000);
+
   it('a failed reload keeps the old cache and retries after the backoff', async () => {
     const store = syntheticStore();
     const setup = await harness({ stores: [store] });

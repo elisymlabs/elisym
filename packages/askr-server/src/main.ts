@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
 import {
   type LlmProvider,
@@ -11,6 +12,7 @@ import {
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
+import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { runCli } from './cli';
 import { DEFAULT_TURN_RESERVE_USD, positiveUsd, publicBaseOf } from './config';
 import { ShopRateLimiter } from './connectors/http';
@@ -74,6 +76,27 @@ function widgetScript(): string {
     process.env.ASKR_WIDGET_FILE ??
     createRequire(import.meta.url).resolve('@elisym/askr-widget/widget.js');
   return readFileSync(path, 'utf8');
+}
+
+/**
+ * The built admin app (7.3), from `ASKR_ADMIN_DIR` or the workspace's
+ * `@elisym/askr-admin`; none means the admin is not served here.
+ */
+function adminFiles(log: (message: string) => void): Map<string, AdminFile> | undefined {
+  const configured = process.env.ASKR_ADMIN_DIR;
+  if (configured !== undefined) {
+    // Named on purpose: a wrong directory stops the server rather than serving no admin.
+    return loadAdminFiles(configured);
+  }
+  try {
+    const installed = createRequire(import.meta.url).resolve('@elisym/askr-admin/package.json');
+    return loadAdminFiles(join(dirname(installed), 'dist'));
+  } catch (error) {
+    log(
+      `the admin app is not installed or not built: /admin/ is not served (${error instanceof Error ? error.message : 'unknown'})`,
+    );
+    return undefined;
+  }
 }
 
 /** The master key (9) from a Docker secret file or the environment, never from the database. */
@@ -192,8 +215,10 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     connectors,
     log,
   });
+  const files = adminFiles(log);
+  const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
   const handler = async (input: GatewayRequest): Promise<Response> =>
-    (await admin(input)) ?? gateway(input);
+    adminPages?.(input) ?? (await admin(input)) ?? gateway(input);
   server = serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),
     trustProxy: process.env.ASKR_TRUST_PROXY === '1',

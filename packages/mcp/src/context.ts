@@ -110,6 +110,11 @@ export interface AgentInstance {
   name: string;
   network: SolanaNetwork;
   solanaKeypair?: { publicKey: string; secretKey: Uint8Array };
+  /**
+   * The agent's Askr catalog key K and the store (owner pubkey) whose catalog
+   * it writes, from `elisym askr-key`. Zeroed with the other keys on teardown.
+   */
+  askr?: { secretKey: Uint8Array; store: string };
   security: AgentSecurityFlags;
   /**
    * Absolute path to this agent's `.elisym/<name>/` directory on disk.

@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "~0.5.13",
+    "@elisym/askr-admin": "~0.1.0",
     "@elisym/askr-widget": "~0.1.0",
     "@types/node": "~25.5.0",
     "@types/pg": "~8.23.1",

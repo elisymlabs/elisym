@@ -47,6 +47,8 @@ export interface Product {
   /** The markdown body: the listing's description. */
   description: string;
   summary?: string;
+  /** The product's page on the store's site (https): the listing's `r` link. */
+  url?: string;
   /** USD, e.g. `"1"` or `"49.00"`: paid 1:1 in a USD coin. */
   priceUsd: string;
   /** `false`: the listing is republished sold out, and its terms retire. */
@@ -75,8 +77,23 @@ const frontmatterSchema = z
       }),
     onSale: z.boolean().optional(),
     summary: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
+    url: z
+      .string()
+      .max(LIMITS.MAX_TAG_VALUE_LENGTH)
+      .refine(isHttpsUrl, {
+        message: 'must be an https link, such as "https://shop.example/socks"',
+      })
+      .optional(),
   })
   .strict();
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 type Parsed =
   | { ok: true; product: Omit<Product, 'd' | 'file'> }
@@ -135,13 +152,14 @@ export function parseProductText(text: string): Parsed {
   if (description.length > LIMITS.MAX_CONTENT_LENGTH) {
     return { ok: false, problems: [`the body is longer than ${LIMITS.MAX_CONTENT_LENGTH}`] };
   }
-  const { title, priceUsd, onSale, summary } = parsed.data;
+  const { title, priceUsd, onSale, summary, url } = parsed.data;
   return {
     ok: true,
     product: {
       title,
       description,
       ...(summary === undefined ? {} : { summary }),
+      ...(url === undefined ? {} : { url }),
       priceUsd,
       onSale: onSale ?? true,
     },

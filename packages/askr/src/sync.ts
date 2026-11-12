@@ -40,11 +40,21 @@ export interface SyncCatalogOptions {
   /** The store owner O. */
   store: string;
   items: readonly CatalogItemInput[];
+  /**
+   * `replace` (default): `items` is the whole catalog, and K's listings missing
+   * from it are hidden. `upsert`: only `items` and the listings named in `hide`
+   * are touched, every other listing of K stays as it is.
+   */
+  mode?: 'replace' | 'upsert';
+  /** `upsert` only: `d`s of K's listings to hide (one not listed is skipped). */
+  hide?: readonly string[];
   client: SyncRelayClient;
   dryRun?: boolean;
   /** Events per second while publishing. */
   pace?: number;
   now?: number;
+  /** The clock events are dated by as they are published (default: `now` if given, else the time). */
+  clock?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -59,6 +69,16 @@ export interface SyncDiff {
 function sameListing(left: Pick<EventTemplate, 'tags' | 'content'>, right: NostrEvent): boolean {
   return left.content === right.content && JSON.stringify(left.tags) === JSON.stringify(right.tags);
 }
+
+/**
+ * Events dated in one second at most: a reader pages back in time with an
+ * inclusive `until`, so a second holding a whole page (500) could never be
+ * stepped past and the catalog would never read whole again.
+ */
+export const MAX_EVENTS_PER_SECOND = 100;
+
+/** Addresses per deletion query: keeps each REQ well under a relay's message size limit. */
+const DELETION_ADDRESSES_PER_QUERY = 100;
 
 const PUBLISH_ATTEMPTS = 3;
 const RETRY_BASE_MS = 1_000;
@@ -117,16 +137,40 @@ interface OwnAddresses {
  * `key`'s addressable events of `kind` and its deletions, cleaned: a forged,
  * foreign or malformed relay entry must neither crash a sync nor steer its
  * dating or its deletions. A NIP-09 relay may keep nothing of a deleted address
- * but the deletion, so deletions are read straight from the kind 5s.
+ * but the deletion, so deletions are read straight from the kind 5s, and only
+ * those of the addresses in play (the listed ones and `touched`): the kind 5s
+ * of a long-running store only grow, and a read that must be whole could
+ * otherwise outgrow the reader's cap.
  */
 async function readOwnAddresses(
   client: SyncRelayClient,
   key: string,
   kind: number,
+  touched: Iterable<string>,
 ): Promise<OwnAddresses> {
-  const ownEvents = (
-    await client.query(ASKR_RELAYS, { kinds: [kind, KIND_DELETION], authors: [key] })
-  ).filter((event) => isEventShaped(event) && event.pubkey === key && isGenuineEvent(event));
+  const isOwn = (event: NostrEvent) =>
+    isEventShaped(event) && event.pubkey === key && isGenuineEvent(event);
+  const listings = (await client.query(ASKR_RELAYS, { kinds: [kind], authors: [key] })).filter(
+    isOwn,
+  );
+  const ds = new Set(touched);
+  for (const event of listings) {
+    const d = tagValue(event.tags, 'd');
+    if (d !== undefined) {
+      ds.add(d);
+    }
+  }
+  const addressList = [...ds].map((d) => `${kind}:${key}:${d}`);
+  const deletions: NostrEvent[] = [];
+  for (let start = 0; start < addressList.length; start += DELETION_ADDRESSES_PER_QUERY) {
+    const chunk = addressList.slice(start, start + DELETION_ADDRESSES_PER_QUERY);
+    deletions.push(
+      ...(
+        await client.query(ASKR_RELAYS, { kinds: [KIND_DELETION], authors: [key], '#a': chunk })
+      ).filter(isOwn),
+    );
+  }
+  const ownEvents = [...listings, ...deletions];
   const addressPrefix = `${kind}:${key}:`;
   const deletedAt = new Map<string, number>();
   const latestAt = new Map<string, number>();
@@ -167,7 +211,10 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const now = options.now ?? nowSecs();
   const key = getPublicKey(options.signer);
   const relays = ASKR_RELAYS;
-  await requireCatalogKey(options.client, options.store, key, now);
+  const upsert = options.mode === 'upsert';
+  if (!upsert && options.hide !== undefined) {
+    throw new Error('hide is for the upsert mode: a replace hides every listing not in items');
+  }
 
   const inputs = new Map<string, CatalogItemInput>();
   for (const input of options.items) {
@@ -177,11 +224,19 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     }
     inputs.set(d, input);
   }
+  const toHide = new Set(options.hide ?? []);
+  for (const d of toHide) {
+    if (inputs.has(d)) {
+      throw new Error(`An item to publish cannot also be hidden: ${d}`);
+    }
+  }
+  await requireCatalogKey(options.client, options.store, key, now);
 
   const { ownEvents, latestAt, deletedAt } = await readOwnAddresses(
     options.client,
     key,
     KIND_PRODUCT,
+    [...inputs.keys(), ...toHide],
   );
   const current = new Map<string, NostrEvent>();
   for (const d of latestAt.keys()) {
@@ -196,7 +251,8 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
   const addresses = { ownEvents, latestAt, deletedAt };
 
   const diff: SyncDiff = { created: [], updated: [], hidden: [], unchanged: [] };
-  const toPublish: EventTemplate[] = [];
+  /** Each event with the `d` it is about: dating keeps one product's events in order. */
+  const toPublish: { d: string; template: EventTemplate }[] = [];
   for (const [d, input] of inputs) {
     const listed = current.get(d);
     // Dated after every version on the relay and after any deletion of the address:
@@ -205,12 +261,12 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     const template = buildCatalogItemEvent({ ...input, createdAt });
     if (!listed) {
       diff.created.push(d);
-      toPublish.push(template);
+      toPublish.push({ d, template });
     } else if (sameListing(template, listed)) {
       diff.unchanged.push(d);
     } else {
       diff.updated.push(d);
-      toPublish.push(template);
+      toPublish.push({ d, template });
     }
   }
   const deletionOf = (d: string, at: number): EventTemplate => ({
@@ -223,7 +279,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     content: '',
   });
   for (const [d, listed] of current) {
-    if (inputs.has(d)) {
+    if (inputs.has(d) || (upsert && !toHide.has(d))) {
       continue;
     }
     diff.hidden.push(d);
@@ -231,16 +287,19 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     const hiddenAt = floorFor(addresses, d, now);
     if (tagValue(listed.tags, 'visibility') !== 'hidden') {
       toPublish.push({
-        kind: KIND_PRODUCT,
-        created_at: hiddenAt,
-        tags: listed.tags
-          .filter((tag) => tag[0] !== 'visibility')
-          .concat([['visibility', 'hidden']]),
-        content: listed.content,
+        d,
+        template: {
+          kind: KIND_PRODUCT,
+          created_at: hiddenAt,
+          tags: listed.tags
+            .filter((tag) => tag[0] !== 'visibility')
+            .concat([['visibility', 'hidden']]),
+          content: listed.content,
+        },
       });
     }
     // Also when only the hidden version made it last time: the deletion is retried.
-    toPublish.push(deletionOf(d, hiddenAt));
+    toPublish.push({ d, template: deletionOf(d, hiddenAt) });
   }
 
   const pace = options.pace ?? DEFAULT_SYNC_EVENTS_PER_SEC;
@@ -251,12 +310,26 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     return diff;
   }
   const sleep = options.sleep ?? defaultSleep;
+  const clock = options.clock ?? (options.now === undefined ? nowSecs : () => now);
   const gapMs = Math.ceil(1000 / pace);
-  for (const [index, template] of toPublish.entries()) {
+  // Each event is dated as it goes out: never before its floor, never before
+  // an earlier event about the same product (a deletion stays at or after the
+  // hidden version it follows), and never in a second that already holds
+  // MAX_EVENTS_PER_SECOND events. One product's date never moves another's.
+  const lastAtOf = new Map<string, number>();
+  const countAt = new Map<number, number>();
+  for (const [index, { d, template }] of toPublish.entries()) {
     if (index > 0) {
       await sleep(gapMs);
     }
-    await publishWithRetry(options.client, relays, finalizeEvent(template, options.signer), sleep);
+    let createdAt = Math.max(template.created_at, clock(), lastAtOf.get(d) ?? -1);
+    while ((countAt.get(createdAt) ?? 0) >= MAX_EVENTS_PER_SECOND) {
+      createdAt += 1;
+    }
+    countAt.set(createdAt, (countAt.get(createdAt) ?? 0) + 1);
+    lastAtOf.set(d, createdAt);
+    const event = finalizeEvent({ ...template, created_at: createdAt }, options.signer);
+    await publishWithRetry(options.client, relays, event, sleep);
   }
   return diff;
 }
@@ -277,7 +350,7 @@ export async function setPolicy(
   const key = getPublicKey(options.signer);
   await requireCatalogKey(options.client, options.store, key, now);
   const { slug } = PolicyInputSchema.parse(options.policy);
-  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY);
+  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY, [slug]);
   const event = finalizeEvent(
     buildPolicyEvent({ ...options.policy, createdAt: floorFor(addresses, slug, now) }),
     options.signer,
@@ -293,7 +366,7 @@ export async function removePolicy(
   const now = options.now ?? nowSecs();
   const key = getPublicKey(options.signer);
   await requireCatalogKey(options.client, options.store, key, now);
-  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY);
+  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY, [options.slug]);
   const event = finalizeEvent(
     {
       kind: KIND_DELETION,

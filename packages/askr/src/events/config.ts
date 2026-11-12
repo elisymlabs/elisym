@@ -134,6 +134,12 @@ export const StoreConfigInputSchema = z.object({
 export type StoreConfigInput = z.input<typeof StoreConfigInputSchema>;
 
 /**
+ * Encrypts the config's private part (JSON) from the owner to `assistant`
+ * with NIP-44 v2: the owner's key, or a NIP-07 signer's `nip44.encrypt`.
+ */
+export type PrivateConfigEncrypt = (plaintext: string, assistant: string) => Promise<string>;
+
+/**
  * Build the store's Askr config (2.3). The private part is NIP-44 encrypted
  * from the owner to the assistant key; the caller signs the template with the
  * same owner key.
@@ -142,6 +148,29 @@ export function buildConfigEvent(
   input: StoreConfigInput,
   ownerSecretKey: Uint8Array,
 ): EventTemplate {
+  const { template, privateJson, assistant } = configTemplate(input);
+  const conversationKey = nip44.v2.utils.getConversationKey(ownerSecretKey, assistant);
+  return { ...template, content: nip44.v2.encrypt(privateJson, conversationKey) };
+}
+
+/**
+ * `buildConfigEvent` for a signer that does not hand out the owner's key (a
+ * NIP-07 extension): `encrypt` seals the private part.
+ */
+export async function buildConfigEventWith(
+  input: StoreConfigInput,
+  encrypt: PrivateConfigEncrypt,
+): Promise<EventTemplate> {
+  const { template, privateJson, assistant } = configTemplate(input);
+  return { ...template, content: await encrypt(privateJson, assistant) };
+}
+
+/** The config's tags and its private part, checked; the content is left to the caller. */
+function configTemplate(input: StoreConfigInput): {
+  template: EventTemplate;
+  privateJson: string;
+  assistant: string;
+} {
   const config = StoreConfigInputSchema.parse(input);
   if ((config.source.kind === 'connector') !== (config.source.platform !== undefined)) {
     throw new Error('A connector source names its platform, and only a connector source does');
@@ -166,7 +195,6 @@ export function buildConfigEvent(
   if (new TextEncoder().encode(privateJson).length > LIMITS.CONFIG_PRIVATE_BYTES) {
     throw new Error('The private part of the config is too large');
   }
-  const conversationKey = nip44.v2.utils.getConversationKey(ownerSecretKey, config.assistant);
   const tags: string[][] = [
     ['d', CONFIG_D_TAG],
     ['assistant', config.assistant],
@@ -196,10 +224,9 @@ export function buildConfigEvent(
     tags.push(['contact', config.contact]);
   }
   return {
-    kind: KIND_CONFIG,
-    created_at: config.createdAt ?? nowSecs(),
-    tags,
-    content: nip44.v2.encrypt(privateJson, conversationKey),
+    template: { kind: KIND_CONFIG, created_at: config.createdAt ?? nowSecs(), tags, content: '' },
+    privateJson,
+    assistant: config.assistant,
   };
 }
 
@@ -350,6 +377,26 @@ export function decryptPrivateConfig(
     const conversationKey = nip44.v2.utils.getConversationKey(assistantSecretKey, config.owner);
     const parsed = PrivateConfigSchema.safeParse(
       JSON.parse(nip44.v2.decrypt(config.privateContent, conversationKey)),
+    );
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The private part as its owner reads it back (the admin, 7.3): `decrypt` is
+ * NIP-44 v2 from the owner's side with the config's assistant as the peer
+ * (the owner's key, or a NIP-07 signer's `nip44.decrypt`). Undefined when it
+ * does not decrypt or parse.
+ */
+export async function decryptPrivateConfigWith(
+  config: Pick<StoreConfig, 'assistant' | 'privateContent'>,
+  decrypt: (ciphertext: string, peer: string) => Promise<string>,
+): Promise<StorePrivateConfig | undefined> {
+  try {
+    const parsed = PrivateConfigSchema.safeParse(
+      JSON.parse(await decrypt(config.privateContent, config.assistant)),
     );
     return parsed.success ? parsed.data : undefined;
   } catch {
