@@ -14,7 +14,7 @@
     },
     "packages/app": {
       "name": "@elisym/app",
-      "version": "0.19.3",
+      "version": "0.19.4",
       "dependencies": {
         "@elisym/sdk": "~0.39.0",
         "@solana-program/memo": "~0.11.0",
@@ -151,6 +151,7 @@
       },
       "devDependencies": {
         "@electric-sql/pglite": "~0.5.13",
+        "@elisym/askr-admin": "~0.1.0",
         "@elisym/askr-widget": "~0.1.0",
         "@types/node": "~25.5.0",
         "@types/pg": "~8.23.1",
@@ -203,7 +204,7 @@
     },
     "packages/cli": {
       "name": "@elisym/cli",
-      "version": "0.33.6",
+      "version": "0.34.0",
       "bin": {
         "elisym": "./dist/index.js",
       },
@@ -299,7 +300,7 @@
     },
     "packages/mcp": {
       "name": "@elisym/mcp",
-      "version": "0.34.1",
+      "version": "0.35.0",
       "bin": {
         "elisym-mcp": "./dist/index.js",
       },
@@ -376,7 +377,7 @@
     },
     "packages/merchant-node": {
       "name": "@elisym/merchant-node",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "bin": {
         "elisym-merchant": "./dist/cli.js",
       },
@@ -462,7 +463,7 @@
     },
     "packages/sdk": {
       "name": "@elisym/sdk",
-      "version": "0.44.0",
+      "version": "0.45.0",
       "dependencies": {
         "@elisym/pay-core": "~0.4.0",
         "yaml": "~2.8.3",

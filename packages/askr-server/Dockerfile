@@ -11,8 +11,8 @@
 #   docker run --rm -e DATABASE_URL=... -e ASKR_MASTER_KEY_FILE=... askr-server store list
 ARG BUN_IMAGE=oven/bun:1.3.11-slim
 
-# Build stage: compile from source (the widget is a devDependency of the
-# server, so turbo builds it first).
+# Build stage: compile from source (the widget and the admin are
+# devDependencies of the server, so turbo builds them first).
 FROM ${BUN_IMAGE} AS build
 WORKDIR /app
 COPY . .
@@ -40,8 +40,10 @@ COPY --from=build /app/packages/askr/dist packages/askr/dist
 COPY --from=build /app/packages/askr-agent/dist packages/askr-agent/dist
 COPY --from=build /app/packages/askr-server/dist packages/askr-server/dist
 COPY --from=build /app/packages/askr-widget/dist/widget.js packages/askr-server/widget/widget.js
+COPY --from=build /app/packages/askr-admin/dist packages/askr-server/admin
 
 ENV ASKR_WIDGET_FILE=/app/packages/askr-server/widget/widget.js
+ENV ASKR_ADMIN_DIR=/app/packages/askr-server/admin
 ENV PORT=8787
 EXPOSE 8787
 USER bun
