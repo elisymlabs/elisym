@@ -3,6 +3,7 @@ import {
   type Policy,
   type StoreConfig,
   buildCatalogItemEvent,
+  catalogAddress,
   parseCatalogItem,
 } from '@elisym/askr';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -23,6 +24,22 @@ export function item(input: CatalogItemInput) {
     throw new Error(`fixture item ${input.d} did not parse`);
   }
   return parsed;
+}
+
+/**
+ * `count` listings told apart by `d` and title only, built from one signed and
+ * parsed listing: signing each would cost a schnorr signature and check per item.
+ */
+export function manyItems(
+  count: number,
+  label: (index: number) => { d: string; title: string },
+  price = { amount: '10', currency: 'USD' },
+) {
+  const template = item({ d: 'template', title: 'Template', price });
+  return Array.from({ length: count }, (_unused, index) => {
+    const { d, title } = label(index);
+    return { ...template, d, title, address: catalogAddress(template.author, d) };
+  });
 }
 
 export const CONFIG: StoreConfig = {
@@ -137,6 +154,8 @@ export function scripted(steps: Array<{ text?: string; calls?: ToolUseBlock[] }>
  * Assert that work grows linearly with input size, independent of machine load: after a warm-up
  * run, 4x the input may take at most about 8x the time (linear work takes ~4x, quadratic ~16x).
  */
+const LINEAR_ROUNDS = 5;
+
 export function expectLinear(run: (scale: number) => void): void {
   run(1);
   const timeOf = (scale: number): number => {
@@ -144,8 +163,13 @@ export function expectLinear(run: (scale: number) => void): void {
     run(scale);
     return performance.now() - started;
   };
-  // The fastest of three runs at each size filters out load spikes and GC pauses.
-  const small = Math.min(timeOf(1), timeOf(1), timeOf(1));
-  const large = Math.min(timeOf(4), timeOf(4), timeOf(4));
+  // Sizes alternate, so a stretch of load (other packages' tests run alongside)
+  // slows both alike; the fastest run at each size filters out spikes and GC pauses.
+  let small = Number.POSITIVE_INFINITY;
+  let large = Number.POSITIVE_INFINITY;
+  for (let round = 0; round < LINEAR_ROUNDS; round++) {
+    small = Math.min(small, timeOf(1));
+    large = Math.min(large, timeOf(4));
+  }
   expect(large).toBeLessThan(small * 8 + 200);
 }

@@ -15,6 +15,7 @@ import {
   POLICIES,
   catalog,
   item,
+  manyItems,
   scripted,
   toolCall,
   expectLinear,
@@ -229,13 +230,10 @@ describe('13. OpenAI-compatible last-message cache mark', () => {
 
 describe('14. surviving mutants', () => {
   const big = () => {
-    const many = Array.from({ length: 1_600 }, (_unused, index) =>
-      item({
-        d: `p${index}`,
-        title: `Product number ${index} with a long descriptive title to fill the prompt budget`,
-        price: { amount: '10', currency: 'USD' },
-      }),
-    );
+    const many = manyItems(1_600, (index) => ({
+      d: `p${index}`,
+      title: `Product number ${index} with a long descriptive title to fill the prompt budget`,
+    }));
     return new StoreCatalog(CONFIG, undefined, many, []);
   };
 

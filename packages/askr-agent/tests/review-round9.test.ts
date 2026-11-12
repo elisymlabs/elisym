@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { StoreCatalog } from '../src/catalog/store-catalog';
 import { checkPrices, extractAmounts } from '../src/price-check';
 import { executeTool, newTurnState } from '../src/tools';
-import { CONFIG, catalog, item, toolCall } from './fixtures';
+import { CONFIG, catalog, item, manyItems, toolCall } from './fixtures';
 
 const answer = (text: string): Answer => ({
   type: 'answer',
@@ -234,13 +234,10 @@ describe('test gaps', () => {
   });
 
   it('naming products stays fast on a large catalog', () => {
-    const items = Array.from({ length: 1_500 }, (_unused, index) =>
-      item({
-        d: `item-${index}`,
-        title: `Product number ${index}`,
-        price: { amount: '10', currency: 'USD' },
-      }),
-    );
+    const items = manyItems(1_500, (index) => ({
+      d: `item-${index}`,
+      title: `Product number ${index}`,
+    }));
     const store = new StoreCatalog(
       { ...CONFIG, currency: 'USD', language: 'en' },
       undefined,
