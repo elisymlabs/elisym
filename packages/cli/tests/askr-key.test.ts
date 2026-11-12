@@ -110,8 +110,9 @@ describe('elisym askr-key', () => {
     const created = await runAskrKey(NAME, root, undefined, { store: OWNER });
     await writeFile(join(dir, 'elisym.yaml'), YAML.stringify({ description: 'test' }), 'utf-8');
     await expect(runAskrKey(NAME, root, undefined, {})).rejects.toThrow(/no store/);
+    await expect(runAskrKey(NAME, root, undefined, { show: true })).rejects.toThrow(/no store/);
     const attached = await runAskrKey(NAME, root, undefined, { store: OTHER_OWNER });
-    expect(attached).toEqual({ status: 'existing', pubkey: created.pubkey, store: OTHER_OWNER });
+    expect(attached).toEqual({ status: 'attached', pubkey: created.pubkey, store: OTHER_OWNER });
     const loaded = await loadAgent(NAME, root);
     expect(loaded.yaml.askr_store).toBe(OTHER_OWNER);
     expect(getPublicKey(hexToBytes(loaded.secrets.askr_catalog_secret_key ?? ''))).toBe(

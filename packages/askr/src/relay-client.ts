@@ -143,11 +143,26 @@ export function relaySyncClient(
   };
 }
 
-/** A client on its own connection to `url`; `close` ends it. */
+/** A relay connection `connectSyncClient` can open: nostr-tools' `Relay` fits. */
+export interface ConnectableRelay extends SyncRelayConnection {
+  connect(options: { timeout: number }): Promise<void>;
+  close(): void;
+}
+
+/**
+ * A client on its own connection to `url`; `close` ends it. A connection that
+ * fails or times out is closed too, so a socket that opens late is not left behind.
+ */
 export async function connectSyncClient(
   url: string,
+  open: (url: string) => ConnectableRelay = (relayUrl) => new Relay(relayUrl),
 ): Promise<SyncRelayClient & { close: () => void }> {
-  const relay = new Relay(url);
-  await relay.connect({ timeout: CONNECTION_TIMEOUT_MS });
+  const relay = open(url);
+  try {
+    await relay.connect({ timeout: CONNECTION_TIMEOUT_MS });
+  } catch (error) {
+    relay.close();
+    throw error;
+  }
   return { ...relaySyncClient(relay), close: () => relay.close() };
 }

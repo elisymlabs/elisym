@@ -40,8 +40,15 @@ const NO_KEY =
   'terminal, authorize the printed key in the Askr admin, then restart the MCP server so it ' +
   'loads the key.';
 
+/**
+ * A product as the tools take it: the protocol's input without `createdAt`,
+ * which the sync always sets itself. The whole input schema still checks each
+ * product inside `syncCatalog`.
+ */
+const ProductSchema = CatalogItemInputSchema.innerType().omit({ createdAt: true });
+
 const ProductsSchema = z
-  .array(CatalogItemInputSchema)
+  .array(ProductSchema)
   .min(1)
   .max(MAX_PRODUCTS_PER_CALL)
   .describe(

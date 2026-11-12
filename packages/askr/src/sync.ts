@@ -77,6 +77,9 @@ function sameListing(left: Pick<EventTemplate, 'tags' | 'content'>, right: Nostr
  */
 export const MAX_EVENTS_PER_SECOND = 100;
 
+/** Addresses per deletion query: keeps each REQ well under a relay's message size limit. */
+const DELETION_ADDRESSES_PER_QUERY = 100;
+
 const PUBLISH_ATTEMPTS = 3;
 const RETRY_BASE_MS = 1_000;
 
@@ -134,16 +137,40 @@ interface OwnAddresses {
  * `key`'s addressable events of `kind` and its deletions, cleaned: a forged,
  * foreign or malformed relay entry must neither crash a sync nor steer its
  * dating or its deletions. A NIP-09 relay may keep nothing of a deleted address
- * but the deletion, so deletions are read straight from the kind 5s.
+ * but the deletion, so deletions are read straight from the kind 5s, and only
+ * those of the addresses in play (the listed ones and `touched`): the kind 5s
+ * of a long-running store only grow, and a read that must be whole could
+ * otherwise outgrow the reader's cap.
  */
 async function readOwnAddresses(
   client: SyncRelayClient,
   key: string,
   kind: number,
+  touched: Iterable<string>,
 ): Promise<OwnAddresses> {
-  const ownEvents = (
-    await client.query(ASKR_RELAYS, { kinds: [kind, KIND_DELETION], authors: [key] })
-  ).filter((event) => isEventShaped(event) && event.pubkey === key && isGenuineEvent(event));
+  const isOwn = (event: NostrEvent) =>
+    isEventShaped(event) && event.pubkey === key && isGenuineEvent(event);
+  const listings = (await client.query(ASKR_RELAYS, { kinds: [kind], authors: [key] })).filter(
+    isOwn,
+  );
+  const ds = new Set(touched);
+  for (const event of listings) {
+    const d = tagValue(event.tags, 'd');
+    if (d !== undefined) {
+      ds.add(d);
+    }
+  }
+  const addressList = [...ds].map((d) => `${kind}:${key}:${d}`);
+  const deletions: NostrEvent[] = [];
+  for (let start = 0; start < addressList.length; start += DELETION_ADDRESSES_PER_QUERY) {
+    const chunk = addressList.slice(start, start + DELETION_ADDRESSES_PER_QUERY);
+    deletions.push(
+      ...(
+        await client.query(ASKR_RELAYS, { kinds: [KIND_DELETION], authors: [key], '#a': chunk })
+      ).filter(isOwn),
+    );
+  }
+  const ownEvents = [...listings, ...deletions];
   const addressPrefix = `${kind}:${key}:`;
   const deletedAt = new Map<string, number>();
   const latestAt = new Map<string, number>();
@@ -209,6 +236,7 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     options.client,
     key,
     KIND_PRODUCT,
+    [...inputs.keys(), ...toHide],
   );
   const current = new Map<string, NostrEvent>();
   for (const d of latestAt.keys()) {
@@ -322,7 +350,7 @@ export async function setPolicy(
   const key = getPublicKey(options.signer);
   await requireCatalogKey(options.client, options.store, key, now);
   const { slug } = PolicyInputSchema.parse(options.policy);
-  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY);
+  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY, [slug]);
   const event = finalizeEvent(
     buildPolicyEvent({ ...options.policy, createdAt: floorFor(addresses, slug, now) }),
     options.signer,
@@ -338,7 +366,7 @@ export async function removePolicy(
   const now = options.now ?? nowSecs();
   const key = getPublicKey(options.signer);
   await requireCatalogKey(options.client, options.store, key, now);
-  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY);
+  const addresses = await readOwnAddresses(options.client, key, KIND_POLICY, [options.slug]);
   const event = finalizeEvent(
     {
       kind: KIND_DELETION,

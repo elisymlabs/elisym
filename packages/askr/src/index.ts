@@ -90,4 +90,9 @@ export {
   setPolicy,
   syncCatalog,
 } from './sync';
-export { type SyncRelayConnection, connectSyncClient, relaySyncClient } from './relay-client';
+export {
+  type ConnectableRelay,
+  type SyncRelayConnection,
+  connectSyncClient,
+  relaySyncClient,
+} from './relay-client';

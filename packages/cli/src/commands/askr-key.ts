@@ -20,7 +20,8 @@ export interface AskrKeyOptions {
 }
 
 export interface AskrKeyResult {
-  status: 'created' | 'rotated' | 'existing';
+  /** `attached`: a key whose store went missing, attached to the store named now. */
+  status: 'created' | 'rotated' | 'existing' | 'attached';
   pubkey: string;
   store: string;
 }
@@ -61,9 +62,14 @@ export async function runAskrKey(
   const store = options.store === undefined ? undefined : parseStoreOwner(options.store);
 
   if (options.show) {
-    if (existing === undefined || currentStore === undefined) {
+    if (existing === undefined) {
       throw new Error(
         `Agent "${agentName}" has no Askr catalog key. Run \`elisym askr-key ${agentName} --store <owner npub>\` to create one.`,
+      );
+    }
+    if (currentStore === undefined) {
+      throw new Error(
+        `Agent "${agentName}" has an Askr catalog key but no store. Pass --store <owner npub> to attach it, or --rotate for a new key.`,
       );
     }
     return {
@@ -82,7 +88,7 @@ export async function runAskrKey(
       );
     }
     await writeYaml(loaded.dir, { ...loaded.yaml, askr_store: store });
-    return { status: 'existing', pubkey: getPublicKey(hexToBytes(existing)), store };
+    return { status: 'attached', pubkey: getPublicKey(hexToBytes(existing)), store };
   }
 
   if (existing !== undefined && currentStore !== undefined && !options.rotate) {
@@ -130,6 +136,12 @@ export async function cmdAskrKey(agentName: string, options: AskrKeyOptions): Pr
   }
   if (result.status === 'existing' && !options.show) {
     console.log(`  Agent "${agentName}" already has an Askr catalog key.`);
+  } else if (result.status === 'attached') {
+    console.log(
+      '\n  Askr catalog key attached to this store.\n' +
+        '  ! If another store authorized this key, revoke it there: what the key signs shows in every\n' +
+        '    store that authorized it. Use --rotate for a key of its own.',
+    );
   } else if (result.status !== 'existing') {
     console.log(
       result.status === 'created'

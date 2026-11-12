@@ -238,4 +238,17 @@ describe('syncCatalog', () => {
     });
     expect(old.published.at(-1)?.created_at).toBe(past);
   });
+
+  it('a deletion is never dated before the hidden version it follows, even when the clock steps back', async () => {
+    const relay = relayWithGrant();
+    const base = { signer: catalog.secretKey, store: owner.pubkey, client: relay, sleep: noSleep };
+    await syncCatalog({ ...base, items: [item('a')], now: NOW });
+    const before = relay.published.length;
+    const ticks = [NOW + 50, NOW + 10];
+    await syncCatalog({ ...base, items: [], now: NOW, clock: () => ticks.shift() ?? NOW });
+    const [hidden, deletion] = relay.published.slice(before);
+    expect(hidden?.kind).toBe(30402);
+    expect(deletion?.kind).toBe(5);
+    expect(deletion?.created_at).toBeGreaterThanOrEqual(hidden?.created_at ?? Infinity);
+  });
 });

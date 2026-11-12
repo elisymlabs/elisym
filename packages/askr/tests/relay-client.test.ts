@@ -2,7 +2,7 @@ import type { Filter, NostrEvent } from 'nostr-tools';
 import { matchFilter } from 'nostr-tools/filter';
 import { describe, expect, it } from 'vitest';
 import { buildCatalogAuth } from '../src/events/catalog-auth';
-import { type SyncRelayConnection, relaySyncClient } from '../src/relay-client';
+import { type SyncRelayConnection, connectSyncClient, relaySyncClient } from '../src/relay-client';
 import { MAX_EVENTS_PER_SECOND, syncCatalog } from '../src/sync';
 import { NOW, sign, testKey } from './fixtures';
 
@@ -226,5 +226,59 @@ describe('relaySyncClient', () => {
     const relay = new FakeConnection([event(1, 1_000)]);
     await relaySyncClient(relay, { pageTimeoutMs: 40_000 }).query([], FILTER);
     expect(relay.eoseTimeouts.every((timeout) => timeout >= 40_000 + 10_000)).toBe(true);
+  });
+
+  it("a store's old deletions, however many, never stop a sync: only those of the addresses in play are read", async () => {
+    const owner = testKey();
+    const catalog = testKey();
+    const grant = sign(
+      buildCatalogAuth({ key: catalog.pubkey, mode: 'self-host', createdAt: NOW - 100 }),
+      owner,
+    );
+    // 25 000 kind 5s of long-gone products: past the reader's 20 000-event cap if read whole.
+    const old = Array.from({ length: 25_000 }, (_unused, index) => ({
+      ...event(index, NOW - 1_000 - index, catalog.pubkey),
+      kind: 5,
+      tags: [['a', `30402:${catalog.pubkey}:gone-${index}`]],
+    }));
+    const relay = new FakeConnection([grant, ...old]);
+    const client = relaySyncClient(relay);
+    const items = [{ d: 'p1', title: 'Item', price: { amount: '10', currency: 'USD' } }];
+    const base = { signer: catalog.secretKey, store: owner.pubkey, client, sleep: async () => {} };
+    expect(await syncCatalog({ ...base, items, now: NOW })).toMatchObject({ created: ['p1'] });
+    expect(await syncCatalog({ ...base, items, now: NOW, dryRun: true })).toMatchObject({
+      unchanged: ['p1'],
+    });
+    expect(
+      relay.requests
+        .filter((filter) => filter.kinds?.includes(5) && filter.authors?.includes(catalog.pubkey))
+        .every((filter) => filter['#a'] !== undefined),
+    ).toBe(true);
+  }, 60_000);
+
+  it('connectSyncClient closes its connection when done, and when the connect fails', async () => {
+    let closed = 0;
+    const opened = Object.assign(new FakeConnection([]), {
+      connect: async () => undefined,
+      close: () => {
+        closed += 1;
+      },
+    });
+    const client = await connectSyncClient('wss://relay.example', () => opened);
+    expect(closed).toBe(0);
+    client.close();
+    expect(closed).toBe(1);
+    const failing = Object.assign(new FakeConnection([]), {
+      connect: async () => {
+        throw new Error('connection timed out');
+      },
+      close: () => {
+        closed += 1;
+      },
+    });
+    await expect(connectSyncClient('wss://relay.example', () => failing)).rejects.toThrow(
+      /timed out/,
+    );
+    expect(closed).toBe(2);
   });
 });
