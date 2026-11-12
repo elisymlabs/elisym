@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": { "deploymentEnabled": { "**": false, "main": true } },
   "installCommand": "bun install --frozen-lockfile",
   "ignoreCommand": "bunx turbo-ignore @elisym/docs"
 }
