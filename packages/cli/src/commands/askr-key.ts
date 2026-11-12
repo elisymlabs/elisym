@@ -72,6 +72,18 @@ export async function runAskrKey(
     };
   }
 
+  if (existing !== undefined && currentStore === undefined && !options.rotate) {
+    // A key whose store went missing (a hand edit, or a run stopped between its two writes)
+    // is re-attached, never silently replaced.
+    if (store === undefined) {
+      throw new Error(
+        `Agent "${agentName}" has an Askr catalog key but no store. Pass --store <owner npub> to attach it, or --rotate for a new key.`,
+      );
+    }
+    await writeYaml(loaded.dir, { ...loaded.yaml, askr_store: store });
+    return { status: 'existing', pubkey: getPublicKey(hexToBytes(existing)), store };
+  }
+
   if (existing !== undefined && currentStore !== undefined && !options.rotate) {
     if (store !== undefined && store !== currentStore) {
       throw new Error(
@@ -90,7 +102,8 @@ export async function runAskrKey(
     throw new Error('--store <owner npub> is required: the store whose catalog this key writes');
   }
   const secret = bytesToHex(generateSecretKey());
-  // The yaml goes first: a key without its store is unusable, a store without a key is just unset.
+  // The yaml goes first. A run stopped between the two writes leaves the old key on the new
+  // store, where it is refused until authorized; the next run with --rotate replaces it.
   await writeYaml(loaded.dir, { ...loaded.yaml, askr_store: target });
   await writeSecrets(
     loaded.dir,

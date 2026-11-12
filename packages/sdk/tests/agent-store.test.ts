@@ -87,6 +87,11 @@ describe('ElisymYamlSchema', () => {
 
   it('rejects unknown fields (strict)', () => {
     expect(() => ElisymYamlSchema.parse({ description: 'hi', extra: 1 })).toThrow();
+    const owner = 'a'.repeat(64);
+    expect(ElisymYamlSchema.parse({ askr_store: owner }).askr_store).toBe(owner);
+    for (const askrStore of ['A'.repeat(64), 'a'.repeat(63), `npub1${'q'.repeat(58)}`, '']) {
+      expect(() => ElisymYamlSchema.parse({ askr_store: askrStore })).toThrow(/askr_store/);
+    }
   });
 
   it('accepts a mainnet payment entry', () => {

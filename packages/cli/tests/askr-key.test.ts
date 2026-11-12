@@ -103,4 +103,18 @@ describe('elisym askr-key', () => {
     const shown = await runAskrKey(NAME, root, 'pass phrase', { show: true });
     expect(shown.pubkey).toBe(created.pubkey);
   }, 60_000); // scrypt per field takes seconds on a shared CI runner.
+
+  it('re-attaches a key whose store went missing, and never replaces it without --rotate', async () => {
+    const { root, dir } = await makeAgent();
+    const created = await runAskrKey(NAME, root, undefined, { store: OWNER });
+    await writeFile(join(dir, 'elisym.yaml'), YAML.stringify({ description: 'test' }), 'utf-8');
+    await expect(runAskrKey(NAME, root, undefined, {})).rejects.toThrow(/no store/);
+    const attached = await runAskrKey(NAME, root, undefined, { store: OTHER_OWNER });
+    expect(attached).toEqual({ status: 'existing', pubkey: created.pubkey, store: OTHER_OWNER });
+    const loaded = await loadAgent(NAME, root);
+    expect(loaded.yaml.askr_store).toBe(OTHER_OWNER);
+    expect(getPublicKey(hexToBytes(loaded.secrets.askr_catalog_secret_key ?? ''))).toBe(
+      created.pubkey,
+    );
+  });
 });
