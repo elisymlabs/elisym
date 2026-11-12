@@ -288,6 +288,8 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
       items,
       client: options.client,
       now: nowSecs,
+      // A test's fixed `now` dates every event; otherwise each is dated as it is published.
+      ...(options.now === undefined ? { clock: () => Math.floor(Date.now() / 1000) } : {}),
       ...(options.dryRun ? { dryRun: true } : {}),
       ...(options.pace === undefined ? {} : { pace: options.pace }),
       ...(options.sleep ? { sleep: options.sleep } : {}),

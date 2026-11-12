@@ -83,19 +83,20 @@ function widgetScript(): string {
  * `@elisym/askr-admin`; none means the admin is not served here.
  */
 function adminFiles(log: (message: string) => void): Map<string, AdminFile> | undefined {
-  let dir = process.env.ASKR_ADMIN_DIR;
-  if (dir === undefined) {
-    try {
-      dir = join(
-        dirname(createRequire(import.meta.url).resolve('@elisym/askr-admin/package.json')),
-        'dist',
-      );
-    } catch {
-      log('the admin app is not installed: /admin/ is not served');
-      return undefined;
-    }
+  const configured = process.env.ASKR_ADMIN_DIR;
+  if (configured !== undefined) {
+    // Named on purpose: a wrong directory stops the server rather than serving no admin.
+    return loadAdminFiles(configured);
   }
-  return loadAdminFiles(dir);
+  try {
+    const installed = createRequire(import.meta.url).resolve('@elisym/askr-admin/package.json');
+    return loadAdminFiles(join(dirname(installed), 'dist'));
+  } catch (error) {
+    log(
+      `the admin app is not installed or not built: /admin/ is not served (${error instanceof Error ? error.message : 'unknown'})`,
+    );
+    return undefined;
+  }
 }
 
 /** The master key (9) from a Docker secret file or the environment, never from the database. */

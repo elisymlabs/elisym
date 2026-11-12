@@ -33,6 +33,8 @@ describe('the admin pages', () => {
     expect(script?.headers.get('cache-control')).toContain('immutable');
     expect(script?.headers.get('content-security-policy')).toBe(adminCsp(RELAY));
     expect(script?.headers.get('x-frame-options')).toBe('DENY');
+    expect(script?.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(script?.headers.get('referrer-policy')).toBe('no-referrer');
     expect(await script?.text()).toBe('console.log(1)');
     const icon = get('/admin/favicon.svg');
     expect(icon?.headers.get('cache-control')).toBe('no-cache');
@@ -75,6 +77,11 @@ describe('the admin pages', () => {
   it('refuses a directory that is not the admin build', () => {
     const empty = mkdtempSync(join(tmpdir(), 'askr-admin-empty-'));
     expect(() => loadAdminFiles(empty)).toThrow(/index.html/);
+    const huge = build();
+    for (let index = 0; index < 500; index++) {
+      writeFileSync(join(huge, `page-${index}.html`), '<!doctype html>');
+    }
+    expect(() => loadAdminFiles(huge)).toThrow(/more than 500 files/);
   });
 
   it('lets the page reach only this origin and the relay', () => {
