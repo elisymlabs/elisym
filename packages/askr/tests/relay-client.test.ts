@@ -1,7 +1,10 @@
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { matchFilter } from 'nostr-tools/filter';
 import { describe, expect, it } from 'vitest';
+import { buildCatalogAuth } from '../src/events/catalog-auth';
 import { type SyncRelayConnection, relaySyncClient } from '../src/relay-client';
+import { MAX_EVENTS_PER_SECOND, syncCatalog } from '../src/sync';
+import { NOW, sign, testKey } from './fixtures';
 
 const AUTHOR = 'a'.repeat(64);
 const OTHER = 'b'.repeat(64);
@@ -26,7 +29,7 @@ class FakeConnection implements SyncRelayConnection {
   requests: Filter[] = [];
   published: NostrEvent[] = [];
   constructor(
-    private readonly events: NostrEvent[],
+    readonly events: NostrEvent[],
     private readonly ending: (request: number) => Ending = () => 'eose',
     private readonly extra: NostrEvent[] = [],
     private readonly pageCap = Number.POSITIVE_INFINITY,
@@ -39,8 +42,12 @@ class FakeConnection implements SyncRelayConnection {
       onevent: (event: NostrEvent) => void;
       oneose: () => void;
       onclose: (reason: string) => void;
+      eoseTimeout: number;
     },
   ) {
+    if (!this.connected) {
+      throw new Error('subscribe on a closed connection');
+    }
     const [filter] = filters;
     if (filter === undefined) {
       throw new Error('no filter');
@@ -60,6 +67,9 @@ class FakeConnection implements SyncRelayConnection {
         params.oneose();
       } else if (ending === 'close' && !closed) {
         params.onclose('relay closed');
+      } else if (ending === 'silent') {
+        // nostr-tools' own timer: it calls `oneose` too, real EOSE or not.
+        setTimeout(() => params.oneose(), params.eoseTimeout);
       }
     });
     return {
@@ -74,6 +84,7 @@ class FakeConnection implements SyncRelayConnection {
       throw new Error('blocked: not allowed');
     }
     this.published.push(published);
+    this.events.push(published);
     return '';
   }
 }
@@ -132,4 +143,60 @@ describe('relaySyncClient', () => {
     const refusing = new FakeConnection([], () => 'eose', [], Number.POSITIVE_INFINITY, true);
     await expect(relaySyncClient(refusing).publish([], event(1, 1_000))).rejects.toThrow(/blocked/);
   });
+
+  it('never sends on a closed connection: a read and a publish fail as errors', async () => {
+    const closed = new FakeConnection([event(1, 1_000)]);
+    closed.connected = false;
+    await expect(relaySyncClient(closed).query([], FILTER)).rejects.toThrow(/whole read/);
+    await expect(relaySyncClient(closed).publish([], event(2, 1_000))).rejects.toThrow(/closed/);
+    expect(closed.requests).toEqual([]);
+    expect(closed.published).toEqual([]);
+  });
+
+  it("counts only a real EOSE: the library's own timer always fires after ours", async () => {
+    const silent = new FakeConnection([event(1, 1_000)], () => 'silent');
+    await expect(relaySyncClient(silent, { pageTimeoutMs: 30 }).query([], FILTER)).rejects.toThrow(
+      /whole read/,
+    );
+  });
+
+  it('a full page is full by what the relay sent, also events the filter drops', async () => {
+    const strays = Array.from({ length: 10 }, (_unused, index) =>
+      event(50_000 + index, 9_000, OTHER),
+    );
+    const events = Array.from({ length: 700 }, (_unused, index) => event(index, 1_000 + index));
+    // Each page carries 10 stray events: 490 + 10 received is a full page, not the last one.
+    const relay = new FakeConnection(events, () => 'eose', strays, 490);
+    expect(await relaySyncClient(relay).query([], FILTER)).toHaveLength(700);
+  });
+
+  it('a catalog synced in one go reads whole again: no second holds a page', async () => {
+    const owner = testKey();
+    const catalog = testKey();
+    const grant = sign(
+      buildCatalogAuth({ key: catalog.pubkey, mode: 'self-host', createdAt: NOW - 100 }),
+      owner,
+    );
+    const relay = new FakeConnection([grant]);
+    const client = relaySyncClient(relay);
+    const items = Array.from({ length: 600 }, (_unused, index) => ({
+      d: `p${index}`,
+      title: `Item ${index}`,
+      price: { amount: '10', currency: 'USD' },
+    }));
+    const base = { signer: catalog.secretKey, store: owner.pubkey, client, sleep: async () => {} };
+    // A frozen clock, as a fast publish within one second would be.
+    await syncCatalog({ ...base, items, now: NOW });
+    const perSecond = new Map<number, number>();
+    for (const published of relay.published) {
+      perSecond.set(published.created_at, (perSecond.get(published.created_at) ?? 0) + 1);
+    }
+    expect(Math.max(...perSecond.values())).toBeLessThanOrEqual(MAX_EVENTS_PER_SECOND);
+    const again = await syncCatalog({ ...base, items, now: NOW, dryRun: true });
+    expect(again.unchanged).toHaveLength(600);
+    // Hiding them all (a listing and a deletion each) keeps the cap too.
+    await syncCatalog({ ...base, items: [], now: NOW + 1 });
+    const read = await syncCatalog({ ...base, items: [], now: NOW + 1, dryRun: true });
+    expect(read).toEqual({ created: [], updated: [], hidden: [], unchanged: [] });
+  }, 60_000);
 });

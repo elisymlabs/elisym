@@ -103,6 +103,13 @@ describe('config', () => {
     const strangerDecrypt = async (ciphertext: string, peer: string) =>
       nip44.v2.decrypt(ciphertext, nip44.v2.utils.getConversationKey(stranger.secretKey, peer));
     expect(parsed && (await decryptPrivateConfigWith(parsed, strangerDecrypt))).toBeUndefined();
+    // A part that decrypts but is not a private config (wrong types) is refused too.
+    expect(
+      parsed && (await decryptPrivateConfigWith(parsed, async () => '{"voice":42}')),
+    ).toBeUndefined();
+    expect(
+      parsed && (await decryptPrivateConfigWith(parsed, async () => 'not json')),
+    ).toBeUndefined();
     // The same checks as the direct builder: a bad input never reaches the encrypt.
     await expect(
       buildConfigEventWith({ ...input, origins: ['http://shop.example.com'] }, ownerEncrypt),

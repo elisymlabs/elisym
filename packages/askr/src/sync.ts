@@ -53,6 +53,8 @@ export interface SyncCatalogOptions {
   /** Events per second while publishing. */
   pace?: number;
   now?: number;
+  /** The clock events are dated by as they are published (default: `now` if given, else the time). */
+  clock?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -67,6 +69,13 @@ export interface SyncDiff {
 function sameListing(left: Pick<EventTemplate, 'tags' | 'content'>, right: NostrEvent): boolean {
   return left.content === right.content && JSON.stringify(left.tags) === JSON.stringify(right.tags);
 }
+
+/**
+ * Events dated in one second at most: a reader pages back in time with an
+ * inclusive `until`, so a second holding a whole page (500) could never be
+ * stepped past and the catalog would never read whole again.
+ */
+export const MAX_EVENTS_PER_SECOND = 100;
 
 const PUBLISH_ATTEMPTS = 3;
 const RETRY_BASE_MS = 1_000;
@@ -269,12 +278,25 @@ export async function syncCatalog(options: SyncCatalogOptions): Promise<SyncDiff
     return diff;
   }
   const sleep = options.sleep ?? defaultSleep;
+  const clock = options.clock ?? (options.now === undefined ? nowSecs : () => now);
   const gapMs = Math.ceil(1000 / pace);
+  // Each event is dated as it goes out, never before its floor nor before the
+  // event ahead of it (a deletion stays at or after the hidden version it
+  // follows), and no second holds more than MAX_EVENTS_PER_SECOND.
+  let lastAt = -1;
+  let atLast = 0;
   for (const [index, template] of toPublish.entries()) {
     if (index > 0) {
       await sleep(gapMs);
     }
-    await publishWithRetry(options.client, relays, finalizeEvent(template, options.signer), sleep);
+    let createdAt = Math.max(template.created_at, clock(), lastAt);
+    if (createdAt === lastAt && atLast >= MAX_EVENTS_PER_SECOND) {
+      createdAt = lastAt + 1;
+    }
+    atLast = createdAt === lastAt ? atLast + 1 : 1;
+    lastAt = createdAt;
+    const event = finalizeEvent({ ...template, created_at: createdAt }, options.signer);
+    await publishWithRetry(options.client, relays, event, sleep);
   }
   return diff;
 }
