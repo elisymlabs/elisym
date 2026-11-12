@@ -1,4 +1,5 @@
 import { buildStoreAuthEvent, buildStoreRevocationEvent } from '@elisym/commerce';
+import { nip44 } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
 import {
   buildCatalogAuth,
@@ -10,7 +11,9 @@ import {
 import {
   assistantDisplayName,
   buildConfigEvent,
+  buildConfigEventWith,
   decryptPrivateConfig,
+  decryptPrivateConfigWith,
   normalizeShopUrl,
   parseConfig,
 } from '../src/events/config';
@@ -64,6 +67,46 @@ describe('config', () => {
     });
     expect(parsed && decryptPrivateConfig(parsed, testKey().secretKey)).toBeUndefined();
     expect(parsed && assistantDisplayName(parsed)).toBe('Example Shop assistant');
+  });
+
+  it('builds through an outside encrypt (NIP-07) the same config, and the owner reads it back', async () => {
+    const ownerEncrypt = async (plaintext: string, peer: string) =>
+      nip44.v2.encrypt(plaintext, nip44.v2.utils.getConversationKey(owner.secretKey, peer));
+    const ownerDecrypt = async (ciphertext: string, peer: string) =>
+      nip44.v2.decrypt(ciphertext, nip44.v2.utils.getConversationKey(owner.secretKey, peer));
+    const input = {
+      assistant: assistant.pubkey,
+      origins: ['https://shop.example.com'],
+      name: 'Example Shop',
+      language: 'en',
+      currency: 'USD',
+      source: { kind: 'catalog' as const },
+      catalogKey: catalog.pubkey,
+      private: { voice: 'calm', instructions: '', notes: '' },
+      createdAt: NOW - 100,
+    };
+    const peers: string[] = [];
+    const viaSigner = sign(
+      await buildConfigEventWith(input, async (plaintext, peer) => {
+        peers.push(peer);
+        return ownerEncrypt(plaintext, peer);
+      }),
+      owner,
+    );
+    expect(peers).toEqual([assistant.pubkey]);
+    const direct = sign(buildConfigEvent(input, owner.secretKey), owner);
+    expect(viaSigner.tags).toEqual(direct.tags);
+    const parsed = parseConfig(viaSigner);
+    expect(parsed && decryptPrivateConfig(parsed, assistant.secretKey)).toEqual(input.private);
+    expect(parsed && (await decryptPrivateConfigWith(parsed, ownerDecrypt))).toEqual(input.private);
+    const stranger = testKey();
+    const strangerDecrypt = async (ciphertext: string, peer: string) =>
+      nip44.v2.decrypt(ciphertext, nip44.v2.utils.getConversationKey(stranger.secretKey, peer));
+    expect(parsed && (await decryptPrivateConfigWith(parsed, strangerDecrypt))).toBeUndefined();
+    // The same checks as the direct builder: a bad input never reaches the encrypt.
+    await expect(
+      buildConfigEventWith({ ...input, origins: ['http://shop.example.com'] }, ownerEncrypt),
+    ).rejects.toThrow();
   });
 
   it('fails closed on a duplicated required tag', () => {

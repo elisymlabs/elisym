@@ -27,10 +27,13 @@ export {
   type StoreConfig,
   type StoreConfigInput,
   type StorePrivateConfig,
+  type PrivateConfigEncrypt,
   StoreConfigInputSchema,
   assistantDisplayName,
   buildConfigEvent,
+  buildConfigEventWith,
   decryptPrivateConfig,
+  decryptPrivateConfigWith,
   normalizeShopUrl,
   parseConfig,
 } from './events/config';
