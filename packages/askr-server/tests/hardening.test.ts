@@ -76,7 +76,7 @@ describe('gateway refusals (3)', () => {
       tier: { ...TIER, dailyBudgetUsd: '0.05' },
     }));
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, 'b'.repeat(64), NOW);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
     expect((await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).admitted).toBe(true);
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
     expect(response.status).toBe(503);
@@ -173,8 +173,8 @@ describe('gateway review round 3 (3)', () => {
   it('keeps a replaced session from being written back', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
-    const old = await state.session(store.assistant, 'b'.repeat(64), NOW);
-    const fresh = await state.session(store.assistant, 'b'.repeat(64), old.sessionEnd);
+    const old = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
+    const fresh = await state.session(store.owner, store.assistant, 'b'.repeat(64), old.sessionEnd);
     old.history = [{ role: 'user', content: [{ type: 'text', text: 'stale' }] }];
     await state.saveSession(old);
     const stored = await state.storedSession(store.assistant, 'b'.repeat(64));
@@ -198,7 +198,7 @@ describe('review round 4', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, 'b'.repeat(64), NOW);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.25', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -217,7 +217,7 @@ describe('review round 4', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, 'b'.repeat(64), NOW);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.25', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -316,7 +316,7 @@ describe('dedup and sweep (5.8)', () => {
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
     const visitor = 'b'.repeat(64);
-    const session = await state.session(store.assistant, visitor, NOW);
+    const session = await state.session(store.owner, store.assistant, visitor, NOW);
     session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
     await state.saveSession(session);
     const running = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
@@ -342,19 +342,21 @@ describe('dedup and sweep (5.8)', () => {
       ),
     ).toBe(false);
     expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0' });
-    expect((await state.session(store.assistant, visitor, session.sessionEnd)).history).toEqual([]);
+    expect(
+      (await state.session(store.owner, store.assistant, visitor, session.sessionEnd)).history,
+    ).toEqual([]);
   });
 
   it('keeps a session that has not ended', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
-    const session = await state.session(store.assistant, 'b'.repeat(64), NOW);
+    const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
     session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
     await state.saveSession(session);
     await state.sweep(NOW + 60);
-    expect((await state.session(store.assistant, 'b'.repeat(64), NOW + 60)).history).toHaveLength(
-      1,
-    );
+    expect(
+      (await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW + 60)).history,
+    ).toHaveLength(1);
   });
 });
 

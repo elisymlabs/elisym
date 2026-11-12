@@ -75,7 +75,7 @@ export async function intakeWrap(
   if (!(await state.recordRumor(chat.rumorId, now))) {
     return { action: 'drop' };
   }
-  const session = await state.session(chat.recipientPubkey, chat.senderPubkey, now);
+  const session = await state.session(store.owner, chat.recipientPubkey, chat.senderPubkey, now);
   if (check === 'expired') {
     return {
       action: 'unavailable',

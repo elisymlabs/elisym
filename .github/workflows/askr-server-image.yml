@@ -10,6 +10,17 @@ on:
     types: [completed]
     branches: [main]
 
+# One run at a time, none cancelled, so a push is never cut off half way. A
+# run does not trust its turn in the queue (CI runs of two commits can finish
+# in either order): it moves :latest only if its commit is still the head of
+# main when it pushes, so an older commit's run never moves :latest back. The
+# per-commit tag is always pushed. GitHub keeps one pending run per group, so
+# a burst of merges may skip a middle commit's image; :latest still ends on
+# the newest one.
+concurrency:
+  group: askr-server-image
+  cancel-in-progress: false
+
 jobs:
   image:
     name: Build and push
@@ -34,6 +45,25 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
+      - name: Choose the tags
+        id: tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          image=ghcr.io/elisymlabs/askr-server
+          head=$(git ls-remote origin refs/heads/main | cut -f1)
+          {
+            echo 'list<<EOF'
+            echo "$image:$VERSION-$SHA"
+            if [ "$head" = "$SHA" ]; then
+              echo "$image:latest"
+            else
+              echo "main moved on to $head: :latest is left to its run" >&2
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Login to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
@@ -48,8 +78,6 @@ jobs:
           file: packages/askr-server/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/elisymlabs/askr-server:${{ steps.version.outputs.version }}-${{ github.event.workflow_run.head_sha }}
-            ghcr.io/elisymlabs/askr-server:latest
+          tags: ${{ steps.tags.outputs.list }}
           cache-from: type=gha,scope=askr-server
           cache-to: type=gha,mode=max,scope=askr-server

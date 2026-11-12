@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import type { Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
 import {
@@ -11,7 +12,7 @@ import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
 import { runCli } from './cli';
-import { DEFAULT_TURN_RESERVE_USD, positiveUsd } from './config';
+import { DEFAULT_TURN_RESERVE_USD, positiveUsd, publicBaseOf } from './config';
 import { ShopRateLimiter } from './connectors/http';
 import { ConnectorService } from './connectors/service';
 import type { Db } from './db/db';
@@ -81,18 +82,19 @@ function masterKey(): string {
 }
 
 async function serve(db: Db, vault: KeyVault): Promise<void> {
+  const log = (message: string) => console.error(message);
   const relayUrl = process.env.ASKR_RELAY_URL ?? ASKR_RELAYS[0] ?? '';
   const gatewaySecretKey = hexToBytes(required('ASKR_GATEWAY_SECRET'));
-  const state = new PgState(db, vault);
+  const state = new PgState(db, vault, log);
   const directory = new StoreDirectory(db, vault);
   const provider = providerFromEnv();
   const reserveUsd = positiveUsd(
     'ASKR_TURN_RESERVE_USD',
     process.env.ASKR_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
   );
-  let worker: Worker | undefined;
-  const pool = createServerPool((pubkey) => worker?.isLeased(pubkey) ?? false);
-  worker = new Worker({
+  let leasedBy: Worker | undefined;
+  const pool = createServerPool((pubkey) => leasedBy?.isLeased(pubkey) ?? false);
+  const worker = new Worker({
     relayUrl,
     state,
     pool,
@@ -100,67 +102,96 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     providerFor: () => provider,
     price: priceFromEnv(),
     reserveUsd,
-    log: (message) => console.error(message),
+    log,
   });
-  await worker.start();
-  const startedWorker = worker;
-  const shutdown = () => {
-    // Give the leases up so another instance takes the stores at once (5.8).
-    connectors.stop();
-    void startedWorker
-      .shutdown()
-      .finally(() => db.close())
-      .finally(() => process.exit(0));
-  };
-  process.once('SIGTERM', shutdown);
-  process.once('SIGINT', shutdown);
-  const publisher = new StoreEventPublisher({
-    directory,
-    pool,
-    relayUrl,
-    log: (message) => console.error(message),
-  });
+  leasedBy = worker;
+  const publisher = new StoreEventPublisher({ directory, pool, relayUrl, log });
   const catalogs = worker.catalogs;
   const syncClient = poolSyncClient(pool, relayUrl);
   const connectors = new ConnectorService({
     directory,
-    holder: startedWorker.holderId,
+    holder: worker.holderId,
     client: syncClient,
     configFor: (owner) => catalogs.get(owner)?.config,
     limiter: new ShopRateLimiter(),
-    log: (message) => console.error(message),
+    log,
   });
+
+  let server: Server | undefined;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let unlisten: (() => Promise<void>) | undefined;
+  let shuttingDown = false;
+  async function stopServing(): Promise<void> {
+    server?.close();
+    clearInterval(pollTimer);
+    connectors.stop();
+    await unlisten?.().catch(() => undefined);
+    // Turns in flight get a bounded wait, then the leases are given up so another instance
+    // takes the stores at once (5.8).
+    await worker.shutdown();
+    await db.close();
+  }
+  const shutdown = () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    stopServing()
+      .catch((error: unknown) =>
+        log(`shutdown: ${error instanceof Error ? error.message : 'unknown'}`),
+      )
+      .finally(() => process.exit(0));
+  };
+  // Installed before anything starts, so a signal during startup still releases the leases.
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+
+  await worker.start();
   const onStoresChanged = () => {
     // Serve a newly active store first, then publish its stored events (7.3) and sync its connector.
-    void startedWorker
+    worker
       .refreshLeases()
       .then(() => publisher.run())
-      .then(() => connectors.refresh());
+      .then(() => connectors.refresh())
+      .catch((error: unknown) => {
+        log(`store change handling failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      });
   };
-  await db.listen(STORES_CHANNEL, onStoresChanged);
+  if (shuttingDown) {
+    return;
+  }
+  unlisten = await db.listen(STORES_CHANNEL, onStoresChanged);
+  if (shuttingDown) {
+    return;
+  }
   // The poll covers a notify missed while the listening connection was down (7.3).
-  setInterval(onStoresChanged, STORE_POLL_MS);
+  pollTimer = setInterval(onStoresChanged, STORE_POLL_MS);
   onStoresChanged();
   await connectors.start();
+  if (shuttingDown) {
+    connectors.stop();
+    return;
+  }
   const gateway = createGateway({
     state,
     gatewaySecretKey,
     widgetScript: widgetScript(),
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
-    isUnservable: (owner) => worker?.isUnservable(owner) ?? false,
+    isUnservable: (owner) => worker.isUnservable(owner),
     reserveUsd,
   });
   const admin = createAdminApi({
     directory,
-    publicBase: process.env.ASKR_PUBLIC_BASE ?? ASKR_API_BASE,
+    // A trailing slash is stripped once at startup, so NIP-98 `u` compares exactly.
+    publicBase: publicBaseOf(process.env.ASKR_PUBLIC_BASE ?? ASKR_API_BASE),
     syncClient,
     storeEventsChanged: onStoresChanged,
     connectors,
   });
   const handler = async (input: GatewayRequest): Promise<Response> =>
     (await admin(input)) ?? gateway(input);
-  serveGateway(handler, {
+  server = serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),
     trustProxy: process.env.ASKR_TRUST_PROXY === '1',
   });

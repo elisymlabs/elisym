@@ -16,6 +16,7 @@ import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
 import { z } from 'zod';
+import { publicBaseOf } from '../config';
 import type { ConnectorService } from '../connectors/service';
 import type { GatewayRequest } from '../gateway/gateway';
 import type { StoreDirectory } from '../state/stores';
@@ -105,7 +106,7 @@ function refusal(
   nextAssistant: string | undefined,
   now: number,
 ): string | undefined {
-  if (JSON.stringify(event).length > MAX_EVENT_BYTES) {
+  if (Buffer.byteLength(JSON.stringify(event), 'utf8') > MAX_EVENT_BYTES) {
     return 'too_large';
   }
   if (event.pubkey !== store.owner || !verifyEvent(event)) {
@@ -146,6 +147,8 @@ export function createAdminApi(
   deps: AdminDeps,
 ): (input: GatewayRequest) => Promise<Response | undefined> {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
+  // `https://api.askr.elisym.network/` and without the slash name the same base.
+  const publicBase = publicBaseOf(deps.publicBase);
   const syncs = new Map<string, SyncStatus>();
   const previewing = new Set<string>();
 
@@ -159,6 +162,7 @@ export function createAdminApi(
     usage: await deps.directory.usage(store.owner, store.assistant, now()),
     catalogSync: syncs.get(store.owner) ?? null,
     connector: (await deps.directory.connector(store.owner)) ?? null,
+    events: await deps.directory.eventStatus(store.owner),
   });
 
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -174,7 +178,12 @@ export function createAdminApi(
         return json({ error: 'bad_event', reason, id: event.id }, 400);
       }
     }
-    await deps.directory.addEvents(store.owner, events);
+    const added = await deps.directory.addEvents(store.owner, events);
+    if (!added.ok) {
+      return added.reason === 'stale_config'
+        ? json({ error: 'bad_event', reason: 'stale_config', id: added.id }, 400)
+        : json({ error: 'too_many_events' }, 409);
+    }
     deps.storeEventsChanged();
     return json({ stored: events.map((event) => event.id) }, 200);
   };
@@ -269,7 +278,7 @@ export function createAdminApi(
     const auth = checkNip98({
       header: request.headers.get('authorization'),
       method: request.method,
-      publicUrl: `${deps.publicBase}${url.pathname}${url.search}`,
+      publicUrl: `${publicBase}${url.pathname}${url.search}`,
       body,
       now: now(),
     });

@@ -2,7 +2,7 @@ import { SESSION_END_MARGIN_SECS, SESSION_TTL_SECS } from '@elisym/askr';
 import type { LlmMessage } from '@elisym/askr-agent';
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
-import { RUMOR_DEDUP_SECS } from '../constants';
+import { ORPHAN_RESERVATION_SECS, RUMOR_DEDUP_SECS } from '../constants';
 import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import type {
@@ -99,6 +99,7 @@ export function storeOf(row: StoreRow, vault: KeyVault): StoreRecord {
 
 interface SessionRow extends Record<string, unknown> {
   id: string;
+  owner: string;
   assistant: string;
   visitor: string;
   session_end: number;
@@ -113,6 +114,7 @@ interface SessionRow extends Record<string, unknown> {
 function sessionOf(row: SessionRow): SessionState {
   return {
     id: row.id,
+    owner: row.owner,
     assistant: row.assistant,
     visitor: row.visitor,
     sessionEnd: row.session_end,
@@ -123,9 +125,10 @@ function sessionOf(row: SessionRow): SessionState {
   };
 }
 
-function newSession(assistant: string, visitor: string, now: number): SessionState {
+function newSession(owner: string, assistant: string, visitor: string, now: number): SessionState {
   return {
     id: randomId(),
+    owner,
     assistant,
     visitor,
     sessionEnd: now + SESSION_TTL_SECS,
@@ -163,13 +166,15 @@ function askOf(row: AskRow): AskRecord {
   };
 }
 
-/** The `where` that makes a transition conditional on the store's current lease epoch (5.8). */
-function epochIsCurrent(assistantParam: string, epochParam: string): string {
-  return `exists (
-    select 1 from leases l join stores s on s.owner = l.owner
-    where s.assistant = ${assistantParam} and l.epoch = ${epochParam}
-  )`;
+/**
+ * The `where` that makes a transition conditional on the store's current
+ * lease epoch (5.8). By owner, not A: a rotation of A keeps the lease.
+ */
+function epochIsCurrent(ownerParam: string, epochParam: string): string {
+  return `exists (select 1 from leases l where l.owner = ${ownerParam} and l.epoch = ${epochParam})`;
 }
+
+const SUPERSEDED: Admission = { admitted: false, reason: 'superseded' };
 
 /**
  * The server state on Postgres (9). Money is read as `numeric` text, added
@@ -180,6 +185,7 @@ export class PgState implements ServerState {
   constructor(
     private readonly db: Db,
     private readonly vault: KeyVault,
+    private readonly log: (message: string) => void = () => undefined,
   ) {}
 
   async store(owner: string): Promise<StoreRecord | undefined> {
@@ -211,17 +217,32 @@ export class PgState implements ServerState {
         [holder, now],
       );
     });
-    return rows.map((row) => ({ store: storeOf(row, this.vault), epoch: row.epoch }));
+    // One store whose keys do not open (a corrupted row, a wrong master key) never stops the others.
+    return rows.flatMap((row) => {
+      try {
+        return [{ store: storeOf(row, this.vault), epoch: row.epoch }];
+      } catch (error) {
+        this.log(
+          `store ${row.owner} skipped: its keys do not open (${error instanceof Error ? error.message : 'unknown'})`,
+        );
+        return [];
+      }
+    });
   }
 
   async releaseLeases(holder: string): Promise<void> {
     await this.db.query('update leases set expires_at = 0 where holder = $1', [holder]);
   }
 
-  async session(assistant: string, visitor: string, now: number): Promise<SessionState> {
+  async session(
+    owner: string,
+    assistant: string,
+    visitor: string,
+    now: number,
+  ): Promise<SessionState> {
     return this.db.transaction(async (tx) => {
       // Two first messages at once: one insert wins, the other waits for it and reads its row.
-      await this.insertSession(tx, newSession(assistant, visitor, now), 'do nothing');
+      await this.insertSession(tx, newSession(owner, assistant, visitor, now), 'do nothing');
       const [existing] = await tx.query<SessionRow>(
         'select * from sessions where assistant = $1 and visitor = $2 for update',
         [assistant, visitor],
@@ -233,7 +254,7 @@ export class PgState implements ServerState {
       if (existing) {
         await this.dropSession(tx, existing.id);
       }
-      const fresh = newSession(assistant, visitor, now);
+      const fresh = newSession(owner, assistant, visitor, now);
       await this.insertSession(tx, fresh, 'fail');
       return fresh;
     });
@@ -245,10 +266,17 @@ export class PgState implements ServerState {
     onConflict: 'do nothing' | 'fail',
   ): Promise<void> {
     await tx.query(
-      `insert into sessions (assistant, visitor, id, session_end, data)
-       values ($1, $2, $3, $4, ($5::text)::jsonb)
+      `insert into sessions (owner, assistant, visitor, id, session_end, data)
+       values ($1, $2, $3, $4, $5, ($6::text)::jsonb)
        ${onConflict === 'do nothing' ? 'on conflict (assistant, visitor) do nothing' : ''}`,
-      [session.assistant, session.visitor, session.id, session.sessionEnd, sessionData(session)],
+      [
+        session.owner,
+        session.assistant,
+        session.visitor,
+        session.id,
+        session.sessionEnd,
+        sessionData(session),
+      ],
     );
   }
 
@@ -391,10 +419,9 @@ export class PgState implements ServerState {
     reserveUsd: string,
     now: number,
   ): Promise<{ attemptId: string } | { reason: 'quota' | 'budget' }> {
-    const [row] = await tx.query<StoreRow>(
-      `${STORE_SELECT} where s.assistant = $1 for update of s`,
-      [session.assistant],
-    );
+    const [row] = await tx.query<StoreRow>(`${STORE_SELECT} where s.owner = $1 for update of s`, [
+      session.owner,
+    ]);
     const tier = row ? tierOf(row) : undefined;
     if (!row || row.status !== 'active' || tier === undefined) {
       return { reason: 'budget' };
@@ -418,8 +445,8 @@ export class PgState implements ServerState {
     ]);
     const attemptId = randomId();
     await tx.query(
-      'insert into reservations (attempt_id, owner, day, amount) values ($1, $2, $3, $4)',
-      [attemptId, row.owner, day, reserveUsd],
+      'insert into reservations (attempt_id, owner, day, amount, created_at) values ($1, $2, $3, $4, $5)',
+      [attemptId, row.owner, day, reserveUsd, now],
     );
     await tx.query(
       `insert into session_days (assistant, visitor, day, used) values ($1, $2, $3, 1)
@@ -429,26 +456,21 @@ export class PgState implements ServerState {
     return { attemptId };
   }
 
-  private async writeQueued(
-    tx: Queryable,
-    session: SessionState,
-    askId: string,
-    attemptId: string,
-    epoch: number,
-  ): Promise<AskRecord> {
-    await tx.query(
-      `insert into asks (session_id, ask_id, state, attempt_id, lease_epoch, deadline)
-       values ($1, $2, 'queued', $3, $4, 0)
-       on conflict (session_id, ask_id) do update set
-         state = 'queued', attempt_id = $3, lease_epoch = $4, deadline = 0, answer_wrap = null`,
-      [session.id, askId, attemptId, epoch],
-    );
-    return { state: 'queued', attemptId, leaseEpoch: epoch, deadline: 0 };
-  }
-
-  /** Lock the session row; undefined once it was replaced or swept. */
+  /** Lock the session row; false once it was replaced or swept. */
   private async lockSession(tx: Queryable, session: SessionState): Promise<boolean> {
     const rows = await tx.query('select 1 from sessions where id = $1 for update', [session.id]);
+    return rows.length > 0;
+  }
+
+  /**
+   * Whether `epoch` is the store's current lease epoch, holding the lease row
+   * so a lease taken over meanwhile waits for this transaction (5.8).
+   */
+  private async leaseIsCurrent(tx: Queryable, owner: string, epoch: number): Promise<boolean> {
+    const rows = await tx.query('select 1 from leases where owner = $1 and epoch = $2 for share', [
+      owner,
+      epoch,
+    ]);
     return rows.length > 0;
   }
 
@@ -460,35 +482,72 @@ export class PgState implements ServerState {
     now: number,
   ): Promise<Admission> {
     return this.db.transaction(async (tx) => {
-      if (!(await this.lockSession(tx, session))) {
-        return { admitted: false, reason: 'budget' };
+      if (
+        !(await this.lockSession(tx, session)) ||
+        !(await this.leaseIsCurrent(tx, session.owner, epoch))
+      ) {
+        return SUPERSEDED;
+      }
+      // A record exists: another attempt owns the ask (a retry decides, never an overwrite).
+      const existing = await tx.query('select 1 from asks where session_id = $1 and ask_id = $2', [
+        session.id,
+        askId,
+      ]);
+      if (existing.length > 0) {
+        return SUPERSEDED;
       }
       const reserved = await this.reserveAttempt(tx, session, reserveUsd, now);
       if ('reason' in reserved) {
         return { admitted: false, reason: reserved.reason };
       }
-      const record = await this.writeQueued(tx, session, askId, reserved.attemptId, epoch);
-      return { admitted: true, record };
+      const { attemptId } = reserved;
+      const inserted = await tx.query(
+        `insert into asks (session_id, ask_id, state, attempt_id, lease_epoch, deadline)
+         values ($1, $2, 'queued', $3, $4, 0)
+         on conflict (session_id, ask_id) do nothing
+         returning 1`,
+        [session.id, askId, attemptId, epoch],
+      );
+      if (inserted.length === 0) {
+        // Unreachable under the session lock; the throw rolls the reservation back.
+        throw new Error('ask record appeared during admission');
+      }
+      return {
+        admitted: true,
+        record: { state: 'queued', attemptId, leaseEpoch: epoch, deadline: 0 },
+      };
     });
   }
 
   async retryAsk(
     session: SessionState,
     askId: string,
+    previousAttemptId: string,
     reserveUsd: string,
     epoch: number,
     now: number,
   ): Promise<Admission> {
     return this.db.transaction(async (tx) => {
-      if (!(await this.lockSession(tx, session))) {
-        return { admitted: false, reason: 'budget' };
+      if (
+        !(await this.lockSession(tx, session)) ||
+        !(await this.leaseIsCurrent(tx, session.owner, epoch))
+      ) {
+        return SUPERSEDED;
       }
       const [previous] = await tx.query<AskRow>(
         'select * from asks where session_id = $1 and ask_id = $2 for update',
         [session.id, askId],
       );
-      if (!previous) {
-        return { admitted: false, reason: 'budget' };
+      // Only the attempt the caller read is superseded; another retry got there first otherwise.
+      if (!previous || previous.attempt_id !== previousAttemptId || previous.state === 'answered') {
+        return SUPERSEDED;
+      }
+      const live =
+        (previous.state === 'queued' || previous.state === 'running') &&
+        previous.lease_epoch === epoch &&
+        previous.deadline > now * 1000;
+      if (live) {
+        return SUPERSEDED;
       }
       const reserved = await this.reserveAttempt(tx, session, reserveUsd, now);
       if ('reason' in reserved) {
@@ -500,8 +559,16 @@ export class PgState implements ServerState {
         // Real usage is unknown: the superseded attempt is charged in full.
         await this.settle(tx, previous.attempt_id, 'reserved');
       }
-      const record = await this.writeQueued(tx, session, askId, reserved.attemptId, epoch);
-      return { admitted: true, record };
+      const { attemptId } = reserved;
+      await tx.query(
+        `update asks set state = 'queued', attempt_id = $3, lease_epoch = $4, deadline = 0, answer_wrap = null
+         where session_id = $1 and ask_id = $2`,
+        [session.id, askId, attemptId, epoch],
+      );
+      return {
+        admitted: true,
+        record: { state: 'queued', attemptId, leaseEpoch: epoch, deadline: 0 },
+      };
     });
   }
 
@@ -517,7 +584,7 @@ export class PgState implements ServerState {
        where session_id = $2 and ask_id = $3 and state = 'queued'
          and attempt_id = $4 and lease_epoch = $5 and ${epochIsCurrent('$6', '$5')}
        returning 1`,
-      [deadline, session.id, askId, attemptId, epoch, session.assistant],
+      [deadline, session.id, askId, attemptId, epoch, session.owner],
     );
     return rows.length > 0;
   }
@@ -545,12 +612,17 @@ export class PgState implements ServerState {
           attemptId,
           epoch,
           now * 1000,
-          session.assistant,
+          session.owner,
         ],
       );
       if (rows.length === 0) {
         return false;
       }
+      // The answer and the history it extends are one step: a crash never keeps one without the other.
+      await tx.query('update sessions set data = ($2::text)::jsonb where id = $1', [
+        session.id,
+        sessionData(session),
+      ]);
       await this.settle(tx, attemptId, spentUsd);
       return true;
     });
@@ -578,7 +650,7 @@ export class PgState implements ServerState {
          where session_id = $1 and ask_id = $2 and state = 'running'
            and attempt_id = $3 and lease_epoch = $4 and ${epochIsCurrent('$5', '$4')}
          returning 1`,
-        [session.id, askId, attemptId, epoch, session.assistant],
+        [session.id, askId, attemptId, epoch, session.owner],
       );
       if (rows.length === 0) {
         return false;
@@ -610,33 +682,40 @@ export class PgState implements ServerState {
 
   /**
    * Attempts nobody will finish or retry (5.8): `queued` under a lease epoch
-   * that is no longer current is released, `running` past its deadline is
-   * converted into spend in full; both records become `failed`, so the next
-   * resend re-runs at once.
+   * that is no longer current, or under a lease that has expired or was given
+   * up (a suspended store's, whose epoch stays until someone takes it), is
+   * released; `running` past its deadline is converted into spend in full;
+   * both records become `failed`, so the next resend re-runs at once. Joined
+   * by owner, so a rotation of A does not hide them.
    */
   private async resolveAbandoned(now: number): Promise<void> {
     const abandoned = await this.db.query<{ session_id: string; ask_id: string }>(
       `select a.session_id, a.ask_id from asks a
        join sessions se on se.id = a.session_id
-       join stores s on s.assistant = se.assistant
-       left join leases l on l.owner = s.owner
+       left join leases l on l.owner = se.owner
        where (a.state = 'running' and a.deadline <= $1)
-          or (a.state = 'queued' and (l.epoch is null or l.epoch <> a.lease_epoch))`,
-      [now * 1000],
+          or (a.state = 'queued'
+              and (l.epoch is null or l.epoch <> a.lease_epoch or l.expires_at <= $2))`,
+      [now * 1000, now],
     );
     for (const { session_id: sessionId, ask_id: askId } of abandoned) {
       await this.db.transaction(async (tx) => {
-        const [ask] = await tx.query<AskRow & { current_epoch: number | null }>(
-          `select a.*, l.epoch as current_epoch from asks a
+        const [ask] = await tx.query<
+          AskRow & { current_epoch: number | null; lease_expires_at: number | null }
+        >(
+          `select a.*, l.epoch as current_epoch, l.expires_at as lease_expires_at from asks a
            join sessions se on se.id = a.session_id
-           join stores s on s.assistant = se.assistant
-           left join leases l on l.owner = s.owner
+           left join leases l on l.owner = se.owner
            where a.session_id = $1 and a.ask_id = $2
            for update of a`,
           [sessionId, askId],
         );
         const pastDeadline = ask?.state === 'running' && ask.deadline <= now * 1000;
-        const deadQueued = ask?.state === 'queued' && ask.current_epoch !== ask.lease_epoch;
+        const deadQueued =
+          ask?.state === 'queued' &&
+          (ask.current_epoch !== ask.lease_epoch ||
+            ask.lease_expires_at === null ||
+            ask.lease_expires_at <= now);
         if (!ask || !(pastDeadline || deadQueued)) {
           return;
         }
@@ -671,6 +750,18 @@ export class PgState implements ServerState {
       [now * 1000],
     );
     for (const { attempt_id: attemptId } of orphans) {
+      await this.db.transaction((tx) => this.settle(tx, attemptId, 'reserved'));
+    }
+    // Defense in depth: a reservation no ask references (never created so by design) is not held
+    // until the daily reset. Its turn may have run, so it is charged in full.
+    const unreferenced = await this.db.query<{ attempt_id: string }>(
+      `select r.attempt_id from reservations r
+       where r.orphan_deadline is null and r.created_at <= $1
+         and not exists (select 1 from asks a where a.attempt_id = r.attempt_id)`,
+      [now - ORPHAN_RESERVATION_SECS],
+    );
+    for (const { attempt_id: attemptId } of unreferenced) {
+      this.log(`reservation ${attemptId} had no ask: charged in full`);
       await this.db.transaction((tx) => this.settle(tx, attemptId, 'reserved'));
     }
     await this.db.query('delete from rumors where expires_at <= $1', [now]);

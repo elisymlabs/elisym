@@ -94,6 +94,15 @@ class CountingState extends PgState {
     this.lastSweep = super.sweep(now);
     return this.lastSweep;
   }
+  /** Delays of the next `rumorSeen` calls, in order, so a test can slow one intake down. */
+  rumorSeenDelaysMs: number[] = [];
+  override async rumorSeen(rumorId: string, now: number): Promise<boolean> {
+    const delay = this.rumorSeenDelaysMs.shift();
+    if (delay !== undefined) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    return super.rumorSeen(rumorId, now);
+  }
   override acquireLeases(holder: string, now: number, ttlSecs: number): Promise<LeasedStore[]> {
     this.leaseCalls += 1;
     return super.acquireLeases(holder, now, ttlSecs);
@@ -354,7 +363,12 @@ describe('worker turns (5.8)', () => {
       await waitUntil(() => received(setup, store, visitorSecret).length === index + 1);
       await setup.worker.idle();
     }
-    const session = await setup.state.session(store.assistant, getPublicKey(visitorSecret), NOW);
+    const session = await setup.state.session(
+      store.owner,
+      store.assistant,
+      getPublicKey(visitorSecret),
+      NOW,
+    );
     expect(session.history.length).toBeGreaterThan(0);
     expect(session.history.length).toBeLessThanOrEqual(20);
   });
@@ -835,14 +849,16 @@ describe('worker review round 2', () => {
       const store = syntheticStore();
       const setup = await harness({ stores: [store] });
       const visitor = 'b'.repeat(64);
-      const session = await setup.state.session(store.assistant, visitor, NOW);
+      const session = await setup.state.session(store.owner, store.assistant, visitor, NOW);
       setup.clock.now = session.sessionEnd;
       session.history = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
       await setup.state.saveSession(session);
       vi.advanceTimersByTime(60_000);
       expect(setup.state.sweepCalls).toBeGreaterThan(0);
       await setup.state.lastSweep;
-      expect((await setup.state.session(store.assistant, visitor, NOW)).history).toEqual([]);
+      expect(
+        (await setup.state.session(store.owner, store.assistant, visitor, NOW)).history,
+      ).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
@@ -1239,5 +1255,90 @@ describe('worker review round 4', () => {
     const beforeClose = opens();
     closeWraps();
     await waitUntil(() => opens() > beforeClose, 1_500);
+  });
+});
+
+describe('server core review: worker', () => {
+  it('a running record under a dead lease is re-run on a resend', async () => {
+    const store = syntheticStore();
+    const provider = heldProvider();
+    const setup = await harness({ stores: [store], provider });
+    const visitorSecret = generateSecretKey();
+    const askId = 'd1'.repeat(16);
+    ask(setup, store, visitorSecret, askId);
+    await waitUntil(() => provider.requests.length === 1);
+    // The first worker is gone with its turn still running before the deadline; another takes the store.
+    setup.worker.stop();
+    await setup.state.releaseLeases(HOLDER);
+    const second = new Worker({
+      relayUrl: RELAY,
+      state: setup.state,
+      pool: setup.pool,
+      gatewayKeys: [getPublicKey(setup.gatewaySecret)],
+      providerFor: () => provider,
+      price: PRICE,
+      holder: 'second-worker',
+      reserveUsd: '0.25',
+      now: () => setup.clock.now,
+    });
+    running.push(second);
+    await second.start();
+    expect(second.leaseOf(store.assistant)?.epoch).toBe(2);
+    ask(setup, store, visitorSecret, askId);
+    await waitUntil(() => provider.requests.length === 2);
+    provider.release();
+    await second.idle();
+    const answers = received(setup, store, visitorSecret).filter(
+      (opened) => opened.message.type === 'answer',
+    );
+    expect(answers.map((opened) => opened.message.ask_id)).toEqual([askId]);
+  });
+
+  it('a worker whose lease moved on drops an ask silently and reserves nothing', async () => {
+    const store = syntheticStore();
+    const provider = scriptedProvider(['Here.']);
+    const setup = await harness({ stores: [store], provider });
+    // Another instance took the store; this worker has not refreshed its leases yet.
+    await setup.db.query(
+      `update leases set holder = 'other', epoch = epoch + 1, expires_at = $2 where owner = $1`,
+      [store.owner, setup.clock.now + 60],
+    );
+    const visitorSecret = generateSecretKey();
+    ask(setup, store, visitorSecret, 'd2'.repeat(16));
+    await waitUntil(() => setup.logs.includes('ask dropped: superseded'));
+    await setup.worker.idle();
+    expect(received(setup, store, visitorSecret)).toEqual([]);
+    expect(provider.requests).toHaveLength(0);
+    expect(await day(setup, store)).toEqual({ spent: '0', reserved: '0' });
+  });
+
+  it('two asks of one session read back to back are taken in arrival order', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    const visitorSecret = generateSecretKey();
+    // The first intake is slow: the second must still wait behind it.
+    setup.state.rumorSeenDelaysMs.push(200);
+    ask(setup, store, visitorSecret, 'e1'.repeat(16));
+    ask(setup, store, visitorSecret, 'e2'.repeat(16));
+    await waitUntil(() => received(setup, store, visitorSecret).length === 2);
+    await setup.worker.idle();
+    expect(received(setup, store, visitorSecret).map((opened) => opened.message.ask_id)).toEqual([
+      'e1'.repeat(16),
+      'e2'.repeat(16),
+    ]);
+  });
+
+  it('a shutdown waits for a turn in flight only so long, then gives the leases up', async () => {
+    const store = syntheticStore();
+    const provider = heldProvider();
+    const setup = await harness({ stores: [store], provider });
+    ask(setup, store, generateSecretKey(), 'f1'.repeat(16));
+    await waitUntil(() => provider.requests.length === 1);
+    const started = Date.now();
+    await setup.worker.shutdown(200);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    const taken = await setup.state.acquireLeases('other', setup.clock.now, 60);
+    expect(taken.map((lease) => lease.store.owner)).toEqual([store.owner]);
+    provider.release();
   });
 });

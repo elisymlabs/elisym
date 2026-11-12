@@ -1,7 +1,22 @@
+import { buildConfigEvent } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
-import { monthStartDay, utcDay } from '../src/state/pg-state';
-import { HOLDER, NOW, TIER, leaseEpoch, stateWith, storeRecord, syntheticStore } from './fixtures';
+import { ORPHAN_RESERVATION_SECS } from '../src/constants';
+import { PgState, monthStartDay, utcDay } from '../src/state/pg-state';
+import type { StoreDirectory } from '../src/state/stores';
+import type { SessionState } from '../src/state/types';
+import {
+  HOLDER,
+  NOW,
+  ORIGIN,
+  type SyntheticStore,
+  TIER,
+  leaseEpoch,
+  stateWith,
+  storeRecord,
+  syntheticStore,
+} from './fixtures';
 
 const VISITOR = 'b'.repeat(64);
 const ASK_ID = 'a'.repeat(32);
@@ -79,7 +94,7 @@ describe('ask transitions under lease epochs (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -96,7 +111,7 @@ describe('ask transitions under lease epochs (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -111,7 +126,7 @@ describe('ask transitions under lease epochs (5.8)', () => {
     );
     expect(await state.failAsk(session, ASK_ID, attemptId, epoch, '0.01')).toBe(false);
     expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.05' });
-    const retry = await state.retryAsk(session, ASK_ID, '0.05', newEpoch, NOW + 61);
+    const retry = await state.retryAsk(session, ASK_ID, attemptId, '0.05', newEpoch, NOW + 61);
     expect(retry).toMatchObject({ admitted: true, record: { leaseEpoch: newEpoch } });
     expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0.05' });
   });
@@ -120,7 +135,7 @@ describe('ask transitions under lease epochs (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     expect((await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).admitted).toBe(true);
     await state.sweep(NOW);
     // Its lease is live: the sweep leaves it.
@@ -135,7 +150,7 @@ describe('ask transitions under lease epochs (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -155,12 +170,18 @@ describe('ask transitions under lease epochs (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
-    await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const first = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
+    if (!first.admitted) {
+      throw new Error('not admitted');
+    }
     await state.releaseLeases(HOLDER);
     const newEpoch = await leaseEpoch(state, store.assistant, NOW + 1);
     expect(newEpoch).toBe(epoch + 1);
-    expect((await state.retryAsk(session, ASK_ID, '0.05', newEpoch, NOW + 1)).admitted).toBe(true);
+    expect(
+      (await state.retryAsk(session, ASK_ID, first.record.attemptId, '0.05', newEpoch, NOW + 1))
+        .admitted,
+    ).toBe(true);
     await state.sweep(NOW + 1);
     expect(await state.askRecord(session, ASK_ID)).toMatchObject({
       state: 'queued',
@@ -173,7 +194,7 @@ describe('ask transitions under lease epochs (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -212,7 +233,7 @@ describe('budgets (5.8)', () => {
       '50',
     ]);
     const epoch = await leaseEpoch(state, store.assistant, today);
-    const session = await state.session(store.assistant, VISITOR, today);
+    const session = await state.session(store.owner, store.assistant, VISITOR, today);
     expect(await state.budgetExhausted(store.owner, today, '0.5')).toBe(false);
     expect((await state.admitAsk(session, ASK_ID, '0.5', epoch, today)).admitted).toBe(true);
     expect(await state.budgetExhausted(store.owner, today, '0.01')).toBe(true);
@@ -235,7 +256,9 @@ describe('budgets (5.8)', () => {
     ]);
     const epoch = await leaseEpoch(state, store.assistant);
     const sessions = await Promise.all(
-      ['1', '2', '3'].map((digit) => state.session(store.assistant, digit.repeat(64), NOW)),
+      ['1', '2', '3'].map((digit) =>
+        state.session(store.owner, store.assistant, digit.repeat(64), NOW),
+      ),
     );
     const results = await Promise.all(
       sessions.map((session) => state.admitAsk(session, ASK_ID, '0.04', epoch, NOW)),
@@ -265,7 +288,7 @@ describe('dedup and sessions (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -284,8 +307,8 @@ describe('dedup and sessions (5.8)', () => {
   it('saving a replaced session changes nothing', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
-    const old = await state.session(store.assistant, VISITOR, NOW);
-    const fresh = await state.session(store.assistant, VISITOR, old.sessionEnd);
+    const old = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const fresh = await state.session(store.owner, store.assistant, VISITOR, old.sessionEnd);
     expect(fresh.id).not.toBe(old.id);
     await state.saveSession({ ...old, visitorMessages: ['stale'] });
     expect(await state.storedSession(store.assistant, VISITOR)).toEqual(fresh);
@@ -294,7 +317,7 @@ describe('dedup and sessions (5.8)', () => {
   it('a history round-trips through the database', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const saved = {
       ...session,
       history: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
@@ -304,5 +327,283 @@ describe('dedup and sessions (5.8)', () => {
     };
     await state.saveSession(saved);
     expect(await state.storedSession(store.assistant, VISITOR)).toEqual(saved);
+  });
+});
+
+/** Admit and start an ask as `HOLDER`; returns the attempt id. */
+async function runningAttempt(
+  state: PgState,
+  session: SessionState,
+  askId: string,
+  epoch: number,
+  deadline: number,
+): Promise<string> {
+  const admitted = await state.admitAsk(session, askId, '0.05', epoch, NOW);
+  if (!admitted.admitted) {
+    throw new Error('not admitted');
+  }
+  expect(await state.startAsk(session, askId, admitted.record.attemptId, epoch, deadline)).toBe(
+    true,
+  );
+  return admitted.record.attemptId;
+}
+
+/** O signs a config naming `assistant` and stores it: the rotation completes (1.5). */
+async function rotateTo(directory: StoreDirectory, store: SyntheticStore, assistant: string) {
+  const config = finalizeEvent(
+    buildConfigEvent(
+      {
+        assistant,
+        origins: [ORIGIN],
+        name: 'Example Shop',
+        language: 'en',
+        currency: 'USD',
+        source: { kind: 'catalog' },
+        catalogKey: store.catalogKey,
+        createdAt: NOW,
+      },
+      store.ownerSecret,
+    ),
+    store.ownerSecret,
+  );
+  expect(await directory.addEvents(store.owner, [config])).toEqual({ ok: true });
+}
+
+describe('server core review: admission under lease handover (5.8)', () => {
+  it('a holder whose epoch moved on cannot admit, and a stale admit never overwrites the live record', async () => {
+    const store = syntheticStore();
+    const { state } = await stateWith([storeRecord(store)]);
+    const stale = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const [taken] = await state.acquireLeases('other', NOW + 61, 60);
+    const current = taken?.epoch ?? 0;
+    expect(await state.admitAsk(session, ASK_ID, '0.05', stale, NOW)).toEqual({
+      admitted: false,
+      reason: 'superseded',
+    });
+    expect(await state.askRecord(session, ASK_ID)).toBeUndefined();
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0' });
+    // The current holder runs the ask; a resend read by the stale holder changes nothing.
+    const admitted = await state.admitAsk(session, ASK_ID, '0.05', current, NOW);
+    if (!admitted.admitted) {
+      throw new Error('not admitted');
+    }
+    const { attemptId } = admitted.record;
+    await state.startAsk(session, ASK_ID, attemptId, current, NOW * 1000 + 120_000);
+    expect((await state.admitAsk(session, ASK_ID, '0.05', stale, NOW)).admitted).toBe(false);
+    expect(await state.answerAsk(session, ASK_ID, attemptId, current, WRAP, '0.01', NOW)).toBe(
+      true,
+    );
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
+  });
+
+  it('admitting an ask that already has a record is superseded and keeps that record', async () => {
+    const store = syntheticStore();
+    const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const attemptId = await runningAttempt(state, session, ASK_ID, epoch, NOW * 1000 + 120_000);
+    expect(await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).toEqual({
+      admitted: false,
+      reason: 'superseded',
+    });
+    expect(await state.askRecord(session, ASK_ID)).toMatchObject({ state: 'running', attemptId });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.05' });
+  });
+
+  it('a retry by a stale epoch, of another attempt, or of a live record is superseded', async () => {
+    const store = syntheticStore();
+    const { state } = await stateWith([storeRecord(store)]);
+    const stale = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const first = await runningAttempt(state, session, ASK_ID, stale, (NOW + 600) * 1000);
+    const [taken] = await state.acquireLeases('other', NOW + 61, 60);
+    const current = taken?.epoch ?? 0;
+    const later = NOW + 61;
+    expect(await state.retryAsk(session, ASK_ID, first, '0.05', stale, later)).toEqual({
+      admitted: false,
+      reason: 'superseded',
+    });
+    expect(
+      (await state.retryAsk(session, ASK_ID, 'f'.repeat(32), '0.05', current, later)).admitted,
+    ).toBe(false);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.05' });
+    const retry = await state.retryAsk(session, ASK_ID, first, '0.05', current, later);
+    if (!retry.admitted) {
+      throw new Error('not retried');
+    }
+    const second = retry.record.attemptId;
+    expect(await state.startAsk(session, ASK_ID, second, current, (later + 120) * 1000)).toBe(true);
+    // Live under the current epoch before its deadline: a second resend does not take it over.
+    expect(await state.retryAsk(session, ASK_ID, second, '0.05', current, later)).toEqual({
+      admitted: false,
+      reason: 'superseded',
+    });
+    // The stale holder reads that live record of the new epoch and must not take it over either.
+    expect(await state.retryAsk(session, ASK_ID, second, '0.05', stale, later)).toEqual({
+      admitted: false,
+      reason: 'superseded',
+    });
+    expect(await state.askRecord(session, ASK_ID)).toMatchObject({ attemptId: second });
+    // The first attempt was converted in full once; only the second one is held.
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0.05' });
+  });
+
+  it('the sweep charges a reservation no ask references once it is past the turn deadline and margin', async () => {
+    const store = syntheticStore();
+    const { state, db } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect((await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).admitted).toBe(true);
+    // An ask record lost by some future bug: its reservation would otherwise be held all day.
+    await db.query('delete from asks where session_id = $1', [session.id]);
+    await leaseEpoch(state, store.assistant, NOW + ORPHAN_RESERVATION_SECS - 1);
+    await state.sweep(NOW + ORPHAN_RESERVATION_SECS - 1);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.05' });
+    await state.sweep(NOW + ORPHAN_RESERVATION_SECS);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0' });
+  });
+});
+
+describe('server core review: rotation, suspension and counters (5.8)', () => {
+  it('a turn running while A rotates still answers and settles', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const attemptId = await runningAttempt(state, session, ASK_ID, epoch, NOW * 1000 + 120_000);
+    const next = await directory.beginRotation(store.owner);
+    if (next === undefined) {
+      throw new Error('no rotation');
+    }
+    await rotateTo(directory, store, next);
+    expect((await state.store(store.owner))?.assistant).toBe(next);
+    expect(await state.answerAsk(session, ASK_ID, attemptId, epoch, WRAP, '0.01', NOW)).toBe(true);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
+  });
+
+  it("the sweep resolves the old A's queued attempt once its lease moved", async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect((await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).admitted).toBe(true);
+    const next = await directory.beginRotation(store.owner);
+    if (next === undefined) {
+      throw new Error('no rotation');
+    }
+    await rotateTo(directory, store, next);
+    await state.acquireLeases('other', NOW + 61, 60);
+    await state.sweep(NOW + 61);
+    expect(await state.askRecord(session, ASK_ID)).toMatchObject({ state: 'failed' });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0' });
+  });
+
+  it("a suspended store's queued attempt is released by the next sweep", async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect((await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).admitted).toBe(true);
+    expect(await directory.setStatus(store.owner, 'suspended')).toBe(true);
+    // The holder gives the lease up (expiry 0); nobody takes it, so the epoch stays.
+    expect(await state.acquireLeases(HOLDER, NOW + 1, 60)).toEqual([]);
+    await state.sweep(NOW + 1);
+    expect(await state.askRecord(session, ASK_ID)).toMatchObject({ state: 'failed' });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0' });
+  });
+
+  it('refuses an ask for a store that is not active, reserving nothing', async () => {
+    const store = syntheticStore();
+    const { state, db } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    // The lease is still current: only the store's state refuses.
+    await db.query(`update stores set status = 'suspended' where owner = $1`, [store.owner]);
+    expect(await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW)).toEqual({
+      admitted: false,
+      reason: 'budget',
+    });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0' });
+  });
+
+  it('the per-session quota still holds after a sweep on the same day', async () => {
+    const store = syntheticStore();
+    const { state } = await stateWith([
+      { ...storeRecord(store), tier: { ...TIER, messagesPerSessionPerDay: 1 } },
+    ]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect((await state.admitAsk(session, ASK_ID, '0.01', epoch, NOW)).admitted).toBe(true);
+    await state.sweep(NOW);
+    expect(await state.admitAsk(session, OTHER_ASK, '0.01', epoch, NOW)).toEqual({
+      admitted: false,
+      reason: 'quota',
+    });
+  });
+
+  it('spend on the first day of the month counts toward the monthly budget', async () => {
+    const store = syntheticStore();
+    const today = (monthStartDay(NOW) + 1) * SECS_PER_DAY + 3_600;
+    const { state, db } = await stateWith(
+      [{ ...storeRecord(store), tier: { ...TIER, dailyBudgetUsd: '1', monthlyBudgetUsd: '1.5' } }],
+      today,
+    );
+    await db.query('insert into store_days (owner, day, spent, reserved) values ($1, $2, $3, 0)', [
+      store.owner,
+      monthStartDay(today),
+      '1',
+    ]);
+    const epoch = await leaseEpoch(state, store.assistant, today);
+    const session = await state.session(store.owner, store.assistant, VISITOR, today);
+    expect(await state.admitAsk(session, ASK_ID, '0.6', epoch, today)).toEqual({
+      admitted: false,
+      reason: 'budget',
+    });
+    expect((await state.admitAsk(session, ASK_ID, '0.5', epoch, today)).admitted).toBe(true);
+  });
+
+  it('admitting on a replaced session is refused without reserving', async () => {
+    const store = syntheticStore();
+    const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const old = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    await state.session(store.owner, store.assistant, VISITOR, old.sessionEnd);
+    expect(await state.admitAsk(old, ASK_ID, '0.05', epoch, NOW)).toEqual({
+      admitted: false,
+      reason: 'superseded',
+    });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0' });
+  });
+
+  it('a store whose sealed key does not open is skipped; the others are leased', async () => {
+    const broken = syntheticStore();
+    const fine = syntheticStore();
+    const { db, vault } = await stateWith([storeRecord(broken), storeRecord(fine)]);
+    await db.query('update stores set assistant_key = $2 where owner = $1', [
+      broken.owner,
+      vault.seal(generateSecretKey(), 'f'.repeat(64), 'assistant'),
+    ]);
+    const logs: string[] = [];
+    const state = new PgState(db, vault, (message) => logs.push(message));
+    const leases = await state.acquireLeases(HOLDER, NOW, 60);
+    expect(leases.map((lease) => lease.store.owner)).toEqual([fine.owner]);
+    expect(logs).toEqual([expect.stringContaining(`store ${broken.owner} skipped`)]);
+  });
+
+  it('an answer stores the session history in the same step; a superseded one stores nothing', async () => {
+    const store = syntheticStore();
+    const { state } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const attemptId = await runningAttempt(state, session, ASK_ID, epoch, NOW * 1000 + 120_000);
+    const late = { ...session, visitorMessages: ['late'] };
+    expect(await state.answerAsk(late, ASK_ID, 'f'.repeat(32), epoch, WRAP, '0', NOW)).toBe(false);
+    expect((await state.storedSession(store.assistant, VISITOR))?.visitorMessages).toEqual([]);
+    const answered = { ...session, visitorMessages: ['something warm?'] };
+    expect(await state.answerAsk(answered, ASK_ID, attemptId, epoch, WRAP, '0.01', NOW)).toBe(true);
+    expect((await state.storedSession(store.assistant, VISITOR))?.visitorMessages).toEqual([
+      'something warm?',
+    ]);
   });
 });

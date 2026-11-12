@@ -20,6 +20,7 @@ import {
   LEASE_RENEW_MS,
   LEASE_TTL_SECS,
   RELOAD_SLOTS,
+  SHUTDOWN_WAIT_MS,
   SUBSCRIPTION_BUDGET,
   STABLE_CONNECTION_MS,
   SWEEP_INTERVAL_MS,
@@ -101,6 +102,8 @@ export class Worker {
   /** Wrap id to expiry; insertion order is expiry order (one TTL). */
   private readonly verifiedIds = new Map<string, number>();
   private readonly sessionQueues = new Map<string, Promise<void>>();
+  /** Intake per assistant key (A), in arrival order. */
+  private readonly intakeQueues = new Map<string, Promise<void>>();
   private readonly backoff = new Backoff();
   /** Leased A (hex) to its store and lease epoch; the pre-check reads it on every wrap. */
   private leases = new Map<string, LeasedStore>();
@@ -235,10 +238,20 @@ export class Worker {
     }, SWEEP_INTERVAL_MS);
   }
 
-  /** Stop and give up this worker's leases, so another worker can take them at once. */
-  async shutdown(): Promise<void> {
+  /**
+   * Stop and give up this worker's leases, so another worker can take them at
+   * once. Turns in flight get up to `maxWaitMs` (inside Docker's 10 s stop
+   * grace); one still running then is resolved like any attempt of a dead
+   * lease (5.8).
+   */
+  async shutdown(maxWaitMs: number = SHUTDOWN_WAIT_MS): Promise<void> {
     this.stop();
-    await this.idle();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, maxWaitMs);
+    });
+    await Promise.race([this.idle(), waited]);
+    clearTimeout(timer);
     await this.deps.state.releaseLeases(this.holder);
   }
 
@@ -255,8 +268,9 @@ export class Worker {
     clearInterval(this.sweepTimer);
   }
 
-  /** Settle every queued turn (tests and shutdown). */
+  /** Settle every intake and queued turn (tests and shutdown). */
   async idle(): Promise<void> {
+    await Promise.all([...this.intakeQueues.values()]);
     await Promise.all([...this.sessionQueues.values()]);
   }
 
@@ -359,9 +373,24 @@ export class Worker {
       this.verifiedIds.delete(id);
     }
     this.verifiedIds.set(wrap.id, now + VERIFIED_IDS_TTL_SECS);
-    void this.takeWrap(wrap, now).catch((error: unknown) => {
-      this.log(`intake failed: ${error instanceof Error ? error.message : 'unknown'}`);
-    });
+    // Intake is a few awaited steps (decrypt, dedup, session), so two asks of one session read
+    // back to back could enter their session's turn queue in the wrong order. The sender is
+    // known only after decrypt, so intake is chained per recipient A (the pre-check ensured
+    // exactly one `p`): arrival order holds within a store, stores still run in parallel, and a
+    // flood to one A delays only that store. The turns themselves stay queued per session.
+    const recipient = wrap.tags.find((tag) => tag[0] === 'p')?.[1] ?? '';
+    const previous = this.intakeQueues.get(recipient) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.takeWrap(wrap, now))
+      .catch((error: unknown) => {
+        this.log(`intake failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      })
+      .finally(() => {
+        if (this.intakeQueues.get(recipient) === next) {
+          this.intakeQueues.delete(recipient);
+        }
+      });
+    this.intakeQueues.set(recipient, next);
   }
 
   private async takeWrap(wrap: NostrEvent, now: number): Promise<void> {
@@ -471,9 +500,21 @@ export class Worker {
       return;
     }
     const admitted = existing
-      ? await this.deps.state.retryAsk(session, ask.ask_id, this.deps.reserveUsd, epoch, now)
+      ? await this.deps.state.retryAsk(
+          session,
+          ask.ask_id,
+          existing.attemptId,
+          this.deps.reserveUsd,
+          epoch,
+          now,
+        )
       : await this.deps.state.admitAsk(session, ask.ask_id, this.deps.reserveUsd, epoch, now);
     if (!admitted.admitted) {
+      if (admitted.reason === 'superseded') {
+        // Our lease moved on or another attempt owns the ask: its holder answers, we stay silent.
+        this.log('ask dropped: superseded');
+        return;
+      }
       await this.refuse(store, session, ask.ask_id, admitted.reason);
       return;
     }
@@ -532,9 +573,16 @@ export class Worker {
         expiresAt: session.sessionEnd,
         now: this.now(),
       });
+      const answered: SessionState = {
+        ...session,
+        history: output.history.slice(-MAX_HISTORY_MESSAGES),
+        visitorMessages: [...session.visitorMessages, ask.text],
+        policyPassages: [...session.policyPassages, ...output.policyPassages],
+        allowedIds: output.allowedIds,
+      };
       if (
         await this.deps.state.answerAsk(
-          session,
+          answered,
           ask.ask_id,
           attemptId,
           epoch,
@@ -543,11 +591,6 @@ export class Worker {
           this.now(),
         )
       ) {
-        session.history = output.history.slice(-MAX_HISTORY_MESSAGES);
-        session.visitorMessages = [...session.visitorMessages, ask.text];
-        session.policyPassages = [...session.policyPassages, ...output.policyPassages];
-        session.allowedIds = output.allowedIds;
-        await this.deps.state.saveSession(session);
         await this.publish(wrap);
       } else if (await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, spent)) {
         // Past the deadline: the visitor was told to retry, so the late answer is dropped, its spend kept.

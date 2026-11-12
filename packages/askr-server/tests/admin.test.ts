@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http';
 import {
   type SyncRelayClient,
   buildCatalogAuth,
@@ -12,6 +13,7 @@ import { createAdminApi } from '../src/admin/api';
 import { KIND_HTTP_AUTH, checkNip98, sha256Hex } from '../src/admin/nip98';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
+import { bodyLimitOf, serveGateway } from '../src/gateway/http';
 import { HOLDER, NOW, ORIGIN, stateWith, storeRecord, syntheticStore } from './fixtures';
 
 const BASE = 'https://api.askr.test';
@@ -462,5 +464,224 @@ describe('admin API (7.3)', () => {
     expect(removed.status).toBe(200);
     expect(relay.events.find((event) => event.id === removed.body.id)?.kind).toBe(5);
     expect((await call('PUT', '/v1/admin/policies/Bad_Slug', {})).status).toBe(404);
+  });
+});
+
+/** A raw request, path sent as is (fetch would resolve `..` before sending). */
+function rawRequest(input: {
+  port: number;
+  method: string;
+  path: string;
+  body: string;
+  authorization?: string;
+}): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: input.port,
+        method: input.method,
+        path: input.path,
+        headers: {
+          'content-length': Buffer.byteLength(input.body),
+          ...(input.authorization === undefined ? {} : { authorization: input.authorization }),
+        },
+      },
+      (response) => {
+        response.resume();
+        response.on('end', () => resolve(response.statusCode ?? 0));
+      },
+    );
+    request.on('error', reject);
+    request.end(input.body);
+  });
+}
+
+describe('server core review: admin over HTTP and stored events (7.3)', () => {
+  it('chooses the body cap by the normalized path and reads no admin body without a NIP-98 header', async () => {
+    const reached: string[] = [];
+    const server = serveGateway(
+      async ({ request }) => {
+        reached.push(`${request.method} ${new URL(request.url).pathname}`);
+        return new Response('ok', { status: 200 });
+      },
+      { port: 0, trustProxy: false },
+    );
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+    const authorization = `Nostr ${Buffer.from('{}').toString('base64')}`;
+    const kib = (size: number) => 'x'.repeat(size * 1024);
+    try {
+      // A gateway path dressed as an admin one keeps the gateway's 16 KiB cap.
+      expect(
+        await rawRequest({ port, method: 'POST', path: '/v1/admin/../v1/session', body: kib(20) }),
+      ).toBe(413);
+      expect(
+        await rawRequest({
+          port,
+          method: 'POST',
+          path: '/v1/admin/%2e%2e/v1/session',
+          body: kib(20),
+          authorization,
+        }),
+      ).toBe(413);
+      expect(
+        await rawRequest({ port, method: 'POST', path: '/v1/admin/store/events', body: kib(20) }),
+      ).toBe(401);
+      expect(
+        await rawRequest({
+          port,
+          method: 'POST',
+          path: '/v1/admin/store/events',
+          body: kib(20),
+          authorization: 'Bearer abc',
+        }),
+      ).toBe(401);
+      expect(
+        await rawRequest({
+          port,
+          method: 'POST',
+          path: '/v1/admin/store/events',
+          body: kib(20),
+          authorization,
+        }),
+      ).toBe(200);
+      expect(reached).toEqual(['POST /v1/admin/store/events']);
+    } finally {
+      server.close();
+    }
+    // The size classes (a body past its cap is refused while still arriving, which a test
+    // client sending megabytes may see as a reset, so they are checked here).
+    const nostr = 'Nostr abc=';
+    expect(bodyLimitOf('POST', '/v1/session', undefined)).toBe(16 * 1024);
+    expect(bodyLimitOf('POST', '/v1/admin/catalog', nostr)).toBe(8 * 1024 * 1024);
+    expect(bodyLimitOf('PUT', '/v1/admin/catalog', nostr)).toBe(2 * 1024 * 1024);
+    expect(bodyLimitOf('POST', '/v1/admin/store/events', nostr)).toBe(2 * 1024 * 1024);
+    expect(bodyLimitOf('POST', '/v1/admin/catalog', undefined)).toBe('unauthorized');
+    expect(bodyLimitOf('POST', '/v1/admin/catalog', 'Nostr')).toBe('unauthorized');
+  });
+
+  it('refuses stored events past the per-store cap with 409', async () => {
+    const { call, store } = await setup();
+    const auths = Array.from({ length: 60 }, (_unused, index) =>
+      finalizeEvent(
+        buildCatalogAuth({
+          key: getPublicKey(generateSecretKey()),
+          mode: 'self-host',
+          createdAt: NOW - 100 + index,
+        }),
+        store.ownerSecret,
+      ),
+    );
+    for (let index = 0; index < 50; index += 10) {
+      const batch = auths.slice(index, index + 10);
+      expect((await call('POST', '/v1/admin/store/events', { events: batch })).status).toBe(200);
+    }
+    expect(await call('POST', '/v1/admin/store/events', { events: auths.slice(50, 51) })).toEqual({
+      status: 409,
+      body: { error: 'too_many_events' },
+    });
+  });
+
+  it('refuses a deletion with no address, an authorization whose key is not hex, an event over 64 KiB in UTF-8, and a stale config', async () => {
+    const { call, store } = await setup();
+    const noAddress = finalizeEvent(
+      { kind: 5, created_at: NOW, tags: [['k', '30497']], content: '' },
+      store.ownerSecret,
+    );
+    const badKey = finalizeEvent(
+      { kind: 30497, created_at: NOW, tags: [['d', 'Z'.repeat(64)]], content: '' },
+      store.ownerSecret,
+    );
+    // 30 000 three-byte characters: under 64 Ki UTF-16 units, over 64 KiB as UTF-8.
+    const wide = finalizeEvent(
+      {
+        kind: 30497,
+        created_at: NOW,
+        tags: [['d', store.catalogKey]],
+        content: '€'.repeat(30_000),
+      },
+      store.ownerSecret,
+    );
+    expect(JSON.stringify(wide).length).toBeLessThan(64 * 1024);
+    const cases: [NostrEvent, string][] = [
+      [noAddress, 'deletion_target'],
+      [badKey, 'auth_key'],
+      [wide, 'too_large'],
+    ];
+    for (const [event, reason] of cases) {
+      expect(await call('POST', '/v1/admin/store/events', { events: [event] })).toEqual({
+        status: 400,
+        body: { error: 'bad_event', reason, id: event.id },
+      });
+    }
+    const [config] = store.events;
+    if (!config) {
+      throw new Error('fixture events missing');
+    }
+    expect((await call('POST', '/v1/admin/store/events', { events: [config] })).status).toBe(200);
+    const older = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant: store.assistant,
+          origins: [ORIGIN],
+          name: 'Older',
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'catalog' },
+          catalogKey: store.catalogKey,
+          createdAt: config.created_at - 1,
+        },
+        store.ownerSecret,
+      ),
+      store.ownerSecret,
+    );
+    expect(await call('POST', '/v1/admin/store/events', { events: [older] })).toEqual({
+      status: 400,
+      body: { error: 'bad_event', reason: 'stale_config', id: older.id },
+    });
+  });
+
+  it('accepts a NIP-98 `u` with the query string, and a public base given with a trailing slash', async () => {
+    const store = syntheticStore();
+    const seeded = await stateWith([storeRecord(store)]);
+    const relay = memoryRelay();
+    const api = createAdminApi({
+      directory: seeded.directory,
+      publicBase: `${BASE}/`,
+      syncClient: relay,
+      storeEventsChanged: () => undefined,
+      connectors: new ConnectorService({
+        directory: seeded.directory,
+        holder: HOLDER,
+        client: relay,
+        configFor: () => undefined,
+        limiter: new ShopRateLimiter(0),
+      }),
+      now: () => NOW,
+    });
+    const get = async (path: string, signedUrl: string) => {
+      const response = await api({
+        request: new Request(`http://internal${path}`, {
+          headers: {
+            authorization: authHeader({ secret: store.ownerSecret, method: 'GET', url: signedUrl }),
+          },
+        }),
+        clientAddress: '203.0.113.9',
+      });
+      return { status: response?.status, body: await response?.json() };
+    };
+    expect(
+      (await get('/v1/admin/store?view=full', `${BASE}/v1/admin/store?view=full`)).status,
+    ).toBe(200);
+    expect(await get('/v1/admin/store?view=full', `${BASE}/v1/admin/store`)).toEqual({
+      status: 401,
+      body: { error: 'unauthorized', reason: 'url' },
+    });
+    expect((await get('/v1/admin/store', `${BASE}/v1/admin/store`)).body).toMatchObject({
+      owner: store.owner,
+      events: { pending: 0, failing: [] },
+    });
   });
 });

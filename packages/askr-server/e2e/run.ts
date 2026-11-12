@@ -61,9 +61,15 @@ const TIER_ARGS = [
   'true',
 ];
 const GATEWAY_PORT = 8799;
-const here = dirname(fileURLToPath(import.meta.url));
-const nowSecs = () => Math.floor(Date.now() / 1000);
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+function nowSecs(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 let failures = 0;
 function check(label: string, ok: boolean): void {
@@ -83,9 +89,17 @@ async function waitForRelay(pool: SimplePool): Promise<void> {
   throw new Error('relay did not come up');
 }
 
+/** What the database layer logged (connection losses), checked after the loss below. */
+const DB_LOGS: string[] = [];
+
+function logDb(message: string): void {
+  DB_LOGS.push(message);
+  console.error(message);
+}
+
 async function waitForDb(): Promise<Db> {
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const db = createPgDb(DATABASE_URL);
+    const db = createPgDb(DATABASE_URL, logDb);
     try {
       await db.query('select 1');
       return db;
@@ -142,7 +156,7 @@ async function races(db: Db, vault: KeyVault, directory: StoreDirectory): Promis
 
   const sessions = await Promise.all(
     Array.from({ length: 30 }, () =>
-      state.session(store.assistant, getPublicKey(generateSecretKey()), now),
+      state.session(store.owner, store.assistant, getPublicKey(generateSecretKey()), now),
     ),
   );
   const admitted = await Promise.all(
@@ -163,12 +177,130 @@ async function races(db: Db, vault: KeyVault, directory: StoreDirectory): Promis
   );
 
   const sessionPairs = await Promise.all(
-    Array.from({ length: 10 }, () => state.session(store.assistant, 'e5'.repeat(32), now)),
+    Array.from({ length: 10 }, () =>
+      state.session(store.owner, store.assistant, 'e5'.repeat(32), now),
+    ),
   );
   check(
     'ten session reads at once for a new visitor agree on one session',
     new Set(sessionPairs.map((session) => session.id)).size === 1,
   );
+
+  await handoverRace(db, vault, state);
+}
+
+/**
+ * A lease handover (5.8): instance A still uses its old epoch while B holds
+ * the new one, both admitting and retrying the same asks at once. A is never
+ * admitted, each ask has one live attempt, and once the leases are gone the
+ * sweep leaves no reservation held.
+ */
+async function handoverRace(db: Db, vault: KeyVault, state: PgState): Promise<void> {
+  const store = syntheticStore(nowSecs());
+  await insertPending(db, vault, store);
+  // Activated without a notify, so the running e2e worker does not reach for it first.
+  await db.query(`update stores set status = 'active', tier = 'tight' where owner = $1`, [
+    store.owner,
+  ]);
+  const now = nowSecs();
+  const epochOf = (leases: { store: { owner: string }; epoch: number }[]) =>
+    leases.find((lease) => lease.store.owner === store.owner)?.epoch ?? 0;
+  const stale = epochOf(await state.acquireLeases('instance-a', now, 60));
+  await state.releaseLeases('instance-a');
+  const current = epochOf(await state.acquireLeases('instance-b', now, 60));
+  const askId = 'f6'.repeat(16);
+  const sessions = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      state.session(store.owner, store.assistant, getPublicKey(generateSecretKey()), now),
+    ),
+  );
+  const admissions = await Promise.all(
+    sessions.map((session) =>
+      Promise.all([
+        state.admitAsk(session, askId, '0.01', stale, now),
+        state.admitAsk(session, askId, '0.01', current, now),
+        state.admitAsk(session, askId, '0.01', current, now),
+      ]),
+    ),
+  );
+  check(
+    'a stale epoch admits nothing and each ask is admitted once under the current one',
+    stale !== current &&
+      admissions.every(
+        ([byStale, ...byCurrent]) =>
+          byStale?.admitted === false &&
+          byCurrent.filter((admission) => admission?.admitted).length === 1,
+      ),
+  );
+  // Half the attempts run past their deadline (retryable), half are live.
+  await Promise.all(
+    sessions.map(async (session, index) => {
+      const record = await state.askRecord(session, askId);
+      if (record) {
+        const deadline = index % 2 === 0 ? now * 1000 - 1 : (now + 120) * 1000;
+        await state.startAsk(session, askId, record.attemptId, current, deadline);
+      }
+    }),
+  );
+  const retries = await Promise.all(
+    sessions.map(async (session) => {
+      const attemptId = (await state.askRecord(session, askId))?.attemptId ?? '';
+      return Promise.all([
+        state.retryAsk(session, askId, attemptId, '0.01', stale, now),
+        state.retryAsk(session, askId, attemptId, '0.01', current, now),
+        state.retryAsk(session, askId, attemptId, '0.01', current, now),
+      ]);
+    }),
+  );
+  check(
+    'a stale epoch retries nothing; a run past its deadline is retried once, a live one never',
+    retries.every(([byStale, ...byCurrent], index) => {
+      const admitted = byCurrent.filter((retry) => retry?.admitted).length;
+      return byStale?.admitted === false && admitted === (index % 2 === 0 ? 1 : 0);
+    }),
+  );
+  await state.releaseLeases('instance-b');
+  await state.sweep(now + 600);
+  const [held] = await db.query<{ count: number }>(
+    'select count(*)::int8 as count from reservations where owner = $1',
+    [store.owner],
+  );
+  const totals = await state.dayTotals(store.owner, now);
+  check(
+    'after the handover race and a sweep no reservation is held',
+    held?.count === 0 && totals.reserved === '0',
+  );
+}
+
+/**
+ * A Postgres connection loss (7.3, 9): every other backend is terminated, so
+ * idle pool clients and the LISTEN connection error. The process survives,
+ * LISTEN comes back on its own and hears a new notify.
+ */
+async function connectionLoss(db: Db): Promise<void> {
+  let heard = 0;
+  const stop = await db.listen('askr_probe', () => {
+    heard += 1;
+  });
+  // Several pool connections are idle when the backends go (an unhandled idle error would end the process).
+  await Promise.all(Array.from({ length: 5 }, () => db.query('select pg_sleep(0.05)')));
+  await db.query(
+    `select pg_terminate_backend(pid) from pg_stat_activity
+     where datname = current_database() and pid <> pg_backend_pid() and backend_type = 'client backend'`,
+  );
+  const back = await waitFor(() => (heard > 0 ? true : undefined), 15_000);
+  const before = heard;
+  await db.query(`select pg_notify('askr_probe', 'x')`);
+  const notified = await waitFor(() => (heard > before ? true : undefined), 5_000);
+  check(
+    'after Postgres dropped every connection, LISTEN came back and hears a notify',
+    back === true && notified === true,
+  );
+  check(
+    'idle pool connections that Postgres dropped were handled and logged, not left unhandled',
+    DB_LOGS.some((message) => message.startsWith('idle database connection lost')),
+  );
+  await stop();
 }
 
 async function publishAll(pool: SimplePool, events: readonly NostrEvent[]): Promise<boolean[]> {
@@ -219,7 +351,7 @@ async function waitFor<T>(
 
 async function main(): Promise<void> {
   execFileSync('docker', ['compose', 'up', '-d', '--force-recreate'], {
-    cwd: here,
+    cwd: HERE,
     stdio: 'inherit',
   });
   const client = new SimplePool();
@@ -412,6 +544,7 @@ async function main(): Promise<void> {
   );
 
   await races(db, vault, directory);
+  await connectionLoss(db);
 
   box.close();
   await worker.shutdown();
@@ -419,13 +552,13 @@ async function main(): Promise<void> {
   await db.close();
   server.close();
   client.close([RELAY]);
-  execFileSync('docker', ['compose', 'down'], { cwd: here, stdio: 'inherit' });
+  execFileSync('docker', ['compose', 'down'], { cwd: HERE, stdio: 'inherit' });
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 }
 
 main().catch((error: unknown) => {
   console.error(error);
-  execFileSync('docker', ['compose', 'down'], { cwd: here, stdio: 'inherit' });
+  execFileSync('docker', ['compose', 'down'], { cwd: HERE, stdio: 'inherit' });
   process.exit(1);
 });

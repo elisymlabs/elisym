@@ -46,6 +46,8 @@ export interface LeasedStore {
 export interface SessionState {
   /** Changes whenever the (A, V) session is replaced, so a stale copy is told apart. */
   id: string;
+  /** O: kept when A rotates, so the session's attempts stay tied to the store's lease (1.5, 5.8). */
+  owner: string;
   assistant: string;
   visitor: string;
   /** Unix seconds: first message + 24 h (4.4). */
@@ -69,9 +71,14 @@ export interface AskRecord {
   answerWrap?: NostrEvent;
 }
 
+/**
+ * `superseded`: the caller's lease epoch is no longer current, its session was
+ * replaced, or another attempt owns the record; the caller drops the ask
+ * silently (the current holder answers it, 5.8).
+ */
 export type Admission =
   | { admitted: true; record: AskRecord }
-  | { admitted: false; reason: 'quota' | 'budget' };
+  | { admitted: false; reason: 'quota' | 'budget' | 'superseded' };
 
 /**
  * The server's state (9) on Postgres; every method is one transaction.
@@ -89,10 +96,10 @@ export interface ServerState {
   /** Give up every lease `holder` holds (shutdown). */
   releaseLeases(holder: string): Promise<void>;
   /**
-   * The session for (A, V) at `now`, started at `now` when there is none or
-   * when the stored one ends within the end margin (4.4).
+   * The session for (A, V) of store O at `now`, started at `now` when there is
+   * none or when the stored one ends within the end margin (4.4).
    */
-  session(assistant: string, visitor: string, now: number): Promise<SessionState>;
+  session(owner: string, assistant: string, visitor: string, now: number): Promise<SessionState>;
   /** The stored session for (A, V), if any, without starting one. */
   storedSession(assistant: string, visitor: string): Promise<SessionState | undefined>;
   /** Store a session's new history; a no-op when another session has replaced it since. */
@@ -109,7 +116,9 @@ export interface ServerState {
   askRecord(session: SessionState, askId: string): Promise<AskRecord | undefined>;
   /**
    * Admit a new ask in one step (5.8): the quota and budget check, the
-   * reservation and the `queued` record; a refusal writes nothing.
+   * reservation and the `queued` record; a refusal writes nothing. Only under
+   * the store's current lease epoch and only when the ask has no record yet
+   * (`superseded` otherwise), so a stale holder never overwrites a live one.
    */
   admitAsk(
     session: SessionState,
@@ -124,11 +133,15 @@ export interface ServerState {
    * a new attempt and resolve what the superseded attempt still holds (`queued`
    * releases it, `running` converts it into spend in full). A retry counts
    * against the session quota like a new ask, so forced failures cannot buy
-   * unlimited turns.
+   * unlimited turns. `superseded` when the caller's epoch is not current, the
+   * stored attempt is not `previousAttemptId` (the one the caller read), or
+   * the record is live: `queued`/`running` under the current epoch before its
+   * deadline.
    */
   retryAsk(
     session: SessionState,
     askId: string,
+    previousAttemptId: string,
     reserveUsd: string,
     epoch: number,
     now: number,
@@ -141,7 +154,10 @@ export interface ServerState {
     epoch: number,
     deadline: number,
   ): Promise<boolean>;
-  /** Conditional transition `running` (attempt, epoch) to `answered`, settling spend to `spentUsd`. */
+  /**
+   * Conditional transition `running` (attempt, epoch) to `answered`, settling
+   * spend to `spentUsd` and storing `session`'s new history in the same step.
+   */
   answerAsk(
     session: SessionState,
     askId: string,

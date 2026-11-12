@@ -387,7 +387,7 @@ describe('ask records and budget (5.8)', () => {
       { ...storeRecord(store), tier: { ...TIER, messagesPerSessionPerDay: 1 } },
     ]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const first = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     expect(first.admitted).toBe(true);
     expect(await state.admitAsk(session, 'c'.repeat(32), '0.05', epoch, NOW)).toEqual({
@@ -402,7 +402,7 @@ describe('ask records and budget (5.8)', () => {
       { ...storeRecord(store), tier: { ...TIER, dailyBudgetUsd: '0.1' } },
     ]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const admitted = await state.admitAsk(session, ASK_ID, '0.06', epoch, NOW);
     if (!admitted.admitted) {
       throw new Error('not admitted');
@@ -433,13 +433,13 @@ describe('ask records and budget (5.8)', () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const first = await state.admitAsk(session, ASK_ID, '0.05', epoch, NOW);
     if (!first.admitted) {
       throw new Error('not admitted');
     }
     await state.startAsk(session, ASK_ID, first.record.attemptId, epoch, NOW * 1000 - 1);
-    const retry = await state.retryAsk(session, ASK_ID, '0.05', epoch, NOW);
+    const retry = await state.retryAsk(session, ASK_ID, first.record.attemptId, '0.05', epoch, NOW);
     expect(retry.admitted).toBe(true);
     expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.05', reserved: '0.05' });
   });
@@ -447,9 +447,16 @@ describe('ask records and budget (5.8)', () => {
   it('starts a new session within the end margin', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
-    const first = await state.session(store.assistant, VISITOR, NOW);
-    expect((await state.session(store.assistant, VISITOR, NOW + 60)).id).toBe(first.id);
-    const later = await state.session(store.assistant, VISITOR, first.sessionEnd - 4 * 60);
+    const first = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect((await state.session(store.owner, store.assistant, VISITOR, NOW + 60)).id).toBe(
+      first.id,
+    );
+    const later = await state.session(
+      store.owner,
+      store.assistant,
+      VISITOR,
+      first.sessionEnd - 4 * 60,
+    );
     expect(later.id).not.toBe(first.id);
   });
 });
@@ -471,14 +478,16 @@ describe('security review fixes', () => {
       { ...storeRecord(store), tier: { ...TIER, messagesPerSessionPerDay: 1 } },
     ]);
     const epoch = await leaseEpoch(state, store.assistant);
-    const session = await state.session(store.assistant, VISITOR, NOW);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
     const first = await state.admitAsk(session, ASK_ID, '0.01', epoch, NOW);
     if (!first.admitted) {
       throw new Error('not admitted');
     }
     await state.startAsk(session, ASK_ID, first.record.attemptId, epoch, NOW * 1000 + 60_000);
     await state.failAsk(session, ASK_ID, first.record.attemptId, epoch, '0');
-    expect(await state.retryAsk(session, ASK_ID, '0.01', epoch, NOW)).toEqual({
+    expect(
+      await state.retryAsk(session, ASK_ID, first.record.attemptId, '0.01', epoch, NOW),
+    ).toEqual({
       admitted: false,
       reason: 'quota',
     });

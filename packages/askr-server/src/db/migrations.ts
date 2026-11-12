@@ -40,7 +40,11 @@ create table store_events (
   id text primary key,
   owner text not null references stores (owner) on delete cascade,
   event jsonb not null,
-  published boolean not null default false
+  published boolean not null default false,
+  -- Publish attempts the relay refused or that failed; past the limit the event is no longer retried.
+  publish_failures integer not null default 0,
+  -- Unix seconds before which a failed event is not retried (backoff).
+  next_attempt_at bigint not null default 0
 );
 create index store_events_unpublished on store_events (owner) where not published;
 
@@ -52,6 +56,8 @@ create table leases (
 );
 
 create table sessions (
+  -- The store (O): a session keeps it when A rotates, so its attempts stay resolvable (1.5, 5.8).
+  owner text not null,
   assistant text not null,
   visitor text not null,
   id text not null unique,
@@ -71,6 +77,7 @@ create table asks (
   answer_wrap jsonb,
   primary key (session_id, ask_id)
 );
+create index asks_attempt on asks (attempt_id);
 
 create table store_days (
   owner text not null,
@@ -85,6 +92,8 @@ create table reservations (
   owner text not null,
   day integer not null,
   amount numeric(20, 9) not null,
+  -- Unix seconds: a reservation no ask references past the turn deadline plus a margin is resolved by the sweep.
+  created_at bigint not null,
   -- Set when the attempt's session ended while it was running: unix ms after which it is charged in full.
   orphan_deadline bigint
 );
