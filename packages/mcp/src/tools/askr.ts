@@ -40,7 +40,8 @@ const ProductsSchema = z
   .describe(
     `Products, at most ${MAX_PRODUCTS_PER_CALL} per call. Each: d (the product id, unique in the ` +
       'store), title, price {amount as a decimal string, currency}, and optionally summary, ' +
-      'description, images (https), url (the product page, https), topics, attrs, options, ' +
+      'description, images (https), url (the product page, https, on one of the store origins or ' +
+      'link origins, else not shown), topics, attrs, options, ' +
       'variants, visibility.',
   );
 

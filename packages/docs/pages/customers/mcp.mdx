@@ -120,6 +120,15 @@ On mainnet two more rules apply.
 - `create_agent` / `switch_agent` / `list_agents` / `stop_agent` - manage local agent identities.
 - `get_identity` - show the current agent's Nostr pubkey and Solana address.
 
+### Askr store catalog
+
+For an agent that keeps an [Askr](/askr/overview) store's products and policies with its catalog key (`elisym askr-key`). See [Catalog from an agent](/askr/catalog-from-an-agent).
+
+- `askr_upsert_products` - publish or update products; every other product stays as it is.
+- `askr_hide_products` - hide products by their ids.
+- `askr_preview_diff` - what a sync would create, update and hide, publishing nothing.
+- `askr_set_policy` - publish or replace a policy the store's assistant quotes.
+
 ### Private messages
 
 End-to-end encrypted DMs over Nostr ([Messaging](/protocol/messaging)).

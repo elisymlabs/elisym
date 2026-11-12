@@ -17,7 +17,7 @@ Then authorize that npub in the admin, under catalog keys, signed by the owner k
 
 ## MCP tools
 
-Restart the MCP server (or `switch_agent` to the agent) so it loads the key. The agent then has:
+Restart the MCP server so it loads the key (also after `--rotate`: until then it keeps the old one). The agent then has:
 
 | Tool                   | What it does                                                                                                                                                    |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -26,7 +26,7 @@ Restart the MCP server (or `switch_agent` to the agent) so it loads the key. The
 | `askr_preview_diff`    | Compares products with what the store lists and reports what would be created, updated and, with `replace`, hidden. Publishes nothing.                          |
 | `askr_set_policy`      | Publishes or replaces a policy (returns, shipping, warranty, FAQ) the assistant can quote.                                                                      |
 
-Each product has a `d` id (unique in the store), a `title` and a `price` (`amount` as a decimal string, `currency`), and optionally `summary`, `description`, `images` and `url` (https), `topics`, `attrs`, `options`, `variants` and `visibility`. A call takes at most 200 products. The tools only ever touch listings signed by this agent's key, and report a warning when the store's config reads its products or policies from another key.
+Each product has a `d` id (unique in the store), a `title` and a `price` (`amount` as a decimal string, `currency`), and optionally `summary`, `description`, `images` and `url` (https), `topics`, `attrs`, `options`, `variants` and `visibility`. A product's `url` must be on one of the origins or link origins in the store's config: a link anywhere else is not shown. A call takes at most 200 products. The tools only ever touch listings signed by this agent's key, and report a warning when the store's config reads its products or policies from another key.
 
 ## From your own code
 
