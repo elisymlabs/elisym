@@ -3,9 +3,9 @@ import {
   type CatalogItem,
   type CatalogOption,
   type CatalogVariant,
-  type StoreConfig,
   determinedVariant,
 } from '@elisym/askr';
+import { type NativeCartPlatform, nativeCartVariantId } from './native-cart';
 
 /** What the host's `window.Askr.onAddToCart` hook receives (6). */
 export interface AddToCartDetail {
@@ -119,31 +119,16 @@ export function hostAddToCartHook(scope: object = globalThis): AddToCartHook | u
   return (detail) => Reflect.apply(hook, namespace, [detail]);
 }
 
-/**
- * PHASE 3 STUB. Native add-to-cart on connector platforms (7.4: Shopify
- * `POST /cart/add.js`, Woo `?add-to-cart=`) needs the connected domain
- * verified first, which arrives with the connectors; until then no card offers
- * it, so the precedence below falls through to "no button".
- */
-export function nativeAddToCartAvailable(
-  _config: Pick<StoreConfig, 'source'>,
-  _pageOrigin: string | undefined,
-): boolean {
-  return false;
-}
-
-/** PHASE 3 STUB: performs native add-to-cart for a determined variant; never called in phase 2. */
-export function nativeAddToCartPhase3Stub(_variant: CatalogVariant): Promise<boolean> {
-  return Promise.resolve(false);
-}
-
 export type CartButton =
   /** Sold out: a label instead of any add-to-cart button; the product-page link stays. */
   | { kind: 'sold-out' }
   /** The host's hook: enabled once every selector is set. */
   | { kind: 'hook'; enabled: boolean; detail: AddToCartDetail }
-  /** Native add-to-cart once the pick determines a variant; until then it opens the product page. */
-  | { kind: 'native'; variant?: CatalogVariant }
+  /**
+   * Native add-to-cart once the pick determines a variant the platform's cart
+   * takes; until then (or for a `*` or non-numeric variant) it opens the product page.
+   */
+  | { kind: 'native'; platform: NativeCartPlatform; variant?: CatalogVariant }
   | { kind: 'none' };
 
 /**
@@ -153,7 +138,7 @@ export type CartButton =
 export function cartButton(
   item: Pick<CatalogItem, 'd' | 'sku'>,
   state: PickState,
-  environment: { hook: AddToCartHook | undefined; nativeAvailable: boolean },
+  environment: { hook: AddToCartHook | undefined; native: NativeCartPlatform | undefined },
 ): CartButton {
   if (state.soldOut) {
     return { kind: 'sold-out' };
@@ -161,8 +146,11 @@ export function cartButton(
   if (environment.hook) {
     return { kind: 'hook', enabled: state.complete, detail: addToCartDetail(item, state) };
   }
-  if (environment.nativeAvailable) {
-    return state.variant ? { kind: 'native', variant: state.variant } : { kind: 'native' };
+  if (environment.native) {
+    const { variant } = state;
+    return variant && nativeCartVariantId(variant) !== undefined
+      ? { kind: 'native', platform: environment.native, variant }
+      : { kind: 'native', platform: environment.native };
   }
   return { kind: 'none' };
 }

@@ -1,16 +1,19 @@
 // @vitest-environment happy-dom
 import {
   type CatalogItem,
+  type ConnectorPlatform,
   type StoreConfig,
   buildCatalogItemEvent,
   buildConfigEvent,
   parseCatalogItem,
   parseConfig,
 } from '@elisym/askr';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { type MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 import { type CardContext, cardPageUrl, renderCard } from '../src/ui/card-view';
 import { httpsUrl } from '../src/ui/dom';
 import { localSecs, makeStore, sign, testKey } from './fixtures';
+
+const SHOP = 'https://shop.example';
 
 function storeConfig(linkOrigins: string[] = []): StoreConfig {
   const store = makeStore({ linkOrigins });
@@ -45,19 +48,86 @@ function catalogItem(overrides: Partial<CatalogItem> = {}): CatalogItem {
   return { ...item, ...overrides };
 }
 
-function context(config: StoreConfig = storeConfig()): CardContext & { clicks: string[] } {
+function connectorConfig(platform: ConnectorPlatform): StoreConfig {
+  const store = makeStore({ source: { kind: 'connector', platform } });
+  const config = parseConfig(
+    sign(buildConfigEvent(store.configInput, store.owner.secretKey), store.owner),
+  );
+  if (!config) {
+    throw new Error('config did not parse');
+  }
+  return config;
+}
+
+function context(
+  config: StoreConfig = storeConfig(),
+  pageOrigin: string | undefined = SHOP,
+): CardContext & { clicks: string[] } {
   const clicks: string[] = [];
   return {
     document,
     config,
     reportClick: (address) => clicks.push(address),
-    pageOrigin: 'https://shop.example',
+    pageOrigin,
     clicks,
   };
 }
 
+const SIZED: Partial<CatalogItem> = {
+  options: [{ name: 'Size', values: ['S', 'M'] }],
+  variants: [
+    { id: '101', price: '49.9', available: true, values: ['S'] },
+    { id: '102', price: '49.9', available: true, values: ['M'] },
+  ],
+};
+
+const SINGLE: Partial<CatalogItem> = {
+  options: [{ name: 'Title', values: ['Default Title'] }],
+  variants: [{ id: '4242', price: '49.9', available: true, values: ['Default Title'] }],
+};
+
+function pick(card: HTMLElement, value: string): void {
+  const select = card.querySelector('select');
+  if (!select) {
+    throw new Error('no selector');
+  }
+  select.value = value;
+  select.dispatchEvent(new Event('change'));
+}
+
+function cartButtonOf(card: HTMLElement): HTMLButtonElement {
+  const button = card.querySelector<HTMLButtonElement>('button.cart');
+  if (!button) {
+    throw new Error('no cart button');
+  }
+  return button;
+}
+
+interface PendingFetch {
+  fetchMock: MockInstance<typeof fetch>;
+  answer: (status: number) => Promise<void>;
+}
+
+function pendingFetch(): PendingFetch {
+  let settle: ((response: Response) => void) | undefined;
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
+    () =>
+      new Promise<Response>((resolve) => {
+        settle = resolve;
+      }),
+  );
+  const answer = async (status: number): Promise<void> => {
+    settle?.(new Response(null, { status }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[aria-busy]')).toBeNull();
+    });
+  };
+  return { fetchMock, answer };
+}
+
 afterEach(() => {
   Reflect.deleteProperty(window, 'Askr');
+  vi.restoreAllMocks();
 });
 
 describe('card links', () => {
@@ -148,5 +218,130 @@ describe('card add-to-cart', () => {
     Reflect.deleteProperty(window, 'Askr');
     card.dispatchEvent(new Event('focusin'));
     expect(card.querySelector('button.cart')).toBeNull();
+  });
+});
+
+describe('card native add-to-cart', () => {
+  it('Shopify: busy while adding, then added; the handoff is reported once', async () => {
+    const { fetchMock, answer } = pendingFetch();
+    const ctx = context(connectorConfig('shopify'));
+    const item = catalogItem(SINGLE);
+    const card = renderCard(ctx, item);
+    document.body.append(card);
+    const button = cartButtonOf(card);
+    expect(button.textContent).toBe('Add to cart');
+    button.click();
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('Adding...');
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    button.click();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://shop.example/cart/add.js');
+    await answer(200);
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toBe('Added to cart');
+    expect(ctx.clicks).toEqual([item.address]);
+    card.remove();
+  });
+
+  it('WooCommerce: adds the determined variation through ?add-to-cart=', async () => {
+    const { fetchMock, answer } = pendingFetch();
+    const card = renderCard(context(connectorConfig('woocommerce')), catalogItem(SIZED));
+    document.body.append(card);
+    pick(card, 'M');
+    cartButtonOf(card).click();
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://shop.example/?add-to-cart=102');
+    await answer(302);
+    expect(cartButtonOf(card).textContent).toBe('Added to cart');
+    card.remove();
+  });
+
+  it('a failed add opens the product page and leaves its link with a notice', async () => {
+    const { answer } = pendingFetch();
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const ctx = context(connectorConfig('shopify'));
+    const item = catalogItem(SINGLE);
+    const card = renderCard(ctx, item);
+    document.body.append(card);
+    cartButtonOf(card).click();
+    await answer(422);
+    expect(card.querySelector('button.cart')).toBeNull();
+    expect(card.querySelector('.cart-failed')?.textContent).toBe('Could not add to cart');
+    expect(card.querySelector<HTMLAnchorElement>('a.view')?.href).toBe(
+      'https://shop.example/p/scarf',
+    );
+    expect(open).toHaveBeenCalledWith(
+      'https://shop.example/p/scarf',
+      '_blank',
+      'noopener,noreferrer',
+    );
+    expect(ctx.clicks).toEqual([item.address]);
+    card.remove();
+  });
+
+  it('a failed add without a product page restores the button for a retry', async () => {
+    const { answer } = pendingFetch();
+    const card = renderCard(
+      context(connectorConfig('shopify')),
+      catalogItem({ ...SINGLE, links: ['https://evil.example/p/scarf'] }),
+    );
+    document.body.append(card);
+    cartButtonOf(card).click();
+    await answer(500);
+    expect(cartButtonOf(card).disabled).toBe(false);
+    expect(cartButtonOf(card).textContent).toBe('Add to cart');
+    expect(card.querySelector('.cart-failed')).not.toBeNull();
+    card.remove();
+  });
+
+  it('opens the product page until the pick determines a variant', () => {
+    const card = renderCard(context(connectorConfig('shopify')), catalogItem(SIZED));
+    expect(card.querySelector('button.cart')).toBeNull();
+    expect(card.querySelector('a.view')).not.toBeNull();
+    pick(card, 'S');
+    expect(card.querySelector('a.view')).toBeNull();
+    expect(cartButtonOf(card).textContent).toBe('Add to cart');
+  });
+
+  it('never native for a * variant or a non-numeric id', () => {
+    const any = catalogItem({
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [{ id: '201', price: '49.9', available: true, values: ['*'] }],
+    });
+    const anyCard = renderCard(context(connectorConfig('woocommerce')), any);
+    pick(anyCard, 'M');
+    expect(anyCard.querySelector('button.cart')).toBeNull();
+    expect(anyCard.querySelector('a.view')).not.toBeNull();
+    const named = catalogItem({
+      ...SINGLE,
+      variants: [{ id: 'gid-1', price: '49.9', available: true, values: ['Default Title'] }],
+    });
+    expect(
+      renderCard(context(connectorConfig('shopify')), named).querySelector('button.cart'),
+    ).toBe(null);
+  });
+
+  it('no native button off the connected domain, for a feed, or a non-connector store', () => {
+    const item = catalogItem(SINGLE);
+    for (const ctx of [
+      context(connectorConfig('shopify'), 'https://other.example'),
+      { ...context(connectorConfig('shopify')), pageOrigin: undefined },
+      context(connectorConfig('google')),
+      context(storeConfig()),
+    ]) {
+      const card = renderCard(ctx, item);
+      expect(card.querySelector('button.cart')).toBeNull();
+      expect(card.querySelector('a.view')).toBeNull();
+    }
+  });
+
+  it("the host's hook wins over native", () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const onAddToCart = vi.fn();
+    Reflect.set(window, 'Askr', { onAddToCart });
+    const card = renderCard(context(connectorConfig('shopify')), catalogItem(SINGLE));
+    cartButtonOf(card).click();
+    expect(onAddToCart).toHaveBeenCalledWith({ d: 'scarf', variant: '4242' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

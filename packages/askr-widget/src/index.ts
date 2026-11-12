@@ -47,11 +47,16 @@ export {
   addToCartDetail,
   cartButton,
   hostAddToCartHook,
-  nativeAddToCartAvailable,
-  nativeAddToCartPhase3Stub,
   pickState,
   selectorsFor,
 } from './variant';
+export {
+  type NativeCartPlatform,
+  NATIVE_CART_TIMEOUT_MS,
+  nativeAddToCart,
+  nativeCartPlatform,
+  nativeCartVariantId,
+} from './native-cart';
 export { type VisitorKey, loadVisitorKey } from './visitor-key';
 export { wrapOutgoing } from './wrap-outgoing';
 export { createBrowserClient } from './browser-client';

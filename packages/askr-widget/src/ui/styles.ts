@@ -89,7 +89,7 @@ a.card-title:hover { text-decoration: underline; }
 .price { font-variant-numeric: tabular-nums; }
 .reason { font-size: 12px; color: var(--cc-muted); }
 .label { align-self: flex-start; font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--cc-surface); color: var(--cc-muted); }
-.label.sold-out { color: var(--cc-danger); }
+.label.sold-out, .label.cart-failed { color: var(--cc-danger); }
 .label.recommended { color: var(--cc-accent); }
 .selector { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .selector select { padding: 4px; border: 1px solid var(--cc-border); border-radius: 6px; background: var(--cc-bg); }
