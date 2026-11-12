@@ -24,7 +24,7 @@ export interface StoreAuthInput {
   createdAt?: number;
   /**
    * The authorization kind. Pay Core's is 30490; another protocol built on the
-   * same tag set (ComCore's catalog keys) passes its own, so Pay Core never
+   * same tag set (Askr's catalog keys) passes its own, so Pay Core never
    * reads that authorization as a store key.
    */
   kind?: number;
