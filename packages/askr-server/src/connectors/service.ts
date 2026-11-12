@@ -1,4 +1,6 @@
 import type { StoreConfig, SyncRelayClient } from '@elisym/askr';
+import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
+import { randomId } from '../state/pg-state';
 import type { ConnectorRecord, ScheduledConnector, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { PREVIEW_DEADLINE_MS } from './constants';
@@ -139,7 +141,32 @@ export class ConnectorService {
     if (store === undefined) {
       return { status: 'error', message: 'The store is gone' };
     }
-    return this.sync(store, connector, { dryRun: false, maxProducts: connector.maxProducts });
+    // The store's catalog sync guard (7.3): never alongside an admin catalog sync or preview.
+    const holder = randomId();
+    const nowSecs = () => Math.floor((this.deps.now?.() ?? Date.now()) / 1000);
+    if (
+      !(await this.deps.directory.claimCatalogSync(store.owner, holder, nowSecs(), SYNC_HOLD_SECS))
+    ) {
+      return { status: 'error', message: 'Another catalog sync of this store is running' };
+    }
+    const renewal = setInterval(() => {
+      this.deps.directory
+        .renewCatalogSync(store.owner, holder, nowSecs(), SYNC_HOLD_SECS)
+        .catch((error: unknown) =>
+          this.deps.log?.(
+            `connector sync guard renewal failed: ${error instanceof Error ? error.message : 'unknown'}`,
+          ),
+        );
+    }, SYNC_RENEW_MS);
+    try {
+      return await this.sync(store, connector, {
+        dryRun: false,
+        maxProducts: connector.maxProducts,
+      });
+    } finally {
+      clearInterval(renewal);
+      await this.deps.directory.releaseCatalogSync(store.owner, holder);
+    }
   }
 
   start(): Promise<void> {

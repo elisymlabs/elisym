@@ -310,6 +310,24 @@ describe('admin connector setup (7.3, 7.4)', () => {
       .poll(async () => (await directory.connector(store.owner))?.lastStatus, { timeout: 5_000 })
       .toMatchObject({ status: 'ok' });
     expect(relay.published.filter((event) => event.kind === 30402)).toHaveLength(3);
+    // The guard was given up: an admin sync may claim it at once.
+    expect(await directory.claimCatalogSync(store.owner, 'admin', NOW, 60)).toBe(true);
+  });
+
+  it('a scheduled sync waits while another catalog sync of the store holds the guard', async () => {
+    const { call, state, directory, store, relay } = await setup();
+    await call('PUT', '/v1/admin/connector', {
+      platform: 'shopify',
+      url: SHOP,
+      importPolicies: false,
+    });
+    await state.acquireLeases(HOLDER, NOW, 60);
+    expect(await directory.claimCatalogSync(store.owner, 'other-instance', NOW, 3_600)).toBe(true);
+    await call('POST', '/v1/admin/connector/enable');
+    await expect
+      .poll(async () => (await directory.connector(store.owner))?.lastStatus, { timeout: 5_000 })
+      .toEqual({ status: 'error', message: 'Another catalog sync of this store is running' });
+    expect(relay.published).toEqual([]);
   });
 });
 

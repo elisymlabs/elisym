@@ -33,7 +33,11 @@ export class FakeRelay implements RelayLike {
   /** When set, the socket dies right after the EOSE of a REQ matching it (no close reaches the REQ yet). */
   disconnectAfterEose: ((filters: Filter[]) => boolean) | undefined;
 
-  constructor(private readonly verify: (event: NostrEvent) => boolean) {}
+  constructor(
+    private readonly verify: (event: NostrEvent) => boolean,
+    /** Every event published on this connection, as the pool records it. */
+    private readonly onPublish: (event: NostrEvent) => void = () => undefined,
+  ) {}
 
   get open(): FakeSubscription[] {
     return this.subscriptions.filter((subscription) => !subscription.closed);
@@ -113,6 +117,7 @@ export class FakeRelay implements RelayLike {
   }
 
   async publish(event: NostrEvent): Promise<string> {
+    this.onPublish(event);
     this.accept(event);
     return '';
   }
@@ -144,7 +149,7 @@ export class FakePool implements ServerPool {
     if (existing?.connected) {
       return existing;
     }
-    const fresh = new FakeRelay(this.verify);
+    const fresh = new FakeRelay(this.verify, (event) => this.published.push(event));
     if (existing) {
       fresh.events.push(...existing.events);
       fresh.holdEose = existing.holdEose;

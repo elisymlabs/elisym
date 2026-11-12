@@ -46,3 +46,10 @@ export const SHUTDOWN_WAIT_MS = 8_000;
 export const LEASE_TTL_SECS = 60;
 /** Leases are renewed (and store states re-read) this often, well inside the TTL. */
 export const LEASE_RENEW_MS = 20_000;
+/**
+ * A catalog sync or connector preview holds its store's guard this long past
+ * its last renewal, so one whose instance died frees the store soon (7.3).
+ */
+export const SYNC_HOLD_SECS = 2 * 60;
+/** ...and renews it this often while it runs. */
+export const SYNC_RENEW_MS = 30_000;

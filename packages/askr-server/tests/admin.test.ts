@@ -474,7 +474,9 @@ describe('admin API (7.3)', () => {
       .toBe('done');
     const listings = relay.events.filter((event) => event.kind === 30402);
     expect(listings.map((event) => event.pubkey)).toEqual([server.catalogKey]);
-    expect(parseCatalogItem(listings[0] ?? relay.events[0], { now: NOW })).toBeTruthy();
+    expect(
+      parseCatalogItem(listings[0] ?? relay.events[0], { now: NOW, role: 'catalog' }),
+    ).toBeTruthy();
     const invalid = await call('POST', '/v1/admin/catalog', { items: [{ d: 'x' }] });
     expect(invalid.body.error).toBe('invalid_items');
     const tooMany = await call('POST', '/v1/admin/catalog', {

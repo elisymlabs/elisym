@@ -1,6 +1,7 @@
 import type { SyncRelayClient } from '@elisym/askr';
 import { CONNECTION_TIMEOUT_MS } from '../constants';
 import type { ServerPool } from './pool';
+import { publishToRelay } from './publish';
 import { readAllPages } from './read-all';
 
 /**
@@ -9,7 +10,7 @@ import { readAllPages } from './read-all';
  * read would re-create existing listings and miss stale ones.
  */
 export function poolSyncClient(
-  pool: Pick<ServerPool, 'ensureRelay' | 'publish'>,
+  pool: Pick<ServerPool, 'ensureRelay'>,
   relayUrl: string,
   options: { pageTimeoutMs?: number } = {},
 ): SyncRelayClient {
@@ -25,7 +26,11 @@ export function poolSyncClient(
       return read.events;
     },
     async publish(_relays, event) {
-      await Promise.any(pool.publish([relayUrl], event));
+      // nostr-tools' pool resolves a publish it could not deliver; only an OK from the relay counts.
+      const outcome = await publishToRelay(pool, relayUrl, event);
+      if (outcome.status !== 'accepted') {
+        throw new Error(`The relay did not accept ${event.id}: ${outcome.reason}`);
+      }
     },
   };
 }

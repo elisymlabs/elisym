@@ -32,6 +32,7 @@ import { Backoff } from '../relay/backoff';
 import { chunkByBytes } from '../relay/chunks';
 import { readHistory } from '../relay/history';
 import type { RelayLike, ServerPool } from '../relay/pool';
+import { publishToRelay } from '../relay/publish';
 import { randomId } from '../state/pg-state';
 import type { LeasedStore, ServerState, SessionState, StoreRecord } from '../state/types';
 import { CatalogLoader } from './catalog-loader';
@@ -451,11 +452,14 @@ export class Worker {
     return wrap;
   }
 
+  /**
+   * Best effort: an answer not delivered is stored (5.8) and re-published when
+   * the widget asks again; a status or refusal is not worth a retry.
+   */
   private async publish(wrap: NostrEvent): Promise<void> {
-    try {
-      await Promise.any(this.deps.pool.publish([this.deps.relayUrl], wrap));
-    } catch {
-      this.log('publish failed');
+    const outcome = await publishToRelay(this.deps.pool, this.deps.relayUrl, wrap);
+    if (outcome.status !== 'accepted') {
+      this.log(`publish ${outcome.status}: ${outcome.reason}`);
     }
   }
 

@@ -18,6 +18,7 @@ import { verifyEvent } from 'nostr-tools/pure';
 import { z } from 'zod';
 import { publicBaseOf } from '../config';
 import type { ConnectorService } from '../connectors/service';
+import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
 import { randomId } from '../state/pg-state';
 import type { CatalogSyncStatus, StoreDirectory } from '../state/stores';
@@ -31,13 +32,6 @@ const MAX_EVENT_BYTES = 64 * 1024;
 /** A stored event may be dated at most this far ahead (clock skew of the signer). */
 const MAX_AHEAD_SECS = 10 * 60;
 const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
-/**
- * A catalog sync or connector preview holds its store's guard this long past
- * its last renewal, so one whose instance died frees the store soon (7.3).
- */
-const SYNC_HOLD_SECS = 2 * 60;
-/** ...and renews it this often while it runs. */
-const SYNC_RENEW_MS = 30_000;
 
 const EventSchema = z.object({
   id: z.string(),
