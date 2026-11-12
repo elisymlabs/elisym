@@ -262,13 +262,10 @@ export function createAdminApi(
     if (!auth.ok) {
       return json({ error: 'unauthorized', reason: auth.reason }, 401);
     }
-    // Kept past the last second the authorization is valid in (created_at + window), so it is never accepted twice.
-    if (
-      !(await deps.directory.recordAuthId(
-        auth.event.id,
-        auth.event.created_at + AUTH_WINDOW_SECS + 1,
-      ))
-    ) {
+    // Kept past the last second the authorization is valid in (created_at + window), with one
+    // more window of slack for a sweeping instance whose clock runs ahead, so it is never accepted twice.
+    const authExpiry = Math.max(auth.event.created_at, now()) + 2 * AUTH_WINDOW_SECS + 1;
+    if (!(await deps.directory.recordAuthId(auth.event.id, authExpiry))) {
       return json({ error: 'unauthorized', reason: 'replay' }, 401);
     }
     const owner = auth.pubkey;
