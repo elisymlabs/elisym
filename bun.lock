@@ -74,6 +74,29 @@
         "nostr-tools": "~2.23.0",
       },
     },
+    "packages/askr-admin": {
+      "name": "@elisym/askr-admin",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elisym/askr": "~0.1.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+        "react": "~19.2.0",
+        "react-dom": "~19.2.0",
+      },
+      "devDependencies": {
+        "@tailwindcss/vite": "~4.2.0",
+        "@types/node": "~25.5.0",
+        "@types/react": "~19.2.0",
+        "@types/react-dom": "~19.2.0",
+        "@vitejs/plugin-react": "~4.7.0",
+        "happy-dom": "~20.14.5",
+        "tailwindcss": "~4.2.0",
+        "typescript": "~5.7.0",
+        "vite": "~6.4.0",
+        "vitest": "~3.2.6",
+      },
+    },
     "packages/askr-agent": {
       "name": "@elisym/askr-agent",
       "version": "0.1.0",
@@ -91,6 +114,26 @@
       },
       "peerDependencies": {
         "nostr-tools": "~2.23.0",
+      },
+    },
+    "packages/askr-landing": {
+      "name": "@elisym/askr-landing",
+      "version": "0.1.0",
+      "dependencies": {
+        "react": "~19.2.0",
+        "react-dom": "~19.2.0",
+      },
+      "devDependencies": {
+        "@tailwindcss/vite": "~4.2.0",
+        "@types/node": "~25.5.0",
+        "@types/react": "~19.2.0",
+        "@types/react-dom": "~19.2.0",
+        "@vitejs/plugin-react": "~4.7.0",
+        "happy-dom": "~20.14.5",
+        "tailwindcss": "~4.2.0",
+        "typescript": "~5.7.0",
+        "vite": "~6.4.0",
+        "vitest": "~3.2.6",
       },
     },
     "packages/askr-server": {
@@ -688,7 +731,11 @@
 
     "@elisym/askr": ["@elisym/askr@workspace:packages/askr"],
 
+    "@elisym/askr-admin": ["@elisym/askr-admin@workspace:packages/askr-admin"],
+
     "@elisym/askr-agent": ["@elisym/askr-agent@workspace:packages/askr-agent"],
+
+    "@elisym/askr-landing": ["@elisym/askr-landing@workspace:packages/askr-landing"],
 
     "@elisym/askr-server": ["@elisym/askr-server@workspace:packages/askr-server"],
 
