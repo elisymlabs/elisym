@@ -155,6 +155,10 @@ export function buildConfigEvent(
   if (config.source.shopUrl !== undefined && config.source.kind !== 'connector') {
     throw new Error('Only a connector source names a shop URL');
   }
+  // A feed is read from its own URL and has no cart: only Shopify and WooCommerce name a shop.
+  if (config.source.shopUrl !== undefined && config.source.platform === 'google') {
+    throw new Error('A google feed source names no shop URL');
+  }
   if (shopUrl !== undefined && !config.origins.includes(new URL(shopUrl).origin)) {
     throw new Error("The shop URL's origin must be one of the config's origins");
   }
@@ -284,8 +288,10 @@ export function parseConfig(
     }
     source.platform = sourcePlatform;
     if (sourceShopUrl !== undefined) {
-      // Fail closed: a shop URL that is not canonical, or off the config's origins, voids the config.
+      // Fail closed: a shop URL that is not canonical, off the config's origins, or on a
+      // google feed source (which names none), voids the config.
       if (
+        sourcePlatform === 'google' ||
         normalizeShopUrl(sourceShopUrl) !== sourceShopUrl ||
         !origins.includes(new URL(sourceShopUrl).origin)
       ) {

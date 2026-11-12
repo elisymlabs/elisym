@@ -157,6 +157,23 @@ describe('config', () => {
     ).toBe('https://shop.example.com/a');
   });
 
+  it('a google feed source names no shop URL: refused on build, voids the config on read', () => {
+    expect(() =>
+      config({
+        source: { kind: 'connector', platform: 'google', shopUrl: 'https://shop.example.com' },
+      }),
+    ).toThrow('A google feed source names no shop URL');
+    const event = config({ source: { kind: 'connector', platform: 'google' } });
+    expect(parseConfig(event)?.source).toEqual({ kind: 'connector', platform: 'google' });
+    const tampered = {
+      ...event,
+      tags: event.tags.map((tag) =>
+        tag[0] === 'source' ? ['source', 'connector', 'google', 'https://shop.example.com'] : tag,
+      ),
+    };
+    expect(parseConfig(tampered)).toBeUndefined();
+  });
+
   it('normalizeShopUrl gives the canonical form or nothing', () => {
     expect(normalizeShopUrl('https://shop.example.com//')).toBe('https://shop.example.com');
     expect(normalizeShopUrl('https://shop.example.com:443/a/b/')).toBe(

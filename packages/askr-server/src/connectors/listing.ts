@@ -135,6 +135,8 @@ interface FittedVariants {
   }>;
   price: string;
   visibility: Visibility;
+  /** Prices differ over all (cleaned) variants, whatever the cuts kept (7.4 step 1). */
+  priceFrom: boolean;
 }
 
 /** Variants with a valid id and price, values clipped and padded to one per option. */
@@ -184,9 +186,9 @@ function highest(variants: readonly DraftVariant[]): DraftVariant | undefined {
 
 /**
  * A variant priced differently from `anchor`, when any is: the highest-priced,
- * else the lowest-priced one. Kept next to the anchor so the builder, which
- * derives `price-from` from the kept variants, sees the prices differ when
- * they differ over all variants (7.4 step 1).
+ * else the lowest-priced one. Its existence is what `price-from` means (7.4
+ * step 1); it is also kept next to the anchor when the cuts allow, so the
+ * listed variants show the range.
  */
 function priceContrast(
   variants: readonly DraftVariant[],
@@ -252,7 +254,9 @@ function capValues(values: readonly string[], protectedValues: readonly string[]
  * lowest available, else the lowest) is ordered first and never dropped:
  * the builder requires `price` to equal the lowest kept variant's price, and
  * (1) computes it over all variants, so the variant behind it must survive.
- * Next to it a variant of another price is kept too, so `price-from` holds.
+ * Next to it a variant of another price is kept when the cuts allow, and
+ * `price-from` is passed to the builder explicitly, since a later cut (an
+ * option's `*` variants, a dead option, no variants at all) may still take it.
  *
  * A `*` never disappears from a variant (7.4: a variant containing `*` is
  * never determined): an option some kept variant has `*` in is never the one
@@ -406,6 +410,7 @@ function fitVariants(draft: ProductDraft, fitting: Fitting): FittedVariants | un
         })),
     price: anchor.price,
     visibility,
+    priceFrom: contrast !== undefined,
   };
 }
 
@@ -479,12 +484,13 @@ export function fitDraft(draft: ProductDraft): FitResult {
   let price: string;
   let visibility: Visibility;
   let sku: string | undefined;
+  let priceFrom = false;
   if (draft.variants.length > 0) {
     const fitted = fitVariants(draft, fitting);
     if (!fitted) {
       return refuse('no variant with a valid price');
     }
-    ({ options, variants, price, visibility } = fitted);
+    ({ options, variants, price, visibility, priceFrom } = fitted);
     sku = sharedSku(draft.variants);
   } else {
     const amount = draft.price === undefined ? undefined : normalizeAmount(draft.price);
@@ -522,6 +528,9 @@ export function fitDraft(draft: ProductDraft): FitResult {
     variants,
     visibility,
   };
+  if (priceFrom) {
+    listing.priceFrom = true;
+  }
   const summary = draft.summary?.trim();
   if (summary) {
     listing.summary = clipped(summary, LIMITS.TAG_VALUE_CHARS, fitting);

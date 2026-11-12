@@ -11,7 +11,8 @@ export type NativeCartPlatform = Extract<ConnectorPlatform, 'shopify' | 'woocomm
 /** A cart add that has not answered within this long counts as failed. */
 export const NATIVE_CART_TIMEOUT_MS = 15_000;
 
-const VARIANT_ID_RE = /^\d+$/;
+/** At most 15 digits: always below 2^53, so `Number` in the Shopify body keeps it exact. */
+const VARIANT_ID_RE = /^\d{1,15}$/;
 const HTTP_STATUS_OK_MIN = 200;
 const HTTP_STATUS_REDIRECT_MAX = 399;
 

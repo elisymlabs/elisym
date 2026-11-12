@@ -131,6 +131,36 @@ describe('syncConnector: Shopify', () => {
     expect(web.urls).toEqual([]);
   });
 
+  it('refuses a shop listed only as a link origin: the shop must be a config origin', async () => {
+    const keys = storeKeys();
+    const web = shopifyWeb(keys);
+    const result = await syncConnector(
+      options(keys, web, { origins: ['https://blog.example'], linkOrigins: [SHOP] }),
+    );
+    expect(result).toEqual({
+      status: 'verification_failed',
+      failures: [{ origin: SHOP, reason: 'not_configured' }],
+    });
+    expect(web.urls).toEqual([]);
+  });
+
+  it('reads the policies before publishing, so a slow publish never outlasts them', async () => {
+    const keys = storeKeys();
+    const web = shopifyWeb(keys);
+    const publish = keys.relay.publish.bind(keys.relay);
+    keys.relay.publish = async (relays, event) => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      await publish(relays, event);
+    };
+    const result = await syncConnector(options(keys, web, { deadlineMs: 100 }));
+    if (result.status !== 'ok') {
+      throw new Error(JSON.stringify(result));
+    }
+    expect(result.policyError).toBeUndefined();
+    expect(result.policies?.set).toEqual(['returns']);
+    expect(keys.relay.published.some((event) => event.kind === KIND_POLICY)).toBe(true);
+  });
+
   it('syncs nothing when the catalog is over the tier', async () => {
     const keys = storeKeys();
     const result = await syncConnector(options(keys, shopifyWeb(keys), { maxItems: 2 }));
@@ -401,6 +431,19 @@ describe('syncConnector: Google feed', () => {
       failures: [{ origin: 'https://mirror.example', reason: 'not_configured' }],
     });
     expect(keys.relay.published).toHaveLength(0);
+  });
+
+  it('accepts product links on a link origin', async () => {
+    const keys = storeKeys();
+    const web = new FakeWeb()
+      .route(FEED, { body: feed([`${SHOP}/a`]) })
+      .route(`${SHOP}/.well-known/askr`, { body: keys.ownerNpub });
+    const result = await syncConnector({
+      ...options(keys, web, { origins: ['https://blog.example'], linkOrigins: [SHOP] }),
+      platform: 'google',
+      url: FEED,
+    });
+    expect(result.status === 'ok' && result.diff.created).toEqual(['google:ITEM-0']);
   });
 
   it('fails when a configured link origin does not name the owner', async () => {

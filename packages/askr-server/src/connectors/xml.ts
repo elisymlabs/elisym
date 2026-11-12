@@ -22,7 +22,8 @@ export class XmlParseError extends Error {
 }
 
 const MAX_DEPTH = 64;
-const MAX_ELEMENTS = 2_000_000;
+/** About 10k feed items: a cap on the tree kept in memory (every element is retained). */
+const MAX_ELEMENTS = 200_000;
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9._:-]*/u;
 const ATTR_RE = /\s*([A-Za-z_][A-Za-z0-9._:-]*)\s*=\s*("([^"]*)"|'([^']*)')/uy;
 

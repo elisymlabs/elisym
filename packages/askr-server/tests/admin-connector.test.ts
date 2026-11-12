@@ -34,9 +34,16 @@ async function setup(
   options: {
     status?: 'active' | 'pending';
     source?: 'connector' | 'catalog';
-    shopUrl?: string;
+    platform?: 'shopify' | 'google';
+    /** The config's shop URL (default the shop); null signs the old form without one. */
+    shopUrl?: string | null;
+    origins?: string[];
+    linkOrigins?: string[];
   } = {},
 ) {
+  const platform = options.platform ?? 'shopify';
+  const defaultShopUrl = platform === 'google' ? null : SHOP;
+  const shopUrl = options.shopUrl === undefined ? defaultShopUrl : options.shopUrl;
   const store = syntheticStore();
   const seeded = await stateWith([{ ...storeRecord(store), status: options.status ?? 'active' }]);
   const relay = new MemoryRelay();
@@ -50,7 +57,8 @@ async function setup(
     buildConfigEvent(
       {
         assistant: store.assistant,
-        origins: [SHOP],
+        origins: options.origins ?? [SHOP],
+        linkOrigins: options.linkOrigins ?? [],
         name: 'Shop',
         language: 'en',
         currency: 'USD',
@@ -59,8 +67,8 @@ async function setup(
             ? { kind: 'catalog' }
             : {
                 kind: 'connector',
-                platform: 'shopify',
-                ...(options.shopUrl === undefined ? {} : { shopUrl: options.shopUrl }),
+                platform,
+                ...(shopUrl === null ? {} : { shopUrl }),
               },
         catalogKey: store.catalogKey,
         createdAt: NOW - 50,
@@ -214,6 +222,43 @@ describe('admin connector setup (7.3, 7.4)', () => {
     expect((await pathed.call('POST', '/v1/admin/connector/preview')).body.result.status).toBe(
       'ok',
     );
+  });
+
+  it('refuses a config without the shop URL (the old form), even when the shop is a link origin', async () => {
+    const old = await setup({ shopUrl: null });
+    await old.call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
+    const refusal = {
+      status: 'error',
+      message:
+        'The store config does not name the shop URL: sign the config again with the shop URL',
+    };
+    expect((await old.call('POST', '/v1/admin/connector/preview')).body.result).toEqual(refusal);
+    expect(old.web.requests).toEqual([]);
+
+    const linked = await setup({
+      shopUrl: null,
+      origins: ['https://blog.example'],
+      linkOrigins: [SHOP],
+    });
+    await linked.call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
+    expect((await linked.call('POST', '/v1/admin/connector/preview')).body.result).toEqual(refusal);
+    expect(linked.web.requests).toEqual([]);
+  });
+
+  it('a feed needs no shop URL, and its product links may be on a link origin', async () => {
+    const feedUrl = 'https://feeds.example/products.xml';
+    const feed = await setup({
+      platform: 'google',
+      origins: ['https://blog.example'],
+      linkOrigins: [SHOP],
+    });
+    feed.web.route(feedUrl, {
+      body: `<?xml version="1.0"?><rss version="2.0" xmlns:g="http://base.google.com/ns/1.0"><channel><item><g:id>ITEM-1</g:id><title>Item</title><link>${SHOP}/a</link><g:price>10.00 EUR</g:price><g:availability>in_stock</g:availability></item></channel></rss>`,
+    });
+    await feed.call('PUT', '/v1/admin/connector', { platform: 'google', url: feedUrl });
+    const preview = await feed.call('POST', '/v1/admin/connector/preview');
+    expect(preview.body.result.status).toBe('ok');
+    expect(preview.body.result.diff.created).toEqual(['google:ITEM-1']);
   });
 
   it('a scheduled sync saves its status', async () => {

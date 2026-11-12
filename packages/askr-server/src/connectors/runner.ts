@@ -15,6 +15,7 @@ import {
   fetchShopifyCurrency,
   fetchShopifyPolicies,
   fetchShopifyProducts,
+  type ImportedPolicy,
   mapShopifyProduct,
 } from './shopify';
 import { type VerificationFailure, verifyOrigins } from './verification';
@@ -57,8 +58,10 @@ export interface ConnectorSyncOptions {
   /** The store's server K, 30497-authorized by O; signs listings and imported policies. */
   serverKey: Uint8Array;
   client: SyncRelayClient;
-  /** The store config's `origin` and `link-origin` entries. */
+  /** The store config's `origin` entries: a Shopify/Woo shop must be on one of these. */
   origins: readonly string[];
+  /** The store config's `link-origin` entries: a feed's product links may be on these too. */
+  linkOrigins?: readonly string[];
   fetch?: FetchGuardDeps;
   /** Share one across syncs: the per-shop rate limit. */
   limiter?: ShopRateLimiter;
@@ -228,12 +231,14 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
   try {
     const url = checkUrl(options.url);
     const configured = options.origins.map((origin) => originOf(origin) ?? origin);
+    const linkConfigured = (options.linkOrigins ?? []).map((origin) => originOf(origin) ?? origin);
     let catalog: FetchedCatalog;
     if (options.platform === 'google') {
       catalog = await fetchGoogle(http, url.toString(), nowSecs * 1000);
     } else {
-      // Shopify/Woo: the shop's own origin, one of the config's (its product pages are the
-      // listings' links, K12) and verified before anything is read.
+      // Shopify/Woo: the shop's own origin, one of the config's `origin` entries (the widget
+      // runs and adds to the cart there; a `link-origin` is only a link target, K12) and
+      // verified before anything is read.
       const failures = await verifyOrigins(http, [url.origin], configured, options.owner);
       if (failures.length > 0) {
         return { status: 'verification_failed', failures };
@@ -255,9 +260,26 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
       const linkOrigins = items
         .map((item) => (item.url === undefined ? undefined : originOf(item.url)))
         .filter((origin) => origin !== undefined);
-      const failures = await verifyOrigins(http, linkOrigins, configured, options.owner);
+      const failures = await verifyOrigins(
+        http,
+        linkOrigins,
+        [...configured, ...linkConfigured],
+        options.owner,
+      );
       if (failures.length > 0) {
         return { status: 'verification_failed', failures };
+      }
+    }
+    // Shopify policies are read before anything is published: publishing a large catalog
+    // may outlast the sync deadline, which only bounds the shop reads.
+    const importPolicies = options.platform === 'shopify' && options.importPolicies !== false;
+    let policies: ImportedPolicy[] | undefined;
+    let policyError: string | undefined;
+    if (importPolicies) {
+      try {
+        policies = await fetchShopifyPolicies(http, url.origin);
+      } catch (error) {
+        policyError = errorMessage(error);
       }
     }
     const diff = await syncCatalog({
@@ -279,9 +301,10 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
     if (options.dryRun) {
       result.items = items;
     }
-    if (options.platform === 'shopify' && options.importPolicies !== false) {
+    if (policyError !== undefined) {
+      result.policyError = policyError;
+    } else if (policies !== undefined) {
       try {
-        const policies = await fetchShopifyPolicies(http, url.origin);
         result.policies = await syncImportedPolicies({
           signer: options.serverKey,
           store: options.owner,

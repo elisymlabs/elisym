@@ -5,7 +5,7 @@ import { ComparisonComponentSchema, newAskId } from '../src/chat/messages';
 import { unwrapChatMessage } from '../src/chat/wrap';
 import { KIND_CATALOG_AUTH } from '../src/constants';
 import { buildCatalogAuth, readCatalogAuthority } from '../src/events/catalog-auth';
-import { buildCatalogItemEvent } from '../src/events/catalog-item';
+import { buildCatalogItemEvent, parseCatalogItem } from '../src/events/catalog-item';
 import { syncCatalog } from '../src/sync';
 import { craftWrap } from './craft';
 import { MemoryRelay, NOW, sign, testKey } from './fixtures';
@@ -163,6 +163,39 @@ describe('authority and builder rules', () => {
       ],
     });
     expect(same.tags.some((tag) => tag[0] === 'price-from')).toBe(false);
+  });
+
+  it('honours an explicit priceFrom: true the listed variants cannot show', () => {
+    const base = { d: 'x', title: 'X', price: { amount: '5', currency: 'USD' } };
+    const noVariants = buildCatalogItemEvent({ ...base, priceFrom: true });
+    const oneVariant = buildCatalogItemEvent({
+      ...base,
+      priceFrom: true,
+      options,
+      variants: [{ id: 'a', price: '5', available: true, values: ['S'] }],
+    });
+    const variantCounts = [noVariants, oneVariant].map((template) => {
+      expect(template.tags).toContainEqual(['price-from', '1']);
+      const read = parseCatalogItem(
+        { ...template, pubkey: catalog.pubkey },
+        { role: 'catalog', now: NOW },
+      );
+      expect(read?.priceFrom).toBe(true);
+      return read?.variants.length;
+    });
+    expect(variantCounts).toEqual([0, 1]);
+    // false never takes away what the listed variants show.
+    const differ = buildCatalogItemEvent({
+      ...base,
+      priceFrom: false,
+      options,
+      variants: [
+        { id: 'a', price: '5', available: true, values: ['S'] },
+        { id: 'b', price: '6', available: true, values: ['M'] },
+      ],
+    });
+    expect(differ.tags).toContainEqual(['price-from', '1']);
+    expect(buildCatalogItemEvent(base).tags.some((tag) => tag[0] === 'price-from')).toBe(false);
   });
 
   it('lets a fully sold-out product be hidden', () => {

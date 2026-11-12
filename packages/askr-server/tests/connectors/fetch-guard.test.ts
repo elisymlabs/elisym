@@ -50,6 +50,7 @@ describe('isPublicAddress', () => {
     '::1',
     'fe80::1',
     'fe80::1%eth0',
+    '2a00:1450::1%eth0',
     'fc00::1',
     'fd00:ec2::254',
     '::ffff:127.0.0.1',

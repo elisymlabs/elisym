@@ -51,6 +51,9 @@ function configRefusal(
   }
   // The widget adds to the cart of the shop the config names (6, 7.4): it must be this one.
   const shopUrl = config.source.shopUrl;
+  if (connector.platform !== 'google' && shopUrl === undefined) {
+    return 'The store config does not name the shop URL: sign the config again with the shop URL';
+  }
   if (shopUrl !== undefined && shopIdentity(shopUrl) !== shopIdentity(connector.url)) {
     return 'The store config names another shop URL than the connector';
   }
@@ -103,7 +106,8 @@ export class ConnectorService {
       owner: store.owner,
       serverKey: store.catalogSecretKey,
       client: this.deps.client,
-      origins: [...config.origins, ...config.linkOrigins],
+      origins: config.origins,
+      linkOrigins: config.linkOrigins,
       limiter: this.deps.limiter,
       maxItems: options.maxProducts,
       importPolicies: connector.importPolicies,

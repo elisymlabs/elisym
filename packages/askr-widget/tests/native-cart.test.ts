@@ -75,6 +75,21 @@ describe('nativeCartVariantId', () => {
     }
     expect(nativeCartVariantId({ id: '4242', values: ['S', '*'] })).toBeUndefined();
   });
+
+  it('takes at most 15 digits, so Number() never turns the id into another variant', async () => {
+    expect(nativeCartVariantId({ id: '999999999999999', values: [] })).toBe('999999999999999');
+    // 2^53 + 1: Number() would send 9007199254740992, a different variant.
+    const tooLong = { id: '9007199254740993', values: [] };
+    expect(nativeCartVariantId(tooLong)).toBeUndefined();
+    const fetchImpl = respond(200);
+    expect(await nativeAddToCart('shopify', SHOP, tooLong, fetchImpl)).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const fits = respond(200);
+    await nativeAddToCart('shopify', SHOP, { id: '999999999999999', values: [] }, fits);
+    expect(JSON.parse(String(requestOf(fits)[1].body))).toEqual({
+      items: [{ id: 999_999_999_999_999, quantity: 1 }],
+    });
+  });
 });
 
 describe('nativeAddToCart', () => {

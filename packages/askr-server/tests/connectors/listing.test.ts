@@ -383,6 +383,30 @@ describe('(3) at most 5 options, preferring those that differ', () => {
     expect(result.listing.price.amount).toBe('5');
     expect(result.listing.options).toHaveLength(5);
     expect(result.truncated).toBe(true);
+    // The 6 variant is gone, but the product's prices still differ.
+    expect(buildCatalogItemEvent(result.listing).tags).toContainEqual(['price-from', '1']);
+  });
+
+  it('keeps price-from when the * cut takes the variant of the other price', () => {
+    const names = ['A', 'B', 'C', 'D', 'E', 'F'];
+    const options = names.map((name) => ({ name, values: ['t1', 't2'], terms: ['t1', 't2'] }));
+    const result = fitted(
+      fitDraft(
+        draft({
+          platform: 'woocommerce',
+          options,
+          variants: [
+            variant('1', '5', true, ['t1', 't1', 't1', 't1', 't1', 't1']),
+            variant('2', '9', true, ['', '', '', '', '', '']),
+          ],
+        }),
+      ),
+    );
+    expect(result.listing.variants?.map((entry) => entry.id)).toEqual(['1']);
+    expect(result.listing.price.amount).toBe('5');
+    const event = { ...buildCatalogItemEvent(result.listing), pubkey: 'a'.repeat(64) };
+    expect(event.tags).toContainEqual(['price-from', '1']);
+    expect(parseCatalogItem(event, { role: 'catalog', now: 1 })?.priceFrom).toBe(true);
   });
 
   it('drops an unnamed option or a repeated option name', () => {
@@ -467,6 +491,42 @@ describe('(4) option values from the kept variants', () => {
     expect(tags.filter((tag) => tag[0] === 'variant')).toEqual([]);
   });
 
+  it('keeps price-from when a dead * option leaves no variants', () => {
+    const result = fitted(
+      fitDraft(
+        draft({
+          platform: 'woocommerce',
+          options: [{ name: 'Engraving', values: [] }],
+          variants: [variant('1', '10', true, ['']), variant('2', '20', true, [''])],
+        }),
+      ),
+    );
+    expect(result.listing.variants).toEqual([]);
+    expect(result.listing.options).toEqual([]);
+    expect(result.listing.price.amount).toBe('10');
+    expect(buildCatalogItemEvent(result.listing).tags).toContainEqual(['price-from', '1']);
+  });
+
+  it('a * option takes the attribute terms, not the option values, when they differ', () => {
+    const result = fitted(
+      fitDraft(
+        draft({
+          platform: 'woocommerce',
+          options: [
+            { name: 'Size', values: ['X'], terms: ['S', 'M', 'L'] },
+            { name: 'Color', values: ['Black'] },
+          ],
+          variants: [variant('1', '10', true, ['', 'Black'])],
+        }),
+      ),
+    );
+    expect(result.listing.options).toEqual([
+      { name: 'Size', values: ['S', 'M', 'L'] },
+      { name: 'Color', values: ['Black'] },
+    ]);
+    expect(result.listing.variants?.map((entry) => entry.values)).toEqual([['*', 'Black']]);
+  });
+
   it('never leaves a variant that had * looking determined', () => {
     // Engraving is `*` (no terms) on variant 2 only; the option has values from variant 1,
     // so it stays, and variant 2 keeps its *.
@@ -526,6 +586,33 @@ describe('(5) at most 10 values per option', () => {
     expect(values).toContain('13');
     expect(result.listing.variants?.[0]?.id).toBe('v13');
     expect(result.listing.visibility).toBe('on-sale');
+  });
+
+  it('never swaps the price-defining value out for the contrast value', () => {
+    const pricesBySize = new Map([
+      ['10', '1'],
+      ['13', '99'],
+    ]);
+    // The anchor (cheapest) is on "10", the contrast (dearest) on "13": "13" must take
+    // a slot that is not "10", or the anchor is cut and the product refused.
+    const result = fitted(
+      fitDraft(
+        draft({
+          options: [{ name: 'Size', values: sizes }],
+          variants: sizes.map((size) =>
+            variant(`v${size}`, pricesBySize.get(size) ?? '50', true, [size]),
+          ),
+        }),
+      ),
+    );
+    const values = result.listing.options?.[0]?.values ?? [];
+    expect(values).toHaveLength(10);
+    expect(values).toContain('10');
+    expect(values).toContain('13');
+    expect(result.listing.price.amount).toBe('1');
+    expect(result.listing.variants?.map((entry) => entry.id)).toEqual(
+      expect.arrayContaining(['v10', 'v13']),
+    );
   });
 
   it('never drops every variant: the first (price-defining) one survives every cut', () => {

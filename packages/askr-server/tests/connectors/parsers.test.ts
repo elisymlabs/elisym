@@ -90,6 +90,13 @@ describe('parseXml', () => {
     expect(items[0]?.get('description')).toEqual(['&web;']);
   });
 
+  it('refuses a document over 200 000 elements, and parses one at the cap', () => {
+    const elements = (count: number) => `<rss>${'<a/>'.repeat(count - 1)}</rss>`;
+    expect(parseXml(elements(200_000)).children).toHaveLength(199_999);
+    expect(() => parseXml(elements(200_001))).toThrow(new XmlParseError('Too many elements'));
+    expect(() => parseGoogleFeed(elements(200_001))).toThrow(FeedFormatError);
+  });
+
   it('decodes only the predefined entities and numeric references', () => {
     expect(parseXml('<a>&lt;&#65;&#x42;&#0;&nbsp;</a>').text).toBe('<AB�&nbsp;');
   });

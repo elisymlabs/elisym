@@ -364,7 +364,12 @@ describe('card native add-to-cart', () => {
       // A config naming no shop URL (the old two-value source): native stays off.
       context(connectorConfig('shopify', null)),
       { ...context(connectorConfig('shopify')), pageOrigin: undefined },
-      context(connectorConfig('google')),
+      context(connectorConfig('google', null)),
+      // A feed names no shop URL (the reader voids one); native stays off even if it did.
+      context({
+        ...connectorConfig('google', null),
+        source: { kind: 'connector', platform: 'google', shopUrl: SHOP },
+      }),
       context(storeConfig()),
     ]) {
       const card = renderCard(ctx, item);
