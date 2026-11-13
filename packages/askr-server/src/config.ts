@@ -94,35 +94,76 @@ function required(env: Env, name: string): string {
 
 export type ModelConfig =
   | { kind: 'anthropic'; apiKey: string; model: string; effort?: Effort }
-  | { kind: 'openrouter'; apiKey: string; model: string; providers?: string[] };
+  | { kind: 'openrouter'; apiKey: string; model: string; providers: string[] };
 
-/** A DeepSeek model under any author or casing ("deepseek/...", "DeepSeek/...", ".../deepseek-r1"). */
-const DEEPSEEK_MODEL_RE = /deepseek/i;
-/** OpenRouter's slug for DeepSeek's own (China-hosted) endpoint. */
-const DEEPSEEK_HOST_RE = /^deepseek$/i;
+// cspell:disable
+/**
+ * OpenRouter hosts that serve from the US or the EU (spec 8: visitor data stays there). To add
+ * one, check where it hosts on its OpenRouter provider page, then add its slug here.
+ */
+export const OPENROUTER_HOSTS: readonly string[] = [
+  'together',
+  'fireworks',
+  'baseten',
+  'deepinfra',
+  'parasail',
+  'crusoe',
+  'coreweave',
+  'modal',
+  'digitalocean',
+  'google-vertex',
+  'amazon-bedrock',
+  'azure',
+  'anthropic',
+  'openai',
+  'google-ai-studio',
+  'groq',
+  'cerebras',
+  'sambanova',
+  'lambda',
+  'nebius',
+  'mistral',
+  'venice',
+];
+/** China-hosted OpenRouter hosts: never, whatever the model. */
+const CHINA_HOSTED: readonly string[] = [
+  'deepseek',
+  'siliconflow',
+  'baidu',
+  'alibaba',
+  'streamlake',
+  'atlas-cloud',
+];
+// cspell:enable
+/** A slug, with an optional variant ("fireworks/us"). */
+const HOST_SLUG_RE = /^([a-z0-9-]+)(?:\/[a-z0-9-]+)?$/u;
 
 /**
- * ASKR_OPENROUTER_PROVIDERS: the OpenRouter hosts a request may go to, comma-separated
- * ("together,fireworks"). A DeepSeek model needs it, without DeepSeek's own host: visitor data
- * never goes to a China-hosted endpoint (spec 8).
+ * ASKR_OPENROUTER_PROVIDERS: the hosts an OpenRouter request may go to, comma-separated
+ * ("together,fireworks"), required for every OpenRouter model, each one a listed US or EU host
+ * (OPENROUTER_HOSTS), never a China-hosted one: OpenRouter is told to use only these, with no
+ * fallback (spec 8).
  */
-export function openRouterProvidersFrom(
-  model: string,
-  value: string | undefined,
-): string[] | undefined {
-  const providers = value?.split(',').map((slug) => slug.trim());
-  if (providers?.some((slug) => slug.length === 0)) {
-    throw new Error(`ASKR_OPENROUTER_PROVIDERS has an empty entry: ${value ?? ''}`);
+export function openRouterProvidersFrom(model: string, value: string | undefined): string[] {
+  if (value === undefined) {
+    throw new Error(
+      `ASKR_OPENROUTER_PROVIDERS is required with ASKR_OPENROUTER_MODEL ${model}: name the hosts it may run on, comma-separated (for example together,fireworks,baseten,deepinfra).`,
+    );
   }
-  if (DEEPSEEK_MODEL_RE.test(model)) {
-    if (providers === undefined) {
+  const providers = value.split(',').map((slug) => slug.trim().toLowerCase());
+  if (providers.some((slug) => slug.length === 0)) {
+    throw new Error(`ASKR_OPENROUTER_PROVIDERS has an empty entry: ${value}`);
+  }
+  for (const slug of providers) {
+    const host = HOST_SLUG_RE.exec(slug)?.[1] ?? '';
+    if (CHINA_HOSTED.includes(host)) {
       throw new Error(
-        `ASKR_OPENROUTER_PROVIDERS is required for ${model}: name the hosts it may run on (for example together,fireworks,baseten,deepinfra), never deepseek.`,
+        `ASKR_OPENROUTER_PROVIDERS must not name ${slug}: visitor data never goes to a China-hosted endpoint.`,
       );
     }
-    if (providers.some((slug) => DEEPSEEK_HOST_RE.test(slug))) {
+    if (!OPENROUTER_HOSTS.includes(host)) {
       throw new Error(
-        `ASKR_OPENROUTER_PROVIDERS must not name deepseek for ${model}: visitor data never goes to DeepSeek's own (China-hosted) endpoint.`,
+        `ASKR_OPENROUTER_PROVIDERS names ${slug}, not a known US or EU host. Known: ${OPENROUTER_HOSTS.join(', ')} (a variant like fireworks/us is allowed). To add a host, check where it serves from and add it to OPENROUTER_HOSTS in packages/askr-server/src/config.ts.`,
       );
     }
   }
@@ -161,9 +202,14 @@ export function serveConfigFromEnv(rawEnv: Env): ServeConfig {
       kind: 'openrouter',
       apiKey: required(env, 'OPENROUTER_API_KEY'),
       model: openRouterModel,
-      ...(providers === undefined ? {} : { providers }),
+      providers,
     };
   } else {
+    if (env.ASKR_OPENROUTER_PROVIDERS !== undefined) {
+      throw new Error(
+        'ASKR_OPENROUTER_PROVIDERS is an OpenRouter setting: unset it without ASKR_OPENROUTER_MODEL.',
+      );
+    }
     const effort = effortFrom(env.ASKR_EFFORT);
     model = {
       kind: 'anthropic',
@@ -207,12 +253,7 @@ export function providerFor(config: ModelConfig, fetch?: typeof globalThis.fetch
       // No training and zero data retention where offered (4.4); only the named hosts, with no
       // fallback to others (spec 8).
       extraBody: {
-        provider: {
-          data_collection: 'deny',
-          ...(config.providers === undefined
-            ? {}
-            : { only: config.providers, allow_fallbacks: false }),
-        },
+        provider: { data_collection: 'deny', only: config.providers, allow_fallbacks: false },
       },
       ...(fetch ? { fetch } : {}),
     });

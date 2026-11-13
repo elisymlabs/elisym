@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   checkTurnBudget,
   effortFrom,
+  OPENROUTER_HOSTS,
   openRouterProvidersFrom,
   positiveInteger,
   providerFor,
@@ -87,6 +88,7 @@ describe('serveConfigFromEnv: the model and turn budget the server starts with',
     const openRouter = {
       ...ANTHROPIC_ENV,
       ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max',
+      ASKR_OPENROUTER_PROVIDERS: 'together',
       OPENROUTER_API_KEY: 'or',
     };
     expect(() => serveConfigFromEnv({ ...openRouter, ASKR_EFFORT: 'low' })).toThrow(
@@ -96,6 +98,7 @@ describe('serveConfigFromEnv: the model and turn budget the server starts with',
       kind: 'openrouter',
       apiKey: 'or',
       model: 'qwen/qwen3-max',
+      providers: ['together'],
     });
   });
 
@@ -153,7 +156,11 @@ describe('round 5: the provider and worker settings built from the configuration
   });
 
   it('OpenRouter passes cache marks only for anthropic/ models, and always denies data collection', async () => {
-    const env = { ...ANTHROPIC_ENV, OPENROUTER_API_KEY: 'or' };
+    const env = {
+      ...ANTHROPIC_ENV,
+      OPENROUTER_API_KEY: 'or',
+      ASKR_OPENROUTER_PROVIDERS: 'together',
+    };
     const claude = recordingFetch('openai');
     await providerFor(
       serveConfigFromEnv({ ...env, ASKR_OPENROUTER_MODEL: 'anthropic/claude-sonnet-5-5' }).model,
@@ -171,8 +178,9 @@ describe('round 5: the provider and worker settings built from the configuration
       content: [{ type: 'text', text: 'S', cache_control: { type: 'ephemeral' } }],
     });
     expect(systemOf(other.bodies[0])).toEqual({ role: 'system', content: 'S' });
-    expect(claude.bodies[0]?.provider).toEqual({ data_collection: 'deny' });
-    expect(other.bodies[0]?.provider).toEqual({ data_collection: 'deny' });
+    const routing = { data_collection: 'deny', only: ['together'], allow_fallbacks: false };
+    expect(claude.bodies[0]?.provider).toEqual(routing);
+    expect(other.bodies[0]?.provider).toEqual(routing);
   });
 
   it('the worker gets the provider, price, reservation and max tokens', () => {
@@ -197,7 +205,11 @@ describe('round 5: the provider and worker settings built from the configuration
 
   it('OpenRouter needs OPENROUTER_API_KEY', () => {
     expect(() =>
-      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max' }),
+      serveConfigFromEnv({
+        ...ANTHROPIC_ENV,
+        ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max',
+        ASKR_OPENROUTER_PROVIDERS: 'together',
+      }),
     ).toThrow('OPENROUTER_API_KEY is required');
   });
 
@@ -219,6 +231,7 @@ describe('round 5: the provider and worker settings built from the configuration
       serveConfigFromEnv({
         ...ANTHROPIC_ENV,
         ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max',
+        ASKR_OPENROUTER_PROVIDERS: 'together',
         OPENROUTER_API_KEY: 'or',
         ASKR_EFFORT: '',
       }).model.kind,
@@ -238,7 +251,7 @@ const DEEPSEEK_ENV = {
   ASKR_MAX_TOKENS: '4096',
 };
 
-describe('OpenRouter hosts: a DeepSeek model runs only on named hosts, never DeepSeek its own', () => {
+describe('OpenRouter hosts: only named US or EU hosts, never a China-hosted one', () => {
   it('sends only the named hosts, no fallback, with data collection denied', async () => {
     const config = serveConfigFromEnv(DEEPSEEK_ENV);
     expect(config.model).toEqual({
@@ -268,7 +281,7 @@ describe('OpenRouter hosts: a DeepSeek model runs only on named hosts, never Dee
         ASKR_OPENROUTER_MODEL: model,
         ASKR_OPENROUTER_PROVIDERS: undefined,
       }),
-    ).toThrow(`ASKR_OPENROUTER_PROVIDERS is required for ${model}`);
+    ).toThrow(`ASKR_OPENROUTER_PROVIDERS is required with ASKR_OPENROUTER_MODEL ${model}`);
     expect(() =>
       serveConfigFromEnv({
         ...DEEPSEEK_ENV,
@@ -296,20 +309,59 @@ describe('OpenRouter hosts: a DeepSeek model runs only on named hosts, never Dee
     },
   );
 
-  it('stays optional for other models, and is sent when given', async () => {
+  it('is required for every OpenRouter model, and sent with it', async () => {
     const qwen = { ...DEEPSEEK_ENV, ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max' };
-    const unset = serveConfigFromEnv({ ...qwen, ASKR_OPENROUTER_PROVIDERS: undefined });
-    expect(unset.model).not.toHaveProperty('providers');
+    expect(() => serveConfigFromEnv({ ...qwen, ASKR_OPENROUTER_PROVIDERS: undefined })).toThrow(
+      'ASKR_OPENROUTER_PROVIDERS is required with ASKR_OPENROUTER_MODEL qwen/qwen3-max',
+    );
     const recorded = recordingFetch('openai');
     await providerFor(
-      serveConfigFromEnv({ ...qwen, ASKR_OPENROUTER_PROVIDERS: 'together' }).model,
+      serveConfigFromEnv({ ...qwen, ASKR_OPENROUTER_PROVIDERS: 'Together, fireworks/us' }).model,
       recorded.doFetch,
     ).turn(REQUEST);
     expect(recorded.bodies[0]?.provider).toEqual({
       data_collection: 'deny',
-      only: ['together'],
+      only: ['together', 'fireworks/us'],
       allow_fallbacks: false,
     });
+  });
+
+  it.each(['siliconflow', 'baidu', 'alibaba', 'streamlake', 'atlas-cloud', 'deepseek/fp8'])(
+    'refuses a China-hosted host for any model: %s',
+    (host) => {
+      expect(() => openRouterProvidersFrom('qwen/qwen3-max', `together,${host}`)).toThrow(
+        `ASKR_OPENROUTER_PROVIDERS must not name ${host}: visitor data never goes to a China-hosted endpoint.`,
+      );
+    },
+  );
+
+  it.each(['novita', 'some-new-host', 'together/', 'fire works', '/us'])(
+    'refuses an unknown host, listing the known ones and how to add one: "%s"',
+    (host) => {
+      expect(() => openRouterProvidersFrom('qwen/qwen3-max', host)).toThrow(
+        /not a known US or EU host\. Known: together, fireworks, .*add it to OPENROUTER_HOSTS in packages\/askr-server\/src\/config\.ts/,
+      );
+    },
+  );
+
+  it('every listed host is accepted, with or without a variant', () => {
+    for (const host of OPENROUTER_HOSTS) {
+      expect(openRouterProvidersFrom('qwen/qwen3-max', `${host},${host}/eu`)).toEqual([
+        host,
+        `${host}/eu`,
+      ]);
+    }
+  });
+
+  it('refuses ASKR_OPENROUTER_PROVIDERS with an Anthropic model', () => {
+    expect(() =>
+      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_OPENROUTER_PROVIDERS: 'together' }),
+    ).toThrow(
+      'ASKR_OPENROUTER_PROVIDERS is an OpenRouter setting: unset it without ASKR_OPENROUTER_MODEL.',
+    );
+    expect(serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_OPENROUTER_PROVIDERS: '' }).model.kind).toBe(
+      'anthropic',
+    );
   });
 
   it('the recommended DeepSeek settings fit the default reservation: 8 x 4096 x 1.2 per million', () => {
