@@ -24,6 +24,7 @@ import { migrate } from './db/migrations';
 import { createPgDb } from './db/pg';
 import { type GatewayRequest, createGateway } from './gateway/gateway';
 import { serveGateway } from './gateway/http';
+import { WidgetVersions, widgetBundle } from './gateway/widget';
 import { StoreEventPublisher } from './publisher';
 import { createServerPool } from './relay/pool';
 import { poolSyncClient } from './relay/sync-client';
@@ -197,10 +198,14 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     connectors.stop();
     return;
   }
+  // Kept in the database, so its pinned path stays served after the next release (6).
+  const widget = widgetBundle(widgetScript());
+  const widgetVersions = new WidgetVersions(db);
+  await widgetVersions.record(widget, Math.floor(Date.now() / 1000));
   const gateway = createGateway({
     state,
     gatewaySecretKey,
-    widgetScript: widgetScript(),
+    widget: { current: widget, earlier: (id) => widgetVersions.script(id) },
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),

@@ -12,6 +12,24 @@ To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` wh
 
 The page must be on one of the origins in your store's config: the server issues a chat session only to those.
 
+## Pin one version
+
+`/widget.js` always serves the current release, so fixes reach your site within minutes. To load one exact version instead, use the pinned snippet the admin shows under **Embed**:
+
+```html
+<script
+  src="https://api.askr.elisym.network/widget/<id>.js"
+  integrity="sha384-..."
+  crossorigin="anonymous"
+  data-store="npub1..."
+  async
+></script>
+```
+
+The path names the bundle by its SHA-384, and the browser runs it only if it matches `integrity`. It never changes under you, and the server keeps serving it after later releases. The trade-off: fixes and new features do not reach a pinned page until you paste a newer snippet from the admin. The bundle is the whole widget: it loads no other script.
+
+The current pinned path and integrity are also at `https://api.askr.elisym.network/v1/widget`, as `{ "path": "/widget/<id>.js", "integrity": "sha384-..." }`.
+
 ## Add to cart
 
 Each product card links to the product page. The add-to-cart button, in order of precedence:
@@ -41,7 +59,7 @@ If your site sends a CSP, allow:
 
 | Directive     | Source                                                         | Why                                                               |
 | ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `script-src`  | `https://api.askr.elisym.network`                              | `widget.js`                                                       |
+| `script-src`  | `https://api.askr.elisym.network`                              | `widget.js`, or the pinned `/widget/<id>.js`                      |
 | `connect-src` | `https://api.askr.elisym.network` `wss://relay.elisym.network` | the chat session and the chat itself                              |
 | `img-src`     | `https:`                                                       | product images and the assistant's avatar, wherever you host them |
 

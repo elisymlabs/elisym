@@ -5,6 +5,7 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import type { ServerState } from '../state/types';
 import { WindowLimiter, ipKey } from './limits';
+import { type WidgetBundle, pinnedIdOf } from './widget';
 
 /** Tickets per IP (or IPv6 /64) per minute. */
 const TICKETS_PER_IP_PER_MINUTE = 20;
@@ -13,6 +14,10 @@ const MINUTE_MS = 60_000;
 const MAX_BODY_BYTES = 16 * 1024;
 /** Short, so a widget release reaches every store's site within minutes. */
 const WIDGET_MAX_AGE_SECS = 300;
+/** A pinned bundle never changes under its path (6). */
+const PINNED_WIDGET_MAX_AGE_SECS = 365 * 24 * 60 * 60;
+/** Where the admin reads the current bundle's pinned path and SRI value (6, 7.3). */
+export const WIDGET_INFO_PATH = '/v1/widget';
 
 const SessionRequestSchema = z.object({
   store: z.string().regex(HEX_PUBKEY_RE),
@@ -47,9 +52,40 @@ export interface GatewayDeps {
    * clicks are counted, so the counter cannot be grown with made-up addresses.
    */
   isListed: (owner: string, address: string) => boolean;
-  /** The built `widget.js`, served at `GET /widget.js`; absent means not served here. */
-  widgetScript?: string;
+  /** The widget this server serves; absent means none is served here. */
+  widget?: WidgetSource;
   now?: () => number;
+}
+
+/**
+ * The built `widget.js` (6): served at the moving `GET /widget.js` and at its
+ * pinned path, with the earlier bundles any server served at theirs.
+ */
+export interface WidgetSource {
+  current: WidgetBundle;
+  /** An earlier bundle by its pinned id, or undefined when none was served. */
+  earlier: (id: string) => Promise<string | undefined>;
+}
+
+const WIDGET_HEADERS = {
+  'content-type': 'text/javascript; charset=utf-8',
+  'cross-origin-resource-policy': 'cross-origin',
+  'x-content-type-options': 'nosniff',
+};
+
+/**
+ * A pinned bundle: cached for good and readable cross-origin, so a page
+ * loading it with `crossorigin="anonymous"` can check its `integrity`.
+ */
+function pinnedWidget(script: string): Response {
+  return new Response(script, {
+    status: 200,
+    headers: {
+      ...WIDGET_HEADERS,
+      'cache-control': `public, max-age=${PINNED_WIDGET_MAX_AGE_SECS}, immutable`,
+      'access-control-allow-origin': '*',
+    },
+  });
 }
 
 export interface GatewayRequest {
@@ -199,16 +235,35 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
         },
       });
     }
-    if (input.request.method === 'GET' && url.pathname === '/widget.js' && deps.widgetScript) {
-      return new Response(deps.widgetScript, {
-        status: 200,
-        headers: {
-          'content-type': 'text/javascript; charset=utf-8',
-          'cache-control': `public, max-age=${WIDGET_MAX_AGE_SECS}`,
-          'cross-origin-resource-policy': 'cross-origin',
-          'x-content-type-options': 'nosniff',
-        },
-      });
+    const { widget } = deps;
+    if (input.request.method === 'GET' && widget !== undefined) {
+      if (url.pathname === '/widget.js') {
+        return new Response(widget.current.script, {
+          status: 200,
+          headers: { ...WIDGET_HEADERS, 'cache-control': `public, max-age=${WIDGET_MAX_AGE_SECS}` },
+        });
+      }
+      if (url.pathname === WIDGET_INFO_PATH) {
+        return new Response(
+          JSON.stringify({ path: widget.current.path, integrity: widget.current.integrity }),
+          {
+            status: 200,
+            headers: {
+              'content-type': 'application/json',
+              'cache-control': 'no-cache',
+              'access-control-allow-origin': '*',
+            },
+          },
+        );
+      }
+      const pinnedId = pinnedIdOf(url.pathname);
+      if (pinnedId !== undefined) {
+        const script =
+          pinnedId === widget.current.id ? widget.current.script : await widget.earlier(pinnedId);
+        if (script !== undefined) {
+          return pinnedWidget(script);
+        }
+      }
     }
     if (input.request.method === 'POST' && url.pathname === '/v1/session') {
       return session(input);

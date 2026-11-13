@@ -61,6 +61,14 @@ export interface StoredEventsRead {
   truncated: boolean;
 }
 
+/** `GET /v1/widget`: the current bundle's content-addressed path and its SRI value. */
+export interface PinnedWidget {
+  /** `/widget/<id>.js` */
+  path: string;
+  /** `sha384-<base64>` */
+  integrity: string;
+}
+
 /** `GET /v1/admin/store` (the server's `view()`). */
 export interface StoreView {
   owner: string;

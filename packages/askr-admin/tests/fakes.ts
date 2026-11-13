@@ -16,6 +16,10 @@ export const SERVER_KEY_SECRET = generateSecretKey();
 export const SERVER_KEY = getPublicKey(SERVER_KEY_SECRET);
 export const ASSISTANT = getPublicKey(generateSecretKey());
 export const NOW = 1_800_000_000;
+export const PINNED_WIDGET = {
+  path: `/widget/${'0123456789abcdef'.repeat(2)}.js`,
+  integrity: `sha384-${'A'.repeat(64)}`,
+};
 
 const EMPTY_DIFF = { created: [], updated: [], hidden: [], unchanged: [] };
 
@@ -99,6 +103,7 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
       stored: events.map((event) => event.id),
     })),
     storedEvents: vi.fn(async () => ({ events: [], truncated: false })),
+    pinnedWidget: vi.fn(async () => PINNED_WIDGET),
     catalog: vi.fn(async () => ({ diff: EMPTY_DIFF })),
     putPolicy: vi.fn(async () => ({ id: 'p' })),
     deletePolicy: vi.fn(async () => ({ id: 'p' })),

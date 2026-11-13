@@ -3,6 +3,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import { describe, expect, it } from 'vitest';
 import { createGateway } from '../src/gateway/gateway';
 import { WindowLimiter, ipKey } from '../src/gateway/limits';
+import { widgetBundle } from '../src/gateway/widget';
 import { Backoff } from '../src/relay/backoff';
 import { passesWrapPreCheck } from '../src/relay/pool';
 import type { LeasedStore } from '../src/state/types';
@@ -234,7 +235,8 @@ describe('gateway (3)', () => {
       request: new Request('http://localhost/widget.js'),
       clientAddress: '203.0.113.7',
     });
-    const served = await createGateway({ ...deps, widgetScript: '/* widget */' })(get());
+    const widget = { current: widgetBundle('/* widget */'), earlier: async () => undefined };
+    const served = await createGateway({ ...deps, widget })(get());
     expect(served.status).toBe(200);
     expect(served.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
     expect(await served.text()).toBe('/* widget */');

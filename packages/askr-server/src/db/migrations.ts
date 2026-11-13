@@ -176,6 +176,21 @@ insert into store_totals (owner, conversations)
 select owner, count(*) from sessions where counted group by owner;
 `,
   },
+  {
+    id: '0003_widget_versions',
+    sql: `
+-- Every widget bundle a server has served (6): a pinned snippet's content-addressed path keeps
+-- working after a release, on any instance.
+create table widget_versions (
+  -- The first 32 lowercase hex characters of the bundle's SHA-384: its path is /widget/<id>.js.
+  id text primary key,
+  -- The SRI value of the whole digest, sha384-<base64>.
+  integrity text not null,
+  script text not null,
+  first_served_at bigint not null
+);
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;
