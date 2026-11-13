@@ -39,13 +39,11 @@ export const MCP_TOOLS: readonly { name: string; body: string }[] = [
 /**
  * What the default model did on the Askr evals (`packages/askr-agent/evals`),
  * rounded for the page: 90 scenarios, 95.6% passed, about $0.0013 per passing
- * conversation, a median answer of about 7.5 s. The cost is shown only as
- * "a fraction of a cent".
+ * conversation. The cost is shown only as "a fraction of a cent".
  */
 export const EVALS = {
   scenarios: '90',
   passed: '95.6%',
-  medianAnswer: '7.5 s',
 };
 
 export interface Plan {

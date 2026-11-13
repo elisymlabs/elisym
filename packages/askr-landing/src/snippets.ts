@@ -26,3 +26,21 @@ export const PINNED_SNIPPET = [
   '  async',
   '></script>',
 ].join('\n');
+
+/** One product as an agent reads it off the relay: a signed NIP-99 listing, abridged. */
+export const LISTING_SNIPPET = [
+  '{',
+  '  "kind": 30402,',
+  '  "tags": [',
+  '    ["d", "pulse-pro"],',
+  '    ["title", "Pulse Pro headphones"],',
+  '    ["price", "199.00", "USD"],',
+  '    ["t", "headphones"],',
+  '    ["attr", "battery", "40 h"],',
+  '    ["r", "https://northwind.example/p/pulse-pro"],',
+  '    ["visibility", "on-sale"]',
+  '  ],',
+  '  "pubkey": "…",',
+  '  "sig": "…"',
+  '}',
+].join('\n');

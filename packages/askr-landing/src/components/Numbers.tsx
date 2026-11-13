@@ -14,9 +14,9 @@ const STATS = [
     note: 'A fraction of a cent of model cost for a whole conversation that got its answer.',
   },
   {
-    value: `~${EVALS.medianAnswer}`,
-    label: 'median answer',
-    note: 'Including the search through your catalog and the price check.',
+    value: '24 h',
+    label: 'the longest a conversation lives',
+    note: 'Then it is gone. There is no transcript archive, for us or for you.',
   },
 ];
 

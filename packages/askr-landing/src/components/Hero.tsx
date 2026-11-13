@@ -34,7 +34,7 @@ export function Hero() {
         </Reveal>
         <Reveal delay={2}>
           <p className="text-18 sm:text-20 text-text-2 mx-auto mt-28 max-w-640 leading-relaxed">
-            {`${PRODUCT_NAME} answers your visitors from your own catalog and policies, finds the product for their need and budget, and sends them to your cart. One script tag. It sells nothing itself.`}
+            {`${PRODUCT_NAME} answers your visitors from your own catalog and policies, finds the product for their need and budget, and sends them to your cart. AI agents read the same catalog straight from the open network. It sells nothing itself.`}
           </p>
         </Reveal>
         <Reveal delay={3} className="mt-36 flex flex-wrap justify-center gap-12">
