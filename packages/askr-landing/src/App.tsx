@@ -8,18 +8,22 @@ import { GetStarted } from './components/GetStarted';
 import { Hero } from './components/Hero';
 import { Honest } from './components/Honest';
 import { Languages } from './components/Languages';
+import { Manifesto } from './components/Manifesto';
 import { Numbers } from './components/Numbers';
 import { Pricing } from './components/Pricing';
 import { SiteHeader } from './components/SiteHeader';
 import { Sources } from './components/Sources';
 import { Trust } from './components/Trust';
+import { WorksWith } from './components/WorksWith';
 
 export function App() {
   return (
-    <div className="min-h-screen overflow-x-hidden">
+    <div className="grain min-h-screen overflow-x-clip">
       <SiteHeader />
       <main>
         <Hero />
+        <WorksWith />
+        <Manifesto />
         <Features />
         <Honest />
         <Languages />

@@ -1,10 +1,12 @@
+import { BUTTON } from '../buttons';
 import { DOCS, PRODUCT_NAME } from '../constants';
-import { PINNED_SNIPPET } from '../snippets';
+import { PINNED_SNIPPET, embedSnippet } from '../snippets';
 import { AdminLink } from './AdminLink';
 import { CodeBlock } from './CodeBlock';
 import { ExternalLink } from './ExternalLink';
+import { Eyebrow } from './Eyebrow';
 import { Icon } from './Icon';
-import { SectionHeading } from './SectionHeading';
+import { Reveal } from './Reveal';
 
 const STEPS = [
   {
@@ -16,48 +18,55 @@ const STEPS = [
     body: 'Your store goes live once it is on a plan. Until then the admin already shows everything you set up.',
   },
   {
-    title: 'Paste the snippet',
-    body: `One script tag on your pages, and ${PRODUCT_NAME} appears in the corner. It runs in its own shadow root, so your styles stay yours.`,
+    title: 'Paste one line',
+    body: `${PRODUCT_NAME} appears in the corner of your pages. It runs in its own shadow root, so your styles stay yours.`,
   },
 ];
 
 export function GetStarted() {
   return (
-    <section id="start" className="border-line bg-surface border-y">
-      <div className="mx-auto grid max-w-1200 items-start gap-48 px-16 py-80 sm:px-24 sm:py-112 lg:grid-cols-2">
-        <div className="flex flex-col gap-32">
-          <SectionHeading eyebrow="Get started" title="Live on your site in three steps" />
-          <ol className="flex flex-col gap-24">
+    <section id="start" className="bg-surface border-line-2 border-y">
+      <div className="mx-auto max-w-1200 px-16 py-96 sm:px-24 sm:py-160">
+        <Reveal className="flex flex-col items-start gap-16">
+          <Eyebrow>Get started</Eyebrow>
+          <h2 className="text-48 sm:text-80 font-serif leading-[0.95]">
+            Live on your site <em>in three steps.</em>
+          </h2>
+        </Reveal>
+        <Reveal delay={1}>
+          <ol className="mt-56 grid gap-32 md:grid-cols-3">
             {STEPS.map((step, index) => (
-              <li key={step.title} className="flex gap-16">
-                <span className="rounded-12 bg-accent text-15 text-accent-text grid size-36 shrink-0 place-items-center font-semibold">
-                  {index + 1}
+              <li key={step.title} className="border-line-2 flex flex-col gap-12 border-t pt-24">
+                <span className="text-64 text-accent-ink font-serif leading-none italic">
+                  {`0${index + 1}`}
                 </span>
-                <div className="flex flex-col gap-6">
-                  <h3 className="text-18 font-semibold">{step.title}</h3>
-                  <p className="text-15 text-text-2 leading-relaxed">{step.body}</p>
-                </div>
+                <h3 className="text-24 font-serif">{step.title}</h3>
+                <p className="text-15 text-text-2 leading-relaxed">{step.body}</p>
               </li>
             ))}
           </ol>
-          <AdminLink
-            label="Create your store"
-            className="rounded-12 bg-accent text-15 text-accent-text self-start px-20 py-12 font-semibold transition hover:brightness-95"
-          />
-        </div>
-        <div className="flex min-w-0 flex-col gap-16 lg:mt-72">
-          <CodeBlock id="pinned-snippet" label="Or pin one exact version" code={PINNED_SNIPPET} />
-          <p className="text-14 text-text-2 leading-relaxed">
-            The pinned tag names the widget by its hash. The browser runs it only if the file
-            matches, so nobody can swap the script under your page. The admin gives you the exact
-            tag.
-          </p>
-          <ExternalLink
-            href={DOCS.embed}
-            className="text-14 text-accent-ink flex items-center gap-6 self-start font-medium hover:underline"
-          >
+        </Reveal>
+        <Reveal delay={2} className="mt-56 grid gap-16 lg:grid-cols-2">
+          <div className="flex min-w-0 flex-col gap-12">
+            <CodeBlock id="embed-snippet" label="Paste into your pages" code={embedSnippet()} />
+            <p className="text-14 text-text-2 leading-relaxed">
+              Always the current release: fixes reach your site within minutes.
+            </p>
+          </div>
+          <div className="flex min-w-0 flex-col gap-12">
+            <CodeBlock id="pinned-snippet" label="Or pin one exact version" code={PINNED_SNIPPET} />
+            <p className="text-14 text-text-2 leading-relaxed">
+              The pinned tag names the widget by its hash. The browser runs it only if the file
+              matches, so nobody can swap the script under your page. The admin gives you the exact
+              tag.
+            </p>
+          </div>
+        </Reveal>
+        <div className="mt-40 flex flex-wrap items-center gap-12">
+          <AdminLink label="Create your store" className={BUTTON.solid} />
+          <ExternalLink href={DOCS.embed} className={BUTTON.ghost}>
             The embed guide
-            <Icon name="arrow" className="size-16" />
+            <Icon name="arrow" className="size-18" />
           </ExternalLink>
         </div>
       </div>

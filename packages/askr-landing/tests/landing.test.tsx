@@ -14,7 +14,7 @@ import {
   WIDGET_SRC,
   X_URL,
 } from '../src/constants';
-import { MEDIA, mediaUrl } from '../src/media';
+import { PHOTOS, PRODUCTS } from '../src/media';
 import { CART_HOOK_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
 
 declare global {
@@ -229,7 +229,7 @@ describe('the page structure', () => {
   it('gives every section of the main content a heading', async () => {
     const page = await render(<App />);
     const sections = [...page.querySelectorAll('main > section')];
-    expect(sections.length).toBe(13);
+    expect(sections.length).toBe(15);
     for (const section of sections) {
       expect(section.querySelector('h1, h2'), section.id).not.toBeNull();
     }
@@ -243,32 +243,23 @@ describe('the page structure', () => {
     }
   });
 
-  it('draws a placeholder for a media slot whose file has not landed, and a file once it has', async () => {
+  it('shows every photo with its alt text and size, and keeps each file small', async () => {
     const page = await render(<App />);
-    for (const slot of Object.values(MEDIA)) {
-      const image = mediaUrl(slot.image);
-      const video = mediaUrl('video' in slot ? slot.video : undefined);
-      if (image === undefined && video === undefined) {
-        expect(page.querySelector(`[alt="${slot.alt}"], [aria-label="${slot.alt}"]`)).toBeNull();
-      } else {
-        expect(
-          page.querySelector(`[alt="${slot.alt}"], [aria-label="${slot.alt}"]`),
-        ).not.toBeNull();
-      }
+    for (const photo of Object.values(PHOTOS)) {
+      const image = page.querySelector(`img[alt="${photo.alt}"]`);
+      expect(image, photo.alt).not.toBeNull();
+      expect(image?.getAttribute('width')).toBe(String(photo.width));
+      expect(image?.getAttribute('height')).toBe(String(photo.height));
     }
-    expect(page.querySelectorAll('.media-placeholder').length).toBe(
-      Object.values(MEDIA).filter(
-        (slot) =>
-          mediaUrl(slot.image) === undefined &&
-          mediaUrl('video' in slot ? slot.video : undefined) === undefined,
-      ).length,
-    );
+    for (const file of filesIn(join(PACKAGE, 'src/media'))) {
+      expect(file).toMatch(/\.webp$/);
+      expect(readFileSync(file).byteLength, file).toBeLessThan(200_000);
+    }
   });
 
-  it('plays a loop muted and inline, so a browser autoplays it', () => {
-    const code = readFileSync(join(PACKAGE, 'src/components/Visual.tsx'), 'utf8');
-    for (const attribute of ['autoPlay', 'muted', 'loop', 'playsInline']) {
-      expect(code).toContain(attribute);
+  it('draws product cards with the catalog prices, as decimal strings with cents', () => {
+    for (const product of Object.values(PRODUCTS)) {
+      expect(product.price).toMatch(/^\$\d+\.\d{2}$/);
     }
   });
 

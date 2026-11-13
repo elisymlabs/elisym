@@ -1,39 +1,30 @@
 @import 'tailwindcss';
+@import '@fontsource-variable/inter/index.css';
+@import '@fontsource/instrument-serif/latin-400.css';
+@import '@fontsource/instrument-serif/latin-400-italic.css';
 
+/* One light scheme: warm paper, near-black ink, a deep teal used sparingly. */
 :root {
-  color-scheme: dark;
-  --bg: #0a0b0d;
-  --surface: #111316;
-  --surface-2: #181b20;
-  --line: #24272e;
-  --line-2: #32363f;
-  --text: #f4f5f7;
-  --text-2: #a3a7b3;
-  --text-3: #8c909c;
-  --accent: #2dd4bf;
-  --accent-ink: #5eead4;
-  --accent-soft: rgb(45 212 191 / 0.1);
-  --accent-text: #061412;
-  --glow: rgb(45 212 191 / 0.14);
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #fafafa;
-    --surface: #ffffff;
-    --surface-2: #f1f3f4;
-    --line: #e3e6e8;
-    --line-2: #d2d6da;
-    --text: #111418;
-    --text-2: #525862;
-    --text-3: #666c76;
-    --accent: #2dd4bf;
-    --accent-ink: #0f766e;
-    --accent-soft: rgb(20 184 166 / 0.12);
-    --accent-text: #061412;
-    --glow: rgb(45 212 191 / 0.2);
-  }
+  color-scheme: light;
+  --bg: #f4f0e8;
+  --surface: #fbf9f4;
+  --surface-2: #ece6da;
+  --line: #e0d8c8;
+  --line-2: #cfc4b0;
+  --text: #17150f;
+  --text-2: #4f4a42;
+  --text-3: #635d54;
+  --accent: #0e6b62;
+  --accent-ink: #0b5c54;
+  --accent-soft: rgb(14 107 98 / 0.09);
+  --accent-text: #ffffff;
+  --ink: #15140f;
+  --ink-2: #211f19;
+  --ink-line: #34312a;
+  --on-ink: #f4f0e8;
+  --on-ink-2: #b9b2a5;
+  --on-ink-accent: #7fd6c8;
+  --warn: #9a3412;
 }
 
 @theme inline {
@@ -49,7 +40,16 @@
   --color-accent-ink: var(--accent-ink);
   --color-accent-soft: var(--accent-soft);
   --color-accent-text: var(--accent-text);
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-line: var(--ink-line);
+  --color-on-ink: var(--on-ink);
+  --color-on-ink-2: var(--on-ink-2);
+  --color-on-ink-accent: var(--on-ink-accent);
+  --color-warn: var(--warn);
+  --font-sans:
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-serif: 'Instrument Serif', 'Iowan Old Style', Georgia, serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
 }
 
@@ -63,6 +63,7 @@
   --radius-20: 1.25rem;
   --radius-24: 1.5rem;
   --radius-32: 2rem;
+  --radius-40: 2.5rem;
   /* Font sizes by pixel: `text-14` is 14px. */
   --text-11: 0.6875rem;
   --text-12: 0.75rem;
@@ -73,16 +74,21 @@
   --text-18: 1.125rem;
   --text-20: 1.25rem;
   --text-24: 1.5rem;
+  --text-28: 1.75rem;
   --text-32: 2rem;
   --text-40: 2.5rem;
   --text-48: 3rem;
   --text-56: 3.5rem;
-  --text-72: 4.5rem;
+  --text-64: 4rem;
+  --text-80: 5rem;
+  --text-96: 6rem;
+  --text-128: 8rem;
+  --text-200: 12.5rem;
 }
 
 html {
   scroll-behavior: smooth;
-  scroll-padding-top: 80px;
+  scroll-padding-top: 96px;
 }
 
 body {
@@ -105,39 +111,97 @@ body {
   }
 }
 
-/* The soft light behind the hero. */
-.hero-glow {
-  background:
-    radial-gradient(55% 50% at 80% 0%, var(--glow), transparent 70%),
-    radial-gradient(40% 40% at 0% 10%, var(--accent-soft), transparent 70%);
+/* Paper grain over the whole page: an SVG noise tile as a data: URL (img-src allows data:). */
+.grain::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  opacity: 0.06;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* Faint dots behind the hero. */
-.hero-dots {
-  background-image: radial-gradient(var(--line-2) 1px, transparent 1px);
-  background-size: 24px 24px;
-  mask-image: radial-gradient(70% 60% at 50% 0%, black, transparent 75%);
-  opacity: 0.6;
+/* A block rises in the first time it scrolls into view (see useInView). */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition:
+    opacity 0.9s cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
-/* A media slot before its file lands: a soft accent light on the surface. */
-.media-placeholder {
-  background:
-    radial-gradient(60% 70% at 30% 20%, var(--glow), transparent 70%),
-    radial-gradient(50% 60% at 85% 90%, var(--accent-soft), transparent 70%),
-    linear-gradient(160deg, var(--surface-2), var(--surface));
+.reveal[data-shown='true'] {
+  opacity: 1;
+  transform: none;
 }
 
-/* The hero chat plays once: each step rises in after the one before it. */
-@keyframes rise {
+.reveal-delay-1 {
+  transition-delay: 0.12s;
+}
+
+.reveal-delay-2 {
+  transition-delay: 0.24s;
+}
+
+.reveal-delay-3 {
+  transition-delay: 0.36s;
+}
+
+/* The hero photo settles slowly as the page opens. */
+@keyframes settle {
+  from {
+    transform: scale(1.1);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.settle {
+  animation: settle 16s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+/* A row that scrolls sideways forever: the track holds its items twice. */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee {
+  mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+}
+
+.marquee-track {
+  animation: marquee 50s linear infinite;
+}
+
+.marquee-reverse {
+  animation-direction: reverse;
+}
+
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+/* A chat message or card arriving in the demos. */
+@keyframes arrive {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px) scale(0.98);
   }
   to {
     opacity: 1;
     transform: none;
   }
+}
+
+.arrive {
+  animation: arrive 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
 
 @keyframes blink {
@@ -148,26 +212,6 @@ body {
   50% {
     opacity: 1;
   }
-}
-
-.chat-step {
-  animation: rise 0.5s ease-out both;
-}
-
-.chat-step-1 {
-  animation-delay: 0.3s;
-}
-
-.chat-step-2 {
-  animation-delay: 1.4s;
-}
-
-.chat-step-3 {
-  animation-delay: 2s;
-}
-
-.chat-step-4 {
-  animation-delay: 2.3s;
 }
 
 .typing-dot {
@@ -182,19 +226,14 @@ body {
   animation-delay: 0.3s;
 }
 
-/* The dots show only until the answer rises in. */
-@keyframes vanish {
-  to {
-    opacity: 0;
-    height: 0;
-    margin: 0;
-    padding: 0;
-  }
+/* The wrong price struck through as the check catches it. */
+.strike {
+  background: linear-gradient(currentColor, currentColor) no-repeat 0 55% / 0 2px;
+  transition: background-size 0.5s ease-out;
 }
 
-.chat-typing {
-  animation: vanish 0.2s ease-in 1.3s forwards;
-  overflow: hidden;
+.strike[data-struck='true'] {
+  background-size: 100% 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -202,12 +241,20 @@ body {
     scroll-behavior: auto;
   }
 
-  .chat-step,
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .settle,
+  .marquee-track,
+  .arrive,
   .typing-dot {
     animation: none;
   }
 
-  .chat-typing {
-    display: none;
+  .strike {
+    transition: none;
   }
 }

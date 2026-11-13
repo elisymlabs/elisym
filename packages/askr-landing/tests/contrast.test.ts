@@ -5,17 +5,18 @@ import { describe, expect, it } from 'vitest';
 
 const CSS = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
 
-const BASE_TEXT = ['text', 'text-2', 'text-3'];
-
-/** Text on a tinted background, each tint laid over the backgrounds it sits on. */
-const PAIRS: { text: string; on: string; over: string[] }[] = [
-  { text: 'accent-ink', on: 'bg', over: [] },
-  { text: 'accent-ink', on: 'surface', over: [] },
-  { text: 'accent-ink', on: 'surface-2', over: [] },
-  { text: 'accent-text', on: 'accent', over: [] },
+/** Text colors and the backgrounds each one is set on. */
+const PAIRS: { text: string; on: string[] }[] = [
+  { text: 'text', on: ['bg', 'surface', 'surface-2'] },
+  { text: 'text-2', on: ['bg', 'surface', 'surface-2'] },
+  { text: 'text-3', on: ['bg', 'surface', 'surface-2'] },
+  { text: 'accent-ink', on: ['bg', 'surface', 'surface-2'] },
+  { text: 'accent-text', on: ['accent'] },
+  { text: 'on-ink', on: ['ink', 'ink-2', 'accent'] },
+  { text: 'on-ink-2', on: ['ink', 'ink-2'] },
+  { text: 'on-ink-accent', on: ['ink', 'ink-2'] },
+  { text: 'ink', on: ['on-ink-accent', 'on-ink'] },
 ];
-
-const BACKGROUNDS = ['bg', 'surface', 'surface-2'];
 
 /** An sRGB color with its alpha, channels 0-255. */
 interface Color {
@@ -44,28 +45,15 @@ function parseColor(value: string): Color | undefined {
   return undefined;
 }
 
-/** The color variables of each scheme: the page's own, and the other one under its media query. */
-function schemes(): Map<string, Color>[] {
-  const [base = '', other = ''] = CSS.split('@media (prefers-color-scheme');
-  const read = (part: string) =>
-    new Map(
-      [...part.matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)].flatMap((match) => {
-        const color = parseColor((match[2] ?? '').trim());
-        return color === undefined ? [] : [[match[1] ?? '', color] as const];
-      }),
-    );
-  return [read(base), read(other.split('@theme')[0] ?? '')];
-}
-
-/** A translucent color laid over an opaque one. */
-function over(top: Color, bottom: Color): Color {
-  const mix = (upper: number, lower: number) => upper * top.alpha + lower * (1 - top.alpha);
-  return {
-    red: mix(top.red, bottom.red),
-    green: mix(top.green, bottom.green),
-    blue: mix(top.blue, bottom.blue),
-    alpha: 1,
-  };
+/** The page's one scheme: the color variables of its `:root`. */
+function scheme(): Map<string, Color> {
+  const root = CSS.split(':root {')[1]?.split('}')[0] ?? '';
+  return new Map(
+    [...root.matchAll(/--([a-z0-9-]+):\s*([^;]+);/g)].flatMap((match) => {
+      const color = parseColor((match[2] ?? '').trim());
+      return color === undefined ? [] : [[match[1] ?? '', color] as const];
+    }),
+  );
 }
 
 /** WCAG relative luminance. */
@@ -93,33 +81,17 @@ function named(colors: Map<string, Color>, name: string): Color {
 }
 
 describe('the text colors', () => {
-  const found = schemes();
+  const colors = scheme();
 
-  it('reads both schemes from app.css', () => {
-    expect(found).toHaveLength(2);
-    for (const colors of found) {
-      expect(colors.size).toBeGreaterThan(5);
-    }
+  it('reads the scheme from app.css', () => {
+    expect(colors.size).toBeGreaterThan(10);
   });
 
-  it('read at 4.5:1 or better, plain and on every tint, in both schemes', () => {
-    for (const colors of found) {
-      for (const text of BASE_TEXT) {
-        for (const background of BACKGROUNDS) {
-          const ratio = contrast(named(colors, text), named(colors, background));
-          expect(ratio, `${text} on ${background}`).toBeGreaterThanOrEqual(4.5);
-        }
-      }
-      for (const pair of PAIRS) {
-        const tint = named(colors, pair.on);
-        const grounds =
-          pair.over.length === 0
-            ? [tint]
-            : pair.over.map((name) => over(tint, named(colors, name)));
-        for (const ground of grounds) {
-          const ratio = contrast(named(colors, pair.text), ground);
-          expect(ratio, `${pair.text} on ${pair.on}`).toBeGreaterThanOrEqual(4.5);
-        }
+  it('read at 4.5:1 or better on every background they are set on', () => {
+    for (const pair of PAIRS) {
+      for (const background of pair.on) {
+        const ratio = contrast(named(colors, pair.text), named(colors, background));
+        expect(ratio, `${pair.text} on ${background}`).toBeGreaterThanOrEqual(4.5);
       }
     }
   });
