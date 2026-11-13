@@ -1,7 +1,6 @@
 import type { Answer } from '@elisym/askr';
 import { describe, expect, it } from 'vitest';
-import { StoreCatalog } from '../src/catalog/store-catalog';
-import { StoreCatalog as Catalog, tokenize } from '../src/catalog/store-catalog';
+import { StoreCatalog, StoreCatalog as Catalog, tokenize } from '../src/catalog/store-catalog';
 import { checkPrices, extractAmounts } from '../src/price-check';
 import { CONFIG, item, expectLinear } from './fixtures';
 

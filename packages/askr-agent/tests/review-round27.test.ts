@@ -14,23 +14,6 @@ const answer = (text: string): Answer => ({
   chips: [],
 });
 
-interface Options {
-  visitor?: string[];
-  policies?: string[];
-}
-
-function violationsIn(currency: string, language: string, text: string, options: Options = {}) {
-  const jacket = item({ d: 'jacket', title: 'Jacket', price: { amount: '1200', currency } });
-  const store = new StoreCatalog({ ...CONFIG, currency, language }, undefined, [jacket], []);
-  return checkPrices(answer(text), {
-    storeCurrency: currency,
-    items: store.items,
-    visitorMessages: options.visitor ?? [],
-    policyPassages: options.policies ?? [],
-    locales: [language, language],
-  }).length;
-}
-
 function storeOf(currency: string, language: string) {
   const jacket = item({ d: 'jacket', title: 'Jacket', price: { amount: '1200', currency } });
   return new StoreCatalog({ ...CONFIG, currency, language }, undefined, [jacket], []);
