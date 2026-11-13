@@ -16,8 +16,23 @@ const LOOKALIKES: Readonly<Record<string, string>> = {
   ']': '\u27e7',
 };
 
+/** A product id written in parentheses ("(id: pack-45)"): products are named, never id'd. */
+const ID_MENTION_RE = /[ \t]*\(\s*(?:id|sku|handle)\s*:\s*[^()\n]{1,80}\)/giu;
+
 export function sanitizeAnswerText(text: string): string {
   return stripInvisible(text.normalize('NFKC'))
+    .replace(ID_MENTION_RE, '')
     .replace(/[<>[\]]/g, (character) => LOOKALIKES[character] ?? '')
     .trim();
+}
+
+/** Drop a known product id in parentheses ("the Trek 45 l (pack-45)"): the text names products. */
+export function stripProductIds(text: string, ids: Iterable<string>): string {
+  let stripped = text;
+  for (const id of ids) {
+    if (stripped.includes(`(${id})`)) {
+      stripped = stripped.split(` (${id})`).join('').split(`(${id})`).join('');
+    }
+  }
+  return stripped;
 }

@@ -15,7 +15,7 @@ import {
 } from './llm/types';
 import { type PriceViolation, cardsPointer, checkPrices, stripViolations } from './price-check';
 import { globalBlock, sessionBlock, storeBlock } from './prompt';
-import { sanitizeAnswerText } from './text-sanitize';
+import { sanitizeAnswerText, stripProductIds } from './text-sanitize';
 import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
 
 /** Tool rounds per turn before a forced no-tool round (5.5). */
@@ -29,6 +29,19 @@ export const MAX_MODEL_CALLS_PER_TURN = MAX_TOOL_ROUNDS + 2;
 /** Per model call, thinking included on models that think. */
 export const DEFAULT_MAX_TOKENS = 2_048;
 const VISITOR_FENCE_CHARS = 4_000;
+/** Tools that only show something: text written next to them is part of the answer. */
+const PRESENTATION_TOOL_PREFIX = 'present_';
+
+/**
+ * The answer text of one loop: the text of rounds that only presented (some models write the
+ * whole answer next to their present_* calls and close with a short question), then the final
+ * round's text, in order. Text next to a search or lookup ("Let me check") is a preamble, dropped.
+ */
+export function joinAnswerText(presented: readonly string[], final: string): string {
+  const parts = [...presented, final].map((part) => part.trim()).filter((part) => part.length > 0);
+  // A final round that repeats an earlier part word for word adds nothing.
+  return parts.filter((part, index) => parts.indexOf(part) === index).join('\n\n');
+}
 const MAX_STRIP_PASSES = 32;
 
 export interface TurnInput {
@@ -124,9 +137,13 @@ function replayOf(content: readonly ContentBlock[], text: string): ContentBlock[
   return content.some((block) => block.type === 'text') ? [...content] : [...content, plain];
 }
 
-function correctionMessage(violations: readonly PriceViolation[]): string {
+/**
+ * The note before the price-check re-run. The visitor never sees it, so the rewrite must not
+ * refer to it ("Fair enough, the cards carry the prices..." leaked into an answer).
+ */
+export function correctionMessage(violations: readonly PriceViolation[]): string {
   const quoted = violations.map((violation) => `- "${violation.text.slice(0, 200)}"`).join('\n');
-  return `Your answer stated amounts that are not prices of the products you showed or named, a sum or difference of them, a policy amount or the visitor's own figure:\n${quoted}\nRewrite the answer without those amounts. Keep the cards you already showed unless they were wrong. Do not convert currencies or estimate prices; the cards show the prices.`;
+  return `Your answer stated amounts that are not prices of the products you showed or named, a sum or difference of them, a policy amount or the visitor's own figure:\n${quoted}\nWrite your whole answer to the visitor again, without those amounts. The visitor never sees this note: do not mention it, do not acknowledge or apologize for the change, and do not comment on prices being left out; start directly with the answer. Keep the cards you already showed unless they were wrong. Do not convert currencies or estimate prices.`;
 }
 
 /** The assistant history entry: the text plus which products were shown, so "the second one" resolves. */
@@ -180,6 +197,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   const runLoop = async (start: LlmMessage[]) => {
     const state = newTurnState(allowedIds, policyPassages, statuses);
     let messages = start;
+    const presentedText: string[] = [];
     for (;;) {
       const forceText = toolRounds >= MAX_TOOL_ROUNDS;
       const response = await input.provider.turn({
@@ -206,7 +224,16 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       ];
       // A model that still calls tools on the forced round is not obeyed: its text is the answer.
       if (response.toolCalls.length === 0 || forceText) {
-        return { text: response.text, state, messages, assistantContent };
+        return {
+          text: joinAnswerText(presentedText, response.text),
+          finalText: response.text,
+          state,
+          messages,
+          assistantContent,
+        };
+      }
+      if (response.toolCalls.every((call) => call.name.startsWith(PRESENTATION_TOOL_PREFIX))) {
+        presentedText.push(response.text);
       }
       toolRounds += 1;
       const results: ToolResultBlock[] = response.toolCalls.map((call) => {
@@ -239,7 +266,10 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         type: 'answer',
         ask_id: input.askId,
         session_end: input.sessionEnd,
-        text: sanitizeAnswerText(text).slice(0, LIMITS.ANSWER_TEXT_CHARS),
+        text: stripProductIds(sanitizeAnswerText(text), input.catalog.items.keys()).slice(
+          0,
+          LIMITS.ANSWER_TEXT_CHARS,
+        ),
         components: state.components.slice(0, LIMITS.MAX_COMPONENTS),
         chips: state.chips,
       },
@@ -265,7 +295,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       try {
         retry = await runLoop([
           ...first.messages,
-          { role: 'assistant', content: replayOf(first.assistantContent, first.text) },
+          { role: 'assistant', content: replayOf(first.assistantContent, first.finalText) },
           { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
         ]);
       } catch (error) {
