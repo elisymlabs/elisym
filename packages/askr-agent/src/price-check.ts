@@ -31,6 +31,9 @@ const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
     ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD'],
   ],
   [/^(euros?|евро)$/i, ['EUR']],
+  // Everyday codes that are no ISO 4217 code: renminbi, New Taiwan dollar, in any case.
+  [/^rmb$/i, ['CNY']],
+  [/^ntd$/i, ['TWD']],
   [/^(quid|фунт(а|ов|ы|ів)?\s+стерл[иі]нг(а|ов|ів)?)$/i, ['GBP']],
   [/^(yens?|yenes|ienes|иен(а|ы)?|йен(а|ы)?|єн(а|и)?)$/i, ['JPY']],
   [/^(yuans?|yuanes|iuanes|юан(ь|я|ей|и|ів)?|рмб)$/i, ['CNY']],
@@ -289,6 +292,8 @@ const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['лв', ['BGN']],
   ['Rp', ['IDR']],
   ['RM', ['MYR']],
+  ['RMB', ['CNY']],
+  ['NTD', ['TWD']],
   ['₫', ['VND']],
   ['฿', ['THB']],
   ['₱', ['PHP']],
@@ -1390,7 +1395,23 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['港幣', ['HKD']],
   ['台币', ['TWD']],
   ['台幣', ['TWD']],
+  ['新加坡元', ['SGD']],
   ['新元', ['SGD']],
+  ['新币', ['SGD']],
+  ['新幣', ['SGD']],
+  ['加拿大元', ['CAD']],
+  ['澳大利亚元', ['AUD']],
+  ['澳大利亞元', ['AUD']],
+  ['カナダドル', ['CAD']],
+  ['豪ドル', ['AUD']],
+  ['香港ドル', ['HKD']],
+  ['台湾ドル', ['TWD']],
+  ['캐나다 달러', ['CAD']],
+  ['캐나다달러', ['CAD']],
+  ['호주 달러', ['AUD']],
+  ['호주달러', ['AUD']],
+  ['홍콩 달러', ['HKD']],
+  ['홍콩달러', ['HKD']],
   ['澳门元', ['MOP']],
   ['澳門元', ['MOP']],
   ['欧元', ['EUR']],
@@ -1474,8 +1495,11 @@ const CJK_RANGE = String.raw`\s?(?:[〜~～–\-、か]|ないし|或者|或|还
  * of "about" or "converted" ("人民币大约3万", "円換算で3.7万", "日元的话3万", "원으로 3만").
  */
 const CJK_PREFIX_GAP = String.raw`[\s:：、,，\p{Script=Hiragana}約约大概换換算的话話으로는은에서]{0,6}`;
-/** 多 / 余 / 来 / 几 / 여 after a number: "3万多元", "1700余元", "3만여 원" is about that much. */
-const CJK_APPROXIMATE = String.raw`(?<approximate>[多余餘来來几幾]|여)?`;
+/**
+ * 多 / 余 / 来 / 几 / 여 / 左右 / 上下 after a number: "3万多元", "1700余元", "3만여 원",
+ * "1800上下人民币" is about that much.
+ */
+const CJK_APPROXIMATE = String.raw`(?<approximate>[多余餘来來几幾]|여|左右|上下)?`;
 /** 角 / 毛 / 分 after 元 or 块, or a bare digit after 块: "39元8角", "三块五", "249块零5毛". */
 const CJK_SUBUNITS = String.raw`(?:\s?零?(?<tenths>[\d一二三四五六七八九两])(?<tenthsUnit>\s?[角毛])?)?(?:\s?(?<hundredths>[\d一二三四五六七八九两])\s?分)?(?:钱|錢)?`;
 /** Cents after a dollar word: "249ドル50セント". */
@@ -1629,16 +1653,41 @@ const MONEY_AFTER_PIECE: readonly string[] = [
   '吃',
   '玩',
   '做',
-  // Sentence-final particles: "便宜5块呢", "要5块吗", "差5块就包邮".
+];
+/**
+ * Sentence-final particles: after a small count they end stock talk ("只剩一块了", "两块就够")
+ * unless a price word comes before the count in the clause ("便宜5块呢", "差5块就包邮").
+ */
+const CLAUSE_PARTICLES: readonly string[] = [
   '呢',
   '哦',
   '吗',
+  '嗎',
   '啊',
   '吧',
   '了',
   '呀',
   '就',
+  '嘛',
+  '啦',
 ];
+const PRICE_WORDS: readonly string[] = [
+  '便宜',
+  '贵',
+  '貴',
+  '差',
+  '花',
+  '省',
+  '付',
+  '价',
+  '價',
+  '才',
+  '只要',
+  '运费',
+  '運費',
+  '要',
+];
+const CLAUSE_START_RE = /[。！？!?，,；;：:\n]/u;
 /** 一块 as "together": 一块儿, 一块看, 一块去... (another count before them stays money). */
 const TOGETHER_AFTER: readonly string[] = [
   '儿',
@@ -1653,14 +1702,13 @@ const TOGETHER_AFTER: readonly string[] = [
   '做',
 ];
 /**
- * A count cut into pieces at the end of a clause: "切成四块。", "拆成12块". A larger count
- * before a noun ("一盒24块巧克力", "1000块拼图") stays money: it cannot be told from a price.
+ * The splits that may come before a larger count at the end of a clause ("切成12块"); a bare
+ * 成 ("变成300块", "换算成1800块"), 分 ("每人分100块") or 分成 ("分成300块") may not: money,
+ * fail closed. A larger count before a noun ("一盒24块巧克力", "1000块拼图") stays money too.
  */
-const SPLIT_BEFORE: readonly string[] = ['成', '分', '切', '拆'];
-/** The splits that may come before any count ("切成12块"); a bare 成 ("变成300块") may not. */
-const EXPLICIT_SPLITS: readonly string[] = ['切成', '拆成', '分成', '切', '拆'];
-/** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素. */
-const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素'];
+const EXPLICIT_SPLITS: readonly string[] = ['切成', '拆成', '切', '拆'];
+/** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素, 一元复始. */
+const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素', '复', '復'];
 /** 元 after a small count in a technical word: 三元锂电池, 3元系 (ternary). */
 const TERNARY_AFTER: readonly string[] = ['锂', '鋰', '系'];
 /** 日元 in a date: 元旦, 元宵, 元気 ("1月1日元旦", "3日元気に"). */
@@ -1727,18 +1775,18 @@ function pieceCount(context: TokenContext, expression: string): boolean {
   if (context.approximate) {
     return false;
   }
-  // A count cut into pieces at the end of a clause: a small one after 成/分/切/拆 ("分成两块"),
-  // a larger one only after an explicit split ("拆成12块。"): "变成300块。" is money.
-  const clauseEnd = !/[\p{L}\p{N}]/u.test(next);
-  const small = SMALL_COUNT_RE.test(expression);
-  const before = text.slice(0, lowerAt);
-  const split = small
-    ? SPLIT_BEFORE.includes(text[lowerAt - 1] ?? '')
-    : EXPLICIT_SPLITS.some((phrase) => before.endsWith(phrase));
-  if (clauseEnd && split) {
-    return true;
+  const clauseEnd = !/[\p{L}\p{N}]/u.test(next) || CLAUSE_PARTICLES.includes(next);
+  if (!SMALL_COUNT_RE.test(expression)) {
+    // A larger count is pieces only at the end of a clause right after an explicit split.
+    const before = text.slice(0, lowerAt);
+    return !/[\p{L}\p{N}]/u.test(next) && EXPLICIT_SPLITS.some((phrase) => before.endsWith(phrase));
   }
-  if (!small || !HAN_RE.test(next)) {
+  if (clauseEnd) {
+    // Stock talk ("只剩一块了", "切成两块就好") unless a price word leads the clause to the count.
+    const clause = text.slice(0, lowerAt).split(CLAUSE_START_RE).at(-1) ?? '';
+    return !PRICE_WORDS.some((word) => clause.includes(word));
+  }
+  if (!HAN_RE.test(next)) {
     return false;
   }
   return !MONEY_AFTER_PIECE.includes(next) && !CJK_CHARS.includes(next);
@@ -1768,6 +1816,14 @@ function notMoney(context: TokenContext): boolean {
   }
   if (token === '日元' || token === '日圓') {
     return startsWithAny(DATE_YUAN_AFTER) || previous === '月';
+  }
+  if (token === '円' && (rest.startsWith('玉') || rest.startsWith('ショップ'))) {
+    // A coin or a shop, not a price: 一円玉サイズ, 百円ショップ.
+    return true;
+  }
+  if (token === '원' && /^짜리\s?동전/u.test(rest)) {
+    // A coin: 백 원짜리 동전.
+    return true;
   }
   if (token === '円') {
     return (
@@ -2166,7 +2222,7 @@ const HEDGE_ABBREVIATIONS = 'ok';
 // cspell:enable
 /** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
 const SENTENCE_SPLIT_RE = new RegExp(
-  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|\n+)`,
+  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|(?<=[。！？．])[ \t]*(?=\S)|\n+)`,
   'iu',
 );
 /** A numbered-list marker alone in its sentence ("1.", "12)"). */
@@ -2423,10 +2479,20 @@ const CARDS_POINTER: Readonly<Record<string, string>> = {
   de: 'Die Preise stehen auf den Karten.',
   fr: 'Les prix figurent sur les fiches.',
   it: 'I prezzi sono nelle schede.',
+  zh: '价格请看商品卡片。',
+  'zh-hant': '價格請見商品卡片。',
+  ja: '価格はカードをご覧ください。',
+  ko: '가격은 카드를 확인해 주세요.',
 };
 // cspell:enable
 
+/** Traditional Chinese locales: Taiwan, Hong Kong, Macau, or an explicit Hant script. */
+const HANT_RE = /^zh-(?:hant|tw|hk|mo)\b/iu;
+
 export function cardsPointer(locale: string): string {
+  if (HANT_RE.test(locale)) {
+    return CARDS_POINTER['zh-hant'] ?? '';
+  }
   const language = locale.split('-')[0]?.toLowerCase() ?? 'en';
   return CARDS_POINTER[language] ?? CARDS_POINTER.en ?? '';
 }

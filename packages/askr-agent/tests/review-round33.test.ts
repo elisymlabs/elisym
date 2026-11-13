@@ -193,7 +193,8 @@ describe('M-4. words that only look like money are not amounts', () => {
     expect(violations('JPY', '3980', '価格は3,980円で、関東一円に配送します。')).toBe(0);
     expect(violations('JPY', '3980', '価格は4,980円で、関東一円に配送します。')).toBe(1);
     expect(violations('CNY', '2', '2块钱一个。', 'zh')).toBe(0);
-    expect(violations('CNY', '2', '3块。', 'zh')).toBe(1);
+    // A small count before 块 at a clause end is stock talk unless a price word leads (round 36).
+    expect(violations('CNY', '2', '才3块。', 'zh')).toBe(1);
     expect(violations('KRW', '10000', '만 원입니다', 'ko')).toBe(0);
   });
 });
