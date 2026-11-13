@@ -1399,42 +1399,72 @@ const CJK_AMOUNT_RE = new RegExp(
 );
 // cspell:enable
 
-/** The exact value of one CJK expression, or undefined when it does not read cleanly. */
+const TEN = 10;
+
+/**
+ * The exact value of one CJK expression, or undefined when it does not read cleanly: an
+ * explicit zero before a unit ("0万"), a repeated or rising large unit, a comma, or a bare
+ * number after a unit that convention may abbreviate ("三万五" is 35000 to a reader, "一千二"
+ * 1200). After 万 / 億 only a full group of plain digits reads ("3万7000" is 37000), after 十
+ * one digit ("十五" is 15).
+ */
 export function readCjkNumber(expression: string): Decimal | undefined {
   const tokens = expression.replace(/\s/g, '').match(new RegExp(`${CJK_ARABIC}|.`, 'gu')) ?? [];
   let total = new Decimal(0);
   let section = new Decimal(0);
+  let sectionHasCoefficient = false;
   let pending: Decimal | undefined;
+  let pendingToken = '';
   let lastLarge = Number.POSITIVE_INFINITY;
+  let lastUnit: 'none' | 'small' | 'large' = 'none';
+  let lastSmall = 0;
   for (const token of tokens) {
     const digit = CJK_DIGITS[token];
     const small = CJK_SMALL_UNITS[token];
     const large = CJK_LARGE_UNITS[token];
-    if (/^\d/.test(token)) {
+    if (/^\d/.test(token) || digit !== undefined) {
       // Only a plain decimal point reads: "3,7" or "1,000" next to a magnitude is ambiguous.
-      if (pending !== undefined || !/^\d+(?:\.\d+)?$/.test(token)) {
+      if (pending !== undefined || (digit === undefined && !/^\d+(?:\.\d+)?$/.test(token))) {
         return undefined;
       }
-      pending = new Decimal(token);
-    } else if (digit !== undefined) {
-      if (pending !== undefined) {
+      pending = new Decimal(digit ?? token);
+      pendingToken = token;
+    } else if (small !== undefined || large !== undefined) {
+      if (pending?.isZero()) {
         return undefined;
       }
-      pending = new Decimal(digit);
-    } else if (small !== undefined) {
-      section = section.plus((pending ?? new Decimal(1)).times(small));
+      if (small !== undefined) {
+        section = section.plus((pending ?? new Decimal(1)).times(small));
+        sectionHasCoefficient = true;
+        lastUnit = 'small';
+        lastSmall = small;
+      } else if (large !== undefined) {
+        // Larger units come first ("1億2千万"); a repeated or rising one does not read.
+        if (large >= lastLarge) {
+          return undefined;
+        }
+        lastLarge = large;
+        const hasCoefficient = pending !== undefined || sectionHasCoefficient;
+        total = total.plus(
+          (hasCoefficient ? section.plus(pending ?? 0) : new Decimal(1)).times(large),
+        );
+        section = new Decimal(0);
+        sectionHasCoefficient = false;
+        lastUnit = 'large';
+      }
       pending = undefined;
-    } else if (large !== undefined) {
-      // Larger units come first ("1億2千万"); a repeated or rising one does not read.
-      if (large >= lastLarge) {
-        return undefined;
-      }
-      lastLarge = large;
-      const units = section.plus(pending ?? 0);
-      total = total.plus((units.isZero() ? new Decimal(1) : units).times(large));
-      section = new Decimal(0);
-      pending = undefined;
+      pendingToken = '';
     } else {
+      return undefined;
+    }
+  }
+  if (pending !== undefined && lastUnit !== 'none') {
+    const groupDigits = String(Math.log10(lastLarge));
+    const fullGroup =
+      lastUnit === 'large' && new RegExp(`^\\d{${groupDigits}}$`).test(pendingToken);
+    // After 十 the bare digit can only be the ones ("十五" is 15).
+    const ones = lastUnit === 'small' && lastSmall === TEN && /^\d$|^\D$/u.test(pendingToken);
+    if (!fullGroup && !ones) {
       return undefined;
     }
   }
@@ -1446,7 +1476,7 @@ function cjkValues(expression: string): Decimal[] {
   return value === undefined ? [] : [value];
 }
 
-function cjkCurrencies(token: string | undefined): readonly string[] {
+function cjkCurrencies(token: string): readonly string[] {
   return CJK_CURRENCIES.find(([candidate]) => candidate === token)?.[1] ?? [];
 }
 
@@ -1456,27 +1486,38 @@ function cjkCurrencies(token: string | undefined): readonly string[] {
  */
 function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]): void {
   const cjk: MoneyAmount[] = [];
-  const spans: Array<[number, number]> = [];
+  /** Where each CJK match starts, and where its numbers end: readings inside are replaced. */
+  const covered: Array<{ start: number; end: number; numberStart: number; numberEnd: number }> = [];
   for (const match of text.matchAll(CJK_AMOUNT_RE)) {
     const groups = match.groups ?? {};
-    const token = groups.before ?? groups.after;
-    const currencies = cjkCurrencies(token);
+    const tokens = [groups.before, groups.after].filter(
+      (token): token is string => token !== undefined,
+    );
     const lower = groups.lower;
-    if (currencies.length === 0 || lower === undefined || token === undefined) {
+    if (tokens.length === 0 || lower === undefined) {
       continue;
     }
+    // A currency on both sides must agree: "¥3万ドル" is no currency at all, so it matches nothing.
+    const currencies = tokens
+      .map(cjkCurrencies)
+      .reduce((shared, next) => shared.filter((currency) => next.includes(currency)));
     const written = groups.upper === undefined ? lower : `${lower}${groups.upper}`;
     const plain = !CJK_CHAR_RE.test(written);
-    if (plain && SCANNED_CJK_TOKENS.includes(token)) {
+    if (plain && tokens.every((token) => SCANNED_CJK_TOKENS.includes(token))) {
       continue;
     }
     const start = match.index;
     const lowerAt = start + match[0].indexOf(lower);
-    spans.push([start, start + match[0].length]);
     const bounds = groups.upper === undefined ? [lower] : [lower, groups.upper];
     for (const bound of bounds) {
       const values = plain ? readValues(bound.trim(), decimals) : cjkValues(bound);
       const numberIndex = bound === lower ? lowerAt : start + match[0].lastIndexOf(bound);
+      covered.push({
+        start,
+        end: start + match[0].length,
+        numberStart: numberIndex,
+        numberEnd: numberIndex + bound.length,
+      });
       cjk.push({
         values,
         currencies: [...currencies],
@@ -1487,11 +1528,21 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
       });
     }
   }
-  if (spans.length === 0) {
+  if (cjk.length === 0) {
     return;
   }
+  // Only a partial reading of the same amount ("¥3.7" of "¥3.7万", "7000円" of "3万7000円") is
+  // replaced: it lies wholly inside the match and its number starts inside the CJK number. Every
+  // other reading stays and must pass on its own.
   const kept = found.filter(
-    (amount) => !spans.some(([from, to]) => amount.numberIndex >= from && amount.numberIndex < to),
+    (amount) =>
+      !covered.some(
+        (span) =>
+          amount.index >= span.start &&
+          amount.index + amount.raw.length <= span.end &&
+          amount.numberIndex >= span.numberStart &&
+          amount.numberIndex < span.numberEnd,
+      ),
   );
   found.splice(0, found.length, ...kept, ...cjk);
 }
