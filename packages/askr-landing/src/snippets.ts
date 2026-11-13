@@ -15,3 +15,14 @@ export const CART_HOOK_SNIPPET = [
   '  };',
   '</script>',
 ].join('\n');
+
+/** The pinned tag the admin shows under Embed: the browser runs the bundle only if it matches. */
+export const PINNED_SNIPPET = [
+  '<script',
+  `  src="${WIDGET_SRC.replace('/widget.js', '/widget/<id>.js')}"`,
+  '  integrity="sha384-..."',
+  '  crossorigin="anonymous"',
+  '  data-store="npub1..."',
+  '  async',
+  '></script>',
+].join('\n');

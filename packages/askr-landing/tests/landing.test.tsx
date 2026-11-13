@@ -10,10 +10,12 @@ import {
   DOCS,
   GITHUB_URL,
   MCP_TOOLS,
+  PLANS,
   WIDGET_SRC,
   X_URL,
 } from '../src/constants';
-import { CART_HOOK_SNIPPET, embedSnippet } from '../src/snippets';
+import { MEDIA, mediaUrl } from '../src/media';
+import { CART_HOOK_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -116,7 +118,7 @@ describe('the snippets', () => {
     expect(docsPage('embed')).toContain(snippet);
     expect(WIDGET_SRC.endsWith('/widget.js')).toBe(true);
     expect(readFileSync(join(PACKAGES, 'askr-server/src/gateway/gateway.ts'), 'utf8')).toContain(
-      "url.pathname === '/widget.js'",
+      "pathname === '/widget.js'",
     );
     const page = await render(<App />);
     expect(page.querySelector('#embed-snippet')?.textContent).toBe(snippet);
@@ -130,6 +132,13 @@ describe('the snippets', () => {
     await act(async () => copy?.click());
     expect(writeText).toHaveBeenCalledWith(embedSnippet());
     expect(copy?.textContent).toBe('Copied');
+  });
+
+  it('the pinned tag is the one the embed guide gives', async () => {
+    expect(docsPage('embed')).toContain(PINNED_SNIPPET);
+    expect(PINNED_SNIPPET).toContain('integrity="sha384-..."');
+    const page = await render(<App />);
+    expect(page.querySelector('#pinned-snippet')?.textContent).toBe(PINNED_SNIPPET);
   });
 
   it('the cart hook uses the name and fields the widget reads', async () => {
@@ -184,11 +193,22 @@ describe('the copy', () => {
     }
   });
 
-  it('gives no plan prices: plans are set up on request', async () => {
+  it('shows every plan once, priced or custom, each with a way to start', async () => {
     const page = await render(<App />);
-    const plans = page.querySelector('#plans')?.textContent ?? '';
-    expect(plans).toContain('on request');
-    expect(plans).not.toMatch(/[$€£]|\d/);
+    const cards = [...page.querySelectorAll('#pricing li:has(> div > h3)')];
+    expect(cards.map((card) => card.querySelector('h3')?.textContent)).toEqual(
+      PLANS.map((plan) => plan.name),
+    );
+    PLANS.forEach((plan, index) => {
+      const card = cards[index];
+      expect(card?.textContent).toContain(plan.price ?? 'Custom');
+      for (const feature of plan.features) {
+        expect(card?.textContent).toContain(feature);
+      }
+      const start = [...(card?.querySelectorAll('a') ?? [])].map((link) => link.href);
+      expect(start).toEqual([plan.start === 'admin' ? ADMIN_URL : `${X_URL}`]);
+    });
+    expect(PLANS.filter((plan) => plan.featured)).toHaveLength(1);
   });
 });
 
@@ -209,7 +229,7 @@ describe('the page structure', () => {
   it('gives every section of the main content a heading', async () => {
     const page = await render(<App />);
     const sections = [...page.querySelectorAll('main > section')];
-    expect(sections.length).toBe(7);
+    expect(sections.length).toBe(13);
     for (const section of sections) {
       expect(section.querySelector('h1, h2'), section.id).not.toBeNull();
     }
@@ -220,6 +240,35 @@ describe('the page structure', () => {
       const code = readFileSync(file, 'utf8');
       expect(code, file).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
       expect(code, file).not.toMatch(/\bstyle=\{/);
+    }
+  });
+
+  it('draws a placeholder for a media slot whose file has not landed, and a file once it has', async () => {
+    const page = await render(<App />);
+    for (const slot of Object.values(MEDIA)) {
+      const image = mediaUrl(slot.image);
+      const video = mediaUrl('video' in slot ? slot.video : undefined);
+      if (image === undefined && video === undefined) {
+        expect(page.querySelector(`[alt="${slot.alt}"], [aria-label="${slot.alt}"]`)).toBeNull();
+      } else {
+        expect(
+          page.querySelector(`[alt="${slot.alt}"], [aria-label="${slot.alt}"]`),
+        ).not.toBeNull();
+      }
+    }
+    expect(page.querySelectorAll('.media-placeholder').length).toBe(
+      Object.values(MEDIA).filter(
+        (slot) =>
+          mediaUrl(slot.image) === undefined &&
+          mediaUrl('video' in slot ? slot.video : undefined) === undefined,
+      ).length,
+    );
+  });
+
+  it('plays a loop muted and inline, so a browser autoplays it', () => {
+    const code = readFileSync(join(PACKAGE, 'src/components/Visual.tsx'), 'utf8');
+    for (const attribute of ['autoPlay', 'muted', 'loop', 'playsInline']) {
+      expect(code).toContain(attribute);
     }
   });
 

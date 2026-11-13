@@ -15,6 +15,15 @@ const PATHS = {
   globe:
     'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0 0c2.5-2.5 3.5-5.5 3.5-9S14.5 5.5 12 3m0 18c-2.5-2.5-3.5-5.5-3.5-9S9.5 5.5 12 3M3.5 9h17m-17 6h17',
   ban: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18ZM5.6 5.6l12.8 12.8',
+  chat: 'M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 4v-4A1.5 1.5 0 0 1 5 14.5v-8Z',
+  compare: 'M4 6h7v12H4V6Zm9 0h7v12h-7V6ZM6.5 10h2m-2 3h2m7-3h2m-2 3h2',
+  lock: 'M6 11h12v9H6v-9Zm2.5 0V8a3.5 3.5 0 0 1 7 0v3M12 14.5v2',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-13v4l3 2',
+  language:
+    'M4 5h8M8 3v2m2 0c-.5 3.5-2.5 6.5-6 8m2-5c1 2 2.5 3.5 4.5 4.5M13 21l4-10 4 10m-6.8-3h5.6',
+  chart: 'M4 20V4m0 16h16M8 16v-4m4 4V8m4 8v-6',
+  sliders: 'M4 7h9m4 0h3M4 17h3m4 0h9M15 5v4M9 15v4',
+  close: 'M6 6l12 12M18 6 6 18',
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -62,6 +62,7 @@
   --radius-16: 1rem;
   --radius-20: 1.25rem;
   --radius-24: 1.5rem;
+  --radius-32: 2rem;
   /* Font sizes by pixel: `text-14` is 14px. */
   --text-11: 0.6875rem;
   --text-12: 0.75rem;
@@ -74,7 +75,9 @@
   --text-24: 1.5rem;
   --text-32: 2rem;
   --text-40: 2.5rem;
+  --text-48: 3rem;
   --text-56: 3.5rem;
+  --text-72: 4.5rem;
 }
 
 html {
@@ -117,8 +120,94 @@ body {
   opacity: 0.6;
 }
 
+/* A media slot before its file lands: a soft accent light on the surface. */
+.media-placeholder {
+  background:
+    radial-gradient(60% 70% at 30% 20%, var(--glow), transparent 70%),
+    radial-gradient(50% 60% at 85% 90%, var(--accent-soft), transparent 70%),
+    linear-gradient(160deg, var(--surface-2), var(--surface));
+}
+
+/* The hero chat plays once: each step rises in after the one before it. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.chat-step {
+  animation: rise 0.5s ease-out both;
+}
+
+.chat-step-1 {
+  animation-delay: 0.3s;
+}
+
+.chat-step-2 {
+  animation-delay: 1.4s;
+}
+
+.chat-step-3 {
+  animation-delay: 2s;
+}
+
+.chat-step-4 {
+  animation-delay: 2.3s;
+}
+
+.typing-dot {
+  animation: blink 1s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* The dots show only until the answer rises in. */
+@keyframes vanish {
+  to {
+    opacity: 0;
+    height: 0;
+    margin: 0;
+    padding: 0;
+  }
+}
+
+.chat-typing {
+  animation: vanish 0.2s ease-in 1.3s forwards;
+  overflow: hidden;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+
+  .chat-step,
+  .typing-dot {
+    animation: none;
+  }
+
+  .chat-typing {
+    display: none;
   }
 }

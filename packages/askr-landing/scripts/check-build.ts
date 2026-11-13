@@ -12,6 +12,7 @@ const LANDING_CSP: Record<string, string[]> = {
   'frame-src': ["'none'"],
   'style-src': ["'self'"],
   'img-src': ["'self'", 'data:'],
+  'media-src': ["'self'"],
   'font-src': ["'self'"],
   'connect-src': ["'self'"],
   'frame-ancestors': ["'none'"],
