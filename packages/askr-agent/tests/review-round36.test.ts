@@ -49,20 +49,27 @@ describe('MAJOR-1. a small count before 块 ending a clause is stock talk unless
     '只剩一块了。',
     '只剩最后一块了！',
     '库存只剩3块了。',
-    '一块就够用了。',
-    '两块就能铺满帐篷底部。',
     '套装里有三块呢。',
     '建议多带两块吧。',
     '一盒有六块呢。',
     '这款地垫送两块哦。',
-    '买两块吗？',
     '切成两块就好。',
-    '電池兩塊就夠了。',
     '只剩一塊了。',
-    '建议买2块，一块备用。',
   ])('"%s" is no amount in USD and CNY stores', (text) => {
     expect(usd(text, 'zh')).toBe(0);
     expect(violations('CNY', '249', text, 'zh')).toBe(0);
+  });
+
+  // Fail-closed decisions (round 37): no stock verb right before the count, so money. A false
+  // positive strips one sentence and appends the pointer; a fail-open passes a wrong price.
+  it.each([
+    '一块就够用了。',
+    '两块就能铺满帐篷底部。',
+    '买两块吗？',
+    '電池兩塊就夠了。',
+    '建议买2块，一块备用。',
+  ])('accepted false positive: "%s" is read as money in a CNY store', (text) => {
+    expect(violations('CNY', '249', text, 'zh')).toBe(1);
   });
 
   it.each([

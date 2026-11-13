@@ -292,8 +292,6 @@ const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['лв', ['BGN']],
   ['Rp', ['IDR']],
   ['RM', ['MYR']],
-  ['RMB', ['CNY']],
-  ['NTD', ['TWD']],
   ['₫', ['VND']],
   ['฿', ['THB']],
   ['₱', ['PHP']],
@@ -1653,6 +1651,8 @@ const MONEY_AFTER_PIECE: readonly string[] = [
   '吃',
   '玩',
   '做',
+  '换',
+  '換',
 ];
 /**
  * Sentence-final particles: after a small count they end stock talk ("只剩一块了", "两块就够")
@@ -1685,17 +1685,12 @@ const PRICE_WORDS: readonly string[] = [
   '只要',
   '运费',
   '運費',
-  '要',
+  '费',
+  '費',
   '卖',
   '賣',
   '售',
   '降',
-  '特价',
-  '特價',
-  '现价',
-  '現價',
-  '原价',
-  '原價',
   '优惠',
   '優惠',
   '折',
@@ -1709,37 +1704,20 @@ const PRICE_WORDS: readonly string[] = [
   '只需',
   '仅',
   '僅',
+  // 价 / 價 also cover 特价, 现价, 原价.
 ];
 /**
- * Stock or quantity words: a small count before 块 ending a clause is pieces only with one of
- * these in the clause ("只剩一块了", "套装里有三块呢", "一块就够用了") and no price word. Without
- * one ("这个5块呢") it is money: fail closed.
+ * A stock verb right before a small count before 块 ending a clause: only then it is pieces
+ * ("只剩一块了", "套装里有三块呢", "建议多带两块吧", "切成两块就好"), and only with no price word
+ * before it in the clause. Fillers (只, 还, 仅, 就, 最后) between the verb and the count are skipped.
+ * 送 after 配, 运, 快, 发 or 递 is delivery, not a gift. Anything else is money, fail closed:
+ * "一块就够用了", "买两块吗" and "两块就能铺满" are accepted false positives.
  */
-const STOCK_WORDS: readonly string[] = [
-  '剩',
-  '有',
-  '带',
-  '帶',
-  '送',
-  '附',
-  '赠',
-  '贈',
-  '买',
-  '買',
-  '需要',
-  '备',
-  '備',
-  '装',
-  '裝',
-  '切成',
-  '拆成',
-  '分成',
-  '用',
-  '够',
-  '夠',
-  '铺',
-  '鋪',
-];
+const STOCK_BEFORE_RE =
+  /(?:剩下?|还有|還有|只有|共有|有|(?<![配运運快发發递遞])送|附|赠|贈|带|帶|装了?|裝了?|切成|拆成|分成|需要|备|備)(?:了|着|著)?$/u;
+const STOCK_FILLERS_RE = /(?:[只还還仅僅就]|最后|最後)+$/u;
+/** 要 is a price word ("要5块吗") but not inside 需要, 想要, 重要, 主要. */
+const PRICE_WANT_RE = /(?<![需想重主只])要/u;
 const CLAUSE_START_RE = /[。！？!?，,；;：:\n]/u;
 /** 一块 as "together": 一块儿, 一块看, 一块去... (another count before them stays money). */
 const TOGETHER_AFTER: readonly string[] = [
@@ -1835,13 +1813,11 @@ function pieceCount(context: TokenContext, expression: string): boolean {
     return !/[\p{L}\p{N}]/u.test(next) && EXPLICIT_SPLITS.some((phrase) => before.endsWith(phrase));
   }
   if (clauseEnd) {
-    // Stock talk only with a stock word in the clause and no price word ("只剩一块了",
-    // "两块就能铺满"); anything else ("这个卖5块呢", "一共5块吧", "这个5块呢") is money.
-    const clause = `${text.slice(0, lowerAt).split(CLAUSE_START_RE).at(-1) ?? ''}${text.slice(tokenEnd).split(CLAUSE_START_RE)[0] ?? ''}`;
-    return (
-      STOCK_WORDS.some((word) => clause.includes(word)) &&
-      !PRICE_WORDS.some((word) => clause.includes(word))
-    );
+    // Stock talk only with a stock verb right before the count and no price word before it in
+    // the clause; never the text after the count ("5块就能买到", "配送费5块" are money).
+    const clause = text.slice(0, lowerAt).split(CLAUSE_START_RE).at(-1) ?? '';
+    const priced = PRICE_WORDS.some((word) => clause.includes(word)) || PRICE_WANT_RE.test(clause);
+    return !priced && STOCK_BEFORE_RE.test(clause.replace(STOCK_FILLERS_RE, ''));
   }
   if (!HAN_RE.test(next)) {
     return false;
@@ -2279,7 +2255,7 @@ const HEDGE_ABBREVIATIONS = 'ok';
 // cspell:enable
 /** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
 const SENTENCE_SPLIT_RE = new RegExp(
-  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|(?<=[。！？．])[ \t]*(?=\S)|\n+)`,
+  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|(?:(?<=[。！？])|(?<=(?<![\d０-９])．)(?![\d０-９]))[ \t]*(?=\S)|\n+)`,
   'iu',
 );
 /** A numbered-list marker alone in its sentence ("1.", "12)"). */
@@ -2546,7 +2522,9 @@ const CARDS_POINTER: Readonly<Record<string, string>> = {
 /** Traditional Chinese locales: Taiwan, Hong Kong, Macau, or an explicit Hant script. */
 const HANT_RE = /^zh-(?:hant|tw|hk|mo)\b/iu;
 
-export function cardsPointer(locale: string): string {
+export function cardsPointer(rawLocale: string): string {
+  // POSIX-style locales ("zh_TW") use an underscore.
+  const locale = rawLocale.replace(/_/g, '-');
   if (HANT_RE.test(locale)) {
     return CARDS_POINTER['zh-hant'] ?? '';
   }
