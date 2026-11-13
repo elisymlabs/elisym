@@ -1653,10 +1653,12 @@ const TOGETHER_AFTER: readonly string[] = [
   '做',
 ];
 /**
- * Any count cut into pieces at the end of a clause: "切成四块。", "拆成12块". A larger count
+ * A count cut into pieces at the end of a clause: "切成四块。", "拆成12块". A larger count
  * before a noun ("一盒24块巧克力", "1000块拼图") stays money: it cannot be told from a price.
  */
 const SPLIT_BEFORE: readonly string[] = ['成', '分', '切', '拆'];
+/** The splits that may come before any count ("切成12块"); a bare 成 ("变成300块") may not. */
+const EXPLICIT_SPLITS: readonly string[] = ['切成', '拆成', '分成', '切', '拆'];
 /** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素. */
 const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素'];
 /** 元 after a small count in a technical word: 三元锂电池, 3元系 (ternary). */
@@ -1725,12 +1727,18 @@ function pieceCount(context: TokenContext, expression: string): boolean {
   if (context.approximate) {
     return false;
   }
-  // Any count cut into pieces at the end of a clause ("拆成12块。").
+  // A count cut into pieces at the end of a clause: a small one after 成/分/切/拆 ("分成两块"),
+  // a larger one only after an explicit split ("拆成12块。"): "变成300块。" is money.
   const clauseEnd = !/[\p{L}\p{N}]/u.test(next);
-  if (clauseEnd && SPLIT_BEFORE.includes(text[lowerAt - 1] ?? '')) {
+  const small = SMALL_COUNT_RE.test(expression);
+  const before = text.slice(0, lowerAt);
+  const split = small
+    ? SPLIT_BEFORE.includes(text[lowerAt - 1] ?? '')
+    : EXPLICIT_SPLITS.some((phrase) => before.endsWith(phrase));
+  if (clauseEnd && split) {
     return true;
   }
-  if (!SMALL_COUNT_RE.test(expression) || !HAN_RE.test(next)) {
+  if (!small || !HAN_RE.test(next)) {
     return false;
   }
   return !MONEY_AFTER_PIECE.includes(next) && !CJK_CHARS.includes(next);

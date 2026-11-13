@@ -144,3 +144,20 @@ describe('MINOR. guards pinned', () => {
     expect(violations('CNY', '39.8', '38-39元8角', 'zh')).toBe(1);
   });
 });
+
+describe('security: a split clause takes a large count only after an explicit split', () => {
+  it.each(['变成300块。', '变成1700块', '打折后变成300块。', '合计分300块'])(
+    '"%s" is money in USD and CNY stores',
+    (text) => {
+      expect(usd(text, 'zh')).toBe(1);
+      expect(violations('CNY', '249', text, 'zh')).toBe(1);
+    },
+  );
+
+  it.each(['拆成12块。', '切成12块', '可以拆12块。', '分成两块', '分成300块。', '变成两块。'])(
+    '"%s" stays pieces',
+    (text) => {
+      expect(violations('CNY', '249', text, 'zh')).toBe(0);
+    },
+  );
+});
