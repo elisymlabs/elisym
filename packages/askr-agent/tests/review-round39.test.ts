@@ -67,7 +67,6 @@ describe('MAJOR-1. a small count + 块 is money unless a listed product noun fol
     '两块便携式太阳能板',
     '套装含两块太阳能板',
     '两块真皮护垫',
-    '两块和牛牛排',
     '两块能量棒',
     '两块元宵',
     '三块香皂',
@@ -82,6 +81,7 @@ describe('MAJOR-1. a small count + 块 is money unless a listed product noun fol
    */
   it.each([
     '一块上好的木板',
+    '两块和牛牛排',
     '两块最新款电池',
     '两块下垫',
     '分成两块收纳。',

@@ -1647,20 +1647,29 @@ const CLAUSE_PARTICLES: readonly string[] = [
   '嘛',
   '啦',
 ];
+/** Words that start like a listed noun but are not one: 元宵节 (9块元宵节特价). */
+const NOT_PIECE_NOUNS: readonly string[] = ['元宵节', '元宵節'];
 /**
  * What a small count + 块 / 塊 counts when it counts pieces: a product noun or a common
  * product-copy modifier at the start of the next word ("两块砧板", "附赠两块可替换滤芯").
  * Anything else after it is money ("5块很便宜", "9块是活动价", "9块含运费"): a product noun
- * missing here strips one sentence (fail closed); add it to this list.
+ * missing here strips one sentence (fail closed); add it to this list. No entry may start with
+ * a word that can continue a price (和, 加, 更...): "5块和牛奶8块" is money.
  */
-const PIECE_NOUN_STARTS: readonly string[] = [
+export const PIECE_NOUN_STARTS: readonly string[] = [
   '砧板',
   '香皂',
   '肥皂',
   '抹布',
   '毛巾',
   '地垫',
+  '地墊',
+  '防潮垫',
+  '防潮墊',
+  '防潮布',
+  '面板',
   '垫子',
+  '墊子',
   '垫',
   '墊',
   '地布',
@@ -1690,7 +1699,6 @@ const PIECE_NOUN_STARTS: readonly string[] = [
   '护垫',
   '護墊',
   '牛排',
-  '和牛',
   '能量棒',
   '巧克力',
   '蛋糕',
@@ -1726,7 +1734,6 @@ const PIECE_NOUN_STARTS: readonly string[] = [
   '替換',
   '更换用',
   '更換用',
-  '加厚',
   '防水',
   '防滑',
   '硅胶',
@@ -1837,7 +1844,11 @@ function pieceCount(context: TokenContext, expression: string): boolean {
     return (small ? SMALL_SPLITS : EXPLICIT_SPLITS).some((phrase) => before.endsWith(phrase));
   }
   // A small count before a listed product noun counts pieces ("两块砧板"); anything else is money.
-  return small && PIECE_NOUN_STARTS.some((noun) => text.startsWith(noun, tokenEnd));
+  return (
+    small &&
+    PIECE_NOUN_STARTS.some((noun) => text.startsWith(noun, tokenEnd)) &&
+    !NOT_PIECE_NOUNS.some((word) => text.startsWith(word, tokenEnd))
+  );
 }
 
 /**
