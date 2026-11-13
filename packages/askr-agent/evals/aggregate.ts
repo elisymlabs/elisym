@@ -71,6 +71,10 @@ export interface ModelSummary {
   flakyCases: string[];
   /** Turns that failed for a reason other than the provider: quality failures. */
   turnErrors: number;
+  /** Of those, turns cut at max_tokens: the max_tokens setting (2048 by default) is too low. */
+  maxTokensStops: number;
+  /** Of those, turns the model declined. */
+  refusals: number;
   /** Runs that ended on a provider error after retries: out of the pass rate. */
   providerErrors: number;
   /** Of those, a 4xx that a rerun will not change: fix the route or model. */
@@ -247,6 +251,8 @@ export function summarize(
     passedRuns,
     flakyCases: cases.filter((result) => result.flaky).map((result) => result.caseId),
     turnErrors: runs.filter((run) => run.error !== undefined && run.providerError !== true).length,
+    maxTokensStops: runs.filter((run) => run.stopKind === 'max_tokens').length,
+    refusals: runs.filter((run) => run.stopKind === 'refusal').length,
     providerErrors: runs.filter((run) => run.providerError === true).length,
     configErrors: runs.filter((run) => run.configError === true).length,
     judgeErrors: runs.filter((run) => run.judgeError === true).length,

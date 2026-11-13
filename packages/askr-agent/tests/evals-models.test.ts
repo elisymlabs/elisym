@@ -52,7 +52,9 @@ describe('the models file', () => {
     const specs: ProviderSpec[] = [];
     const models = resolveModels(json, { env: ENV, createProvider: fake(specs) });
     expect(specs[0]?.effort).toBe('low');
-    expect(specs[1]?.effort).toBeUndefined();
+    // The example runs Anthropic entries at production effort (ASKR_EFFORT low).
+    expect(specs[1]?.effort).toBe('low');
+    expect(specs[2]?.effort).toBeUndefined();
     expect(models[0]?.maxTokens).toBe(4_000);
     expect(models[1]?.maxTokens).toBeUndefined();
     const wrong = filledExample();

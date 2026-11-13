@@ -21,7 +21,7 @@ import {
   type Usage,
   ZERO_USAGE,
 } from '../src/llm/types';
-import { TurnError, runTurn } from '../src/turn';
+import { type StopKind, StopReasonError, TurnError, runTurn } from '../src/turn';
 import type { EvalCase, EvalStore } from './cases';
 
 /** Visitor messages in a history are fenced exactly as `runTurn` fences live ones. */
@@ -347,6 +347,8 @@ export interface CaseOutcome {
   timedOut?: boolean;
   /** ...and the failure is a 4xx that will not change on a rerun: fix the route or model. */
   configError?: boolean;
+  /** The turn ended on the model's stop reason: cut at max_tokens, declined, or another. */
+  stopKind?: StopKind;
 }
 
 export interface RunCaseInput {
@@ -419,6 +421,7 @@ export async function runCase(input: RunCaseInput): Promise<CaseOutcome> {
       modelCalls: spent?.modelCalls ?? 0,
       latencyMs,
       error: errorMessage(reason),
+      ...(reason instanceof StopReasonError ? { stopKind: reason.kind } : {}),
       ...(reason instanceof ProviderError
         ? {
             providerError: true,

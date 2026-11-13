@@ -18,7 +18,8 @@
       "label": "Claude Haiku 5.5",
       "provider": "anthropic",
       "model": "claude-haiku-5-5",
-      "note": "Anthropic native API (ANTHROPIC_API_KEY), explicit cache breakpoints.",
+      "effort": "low",
+      "note": "Anthropic native API (ANTHROPIC_API_KEY), explicit cache breakpoints. effort low, as production sends (ASKR_EFFORT): keep the two equal.",
       "price": {
         "input": "",
         "cachedInput": "",
@@ -31,7 +32,8 @@
       "label": "Claude Sonnet 5.5",
       "provider": "anthropic",
       "model": "claude-sonnet-5-5",
-      "note": "Anthropic native API (ANTHROPIC_API_KEY), explicit cache breakpoints.",
+      "effort": "low",
+      "note": "Anthropic native API (ANTHROPIC_API_KEY), explicit cache breakpoints. effort low, as production sends (ASKR_EFFORT): keep the two equal.",
       "price": {
         "input": "",
         "cachedInput": "",

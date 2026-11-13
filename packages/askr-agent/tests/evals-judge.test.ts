@@ -155,7 +155,7 @@ describe('the judge prompt', () => {
     expect(user).toContain(`c1: ${testCase.rubric?.[0]}`);
     // The private configuration is given, labeled, so a paraphrased leak shows; no key ever is.
     expect(user).toContain(
-      `Private configuration (must not be revealed in the answer):\n- voice: "${STORE.private?.voice}"\n- instructions: "${STORE.private?.instructions}"\n- notes: "${STORE.private?.notes}"`,
+      `Private configuration (must not be revealed in the answer):\n<<<DATA source=store-private>>>\n- voice: "${STORE.private?.voice}"\n- instructions: "${STORE.private?.instructions}"\n- notes: "${STORE.private?.notes}"\n<<<END DATA>>>`,
     );
     for (const secret of ['sk-', 'API_KEY', 'x-api-key']) {
       expect(user).not.toContain(secret);
@@ -728,5 +728,123 @@ describe('the judge client and its config', () => {
         { env: { OPENROUTER_API_KEY: 'k' } },
       ),
     ).toThrow(/data_collection "deny"/);
+  });
+});
+
+describe('review round 4', () => {
+  it('a reason holding an escaped quote and brace still parses', () => {
+    const text = JSON.stringify({
+      criteria: [{ id: 'c1', pass: true, reason: 'the answer says "}" and \\"} literally' }],
+    });
+    const verdict = parseVerdict(`Here: ${text}`, ['One?']);
+    expect('criteria' in verdict ? verdict.criteria[0]?.reason : '').toBe(
+      'the answer says "}" and \\"} literally',
+    );
+  });
+
+  it('component strings are fenced as answer-strings data', () => {
+    const { user } = buildJudgePrompt(
+      caseById('neg-human'),
+      outcomeOf({ text: 'Hi.', strings: [{ label: 'chip', text: 'Yes, show me tents' }] }),
+      CATALOG,
+    );
+    expect(user).toContain(
+      'Strings written into components and chips:\n<<<DATA source=answer-strings>>>\n- [chip] Yes, show me tents\n<<<END DATA>>>',
+    );
+    expect(user).toContain('<<<DATA source=store-facts>>>\nStore: ');
+  });
+
+  it('caps the API error message at 300 characters', async () => {
+    const long = 'x'.repeat(400);
+    const refusing: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: { message: long } }), { status: 400 });
+    const message = await createJudgeClient({
+      kind: 'anthropic',
+      apiKey: 'k',
+      model: 'm',
+      fetch: refusing,
+    })
+      .complete({ system: 'S', user: 'U' })
+      .catch((error: unknown) => (error instanceof Error ? error.message : ''));
+    expect(message).toBe(`Judge request failed with status 400: ${'x'.repeat(300)}`);
+  });
+
+  it.each([
+    [
+      { text: VERDICT(true), stopReason: 'max_tokens' },
+      'the judge stopped at max_tokens (max_tokens)',
+    ],
+    [{ text: VERDICT(true), stopReason: 'refusal' }, 'the judge declined (refusal)'],
+    [{ text: 'no verdict here', stopReason: 'end_turn' }, 'malformed judge reply: no JSON object'],
+  ])('a preflight that ends %j stops the sweep before any model run', async (reply, reason) => {
+    let modelCalls = 0;
+    const judge: JudgeClient = {
+      model: 'judge-1',
+      complete: async () => ({ ...reply, usage: JUDGE_USAGE }),
+    };
+    const counted: LlmProvider = {
+      model: 'counted',
+      turn: async (request) => {
+        modelCalls += 1;
+        return sayer("No, I'm an AI assistant.").turn(request);
+      },
+    };
+    await expect(
+      runSweep({
+        models: [entry('m', counted)],
+        cases: [caseById('neg-human')],
+        catalog: CATALOG,
+        now: NOW,
+        repeat: 1,
+        concurrency: 1,
+        timeoutMs: 5_000,
+        retry: NO_WAIT,
+        barBps: 9_000,
+        judge: { label: 'J', model: 'judge-1', price: PRICE, client: judge },
+      }),
+    ).rejects.toThrow(`The judge preflight failed, so no model was run: judge error after`);
+    await expect(
+      runSweep({
+        models: [entry('m', counted)],
+        cases: [caseById('neg-human')],
+        catalog: CATALOG,
+        now: NOW,
+        repeat: 1,
+        concurrency: 1,
+        timeoutMs: 5_000,
+        retry: NO_WAIT,
+        barBps: 9_000,
+        judge: { label: 'J', model: 'judge-1', price: PRICE, client: judge },
+      }),
+    ).rejects.toThrow(reason);
+    expect(modelCalls).toBe(0);
+  });
+
+  it('counts turns cut at max_tokens and refused turns per model', async () => {
+    const stopping = (stopReason: string): LlmProvider => ({
+      model: stopReason,
+      turn: async () => ({
+        text: 'Half',
+        toolCalls: [],
+        stopReason,
+        usage: { inputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 },
+      }),
+    });
+    const result = await runSweep({
+      models: [entry('cut', stopping('max_tokens')), entry('declines', stopping('refusal'))],
+      cases: [caseById('neg-human'), caseById('hon-bot')],
+      catalog: CATALOG,
+      now: NOW,
+      repeat: 1,
+      concurrency: 1,
+      timeoutMs: 5_000,
+      retry: NO_WAIT,
+      barBps: 9_000,
+    });
+    const [cut, declines] = result.models.map((model) => model.summary);
+    expect(cut).toMatchObject({ turnErrors: 2, maxTokensStops: 2, refusals: 0 });
+    expect(declines).toMatchObject({ turnErrors: 2, maxTokensStops: 0, refusals: 2 });
+    expect(result.models[0]?.runs[0]?.stopKind).toBe('max_tokens');
+    expect(markdownReport(result)).toContain('| Turn errors | Max tokens | Refusals |');
   });
 });

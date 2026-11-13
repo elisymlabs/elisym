@@ -83,18 +83,18 @@ ANTHROPIC_API_KEY=... OPENROUTER_API_KEY=... DEEPSEEK_API_KEY=... \
 Only the keys of the selected entries and the judge are needed: `--only claude-haiku-5-5` needs
 `ANTHROPIC_API_KEY` alone, and unselected entries may keep empty prices.
 
-| Option                 | Default     | Meaning                                                                                                                                                              |
-| ---------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--models <file>`      | required    | The matrix and the judge. An Anthropic entry may set `effort`; any entry may set `maxTokens` (per model call, thinking included; 2048 by default, as in production). |
-| `--only <id,...>`      | all entries | Run only these entries.                                                                                                                                              |
-| `--cases <filter,...>` | all cases   | Case ids or categories; a trailing `*` matches a prefix (`hist-*`).                                                                                                  |
-| `--repeat <n>`         | 1           | Run each case n times; a case passes only when every repeat passes.                                                                                                  |
-| `--concurrency <n>`    | 4           | Turns in flight at once, over all models.                                                                                                                            |
-| `--timeout <seconds>`  | 60          | Per model or judge call; a hung call fails its case instead of stalling the run.                                                                                     |
-| `--retries <n>`        | 3           | Retries of a call that hit a 408, a 429, a 5xx, a network error or the timeout, and of a malformed judge reply.                                                      |
-| `--bar <percent>`      | 90          | The pass-rate bar for the suggested default.                                                                                                                         |
-| `--no-judge`           | off         | Deterministic checks only: a cheap dry check. The report says it is no quality verdict and suggests no default.                                                      |
-| `--out <dir>`          | none        | Start `runs.jsonl` afresh, append each graded run as it lands, then write `results.json` and `report.md`.                                                            |
+| Option                 | Default     | Meaning                                                                                                                                                                                                                                                                              |
+| ---------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--models <file>`      | required    | The matrix and the judge. An Anthropic entry sets `effort` (the example: `low`, as askr-server's `ASKR_EFFORT` default; keep them equal so the sweep measures production); any entry may set `maxTokens` (per model call, thinking included; 2048 by default, as `ASKR_MAX_TOKENS`). |
+| `--only <id,...>`      | all entries | Run only these entries.                                                                                                                                                                                                                                                              |
+| `--cases <filter,...>` | all cases   | Case ids or categories; a trailing `*` matches a prefix (`hist-*`).                                                                                                                                                                                                                  |
+| `--repeat <n>`         | 1           | Run each case n times; a case passes only when every repeat passes.                                                                                                                                                                                                                  |
+| `--concurrency <n>`    | 4           | Turns in flight at once, over all models.                                                                                                                                                                                                                                            |
+| `--timeout <seconds>`  | 60          | Per model or judge call; a hung call fails its case instead of stalling the run.                                                                                                                                                                                                     |
+| `--retries <n>`        | 3           | Retries of a call that hit a 408, a 429, a 5xx, a network error or the timeout, and of a malformed judge reply.                                                                                                                                                                      |
+| `--bar <percent>`      | 90          | The pass-rate bar for the suggested default.                                                                                                                                                                                                                                         |
+| `--no-judge`           | off         | Deterministic checks only: a cheap dry check. The report says it is no quality verdict and suggests no default.                                                                                                                                                                      |
+| `--out <dir>`          | none        | Start `runs.jsonl` afresh, append each graded run as it lands, then write `results.json` and `report.md`.                                                                                                                                                                            |
 
 Each run prints a progress line; `runs.jsonl` keeps what an interrupted sweep paid for. The sweep
 stops starting new paid runs when writing a run fails. The exit code is 0 whenever the sweep ran,
@@ -131,6 +131,9 @@ are computed with `decimal.js-light` from the usage each call reports.
   p95 over runs that produced an answer; a run that timed out counts at its wall time or the
   timeout, whichever is longer (leaving it out would flatter the models that hang). Answers are
   not streamed, so the time to the first answer is the time to the whole answer.
+- **Max tokens and Refusals**: turn errors where the model stopped at `max_tokens` (thinking
+  counts toward it: raise `maxTokens` or lower `effort`, and size `ASKR_MAX_TOKENS` from this) or
+  declined; any other stop reason that is not an answer is a turn error too.
 - **Calls and tokens**: model calls (including the price-check re-run) and input, cached input,
   cache write and output tokens.
 
