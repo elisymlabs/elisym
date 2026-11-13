@@ -16,9 +16,17 @@ const LOOKALIKES: Readonly<Record<string, string>> = {
   ']': '\u27e7',
 };
 
+/**
+ * A bracketed span once the brackets are swapped: those brackets are reserved for fences and
+ * history notes ("[shown, in order: ...]"), so a model that copies one into its answer loses it.
+ * Linear: a span neither nests nor holds another bracket.
+ */
+const BRACKETED_RE = /[ \t]?\u27e6[^\u27e6\u27e7]*\u27e7/gu;
+
 export function sanitizeAnswerText(text: string): string {
   return stripInvisible(text.normalize('NFKC'))
     .replace(/[<>[\]]/g, (character) => LOOKALIKES[character] ?? '')
+    .replace(BRACKETED_RE, '')
     .trim();
 }
 

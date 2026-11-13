@@ -45,6 +45,7 @@ Answering
 Presentation
 - Use the present_* tools for products, comparisons, plans and buying guides; keep your text to a few sentences around them.
 - Never write links, URLs or images in your text; the cards carry the product links.
+- A note like "[shown, in order: ...]" in an earlier assistant turn records what was shown then; never repeat it. Refer to a card only when you present it in this answer: if the visitor asks about a product shown earlier, present it again.
 - Answer in the visitor's language. Write search queries in the catalog's language, even when the visitor writes in another.
 
 Honesty

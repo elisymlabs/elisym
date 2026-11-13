@@ -1,5 +1,6 @@
 import { LIMITS } from '@elisym/askr';
 import { describe, expect, it, vi } from 'vitest';
+import { globalBlock } from '../src/prompt';
 import * as sanitize from '../src/text-sanitize';
 import { executeTool, newTurnState } from '../src/tools';
 import { runTurn } from '../src/turn';
@@ -188,5 +189,58 @@ describe('NIT-4. suggestions that clean to nothing show nothing', () => {
     ]);
     const output = await runTurn(baseInput(provider));
     expect(output.answer.text).toBe('Anything else?');
+  });
+});
+
+describe('the history note never reaches the answer', () => {
+  it('the sanitizer drops a bracketed span, swapped or not', () => {
+    expect(
+      sanitizeAnswerText('The tent is great [shown, in order: 1. tent-1p (Trail tent)] for one.'),
+    ).toBe('The tent is great for one.');
+    expect(sanitizeAnswerText('See ⟦shown, in order: 1. tent-1p (Trail tent)⟧ below.')).toBe(
+      'See below.',
+    );
+    // An unbalanced bracket stays, as its lookalike.
+    expect(sanitizeAnswerText('Sizes [S, M and L.')).toBe('Sizes ⟦S, M and L.');
+  });
+
+  it('is linear on unclosed and repeated brackets', () => {
+    expectLinear((scale) => {
+      sanitizeAnswerText(`[${'a'.repeat(20_000 * scale)}`);
+      sanitizeAnswerText('[a'.repeat(10_000 * scale));
+      sanitizeAnswerText(`${' '.repeat(10_000 * scale)}[`);
+    });
+  });
+
+  it('component strings drop it too', () => {
+    const state = newTurnState(new Set(['jacket-wool']), [], []);
+    executeTool(
+      catalog(),
+      state,
+      toolCall('present_products', {
+        picks: [{ id: 'jacket-wool', reason: 'Warm [shown, in order: 1. jacket-wool] wool' }],
+      }),
+    );
+    expect(state.components).toEqual([
+      expect.objectContaining({ picks: [expect.objectContaining({ reason: 'Warm wool' })] }),
+    ]);
+  });
+
+  it('a turn whose model copies the note publishes it without the note', async () => {
+    const { provider } = scripted([
+      { text: 'It costs what its card says. [shown, in order: 1. jacket-wool (Wool jacket)]' },
+    ]);
+    const output = await runTurn(baseInput(provider));
+    expect(output.answer.text).toBe('It costs what its card says.');
+  });
+
+  it('the prompt says notes are never repeated and cards are presented again', () => {
+    const text = globalBlock().text;
+    expect(text).toContain(
+      'A note like "[shown, in order: ...]" in an earlier assistant turn records what was shown then; never repeat it.',
+    );
+    expect(text).toContain(
+      'Refer to a card only when you present it in this answer: if the visitor asks about a product shown earlier, present it again.',
+    );
   });
 });
