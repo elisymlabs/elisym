@@ -24,8 +24,9 @@ describe('loadOffer', () => {
     expect(loaded.payouts[0]?.target.address).toBe(shop.payout);
     expect(loaded.confirm).toEqual([]);
     expect(loaded.notices).toEqual(
-      expect.arrayContaining(['owner_unpinned', 'origin_unverifiable', 'payout_unsigned']),
+      expect.arrayContaining(['owner_unpinned', 'origin_unverifiable']),
     );
+    expect(loaded.notices).not.toContain('payout_unsigned');
     expect(loaded.snapshotAt).toBe(NOW);
   });
 

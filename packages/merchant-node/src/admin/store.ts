@@ -269,6 +269,8 @@ export interface ProductLine {
   title: string;
   price: string;
   onSale: boolean;
+  /** The listing's first picture (an `https:` URL: commerce keeps no other). */
+  image?: string;
 }
 
 /** The store's products read so far, by `d`. */
@@ -283,6 +285,7 @@ export function productLines(kept: KeptListings): ProductLine[] {
         title: product.title,
         price: `${product.price.amount} ${product.price.currency}`,
         onSale: isPurchasable(product),
+        ...(product.images[0] === undefined ? {} : { image: product.images[0] }),
       });
     }
   }

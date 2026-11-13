@@ -1,15 +1,16 @@
-import { type ReactNode, useState } from 'react';
+import * as nip19 from 'nostr-tools/nip19';
+import { useState } from 'react';
 import type { DashboardState } from '../App';
-import { HEADER_BAR, PAGE_FRAME } from '../constants';
+import { loadedOrdersCsv } from '../lib/csv';
 import { About } from './About';
-import { DashboardHeader } from './DashboardHeader';
+import { DashboardShell, type ShellPage } from './DashboardShell';
 import { EmptyState } from './EmptyState';
+import type { IconName } from './Icon';
 import { LoadingOverview } from './LoadingOverview';
 import { OrdersSection } from './OrdersSection';
 import { Overview } from './Overview';
 import { ProductsSection } from './ProductsSection';
 import { StoreSection } from './StoreSection';
-import { type Tab, TabBar } from './TabBar';
 
 interface Props {
   state: DashboardState;
@@ -18,97 +19,88 @@ interface Props {
   onLogOut: () => void;
 }
 
-interface PanelProps {
-  tab: Tab;
-  active: Tab;
-  children: ReactNode;
-}
+type Page = 'overview' | 'orders' | 'products' | 'store' | 'help';
 
-/** A tab's panel: every panel stays mounted, so filters and open rows survive a tab switch. */
-function Panel({ tab, active, children }: PanelProps) {
-  return (
-    <div id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} hidden={tab !== active}>
-      {children}
-    </div>
-  );
-}
+const PAGES: { id: Page; label: string; icon: IconName }[] = [
+  { id: 'overview', label: 'Overview', icon: 'home' },
+  { id: 'orders', label: 'Orders', icon: 'receipt' },
+  { id: 'products', label: 'Products', icon: 'box' },
+  { id: 'store', label: 'Store', icon: 'store' },
+  { id: 'help', label: 'Help', icon: 'help' },
+];
 
 interface NotReadProps {
-  tab: Tab;
   busy: boolean;
 }
 
 /** Before the first read lands: placeholders while it runs, a way out when it failed. */
-function NotRead({ tab, busy }: NotReadProps) {
-  if (tab === 'help') {
-    return <About />;
-  }
+function NotRead({ busy }: NotReadProps) {
   if (busy) {
     return <LoadingOverview />;
   }
   return (
     <div className="rounded-16 border-line bg-surface border">
       <EmptyState icon="alert" title="Your store could not be read">
-        The status at the top says why. Press Refresh to read it again.
+        The status above says why. Press Refresh to read it again.
       </EmptyState>
     </div>
   );
 }
 
+/** The self-hosted store's pages, read from its relays, on the admin's frame. */
 export function Dashboard({ state, onRefresh, onMore, onLogOut }: Props) {
-  const [tab, setTab] = useState<Tab>('overview');
+  const [page, setPage] = useState<Page>('overview');
   const { snapshot } = state;
-  const counts =
+  const contentOf = (id: Page) => {
+    if (id === 'help') {
+      return <About />;
+    }
+    if (snapshot === undefined) {
+      return <NotRead busy={state.busy} />;
+    }
+    switch (id) {
+      case 'overview':
+        return <Overview snapshot={snapshot} onTab={setPage} />;
+      case 'orders':
+        return (
+          <OrdersSection
+            rows={snapshot.history.rows}
+            busy={state.busy}
+            {...(snapshot.more ? { onMore } : {})}
+            csv={loadedOrdersCsv(snapshot.history.rows, snapshot.storePubkey)}
+          />
+        );
+      case 'products':
+        return <ProductsSection products={snapshot.allProducts} />;
+      case 'store':
+        return <StoreSection store={snapshot.store} pubkey={snapshot.storePubkey} />;
+    }
+  };
+  const counts: Partial<Record<Page, number>> =
     snapshot === undefined
       ? {}
       : {
           orders: snapshot.history.rows.length,
           products: snapshot.allProducts?.lines.length ?? 0,
         };
-  // A switch from a button inside a panel would hide the focused button: focus moves to the tab.
-  const select = (next: Tab) => {
-    setTab(next);
-    window.scrollTo?.({ top: 0 });
-    document.getElementById(`tab-${next}`)?.focus();
-  };
+  const pages: ShellPage[] = PAGES.map((each) => ({
+    ...each,
+    ...(counts[each.id] === undefined ? {} : { count: counts[each.id] }),
+    content: contentOf(each.id),
+  }));
   return (
-    <div className="min-h-screen">
-      <header className={HEADER_BAR}>
-        <div className="border-line/60 border-b">
-          <DashboardHeader
-            pubkey={state.pubkey}
-            name={state.store?.name}
-            status={state.status}
-            busy={state.busy}
-            onRefresh={onRefresh}
-            onLogOut={onLogOut}
-          />
-        </div>
-        <TabBar active={tab} counts={counts} panels={snapshot !== undefined} onSelect={select} />
-      </header>
-      <main className={`${PAGE_FRAME} py-24 sm:py-32`}>
-        {snapshot === undefined ? (
-          <NotRead tab={tab} busy={state.busy} />
-        ) : (
-          <>
-            <Panel tab="overview" active={tab}>
-              <Overview snapshot={snapshot} onTab={select} />
-            </Panel>
-            <Panel tab="orders" active={tab}>
-              <OrdersSection snapshot={snapshot} busy={state.busy} onMore={onMore} />
-            </Panel>
-            <Panel tab="products" active={tab}>
-              <ProductsSection products={snapshot.allProducts} />
-            </Panel>
-            <Panel tab="store" active={tab}>
-              <StoreSection store={snapshot.store} pubkey={snapshot.storePubkey} />
-            </Panel>
-            <Panel tab="help" active={tab}>
-              <About />
-            </Panel>
-          </>
-        )}
-      </main>
-    </div>
+    <DashboardShell
+      name={state.store?.name}
+      unnamed="(no profile name)"
+      identity={{ value: nip19.npubEncode(state.pubkey), copyLabel: 'Copy npub' }}
+      status={state.status}
+      busy={state.busy}
+      onRefresh={onRefresh}
+      onSignOut={onLogOut}
+      signOutLabel="Log out"
+      pages={pages}
+      active={page}
+      onSelect={(id) => setPage(PAGES.find((each) => each.id === id)?.id ?? 'overview')}
+    />
   );
 }

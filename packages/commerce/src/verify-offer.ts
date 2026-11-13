@@ -62,8 +62,6 @@ export type OfferWarning =
   | 'payout_recently_changed'
   /** A payout address is not among the `knownPayouts` of earlier purchases. */
   | 'payout_changed'
-  /** A payout address carries no wallet proof. */
-  | 'payout_unsigned'
   /**
    * No `pinnedOwnerPubkey` (a first purchase): nothing but this bundle names the
    * owner, and a stolen store key can name a new one - at level A through a
@@ -468,9 +466,6 @@ export function evaluateOffer(
     )
   ) {
     warnings.push('payout_changed');
-  }
-  if (payouts.some((target) => !target.walletSigned)) {
-    warnings.push('payout_unsigned');
   }
 
   const offer: VerifiedOffer = {

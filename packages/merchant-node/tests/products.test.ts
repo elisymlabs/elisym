@@ -212,6 +212,52 @@ describe('the PRODUCT.md file', () => {
     expect(problemsOf(VALID.replace('priceUsd: "10"', 'priceUsd: "0.5"'))).toEqual([]);
   });
 
+  it('reads an optional https image; refuses any other link or value, in words', () => {
+    const withImage = VALID.replace(
+      'summary: Adds 10 USD.',
+      'summary: Adds 10 USD.\nimage: https://shop.example/deposit.png',
+    );
+    const parsed = parseProductText(withImage);
+    expect(parsed.ok && parsed.product.image).toBe('https://shop.example/deposit.png');
+    const without = parseProductText(VALID);
+    expect(without.ok && 'image' in without.product).toBe(false);
+    for (const value of [
+      'http://shop.example/deposit.png',
+      'javascript:alert(1)',
+      'data:image/png;base64,AAAA',
+      'shop.example/deposit.png',
+      '"https://"',
+      '12',
+      '[https://shop.example/a.png]',
+      `https://shop.example/${'a'.repeat(1024)}.png`,
+    ]) {
+      const problems = problemsOf(VALID.replace('summary: Adds 10 USD.', `image: ${value}`));
+      expect(problems, value).toHaveLength(1);
+      expect(problems[0], value).toMatch(/^image: /);
+    }
+    expect(
+      problemsOf(VALID.replace('summary: Adds 10 USD.', 'image: http://shop.example/a.png'))[0],
+    ).toBe(
+      'image: must be an https:// link to a picture, at most 1,024 characters, such as "https://example.com/photo.jpg"',
+    );
+    // Too long: the same words, which name the length.
+    expect(
+      problemsOf(
+        VALID.replace(
+          'summary: Adds 10 USD.',
+          `image: https://shop.example/${'a'.repeat(1024)}.png`,
+        ),
+      ),
+    ).toEqual([
+      'image: must be an https:// link to a picture, at most 1,024 characters, such as "https://example.com/photo.jpg"',
+    ]);
+    // The value quoted, as the docs write it, reads the same.
+    const quoted = parseProductText(
+      VALID.replace('summary: Adds 10 USD.', 'image: "https://shop.example/deposit.png"'),
+    );
+    expect(quoted.ok && quoted.product.image).toBe('https://shop.example/deposit.png');
+  });
+
   it('refuses a duplicate key', () => {
     expect(problemsOf(VALID.replace('summary: Adds 10 USD.', 'title: again'))).toHaveLength(1);
   });

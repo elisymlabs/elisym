@@ -13,7 +13,7 @@ export const HEADER_ROW = `${PAGE_FRAME} flex h-64 items-center justify-between 
 export const HEADER_NAV = 'text-14 flex items-center gap-4';
 /** The admin's one header link, back to the landing: the landing's link look, at every width. */
 export const HEADER_HOME_LINK =
-  'text-text-2 hover:text-text rounded-8 inline-flex items-center gap-6 px-12 py-8';
+  'text-text-2 hover:text-text rounded-8 inline-flex items-center gap-6 px-12 py-8 whitespace-nowrap';
 
 /** The product's name, everywhere the admin names it. */
 export const PRODUCT_NAME = 'Pay Core';
@@ -28,3 +28,18 @@ export const LOCAL_ADMIN_COMMAND = 'npx @elisym/merchant-node admin';
 export const LANDING_URL = 'https://paycore.elisym.network';
 
 export const QUICKSTART_URL = 'https://docs.elisym.network/commerce/quickstart';
+
+/** Where a store run by the merchant edits its products: as PRODUCT.md files, then `setup`. */
+export const PRODUCTS_AS_FILES_URL = `${QUICKSTART_URL}#1-create-the-store`;
+
+/** The cloud store guide in the docs: what the front page's Docs link opens. */
+export const CLOUD_DOCS_URL = 'https://docs.elisym.network/commerce/cloud-agents';
+
+/** The landing's plans and prices. */
+export const PRICING_URL = `${LANDING_URL}/#pricing`;
+
+/** The cloud terms of service a signup accepts, on the landing. */
+export const TERMS_URL = 'https://paycore.elisym.network/terms';
+
+/** Where a merchant reaches us about a plan that is not self-serve. */
+export const CONTACT_URL = 'https://x.com/elisymlabs';

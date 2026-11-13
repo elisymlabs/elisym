@@ -92,7 +92,6 @@ const WARNING_TEXT: Record<OfferWarning, string> = {
   payout_recently_changed:
     'The store’s payout list is less than three days old (always so for a new store).',
   payout_changed: 'The payout is not one this agent was paid through on a completed purchase.',
-  payout_unsigned: 'The payout address carries no wallet proof.',
   owner_unpinned: 'This agent has no completed purchase from this store yet.',
 };
 

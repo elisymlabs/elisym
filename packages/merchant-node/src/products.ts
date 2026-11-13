@@ -33,7 +33,7 @@ export const DELIVERY_REMOVED =
   'delivery: removed in 0.9.0 - the node sends no delivery; act on the signed order.paid webhook (remove the key)';
 
 /** A product id is its directory name: a letter or digit, then letters, digits, dots, dashes, underscores. */
-const PRODUCT_D_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const PRODUCT_D_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export const PRICE_RE = /^(0|[1-9]\d{0,8})(\.\d{1,6})?$/;
 
@@ -47,6 +47,8 @@ export interface Product {
   /** The markdown body: the listing's description. */
   description: string;
   summary?: string;
+  /** One `https://` picture of the product: the listing's `image`. */
+  image?: string;
   /** USD, e.g. `"1"` or `"49.00"`: paid 1:1 in a USD coin. */
   priceUsd: string;
   /** `false`: the listing is republished sold out, and its terms retire. */
@@ -63,6 +65,17 @@ export interface ProductsFs {
   readFileSync(path: string, encoding: 'utf8'): string;
 }
 
+/** What an image must be: an `https://` URL, as commerce builds and reads a listing's `image`. */
+const IMAGE_RULE =
+  'must be an https:// link to a picture, at most 1,024 characters, such as "https://example.com/photo.jpg"';
+
+/** A listing image as commerce's `buildProductEvent` takes one: anything else would fail the publish. */
+const LISTING_IMAGE = z.string().url().startsWith('https://').max(LIMITS.MAX_TAG_VALUE_LENGTH);
+
+function isImageUrl(value: string): boolean {
+  return LISTING_IMAGE.safeParse(value).success;
+}
+
 const QUOTE_IT = 'must be a quoted string (quote it: a bare number is read as a number)';
 
 const frontmatterSchema = z
@@ -75,6 +88,10 @@ const frontmatterSchema = z
       }),
     onSale: z.boolean().optional(),
     summary: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
+    image: z
+      .string({ invalid_type_error: IMAGE_RULE })
+      .refine(isImageUrl, { message: IMAGE_RULE })
+      .optional(),
   })
   .strict();
 
@@ -135,13 +152,14 @@ export function parseProductText(text: string): Parsed {
   if (description.length > LIMITS.MAX_CONTENT_LENGTH) {
     return { ok: false, problems: [`the body is longer than ${LIMITS.MAX_CONTENT_LENGTH}`] };
   }
-  const { title, priceUsd, onSale, summary } = parsed.data;
+  const { title, priceUsd, onSale, summary, image } = parsed.data;
   return {
     ok: true,
     product: {
       title,
       description,
       ...(summary === undefined ? {} : { summary }),
+      ...(image === undefined ? {} : { image }),
       priceUsd,
       onSale: onSale ?? true,
     },

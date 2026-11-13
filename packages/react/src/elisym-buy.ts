@@ -1,10 +1,18 @@
 import { createElement, useEffect, useRef, type ReactElement } from 'react';
 import { type ElementOptions, elementAttributes } from './attributes';
+import { DEFAULT_LOADER, type LoaderScript } from './constants';
 import { ensureLoader, warnIfOlderLoader, whenLoaderDefined } from './loader';
 import { loaderModalOpen } from './loader-state';
 import { type CheckoutState, isCheckoutState } from './states';
 
 export interface ElisymBuyProps extends ElementOptions {
+  /**
+   * The loader to add: a white-label checkout's own `/v4/embed.js` and its
+   * pinned SRI. The pinned v3 on pay.elisym.network by default. Set it on the
+   * first render: one script is added per document, so a `loader` set or
+   * changed later adds nothing.
+   */
+  loader?: Readonly<LoaderScript>;
   /** The modal opened. */
   onOpen?: () => void;
   /** The modal closed (also when the element was removed while it was open). */
@@ -44,12 +52,14 @@ function closedElement(event: Event): unknown {
 }
 
 /**
- * `<elisym-buy>`, the Pay Core checkout, on the pinned v3 loader. Server
+ * `<elisym-buy>`, the Pay Core checkout, on the pinned v3 loader (or the
+ * `loader` prop's, such as a white-label checkout's v4). Server
  * rendering writes the element only; the loader's script is added in the
  * browser, once per document.
  */
 export function ElisymBuy(props: ElisymBuyProps): ReactElement {
-  const { onOpen, onClose, onStatus, onPaid, ...options } = props;
+  const { onOpen, onClose, onStatus, onPaid, loader = DEFAULT_LOADER, ...options } = props;
+  const { src: loaderSrc, integrity: loaderIntegrity } = loader;
   const elementRef = useRef<HTMLElement>(null);
   const handlersRef = useRef<Handlers>({ onOpen, onClose, onStatus, onPaid });
   const carriesRef =
@@ -60,8 +70,10 @@ export function ElisymBuy(props: ElisymBuyProps): ReactElement {
     handlersRef.current = { onOpen, onClose, onStatus, onPaid };
   });
 
+  // The first render's loader: one loader per document, so a later one is never added.
+  const firstLoaderRef = useRef({ src: loaderSrc, integrity: loaderIntegrity });
   useEffect(() => {
-    ensureLoader(document);
+    ensureLoader(document, firstLoaderRef.current);
   }, []);
 
   useEffect(() => {
@@ -69,16 +81,17 @@ export function ElisymBuy(props: ElisymBuyProps): ReactElement {
       return undefined;
     }
     let active = true;
-    warnIfOlderLoader(document);
+    const configured = { src: loaderSrc, integrity: loaderIntegrity };
+    warnIfOlderLoader(document, configured);
     void whenLoaderDefined(document)?.then(() => {
       if (active) {
-        warnIfOlderLoader(document);
+        warnIfOlderLoader(document, configured);
       }
     });
     return () => {
       active = false;
     };
-  }, [carriesRef]);
+  }, [carriesRef, loaderSrc, loaderIntegrity]);
 
   useEffect(() => {
     const element = elementRef.current;

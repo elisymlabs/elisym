@@ -18,6 +18,9 @@
   --ink-text: #ffffff;
   --green: #15803d;
   --green-bg: #dcfce7;
+  /* A state that holds (the cloud steps' pills): AA on its own tint. */
+  --ok: #166534;
+  --ok-bg: rgb(21 128 61 / 0.1);
   --warn: #a16207;
   --warn-bg: #fef9c3;
   --error: #b91c1c;
@@ -51,6 +54,8 @@
     --ink-text: #09090b;
     --green: #4ade80;
     --green-bg: rgb(74 222 128 / 0.12);
+    --ok: #4ade80;
+    --ok-bg: rgb(74 222 128 / 0.1);
     --warn: #facc15;
     --warn-bg: rgb(250 204 21 / 0.1);
     --error: #f87171;
@@ -83,6 +88,8 @@
   --color-ink-text: var(--ink-text);
   --color-green: var(--green);
   --color-green-bg: var(--green-bg);
+  --color-ok: var(--ok);
+  --color-ok-bg: var(--ok-bg);
   --color-warn: var(--warn);
   --color-warn-bg: var(--warn-bg);
   --color-error: var(--error);

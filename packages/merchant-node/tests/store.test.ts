@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { evaluateOffer, unwrapOrderMessage } from '@elisym/commerce';
 import { describe, expect, it } from 'vitest';
 import { buildDeliveryReply } from '../src/reply';
@@ -23,6 +24,7 @@ const PRODUCT = {
   priceUsd: '1',
   onSale: true,
 };
+const IMAGE = 'https://shop.example/agents-101.png';
 const TEMPO_USDC = 'eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50';
 
 describe('the store events', () => {
@@ -84,6 +86,37 @@ describe('the store events', () => {
     ).toMatchObject({ ok: false, refusal: 'product_not_on_sale' });
   });
 
+  it("a product's image is the listing's one image tag; without one, no image tag and the hash it had before images", () => {
+    const store = key();
+    const listing = buildListingEvent(
+      { ...PRODUCT, image: IMAGE },
+      CONFIG.payouts,
+      store.secretKey,
+      T0,
+    );
+    expect(listing.tags.filter((tag) => tag[0] === 'image')).toEqual([['image', IMAGE]]);
+    const plain = buildListingEvent(PRODUCT, CONFIG.payouts, store.secretKey, T0);
+    expect(plain.tags.some((tag) => tag[0] === 'image')).toBe(false);
+    // The hash of a listing with no image, as every release before images computed it.
+    expect(listingHash(PRODUCT, CONFIG.payouts)).toBe(
+      createHash('sha256')
+        .update(
+          JSON.stringify([
+            D,
+            'Agents 101',
+            null,
+            'Twelve lessons.',
+            '1',
+            'USD',
+            'on-sale',
+            CONFIG.payouts.map((payout) => payout.caip19),
+          ]),
+          'utf8',
+        )
+        .digest('hex'),
+    );
+  });
+
   it("hash a listing's content, never its date; a sold-out one without its coins (M38)", () => {
     const withTempo = [...CONFIG.payouts, { caip19: TEMPO_USDC, address: '0x' + '1'.repeat(40) }];
     const base = listingHash(PRODUCT, CONFIG.payouts);
@@ -92,6 +125,10 @@ describe('the store events', () => {
     expect(listingHash({ ...PRODUCT, title: 'Agents 102' }, CONFIG.payouts)).not.toBe(base);
     expect(listingHash({ ...PRODUCT, description: 'Ten.' }, CONFIG.payouts)).not.toBe(base);
     expect(listingHash({ ...PRODUCT, summary: 'Short' }, CONFIG.payouts)).not.toBe(base);
+    expect(listingHash({ ...PRODUCT, image: IMAGE }, CONFIG.payouts)).not.toBe(base);
+    expect(listingHash({ ...PRODUCT, image: IMAGE }, CONFIG.payouts)).not.toBe(
+      listingHash({ ...PRODUCT, image: `${IMAGE}?v=2` }, CONFIG.payouts),
+    );
     expect(listingHash({ ...PRODUCT, onSale: false }, CONFIG.payouts)).not.toBe(base);
     // A coin change republishes an on-sale listing, not a sold-out one.
     expect(listingHash(PRODUCT, withTempo)).not.toBe(base);

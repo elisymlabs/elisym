@@ -127,6 +127,16 @@ a {
   gap: 6px;
 }
 
+/* The listing's picture: a fixed band, cropped to fill it, so a big or odd-shaped one never moves the card. */
+.header .product-image {
+  display: block;
+  width: 100%;
+  height: 160px;
+  border-radius: var(--radius-small);
+  background: var(--surface);
+  object-fit: cover;
+}
+
 /* The product first: two lines at most, the full name on hover (its `title`). */
 .header .product-title {
   display: -webkit-box;

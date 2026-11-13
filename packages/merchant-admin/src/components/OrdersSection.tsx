@@ -1,9 +1,8 @@
-import { useState } from 'react';
-import type { Snapshot } from '../lib/core';
+import { type ReactNode, useState } from 'react';
 import { countText } from '../lib/count';
-import { csvFileName, ordersCsv } from '../lib/csv';
-import { downloadText } from '../lib/download';
-import { type StateFilter, filterRows, stateCounts } from '../lib/orders';
+import type { CsvAction } from '../lib/csv';
+import { type ShownRow, type StateFilter, filterRows, stateCounts } from '../lib/orders';
+import { CREDITOR, type Source } from '../lib/source';
 import { EmptyState } from './EmptyState';
 import { Icon } from './Icon';
 import { OrderFilters } from './OrderFilters';
@@ -11,44 +10,72 @@ import { OrderRowView } from './OrderRowView';
 import { Section } from './Section';
 
 interface Props {
-  snapshot: Snapshot;
+  rows: readonly ShownRow[];
   busy: boolean;
-  onMore: () => void;
+  /** Older history exists: the list says it covers the loaded orders, and loads more. */
+  onMore?: () => void;
+  csv: CsvAction;
+  source?: Source;
+  /** More buttons beside the CSV (the cloud's "Read the orders again"). */
+  tools?: ReactNode;
+  /** Above the list (the orders waiting for the owner), and below it. */
+  before?: ReactNode;
+  after?: ReactNode;
+  /** The owner's commands on one order, shown in its details. */
+  actionsFor?: (row: ShownRow) => ReactNode;
 }
 
-const COLUMNS = ['Date', 'Order', 'Customer', 'Total', 'State', 'Credited by your node'];
+const DESCRIPTIONS: Readonly<Record<Source, string>> = {
+  'self-hosted': 'Every order your inbox relays hold, with what your node credited for it.',
+  cloud: 'Every order of your store, with what your store credited for it.',
+};
 
-export function OrdersSection({ snapshot, busy, onMore }: Props) {
-  const { rows } = snapshot.history;
+export function OrdersSection({
+  rows,
+  busy,
+  onMore,
+  csv,
+  source = 'self-hosted',
+  tools,
+  before,
+  after,
+  actionsFor,
+}: Props) {
+  const columns = [
+    'Date',
+    'Order',
+    'Customer',
+    'Total',
+    'State',
+    `Credited by ${CREDITOR[source]}`,
+  ];
   const [state, setState] = useState<StateFilter>('all');
   const [query, setQuery] = useState('');
   const shown = filterRows(rows, state, query);
   const filtered = shown.length !== rows.length;
-  const exportCsv = () =>
-    downloadText(
-      document,
-      ordersCsv(rows),
-      csvFileName(snapshot.storePubkey, new Date()),
-      'text/csv;charset=utf-8',
-    );
   return (
     <Section
       title="Orders"
-      description="Every order your inbox relays hold, with what your node credited for it."
+      heading="h1"
+      description={DESCRIPTIONS[source]}
       actions={
-        <button
-          type="button"
-          onClick={exportCsv}
-          disabled={rows.length === 0}
-          title="Every loaded order, whatever the filters"
-          className="rounded-10 border-line bg-surface text-14 hover:bg-surface-2 flex items-center gap-6 border px-12 py-8 font-medium disabled:opacity-50"
-        >
-          <Icon name="download" className="size-16" />
-          Download CSV
-        </button>
+        <div className="flex flex-wrap gap-8">
+          {tools}
+          <button
+            type="button"
+            onClick={csv.run}
+            disabled={csv.empty === true || csv.busy === true}
+            title={csv.title}
+            className="rounded-10 border-line bg-surface text-14 hover:bg-surface-2 flex items-center gap-6 border px-12 py-8 font-medium disabled:opacity-50"
+          >
+            <Icon name="download" className="size-16" />
+            Download CSV
+          </button>
+        </div>
       }
     >
-      {snapshot.more && (
+      {before}
+      {onMore !== undefined && (
         <p id="csv-partial" className="text-13 text-text-2 -mt-8">
           The list and the CSV cover the loaded orders only: load more history for older ones.
         </p>
@@ -66,7 +93,7 @@ export function OrdersSection({ snapshot, busy, onMore }: Props) {
           <table className="text-13 w-full min-w-880 border-collapse text-left">
             <thead className="bg-surface-2/60 text-12 text-text-2">
               <tr>
-                {COLUMNS.map((column) => (
+                {columns.map((column) => (
                   <th key={column} className="px-16 py-10 font-medium whitespace-nowrap">
                     {column}
                   </th>
@@ -78,15 +105,17 @@ export function OrdersSection({ snapshot, busy, onMore }: Props) {
             </thead>
             <tbody id="orders">
               {shown.map((row) => (
-                <OrderRowView key={row.key} row={row} />
+                <OrderRowView key={row.key} row={row} source={source} actions={actionsFor?.(row)} />
               ))}
             </tbody>
           </table>
         </div>
         {rows.length === 0 && (
           <EmptyState icon="receipt" title="No orders found.">
-            Orders show up here once buyers order from your store. Many relays keep private messages
-            for only about two days.
+            Orders show up here once buyers order from your store.
+            {source === 'cloud'
+              ? null
+              : ' Many relays keep private messages for only about two days.'}
           </EmptyState>
         )}
         {rows.length > 0 && shown.length === 0 && (
@@ -99,7 +128,7 @@ export function OrdersSection({ snapshot, busy, onMore }: Props) {
             ? `${shown.length} of ${countText(rows.length, 'loaded order')}`
             : countText(rows.length, 'loaded order')}
         </span>
-        {snapshot.more && (
+        {onMore !== undefined && (
           <button
             type="button"
             onClick={onMore}
@@ -110,6 +139,7 @@ export function OrdersSection({ snapshot, busy, onMore }: Props) {
           </button>
         )}
       </div>
+      {after}
     </Section>
   );
 }

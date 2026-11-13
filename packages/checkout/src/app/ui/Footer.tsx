@@ -1,9 +1,12 @@
+import { type Brand, footerText } from '../brand';
+
 interface Props {
+  brand: Brand;
   /** A session is running: "Your purchases" opens from here (the same with or without any). */
   onPurchases?: () => void;
 }
 
-export function Footer({ onPurchases }: Props) {
+export function Footer({ brand, onPurchases }: Props) {
   return (
     <footer class="footer">
       {onPurchases === undefined ? null : (
@@ -11,7 +14,7 @@ export function Footer({ onPurchases }: Props) {
           Your purchases
         </button>
       )}
-      <span>Checkout by Elisym · payments go straight to the store</span>
+      <span>{footerText(brand)}</span>
     </footer>
   );
 }

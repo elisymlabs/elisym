@@ -509,4 +509,94 @@ describe('publishing a setup', () => {
     ).rejects.toThrow('nothing reached a relay');
     expect(JSON.stringify(state)).toBe(before);
   });
+
+  it('a store-only withdrawal that changes no listing is no failure; a failed listing still is', async () => {
+    const state = published();
+    const payto = state.payto;
+    const stopped = { ...productOf('a'), onSale: false };
+    // First stop: its sold-out listing goes out.
+    const first = planListings(state, [stopped], payouts, new Map(), T);
+    await publishAndRecord(state, {
+      plans: first,
+      payouts,
+      storeSecretKey: store,
+      wide: { payoutList: undefined, others: [profile] },
+      publish: async () => true,
+      payoutList: undefined,
+      startedAt: T,
+      now: () => T,
+      withdrawal: true,
+    });
+    // As the relays still serve the recorded sold-out listing: nothing to republish.
+    const unchanged = first.map((plan) => ({ ...plan, changed: false }));
+    await expect(
+      publishAndRecord(state, {
+        plans: unchanged,
+        payouts,
+        storeSecretKey: store,
+        wide: { payoutList: undefined, others: [profile] },
+        publish: async () => true,
+        payoutList: undefined,
+        startedAt: T + 1,
+        now: () => T + 1,
+        withdrawal: true,
+      }),
+    ).resolves.toBeDefined();
+    expect(state.payto).toEqual(payto);
+    const restarted = published();
+    const changed = planListings(restarted, [stopped], payouts, new Map(), T);
+    await expect(
+      publishAndRecord(restarted, {
+        plans: changed,
+        payouts,
+        storeSecretKey: store,
+        wide: { payoutList: undefined, others: [profile] },
+        publish: async () => false,
+        payoutList: undefined,
+        startedAt: T,
+        now: () => T,
+        withdrawal: true,
+      }),
+    ).rejects.toThrow('nothing reached a relay');
+  });
+
+  it('only a withdrawal waives it, and only when every listing is unchanged', async () => {
+    const state = published();
+    const stopped = { ...productOf('a'), onSale: false };
+    const kept = { ...productOf('kept'), onSale: false };
+    const plans = planListings(state, [stopped, kept], payouts, new Map(), T);
+    const unchanged = plans.map((plan) => ({ ...plan, changed: false }));
+    // Not a withdrawal: every listing unchanged and the payout list refused is "nothing".
+    await expect(
+      publishAndRecord(state, {
+        plans: unchanged,
+        payouts,
+        storeSecretKey: store,
+        wide,
+        publish: async () => false,
+        payoutList: { createdAt: T, payouts: listX },
+        startedAt: T,
+        now: () => T,
+      }),
+    ).rejects.toThrow('nothing reached a relay');
+    // A withdrawal with one listing unchanged and one that failed is "nothing" too.
+    const [stoppedPlan, keptPlan] = plans;
+    if (stoppedPlan === undefined || keptPlan === undefined) {
+      throw new Error('two plans expected');
+    }
+    const mixed = [{ ...stoppedPlan, changed: false }, keptPlan];
+    await expect(
+      publishAndRecord(state, {
+        plans: mixed,
+        payouts,
+        storeSecretKey: store,
+        wide: { payoutList: undefined, others: [profile] },
+        publish: async () => false,
+        payoutList: undefined,
+        startedAt: T,
+        now: () => T,
+        withdrawal: true,
+      }),
+    ).rejects.toThrow('nothing reached a relay');
+  });
 });

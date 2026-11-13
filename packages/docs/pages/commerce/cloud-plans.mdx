@@ -1,0 +1,58 @@
+# Change your cloud plan
+
+A store in elisym Cloud on a self-serve plan (Starter or Business) changes its own plan in the admin: sign in at [admin.elisym.network](https://admin.elisym.network) with the store's access key, open **Plan & billing** and press **Change plan**. Enterprise and White-label plans are changed with us, and a store a partner runs has its plan managed by that partner: the admin says so in place of the button.
+
+Pick a plan in the sheet. Before anything is charged or scheduled, the sheet asks the cloud what the change would do and says it in words: when the new plan starts, what it costs, how many days of the current plan are given up, and what a smaller plan would leave over its limits. Nothing changes until you press the sheet's button, and the cloud checks everything again then: if the store changed meanwhile, the sheet says so and nothing is done. One change runs at a time.
+
+## Moving up
+
+A bigger plan starts the moment it is paid, at its full monthly price, for a full month. The time left on the current plan is not carried over: no credit, no discount. The sheet names the days given up ("The 12 days left on Starter are not carried over.").
+
+### Paying by card
+
+When the store pays by card, the bigger plan is charged to the card on file at once and a new monthly period starts today: "Business starts now at $99 a month, charged to your card today." The button names the amount ("Pay $99 and switch").
+
+When the bank asks you to confirm the payment (3D Secure), or the card is declined or needs replacing, the plan does not change yet. Plan & billing shows "Your card needs you to confirm the payment of $99 by 3 Nov, 14:20 UTC. Until then nothing changes." with:
+
+- **Confirm the payment**: opens the payment's page on Stripe (`invoice.stripe.com`) in a new tab, where you confirm with your bank or pay with another card. The plan changes once that payment goes through.
+- **Check again**: reads where the payment stands now, without waiting.
+- **Cancel**: drops the change. If the payment had already gone through, you are told so and the store is on the new plan.
+
+The confirmation is open for up to 23 hours (the time is shown). Past it the change ends: "The payment for Business was not completed in time: nothing changed." A change that ended without applying stays shown for a week, then goes.
+
+The card path is closed, with the reason in words, while:
+
+- the card subscription is not active (a payment of its own is unpaid): fix it in the billing portal first;
+- the monthly payment is being taken right now: try again in an hour;
+- the store's access key is not confirmed yet: a charge to the card on file must come from a confirmed owner;
+- a downgrade is scheduled: keep the current plan first (below).
+
+### Paying in stablecoins
+
+When the store pays in stablecoins, the bigger plan starts when your payment arrives, for a full month. Press **Open the billing page** and pay the plan's product there ("On the billing page, choose Business, one month"). The sheet links the billing page only for a plan that page sells; for any other it says the plan cannot be paid in stablecoins here, and to contact us.
+
+The sheet's link carries your store's own billing reference, bound to your access key: only a payment through it may change the plan. A payment of another plan that names the store any other way (its plain id, a link from an earlier owner) adds no plan change: it is held until we have checked with you. Through any link, a payment of the plan the store is already on renews it, unless a move down is scheduled (then it would cancel that move, so it needs your link), and a store that never had paid service starts on the plan it paid for (within that plan's limits).
+
+### With nothing paid now
+
+- A store that never had paid service moves at once and for free ("Your store moves to Business now. Your next payment is $99 a month."), as long as it is within the new plan's limits: a store over them is told what to remove first, with a link to Products or Settings.
+- A store that had service and whose paid time ran out pays for the bigger plan first: on the billing page where it sells that plan, or by card where the sheet offers **Pay by card** (a card checkout of that plan); with neither, the sheet says to contact us. The plan changes when that payment arrives.
+- Moving down with nothing paid is free for every store (for a store that never had paid service, again within the smaller plan's limits).
+
+## Moving down
+
+A smaller plan takes over at the end of the period you paid for: "Your store moves to Starter on 30 Nov. Until then you keep Business. From then, $29 a month." Until that day the bigger plan's limits stay. On card, the next monthly payment is taken at the smaller price; a move down on card waits, as an upgrade does, while the card subscription is not active or its monthly payment is being taken.
+
+Plan & billing shows "Moves to Starter on 30 Nov" with **Keep Business**, which cancels the move. Keep is not offered, and the page says why, when:
+
+- the smaller plan's month is already paid: once the store has moved, change plan to go back;
+- the move is due in a few minutes, or has happened;
+- a card plan for the smaller plan has started.
+
+## What happens to your limits
+
+Nothing is ever cut. When a store moves to a plan with a lower product limit, every product already listed stays on sale, and you cannot add new ones until the store is within the plan's limits. The sheet tells you beforehand what will be over ("On Starter, your store will be over its limits: ..."), and never refuses the change for it, except for a store that never had paid service, which must first be within the smaller plan's limits (above). The monthly orders limit is soft: a buyer is never refused, and the sheet only notes when this month's paid orders are over the smaller plan's.
+
+## For agents
+
+An agent reads where the plan stands in `GET /tenants/:id` (the `plan` field, [Cloud store with an AI agent](/commerce/cloud-agents#the-plan)), but plan changes are made by the merchant in the admin.

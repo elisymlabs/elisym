@@ -366,7 +366,8 @@ export interface StoreInfo {
 /** What a progress view is about: the store, the product (the order's own once it is paid on), the email sent. */
 export interface About {
   store: StoreInfo;
-  product: { title: string; summary?: string; price: Product['price'] };
+  /** `image`: the listing's first picture (commerce keeps only `https:` ones). */
+  product: { title: string; summary?: string; image?: string; price: Product['price'] };
   /** The email this session sent with the order shown, if any. */
   email?: string;
 }
@@ -636,6 +637,7 @@ function productOf(product: Product): About['product'] {
   return {
     title: product.title,
     ...(product.summary === undefined ? {} : { summary: product.summary }),
+    ...(product.images[0] === undefined ? {} : { image: product.images[0] }),
     price: product.price,
   };
 }

@@ -47,19 +47,35 @@ export function stateCounts(rows: readonly OrderRow[]): Record<OrderState, numbe
   return counts;
 }
 
+/**
+ * A row as the admin shows it. A cloud order has no buyer's order event to
+ * read its contact from: it carries the email and reference itself.
+ */
+export type ShownRow = OrderRow & { email?: string; customerRef?: string };
+
+/** The buyer's email: from the loaded order, else what the row carries. */
+export function emailOf(row: ShownRow): string | undefined {
+  return row.order?.email ?? row.email;
+}
+
+/** The buyer's reference: from the loaded order, else what the row carries. */
+export function customerRefOf(row: ShownRow): string | undefined {
+  return row.order?.customerRef ?? row.customerRef;
+}
+
 /** The row's searchable text: ids, product, email, reference and buyer. */
-function searchText(row: OrderRow): string {
-  return [row.orderId, row.product, row.order?.email, row.order?.customerRef, row.buyerPubkey]
+function searchText(row: ShownRow): string {
+  return [row.orderId, row.product, emailOf(row), customerRefOf(row), row.buyerPubkey]
     .filter((part): part is string => part !== undefined)
     .join('\n')
     .toLowerCase();
 }
 
-export function filterRows(
-  rows: readonly OrderRow[],
+export function filterRows<Row extends ShownRow>(
+  rows: readonly Row[],
   state: StateFilter,
   query: string,
-): OrderRow[] {
+): Row[] {
   const needle = query.trim().toLowerCase();
   return rows.filter(
     (row) =>
@@ -75,10 +91,16 @@ export function feeText(credit: Credit): string | undefined {
     : amountText({ ...credit, amount: credit.fee }, credit.medium);
 }
 
-/** The notes on a row's state, besides the state itself. */
+/**
+ * The notes on a row's state, besides the state itself. A reported payment
+ * is "not confirmed" only when no credit confirms it (as `unconfirmedPayments`
+ * counts): a cloud order paid and not yet completed carries its credit.
+ */
 export function rowNotes(row: OrderRow): string[] {
   return [
-    ...(row.state === 'payment_reported' ? ['not confirmed by your node'] : []),
+    ...(row.state === 'payment_reported' && row.credits.length === 0
+      ? ['not confirmed by your node']
+      : []),
     ...(row.state === 'expired' ? ['no payment credited within 3 days'] : []),
     ...(row.orderNotLoaded ? ['order not loaded'] : []),
     ...(row.unlistedMedium ? ['receipt in a medium the store no longer lists'] : []),
