@@ -1444,9 +1444,7 @@ const CJK_AMOUNT_RE = new RegExp(
   'gu',
 );
 const HAN_RE = /^\p{Script=Han}$/u;
-const HANGUL_RE = /^\p{Script=Hangul}$/u;
 const LETTER_RE = /^\p{L}$/u;
-const MONEY_HAN: readonly string[] = ['钱', '錢'];
 const CNY_TOKENS: readonly string[] = ['元', '圆', '圓', '块', '塊', '块钱', '塊錢'];
 // cspell:enable
 
@@ -1554,28 +1552,124 @@ function isLatinToken(token: string): boolean {
   return /^[A-Za-z]+$/.test(token);
 }
 
+// cspell:disable
+/**
+ * What follows 块 / 塊 when it counts pieces, not yuan ("两块垫子"): an explicit list, since
+ * anything else after a number and 块 ("50块左右", "50块一个", "50块包邮") is money.
+ */
+const PIECE_NOUNS: readonly string[] = [
+  '垫子',
+  '垫',
+  '布',
+  '帆布',
+  '防水布',
+  '石头',
+  '石',
+  '蛋糕',
+  '肉',
+  '板',
+  '木板',
+  '玻璃',
+  '手表',
+  '表',
+  '电池',
+  '電池',
+  '木头',
+  '木頭',
+  '面料',
+  '地毯',
+  '毛巾',
+  '肥皂',
+  '巧克力',
+  '糖',
+  '砖',
+  '磚',
+  '饼',
+  '餅',
+  '牌子',
+  '镜子',
+  '鏡子',
+  '磁铁',
+  '海绵',
+  '海綿',
+];
+/** 一块 as "together": 一块儿, 一块看, 一块去... */
+const TOGETHER_AFTER: readonly string[] = [
+  '儿',
+  '兒',
+  '看',
+  '去',
+  '走',
+  '来',
+  '來',
+  '吃',
+  '玩',
+  '做',
+];
+/** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素. */
+const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素'];
+/** 一円 as "the whole area" (関東一円に): a place before it, a particle after it. */
+const AREA_PARTICLES: readonly string[] = ['に', 'で', 'の', 'を', 'へ'];
+/**
+ * What follows 원 / 엔 in a word that is not money: 원하- (want), 원단 (fabric), 원래
+ * (originally)... Only these, and only after a bare unit with no number: anything else after
+ * 원 ("만원이에요", "만원짜리", "만원으로") is money. "버스가 만원이었어요" (crowded) is money
+ * to this check too: it cannot be told from "it was 10,000 won".
+ */
+const WON_WORDS_AFTER: readonly string[] = [
+  '하시',
+  '하면',
+  '해요',
+  '해서',
+  '했',
+  '합니',
+  '한다',
+  '하지',
+  '하신',
+  '하세',
+  '단',
+  '래',
+  '인',
+  '칙',
+  '본',
+  '형',
+  '산',
+  '작',
+  '피스',
+  '료',
+  '두',
+  '목',
+  '룸',
+];
+// cspell:enable
+
 /**
  * Whether a token after the number is a word that only looks like money: 块 as a
- * classifier ("两块垫子"), 一元 / 一円 in an idiom ("一元化", "関東一円"), 원 or 엔 after
- * a bare unit and before more Hangul ("색상만 원하시면", "천 원단", "만원이었어요").
+ * classifier before a listed noun ("两块垫子"), 一块 as "together" ("一块看看"), 一元 / 一円 in
+ * an idiom ("一元化", "関東一円に"), 원 or 엔 after a bare unit inside a listed word ("색상만
+ * 원하시면", "천 원단"). Every exemption is an explicit list: anything else is money.
  */
 function notMoney(text: string, token: string, lower: string, lowerAt: number, tokenEnd: number) {
-  const next = text[tokenEnd] ?? '';
+  const rest = text.slice(tokenEnd);
   const previous = text[lowerAt - 1] ?? '';
   const expression = lower.replace(/\s/g, '');
-  if ((token === '块' || token === '塊') && HAN_RE.test(next) && !MONEY_HAN.includes(next)) {
-    return true;
+  const isOne = expression === '一';
+  if (token === '块' || token === '塊') {
+    const together = isOne && TOGETHER_AFTER.some((word) => rest.startsWith(word));
+    return together || PIECE_NOUNS.some((noun) => rest.startsWith(noun));
   }
-  const loneDigit = expression.length === 1 && CJK_DIGITS[expression] !== undefined;
-  if (loneDigit && (token === '円' || token === '元')) {
-    const idiomAfter = HAN_RE.test(next) && !CJK_CHARS.includes(next) && !MONEY_HAN.includes(next);
-    const placeBefore = token === '円' && HAN_RE.test(previous);
-    if (idiomAfter || placeBefore) {
-      return true;
-    }
+  if (isOne && token === '元') {
+    return YUAN_WORD_AFTER.some((word) => rest.startsWith(word));
+  }
+  if (isOne && token === '円') {
+    return HAN_RE.test(previous) && AREA_PARTICLES.some((particle) => rest.startsWith(particle));
   }
   const bareUnit = expression.length === 1 && CJK_UNIT_START_RE.test(expression);
-  return bareUnit && (token === '원' || token === '엔') && HANGUL_RE.test(next);
+  return (
+    bareUnit &&
+    (token === '원' || token === '엔') &&
+    WON_WORDS_AFTER.some((word) => rest.startsWith(word))
+  );
 }
 
 /** A sign before the amount: "-3.7万円" is no price. */

@@ -141,7 +141,6 @@ const NO_PRICE: ReadonlyArray<[string, string]> = [
   ['ja', '十分な広さがあります。'],
   ['ko', '이 색상만 원하시면 말씀해 주세요.'],
   ['ko', '천 원단으로 만들어졌습니다.'],
-  ['ko', '버스가 만원이었어요.'],
   ['ko', '백화점에서도 판매합니다.'],
   ['ko', '천천히 골라 보세요.'],
   ['ko', '만나서 반갑습니다.'],
@@ -163,6 +162,32 @@ describe('M-4. words that only look like money are not amounts', () => {
     const currency = CURRENCY_OF[language] ?? 'JPY';
     expect(violations(currency, '3980', text, language)).toBe(0);
   });
+
+  it.each([
+    ['ko', '만원이에요'],
+    ['ko', '천원입니다'],
+    ['ko', '만원짜리 가방이에요'],
+    ['ko', '만원 정도예요'],
+    ['ko', '만원에 드려요'],
+    ['ko', '만원으로 살 수 있어요'],
+    ['ko', '만원을 내시면 됩니다'],
+    ['ko', '가격은만원이에요'],
+    ['ko', '버스가 만원이었어요'],
+    ['zh', '50块的那个'],
+    ['zh', '50块左右'],
+    ['zh', '50块一个'],
+    ['zh', '50块包邮'],
+    ['zh', '50块起'],
+    ['zh', '50块多'],
+    ['zh', '一块包邮'],
+    ['zh', '一元包邮'],
+    ['zh', '每块布50块'],
+  ])(
+    '%s: money "%s" still fails in a USD store (exemptions are explicit lists)',
+    (language, text) => {
+      expect(violations('USD', '249', text, language)).toBe(1);
+    },
+  );
 
   it('a real price next to an idiom still passes, and a wrong one still fails', () => {
     expect(violations('JPY', '3980', '価格は3,980円で、関東一円に配送します。')).toBe(0);
