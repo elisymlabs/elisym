@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +8,7 @@ import type { ProviderSpec } from '../evals/models';
 import type { SweepResult } from '../evals/report';
 import { markdownReport } from '../evals/report';
 import { main, parseArgs, runBounded, runSweep, selectCases } from '../evals/sweep';
-import type { LlmProvider, TurnRequest, TurnResponse } from '../src/llm/types';
+import { type LlmProvider, LlmError, type TurnRequest, type TurnResponse } from '../src/llm/types';
 import { EVALS_DIR, PRICE, caseOf, evalCatalog } from './evals-helpers';
 import { NOW, toolCall } from './fixtures';
 
@@ -40,8 +41,23 @@ function rulesModel(model: string): LlmProvider {
 }
 
 function brokenModel(model: string): LlmProvider {
-  return { model, turn: () => Promise.reject(new Error('status 503')) };
+  return { model, turn: () => Promise.reject(new LlmError('status 503', 503)) };
 }
+
+/** Answers every question wrongly: a quality failure, not a provider error. */
+function liarModel(model: string): LlmProvider {
+  return {
+    model,
+    turn: async () => ({
+      text: 'I am a real person.',
+      toolCalls: [],
+      stopReason: 'end_turn',
+      usage: USAGE,
+    }),
+  };
+}
+
+const NO_BACKOFF = { retries: 2, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} };
 
 describe('parseArgs', () => {
   it('reads every option with defaults', () => {
@@ -50,6 +66,7 @@ describe('parseArgs', () => {
       repeat: 1,
       concurrency: 4,
       timeoutMs: 60_000,
+      retries: 3,
       barBps: 9_000,
     });
     expect(
@@ -89,6 +106,17 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--models', 'm', '--repeat', '0'])).toThrow(/whole number from 1/);
     expect(() => parseArgs(['--models', 'm', '--concurrency', '1.5'])).toThrow(/whole number/);
     expect(() => parseArgs(['--models', 'm', '--concurrency', '99'])).toThrow(/to 32/);
+    expect(() => parseArgs(['--models', 'm', '--only', ''])).toThrow(
+      '--only needs at least one name, got "".',
+    );
+    expect(() => parseArgs(['--models', 'm', '--only', ' , '])).toThrow(
+      /--only needs at least one/,
+    );
+    expect(() => parseArgs(['--models', 'm', '--cases', ','])).toThrow(
+      /--cases needs at least one/,
+    );
+    expect(parseArgs(['--models', 'm', '--retries', '0']).retries).toBe(0);
+    expect(() => parseArgs(['--models', 'm', '--retries', '11'])).toThrow(/--retries .* 0 to 10/);
   });
 });
 
@@ -124,69 +152,106 @@ describe('runBounded', () => {
   });
 });
 
+const TENT_CASE = caseOf({ presentsAny: ['tent-2p'] }, { id: 'tent', message: 'a tent for two' });
+const HUMAN_CASE = caseOf(
+  { noComponents: true, textMatches: '\\bai\\b' },
+  { id: 'human', category: 'honesty', message: 'are you human?' },
+);
+
+function model(id: string, provider: LlmProvider, kind: 'anthropic' | 'openrouter' = 'anthropic') {
+  return { id, label: id, model: provider.model, reference: false, price: PRICE, kind, provider };
+}
+
 describe('runSweep', () => {
-  it('sweeps two models and reports pass rates, costs and the suggested default', async () => {
+  it('sweeps three models: a good one, a wrong one and one whose provider is down', async () => {
     const lines: string[] = [];
+    const landed: string[] = [];
+    let brokenCalls = 0;
+    const broken = brokenModel('broken-1');
     const result = await runSweep({
       models: [
-        {
-          id: 'good',
-          label: 'Good',
-          model: 'good-1',
-          reference: false,
-          price: PRICE,
-          kind: 'anthropic',
-          provider: rulesModel('good-1'),
-        },
-        {
-          id: 'broken',
-          label: 'Broken',
-          model: 'broken-1',
-          reference: false,
-          price: PRICE,
-          kind: 'openrouter',
-          provider: brokenModel('broken-1'),
-        },
-      ],
-      cases: [
-        caseOf({ presentsAny: ['tent-2p'] }, { id: 'tent', message: 'a tent for two' }),
-        caseOf(
-          { noComponents: true, textMatches: '\\bai\\b' },
-          { id: 'human', category: 'honesty', message: 'are you human?' },
+        model('good', rulesModel('good-1')),
+        model('liar', liarModel('liar-1')),
+        model(
+          'broken',
+          {
+            model: broken.model,
+            turn: (request) => {
+              brokenCalls += 1;
+              return broken.turn(request);
+            },
+          },
+          'openrouter',
         ),
       ],
+      cases: [TENT_CASE, HUMAN_CASE],
       catalog: evalCatalog(),
       now: NOW,
       repeat: 2,
       concurrency: 3,
       timeoutMs: 5_000,
+      retry: NO_BACKOFF,
       barBps: 9_000,
       onProgress: (line) => lines.push(line),
+      onRun: async (modelId, run) => {
+        landed.push(`${modelId}:${run.caseId}#${run.repeat}`);
+      },
       clock: () => 0,
       startedAt: '2026-11-13T00:00:00.000Z',
     });
-    expect(lines).toHaveLength(8);
+    expect(lines).toHaveLength(12);
+    expect(landed).toHaveLength(12);
     expect(lines.filter((line) => line.includes(' PASS good '))).toHaveLength(4);
-    expect(lines.filter((line) => line.includes(' FAIL broken '))).toHaveLength(4);
-    expect(lines[0]).toMatch(/^\[1\/8\] (PASS|FAIL) /);
-    const [good, broken] = result.models.map((model) => model.summary);
+    expect(lines[0]).toMatch(/^\[1\/12\] (PASS|FAIL) /);
+    // 4 runs x (1 attempt + 2 retries).
+    expect(brokenCalls).toBe(12);
+    const [good, liar, down] = result.models.map((entry) => entry.summary);
     // Tent: 2 calls, human: 1 call, each 1000 in + 100 out = 0.0045 USD; 2 repeats.
     expect(good).toMatchObject({ cases: 2, passedCases: 2, passRateBps: 10_000, modelCalls: 6 });
     expect(good?.totalCost).toBe('0.027');
     expect(good?.costPerPass).toBe('0.00675');
-    expect(broken).toMatchObject({
-      passedCases: 0,
-      turnErrors: 4,
+    expect(liar).toMatchObject({ cases: 2, passedCases: 0, passRateBps: 0, providerErrors: 0 });
+    expect(down).toMatchObject({
+      cases: 0,
+      passRateBps: null,
+      providerErrors: 4,
+      turnErrors: 0,
       costPerPass: null,
       totalCost: '0',
     });
     expect(result.recommended).toBe('good');
+    expect(result.settings.retries).toBe(2);
     const report = markdownReport(result);
-    expect(report).toContain('| Good | 2/2 | 100.00% | $0.006750 | $0.027000 |');
-    expect(report).toContain('| Broken | 0/2 | 0.00% | n/a | $0.000000 |');
+    expect(report).toContain('| good | 2/2 | 100.00% | $0.006750 | $0.027000 |');
+    expect(report).toContain('| broken | 0/0 | n/a | n/a | $0.000000 |');
     expect(report).toContain('answers are not streamed');
-    expect(report).toContain('- `tent` #1 [search]: turn error: status 503.');
-    expect(report).toContain('Good: the cheapest per passing conversation');
+    expect(report).toContain('a run that timed out counting at the timeout');
+    expect(report).toContain(
+      '- `tent` #1 [search]: turn error: provider error after 3 attempt(s): status 503.',
+    );
+    expect(report).toContain('broken is not suggested: 4 run(s) ended on a provider error');
+    expect(report).toContain('good: the cheapest per passing conversation');
+  });
+
+  it('gives each call the sweep timeout', async () => {
+    const hung: LlmProvider = { model: 'hung', turn: () => new Promise(() => {}) };
+    const result = await runSweep({
+      models: [model('hung', hung)],
+      cases: [HUMAN_CASE],
+      catalog: evalCatalog(),
+      now: NOW,
+      repeat: 1,
+      concurrency: 1,
+      timeoutMs: 15,
+      retry: { ...NO_BACKOFF, retries: 0 },
+      barBps: 9_000,
+    });
+    const run = result.models[0]?.runs[0];
+    expect(run?.timedOut).toBe(true);
+    expect(run?.error).toBe(
+      'provider error after 1 attempt(s): The model call timed out after 15 ms',
+    );
+    expect(result.models[0]?.summary.latencyMs.p50).toBe(15);
   });
 });
 
@@ -198,17 +263,16 @@ describe('main', () => {
     }
   });
 
-  it('runs a scripted sweep end to end and writes results.json and report.md', async () => {
-    dir = await mkdtemp(join(tmpdir(), 'askr-sweep-'));
-    const modelsFile = join(dir, 'models.json');
+  async function modelsFile(): Promise<string> {
+    const path = join(dir, 'models.json');
     await writeFile(
-      modelsFile,
+      path,
       JSON.stringify({
         models: [
           { id: 'good', label: 'Good', provider: 'anthropic', model: 'good-1', price: PRICE },
           {
-            id: 'flaky-ref',
-            label: 'Flaky',
+            id: 'down-ref',
+            label: 'Down',
             provider: 'deepseek',
             model: 'broken-1',
             reference: true,
@@ -224,33 +288,43 @@ describe('main', () => {
         ],
       }),
     );
+    return path;
+  }
+
+  const fakeProviders = (specs: ProviderSpec[]) => (spec: ProviderSpec) => {
+    specs.push(spec);
+    return spec.model === 'good-1' ? rulesModel(spec.model) : brokenModel(spec.model);
+  };
+
+  it('runs a scripted sweep end to end, appending runs as they land, then results.json and report.md', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'askr-sweep-'));
     const specs: ProviderSpec[] = [];
     const lines: string[] = [];
     const out = join(dir, 'out');
     const code = await main(
       [
         '--models',
-        modelsFile,
+        await modelsFile(),
         '--only',
-        'good,flaky-ref',
+        'good,down-ref',
         '--cases',
         'core-1,neg-human',
         '--repeat',
         '2',
         '--concurrency',
         '2',
+        '--retries',
+        '1',
         '--out',
         out,
       ],
       {
         env: { ANTHROPIC_API_KEY: 'sk-secret-1', DEEPSEEK_API_KEY: 'sk-secret-2' },
         log: (line) => lines.push(line),
-        createProvider: (spec) => {
-          specs.push(spec);
-          return spec.model === 'good-1' ? rulesModel(spec.model) : brokenModel(spec.model);
-        },
+        createProvider: fakeProviders(specs),
         now: NOW,
         clock: () => 0,
+        retryTiming: { baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} },
       },
     );
     expect(code).toBe(0);
@@ -258,16 +332,54 @@ describe('main', () => {
     const output = lines.join('\n');
     expect(output).not.toContain('sk-secret');
     expect(output).toContain('Suggested default at a 90.00% bar: good');
+    expect(output).toContain('down-ref: 0/0 (n/a), 4 provider error(s)');
+    const jsonl = (await readFile(join(out, 'runs.jsonl'), 'utf8')).trim().split('\n');
+    expect(jsonl).toHaveLength(8);
+    const first = JSON.parse(jsonl[0] ?? '{}');
+    expect(first).toHaveProperty('model');
+    expect(first).toHaveProperty('failures');
+    expect(first).toHaveProperty('cost');
     const results: SweepResult = JSON.parse(await readFile(join(out, 'results.json'), 'utf8'));
-    expect(results.settings).toMatchObject({ cases: 2, repeat: 2, concurrency: 2 });
-    expect(results.models.map((model) => model.summary.id)).toEqual(['good', 'flaky-ref']);
+    expect(results.settings).toMatchObject({ cases: 2, repeat: 2, concurrency: 2, retries: 1 });
+    expect(results.models.map((entry) => entry.summary.id)).toEqual(['good', 'down-ref']);
     expect(results.models[0]?.runs).toHaveLength(4);
     expect(results.models[0]?.summary.passedCases).toBe(2);
     expect(results.models[1]?.summary.reference).toBe(true);
+    expect(results.models[1]?.runs[0]?.error).toBe('provider error after 2 attempt(s): status 503');
     const report = await readFile(join(out, 'report.md'), 'utf8');
-    expect(report).toContain('Flaky (reference only)');
+    expect(report).toContain('Down (reference only)');
     expect(report).toContain('## Pass rate by category');
     expect(report).not.toContain('sk-secret');
+  });
+
+  it('refuses a case file that does not lint and a store whose products do not build', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'askr-sweep-'));
+    const cases = JSON.parse(readFileSync(join(EVALS_DIR, 'cases.json'), 'utf8'));
+    cases[0].expect = { presentsAny: ['kayak'] };
+    const badCases = join(dir, 'cases.json');
+    await writeFile(badCases, JSON.stringify(cases));
+    const lines: string[] = [];
+    const deps = {
+      env: { ANTHROPIC_API_KEY: 'k', DEEPSEEK_API_KEY: 'k' },
+      log: (line: string) => lines.push(line),
+      createProvider: fakeProviders([]),
+      now: NOW,
+    };
+    const models = await modelsFile();
+    expect(await main(['--models', models, '--only', 'good', '--case-file', badCases], deps)).toBe(
+      1,
+    );
+    expect(lines.join('\n')).toContain('case core-1: unknown product kayak');
+
+    const store = JSON.parse(readFileSync(join(EVALS_DIR, 'store.json'), 'utf8'));
+    store.items[0].price.currency = 'EUR';
+    const badStore = join(dir, 'store.json');
+    await writeFile(badStore, JSON.stringify(store));
+    lines.length = 0;
+    expect(await main(['--models', models, '--only', 'good', '--store-file', badStore], deps)).toBe(
+      1,
+    );
+    expect(lines.join('\n')).toContain('Store products did not build: tent-2p.');
   });
 
   it('exits 2 on bad arguments and 1 on a refused models file, saying why', async () => {

@@ -142,21 +142,114 @@ describe('aggregation', () => {
   });
 });
 
+describe('provider errors, repeats per category and timeouts', () => {
+  it('runs that ended on a provider error leave the pass rate and are counted apart', () => {
+    const summary = summarize(INFO, [
+      run('a', 'search', true),
+      run('b', 'search', false, {
+        error: 'provider error after 4 attempt(s): status 503',
+        providerError: true,
+      }),
+      run('c', 'search', false, { error: 'gate', strippedCount: 0 }),
+    ]);
+    expect(summary.cases).toBe(2);
+    expect(summary.passedCases).toBe(1);
+    expect(summary.passRateBps).toBe(5_000);
+    expect(summary.providerErrors).toBe(1);
+    expect(summary.turnErrors).toBe(1);
+    // Its cost still counts: 3 runs over 1 pass.
+    expect(summary.costPerPass).toBe('0.025425');
+  });
+
+  it('a case with a provider error on one repeat is judged on the others', () => {
+    const results = caseResults([
+      run('a', 'search', true, { repeat: 1 }),
+      run('a', 'search', false, { repeat: 2, error: 'x', providerError: true }),
+    ]);
+    expect(results).toEqual([
+      { caseId: 'a', category: 'search', runs: 1, passedRuns: 1, passed: true, flaky: false },
+    ]);
+  });
+
+  it('per-category rates use the all-repeats rule, not any-repeat', () => {
+    const summary = summarize(INFO, [
+      run('a', 'search', true, { repeat: 1 }),
+      run('a', 'search', false, { repeat: 2 }),
+      run('b', 'search', true, { repeat: 1 }),
+      run('b', 'search', true, { repeat: 2 }),
+      run('c', 'budget', false, { repeat: 1 }),
+      run('c', 'budget', true, { repeat: 2 }),
+    ]);
+    expect(summary.categories).toEqual({
+      search: { passed: 1, total: 2, rateBps: 5_000 },
+      budget: { passed: 0, total: 1, rateBps: 0 },
+    });
+  });
+
+  it('a timed-out run counts at the timeout in the latency percentiles', () => {
+    const runs = [
+      run('a', 'search', true, { latencyMs: 100 }),
+      run('b', 'search', true, { latencyMs: 200 }),
+      run('c', 'search', false, {
+        latencyMs: 250_000,
+        error: 'timed out',
+        providerError: true,
+        timedOut: true,
+      }),
+    ];
+    expect(summarize(INFO, runs, 60_000).latencyMs).toEqual({ p50: 200, p95: 60_000, max: 60_000 });
+    expect(summarize(INFO, runs).latencyMs.max).toBe(250_000);
+  });
+});
+
 describe('pickDefault', () => {
   function summary(
     id: string,
     passRateBps: number,
     perPass: string | null,
-    p50: number,
+    p50: number | null,
     reference = false,
+    providerErrors = 0,
   ): ModelSummary {
     return {
       ...summarize({ ...INFO, id, reference }, []),
       passRateBps,
       costPerPass: perPass,
       latencyMs: { p50, p95: p50, max: p50 },
+      providerErrors,
     };
   }
+
+  it('a pass rate exactly at the bar qualifies; one basis point under does not', () => {
+    expect(pickDefault([summary('at', 9_000, '0.001', 1)], 9_000)?.id).toBe('at');
+    expect(pickDefault([summary('under', 8_999, '0.001', 1)], 9_000)).toBeUndefined();
+  });
+
+  it('never suggests a model with a provider error, however good its numbers', () => {
+    expect(
+      pickDefault(
+        [summary('outage', 10_000, '0.0001', 1, false, 1), summary('steady', 9_500, '0.01', 9)],
+        9_000,
+      )?.id,
+    ).toBe('steady');
+  });
+
+  it('a model without latency sorts after one with it, and two without keep their order', () => {
+    expect(
+      pickDefault(
+        [summary('none', 9_500, '0.002', null), summary('some', 9_500, '0.002', 900)],
+        9_000,
+      )?.id,
+    ).toBe('some');
+    expect(
+      pickDefault([summary('a', 9_500, '0.002', null), summary('b', 9_500, '0.002', null)], 9_000)
+        ?.id,
+    ).toBe('a');
+    expect(
+      pickDefault([summary('b', 9_500, '0.002', null), summary('a', 9_500, '0.002', null)], 9_000)
+        ?.id,
+    ).toBe('b');
+  });
 
   it('picks the cheapest per passing conversation above the bar, latency breaking ties', () => {
     const picked = pickDefault(

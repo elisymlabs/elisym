@@ -47,12 +47,15 @@ export interface ModelSummary {
   runs: number;
   passedRuns: number;
   flakyCases: string[];
+  /** Turns that failed for a reason other than the provider: quality failures. */
   turnErrors: number;
+  /** Runs that ended on a provider error after retries: out of the pass rate. */
+  providerErrors: number;
   /** USD over every run, exact. */
   totalCost: string;
   /** Total cost over passing runs, USD; null when nothing passed. */
   costPerPass: string | null;
-  /** Over runs that produced an answer; null when none did. */
+  /** Over runs that produced an answer, timed-out runs at the timeout; null when none. */
   latencyMs: { p50: number | null; p95: number | null; max: number | null };
   modelCalls: number;
   tokens: Usage;
@@ -110,9 +113,14 @@ export function costPerPass(totalCost: Decimal, passedRuns: number): Decimal | n
   return totalCost.div(passedRuns);
 }
 
+/**
+ * Per case over the runs that reached a verdict: a run that ended on a
+ * provider error (after retries) says nothing about the model's answers, so
+ * it is left out; a case whose every run did is left out of the pass rate.
+ */
 export function caseResults(runs: readonly GradedRun[]): CaseResult[] {
   const byCase = new Map<string, CaseResult>();
-  for (const run of runs) {
+  for (const run of runs.filter((entry) => entry.providerError !== true)) {
     const current = byCase.get(run.caseId) ?? {
       caseId: run.caseId,
       category: run.category,
@@ -130,7 +138,27 @@ export function caseResults(runs: readonly GradedRun[]): CaseResult[] {
   return [...byCase.values()];
 }
 
-export function summarize(info: ModelInfo, runs: readonly GradedRun[]): ModelSummary {
+/**
+ * A timed-out run counts at the timeout (when known): leaving it out would
+ * flatter exactly the models that hang.
+ */
+function latencySamples(runs: readonly GradedRun[], timeoutMs?: number): number[] {
+  return runs.flatMap((run) => {
+    if (run.error === undefined) {
+      return [run.latencyMs];
+    }
+    if (run.timedOut === true) {
+      return [timeoutMs ?? run.latencyMs];
+    }
+    return [];
+  });
+}
+
+export function summarize(
+  info: ModelInfo,
+  runs: readonly GradedRun[],
+  timeoutMs?: number,
+): ModelSummary {
   const cases = caseResults(runs);
   const categories: Record<string, CategoryResult> = {};
   for (const result of cases) {
@@ -143,7 +171,7 @@ export function summarize(info: ModelInfo, runs: readonly GradedRun[]): ModelSum
   const totalCost = runs.reduce((sum, run) => sum.plus(run.cost), new Decimal(0));
   const passedRuns = runs.filter((run) => run.passed).length;
   const perPass = costPerPass(totalCost, passedRuns);
-  const latencies = runs.filter((run) => run.error === undefined).map((run) => run.latencyMs);
+  const latencies = latencySamples(runs, timeoutMs);
   const passedCases = cases.filter((result) => result.passed).length;
   return {
     id: info.id,
@@ -157,7 +185,8 @@ export function summarize(info: ModelInfo, runs: readonly GradedRun[]): ModelSum
     runs: runs.length,
     passedRuns,
     flakyCases: cases.filter((result) => result.flaky).map((result) => result.caseId),
-    turnErrors: runs.filter((run) => run.error !== undefined).length,
+    turnErrors: runs.filter((run) => run.error !== undefined && run.providerError !== true).length,
+    providerErrors: runs.filter((run) => run.providerError === true).length,
     totalCost: totalCost.toFixed(),
     costPerPass: perPass === null ? null : perPass.toFixed(),
     latencyMs: {
@@ -170,10 +199,19 @@ export function summarize(info: ModelInfo, runs: readonly GradedRun[]): ModelSum
   };
 }
 
+/** Lower p50 first; a model with no latency sorts last; two without tie. */
+function compareLatency(left: number | null, right: number | null): number {
+  if (left === null || right === null) {
+    return (left === null ? 1 : 0) - (right === null ? 1 : 0);
+  }
+  return left - right;
+}
+
 /**
  * The tier default the numbers suggest: among models that are not reference
- * only and pass at least `barBps` of the cases, the cheapest per passing
- * conversation, then the lower p50 latency. Undefined when none qualifies.
+ * only, had no provider error and pass at least `barBps` of the cases, the
+ * cheapest per passing conversation, then the lower p50 latency. Undefined
+ * when none qualifies.
  */
 export function pickDefault(
   summaries: readonly ModelSummary[],
@@ -182,14 +220,14 @@ export function pickDefault(
   const candidates = summaries.filter(
     (summary) =>
       !summary.reference &&
+      summary.providerErrors === 0 &&
       summary.passRateBps !== null &&
       summary.passRateBps >= barBps &&
       summary.costPerPass !== null,
   );
-  const latencyOf = (summary: ModelSummary) => summary.latencyMs.p50 ?? Number.POSITIVE_INFINITY;
   return [...candidates].sort((left, right) => {
     const byCost = new Decimal(left.costPerPass ?? '0').comparedTo(right.costPerPass ?? '0');
-    return byCost !== 0 ? byCost : latencyOf(left) - latencyOf(right);
+    return byCost !== 0 ? byCost : compareLatency(left.latencyMs.p50, right.latencyMs.p50);
   })[0];
 }
 

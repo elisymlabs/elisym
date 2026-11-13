@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { type ProviderSpec, resolveModels } from '../evals/models';
+import { type ProviderSpec, createProvider, resolveModels } from '../evals/models';
 import type { LlmProvider } from '../src/llm/types';
 import { EVALS_DIR } from './evals-helpers';
 
@@ -35,7 +35,58 @@ function filledExample() {
   return json;
 }
 
+function refusal(json: unknown, env: Record<string, string> = ENV): string {
+  try {
+    resolveModels(json, { env, createProvider: fake([]) });
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  return '';
+}
+
 describe('the models file', () => {
+  it('refuses a negative price and a whitespace-only key, and trims prices', () => {
+    const negative = filledExample();
+    negative.models[0].price = { ...FILLED, input: '-1' };
+    expect(refusal(negative)).toMatch(
+      /price\.input must be a non-negative decimal string, got "-1"/,
+    );
+    expect(refusal(filledExample(), { ...ENV, ANTHROPIC_API_KEY: '   ' })).toBe(
+      'Model entry "claude-haiku-5-5" (anthropic) needs ANTHROPIC_API_KEY set in the environment.',
+    );
+    const padded = filledExample();
+    padded.models[0].price = {
+      input: ' 1 ',
+      cachedInput: '0.1 ',
+      cacheWrite: ' 1.25',
+      output: '5',
+    };
+    const models = resolveModels(padded, { env: ENV, createProvider: fake([]) });
+    expect(models[0]?.price).toEqual(FILLED);
+  });
+
+  it('refuses extraBody on an anthropic entry', () => {
+    const json = filledExample();
+    json.models[0].extraBody = { provider: { data_collection: 'deny' } };
+    expect(refusal(json)).toBe(
+      'Model entry "claude-haiku-5-5": extraBody is not used by the anthropic provider; remove it.',
+    );
+  });
+
+  it('a DeepSeek model on OpenRouter needs named hosts, never DeepSeek itself', () => {
+    const missing = filledExample();
+    delete missing.models[2].extraBody.provider.only;
+    expect(refusal(missing)).toMatch(/provider\.only is empty.*a DeepSeek model needs it/);
+    for (const host of ['deepseek', ' DeepSeek ']) {
+      const own = filledExample();
+      own.models[2].extraBody.provider.only = ['us-host', host];
+      expect(refusal(own)).toMatch(/never DeepSeek's own endpoint/);
+    }
+    const gemini = filledExample();
+    expect(gemini.models[4].extraBody.provider.only).toBeUndefined();
+    expect(refusal(gemini)).toBe('');
+  });
+
   it('the example has the plan matrix with every price left empty', () => {
     const json = example();
     expect(json.models.map((entry: { id: string }) => entry.id)).toEqual([
@@ -143,6 +194,58 @@ describe('the models file', () => {
     expect(() =>
       resolveModels(json, { env: ENV, only: ['gpt-9'], createProvider: fake([]) }),
     ).toThrow('--only names unknown model entries: gpt-9.');
+  });
+
+  it('wires each provider kind to its endpoint, key and body', async () => {
+    const seen: { url: string; headers: Record<string, string>; body: Record<string, unknown> }[] =
+      [];
+    const fakeFetch: typeof fetch = async (input, init) => {
+      const headers: Record<string, string> = {};
+      new Headers(init?.headers).forEach((value, name) => {
+        headers[name] = value;
+      });
+      seen.push({
+        url: String(input),
+        headers,
+        body: JSON.parse(typeof init?.body === 'string' ? init.body : '{}'),
+      });
+      return new Response(JSON.stringify({}), { status: 200 });
+    };
+    const request = { system: [], messages: [], tools: [], maxTokens: 1 };
+    const route = {
+      provider: { data_collection: 'deny', only: ['us-host'], allow_fallbacks: false },
+    };
+    await createProvider({
+      kind: 'anthropic',
+      apiKey: 'a-key',
+      model: 'claude-haiku-5-5',
+      fetch: fakeFetch,
+    }).turn(request);
+    await createProvider({
+      kind: 'openrouter',
+      apiKey: 'or-key',
+      model: 'deepseek/deepseek-chat',
+      extraBody: route,
+      fetch: fakeFetch,
+    }).turn(request);
+    await createProvider({
+      kind: 'deepseek',
+      apiKey: 'ds-key',
+      model: 'deepseek-chat',
+      fetch: fakeFetch,
+    }).turn(request);
+    expect(seen.map((call) => call.url)).toEqual([
+      'https://api.anthropic.com/v1/messages',
+      'https://openrouter.ai/api/v1/chat/completions',
+      'https://api.deepseek.com/v1/chat/completions',
+    ]);
+    expect(seen[0]?.headers['x-api-key']).toBe('a-key');
+    expect(seen[0]?.body.model).toBe('claude-haiku-5-5');
+    expect(seen[1]?.headers.authorization).toBe('Bearer or-key');
+    expect(seen[1]?.body.provider).toEqual(route.provider);
+    expect(seen[1]?.body.model).toBe('deepseek/deepseek-chat');
+    expect(seen[2]?.headers.authorization).toBe('Bearer ds-key');
+    expect(seen[2]?.body.provider).toBeUndefined();
   });
 
   it('refuses a duplicate id and an invalid file', () => {

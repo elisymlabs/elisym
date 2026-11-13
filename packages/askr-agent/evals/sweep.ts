@@ -3,7 +3,7 @@
  * with repeats, bounded concurrency and a per-call timeout; then per-model
  * metrics, a JSON results file and a markdown report.
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { StoreCatalog } from '../src/catalog/store-catalog';
@@ -17,7 +17,14 @@ import {
 } from './aggregate';
 import { type EvalCase, lintCases, parseCases, parseStore } from './cases';
 import { grade } from './grade';
-import { buildCatalog, runCase, withCallTimeout } from './harness';
+import {
+  DEFAULT_RETRY,
+  type RetryOptions,
+  buildCatalog,
+  runCase,
+  withCallTimeout,
+  withRetries,
+} from './harness';
 import { type ProviderFactory, type ResolvedModel, resolveModels } from './models';
 import { type ModelResult, type SweepResult, jsonResults, markdownReport } from './report';
 
@@ -26,6 +33,8 @@ export const DEFAULT_CONCURRENCY = 4;
 export const MAX_CONCURRENCY = 32;
 export const DEFAULT_TIMEOUT_SECONDS = 60;
 const MAX_REPEAT = 20;
+const MAX_RETRIES = 10;
+export const RUNS_FILE = 'runs.jsonl';
 const MS_PER_SECOND = 1_000;
 const FAILURE_PREVIEW_CHARS = 160;
 
@@ -36,6 +45,7 @@ export interface SweepArgs {
   repeat: number;
   concurrency: number;
   timeoutMs: number;
+  retries: number;
   barBps: number;
   out?: string;
   casesFile: string;
@@ -49,6 +59,7 @@ const FLAGS = [
   '--repeat',
   '--concurrency',
   '--timeout',
+  '--retries',
   '--bar',
   '--out',
   '--case-file',
@@ -67,11 +78,15 @@ function integerIn(flag: string, value: string, min: number, max: number): numbe
   return Number(value);
 }
 
-function list(value: string): string[] {
-  return value
+function list(flag: string, value: string): string[] {
+  const parts = value
     .split(',')
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
+  if (parts.length === 0) {
+    throw new Error(`${flag} needs at least one name, got "${value}".`);
+  }
+  return parts;
 }
 
 export const USAGE = `Usage: bun packages/askr-agent/evals/run.ts --models <file> [options]
@@ -81,8 +96,9 @@ export const USAGE = `Usage: bun packages/askr-agent/evals/run.ts --models <file
   --repeat <n>           run each case n times; a case passes only if every run passes (default 1)
   --concurrency <n>      turns in flight at once (default ${DEFAULT_CONCURRENCY}, max ${MAX_CONCURRENCY})
   --timeout <seconds>    per model call (default ${DEFAULT_TIMEOUT_SECONDS})
+  --retries <n>          retries of a rate-limited, failed or timed-out call (default ${DEFAULT_RETRY.retries})
   --bar <percent>        pass-rate bar for the suggested default (default ${DEFAULT_BAR_BPS / 100})
-  --out <dir>            write results.json and report.md there
+  --out <dir>            write ${RUNS_FILE} as runs land, then results.json and report.md
   --case-file <file>     default evals/cases.json
   --store-file <file>    default evals/store.json`;
 
@@ -108,8 +124,8 @@ export function parseArgs(argv: readonly string[]): SweepArgs {
   const out = values.get('--out');
   return {
     models,
-    ...(only !== undefined ? { only: list(only) } : {}),
-    ...(cases !== undefined ? { cases: list(cases) } : {}),
+    ...(only !== undefined ? { only: list('--only', only) } : {}),
+    ...(cases !== undefined ? { cases: list('--cases', cases) } : {}),
     repeat: integerIn('--repeat', values.get('--repeat') ?? '1', 1, MAX_REPEAT),
     concurrency: integerIn(
       '--concurrency',
@@ -120,6 +136,12 @@ export function parseArgs(argv: readonly string[]): SweepArgs {
     timeoutMs:
       integerIn('--timeout', values.get('--timeout') ?? String(DEFAULT_TIMEOUT_SECONDS), 1, 3_600) *
       MS_PER_SECOND,
+    retries: integerIn(
+      '--retries',
+      values.get('--retries') ?? String(DEFAULT_RETRY.retries),
+      0,
+      MAX_RETRIES,
+    ),
     barBps: integerIn('--bar', values.get('--bar') ?? String(DEFAULT_BAR_BPS / 100), 0, 100) * 100,
     ...(out !== undefined ? { out } : {}),
     casesFile: values.get('--case-file') ?? join(EVALS_DIR, 'cases.json'),
@@ -173,8 +195,12 @@ export interface SweepOptions {
   repeat: number;
   concurrency: number;
   timeoutMs: number;
+  /** Retries and backoff of a failed call; the defaults when absent. */
+  retry?: RetryOptions;
   barBps: number;
   onProgress?: (line: string) => void;
+  /** Called with each graded run as it lands, before the sweep ends. */
+  onRun?: (modelId: string, run: GradedRun) => Promise<void>;
   clock?: () => number;
   startedAt?: string;
 }
@@ -191,7 +217,10 @@ function progressLine(done: number, total: number, model: ResolvedModel, run: Gr
 export async function runSweep(options: SweepOptions): Promise<SweepResult> {
   const timed = options.models.map((model) => ({
     model,
-    provider: withCallTimeout(model.provider, options.timeoutMs),
+    provider: withRetries(
+      withCallTimeout(model.provider, options.timeoutMs),
+      options.retry ?? DEFAULT_RETRY,
+    ),
   }));
   // Case-major order spreads each provider's calls over the whole sweep.
   const jobs = options.cases.flatMap((testCase) =>
@@ -212,6 +241,7 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
       });
       const run = gradeRun(outcome, grade(job.testCase, outcome), job.model.price);
       done += 1;
+      await options.onRun?.(job.model.id, run);
       options.onProgress?.(progressLine(done, jobs.length, job.model, run));
       return { modelId: job.model.id, run };
     }),
@@ -219,7 +249,7 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
   );
   const models: ModelResult[] = options.models.map((model) => {
     const runs = graded.filter((entry) => entry.modelId === model.id).map((entry) => entry.run);
-    return { summary: summarize(model, runs), runs };
+    return { summary: summarize(model, runs, options.timeoutMs), runs };
   });
   const recommended = pickDefault(
     models.map((model) => model.summary),
@@ -232,6 +262,7 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
       repeat: options.repeat,
       concurrency: options.concurrency,
       timeoutMs: options.timeoutMs,
+      retries: (options.retry ?? DEFAULT_RETRY).retries,
       barBps: options.barBps,
       storeItems: options.catalog.items.size,
     },
@@ -246,6 +277,8 @@ export interface MainDeps {
   createProvider?: ProviderFactory;
   now?: number;
   clock?: () => number;
+  /** Tests only: backoff timing (the retry count comes from --retries). */
+  retryTiming?: Omit<RetryOptions, 'retries'>;
 }
 
 async function readJson(path: string): Promise<unknown> {
@@ -286,6 +319,15 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
     if (rejected.length > 0) {
       throw new Error(`Store products did not build: ${rejected.join(', ')}.`);
     }
+    let appendRun: ((modelId: string, run: GradedRun) => Promise<void>) | undefined;
+    if (args.out !== undefined) {
+      const out = args.out;
+      await mkdir(out, { recursive: true });
+      // One line per graded run as it lands: an interrupted sweep keeps what it paid for.
+      await writeFile(join(out, RUNS_FILE), '');
+      appendRun = (modelId, run) =>
+        appendFile(join(out, RUNS_FILE), `${JSON.stringify({ model: modelId, ...run })}\n`);
+    }
     deps.log(
       `Sweeping ${cases.length} case(s) x ${args.repeat} over ${models.map((model) => model.id).join(', ')}`,
     );
@@ -297,14 +339,19 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
       repeat: args.repeat,
       concurrency: args.concurrency,
       timeoutMs: args.timeoutMs,
+      retry: {
+        ...(deps.retryTiming ?? DEFAULT_RETRY),
+        retries: args.retries,
+      },
       barBps: args.barBps,
       onProgress: deps.log,
+      ...(appendRun ? { onRun: appendRun } : {}),
       ...(deps.clock ? { clock: deps.clock } : {}),
     });
     deps.log('');
     for (const { summary } of result.models) {
       deps.log(
-        `${summary.id}: ${summary.passedCases}/${summary.cases} (${formatBps(summary.passRateBps)}), cost per passing conversation ${summary.costPerPass ?? 'n/a'} USD, p50 ${summary.latencyMs.p50 ?? 'n/a'} ms`,
+        `${summary.id}: ${summary.passedCases}/${summary.cases} (${formatBps(summary.passRateBps)}), ${summary.providerErrors} provider error(s), cost per passing conversation ${summary.costPerPass ?? 'n/a'} USD, p50 ${summary.latencyMs.p50 ?? 'n/a'} ms`,
       );
     }
     deps.log(
@@ -313,10 +360,11 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
         : `No model reached the ${formatBps(args.barBps)} bar.`,
     );
     if (args.out !== undefined) {
-      await mkdir(args.out, { recursive: true });
       await writeFile(join(args.out, 'results.json'), jsonResults(result));
       await writeFile(join(args.out, 'report.md'), markdownReport(result));
-      deps.log(`Wrote ${join(args.out, 'results.json')} and ${join(args.out, 'report.md')}`);
+      deps.log(
+        `Wrote ${join(args.out, RUNS_FILE)}, ${join(args.out, 'results.json')} and ${join(args.out, 'report.md')}`,
+      );
     }
     return 0;
   } catch (error) {

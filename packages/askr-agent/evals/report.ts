@@ -6,6 +6,7 @@ export interface SweepSettings {
   repeat: number;
   concurrency: number;
   timeoutMs: number;
+  retries: number;
   barBps: number;
   storeItems: number;
 }
@@ -55,6 +56,7 @@ function overviewRow(summary: ModelSummary): string {
     String(summary.tokens.cacheWriteTokens),
     String(summary.tokens.outputTokens),
     String(summary.turnErrors),
+    String(summary.providerErrors),
     String(summary.flakyCases.length),
   ];
   return `| ${columns.map(cell).join(' | ')} |`;
@@ -66,12 +68,12 @@ export function markdownReport(result: SweepResult): string {
   const lines: string[] = [
     '# Askr eval sweep',
     '',
-    `Started ${result.startedAt}. ${settings.cases} cases x ${settings.repeat} repeat(s) on a synthetic store of ${settings.storeItems} products; concurrency ${settings.concurrency}, per-call timeout ${settings.timeoutMs} ms.`,
+    `Started ${result.startedAt}. ${settings.cases} cases x ${settings.repeat} repeat(s) on a synthetic store of ${settings.storeItems} products; concurrency ${settings.concurrency}, per-call timeout ${settings.timeoutMs} ms, ${settings.retries} retries of a rate-limited, failed or timed-out call.`,
     '',
-    'A case passes only when every repeat passes; a flaky case passed some repeats and failed others. Turn errors count as failures. Cost per passing conversation is the total cost of every run divided by the passing runs (n/a when none passed). Latency is the wall time of one turn over runs that produced an answer: answers are not streamed, so the time to the first answer is the time to the whole answer.',
+    'A case passes only when every repeat passes; a flaky case passed some repeats and failed others. Turn errors (for example the price gate) count as failures. A run that still failed on a provider error after its retries is left out of the pass rate and counted under Provider errors; its cost still counts. Cost per passing conversation is the total cost of every run divided by the passing runs (n/a when none passed). Latency is the wall time of one turn over runs that produced an answer, a run that timed out counting at the timeout: answers are not streamed, so the time to the first answer is the time to the whole answer.',
     '',
-    '| Model | Passed | Pass rate | Cost per passing conversation | Total cost | p50 | p95 | Calls | Input | Cached | Cache write | Output | Errors | Flaky |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Model | Passed | Pass rate | Cost per passing conversation | Total cost | p50 | p95 | Calls | Input | Cached | Cache write | Output | Turn errors | Provider errors | Flaky |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...summaries.map(overviewRow),
     '',
     '## Pass rate by category',
@@ -94,8 +96,16 @@ export function markdownReport(result: SweepResult): string {
   lines.push(
     recommended
       ? `${recommended.label}: the cheapest per passing conversation among models (not reference only) at or above a ${formatBps(settings.barBps)} pass rate, latency as the tiebreak.`
-      : `No model that is not reference only reached a ${formatBps(settings.barBps)} pass rate.`,
+      : `No model that is not reference only and had no provider error reached a ${formatBps(settings.barBps)} pass rate.`,
   );
+  for (const summary of summaries) {
+    if (!summary.reference && summary.providerErrors > 0) {
+      lines.push(
+        '',
+        `${summary.label} is not suggested: ${summary.providerErrors} run(s) ended on a provider error, so its pass rate covers fewer runs than the others. Rerun it before choosing a default.`,
+      );
+    }
+  }
   lines.push('', '## Failures');
   for (const model of result.models) {
     const failed = model.runs.filter((run) => !run.passed);

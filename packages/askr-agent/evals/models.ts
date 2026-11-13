@@ -53,6 +53,8 @@ export interface ProviderSpec {
   apiKey: string;
   model: string;
   extraBody?: Record<string, unknown>;
+  /** Tests only: the fetch the adapter uses. */
+  fetch?: typeof fetch;
 }
 
 export type ProviderFactory = (spec: ProviderSpec) => LlmProvider;
@@ -65,7 +67,11 @@ export interface ResolvedModel extends ModelInfo {
 export const createProvider: ProviderFactory = (spec) => {
   switch (spec.kind) {
     case 'anthropic':
-      return createAnthropicProvider({ apiKey: spec.apiKey, model: spec.model });
+      return createAnthropicProvider({
+        apiKey: spec.apiKey,
+        model: spec.model,
+        ...(spec.fetch ? { fetch: spec.fetch } : {}),
+      });
     case 'openrouter':
       return createOpenAiCompatibleProvider({
         apiKey: spec.apiKey,
@@ -73,6 +79,7 @@ export const createProvider: ProviderFactory = (spec) => {
         baseUrl: OPENROUTER_BASE_URL,
         passCacheMarks: spec.model.startsWith('anthropic/'),
         ...(spec.extraBody ? { extraBody: spec.extraBody } : {}),
+        ...(spec.fetch ? { fetch: spec.fetch } : {}),
       });
     case 'deepseek':
       return createOpenAiCompatibleProvider({
@@ -80,6 +87,7 @@ export const createProvider: ProviderFactory = (spec) => {
         model: spec.model,
         baseUrl: DEEPSEEK_BASE_URL,
         ...(spec.extraBody ? { extraBody: spec.extraBody } : {}),
+        ...(spec.fetch ? { fetch: spec.fetch } : {}),
       });
   }
 };
@@ -114,8 +122,20 @@ function checkPrice(entry: ModelEntry): ModelPrice {
   };
 }
 
-/** Visitor-data rules (4.4, spec 8): no training on OpenRouter, direct DeepSeek only as reference. */
+/** OpenRouter's slug for DeepSeek's own (China-hosted) endpoint. */
+const DEEPSEEK_HOST_RE = /^deepseek$/i;
+
+/**
+ * Visitor-data rules (4.4, spec 8): no training on OpenRouter, a DeepSeek model
+ * there only on hosts the entry names (never DeepSeek's own), direct DeepSeek
+ * only as reference.
+ */
 function checkRoute(entry: ModelEntry, kind: ProviderKind): void {
+  if (kind === 'anthropic' && entry.extraBody !== undefined) {
+    throw new Error(
+      `Model entry "${entry.id}": extraBody is not used by the anthropic provider; remove it.`,
+    );
+  }
   if (kind === 'deepseek' && !entry.reference) {
     throw new Error(
       `Model entry "${entry.id}": a direct DeepSeek API entry must be "reference": true (visitor data never goes to China-hosted endpoints by default).`,
@@ -128,9 +148,19 @@ function checkRoute(entry: ModelEntry, kind: ProviderKind): void {
         `Model entry "${entry.id}": an OpenRouter entry needs extraBody.provider.data_collection "deny".`,
       );
     }
-    if (route.only !== undefined && (!Array.isArray(route.only) || route.only.length === 0)) {
+    const only = route.only;
+    const isDeepSeek = entry.model.toLowerCase().startsWith('deepseek/');
+    if ((only !== undefined || isDeepSeek) && (!Array.isArray(only) || only.length === 0)) {
       throw new Error(
-        `Model entry "${entry.id}": extraBody.provider.only is empty. List the US/EU-hosted providers to route to (see the model's providers on OpenRouter), or remove the field.`,
+        `Model entry "${entry.id}": extraBody.provider.only is empty. List the US/EU-hosted providers to route to (see the model's providers on OpenRouter)${isDeepSeek ? '; a DeepSeek model needs it' : ', or remove the field'}.`,
+      );
+    }
+    if (
+      Array.isArray(only) &&
+      only.some((host) => typeof host !== 'string' || DEEPSEEK_HOST_RE.test(host.trim()))
+    ) {
+      throw new Error(
+        `Model entry "${entry.id}": extraBody.provider.only must name hosts as strings and never DeepSeek's own endpoint.`,
       );
     }
   }
