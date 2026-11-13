@@ -8,7 +8,7 @@ interface Props {
 }
 
 const PLAIN =
-  'rounded-8 border-line text-13 text-text-2 hover:text-text hover:bg-surface-2 border px-10 py-6';
+  'rounded-8 border-ink-line text-13 text-on-ink-2 hover:text-on-ink hover:bg-ink-2 border px-10 py-6';
 
 export function CopyButton({ text, label = 'Copy', className = PLAIN }: Props) {
   const [copied, setCopied] = useState(false);

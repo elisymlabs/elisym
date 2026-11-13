@@ -10,10 +10,13 @@ import {
   DOCS,
   GITHUB_URL,
   MCP_TOOLS,
+  PLANS,
   WIDGET_SRC,
   X_URL,
 } from '../src/constants';
-import { CART_HOOK_SNIPPET, embedSnippet } from '../src/snippets';
+import { PHOTOS, PRODUCTS } from '../src/media';
+import { NICHES } from '../src/niches';
+import { CART_HOOK_SNIPPET, LISTING_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -116,7 +119,7 @@ describe('the snippets', () => {
     expect(docsPage('embed')).toContain(snippet);
     expect(WIDGET_SRC.endsWith('/widget.js')).toBe(true);
     expect(readFileSync(join(PACKAGES, 'askr-server/src/gateway/gateway.ts'), 'utf8')).toContain(
-      "url.pathname === '/widget.js'",
+      "pathname === '/widget.js'",
     );
     const page = await render(<App />);
     expect(page.querySelector('#embed-snippet')?.textContent).toBe(snippet);
@@ -130,6 +133,28 @@ describe('the snippets', () => {
     await act(async () => copy?.click());
     expect(writeText).toHaveBeenCalledWith(embedSnippet());
     expect(copy?.textContent).toBe('Copied');
+  });
+
+  it('the pinned tag is the one the embed guide gives', async () => {
+    expect(docsPage('embed')).toContain(PINNED_SNIPPET);
+    expect(PINNED_SNIPPET).toContain('integrity="sha384-..."');
+    const page = await render(<App />);
+    expect(page.querySelector('#pinned-snippet')?.textContent).toBe(PINNED_SNIPPET);
+  });
+
+  it('the listing an agent reads is a product event with the tags the catalog builder writes', async () => {
+    const constants = readFileSync(join(PACKAGES, 'commerce/src/constants.ts'), 'utf8');
+    expect(constants).toContain('export const KIND_PRODUCT = 30402;');
+    const listing = JSON.parse(LISTING_SNIPPET) as { kind: number; tags: string[][] };
+    expect(listing.kind).toBe(30402);
+    const builder = readFileSync(join(PACKAGES, 'askr/src/events/catalog-item.ts'), 'utf8');
+    for (const [name] of listing.tags) {
+      expect(builder, String(name)).toMatch(new RegExp(`\\['${String(name)}', `));
+    }
+    const price = listing.tags.find(([name]) => name === 'price');
+    expect(price?.[1]).toMatch(/^\d+\.\d{2}$/);
+    const page = await render(<App />);
+    expect(page.querySelector('#listing-snippet')?.textContent).toBe(LISTING_SNIPPET);
   });
 
   it('the cart hook uses the name and fields the widget reads', async () => {
@@ -172,11 +197,12 @@ describe('the copy', () => {
     }
   });
 
-  it('writes "Elisym" capitalized only after "by" or at the start of a sentence', async () => {
+  it('names the company "Elisym Labs", and writes "Elisym" capitalized only there, after "by" or at the start of a sentence', async () => {
     const page = await render(<App />);
     const html = readFileSync(join(PACKAGE, 'index.html'), 'utf8');
     for (const text of [page.textContent ?? '', html]) {
-      for (const match of text.matchAll(/(.{0,3})Elisym/g)) {
+      expect(text).not.toMatch(/elisym labs/);
+      for (const match of text.matchAll(/(.{0,3})Elisym(?! Labs)/g)) {
         expect(match[1] ?? '', text.slice(match.index ?? 0, (match.index ?? 0) + 40)).toMatch(
           /(?:by |\. |^|>)$/,
         );
@@ -184,11 +210,22 @@ describe('the copy', () => {
     }
   });
 
-  it('gives no plan prices: plans are set up on request', async () => {
+  it('shows every plan once, priced or custom, each with a way to start', async () => {
     const page = await render(<App />);
-    const plans = page.querySelector('#plans')?.textContent ?? '';
-    expect(plans).toContain('on request');
-    expect(plans).not.toMatch(/[$€£]|\d/);
+    const cards = [...page.querySelectorAll('#pricing li:has(> div > h3)')];
+    expect(cards.map((card) => card.querySelector('h3')?.textContent)).toEqual(
+      PLANS.map((plan) => plan.name),
+    );
+    PLANS.forEach((plan, index) => {
+      const card = cards[index];
+      expect(card?.textContent).toContain(plan.price ?? 'Custom');
+      for (const feature of plan.features) {
+        expect(card?.textContent).toContain(feature);
+      }
+      const start = [...(card?.querySelectorAll('a') ?? [])].map((link) => link.href);
+      expect(start).toEqual([plan.start === 'admin' ? ADMIN_URL : `${X_URL}`]);
+    });
+    expect(PLANS.filter((plan) => plan.featured)).toHaveLength(1);
   });
 });
 
@@ -209,7 +246,7 @@ describe('the page structure', () => {
   it('gives every section of the main content a heading', async () => {
     const page = await render(<App />);
     const sections = [...page.querySelectorAll('main > section')];
-    expect(sections.length).toBe(7);
+    expect(sections.length).toBe(16);
     for (const section of sections) {
       expect(section.querySelector('h1, h2'), section.id).not.toBeNull();
     }
@@ -220,6 +257,59 @@ describe('the page structure', () => {
       const code = readFileSync(file, 'utf8');
       expect(code, file).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
       expect(code, file).not.toMatch(/\bstyle=\{/);
+    }
+  });
+
+  it('shows every photo with its alt text and size, and keeps each file small', async () => {
+    const page = await render(<App />);
+    const shown = Object.values(PHOTOS).filter(
+      (photo) => !NICHES.slice(1).some((niche) => niche.photo === photo),
+    );
+    for (const photo of shown) {
+      const image = page.querySelector(`img[alt="${photo.alt}"]`);
+      expect(image, photo.alt).not.toBeNull();
+      expect(image?.getAttribute('width')).toBe(String(photo.width));
+      expect(image?.getAttribute('height')).toBe(String(photo.height));
+    }
+    for (const file of filesIn(join(PACKAGE, 'src/media'))) {
+      expect(file).toMatch(/\.webp$/);
+      expect(readFileSync(file).byteLength, file).toBeLessThan(200_000);
+    }
+  });
+
+  it('switches the hero demo to the niche a tab names, with its photo and its store', async () => {
+    const page = await render(<App />);
+    const tabs = [...page.querySelectorAll('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(NICHES.map((niche) => niche.label));
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+    for (const [index, niche] of NICHES.entries()) {
+      await act(async () => (tabs[index] as HTMLButtonElement | undefined)?.click());
+      expect(tabs[index]?.getAttribute('aria-selected')).toBe('true');
+      const panel = page.querySelector('#niche-demo');
+      expect(panel?.getAttribute('aria-labelledby')).toBe(tabs[index]?.id);
+      expect(panel?.querySelector('figure')?.getAttribute('aria-label')).toContain(niche.store);
+      expect(page.querySelector(`img[alt="${niche.photo.alt}"]`)).not.toBeNull();
+    }
+  });
+
+  it('each niche answer names no price but those on its cards', () => {
+    for (const niche of NICHES) {
+      const prices = [...`${niche.question} ${niche.answer}`.matchAll(/\$\d+(?:\.\d{2})?/g)].map(
+        (match) => match[0],
+      );
+      const asked = [...niche.question.matchAll(/\$\d+/g)].map((match) => match[0]);
+      for (const price of prices) {
+        expect(
+          asked.includes(price) || niche.cards.some((card) => card.price === price),
+          `${niche.id}: ${price}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('draws product cards with the catalog prices, as decimal strings with cents', () => {
+    for (const product of Object.values(PRODUCTS)) {
+      expect(product.price).toMatch(/^\$\d+\.\d{2}$/);
     }
   });
 
