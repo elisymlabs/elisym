@@ -353,6 +353,34 @@ describe('OpenRouter hosts: only named US or EU hosts, never a China-hosted one'
     }
   });
 
+  it.each([
+    'fireworks/us',
+    'together/eu',
+    'amazon-bedrock/us-east-1',
+    'azure/eu-west-1',
+    'deepinfra/fp8',
+    'baseten/fp4',
+    'together/bf16',
+    'fireworks/mxfp4',
+    'groq/int8',
+    'openai/flex',
+    'google-vertex/priority',
+  ])('accepts a known variant: %s', (slug) => {
+    expect(openRouterProvidersFrom('qwen/qwen3-max', slug)).toEqual([slug]);
+  });
+
+  it.each([
+    'fireworks/global',
+    'together/asia',
+    'deepinfra/cn',
+    'azure/ap-east-1',
+    'groq/whatever',
+  ])('refuses an unknown or non-US/EU variant: %s', (slug) => {
+    expect(() => openRouterProvidersFrom('qwen/qwen3-max', slug)).toThrow(
+      `ASKR_OPENROUTER_PROVIDERS names ${slug}: an unknown variant. Allowed: a US or EU region (us, eu, us-east-1...) or fp4, fp8,`,
+    );
+  });
+
   it('refuses ASKR_OPENROUTER_PROVIDERS with an Anthropic model', () => {
     expect(() =>
       serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_OPENROUTER_PROVIDERS: 'together' }),

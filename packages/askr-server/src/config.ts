@@ -136,7 +136,25 @@ const CHINA_HOSTED: readonly string[] = [
 ];
 // cspell:enable
 /** A slug, with an optional variant ("fireworks/us"). */
-const HOST_SLUG_RE = /^([a-z0-9-]+)(?:\/[a-z0-9-]+)?$/u;
+const HOST_SLUG_RE = /^([a-z0-9-]+)(?:\/([a-z0-9-]+))?$/u;
+/** Host variants that keep the host's region: quantized builds and service tiers. */
+const HOST_VARIANTS: readonly string[] = [
+  'fp4',
+  'fp8',
+  'fp16',
+  'bf16',
+  // cspell:disable-next-line
+  'mxfp4',
+  'int4',
+  'int8',
+  'flex',
+  'spot',
+  'fast',
+  'priority',
+  'turbo',
+];
+/** A US or EU region variant: us, eu, us-east-1, eu-west-1 ("global" could be anywhere). */
+const REGION_VARIANT_RE = /^(?:us|eu)(?:-[a-z]+-\d+)?$/u;
 
 /**
  * ASKR_OPENROUTER_PROVIDERS: the hosts an OpenRouter request may go to, comma-separated
@@ -159,6 +177,17 @@ export function openRouterProvidersFrom(model: string, value: string | undefined
     if (CHINA_HOSTED.includes(host)) {
       throw new Error(
         `ASKR_OPENROUTER_PROVIDERS must not name ${slug}: visitor data never goes to a China-hosted endpoint.`,
+      );
+    }
+    const variant = HOST_SLUG_RE.exec(slug)?.[2];
+    if (
+      OPENROUTER_HOSTS.includes(host) &&
+      variant !== undefined &&
+      !HOST_VARIANTS.includes(variant) &&
+      !REGION_VARIANT_RE.test(variant)
+    ) {
+      throw new Error(
+        `ASKR_OPENROUTER_PROVIDERS names ${slug}: an unknown variant. Allowed: a US or EU region (us, eu, us-east-1...) or ${HOST_VARIANTS.join(', ')}.`,
       );
     }
     if (!OPENROUTER_HOSTS.includes(host)) {
