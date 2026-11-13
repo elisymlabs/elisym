@@ -4,10 +4,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
 import {
-  DEFAULT_MAX_TOKENS,
   type LlmProvider,
-  MAX_MODEL_CALLS_PER_TURN,
-  type ModelPrice,
   createAnthropicProvider,
   createOpenAiCompatibleProvider,
 } from '@elisym/askr-agent';
@@ -16,14 +13,7 @@ import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { runCli } from './cli';
-import {
-  DEFAULT_TURN_RESERVE_USD,
-  checkTurnBudget,
-  effortFrom,
-  positiveInteger,
-  positiveUsd,
-  publicBaseOf,
-} from './config';
+import { type ModelConfig, publicBaseOf, serveConfigFromEnv } from './config';
 import { ShopRateLimiter } from './connectors/http';
 import { ConnectorService } from './connectors/service';
 import type { Db } from './db/db';
@@ -53,32 +43,22 @@ function required(name: string): string {
   return value;
 }
 
-function providerFromEnv(): LlmProvider {
-  const openRouterModel = process.env.ASKR_OPENROUTER_MODEL;
-  if (openRouterModel) {
+function providerFor(config: ModelConfig): LlmProvider {
+  if (config.kind === 'openrouter') {
     return createOpenAiCompatibleProvider({
-      apiKey: required('OPENROUTER_API_KEY'),
-      model: openRouterModel,
+      apiKey: config.apiKey,
+      model: config.model,
       baseUrl: 'https://openrouter.ai/api/v1',
-      passCacheMarks: openRouterModel.startsWith('anthropic/'),
+      passCacheMarks: config.model.startsWith('anthropic/'),
       // No training and zero data retention where offered (4.4).
       extraBody: { provider: { data_collection: 'deny' } },
     });
   }
   return createAnthropicProvider({
-    apiKey: required('ANTHROPIC_API_KEY'),
-    model: required('ASKR_MODEL'),
-    effort: effortFrom(process.env.ASKR_EFFORT),
+    apiKey: config.apiKey,
+    model: config.model,
+    ...(config.effort ? { effort: config.effort } : {}),
   });
-}
-
-function priceFromEnv(): ModelPrice {
-  return {
-    input: positiveUsd('ASKR_PRICE_INPUT', required('ASKR_PRICE_INPUT')),
-    cachedInput: positiveUsd('ASKR_PRICE_CACHED_INPUT', required('ASKR_PRICE_CACHED_INPUT')),
-    cacheWrite: positiveUsd('ASKR_PRICE_CACHE_WRITE', required('ASKR_PRICE_CACHE_WRITE')),
-    output: positiveUsd('ASKR_PRICE_OUTPUT', required('ASKR_PRICE_OUTPUT')),
-  };
 }
 
 /** The built widget, from `ASKR_WIDGET_FILE` or the workspace's `@elisym/askr-widget`. */
@@ -122,23 +102,9 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const gatewaySecretKey = hexToBytes(required('ASKR_GATEWAY_SECRET'));
   const state = new PgState(db, vault, log);
   const directory = new StoreDirectory(db, vault);
-  const provider = providerFromEnv();
-  const price = priceFromEnv();
-  const reserveUsd = positiveUsd(
-    'ASKR_TURN_RESERVE_USD',
-    process.env.ASKR_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
-  );
-  const maxTokens = positiveInteger(
-    'ASKR_MAX_TOKENS',
-    process.env.ASKR_MAX_TOKENS ?? String(DEFAULT_MAX_TOKENS),
-  );
-  // Refuse to start rather than let a turn's output outrun its reservation.
-  checkTurnBudget({
-    maxTokens,
-    calls: MAX_MODEL_CALLS_PER_TURN,
-    outputPricePerMillion: price.output,
-    reserveUsd,
-  });
+  // Refuses to start on a bad model setting or a max_tokens the reservation cannot pay for.
+  const { model, price, reserveUsd, maxTokens } = serveConfigFromEnv(process.env);
+  const provider = providerFor(model);
   let leasedBy: Worker | undefined;
   const pool = createServerPool((pubkey) => leasedBy?.isLeased(pubkey) ?? false);
   const worker = new Worker({

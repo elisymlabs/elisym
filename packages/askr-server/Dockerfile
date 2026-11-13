@@ -7,6 +7,11 @@
 #     -e ASKR_GATEWAY_SECRET=... -e ANTHROPIC_API_KEY=... -e ASKR_MODEL=... \
 #     -e ASKR_PRICE_INPUT=... -e ASKR_PRICE_CACHED_INPUT=... -e ASKR_PRICE_CACHE_WRITE=... \
 #     -e ASKR_PRICE_OUTPUT=... -e ASKR_TRUST_PROXY=1 -p 8787:8787 askr-server
+# Model turn budget: ASKR_MAX_TOKENS (per model call, thinking included; 2048 by default),
+# ASKR_EFFORT (Anthropic: low by default, none for models without effort) and
+# ASKR_TURN_RESERVE_USD (0.25 by default). The server refuses to start when 8 calls x
+# ASKR_MAX_TOKENS x ASKR_PRICE_OUTPUT exceed the reservation: an Opus-priced model
+# ($20 per million output) at the defaults does; lower ASKR_MAX_TOKENS or raise the reserve.
 # Operator commands run in the same image:
 #   docker run --rm -e DATABASE_URL=... -e ASKR_MASTER_KEY_FILE=... askr-server store list
 ARG BUN_IMAGE=oven/bun:1.3.11-slim
