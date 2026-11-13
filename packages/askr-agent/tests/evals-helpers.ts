@@ -30,6 +30,7 @@ export function outcomeOf(extra: Partial<CaseOutcome> = {}): CaseOutcome {
     category: 'search',
     repeat: 1,
     text: 'Here is a tent.',
+    strings: [],
     presented: [],
     componentCount: 0,
     strippedCount: 0,

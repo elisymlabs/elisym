@@ -33,6 +33,8 @@ const ExpectSchema = z
     presentsAny: PRODUCT_IDS.optional(),
     /** Every one of these ids is presented. */
     presentsAll: PRODUCT_IDS.optional(),
+    /** The first presented id (the recommended one, as the tools ask) is this one. */
+    presentsFirst: z.string().min(1).optional(),
     /** None of these ids is presented. */
     presentsNone: PRODUCT_IDS.optional(),
     /** At most this many distinct ids are presented. */
@@ -124,11 +126,15 @@ export function graderRegex(pattern: string): RegExp {
   return new RegExp(pattern, 'i');
 }
 
-/** How many checks a case makes (the price check is always on and not counted). */
+/**
+ * How many checks a case makes (the price check is always on and not counted).
+ * Text checks read the answer text and every model-written component string.
+ */
 export function checkCount(expectation: Expectation): number {
   return (
     (expectation.presentsAny ? 1 : 0) +
     (expectation.presentsAll ? 1 : 0) +
+    (expectation.presentsFirst ? 1 : 0) +
     (expectation.presentsNone ? 1 : 0) +
     (expectation.maxPresented !== undefined ? 1 : 0) +
     (expectation.hasComponents ? 1 : 0) +
@@ -161,6 +167,7 @@ export function lintCases(cases: readonly EvalCase[], store: EvalStore): string[
     const referenced = [
       ...(expectation.presentsAny ?? []),
       ...(expectation.presentsAll ?? []),
+      ...(expectation.presentsFirst ? [expectation.presentsFirst] : []),
       ...(expectation.presentsNone ?? []),
     ];
     for (const productId of referenced) {
@@ -169,7 +176,10 @@ export function lintCases(cases: readonly EvalCase[], store: EvalStore): string[
       }
     }
     const forbidden = new Set(expectation.presentsNone ?? []);
-    for (const productId of expectation.presentsAll ?? []) {
+    for (const productId of [
+      ...(expectation.presentsAll ?? []),
+      ...(expectation.presentsFirst ? [expectation.presentsFirst] : []),
+    ]) {
       if (forbidden.has(productId)) {
         problems.push(`${where}: ${productId} is both required and forbidden`);
       }
@@ -180,7 +190,10 @@ export function lintCases(cases: readonly EvalCase[], store: EvalStore): string[
     }
     if (
       expectation.noComponents &&
-      (expectation.presentsAny || expectation.presentsAll || expectation.hasComponents)
+      (expectation.presentsAny ||
+        expectation.presentsAll ||
+        expectation.presentsFirst ||
+        expectation.hasComponents)
     ) {
       problems.push(`${where}: noComponents contradicts a presents check`);
     }

@@ -1,10 +1,18 @@
 /**
  * Deterministic grading of one answer against a case's `expect`: component
- * checks first (which products were presented), loose regexes on the text,
- * and the price check, which must not have had to strip anything.
+ * checks first (which products were presented), loose regexes on what the
+ * model wrote (the text and every component string and chip), and the price
+ * check, which must not have had to strip anything.
  */
 import { type EvalCase, graderRegex, patternsOf } from './cases';
 import type { CaseOutcome } from './harness';
+
+const QUOTE_CHARS = 80;
+
+function quote(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > QUOTE_CHARS ? `${flat.slice(0, QUOTE_CHARS)}...` : flat;
+}
 
 /** Why the answer fails the case; empty when it passes. */
 export function grade(testCase: EvalCase, outcome: CaseOutcome): string[] {
@@ -27,6 +35,9 @@ export function grade(testCase: EvalCase, outcome: CaseOutcome): string[] {
   if (missing.length > 0) {
     failures.push(`expected all of ${missing.join(', ')} too, presented ${shown}`);
   }
+  if (expectation.presentsFirst !== undefined && presented[0] !== expectation.presentsFirst) {
+    failures.push(`expected ${expectation.presentsFirst} first, presented ${shown}`);
+  }
   for (const productId of expectation.presentsNone ?? []) {
     if (presented.includes(productId)) {
       failures.push(`presented forbidden ${productId}`);
@@ -41,14 +52,22 @@ export function grade(testCase: EvalCase, outcome: CaseOutcome): string[] {
   if (expectation.noComponents && outcome.componentCount > 0) {
     failures.push('expected no components');
   }
+  const written = [text, ...outcome.strings];
   for (const pattern of patternsOf(expectation.textMatches)) {
-    if (!graderRegex(pattern).test(text)) {
+    const regex = graderRegex(pattern);
+    if (!written.some((entry) => regex.test(entry))) {
       failures.push(`text does not match /${pattern}/`);
     }
   }
   for (const pattern of patternsOf(expectation.textNotMatches)) {
-    if (graderRegex(pattern).test(text)) {
-      failures.push(`text matches forbidden /${pattern}/`);
+    const regex = graderRegex(pattern);
+    const hit = written.find((entry) => regex.test(entry));
+    if (hit !== undefined) {
+      failures.push(
+        hit === text
+          ? `text matches forbidden /${pattern}/`
+          : `component string "${quote(hit)}" matches forbidden /${pattern}/`,
+      );
     }
   }
   if (outcome.strippedCount > 0) {
