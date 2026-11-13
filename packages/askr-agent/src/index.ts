@@ -7,17 +7,27 @@ export {
   topAttrs,
 } from './catalog/store-catalog';
 export { FENCE_RULE, fence, sanitizeText } from './fence';
-export { type AnthropicConfig, createAnthropicProvider } from './llm/anthropic';
+export {
+  type AnthropicConfig,
+  EFFORTS,
+  type Effort,
+  createAnthropicProvider,
+} from './llm/anthropic';
 export {
   type OpenAiCompatibleConfig,
   createOpenAiCompatibleProvider,
 } from './llm/openai-compatible';
 export {
+  ANSWER_STOP_REASONS,
   type ContentBlock,
+  DECLINED_STOP_REASONS,
   type LlmMessage,
   type LlmProvider,
   type ModelPrice,
+  type RedactedThinkingBlock,
   type SystemBlock,
+  TRUNCATED_STOP_REASONS,
+  type ThinkingBlock,
   type ToolChoice,
   type ToolSpec,
   type TurnRequest,
@@ -48,4 +58,14 @@ export {
 export { SKILL_NAMES, skillIndex, skillText } from './skills';
 export { sanitizeAnswerText } from './text-sanitize';
 export { MAX_SEARCH_RESULTS, TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
-export { MAX_TOOL_ROUNDS, TurnError, type TurnInput, type TurnOutput, runTurn } from './turn';
+export {
+  DEFAULT_MAX_TOKENS,
+  MAX_MODEL_CALLS_PER_TURN,
+  MAX_TOOL_ROUNDS,
+  StopReasonError,
+  type StopKind,
+  TurnError,
+  type TurnInput,
+  type TurnOutput,
+  runTurn,
+} from './turn';

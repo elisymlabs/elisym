@@ -2,7 +2,11 @@ import { type Answer, LIMITS, fitAnswer, parseAddress } from '@elisym/askr';
 import type { StoreCatalog } from './catalog/store-catalog';
 import { fence, sanitizeText } from './fence';
 import {
+  ANSWER_STOP_REASONS,
+  type ContentBlock,
+  DECLINED_STOP_REASONS,
   type LlmMessage,
+  TRUNCATED_STOP_REASONS,
   type LlmProvider,
   type ToolResultBlock,
   type Usage,
@@ -11,13 +15,35 @@ import {
 } from './llm/types';
 import { type PriceViolation, cardsPointer, checkPrices, stripViolations } from './price-check';
 import { globalBlock, sessionBlock, storeBlock } from './prompt';
-import { sanitizeAnswerText } from './text-sanitize';
-import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
+import { sanitizeAnswerText, stripProductIds } from './text-sanitize';
+import { TOOL_SPECS, type TurnState, executeTool, knownIds, newTurnState } from './tools';
 
 /** Tool rounds per turn before a forced no-tool round (5.5). */
 export const MAX_TOOL_ROUNDS = 6;
-const DEFAULT_MAX_TOKENS = 2_048;
+/**
+ * The most model calls one turn makes: the tool rounds (counted across the
+ * price-check re-run) plus the closing no-tool call of the first loop and of
+ * the re-run. A turn's output spend is at most this times max_tokens.
+ */
+export const MAX_MODEL_CALLS_PER_TURN = MAX_TOOL_ROUNDS + 2;
+/** Per model call, thinking included on models that think. */
+export const DEFAULT_MAX_TOKENS = 2_048;
 const VISITOR_FENCE_CHARS = 4_000;
+/** Tools that only show something: text written next to them is part of the answer. */
+const PRESENTATION_TOOL_PREFIX = 'present_';
+/** The most joined text the sanitizer reads: four times the answer cap. */
+const JOINED_TEXT_CHARS = LIMITS.ANSWER_TEXT_CHARS * 4;
+
+/**
+ * The answer text of one loop: the text of rounds that only presented (some models write the
+ * whole answer next to their present_* calls and close with a short question), then the final
+ * round's text, in order. Text next to a search or lookup ("Let me check") is a preamble, dropped.
+ */
+export function joinAnswerText(presented: readonly string[], final: string): string {
+  const parts = [...presented, final].map((part) => part.trim()).filter((part) => part.length > 0);
+  // A final round that repeats an earlier part word for word adds nothing.
+  return parts.filter((part, index) => parts.indexOf(part) === index).join('\n\n');
+}
 const MAX_STRIP_PASSES = 32;
 
 export interface TurnInput {
@@ -60,6 +86,33 @@ export interface TurnOutput {
   stripped: PriceViolation[];
 }
 
+/** The model stopped for a reason that is no answer: cut at max_tokens, declined, or unknown. */
+export type StopKind = 'max_tokens' | 'refusal' | 'other';
+
+function stopKindOf(stopReason: string): StopKind {
+  if (TRUNCATED_STOP_REASONS.includes(stopReason)) {
+    return 'max_tokens';
+  }
+  return DECLINED_STOP_REASONS.includes(stopReason) ? 'refusal' : 'other';
+}
+
+const STOP_MESSAGES: Readonly<Record<StopKind, string>> = {
+  max_tokens: 'The model stopped at max_tokens',
+  refusal: 'The model declined the request',
+  other: 'The model stopped without an answer',
+};
+
+export class StopReasonError extends Error {
+  readonly kind: StopKind;
+
+  constructor(readonly stopReason: string) {
+    const kind = stopKindOf(stopReason);
+    super(`${STOP_MESSAGES[kind]} (${stopReason})`);
+    this.name = 'StopReasonError';
+    this.kind = kind;
+  }
+}
+
 /** A turn that ended without an answer; carries what it already spent (5.8 settles it). */
 export class TurnError extends Error {
   constructor(
@@ -72,9 +125,27 @@ export class TurnError extends Error {
   }
 }
 
-function correctionMessage(violations: readonly PriceViolation[]): string {
+/**
+ * The final assistant turn as sent back before the price-check correction: as
+ * returned, thinking included, when it is a plain answer. A forced round the
+ * model answered with tool calls anyway cannot go back as is (a tool_use needs
+ * its result), so it is rebuilt from the text.
+ */
+function replayOf(content: readonly ContentBlock[], text: string): ContentBlock[] {
+  const plain = { type: 'text' as const, text: text || '(no text)' };
+  if (content.some((block) => block.type === 'tool_use')) {
+    return [plain];
+  }
+  return content.some((block) => block.type === 'text') ? [...content] : [...content, plain];
+}
+
+/**
+ * The note before the price-check re-run. The visitor never sees it, so the rewrite must not
+ * refer to it ("Fair enough, the cards carry the prices..." leaked into an answer).
+ */
+export function correctionMessage(violations: readonly PriceViolation[]): string {
   const quoted = violations.map((violation) => `- "${violation.text.slice(0, 200)}"`).join('\n');
-  return `Your answer stated amounts that are not prices of the products you showed or named, a sum or difference of them, a policy amount or the visitor's own figure:\n${quoted}\nRewrite the answer without those amounts. Keep the cards you already showed unless they were wrong. Do not convert currencies or estimate prices; the cards show the prices.`;
+  return `Your answer stated amounts that are not prices of the products you showed or named, a sum or difference of them, a policy amount or the visitor's own figure:\n${quoted}\nWrite your whole answer to the visitor again, without those amounts. The visitor never sees this note: do not mention it, do not acknowledge or apologize for the change, and do not comment on prices being left out; start directly with the answer. Keep the cards you already showed unless they were wrong. Do not convert currencies or estimate prices.`;
 }
 
 /** The assistant history entry: the text plus which products were shown, so "the second one" resolves. */
@@ -128,6 +199,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
   const runLoop = async (start: LlmMessage[]) => {
     const state = newTurnState(allowedIds, policyPassages, statuses);
     let messages = start;
+    const presentedText: string[] = [];
     for (;;) {
       const forceText = toolRounds >= MAX_TOOL_ROUNDS;
       const response = await input.provider.turn({
@@ -141,9 +213,26 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       });
       modelCalls += 1;
       usage = addUsage(usage, response.usage);
+      // Fail closed: a cut-off text or tool call is no answer, and neither is a declined one or
+      // one that stopped for any reason not known to end an answer (a context-window stop...).
+      // A refusal is deliberately no fallback to another model: the turn ends, the server settles it.
+      if (!ANSWER_STOP_REASONS.includes(response.stopReason)) {
+        throw new StopReasonError(response.stopReason);
+      }
+      // Sent back unchanged in this turn: thinking blocks stay with the tool calls they led to.
+      const assistantContent: ContentBlock[] = response.assistantContent ?? [
+        ...(response.text ? [{ type: 'text' as const, text: response.text }] : []),
+        ...response.toolCalls,
+      ];
       // A model that still calls tools on the forced round is not obeyed: its text is the answer.
       if (response.toolCalls.length === 0 || forceText) {
-        return { text: response.text, state, messages };
+        return {
+          text: joinAnswerText(presentedText, response.text),
+          finalText: response.text,
+          state,
+          messages,
+          assistantContent,
+        };
       }
       toolRounds += 1;
       const results: ToolResultBlock[] = response.toolCalls.map((call) => {
@@ -155,6 +244,14 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
           ...(outcome.isError ? { isError: true } : {}),
         };
       });
+      // Text next to presentation only, at least one of which showed something: a round whose
+      // present call failed is redone, and its text with it.
+      if (
+        response.toolCalls.every((call) => call.name.startsWith(PRESENTATION_TOOL_PREFIX)) &&
+        results.some((result) => result.isError !== true)
+      ) {
+        presentedText.push(response.text);
+      }
       while (reportedStatuses < statuses.length) {
         const line = statuses[reportedStatuses];
         reportedStatuses += 1;
@@ -164,13 +261,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       }
       messages = [
         ...messages,
-        {
-          role: 'assistant',
-          content: [
-            ...(response.text ? [{ type: 'text' as const, text: response.text }] : []),
-            ...response.toolCalls,
-          ],
-        },
+        { role: 'assistant', content: assistantContent },
         { role: 'user', content: results },
       ];
     }
@@ -182,7 +273,11 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         type: 'answer',
         ask_id: input.askId,
         session_end: input.sessionEnd,
-        text: sanitizeAnswerText(text).slice(0, LIMITS.ANSWER_TEXT_CHARS),
+        // Joined rounds can be long: cut generously before the sanitizer, exactly after it.
+        text: stripProductIds(
+          sanitizeAnswerText(text.slice(0, JOINED_TEXT_CHARS)),
+          knownIds(input.catalog),
+        ).slice(0, LIMITS.ANSWER_TEXT_CHARS),
         components: state.components.slice(0, LIMITS.MAX_COMPONENTS),
         chips: state.chips,
       },
@@ -204,20 +299,31 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     answer = toAnswer(first.text, first.state);
     let violations = checkPrices(answer, checkContext());
     if (violations.length > 0) {
-      const retry = await runLoop([
-        ...first.messages,
-        { role: 'assistant', content: [{ type: 'text', text: first.text || '(no text)' }] },
-        { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
-      ]);
-      // A re-run that only rewrites its text keeps what it did not redo, field by field.
-      const retryState: TurnState = {
-        ...retry.state,
-        components:
-          retry.state.components.length > 0 ? retry.state.components : first.state.components,
-        chips: retry.state.chips.length > 0 ? retry.state.chips : first.state.chips,
-      };
-      answer = toAnswer(retry.text, retryState);
-      violations = checkPrices(answer, checkContext());
+      let retry: Awaited<ReturnType<typeof runLoop>> | undefined;
+      try {
+        retry = await runLoop([
+          ...first.messages,
+          { role: 'assistant', content: replayOf(first.assistantContent, first.finalText) },
+          { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
+        ]);
+      } catch (error) {
+        // A re-run that stops without an answer (max_tokens, a refusal...) leaves the first
+        // answer, stripped below; its spend is already counted.
+        if (!(error instanceof StopReasonError)) {
+          throw error;
+        }
+      }
+      if (retry !== undefined) {
+        // A re-run that only rewrites its text keeps what it did not redo, field by field.
+        const retryState: TurnState = {
+          ...retry.state,
+          components:
+            retry.state.components.length > 0 ? retry.state.components : first.state.components,
+          chips: retry.state.chips.length > 0 ? retry.state.chips : first.state.chips,
+        };
+        answer = toAnswer(retry.text, retryState);
+        violations = checkPrices(answer, checkContext());
+      }
       // Strip until the check passes: removing a sentence can let a kept one borrow a symbol it
       // did not before ("1200 Rs." then "999 people"), and removing a component removes the
       // items it cited. Every pass removes at least one string, so this ends; the bound guards.

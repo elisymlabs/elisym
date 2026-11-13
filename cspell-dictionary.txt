@@ -7,6 +7,7 @@ autolinks
 auxe
 backgrounded
 bankr
+baseten
 bech
 behaviour
 Birdeye
@@ -36,6 +37,7 @@ dedup
 deduplicate
 deduplicated
 deduplicates
+deepinfra
 deepseek
 defence
 devnet
@@ -51,6 +53,7 @@ elisymlabs
 elizaos
 eose
 ERESOLVE
+evals
 evictable
 exfil
 exfiltration
@@ -127,6 +130,7 @@ preimage
 pubkey
 pubkeys
 purplepag
+qwen
 ratatui
 recompile
 recompiles

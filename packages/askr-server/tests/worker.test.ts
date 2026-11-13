@@ -7,7 +7,11 @@ import {
   unwrapChatMessage,
 } from '@elisym/askr';
 import {
+  DEFAULT_MAX_TOKENS,
+  LlmError,
   type LlmProvider,
+  StopReasonError,
+  TurnError,
   type TurnRequest,
   type TurnResponse,
   type Usage,
@@ -22,7 +26,7 @@ import type { Db } from '../src/db/db';
 import { passesWrapPreCheck } from '../src/relay/pool';
 import { PgState } from '../src/state/pg-state';
 import type { LeasedStore, StoreStatus } from '../src/state/types';
-import { Worker } from '../src/worker/worker';
+import { Worker, failureKind } from '../src/worker/worker';
 import { FakePool } from './fake-pool';
 import {
   HOLDER,
@@ -144,6 +148,7 @@ async function harness(input: {
   provider?: LlmProvider;
   records?: StoreSpec[];
   reserveUsd?: string;
+  maxTokens?: number;
   historyTimeoutMs?: number;
   extraRelayBudgetMs?: number;
   stableConnectionMs?: number;
@@ -177,6 +182,7 @@ async function harness(input: {
     price: PRICE,
     holder: HOLDER,
     reserveUsd: input.reserveUsd ?? '0.25',
+    ...(input.maxTokens === undefined ? {} : { maxTokens: input.maxTokens }),
     now: () => clock.now,
     log: (message) => logs.push(message),
     ...(input.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: input.historyTimeoutMs }),
@@ -240,6 +246,26 @@ describe('worker turns (5.8)', () => {
     });
   });
 
+  it('asks the model with the configured max_tokens, runTurn default otherwise', async () => {
+    const variants: Array<{ maxTokens?: number; expected: number }> = [
+      { maxTokens: 777, expected: 777 },
+      { expected: DEFAULT_MAX_TOKENS },
+    ];
+    for (const { maxTokens, expected } of variants) {
+      const store = syntheticStore();
+      const provider = scriptedProvider(['Here.']);
+      const setup = await harness({
+        stores: [store],
+        provider,
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+      });
+      ask(setup, store, generateSecretKey(), 'a9'.repeat(16));
+      await waitUntil(() => provider.requests.length === 1);
+      await setup.worker.idle();
+      expect(provider.requests[0]?.maxTokens).toBe(expected);
+    }
+  });
+
   it('re-publishes the stored answer for a repeated ask id, with no new turn', async () => {
     const store = syntheticStore();
     const provider = scriptedProvider(['Here.']);
@@ -283,6 +309,45 @@ describe('worker turns (5.8)', () => {
     ]);
     expect(answers[1]?.wrap.id).toBe(answers[0]?.wrap.id);
     expect(provider.requests).toHaveLength(2);
+  });
+
+  it('logs the kind of a failed turn, never its content', async () => {
+    const store = syntheticStore();
+    const provider: LlmProvider = {
+      model: 'cut',
+      async turn(): Promise<TurnResponse> {
+        return {
+          text: 'secret half answer',
+          toolCalls: [],
+          stopReason: 'max_tokens',
+          usage: SMALL_USAGE,
+        };
+      },
+    };
+    const setup = await harness({ stores: [store], provider });
+    const visitorSecret = generateSecretKey();
+    ask(setup, store, visitorSecret, 'b1'.repeat(16));
+    await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+    await setup.worker.idle();
+    expect(setup.logs).toContain('turn failed: StopReasonError max_tokens');
+    expect(setup.logs.join('\n')).not.toContain('secret half answer');
+  });
+
+  it('names a stop reason, a provider status or the error kind', () => {
+    const usage = { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
+    expect(failureKind(new TurnError(new StopReasonError('refusal'), usage, 1))).toBe(
+      'StopReasonError refusal',
+    );
+    expect(failureKind(new TurnError(new LlmError('status 429', 429), usage, 1))).toBe(
+      'LlmError 429',
+    );
+    expect(failureKind(new TurnError(new LlmError('no status'), usage, 1))).toBe(
+      'LlmError no status',
+    );
+    expect(failureKind(new TurnError(new RangeError('the visitor text'), usage, 0))).toBe(
+      'RangeError',
+    );
+    expect(failureKind('thrown string')).toBe('unknown');
   });
 
   it('a turn that fails mid-way settles what it spent and tells the visitor error', async () => {

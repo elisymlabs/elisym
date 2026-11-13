@@ -155,6 +155,42 @@ create table admin_auth_ids (
 create index admin_auth_ids_expiry on admin_auth_ids (expires_at);
 `,
   },
+  {
+    id: '0002_conversations',
+    sql: `
+-- A store's conversations so far (7.3). A conversation is one session (a visitor's chat with the store,
+-- up to 24 h from its first message, 5.8) that got at least one answered turn. A session is counted when
+-- its first ask is answered, in the transaction that marks it answered: the conditional transition
+-- happens once per ask, and the counted flag once per session, so a retried turn or a moved lease never counts twice.
+alter table sessions add column counted boolean not null default false;
+
+create table store_totals (
+  owner text primary key,
+  conversations bigint not null default 0 check (conversations >= 0)
+);
+
+-- Sessions still held that already got an answer are counted from the start; ones already swept are
+-- gone, so the count starts around this upgrade. An instance still on the old code answers without
+-- counting, so the upgrade should not run old and new instances side by side (v1 runs one).
+update sessions set counted = true
+where exists (select 1 from asks a where a.session_id = sessions.id and a.state = 'answered');
+insert into store_totals (owner, conversations)
+select owner, count(*) from sessions where counted group by owner;
+`,
+  },
+  {
+    id: '0003_widget_versions',
+    sql: `
+-- Every widget bundle a server has served (6): a pinned snippet's content-addressed path keeps
+-- working after a release, on any instance.
+create table widget_versions (
+  -- The first 32 lowercase hex characters of the bundle's SHA-384: its path is /widget/<id>.js.
+  id text primary key,
+  script text not null,
+  first_served_at bigint not null
+);
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

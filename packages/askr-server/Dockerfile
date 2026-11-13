@@ -7,6 +7,25 @@
 #     -e ASKR_GATEWAY_SECRET=... -e ANTHROPIC_API_KEY=... -e ASKR_MODEL=... \
 #     -e ASKR_PRICE_INPUT=... -e ASKR_PRICE_CACHED_INPUT=... -e ASKR_PRICE_CACHE_WRITE=... \
 #     -e ASKR_PRICE_OUTPUT=... -e ASKR_TRUST_PROXY=1 -p 8787:8787 askr-server
+# Through OpenRouter instead: ASKR_OPENROUTER_MODEL and OPENROUTER_API_KEY (no ANTHROPIC_API_KEY
+# or ASKR_MODEL); ASKR_EFFORT must stay unset then (the server refuses to start otherwise).
+# ASKR_OPENROUTER_PROVIDERS is required with it: comma-separated OpenRouter host slugs, each a
+# listed US or EU host (OPENROUTER_HOSTS in src/config.ts; a variant like fireworks/us is
+# allowed), used with no fallback. China-hosted hosts (deepseek, siliconflow...) and unlisted
+# ones refuse to start; so does ASKR_OPENROUTER_PROVIDERS without ASKR_OPENROUTER_MODEL.
+# The default model, as evaluated:
+#   -e ASKR_OPENROUTER_MODEL=deepseek/deepseek-v4.1-flash \
+#   -e ASKR_OPENROUTER_PROVIDERS=together,fireworks,baseten,deepinfra \
+#   -e ASKR_PRICE_INPUT=0.3 -e ASKR_PRICE_CACHED_INPUT=0.006 -e ASKR_PRICE_CACHE_WRITE=0.3 \
+#   -e ASKR_PRICE_OUTPUT=1.2 -e ASKR_MAX_TOKENS=4096
+# (USD per million tokens at those hosts; with no cache-write price given, set it to the
+# input price. 4096 max tokens: a plan answer hit 2048; 8 x 4096 x 1.2 per million is 0.039 USD,
+# within the 0.25 reservation.)
+# Model turn budget: ASKR_MAX_TOKENS (per model call, thinking included; 2048 by default),
+# ASKR_EFFORT (Anthropic: low by default, none for models without effort) and
+# ASKR_TURN_RESERVE_USD (0.25 by default). The server refuses to start when 8 calls x
+# ASKR_MAX_TOKENS x ASKR_PRICE_OUTPUT exceed the reservation: an Opus-priced model
+# ($20 per million output) at the defaults does; lower ASKR_MAX_TOKENS or raise the reserve.
 # Operator commands run in the same image:
 #   docker run --rm -e DATABASE_URL=... -e ASKR_MASTER_KEY_FILE=... askr-server store list
 ARG BUN_IMAGE=oven/bun:1.3.11-slim

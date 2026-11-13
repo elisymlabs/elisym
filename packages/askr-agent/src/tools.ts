@@ -12,7 +12,7 @@ import {
 import { fence, sanitizeText } from './fence';
 import type { ToolSpec, ToolUseBlock } from './llm/types';
 import { SKILL_NAMES, skillText } from './skills';
-import { sanitizeAnswerText } from './text-sanitize';
+import { type IdsToStrip, sanitizeAnswerText, idsToStrip, stripProductIds } from './text-sanitize';
 
 export const MAX_SEARCH_RESULTS = 12;
 const DEFAULT_SEARCH_RESULTS = 8;
@@ -484,11 +484,30 @@ function resolveIds(catalog: StoreCatalog, state: TurnState, ids: string[]) {
 
 const addressOf = (item: CatalogItem) => catalogAddress(item.author, item.d);
 
+const KNOWN_IDS = new WeakMap<StoreCatalog, IdsToStrip>();
+
+/** The catalog's product and variant ids, built once per catalog: model-written strings never show them. */
+export function knownIds(catalog: StoreCatalog): IdsToStrip {
+  const cached = KNOWN_IDS.get(catalog);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const items = [...catalog.items.values()];
+  const ids = idsToStrip(
+    items.map((item) => item.d),
+    items.flatMap((item) => item.variants.map((variant) => variant.id)),
+  );
+  KNOWN_IDS.set(catalog, ids);
+  return ids;
+}
+
 /**
- * Every model-written string goes through the answer sanitizer (4.3) and is
- * cut to its limit afterwards: NFKC can lengthen text past what zod checked.
+ * Every model-written string goes through the answer sanitizer (4.3), loses any product id
+ * written in it, and is cut to its limit afterwards: NFKC can lengthen text past what zod checked.
  */
-const clean = (text: string, max: number): string => sanitizeAnswerText(text).slice(0, max);
+function cleanFor(catalog: StoreCatalog): (text: string, max: number) => string {
+  return (text, max) => stripProductIds(sanitizeAnswerText(text), knownIds(catalog)).slice(0, max);
+}
 
 /** A price row the model wrote under any common name, or one of bare numbers: the server owns prices. */
 // cspell:disable
@@ -592,6 +611,7 @@ export function executeTool(
   call: ToolUseBlock,
 ): ToolOutcome {
   const input = call.input;
+  const clean = cleanFor(catalog);
   // Status lines only from the read tools (5.2), at most two per turn (4.2).
   if (
     READ_TOOLS.includes(call.name) &&
@@ -745,10 +765,18 @@ export function executeTool(
       if (!parsed.success) {
         return invalid(parsed.error);
       }
-      state.chips = parsed.data.chips
+      const chips = parsed.data.chips
         .map((chip) => clean(chip, LIMITS.CHIP_CHARS))
         .filter((chip) => chip.length > 0)
         .slice(0, LIMITS.MAX_CHIPS);
+      if (chips.length === 0) {
+        // Nothing left to show: the round showed nothing, and its text is not kept either.
+        return {
+          content: JSON.stringify({ shown: false, error: 'No chip left to show.' }),
+          isError: true,
+        };
+      }
+      state.chips = chips;
       return { content: JSON.stringify({ shown: true }) };
     }
     default:

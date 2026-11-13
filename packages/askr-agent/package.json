@@ -38,8 +38,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "lint": "oxlint src/",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.evals.json",
+    "lint": "oxlint src/ evals/ tests/evals-*.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
