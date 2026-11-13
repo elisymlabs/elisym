@@ -113,7 +113,7 @@ describe('MINOR-5. a year before 元旦 / 元宵 / 元年 / 元宇宙', () => {
     '2026年元旦。',
     '2026元旦促销。',
     '2026元宵节。',
-    '2026元年。',
+
     '2026元宇宙。',
   ])('CNY 299: "%s" is no price', (text) => {
     expect(failures('CNY', '299', text, 'zh')).toBe(0);

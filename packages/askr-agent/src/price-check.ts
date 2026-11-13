@@ -1956,7 +1956,46 @@ const NAME_AFTER: ReadonlyArray<[string, RegExp]> = [
   ['里拉', /^[链鏈杆桿手]/u],
 ];
 /** 元 after a four-digit year starts a date word: "2026元旦活动" is New Year's Day of 2026. */
-const YEAR_YUAN_AFTER: readonly string[] = ['旦', '宵', '年', '宇宙'];
+const YEAR_YUAN_AFTER: readonly string[] = ['旦', '宵节', '宵節', '宇宙'];
+/** Price words in the clause before a year-like number keep 元 money ("售价2026元旦发货"). */
+const PRICE_CONTEXT: readonly string[] = [
+  '售价',
+  '售價',
+  '价格',
+  '價格',
+  '只要',
+  '只需',
+  '约',
+  '約',
+  '仅',
+  '僅',
+  '才',
+  '满',
+  '滿',
+  '减',
+  '減',
+  '共',
+  '合计',
+  '合計',
+  '优惠',
+  '優惠',
+  '特价',
+  '特價',
+  '原价',
+  '原價',
+  '现价',
+  '現價',
+];
+/** The clause before an index: from the last sentence or clause break. */
+function clauseBefore(text: string, index: number): string {
+  const before = text.slice(0, index);
+  const breakAt = Math.max(
+    ...['，', '。', '！', '？', ',', '!', '?', '；', ';', '\n'].map((mark) =>
+      before.lastIndexOf(mark),
+    ),
+  );
+  return before.slice(breakAt + 1);
+}
 /** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素, 一元复始. */
 const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素', '复', '復'];
 /** 元 after a small count in a technical word: 三元锂电池, 3元系 (ternary). */
@@ -2064,8 +2103,14 @@ function notMoney(context: TokenContext): boolean {
     // A name that starts like the currency word: 2フランス製, 2ルーブル美術館, 5弗吉尼亚.
     return true;
   }
-  if (token === '元' && YEAR_RE.test(expression) && startsWithAny(YEAR_YUAN_AFTER)) {
-    // A year before 元旦 / 元宵 / 元年 / 元宇宙: "2026元旦活动".
+  if (
+    token === '元' &&
+    YEAR_RE.test(expression) &&
+    startsWithAny(YEAR_YUAN_AFTER) &&
+    !PRICE_CONTEXT.some((word) => clauseBefore(text, lowerAt).includes(word))
+  ) {
+    // A year before 元旦 / 元宵节 / 元宇宙 with no price word in its clause: "2026元旦活动".
+    // 元年 is no exemption ("1999元年货节" is a price): "2026元年" fails closed.
     return true;
   }
   if (token === '元') {
