@@ -1655,8 +1655,9 @@ const MONEY_AFTER_PIECE: readonly string[] = [
   '換',
 ];
 /**
- * Sentence-final particles: after a small count they end stock talk ("只剩一块了", "两块就够")
- * unless a price word comes before the count in the clause ("便宜5块呢", "差5块就包邮").
+ * Sentence-final particles: a count before 块 and one of these ends its clause as money
+ * ("只剩一块了" too: "需要9块" and "需要两块" cannot be told apart, so stock talk is a
+ * false positive, one sentence stripped with a localized pointer, never a passed price).
  */
 const CLAUSE_PARTICLES: readonly string[] = [
   '呢',
@@ -1671,54 +1672,29 @@ const CLAUSE_PARTICLES: readonly string[] = [
   '嘛',
   '啦',
 ];
-const PRICE_WORDS: readonly string[] = [
-  '便宜',
-  '贵',
-  '貴',
-  '差',
-  '花',
-  '省',
-  '付',
-  '价',
-  '價',
-  '才',
-  '只要',
-  '运费',
-  '運費',
-  '费',
-  '費',
-  '卖',
-  '賣',
-  '售',
-  '降',
+/** Words after a count and 块 that keep it money: a coupon, a red envelope, a fee ("送5块券"). */
+const MONEY_NOUNS: readonly string[] = [
+  '券',
+  '红包',
+  '紅包',
+  '钱',
+  '錢',
+  '差价',
+  '差價',
   '优惠',
   '優惠',
-  '折',
-  '一共',
-  '总共',
-  '總共',
-  '合计',
-  '合計',
-  '共计',
-  '共計',
-  '只需',
-  '仅',
-  '僅',
-  // 价 / 價 also cover 特价, 现价, 原价.
+  '补贴',
+  '補貼',
+  '运费',
+  '運費',
+  '现金',
+  '現金',
+  '无门槛',
+  '無門檻',
+  '元',
 ];
-/**
- * A stock verb right before a small count before 块 ending a clause: only then it is pieces
- * ("只剩一块了", "套装里有三块呢", "建议多带两块吧", "切成两块就好"), and only with no price word
- * before it in the clause. Fillers (只, 还, 仅, 就, 最后) between the verb and the count are skipped.
- * 送 after 配, 运, 快, 发 or 递 is delivery, not a gift. Anything else is money, fail closed:
- * "一块就够用了", "买两块吗" and "两块就能铺满" are accepted false positives.
- */
-const STOCK_BEFORE_RE =
-  /(?:剩下?|还有|還有|只有|共有|有|(?<![配运運快发發递遞])送|附|赠|贈|带|帶|装了?|裝了?|切成|拆成|分成|需要|备|備)(?:了|着|著)?$/u;
-const STOCK_FILLERS_RE = /(?:[只还還仅僅就]|最后|最後)+$/u;
-/** 要 is a price word ("要5块吗") but not inside 需要, 想要, 重要, 主要. */
-const PRICE_WANT_RE = /(?<![需想重主只])要/u;
-const CLAUSE_START_RE = /[。！？!?，,；;：:\n]/u;
+/** How far back the split rule looks before a count: phrases are short, the prefix is not read. */
+const SPLIT_WINDOW = 8;
 /** 一块 as "together": 一块儿, 一块看, 一块去... (another count before them stays money). */
 const TOGETHER_AFTER: readonly string[] = [
   '儿',
@@ -1738,6 +1714,8 @@ const TOGETHER_AFTER: readonly string[] = [
  * fail closed. A larger count before a noun ("一盒24块巧克力", "1000块拼图") stays money too.
  */
 const EXPLICIT_SPLITS: readonly string[] = ['切成', '拆成', '切', '拆'];
+/** 分成 splits a small count only ("分成两块"): "分成300块" is money. */
+const SMALL_SPLITS: readonly string[] = [...EXPLICIT_SPLITS, '分成'];
 /** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素, 一元复始. */
 const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素', '复', '復'];
 /** 元 after a small count in a technical word: 三元锂电池, 3元系 (ternary). */
@@ -1806,20 +1784,16 @@ function pieceCount(context: TokenContext, expression: string): boolean {
   if (context.approximate) {
     return false;
   }
+  const small = SMALL_COUNT_RE.test(expression);
   const clauseEnd = !/[\p{L}\p{N}]/u.test(next) || CLAUSE_PARTICLES.includes(next);
-  if (!SMALL_COUNT_RE.test(expression)) {
-    // A larger count is pieces only at the end of a clause right after an explicit split.
-    const before = text.slice(0, lowerAt);
-    return !/[\p{L}\p{N}]/u.test(next) && EXPLICIT_SPLITS.some((phrase) => before.endsWith(phrase));
-  }
   if (clauseEnd) {
-    // Stock talk only with a stock verb right before the count and no price word before it in
-    // the clause; never the text after the count ("5块就能买到", "配送费5块" are money).
-    const clause = text.slice(0, lowerAt).split(CLAUSE_START_RE).at(-1) ?? '';
-    const priced = PRICE_WORDS.some((word) => clause.includes(word)) || PRICE_WANT_RE.test(clause);
-    return !priced && STOCK_BEFORE_RE.test(clause.replace(STOCK_FILLERS_RE, ''));
+    // Money, unless an explicit split comes right before the count ("切成两块就好", "拆成12块").
+    const before = text.slice(Math.max(0, lowerAt - SPLIT_WINDOW), lowerAt);
+    return (small ? SMALL_SPLITS : EXPLICIT_SPLITS).some((phrase) => before.endsWith(phrase));
   }
-  if (!HAN_RE.test(next)) {
+  // A small count before a noun counts pieces ("两块砧板"), unless the noun is money ("送5块券").
+  const rest = text.slice(tokenEnd, tokenEnd + SPLIT_WINDOW);
+  if (!small || !HAN_RE.test(next) || MONEY_NOUNS.some((noun) => rest.startsWith(noun))) {
     return false;
   }
   return !MONEY_AFTER_PIECE.includes(next) && !CJK_CHARS.includes(next);
@@ -1891,6 +1865,15 @@ function negative(text: string, start: number): boolean {
   const sign = text[start - 1] ?? '';
   const beforeSign = text[start - 2] ?? '';
   return (sign === '-' || sign === '–') && !/[\d\p{L}]/u.test(beforeSign);
+}
+
+/**
+ * RMB or NTD before a number with a hyphen or a colon ("Model RMB-200"): a model name. As
+ * money they come glued or with one space ("RMB 1800", "RMB1800").
+ */
+function codeModelName(text: string, amount: MoneyAmount): boolean {
+  const prefix = text.slice(amount.index, amount.numberIndex);
+  return /^(?:rmb|ntd)/iu.test(prefix) && !/^(?:rmb|ntd)\s?$/iu.test(prefix);
 }
 
 /** A token reading whose prefix token ends a word ("単元3", "회원 10%"): no amount. */
@@ -2123,6 +2106,7 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
       ) &&
       !trailingToken(text, amount) &&
       !tokenInWord(text, amount) &&
+      !codeModelName(text, amount) &&
       !covered.some(
         (span) =>
           amount.index >= span.start &&
@@ -2255,7 +2239,7 @@ const HEDGE_ABBREVIATIONS = 'ok';
 // cspell:enable
 /** Splits sentences and keeps the separators, so stripping does not collapse markdown. */
 const SENTENCE_SPLIT_RE = new RegExp(
-  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|(?:(?<=[。！？])|(?<=(?<![\d０-９])．)(?![\d０-９]))[ \t]*(?=\S)|\n+)`,
+  String.raw`((?<=[.!?])(?<!(?:^|[^\p{L}])(?:${ABBREVIATIONS})\.)(?<!\d[*_~\x60]*\s*(?:${MAGNITUDE_ABBREVIATIONS})\.)(?:(?<!(?:^|[^\p{L}])(?:${HEDGE_ABBREVIATIONS})\.)[ \t]+|[ \t]+(?!\d))|(?:(?<=[。！？])|(?<=．)(?![\d０-９]))[ \t]*(?=\S)|\n+)`,
   'iu',
 );
 /** A numbered-list marker alone in its sentence ("1.", "12)"). */

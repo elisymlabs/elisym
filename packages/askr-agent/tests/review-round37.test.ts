@@ -60,18 +60,8 @@ describe('MAJOR-2. a small count before 块 is pieces only right after a stock v
     expect(cny(text, language)).toBe(1);
   });
 
-  it.each([
-    '只剩一块了。',
-    '只剩最后一块了！',
-    '套装里有三块呢。',
-    '建议多带两块吧。',
-    '这款地垫送两块哦。',
-    '切成两块就好。',
-    '只剩一塊了。',
-    '需要两块吧。',
-    '需要的话还有两块。',
-    '价格很好，只剩一块了。',
-  ])('"%s" stays pieces', (text) => {
+  // Since round 38 only an explicit split keeps these as pieces (see review-round38).
+  it.each(['切成两块就好。', '价格很好，切成两块就好。'])('"%s" stays pieces', (text) => {
     expect(cny(text)).toBe(0);
   });
 
@@ -102,7 +92,7 @@ describe('MAJOR-3. a full-width point between digits is a decimal point, not a s
   });
 
   it('a full-width point after a word still ends a sentence', () => {
-    expect(violations('CNY', '249', '这款很轻．只剩一块了。', 'zh')).toBe(0);
+    expect(violations('CNY', '249', '这款很轻．切成两块就好。', 'zh')).toBe(0);
   });
 });
 

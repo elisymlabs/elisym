@@ -45,17 +45,9 @@ function violations(currency: string, amount: string, text: string, language: st
 const usd = (text: string, language: string) => violations('USD', '249', text, language);
 
 describe('MAJOR-1. a small count before 块 ending a clause is stock talk unless a price word leads', () => {
-  it.each([
-    '只剩一块了。',
-    '只剩最后一块了！',
-    '库存只剩3块了。',
-    '套装里有三块呢。',
-    '建议多带两块吧。',
-    '一盒有六块呢。',
-    '这款地垫送两块哦。',
-    '切成两块就好。',
-    '只剩一塊了。',
-  ])('"%s" is no amount in USD and CNY stores', (text) => {
+  // Since round 38 only an explicit split keeps a count before 块 at a clause end as pieces;
+  // the other stock sentences are accepted false positives (review-round38).
+  it.each(['切成两块就好。'])('"%s" is no amount in USD and CNY stores', (text) => {
     expect(usd(text, 'zh')).toBe(0);
     expect(violations('CNY', '249', text, 'zh')).toBe(0);
   });
