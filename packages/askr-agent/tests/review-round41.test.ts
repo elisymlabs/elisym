@@ -110,18 +110,21 @@ describe('MAJOR-1. a country between the number and the currency word names the 
     },
   );
 
-  it.each([
-    ['約100中国円です。', 'ja', 'JPY'],
-    ['約100メキシコドルです。', 'ja', 'USD'],
-    ['약 100 멕시코 달러예요.', 'ko', 'USD'],
-    ['約100 MXドルです。', 'ja', 'USD'],
-  ])(
-    'a qualifier the unit does not fit, or an unknown one, matches nothing: "%s"',
+  it.each([['約100中国円です。', 'ja', 'JPY']])(
+    'a qualifier the unit does not fit matches nothing: "%s"',
     (text, language, store) => {
       expect(currenciesOf(text, language, store)).toEqual([[]]);
       expect(failures(store, '100', text, language)).toBe(1);
     },
   );
+
+  it.each([
+    ['約100メキシコドルです。', 'ja'],
+    ['약 100 멕시코 달러예요.', 'ko'],
+  ])('a listed country names its own currency (round 42): "%s"', (text, language) => {
+    expect(currenciesOf(text, language, 'USD')).toEqual([['MXN']]);
+    expect(failures('USD', '100', text, language)).toBe(1);
+  });
 
   it('a qualifier inside a word before the currency is no qualifier', () => {
     expect(currenciesOf('15,000日本円です。', 'ja', 'JPY')).toEqual([['JPY']]);
@@ -136,7 +139,6 @@ describe('MINOR-1. more currency words', () => {
     ['ja', '100バーツです。', ['THB']],
     ['ja', '100ルピーです。', ['INR', 'PKR', 'LKR', 'NPR']],
     ['ja', '100弗です。', ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD']],
-    ['ja', '米$100です。', ['USD']],
     ['ko', '100프랑이에요.', ['CHF']],
     ['ko', '100바트예요.', ['THB']],
     ['ko', '100인민폐예요.', ['CNY']],
@@ -149,6 +151,10 @@ describe('MINOR-1. more currency words', () => {
     ['zh', '100美圆。', ['USD']],
   ])('%s "%s" is %j', (language, text, currencies) => {
     expect(currenciesOf(text, language, 'JPY')).toEqual([currencies]);
+  });
+
+  it('ja 米$ is USD', () => {
+    expect(currenciesOf('米$100です。', 'ja', 'JPY')).toEqual([['USD']]);
   });
 
   it('they fail in a store of another currency', () => {
