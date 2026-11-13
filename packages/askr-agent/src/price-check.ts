@@ -1317,6 +1317,185 @@ function restates(first: MoneyAmount, second: MoneyAmount): boolean {
  * or currency word next to a number, read with each locale's decimal separator
  * (CLDR through Intl). Bare numbers are not amounts (5.5).
  */
+// cspell:disable
+/**
+ * Amounts written with CJK numerals or magnitudes ("3.7万円", "3万7千円", "約三万七千円",
+ * "¥3.7万", "3만 7천원", "3700元"): the token scanners above read none of them, so a
+ * converted price would pass. Read here, fail closed: any such number next to a CJK
+ * currency is an amount, and one whose value is not read exactly has no value, so it
+ * matches nothing.
+ */
+const CJK_DIGITS: Readonly<Record<string, number>> = {
+  〇: 0,
+  零: 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  兩: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+};
+const CJK_SMALL_UNITS: Readonly<Record<string, number>> = {
+  十: 10,
+  拾: 10,
+  百: 100,
+  佰: 100,
+  백: 100,
+  千: 1_000,
+  仟: 1_000,
+  천: 1_000,
+};
+const CJK_LARGE_UNITS: Readonly<Record<string, number>> = {
+  万: 10_000,
+  萬: 10_000,
+  만: 10_000,
+  億: 100_000_000,
+  亿: 100_000_000,
+  억: 100_000_000,
+};
+const CJK_CHARS = [
+  ...Object.keys(CJK_DIGITS),
+  ...Object.keys(CJK_SMALL_UNITS),
+  ...Object.keys(CJK_LARGE_UNITS),
+].join('');
+const CJK_ARABIC = String.raw`\d+(?:[.,]\d+)*`;
+/** At least one CJK numeral or magnitude, with Arabic digits around them. */
+const CJK_EXPRESSION = String.raw`(?:${CJK_ARABIC}\s?)?(?:[${CJK_CHARS}]\s?(?:${CJK_ARABIC}\s?)?)+`;
+const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
+  ['日元', ['JPY']],
+  ['日圓', ['JPY']],
+  ['人民币', ['CNY']],
+  ['人民幣', ['CNY']],
+  ['韩元', ['KRW']],
+  ['韓元', ['KRW']],
+  ['美元', ['USD']],
+  ['ドル', ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD']],
+  ['円', ['JPY']],
+  ['圆', ['CNY']],
+  ['圓', ['CNY']],
+  ['元', ['CNY']],
+  ['块', ['CNY']],
+  ['塊', ['CNY']],
+  ['원', ['KRW']],
+  ['¥', ['JPY', 'CNY']],
+  ['￥', ['JPY', 'CNY']],
+  ['₩', ['KRW']],
+];
+const CJK_CURRENCY = CJK_CURRENCIES.map(([token]) => token).join('|');
+/** Read by the token scanners when the number is plain digits ("37,000円"): left to them. */
+const SCANNED_CJK_TOKENS: readonly string[] = ['円', '元', '원', '¥', '￥', '₩'];
+const CJK_CHAR_RE = new RegExp(`[${CJK_CHARS}]`, 'u');
+const CJK_RANGE = String.raw`\s?[〜~～–]\s?`;
+/** A currency before the number may be followed by a particle ("円で3.7万"). */
+const CJK_PREFIX_GAP = String.raw`[\s:：でにはが約约]{0,2}`;
+const CJK_AMOUNT_RE = new RegExp(
+  String.raw`(?:(?<before>${CJK_CURRENCY})${CJK_PREFIX_GAP})?(?<lower>${CJK_EXPRESSION}|${CJK_ARABIC})(?:${CJK_RANGE}(?<upper>${CJK_EXPRESSION}|${CJK_ARABIC}))?\s?(?<after>${CJK_CURRENCY})?`,
+  'gu',
+);
+// cspell:enable
+
+/** The exact value of one CJK expression, or undefined when it does not read cleanly. */
+export function readCjkNumber(expression: string): Decimal | undefined {
+  const tokens = expression.replace(/\s/g, '').match(new RegExp(`${CJK_ARABIC}|.`, 'gu')) ?? [];
+  let total = new Decimal(0);
+  let section = new Decimal(0);
+  let pending: Decimal | undefined;
+  let lastLarge = Number.POSITIVE_INFINITY;
+  for (const token of tokens) {
+    const digit = CJK_DIGITS[token];
+    const small = CJK_SMALL_UNITS[token];
+    const large = CJK_LARGE_UNITS[token];
+    if (/^\d/.test(token)) {
+      // Only a plain decimal point reads: "3,7" or "1,000" next to a magnitude is ambiguous.
+      if (pending !== undefined || !/^\d+(?:\.\d+)?$/.test(token)) {
+        return undefined;
+      }
+      pending = new Decimal(token);
+    } else if (digit !== undefined) {
+      if (pending !== undefined) {
+        return undefined;
+      }
+      pending = new Decimal(digit);
+    } else if (small !== undefined) {
+      section = section.plus((pending ?? new Decimal(1)).times(small));
+      pending = undefined;
+    } else if (large !== undefined) {
+      // Larger units come first ("1億2千万"); a repeated or rising one does not read.
+      if (large >= lastLarge) {
+        return undefined;
+      }
+      lastLarge = large;
+      const units = section.plus(pending ?? 0);
+      total = total.plus((units.isZero() ? new Decimal(1) : units).times(large));
+      section = new Decimal(0);
+      pending = undefined;
+    } else {
+      return undefined;
+    }
+  }
+  return total.plus(section).plus(pending ?? 0);
+}
+
+function cjkValues(expression: string): Decimal[] {
+  const value = readCjkNumber(expression);
+  return value === undefined ? [] : [value];
+}
+
+function cjkCurrencies(token: string | undefined): readonly string[] {
+  return CJK_CURRENCIES.find(([candidate]) => candidate === token)?.[1] ?? [];
+}
+
+/**
+ * Add the CJK amounts and drop the token readings that overlap them ("¥3.7" of "¥3.7万").
+ * Plain digits count only with a currency word the token scanners do not read ("199ドル").
+ */
+function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]): void {
+  const cjk: MoneyAmount[] = [];
+  const spans: Array<[number, number]> = [];
+  for (const match of text.matchAll(CJK_AMOUNT_RE)) {
+    const groups = match.groups ?? {};
+    const token = groups.before ?? groups.after;
+    const currencies = cjkCurrencies(token);
+    const lower = groups.lower;
+    if (currencies.length === 0 || lower === undefined || token === undefined) {
+      continue;
+    }
+    const written = groups.upper === undefined ? lower : `${lower}${groups.upper}`;
+    const plain = !CJK_CHAR_RE.test(written);
+    if (plain && SCANNED_CJK_TOKENS.includes(token)) {
+      continue;
+    }
+    const start = match.index;
+    const lowerAt = start + match[0].indexOf(lower);
+    spans.push([start, start + match[0].length]);
+    const bounds = groups.upper === undefined ? [lower] : [lower, groups.upper];
+    for (const bound of bounds) {
+      const values = plain ? readValues(bound.trim(), decimals) : cjkValues(bound);
+      const numberIndex = bound === lower ? lowerAt : start + match[0].lastIndexOf(bound);
+      cjk.push({
+        values,
+        currencies: [...currencies],
+        raw: match[0],
+        index: start,
+        numberIndex,
+        group: lowerAt,
+      });
+    }
+  }
+  if (spans.length === 0) {
+    return;
+  }
+  const kept = found.filter(
+    (amount) => !spans.some(([from, to]) => amount.numberIndex >= from && amount.numberIndex < to),
+  );
+  found.splice(0, found.length, ...kept, ...cjk);
+}
+
 export function extractAmounts(
   text: string,
   locales: readonly string[],
@@ -1329,6 +1508,7 @@ export function extractAmounts(
   const found: MoneyAmount[] = [];
   scan(normalized, prefix, true, decimals, storeCurrency, symbols, found);
   scan(normalized, postfix, false, decimals, storeCurrency, symbols, found);
+  scanCjk(normalized, found, decimals);
   // One number read both ways ("$99 USD", "$1200 CAD") is one amount in the currencies both
   // readings allow; an empty intersection matches nothing, so the check fails closed. Done before
   // range bounds, which copy the amount's currencies.
