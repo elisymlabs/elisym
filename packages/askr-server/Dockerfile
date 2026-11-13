@@ -7,6 +7,8 @@
 #     -e ASKR_GATEWAY_SECRET=... -e ANTHROPIC_API_KEY=... -e ASKR_MODEL=... \
 #     -e ASKR_PRICE_INPUT=... -e ASKR_PRICE_CACHED_INPUT=... -e ASKR_PRICE_CACHE_WRITE=... \
 #     -e ASKR_PRICE_OUTPUT=... -e ASKR_TRUST_PROXY=1 -p 8787:8787 askr-server
+# Through OpenRouter instead: ASKR_OPENROUTER_MODEL and OPENROUTER_API_KEY (no ANTHROPIC_API_KEY
+# or ASKR_MODEL); ASKR_EFFORT must stay unset then (the server refuses to start otherwise).
 # Model turn budget: ASKR_MAX_TOKENS (per model call, thinking included; 2048 by default),
 # ASKR_EFFORT (Anthropic: low by default, none for models without effort) and
 # ASKR_TURN_RESERVE_USD (0.25 by default). The server refuses to start when 8 calls x

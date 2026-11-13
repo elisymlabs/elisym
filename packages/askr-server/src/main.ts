@@ -3,17 +3,12 @@ import type { Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
-import {
-  type LlmProvider,
-  createAnthropicProvider,
-  createOpenAiCompatibleProvider,
-} from '@elisym/askr-agent';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { runCli } from './cli';
-import { type ModelConfig, publicBaseOf, serveConfigFromEnv } from './config';
+import { publicBaseOf, serveConfigFromEnv, workerSettings } from './config';
 import { ShopRateLimiter } from './connectors/http';
 import { ConnectorService } from './connectors/service';
 import type { Db } from './db/db';
@@ -41,24 +36,6 @@ function required(name: string): string {
     throw new Error(`${name} is required`);
   }
   return value;
-}
-
-function providerFor(config: ModelConfig): LlmProvider {
-  if (config.kind === 'openrouter') {
-    return createOpenAiCompatibleProvider({
-      apiKey: config.apiKey,
-      model: config.model,
-      baseUrl: 'https://openrouter.ai/api/v1',
-      passCacheMarks: config.model.startsWith('anthropic/'),
-      // No training and zero data retention where offered (4.4).
-      extraBody: { provider: { data_collection: 'deny' } },
-    });
-  }
-  return createAnthropicProvider({
-    apiKey: config.apiKey,
-    model: config.model,
-    ...(config.effort ? { effort: config.effort } : {}),
-  });
 }
 
 /** The built widget, from `ASKR_WIDGET_FILE` or the workspace's `@elisym/askr-widget`. */
@@ -103,8 +80,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const state = new PgState(db, vault, log);
   const directory = new StoreDirectory(db, vault);
   // Refuses to start on a bad model setting or a max_tokens the reservation cannot pay for.
-  const { model, price, reserveUsd, maxTokens } = serveConfigFromEnv(process.env);
-  const provider = providerFor(model);
+  const config = serveConfigFromEnv(process.env);
   let leasedBy: Worker | undefined;
   const pool = createServerPool((pubkey) => leasedBy?.isLeased(pubkey) ?? false);
   const worker = new Worker({
@@ -112,10 +88,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     state,
     pool,
     gatewayKeys: [getPublicKey(gatewaySecretKey)],
-    providerFor: () => provider,
-    price,
-    reserveUsd,
-    maxTokens,
+    ...workerSettings(config),
     log,
   });
   leasedBy = worker;
@@ -198,7 +171,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),
-    reserveUsd,
+    reserveUsd: config.reserveUsd,
   });
   const admin = createAdminApi({
     directory,

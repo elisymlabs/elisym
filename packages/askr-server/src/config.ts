@@ -2,8 +2,11 @@ import {
   DEFAULT_MAX_TOKENS,
   EFFORTS,
   type Effort,
+  type LlmProvider,
   MAX_MODEL_CALLS_PER_TURN,
   type ModelPrice,
+  createAnthropicProvider,
+  createOpenAiCompatibleProvider,
 } from '@elisym/askr-agent';
 import Decimal from 'decimal.js-light';
 
@@ -105,7 +108,13 @@ export interface ServeConfig {
  * server starts: an effort set for OpenRouter (which this server does not
  * pass through) and a max_tokens the reservation cannot pay for both refuse.
  */
-export function serveConfigFromEnv(env: Env): ServeConfig {
+/** An empty variable is an unset one, as `required` reads it, everywhere. */
+function withoutEmpty(env: Env): Env {
+  return Object.fromEntries(Object.entries(env).filter(([, value]) => value !== ''));
+}
+
+export function serveConfigFromEnv(rawEnv: Env): ServeConfig {
+  const env = withoutEmpty(rawEnv);
   const openRouterModel = env.ASKR_OPENROUTER_MODEL;
   let model: ModelConfig;
   if (openRouterModel) {
@@ -149,4 +158,45 @@ export function serveConfigFromEnv(env: Env): ServeConfig {
     reserveUsd,
   });
   return { model, price, reserveUsd, maxTokens };
+}
+
+/** The provider for the configured model; `fetch` is for tests. */
+export function providerFor(config: ModelConfig, fetch?: typeof globalThis.fetch): LlmProvider {
+  if (config.kind === 'openrouter') {
+    return createOpenAiCompatibleProvider({
+      apiKey: config.apiKey,
+      model: config.model,
+      baseUrl: 'https://openrouter.ai/api/v1',
+      // Anthropic models through OpenRouter need the cache marks passed through (5.7).
+      passCacheMarks: config.model.startsWith('anthropic/'),
+      // No training and zero data retention where offered (4.4).
+      extraBody: { provider: { data_collection: 'deny' } },
+      ...(fetch ? { fetch } : {}),
+    });
+  }
+  return createAnthropicProvider({
+    apiKey: config.apiKey,
+    model: config.model,
+    ...(config.effort ? { effort: config.effort } : {}),
+    ...(fetch ? { fetch } : {}),
+  });
+}
+
+/** The worker's model settings from the checked configuration. */
+export function workerSettings(
+  config: ServeConfig,
+  fetch?: typeof globalThis.fetch,
+): {
+  providerFor: () => LlmProvider;
+  price: ModelPrice;
+  reserveUsd: string;
+  maxTokens: number;
+} {
+  const provider = providerFor(config.model, fetch);
+  return {
+    providerFor: () => provider,
+    price: config.price,
+    reserveUsd: config.reserveUsd,
+    maxTokens: config.maxTokens,
+  };
 }
