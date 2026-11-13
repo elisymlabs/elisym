@@ -119,19 +119,23 @@ describe('MINOR', () => {
     });
   });
 
-  it.each(['Model RMB-200 is in stock.', 'Model NTD-12 adapter.', 'Model RMB:200 is new.'])(
-    'a code with a hyphen or colon before the number is a model name: "%s"',
-    (text) => {
-      expect(violations('USD', '249', text, 'en')).toBe(0);
-    },
-  );
-
-  it.each(['The RMB200 kit fits.', 'Rated NTD 12 for safety.', 'Ships with 3 NTD adapters.'])(
-    'accepted false positive (fail closed): "%s" is read as money',
+  it.each(['About RMB: 1800.', 'RMB:1800', 'NTD:  7,990', 'RMB-1800'])(
+    'RMB or NTD with a colon, spaces or a hyphen is money: "%s"',
     (text) => {
       expect(violations('USD', '249', text, 'en')).toBe(1);
     },
   );
+
+  it.each([
+    'The RMB200 kit fits.',
+    'Rated NTD 12 for safety.',
+    'Ships with 3 NTD adapters.',
+    'Model RMB-200 is in stock.',
+    'Model NTD-12 adapter.',
+    'Model RMB:200 is new.',
+  ])('accepted false positive (fail closed): "%s" is read as money', (text) => {
+    expect(violations('USD', '249', text, 'en')).toBe(1);
+  });
 
   it('a full-width point between letters splits, between digits does not', () => {
     const letters = check('CNY', '249', '这款很轻．价格199元。', 'zh');

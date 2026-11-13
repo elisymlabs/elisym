@@ -1917,15 +1917,6 @@ function negative(text: string, start: number): boolean {
   return (sign === '-' || sign === '–') && !/[\d\p{L}]/u.test(beforeSign);
 }
 
-/**
- * RMB or NTD before a number with a hyphen or a colon ("Model RMB-200"): a model name. As
- * money they come glued or with one space ("RMB 1800", "RMB1800").
- */
-function codeModelName(text: string, amount: MoneyAmount): boolean {
-  const prefix = text.slice(amount.index, amount.numberIndex);
-  return /^(?:rmb|ntd)/iu.test(prefix) && !/^(?:rmb|ntd)\s?$/iu.test(prefix);
-}
-
 /** A token reading whose prefix token ends a word ("単元3", "회원 10%"): no amount. */
 function tokenInWord(text: string, amount: MoneyAmount): boolean {
   // The token without the gap the scanners allow after it ("원: 2").
@@ -2156,7 +2147,6 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
       ) &&
       !trailingToken(text, amount) &&
       !tokenInWord(text, amount) &&
-      !codeModelName(text, amount) &&
       !covered.some(
         (span) =>
           amount.index >= span.start &&
