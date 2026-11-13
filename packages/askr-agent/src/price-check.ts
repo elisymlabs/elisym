@@ -280,7 +280,8 @@ const ISO_CODES: ReadonlySet<string> = new Set([
 // cspell:disable
 const EXTRA_SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['円', ['JPY']],
-  ['元', ['CNY']],
+  // The yuan of China, Taiwan and Hong Kong alike: the store currency decides.
+  ['元', ['CNY', 'TWD', 'HKD']],
   ['kr', ['SEK', 'NOK', 'DKK', 'ISK']],
   ['kr.', ['SEK', 'NOK', 'DKK', 'ISK']],
   ['Kč', ['CZK']],
@@ -1356,6 +1357,8 @@ const CJK_LARGE_UNITS: Readonly<Record<string, number>> = {
   億: 100_000_000,
   亿: 100_000_000,
   억: 100_000_000,
+  兆: 1_000_000_000_000,
+  조: 1_000_000_000_000,
 };
 const CJK_UNIT_CHARS = [...Object.keys(CJK_SMALL_UNITS), ...Object.keys(CJK_LARGE_UNITS)].join('');
 const CJK_CHARS = `${Object.keys(CJK_DIGITS).join('')}${CJK_UNIT_CHARS}`;
@@ -1365,11 +1368,15 @@ const CJK_EXPRESSION = String.raw`(?:${CJK_ARABIC}\s?)?(?:[${CJK_CHARS}]\s?(?:${
 /** "37k円": a Western thousands suffix before a CJK currency. */
 const WESTERN_THOUSANDS = String.raw`${CJK_ARABIC}\s?[kK]`;
 const DOLLARS: readonly string[] = ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD'];
+/** 元 and 块 name the yuan of China, Taiwan and Hong Kong alike: the store currency decides. */
+const YUAN: readonly string[] = ['CNY', 'TWD', 'HKD'];
 const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['新台币', ['TWD']],
   ['新台幣', ['TWD']],
   ['人民币', ['CNY']],
   ['人民幣', ['CNY']],
+  ['人民元', ['CNY']],
+  ['软妹币', ['CNY']],
   ['日元', ['JPY']],
   ['日圓', ['JPY']],
   ['日币', ['JPY']],
@@ -1383,6 +1390,9 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['港幣', ['HKD']],
   ['台币', ['TWD']],
   ['台幣', ['TWD']],
+  ['新元', ['SGD']],
+  ['澳门元', ['MOP']],
+  ['澳門元', ['MOP']],
   ['欧元', ['EUR']],
   ['歐元', ['EUR']],
   ['英镑', ['GBP']],
@@ -1396,30 +1406,49 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['美元', ['USD']],
   ['美金', ['USD']],
   ['美刀', ['USD']],
-  ['块钱', ['CNY']],
-  ['塊錢', ['CNY']],
+  ['泰铢', ['THB']],
+  ['泰銖', ['THB']],
+  ['卢布', ['RUB']],
+  ['盧布', ['RUB']],
+  ['块钱', YUAN],
+  ['塊錢', YUAN],
+  ['米ドル', ['USD']],
   ['ドル', DOLLARS],
+  ['ユーロ', ['EUR']],
+  ['ポンド', ['GBP']],
+  ['ウォン', ['KRW']],
   ['エン', ['JPY']],
   ['えん', ['JPY']],
+  ['US달러', ['USD']],
+  ['미국달러', ['USD']],
   ['달러', ['USD']],
+  ['달라', ['USD']],
+  ['미화', ['USD']],
   ['유로', ['EUR']],
   ['위안', ['CNY']],
   ['파운드', ['GBP']],
   ['円', ['JPY']],
-  ['圆', ['CNY']],
-  ['圓', ['CNY']],
-  ['元', ['CNY']],
-  ['块', ['CNY']],
-  ['塊', ['CNY']],
+  ['圆', YUAN],
+  ['圓', YUAN],
+  ['元', YUAN],
+  ['块', YUAN],
+  ['塊', YUAN],
+  ['刀', ['USD']],
   ['원', ['KRW']],
   ['엔', ['JPY']],
+  ['불', ['USD']],
   ['¥', ['JPY', 'CNY']],
   ['￥', ['JPY', 'CNY']],
   ['₩', ['KRW']],
+  ['€', ['EUR']],
+  ['£', ['GBP']],
 ];
+/** Currency words that are money only glued to a number ("300불", "300刀"). */
+const GLUED_ONLY: readonly string[] = ['불', '刀'];
 /** Latin currency words after a CJK number ("3.7万 dollars"). */
 const CJK_LATIN_WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^dollars?$/i, DOLLARS],
+  [/^bucks?$/i, DOLLARS],
   [/^yen$/i, ['JPY']],
   [/^yuan$/i, ['CNY']],
   [/^won$/i, ['KRW']],
@@ -1429,23 +1458,39 @@ const CJK_CURRENCY = [...CJK_CURRENCIES]
   .map(([token]) => token)
   .sort((left, right) => right.length - left.length)
   .join('|');
-const LATIN_CURRENCY = String.raw`(?:dollars?|yen|yuan|won|euros?|[A-Za-z]{3})(?![A-Za-z])`;
+const LATIN_CURRENCY = String.raw`(?:dollars?|bucks?|yen|yuan|won|euros?|[A-Za-z]{3})(?![A-Za-z])`;
 /** Read by the token scanners when the number is plain digits ("37,000円"): left to them. */
 const SCANNED_CJK_TOKENS: readonly string[] = ['円', '元', '원', '¥', '￥', '₩'];
 const CJK_CHAR_RE = new RegExp(`[${CJK_CHARS}]`, 'u');
 const CJK_UNIT_START_RE = new RegExp(`^[${CJK_UNIT_CHARS}]`, 'u');
-const CJK_RANGE = String.raw`\s?(?:[〜~～–-]|至|到|から)\s?`;
-/** A currency before the number may be followed by a particle ("円で3.7万"). */
-const CJK_PREFIX_GAP = String.raw`[\s:：でにはが約约]{0,2}`;
-/** 角 and 分 after 元: "39元8角" is 39.8. */
-const CJK_SUBUNITS = String.raw`(?:(?<tenths>\d)\s?角)?(?:(?<hundredths>\d)\s?分)?`;
+const CJK_LARGE_UNIT_RE = new RegExp(`[${Object.keys(CJK_LARGE_UNITS).join('')}]`, 'u');
+const GLUED_MAGNITUDE_RE = new RegExp(`^\\s?[${CJK_UNIT_CHARS}]`, 'u');
+const WESTERN_THOUSANDS_RE = new RegExp(`^${WESTERN_THOUSANDS}$`, 'u');
+const CJK_TOKEN_RE = new RegExp(`${CJK_ARABIC}|.`, 'gu');
+const CJK_RANGE = String.raw`\s?(?:[〜~～–\-、か]|ないし|或者|或|还是|還是|至|到|から|에서|이나)\s?`;
+/**
+ * Between a currency and its number: spaces, punctuation, hiragana particles and the words
+ * of "about" or "converted" ("人民币大约3万", "円換算で3.7万", "日元的话3万", "원으로 3만").
+ */
+const CJK_PREFIX_GAP = String.raw`[\s:：、,，\p{Script=Hiragana}約约大概换換算的话話으로는은에서]{0,6}`;
+/** 多 / 余 / 来 / 几 / 여 after a number: "3万多元", "1700余元", "3만여 원" is about that much. */
+const CJK_APPROXIMATE = String.raw`(?<approximate>[多余餘来來几幾]|여)?`;
+/** 角 / 毛 / 分 after 元 or 块, or a bare digit after 块: "39元8角", "三块五", "249块零5毛". */
+const CJK_SUBUNITS = String.raw`(?:\s?零?(?<tenths>[\d一二三四五六七八九两])(?<tenthsUnit>\s?[角毛])?)?(?:\s?(?<hundredths>[\d一二三四五六七八九两])\s?分)?(?:钱|錢)?`;
+/** Cents after a dollar word: "249ドル50セント". */
+const CJK_CENTS = String.raw`\s?(?<cents>\d{1,2})\s?(?:セント|센트|美分)`;
 const CJK_AMOUNT_RE = new RegExp(
-  String.raw`(?:(?<before>${CJK_CURRENCY})${CJK_PREFIX_GAP})?(?<lower>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC})(?:${CJK_RANGE}(?<upper>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC}))?\s?(?:(?<after>${CJK_CURRENCY})${CJK_SUBUNITS}|(?<latin>${LATIN_CURRENCY}))?`,
+  String.raw`(?:(?<before>${CJK_CURRENCY})${CJK_PREFIX_GAP})?(?<lower>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC})(?:${CJK_RANGE}(?<upper>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC}))?${CJK_APPROXIMATE}(?<gap>\s?)(?:(?<after>${CJK_CURRENCY})(?:${CJK_CENTS}|${CJK_SUBUNITS})|(?<latin>${LATIN_CURRENCY}))?`,
   'gu',
 );
 const HAN_RE = /^\p{Script=Han}$/u;
+const HANGUL_RE = /^\p{Script=Hangul}$/u;
 const LETTER_RE = /^\p{L}$/u;
-const CNY_TOKENS: readonly string[] = ['元', '圆', '圓', '块', '塊', '块钱', '塊錢'];
+const LATIN_LETTER_RE = /^[A-Za-z]$/;
+const YUAN_TOKENS: readonly string[] = ['元', '圆', '圓', '块', '塊', '块钱', '塊錢'];
+const PIECE_TOKENS: readonly string[] = ['块', '塊'];
+/** A bare digit after 块 is its tenths ("三块五"), not before more words ("3块5个"). */
+const CJK_DIGIT_VALUES: Readonly<Record<string, number>> = { ...CJK_DIGITS };
 // cspell:enable
 
 /**
@@ -1458,7 +1503,7 @@ const CNY_TOKENS: readonly string[] = ['元', '圆', '圓', '块', '塊', '块�
  * after 百, one after 十 ("十五" is 15).
  */
 export function readCjkNumber(expression: string): Decimal | undefined {
-  const tokens = expression.replace(/\s/g, '').match(new RegExp(`${CJK_ARABIC}|.`, 'gu')) ?? [];
+  const tokens = expression.replace(/\s/g, '').match(CJK_TOKEN_RE) ?? [];
   let total = new Decimal(0);
   let section = new Decimal(0);
   let sectionHasCoefficient = false;
@@ -1547,53 +1592,44 @@ function cjkCurrencies(token: string): readonly string[] | undefined {
   return ISO_CODES.has(token.toUpperCase()) ? [token.toUpperCase()] : undefined;
 }
 
-/** A Latin word or code: plain digits next to one are the token scanners' alone. */
+/** Western currency signs read after a CJK number ("3万€"); with plain digits, the scanners'. */
+const WESTERN_SIGNS: readonly string[] = ['€', '£'];
+
+/** A Latin word or code, or a Western sign: plain digits next to one are the token scanners' alone. */
 function isLatinToken(token: string): boolean {
-  return /^[A-Za-z]+$/.test(token);
+  return /^[A-Za-z]+$/.test(token) || WESTERN_SIGNS.includes(token);
 }
 
 // cspell:disable
 /**
- * What follows 块 / 塊 when it counts pieces, not yuan ("两块垫子"): an explicit list, since
- * anything else after a number and 块 ("50块左右", "50块一个", "50块包邮") is money.
+ * 块 / 塊 after a small count (一 to 十, 两, one digit) and before a word is a measure word
+ * ("附赠一块抹布", "两块砧板", "由三块组成"), unless the word keeps it money ("五块钱", "两块多",
+ * "三块左右", "一块起"). The trade-off: a wrong "price" of at most ten yuan written that way
+ * passes; a larger count ("1700块手表") is always money.
  */
-const PIECE_NOUNS: readonly string[] = [
-  '垫子',
-  '垫',
-  '布',
-  '帆布',
-  '防水布',
-  '石头',
-  '石',
-  '蛋糕',
-  '肉',
-  '板',
-  '木板',
-  '玻璃',
-  '手表',
-  '表',
-  '电池',
-  '電池',
-  '木头',
-  '木頭',
-  '面料',
-  '地毯',
-  '毛巾',
-  '肥皂',
-  '巧克力',
-  '糖',
-  '砖',
-  '磚',
-  '饼',
-  '餅',
-  '牌子',
-  '镜子',
-  '鏡子',
-  '磁铁',
-  '海绵',
-  '海綿',
+const SMALL_COUNT_RE = /^(?:[一二三四五六七八九十两兩]|\d)$/u;
+const MONEY_AFTER_PIECE: readonly string[] = [
+  '钱',
+  '錢',
+  '多',
+  '左',
+  '起',
+  '包',
+  '的',
+  '半',
+  '毛',
+  '角',
+  '零',
+  '看',
+  '去',
+  '走',
+  '来',
+  '來',
+  '吃',
+  '玩',
+  '做',
 ];
-/** 一块 as "together": 一块儿, 一块看, 一块去... */
+/** 一块 as "together": 一块儿, 一块看, 一块去... (another count before them stays money). */
 const TOGETHER_AFTER: readonly string[] = [
   '儿',
   '兒',
@@ -1606,15 +1642,23 @@ const TOGETHER_AFTER: readonly string[] = [
   '玩',
   '做',
 ];
+/** A count cut into pieces at the end of a clause: "切成四块。", "分成两块". */
+const SPLIT_BEFORE: readonly string[] = ['成', '分', '切'];
 /** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素. */
 const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素'];
-/** 一円 as "the whole area" (関東一円に): a place before it, a particle after it. */
+/** 元 after a small count in a technical word: 三元锂电池, 3元系 (ternary). */
+const TERNARY_AFTER: readonly string[] = ['锂', '鋰', '系'];
+/** 日元 in a date: 元旦, 元宵, 元気 ("1月1日元旦", "3日元気に"). */
+const DATE_YUAN_AFTER: readonly string[] = ['旦', '宵', '気', '氣'];
+/** 一円 as "the whole area" (関東一円に): a place before it, a particle after it... */
 const AREA_PARTICLES: readonly string[] = ['に', 'で', 'の', 'を', 'へ'];
+/** ...but not a fee or a price before it (税込一円で, 送料一円で). */
+const FEE_BEFORE: readonly string[] = ['込', '料', '価', '額', '計'];
 /**
- * What follows 원 / 엔 in a word that is not money: 원하- (want), 원단 (fabric), 원래
- * (originally)... Only these, and only after a bare unit with no number: anything else after
- * 원 ("만원이에요", "만원짜리", "만원으로") is money. "버스가 만원이었어요" (crowded) is money
- * to this check too: it cannot be told from "it was 10,000 won".
+ * What follows 원 / 엔 after a bare unit in a word that is not money: 원하- (want), 원단
+ * (fabric), 원래 (originally)... Only these: anything else after 원 ("만원이에요", "만원인
+ * 제품", "만원짜리") is money. "버스가 만원이었어요" (crowded) is money to this check too: it
+ * cannot be told from "it was 10,000 won".
  */
 const WON_WORDS_AFTER: readonly string[] = [
   '하시',
@@ -1627,12 +1671,17 @@ const WON_WORDS_AFTER: readonly string[] = [
   '하지',
   '하신',
   '하세',
+  '할',
+  '하던',
+  '하니',
+  '하고자',
+  '치',
+  '터치',
+  '활',
+  '격',
   '단',
   '래',
-  '인',
   '칙',
-  '본',
-  '형',
   '산',
   '작',
   '피스',
@@ -1643,33 +1692,84 @@ const WON_WORDS_AFTER: readonly string[] = [
 ];
 // cspell:enable
 
+interface TokenContext {
+  text: string;
+  token: string;
+  lower: string;
+  lowerAt: number;
+  tokenEnd: number;
+  approximate: boolean;
+  gapBeforeToken: string;
+}
+
+/** 块 counting pieces, not yuan (see SMALL_COUNT_RE). */
+function pieceCount(context: TokenContext, expression: string): boolean {
+  const { text, lowerAt, tokenEnd } = context;
+  const next = text[tokenEnd] ?? '';
+  if (expression === '一' && TOGETHER_AFTER.some((word) => text.startsWith(word, tokenEnd))) {
+    return true;
+  }
+  if (context.approximate || !SMALL_COUNT_RE.test(expression)) {
+    return false;
+  }
+  if (HAN_RE.test(next)) {
+    return !MONEY_AFTER_PIECE.includes(next) && !CJK_CHARS.includes(next);
+  }
+  const clauseEnd = !/[\p{L}\p{N}]/u.test(next);
+  return clauseEnd && SPLIT_BEFORE.includes(text[lowerAt - 1] ?? '');
+}
+
 /**
- * Whether a token after the number is a word that only looks like money: 块 as a
- * classifier before a listed noun ("两块垫子"), 一块 as "together" ("一块看看"), 一元 / 一円 in
- * an idiom ("一元化", "関東一円に"), 원 or 엔 after a bare unit inside a listed word ("색상만
- * 원하시면", "천 원단"). Every exemption is an explicit list: anything else is money.
+ * Whether a token after the number is a word that only looks like money: 块 as a measure word
+ * ("两块砧板"), 一块 as "together" ("一块看看"), 元 / 円 in a word or a date ("一元化",
+ * "三元锂电池", "関東一円に", "1月1日元旦"), a model number before エン / 엔 ("V8エンジン"),
+ * 원 / 엔 in a word after a bare unit ("색상만 원하시면", "천 원단", "3원색", "엔진"). Every
+ * exemption is an explicit rule or list: anything else is money.
  */
-function notMoney(text: string, token: string, lower: string, lowerAt: number, tokenEnd: number) {
+function notMoney(context: TokenContext): boolean {
+  const { text, token, lower, lowerAt, tokenEnd } = context;
   const rest = text.slice(tokenEnd);
   const previous = text[lowerAt - 1] ?? '';
   const expression = lower.replace(/\s/g, '');
-  const isOne = expression === '一';
-  if (token === '块' || token === '塊') {
-    const together = isOne && TOGETHER_AFTER.some((word) => rest.startsWith(word));
-    return together || PIECE_NOUNS.some((noun) => rest.startsWith(noun));
+  const startsWithAny = (words: readonly string[]) => words.some((word) => rest.startsWith(word));
+  if (PIECE_TOKENS.includes(token)) {
+    return pieceCount(context, expression);
   }
-  if (isOne && token === '元') {
-    return YUAN_WORD_AFTER.some((word) => rest.startsWith(word));
+  if (token === '元') {
+    return (
+      (expression === '一' && startsWithAny(YUAN_WORD_AFTER)) ||
+      (SMALL_COUNT_RE.test(expression) && startsWithAny(TERNARY_AFTER))
+    );
   }
-  if (isOne && token === '円') {
-    return HAN_RE.test(previous) && AREA_PARTICLES.some((particle) => rest.startsWith(particle));
+  if (token === '日元' || token === '日圓') {
+    return startsWithAny(DATE_YUAN_AFTER) || previous === '月';
+  }
+  if (token === '円') {
+    return (
+      expression === '一' &&
+      HAN_RE.test(previous) &&
+      !FEE_BEFORE.includes(previous) &&
+      startsWithAny(AREA_PARTICLES)
+    );
+  }
+  const modelNumber = /^\d+$/.test(expression) && LATIN_LETTER_RE.test(previous);
+  if ((token === 'エン' || token === '엔') && (modelNumber || rest.startsWith('ジン'))) {
+    return true;
+  }
+  if (token === '엔' && rest.startsWith('진')) {
+    return true;
+  }
+  if (token === '원' && rest.startsWith('색')) {
+    return true;
   }
   const bareUnit = expression.length === 1 && CJK_UNIT_START_RE.test(expression);
-  return (
-    bareUnit &&
-    (token === '원' || token === '엔') &&
-    WON_WORDS_AFTER.some((word) => rest.startsWith(word))
-  );
+  if (!bareUnit || (token !== '원' && token !== '엔')) {
+    return false;
+  }
+  // 원하는 is "want" only when 만 is the particle: after a Hangul letter, a space before 원
+  // ("블랙만 원하는 분"); glued "만원하는 가방" is a 10,000-won bag.
+  const particle = HANGUL_RE.test(previous) && context.gapBeforeToken.length > 0;
+  return startsWithAny(WON_WORDS_AFTER) || (particle && rest.startsWith('하는'));
 }
 
 /** A sign before the amount: "-3.7万円" is no price. */
@@ -1680,58 +1780,163 @@ function negative(text: string, start: number): boolean {
 }
 
 /**
+ * A token reading that starts with the currency word of the number before it ("元5" of
+ * "100元5个"): the word closes that number and opens nothing.
+ */
+function trailingToken(text: string, amount: MoneyAmount): boolean {
+  const token = text.slice(amount.index, amount.numberIndex).trim();
+  const beforeToken = text[amount.index - 1] ?? '';
+  return (
+    amount.index < amount.numberIndex &&
+    SCANNED_CJK_TOKENS.includes(token) &&
+    beforeToken.length === 1 &&
+    (/\d/.test(beforeToken) || CJK_CHARS.includes(beforeToken))
+  );
+}
+
+/** A one-character Han currency inside a word before it (単元, 紀元, 次元) is no currency. */
+function wordBefore(text: string, before: string, start: number): boolean {
+  return before.length === 1 && HAN_RE.test(before) && HAN_RE.test(text[start - 1] ?? '');
+}
+
+function digitValue(digit: string): Decimal {
+  const kanji = CJK_DIGIT_VALUES[digit];
+  return new Decimal(kanji ?? digit);
+}
+
+/** The value of one bound, before the sub-units: exact, or none when it does not read. */
+function boundValues(bound: string, decimals: readonly string[]): Decimal[] {
+  const trimmed = bound.trim();
+  if (WESTERN_THOUSANDS_RE.test(trimmed)) {
+    return readValues(trimmed.replace(/\s?[kK]$/, ''), decimals).map((value) => value.times(1_000));
+  }
+  if (!CJK_CHAR_RE.test(bound)) {
+    return readValues(trimmed, decimals);
+  }
+  const value = readCjkNumber(bound);
+  return value === undefined ? [] : [value];
+}
+
+interface Subunits {
+  /** Any sub-unit was written with the amount (it belongs to the number). */
+  present: boolean;
+  /** What it adds, or undefined when it does not fit the currency (no value then). */
+  add: Decimal | undefined;
+}
+
+/**
+ * 角 / 毛 / 分 after a yuan word, a bare digit after 块 ("三块五" is 3.5), cents after a dollar
+ * word ("249ドル50セント"). A bare digit after 元 or before more words ("3块5个") is no part of
+ * the amount.
+ */
+function subunitsOf(
+  groups: Record<string, string | undefined>,
+  text: string,
+  end: number,
+): Subunits {
+  const after = groups.after ?? '';
+  const yuan = YUAN_TOKENS.includes(after);
+  let add = new Decimal(0);
+  let present = false;
+  let fits = true;
+  if (groups.tenths !== undefined) {
+    const bare = groups.tenthsUnit === undefined;
+    const glued = /[\p{L}\p{N}]/u.test(text[end] ?? '');
+    if (!bare || (PIECE_TOKENS.includes(after) && !glued)) {
+      present = true;
+      fits = fits && yuan;
+      add = add.plus(digitValue(groups.tenths).div(TEN));
+    }
+  }
+  if (groups.hundredths !== undefined) {
+    present = true;
+    fits = fits && yuan;
+    add = add.plus(digitValue(groups.hundredths).div(100));
+  }
+  if (groups.cents !== undefined) {
+    present = true;
+    fits = fits && (cjkCurrencies(after) ?? []).includes('USD');
+    add = add.plus(new Decimal(groups.cents).div(100));
+  }
+  return { present, add: fits ? add : undefined };
+}
+
+/**
  * Add the CJK amounts. A token reading of the same amount cut short ("¥3.7" of "¥3.7万",
  * "7000円" of "3万7000円") is replaced; any other reading stays and must pass on its own,
  * and a reading glued to a CJK magnitude ("$3.7万", "US$249万") loses its value.
  */
 function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]): void {
   for (const amount of found) {
-    if (
-      new RegExp(`^\\s?[${CJK_UNIT_CHARS}]`, 'u').test(text.slice(amount.index + amount.raw.length))
-    ) {
+    if (GLUED_MAGNITUDE_RE.test(text.slice(amount.index + amount.raw.length))) {
       amount.values = [];
     }
   }
   const cjk: MoneyAmount[] = [];
   const covered: Array<{ start: number; end: number; numberStart: number; numberEnd: number }> = [];
+  const exempt: Array<{ from: number; to: number }> = [];
   for (const match of text.matchAll(CJK_AMOUNT_RE)) {
-    const groups = match.groups ?? {};
+    const groups: Record<string, string | undefined> = match.groups ?? {};
     const lower = groups.lower;
     const start = match.index;
     if (lower === undefined) {
       continue;
     }
+    const before =
+      groups.before !== undefined &&
+      !GLUED_ONLY.includes(groups.before) &&
+      !wordBefore(text, groups.before, start)
+        ? groups.before
+        : undefined;
     const lowerAt =
       start + match[0].indexOf(lower, groups.before === undefined ? 0 : groups.before.length);
     const afterToken = groups.after ?? groups.latin;
+    const matchEnd = start + match[0].length;
     const afterEnd =
       afterToken === undefined
-        ? start + match[0].length
+        ? matchEnd
         : start + match[0].lastIndexOf(afterToken) + afterToken.length;
+    const approximate = groups.approximate !== undefined;
+    // The space after a bare unit is in the expression ("만 "): count it as the gap too.
+    const gapBeforeToken = /\s$/u.test(lower) ? ' ' : (groups.gap ?? '');
+    const afterCounts =
+      afterToken !== undefined &&
+      !(GLUED_ONLY.includes(afterToken) && (gapBeforeToken.length > 0 || approximate)) &&
+      !notMoney({
+        text,
+        token: afterToken,
+        lower,
+        lowerAt,
+        tokenEnd: afterEnd,
+        approximate,
+        gapBeforeToken,
+      });
+    if (afterToken !== undefined && !afterCounts) {
+      // A word, not money ("3원색", "3元系"): no token reading of it either.
+      exempt.push({ from: lowerAt, to: afterEnd });
+    }
     const tokens = [
-      ...(groups.before === undefined ? [] : [groups.before]),
-      ...(afterToken === undefined || notMoney(text, afterToken, lower, lowerAt, afterEnd)
-        ? []
-        : [afterToken]),
+      ...(before === undefined ? [] : [before]),
+      ...(afterCounts && afterToken !== undefined ? [afterToken] : []),
     ].filter((token) => cjkCurrencies(token) !== undefined);
     if (tokens.length === 0) {
       continue;
     }
     const written = groups.upper === undefined ? lower : `${lower}${groups.upper}`;
     const plain = !CJK_CHAR_RE.test(written);
-    const westernThousands = new RegExp(`^${WESTERN_THOUSANDS}$`, 'u');
-    const glued = plain && !westernThousands.test(lower.trim());
     if (plain && tokens.every(isLatinToken)) {
       // No CJK numeral and only a Latin code or word ("99 USD", "1.5k USD"): the token scanners' alone.
       continue;
     }
+    const subunits = subunitsOf(groups, text, matchEnd);
+    const glued = plain && !WESTERN_THOUSANDS_RE.test(lower.trim());
     const readByScanner = found.some(
       (amount) => amount.numberIndex <= lowerAt && lowerAt < amount.index + amount.raw.length,
     );
-    const subunits = groups.tenths !== undefined || groups.hundredths !== undefined;
     if (
       glued &&
-      !subunits &&
+      !subunits.present &&
+      !approximate &&
       readByScanner &&
       tokens.every((token) => SCANNED_CJK_TOKENS.includes(token) || isLatinToken(token))
     ) {
@@ -1742,41 +1947,34 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
       .map((token) => cjkCurrencies(token) ?? [])
       .reduce((shared, next) => shared.filter((currency) => next.includes(currency)));
     const bounds = groups.upper === undefined ? [lower] : [lower, groups.upper];
+    // "3、4万円" is 30,000 to 40,000: a bare lower bound borrows a magnitude it does not show.
+    const borrowsMagnitude =
+      groups.upper !== undefined &&
+      !CJK_CHAR_RE.test(lower) &&
+      CJK_LARGE_UNIT_RE.test(groups.upper);
     for (const bound of bounds) {
       const numberIndex = bound === lower ? lowerAt : start + match[0].lastIndexOf(bound);
-      const trimmed = bound.trim();
-      let values: Decimal[];
-      if (westernThousands.test(trimmed)) {
-        values = readValues(trimmed.replace(/\s?[kK]$/, ''), decimals).map((value) =>
-          value.times(1_000),
-        );
-      } else if (!CJK_CHAR_RE.test(bound)) {
-        values = readValues(trimmed, decimals);
-      } else {
-        const value = readCjkNumber(bound);
-        values = value === undefined ? [] : [value];
-      }
+      let values = boundValues(bound, decimals);
       // No coefficient after a letter (数万円, 弐万円, 몇만 원): a vague or unknown number.
-      const vague = CJK_UNIT_START_RE.test(trimmed) && LETTER_RE.test(text[numberIndex - 1] ?? '');
-      if (vague || (bound === lower && negative(text, start))) {
+      const vague =
+        CJK_UNIT_START_RE.test(bound.trim()) && LETTER_RE.test(text[numberIndex - 1] ?? '');
+      const unread =
+        vague ||
+        approximate ||
+        (bound === lower && (negative(text, start) || borrowsMagnitude)) ||
+        (subunits.present && (groups.upper !== undefined || subunits.add === undefined));
+      if (unread) {
         values = [];
-      }
-      if (subunits) {
-        values =
-          groups.upper !== undefined || !CNY_TOKENS.includes(groups.after ?? '')
-            ? []
-            : values.map((value) =>
-                value
-                  .plus(new Decimal(groups.tenths ?? 0).div(TEN))
-                  .plus(new Decimal(groups.hundredths ?? 0).div(100)),
-              );
+      } else if (subunits.present && subunits.add !== undefined) {
+        const add = subunits.add;
+        values = values.map((value) => value.plus(add));
       }
       covered.push({
         start,
-        end: start + match[0].length,
+        end: matchEnd,
         numberStart: numberIndex,
-        // 角 and 分 belong to the number: "元8" of "39元8角" is the same amount.
-        numberEnd: subunits ? start + match[0].length : numberIndex + bound.length,
+        // Sub-units belong to the number: "元8" of "39元8角" is the same amount.
+        numberEnd: subunits.present ? matchEnd : numberIndex + bound.length,
       });
       cjk.push({
         values,
@@ -1788,11 +1986,12 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
       });
     }
   }
-  if (cjk.length === 0) {
-    return;
-  }
   const kept = found.filter(
     (amount) =>
+      !exempt.some(
+        (span) => amount.numberIndex >= span.from && amount.index + amount.raw.length <= span.to,
+      ) &&
+      !trailingToken(text, amount) &&
       !covered.some(
         (span) =>
           amount.index >= span.start &&
