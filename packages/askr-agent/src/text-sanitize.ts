@@ -16,23 +16,44 @@ const LOOKALIKES: Readonly<Record<string, string>> = {
   ']': '\u27e7',
 };
 
-/** A product id written in parentheses ("(id: pack-45)"): products are named, never id'd. */
-const ID_MENTION_RE = /[ \t]*\(\s*(?:id|sku|handle)\s*:\s*[^()\n]{1,80}\)/giu;
-
 export function sanitizeAnswerText(text: string): string {
   return stripInvisible(text.normalize('NFKC'))
-    .replace(ID_MENTION_RE, '')
     .replace(/[<>[\]]/g, (character) => LOOKALIKES[character] ?? '')
     .trim();
 }
 
-/** Drop a known product id in parentheses ("the Trek 45 l (pack-45)"): the text names products. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Ids too short or too plain to strip: "Step (1)", "(m)" are not product ids. */
+function stripsAsId(id: string): boolean {
+  return id.length > 2 && !/^\d+$/u.test(id);
+}
+
+/**
+ * Drop a known product or variant id in parentheses from model-written text: "the Trek 45 l
+ * (pack-45)", "(id: pack-45)", "(sku: scarf-red)". Products are named, never id'd. Anything else
+ * in parentheses stays ("(ID: passport)", "(Handle: oak)"). Run after sanitizeAnswerText, so
+ * NFKC has folded full-width parentheses and invisible characters are gone.
+ */
 export function stripProductIds(text: string, ids: Iterable<string>): string {
-  let stripped = text;
-  for (const id of ids) {
-    if (stripped.includes(`(${id})`)) {
-      stripped = stripped.split(` (${id})`).join('').split(`(${id})`).join('');
-    }
+  if (!text.includes('(')) {
+    return text;
   }
-  return stripped;
+  let stripped = text;
+  let lower = text.toLowerCase();
+  for (const id of ids) {
+    if (!stripsAsId(id) || !lower.includes(`${id.toLowerCase()})`)) {
+      continue;
+    }
+    const mention = String.raw`\((?:(?:id|sku)[ \t]?:[ \t]?)?${escapeRegExp(id)}\)`;
+    // The space before goes with it; at a line start, the space after does.
+    stripped = stripped.replace(
+      new RegExp(String.raw`[ \t]${mention}|^${mention}[ \t]?|${mention}`, 'gimu'),
+      '',
+    );
+    lower = stripped.toLowerCase();
+  }
+  return stripped === text ? text : stripped.trim();
 }

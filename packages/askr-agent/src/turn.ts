@@ -16,7 +16,7 @@ import {
 import { type PriceViolation, cardsPointer, checkPrices, stripViolations } from './price-check';
 import { globalBlock, sessionBlock, storeBlock } from './prompt';
 import { sanitizeAnswerText, stripProductIds } from './text-sanitize';
-import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
+import { TOOL_SPECS, type TurnState, executeTool, knownIds, newTurnState } from './tools';
 
 /** Tool rounds per turn before a forced no-tool round (5.5). */
 export const MAX_TOOL_ROUNDS = 6;
@@ -31,6 +31,8 @@ export const DEFAULT_MAX_TOKENS = 2_048;
 const VISITOR_FENCE_CHARS = 4_000;
 /** Tools that only show something: text written next to them is part of the answer. */
 const PRESENTATION_TOOL_PREFIX = 'present_';
+/** The most joined text the sanitizer reads: four times the answer cap. */
+const JOINED_TEXT_CHARS = LIMITS.ANSWER_TEXT_CHARS * 4;
 
 /**
  * The answer text of one loop: the text of rounds that only presented (some models write the
@@ -232,9 +234,6 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
           assistantContent,
         };
       }
-      if (response.toolCalls.every((call) => call.name.startsWith(PRESENTATION_TOOL_PREFIX))) {
-        presentedText.push(response.text);
-      }
       toolRounds += 1;
       const results: ToolResultBlock[] = response.toolCalls.map((call) => {
         const outcome = executeTool(input.catalog, state, call);
@@ -245,6 +244,14 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
           ...(outcome.isError ? { isError: true } : {}),
         };
       });
+      // Text next to presentation only, at least one of which showed something: a round whose
+      // present call failed is redone, and its text with it.
+      if (
+        response.toolCalls.every((call) => call.name.startsWith(PRESENTATION_TOOL_PREFIX)) &&
+        results.some((result) => result.isError !== true)
+      ) {
+        presentedText.push(response.text);
+      }
       while (reportedStatuses < statuses.length) {
         const line = statuses[reportedStatuses];
         reportedStatuses += 1;
@@ -266,10 +273,11 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
         type: 'answer',
         ask_id: input.askId,
         session_end: input.sessionEnd,
-        text: stripProductIds(sanitizeAnswerText(text), input.catalog.items.keys()).slice(
-          0,
-          LIMITS.ANSWER_TEXT_CHARS,
-        ),
+        // Joined rounds can be long: cut generously before the sanitizer, exactly after it.
+        text: stripProductIds(
+          sanitizeAnswerText(text.slice(0, JOINED_TEXT_CHARS)),
+          knownIds(input.catalog),
+        ).slice(0, LIMITS.ANSWER_TEXT_CHARS),
         components: state.components.slice(0, LIMITS.MAX_COMPONENTS),
         chips: state.chips,
       },
