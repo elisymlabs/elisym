@@ -441,7 +441,7 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
     deps.log('');
     for (const { summary } of result.models) {
       deps.log(
-        `${summary.id}: ${summary.passedCases}/${summary.cases} (${formatBps(summary.passRateBps)}), ${summary.providerErrors} provider error(s), ${summary.judgeErrors} judge error(s), cost per passing conversation ${summary.costPerPass ?? 'n/a'} USD, p50 ${summary.latencyMs.p50 ?? 'n/a'} ms`,
+        `${summary.id}: ${summary.passedCases}/${summary.cases} (${formatBps(summary.passRateBps)}), ${summary.providerErrors} provider error(s), ${summary.judgeErrors} judge error(s), ${summary.maxTokensStops} stopped at max_tokens, ${summary.refusals} refused, cost per passing conversation ${summary.costPerPass ?? 'n/a'} USD, p50 ${summary.latencyMs.p50 ?? 'n/a'} ms`,
       );
     }
     if (judge === undefined) {

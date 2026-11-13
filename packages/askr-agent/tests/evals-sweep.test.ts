@@ -466,6 +466,9 @@ describe('main', () => {
     expect(output).not.toContain('sk-secret');
     expect(output).toContain('Suggested default at a 90.00% bar: good');
     expect(output).toContain('down-ref: 0/0 (n/a), 4 provider error(s)');
+    expect(output).toContain(
+      'good: 2/2 (100.00%), 0 provider error(s), 0 judge error(s), 0 stopped at max_tokens, 0 refused,',
+    );
     const jsonl = (await readFile(join(out, 'runs.jsonl'), 'utf8')).trim().split('\n');
     expect(jsonl).toHaveLength(8);
     const first = JSON.parse(jsonl[0] ?? '{}');

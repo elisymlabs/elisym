@@ -261,20 +261,31 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     answer = toAnswer(first.text, first.state);
     let violations = checkPrices(answer, checkContext());
     if (violations.length > 0) {
-      const retry = await runLoop([
-        ...first.messages,
-        { role: 'assistant', content: replayOf(first.assistantContent, first.text) },
-        { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
-      ]);
-      // A re-run that only rewrites its text keeps what it did not redo, field by field.
-      const retryState: TurnState = {
-        ...retry.state,
-        components:
-          retry.state.components.length > 0 ? retry.state.components : first.state.components,
-        chips: retry.state.chips.length > 0 ? retry.state.chips : first.state.chips,
-      };
-      answer = toAnswer(retry.text, retryState);
-      violations = checkPrices(answer, checkContext());
+      let retry: Awaited<ReturnType<typeof runLoop>> | undefined;
+      try {
+        retry = await runLoop([
+          ...first.messages,
+          { role: 'assistant', content: replayOf(first.assistantContent, first.text) },
+          { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
+        ]);
+      } catch (error) {
+        // A re-run that stops without an answer (max_tokens, a refusal...) leaves the first
+        // answer, stripped below; its spend is already counted.
+        if (!(error instanceof StopReasonError)) {
+          throw error;
+        }
+      }
+      if (retry !== undefined) {
+        // A re-run that only rewrites its text keeps what it did not redo, field by field.
+        const retryState: TurnState = {
+          ...retry.state,
+          components:
+            retry.state.components.length > 0 ? retry.state.components : first.state.components,
+          chips: retry.state.chips.length > 0 ? retry.state.chips : first.state.chips,
+        };
+        answer = toAnswer(retry.text, retryState);
+        violations = checkPrices(answer, checkContext());
+      }
       // Strip until the check passes: removing a sentence can let a kept one borrow a symbol it
       // did not before ("1200 Rs." then "999 people"), and removing a component removes the
       // items it cited. Every pass removes at least one string, so this ends; the bound guards.

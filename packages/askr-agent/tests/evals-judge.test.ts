@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { gradeRun, summarize } from '../evals/aggregate';
 import { RUBRIC_CATEGORIES, parseCases } from '../evals/cases';
 import { grade } from '../evals/grade';
 import {
@@ -846,5 +847,50 @@ describe('review round 4', () => {
     expect(declines).toMatchObject({ turnErrors: 2, maxTokensStops: 0, refusals: 2 });
     expect(result.models[0]?.runs[0]?.stopKind).toBe('max_tokens');
     expect(markdownReport(result)).toContain('| Turn errors | Max tokens | Refusals |');
+  });
+});
+
+describe('review round 5: the report columns', () => {
+  it('puts turn errors, max tokens and refusals in their own cells, in that order', () => {
+    const stopped = (stopKind: 'max_tokens' | 'refusal', caseId: string) =>
+      gradeRun(
+        outcomeOf({ caseId, error: `stopped (${stopKind})`, stopKind }),
+        [`turn error: stopped (${stopKind})`],
+        PRICE,
+      );
+    const runs = [
+      stopped('max_tokens', 'a'),
+      stopped('max_tokens', 'b'),
+      stopped('refusal', 'c'),
+      stopped('refusal', 'd'),
+      stopped('refusal', 'e'),
+    ];
+    const summary = summarize(
+      { id: 'm', label: 'M', model: 'm-1', reference: false, price: PRICE },
+      runs,
+    );
+    expect(summary).toMatchObject({ turnErrors: 5, maxTokensStops: 2, refusals: 3 });
+    const report = markdownReport({
+      startedAt: '2026-11-13T00:00:00.000Z',
+      settings: {
+        cases: 5,
+        repeat: 1,
+        concurrency: 1,
+        timeoutMs: 1_000,
+        retries: 0,
+        barBps: 9_000,
+        storeItems: 1,
+        judge: 'judge-1',
+      },
+      models: [{ summary, runs }],
+    });
+    const header = report.split('\n').find((line) => line.startsWith('| Model |')) ?? '';
+    const row = report.split('\n').find((line) => line.startsWith('| M |')) ?? '';
+    const cells = (line: string) => line.split('|').map((cell) => cell.trim());
+    const column = (name: string) => cells(header).indexOf(name);
+    expect(cells(row)[column('Turn errors')]).toBe('5');
+    expect(cells(row)[column('Max tokens')]).toBe('2');
+    expect(cells(row)[column('Refusals')]).toBe('3');
+    expect(cells(row)).toHaveLength(cells(header).length);
   });
 });
