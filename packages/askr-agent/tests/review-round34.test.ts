@@ -137,7 +137,7 @@ const PIECES = [
   '营地旁边有一块空地。',
   '由三块组成。',
   '两块门帘。',
-  '分成两块很方便携带。',
+  // '分成两块很方便携带。' is money since round 38 (很 continues a price; review-round38).
   '这款帐篷附带2块垫子。',
 ];
 

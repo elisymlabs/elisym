@@ -145,3 +145,29 @@ describe('MINOR', () => {
     expect(violations('CNY', '1.5', '价格是１．５元。', 'zh')).toBe(0);
   });
 });
+
+describe('a price continued after 块 is money, not a counted noun', () => {
+  it.each([
+    '5块很便宜',
+    '这个5块太划算了',
+    '9块真值',
+    '5块就能买',
+    '5块也行',
+    '5块左右',
+    '5块一个',
+    '5块和10块两种',
+    '3块都可以',
+    '5块还送赠品',
+  ])('"%s" fails in a CNY store at 249', (text) => {
+    expect(cny(text)).toBe(1);
+  });
+
+  it.each(['两块砧板', '三块香皂', '附赠一块抹布', '分成两块收纳'])('"%s" stays pieces', (text) => {
+    expect(cny(text)).toBe(0);
+  });
+
+  // Accepted false positive (fail closed): a degree word after 块 continues a price as often.
+  it('分成两块很方便携带 is read as money', () => {
+    expect(cny('分成两块很方便携带。')).toBe(1);
+  });
+});
