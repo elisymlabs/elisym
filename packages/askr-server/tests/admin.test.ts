@@ -14,7 +14,11 @@ import { KIND_HTTP_AUTH, checkNip98, sha256Hex } from '../src/admin/nip98';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { bodyLimitOf, serveGateway } from '../src/gateway/http';
-import { MAX_PUBLISH_ATTEMPTS, MAX_UNPUBLISHED_EVENTS } from '../src/state/stores';
+import {
+  MAX_PUBLISH_ATTEMPTS,
+  MAX_STORED_EVENTS,
+  MAX_UNPUBLISHED_EVENTS,
+} from '../src/state/stores';
 import { HOLDER, NOW, ORIGIN, stateWith, storeRecord, syntheticStore } from './fixtures';
 
 const BASE = 'https://api.askr.test';
@@ -841,13 +845,21 @@ describe('server core review 2: one catalog sync per store across instances (7.3
 });
 
 describe('read-back of stored events (7.3)', () => {
-  /** A deletion of the server K's authorization, padded to about `bytes` of content. */
-  function paddedDeletion(store: ReturnType<typeof syntheticStore>, createdAt: number, bytes = 0) {
+  /**
+   * A deletion of an authorization (the server K's unless `target` names another key), padded to
+   * about `bytes` of content.
+   */
+  function paddedDeletion(
+    store: ReturnType<typeof syntheticStore>,
+    createdAt: number,
+    bytes = 0,
+    target: string = store.catalogKey,
+  ) {
     return finalizeEvent(
       {
         kind: 5,
         created_at: createdAt,
-        tags: [['a', `30497:${store.owner}:${store.catalogKey}`]],
+        tags: [['a', `30497:${store.owner}:${target}`]],
         content: 'x'.repeat(bytes),
       },
       store.ownerSecret,
@@ -926,8 +938,9 @@ describe('read-back of stored events (7.3)', () => {
 
   it('answers with at most 1 MiB of events, the newest, and says when it left older ones out', async () => {
     const { call, store } = await setup('pending');
+    // One second, one target: none replaces another, so all wait; a read-back orders them by id.
     const events = Array.from({ length: 20 }, (_unused, index) =>
-      paddedDeletion(store, NOW - 100 + index, 60 * 1024),
+      paddedDeletion(store, NOW, 60 * 1024 + index),
     );
     expect((await call('POST', '/v1/admin/store/events', { events })).status).toBe(200);
     const read = await call('GET', '/v1/admin/store/events');
@@ -935,15 +948,14 @@ describe('read-back of stored events (7.3)', () => {
     expect(read.body.truncated).toBe(true);
     const bytes = returned.reduce((total, event) => total + JSON.stringify(event).length, 0);
     expect(bytes).toBeLessThanOrEqual(MAX_READ_BACK_BYTES);
-    expect(returned.length).toBe(
-      Math.floor(MAX_READ_BACK_BYTES / JSON.stringify(events[0]).length),
-    );
-    expect(returned.map((event) => event.id)).toEqual(
-      events
-        .slice(-returned.length)
-        .reverse()
-        .map((event) => event.id),
-    );
+    const byId = [...events].sort((left, right) => (left.id < right.id ? -1 : 1));
+    let budget = 0;
+    const fitting = byId.filter((event) => {
+      budget += JSON.stringify(event).length;
+      return budget <= MAX_READ_BACK_BYTES;
+    });
+    expect(fitting.length).toBeLessThan(events.length);
+    expect(returned.map((event) => event.id)).toEqual(fitting.map((event) => event.id));
   });
 
   it('always includes the newest event of every address, however large the older ones', async () => {
@@ -959,16 +971,15 @@ describe('read-back of stored events (7.3)', () => {
     );
     await call('POST', '/v1/admin/store/events', { events: [config, auth, oldAuth] });
     const deletions = Array.from({ length: 20 }, (_unused, index) =>
-      paddedDeletion(store, NOW - 100 + index, 60 * 1024),
+      paddedDeletion(store, NOW, 60 * 1024 + index),
     );
     expect((await call('POST', '/v1/admin/store/events', { events: deletions })).status).toBe(200);
     const read = await call('GET', '/v1/admin/store/events');
     const ids = read.body.events.map((event: NostrEvent) => event.id);
     expect(read.body.truncated).toBe(true);
-    expect(ids).toEqual(
-      expect.arrayContaining([config.id, auth.id, oldAuth.id, deletions[19]?.id]),
-    );
-    expect(ids).not.toContain(deletions[0]?.id);
+    const deletionIds = deletions.map((event) => event.id).sort();
+    expect(ids).toEqual(expect.arrayContaining([config.id, auth.id, oldAuth.id, deletionIds[0]]));
+    expect(ids).not.toContain(deletionIds[19]);
   });
 
   it('leaves out an event the relay refused for good: it is not on its way', async () => {
@@ -989,7 +1000,7 @@ describe('read-back of stored events (7.3)', () => {
   it('bounds the older events by the byte budget exactly', async () => {
     const { call, store, directory } = await setup('pending');
     const events = Array.from({ length: 3 }, (_unused, index) =>
-      paddedDeletion(store, NOW - 10 + index, 100),
+      paddedDeletion(store, NOW, 100 + index),
     );
     await call('POST', '/v1/admin/store/events', { events });
     const total = events.reduce((sum, event) => sum + JSON.stringify(event).length, 0);
@@ -1036,17 +1047,128 @@ describe('read-back of stored events (7.3)', () => {
     expect((await directory.eventStatus(store.owner)).pending).toBe(MAX_UNPUBLISHED_EVENTS);
   });
 
+  it('keys a deletion by what it deletes, in any order: each target set keeps its newest', async () => {
+    const { store, directory, db } = await setup('pending');
+    const first = getPublicKey(generateSecretKey());
+    const second = getPublicKey(generateSecretKey());
+    const deletionOf = (targets: string[], bytes: number) =>
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: NOW,
+          tags: targets.map((key) => ['a', `30497:${store.owner}:${key}`]),
+          content: 'x'.repeat(bytes),
+        },
+        store.ownerSecret,
+      );
+    // Two deletions of different keys: both current, however large and however small the budget.
+    const ofFirst = deletionOf([first], 60 * 1024);
+    const ofSecond = deletionOf([second], 60 * 1024);
+    expect(await directory.addEvents(store.owner, [ofFirst, ofSecond])).toEqual({ ok: true });
+    const both = await directory.storedEvents(store.owner, 10);
+    expect(both.events.map((event) => event.id).sort()).toEqual([ofFirst.id, ofSecond.id].sort());
+    expect(both.truncated).toBe(false);
+    // The same two targets in either order are one key: only the newest (lower id here) is current.
+    await db.query('delete from store_events where owner = $1', [store.owner]);
+    const forward = deletionOf([first, second], 10);
+    const backward = deletionOf([second, first], 11);
+    expect(await directory.addEvents(store.owner, [forward, backward])).toEqual({ ok: true });
+    const one = await directory.storedEvents(store.owner, 10);
+    expect(one.events.map((event) => event.id)).toEqual([[forward.id, backward.id].sort()[0]]);
+    expect(one.truncated).toBe(true);
+  });
+
+  it('refuses a batch past the waiting cap whole: nothing of it stored, nothing it would replace pruned', async () => {
+    const { store, directory, call, db } = await setup('pending');
+    const configAt = (createdAt: number) =>
+      finalizeEvent(
+        buildConfigEvent(
+          {
+            assistant: store.assistant,
+            origins: [ORIGIN],
+            name: 'Shop',
+            language: 'en',
+            currency: 'USD',
+            source: { kind: 'catalog' },
+            catalogKey: store.catalogKey,
+            createdAt,
+          },
+          store.ownerSecret,
+        ),
+        store.ownerSecret,
+      );
+    const authAt = (createdAt: number) =>
+      finalizeEvent(
+        buildCatalogAuth({ key: getPublicKey(generateSecretKey()), mode: 'self-host', createdAt }),
+        store.ownerSecret,
+      );
+    const waitingConfig = configAt(NOW - 100);
+    const auths = Array.from({ length: MAX_UNPUBLISHED_EVENTS - 1 }, (_unused, index) =>
+      authAt(NOW - 1_000 + index),
+    );
+    expect(await directory.addEvents(store.owner, [...auths, waitingConfig])).toEqual({ ok: true });
+    // The newer config would replace the waiting one, but two new authorizations still overflow.
+    const batch = [configAt(NOW - 50), authAt(NOW), authAt(NOW + 1)];
+    expect(await call('POST', '/v1/admin/store/events', { events: batch })).toEqual({
+      status: 409,
+      body: { error: 'too_many_events' },
+    });
+    expect((await directory.eventStatus(store.owner)).pending).toBe(MAX_UNPUBLISHED_EVENTS);
+    const ids = (
+      await db.query<{ id: string }>('select id from store_events where owner = $1', [store.owner])
+    ).map((row) => row.id);
+    expect(ids).toContain(waitingConfig.id);
+    for (const refused of batch) {
+      expect(ids).not.toContain(refused.id);
+    }
+  });
+
+  it('refuses a batch past the total cap of stored events, published ones included', async () => {
+    const { store, call, db } = await setup('pending');
+    // Published authorizations of distinct keys: none replaces another.
+    await db.query(
+      `insert into store_events (id, owner, event, published)
+       select md5(n::text), $1, jsonb_build_object('kind', 30497, 'created_at', n,
+         'tags', jsonb_build_array(jsonb_build_array('d', md5(n::text)))), true
+       from generate_series(1, $2::int) n`,
+      [store.owner, MAX_STORED_EVENTS - 1],
+    );
+    const authAt = (createdAt: number) =>
+      finalizeEvent(
+        buildCatalogAuth({ key: getPublicKey(generateSecretKey()), mode: 'self-host', createdAt }),
+        store.ownerSecret,
+      );
+    expect((await call('POST', '/v1/admin/store/events', { events: [authAt(NOW)] })).status).toBe(
+      200,
+    );
+    const over = authAt(NOW + 1);
+    expect(await call('POST', '/v1/admin/store/events', { events: [over] })).toEqual({
+      status: 409,
+      body: { error: 'too_many_events' },
+    });
+    const [count] = await db.query<{ count: number }>(
+      'select count(*)::int8 as count from store_events where owner = $1',
+      [store.owner],
+    );
+    expect(count?.count).toBe(MAX_STORED_EVENTS);
+  });
+
   it('never returns more than the events a store may have waiting', async () => {
     const { call, store, db } = await setup('pending');
     for (let batch = 0; batch < 3; batch += 1) {
       const events = Array.from({ length: 15 }, (_unused, index) =>
-        paddedDeletion(store, NOW - 1000 + batch * 20 + index),
+        paddedDeletion(
+          store,
+          NOW - 1000 + batch * 20 + index,
+          0,
+          getPublicKey(generateSecretKey()),
+        ),
       );
       expect((await call('POST', '/v1/admin/store/events', { events })).status).toBe(200);
     }
     // More than MAX_UNPUBLISHED_EVENTS stored only by bypassing the API's cap.
     for (let index = 0; index < 10; index += 1) {
-      const event = paddedDeletion(store, NOW - 2000 + index);
+      const event = paddedDeletion(store, NOW - 2000 + index, 0, getPublicKey(generateSecretKey()));
       await db.query(
         'insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)',
         [event.id, store.owner, JSON.stringify(event)],

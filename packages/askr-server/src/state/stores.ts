@@ -65,22 +65,37 @@ function dTagOf(alias: string): string {
 }
 
 /**
- * Configs and authorizations a newer stored one of the same address
- * replaced: a published one once the newer one is published too; one still
- * waiting as soon as a newer one is stored that is published or still retried
- * (the relay would keep only the newer, so the older one need not count
- * against the caps). One whose newer one was stopped stays, so the relay is
- * not left without either.
+ * What a newer stored event of the same kind replaces, in SQL: the `d` tag of
+ * a config or authorization, the sorted `a` targets of a deletion (a newer
+ * deletion of the same addresses deletes all the older one does). Read-backs
+ * key them the same way (`addressOf`).
+ */
+function replaceKeyOf(alias: string): string {
+  return `case when (${alias}.event->>'kind')::int = ${KIND_DELETION}
+    then (select string_agg(tag->>1, ' ' order by tag->>1)
+          from jsonb_array_elements(${alias}.event->'tags') tag where tag->>0 = 'a')
+    else ${dTagOf(alias)} end`;
+}
+
+/**
+ * Configs, authorizations and deletions a newer stored one of the same kind
+ * and key replaced: a published one once the newer one is published too; one
+ * still waiting as soon as a newer one is stored that is published or still
+ * retried (the relay would keep only the newer, so the older one need not
+ * count against the caps). One whose newer one was stopped stays, so the
+ * relay is not left without either. The kind is matched on its own: a key
+ * alone could name a config and an authorization alike.
  */
 const PRUNE_REPLACED_SQL = `
   delete from store_events e
-  where e.owner = $1 and (e.event->>'kind')::int in (${KIND_CONFIG}, ${KIND_CATALOG_AUTH})
+  where e.owner = $1
+    and (e.event->>'kind')::int in (${KIND_CONFIG}, ${KIND_CATALOG_AUTH}, ${KIND_DELETION})
     and exists (
       select 1 from store_events n
       where n.owner = e.owner and n.id <> e.id
         and (n.published or (not e.published and n.publish_failures < $2))
         and n.event->>'kind' = e.event->>'kind'
-        and ${dTagOf('n')} is not distinct from ${dTagOf('e')}
+        and ${replaceKeyOf('n')} is not distinct from ${replaceKeyOf('e')}
         and (n.event->>'created_at')::bigint > (e.event->>'created_at')::bigint
     )`;
 
