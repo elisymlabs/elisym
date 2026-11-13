@@ -28,7 +28,9 @@ A store reads its products from exactly one source, chosen in the admin:
 
 1. Open the admin at `https://api.askr.elisym.network/admin/` and sign in with your owner key: paste an nsec, use a NIP-07 browser extension, or let the admin generate one (save it: it is your store).
 2. Create the store. Fill in its name, language, currency, the origins your site runs on, the product source, and the assistant's voice and instructions. One signing step stores the config and the catalog key authorization.
-3. The store stays pending until it is activated on a plan. Once active, the server publishes what you signed and the assistant starts answering.
+3. The store stays pending until it is activated on a plan. Meanwhile the admin shows your settings from what you signed, which the server holds; your browser checks every signature, as it does for the relay. Once active, the server publishes what you signed, the relay becomes the source, and the assistant starts answering.
 4. [Embed the widget](/askr/embed) on your site.
 
 From the admin you can later edit the settings, manage catalog keys, import products, edit policies, set up a connector, see usage against your plan, and rotate the assistant key.
+
+The overview counts **conversations**: a conversation is one visitor's chat, up to 24 hours from their first message, that got at least one answer. Each is counted once, on its first answer, however many questions follow or however often a turn is retried; a chat whose questions all failed is not counted. Next to it are the open conversations (chats started in the last 24 hours) and the advisory product link clicks.

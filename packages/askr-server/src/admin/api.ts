@@ -29,6 +29,12 @@ export const ADMIN_PREFIX = '/v1/admin/';
 const KIND_DELETION = 5;
 const MAX_EVENTS_PER_REQUEST = 20;
 const MAX_EVENT_BYTES = 64 * 1024;
+/**
+ * `GET /v1/admin/store/events` answers with at most this much event JSON:
+ * well above a store's settings and authorizations, far below what one
+ * request may post (20 events of 64 KiB).
+ */
+export const MAX_READ_BACK_BYTES = 1024 * 1024;
 /** A stored event may be dated at most this far ahead (clock skew of the signer). */
 const MAX_AHEAD_SECS = 10 * 60;
 const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
@@ -348,6 +354,12 @@ export function createAdminApi(
     }
     if (route === 'POST /v1/admin/store/events') {
       return storeEvents(store, body);
+    }
+    if (route === 'GET /v1/admin/store/events') {
+      // The read-back (7.3): a store that is not active has nothing on the relay yet, so its admin
+      // shows the events O signed from here. Only the caller's own store; the admin checks each
+      // signature and author as it does the relay's.
+      return json(await deps.directory.storedEvents(owner, MAX_READ_BACK_BYTES), 200);
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);

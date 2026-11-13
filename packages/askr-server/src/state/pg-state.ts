@@ -186,7 +186,8 @@ const SUPERSEDED: Admission = { admitted: false, reason: 'superseded' };
  * `sessions` row first (`lockSession`, or the `for update` of `session()` and
  * the sweep), then its `asks` rows, then `reservations` and `store_days`
  * (`settle`, `reserveAttempt`, which also takes the store, lease and quota
- * rows after the session's). A transaction whose session is gone takes the
+ * rows after the session's), and the store's `store_totals` row last
+ * (`countConversation`). A transaction whose session is gone takes the
  * reservation directly (`failAsk`, the orphan sweep): nothing holds a later
  * row while waiting for an earlier one.
  */
@@ -636,8 +637,31 @@ export class PgState implements ServerState {
         sessionData(session),
       ]);
       await this.settle(tx, attemptId, spentUsd);
+      await this.countConversation(tx, session);
       return true;
     });
+  }
+
+  /**
+   * Count the session as one of its store's conversations on its first
+   * answered turn (7.3). Runs in the answer's transaction, under the session
+   * row lock: the answer transition happens once per ask and the flag flips
+   * once per session, so neither a retried turn nor a moved lease counts twice.
+   * `store_totals` is the last row the transaction takes (the lock order above).
+   */
+  private async countConversation(tx: Queryable, session: SessionState): Promise<void> {
+    const first = await tx.query(
+      'update sessions set counted = true where id = $1 and not counted returning 1',
+      [session.id],
+    );
+    if (first.length === 0) {
+      return;
+    }
+    await tx.query(
+      `insert into store_totals (owner, conversations) values ($1, 1)
+       on conflict (owner) do update set conversations = store_totals.conversations + 1`,
+      [session.owner],
+    );
   }
 
   async failAsk(

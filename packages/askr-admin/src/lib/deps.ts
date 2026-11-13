@@ -11,6 +11,7 @@ export type AdminClient = Pick<
   | 'createStore'
   | 'store'
   | 'storeEvents'
+  | 'storedEvents'
   | 'catalog'
   | 'putPolicy'
   | 'deletePolicy'

@@ -155,6 +155,27 @@ create table admin_auth_ids (
 create index admin_auth_ids_expiry on admin_auth_ids (expires_at);
 `,
   },
+  {
+    id: '0002_conversations',
+    sql: `
+-- A store's conversations so far (7.3). A conversation is one session (a visitor's chat with the store,
+-- up to 24 h from its first message, 5.8) that got at least one answered turn. A session is counted when
+-- its first ask is answered, in the transaction that marks it answered: the conditional transition
+-- happens once per ask, and the counted flag once per session, so a retried turn or a moved lease never counts twice.
+alter table sessions add column counted boolean not null default false;
+
+create table store_totals (
+  owner text primary key,
+  conversations bigint not null default 0 check (conversations >= 0)
+);
+
+-- Sessions still held that already got an answer are counted from the start.
+update sessions set counted = true
+where exists (select 1 from asks a where a.session_id = sessions.id and a.state = 'answered');
+insert into store_totals (owner, conversations)
+select owner, count(*) from sessions where counted group by owner;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

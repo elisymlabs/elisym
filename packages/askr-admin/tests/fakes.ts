@@ -40,6 +40,7 @@ export function storeView(overrides: Partial<StoreView> = {}): StoreView {
       today: { spent: '0.5', reserved: '0' },
       month: { spent: '10' },
       sessions: 3,
+      conversations: 12,
       clicks: [],
     },
     catalogSync: null,
@@ -97,6 +98,7 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     storeEvents: vi.fn(async (events: NostrEvent[]) => ({
       stored: events.map((event) => event.id),
     })),
+    storedEvents: vi.fn(async () => ({ events: [], truncated: false })),
     catalog: vi.fn(async () => ({ diff: EMPTY_DIFF })),
     putPolicy: vi.fn(async () => ({ id: 'p' })),
     deletePolicy: vi.fn(async () => ({ id: 'p' })),

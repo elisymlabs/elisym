@@ -366,7 +366,11 @@ export class StoreDirectory {
     return rows.length > 0;
   }
 
-  /** What the admin shows (7.3): spend today and this month, live sessions, advisory clicks. */
+  /**
+   * What the admin shows (7.3): spend today and this month, live sessions,
+   * conversations so far (sessions with at least one answered turn, counted
+   * once each: `PgState.countConversation`), advisory clicks.
+   */
   async usage(
     owner: string,
     assistant: string,
@@ -375,6 +379,7 @@ export class StoreDirectory {
     today: { spent: string; reserved: string };
     month: { spent: string };
     sessions: number;
+    conversations: number;
     clicks: { address: string; count: number }[];
   }> {
     const days = await this.db.query<{ day: number; spent: string; reserved: string }>(
@@ -387,6 +392,10 @@ export class StoreDirectory {
       'select count(*)::int8 as count from sessions where assistant = $1 and session_end > $2',
       [assistant, now],
     );
+    const [totals] = await this.db.query<{ conversations: number }>(
+      'select conversations from store_totals where owner = $1',
+      [owner],
+    );
     const clicks = await this.db.query<{ address: string; count: number }>(
       'select address, count from clicks where owner = $1 order by count desc, address limit 100',
       [owner],
@@ -398,8 +407,37 @@ export class StoreDirectory {
       },
       month: { spent: monthSpent.toString() },
       sessions: sessions?.count ?? 0,
+      conversations: totals?.conversations ?? 0,
       clicks,
     };
+  }
+
+  /**
+   * The store's own O-signed events the relay does not have yet, newest
+   * first, as stored (7.3): what the admin of a store that is not active
+   * shows its settings from. At most `MAX_UNPUBLISHED_EVENTS` (no more are
+   * ever waiting) and `maxBytes` of JSON; `truncated` when older ones were
+   * left out for the byte budget.
+   */
+  async storedEvents(
+    owner: string,
+    maxBytes: number,
+  ): Promise<{ events: NostrEvent[]; truncated: boolean }> {
+    const rows = await this.db.query<{ event: NostrEvent }>(
+      `select event from store_events where owner = $1 and not published
+       order by (event->>'created_at')::bigint desc, id limit $2`,
+      [owner, MAX_UNPUBLISHED_EVENTS],
+    );
+    const events: NostrEvent[] = [];
+    let bytes = 0;
+    for (const { event } of rows) {
+      bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
+      if (bytes > maxBytes) {
+        return { events, truncated: true };
+      }
+      events.push(event);
+    }
+    return { events, truncated: false };
   }
 
   /**

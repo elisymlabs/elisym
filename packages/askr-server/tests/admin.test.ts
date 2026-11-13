@@ -7,13 +7,14 @@ import {
 } from '@elisym/askr';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { matchFilter } from 'nostr-tools/filter';
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
-import { createAdminApi } from '../src/admin/api';
+import { MAX_READ_BACK_BYTES, createAdminApi } from '../src/admin/api';
 import { KIND_HTTP_AUTH, checkNip98, sha256Hex } from '../src/admin/nip98';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { bodyLimitOf, serveGateway } from '../src/gateway/http';
+import { MAX_UNPUBLISHED_EVENTS } from '../src/state/stores';
 import { HOLDER, NOW, ORIGIN, stateWith, storeRecord, syntheticStore } from './fixtures';
 
 const BASE = 'https://api.askr.test';
@@ -277,6 +278,7 @@ describe('admin API (7.3)', () => {
         today: { spent: '0', reserved: '0' },
         month: { spent: '0' },
         sessions: 0,
+        conversations: 0,
         clicks: [],
       },
     });
@@ -835,5 +837,131 @@ describe('server core review 2: one catalog sync per store across instances (7.3
     await expect
       .poll(async () => (await callOther('GET', '/v1/admin/store')).body.catalogSync)
       .toMatchObject({ state: 'failed', error: expect.stringContaining('relay said no') });
+  });
+});
+
+describe('read-back of stored events (7.3)', () => {
+  /** A deletion of the server K's authorization, padded to about `bytes` of content. */
+  function paddedDeletion(store: ReturnType<typeof syntheticStore>, createdAt: number, bytes = 0) {
+    return finalizeEvent(
+      {
+        kind: 5,
+        created_at: createdAt,
+        tags: [['a', `30497:${store.owner}:${store.catalogKey}`]],
+        content: 'x'.repeat(bytes),
+      },
+      store.ownerSecret,
+    );
+  }
+
+  it("returns a pending store's own stored events, newest first, exactly as O signed them", async () => {
+    const { call, store } = await setup('pending');
+    const [config, auth] = store.events;
+    const deletion = paddedDeletion(store, NOW);
+    expect(
+      (await call('POST', '/v1/admin/store/events', { events: [config, auth, deletion] })).status,
+    ).toBe(200);
+    const read = await call('GET', '/v1/admin/store/events');
+    expect(read.status).toBe(200);
+    expect(read.body.truncated).toBe(false);
+    const events: NostrEvent[] = read.body.events;
+    expect(events.map((event) => event.id)).toEqual([deletion.id, config?.id, auth?.id]);
+    expect(events.every((event) => verifyEvent(event) && event.pubkey === store.owner)).toBe(true);
+    expect(events[1]).toEqual(config);
+  });
+
+  it('shows no other owner anything: each sees only its own store, and needs one', async () => {
+    const { call, store } = await setup('pending');
+    const [config] = store.events;
+    await call('POST', '/v1/admin/store/events', { events: [config] });
+    const other = generateSecretKey();
+    expect((await call('GET', '/v1/admin/store/events', undefined, other)).status).toBe(404);
+    await call('POST', '/v1/admin/store', undefined, other);
+    expect((await call('GET', '/v1/admin/store/events', undefined, other)).body).toEqual({
+      events: [],
+      truncated: false,
+    });
+  });
+
+  it('needs a NIP-98 authorization for exactly this read', async () => {
+    const { api, store } = await setup('pending');
+    const path = '/v1/admin/store/events';
+    const send = (authorization?: string) =>
+      api({
+        request: new Request(`http://internal${path}`, {
+          headers: authorization === undefined ? {} : { authorization },
+        }),
+        clientAddress: '203.0.113.9',
+      });
+    expect((await send())?.status).toBe(401);
+    const forPost = authHeader({
+      secret: store.ownerSecret,
+      method: 'POST',
+      url: `${BASE}${path}`,
+    });
+    expect((await send(forPost))?.status).toBe(401);
+    const forStore = authHeader({
+      secret: store.ownerSecret,
+      method: 'GET',
+      url: `${BASE}/v1/admin/store`,
+    });
+    expect((await send(forStore))?.status).toBe(401);
+    const right = authHeader({ secret: store.ownerSecret, method: 'GET', url: `${BASE}${path}` });
+    expect((await send(right))?.status).toBe(200);
+  });
+
+  it('leaves out what the relay accepted: once published, the relay is the source', async () => {
+    const { call, store, directory } = await setup('pending');
+    const [config, auth] = store.events;
+    if (config === undefined || auth === undefined) {
+      throw new Error('fixture');
+    }
+    await call('POST', '/v1/admin/store/events', { events: [config, auth] });
+    await directory.markPublished(config.id);
+    const read = await call('GET', '/v1/admin/store/events');
+    expect(read.body.events.map((event: NostrEvent) => event.id)).toEqual([auth.id]);
+  });
+
+  it('answers with at most 1 MiB of events, the newest, and says when it left older ones out', async () => {
+    const { call, store } = await setup('pending');
+    const events = Array.from({ length: 20 }, (_unused, index) =>
+      paddedDeletion(store, NOW - 100 + index, 60 * 1024),
+    );
+    expect((await call('POST', '/v1/admin/store/events', { events })).status).toBe(200);
+    const read = await call('GET', '/v1/admin/store/events');
+    const returned: NostrEvent[] = read.body.events;
+    expect(read.body.truncated).toBe(true);
+    const bytes = returned.reduce((total, event) => total + JSON.stringify(event).length, 0);
+    expect(bytes).toBeLessThanOrEqual(MAX_READ_BACK_BYTES);
+    expect(returned.length).toBe(
+      Math.floor(MAX_READ_BACK_BYTES / JSON.stringify(events[0]).length),
+    );
+    expect(returned.map((event) => event.id)).toEqual(
+      events
+        .slice(-returned.length)
+        .reverse()
+        .map((event) => event.id),
+    );
+  });
+
+  it('never returns more than the events a store may have waiting', async () => {
+    const { call, store, db } = await setup('pending');
+    for (let batch = 0; batch < 3; batch += 1) {
+      const events = Array.from({ length: 15 }, (_unused, index) =>
+        paddedDeletion(store, NOW - 1000 + batch * 20 + index),
+      );
+      expect((await call('POST', '/v1/admin/store/events', { events })).status).toBe(200);
+    }
+    // More than MAX_UNPUBLISHED_EVENTS stored only by bypassing the API's cap.
+    for (let index = 0; index < 10; index += 1) {
+      const event = paddedDeletion(store, NOW - 2000 + index);
+      await db.query(
+        'insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)',
+        [event.id, store.owner, JSON.stringify(event)],
+      );
+    }
+    const read = await call('GET', '/v1/admin/store/events');
+    expect(read.body.events).toHaveLength(MAX_UNPUBLISHED_EVENTS);
+    expect(read.body.truncated).toBe(false);
   });
 });

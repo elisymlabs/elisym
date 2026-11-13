@@ -3,7 +3,12 @@ import type { NostrEvent } from 'nostr-tools';
 import { apiBase } from '../constants';
 import { nip98Header } from './nip98';
 import type { Signer } from './signer';
-import type { ConnectorRecord, ConnectorSyncResult, StoreView } from './types';
+import type {
+  ConnectorRecord,
+  ConnectorSyncResult,
+  StoreView,
+  StoredEventsRead,
+} from './types';
 
 /** An admin API refusal (`packages/askr-server/src/admin/api.ts`), or `network` when no answer came. */
 export class ApiError extends Error {
@@ -107,6 +112,11 @@ export class AdminApi {
 
   storeEvents(events: NostrEvent[]): Promise<{ stored: string[] }> {
     return this.call('POST', '/v1/admin/store/events', { events });
+  }
+
+  /** What O signed and the server holds for the relay: a store that is not active shows it (7.3). */
+  storedEvents(): Promise<StoredEventsRead> {
+    return this.call('GET', '/v1/admin/store/events');
   }
 
   catalog(

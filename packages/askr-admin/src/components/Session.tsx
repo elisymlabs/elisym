@@ -1,10 +1,12 @@
 import type { StoreConfig } from '@elisym/askr';
-import { useCallback, useEffect, useState } from 'react';
+import type { NostrEvent } from 'nostr-tools';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../lib/api';
 import { type SessionDeps, syncPollMs } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { readConfig } from '../lib/store-data';
-import type { StoreView } from '../lib/types';
+import { ownSignedEvents, withStoredEvents } from '../lib/stored-events';
+import type { StoreStatus, StoreView } from '../lib/types';
 import { Notice } from './Notice';
 import { Onboarding } from './Onboarding';
 import { Shell } from './Shell';
@@ -20,7 +22,11 @@ type Load =
   | { state: 'failed'; error: string }
   | { state: 'ready'; view: StoreView };
 
-/** A signed-in owner: their store from the API and its config from the relay. */
+/**
+ * A signed-in owner: their store from the API and its config from the relay,
+ * or, while the store is not active, from what O signed and the server holds
+ * for the relay (7.3).
+ */
 export function Session({ deps, onSignOut }: Props) {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
   const [config, setConfig] = useState<StoreConfig>();
@@ -29,10 +35,15 @@ export function Session({ deps, onSignOut }: Props) {
   /** The date of a newest config that does not parse: a new one must be dated after it. */
   const [unreadableAt, setUnreadableAt] = useState<number>();
   const [reloadWarning, setReloadWarning] = useState('');
+  /** The owner's stored events in use: none once the store is active (the relay is the source). */
+  const [stored, setStored] = useState<NostrEvent[]>([]);
+  /** The store's state as last read, for the config read that follows. */
+  const status = useRef<StoreStatus | undefined>(undefined);
 
   const reload = useCallback(async () => {
     try {
       const view = await deps.api.store();
+      status.current = view.status;
       setLoad({ state: 'ready', view });
       setReloadWarning('');
     } catch (error) {
@@ -50,8 +61,20 @@ export function Session({ deps, onSignOut }: Props) {
   }, [deps]);
 
   const reloadConfig = useCallback(async () => {
+    let own: NostrEvent[] = [];
+    if (status.current !== undefined && status.current !== 'active') {
+      try {
+        own = ownSignedEvents((await deps.api.storedEvents()).events, deps.signer.pubkey);
+      } catch (error) {
+        setConfigError(`Your saved settings could not be read: ${errorMessage(error)}`);
+        setConfigRead(true);
+        return;
+      }
+    }
+    setStored(own);
     try {
-      const read = await readConfig(deps.reader, deps.signer.pubkey, deps.now());
+      const reader = withStoredEvents(deps.reader, own);
+      const read = await readConfig(reader, deps.signer.pubkey, deps.now());
       if (read.state === 'unreadable') {
         setConfig(read.fallback);
         setUnreadableAt(read.newestAt);
@@ -67,10 +90,21 @@ export function Session({ deps, onSignOut }: Props) {
     }
   }, [deps]);
 
-  useEffect(() => {
-    void reload();
-    void reloadConfig();
+  // The store first: its state decides where the config is read from.
+  const reloadAll = useCallback(async () => {
+    await reload();
+    await reloadConfig();
   }, [reload, reloadConfig]);
+
+  useEffect(() => {
+    void reloadAll();
+  }, [reloadAll]);
+
+  // The sections read authorizations through the same reader as the config.
+  const shellDeps = useMemo(
+    () => (stored.length === 0 ? deps : { ...deps, reader: withStoredEvents(deps.reader, stored) }),
+    [deps, stored],
+  );
 
   const syncRunning = load.state === 'ready' && load.view.catalogSync?.state === 'running';
   useEffect(() => {
@@ -89,7 +123,7 @@ export function Session({ deps, onSignOut }: Props) {
       <main className="mx-auto flex max-w-560 flex-col gap-12 p-24">
         <Notice tone="error">{load.error}</Notice>
         <div className="flex gap-8">
-          <button type="button" className="btn" onClick={() => void reload()}>
+          <button type="button" className="btn" onClick={() => void reloadAll()}>
             Retry
           </button>
           <button type="button" className="btn" onClick={onSignOut}>
@@ -113,19 +147,17 @@ export function Session({ deps, onSignOut }: Props) {
         deps={deps}
         view={view}
         onCreated={(created) => setLoad({ state: 'ready', view: created })}
-        onDone={async () => {
-          await reload();
-          await reloadConfig();
-        }}
+        onDone={reloadAll}
         onSignOut={onSignOut}
       />
     );
   }
   return (
     <Shell
-      deps={deps}
+      deps={shellDeps}
       view={view}
       config={config}
+      configFromServer={stored.length > 0}
       configError={configError}
       configUnreadableAt={unreadableAt}
       reloadWarning={reloadWarning}

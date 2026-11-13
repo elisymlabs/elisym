@@ -19,6 +19,8 @@ interface Props {
   view: StoreView;
   /** The published config, if the relay has one. */
   config: StoreConfig | undefined;
+  /** The config is read from what the server holds for the relay (a store that is not active). */
+  configFromServer: boolean;
   configError: string;
   /** Set when the relay's newest config does not parse: its date (`config` is then an older one). */
   configUnreadableAt: number | undefined;
@@ -33,6 +35,7 @@ export function Shell({
   deps,
   view,
   config,
+  configFromServer,
   configError,
   configUnreadableAt,
   reloadWarning,
@@ -47,7 +50,7 @@ export function Shell({
   };
   let content;
   if (tab === 'overview') {
-    content = <Overview view={view} config={config} />;
+    content = <Overview view={view} config={config} configFromServer={configFromServer} />;
   } else if (tab === 'settings') {
     content = (
       <SettingsSection
