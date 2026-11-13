@@ -7,6 +7,7 @@ autolinks
 auxe
 backgrounded
 bankr
+baseten
 bech
 behaviour
 Birdeye
@@ -36,6 +37,7 @@ dedup
 deduplicate
 deduplicated
 deduplicates
+deepinfra
 deepseek
 defence
 devnet
@@ -128,6 +130,7 @@ preimage
 pubkey
 pubkeys
 purplepag
+qwen
 ratatui
 recompile
 recompiles
@@ -288,6 +291,3 @@ bytea
 xact
 timestamptz
 unlisten
-baseten
-deepinfra
-qwen
