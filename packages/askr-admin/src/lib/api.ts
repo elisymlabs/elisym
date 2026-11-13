@@ -125,8 +125,9 @@ export class AdminApi {
   }
 
   /**
-   * The widget bundle's pinned path and integrity. Public, so not signed: no
-   * extension prompt for it.
+   * The widget bundle's pinned address and integrity. Public, so not signed:
+   * no extension prompt for it. The path is checked strictly, as it ends up
+   * in an HTML attribute the merchant pastes.
    */
   async pinnedWidget(): Promise<PinnedWidget> {
     let response: Response;
@@ -145,7 +146,8 @@ export class AdminApi {
     ) {
       throw new ApiError(response.status, 'unexpected');
     }
-    return { path: parsed.path, integrity: parsed.integrity };
+    // The host it was read from, so the snippet names the server that has this bundle.
+    return { src: `${this.base}${parsed.path}`, integrity: parsed.integrity };
   }
 
   catalog(

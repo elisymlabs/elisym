@@ -3,7 +3,9 @@ import { generateSecretKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { WIDGET_INFO_PATH, type WidgetSource, createGateway } from '../src/gateway/gateway';
 import {
+  MAX_CACHED_MISSES,
   MAX_CACHED_VERSIONS,
+  MISS_TTL_MS,
   WidgetVersions,
   pinnedIdOf,
   widgetBundle,
@@ -146,10 +148,10 @@ describe('widget versions in the database (6)', () => {
     const bundle = widgetBundle(SCRIPT);
     await new WidgetVersions(db).record(bundle, NOW);
     await new WidgetVersions(db).record(bundle, NOW + 10);
-    const rows = await db.query<{ first_served_at: number; integrity: string }>(
-      'select first_served_at, integrity from widget_versions',
+    const rows = await db.query<{ first_served_at: number; script: string }>(
+      'select first_served_at, script from widget_versions',
     );
-    expect(rows).toEqual([{ first_served_at: NOW, integrity: bundle.integrity }]);
+    expect(rows).toEqual([{ first_served_at: NOW, script: SCRIPT }]);
   });
 
   it('reads a version from the database once, then from memory', async () => {
@@ -163,7 +165,7 @@ describe('widget versions in the database (6)', () => {
     expect(await new WidgetVersions(db).script(bundle.id)).toBeUndefined();
   });
 
-  it('keeps a bounded number of versions in memory, dropping the oldest read', async () => {
+  it('keeps a bounded number of versions in memory, first in first out by first read', async () => {
     const db = await freshDb();
     const bundles = Array.from({ length: MAX_CACHED_VERSIONS + 1 }, (_unused, index) =>
       widgetBundle(`/* release ${index} */`),
@@ -179,5 +181,91 @@ describe('widget versions in the database (6)', () => {
     expect(await versions.script(oldest?.id ?? '')).toBeUndefined();
     expect(await versions.script(newest?.id ?? '')).toBe(newest?.script);
     expect(await versions.script(bundles[1]?.id ?? '')).toBe(bundles[1]?.script);
+  });
+
+  it('remembers a missed id for a short while, so repeated misses cost no query', async () => {
+    const db = await freshDb();
+    const clock = { now: 1_000_000 };
+    const versions = new WidgetVersions(db, () => clock.now);
+    const bundle = widgetBundle(SCRIPT);
+    expect(await versions.script(bundle.id)).toBeUndefined();
+    // Recorded meanwhile (another instance of a newer release): the miss holds until its time is up.
+    await new WidgetVersions(db).record(bundle, NOW);
+    expect(await versions.script(bundle.id)).toBeUndefined();
+    clock.now += MISS_TTL_MS - 1;
+    expect(await versions.script(bundle.id)).toBeUndefined();
+    clock.now += 1;
+    expect(await versions.script(bundle.id)).toBe(SCRIPT);
+  });
+
+  it('remembers a bounded number of misses, first in first out', async () => {
+    const db = await freshDb();
+    const versions = new WidgetVersions(db, () => 0);
+    const ids = Array.from({ length: MAX_CACHED_MISSES + 1 }, (_unused, index) =>
+      index.toString(16).padStart(32, '0'),
+    );
+    for (const id of ids) {
+      expect(await versions.script(id)).toBeUndefined();
+    }
+    const first = ids[0] ?? '';
+    const second = ids[1] ?? '';
+    await db.query(
+      `insert into widget_versions (id, script, first_served_at) values ($1, 'first', 0), ($2, 'second', 0)`,
+      [first, second],
+    );
+    // The first miss was dropped to make room: it is looked up again; the second is still remembered.
+    expect(await versions.script(first)).toBe('first');
+    expect(await versions.script(second)).toBeUndefined();
+  });
+});
+
+describe('widget paths for HEAD and under load (6)', () => {
+  it('answers HEAD on every widget path like GET, without a body', async () => {
+    const earlier = widgetBundle('/* the last release */');
+    const current = widgetBundle(SCRIPT);
+    const get = await gatewayWith({
+      current,
+      earlier: async (id) => (id === earlier.id ? earlier.script : undefined),
+    });
+    for (const path of ['/widget.js', current.path, earlier.path, WIDGET_INFO_PATH]) {
+      const head = await get(path, 'HEAD');
+      const full = await get(path);
+      expect(head.status).toBe(200);
+      expect([...head.headers]).toEqual([...full.headers]);
+      expect(await head.text()).toBe('');
+    }
+    expect((await get(`/widget/${'0'.repeat(32)}.js`, 'HEAD')).status).toBe(404);
+  });
+
+  it('limits lookups of earlier bundles per IP, never the current one', async () => {
+    const current = widgetBundle(SCRIPT);
+    let lookups = 0;
+    const { state } = await stateWith([storeRecord(syntheticStore())]);
+    const handler = createGateway({
+      state,
+      gatewaySecretKey: generateSecretKey(),
+      configFor: () => undefined,
+      isListed: () => false,
+      isUnservable: () => false,
+      reserveUsd: '0.25',
+      now: () => NOW,
+      widget: {
+        current,
+        earlier: async () => {
+          lookups += 1;
+          return undefined;
+        },
+      },
+    });
+    const get = (path: string, clientAddress = '203.0.113.7') =>
+      handler({ request: new Request(`http://localhost${path}`), clientAddress });
+    const missing = `/widget/${'0'.repeat(32)}.js`;
+    for (let index = 0; index < 60; index += 1) {
+      expect((await get(missing)).status).toBe(404);
+    }
+    expect((await get(missing)).status).toBe(429);
+    expect(lookups).toBe(60);
+    expect((await get(current.path)).status).toBe(200);
+    expect((await get(missing, '198.51.100.4')).status).toBe(404);
   });
 });

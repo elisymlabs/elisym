@@ -10,6 +10,8 @@ import { type WidgetBundle, pinnedIdOf } from './widget';
 /** Tickets per IP (or IPv6 /64) per minute. */
 const TICKETS_PER_IP_PER_MINUTE = 20;
 const CLICKS_PER_IP_PER_MINUTE = 60;
+/** Lookups of earlier pinned bundles per IP per minute: each may cost a query. */
+const EARLIER_WIDGETS_PER_IP_PER_MINUTE = 60;
 const MINUTE_MS = 60_000;
 const MAX_BODY_BYTES = 16 * 1024;
 /** Short, so a widget release reaches every store's site within minutes. */
@@ -127,6 +129,46 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
   const ticketsPerIp = new WindowLimiter(TICKETS_PER_IP_PER_MINUTE, MINUTE_MS);
   const ticketsPerStore = new WindowLimiter(0, MINUTE_MS);
   const clicksPerIp = new WindowLimiter(CLICKS_PER_IP_PER_MINUTE, MINUTE_MS);
+  const earlierWidgetsPerIp = new WindowLimiter(EARLIER_WIDGETS_PER_IP_PER_MINUTE, MINUTE_MS);
+
+  /** A widget path's answer for GET, or HEAD with its headers and no body; undefined for another path. */
+  const widgetFile = async (
+    widget: WidgetSource,
+    clientAddress: string,
+    pathname: string,
+  ): Promise<Response | undefined> => {
+    if (pathname === '/widget.js') {
+      return new Response(widget.current.script, {
+        status: 200,
+        headers: { ...WIDGET_HEADERS, 'cache-control': `public, max-age=${WIDGET_MAX_AGE_SECS}` },
+      });
+    }
+    if (pathname === WIDGET_INFO_PATH) {
+      return new Response(
+        JSON.stringify({ path: widget.current.path, integrity: widget.current.integrity }),
+        {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'cache-control': 'no-cache',
+            'access-control-allow-origin': '*',
+          },
+        },
+      );
+    }
+    const pinnedId = pinnedIdOf(pathname);
+    if (pinnedId === undefined) {
+      return undefined;
+    }
+    if (pinnedId === widget.current.id) {
+      return pinnedWidget(widget.current.script);
+    }
+    if (!earlierWidgetsPerIp.hit(ipKey(clientAddress), now() * 1000)) {
+      return json({ error: 'rate_limited' }, 429);
+    }
+    const script = await widget.earlier(pinnedId);
+    return script === undefined ? undefined : pinnedWidget(script);
+  };
 
   const allowedOrigin = (config: StoreConfig | undefined, origin: string | null) =>
     config !== undefined && origin !== null && config.origins.includes(origin) ? origin : undefined;
@@ -236,33 +278,13 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
       });
     }
     const { widget } = deps;
-    if (input.request.method === 'GET' && widget !== undefined) {
-      if (url.pathname === '/widget.js') {
-        return new Response(widget.current.script, {
-          status: 200,
-          headers: { ...WIDGET_HEADERS, 'cache-control': `public, max-age=${WIDGET_MAX_AGE_SECS}` },
-        });
-      }
-      if (url.pathname === WIDGET_INFO_PATH) {
-        return new Response(
-          JSON.stringify({ path: widget.current.path, integrity: widget.current.integrity }),
-          {
-            status: 200,
-            headers: {
-              'content-type': 'application/json',
-              'cache-control': 'no-cache',
-              'access-control-allow-origin': '*',
-            },
-          },
-        );
-      }
-      const pinnedId = pinnedIdOf(url.pathname);
-      if (pinnedId !== undefined) {
-        const script =
-          pinnedId === widget.current.id ? widget.current.script : await widget.earlier(pinnedId);
-        if (script !== undefined) {
-          return pinnedWidget(script);
-        }
+    const method = input.request.method;
+    if ((method === 'GET' || method === 'HEAD') && widget !== undefined) {
+      const served = await widgetFile(widget, input.clientAddress, url.pathname);
+      if (served !== undefined) {
+        return method === 'HEAD'
+          ? new Response(null, { status: served.status, headers: served.headers })
+          : served;
       }
     }
     if (input.request.method === 'POST' && url.pathname === '/v1/session') {

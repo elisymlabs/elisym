@@ -17,7 +17,7 @@ export const SERVER_KEY = getPublicKey(SERVER_KEY_SECRET);
 export const ASSISTANT = getPublicKey(generateSecretKey());
 export const NOW = 1_800_000_000;
 export const PINNED_WIDGET = {
-  path: `/widget/${'0123456789abcdef'.repeat(2)}.js`,
+  src: `https://api.askr.example/widget/${'0123456789abcdef'.repeat(2)}.js`,
   integrity: `sha384-${'A'.repeat(64)}`,
 };
 

@@ -169,7 +169,9 @@ create table store_totals (
   conversations bigint not null default 0 check (conversations >= 0)
 );
 
--- Sessions still held that already got an answer are counted from the start.
+-- Sessions still held that already got an answer are counted from the start; ones already swept are
+-- gone, so the count starts around this upgrade. An instance still on the old code answers without
+-- counting, so the upgrade should not run old and new instances side by side (v1 runs one).
 update sessions set counted = true
 where exists (select 1 from asks a where a.session_id = sessions.id and a.state = 'answered');
 insert into store_totals (owner, conversations)
@@ -184,8 +186,6 @@ select owner, count(*) from sessions where counted group by owner;
 create table widget_versions (
   -- The first 32 lowercase hex characters of the bundle's SHA-384: its path is /widget/<id>.js.
   id text primary key,
-  -- The SRI value of the whole digest, sha384-<base64>.
-  integrity text not null,
   script text not null,
   first_served_at bigint not null
 );

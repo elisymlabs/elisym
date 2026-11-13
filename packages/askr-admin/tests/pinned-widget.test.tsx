@@ -1,4 +1,3 @@
-import { ASKR_API_BASE } from '@elisym/askr';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { widgetBundle } from '../../askr-server/src/gateway/widget';
 import { EmbedSection } from '../src/components/EmbedSection';
@@ -39,7 +38,11 @@ describe('the pinned widget the server serves', () => {
         }),
       seen,
     );
-    expect(await api.pinnedWidget()).toEqual({ path: bundle.path, integrity: bundle.integrity });
+    // Addressed on the host it was read from, which is the server that has this bundle.
+    expect(await api.pinnedWidget()).toEqual({
+      src: `${BASE}${bundle.path}`,
+      integrity: bundle.integrity,
+    });
     expect(new Headers(seen[0]?.headers).get('authorization')).toBeNull();
     expect(seen[0]?.cache).toBe('no-store');
   });
@@ -49,6 +52,17 @@ describe('the pinned widget the server serves', () => {
     const answers = [
       { path: '/widget.js', integrity: bundle.integrity },
       { path: `https://evil.example${bundle.path}`, integrity: bundle.integrity },
+      { path: `${bundle.path}?x=1`, integrity: bundle.integrity },
+      { path: `/widget/${bundle.id}.js" onload="alert(1)`, integrity: bundle.integrity },
+      { path: `/widget/x" onload="alert(1)`, integrity: bundle.integrity },
+      { path: '/widget/abc.js', integrity: bundle.integrity },
+      { path: `/widget/${bundle.id.toUpperCase()}.js`, integrity: bundle.integrity },
+      { path: `/widget/${bundle.id.slice(1)}.js`, integrity: bundle.integrity },
+      { path: `/widget/${bundle.id}0.js`, integrity: bundle.integrity },
+      { path: `/widget/${bundle.id}.mjs`, integrity: bundle.integrity },
+      { path: `/widgets/${bundle.id}.js`, integrity: bundle.integrity },
+      { path: `/x/widget/${bundle.id}.js`, integrity: bundle.integrity },
+      { path: `/widget/${bundle.id}.js\n`, integrity: bundle.integrity },
       { path: bundle.path, integrity: bundle.integrity.replace('sha384-', 'sha256-') },
       { path: bundle.path, integrity: `${bundle.integrity}" onload="alert(1)` },
       { path: bundle.path },
@@ -68,10 +82,20 @@ describe('the pinned widget the server serves', () => {
     await expect(offline.pinnedWidget()).rejects.toMatchObject({ code: 'network' });
   });
 
+  it('escapes every attribute value of the pinned snippet, whatever it is given', () => {
+    const snippet = pinnedScriptSnippet('npub1"x', {
+      src: 'https://a.example/widget/x" onload="alert(1)&<b>',
+      integrity: 'sha384-"><script>',
+    });
+    expect(snippet).toBe(
+      '<script src="https://a.example/widget/x&quot; onload=&quot;alert(1)&amp;&lt;b&gt;" integrity="sha384-&quot;&gt;&lt;script&gt;" crossorigin="anonymous" data-store="npub1&quot;x" async></script>',
+    );
+  });
+
   it('the pinned snippet names the exact bundle with its integrity, loaded anonymously', () => {
     const npub = npubOf(OWNER);
     expect(pinnedScriptSnippet(npub, PINNED_WIDGET)).toBe(
-      `<script src="${ASKR_API_BASE}${PINNED_WIDGET.path}" integrity="${PINNED_WIDGET.integrity}" crossorigin="anonymous" data-store="${npub}" async></script>`,
+      `<script src="${PINNED_WIDGET.src}" integrity="${PINNED_WIDGET.integrity}" crossorigin="anonymous" data-store="${npub}" async></script>`,
     );
   });
 });
