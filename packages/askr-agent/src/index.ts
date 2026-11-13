@@ -8,7 +8,6 @@ export {
 } from './catalog/store-catalog';
 export { FENCE_RULE, fence, sanitizeText } from './fence';
 export {
-  ANTHROPIC_MIN_MAX_TOKENS,
   type AnthropicConfig,
   EFFORTS,
   type Effort,
@@ -58,4 +57,12 @@ export {
 export { SKILL_NAMES, skillIndex, skillText } from './skills';
 export { sanitizeAnswerText } from './text-sanitize';
 export { MAX_SEARCH_RESULTS, TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
-export { MAX_TOOL_ROUNDS, TurnError, type TurnInput, type TurnOutput, runTurn } from './turn';
+export {
+  DEFAULT_MAX_TOKENS,
+  MAX_MODEL_CALLS_PER_TURN,
+  MAX_TOOL_ROUNDS,
+  TurnError,
+  type TurnInput,
+  type TurnOutput,
+  runTurn,
+} from './turn';

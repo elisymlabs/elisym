@@ -10,12 +10,6 @@ import {
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
-/**
- * Claude Haiku / Sonnet / Opus 5.5 think by default (Opus 5.5 cannot turn it
- * off), and thinking counts toward max_tokens: a cap sized for a short answer
- * can end the response before any text. The floor leaves room for both.
- */
-export const ANTHROPIC_MIN_MAX_TOKENS = 16_000;
 
 // cspell:disable-next-line
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -25,12 +19,13 @@ export interface AnthropicConfig {
   apiKey: string;
   model: string;
   /**
-   * `output_config.effort`: how much the model thinks. Unset leaves the model's
-   * default (medium on Opus and Haiku 5.5, high on Sonnet 5.5).
+   * `output_config.effort`: how much the model thinks. Claude Haiku, Sonnet and
+   * Opus 5.5 think by default (Opus 5.5 cannot turn it off), and the thinking
+   * counts toward max_tokens, which stays the caller's: a lower effort is how a
+   * short answer fits. Unset leaves the model's default (medium on Opus and
+   * Haiku 5.5, high on Sonnet 5.5).
    */
   effort?: Effort;
-  /** The max_tokens floor (thinking counts toward it); ANTHROPIC_MIN_MAX_TOKENS by default. */
-  minMaxTokens?: number;
   baseUrl?: string;
   fetch?: typeof fetch;
 }
@@ -93,7 +88,8 @@ export function createAnthropicProvider(config: AnthropicConfig): LlmProvider {
     async turn(request: TurnRequest): Promise<TurnResponse> {
       const body: Record<string, unknown> = {
         model: config.model,
-        max_tokens: Math.max(request.maxTokens, config.minMaxTokens ?? ANTHROPIC_MIN_MAX_TOKENS),
+        // The caller's ceiling, never raised: the server sizes its spend reservation on it.
+        max_tokens: request.maxTokens,
         // No temperature / top_p / top_k: Opus 5.5 rejects them, Haiku and Sonnet 5.5 reject
         // non-default values, and API version 2026-10-21 rejects them on every model.
         ...(config.effort ? { output_config: { effort: config.effort } } : {}),

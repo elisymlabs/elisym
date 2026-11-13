@@ -19,7 +19,14 @@ import { TOOL_SPECS, type TurnState, executeTool, newTurnState } from './tools';
 
 /** Tool rounds per turn before a forced no-tool round (5.5). */
 export const MAX_TOOL_ROUNDS = 6;
-const DEFAULT_MAX_TOKENS = 2_048;
+/**
+ * The most model calls one turn makes: the tool rounds (counted across the
+ * price-check re-run) plus the closing no-tool call of the first loop and of
+ * the re-run. A turn's output spend is at most this times max_tokens.
+ */
+export const MAX_MODEL_CALLS_PER_TURN = MAX_TOOL_ROUNDS + 2;
+/** Per model call, thinking included on models that think. */
+export const DEFAULT_MAX_TOKENS = 2_048;
 const VISITOR_FENCE_CHARS = 4_000;
 const MAX_STRIP_PASSES = 32;
 

@@ -82,6 +82,8 @@ export interface WorkerDeps {
    * its daily budget by at most the last model call of each turn in flight.
    */
   reserveUsd: string;
+  /** max_tokens per model call, thinking included; runTurn's default when absent. */
+  maxTokens?: number;
   /** A history read with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
   /** Pay Core default relays' timeouts (5.1); tests shorten them. */
@@ -558,6 +560,7 @@ export class Worker {
         earlierVisitorMessages: session.visitorMessages,
         earlierPolicyPassages: session.policyPassages,
         earlierAllowedIds: session.allowedIds,
+        ...(this.deps.maxTokens === undefined ? {} : { maxTokens: this.deps.maxTokens }),
         signal: controller.signal,
         onStatus: (text) => {
           void this.send(

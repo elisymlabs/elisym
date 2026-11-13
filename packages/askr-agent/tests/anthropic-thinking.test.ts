@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { ANTHROPIC_MIN_MAX_TOKENS, createAnthropicProvider } from '../src/llm/anthropic';
+import { createAnthropicProvider } from '../src/llm/anthropic';
 import type { LlmProvider, TurnRequest, TurnResponse } from '../src/llm/types';
-import { TurnError, runTurn } from '../src/turn';
+import { MAX_MODEL_CALLS_PER_TURN, MAX_TOOL_ROUNDS, TurnError, runTurn } from '../src/turn';
 import { NOW, catalog, toolCall } from './fixtures';
 
 /**
@@ -45,7 +45,7 @@ function anthropicFetch(replies: Record<string, unknown>[]) {
 const REQUEST: TurnRequest = { system: [{ text: 'S' }], messages: [], tools: [], maxTokens: 2_048 };
 
 describe('the Anthropic adapter on models that think by default', () => {
-  it('sends no sampling parameters, the 2023-06-01 version, and a max_tokens floor for thinking', async () => {
+  it('sends no sampling parameters, the 2023-06-01 version, and the caller max_tokens unraised', async () => {
     const { doFetch, requests } = anthropicFetch([
       { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: USAGE },
     ]);
@@ -58,7 +58,8 @@ describe('the Anthropic adapter on models that think by default', () => {
     await provider.turn({ ...REQUEST, maxTokens: 40_000 });
     const [small, large] = requests;
     expect(small?.headers.get('anthropic-version')).toBe('2023-06-01');
-    expect(small?.body.max_tokens).toBe(ANTHROPIC_MIN_MAX_TOKENS);
+    // Never raised: the server sizes the turn's spend reservation on this ceiling.
+    expect(small?.body.max_tokens).toBe(2_048);
     expect(large?.body.max_tokens).toBe(40_000);
     for (const key of ['temperature', 'top_p', 'top_k', 'thinking', 'output_config']) {
       expect(small?.body, key).not.toHaveProperty(key);
@@ -74,11 +75,10 @@ describe('the Anthropic adapter on models that think by default', () => {
       apiKey: 'k',
       model: 'claude-opus-5-5',
       effort: 'low',
-      minMaxTokens: 8_000,
       fetch: doFetch,
     }).turn(REQUEST);
     expect(requests[0]?.body.output_config).toEqual({ effort: 'low' });
-    expect(requests[0]?.body.max_tokens).toBe(8_000);
+    expect(requests[0]?.body.max_tokens).toBe(2_048);
   });
 
   it('keeps thinking blocks, empty text included, in order with text and tool calls', async () => {
@@ -235,5 +235,47 @@ describe('the price-check correction replays the answer turn', () => {
       role: 'assistant',
       content: [{ type: 'text', text: 'Only $99.' }],
     });
+  });
+});
+
+describe('a turn makes at most MAX_MODEL_CALLS_PER_TURN model calls', () => {
+  function counting(
+    textFor: (call: number, forced: boolean) => string,
+    tools: (call: number) => boolean,
+  ) {
+    let calls = 0;
+    const provider: LlmProvider = {
+      model: 'counting',
+      turn: async (request) => {
+        calls += 1;
+        const forced = request.toolChoice === 'none';
+        return {
+          text: textFor(calls, forced),
+          toolCalls: !forced && tools(calls) ? [toolCall('search_products', { query: 'x' })] : [],
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 },
+        };
+      },
+    };
+    return { provider, calls: () => calls };
+  }
+
+  it('every tool round in the first loop, then the price-check re-run', async () => {
+    const run = counting(
+      () => 'Only $99.',
+      () => true,
+    );
+    await runTurn(baseInput(run.provider));
+    expect(MAX_MODEL_CALLS_PER_TURN).toBe(MAX_TOOL_ROUNDS + 2);
+    expect(run.calls()).toBe(MAX_MODEL_CALLS_PER_TURN);
+  });
+
+  it('no tool round first, every tool round in the re-run', async () => {
+    const run = counting(
+      () => 'Only $99.',
+      (call) => call > 1,
+    );
+    await runTurn(baseInput(run.provider));
+    expect(run.calls()).toBe(MAX_MODEL_CALLS_PER_TURN);
   });
 });

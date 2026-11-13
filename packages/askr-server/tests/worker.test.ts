@@ -7,6 +7,7 @@ import {
   unwrapChatMessage,
 } from '@elisym/askr';
 import {
+  DEFAULT_MAX_TOKENS,
   type LlmProvider,
   type TurnRequest,
   type TurnResponse,
@@ -144,6 +145,7 @@ async function harness(input: {
   provider?: LlmProvider;
   records?: StoreSpec[];
   reserveUsd?: string;
+  maxTokens?: number;
   historyTimeoutMs?: number;
   extraRelayBudgetMs?: number;
   stableConnectionMs?: number;
@@ -177,6 +179,7 @@ async function harness(input: {
     price: PRICE,
     holder: HOLDER,
     reserveUsd: input.reserveUsd ?? '0.25',
+    ...(input.maxTokens === undefined ? {} : { maxTokens: input.maxTokens }),
     now: () => clock.now,
     log: (message) => logs.push(message),
     ...(input.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: input.historyTimeoutMs }),
@@ -238,6 +241,26 @@ describe('worker turns (5.8)', () => {
       spent: costOf(SMALL_USAGE, PRICE).toString(),
       reserved: '0',
     });
+  });
+
+  it('asks the model with the configured max_tokens, runTurn default otherwise', async () => {
+    const variants: Array<{ maxTokens?: number; expected: number }> = [
+      { maxTokens: 777, expected: 777 },
+      { expected: DEFAULT_MAX_TOKENS },
+    ];
+    for (const { maxTokens, expected } of variants) {
+      const store = syntheticStore();
+      const provider = scriptedProvider(['Here.']);
+      const setup = await harness({
+        stores: [store],
+        provider,
+        ...(maxTokens === undefined ? {} : { maxTokens }),
+      });
+      ask(setup, store, generateSecretKey(), 'a9'.repeat(16));
+      await waitUntil(() => provider.requests.length === 1);
+      await setup.worker.idle();
+      expect(provider.requests[0]?.maxTokens).toBe(expected);
+    }
   });
 
   it('re-publishes the stored answer for a repeated ask id, with no new turn', async () => {
