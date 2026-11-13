@@ -7,17 +7,27 @@ export {
   topAttrs,
 } from './catalog/store-catalog';
 export { FENCE_RULE, fence, sanitizeText } from './fence';
-export { type AnthropicConfig, createAnthropicProvider } from './llm/anthropic';
+export {
+  ANTHROPIC_MIN_MAX_TOKENS,
+  type AnthropicConfig,
+  EFFORTS,
+  type Effort,
+  createAnthropicProvider,
+} from './llm/anthropic';
 export {
   type OpenAiCompatibleConfig,
   createOpenAiCompatibleProvider,
 } from './llm/openai-compatible';
 export {
   type ContentBlock,
+  DECLINED_STOP_REASONS,
   type LlmMessage,
   type LlmProvider,
   type ModelPrice,
+  type RedactedThinkingBlock,
   type SystemBlock,
+  TRUNCATED_STOP_REASONS,
+  type ThinkingBlock,
   type ToolChoice,
   type ToolSpec,
   type TurnRequest,

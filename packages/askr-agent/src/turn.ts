@@ -2,7 +2,10 @@ import { type Answer, LIMITS, fitAnswer, parseAddress } from '@elisym/askr';
 import type { StoreCatalog } from './catalog/store-catalog';
 import { fence, sanitizeText } from './fence';
 import {
+  type ContentBlock,
+  DECLINED_STOP_REASONS,
   type LlmMessage,
+  TRUNCATED_STOP_REASONS,
   type LlmProvider,
   type ToolResultBlock,
   type Usage,
@@ -70,6 +73,20 @@ export class TurnError extends Error {
     super(reason instanceof Error ? reason.message : 'The turn failed');
     this.name = 'TurnError';
   }
+}
+
+/**
+ * The final assistant turn as sent back before the price-check correction: as
+ * returned, thinking included, when it is a plain answer. A forced round the
+ * model answered with tool calls anyway cannot go back as is (a tool_use needs
+ * its result), so it is rebuilt from the text.
+ */
+function replayOf(content: readonly ContentBlock[], text: string): ContentBlock[] {
+  const plain = { type: 'text' as const, text: text || '(no text)' };
+  if (content.some((block) => block.type === 'tool_use')) {
+    return [plain];
+  }
+  return content.some((block) => block.type === 'text') ? [...content] : [...content, plain];
 }
 
 function correctionMessage(violations: readonly PriceViolation[]): string {
@@ -141,9 +158,21 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       });
       modelCalls += 1;
       usage = addUsage(usage, response.usage);
+      // Fail closed: a cut-off text or tool call is no answer, and neither is a declined one.
+      if (TRUNCATED_STOP_REASONS.includes(response.stopReason)) {
+        throw new Error(`The model stopped at max_tokens (${response.stopReason})`);
+      }
+      if (DECLINED_STOP_REASONS.includes(response.stopReason)) {
+        throw new Error(`The model declined the request (${response.stopReason})`);
+      }
+      // Sent back unchanged in this turn: thinking blocks stay with the tool calls they led to.
+      const assistantContent: ContentBlock[] = response.assistantContent ?? [
+        ...(response.text ? [{ type: 'text' as const, text: response.text }] : []),
+        ...response.toolCalls,
+      ];
       // A model that still calls tools on the forced round is not obeyed: its text is the answer.
       if (response.toolCalls.length === 0 || forceText) {
-        return { text: response.text, state, messages };
+        return { text: response.text, state, messages, assistantContent };
       }
       toolRounds += 1;
       const results: ToolResultBlock[] = response.toolCalls.map((call) => {
@@ -164,13 +193,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       }
       messages = [
         ...messages,
-        {
-          role: 'assistant',
-          content: [
-            ...(response.text ? [{ type: 'text' as const, text: response.text }] : []),
-            ...response.toolCalls,
-          ],
-        },
+        { role: 'assistant', content: assistantContent },
         { role: 'user', content: results },
       ];
     }
@@ -206,7 +229,7 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
     if (violations.length > 0) {
       const retry = await runLoop([
         ...first.messages,
-        { role: 'assistant', content: [{ type: 'text', text: first.text || '(no text)' }] },
+        { role: 'assistant', content: replayOf(first.assistantContent, first.text) },
         { role: 'user', content: [{ type: 'text', text: correctionMessage(violations) }] },
       ]);
       // A re-run that only rewrites its text keeps what it did not redo, field by field.
