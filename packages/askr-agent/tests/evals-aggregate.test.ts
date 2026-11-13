@@ -212,6 +212,24 @@ describe('provider errors, repeats per category and timeouts', () => {
   });
 });
 
+describe('a judge error is a failure, never a pass', () => {
+  it('fails the run with the judge error as its reason', () => {
+    const graded = gradeRun(outcomeOf(), [], PRICE, {
+      judge: {
+        error: 'judge error after 1 call(s): the judge declined (refusal)',
+        usage: { inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+        calls: 1,
+        failedCalls: 0,
+      },
+      judgePrice: PRICE,
+    });
+    expect(graded.passed).toBe(false);
+    expect(graded.judgeError).toBe(true);
+    expect(graded.failures).toEqual(['judge error after 1 call(s): the judge declined (refusal)']);
+    expect(graded.judgeCost).toBe('0.00003');
+  });
+});
+
 describe('pickDefault', () => {
   function summary(
     id: string,
@@ -233,6 +251,29 @@ describe('pickDefault', () => {
   it('a pass rate exactly at the bar qualifies; one basis point under does not', () => {
     expect(pickDefault([summary('at', 9_000, '0.001', 1)], 9_000)?.id).toBe('at');
     expect(pickDefault([summary('under', 8_999, '0.001', 1)], 9_000)).toBeUndefined();
+  });
+
+  it('never suggests a model with a judge error: 89 passes and 1 judge error is not a default', () => {
+    const passes = Array.from({ length: 89 }, (_unused, index) =>
+      run(`case-${index}`, 'search', true),
+    );
+    const judgeError = gradeRun(outcomeOf({ caseId: 'case-89', category: 'search' }), [], PRICE, {
+      judge: {
+        error: 'judge error after 3 call(s): malformed judge reply: no JSON object',
+        usage: { inputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0 },
+        calls: 3,
+        failedCalls: 0,
+      },
+      judgePrice: PRICE,
+    });
+    const summary = summarize(INFO, [...passes, judgeError]);
+    expect(summary).toMatchObject({
+      passedCases: 89,
+      cases: 89,
+      passRateBps: 10_000,
+      judgeErrors: 1,
+    });
+    expect(pickDefault([summary], 9_000)).toBeUndefined();
   });
 
   it('never suggests a model with a provider error, however good its numbers', () => {

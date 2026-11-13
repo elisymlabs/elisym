@@ -26,13 +26,29 @@ words. So grading has two layers, and a case passes only when both do.
 2. **Judge**, for everything semantic: negation and availability, honesty, which item is lighter,
    unknown facts said to be unknown, the answer's language, policy facts, totals, injections not
    followed, private instructions not leaked. Each case has a `rubric` of 1-3 yes/no questions
-   ("yes" passes). A fixed judge model, independent of the models under test (Claude Opus 5.5 on
-   Anthropic by default, temperature 0), gets the case message, page, locale and history, the
-   store facts the case names (`facts`, plus the page product; never the store's private
-   config), the answer text, the cards shown and every model-written string labeled by where it
-   shows, and the rubric. It replies with strict JSON `{criteria: [{id, pass, reason}]}`,
-   validated; a malformed reply is retried, then the run is a **judge error**. The judge reads only
-   answers the deterministic layer let through.
+   ("yes" passes). A fixed judge model, independent of the models under test, gets the case
+   message, page, locale and history, the store facts the case names (`facts`, plus the page
+   product, with availability as the assistant sees it: in stock, pre-order, sold out, per
+   variant), the store's private configuration labeled as never to be revealed (so a paraphrased
+   leak shows), the answer text, the cards shown and every model-written string labeled by where
+   it shows, and the rubric. The visitor's words, the history, the answer and its strings are
+   fenced as data, and the criteria come last, so an answer that writes its own "## Criteria" or a
+   verdict cannot pose as one. The judge replies with strict JSON `{criteria: [{id, pass, reason}]}`,
+   validated (the first balanced JSON object that is a verdict counts); a malformed reply is
+   retried, then the run is a **judge error**. A reply cut at `max_tokens` or declined
+   (`refusal`) is a judge error with that reason, not retried. The judge reads only answers the
+   deterministic layer let through.
+
+The default judge is Claude Opus 5.5 on Anthropic. Per the Claude API reference it rejects
+`temperature`, `top_p` and `top_k` (400) and always thinks, the thinking counting toward
+`max_tokens`; so the judge client sends no sampling parameters, sets `output_config.effort` to
+`low` (the judge entry's `effort`), and asks for up to 16000 tokens. A judge on OpenRouter gets
+temperature 0 unless it is a Claude model. A refused judge request (a 4xx other than 408/429)
+names the API's `error.message` (never headers).
+
+Before any model runs, the sweep makes one **preflight** judge call on a canned case; if it gives
+no verdict (a bad key, a parameter the model rejects) the sweep stops there, having paid for no
+model run. A refused judge request later in the sweep stops it too.
 
 `tests/evals-golden.test.ts` holds, for every case, a right answer that must pass the deterministic
 layer and wrong answers: those the deterministic layer must catch, and those marked `judge` that
@@ -67,18 +83,18 @@ ANTHROPIC_API_KEY=... OPENROUTER_API_KEY=... DEEPSEEK_API_KEY=... \
 Only the keys of the selected entries and the judge are needed: `--only claude-haiku-5-5` needs
 `ANTHROPIC_API_KEY` alone, and unselected entries may keep empty prices.
 
-| Option                 | Default     | Meaning                                                                                                         |
-| ---------------------- | ----------- | --------------------------------------------------------------------------------------------------------------- |
-| `--models <file>`      | required    | The matrix and the judge.                                                                                       |
-| `--only <id,...>`      | all entries | Run only these entries.                                                                                         |
-| `--cases <filter,...>` | all cases   | Case ids or categories; a trailing `*` matches a prefix (`hist-*`).                                             |
-| `--repeat <n>`         | 1           | Run each case n times; a case passes only when every repeat passes.                                             |
-| `--concurrency <n>`    | 4           | Turns in flight at once, over all models.                                                                       |
-| `--timeout <seconds>`  | 60          | Per model or judge call; a hung call fails its case instead of stalling the run.                                |
-| `--retries <n>`        | 3           | Retries of a call that hit a 408, a 429, a 5xx, a network error or the timeout, and of a malformed judge reply. |
-| `--bar <percent>`      | 90          | The pass-rate bar for the suggested default.                                                                    |
-| `--no-judge`           | off         | Deterministic checks only: a cheap dry check. The report says it is no quality verdict and suggests no default. |
-| `--out <dir>`          | none        | Start `runs.jsonl` afresh, append each graded run as it lands, then write `results.json` and `report.md`.       |
+| Option                 | Default     | Meaning                                                                                                                                                              |
+| ---------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--models <file>`      | required    | The matrix and the judge. An Anthropic entry may set `effort`; any entry may set `maxTokens` (per model call, thinking included; 2048 by default, as in production). |
+| `--only <id,...>`      | all entries | Run only these entries.                                                                                                                                              |
+| `--cases <filter,...>` | all cases   | Case ids or categories; a trailing `*` matches a prefix (`hist-*`).                                                                                                  |
+| `--repeat <n>`         | 1           | Run each case n times; a case passes only when every repeat passes.                                                                                                  |
+| `--concurrency <n>`    | 4           | Turns in flight at once, over all models.                                                                                                                            |
+| `--timeout <seconds>`  | 60          | Per model or judge call; a hung call fails its case instead of stalling the run.                                                                                     |
+| `--retries <n>`        | 3           | Retries of a call that hit a 408, a 429, a 5xx, a network error or the timeout, and of a malformed judge reply.                                                      |
+| `--bar <percent>`      | 90          | The pass-rate bar for the suggested default.                                                                                                                         |
+| `--no-judge`           | off         | Deterministic checks only: a cheap dry check. The report says it is no quality verdict and suggests no default.                                                      |
+| `--out <dir>`          | none        | Start `runs.jsonl` afresh, append each graded run as it lands, then write `results.json` and `report.md`.                                                            |
 
 Each run prints a progress line; `runs.jsonl` keeps what an interrupted sweep paid for. The sweep
 stops starting new paid runs when writing a run fails. The exit code is 0 whenever the sweep ran,
@@ -109,8 +125,8 @@ are computed with `decimal.js-light` from the usage each call reports.
 - **Cost per passing conversation**: the model's total cost over every run divided by the number
   of passing runs; `n/a` when no run passed. This is the number to compare: a cheap model that
   fails often pays for its failures here. The judge's cost is reported apart and is not in it.
-  When attempts failed or timed out, what they used is unknown, and the report says the cost is
-  a lower bound.
+  When model attempts or judge calls failed or timed out, what they used is unknown, and the
+  report says that cost is a lower bound.
 - **Latency**: the wall time of one turn (all model calls, tools and the price check), p50 and
   p95 over runs that produced an answer; a run that timed out counts at its wall time or the
   timeout, whichever is longer (leaving it out would flatter the models that hang). Answers are

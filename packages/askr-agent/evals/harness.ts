@@ -355,6 +355,8 @@ export interface RunCaseInput {
   testCase: EvalCase;
   now: number;
   repeat?: number;
+  /** max_tokens per model call (thinking included); runTurn's default when absent. */
+  maxTokens?: number;
   /** A monotonic clock in ms; `performance.now` by default. */
   clock?: () => number;
 }
@@ -389,6 +391,7 @@ export async function runCase(input: RunCaseInput): Promise<CaseOutcome> {
       now: input.now,
       earlierVisitorMessages: history.filter((_text, index) => index % 2 === 0),
       earlierPolicyPassages: passages,
+      ...(input.maxTokens === undefined ? {} : { maxTokens: input.maxTokens }),
     });
     return {
       ...base,

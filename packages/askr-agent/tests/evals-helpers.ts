@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type EvalCase, type EvalStore, type Expectation, parseStore } from '../evals/cases';
 import { type CaseOutcome, buildCatalog } from '../evals/harness';
-import type { JudgeClient } from '../evals/judge';
+import { type JudgeClient, PREFLIGHT_CASE } from '../evals/judge';
 import type { ResolvedJudge } from '../evals/models';
 import type { ModelPrice } from '../src/llm/types';
 import { NOW } from './fixtures';
@@ -51,11 +51,14 @@ export const PRICE: ModelPrice = {
   output: '15',
 };
 
-/** A judge that must never be asked: the cases it is given have no rubric. */
+/** A judge that answers only the sweep's preflight: the cases it is given have no rubric. */
 export function idleJudge(): ResolvedJudge {
   const client: JudgeClient = {
     model: 'judge-1',
-    complete: () => Promise.reject(new Error('the judge was not expected to run')),
+    complete: (call) =>
+      call.user.includes(PREFLIGHT_CASE.message)
+        ? passingJudge().complete(call)
+        : Promise.reject(new Error('the judge was not expected to run')),
   };
   return { label: 'Judge', model: 'judge-1', price: PRICE, client };
 }

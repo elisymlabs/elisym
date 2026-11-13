@@ -5,7 +5,7 @@
  * environment and are never printed.
  */
 import { z } from 'zod';
-import { createAnthropicProvider } from '../src/llm/anthropic';
+import { EFFORTS, type Effort, createAnthropicProvider } from '../src/llm/anthropic';
 import { createOpenAiCompatibleProvider } from '../src/llm/openai-compatible';
 import type { LlmProvider, ModelPrice } from '../src/llm/types';
 import type { ModelInfo } from './aggregate';
@@ -40,6 +40,10 @@ const EntrySchema = z
     reference: z.boolean().default(false),
     note: z.string().optional(),
     extraBody: z.record(z.unknown()).optional(),
+    /** Anthropic only: output_config.effort (the 5.5 models think by default). */
+    effort: z.enum(EFFORTS).optional(),
+    /** max_tokens per model call, thinking included; runTurn's default (2048) when absent. */
+    maxTokens: z.number().int().min(1).optional(),
     price: z
       .object({
         input: z.string(),
@@ -67,6 +71,8 @@ const JudgeSchema = z
     label: z.string().min(1).optional(),
     provider: z.enum(['anthropic', 'openrouter']).default('anthropic'),
     model: z.string().min(1).default(DEFAULT_JUDGE_MODEL),
+    /** Anthropic only; low by default. */
+    effort: z.enum(EFFORTS).optional(),
     note: z.string().optional(),
     extraBody: z.record(z.unknown()).optional(),
     price: PriceSchema,
@@ -93,6 +99,7 @@ export interface ProviderSpec {
   kind: ProviderKind;
   apiKey: string;
   model: string;
+  effort?: Effort;
   extraBody?: Record<string, unknown>;
   /** Tests only: the fetch the adapter uses. */
   fetch?: typeof fetch;
@@ -103,6 +110,8 @@ export type ProviderFactory = (spec: ProviderSpec) => LlmProvider;
 export interface ResolvedModel extends ModelInfo {
   kind: ProviderKind;
   provider: LlmProvider;
+  /** max_tokens per model call; runTurn's default when absent. */
+  maxTokens?: number;
 }
 
 export const createProvider: ProviderFactory = (spec) => {
@@ -111,6 +120,7 @@ export const createProvider: ProviderFactory = (spec) => {
       return createAnthropicProvider({
         apiKey: spec.apiKey,
         model: spec.model,
+        ...(spec.effort ? { effort: spec.effort } : {}),
         ...(spec.fetch ? { fetch: spec.fetch } : {}),
       });
     case 'openrouter':
@@ -179,6 +189,7 @@ interface Routed {
   id: string;
   model: string;
   reference: boolean;
+  effort?: Effort;
   extraBody?: Record<string, unknown>;
 }
 
@@ -188,6 +199,11 @@ interface Routed {
  * only as reference.
  */
 function checkRoute(entry: Routed, kind: ProviderKind): void {
+  if (kind !== 'anthropic' && entry.effort !== undefined) {
+    throw new Error(
+      `Model entry "${entry.id}": effort is an Anthropic setting; remove it for ${kind}.`,
+    );
+  }
   if (kind === 'anthropic' && entry.extraBody !== undefined) {
     throw new Error(
       `Model entry "${entry.id}": extraBody is not used by the anthropic provider; remove it.`,
@@ -284,10 +300,12 @@ export function resolveModels(json: unknown, options: ResolveOptions): ResolvedM
       reference: entry.reference,
       price,
       kind,
+      ...(entry.maxTokens === undefined ? {} : { maxTokens: entry.maxTokens }),
       provider: factory({
         kind,
         apiKey,
         model: entry.model,
+        ...(entry.effort ? { effort: entry.effort } : {}),
         ...(entry.extraBody ? { extraBody: entry.extraBody } : {}),
       }),
     };
@@ -320,6 +338,7 @@ export function resolveJudge(json: unknown, options: ResolveJudgeOptions): Resol
       id: 'judge',
       model: judge.model,
       reference: false,
+      ...(judge.effort ? { effort: judge.effort } : {}),
       ...(judge.extraBody ? { extraBody: judge.extraBody } : {}),
     },
     judge.provider,
@@ -338,6 +357,7 @@ export function resolveJudge(json: unknown, options: ResolveJudgeOptions): Resol
       kind: judge.provider,
       apiKey,
       model: judge.model,
+      ...(judge.effort ? { effort: judge.effort } : {}),
       ...(judge.extraBody ? { extraBody: judge.extraBody } : {}),
     }),
   };

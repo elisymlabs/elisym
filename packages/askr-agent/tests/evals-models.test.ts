@@ -45,6 +45,26 @@ function refusal(json: unknown, env: Record<string, string> = ENV): string {
 }
 
 describe('the models file', () => {
+  it('passes effort to an Anthropic entry and max tokens to its runs; refuses effort elsewhere', () => {
+    const json = filledExample();
+    json.models[0].effort = 'low';
+    json.models[0].maxTokens = 4_000;
+    const specs: ProviderSpec[] = [];
+    const models = resolveModels(json, { env: ENV, createProvider: fake(specs) });
+    expect(specs[0]?.effort).toBe('low');
+    expect(specs[1]?.effort).toBeUndefined();
+    expect(models[0]?.maxTokens).toBe(4_000);
+    expect(models[1]?.maxTokens).toBeUndefined();
+    const wrong = filledExample();
+    wrong.models[4].effort = 'low';
+    expect(refusal(wrong)).toBe(
+      'Model entry "gemini-flash-openrouter": effort is an Anthropic setting; remove it for openrouter.',
+    );
+    const unknown = filledExample();
+    unknown.models[0].effort = 'extreme';
+    expect(refusal(unknown)).toMatch(/The models file is invalid: models\.0\.effort/);
+  });
+
   it('refuses OpenRouter route bypasses: fallback models, a route key, openrouter/* ids', () => {
     for (const key of ['models', 'route']) {
       const json = filledExample();

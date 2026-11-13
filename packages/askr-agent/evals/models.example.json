@@ -3,7 +3,8 @@
     "label": "Claude Opus 5.5 (judge)",
     "provider": "anthropic",
     "model": "claude-opus-5-5",
-    "note": "Grades every rubric for every model (ANTHROPIC_API_KEY), temperature 0. Fixed for the whole sweep and never one of the models under test.",
+    "effort": "low",
+    "note": "Grades every rubric for every model (ANTHROPIC_API_KEY), no sampling parameters (Opus 5.5 rejects them), effort low, thinking always on. Fixed for the whole sweep and never one of the models under test.",
     "price": {
       "input": "",
       "cachedInput": "",

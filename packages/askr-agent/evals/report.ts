@@ -85,6 +85,11 @@ function modelNotes(summary: ModelSummary): string[] {
       `${summary.label}: the judge gave no valid verdict on ${summary.judgeErrors} run(s); they are out of the pass rate. Rerun before choosing a default.`,
     );
   }
+  if (summary.judgeFailedCalls > 0) {
+    notes.push(
+      `${summary.label}: the judge cost is a lower bound. ${summary.judgeFailedCalls} judge call(s) failed or timed out, and what they used is unknown.`,
+    );
+  }
   if (summary.failedAttempts > 0) {
     notes.push(
       `${summary.label}: the cost is a lower bound. ${summary.failedAttempts} model call attempt(s) failed or timed out, and what they used is unknown.`,

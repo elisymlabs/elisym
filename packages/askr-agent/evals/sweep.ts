@@ -15,7 +15,7 @@ import {
   pickDefault,
   summarize,
 } from './aggregate';
-import { type EvalCase, type EvalStore, lintCases, parseCases, parseStore } from './cases';
+import { type EvalCase, lintCases, parseCases, parseStore } from './cases';
 import { grade } from './grade';
 import {
   DEFAULT_RETRY,
@@ -25,7 +25,7 @@ import {
   withCallTimeout,
   withRetries,
 } from './harness';
-import { type JudgeResult, judgeCase } from './judge';
+import { type JudgeResult, judgeCase, preflightJudge } from './judge';
 import {
   type ProviderFactory,
   type ResolveJudgeOptions,
@@ -236,8 +236,6 @@ export interface SweepOptions {
   startedAt?: string;
   /** The judge for rubrics; absent means deterministic checks only (--no-judge). */
   judge?: ResolvedJudge;
-  /** The synthetic store, for the judge's facts. */
-  store?: EvalStore;
 }
 
 function progressLine(done: number, total: number, model: ResolvedModel, run: GradedRun): string {
@@ -257,7 +255,16 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
       options.models.map((model) => ({ model, testCase, repeat: repeatIndex + 1 })),
     ).flat(),
   );
-  const { judge, store } = options;
+  const { judge } = options;
+  if (judge !== undefined) {
+    // One judge call before any paid model run: a refused judge stops the sweep here.
+    const preflight = await preflightJudge(judge.client, options.catalog, retry, options.timeoutMs);
+    if (preflight.criteria === undefined) {
+      throw new Error(
+        `The judge preflight failed, so no model was run: ${preflight.error ?? 'no verdict'}. Fix the judge entry (model, key, effort) and run again.`,
+      );
+    }
+  }
   let done = 0;
   const graded = await runBounded(
     jobs.map((job) => async () => {
@@ -275,6 +282,7 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
         testCase: job.testCase,
         now: options.now,
         repeat: job.repeat,
+        ...(job.model.maxTokens === undefined ? {} : { maxTokens: job.model.maxTokens }),
         ...(options.clock ? { clock: options.clock } : {}),
       });
       const deterministic = grade(job.testCase, outcome);
@@ -283,7 +291,6 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
       let verdict: JudgeResult | undefined;
       if (
         judge !== undefined &&
-        store !== undefined &&
         hasRubric &&
         outcome.error === undefined &&
         deterministic.length === 0
@@ -292,10 +299,16 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
           client: judge.client,
           testCase: job.testCase,
           outcome,
-          store,
+          catalog: options.catalog,
           retry,
           timeoutMs: options.timeoutMs,
         });
+        if (verdict.configError) {
+          // The judge request is refused as configured: every later run would be paid for and lost.
+          throw new Error(
+            `The judge request is refused (${verdict.error ?? 'no verdict'}); the sweep stopped. Fix the judge entry and run again.`,
+          );
+        }
       }
       const run = gradeRun(outcome, deterministic, job.model.price, {
         failedAttempts,
@@ -424,7 +437,6 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
       ...(appendRun ? { onRun: appendRun } : {}),
       ...(deps.clock ? { clock: deps.clock } : {}),
       ...(judge ? { judge } : {}),
-      store,
     });
     deps.log('');
     for (const { summary } of result.models) {

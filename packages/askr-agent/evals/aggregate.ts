@@ -28,6 +28,8 @@ export interface GradedRun extends CaseOutcome {
   /** The judge's cost, USD, exact. */
   judgeCost: string;
   judgeCalls: number;
+  /** Judge calls that failed or timed out: what they used is unknown. */
+  judgeFailedCalls: number;
 }
 
 export interface GradeExtras {
@@ -82,6 +84,8 @@ export interface ModelSummary {
   /** The judge's cost over this model's runs, USD, exact; not in the cost per pass. */
   judgeCost: string;
   judgeCalls: number;
+  /** Judge calls that failed or timed out: the judge cost is a lower bound when > 0. */
+  judgeFailedCalls: number;
   /** USD over every run, exact. */
   totalCost: string;
   /** Total cost over passing runs, USD; null when nothing passed. */
@@ -153,6 +157,7 @@ export function gradeRun(
     ...(extras.notJudged ? { notJudged: true } : {}),
     judgeCost: judge && extras.judgePrice ? costOf(judge.usage, extras.judgePrice).toFixed() : '0',
     judgeCalls: judge?.calls ?? 0,
+    judgeFailedCalls: judge?.failedCalls ?? 0,
   };
 }
 
@@ -248,6 +253,7 @@ export function summarize(
     notJudgedRuns: runs.filter((run) => run.notJudged === true).length,
     failedAttempts: runs.reduce((sum, run) => sum + run.failedAttempts, 0),
     judgeCost: runs.reduce((sum, run) => sum.plus(run.judgeCost), new Decimal(0)).toFixed(),
+    judgeFailedCalls: runs.reduce((sum, run) => sum + run.judgeFailedCalls, 0),
     judgeCalls: runs.reduce((sum, run) => sum + run.judgeCalls, 0),
     totalCost: totalCost.toFixed(),
     costPerPass: perPass === null ? null : perPass.toFixed(),
