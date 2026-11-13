@@ -14,7 +14,7 @@ import { KIND_HTTP_AUTH, checkNip98, sha256Hex } from '../src/admin/nip98';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { bodyLimitOf, serveGateway } from '../src/gateway/http';
-import { MAX_UNPUBLISHED_EVENTS } from '../src/state/stores';
+import { MAX_PUBLISH_ATTEMPTS, MAX_UNPUBLISHED_EVENTS } from '../src/state/stores';
 import { HOLDER, NOW, ORIGIN, stateWith, storeRecord, syntheticStore } from './fixtures';
 
 const BASE = 'https://api.askr.test';
@@ -865,9 +865,11 @@ describe('read-back of stored events (7.3)', () => {
     expect(read.status).toBe(200);
     expect(read.body.truncated).toBe(false);
     const events: NostrEvent[] = read.body.events;
-    expect(events.map((event) => event.id)).toEqual([deletion.id, config?.id, auth?.id]);
+    // Newest first; the config and the authorization share a second, so the lower id comes first.
+    const sameSecond = [config?.id ?? '', auth?.id ?? ''].sort();
+    expect(events.map((event) => event.id)).toEqual([deletion.id, ...sameSecond]);
     expect(events.every((event) => verifyEvent(event) && event.pubkey === store.owner)).toBe(true);
-    expect(events[1]).toEqual(config);
+    expect(events.find((event) => event.id === config?.id)).toEqual(config);
   });
 
   it('shows no other owner anything: each sees only its own store, and needs one', async () => {
@@ -942,6 +944,96 @@ describe('read-back of stored events (7.3)', () => {
         .reverse()
         .map((event) => event.id),
     );
+  });
+
+  it('always includes the newest event of every address, however large the older ones', async () => {
+    const { call, store } = await setup('pending');
+    const [config, auth] = store.events;
+    if (config === undefined || auth === undefined) {
+      throw new Error('fixture');
+    }
+    const otherKey = getPublicKey(generateSecretKey());
+    const oldAuth = finalizeEvent(
+      buildCatalogAuth({ key: otherKey, mode: 'self-host', createdAt: NOW - 5_000 }),
+      store.ownerSecret,
+    );
+    await call('POST', '/v1/admin/store/events', { events: [config, auth, oldAuth] });
+    const deletions = Array.from({ length: 20 }, (_unused, index) =>
+      paddedDeletion(store, NOW - 100 + index, 60 * 1024),
+    );
+    expect((await call('POST', '/v1/admin/store/events', { events: deletions })).status).toBe(200);
+    const read = await call('GET', '/v1/admin/store/events');
+    const ids = read.body.events.map((event: NostrEvent) => event.id);
+    expect(read.body.truncated).toBe(true);
+    expect(ids).toEqual(
+      expect.arrayContaining([config.id, auth.id, oldAuth.id, deletions[19]?.id]),
+    );
+    expect(ids).not.toContain(deletions[0]?.id);
+  });
+
+  it('leaves out an event the relay refused for good: it is not on its way', async () => {
+    const { call, store, db } = await setup('pending');
+    const [config, auth] = store.events;
+    if (config === undefined || auth === undefined) {
+      throw new Error('fixture');
+    }
+    await call('POST', '/v1/admin/store/events', { events: [config, auth] });
+    await db.query('update store_events set publish_failures = $2 where id = $1', [
+      auth.id,
+      MAX_PUBLISH_ATTEMPTS,
+    ]);
+    const read = await call('GET', '/v1/admin/store/events');
+    expect(read.body.events.map((event: NostrEvent) => event.id)).toEqual([config.id]);
+  });
+
+  it('bounds the older events by the byte budget exactly', async () => {
+    const { call, store, directory } = await setup('pending');
+    const events = Array.from({ length: 3 }, (_unused, index) =>
+      paddedDeletion(store, NOW - 10 + index, 100),
+    );
+    await call('POST', '/v1/admin/store/events', { events });
+    const total = events.reduce((sum, event) => sum + JSON.stringify(event).length, 0);
+    expect(await directory.storedEvents(store.owner, total)).toMatchObject({ truncated: false });
+    const short = await directory.storedEvents(store.owner, total - 1);
+    expect(short.truncated).toBe(true);
+    expect(short.events).toHaveLength(2);
+  });
+
+  it('a waiting config a newer one replaces no longer counts against the cap', async () => {
+    const { store, directory } = await setup('pending');
+    const configAt = (createdAt: number) =>
+      finalizeEvent(
+        buildConfigEvent(
+          {
+            assistant: store.assistant,
+            origins: [ORIGIN],
+            name: 'Shop',
+            language: 'en',
+            currency: 'USD',
+            source: { kind: 'catalog' },
+            catalogKey: store.catalogKey,
+            createdAt,
+          },
+          store.ownerSecret,
+        ),
+        store.ownerSecret,
+      );
+    const auths = Array.from({ length: MAX_UNPUBLISHED_EVENTS - 1 }, (_unused, index) =>
+      finalizeEvent(
+        buildCatalogAuth({
+          key: getPublicKey(generateSecretKey()),
+          mode: 'self-host',
+          createdAt: NOW - 1_000 + index,
+        }),
+        store.ownerSecret,
+      ),
+    );
+    expect(await directory.addEvents(store.owner, [...auths, configAt(NOW - 100)])).toEqual({
+      ok: true,
+    });
+    expect(await directory.addEvents(store.owner, [configAt(NOW - 50)])).toEqual({ ok: true });
+    expect(await directory.addEvents(store.owner, [configAt(NOW)])).toEqual({ ok: true });
+    expect((await directory.eventStatus(store.owner)).pending).toBe(MAX_UNPUBLISHED_EVENTS);
   });
 
   it('never returns more than the events a store may have waiting', async () => {

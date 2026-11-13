@@ -49,8 +49,8 @@ export function Overview({ view, config, configFromServer }: Props) {
         ) : null}
         {config !== undefined && configFromServer ? (
           <p className="text-14 text-text-2">
-            Your settings are shown as you signed them. They are published once your store is
-            activated.
+            Your settings are shown as you signed them. They are published once your store is{' '}
+            {view.status === 'suspended' ? 'reactivated' : 'activated'}.
           </p>
         ) : null}
         {view.nextAssistant === null ? null : (

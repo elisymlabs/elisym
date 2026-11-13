@@ -37,6 +37,10 @@ export function Session({ deps, onSignOut }: Props) {
   const [reloadWarning, setReloadWarning] = useState('');
   /** The owner's stored events in use: none once the store is active (the relay is the source). */
   const [stored, setStored] = useState<NostrEvent[]>([]);
+  /** The server left older stored events out of its answer for size. */
+  const [storedTruncated, setStoredTruncated] = useState(false);
+  /** The config shown is one of the stored events, not the relay's. */
+  const [configFromServer, setConfigFromServer] = useState(false);
   /** The store's state as last read, for the config read that follows. */
   const status = useRef<StoreStatus | undefined>(undefined);
 
@@ -62,9 +66,12 @@ export function Session({ deps, onSignOut }: Props) {
 
   const reloadConfig = useCallback(async () => {
     let own: NostrEvent[] = [];
+    let truncated = false;
     if (status.current !== undefined && status.current !== 'active') {
       try {
-        own = ownSignedEvents((await deps.api.storedEvents()).events, deps.signer.pubkey);
+        const read = await deps.api.storedEvents();
+        own = ownSignedEvents(read.events, deps.signer.pubkey);
+        truncated = read.truncated;
       } catch (error) {
         setConfigError(`Your saved settings could not be read: ${errorMessage(error)}`);
         setConfigRead(true);
@@ -72,16 +79,21 @@ export function Session({ deps, onSignOut }: Props) {
       }
     }
     setStored(own);
+    setStoredTruncated(truncated);
     try {
       const reader = withStoredEvents(deps.reader, own);
       const read = await readConfig(reader, deps.signer.pubkey, deps.now());
+      let shownId: string | undefined;
       if (read.state === 'unreadable') {
         setConfig(read.fallback);
         setUnreadableAt(read.newestAt);
+        shownId = read.fallbackId;
       } else {
         setConfig(read.state === 'ok' ? read.config : undefined);
         setUnreadableAt(undefined);
+        shownId = read.state === 'ok' ? read.id : undefined;
       }
+      setConfigFromServer(own.some((event) => event.id === shownId));
       setConfigError('');
     } catch {
       setConfigError('The relay could not be read, so the published settings are not shown.');
@@ -157,7 +169,8 @@ export function Session({ deps, onSignOut }: Props) {
       deps={shellDeps}
       view={view}
       config={config}
-      configFromServer={stored.length > 0}
+      configFromServer={configFromServer}
+      storedTruncated={storedTruncated}
       configError={configError}
       configUnreadableAt={unreadableAt}
       reloadWarning={reloadWarning}

@@ -96,7 +96,15 @@ describe('the owner signed events the server holds', () => {
     const wire = (event: NostrEvent): NostrEvent => JSON.parse(JSON.stringify(event));
     const forged = { ...wire(own), content: `${own.content} ` };
     const relabelled = { ...wire(foreign), pubkey: OWNER };
-    const malformed = [null, 'event', {}, { ...own, tags: [[1]] }, { ...own, created_at: '1' }];
+    const malformed = [
+      null,
+      'event',
+      {},
+      { ...wire(own), tags: [[1]] },
+      { ...wire(own), tags: [1] },
+      { ...wire(own), tags: 'd' },
+      { ...wire(own), created_at: '1' },
+    ];
     const kept = ownSignedEvents([wire(own), foreign, forged, relabelled, ...malformed], OWNER);
     expect(kept.map(wire)).toEqual([wire(own)]);
     // Rebuilt from the signed fields only: nothing else the server sent rides along.
@@ -131,8 +139,9 @@ describe('a pending store read back from the server (7.3)', () => {
     const { container } = await mountSession(api);
     expect(container.textContent).not.toContain('Set up your assistant');
     expect(container.querySelector('h1')?.textContent).toBe('Saved Tea');
-    expect(container.textContent).toContain('shown as you signed them');
+    expect(container.textContent).toContain('published once your store is activated');
     expect(container.textContent).not.toContain('not on the relay yet');
+    expect(container.textContent).not.toContain('not shown here');
     await click(buttonNamed(container, 'Settings'));
     await settle(() => container.querySelector('#store-name') !== null);
     expect(fieldValue(container, 'store-name')).toBe('Saved Tea');
@@ -154,6 +163,26 @@ describe('a pending store read back from the server (7.3)', () => {
     expect(saved?.name).toBe('Saved Tea');
   });
 
+  it('says when the server left older changes out of its answer', async () => {
+    const api = fakeApi({
+      store: vi.fn(async () => pendingView(2)),
+      storedEvents: vi.fn(async () => ({
+        events: [configSignedBy(OWNER_KEY, 'Saved Tea', NOW)],
+        truncated: true,
+      })),
+    });
+    const { container } = await mountSession(api);
+    expect(container.querySelector('h1')?.textContent).toBe('Saved Tea');
+    expect(container.textContent).toContain('Some older changes you signed are not shown here');
+  });
+
+  it('says nothing waits on the server when only an authorization is stored', async () => {
+    const api = pendingApi([serverAuthorization(NOW)]);
+    const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 10)]);
+    expect(container.querySelector('h1')?.textContent).toBe('Relay');
+    expect(container.textContent).not.toContain('shown as you signed them');
+  });
+
   it('never uses an event the owner did not sign', async () => {
     const api = pendingApi([configSignedBy(generateSecretKey(), 'Not Yours', NOW)], 1);
     const { container } = await mountSession(api);
@@ -172,6 +201,8 @@ describe('a pending store read back from the server (7.3)', () => {
     });
     const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Newer', NOW - 10)]);
     expect(container.querySelector('h1')?.textContent).toBe('Newer');
+    // The settings shown are the relay's, so nothing says they wait on the server.
+    expect(container.textContent).not.toContain('shown as you signed them');
   });
 
   it('a suspended store shows what O signed since, which waits for reactivation', async () => {
@@ -184,6 +215,7 @@ describe('a pending store read back from the server (7.3)', () => {
     });
     const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 50)]);
     expect(container.querySelector('h1')?.textContent).toBe('Signed Since');
+    expect(container.textContent).toContain('published once your store is reactivated');
   });
 
   it('an active store reads the relay only, and never asks the server', async () => {

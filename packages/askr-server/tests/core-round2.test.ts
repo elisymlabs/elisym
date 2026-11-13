@@ -1,6 +1,6 @@
-import { buildConfigEvent } from '@elisym/askr';
+import { buildCatalogAuth, buildConfigEvent } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
-import { finalizeEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { CATALOG_PAGE_LIMIT } from '../src/constants';
 import { StoreEventPublisher } from '../src/publisher';
@@ -309,7 +309,7 @@ describe('server core review 2: stored events and the relay (7.3)', () => {
     expect((await directory.eventStatus(store.owner)).pending).toBe(1);
   });
 
-  it('a published config is pruned only by a newer published one', async () => {
+  it('a published config is pruned only by a newer published one; a waiting one by any newer one', async () => {
     const store = syntheticStore();
     const { directory, db } = await stateWith([storeRecord(store)]);
     const stored = async () =>
@@ -324,24 +324,52 @@ describe('server core review 2: stored events and the relay (7.3)', () => {
     const second = configAt(store, NOW - 200);
     expect(await directory.addEvents(store.owner, [second])).toEqual({ ok: true });
     // The newer one is not on the relay yet: the published one it will replace stays.
+    expect(await stored()).toEqual([first.id, second.id].sort());
+    // A waiting one a newer one replaces is pruned at once: the relay would keep only the newer.
     const third = configAt(store, NOW - 100);
     expect(await directory.addEvents(store.owner, [third])).toEqual({ ok: true });
-    expect(await stored()).toEqual([first.id, second.id, third.id].sort());
+    expect(await stored()).toEqual([first.id, third.id].sort());
     // Two published configs of the same second replace neither.
-    await directory.markPublished(second.id);
+    await directory.markPublished(third.id);
     await db.query(
       `update store_events set event = jsonb_set(event, '{created_at}', to_jsonb($2::bigint))
        where id = $1`,
-      [first.id, NOW - 200],
+      [first.id, NOW - 100],
     );
     const fourth = configAt(store, NOW - 50);
     expect(await directory.addEvents(store.owner, [fourth])).toEqual({ ok: true });
-    expect(await stored()).toEqual([first.id, second.id, third.id, fourth.id].sort());
+    expect(await stored()).toEqual([first.id, third.id, fourth.id].sort());
     // Once the newer one is published, the older are pruned on the next store.
-    await directory.markPublished(third.id);
-    expect(await directory.addEvents(store.owner, [configAt(store, NOW)])).toEqual({ ok: true });
-    expect(await stored()).not.toContain(first.id);
-    expect(await stored()).not.toContain(second.id);
+    await directory.markPublished(fourth.id);
+    const fifth = configAt(store, NOW);
+    expect(await directory.addEvents(store.owner, [fifth])).toEqual({ ok: true });
+    expect(await stored()).toEqual([fourth.id, fifth.id].sort());
+  });
+
+  it('a waiting config whose newer one the relay refused for good stays', async () => {
+    const store = syntheticStore();
+    const { directory, db } = await stateWith([storeRecord(store)]);
+    const older = configAt(store, NOW - 200);
+    expect(await directory.addEvents(store.owner, [older])).toEqual({ ok: true });
+    const newer = configAt(store, NOW - 100);
+    await db.query(
+      `insert into store_events (id, owner, event, publish_failures) values ($1, $2, ($3::text)::jsonb, $4)`,
+      [newer.id, store.owner, JSON.stringify(newer), MAX_PUBLISH_ATTEMPTS],
+    );
+    // Any store runs the prune: an authorization of another key.
+    const auth = finalizeEvent(
+      buildCatalogAuth({
+        key: getPublicKey(generateSecretKey()),
+        mode: 'self-host',
+        createdAt: NOW,
+      }),
+      store.ownerSecret,
+    );
+    expect(await directory.addEvents(store.owner, [auth])).toEqual({ ok: true });
+    const ids = (
+      await db.query<{ id: string }>('select id from store_events where owner = $1', [store.owner])
+    ).map((row) => row.id);
+    expect(ids).toContain(older.id);
   });
 });
 

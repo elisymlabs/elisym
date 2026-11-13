@@ -5,6 +5,7 @@ import {
   type SyncDiff,
   parseConfig,
 } from '@elisym/askr';
+import { KIND_DELETION } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -63,17 +64,41 @@ function dTagOf(alias: string): string {
   return `(select tag->>1 from jsonb_array_elements(${alias}.event->'tags') tag where tag->>0 = 'd' limit 1)`;
 }
 
-/** Published configs and authorizations a newer published one of the same address replaced. */
+/**
+ * Configs and authorizations a newer stored one of the same address
+ * replaced: a published one once the newer one is published too; one still
+ * waiting as soon as a newer one is stored that is published or still retried
+ * (the relay would keep only the newer, so the older one need not count
+ * against the caps). One whose newer one was stopped stays, so the relay is
+ * not left without either.
+ */
 const PRUNE_REPLACED_SQL = `
   delete from store_events e
-  where e.owner = $1 and e.published and (e.event->>'kind')::int in (${KIND_CONFIG}, ${KIND_CATALOG_AUTH})
+  where e.owner = $1 and (e.event->>'kind')::int in (${KIND_CONFIG}, ${KIND_CATALOG_AUTH})
     and exists (
       select 1 from store_events n
-      where n.owner = e.owner and n.published and n.id <> e.id
+      where n.owner = e.owner and n.id <> e.id
+        and (n.published or (not e.published and n.publish_failures < $2))
         and n.event->>'kind' = e.event->>'kind'
         and ${dTagOf('n')} is not distinct from ${dTagOf('e')}
         and (n.event->>'created_at')::bigint > (e.event->>'created_at')::bigint
     )`;
+
+/** A batch past a per-store cap: thrown so the transaction rolls its inserts back. */
+class EventCapExceeded extends Error {}
+
+/** What keeps an event current in a read-back: its address, or for a deletion what it deletes. */
+function addressOf(event: NostrEvent): string {
+  if (event.kind === KIND_DELETION) {
+    const targets = event.tags
+      .filter((tag) => tag[0] === 'a')
+      .map((tag) => tag[1] ?? '')
+      .sort();
+    return `${KIND_DELETION}:${targets.join(' ')}`;
+  }
+  const d = event.tags.find((tag) => tag[0] === 'd')?.[1] ?? '';
+  return `${event.kind}:${event.pubkey}:${d}`;
+}
 
 export interface ConnectorSettings {
   platform: ConnectorPlatform;
@@ -253,6 +278,20 @@ export class StoreDirectory {
    * relay would keep the newer one), and so is a batch past the per-store caps.
    */
   async addEvents(owner: string, events: readonly NostrEvent[]): Promise<AddEventsResult> {
+    try {
+      return await this.addEventsOnce(owner, events);
+    } catch (error) {
+      if (error instanceof EventCapExceeded) {
+        return { ok: false, reason: 'too_many_events' };
+      }
+      throw error;
+    }
+  }
+
+  private async addEventsOnce(
+    owner: string,
+    events: readonly NostrEvent[],
+  ): Promise<AddEventsResult> {
     return this.db.transaction(async (tx) => {
       // One writer per store at a time, so the caps and the config order hold.
       const [store] = await tx.query<{ assistant: string; next_assistant: string | null }>(
@@ -305,23 +344,24 @@ export class StoreDirectory {
           return { ok: false, reason: 'config_assistant', id: event.id };
         }
       }
-      await tx.query(PRUNE_REPLACED_SQL, [owner]);
+      for (const event of fresh) {
+        await tx.query(
+          'insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)',
+          [event.id, owner, JSON.stringify(event)],
+        );
+      }
+      // After the batch is in, so what it replaces makes room for it; past a cap the throw rolls it back.
+      await tx.query(PRUNE_REPLACED_SQL, [owner, MAX_PUBLISH_ATTEMPTS]);
       const [counts] = await tx.query<{ unpublished: number; total: number }>(
         `select (count(*) filter (where not published))::int8 as unpublished, count(*)::int8 as total
          from store_events where owner = $1`,
         [owner],
       );
       if (
-        (counts?.unpublished ?? 0) + fresh.length > MAX_UNPUBLISHED_EVENTS ||
-        (counts?.total ?? 0) + fresh.length > MAX_STORED_EVENTS
+        (counts?.unpublished ?? 0) > MAX_UNPUBLISHED_EVENTS ||
+        (counts?.total ?? 0) > MAX_STORED_EVENTS
       ) {
-        return { ok: false, reason: 'too_many_events' };
-      }
-      for (const event of fresh) {
-        await tx.query(
-          'insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)',
-          [event.id, owner, JSON.stringify(event)],
-        );
+        throw new EventCapExceeded();
       }
       await tx.query(
         `update store_events set publish_failures = 0, publish_attempts = 0, next_attempt_at = 0
@@ -413,31 +453,51 @@ export class StoreDirectory {
   }
 
   /**
-   * The store's own O-signed events the relay does not have yet, newest
-   * first, as stored (7.3): what the admin of a store that is not active
-   * shows its settings from. At most `MAX_UNPUBLISHED_EVENTS` (no more are
-   * ever waiting) and `maxBytes` of JSON; `truncated` when older ones were
-   * left out for the byte budget.
+   * The store's own O-signed events the relay does not have yet and will
+   * still get, newest first, as stored (7.3): what the admin of a store that
+   * is not active shows its settings from. One whose publishing was stopped
+   * (the relay refused it) is left out: it is not on its way, so the admin
+   * signs it again. The newest per address (per deleted addresses for a
+   * deletion) is always included, so nothing current is missing; older ones
+   * only within `maxBytes` of JSON, `truncated` when some were left out. At
+   * most `MAX_UNPUBLISHED_EVENTS` rows are read: no more are ever waiting.
    */
   async storedEvents(
     owner: string,
     maxBytes: number,
   ): Promise<{ events: NostrEvent[]; truncated: boolean }> {
     const rows = await this.db.query<{ event: NostrEvent }>(
-      `select event from store_events where owner = $1 and not published
+      `select event from store_events where owner = $1 and not published and publish_failures < $3
        order by (event->>'created_at')::bigint desc, id limit $2`,
-      [owner, MAX_UNPUBLISHED_EVENTS],
+      [owner, MAX_UNPUBLISHED_EVENTS, MAX_PUBLISH_ATTEMPTS],
     );
-    const events: NostrEvent[] = [];
-    let bytes = 0;
+    const sizeOf = (event: NostrEvent) => Buffer.byteLength(JSON.stringify(event), 'utf8');
+    const seen = new Set<string>();
+    const current = new Set<NostrEvent>();
     for (const { event } of rows) {
-      bytes += Buffer.byteLength(JSON.stringify(event), 'utf8');
-      if (bytes > maxBytes) {
-        return { events, truncated: true };
+      const address = addressOf(event);
+      if (!seen.has(address)) {
+        seen.add(address);
+        current.add(event);
       }
-      events.push(event);
     }
-    return { events, truncated: false };
+    let bytes = [...current].reduce((total, event) => total + sizeOf(event), 0);
+    let truncated = false;
+    const events = rows
+      .map((row) => row.event)
+      .filter((event) => {
+        if (current.has(event)) {
+          return true;
+        }
+        const size = sizeOf(event);
+        if (truncated || bytes + size > maxBytes) {
+          truncated = true;
+          return false;
+        }
+        bytes += size;
+        return true;
+      });
+    return { events, truncated };
   }
 
   /**
