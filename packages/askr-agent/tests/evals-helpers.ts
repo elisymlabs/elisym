@@ -3,6 +3,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type EvalCase, type EvalStore, type Expectation, parseStore } from '../evals/cases';
 import { type CaseOutcome, buildCatalog } from '../evals/harness';
+import type { JudgeClient } from '../evals/judge';
+import type { ResolvedJudge } from '../evals/models';
 import type { ModelPrice } from '../src/llm/types';
 import { NOW } from './fixtures';
 
@@ -48,3 +50,29 @@ export const PRICE: ModelPrice = {
   cacheWrite: '3.75',
   output: '15',
 };
+
+/** A judge that must never be asked: the cases it is given have no rubric. */
+export function idleJudge(): ResolvedJudge {
+  const client: JudgeClient = {
+    model: 'judge-1',
+    complete: () => Promise.reject(new Error('the judge was not expected to run')),
+  };
+  return { label: 'Judge', model: 'judge-1', price: PRICE, client };
+}
+
+/** A judge that passes every criterion it is asked, reading the ids from the prompt. */
+export function passingJudge(calls: string[] = []): JudgeClient {
+  return {
+    model: 'judge-1',
+    complete: async (call) => {
+      calls.push(call.user);
+      const ids = [...call.user.matchAll(/^(c\d+): /gm)].map((match) => match[1]);
+      return {
+        text: JSON.stringify({
+          criteria: ids.map((id) => ({ id, pass: true, reason: 'meets it' })),
+        }),
+        usage: { inputTokens: 2_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 50 },
+      };
+    },
+  };
+}

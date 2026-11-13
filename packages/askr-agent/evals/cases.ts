@@ -24,6 +24,21 @@ export const CATEGORIES = [
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
+/** Categories whose point is semantic: each case needs a rubric for the judge. */
+export const RUBRIC_CATEGORIES: readonly Category[] = [
+  'context',
+  'policy',
+  'multilingual',
+  'availability',
+  'unknown-facts',
+  'no-invention',
+  'injection',
+  'honesty',
+  'prices',
+  'history',
+];
+export const MAX_RUBRIC_CRITERIA = 3;
+
 const PRODUCT_IDS = z.array(z.string().min(1)).min(1);
 const PATTERNS = z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]);
 
@@ -43,9 +58,13 @@ const ExpectSchema = z
     hasComponents: z.literal(true).optional(),
     /** No component at all (a pure text answer). */
     noComponents: z.literal(true).optional(),
-    /** The answer text matches each pattern (case-insensitive regex). */
+    /**
+     * Hard tokens only (a script, an injected host or code): the answer text or a
+     * model-written string matches each pattern (case-insensitive). A pattern anchored
+     * with `^` reads the answer text only, never chips or other strings.
+     */
     textMatches: PATTERNS.optional(),
-    /** The answer text matches none of the patterns. */
+    /** No pattern matches the text or any model-written string (`^` patterns: the text only). */
     textNotMatches: PATTERNS.optional(),
   })
   .strict();
@@ -65,6 +84,21 @@ const CaseSchema = z
     /** Why the case exists, for the reader of a failure. */
     note: z.string().optional(),
     expect: ExpectSchema,
+    /** Why a kept text regex cannot misfire on a correct answer (required with one). */
+    why: z.string().min(1).optional(),
+    /**
+     * Yes/no questions about the answer for the LLM judge; "yes" passes. The
+     * semantic checks: negation, availability, honesty, language, policy facts.
+     */
+    rubric: z.array(z.string().min(1)).min(1).max(MAX_RUBRIC_CRITERIA).optional(),
+    /** The store facts the judge sees for this case (the page product is added). */
+    facts: z
+      .object({
+        products: z.array(z.string().min(1)).optional(),
+        policies: z.array(z.string().min(1)).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type EvalCase = z.infer<typeof CaseSchema>;
@@ -161,8 +195,32 @@ export function lintCases(cases: readonly EvalCase[], store: EvalStore): string[
     }
     seen.add(testCase.id);
     const { expect: expectation } = testCase;
-    if (checkCount(expectation) === 0) {
+    const rubric = testCase.rubric ?? [];
+    if (checkCount(expectation) === 0 && rubric.length === 0) {
       problems.push(`${where}: no check`);
+    }
+    if (RUBRIC_CATEGORIES.includes(testCase.category) && rubric.length === 0) {
+      problems.push(`${where}: a ${testCase.category} case needs a rubric`);
+    }
+    for (const criterion of rubric) {
+      if (!criterion.trim().endsWith('?')) {
+        problems.push(`${where}: a rubric criterion is a yes/no question: ${criterion}`);
+      }
+    }
+    const textChecks =
+      patternsOf(expectation.textMatches).length + patternsOf(expectation.textNotMatches).length;
+    if (textChecks > 0 && testCase.why === undefined) {
+      problems.push(`${where}: a text regex needs a why`);
+    }
+    for (const productId of testCase.facts?.products ?? []) {
+      if (!productIds.has(productId)) {
+        problems.push(`${where}: unknown fact product ${productId}`);
+      }
+    }
+    for (const slug of testCase.facts?.policies ?? []) {
+      if (!policySlugs.has(slug)) {
+        problems.push(`${where}: unknown fact policy ${slug}`);
+      }
     }
     const referenced = [
       ...(expectation.presentsAny ?? []),

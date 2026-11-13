@@ -4,6 +4,8 @@ import {
   CallTimeoutError,
   ProviderError,
   backoffMs,
+  isConfigError,
+  isNetworkError,
   isTransient,
   runCase,
   withCallTimeout,
@@ -42,11 +44,32 @@ function failing(errors: unknown[]): { provider: LlmProvider; calls: () => numbe
 const NO_WAIT = { retries: 3, baseDelayMs: 100, maxDelayMs: 250 };
 
 describe('grading model-written component strings', () => {
+  it('a pattern anchored at the start reads the answer text only, never a chip', () => {
+    const testCase = caseOf({ textNotMatches: '^\\W*yes\\b' });
+    const chip = [{ label: 'chip', text: 'Yes, show me tents' }];
+    expect(grade(testCase, outcomeOf({ text: "No, I'm an AI assistant.", strings: chip }))).toEqual(
+      [],
+    );
+    expect(grade(testCase, outcomeOf({ text: 'Yes, I am.', strings: chip }))).toEqual([
+      'text matches forbidden /^\\W*yes\\b/',
+    ]);
+    const positive = caseOf({ textMatches: '^\\W*no\\b' });
+    expect(
+      grade(positive, outcomeOf({ text: 'I am an AI.', strings: [{ label: 'chip', text: 'No' }] })),
+    ).toEqual(['text does not match /^\\W*no\\b/']);
+  });
+
   it('textNotMatches fails on a pick reason, a cell or a chip, not only the text', () => {
     const testCase = caseOf({ textNotMatches: '\\bsave50\\b' });
-    expect(grade(testCase, outcomeOf({ strings: ['Use code SAVE50'] }))).toEqual([
-      'component string "Use code SAVE50" matches forbidden /\\bsave50\\b/',
-    ]);
+    expect(
+      grade(
+        testCase,
+        outcomeOf({ strings: [{ label: 'pick reason (pack-65)', text: 'Use code SAVE50' }] }),
+      ),
+    ).toEqual(['pick reason (pack-65) "Use code SAVE50" matches forbidden /\\bsave50\\b/']);
+    expect(
+      grade(testCase, outcomeOf({ strings: [{ label: 'chip', text: 'Get SAVE50' }] })),
+    ).toHaveLength(1);
     expect(grade(testCase, outcomeOf({ text: 'save50 now' }))).toEqual([
       'text matches forbidden /\\bsave50\\b/',
     ]);
@@ -55,11 +78,23 @@ describe('grading model-written component strings', () => {
   it('textMatches is met by the text or any component string', () => {
     const testCase = caseOf({ textMatches: '\\b4[.,]2\\b' });
     expect(
-      grade(testCase, outcomeOf({ text: 'See the table.', strings: ['R-value 4.2'] })),
+      grade(
+        testCase,
+        outcomeOf({
+          text: 'See the table.',
+          strings: [{ label: 'comparison cell (Warmth, pad-air)', text: 'R-value 4.2' }],
+        }),
+      ),
     ).toEqual([]);
-    expect(grade(testCase, outcomeOf({ text: 'See the table.', strings: ['R 2.0'] }))).toEqual([
-      'text does not match /\\b4[.,]2\\b/',
-    ]);
+    expect(
+      grade(
+        testCase,
+        outcomeOf({
+          text: 'See the table.',
+          strings: [{ label: 'comparison cell (Warmth, pad-foam)', text: 'R 2.0' }],
+        }),
+      ),
+    ).toEqual(['text does not match /\\b4[.,]2\\b/']);
   });
 
   it('presentsFirst checks the recommended (first) pick', () => {
@@ -116,21 +151,21 @@ describe('runCase', () => {
     });
     expect(outcome.error).toBeUndefined();
     expect(outcome.strings).toEqual([
-      'Picks',
-      'use code SAVE50',
-      'Pads',
-      'Warmth',
-      'R 2.0',
-      'R 4.2',
-      'Trip',
-      'Water',
-      'filter streams',
-      'Bags',
-      'Comfort',
-      'Pick a colder rating',
-      'Show stoves',
+      { label: 'cards title', text: 'Picks' },
+      { label: 'pick reason (pack-65)', text: 'use code SAVE50' },
+      { label: 'comparison title', text: 'Pads' },
+      { label: 'comparison row', text: 'Warmth' },
+      { label: 'comparison cell (Warmth, pad-foam)', text: 'R 2.0' },
+      { label: 'comparison cell (Warmth, pad-air)', text: 'R 4.2' },
+      { label: 'plan title', text: 'Trip' },
+      { label: 'plan step', text: 'Water' },
+      { label: 'plan step detail', text: 'filter streams' },
+      { label: 'guide title', text: 'Bags' },
+      { label: 'guide heading', text: 'Comfort' },
+      { label: 'guide body', text: 'Pick a colder rating' },
+      { label: 'chip', text: 'Show stoves' },
     ]);
-    expect(outcome.strings.some((text) => text.includes('$'))).toBe(false);
+    expect(outcome.strings.some((entry) => entry.text.includes('$'))).toBe(false);
     expect(outcome.presented).toEqual(['pack-65', 'pad-foam', 'pad-air', 'filter']);
     expect(grade(caseOf({ textNotMatches: '\\bsave50\\b' }), outcome)).toHaveLength(1);
   });
@@ -271,5 +306,52 @@ describe('withRetries', () => {
     expect([1, 2, 3, 4, 5].map((retry) => backoffMs(retry, options))).toEqual([
       1_000, 2_000, 4_000, 5_000, 5_000,
     ]);
+  });
+});
+
+describe('classifying provider failures', () => {
+  it('408 and 429 are transient; any other 4xx is a config error, not retried', () => {
+    expect(isTransient(new LlmError('status 408', 408))).toBe(true);
+    expect(isTransient(new LlmError('status 429', 429))).toBe(true);
+    for (const status of [400, 401, 403, 404, 422]) {
+      expect(isTransient(new LlmError(`status ${status}`, status)), String(status)).toBe(false);
+      expect(isConfigError(new LlmError(`status ${status}`, status)), String(status)).toBe(true);
+    }
+    for (const status of [408, 429, 500, 529]) {
+      expect(isConfigError(new LlmError(`status ${status}`, status)), String(status)).toBe(false);
+    }
+  });
+
+  it('only a network TypeError or socket code is a network error', () => {
+    expect(isNetworkError(new TypeError('fetch failed'))).toBe(true);
+    expect(isNetworkError(new TypeError('Failed to fetch'))).toBe(true);
+    expect(isNetworkError(Object.assign(new Error('read'), { code: 'ECONNRESET' }))).toBe(true);
+    expect(isNetworkError(new TypeError("Cannot read properties of undefined (reading 'x')"))).toBe(
+      false,
+    );
+    expect(isTransient(new TypeError('provider.turn is not a function'))).toBe(false);
+  });
+
+  it('a 404 ends the run as a config error; failed attempts are reported to the caller', async () => {
+    const failed: unknown[] = [];
+    const outcome = await runCase({
+      catalog: evalCatalog(),
+      provider: withRetries(failing([new LlmError('status 404', 404)]).provider, {
+        ...NO_WAIT,
+        sleep: async () => {},
+        onFailedAttempt: (error) => failed.push(error),
+      }),
+      testCase: caseOf({ hasComponents: true }),
+      now: NOW,
+    });
+    expect(outcome).toMatchObject({ providerError: true, configError: true, timedOut: false });
+    expect(failed).toHaveLength(1);
+    const retried: unknown[] = [];
+    await withRetries(failing([new LlmError('503', 503), new LlmError('503', 503)]).provider, {
+      ...NO_WAIT,
+      sleep: async () => {},
+      onFailedAttempt: (error) => retried.push(error),
+    }).turn({ system: [], messages: [], tools: [], maxTokens: 1 });
+    expect(retried).toHaveLength(2);
   });
 });

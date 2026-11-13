@@ -30,8 +30,24 @@ const ASK_ID = '0'.repeat(32);
 const SESSION_SECONDS = 3_600;
 /** The store writes this comparison row itself (src/tools.ts): not model text. */
 const STORE_PRICE_DIMENSION = 'Price';
+const HTTP_REQUEST_TIMEOUT = 408;
 const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_CLIENT_ERROR = 400;
 const HTTP_SERVER_ERROR = 500;
+/** What fetch rejects with when the network fails (Node, browsers, Safari) or a socket code. */
+const NETWORK_MESSAGE_RE = /fetch failed|failed to fetch|network|load failed|socket|connection/i;
+const NETWORK_CODES: readonly string[] = [
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'ConnectionRefused',
+  'ConnectionClosed',
+];
 
 export interface BuiltCatalog {
   catalog: StoreCatalog;
@@ -94,37 +110,70 @@ export function presentedIds(answer: Answer): string[] {
   return [...new Set(ids)];
 }
 
+/** One string the model wrote into a component or a chip, labeled by where it shows. */
+export interface WrittenString {
+  label: string;
+  text: string;
+}
+
+function idOf(address: string): string {
+  return parseAddress(address)?.d ?? address;
+}
+
+function written(label: string, text: string | undefined): WrittenString[] {
+  return text === undefined || text.length === 0 || text === '-' ? [] : [{ label, text }];
+}
+
 /**
  * Every string the model wrote into the components and chips: titles, pick
  * reasons, comparison dimensions and cells (not the store's price row), plan
  * labels and details, guide headings and bodies. They reach the visitor like
- * the text, so text checks read them too.
+ * the text, so text checks and the judge read them too.
  */
-export function modelStrings(answer: Answer): string[] {
+export function modelStrings(answer: Answer): WrittenString[] {
   const strings = answer.components.flatMap((component) => {
     switch (component.type) {
       case 'products':
-        return [component.title ?? '', ...component.picks.map((pick) => pick.reason ?? '')];
+        return [
+          ...written('cards title', component.title),
+          ...component.picks.flatMap((pick) =>
+            written(`pick reason (${idOf(pick.address)})`, pick.reason),
+          ),
+        ];
       case 'comparison':
         return [
-          component.title ?? '',
+          ...written('comparison title', component.title),
           ...component.rows
             .filter((row) => row.dimension !== STORE_PRICE_DIMENSION)
-            .flatMap((row) => [row.dimension, ...row.cells]),
+            .flatMap((row) => [
+              ...written('comparison row', row.dimension),
+              ...row.cells.flatMap((cell, index) =>
+                written(
+                  `comparison cell (${row.dimension}, ${idOf(component.addresses[index] ?? '')})`,
+                  cell,
+                ),
+              ),
+            ]),
         ];
       case 'plan':
         return [
-          component.title,
-          ...component.steps.flatMap((step) => [step.label, step.detail ?? '']),
+          ...written('plan title', component.title),
+          ...component.steps.flatMap((step) => [
+            ...written('plan step', step.label),
+            ...written('plan step detail', step.detail),
+          ]),
         ];
       case 'guide':
         return [
-          component.title,
-          ...component.sections.flatMap((section) => [section.heading, section.body]),
+          ...written('guide title', component.title),
+          ...component.sections.flatMap((section) => [
+            ...written('guide heading', section.heading),
+            ...written('guide body', section.body),
+          ]),
         ];
     }
   });
-  return [...strings, ...answer.chips].filter((text) => text.length > 0 && text !== '-');
+  return [...strings, ...answer.chips.flatMap((chip) => written('chip', chip))];
 }
 
 export function historyMessages(history: readonly string[]): LlmMessage[] {
@@ -188,16 +237,42 @@ export class ProviderError extends Error {
   }
 }
 
-/** Worth another try: rate limits, server errors, timeouts and network failures. */
+/** A network failure, not any TypeError: a bug that throws one is not retried as a network error. */
+export function isNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : '';
+  if (NETWORK_CODES.includes(code)) {
+    return true;
+  }
+  return error instanceof TypeError && NETWORK_MESSAGE_RE.test(error.message);
+}
+
+/** Worth another try: 408, 429, server errors, timeouts and network failures. */
 export function isTransient(error: unknown): boolean {
   if (error instanceof LlmError) {
     return (
+      error.status === HTTP_REQUEST_TIMEOUT ||
       error.status === HTTP_TOO_MANY_REQUESTS ||
       (error.status !== undefined && error.status >= HTTP_SERVER_ERROR)
     );
   }
-  // fetch rejects with a TypeError when the network fails.
-  return error instanceof CallTimeoutError || error instanceof TypeError;
+  return error instanceof CallTimeoutError || isNetworkError(error);
+}
+
+/**
+ * A 4xx other than 408 and 429 (a bad key, an unknown model, a refused route):
+ * the same on every attempt, so the fix is the configuration, not a rerun.
+ */
+export function isConfigError(error: unknown): boolean {
+  return (
+    error instanceof LlmError &&
+    error.status !== undefined &&
+    error.status >= HTTP_CLIENT_ERROR &&
+    error.status < HTTP_SERVER_ERROR &&
+    !isTransient(error)
+  );
 }
 
 export interface RetryOptions {
@@ -207,6 +282,8 @@ export interface RetryOptions {
   baseDelayMs: number;
   maxDelayMs: number;
   sleep?: (ms: number) => Promise<void>;
+  /** Called for every failed attempt, the last one too: its usage is unknown. */
+  onFailedAttempt?: (error: unknown) => void;
 }
 
 export const DEFAULT_RETRY: RetryOptions = { retries: 3, baseDelayMs: 2_000, maxDelayMs: 30_000 };
@@ -235,6 +312,7 @@ export function withRetries(provider: LlmProvider, options: RetryOptions): LlmPr
         try {
           return await provider.turn(request);
         } catch (error) {
+          options.onFailedAttempt?.(error);
           if (attempt > options.retries || !isTransient(error)) {
             throw new ProviderError(error, attempt);
           }
@@ -252,7 +330,7 @@ export interface CaseOutcome {
   repeat: number;
   text: string;
   /** Model-written component strings and chips (`modelStrings`). */
-  strings: string[];
+  strings: WrittenString[];
   presented: string[];
   componentCount: number;
   /** Strings the price check still removed after its corrective re-run. */
@@ -267,6 +345,8 @@ export interface CaseOutcome {
   providerError?: boolean;
   /** ...and that call's last attempt timed out. */
   timedOut?: boolean;
+  /** ...and the failure is a 4xx that will not change on a rerun: fix the route or model. */
+  configError?: boolean;
 }
 
 export interface RunCaseInput {
@@ -337,7 +417,11 @@ export async function runCase(input: RunCaseInput): Promise<CaseOutcome> {
       latencyMs,
       error: errorMessage(reason),
       ...(reason instanceof ProviderError
-        ? { providerError: true, timedOut: reason.reason instanceof CallTimeoutError }
+        ? {
+            providerError: true,
+            timedOut: reason.reason instanceof CallTimeoutError,
+            configError: isConfigError(reason.reason),
+          }
         : {}),
     };
   }

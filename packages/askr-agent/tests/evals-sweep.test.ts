@@ -9,7 +9,15 @@ import type { SweepResult } from '../evals/report';
 import { markdownReport } from '../evals/report';
 import { main, parseArgs, runBounded, runSweep, selectCases } from '../evals/sweep';
 import { type LlmProvider, LlmError, type TurnRequest, type TurnResponse } from '../src/llm/types';
-import { EVALS_DIR, PRICE, caseOf, evalCatalog } from './evals-helpers';
+import {
+  EVALS_DIR,
+  PRICE,
+  caseOf,
+  evalCatalog,
+  evalStore,
+  idleJudge,
+  passingJudge,
+} from './evals-helpers';
 import { NOW, toolCall } from './fixtures';
 
 const USAGE = { inputTokens: 1_000, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 100 };
@@ -116,6 +124,12 @@ describe('parseArgs', () => {
       /--cases needs at least one/,
     );
     expect(parseArgs(['--models', 'm', '--retries', '0']).retries).toBe(0);
+    expect(parseArgs(['--models', 'm']).noJudge).toBe(false);
+    expect(parseArgs(['--no-judge', '--models', 'm', '--repeat', '2'])).toMatchObject({
+      noJudge: true,
+      models: 'm',
+      repeat: 2,
+    });
     expect(() => parseArgs(['--models', 'm', '--retries', '11'])).toThrow(/--retries .* 0 to 10/);
   });
 });
@@ -162,6 +176,124 @@ function model(id: string, provider: LlmProvider, kind: 'anthropic' | 'openroute
   return { id, label: id, model: provider.model, reference: false, price: PRICE, kind, provider };
 }
 
+describe('runBounded stops starting paid tasks after a failure', () => {
+  it('no new task starts after one rejects; the first rejection is thrown', async () => {
+    const started: number[] = [];
+    const tasks = Array.from({ length: 10 }, (_unused, index) => async () => {
+      started.push(index);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      if (index === 1) {
+        throw new Error('disk full');
+      }
+      return index;
+    });
+    await expect(runBounded(tasks, 2)).rejects.toThrow('disk full');
+    // Tasks 0 and 1 ran together; at most one more started before 1 failed.
+    expect(started.length).toBeLessThanOrEqual(3);
+  });
+
+  it('a failing onRun stops the sweep instead of paying for the rest', async () => {
+    let calls = 0;
+    const counting: LlmProvider = {
+      model: 'counting',
+      turn: async () => {
+        calls += 1;
+        return {
+          text: 'I am an AI assistant.',
+          toolCalls: [],
+          stopReason: 'end_turn',
+          usage: USAGE,
+        };
+      },
+    };
+    await expect(
+      runSweep({
+        models: [model('counting', counting)],
+        cases: Array.from({ length: 8 }, (_unused, index) =>
+          caseOf({ noComponents: true }, { id: `case-${index}`, message: 'hi' }),
+        ),
+        catalog: evalCatalog(),
+        now: NOW,
+        repeat: 1,
+        concurrency: 1,
+        timeoutMs: 5_000,
+        retry: NO_BACKOFF,
+        barBps: 9_000,
+        onRun: async () => {
+          throw new Error('cannot write runs.jsonl');
+        },
+      }),
+    ).rejects.toThrow('cannot write runs.jsonl');
+    expect(calls).toBe(1);
+  });
+});
+
+describe('a cost with failed attempts is a lower bound', () => {
+  it('counts the failed attempts of a run that then succeeded, and says so', async () => {
+    let calls = 0;
+    const flaky: LlmProvider = {
+      model: 'flaky',
+      turn: async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new LlmError('status 503', 503);
+        }
+        return {
+          text: 'I am an AI assistant.',
+          toolCalls: [],
+          stopReason: 'end_turn',
+          usage: USAGE,
+        };
+      },
+    };
+    const result = await runSweep({
+      models: [model('flaky', flaky)],
+      cases: [HUMAN_CASE],
+      catalog: evalCatalog(),
+      now: NOW,
+      repeat: 1,
+      concurrency: 1,
+      timeoutMs: 5_000,
+      retry: NO_BACKOFF,
+      barBps: 9_000,
+      judge: idleJudge(),
+      store: evalStore(),
+    });
+    expect(result.models[0]?.runs[0]?.failedAttempts).toBe(1);
+    expect(result.models[0]?.summary.failedAttempts).toBe(1);
+    expect(result.models[0]?.runs[0]?.passed).toBe(true);
+    expect(markdownReport(result)).toContain(
+      'flaky: the cost is a lower bound. 1 model call attempt(s) failed or timed out',
+    );
+  });
+
+  it('a 4xx is reported as deterministic: fix the route or model', async () => {
+    const denied: LlmProvider = {
+      model: 'denied',
+      turn: () => Promise.reject(new LlmError('status 404', 404)),
+    };
+    const result = await runSweep({
+      models: [model('denied', denied)],
+      cases: [HUMAN_CASE],
+      catalog: evalCatalog(),
+      now: NOW,
+      repeat: 1,
+      concurrency: 1,
+      timeoutMs: 5_000,
+      retry: NO_BACKOFF,
+      barBps: 9_000,
+      judge: idleJudge(),
+      store: evalStore(),
+    });
+    expect(result.models[0]?.summary).toMatchObject({ providerErrors: 1, configErrors: 1 });
+    const report = markdownReport(result);
+    expect(report).toContain(
+      'This is deterministic: fix the route or model, a rerun will not help.',
+    );
+    expect(report).not.toContain('Rerun it before choosing a default');
+  });
+});
+
 describe('runSweep', () => {
   it('sweeps three models: a good one, a wrong one and one whose provider is down', async () => {
     const lines: string[] = [];
@@ -198,6 +330,8 @@ describe('runSweep', () => {
       },
       clock: () => 0,
       startedAt: '2026-11-13T00:00:00.000Z',
+      judge: idleJudge(),
+      store: evalStore(),
     });
     expect(lines).toHaveLength(12);
     expect(landed).toHaveLength(12);
@@ -225,11 +359,11 @@ describe('runSweep', () => {
     expect(report).toContain('| good | 2/2 | 100.00% | $0.006750 | $0.027000 |');
     expect(report).toContain('| broken | 0/0 | n/a | n/a | $0.000000 |');
     expect(report).toContain('answers are not streamed');
-    expect(report).toContain('a run that timed out counting at the timeout');
+    expect(report).toContain('a run that timed out counting at its wall time or the timeout');
     expect(report).toContain(
       '- `tent` #1 [search]: turn error: provider error after 3 attempt(s): status 503.',
     );
-    expect(report).toContain('broken is not suggested: 4 run(s) ended on a provider error');
+    expect(report).toContain('broken: 4 run(s) ended on a provider error after retries');
     expect(report).toContain('good: the cheapest per passing conversation');
   });
 
@@ -245,6 +379,7 @@ describe('runSweep', () => {
       timeoutMs: 15,
       retry: { ...NO_BACKOFF, retries: 0 },
       barBps: 9_000,
+      clock: () => 0,
     });
     const run = result.models[0]?.runs[0];
     expect(run?.timedOut).toBe(true);
@@ -268,6 +403,7 @@ describe('main', () => {
     await writeFile(
       path,
       JSON.stringify({
+        judge: { price: PRICE },
         models: [
           { id: 'good', label: 'Good', provider: 'anthropic', model: 'good-1', price: PRICE },
           {
@@ -301,33 +437,37 @@ describe('main', () => {
     const specs: ProviderSpec[] = [];
     const lines: string[] = [];
     const out = join(dir, 'out');
-    const code = await main(
-      [
-        '--models',
-        await modelsFile(),
-        '--only',
-        'good,down-ref',
-        '--cases',
-        'core-1,neg-human',
-        '--repeat',
-        '2',
-        '--concurrency',
-        '2',
-        '--retries',
-        '1',
-        '--out',
-        out,
-      ],
-      {
-        env: { ANTHROPIC_API_KEY: 'sk-secret-1', DEEPSEEK_API_KEY: 'sk-secret-2' },
-        log: (line) => lines.push(line),
-        createProvider: fakeProviders(specs),
-        now: NOW,
-        clock: () => 0,
-        retryTiming: { baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} },
-      },
-    );
+    const judged: string[] = [];
+    const argv = [
+      '--models',
+      await modelsFile(),
+      '--only',
+      'good,down-ref',
+      '--cases',
+      'core-1,neg-human',
+      '--repeat',
+      '2',
+      '--concurrency',
+      '2',
+      '--retries',
+      '1',
+      '--out',
+      out,
+    ];
+    const deps = {
+      env: { ANTHROPIC_API_KEY: 'sk-secret-1', DEEPSEEK_API_KEY: 'sk-secret-2' },
+      log: (line: string) => lines.push(line),
+      createProvider: fakeProviders(specs),
+      createJudge: () => passingJudge(judged),
+      now: NOW,
+      clock: () => 0,
+      retryTiming: { baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} },
+    };
+    const code = await main(argv, deps);
     expect(code).toBe(0);
+    // neg-human has a rubric: judged for the good model's 2 runs; core-1 has none.
+    expect(judged).toHaveLength(2);
+    expect(judged[0]).toContain('c1: Does the answer say plainly that it is an AI assistant');
     expect(specs.map((spec) => spec.model)).toEqual(['good-1', 'broken-1']);
     const output = lines.join('\n');
     expect(output).not.toContain('sk-secret');
@@ -350,6 +490,16 @@ describe('main', () => {
     expect(report).toContain('Down (reference only)');
     expect(report).toContain('## Pass rate by category');
     expect(report).not.toContain('sk-secret');
+    expect(report).toContain('judged by claude-opus-5-5');
+    expect(results.settings.judge).toBe('claude-opus-5-5');
+    // 2 judge calls of 2000 in + 50 out at PRICE: apart from the model's cost.
+    expect(results.models[0]?.summary.judgeCost).toBe('0.0135');
+    expect(results.models[0]?.summary.judgeCalls).toBe(2);
+
+    // A second sweep into the same directory starts runs.jsonl afresh.
+    expect(await main(argv, deps)).toBe(0);
+    const again = (await readFile(join(out, 'runs.jsonl'), 'utf8')).trim().split('\n');
+    expect(again).toHaveLength(8);
   });
 
   it('refuses a case file that does not lint and a store whose products do not build', async () => {
@@ -363,6 +513,7 @@ describe('main', () => {
       env: { ANTHROPIC_API_KEY: 'k', DEEPSEEK_API_KEY: 'k' },
       log: (line: string) => lines.push(line),
       createProvider: fakeProviders([]),
+      createJudge: () => passingJudge(),
       now: NOW,
     };
     const models = await modelsFile();

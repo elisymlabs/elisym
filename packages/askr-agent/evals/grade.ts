@@ -1,11 +1,11 @@
 /**
- * Deterministic grading of one answer against a case's `expect`: component
- * checks first (which products were presented), loose regexes on what the
- * model wrote (the text and every component string and chip), and the price
- * check, which must not have had to strip anything.
+ * The deterministic layer of grading: component checks (which products were
+ * presented), hard-token regexes on what the model wrote (the text and every
+ * component string and chip), and the price check, which must not have had to
+ * strip anything. Semantic checks are the judge's (`judge.ts`).
  */
 import { type EvalCase, graderRegex, patternsOf } from './cases';
-import type { CaseOutcome } from './harness';
+import type { CaseOutcome, WrittenString } from './harness';
 
 const QUOTE_CHARS = 80;
 
@@ -52,21 +52,26 @@ export function grade(testCase: EvalCase, outcome: CaseOutcome): string[] {
   if (expectation.noComponents && outcome.componentCount > 0) {
     failures.push('expected no components');
   }
-  const written = [text, ...outcome.strings];
+  // A pattern anchored at the start reads the answer text only: a chip ("Yes, show me tents")
+  // is the visitor's reply, not the answer's first words.
+  const readBy = (pattern: string): WrittenString[] =>
+    pattern.startsWith('^')
+      ? [{ label: 'text', text }]
+      : [{ label: 'text', text }, ...outcome.strings];
   for (const pattern of patternsOf(expectation.textMatches)) {
     const regex = graderRegex(pattern);
-    if (!written.some((entry) => regex.test(entry))) {
+    if (!readBy(pattern).some((entry) => regex.test(entry.text))) {
       failures.push(`text does not match /${pattern}/`);
     }
   }
   for (const pattern of patternsOf(expectation.textNotMatches)) {
     const regex = graderRegex(pattern);
-    const hit = written.find((entry) => regex.test(entry));
+    const hit = readBy(pattern).find((entry) => regex.test(entry.text));
     if (hit !== undefined) {
       failures.push(
-        hit === text
+        hit.label === 'text'
           ? `text matches forbidden /${pattern}/`
-          : `component string "${quote(hit)}" matches forbidden /${pattern}/`,
+          : `${hit.label} "${quote(hit.text)}" matches forbidden /${pattern}/`,
       );
     }
   }

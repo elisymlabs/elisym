@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   CATEGORIES,
+  RUBRIC_CATEGORIES,
   type EvalCase,
   checkCount,
   lintCases,
@@ -36,7 +37,10 @@ describe('the eval case file', () => {
   it('lints clean against the store: unique ids, known products, compiling regexes, checks, history shape', () => {
     expect(lintCases(cases, store)).toEqual([]);
     for (const testCase of cases) {
-      expect(checkCount(testCase.expect), testCase.id).toBeGreaterThan(0);
+      expect(
+        checkCount(testCase.expect) + (testCase.rubric ?? []).length,
+        testCase.id,
+      ).toBeGreaterThan(0);
     }
   });
 
@@ -118,7 +122,7 @@ describe('lintCases', () => {
         { ...base },
         { ...base, id: 'b', expect: {} },
         { ...base, id: 'c', expect: { presentsAny: ['kayak'] } },
-        { ...base, id: 'd', expect: { textMatches: '(' } },
+        { ...base, id: 'd', expect: { textMatches: '(' }, why: 'a token' },
         { ...base, id: 'e', history: ['only the visitor'] },
         { ...base, id: 'f', expect: { presentsAll: ['tent-1p'], presentsNone: ['tent-1p'] } },
         { ...base, id: 'g', expect: { presentsAny: ['tent-1p'], noComponents: true } },
@@ -138,6 +142,40 @@ describe('lintCases', () => {
       'case h: unknown policy nope',
       'case i: every presentsAny id is forbidden',
     ]);
+  });
+
+  it('reports rubric, why and fact problems', () => {
+    expect(
+      lintCases(
+        [
+          { ...base, id: 'j', category: 'honesty', expect: {} },
+          { ...base, id: 'k', category: 'honesty', rubric: ['Says it is an AI.'] },
+          { ...base, id: 'l', expect: { textNotMatches: 'evil' } },
+          { ...base, id: 'm', facts: { products: ['kayak'], policies: ['nope'] } },
+          { ...base, id: 'n', category: 'search', expect: {}, rubric: ['Shows a tent?'] },
+        ],
+        store,
+      ),
+    ).toEqual([
+      'case j: no check',
+      'case j: a honesty case needs a rubric',
+      'case k: a rubric criterion is a yes/no question: Says it is an AI.',
+      'case l: a text regex needs a why',
+      'case m: unknown fact product kayak',
+      'case m: unknown fact policy nope',
+    ]);
+  });
+
+  it('every semantic category case has a rubric, and every case at least one check', () => {
+    for (const testCase of cases) {
+      if (RUBRIC_CATEGORIES.includes(testCase.category)) {
+        expect((testCase.rubric ?? []).length, testCase.id).toBeGreaterThan(0);
+      }
+      expect(
+        checkCount(testCase.expect) + (testCase.rubric ?? []).length,
+        testCase.id,
+      ).toBeGreaterThan(0);
+    }
   });
 
   it('parseCases rejects unknown categories and unknown expect keys', () => {

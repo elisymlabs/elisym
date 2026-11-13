@@ -15,7 +15,7 @@ import {
   pickDefault,
   summarize,
 } from './aggregate';
-import { type EvalCase, lintCases, parseCases, parseStore } from './cases';
+import { type EvalCase, type EvalStore, lintCases, parseCases, parseStore } from './cases';
 import { grade } from './grade';
 import {
   DEFAULT_RETRY,
@@ -25,7 +25,15 @@ import {
   withCallTimeout,
   withRetries,
 } from './harness';
-import { type ProviderFactory, type ResolvedModel, resolveModels } from './models';
+import { type JudgeResult, judgeCase } from './judge';
+import {
+  type ProviderFactory,
+  type ResolveJudgeOptions,
+  type ResolvedJudge,
+  type ResolvedModel,
+  resolveJudge,
+  resolveModels,
+} from './models';
 import { type ModelResult, type SweepResult, jsonResults, markdownReport } from './report';
 
 export const EVALS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -50,8 +58,11 @@ export interface SweepArgs {
   out?: string;
   casesFile: string;
   storeFile: string;
+  /** Deterministic checks only: no judge, no quality verdict, no suggested default. */
+  noJudge: boolean;
 }
 
+const NO_JUDGE_FLAG = '--no-judge';
 const FLAGS = [
   '--models',
   '--only',
@@ -99,14 +110,21 @@ export const USAGE = `Usage: bun packages/askr-agent/evals/run.ts --models <file
   --retries <n>          retries of a rate-limited, failed or timed-out call (default ${DEFAULT_RETRY.retries})
   --bar <percent>        pass-rate bar for the suggested default (default ${DEFAULT_BAR_BPS / 100})
   --out <dir>            write ${RUNS_FILE} as runs land, then results.json and report.md
+  --no-judge             deterministic checks only: a cheap dry check, not a quality verdict
   --case-file <file>     default evals/cases.json
   --store-file <file>    default evals/store.json`;
 
 export function parseArgs(argv: readonly string[]): SweepArgs {
   const values = new Map<Flag, string>();
+  let noJudge = false;
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index] ?? '';
     const value = argv[index + 1];
+    if (flag === NO_JUDGE_FLAG) {
+      noJudge = true;
+      index -= 1;
+      continue;
+    }
     if (!isFlag(flag)) {
       throw new Error(`Unknown option "${flag}".\n${USAGE}`);
     }
@@ -146,6 +164,7 @@ export function parseArgs(argv: readonly string[]): SweepArgs {
     ...(out !== undefined ? { out } : {}),
     casesFile: values.get('--case-file') ?? join(EVALS_DIR, 'cases.json'),
     storeFile: values.get('--store-file') ?? join(EVALS_DIR, 'store.json'),
+    noJudge,
   };
 }
 
@@ -165,25 +184,37 @@ export function selectCases(cases: readonly EvalCase[], filters?: readonly strin
   return selected;
 }
 
-/** Run `tasks` with at most `limit` in flight; results keep the task order. */
+/**
+ * Run `tasks` with at most `limit` in flight; results keep the task order. After
+ * a task rejects no new task starts (each one is a paid call); the ones in flight
+ * finish, then the first rejection is thrown.
+ */
 export async function runBounded<T>(
   tasks: readonly (() => Promise<T>)[],
   limit: number,
 ): Promise<T[]> {
   const results: T[] = new Array<T>(tasks.length);
   let next = 0;
+  let failure: { error: unknown } | undefined;
   const worker = async () => {
-    while (next < tasks.length) {
+    while (next < tasks.length && failure === undefined) {
       const index = next;
       next += 1;
       const task = tasks[index];
       if (task) {
-        results[index] = await task();
+        try {
+          results[index] = await task();
+        } catch (error) {
+          failure ??= { error };
+        }
       }
     }
   };
   const workers = Array.from({ length: Math.max(1, Math.min(limit, tasks.length)) }, worker);
   await Promise.all(workers);
+  if (failure !== undefined) {
+    throw failure.error;
+  }
   return results;
 }
 
@@ -203,6 +234,10 @@ export interface SweepOptions {
   onRun?: (modelId: string, run: GradedRun) => Promise<void>;
   clock?: () => number;
   startedAt?: string;
+  /** The judge for rubrics; absent means deterministic checks only (--no-judge). */
+  judge?: ResolvedJudge;
+  /** The synthetic store, for the judge's facts. */
+  store?: EvalStore;
 }
 
 function progressLine(done: number, total: number, model: ResolvedModel, run: GradedRun): string {
@@ -215,31 +250,59 @@ function progressLine(done: number, total: number, model: ResolvedModel, run: Gr
 }
 
 export async function runSweep(options: SweepOptions): Promise<SweepResult> {
-  const timed = options.models.map((model) => ({
-    model,
-    provider: withRetries(
-      withCallTimeout(model.provider, options.timeoutMs),
-      options.retry ?? DEFAULT_RETRY,
-    ),
-  }));
+  const retry = options.retry ?? DEFAULT_RETRY;
   // Case-major order spreads each provider's calls over the whole sweep.
   const jobs = options.cases.flatMap((testCase) =>
     Array.from({ length: options.repeat }, (_unused, repeatIndex) =>
-      timed.map((entry) => ({ ...entry, testCase, repeat: repeatIndex + 1 })),
+      options.models.map((model) => ({ model, testCase, repeat: repeatIndex + 1 })),
     ).flat(),
   );
+  const { judge, store } = options;
   let done = 0;
   const graded = await runBounded(
     jobs.map((job) => async () => {
+      let failedAttempts = 0;
+      // Per run, so the failed attempts (usage unknown) are counted against this run.
+      const provider = withRetries(withCallTimeout(job.model.provider, options.timeoutMs), {
+        ...retry,
+        onFailedAttempt: () => {
+          failedAttempts += 1;
+        },
+      });
       const outcome = await runCase({
         catalog: options.catalog,
-        provider: job.provider,
+        provider,
         testCase: job.testCase,
         now: options.now,
         repeat: job.repeat,
         ...(options.clock ? { clock: options.clock } : {}),
       });
-      const run = gradeRun(outcome, grade(job.testCase, outcome), job.model.price);
+      const deterministic = grade(job.testCase, outcome);
+      const hasRubric = (job.testCase.rubric ?? []).length > 0;
+      // The judge reads only an answer the deterministic layer let through: a fail is a fail.
+      let verdict: JudgeResult | undefined;
+      if (
+        judge !== undefined &&
+        store !== undefined &&
+        hasRubric &&
+        outcome.error === undefined &&
+        deterministic.length === 0
+      ) {
+        verdict = await judgeCase({
+          client: judge.client,
+          testCase: job.testCase,
+          outcome,
+          store,
+          retry,
+          timeoutMs: options.timeoutMs,
+        });
+      }
+      const run = gradeRun(outcome, deterministic, job.model.price, {
+        failedAttempts,
+        ...(verdict ? { judge: verdict } : {}),
+        ...(judge ? { judgePrice: judge.price } : {}),
+        notJudged: hasRubric && judge === undefined,
+      });
       done += 1;
       await options.onRun?.(job.model.id, run);
       options.onProgress?.(progressLine(done, jobs.length, job.model, run));
@@ -251,10 +314,14 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
     const runs = graded.filter((entry) => entry.modelId === model.id).map((entry) => entry.run);
     return { summary: summarize(model, runs, options.timeoutMs), runs };
   });
-  const recommended = pickDefault(
-    models.map((model) => model.summary),
-    options.barBps,
-  );
+  // Without the judge the numbers are no quality verdict: never a suggestion.
+  const recommended =
+    judge === undefined
+      ? undefined
+      : pickDefault(
+          models.map((model) => model.summary),
+          options.barBps,
+        );
   return {
     startedAt: options.startedAt ?? new Date().toISOString(),
     settings: {
@@ -262,8 +329,9 @@ export async function runSweep(options: SweepOptions): Promise<SweepResult> {
       repeat: options.repeat,
       concurrency: options.concurrency,
       timeoutMs: options.timeoutMs,
-      retries: (options.retry ?? DEFAULT_RETRY).retries,
+      retries: retry.retries,
       barBps: options.barBps,
+      judge: judge === undefined ? null : judge.model,
       storeItems: options.catalog.items.size,
     },
     models,
@@ -275,6 +343,7 @@ export interface MainDeps {
   env: Readonly<Record<string, string | undefined>>;
   log: (line: string) => void;
   createProvider?: ProviderFactory;
+  createJudge?: ResolveJudgeOptions['createJudge'];
   now?: number;
   clock?: () => number;
   /** Tests only: backoff timing (the retry count comes from --retries). */
@@ -309,11 +378,18 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
       throw new Error(`The case file has problems:\n  ${problems.join('\n  ')}`);
     }
     const cases = selectCases(allCases, args.cases);
-    const models = resolveModels(await readJson(args.models), {
+    const modelsFile = await readJson(args.models);
+    const models = resolveModels(modelsFile, {
       env: deps.env,
       ...(args.only ? { only: args.only } : {}),
       ...(deps.createProvider ? { createProvider: deps.createProvider } : {}),
     });
+    const judge = args.noJudge
+      ? undefined
+      : resolveJudge(modelsFile, {
+          env: deps.env,
+          ...(deps.createJudge ? { createJudge: deps.createJudge } : {}),
+        });
     const now = deps.now ?? Math.floor(Date.now() / MS_PER_SECOND);
     const { catalog, rejected } = buildCatalog(store, now);
     if (rejected.length > 0) {
@@ -329,7 +405,7 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
         appendFile(join(out, RUNS_FILE), `${JSON.stringify({ model: modelId, ...run })}\n`);
     }
     deps.log(
-      `Sweeping ${cases.length} case(s) x ${args.repeat} over ${models.map((model) => model.id).join(', ')}`,
+      `Sweeping ${cases.length} case(s) x ${args.repeat} over ${models.map((model) => model.id).join(', ')}, ${judge === undefined ? 'deterministic checks only (--no-judge): not a quality verdict' : `judged by ${judge.model}`}`,
     );
     const result = await runSweep({
       models,
@@ -347,18 +423,24 @@ export async function main(argv: readonly string[], deps: MainDeps): Promise<num
       onProgress: deps.log,
       ...(appendRun ? { onRun: appendRun } : {}),
       ...(deps.clock ? { clock: deps.clock } : {}),
+      ...(judge ? { judge } : {}),
+      store,
     });
     deps.log('');
     for (const { summary } of result.models) {
       deps.log(
-        `${summary.id}: ${summary.passedCases}/${summary.cases} (${formatBps(summary.passRateBps)}), ${summary.providerErrors} provider error(s), cost per passing conversation ${summary.costPerPass ?? 'n/a'} USD, p50 ${summary.latencyMs.p50 ?? 'n/a'} ms`,
+        `${summary.id}: ${summary.passedCases}/${summary.cases} (${formatBps(summary.passRateBps)}), ${summary.providerErrors} provider error(s), ${summary.judgeErrors} judge error(s), cost per passing conversation ${summary.costPerPass ?? 'n/a'} USD, p50 ${summary.latencyMs.p50 ?? 'n/a'} ms`,
       );
     }
-    deps.log(
-      result.recommended
-        ? `Suggested default at a ${formatBps(args.barBps)} bar: ${result.recommended}`
-        : `No model reached the ${formatBps(args.barBps)} bar.`,
-    );
+    if (judge === undefined) {
+      deps.log('Deterministic checks only: no quality verdict and no suggested default.');
+    } else {
+      deps.log(
+        result.recommended
+          ? `Suggested default at a ${formatBps(args.barBps)} bar: ${result.recommended}`
+          : `No model qualifies at the ${formatBps(args.barBps)} bar.`,
+      );
+    }
     if (args.out !== undefined) {
       await writeFile(join(args.out, 'results.json'), jsonResults(result));
       await writeFile(join(args.out, 'report.md'), markdownReport(result));

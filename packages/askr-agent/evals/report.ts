@@ -9,6 +9,8 @@ export interface SweepSettings {
   retries: number;
   barBps: number;
   storeItems: number;
+  /** The judge model; null with --no-judge (deterministic checks only). */
+  judge: string | null;
 }
 
 export interface ModelResult {
@@ -57,9 +59,38 @@ function overviewRow(summary: ModelSummary): string {
     String(summary.tokens.outputTokens),
     String(summary.turnErrors),
     String(summary.providerErrors),
+    String(summary.judgeErrors),
     String(summary.flakyCases.length),
+    formatUsd(summary.judgeCost),
   ];
   return `| ${columns.map(cell).join(' | ')} |`;
+}
+
+/** Why a model is not suggested, and whether its cost is a lower bound. */
+function modelNotes(summary: ModelSummary): string[] {
+  const notes: string[] = [];
+  const transient = summary.providerErrors - summary.configErrors;
+  if (summary.configErrors > 0) {
+    notes.push(
+      `${summary.label}: ${summary.configErrors} run(s) failed on a 4xx from the provider. This is deterministic: fix the route or model, a rerun will not help.`,
+    );
+  }
+  if (transient > 0) {
+    notes.push(
+      `${summary.label}: ${transient} run(s) ended on a provider error after retries, so its pass rate covers fewer runs than the others. Rerun it before choosing a default.`,
+    );
+  }
+  if (summary.judgeErrors > 0) {
+    notes.push(
+      `${summary.label}: the judge gave no valid verdict on ${summary.judgeErrors} run(s); they are out of the pass rate. Rerun before choosing a default.`,
+    );
+  }
+  if (summary.failedAttempts > 0) {
+    notes.push(
+      `${summary.label}: the cost is a lower bound. ${summary.failedAttempts} model call attempt(s) failed or timed out, and what they used is unknown.`,
+    );
+  }
+  return notes.flatMap((note) => ['', note]);
 }
 
 export function markdownReport(result: SweepResult): string {
@@ -70,10 +101,14 @@ export function markdownReport(result: SweepResult): string {
     '',
     `Started ${result.startedAt}. ${settings.cases} cases x ${settings.repeat} repeat(s) on a synthetic store of ${settings.storeItems} products; concurrency ${settings.concurrency}, per-call timeout ${settings.timeoutMs} ms, ${settings.retries} retries of a rate-limited, failed or timed-out call.`,
     '',
-    'A case passes only when every repeat passes; a flaky case passed some repeats and failed others. Turn errors (for example the price gate) count as failures. A run that still failed on a provider error after its retries is left out of the pass rate and counted under Provider errors; its cost still counts. Cost per passing conversation is the total cost of every run divided by the passing runs (n/a when none passed). Latency is the wall time of one turn over runs that produced an answer, a run that timed out counting at the timeout: answers are not streamed, so the time to the first answer is the time to the whole answer.',
+    settings.judge === null
+      ? '**Deterministic checks only (--no-judge): this is not a quality verdict.** Rubric criteria were not judged, so a pass here means only that the components, hard tokens and the price check passed. No default is suggested.'
+      : `Graded in two layers: deterministic checks (components, hard tokens, the price check), then each case's rubric judged by ${settings.judge}. A run the judge could not judge after retries is left out of the pass rate and counted under Judge errors. Judge cost is shown apart and is not in the cost per passing conversation.`,
     '',
-    '| Model | Passed | Pass rate | Cost per passing conversation | Total cost | p50 | p95 | Calls | Input | Cached | Cache write | Output | Turn errors | Provider errors | Flaky |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    'A case passes only when every repeat passes; a flaky case passed some repeats and failed others. Turn errors (for example the price gate) count as failures. A run that still failed on a provider error after its retries is left out of the pass rate and counted under Provider errors; its cost still counts. Cost per passing conversation is the total cost of every run divided by the passing runs (n/a when none passed). Latency is the wall time of one turn over runs that produced an answer, a run that timed out counting at its wall time or the timeout, whichever is longer: answers are not streamed, so the time to the first answer is the time to the whole answer.',
+    '',
+    '| Model | Passed | Pass rate | Cost per passing conversation | Total cost | p50 | p95 | Calls | Input | Cached | Cache write | Output | Turn errors | Provider errors | Judge errors | Flaky | Judge cost |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     ...summaries.map(overviewRow),
     '',
     '## Pass rate by category',
@@ -92,19 +127,18 @@ export function markdownReport(result: SweepResult): string {
     lines.push(`| ${cell(category)} | ${rates.join(' | ')} |`);
   }
   lines.push('', '## Default suggested by the numbers', '');
-  const recommended = summaries.find((summary) => summary.id === result.recommended);
-  lines.push(
-    recommended
-      ? `${recommended.label}: the cheapest per passing conversation among models (not reference only) at or above a ${formatBps(settings.barBps)} pass rate, latency as the tiebreak.`
-      : `No model that is not reference only and had no provider error reached a ${formatBps(settings.barBps)} pass rate.`,
-  );
+  if (settings.judge === null) {
+    lines.push('None: deterministic checks only are no quality verdict.');
+  } else {
+    const recommended = summaries.find((summary) => summary.id === result.recommended);
+    lines.push(
+      recommended
+        ? `${recommended.label}: the cheapest per passing conversation among models (not reference only, no provider or judge error) at or above a ${formatBps(settings.barBps)} pass rate, latency as the tiebreak.`
+        : `No model that is not reference only and had no provider or judge error reached a ${formatBps(settings.barBps)} pass rate.`,
+    );
+  }
   for (const summary of summaries) {
-    if (!summary.reference && summary.providerErrors > 0) {
-      lines.push(
-        '',
-        `${summary.label} is not suggested: ${summary.providerErrors} run(s) ended on a provider error, so its pass rate covers fewer runs than the others. Rerun it before choosing a default.`,
-      );
-    }
+    lines.push(...modelNotes(summary));
   }
   lines.push('', '## Failures');
   for (const model of result.models) {

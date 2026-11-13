@@ -9,6 +9,12 @@ import { createAnthropicProvider } from '../src/llm/anthropic';
 import { createOpenAiCompatibleProvider } from '../src/llm/openai-compatible';
 import type { LlmProvider, ModelPrice } from '../src/llm/types';
 import type { ModelInfo } from './aggregate';
+import {
+  DEFAULT_JUDGE_MODEL,
+  type JudgeClient,
+  type JudgeClientSpec,
+  createJudgeClient,
+} from './judge';
 
 export const PROVIDER_KINDS = ['anthropic', 'openrouter', 'deepseek'] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
@@ -46,7 +52,42 @@ const EntrySchema = z
   .strict();
 export type ModelEntry = z.infer<typeof EntrySchema>;
 
-const ModelsFileSchema = z.object({ models: z.array(EntrySchema).min(1) }).strict();
+const PriceSchema = z
+  .object({
+    input: z.string(),
+    cachedInput: z.string(),
+    cacheWrite: z.string(),
+    output: z.string(),
+  })
+  .strict();
+
+/** The judge: one fixed model for every entry, Claude Opus 5.5 on Anthropic by default. */
+const JudgeSchema = z
+  .object({
+    label: z.string().min(1).optional(),
+    provider: z.enum(['anthropic', 'openrouter']).default('anthropic'),
+    model: z.string().min(1).default(DEFAULT_JUDGE_MODEL),
+    note: z.string().optional(),
+    extraBody: z.record(z.unknown()).optional(),
+    price: PriceSchema,
+  })
+  .strict();
+
+const ModelsFileSchema = z
+  .object({ judge: JudgeSchema.optional(), models: z.array(EntrySchema).min(1) })
+  .strict();
+
+function parseModelsFile(json: unknown): z.infer<typeof ModelsFileSchema> {
+  const parsed = ModelsFileSchema.safeParse(json);
+  if (!parsed.success) {
+    const detail = parsed.error.issues
+      .slice(0, 5)
+      .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+      .join('; ');
+    throw new Error(`The models file is invalid: ${detail}`);
+  }
+  return parsed.data;
+}
 
 export interface ProviderSpec {
   kind: ProviderKind;
@@ -100,7 +141,12 @@ function recordOf(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? { ...value } : {};
 }
 
-function checkPrice(entry: ModelEntry): ModelPrice {
+interface Priced {
+  id: string;
+  price: z.infer<typeof PriceSchema>;
+}
+
+function checkPrice(entry: Priced): ModelPrice {
   for (const field of PRICE_FIELDS) {
     const value = entry.price[field].trim();
     if (value.length === 0) {
@@ -124,13 +170,24 @@ function checkPrice(entry: ModelEntry): ModelPrice {
 
 /** OpenRouter's slug for DeepSeek's own (China-hosted) endpoint. */
 const DEEPSEEK_HOST_RE = /^deepseek$/i;
+/** A DeepSeek model under any author or casing ("deepseek/...", "DeepSeek/...", ".../deepseek-r1"). */
+const DEEPSEEK_MODEL_RE = /deepseek/i;
+/** OpenRouter body keys that pick other models or routes behind the entry's back. */
+const ROUTING_KEYS: readonly string[] = ['models', 'route'];
+
+interface Routed {
+  id: string;
+  model: string;
+  reference: boolean;
+  extraBody?: Record<string, unknown>;
+}
 
 /**
  * Visitor-data rules (4.4, spec 8): no training on OpenRouter, a DeepSeek model
  * there only on hosts the entry names (never DeepSeek's own), direct DeepSeek
  * only as reference.
  */
-function checkRoute(entry: ModelEntry, kind: ProviderKind): void {
+function checkRoute(entry: Routed, kind: ProviderKind): void {
   if (kind === 'anthropic' && entry.extraBody !== undefined) {
     throw new Error(
       `Model entry "${entry.id}": extraBody is not used by the anthropic provider; remove it.`,
@@ -142,14 +199,26 @@ function checkRoute(entry: ModelEntry, kind: ProviderKind): void {
     );
   }
   if (kind === 'openrouter') {
-    const route = recordOf(recordOf(entry.extraBody).provider);
+    const body = recordOf(entry.extraBody);
+    const bypass = ROUTING_KEYS.filter((key) => key in body);
+    if (bypass.length > 0) {
+      throw new Error(
+        `Model entry "${entry.id}": extraBody.${bypass.join(' and extraBody.')} would route to other models; remove it.`,
+      );
+    }
+    if (entry.model.toLowerCase().startsWith('openrouter/')) {
+      throw new Error(
+        `Model entry "${entry.id}": "${entry.model}" lets OpenRouter pick the model; name one.`,
+      );
+    }
+    const route = recordOf(body.provider);
     if (route.data_collection !== 'deny') {
       throw new Error(
         `Model entry "${entry.id}": an OpenRouter entry needs extraBody.provider.data_collection "deny".`,
       );
     }
     const only = route.only;
-    const isDeepSeek = entry.model.toLowerCase().startsWith('deepseek/');
+    const isDeepSeek = DEEPSEEK_MODEL_RE.test(entry.model);
     if ((only !== undefined || isDeepSeek) && (!Array.isArray(only) || only.length === 0)) {
       throw new Error(
         `Model entry "${entry.id}": extraBody.provider.only is empty. List the US/EU-hosted providers to route to (see the model's providers on OpenRouter)${isDeepSeek ? '; a DeepSeek model needs it' : ', or remove the field'}.`,
@@ -174,15 +243,7 @@ export interface ResolveOptions {
 }
 
 export function resolveModels(json: unknown, options: ResolveOptions): ResolvedModel[] {
-  const parsed = ModelsFileSchema.safeParse(json);
-  if (!parsed.success) {
-    const detail = parsed.error.issues
-      .slice(0, 5)
-      .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
-      .join('; ');
-    throw new Error(`The models file is invalid: ${detail}`);
-  }
-  const entries = parsed.data.models;
+  const entries = parseModelsFile(json).models;
   const ids = new Set<string>();
   for (const entry of entries) {
     if (ids.has(entry.id)) {
@@ -231,4 +292,53 @@ export function resolveModels(json: unknown, options: ResolveOptions): ResolvedM
       }),
     };
   });
+}
+
+export interface ResolvedJudge {
+  label: string;
+  model: string;
+  price: ModelPrice;
+  client: JudgeClient;
+}
+
+export interface ResolveJudgeOptions {
+  env: Readonly<Record<string, string | undefined>>;
+  createJudge?: (spec: JudgeClientSpec) => JudgeClient;
+}
+
+/** The judge from the models file: prices filled, key in the environment, route rules as for models. */
+export function resolveJudge(json: unknown, options: ResolveJudgeOptions): ResolvedJudge {
+  const { judge } = parseModelsFile(json);
+  if (judge === undefined) {
+    throw new Error(
+      `The models file has no "judge" entry. Add one (default model ${DEFAULT_JUDGE_MODEL} on anthropic) with its prices, or run with --no-judge.`,
+    );
+  }
+  const price = checkPrice({ id: 'judge', price: judge.price });
+  checkRoute(
+    {
+      id: 'judge',
+      model: judge.model,
+      reference: false,
+      ...(judge.extraBody ? { extraBody: judge.extraBody } : {}),
+    },
+    judge.provider,
+  );
+  const variable = API_KEY_ENV[judge.provider];
+  const apiKey = options.env[variable] ?? '';
+  if (apiKey.trim().length === 0) {
+    throw new Error(`The judge (${judge.provider}) needs ${variable} set in the environment.`);
+  }
+  const create = options.createJudge ?? createJudgeClient;
+  return {
+    label: judge.label ?? judge.model,
+    model: judge.model,
+    price,
+    client: create({
+      kind: judge.provider,
+      apiKey,
+      model: judge.model,
+      ...(judge.extraBody ? { extraBody: judge.extraBody } : {}),
+    }),
+  };
 }

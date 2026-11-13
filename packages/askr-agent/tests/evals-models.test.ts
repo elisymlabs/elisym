@@ -45,6 +45,29 @@ function refusal(json: unknown, env: Record<string, string> = ENV): string {
 }
 
 describe('the models file', () => {
+  it('refuses OpenRouter route bypasses: fallback models, a route key, openrouter/* ids', () => {
+    for (const key of ['models', 'route']) {
+      const json = filledExample();
+      json.models[4].extraBody[key] = key === 'models' ? ['deepseek/deepseek-chat'] : 'fallback';
+      expect(refusal(json)).toMatch(new RegExp(`extraBody\\.${key} would route to other models`));
+    }
+    const auto = filledExample();
+    auto.models[4].model = 'openrouter/auto';
+    expect(refusal(auto)).toBe(
+      'Model entry "gemini-flash-openrouter": "openrouter/auto" lets OpenRouter pick the model; name one.',
+    );
+  });
+
+  it('a DeepSeek model in any casing or under any author needs named hosts', () => {
+    for (const model of ['DeepSeek/DeepSeek-Chat', 'tngtech/deepseek-r1t-chimera']) {
+      const json = filledExample();
+      json.models[4].model = model;
+      expect(refusal(json), model).toMatch(/a DeepSeek model needs it/);
+      json.models[4].extraBody.provider.only = ['us-host'];
+      expect(refusal(json), model).toBe('');
+    }
+  });
+
   it('refuses a negative price and a whitespace-only key, and trims prices', () => {
     const negative = filledExample();
     negative.models[0].price = { ...FILLED, input: '-1' };

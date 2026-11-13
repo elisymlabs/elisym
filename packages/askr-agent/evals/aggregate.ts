@@ -6,6 +6,7 @@
 import Decimal from 'decimal.js-light';
 import { type ModelPrice, type Usage, ZERO_USAGE, addUsage, costOf } from '../src/llm/types';
 import type { CaseOutcome } from './harness';
+import type { CriterionResult, JudgeResult } from './judge';
 
 /** Rates are in basis points: 10000 bps = 100%. */
 export const FULL_RATE_BPS = 10_000;
@@ -14,8 +15,27 @@ export const DEFAULT_BAR_BPS = 9_000;
 export interface GradedRun extends CaseOutcome {
   failures: string[];
   passed: boolean;
-  /** USD, exact, in plain notation. */
+  /** The model's cost, USD, exact, in plain notation (the judge's is apart). */
   cost: string;
+  /** Model call attempts that failed (timed out, 429, 5xx...): their usage is unknown. */
+  failedAttempts: number;
+  /** The judge's verdict per rubric criterion, when it judged. */
+  criteria?: CriterionResult[];
+  /** The judge gave no valid verdict after retries: the run leaves the pass rate. */
+  judgeError?: boolean;
+  /** The case has a rubric that was not judged (--no-judge). */
+  notJudged?: boolean;
+  /** The judge's cost, USD, exact. */
+  judgeCost: string;
+  judgeCalls: number;
+}
+
+export interface GradeExtras {
+  failedAttempts?: number;
+  /** The judge's result; absent when it did not run. */
+  judge?: JudgeResult;
+  judgePrice?: ModelPrice;
+  notJudged?: boolean;
 }
 
 export interface CaseResult {
@@ -51,11 +71,22 @@ export interface ModelSummary {
   turnErrors: number;
   /** Runs that ended on a provider error after retries: out of the pass rate. */
   providerErrors: number;
+  /** Of those, a 4xx that a rerun will not change: fix the route or model. */
+  configErrors: number;
+  /** Runs the judge could not judge after retries: out of the pass rate. */
+  judgeErrors: number;
+  /** Runs whose rubric was not judged (--no-judge): their pass is deterministic only. */
+  notJudgedRuns: number;
+  /** Failed model call attempts whose usage is unknown: the cost is a lower bound when > 0. */
+  failedAttempts: number;
+  /** The judge's cost over this model's runs, USD, exact; not in the cost per pass. */
+  judgeCost: string;
+  judgeCalls: number;
   /** USD over every run, exact. */
   totalCost: string;
   /** Total cost over passing runs, USD; null when nothing passed. */
   costPerPass: string | null;
-  /** Over runs that produced an answer, timed-out runs at the timeout; null when none. */
+  /** Over runs that produced an answer, a timed-out run at its wall time or the timeout, whichever is longer; null when none. */
   latencyMs: { p50: number | null; p95: number | null; max: number | null };
   modelCalls: number;
   tokens: Usage;
@@ -96,12 +127,32 @@ export function percentile(values: readonly number[], percent: number): number |
   return sorted[Math.min(rank, sorted.length) - 1] ?? null;
 }
 
-export function gradeRun(outcome: CaseOutcome, failures: string[], price: ModelPrice): GradedRun {
+export function gradeRun(
+  outcome: CaseOutcome,
+  deterministic: string[],
+  price: ModelPrice,
+  extras: GradeExtras = {},
+): GradedRun {
+  const { judge } = extras;
+  const criteriaFailures = (judge?.criteria ?? [])
+    .filter((criterion) => !criterion.pass)
+    .map(
+      (criterion) =>
+        `rubric ${criterion.id} failed: ${criterion.question} Judge: ${criterion.reason}`,
+    );
+  const judgeFailures = judge?.error === undefined ? [] : [judge.error];
+  const failures = [...deterministic, ...criteriaFailures, ...judgeFailures];
   return {
     ...outcome,
     failures,
     passed: failures.length === 0,
     cost: costOf(outcome.usage, price).toFixed(),
+    failedAttempts: extras.failedAttempts ?? 0,
+    ...(judge?.criteria ? { criteria: judge.criteria } : {}),
+    ...(judge?.error === undefined ? {} : { judgeError: true }),
+    ...(extras.notJudged ? { notJudged: true } : {}),
+    judgeCost: judge && extras.judgePrice ? costOf(judge.usage, extras.judgePrice).toFixed() : '0',
+    judgeCalls: judge?.calls ?? 0,
   };
 }
 
@@ -113,6 +164,11 @@ export function costPerPass(totalCost: Decimal, passedRuns: number): Decimal | n
   return totalCost.div(passedRuns);
 }
 
+/** A run that ended on a provider or judge error says nothing about the model's answers. */
+export function reachedVerdict(run: GradedRun): boolean {
+  return run.providerError !== true && run.judgeError !== true;
+}
+
 /**
  * Per case over the runs that reached a verdict: a run that ended on a
  * provider error (after retries) says nothing about the model's answers, so
@@ -120,7 +176,7 @@ export function costPerPass(totalCost: Decimal, passedRuns: number): Decimal | n
  */
 export function caseResults(runs: readonly GradedRun[]): CaseResult[] {
   const byCase = new Map<string, CaseResult>();
-  for (const run of runs.filter((entry) => entry.providerError !== true)) {
+  for (const run of runs.filter(reachedVerdict)) {
     const current = byCase.get(run.caseId) ?? {
       caseId: run.caseId,
       category: run.category,
@@ -139,7 +195,7 @@ export function caseResults(runs: readonly GradedRun[]): CaseResult[] {
 }
 
 /**
- * A timed-out run counts at the timeout (when known): leaving it out would
+ * A timed-out run counts at its wall time or the timeout, whichever is longer: leaving it out would
  * flatter exactly the models that hang.
  */
 function latencySamples(runs: readonly GradedRun[], timeoutMs?: number): number[] {
@@ -148,7 +204,7 @@ function latencySamples(runs: readonly GradedRun[], timeoutMs?: number): number[
       return [run.latencyMs];
     }
     if (run.timedOut === true) {
-      return [timeoutMs ?? run.latencyMs];
+      return [Math.max(run.latencyMs, timeoutMs ?? 0)];
     }
     return [];
   });
@@ -187,6 +243,12 @@ export function summarize(
     flakyCases: cases.filter((result) => result.flaky).map((result) => result.caseId),
     turnErrors: runs.filter((run) => run.error !== undefined && run.providerError !== true).length,
     providerErrors: runs.filter((run) => run.providerError === true).length,
+    configErrors: runs.filter((run) => run.configError === true).length,
+    judgeErrors: runs.filter((run) => run.judgeError === true).length,
+    notJudgedRuns: runs.filter((run) => run.notJudged === true).length,
+    failedAttempts: runs.reduce((sum, run) => sum + run.failedAttempts, 0),
+    judgeCost: runs.reduce((sum, run) => sum.plus(run.judgeCost), new Decimal(0)).toFixed(),
+    judgeCalls: runs.reduce((sum, run) => sum + run.judgeCalls, 0),
     totalCost: totalCost.toFixed(),
     costPerPass: perPass === null ? null : perPass.toFixed(),
     latencyMs: {
@@ -209,7 +271,7 @@ function compareLatency(left: number | null, right: number | null): number {
 
 /**
  * The tier default the numbers suggest: among models that are not reference
- * only, had no provider error and pass at least `barBps` of the cases, the
+ * only, had no provider or judge error, were judged, and pass at least `barBps` of the cases, the
  * cheapest per passing conversation, then the lower p50 latency. Undefined
  * when none qualifies.
  */
@@ -221,6 +283,8 @@ export function pickDefault(
     (summary) =>
       !summary.reference &&
       summary.providerErrors === 0 &&
+      summary.judgeErrors === 0 &&
+      summary.notJudgedRuns === 0 &&
       summary.passRateBps !== null &&
       summary.passRateBps >= barBps &&
       summary.costPerPass !== null,

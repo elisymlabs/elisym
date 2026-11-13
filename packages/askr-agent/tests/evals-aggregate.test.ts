@@ -186,7 +186,7 @@ describe('provider errors, repeats per category and timeouts', () => {
     });
   });
 
-  it('a timed-out run counts at the timeout in the latency percentiles', () => {
+  it('a timed-out run counts at its wall time or the timeout, whichever is longer', () => {
     const runs = [
       run('a', 'search', true, { latencyMs: 100 }),
       run('b', 'search', true, { latencyMs: 200 }),
@@ -197,8 +197,18 @@ describe('provider errors, repeats per category and timeouts', () => {
         timedOut: true,
       }),
     ];
-    expect(summarize(INFO, runs, 60_000).latencyMs).toEqual({ p50: 200, p95: 60_000, max: 60_000 });
-    expect(summarize(INFO, runs).latencyMs.max).toBe(250_000);
+    // Retries made it 250 s of wall time: more than one timeout, so the wall time counts.
+    expect(summarize(INFO, runs, 60_000).latencyMs).toEqual({
+      p50: 200,
+      p95: 250_000,
+      max: 250_000,
+    });
+    // A run cut short (an abort before the deadline) still counts at least the timeout.
+    const short = [
+      run('a', 'search', true, { latencyMs: 100 }),
+      run('c', 'search', false, { latencyMs: 30, error: 'x', providerError: true, timedOut: true }),
+    ];
+    expect(summarize(INFO, short, 60_000).latencyMs.max).toBe(60_000);
   });
 });
 
