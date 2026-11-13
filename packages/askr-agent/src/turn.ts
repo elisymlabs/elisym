@@ -2,6 +2,7 @@ import { type Answer, LIMITS, fitAnswer, parseAddress } from '@elisym/askr';
 import type { StoreCatalog } from './catalog/store-catalog';
 import { fence, sanitizeText } from './fence';
 import {
+  ANSWER_STOP_REASONS,
   type ContentBlock,
   DECLINED_STOP_REASONS,
   type LlmMessage,
@@ -68,6 +69,33 @@ export interface TurnOutput {
   allowedIds: string[];
   /** What the price check removed after the re-run, if anything. */
   stripped: PriceViolation[];
+}
+
+/** The model stopped for a reason that is no answer: cut at max_tokens, declined, or unknown. */
+export type StopKind = 'max_tokens' | 'refusal' | 'other';
+
+function stopKindOf(stopReason: string): StopKind {
+  if (TRUNCATED_STOP_REASONS.includes(stopReason)) {
+    return 'max_tokens';
+  }
+  return DECLINED_STOP_REASONS.includes(stopReason) ? 'refusal' : 'other';
+}
+
+const STOP_MESSAGES: Readonly<Record<StopKind, string>> = {
+  max_tokens: 'The model stopped at max_tokens',
+  refusal: 'The model declined the request',
+  other: 'The model stopped without an answer',
+};
+
+export class StopReasonError extends Error {
+  readonly kind: StopKind;
+
+  constructor(readonly stopReason: string) {
+    const kind = stopKindOf(stopReason);
+    super(`${STOP_MESSAGES[kind]} (${stopReason})`);
+    this.name = 'StopReasonError';
+    this.kind = kind;
+  }
 }
 
 /** A turn that ended without an answer; carries what it already spent (5.8 settles it). */
@@ -165,12 +193,11 @@ export async function runTurn(input: TurnInput): Promise<TurnOutput> {
       });
       modelCalls += 1;
       usage = addUsage(usage, response.usage);
-      // Fail closed: a cut-off text or tool call is no answer, and neither is a declined one.
-      if (TRUNCATED_STOP_REASONS.includes(response.stopReason)) {
-        throw new Error(`The model stopped at max_tokens (${response.stopReason})`);
-      }
-      if (DECLINED_STOP_REASONS.includes(response.stopReason)) {
-        throw new Error(`The model declined the request (${response.stopReason})`);
+      // Fail closed: a cut-off text or tool call is no answer, and neither is a declined one or
+      // one that stopped for any reason not known to end an answer (a context-window stop...).
+      // A refusal is deliberately no fallback to another model: the turn ends, the server settles it.
+      if (!ANSWER_STOP_REASONS.includes(response.stopReason)) {
+        throw new StopReasonError(response.stopReason);
       }
       // Sent back unchanged in this turn: thinking blocks stay with the tool calls they led to.
       const assistantContent: ContentBlock[] = response.assistantContent ?? [

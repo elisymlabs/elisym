@@ -59,7 +59,11 @@ export interface ToolSpec {
   inputSchema: Record<string, unknown>;
 }
 
-export type ToolChoice = 'auto' | 'none' | { name: string };
+/**
+ * No forced named tool: Claude Opus and Sonnet 5.5 reject `tool_choice` `tool`
+ * and `any` with a 400, and the turn loop never needs one.
+ */
+export type ToolChoice = 'auto' | 'none';
 
 export interface TurnRequest {
   system: SystemBlock[];
@@ -95,6 +99,14 @@ export interface TurnResponse {
   assistantContent?: ContentBlock[];
 }
 
+/** Stop reasons of a whole answer or a tool round; any other ends the turn (fail closed). */
+export const ANSWER_STOP_REASONS: readonly string[] = [
+  'end_turn',
+  'tool_use',
+  'stop_sequence',
+  'stop',
+  'tool_calls',
+];
 /** The response was cut at max_tokens: its text or tool call is incomplete. */
 export const TRUNCATED_STOP_REASONS: readonly string[] = ['max_tokens', 'length'];
 /** The model or the provider's safety layer declined: there is no answer to use. */

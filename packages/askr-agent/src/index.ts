@@ -18,6 +18,7 @@ export {
   createOpenAiCompatibleProvider,
 } from './llm/openai-compatible';
 export {
+  ANSWER_STOP_REASONS,
   type ContentBlock,
   DECLINED_STOP_REASONS,
   type LlmMessage,
@@ -61,6 +62,8 @@ export {
   DEFAULT_MAX_TOKENS,
   MAX_MODEL_CALLS_PER_TURN,
   MAX_TOOL_ROUNDS,
+  StopReasonError,
+  type StopKind,
   TurnError,
   type TurnInput,
   type TurnOutput,

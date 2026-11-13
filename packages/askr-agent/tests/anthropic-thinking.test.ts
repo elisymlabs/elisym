@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { createAnthropicProvider } from '../src/llm/anthropic';
 import type { LlmProvider, TurnRequest, TurnResponse } from '../src/llm/types';
-import { MAX_MODEL_CALLS_PER_TURN, MAX_TOOL_ROUNDS, TurnError, runTurn } from '../src/turn';
+import {
+  MAX_MODEL_CALLS_PER_TURN,
+  MAX_TOOL_ROUNDS,
+  StopReasonError,
+  TurnError,
+  runTurn,
+} from '../src/turn';
 import { NOW, catalog, toolCall } from './fixtures';
 
 /**
@@ -277,5 +283,127 @@ describe('a turn makes at most MAX_MODEL_CALLS_PER_TURN model calls', () => {
     );
     await runTurn(baseInput(run.provider));
     expect(run.calls()).toBe(MAX_MODEL_CALLS_PER_TURN);
+  });
+});
+
+describe('review round 4: replay and stop reasons', () => {
+  it('replays redacted thinking and non-empty thinking text unchanged through runTurn', async () => {
+    const { doFetch, requests } = anthropicFetch([
+      {
+        content: [
+          { type: 'thinking', thinking: 'The visitor wants wool.', signature: 'sig-1' },
+          { type: 'redacted_thinking', data: 'opaque-blob' },
+          { type: 'tool_use', id: 't1', name: 'search_products', input: { query: 'wool' } },
+        ],
+        stop_reason: 'tool_use',
+        usage: USAGE,
+      },
+      {
+        content: [{ type: 'text', text: 'A wool jacket.' }],
+        stop_reason: 'end_turn',
+        usage: USAGE,
+      },
+    ]);
+    await runTurn(
+      baseInput(createAnthropicProvider({ apiKey: 'k', model: 'claude-opus-5-5', fetch: doFetch })),
+    );
+    const messages = requests[1]?.body.messages;
+    expect(Array.isArray(messages) ? messages[1] : undefined).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'The visitor wants wool.', signature: 'sig-1' },
+        { type: 'redacted_thinking', data: 'opaque-blob' },
+        { type: 'tool_use', id: 't1', name: 'search_products', input: { query: 'wool' } },
+      ],
+    });
+  });
+
+  it('a thinking-only answer turn gets a (no text) block before the correction', async () => {
+    const requests: TurnRequest[] = [];
+    let call = 0;
+    const provider: LlmProvider = {
+      model: 'thinking-only',
+      turn: async (request) => {
+        requests.push(request);
+        call += 1;
+        return {
+          text: call === 1 ? '' : 'Fine.',
+          toolCalls: [],
+          stopReason: 'end_turn',
+          usage: { inputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 },
+          assistantContent:
+            call === 1
+              ? [{ type: 'thinking', thinking: '', signature: 'sig' }]
+              : [{ type: 'text', text: 'Fine.' }],
+        };
+      },
+    };
+    // A card with an invented price in its reason makes the price check ask for a correction.
+    const presenting: LlmProvider = {
+      model: 'presenting',
+      turn: async (request) => {
+        if (request.messages.length === 1) {
+          return {
+            text: '',
+            toolCalls: [
+              toolCall('present_products', { picks: [{ id: 'jacket-wool', reason: 'only $99' }] }),
+            ],
+            stopReason: 'tool_use',
+            usage: { inputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 },
+          };
+        }
+        return provider.turn(request);
+      },
+    };
+    await runTurn(baseInput(presenting));
+    const correction = requests.find((request) =>
+      JSON.stringify(request.messages.at(-1)).includes('not prices of the products'),
+    );
+    expect(correction?.messages.at(-2)).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '', signature: 'sig' },
+        { type: 'text', text: '(no text)' },
+      ],
+    });
+  });
+
+  it.each(['model_context_window_exceeded', 'pause_turn', 'unknown'])(
+    'an unknown stop reason (%s) ends the turn instead of publishing its text',
+    async (stopReason) => {
+      const error = await runTurn(baseInput(stopping(stopReason, 'Half an answer'))).catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(TurnError);
+      expect(error instanceof TurnError ? error.reason : undefined).toBeInstanceOf(StopReasonError);
+      expect(error instanceof TurnError ? error.message : '').toBe(
+        `The model stopped without an answer (${stopReason})`,
+      );
+    },
+  );
+
+  it.each(['end_turn', 'stop_sequence', 'stop'])('%s is an answer', async (stopReason) => {
+    expect((await runTurn(baseInput(stopping(stopReason, 'Hello.')))).answer.text).toBe('Hello.');
+  });
+
+  it('the stop error says its kind', () => {
+    expect(new StopReasonError('max_tokens').kind).toBe('max_tokens');
+    expect(new StopReasonError('length').kind).toBe('max_tokens');
+    expect(new StopReasonError('refusal').kind).toBe('refusal');
+    expect(new StopReasonError('content_filter').kind).toBe('refusal');
+    expect(new StopReasonError('whatever').kind).toBe('other');
+  });
+
+  it('the adapter sends only auto or none as tool_choice', async () => {
+    const { doFetch, requests } = anthropicFetch([
+      { content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: USAGE },
+    ]);
+    const provider = createAnthropicProvider({
+      apiKey: 'k',
+      model: 'claude-sonnet-5-5',
+      fetch: doFetch,
+    });
+    await provider.turn({ ...REQUEST, toolChoice: 'none' });
+    expect(requests[0]?.body.tool_choice).toEqual({ type: 'none' });
   });
 });

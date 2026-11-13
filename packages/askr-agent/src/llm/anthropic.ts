@@ -109,8 +109,7 @@ export function createAnthropicProvider(config: AnthropicConfig): LlmProvider {
         })),
       };
       const choice = request.toolChoice ?? 'auto';
-      body.tool_choice =
-        typeof choice === 'string' ? { type: choice } : { type: 'tool', name: choice.name };
+      body.tool_choice = { type: choice };
       const response = await doFetch(config.baseUrl ?? ANTHROPIC_URL, {
         method: 'POST',
         headers: {
