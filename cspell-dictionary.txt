@@ -51,6 +51,7 @@ elisymlabs
 elizaos
 eose
 ERESOLVE
+evals
 evictable
 exfil
 exfiltration
