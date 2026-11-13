@@ -216,3 +216,22 @@ describe('a price-check re-run that fails on anything but a stop reason fails th
     expect(error instanceof TurnError ? error.reason : undefined).toBeInstanceOf(LlmError);
   });
 });
+
+describe('security: stock talk needs a stock word, not only the absence of a price word', () => {
+  it.each([
+    '这个卖5块呢',
+    '现价8块了',
+    '特价5块哦',
+    '原价9块吧',
+    '优惠后6块啦',
+    '售5块',
+    '降到5块了',
+    '打折5块呀',
+    '一共5块吧',
+    '总共5块呢',
+    '这个5块呢',
+    '剩下的一共5块吧',
+  ])('"%s" is money in a CNY store at 249', (text) => {
+    expect(violations('CNY', '249', text, 'zh')).toBe(1);
+  });
+});

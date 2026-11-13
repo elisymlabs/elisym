@@ -1686,6 +1686,59 @@ const PRICE_WORDS: readonly string[] = [
   '运费',
   '運費',
   '要',
+  '卖',
+  '賣',
+  '售',
+  '降',
+  '特价',
+  '特價',
+  '现价',
+  '現價',
+  '原价',
+  '原價',
+  '优惠',
+  '優惠',
+  '折',
+  '一共',
+  '总共',
+  '總共',
+  '合计',
+  '合計',
+  '共计',
+  '共計',
+  '只需',
+  '仅',
+  '僅',
+];
+/**
+ * Stock or quantity words: a small count before 块 ending a clause is pieces only with one of
+ * these in the clause ("只剩一块了", "套装里有三块呢", "一块就够用了") and no price word. Without
+ * one ("这个5块呢") it is money: fail closed.
+ */
+const STOCK_WORDS: readonly string[] = [
+  '剩',
+  '有',
+  '带',
+  '帶',
+  '送',
+  '附',
+  '赠',
+  '贈',
+  '买',
+  '買',
+  '需要',
+  '备',
+  '備',
+  '装',
+  '裝',
+  '切成',
+  '拆成',
+  '分成',
+  '用',
+  '够',
+  '夠',
+  '铺',
+  '鋪',
 ];
 const CLAUSE_START_RE = /[。！？!?，,；;：:\n]/u;
 /** 一块 as "together": 一块儿, 一块看, 一块去... (another count before them stays money). */
@@ -1782,9 +1835,13 @@ function pieceCount(context: TokenContext, expression: string): boolean {
     return !/[\p{L}\p{N}]/u.test(next) && EXPLICIT_SPLITS.some((phrase) => before.endsWith(phrase));
   }
   if (clauseEnd) {
-    // Stock talk ("只剩一块了", "切成两块就好") unless a price word leads the clause to the count.
-    const clause = text.slice(0, lowerAt).split(CLAUSE_START_RE).at(-1) ?? '';
-    return !PRICE_WORDS.some((word) => clause.includes(word));
+    // Stock talk only with a stock word in the clause and no price word ("只剩一块了",
+    // "两块就能铺满"); anything else ("这个卖5块呢", "一共5块吧", "这个5块呢") is money.
+    const clause = `${text.slice(0, lowerAt).split(CLAUSE_START_RE).at(-1) ?? ''}${text.slice(tokenEnd).split(CLAUSE_START_RE)[0] ?? ''}`;
+    return (
+      STOCK_WORDS.some((word) => clause.includes(word)) &&
+      !PRICE_WORDS.some((word) => clause.includes(word))
+    );
   }
   if (!HAN_RE.test(next)) {
     return false;
