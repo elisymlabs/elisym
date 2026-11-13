@@ -78,7 +78,7 @@ export function AdminPreview() {
                 ))}
               </ul>
               <div className="flex flex-col gap-14 p-16 sm:p-20">
-                <span className="text-24 font-serif">Harbor Knits</span>
+                <span className="text-24 font-serif">Northwind Audio</span>
                 <dl className="grid grid-cols-3 gap-10">
                   {TILES.map((tile) => (
                     <div key={tile.label} className="rounded-12 border-line bg-bg border p-12">
@@ -99,7 +99,7 @@ export function AdminPreview() {
                 <div className="rounded-12 border-line bg-bg flex flex-col gap-6 border p-12">
                   <span className="text-12 text-text-3">Voice</span>
                   <span className="text-14 text-text-2">
-                    Warm and brief. Suggest a size by the visitor's usual fit.
+                    Calm and precise. Name the battery life and the warranty.
                   </span>
                 </div>
               </div>

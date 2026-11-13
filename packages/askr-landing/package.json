@@ -4,7 +4,7 @@
   "private": true,
   "description": "Askr landing page: what the shopping assistant is, how to add it to a store's site, and where to sign in.",
   "license": "MIT",
-  "author": "elisym labs",
+  "author": "Elisym Labs",
   "type": "module",
   "scripts": {
     "build": "vite build && bun scripts/check-build.ts",

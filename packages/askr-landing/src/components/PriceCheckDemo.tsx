@@ -35,7 +35,7 @@ export function PriceCheckDemo() {
   return (
     <figure
       ref={ref}
-      aria-label="The model drafts a price of $65. The check finds no such price in the catalog, and the visitor sees the sweater with its catalog price, $72.00."
+      aria-label="The model drafts a price of $149. The check finds no such price in the catalog, and the visitor sees the headphones with their catalog price, $199.00."
       className="rounded-32 border-ink-line bg-ink-2 flex flex-col gap-16 border p-20 sm:p-28"
     >
       <div aria-hidden="true" className="flex flex-col gap-8">
@@ -43,9 +43,9 @@ export function PriceCheckDemo() {
           The model drafts
         </span>
         <p className="bg-ink text-15 text-on-ink rounded-bl-6 rounded-[18px] px-16 py-12 leading-relaxed">
-          The Merino crew sweater is{' '}
+          The Pulse Pro is{' '}
           <span data-struck={shown >= 1} className={`strike ${shown >= 1 ? 'text-[#f0a37d]' : ''}`}>
-            $65
+            $149
           </span>{' '}
           today.
         </p>
@@ -56,7 +56,7 @@ export function PriceCheckDemo() {
       >
         <Icon name="shield" className="size-16 shrink-0" />
         {shown >= 2
-          ? '$65 is not in the catalog. Rewritten before sending.'
+          ? '$149 is not in the catalog. Rewritten before sending.'
           : 'Checking every price against the catalog'}
       </p>
       <div
@@ -67,11 +67,11 @@ export function PriceCheckDemo() {
           The visitor sees
         </span>
         <p className="bg-ink text-15 text-on-ink rounded-bl-6 rounded-[18px] px-16 py-12 leading-relaxed">
-          The Merino crew sweater fits what you asked for.
+          The Pulse Pro fits what you asked for: 40 hours on a charge.
         </p>
         {shown >= 3 && (
           <div className="arrive">
-            <ProductCard product={PRODUCTS.sweater} />
+            <ProductCard product={PRODUCTS.headphonesBlack} />
           </div>
         )}
       </div>
