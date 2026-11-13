@@ -1563,16 +1563,33 @@ const CJK_QUALIFIER = String.raw`(?:${KNOWN_QUALIFIER}|(?:${[...ISO_CODES].join(
 /** Currency signs: a qualifier before one ("米 ¥4,980" is rice) names nothing. */
 const SIGN_TOKENS: readonly string[] = ['¥', '￥', '₩', '€', '£'];
 /**
- * A Han unit after a qualifier inside a word: 圆形, 圆桌, 圆顶 ("1.2米圆桌"), 元素 ("5中国元素").
+ * A Han unit after a qualifier inside a word: 圆形, 圆桌, 圆顶, 圆领 ("1.2米圆桌", "3 美国圆领T恤"),
+ * 元素 ("5中国元素").
  * Anything else after a qualified unit is money ("199美国元件" fails closed).
  */
 const QUALIFIED_HAN_WORD_AFTER: ReadonlyArray<[string, readonly string[]]> = [
   ['元', ['素']],
-  ['圆', ['形', '桌', '顶', '頂', '床', '管']],
-  ['圓', ['形', '桌', '顶', '頂', '床', '管']],
+  ['圆', ['形', '桌', '顶', '頂', '床', '管', '领', '領']],
+  ['圓', ['形', '桌', '顶', '頂', '床', '管', '领', '領']],
 ];
-/** 원 after a qualifier in a word: 원피스, 원형, 원단, 원격, 원래 ("10 US 원피스"). */
-const QUALIFIED_WON_WORD_AFTER: readonly string[] = ['피스', '형', '단', '격', '래'];
+/**
+ * 원 after a qualifier in a noun: 원피스, 원형, 원단, 원격, 원래, 원두, 원산지, 원료, 원목, 원작,
+ * 원룸, 원칙 ("10 US 원피스", "TOP 3 한국 원두"). Verb forms stay money ("한국원할인").
+ */
+const QUALIFIED_WON_WORD_AFTER: readonly string[] = [
+  '피스',
+  '형',
+  '단',
+  '격',
+  '래',
+  '두',
+  '산',
+  '료',
+  '목',
+  '작',
+  '룸',
+  '칙',
+];
 const LATIN_CURRENCY = String.raw`(?:dollars?|bucks?|yen|yuan|won|euros?|[A-Za-z]{3})(?![A-Za-z])`;
 /** Read by the token scanners when the number is plain digits ("37,000円"): left to them. */
 const SCANNED_CJK_TOKENS: readonly string[] = ['円', '元', '원', '¥', '￥', '₩'];
@@ -1715,8 +1732,9 @@ function cjkCurrencies(token: string): readonly string[] | undefined {
 type QualifierUse = 'none' | 'applies' | 'word';
 
 /**
- * Whether a qualifier names the currency word after it. Always when both are one currency word
- * ("米ドルオフ", "新加坡元领取"); never before a sign ("米 ¥4,980"); not when the unit goes on
+ * Whether a qualifier names the currency word after it. Always when both are one currency word,
+ * whatever follows: the word lists below are for a unit standing alone, so "约199新加坡元素" and
+ * "20米ドルオフ" are money; never before a sign ("米 ¥4,980"); not when the unit goes on
  * as another word: a one-character Han qualifier before a Han unit ("3米圆顶", "3米元素"), a
  * listed Han word ("5中国元素", "1.2米圆桌"), 원 in a listed word ("10 US 원피스").
  */
@@ -1930,13 +1948,15 @@ const PRICE_BEFORE_COUNT: readonly string[] = ['加', '只要', '只需', '仅',
 const NAME_AFTER: ReadonlyArray<[string, RegExp]> = [
   // フランク, not フランクーポン (a coupon in francs).
   ['フラン', /^(?:ス|ク(?!ーポン)|ケ)/u],
-  ['ルーブル', /^美/u],
+  ['ルーブル', /^美術/u],
   ['프랑', /^[스크]/u],
   ['바트', /^맨/u],
   ['弗', /^[兰蘭吉里洛罗羅雷莱萊朗利尼]/u],
   ['克朗', /^姆/u],
   ['里拉', /^[链鏈杆桿手]/u],
 ];
+/** 元 after a four-digit year starts a date word: "2026元旦活动" is New Year's Day of 2026. */
+const YEAR_YUAN_AFTER: readonly string[] = ['旦', '宵', '年', '宇宙'];
 /** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素, 一元复始. */
 const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素', '复', '復'];
 /** 元 after a small count in a technical word: 三元锂电池, 3元系 (ternary). */
@@ -2042,6 +2062,10 @@ function notMoney(context: TokenContext): boolean {
   }
   if (NAME_AFTER.some(([name, after]) => name === token && after.test(rest))) {
     // A name that starts like the currency word: 2フランス製, 2ルーブル美術館, 5弗吉尼亚.
+    return true;
+  }
+  if (token === '元' && YEAR_RE.test(expression) && startsWithAny(YEAR_YUAN_AFTER)) {
+    // A year before 元旦 / 元宵 / 元年 / 元宇宙: "2026元旦活动".
     return true;
   }
   if (token === '元') {
