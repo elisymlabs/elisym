@@ -1,10 +1,12 @@
 import { LIMITS } from '@elisym/askr';
 import { describe, expect, it } from 'vitest';
 import type { LlmProvider, TurnRequest, TurnResponse } from '../src/llm/types';
-import { sanitizeAnswerText, stripProductIds } from '../src/text-sanitize';
+import { sanitizeAnswerText, stripProductIds, idsToStrip } from '../src/text-sanitize';
 import { executeTool, newTurnState } from '../src/tools';
 import { MAX_TOOL_ROUNDS, runTurn } from '../src/turn';
 import { NOW, catalog, expectLinear, scripted, toolCall } from './fixtures';
+
+const products = (ids: readonly string[]) => idsToStrip(ids, []);
 
 function baseInput(provider: LlmProvider) {
   return {
@@ -34,8 +36,11 @@ describe('MAJOR. the sanitizer and the id strip are linear in the text', () => {
 
   it('stripProductIds on long whitespace runs before an unclosed id mention', () => {
     expectLinear((scale) => {
-      stripProductIds(`a${' '.repeat(20_000 * scale)}(id: jacket-wool`, ['jacket-wool']);
-      stripProductIds(`${' \t'.repeat(10_000 * scale)}(jacket-wool(jacket-wool`, ['jacket-wool']);
+      stripProductIds(`a${' '.repeat(20_000 * scale)}(id: jacket-wool`, products(['jacket-wool']));
+      stripProductIds(
+        `${' \t'.repeat(10_000 * scale)}(jacket-wool(jacket-wool`,
+        products(['jacket-wool']),
+      );
     });
   });
 
@@ -63,31 +68,35 @@ describe('MINOR-2. text of a present round counts only when something was shown'
 
 describe('MINOR-3/4. which parentheses are ids', () => {
   it('short or all-digit ids are never stripped', () => {
-    expect(stripProductIds('Step (1) pick a size.', ['1'])).toBe('Step (1) pick a size.');
-    expect(stripProductIds('Size (m) fits.', ['m'])).toBe('Size (m) fits.');
-    expect(stripProductIds('Model (12345) is new.', ['12345'])).toBe('Model (12345) is new.');
+    expect(stripProductIds('Step (1) pick a size.', products(['1']))).toBe('Step (1) pick a size.');
+    expect(stripProductIds('Size (m) fits.', products(['m']))).toBe('Size (m) fits.');
+    expect(stripProductIds('Model (12345) is new.', products(['12345']))).toBe(
+      'Model (12345) is new.',
+    );
   });
 
   it('a mention at the start leaves no leading space', () => {
-    expect(stripProductIds('(jacket-wool) is great.', ['jacket-wool'])).toBe('is great.');
-    expect(stripProductIds('Warm.\n(jacket-wool) is great.', ['jacket-wool'])).toBe(
+    expect(stripProductIds('(jacket-wool) is great.', products(['jacket-wool']))).toBe('is great.');
+    expect(stripProductIds('Warm.\n(jacket-wool) is great.', products(['jacket-wool']))).toBe(
       'Warm.\nis great.',
     );
   });
 
   it('id and sku labels are stripped only around a known id', () => {
-    expect(stripProductIds('The pan (Handle: oak) is nice.', ['jacket-wool', 'oak'])).toBe(
-      'The pan (Handle: oak) is nice.',
-    );
-    expect(stripProductIds('Bring (ID: passport) at pickup.', ['jacket-wool'])).toBe(
+    expect(
+      stripProductIds('The pan (Handle: oak) is nice.', products(['jacket-wool', 'oak'])),
+    ).toBe('The pan (Handle: oak) is nice.');
+    expect(stripProductIds('Bring (ID: passport) at pickup.', products(['jacket-wool']))).toBe(
       'Bring (ID: passport) at pickup.',
     );
-    expect(stripProductIds('The pack (id: pack-45) fits.', ['pack-45'])).toBe('The pack fits.');
-    expect(stripProductIds('Red (SKU:scarf-red) only.', ['scarf-red'])).toBe('Red only.');
+    expect(stripProductIds('The pack (id: pack-45) fits.', products(['pack-45']))).toBe(
+      'The pack fits.',
+    );
+    expect(stripProductIds('Red (SKU:scarf-red) only.', products(['scarf-red']))).toBe('Red only.');
   });
 
   it('a mention never spans a newline (M16/M17)', () => {
-    expect(stripProductIds('The pack (id:\npack-45) fits.', ['pack-45'])).toBe(
+    expect(stripProductIds('The pack (id:\npack-45) fits.', products(['pack-45']))).toBe(
       'The pack (id:\npack-45) fits.',
     );
   });
