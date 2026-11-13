@@ -839,7 +839,8 @@ export function normalizeForCheck(text: string): string {
       // bar, hyphen bullet and minus read as an en dash ("900\u20141200 ₽").
       .replace(/[\u2010\u2012\u2014\u2015\u2043\u2212]/gu, '–')
       .replace(/[*_`]+/g, '')
-      .replace(/(?<!\d)~+|~+(?!\d)/g, '')
+      // A tilde between numbers is a range; next to a CJK magnitude too ("3万~4万円").
+      .replace(/(?<![\d万萬億亿千仟百佰십만천억백])~+|~+(?!\d)/gu, '')
   );
 }
 
@@ -1311,19 +1312,15 @@ function restates(first: MoneyAmount, second: MoneyAmount): boolean {
   return possible.has(tail);
 }
 
-/**
- * Money amounts in a string: a currency symbol (static, plus the store
- * currency's own forms from Intl), ISO 4217 code (any case, glued or spaced)
- * or currency word next to a number, read with each locale's decimal separator
- * (CLDR through Intl). Bare numbers are not amounts (5.5).
- */
 // cspell:disable
 /**
  * Amounts written with CJK numerals or magnitudes ("3.7万円", "3万7千円", "約三万七千円",
- * "¥3.7万", "3만 7천원", "3700元"): the token scanners above read none of them, so a
- * converted price would pass. Read here, fail closed: any such number next to a CJK
- * currency is an amount, and one whose value is not read exactly has no value, so it
- * matches nothing.
+ * "¥3.7万", "3만 7천원", "3700元", "37k円") or with a CJK currency word the token scanners
+ * do not know ("199ドル", "37000엔", "3万港元"): those scanners read none of them, so a
+ * converted price would pass. Read here, fail closed: any such number next to a currency
+ * is an amount, and one whose value is not read exactly has no value, so it matches
+ * nothing. The exceptions are words that only look like money: a classifier (两块垫子), an
+ * idiom (関東一円, 一元化), a Korean word after a bare unit (색상만 원하시면, 천 원단).
  */
 const CJK_DIGITS: Readonly<Record<string, number>> = {
   〇: 0,
@@ -1340,9 +1337,11 @@ const CJK_DIGITS: Readonly<Record<string, number>> = {
   八: 8,
   九: 9,
 };
+const TEN = 10;
 const CJK_SMALL_UNITS: Readonly<Record<string, number>> = {
-  十: 10,
-  拾: 10,
+  十: TEN,
+  拾: TEN,
+  십: TEN,
   百: 100,
   佰: 100,
   백: 100,
@@ -1358,23 +1357,54 @@ const CJK_LARGE_UNITS: Readonly<Record<string, number>> = {
   亿: 100_000_000,
   억: 100_000_000,
 };
-const CJK_CHARS = [
-  ...Object.keys(CJK_DIGITS),
-  ...Object.keys(CJK_SMALL_UNITS),
-  ...Object.keys(CJK_LARGE_UNITS),
-].join('');
+const CJK_UNIT_CHARS = [...Object.keys(CJK_SMALL_UNITS), ...Object.keys(CJK_LARGE_UNITS)].join('');
+const CJK_CHARS = `${Object.keys(CJK_DIGITS).join('')}${CJK_UNIT_CHARS}`;
 const CJK_ARABIC = String.raw`\d+(?:[.,]\d+)*`;
 /** At least one CJK numeral or magnitude, with Arabic digits around them. */
 const CJK_EXPRESSION = String.raw`(?:${CJK_ARABIC}\s?)?(?:[${CJK_CHARS}]\s?(?:${CJK_ARABIC}\s?)?)+`;
+/** "37k円": a Western thousands suffix before a CJK currency. */
+const WESTERN_THOUSANDS = String.raw`${CJK_ARABIC}\s?[kK]`;
+const DOLLARS: readonly string[] = ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD'];
 const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
-  ['日元', ['JPY']],
-  ['日圓', ['JPY']],
+  ['新台币', ['TWD']],
+  ['新台幣', ['TWD']],
   ['人民币', ['CNY']],
   ['人民幣', ['CNY']],
+  ['日元', ['JPY']],
+  ['日圓', ['JPY']],
+  ['日币', ['JPY']],
+  ['日幣', ['JPY']],
   ['韩元', ['KRW']],
   ['韓元', ['KRW']],
+  ['韩币', ['KRW']],
+  ['韓幣', ['KRW']],
+  ['港元', ['HKD']],
+  ['港币', ['HKD']],
+  ['港幣', ['HKD']],
+  ['台币', ['TWD']],
+  ['台幣', ['TWD']],
+  ['欧元', ['EUR']],
+  ['歐元', ['EUR']],
+  ['英镑', ['GBP']],
+  ['英鎊', ['GBP']],
+  ['加元', ['CAD']],
+  ['加币', ['CAD']],
+  ['加幣', ['CAD']],
+  ['澳元', ['AUD']],
+  ['澳币', ['AUD']],
+  ['澳幣', ['AUD']],
   ['美元', ['USD']],
-  ['ドル', ['USD', 'CAD', 'AUD', 'NZD', 'SGD', 'HKD', 'TWD']],
+  ['美金', ['USD']],
+  ['美刀', ['USD']],
+  ['块钱', ['CNY']],
+  ['塊錢', ['CNY']],
+  ['ドル', DOLLARS],
+  ['エン', ['JPY']],
+  ['えん', ['JPY']],
+  ['달러', ['USD']],
+  ['유로', ['EUR']],
+  ['위안', ['CNY']],
+  ['파운드', ['GBP']],
   ['円', ['JPY']],
   ['圆', ['CNY']],
   ['圓', ['CNY']],
@@ -1382,31 +1412,52 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['块', ['CNY']],
   ['塊', ['CNY']],
   ['원', ['KRW']],
+  ['엔', ['JPY']],
   ['¥', ['JPY', 'CNY']],
   ['￥', ['JPY', 'CNY']],
   ['₩', ['KRW']],
 ];
-const CJK_CURRENCY = CJK_CURRENCIES.map(([token]) => token).join('|');
+/** Latin currency words after a CJK number ("3.7万 dollars"). */
+const CJK_LATIN_WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
+  [/^dollars?$/i, DOLLARS],
+  [/^yen$/i, ['JPY']],
+  [/^yuan$/i, ['CNY']],
+  [/^won$/i, ['KRW']],
+  [/^euros?$/i, ['EUR']],
+];
+const CJK_CURRENCY = [...CJK_CURRENCIES]
+  .map(([token]) => token)
+  .sort((left, right) => right.length - left.length)
+  .join('|');
+const LATIN_CURRENCY = String.raw`(?:dollars?|yen|yuan|won|euros?|[A-Za-z]{3})(?![A-Za-z])`;
 /** Read by the token scanners when the number is plain digits ("37,000円"): left to them. */
 const SCANNED_CJK_TOKENS: readonly string[] = ['円', '元', '원', '¥', '￥', '₩'];
 const CJK_CHAR_RE = new RegExp(`[${CJK_CHARS}]`, 'u');
-const CJK_RANGE = String.raw`\s?[〜~～–]\s?`;
+const CJK_UNIT_START_RE = new RegExp(`^[${CJK_UNIT_CHARS}]`, 'u');
+const CJK_RANGE = String.raw`\s?(?:[〜~～–-]|至|到|から)\s?`;
 /** A currency before the number may be followed by a particle ("円で3.7万"). */
 const CJK_PREFIX_GAP = String.raw`[\s:：でにはが約约]{0,2}`;
+/** 角 and 分 after 元: "39元8角" is 39.8. */
+const CJK_SUBUNITS = String.raw`(?:(?<tenths>\d)\s?角)?(?:(?<hundredths>\d)\s?分)?`;
 const CJK_AMOUNT_RE = new RegExp(
-  String.raw`(?:(?<before>${CJK_CURRENCY})${CJK_PREFIX_GAP})?(?<lower>${CJK_EXPRESSION}|${CJK_ARABIC})(?:${CJK_RANGE}(?<upper>${CJK_EXPRESSION}|${CJK_ARABIC}))?\s?(?<after>${CJK_CURRENCY})?`,
+  String.raw`(?:(?<before>${CJK_CURRENCY})${CJK_PREFIX_GAP})?(?<lower>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC})(?:${CJK_RANGE}(?<upper>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC}))?\s?(?:(?<after>${CJK_CURRENCY})${CJK_SUBUNITS}|(?<latin>${LATIN_CURRENCY}))?`,
   'gu',
 );
+const HAN_RE = /^\p{Script=Han}$/u;
+const HANGUL_RE = /^\p{Script=Hangul}$/u;
+const LETTER_RE = /^\p{L}$/u;
+const MONEY_HAN: readonly string[] = ['钱', '錢'];
+const CNY_TOKENS: readonly string[] = ['元', '圆', '圓', '块', '塊', '块钱', '塊錢'];
 // cspell:enable
-
-const TEN = 10;
 
 /**
  * The exact value of one CJK expression, or undefined when it does not read cleanly: an
- * explicit zero before a unit ("0万"), a repeated or rising large unit, a comma, or a bare
- * number after a unit that convention may abbreviate ("三万五" is 35000 to a reader, "一千二"
- * 1200). After 万 / 億 only a full group of plain digits reads ("3万7000" is 37000), after 十
- * one digit ("十五" is 15).
+ * explicit zero before a unit ("0万"), a repeated or rising unit (large units, and small
+ * units within a section: "三百二千"), a decimal coefficient followed by more terms
+ * ("3.7万5千"), a malformed number, or a bare tail convention may abbreviate ("三万五" is
+ * 35000 to a reader, "一千二" 1200). A tail reads only as a full group of plain digits:
+ * four after 万 ("3万7000", "3万7,000"), eight after 億, three after 千 ("3千980"), two
+ * after 百, one after 十 ("十五" is 15).
  */
 export function readCjkNumber(expression: string): Decimal | undefined {
   const tokens = expression.replace(/\s/g, '').match(new RegExp(`${CJK_ARABIC}|.`, 'gu')) ?? [];
@@ -1416,107 +1467,222 @@ export function readCjkNumber(expression: string): Decimal | undefined {
   let pending: Decimal | undefined;
   let pendingToken = '';
   let lastLarge = Number.POSITIVE_INFINITY;
-  let lastUnit: 'none' | 'small' | 'large' = 'none';
-  let lastSmall = 0;
+  let lastSmallInSection = Number.POSITIVE_INFINITY;
+  let lastUnit = 0;
+  let closed = false;
   for (const token of tokens) {
+    if (closed) {
+      return undefined;
+    }
     const digit = CJK_DIGITS[token];
     const small = CJK_SMALL_UNITS[token];
     const large = CJK_LARGE_UNITS[token];
     if (/^\d/.test(token) || digit !== undefined) {
-      // Only a plain decimal point reads: "3,7" or "1,000" next to a magnitude is ambiguous.
-      if (pending !== undefined || (digit === undefined && !/^\d+(?:\.\d+)?$/.test(token))) {
+      if (pending !== undefined) {
         return undefined;
       }
-      pending = new Decimal(digit ?? token);
+      if (digit !== undefined) {
+        pending = new Decimal(digit);
+      } else if (/^\d+(?:\.\d+)?$/.test(token)) {
+        pending = new Decimal(token);
+      } else if (/^\d{1,3}(?:,\d{3})+$/.test(token)) {
+        // A thousands comma; "3,7" is no group and stays ambiguous.
+        pending = new Decimal(token.replace(/,/g, ''));
+      } else {
+        return undefined;
+      }
       pendingToken = token;
-    } else if (small !== undefined || large !== undefined) {
-      if (pending?.isZero()) {
-        return undefined;
-      }
-      if (small !== undefined) {
-        section = section.plus((pending ?? new Decimal(1)).times(small));
-        sectionHasCoefficient = true;
-        lastUnit = 'small';
-        lastSmall = small;
-      } else if (large !== undefined) {
-        // Larger units come first ("1億2千万"); a repeated or rising one does not read.
-        if (large >= lastLarge) {
-          return undefined;
-        }
-        lastLarge = large;
-        const hasCoefficient = pending !== undefined || sectionHasCoefficient;
-        total = total.plus(
-          (hasCoefficient ? section.plus(pending ?? 0) : new Decimal(1)).times(large),
-        );
-        section = new Decimal(0);
-        sectionHasCoefficient = false;
-        lastUnit = 'large';
-      }
-      pending = undefined;
-      pendingToken = '';
-    } else {
+      continue;
+    }
+    const unit = small ?? large;
+    if (unit === undefined || pending?.isZero()) {
       return undefined;
     }
+    // A decimal coefficient ("3.7万") ends the number.
+    closed = pendingToken.includes('.');
+    if (small !== undefined) {
+      if (small >= lastSmallInSection) {
+        return undefined;
+      }
+      lastSmallInSection = small;
+      section = section.plus((pending ?? new Decimal(1)).times(small));
+      sectionHasCoefficient = true;
+    } else {
+      if (unit >= lastLarge) {
+        return undefined;
+      }
+      lastLarge = unit;
+      const hasCoefficient = pending !== undefined || sectionHasCoefficient;
+      total = total.plus(
+        (hasCoefficient ? section.plus(pending ?? 0) : new Decimal(1)).times(unit),
+      );
+      section = new Decimal(0);
+      sectionHasCoefficient = false;
+      lastSmallInSection = Number.POSITIVE_INFINITY;
+    }
+    lastUnit = unit;
+    pending = undefined;
+    pendingToken = '';
   }
-  if (pending !== undefined && lastUnit !== 'none') {
-    const groupDigits = String(Math.log10(lastLarge));
-    const fullGroup =
-      lastUnit === 'large' && new RegExp(`^\\d{${groupDigits}}$`).test(pendingToken);
-    // After 十 the bare digit can only be the ones ("十五" is 15).
-    const ones = lastUnit === 'small' && lastSmall === TEN && /^\d$|^\D$/u.test(pendingToken);
-    if (!fullGroup && !ones) {
+  if (pending !== undefined && lastUnit > 0) {
+    const groupDigits = Math.round(Math.log10(lastUnit));
+    const plainDigits = pendingToken.replace(/,/g, '');
+    const fullGroup = /^\d+$/.test(plainDigits) && plainDigits.length === groupDigits;
+    // After 十 a kanji digit is the ones too ("十五").
+    const kanjiOnes = lastUnit === TEN && CJK_DIGITS[pendingToken] !== undefined;
+    if (!fullGroup && !kanjiOnes) {
       return undefined;
     }
   }
   return total.plus(section).plus(pending ?? 0);
 }
 
-function cjkValues(expression: string): Decimal[] {
-  const value = readCjkNumber(expression);
-  return value === undefined ? [] : [value];
+function cjkCurrencies(token: string): readonly string[] | undefined {
+  const cjk = CJK_CURRENCIES.find(([candidate]) => candidate === token)?.[1];
+  if (cjk !== undefined) {
+    return cjk;
+  }
+  const word = CJK_LATIN_WORDS.find(([pattern]) => pattern.test(token))?.[1];
+  if (word !== undefined) {
+    return word;
+  }
+  return ISO_CODES.has(token.toUpperCase()) ? [token.toUpperCase()] : undefined;
 }
 
-function cjkCurrencies(token: string): readonly string[] {
-  return CJK_CURRENCIES.find(([candidate]) => candidate === token)?.[1] ?? [];
+/** A Latin word or code: plain digits next to one are the token scanners' alone. */
+function isLatinToken(token: string): boolean {
+  return /^[A-Za-z]+$/.test(token);
 }
 
 /**
- * Add the CJK amounts and drop the token readings that overlap them ("¥3.7" of "¥3.7万").
- * Plain digits count only with a currency word the token scanners do not read ("199ドル").
+ * Whether a token after the number is a word that only looks like money: 块 as a
+ * classifier ("两块垫子"), 一元 / 一円 in an idiom ("一元化", "関東一円"), 원 or 엔 after
+ * a bare unit and before more Hangul ("색상만 원하시면", "천 원단", "만원이었어요").
+ */
+function notMoney(text: string, token: string, lower: string, lowerAt: number, tokenEnd: number) {
+  const next = text[tokenEnd] ?? '';
+  const previous = text[lowerAt - 1] ?? '';
+  const expression = lower.replace(/\s/g, '');
+  if ((token === '块' || token === '塊') && HAN_RE.test(next) && !MONEY_HAN.includes(next)) {
+    return true;
+  }
+  const loneDigit = expression.length === 1 && CJK_DIGITS[expression] !== undefined;
+  if (loneDigit && (token === '円' || token === '元')) {
+    const idiomAfter = HAN_RE.test(next) && !CJK_CHARS.includes(next) && !MONEY_HAN.includes(next);
+    const placeBefore = token === '円' && HAN_RE.test(previous);
+    if (idiomAfter || placeBefore) {
+      return true;
+    }
+  }
+  const bareUnit = expression.length === 1 && CJK_UNIT_START_RE.test(expression);
+  return bareUnit && (token === '원' || token === '엔') && HANGUL_RE.test(next);
+}
+
+/** A sign before the amount: "-3.7万円" is no price. */
+function negative(text: string, start: number): boolean {
+  const sign = text[start - 1] ?? '';
+  const beforeSign = text[start - 2] ?? '';
+  return (sign === '-' || sign === '–') && !/[\d\p{L}]/u.test(beforeSign);
+}
+
+/**
+ * Add the CJK amounts. A token reading of the same amount cut short ("¥3.7" of "¥3.7万",
+ * "7000円" of "3万7000円") is replaced; any other reading stays and must pass on its own,
+ * and a reading glued to a CJK magnitude ("$3.7万", "US$249万") loses its value.
  */
 function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]): void {
+  for (const amount of found) {
+    if (
+      new RegExp(`^\\s?[${CJK_UNIT_CHARS}]`, 'u').test(text.slice(amount.index + amount.raw.length))
+    ) {
+      amount.values = [];
+    }
+  }
   const cjk: MoneyAmount[] = [];
-  /** Where each CJK match starts, and where its numbers end: readings inside are replaced. */
   const covered: Array<{ start: number; end: number; numberStart: number; numberEnd: number }> = [];
   for (const match of text.matchAll(CJK_AMOUNT_RE)) {
     const groups = match.groups ?? {};
-    const tokens = [groups.before, groups.after].filter(
-      (token): token is string => token !== undefined,
-    );
     const lower = groups.lower;
-    if (tokens.length === 0 || lower === undefined) {
+    const start = match.index;
+    if (lower === undefined) {
       continue;
     }
-    // A currency on both sides must agree: "¥3万ドル" is no currency at all, so it matches nothing.
-    const currencies = tokens
-      .map(cjkCurrencies)
-      .reduce((shared, next) => shared.filter((currency) => next.includes(currency)));
+    const lowerAt =
+      start + match[0].indexOf(lower, groups.before === undefined ? 0 : groups.before.length);
+    const afterToken = groups.after ?? groups.latin;
+    const afterEnd =
+      afterToken === undefined
+        ? start + match[0].length
+        : start + match[0].lastIndexOf(afterToken) + afterToken.length;
+    const tokens = [
+      ...(groups.before === undefined ? [] : [groups.before]),
+      ...(afterToken === undefined || notMoney(text, afterToken, lower, lowerAt, afterEnd)
+        ? []
+        : [afterToken]),
+    ].filter((token) => cjkCurrencies(token) !== undefined);
+    if (tokens.length === 0) {
+      continue;
+    }
     const written = groups.upper === undefined ? lower : `${lower}${groups.upper}`;
     const plain = !CJK_CHAR_RE.test(written);
-    if (plain && tokens.every((token) => SCANNED_CJK_TOKENS.includes(token))) {
+    const westernThousands = new RegExp(`^${WESTERN_THOUSANDS}$`, 'u');
+    const glued = plain && !westernThousands.test(lower.trim());
+    if (plain && tokens.every(isLatinToken)) {
+      // No CJK numeral and only a Latin code or word ("99 USD", "1.5k USD"): the token scanners' alone.
       continue;
     }
-    const start = match.index;
-    const lowerAt = start + match[0].indexOf(lower);
+    const readByScanner = found.some(
+      (amount) => amount.numberIndex <= lowerAt && lowerAt < amount.index + amount.raw.length,
+    );
+    const subunits = groups.tenths !== undefined || groups.hundredths !== undefined;
+    if (
+      glued &&
+      !subunits &&
+      readByScanner &&
+      tokens.every((token) => SCANNED_CJK_TOKENS.includes(token) || isLatinToken(token))
+    ) {
+      continue;
+    }
+    // Both sides must agree: "¥3万ドル" is no currency at all, so it matches nothing.
+    const currencies = tokens
+      .map((token) => cjkCurrencies(token) ?? [])
+      .reduce((shared, next) => shared.filter((currency) => next.includes(currency)));
     const bounds = groups.upper === undefined ? [lower] : [lower, groups.upper];
     for (const bound of bounds) {
-      const values = plain ? readValues(bound.trim(), decimals) : cjkValues(bound);
       const numberIndex = bound === lower ? lowerAt : start + match[0].lastIndexOf(bound);
+      const trimmed = bound.trim();
+      let values: Decimal[];
+      if (westernThousands.test(trimmed)) {
+        values = readValues(trimmed.replace(/\s?[kK]$/, ''), decimals).map((value) =>
+          value.times(1_000),
+        );
+      } else if (!CJK_CHAR_RE.test(bound)) {
+        values = readValues(trimmed, decimals);
+      } else {
+        const value = readCjkNumber(bound);
+        values = value === undefined ? [] : [value];
+      }
+      // No coefficient after a letter (数万円, 弐万円, 몇만 원): a vague or unknown number.
+      const vague = CJK_UNIT_START_RE.test(trimmed) && LETTER_RE.test(text[numberIndex - 1] ?? '');
+      if (vague || (bound === lower && negative(text, start))) {
+        values = [];
+      }
+      if (subunits) {
+        values =
+          groups.upper !== undefined || !CNY_TOKENS.includes(groups.after ?? '')
+            ? []
+            : values.map((value) =>
+                value
+                  .plus(new Decimal(groups.tenths ?? 0).div(TEN))
+                  .plus(new Decimal(groups.hundredths ?? 0).div(100)),
+              );
+      }
       covered.push({
         start,
         end: start + match[0].length,
         numberStart: numberIndex,
-        numberEnd: numberIndex + bound.length,
+        // 角 and 分 belong to the number: "元8" of "39元8角" is the same amount.
+        numberEnd: subunits ? start + match[0].length : numberIndex + bound.length,
       });
       cjk.push({
         values,
@@ -1531,9 +1697,6 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
   if (cjk.length === 0) {
     return;
   }
-  // Only a partial reading of the same amount ("¥3.7" of "¥3.7万", "7000円" of "3万7000円") is
-  // replaced: it lies wholly inside the match and its number starts inside the CJK number. Every
-  // other reading stays and must pass on its own.
   const kept = found.filter(
     (amount) =>
       !covered.some(
@@ -1547,6 +1710,12 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
   found.splice(0, found.length, ...kept, ...cjk);
 }
 
+/**
+ * Money amounts in a string: a currency symbol (static, plus the store
+ * currency's own forms from Intl), ISO 4217 code (any case, glued or spaced)
+ * or currency word next to a number, read with each locale's decimal separator
+ * (CLDR through Intl). Bare numbers are not amounts (5.5).
+ */
 export function extractAmounts(
   text: string,
   locales: readonly string[],

@@ -104,11 +104,13 @@ describe('B3. reading CJK numbers', () => {
     ['千', '1000'],
     ['3만 7천', '37000'],
     ['2億', '200000000'],
+    // A thousands comma reads since review round 33.
+    ['1,000万', '10000000'],
   ])('"%s" reads %s', (expression, value) => {
     expect(readCjkNumber(expression)?.toString()).toBe(value);
   });
 
-  it.each(['万万', '3万2億', '3,7万', '1,000万', '三3万'])('"%s" does not read', (expression) => {
+  it.each(['万万', '3万2億', '3,7万', '三3万'])('"%s" does not read', (expression) => {
     expect(readCjkNumber(expression)).toBeUndefined();
   });
 
