@@ -235,7 +235,10 @@ describe('gateway (3)', () => {
       request: new Request('http://localhost/widget.js'),
       clientAddress: '203.0.113.7',
     });
-    const widget = { current: widgetBundle('/* widget */'), earlier: async () => undefined };
+    const widget = {
+      current: widgetBundle('/* widget */'),
+      earlier: async () => ({ state: 'missing' as const }),
+    };
     const served = await createGateway({ ...deps, widget })(get());
     expect(served.status).toBe(200);
     expect(served.headers.get('content-type')).toBe('text/javascript; charset=utf-8');

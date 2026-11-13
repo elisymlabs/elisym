@@ -5,12 +5,12 @@ import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { z } from 'zod';
 import type { ServerState } from '../state/types';
 import { WindowLimiter, ipKey } from './limits';
-import { type WidgetBundle, pinnedIdOf } from './widget';
+import { type EarlierWidget, type WidgetBundle, pinnedIdOf } from './widget';
 
 /** Tickets per IP (or IPv6 /64) per minute. */
 const TICKETS_PER_IP_PER_MINUTE = 20;
 const CLICKS_PER_IP_PER_MINUTE = 60;
-/** Lookups of earlier pinned bundles per IP per minute: each may cost a query. */
+/** Database lookups of earlier pinned bundles per IP per minute (a bundle in memory is never limited). */
 const EARLIER_WIDGETS_PER_IP_PER_MINUTE = 60;
 const MINUTE_MS = 60_000;
 const MAX_BODY_BYTES = 16 * 1024;
@@ -65,8 +65,8 @@ export interface GatewayDeps {
  */
 export interface WidgetSource {
   current: WidgetBundle;
-  /** An earlier bundle by its pinned id, or undefined when none was served. */
-  earlier: (id: string) => Promise<string | undefined>;
+  /** An earlier bundle by its pinned id; `mayQuery` is asked before a lookup reaches the database. */
+  earlier: (id: string, mayQuery: () => boolean) => Promise<EarlierWidget>;
 }
 
 const WIDGET_HEADERS = {
@@ -163,11 +163,13 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     if (pinnedId === widget.current.id) {
       return pinnedWidget(widget.current.script);
     }
-    if (!earlierWidgetsPerIp.hit(ipKey(clientAddress), now() * 1000)) {
+    const earlier = await widget.earlier(pinnedId, () =>
+      earlierWidgetsPerIp.hit(ipKey(clientAddress), now() * 1000),
+    );
+    if (earlier.state === 'limited') {
       return json({ error: 'rate_limited' }, 429);
     }
-    const script = await widget.earlier(pinnedId);
-    return script === undefined ? undefined : pinnedWidget(script);
+    return earlier.state === 'found' ? pinnedWidget(earlier.script) : undefined;
   };
 
   const allowedOrigin = (config: StoreConfig | undefined, origin: string | null) =>

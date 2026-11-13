@@ -205,7 +205,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const gateway = createGateway({
     state,
     gatewaySecretKey,
-    widget: { current: widget, earlier: (id) => widgetVersions.script(id) },
+    widget: { current: widget, earlier: (id, mayQuery) => widgetVersions.script(id, mayQuery) },
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),

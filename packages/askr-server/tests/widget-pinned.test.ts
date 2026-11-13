@@ -3,6 +3,7 @@ import { generateSecretKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { WIDGET_INFO_PATH, type WidgetSource, createGateway } from '../src/gateway/gateway';
 import {
+  type EarlierWidget,
   MAX_CACHED_MISSES,
   MAX_CACHED_VERSIONS,
   MISS_TTL_MS,
@@ -20,6 +21,21 @@ const IMMUTABLE = 'public, max-age=31536000, immutable';
 async function sriOf(response: Response): Promise<string> {
   const bytes = Buffer.from(await response.arrayBuffer());
   return `sha384-${createHash('sha384').update(bytes).digest('base64')}`;
+}
+
+function scriptOf(lookup: EarlierWidget): string | undefined {
+  return lookup.state === 'found' ? lookup.script : undefined;
+}
+
+/** An earlier-bundle source as a database is: every lookup is a query, asked for first. */
+function queried(find: (id: string) => string | undefined): WidgetSource['earlier'] {
+  return async (id, mayQuery) => {
+    if (!mayQuery()) {
+      return { state: 'limited' };
+    }
+    const script = find(id);
+    return script === undefined ? { state: 'missing' } : { state: 'found', script };
+  };
 }
 
 async function gatewayWith(widget: WidgetSource | undefined) {
@@ -70,7 +86,7 @@ describe('pinned widget bundles (6)', () => {
 
   it('serves the current bundle at its pinned path for good, readable cross-origin, matching its integrity', async () => {
     const bundle = widgetBundle(SCRIPT);
-    const get = await gatewayWith({ current: bundle, earlier: async () => undefined });
+    const get = await gatewayWith({ current: bundle, earlier: queried(() => undefined) });
     const pinned = await get(bundle.path);
     expect(pinned.status).toBe(200);
     expect(pinned.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
@@ -87,7 +103,7 @@ describe('pinned widget bundles (6)', () => {
 
   it('tells the admin the current pinned path and integrity', async () => {
     const bundle = widgetBundle(SCRIPT);
-    const get = await gatewayWith({ current: bundle, earlier: async () => undefined });
+    const get = await gatewayWith({ current: bundle, earlier: queried(() => undefined) });
     const info = await get(WIDGET_INFO_PATH);
     expect(info.status).toBe(200);
     expect(info.headers.get('cache-control')).toBe('no-cache');
@@ -101,10 +117,10 @@ describe('pinned widget bundles (6)', () => {
     const asked: string[] = [];
     const get = await gatewayWith({
       current,
-      earlier: async (id) => {
+      earlier: queried((id) => {
         asked.push(id);
         return id === earlier.id ? earlier.script : undefined;
-      },
+      }),
     });
     const old = await get(earlier.path);
     expect(old.status).toBe(200);
@@ -135,10 +151,13 @@ describe('widget versions in the database (6)', () => {
     // The next release starts another server process on the same database.
     const versions = new WidgetVersions(db);
     await versions.record(second, NOW + 86_400);
-    expect(await versions.script(first.id)).toBe(first.script);
-    expect(await versions.script(second.id)).toBe(second.script);
-    expect(await versions.script('0'.repeat(32))).toBeUndefined();
-    const get = await gatewayWith({ current: second, earlier: (id) => versions.script(id) });
+    expect(scriptOf(await versions.script(first.id))).toBe(first.script);
+    expect(scriptOf(await versions.script(second.id))).toBe(second.script);
+    expect(scriptOf(await versions.script('0'.repeat(32)))).toBeUndefined();
+    const get = await gatewayWith({
+      current: second,
+      earlier: (id, mayQuery) => versions.script(id, mayQuery),
+    });
     expect(await (await get(first.path)).text()).toBe(first.script);
     expect(await (await get(second.path)).text()).toBe(second.script);
   });
@@ -159,10 +178,10 @@ describe('widget versions in the database (6)', () => {
     const bundle = widgetBundle(SCRIPT);
     await new WidgetVersions(db).record(bundle, NOW);
     const versions = new WidgetVersions(db);
-    expect(await versions.script(bundle.id)).toBe(SCRIPT);
+    expect(scriptOf(await versions.script(bundle.id))).toBe(SCRIPT);
     await db.query('delete from widget_versions');
-    expect(await versions.script(bundle.id)).toBe(SCRIPT);
-    expect(await new WidgetVersions(db).script(bundle.id)).toBeUndefined();
+    expect(scriptOf(await versions.script(bundle.id))).toBe(SCRIPT);
+    expect(scriptOf(await new WidgetVersions(db).script(bundle.id))).toBeUndefined();
   });
 
   it('keeps a bounded number of versions in memory, first in first out by first read', async () => {
@@ -173,14 +192,14 @@ describe('widget versions in the database (6)', () => {
     const versions = new WidgetVersions(db);
     for (const bundle of bundles) {
       await versions.record(bundle, NOW);
-      await versions.script(bundle.id);
+      scriptOf(await versions.script(bundle.id));
     }
     await db.query('delete from widget_versions');
     const [oldest] = bundles;
     const newest = bundles.at(-1);
-    expect(await versions.script(oldest?.id ?? '')).toBeUndefined();
-    expect(await versions.script(newest?.id ?? '')).toBe(newest?.script);
-    expect(await versions.script(bundles[1]?.id ?? '')).toBe(bundles[1]?.script);
+    expect(scriptOf(await versions.script(oldest?.id ?? ''))).toBeUndefined();
+    expect(scriptOf(await versions.script(newest?.id ?? ''))).toBe(newest?.script);
+    expect(scriptOf(await versions.script(bundles[1]?.id ?? ''))).toBe(bundles[1]?.script);
   });
 
   it('remembers a missed id for a short while, so repeated misses cost no query', async () => {
@@ -188,14 +207,14 @@ describe('widget versions in the database (6)', () => {
     const clock = { now: 1_000_000 };
     const versions = new WidgetVersions(db, () => clock.now);
     const bundle = widgetBundle(SCRIPT);
-    expect(await versions.script(bundle.id)).toBeUndefined();
+    expect(scriptOf(await versions.script(bundle.id))).toBeUndefined();
     // Recorded meanwhile (another instance of a newer release): the miss holds until its time is up.
     await new WidgetVersions(db).record(bundle, NOW);
-    expect(await versions.script(bundle.id)).toBeUndefined();
+    expect(scriptOf(await versions.script(bundle.id))).toBeUndefined();
     clock.now += MISS_TTL_MS - 1;
-    expect(await versions.script(bundle.id)).toBeUndefined();
+    expect(scriptOf(await versions.script(bundle.id))).toBeUndefined();
     clock.now += 1;
-    expect(await versions.script(bundle.id)).toBe(SCRIPT);
+    expect(scriptOf(await versions.script(bundle.id))).toBe(SCRIPT);
   });
 
   it('remembers a bounded number of misses, first in first out', async () => {
@@ -205,7 +224,7 @@ describe('widget versions in the database (6)', () => {
       index.toString(16).padStart(32, '0'),
     );
     for (const id of ids) {
-      expect(await versions.script(id)).toBeUndefined();
+      expect(scriptOf(await versions.script(id))).toBeUndefined();
     }
     const first = ids[0] ?? '';
     const second = ids[1] ?? '';
@@ -214,8 +233,8 @@ describe('widget versions in the database (6)', () => {
       [first, second],
     );
     // The first miss was dropped to make room: it is looked up again; the second is still remembered.
-    expect(await versions.script(first)).toBe('first');
-    expect(await versions.script(second)).toBeUndefined();
+    expect(scriptOf(await versions.script(first))).toBe('first');
+    expect(scriptOf(await versions.script(second))).toBeUndefined();
   });
 });
 
@@ -225,7 +244,7 @@ describe('widget paths for HEAD and under load (6)', () => {
     const current = widgetBundle(SCRIPT);
     const get = await gatewayWith({
       current,
-      earlier: async (id) => (id === earlier.id ? earlier.script : undefined),
+      earlier: queried((id) => (id === earlier.id ? earlier.script : undefined)),
     });
     for (const path of ['/widget.js', current.path, earlier.path, WIDGET_INFO_PATH]) {
       const head = await get(path, 'HEAD');
@@ -237,9 +256,12 @@ describe('widget paths for HEAD and under load (6)', () => {
     expect((await get(`/widget/${'0'.repeat(32)}.js`, 'HEAD')).status).toBe(404);
   });
 
-  it('limits lookups of earlier bundles per IP, never the current one', async () => {
+  it('limits database lookups of earlier bundles per IP, never one in memory nor the current one', async () => {
+    const db = await freshDb();
     const current = widgetBundle(SCRIPT);
-    let lookups = 0;
+    const earlier = widgetBundle('/* the last release */');
+    const versions = new WidgetVersions(db);
+    await versions.record(earlier, NOW);
     const { state } = await stateWith([storeRecord(syntheticStore())]);
     const handler = createGateway({
       state,
@@ -249,23 +271,24 @@ describe('widget paths for HEAD and under load (6)', () => {
       isUnservable: () => false,
       reserveUsd: '0.25',
       now: () => NOW,
-      widget: {
-        current,
-        earlier: async () => {
-          lookups += 1;
-          return undefined;
-        },
-      },
+      widget: { current, earlier: (id, mayQuery) => versions.script(id, mayQuery) },
     });
     const get = (path: string, clientAddress = '203.0.113.7') =>
       handler({ request: new Request(`http://localhost${path}`), clientAddress });
-    const missing = `/widget/${'0'.repeat(32)}.js`;
-    for (let index = 0; index < 60; index += 1) {
-      expect((await get(missing)).status).toBe(404);
+    // Many browsers behind one address on a pinned earlier bundle: read once, then from memory.
+    for (let index = 0; index < 200; index += 1) {
+      expect((await get(earlier.path)).status).toBe(200);
+      expect((await get(current.path)).status).toBe(200);
     }
-    expect((await get(missing)).status).toBe(429);
-    expect(lookups).toBe(60);
-    expect((await get(current.path)).status).toBe(200);
-    expect((await get(missing, '198.51.100.4')).status).toBe(404);
+    // Each of these misses reaches the database: the first lookup above was one too.
+    const missing = (index: number) => `/widget/${index.toString(16).padStart(32, '0')}.js`;
+    for (let index = 0; index < 59; index += 1) {
+      expect((await get(missing(index))).status).toBe(404);
+    }
+    expect((await get(missing(59))).status).toBe(429);
+    // A remembered miss costs no query, so it is not limited either.
+    expect((await get(missing(0))).status).toBe(404);
+    expect((await get(earlier.path)).status).toBe(200);
+    expect((await get(missing(60), '198.51.100.4')).status).toBe(404);
   });
 });

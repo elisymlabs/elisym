@@ -53,6 +53,14 @@ export function pinnedIdOf(pathname: string): string | undefined {
   return PINNED_PATH_RE.exec(pathname)?.[1];
 }
 
+/** An earlier bundle looked up: found, never served, or not looked up as the caller may not query now. */
+export type EarlierWidget =
+  | { state: 'found'; script: string }
+  | { state: 'missing' }
+  | { state: 'limited' };
+
+const MISSING: EarlierWidget = { state: 'missing' };
+
 /**
  * Every bundle a server has served, in the database (6): a store that pinned
  * a version keeps getting exactly it after a release, from any instance.
@@ -76,15 +84,22 @@ export class WidgetVersions {
     );
   }
 
-  /** The script kept under `id`, or undefined when no server ever served it. */
-  async script(id: string): Promise<string | undefined> {
+  /**
+   * The script kept under `id`. Answered from memory when it can be; only a
+   * lookup that reaches the database asks `mayQuery` first (a per-IP limit),
+   * so a bundle already read is never limited.
+   */
+  async script(id: string, mayQuery: () => boolean = () => true): Promise<EarlierWidget> {
     const cached = this.cache.get(id);
     if (cached !== undefined) {
-      return cached;
+      return { state: 'found', script: cached };
     }
     const retryAt = this.misses.get(id);
     if (retryAt !== undefined && retryAt > this.nowMs()) {
-      return undefined;
+      return MISSING;
+    }
+    if (!mayQuery()) {
+      return { state: 'limited' };
     }
     this.misses.delete(id);
     const [row] = await this.db.query<{ script: string }>(
@@ -94,10 +109,10 @@ export class WidgetVersions {
     if (row === undefined) {
       makeRoom(this.misses, MAX_CACHED_MISSES);
       this.misses.set(id, this.nowMs() + MISS_TTL_MS);
-      return undefined;
+      return MISSING;
     }
     makeRoom(this.cache, MAX_CACHED_VERSIONS);
     this.cache.set(id, row.script);
-    return row.script;
+    return { state: 'found', script: row.script };
   }
 }
