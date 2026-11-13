@@ -5,11 +5,13 @@ import { Icon } from './Icon';
 import { ProductCard } from './ProductCard';
 import { Reveal } from './Reveal';
 
+const COMPARED = [PRODUCTS.headphonesSand, PRODUCTS.headphonesBlack];
+
 const COMPARE_ROWS = [
-  ['Price', PRODUCTS.sweater.price, PRODUCTS.cardigan.price],
-  ['Wool', 'Merino', 'Lambswool'],
-  ['Sizes', 'S to XL', 'XS to L'],
-  ['Ships to Spain', '3 to 5 days', '3 to 5 days'],
+  ['Price', PRODUCTS.headphonesSand.price, PRODUCTS.headphonesBlack.price],
+  ['Battery', '32 h', '40 h'],
+  ['Weight', '250 g', '280 g'],
+  ['Warranty', '2 years', '2 years'],
 ];
 
 interface TileProps {
@@ -55,14 +57,15 @@ export function Features() {
             className="lg:col-span-3"
           >
             <p className="bg-ink text-14 text-on-ink rounded-br-6 max-w-[80%] self-end rounded-[18px] px-14 py-10">
-              Can I return it after 30 days?
+              Does the warranty cover a cracked case?
             </p>
             <p className="bg-surface-2 text-14 rounded-bl-6 max-w-[92%] self-start rounded-[18px] px-14 py-10 leading-relaxed">
-              Returns are free within 30 days. After that the store offers credit for 60 more days.
+              The 2-year warranty covers defects. A cracked case is accidental damage, which it does
+              not cover.
             </p>
             <span className="border-line-2 text-12 text-text-2 flex items-center gap-6 self-start rounded-full border px-10 py-4">
               <Icon name="shield" className="text-accent-ink size-12" />
-              Quoted from: Returns policy
+              Quoted from: Warranty policy
             </span>
           </Tile>
           <Tile
@@ -72,22 +75,24 @@ export function Features() {
             className="lg:col-span-3"
           >
             <p className="bg-ink text-14 text-on-ink rounded-br-6 max-w-[80%] self-end rounded-[18px] px-14 py-10">
-              A gift under $50, she is always cold
+              Earbuds for running, under $100
             </p>
-            <ProductCard product={PRODUCTS.beanie} />
-            <p className="text-12 text-text-3 px-4">Warm, one size, and under the budget.</p>
+            <ProductCard product={PRODUCTS.earbuds} />
+            <p className="text-12 text-text-3 px-4">
+              Rated IPX5 for sweat and rain, and under the budget.
+            </p>
           </Tile>
           <Tile
             number="03"
             title="Compares side by side"
-            body="Two sweaters or five headphones, row by row. The price row comes straight from your catalog."
+            body="Two headphones or five laptops, row by row. The price row comes straight from your catalog."
             className="lg:col-span-3"
           >
             <table className="text-13 w-full border-collapse text-left">
               <thead>
                 <tr className="text-text-3">
                   <th className="py-6 pr-8 font-normal" />
-                  {[PRODUCTS.sweater, PRODUCTS.cardigan].map((product) => (
+                  {COMPARED.map((product) => (
                     <th key={product.title} className="text-text py-6 pr-8 font-medium">
                       <span className="flex items-center gap-8">
                         <img
@@ -120,10 +125,10 @@ export function Features() {
             body="Every card opens the product page. With your cart hook, or on Shopify and WooCommerce, it adds the pick to your cart."
             className="lg:col-span-3"
           >
-            <ProductCard product={PRODUCTS.sweater} />
+            <ProductCard product={PRODUCTS.charger} />
             <p className="bg-accent text-13 text-accent-text flex items-center gap-8 self-start rounded-full px-12 py-6 font-medium">
               <Icon name="check" className="size-14" />
-              Added to your cart, size M
+              Added to your cart
             </p>
           </Tile>
         </ul>

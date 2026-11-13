@@ -1,44 +1,52 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PRODUCT_NAME } from '../constants';
-import { PRODUCTS } from '../media';
+import type { Niche } from '../niches';
 import { prefersReducedMotion, useInView } from '../useInView';
 import { AskrMark } from './AskrMark';
 import { Icon } from './Icon';
 import { ProductCard } from './ProductCard';
 
-const QUESTION = 'A warm sweater under $80 that ships to Spain?';
-const ANSWER = "Two fit. Both ship to Spain in 3 to 5 days, as the store's shipping policy says.";
-const CARDS = [PRODUCTS.sweater, PRODUCTS.cardigan];
+/** How long each step of the conversation holds before the next, by step. */
+function stepMs(step: number, answer: string): number {
+  return [500, 700, 1100, answer.length * 22 + 200, 350, 5200][step] ?? 1000;
+}
 
-/** Steps of the conversation, with how long each one holds before the next. */
-const STEPS = [
-  { name: 'empty', ms: 600 },
-  { name: 'asked', ms: 700 },
-  { name: 'typing', ms: 1100 },
-  { name: 'answering', ms: ANSWER.length * 22 + 200 },
-  { name: 'card-1', ms: 350 },
-  { name: 'card-2', ms: 7000 },
-] as const;
+const FINAL = 5;
 
-const FINAL = STEPS.length - 1;
+interface Props {
+  niche: Niche;
+  /** Called once the conversation has played through; without it, it plays again. */
+  onFinished?: () => void;
+}
 
-/** The widget answering a visitor, played on a loop once it is on screen: nothing in it is live. */
-export function ChatDemo() {
+/** The widget answering a visitor, played once it is on screen: nothing in it is live. */
+export function ChatDemo({ niche, onFinished }: Props) {
   const [ref, inView] = useInView<HTMLElement>(0.3);
   const [step, setStep] = useState(0);
   const [typed, setTyped] = useState(0);
   const [still] = useState(prefersReducedMotion);
+  const finished = useRef(onFinished);
+  useEffect(() => {
+    finished.current = onFinished;
+  }, [onFinished]);
 
   useEffect(() => {
     if (!inView || still) {
       return undefined;
     }
-    const timer = setTimeout(() => {
-      setTyped(0);
-      setStep((current) => (current + 1) % STEPS.length);
-    }, STEPS[step]?.ms ?? 1000);
+    const timer = setTimeout(
+      () => {
+        if (step === FINAL && finished.current !== undefined) {
+          finished.current();
+          return;
+        }
+        setTyped(0);
+        setStep((current) => (current + 1) % (FINAL + 1));
+      },
+      stepMs(step, niche.answer),
+    );
     return () => clearTimeout(timer);
-  }, [inView, still, step]);
+  }, [inView, still, step, niche.answer]);
 
   const shown = still ? FINAL : step;
   const answering = shown === 3 && !still;
@@ -46,21 +54,24 @@ export function ChatDemo() {
     if (!answering) {
       return undefined;
     }
-    const timer = setInterval(() => setTyped((count) => Math.min(ANSWER.length, count + 1)), 22);
+    const timer = setInterval(
+      () => setTyped((count) => Math.min(niche.answer.length, count + 1)),
+      22,
+    );
     return () => clearInterval(timer);
-  }, [answering]);
+  }, [answering, niche.answer.length]);
 
-  const answer = answering ? ANSWER.slice(0, typed) : ANSWER;
+  const answer = answering ? niche.answer.slice(0, typed) : niche.answer;
   return (
     <figure
       ref={ref}
-      aria-label={`The ${PRODUCT_NAME} chat on a store's page: a visitor asks for ${QUESTION.toLowerCase()} The assistant answers: ${ANSWER}`}
+      aria-label={`The ${PRODUCT_NAME} chat on ${niche.store}'s site. A visitor asks: ${niche.question} The assistant answers: ${niche.answer} It shows ${niche.cards.map((card) => `${card.title} at ${card.price}`).join(' and ')}.`}
       className="rounded-24 border-line bg-bg/95 w-full overflow-hidden border shadow-[0_30px_80px_-20px_rgb(23_21_15_/_0.35)] backdrop-blur"
     >
       <div className="border-line flex items-center gap-10 border-b px-16 py-12">
         <AskrMark className="size-28" />
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="text-14 font-semibold">Harbor Knits</span>
+          <span className="text-14 font-semibold">{niche.store}</span>
           <span className="text-12 text-text-3 flex items-center gap-6">
             <span className="bg-accent size-6 rounded-full" />
             AI assistant, online
@@ -71,7 +82,7 @@ export function ChatDemo() {
       <div aria-hidden="true" className="flex min-h-340 flex-col gap-10 p-14">
         {shown >= 1 && (
           <p className="arrive bg-ink text-14 text-on-ink rounded-br-6 max-w-[85%] self-end rounded-[18px] px-14 py-10">
-            {QUESTION}
+            {niche.question}
           </p>
         )}
         {shown === 2 && (
@@ -86,7 +97,7 @@ export function ChatDemo() {
             {answer}
           </p>
         )}
-        {CARDS.map((product, index) =>
+        {niche.cards.map((product, index) =>
           shown >= 4 + index ? (
             <div key={product.title} className="arrive">
               <ProductCard product={product} />

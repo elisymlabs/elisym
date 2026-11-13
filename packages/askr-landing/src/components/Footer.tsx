@@ -36,7 +36,7 @@ export function Footer() {
     <footer className="mx-auto max-w-1360 overflow-hidden px-16 pt-96 sm:px-24">
       <div className="grid gap-40 md:grid-cols-[1.5fr_1fr_1fr_1fr]">
         <p className="text-24 max-w-360 font-serif leading-snug">
-          {`${PRODUCT_NAME} is a shopping assistant for your store's site, built by elisym labs on the open elisym protocol.`}
+          {`${PRODUCT_NAME} is a shopping assistant for your store's site, built by Elisym Labs on the open elisym protocol.`}
         </p>
         {COLUMNS.map((column) => (
           <nav key={column.title} aria-label={column.title} className="flex flex-col gap-10">
@@ -62,7 +62,7 @@ export function Footer() {
         {PRODUCT_NAME}
       </p>
       <div className="border-line-2 text-13 text-text-3 flex flex-wrap items-center justify-between gap-12 border-t py-20">
-        <span>{`© ${new Date().getFullYear()} elisym labs`}</span>
+        <span>{`© ${new Date().getFullYear()} Elisym Labs`}</span>
         <span className="flex items-center gap-6">
           by
           <ElisymLogo />

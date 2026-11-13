@@ -15,6 +15,7 @@ import {
   X_URL,
 } from '../src/constants';
 import { PHOTOS, PRODUCTS } from '../src/media';
+import { NICHES } from '../src/niches';
 import { CART_HOOK_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
 
 declare global {
@@ -181,11 +182,12 @@ describe('the copy', () => {
     }
   });
 
-  it('writes "Elisym" capitalized only after "by" or at the start of a sentence', async () => {
+  it('names the company "Elisym Labs", and writes "Elisym" capitalized only there, after "by" or at the start of a sentence', async () => {
     const page = await render(<App />);
     const html = readFileSync(join(PACKAGE, 'index.html'), 'utf8');
     for (const text of [page.textContent ?? '', html]) {
-      for (const match of text.matchAll(/(.{0,3})Elisym/g)) {
+      expect(text).not.toMatch(/elisym labs/);
+      for (const match of text.matchAll(/(.{0,3})Elisym(?! Labs)/g)) {
         expect(match[1] ?? '', text.slice(match.index ?? 0, (match.index ?? 0) + 40)).toMatch(
           /(?:by |\. |^|>)$/,
         );
@@ -245,7 +247,10 @@ describe('the page structure', () => {
 
   it('shows every photo with its alt text and size, and keeps each file small', async () => {
     const page = await render(<App />);
-    for (const photo of Object.values(PHOTOS)) {
+    const shown = Object.values(PHOTOS).filter(
+      (photo) => !NICHES.slice(1).some((niche) => niche.photo === photo),
+    );
+    for (const photo of shown) {
       const image = page.querySelector(`img[alt="${photo.alt}"]`);
       expect(image, photo.alt).not.toBeNull();
       expect(image?.getAttribute('width')).toBe(String(photo.width));
@@ -254,6 +259,36 @@ describe('the page structure', () => {
     for (const file of filesIn(join(PACKAGE, 'src/media'))) {
       expect(file).toMatch(/\.webp$/);
       expect(readFileSync(file).byteLength, file).toBeLessThan(200_000);
+    }
+  });
+
+  it('switches the hero demo to the niche a tab names, with its photo and its store', async () => {
+    const page = await render(<App />);
+    const tabs = [...page.querySelectorAll('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(NICHES.map((niche) => niche.label));
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+    for (const [index, niche] of NICHES.entries()) {
+      await act(async () => (tabs[index] as HTMLButtonElement | undefined)?.click());
+      expect(tabs[index]?.getAttribute('aria-selected')).toBe('true');
+      const panel = page.querySelector('#niche-demo');
+      expect(panel?.getAttribute('aria-labelledby')).toBe(tabs[index]?.id);
+      expect(panel?.querySelector('figure')?.getAttribute('aria-label')).toContain(niche.store);
+      expect(page.querySelector(`img[alt="${niche.photo.alt}"]`)).not.toBeNull();
+    }
+  });
+
+  it('each niche answer names no price but those on its cards', () => {
+    for (const niche of NICHES) {
+      const prices = [...`${niche.question} ${niche.answer}`.matchAll(/\$\d+(?:\.\d{2})?/g)].map(
+        (match) => match[0],
+      );
+      const asked = [...niche.question.matchAll(/\$\d+/g)].map((match) => match[0]);
+      for (const price of prices) {
+        expect(
+          asked.includes(price) || niche.cards.some((card) => card.price === price),
+          `${niche.id}: ${price}`,
+        ).toBe(true);
+      }
     }
   });
 
