@@ -1427,6 +1427,7 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['유로', ['EUR']],
   ['위안', ['CNY']],
   ['파운드', ['GBP']],
+  ['日本円', ['JPY']],
   ['円', ['JPY']],
   ['圆', YUAN],
   ['圓', YUAN],
@@ -1628,6 +1629,15 @@ const MONEY_AFTER_PIECE: readonly string[] = [
   '吃',
   '玩',
   '做',
+  // Sentence-final particles: "便宜5块呢", "要5块吗", "差5块就包邮".
+  '呢',
+  '哦',
+  '吗',
+  '啊',
+  '吧',
+  '了',
+  '呀',
+  '就',
 ];
 /** 一块 as "together": 一块儿, 一块看, 一块去... (another count before them stays money). */
 const TOGETHER_AFTER: readonly string[] = [
@@ -1642,8 +1652,11 @@ const TOGETHER_AFTER: readonly string[] = [
   '玩',
   '做',
 ];
-/** A count cut into pieces at the end of a clause: "切成四块。", "分成两块". */
-const SPLIT_BEFORE: readonly string[] = ['成', '分', '切'];
+/**
+ * Any count cut into pieces at the end of a clause: "切成四块。", "拆成12块". A larger count
+ * before a noun ("一盒24块巧克力", "1000块拼图") stays money: it cannot be told from a price.
+ */
+const SPLIT_BEFORE: readonly string[] = ['成', '分', '切', '拆'];
 /** 一元 in a word, not one yuan: 一元化, 一元论, (第)一元素. */
 const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素'];
 /** 元 after a small count in a technical word: 三元锂电池, 3元系 (ternary). */
@@ -1709,14 +1722,18 @@ function pieceCount(context: TokenContext, expression: string): boolean {
   if (expression === '一' && TOGETHER_AFTER.some((word) => text.startsWith(word, tokenEnd))) {
     return true;
   }
-  if (context.approximate || !SMALL_COUNT_RE.test(expression)) {
+  if (context.approximate) {
     return false;
   }
-  if (HAN_RE.test(next)) {
-    return !MONEY_AFTER_PIECE.includes(next) && !CJK_CHARS.includes(next);
-  }
+  // Any count cut into pieces at the end of a clause ("拆成12块。").
   const clauseEnd = !/[\p{L}\p{N}]/u.test(next);
-  return clauseEnd && SPLIT_BEFORE.includes(text[lowerAt - 1] ?? '');
+  if (clauseEnd && SPLIT_BEFORE.includes(text[lowerAt - 1] ?? '')) {
+    return true;
+  }
+  if (!SMALL_COUNT_RE.test(expression) || !HAN_RE.test(next)) {
+    return false;
+  }
+  return !MONEY_AFTER_PIECE.includes(next) && !CJK_CHARS.includes(next);
 }
 
 /**
@@ -1779,6 +1796,13 @@ function negative(text: string, start: number): boolean {
   return (sign === '-' || sign === '–') && !/[\d\p{L}]/u.test(beforeSign);
 }
 
+/** A token reading whose prefix token ends a word ("単元3", "회원 10%"): no amount. */
+function tokenInWord(text: string, amount: MoneyAmount): boolean {
+  // The token without the gap the scanners allow after it ("원: 2").
+  const token = text.slice(amount.index, amount.numberIndex).replace(/[\s:-]+$/u, '');
+  return token.length > 0 && wordBefore(text, token, amount.index);
+}
+
 /**
  * A token reading that starts with the currency word of the number before it ("元5" of
  * "100元5个"): the word closes that number and opens nothing.
@@ -1794,9 +1818,17 @@ function trailingToken(text: string, amount: MoneyAmount): boolean {
   );
 }
 
-/** A one-character Han currency inside a word before it (単元, 紀元, 次元) is no currency. */
+/**
+ * A one-character currency inside a word before it is no currency: a Han one after a Han
+ * letter (単元, 紀元, 次元, 公元), 원 after a Hangul syllable (인원, 회원).
+ */
 function wordBefore(text: string, before: string, start: number): boolean {
-  return before.length === 1 && HAN_RE.test(before) && HAN_RE.test(text[start - 1] ?? '');
+  const previous = text[start - 1] ?? '';
+  // 원 after a Hangul syllable ends a noun (인원, 정원, 회원, 지원, 직원): never a prefix.
+  if (before === '원' && HANGUL_RE.test(previous)) {
+    return true;
+  }
+  return before.length === 1 && HAN_RE.test(before) && HAN_RE.test(previous);
 }
 
 function digitValue(digit: string): Decimal {
@@ -1901,7 +1933,8 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
     const gapBeforeToken = /\s$/u.test(lower) ? ' ' : (groups.gap ?? '');
     const afterCounts =
       afterToken !== undefined &&
-      !(GLUED_ONLY.includes(afterToken) && (gapBeforeToken.length > 0 || approximate)) &&
+      // 불 and 刀 are money only glued to the number; after 多 too ("300多刀"), with no value.
+      !(GLUED_ONLY.includes(afterToken) && gapBeforeToken.length > 0) &&
       !notMoney({
         text,
         token: afterToken,
@@ -1992,6 +2025,7 @@ function scanCjk(text: string, found: MoneyAmount[], decimals: readonly string[]
         (span) => amount.numberIndex >= span.from && amount.index + amount.raw.length <= span.to,
       ) &&
       !trailingToken(text, amount) &&
+      !tokenInWord(text, amount) &&
       !covered.some(
         (span) =>
           amount.index >= span.start &&
