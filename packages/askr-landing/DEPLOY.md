@@ -26,4 +26,4 @@ for path in / /index.html; do
 done
 ```
 
-Both lines must allow scripts, styles and connections from `'self'` only, and no frames.
+Both lines must allow scripts, styles, media and connections from `'self'` only, and no frames.

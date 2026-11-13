@@ -6,10 +6,10 @@ const COLUMNS = [
   {
     title: 'Product',
     links: [
-      { href: '#how', label: 'How it works' },
-      { href: '#sources', label: 'Product sources' },
+      { href: '#features', label: 'What it does' },
       { href: '#trust', label: 'Trust' },
-      { href: '#plans', label: 'Plans' },
+      { href: '#pricing', label: 'Pricing' },
+      { href: '#faq', label: 'FAQ' },
       { href: ADMIN_URL, label: 'Admin' },
     ],
   },
@@ -34,7 +34,7 @@ const COLUMNS = [
 export function Footer() {
   return (
     <footer className="border-line border-t">
-      <div className="mx-auto grid max-w-1160 gap-40 px-16 py-48 sm:px-24 md:grid-cols-[1.5fr_1fr_1fr_1fr]">
+      <div className="mx-auto grid max-w-1200 gap-40 px-16 py-48 sm:px-24 md:grid-cols-[1.5fr_1fr_1fr_1fr]">
         <div className="flex flex-col gap-12">
           <Logo />
           <p className="text-14 text-text-2 max-w-320">
@@ -59,7 +59,7 @@ export function Footer() {
         ))}
       </div>
       <div className="border-line border-t">
-        <p className="text-13 text-text-3 mx-auto max-w-1160 px-16 py-20 sm:px-24">
+        <p className="text-13 text-text-3 mx-auto max-w-1200 px-16 py-20 sm:px-24">
           {`© ${new Date().getFullYear()} elisym labs`}
         </p>
       </div>
