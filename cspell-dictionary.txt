@@ -288,3 +288,6 @@ bytea
 xact
 timestamptz
 unlisten
+baseten
+deepinfra
+qwen

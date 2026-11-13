@@ -94,7 +94,40 @@ function required(env: Env, name: string): string {
 
 export type ModelConfig =
   | { kind: 'anthropic'; apiKey: string; model: string; effort?: Effort }
-  | { kind: 'openrouter'; apiKey: string; model: string };
+  | { kind: 'openrouter'; apiKey: string; model: string; providers?: string[] };
+
+/** A DeepSeek model under any author or casing ("deepseek/...", "DeepSeek/...", ".../deepseek-r1"). */
+const DEEPSEEK_MODEL_RE = /deepseek/i;
+/** OpenRouter's slug for DeepSeek's own (China-hosted) endpoint. */
+const DEEPSEEK_HOST_RE = /^deepseek$/i;
+
+/**
+ * ASKR_OPENROUTER_PROVIDERS: the OpenRouter hosts a request may go to, comma-separated
+ * ("together,fireworks"). A DeepSeek model needs it, without DeepSeek's own host: visitor data
+ * never goes to a China-hosted endpoint (spec 8).
+ */
+export function openRouterProvidersFrom(
+  model: string,
+  value: string | undefined,
+): string[] | undefined {
+  const providers = value?.split(',').map((slug) => slug.trim());
+  if (providers?.some((slug) => slug.length === 0)) {
+    throw new Error(`ASKR_OPENROUTER_PROVIDERS has an empty entry: ${value ?? ''}`);
+  }
+  if (DEEPSEEK_MODEL_RE.test(model)) {
+    if (providers === undefined) {
+      throw new Error(
+        `ASKR_OPENROUTER_PROVIDERS is required for ${model}: name the hosts it may run on (for example together,fireworks,baseten,deepinfra), never deepseek.`,
+      );
+    }
+    if (providers.some((slug) => DEEPSEEK_HOST_RE.test(slug))) {
+      throw new Error(
+        `ASKR_OPENROUTER_PROVIDERS must not name deepseek for ${model}: visitor data never goes to DeepSeek's own (China-hosted) endpoint.`,
+      );
+    }
+  }
+  return providers;
+}
 
 export interface ServeConfig {
   model: ModelConfig;
@@ -123,10 +156,12 @@ export function serveConfigFromEnv(rawEnv: Env): ServeConfig {
         'ASKR_EFFORT is an Anthropic setting and is not passed to OpenRouter: unset it with ASKR_OPENROUTER_MODEL.',
       );
     }
+    const providers = openRouterProvidersFrom(openRouterModel, env.ASKR_OPENROUTER_PROVIDERS);
     model = {
       kind: 'openrouter',
       apiKey: required(env, 'OPENROUTER_API_KEY'),
       model: openRouterModel,
+      ...(providers === undefined ? {} : { providers }),
     };
   } else {
     const effort = effortFrom(env.ASKR_EFFORT);
@@ -169,8 +204,16 @@ export function providerFor(config: ModelConfig, fetch?: typeof globalThis.fetch
       baseUrl: 'https://openrouter.ai/api/v1',
       // Anthropic models through OpenRouter need the cache marks passed through (5.7).
       passCacheMarks: config.model.startsWith('anthropic/'),
-      // No training and zero data retention where offered (4.4).
-      extraBody: { provider: { data_collection: 'deny' } },
+      // No training and zero data retention where offered (4.4); only the named hosts, with no
+      // fallback to others (spec 8).
+      extraBody: {
+        provider: {
+          data_collection: 'deny',
+          ...(config.providers === undefined
+            ? {}
+            : { only: config.providers, allow_fallbacks: false }),
+        },
+      },
       ...(fetch ? { fetch } : {}),
     });
   }

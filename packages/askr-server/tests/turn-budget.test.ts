@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   checkTurnBudget,
   effortFrom,
+  openRouterProvidersFrom,
   positiveInteger,
   providerFor,
   serveConfigFromEnv,
@@ -85,7 +86,7 @@ describe('serveConfigFromEnv: the model and turn budget the server starts with',
   it('refuses ASKR_EFFORT with an OpenRouter model, and runs OpenRouter without it', () => {
     const openRouter = {
       ...ANTHROPIC_ENV,
-      ASKR_OPENROUTER_MODEL: 'deepseek/deepseek-chat',
+      ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max',
       OPENROUTER_API_KEY: 'or',
     };
     expect(() => serveConfigFromEnv({ ...openRouter, ASKR_EFFORT: 'low' })).toThrow(
@@ -94,7 +95,7 @@ describe('serveConfigFromEnv: the model and turn budget the server starts with',
     expect(serveConfigFromEnv(openRouter).model).toEqual({
       kind: 'openrouter',
       apiKey: 'or',
-      model: 'deepseek/deepseek-chat',
+      model: 'qwen/qwen3-max',
     });
   });
 
@@ -158,10 +159,10 @@ describe('round 5: the provider and worker settings built from the configuration
       serveConfigFromEnv({ ...env, ASKR_OPENROUTER_MODEL: 'anthropic/claude-sonnet-5-5' }).model,
       claude.doFetch,
     ).turn(REQUEST);
-    const deepseek = recordingFetch('openai');
+    const other = recordingFetch('openai');
     await providerFor(
-      serveConfigFromEnv({ ...env, ASKR_OPENROUTER_MODEL: 'deepseek/deepseek-chat' }).model,
-      deepseek.doFetch,
+      serveConfigFromEnv({ ...env, ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max' }).model,
+      other.doFetch,
     ).turn(REQUEST);
     const systemOf = (body: Record<string, unknown> | undefined) =>
       Array.isArray(body?.messages) ? body.messages[0] : undefined;
@@ -169,9 +170,9 @@ describe('round 5: the provider and worker settings built from the configuration
       role: 'system',
       content: [{ type: 'text', text: 'S', cache_control: { type: 'ephemeral' } }],
     });
-    expect(systemOf(deepseek.bodies[0])).toEqual({ role: 'system', content: 'S' });
+    expect(systemOf(other.bodies[0])).toEqual({ role: 'system', content: 'S' });
     expect(claude.bodies[0]?.provider).toEqual({ data_collection: 'deny' });
-    expect(deepseek.bodies[0]?.provider).toEqual({ data_collection: 'deny' });
+    expect(other.bodies[0]?.provider).toEqual({ data_collection: 'deny' });
   });
 
   it('the worker gets the provider, price, reservation and max tokens', () => {
@@ -196,7 +197,7 @@ describe('round 5: the provider and worker settings built from the configuration
 
   it('OpenRouter needs OPENROUTER_API_KEY', () => {
     expect(() =>
-      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_OPENROUTER_MODEL: 'deepseek/deepseek-chat' }),
+      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max' }),
     ).toThrow('OPENROUTER_API_KEY is required');
   });
 
@@ -217,10 +218,101 @@ describe('round 5: the provider and worker settings built from the configuration
     expect(
       serveConfigFromEnv({
         ...ANTHROPIC_ENV,
-        ASKR_OPENROUTER_MODEL: 'deepseek/deepseek-chat',
+        ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max',
         OPENROUTER_API_KEY: 'or',
         ASKR_EFFORT: '',
       }).model.kind,
     ).toBe('openrouter');
+  });
+});
+
+const DEEPSEEK_ENV = {
+  ...ANTHROPIC_ENV,
+  OPENROUTER_API_KEY: 'or',
+  ASKR_OPENROUTER_MODEL: 'deepseek/deepseek-v4.1-flash',
+  ASKR_OPENROUTER_PROVIDERS: 'together, fireworks,baseten,deepinfra',
+  ASKR_PRICE_INPUT: '0.3',
+  ASKR_PRICE_CACHED_INPUT: '0.006',
+  ASKR_PRICE_CACHE_WRITE: '0.3',
+  ASKR_PRICE_OUTPUT: '1.2',
+  ASKR_MAX_TOKENS: '4096',
+};
+
+describe('OpenRouter hosts: a DeepSeek model runs only on named hosts, never DeepSeek its own', () => {
+  it('sends only the named hosts, no fallback, with data collection denied', async () => {
+    const config = serveConfigFromEnv(DEEPSEEK_ENV);
+    expect(config.model).toEqual({
+      kind: 'openrouter',
+      apiKey: 'or',
+      model: 'deepseek/deepseek-v4.1-flash',
+      providers: ['together', 'fireworks', 'baseten', 'deepinfra'],
+    });
+    expect(config.maxTokens).toBe(4_096);
+    const recorded = recordingFetch('openai');
+    await providerFor(config.model, recorded.doFetch).turn(REQUEST);
+    expect(recorded.bodies[0]?.provider).toEqual({
+      data_collection: 'deny',
+      only: ['together', 'fireworks', 'baseten', 'deepinfra'],
+      allow_fallbacks: false,
+    });
+  });
+
+  it.each([
+    'deepseek/deepseek-v4.1-flash',
+    'DeepSeek/DeepSeek-V4.1-Flash',
+    'some-author/deepseek-r1',
+  ])('refuses %s without ASKR_OPENROUTER_PROVIDERS', (model) => {
+    expect(() =>
+      serveConfigFromEnv({
+        ...DEEPSEEK_ENV,
+        ASKR_OPENROUTER_MODEL: model,
+        ASKR_OPENROUTER_PROVIDERS: undefined,
+      }),
+    ).toThrow(`ASKR_OPENROUTER_PROVIDERS is required for ${model}`);
+    expect(() =>
+      serveConfigFromEnv({
+        ...DEEPSEEK_ENV,
+        ASKR_OPENROUTER_MODEL: model,
+        ASKR_OPENROUTER_PROVIDERS: '',
+      }),
+    ).toThrow('ASKR_OPENROUTER_PROVIDERS is required');
+  });
+
+  it.each(['deepseek', 'together,deepseek', 'together, DeepSeek '])(
+    'refuses a DeepSeek model when the hosts name DeepSeek: "%s"',
+    (providers) => {
+      expect(() =>
+        serveConfigFromEnv({ ...DEEPSEEK_ENV, ASKR_OPENROUTER_PROVIDERS: providers }),
+      ).toThrow('ASKR_OPENROUTER_PROVIDERS must not name deepseek');
+    },
+  );
+
+  it.each(['together,,fireworks', 'together,', ' , ', ','])(
+    'rejects an empty entry: "%s"',
+    (providers) => {
+      expect(() => openRouterProvidersFrom('qwen/qwen3-max', providers)).toThrow(
+        'ASKR_OPENROUTER_PROVIDERS has an empty entry',
+      );
+    },
+  );
+
+  it('stays optional for other models, and is sent when given', async () => {
+    const qwen = { ...DEEPSEEK_ENV, ASKR_OPENROUTER_MODEL: 'qwen/qwen3-max' };
+    const unset = serveConfigFromEnv({ ...qwen, ASKR_OPENROUTER_PROVIDERS: undefined });
+    expect(unset.model).not.toHaveProperty('providers');
+    const recorded = recordingFetch('openai');
+    await providerFor(
+      serveConfigFromEnv({ ...qwen, ASKR_OPENROUTER_PROVIDERS: 'together' }).model,
+      recorded.doFetch,
+    ).turn(REQUEST);
+    expect(recorded.bodies[0]?.provider).toEqual({
+      data_collection: 'deny',
+      only: ['together'],
+      allow_fallbacks: false,
+    });
+  });
+
+  it('the recommended DeepSeek settings fit the default reservation: 8 x 4096 x 1.2 per million', () => {
+    expect(serveConfigFromEnv(DEEPSEEK_ENV).reserveUsd).toBe('0.25');
   });
 });
