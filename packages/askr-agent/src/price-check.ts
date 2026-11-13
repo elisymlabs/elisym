@@ -1625,85 +1625,10 @@ function isLatinToken(token: string): boolean {
 
 // cspell:disable
 /**
- * 块 / 塊 after a small count (一 to 十, 两, one digit) and before a word is a measure word
- * ("附赠一块抹布", "两块砧板", "由三块组成"), unless the word keeps it money ("五块钱", "两块多",
- * "三块左右", "一块起"). The trade-off: a wrong "price" of at most ten yuan written that way
- * passes; a larger count ("1700块手表") is always money.
+ * 块 / 塊 after a small count (一 to 十, 两, one digit) counts pieces only before a listed
+ * product noun (PIECE_NOUN_STARTS); a larger count ("1700块手表") is always money.
  */
 const SMALL_COUNT_RE = /^(?:[一二三四五六七八九十两兩]|\d)$/u;
-const MONEY_AFTER_PIECE: readonly string[] = [
-  '钱',
-  '錢',
-  '多',
-  '左',
-  '起',
-  '包',
-  '的',
-  '半',
-  '毛',
-  '角',
-  '零',
-  '看',
-  '去',
-  '走',
-  '来',
-  '來',
-  '吃',
-  '玩',
-  '做',
-  '换',
-  '換',
-  // Degree words, adverbs, verbs, conjunctions and particles that continue a price ("5块很便宜",
-  // "5块也行", "5块和10块"): not a noun being counted.
-  '很',
-  '太',
-  '真',
-  '挺',
-  '蛮',
-  '更',
-  '最',
-  '都',
-  '也',
-  '还',
-  '還',
-  '又',
-  '才',
-  '就',
-  '便',
-  '贵',
-  '貴',
-  '划',
-  '值',
-  '能',
-  '可',
-  '够',
-  '夠',
-  '买',
-  '買',
-  '卖',
-  '賣',
-  '到',
-  '上',
-  '下',
-  '一',
-  '和',
-  '跟',
-  '与',
-  '與',
-  '或',
-  '而',
-  '每',
-  '呢',
-  '吧',
-  '了',
-  '啊',
-  '呀',
-  '嘛',
-  '啦',
-  '哦',
-  '吗',
-  '嗎',
-];
 /**
  * Sentence-final particles: a count before 块 and one of these ends its clause as money
  * ("只剩一块了" too: "需要9块" and "需要两块" cannot be told apart, so stock talk is a
@@ -1722,26 +1647,96 @@ const CLAUSE_PARTICLES: readonly string[] = [
   '嘛',
   '啦',
 ];
-/** Words after a count and 块 that keep it money: a coupon, a red envelope, a fee ("送5块券"). */
-const MONEY_NOUNS: readonly string[] = [
-  '券',
-  '红包',
-  '紅包',
-  '钱',
-  '錢',
-  '差价',
-  '差價',
-  '优惠',
-  '優惠',
-  '补贴',
-  '補貼',
-  '运费',
-  '運費',
-  '现金',
-  '現金',
-  '无门槛',
-  '無門檻',
-  '元',
+/**
+ * What a small count + 块 / 塊 counts when it counts pieces: a product noun or a common
+ * product-copy modifier at the start of the next word ("两块砧板", "附赠两块可替换滤芯").
+ * Anything else after it is money ("5块很便宜", "9块是活动价", "9块含运费"): a product noun
+ * missing here strips one sentence (fail closed); add it to this list.
+ */
+const PIECE_NOUN_STARTS: readonly string[] = [
+  '砧板',
+  '香皂',
+  '肥皂',
+  '抹布',
+  '毛巾',
+  '地垫',
+  '垫子',
+  '垫',
+  '墊',
+  '地布',
+  '门帘',
+  '門簾',
+  '拼图',
+  '拼圖',
+  '电池',
+  '電池',
+  '太阳能',
+  '太陽能',
+  '板子',
+  '木板',
+  '石头',
+  '石頭',
+  '玻璃',
+  '表镜',
+  '錶鏡',
+  '滤芯',
+  '濾芯',
+  '滤网',
+  '濾網',
+  '挡板',
+  '擋板',
+  '内胆',
+  '內膽',
+  '护垫',
+  '護墊',
+  '牛排',
+  '和牛',
+  '能量棒',
+  '巧克力',
+  '蛋糕',
+  '元宵',
+  '瓷砖',
+  '瓷磚',
+  '地毯',
+  '磁铁',
+  '磁鐵',
+  '海绵',
+  '海綿',
+  '镜片',
+  '鏡片',
+  '蓝宝石',
+  '藍寶石',
+  '空地',
+  '布',
+  '面料',
+  '布料',
+  '皮革',
+  '真皮',
+  '可替换',
+  '可替換',
+  '可更换',
+  '可更換',
+  '可拆卸',
+  '可水洗',
+  '便携',
+  '便攜',
+  '备用',
+  '備用',
+  '替换',
+  '替換',
+  '更换用',
+  '更換用',
+  '加厚',
+  '防水',
+  '防滑',
+  '硅胶',
+  '矽膠',
+  '不锈钢',
+  '不鏽鋼',
+  '实木',
+  '實木',
+  '纯棉',
+  '純棉',
 ];
 /** How far back the split rule looks before a count: phrases are short, the prefix is not read. */
 const SPLIT_WINDOW = 8;
@@ -1841,12 +1836,8 @@ function pieceCount(context: TokenContext, expression: string): boolean {
     const before = text.slice(Math.max(0, lowerAt - SPLIT_WINDOW), lowerAt);
     return (small ? SMALL_SPLITS : EXPLICIT_SPLITS).some((phrase) => before.endsWith(phrase));
   }
-  // A small count before a noun counts pieces ("两块砧板"), unless the noun is money ("送5块券").
-  const rest = text.slice(tokenEnd, tokenEnd + SPLIT_WINDOW);
-  if (!small || !HAN_RE.test(next) || MONEY_NOUNS.some((noun) => rest.startsWith(noun))) {
-    return false;
-  }
-  return !MONEY_AFTER_PIECE.includes(next) && !CJK_CHARS.includes(next);
+  // A small count before a listed product noun counts pieces ("两块砧板"); anything else is money.
+  return small && PIECE_NOUN_STARTS.some((noun) => text.startsWith(noun, tokenEnd));
 }
 
 /**
@@ -2283,7 +2274,7 @@ const SENTENCE_SPLIT_RE = new RegExp(
   'iu',
 );
 /** A numbered-list marker alone in its sentence ("1.", "12)"). */
-const LIST_MARKER_RE = /^\d{1,3}[.)]$/u;
+const LIST_MARKER_RE = /^[\d０-９]{1,3}[.)．）]$/u;
 /** The last dotted token of a sentence: it may be the symbol of the next sentence's number ("Rs. 999"). */
 const DOTTED_TAIL_RE = /(?:^|\s)(\S{1,8}\.)$/u;
 
@@ -2579,6 +2570,11 @@ export function stripViolations(
     if (index !== undefined) {
       removed.add(Number(index));
       if (violation.borrowed) {
+        removed.add(Number(index) - 1);
+      }
+      // A list marker alone before it ("1．", "２．") goes with it, not left orphaned.
+      const previous = sentences[Number(index) - 1];
+      if (previous !== undefined && LIST_MARKER_RE.test(previous.trim())) {
         removed.add(Number(index) - 1);
       }
     }

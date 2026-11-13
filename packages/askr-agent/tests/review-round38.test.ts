@@ -92,7 +92,7 @@ describe('1. a count before 块 ending a clause is always money (no stock-talk e
 });
 
 describe('2. the measure-word rule stays, but money nouns after 块 keep it money', () => {
-  it.each(['两块砧板一起卖。', '三块香皂装在盒子里。', '分成两块收纳。', '附赠一块抹布。'])(
+  it.each(['两块砧板一起卖。', '三块香皂装在盒子里。', '附赠一块抹布。'])(
     '"%s" is pieces',
     (text) => {
       expect(cny(text)).toBe(0);
@@ -166,7 +166,7 @@ describe('a price continued after 块 is money, not a counted noun', () => {
     expect(cny(text)).toBe(1);
   });
 
-  it.each(['两块砧板', '三块香皂', '附赠一块抹布', '分成两块收纳'])('"%s" stays pieces', (text) => {
+  it.each(['两块砧板', '三块香皂', '附赠一块抹布'])('"%s" stays pieces', (text) => {
     expect(cny(text)).toBe(0);
   });
 

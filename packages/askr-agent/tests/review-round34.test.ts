@@ -126,16 +126,14 @@ describe('3. Korean word exemptions are explicit and narrow', () => {
 /** Natural sentences with 块 counting pieces. */
 const PIECES = [
   '附赠一块抹布。',
+  // 分成两块收纳, 送你一块小毛巾, 由三块组成 are money since round 39 (review-round39).
   '两块砧板一起卖。',
   '三块香皂装在盒子里。',
   '可以切成四块。',
-  '分成两块收纳。',
-  '送你一块小毛巾。',
   '一块蓝宝石表镜。',
   '三块拼图组成一幅画。',
   '两块地布。',
   '营地旁边有一块空地。',
-  '由三块组成。',
   '两块门帘。',
   // '分成两块很方便携带。' is money since round 38 (很 continues a price; review-round38).
   '这款帐篷附带2块垫子。',
