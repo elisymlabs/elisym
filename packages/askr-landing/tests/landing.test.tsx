@@ -16,7 +16,7 @@ import {
 } from '../src/constants';
 import { PHOTOS, PRODUCTS } from '../src/media';
 import { NICHES } from '../src/niches';
-import { CART_HOOK_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
+import { CART_HOOK_SNIPPET, LISTING_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -142,6 +142,21 @@ describe('the snippets', () => {
     expect(page.querySelector('#pinned-snippet')?.textContent).toBe(PINNED_SNIPPET);
   });
 
+  it('the listing an agent reads is a product event with the tags the catalog builder writes', async () => {
+    const constants = readFileSync(join(PACKAGES, 'commerce/src/constants.ts'), 'utf8');
+    expect(constants).toContain('export const KIND_PRODUCT = 30402;');
+    const listing = JSON.parse(LISTING_SNIPPET) as { kind: number; tags: string[][] };
+    expect(listing.kind).toBe(30402);
+    const builder = readFileSync(join(PACKAGES, 'askr/src/events/catalog-item.ts'), 'utf8');
+    for (const [name] of listing.tags) {
+      expect(builder, String(name)).toMatch(new RegExp(`\\['${String(name)}', `));
+    }
+    const price = listing.tags.find(([name]) => name === 'price');
+    expect(price?.[1]).toMatch(/^\d+\.\d{2}$/);
+    const page = await render(<App />);
+    expect(page.querySelector('#listing-snippet')?.textContent).toBe(LISTING_SNIPPET);
+  });
+
   it('the cart hook uses the name and fields the widget reads', async () => {
     const embed = docsPage('embed');
     expect(embed).toContain('window.Askr.onAddToCart = function (detail)');
@@ -231,7 +246,7 @@ describe('the page structure', () => {
   it('gives every section of the main content a heading', async () => {
     const page = await render(<App />);
     const sections = [...page.querySelectorAll('main > section')];
-    expect(sections.length).toBe(15);
+    expect(sections.length).toBe(16);
     for (const section of sections) {
       expect(section.querySelector('h1, h2'), section.id).not.toBeNull();
     }

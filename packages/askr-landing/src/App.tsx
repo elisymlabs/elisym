@@ -4,6 +4,7 @@ import { Developers } from './components/Developers';
 import { Faq } from './components/Faq';
 import { Features } from './components/Features';
 import { Footer } from './components/Footer';
+import { ForAgents } from './components/ForAgents';
 import { GetStarted } from './components/GetStarted';
 import { Hero } from './components/Hero';
 import { Honest } from './components/Honest';
@@ -27,6 +28,7 @@ export function App() {
         <Features />
         <Honest />
         <Languages />
+        <ForAgents />
         <Sources />
         <Trust />
         <Numbers />
