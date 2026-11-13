@@ -1,5 +1,6 @@
 import { PRODUCT_NAME } from '../constants';
-import { SectionHeading } from './SectionHeading';
+import { Eyebrow } from './Eyebrow';
+import { Reveal } from './Reveal';
 
 const QUESTIONS = [
   {
@@ -45,26 +46,30 @@ const QUESTIONS = [
 
 export function Faq() {
   return (
-    <section id="faq" className="mx-auto max-w-880 px-16 py-80 sm:px-24 sm:py-112">
-      <SectionHeading eyebrow="FAQ" title="Questions stores ask" centered />
-      <div className="mt-48 flex flex-col gap-12">
-        {QUESTIONS.map((item) => (
-          <details
-            key={item.question}
-            className="rounded-16 border-line bg-surface group border px-20 py-16 open:pb-20"
-          >
-            <summary className="text-16 flex cursor-pointer list-none items-center justify-between gap-16 font-medium [&::-webkit-details-marker]:hidden">
-              <h3>{item.question}</h3>
-              <span
-                aria-hidden="true"
-                className="text-text-3 text-20 transition group-open:rotate-45"
-              >
-                +
-              </span>
-            </summary>
-            <p className="text-15 text-text-2 mt-12 leading-relaxed">{item.answer}</p>
-          </details>
-        ))}
+    <section id="faq" className="mx-auto max-w-1200 px-16 pb-96 sm:px-24 sm:pb-160">
+      <div className="grid gap-40 lg:grid-cols-[0.8fr_1.2fr]">
+        <Reveal className="flex flex-col gap-16 lg:sticky lg:top-112 lg:self-start">
+          <Eyebrow>FAQ</Eyebrow>
+          <h2 className="text-48 sm:text-64 font-serif leading-[0.98]">
+            Questions <em>stores ask.</em>
+          </h2>
+        </Reveal>
+        <Reveal delay={1} className="border-line-2 border-b">
+          {QUESTIONS.map((item) => (
+            <details key={item.question} className="border-line-2 group border-t py-20">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-16 [&::-webkit-details-marker]:hidden">
+                <h3 className="text-20 sm:text-24 font-serif">{item.question}</h3>
+                <span
+                  aria-hidden="true"
+                  className="border-line-2 text-18 grid size-32 shrink-0 place-items-center rounded-full border transition group-open:rotate-45"
+                >
+                  +
+                </span>
+              </summary>
+              <p className="text-16 text-text-2 mt-12 max-w-640 leading-relaxed">{item.answer}</p>
+            </details>
+          ))}
+        </Reveal>
       </div>
     </section>
   );

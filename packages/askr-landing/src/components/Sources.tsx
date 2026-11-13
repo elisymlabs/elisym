@@ -1,30 +1,27 @@
 import { DOCS } from '../constants';
-import { Icon, type IconName } from './Icon';
+import { PHOTOS } from '../media';
+import { Eyebrow } from './Eyebrow';
+import { Icon } from './Icon';
 import { PageLink } from './PageLink';
-import { SectionHeading } from './SectionHeading';
-import { Visual } from './Visual';
+import { Reveal } from './Reveal';
 
-const SOURCES: { icon: IconName; title: string; body: string; tags: string[] }[] = [
+const SOURCES: { title: string; body: string; tags: string[] }[] = [
   {
-    icon: 'plug',
     title: 'Your shop, connected',
     body: 'Imported on a schedule from what your shop already shows the public. No store token, no admin access to hand over.',
     tags: ['Shopify', 'WooCommerce', 'Google product feed'],
   },
   {
-    icon: 'table',
     title: 'The admin',
     body: 'Import a CSV or add and edit products by hand.',
     tags: ['CSV', 'Editor'],
   },
   {
-    icon: 'code',
     title: 'Your code or your agent',
     body: 'Publish from your backend or CI with the SDK, or let an AI agent keep the catalog with the MCP tools.',
     tags: ['SDK', 'MCP'],
   },
   {
-    icon: 'store',
     title: 'A PayCore store',
     body: "Already sell with PayCore? The assistant reads that store's listings as they are.",
     tags: ['PayCore'],
@@ -33,41 +30,45 @@ const SOURCES: { icon: IconName; title: string; body: string; tags: string[] }[]
 
 export function Sources() {
   return (
-    <section id="sources" className="border-line bg-surface border-y">
-      <div className="mx-auto grid max-w-1200 gap-48 px-16 py-80 sm:px-24 sm:py-112 lg:grid-cols-[0.9fr_1.1fr]">
-        <div className="flex flex-col gap-32">
-          <SectionHeading eyebrow="Your catalog" title="Bring the catalog you already have">
-            Pick one source for your products in the admin, then add the policies the assistant may
-            quote: returns, shipping, warranty and FAQ.
-          </SectionHeading>
-          <div className="rounded-24 border-line relative aspect-[4/3] overflow-hidden border">
-            <Visual name="catalog" className="absolute inset-0 size-full" />
-          </div>
-        </div>
-        <div className="flex flex-col gap-16">
-          <ul className="grid gap-16">
+    <section id="sources" className="mx-auto max-w-1360 px-12 sm:px-24">
+      <div className="grid items-stretch gap-24 lg:grid-cols-2">
+        <Reveal className="rounded-32 sm:rounded-40 relative min-h-360 overflow-hidden">
+          <img
+            src={PHOTOS.catalog.src}
+            alt={PHOTOS.catalog.alt}
+            width={PHOTOS.catalog.width}
+            height={PHOTOS.catalog.height}
+            loading="lazy"
+            decoding="async"
+            className="absolute inset-0 size-full object-cover"
+          />
+        </Reveal>
+        <Reveal delay={1} className="flex flex-col gap-24 px-4 py-24 sm:px-24 lg:py-48">
+          <Eyebrow>Your catalog</Eyebrow>
+          <h2 className="text-48 sm:text-64 font-serif leading-[0.98]">
+            Bring the catalog <em>you already have.</em>
+          </h2>
+          <p className="text-18 text-text-2 leading-relaxed">
+            Pick one source for your products, then add the policies the assistant may quote:
+            returns, shipping, warranty and FAQ.
+          </p>
+          <ul className="mt-8 flex flex-col">
             {SOURCES.map((source) => (
-              <li
-                key={source.title}
-                className="rounded-20 border-line bg-bg flex gap-16 border p-20 sm:p-24"
-              >
-                <span className="rounded-12 bg-accent-soft text-accent-ink grid size-44 shrink-0 place-items-center">
-                  <Icon name={source.icon} className="size-22" />
-                </span>
-                <div className="flex min-w-0 flex-col gap-8">
-                  <h3 className="text-18 font-semibold">{source.title}</h3>
-                  <p className="text-15 text-text-2 leading-relaxed">{source.body}</p>
+              <li key={source.title} className="border-line-2 flex flex-col gap-8 border-t py-20">
+                <div className="flex flex-wrap items-baseline justify-between gap-12">
+                  <h3 className="text-24 font-serif">{source.title}</h3>
                   <ul aria-label={`${source.title}: formats`} className="flex flex-wrap gap-6">
                     {source.tags.map((tag) => (
                       <li
                         key={tag}
-                        className="border-line-2 text-12 text-text-2 rounded-full border px-10 py-4"
+                        className="bg-surface-2 text-12 text-text-2 rounded-full px-10 py-4"
                       >
                         {tag}
                       </li>
                     ))}
                   </ul>
                 </div>
+                <p className="text-15 text-text-2 leading-relaxed">{source.body}</p>
               </li>
             ))}
           </ul>
@@ -78,7 +79,7 @@ export function Sources() {
             Product sources in the docs
             <Icon name="arrow" className="size-16" />
           </PageLink>
-        </div>
+        </Reveal>
       </div>
     </section>
   );

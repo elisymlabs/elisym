@@ -1,14 +1,15 @@
 import { EVALS, PRODUCT_NAME } from '../constants';
-import { SectionHeading } from './SectionHeading';
+import { Eyebrow } from './Eyebrow';
+import { Reveal } from './Reveal';
 
 const STATS = [
   {
     value: EVALS.passed,
-    label: `of ${EVALS.scenarios} test conversations passed`,
+    label: `of ${EVALS.scenarios} graded test conversations passed by the default model`,
     note: 'Budgets, comparisons, policies, tricky prices, injected instructions and questions it must not answer.',
   },
   {
-    value: '< 1¢',
+    value: '<1¢',
     label: 'per conversation',
     note: 'A fraction of a cent of model cost for a whole conversation that got its answer.',
   },
@@ -21,25 +22,30 @@ const STATS = [
 
 export function Numbers() {
   return (
-    <section id="numbers" className="border-line bg-surface border-y">
-      <div className="mx-auto max-w-1200 px-16 py-80 sm:px-24 sm:py-112">
-        <SectionHeading eyebrow="Tested" title="Measured, not promised">
-          {`We grade ${PRODUCT_NAME} on a fixed set of ${EVALS.scenarios} test conversations with a sample store. These are the numbers of the default model.`}
-        </SectionHeading>
-        <dl className="mt-48 grid gap-16 md:grid-cols-3">
-          {STATS.map((stat) => (
-            <div
-              key={stat.label}
-              className="rounded-24 border-line bg-bg flex flex-col gap-8 border p-28"
-            >
-              <dt className="text-15 text-text-2 order-2 font-medium">{stat.label}</dt>
-              <dd className="text-48 text-accent-ink order-1 leading-none font-semibold tracking-tight">
-                {stat.value}
-              </dd>
-              <dd className="text-14 text-text-3 order-3 leading-relaxed">{stat.note}</dd>
-            </div>
-          ))}
-        </dl>
+    <section id="numbers" className="border-line-2 border-y">
+      <div className="mx-auto max-w-1200 px-16 py-96 sm:px-24 sm:py-128">
+        <Reveal className="flex flex-col gap-16">
+          <Eyebrow>Measured, not promised</Eyebrow>
+          <h2 className="text-40 sm:text-56 max-w-800 font-serif leading-[1.02]">
+            {`We grade ${PRODUCT_NAME} on a fixed set of test conversations with a sample store.`}
+          </h2>
+        </Reveal>
+        <Reveal delay={1}>
+          <dl className="mt-56 grid md:grid-cols-3">
+            {STATS.map((stat, index) => (
+              <div
+                key={stat.label}
+                className={`border-line-2 flex flex-col gap-10 border-t py-28 md:border-t-0 md:py-0 ${index > 0 ? 'md:border-l md:pl-32' : ''} ${index < STATS.length - 1 ? 'md:pr-32' : ''}`}
+              >
+                <dt className="text-16 order-2 font-medium">{stat.label}</dt>
+                <dd className="text-80 sm:text-96 text-accent-ink order-1 font-serif leading-none tabular-nums">
+                  {stat.value}
+                </dd>
+                <dd className="text-14 text-text-2 order-3 leading-relaxed">{stat.note}</dd>
+              </div>
+            ))}
+          </dl>
+        </Reveal>
       </div>
     </section>
   );

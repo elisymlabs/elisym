@@ -291,3 +291,4 @@ bytea
 xact
 timestamptz
 unlisten
+Higgsfield

@@ -1,47 +1,47 @@
 /**
- * The page's generated media, picked up from `src/media/` at build time. A slot
- * whose file is not there yet draws its placeholder instead, so the page builds
- * and reads the same before and after the visuals land. Prompts and sizes for
- * each file are in `MEDIA.md`.
+ * The page's photos, generated with Higgsfield (prompts in `MEDIA.md`) and
+ * served from this origin like every other asset.
  */
-const FILES = import.meta.glob<string>('./media/*.{webp,jpg,png,mp4,webm}', {
-  eager: true,
-  query: '?url',
-  import: 'default',
-});
+import beanie from './media/beanie.webp';
+import cardigan from './media/cardigan.webp';
+import catalog from './media/catalog.webp';
+import closing from './media/closing.webp';
+import hero from './media/hero.webp';
+import keys from './media/keys.webp';
+import sweater from './media/sweater.webp';
 
-export interface MediaSlot {
-  /** The still: a poster for a video slot, the image for an image slot. */
-  image: string;
-  /** The loop, for a video slot. */
-  video?: string;
-  alt: string;
-}
-
-export const MEDIA = {
+export const PHOTOS = {
   hero: {
-    image: 'hero.webp',
-    video: 'hero.mp4',
-    alt: 'Products on soft lit shelves in a quiet store',
+    src: hero,
+    width: 2048,
+    height: 1152,
+    alt: 'A bright boutique with folded knitwear and ceramics',
   },
+  closing: { src: closing, width: 2048, height: 1152, alt: 'A boutique storefront at golden hour' },
   catalog: {
-    image: 'catalog.webp',
-    alt: 'A store catalog laid out as neat rows of products',
+    src: catalog,
+    width: 1400,
+    height: 1050,
+    alt: 'Store products laid out in a neat grid',
   },
-  keys: {
-    image: 'keys.webp',
-    alt: 'A single key resting on a store counter',
-  },
-  closing: {
-    image: 'closing.webp',
-    video: 'closing.mp4',
-    alt: 'A storefront at dusk with its lights on',
-  },
-} satisfies Record<string, MediaSlot>;
+  keys: { src: keys, width: 1100, height: 1467, alt: 'A brass key on folded linen' },
+};
 
-export type MediaName = keyof typeof MEDIA;
+/** Made-up products for the drawings: names and prices as a store's catalog would list them. */
+export const PRODUCTS = {
+  sweater: {
+    image: sweater,
+    title: 'Merino crew sweater',
+    note: 'Navy, sizes S to XL',
+    price: '$72.00',
+  },
+  cardigan: {
+    image: cardigan,
+    title: 'Lambswool cardigan',
+    note: 'Oat, sizes XS to L',
+    price: '$78.00',
+  },
+  beanie: { image: beanie, title: 'Ribbed wool beanie', note: 'Rust, one size', price: '$34.00' },
+};
 
-/** The built URL of a media file, or `undefined` while it is not in `src/media/`. */
-export function mediaUrl(file: string | undefined): string | undefined {
-  return file === undefined ? undefined : FILES[`./media/${file}`];
-}
+export type Product = (typeof PRODUCTS)[keyof typeof PRODUCTS];
