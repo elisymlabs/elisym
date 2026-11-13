@@ -5,6 +5,7 @@ import { UNANSWERED, formatCountdown } from './text';
 
 interface Props {
   chain: Rail;
+  compact?: boolean;
   /** About when the request can be judged over (Start over then). */
   startOverIn?: Countdown;
   /** With no countdown: after this (unix seconds), it is taking long. */
@@ -20,7 +21,7 @@ interface Props {
  * at `unsureAt`. The ticking number is not announced: the live region speaks
  * once per phase.
  */
-export function UnansweredHint({ chain, startOverIn, unsureAt }: Props) {
+export function UnansweredHint({ chain, startOverIn, unsureAt, compact = false }: Props) {
   const now = useNow(true);
   const left = startOverIn === undefined ? undefined : secondsLeft(startOverIn, now);
   const unsure = isTakingLong(now, startOverIn, unsureAt, chain);
@@ -44,10 +45,36 @@ export function UnansweredHint({ chain, startOverIn, unsureAt }: Props) {
     line = UNANSWERED.checking[chain];
     spoken = UNANSWERED.checking[chain];
   }
-  return (
+  const options = (
     <>
       <p class="note hint">{line}</p>
       <p class="note hint">{UNANSWERED.reject}</p>
+    </>
+  );
+  let compactLine: ComponentChildren;
+  if (unsure) {
+    compactLine = UNANSWERED.takingLong;
+  } else if (left === undefined) {
+    compactLine = UNANSWERED.unknown[chain];
+  } else if (left > 0) {
+    compactLine = <>{UNANSWERED.countingLead[chain]}<span class="countdown">{formatCountdown(left)}</span>.</>;
+  } else {
+    compactLine = UNANSWERED.checking[chain];
+  }
+  return (
+    <>
+      {compact ? (
+        <div class="wallet-wait-copy">
+          <p class="wallet-wait-subtitle">
+            The wallet hasn’t responded yet. To cancel, reject the request in your wallet.
+          </p>
+          <div class="pending-payment-notice wallet-wait-countdown">
+            <p>{compactLine}</p>
+          </div>
+        </div>
+      ) : (
+        options
+      )}
       <p class="visually-hidden" role="status" data-unanswered-status="">
         {spoken}
       </p>

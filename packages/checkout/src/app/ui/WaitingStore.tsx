@@ -14,15 +14,12 @@ export function WaitingStore({ view }: Props) {
         </p>
       ) : (
         <p class="status" role="status">
-          Paid. Waiting for the store to confirm…
+          {view.noAnswer
+            ? 'The store has not answered for a while. Contact the store.'
+            : 'Stores usually answer within minutes'}
         </p>
       )}
-      {view.noAnswer ? (
-        <p class="note">The store has not answered for a while. Contact the store.</p>
-      ) : null}
-      {view.noAnswer || view.cancelled ? null : (
-        <p class="note">Stores usually answer within minutes.</p>
-      )}
+
       {view.explorer === undefined ? null : (
         <p>
           <a href={view.explorer} target="_blank" rel="noopener noreferrer">

@@ -1,3 +1,4 @@
+import { OrderIdValue } from './OrderIdValue';
 import type { Receipt } from '../session';
 import { CopyText } from './CopyText';
 import { receiptField, receiptText } from './text';
@@ -34,10 +35,15 @@ export function ReceiptBlock({ receipt, kind }: Props) {
     <>
       {rows.map((line, row) => (
         <span key={row} class="receipt-line">
-          {line}
-          {line.startsWith(ORDER_LINE) ? (
-            <span class="receipt-hint">Give this number to the store if you need help.</span>
-          ) : null}
+          {line.includes(': ') ? (
+            <>
+              <span class="receipt-key">{line.slice(0, line.indexOf(': '))}</span>
+              <span class="receipt-value">{line.startsWith(ORDER_LINE) ? <OrderIdValue orderId={receipt.orderId} /> : line.slice(line.indexOf(': ') + 2)}</span>
+            </>
+          ) : (
+            line
+          )}
+
         </span>
       ))}
       {transaction === undefined ? null : (
@@ -55,7 +61,7 @@ export function ReceiptBlock({ receipt, kind }: Props) {
       <CopyText
         text={text}
         shown={shown}
-        label="Copy receipt"
+        label="Copy"
         copiedText="Receipt copied."
         textClass="receipt-text"
       />

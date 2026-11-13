@@ -1,5 +1,5 @@
+import { PaymentStageIcon } from './PaymentStageIcon';
 import type { View } from '../session';
-import { CHECK_GLYPH } from './glyphs';
 import { ReceiptBlock } from './ReceiptBlock';
 import { StepHeading } from './StepHeading';
 
@@ -26,16 +26,24 @@ export function doneHeading(view: Extract<View, { kind: 'delivered' }>): string 
 export function DoneStep({ view, onBuyAgain, onDone }: Props) {
   return (
     <div class="step done" data-step="done">
-      <img class="mark" src={CHECK_GLYPH} alt="" aria-hidden="true" />
+      <div class="success-symbol" aria-hidden="true">
+        <PaymentStageIcon stage="complete" />
+      </div>
       <StepHeading>{doneHeading(view)}</StepHeading>
-      <button type="button" class="primary" onClick={onBuyAgain}>
-        Buy again
-      </button>
-      {onDone === undefined ? null : (
-        <button type="button" class="secondary" onClick={onDone}>
-          Done
+      <div class="done-actions">
+        <button
+          type="button"
+          class={onDone === undefined ? 'primary' : 'secondary'}
+          onClick={onBuyAgain}
+        >
+          Buy again
         </button>
-      )}
+        {onDone === undefined ? null : (
+          <button type="button" class="primary" onClick={onDone}>
+            Done
+          </button>
+        )}
+      </div>
       {view.receipt === undefined ? null : <ReceiptBlock receipt={view.receipt} kind="delivered" />}
     </div>
   );

@@ -685,7 +685,7 @@ describe('the Tempo wallet connect', () => {
       { name: 'MetaMask', connect: () => Promise.reject(new TempoChainUnsupported()) },
     ];
     await run.session.pay('MetaMask');
-    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'tempo_unsupported' } });
+    expect(run.last()).toMatchObject({ kind: 'offer', problem: { reason: 'tempo_unsupported', wallet: { name: 'MetaMask' } } });
     run.deps.tempoWallets = () => [
       {
         name: 'MetaMask',

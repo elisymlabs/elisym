@@ -3,7 +3,7 @@ import type { Problem, Rail, WalletChoice } from '../session';
 import { NoWallet } from './NoWallet';
 import { ProblemNote } from './ProblemNote';
 import { StepHeading } from './StepHeading';
-import { WalletRow } from './WalletRow';
+import { WalletPicker } from './WalletPicker';
 
 interface Props {
   wallets: WalletChoice[];
@@ -29,23 +29,31 @@ export function WalletSection({
   onPay,
   onCheckWallet,
 }: Props) {
+  const unsupported = problem?.reason === 'tempo_unsupported';
+  const failedWallet = unsupported ? problem.wallet : undefined;
   return (
     <div class="step" data-step="wallets">
-      <StepHeading level={3}>Choose a wallet</StepHeading>
+      {wallets.length === 0 && !unsupported ? (
+        <StepHeading level={3}>Choose a wallet</StepHeading>
+      ) : null}
       <ProblemNote
-        problem={problem}
+        problem={unsupported ? undefined : problem}
         asset={asset}
         rail={rail}
         {...(onCheckWallet === undefined ? {} : { onCheckWallet })}
       />
-      {wallets.length === 0 ? (
+      {wallets.length === 0 && !unsupported ? (
         <NoWallet chain={rail} phone={phone} />
       ) : (
-        <div class="wallet-list">
-          {wallets.map((wallet) => (
-            <WalletRow key={wallet.name} wallet={wallet} disabled={locked} onPick={onPay} />
-          ))}
-        </div>
+        <WalletPicker
+          wallets={wallets}
+          showLabel={false}
+          label="Wallet"
+          disabled={locked}
+          unsupported={unsupported}
+          failedWallet={failedWallet}
+          onPay={onPay}
+        />
       )}
     </div>
   );

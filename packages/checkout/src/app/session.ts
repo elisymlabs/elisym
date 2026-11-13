@@ -202,7 +202,8 @@ export interface WalletOption {
 
 export type Problem =
   | { reason: 'no_wallet' | 'clock_skew' | 'rpc_error' | 'self_payment' | 'too_late' }
-  | { reason: 'tempo_unsupported' | 'wallet_busy' }
+  | { reason: 'tempo_unsupported'; wallet?: WalletChoice }
+  | { reason: 'wallet_busy' }
   | { reason: 'order_not_acknowledged' | 'no_store_inbox' | 'failed' | 'bad_email' }
   /** `declined`: the buyer declined an again request; the attempt stays live. */
   | { reason: 'wallet_failed'; declined?: true }
@@ -777,10 +778,11 @@ export function eip3009UnsureAt(record: OrderRecord, sent: boolean): number | un
 /** A Tempo connect failure, as the buyer is told: a wallet without the chain is named as such. */
 function tempoConnectProblem(
   error: unknown,
-): 'tempo_unsupported' | 'rejected' | 'wallet_busy' | 'no_wallet' {
+  wallet: WalletChoice,
+): Problem {
   return error instanceof TempoChainUnsupported
-    ? 'tempo_unsupported'
-    : connectProblem(walletErrorKind(error));
+    ? { reason: 'tempo_unsupported', wallet: { name: wallet.name, ...(wallet.icon ? { icon: wallet.icon } : {}) } }
+    : { reason: connectProblem(walletErrorKind(error)) };
 }
 
 /** The page-facing state of a record, or none (created: nothing to tell yet). */
@@ -1689,7 +1691,7 @@ export class CheckoutSession {
           return;
         }
         this.cancellableFor = undefined;
-        this.showOffer({ reason: tempoConnectProblem(error) });
+        this.showOffer(tempoConnectProblem(error, option));
         return;
       }
       if (this.stale(press)) {
@@ -3840,7 +3842,7 @@ export class CheckoutSession {
     } catch (error) {
       if (!this.stale(press)) {
         this.cancellableFor = undefined;
-        this.showOffer({ reason: tempoConnectProblem(error) });
+        this.showOffer(tempoConnectProblem(error, option));
       }
       return;
     }

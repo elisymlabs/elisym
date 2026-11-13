@@ -1,3 +1,5 @@
+import { ElisymLogo } from './ElisymLogo';
+
 interface Props {
   /** A session is running: "Your purchases" opens from here (the same with or without any). */
   onPurchases?: () => void;
@@ -11,7 +13,12 @@ export function Footer({ onPurchases }: Props) {
           Your purchases
         </button>
       )}
-      <span>Checkout by Elisym · payments go straight to the store</span>
+      <div class="checkout-brand">
+        <span>Checkout by</span>
+        <ElisymLogo />
+        <span aria-hidden="true">·</span>
+        <span>Payments go straight to the store</span>
+      </div>
     </footer>
   );
 }

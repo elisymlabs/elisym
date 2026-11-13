@@ -21,7 +21,7 @@ export function EarlierPaymentNote({ problem, reveal, onCheckWallet }: Props) {
   const left = countdown === undefined ? undefined : secondsLeft(countdown, now);
   const line = earlierPaymentLine(problem, left);
   return (
-    <div class={reveal ? 'problem reveal' : 'problem'} tabindex={-1} data-problem-note="">
+    <div class={reveal ? 'pending-payment-notice reveal' : 'pending-payment-notice'} tabindex={-1} data-problem-note="">
       <p>
         {line.lead}
         {line.countdown === undefined ? null : <span class="countdown">{line.countdown}</span>}

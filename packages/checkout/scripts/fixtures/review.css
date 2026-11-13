@@ -1,0 +1,42 @@
+body { background: var(--surface-hover); padding: 24px; min-height: 100vh; }
+.review-header { max-width: 900px; margin: 0 auto 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.review-header h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; letter-spacing: -.035em; }
+.review-header p { margin: 0; color: var(--muted); font-size: 11px; }
+.review-theme { display: flex; flex-shrink: 0; padding: 3px; gap: 3px; border: 1px solid var(--border); border-radius: 999px; }
+.review-theme button, .review-groups button, .review-arrow, .review-play { width: auto; min-height: 32px; border: none; border-radius: 999px; color: var(--muted); background: transparent; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
+.review-theme button { padding: 6px 14px; }
+.review-theme button[aria-pressed='true'] { color: #111418; background: var(--accent-fill); }
+.review-groups { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; max-width: 900px; margin: 0 auto 16px; }
+.review-groups button { padding: 8px 14px; background: color-mix(in srgb, var(--background) 45%, transparent); }
+.review-groups button:hover, .review-arrow:hover:not(:disabled), .review-play:hover { background: var(--background); color: var(--text); }
+.review-groups button[aria-pressed='true'] { background: var(--background); color: var(--text); box-shadow: 0 1px 4px #00000008; }
+.review-navigation { max-width: 600px; margin: 0 auto 24px; text-align: center; }
+.review-group-description { font-size: 11px; color: var(--muted); margin: 0 auto 12px; line-height: 1.6; }
+.review-picker { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.review-select-label { flex: 1; min-width: 0; max-width: 420px; }
+.review-picker select { width: 100%; min-height: 38px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--background); color: var(--text); font: inherit; font-size: 12px; }
+.review-arrow { width: 32px; height: 32px; padding: 0; flex-shrink: 0; }
+.review-count { color: var(--muted); font-size: 11px; white-space: nowrap; min-width: 40px; font-variant-numeric: tabular-nums; }
+.review-explanation { margin: 10px auto 0; max-width: 480px; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.review-play { padding: 6px 12px; margin-top: 10px; border: 1px solid var(--border); }
+.review-window { width: 420px; max-width: 100%; margin: auto; border-radius: 28px; background: var(--background); overflow: hidden; box-shadow: 0 20px 60px #0002; }
+.review-chrome { height: 0; position: relative; z-index: 2; color: #858995; }
+.review-chrome span { position: absolute; top: 10px; right: 12px; width: 32px; height: 32px; display: grid; place-items: center; font-size: 20px; }
+.review-window .card { padding-top: 30px; }
+html[data-capture='true'] *, html[data-capture='true'] *::before, html[data-capture='true'] *::after { animation: none !important; transition: none !important; }
+/* Demo-only network and trust tags are omitted from this design review. */
+.review-window .header .badge, .review-window .header .chip { display: none; }
+@media (max-width: 540px) {
+  body { padding: 16px 12px; }
+  .review-header { gap: 8px; align-items: flex-start; }
+  .review-header h1 { font-size: 18px; }
+  .review-header p { max-width: 210px; }
+  .review-groups { display: grid; grid-template-columns: 1fr 1fr; }
+  .review-groups button { padding: 8px; font-size: 11px; }
+  .review-count { display: none; }
+}
+
+.review-result-sections { display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; margin: 0 auto 14px; }
+.review-result-sections button { width: auto; min-height: 30px; padding: 6px 12px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 500; }
+.review-result-sections button[aria-pressed='true'] { background: var(--background); color: var(--text); border-color: var(--border); }
+.review-result-sections button:hover { color: var(--text); }

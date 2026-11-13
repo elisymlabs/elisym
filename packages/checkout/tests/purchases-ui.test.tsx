@@ -136,7 +136,20 @@ function mount(
     hold: (promise: Promise<void>) => {
       settle = promise;
     },
-    click: (label: string) => act(() => button(label).click()),
+    click: (label: string) => {
+      if (['Phantom', 'Solflare'].includes(label) && container.querySelector('.wallet-select')) {
+        act(() => container.querySelector<HTMLButtonElement>('.wallet-select')!.click());
+        const option = [...container.querySelectorAll<HTMLElement>('.wallet-option')]
+          .find((each) => each.textContent?.includes(label));
+        if (option === undefined) {
+          throw new Error('Wallet option not found: ' + label);
+        }
+        act(() => option.click());
+        act(() => container.querySelector<HTMLButtonElement>('.wallet-pay')!.click());
+        return;
+      }
+      act(() => button(label).click());
+    },
     /** The button named `label` by its `aria-label`. */
     byLabel: (label: string) => {
       const found = [...container.querySelectorAll('button')].find(
@@ -166,7 +179,7 @@ function mount(
     },
     region: () => container.querySelector('[data-purchases-region]'),
     detail: () => container.querySelector('.purchase-card'),
-    nav: () => container.querySelector('.purchases-nav')?.outerHTML ?? '',
+    nav: () => container.querySelector('.purchases-title-row, .purchases-nav')?.outerHTML ?? '',
     has: (label: string) =>
       [...container.querySelectorAll('button')].some((each) => each.textContent?.trim() === label),
     card: () => container.querySelector('.card'),
@@ -177,6 +190,8 @@ function mount(
         throw new Error('no card');
       }
       card.querySelector('[data-purchases-region]')?.replaceChildren();
+      card.querySelector('[data-purchases-region]')?.classList.remove('is-empty');
+      card.querySelector('.purchases-title-row [data-purchases-back]')?.remove();
       return card.outerHTML;
     },
   };
@@ -311,12 +326,16 @@ describe('the purchases box (T2, T3)', () => {
     expect(details[0]).not.toBe(lists[0]);
   });
 
-  it('draws the nav and its heading before the read, inside the box (H3)', async () => {
+  it('shows the history page title before reading, with one heading and navigation inside the box (H3)', async () => {
     const held = mount(counted(new Promise<Purchase[]>(() => undefined)));
     held.click('Your purchases');
-    const heading = held.region()?.querySelector('h2[data-heading]');
+    const heading = held.container.querySelector('.purchases-header h2[data-heading]');
     expect(heading?.textContent).toBe(PURCHASES_TEXT.title);
-    expect(held.region()?.querySelector('[data-purchases-back]')).not.toBeNull();
+    expect(held.container.querySelectorAll('[data-heading]')).toHaveLength(1);
+    expect(held.container.querySelector('.purchases-header .store-line')).toBeNull();
+    expect(
+      held.container.querySelector('.purchases-title-row [data-purchases-back]'),
+    ).not.toBeNull();
     const loaded = mount(counted(cannedPurchases(3, NOW)));
     await loaded.open();
     expect(held.shell()).toBe(loaded.shell());
@@ -349,16 +368,16 @@ describe('the purchases box (T2, T3)', () => {
   it('lists nothing with a note when there is nothing, and no export warning', async () => {
     const ui = mount(counted([]));
     await ui.open();
-    expect(ui.container.textContent).toContain('No purchases from this store in this browser yet.');
+    expect(ui.container.textContent).toContain('No purchases from this store in this browser yet');
     expect(ui.container.textContent).not.toContain('Keep it private');
     expect(ui.container.textContent).not.toContain('delivery');
-    expect(ui.button('Download CSV').disabled).toBe(false);
+    expect(ui.has('Download CSV')).toBe(false);
   });
 });
 
 describe('one way back (N1)', () => {
   const noOtherBack = (ui: ReturnType<typeof mount>) => {
-    const names = [...ui.container.querySelectorAll('button')].map(
+    const names = [...ui.container.querySelectorAll('button:not([data-purchases-back])')].map(
       (each) => each.textContent?.trim() ?? '',
     );
     expect(names).not.toContain('Back');
@@ -383,7 +402,7 @@ describe('one way back (N1)', () => {
       expect(backs).toHaveLength(1);
       expect(backs[0]?.getAttribute('aria-label')).toBe('Back to checkout');
       expect(backs[0]?.getAttribute('title')).toBe('Back to checkout');
-      expect(backs[0]?.querySelector('[aria-hidden="true"]')?.textContent).toBe('←');
+      expect(backs[0]?.querySelector('[aria-hidden="true"] svg')).not.toBeNull();
       noOtherBack(ui);
     }
   });
@@ -399,7 +418,10 @@ describe('one way back (N1)', () => {
       visibleText(backs[0] ?? null)
         .replace('←', '')
         .trim(),
-    ).toBe('Your purchases');
+    ).toBe('Back');
+    expect(ui.container.querySelector('.purchases-title-row h2')?.textContent).toBe(
+      'Your purchases',
+    );
     expect(ui.allByLabel('Back to checkout')).toHaveLength(0);
     noOtherBack(ui);
   });
@@ -407,7 +429,7 @@ describe('one way back (N1)', () => {
   it('closed again: the footer link is back', async () => {
     const ui = mount(counted(cannedPurchases(3, NOW)));
     await ui.open();
-    ui.click('←');
+    act(() => ui.byLabel('Back to checkout').click());
     expect(ui.card()?.querySelector('[data-purchases-button]')).not.toBeNull();
     expect(ui.region()).toBeNull();
   });
@@ -504,15 +526,15 @@ describe('the detail: one flat card (N3)', () => {
 });
 
 describe('Download CSV (N4)', () => {
-  it('is on the list while loading, with none and with many, never in a detail', async () => {
+  it('is on a loading or nonempty list, never on an empty list or a detail', async () => {
     const loading = mount(counted(new Promise<Purchase[]>(() => undefined)));
     loading.click('Your purchases');
     expect(loading.has('Download CSV')).toBe(true);
     for (const count of [0, 40]) {
       const ui = mount(counted(cannedPurchases(count, NOW)));
       await ui.open();
-      expect(ui.has('Download CSV')).toBe(true);
-      expect(ui.region()?.querySelector('.purchases-actions')).not.toBeNull();
+      expect(ui.has('Download CSV')).toBe(count > 0);
+      expect(ui.region()?.querySelector('.purchases-actions') !== null).toBe(count > 0);
     }
     const detail = mount(counted(cannedPurchases(3, NOW)));
     await detail.open();
@@ -606,7 +628,7 @@ describe('Copy receipt (N6)', () => {
       const ui = mount(counted([purchase]));
       await ui.open();
       await ui.openRow();
-      await act(async () => ui.button('Copy receipt').click());
+      await act(async () => ui.button('Copy').click());
       const copied = String(writeText.mock.calls.at(-1)?.[0] ?? '');
       expect(copied).toBe(receiptText(purchase.receipt, kindOf(status)));
       expect(copied).toContain(`Store: ${purchase.receipt.store}`);
@@ -629,7 +651,7 @@ describe('Copy receipt (N6)', () => {
     const ui = mount(counted([base], async () => sent));
     await ui.open();
     await ui.openRow();
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     expect(writeText).toHaveBeenCalledWith(receiptText(sent.receipt, 'delivered'));
     expect(String(writeText.mock.calls.at(-1)?.[0])).toContain(
       `Transaction sent: ${'5'.repeat(88)}`,
@@ -646,7 +668,7 @@ describe('Copy receipt (N6)', () => {
     await ui.open();
     await ui.openRow();
     expect(ui.detail()?.querySelector('.purchase-receipt-full')).toBeNull();
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     await flush();
     const full = ui.detail()?.querySelector('.purchase-receipt-full');
     expect(full?.textContent).toBe(receiptText(purchase.receipt, 'refunded'));
@@ -839,7 +861,7 @@ describe('the detail', () => {
     expect(ui.detail()?.querySelector('dl')?.lastElementChild?.textContent).toContain(
       tx.slice(0, 6),
     );
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     const copied = String(writeText.mock.calls.at(-1)?.[0] ?? '');
     expect(copied).not.toContain('Delivery');
     expect(copied).toContain(tx);
@@ -862,7 +884,7 @@ describe('the detail', () => {
       );
       expect(ui.detail()?.textContent).not.toContain('Delivered on');
       expect(ui.detail()?.textContent).not.toContain('Completed on');
-      await act(async () => ui.button('Copy receipt').click());
+      await act(async () => ui.button('Copy').click());
       const copied = String(writeText.mock.calls.at(-1)?.[0] ?? '');
       expect(copied).toContain(`Status: ${OPEN_STATUS_LINES[status]}`);
       expect(copied).not.toContain('Delivered on');
@@ -948,7 +970,7 @@ describe('around the purchase on screen', () => {
     await ui.open();
     await ui.openRow();
     await act(async () => ui.byLabel('Copy order number').click());
-    await act(async () => ui.button('Copy receipt').click());
+    await act(async () => ui.button('Copy').click());
     act(() => ui.byLabel('Back to your purchases').click());
     await act(async () => ui.button('Download CSV').click());
     await flush();

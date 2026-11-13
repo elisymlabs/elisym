@@ -15,13 +15,13 @@ import { Header } from './ui/Header';
 import { OfferPanel } from './ui/OfferPanel';
 import { OldPromptStep } from './ui/OldPromptStep';
 import { INITIAL_PANEL, advancePanel, openWallets, shownProblem } from './ui/panel';
-import { PayingLine } from './ui/PayingLine';
+import { PaymentSummary } from './ui/PaymentSummary';
 import { ProductBlock } from './ui/ProductBlock';
 import { ProgressStep } from './ui/ProgressStep';
 import { type PurchasesSource, PurchasesStep } from './ui/PurchasesStep';
 import { ReceiptBlock } from './ui/ReceiptBlock';
 import { SoldOutStep } from './ui/SoldOutStep';
-import { REFUSALS, payoutLabel, slowLoading } from './ui/text';
+import { REFUSALS, payoutLabel, slowLoading, statusSubtitle } from './ui/text';
 
 export interface Actions {
   choosePayout(index: number): void;
@@ -398,6 +398,7 @@ export function Checkout({
   if (historyShown) {
     body = (
       <PurchasesStep
+        externalHeader
         source={purchases}
         {...(store.current?.name === undefined ? {} : { storeName: store.current.name })}
         onBack={closePurchases}
@@ -408,10 +409,13 @@ export function Checkout({
     if (screen.kind === 'refused' && screen.reason === 'sold_out') {
       body = <SoldOutStep />;
     } else if (screen.kind === 'refused') {
+      const message = screen.message?.trim();
+      const refusalCopy = screen.reason === 'offer_refused'
+        ? message
+        : REFUSALS[screen.reason] + (message && message !== REFUSALS[screen.reason] ? ` ${message}` : '');
       body = (
-        <EndedStep glyph={STOP_GLYPH} title="Not available" alert>
-          <p>{REFUSALS[screen.reason]}</p>
-          {screen.message === undefined ? null : <p class="note">{screen.message}</p>}
+        <EndedStep glyph={STOP_GLYPH} title={screen.reason === 'offer_refused' ? 'This product cannot be bought here' : 'Not available'} alert>
+          {refusalCopy ? <p>{statusSubtitle(refusalCopy)}</p> : null}
         </EndedStep>
       );
     } else {
@@ -459,9 +463,8 @@ export function Checkout({
       case 'waiting_store':
         body = (
           <>
-            <ProductBlock product={shown.about.product} />
-            <PayingLine paying={shown.paying} />
-            {shown.about.email === undefined ? null : (
+            <PaymentSummary product={shown.about.product} paying={shown.paying} />
+            {shown.about.email === undefined || (shown.kind === 'waiting_payment' && shown.canRetry) ? null : (
               <p class="sent-email">
                 <span class="label">Email</span> {shown.about.email}
               </p>
@@ -485,13 +488,15 @@ export function Checkout({
       case 'old_prompt':
         body = (
           <>
-            <ProductBlock product={shown.about.product} />
-            {shown.paying === undefined ? null : (
-              <p class="pay-label">
-                <ChainGlyph chain={shown.paying.chain} />
-                <span>{payoutLabel(shown.paying)}</span>
-              </p>
-            )}
+            <ProductBlock
+              product={shown.about.product}
+              network={shown.paying === undefined ? undefined : (
+                <span class="product-network-pill">
+                  <ChainGlyph chain={shown.paying.chain} />
+                  <span>{payoutLabel(shown.paying)}</span>
+                </span>
+              )}
+            />
             <OldPromptStep
               view={shown}
               onContinue={() => run(() => actions.confirmOldPrompt())}
@@ -515,7 +520,7 @@ export function Checkout({
               )
             }
           >
-            <p>The store cancelled this order and refunded the payment.</p>
+            <p>The store cancelled this order and refunded the payment</p>
           </EndedStep>
         );
         break;
@@ -526,7 +531,7 @@ export function Checkout({
             title="Cancelled"
             action={{ label: 'Start a new order', run: startOver }}
           >
-            <p>The store cancelled this order. Nothing was paid.</p>
+            <p class="cancelled-subtitle">The store cancelled this order. Nothing was paid.</p>
           </EndedStep>
         );
         break;
@@ -546,9 +551,8 @@ export function Checkout({
           break;
         }
         body = (
-          <EndedStep glyph={STOP_GLYPH} title="Not available" alert>
-            <p>{REFUSALS.offer_refused}</p>
-            <p class="note">{shown.message}</p>
+          <EndedStep glyph={STOP_GLYPH} title="This product cannot be bought here" alert>
+            {shown.message?.trim() ? <p>{statusSubtitle(shown.message)}</p> : null}
           </EndedStep>
         );
         break;
@@ -558,18 +562,27 @@ export function Checkout({
   return (
     <>
       <BannerNote banner={banner} />
-      <section class="card" aria-labelledby="checkout-title" ref={card}>
-        <Header
-          product={product.current}
-          store={store.current}
-          testNetwork={network.current !== undefined && network.current !== 'mainnet'}
-        />
+      <section
+        class="card"
+        data-view={historyShown ? 'purchases' : shown?.kind}
+        aria-labelledby="checkout-title"
+        ref={card}
+      >
+        {!historyShown ? (
+          <Header
+            product={product.current}
+            store={store.current}
+            testNetwork={network.current !== undefined && network.current !== 'mainnet'}
+          />
+        ) : null}
         {body}
-        <Footer
-          {...(view === undefined || purchases === undefined || historyShown
-            ? {}
-            : { onPurchases: openPurchases })}
-        />
+        {!historyShown ? (
+          <Footer
+            {...(view === undefined || purchases === undefined
+              ? {}
+              : { onPurchases: openPurchases })}
+          />
+        ) : null}
       </section>
     </>
   );

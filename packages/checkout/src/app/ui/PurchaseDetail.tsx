@@ -12,6 +12,7 @@ import {
   receiptField,
   receiptMoment,
   receiptText,
+  statusSubtitle,
 } from './text';
 import { TxLink } from './TxLink';
 
@@ -73,25 +74,27 @@ export function PurchaseDetail({ purchase, fresh }: Props) {
           <p class="purchase-total">{amountText(receipt.paying)}</p>
         )}
         <StatusBadge status={shown.status} />
+        {note !== undefined || (kind === 'open' && !shown.thisProduct) ? (
+          <p class="purchase-guidance">{statusSubtitle([
+            note,
+            kind === 'open' && !shown.thisProduct ? PURCHASES_TEXT.otherProduct : undefined,
+          ].filter(Boolean).join(' '))}</p>
+        ) : null}
       </div>
-      <p class="purchase-meta">
-        <time dateTime={when.toISOString()} title={moment.label}>
-          {when.toLocaleString()}
-        </time>
-        {receipt.paying === undefined
-          ? null
-          : ` · ${networkLabel(receipt.paying.chain, receipt.paying.network)}`}
-      </p>
       {receipt.paying === undefined || shown.feeAmount === undefined ? null : (
         <p class="note" data-fee-line="">
           {feeLine(receipt.paying.asset, BigInt(shown.feeAmount))}
         </p>
       )}
-      {note === undefined ? null : <p class="note">{note}</p>}
-      {kind === 'open' && !shown.thisProduct ? (
-        <p class="note">{PURCHASES_TEXT.otherProduct}</p>
-      ) : null}
+      <div class="purchase-receipt-heading"><h3>Receipt</h3><CopyReceiptButton text={receiptText(receipt, kind)} /></div>
       <dl class="purchase-facts">
+        <div>
+          <dt>{moment.label}</dt>
+          <dd><time dateTime={when.toISOString()}>{when.toLocaleString()}</time></dd>
+        </div>
+        {receipt.paying === undefined ? null : (
+          <div><dt>Network</dt><dd>{networkLabel(receipt.paying.chain, receipt.paying.network)}</dd></div>
+        )}
         <div>
           <dt>{PURCHASES_TEXT.product}</dt>
           <dd>{receiptField(receipt.product)}</dd>
@@ -114,7 +117,6 @@ export function PurchaseDetail({ purchase, fresh }: Props) {
           </div>
         )}
       </dl>
-      <CopyReceiptButton text={receiptText(receipt, kind)} />
     </section>
   );
 }

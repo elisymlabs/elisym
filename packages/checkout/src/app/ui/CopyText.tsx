@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { copyLabels, useCopy } from './copy';
+import { CopyIcon } from './CopyIcon';
 
 export { COPIED_FOR_MS } from './copy';
 
@@ -49,11 +50,14 @@ export function CopyText({
       )}
       <button type="button" class="secondary copy-button" onClick={() => void copy()}>
         <span class="label-stack">
-          {copyLabels(label).map((entry) => (
-            <span key={entry.key} class="label-option" data-current={entry.key === current}>
-              {entry.text}
-            </span>
-          ))}
+          {copyLabels(label)
+            .filter((entry) => entry.key === current)
+            .map((entry) => (
+              <span key={entry.key} class="label-option" data-current={entry.key === current}>
+                <CopyIcon copied={entry.key === 'copied'} />
+                {entry.text}
+              </span>
+            ))}
         </span>
       </button>
       <span class="visually-hidden" role="status">
