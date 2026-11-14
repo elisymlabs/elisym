@@ -17,7 +17,7 @@
  * see it is to watch what was logged.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod';
 
 const errorCalls: { err?: string; stack?: string }[] = [];
 

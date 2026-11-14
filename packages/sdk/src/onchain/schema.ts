@@ -26,7 +26,7 @@
  */
 
 import Decimal from 'decimal.js-light';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   MAX_CALL_BASE64_CHARS,
   MAX_EXPLAIN_ENTRIES,
@@ -142,8 +142,14 @@ export const SkillOnchainSchema = z
   })
   .strip()
   .superRefine((value, ctx) => {
-    const authorizesSomething = new Decimal(value.max_authority).gt(0);
-    if (value.grants_authority && !authorizesSomething) {
+    // Object rules run even when a field failed a non-aborting check, so this one
+    // reads max_authority only when it is a number: a malformed one is already
+    // reported, and a throw would escape safeParse.
+    const authority = DISPLAY_AMOUNT_REGEX.test(value.max_authority)
+      ? new Decimal(value.max_authority)
+      : undefined;
+    const authorizesSomething = authority !== undefined && authority.gt(0);
+    if (authority !== undefined && value.grants_authority && !authorizesSomething) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'onchain.max_authority must be positive when onchain.grants_authority is true',
@@ -211,8 +217,12 @@ export const OnchainDescriptorSchema = z
   })
   .strip()
   .superRefine((value, ctx) => {
-    const authorizesSomething = BigInt(value.max_authority_subunits) > 0n;
-    if (value.grants_authority !== authorizesSomething) {
+    // As above: a malformed max_authority_subunits is already reported, and BigInt
+    // would throw out of safeParse on it.
+    if (
+      SUBUNITS_STRING_REGEX.test(value.max_authority_subunits) &&
+      value.grants_authority !== BigInt(value.max_authority_subunits) > 0n
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:

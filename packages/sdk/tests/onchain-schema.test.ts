@@ -107,6 +107,18 @@ describe('parseOnchainDescriptor', () => {
     expect(parseOnchainDescriptor(raw)).toBeNull();
   });
 
+  it('returns null, never throws, when a field the cross-field rules read is malformed', () => {
+    // The object-level rules call BigInt on max_authority_subunits; a card from the
+    // network carrying a non-number there must be dropped, not crash discovery.
+    for (const value of ['lots', '-1', '1e3', '', '1.5', '0.5']) {
+      expect(() =>
+        parseOnchainDescriptor(validDescriptor({ max_authority_subunits: value })),
+      ).not.toThrow();
+      expect(parseOnchainDescriptor(validDescriptor({ max_authority_subunits: value }))).toBeNull();
+    }
+    expect(parseOnchainDescriptor(validDescriptor({ max_authority_subunits: 7 }))).toBeNull();
+  });
+
   it('rejects a non-native asset with no mint - the verifier could not bound it', () => {
     const descriptor = validDescriptor();
     delete descriptor.mint;
@@ -276,11 +288,34 @@ describe('validateSkillOnchain', () => {
     // constant prefix every message in this function carries, so it could not
     // tell one failure from another - or from a message about a different rule.
     expect(() => validateSkillOnchain('withdraw', { ...block, programs: [] })).toThrow(
-      /invalid "onchain" block: Array must contain at least 1 element/,
+      /invalid "onchain" block: Too small: expected array to have >=1 items/,
     );
     expect(() => validateSkillOnchain('withdraw', { ...block, max_per_call: 'lots' })).toThrow(
       /invalid "onchain" block/,
     );
+    // A field error does not hide the cross-field rules: the operator sees the
+    // 500-SOL trap (a mint next to token sol) in the same run as a bad kind.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, kind: 'BAD KIND', token: 'sol' }),
+    ).toThrow(/onchain\.mint must be absent when onchain\.token is sol/);
+    // ...and so does a malformed max_authority, the one field those rules read.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, max_authority: 'lots', token: 'sol' }),
+    ).toThrow(/onchain\.mint must be absent when onchain\.token is sol/);
+    // A malformed max_authority is reported as the field error alone, not also as
+    // a ceiling that is not positive.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, grants_authority: true, max_authority: 'lots' }),
+    ).not.toThrow(/must be positive/);
+    // A decimal ceiling without the flag is refused like a whole one.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, grants_authority: false, max_authority: '0.5' }),
+    ).toThrow(/onchain\.max_authority must be "0" unless onchain\.grants_authority is true/);
+    // The cross-field rules read max_authority as a Decimal: a malformed one is reported
+    // as an invalid block, never thrown as a Decimal error.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, grants_authority: true, max_authority: 'lots' }),
+    ).toThrow(/invalid "onchain" block/);
   });
 
   it('throws when the authority flag and ceiling disagree', () => {

@@ -3,7 +3,7 @@
  * Shared between CLI (provider mode) and MCP (customer mode, future provider mode).
  */
 
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   GIST_ID_REGEX,
   GITHUB_USERNAME_REGEX,

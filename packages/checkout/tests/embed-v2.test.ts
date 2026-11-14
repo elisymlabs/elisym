@@ -31,7 +31,7 @@ function fakeFrameWindow(): FakeFrameWindow {
 const windows = new Map<HTMLIFrameElement, FakeFrameWindow>();
 
 function standInWindows(): void {
-  const created = document.createElement.bind(document);
+  const created = Document.prototype.createElement.bind(document);
   vi.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
     const made = created(tag);
     if (tag === 'iframe') {

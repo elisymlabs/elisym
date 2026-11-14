@@ -6,7 +6,7 @@
  * (which the loader/writer in `./global` needs).
  */
 
-import { z } from 'zod';
+import * as z from 'zod';
 
 export const SessionSpendLimitEntrySchema = z
   .object({

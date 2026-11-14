@@ -16,7 +16,7 @@ import {
   ensureGitignoreHasMessagesEntry,
   writeFileAtomic,
 } from '@elisym/sdk/agent-store';
-import { z } from 'zod';
+import * as z from 'zod';
 import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 
 export const READ_CURSORS_FILENAME = '.messages-read.json';

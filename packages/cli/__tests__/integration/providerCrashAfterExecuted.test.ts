@@ -5,16 +5,18 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
-    SolanaPaymentStrategy: vi.fn().mockImplementation(() => ({
-      createPaymentRequest: vi.fn().mockReturnValue({
-        recipient: 'addr',
-        amount: 100_000,
-        reference: 'ref',
-        created_at: Math.floor(Date.now() / 1000),
-        expiry_secs: 600,
-      }),
-      verifyPayment: vi.fn().mockResolvedValue({ verified: true, txSignature: 'tx-sig' }),
-    })),
+    SolanaPaymentStrategy: vi.fn().mockImplementation(function () {
+      return {
+        createPaymentRequest: vi.fn().mockReturnValue({
+          recipient: 'addr',
+          amount: 100_000,
+          reference: 'ref',
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+        }),
+        verifyPayment: vi.fn().mockResolvedValue({ verified: true, txSignature: 'tx-sig' }),
+      };
+    }),
     getProtocolConfig: vi.fn().mockResolvedValue({
       feeBps: 300,
       treasury: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',

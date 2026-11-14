@@ -14,7 +14,7 @@ import {
   settlementOf,
 } from '@elisym/pay-core';
 import { TEMPO_UNPAYABLE_ADDRESSES } from '@elisym/pay-core/evm';
-import { z } from 'zod';
+import * as z from 'zod';
 import { OLD_HOME_PROBLEM } from './ledger';
 import type { Product } from './products';
 import { checkoutRelaySpelling } from './relays';

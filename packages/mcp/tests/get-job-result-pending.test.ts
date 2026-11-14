@@ -7,9 +7,13 @@
  * The subscribe stub fires a single callback shortly after subscribing, so no
  * payment flow is needed.
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { nip19 } from 'nostr-tools';
 import { describe, it, expect, vi } from 'vitest';
 import { AgentContext, type AgentInstance } from '../src/context.js';
+import { appendCustomerJob } from '../src/storage/customer-history.js';
 import { customerTools } from '../src/tools/customer.js';
 
 interface StubCallbacks {
@@ -96,6 +100,33 @@ describe('get_job_result pending behavior', () => {
     expect(result.isError).toBeFalsy();
     expect(result.content[0]?.text).toMatch(/not verified/i);
     expect(result.content[0]?.text).toContain('the answer');
+  });
+
+  it('binds the result to the provider recorded for a job submitted here', async () => {
+    // No provider_npub, but the local history knows who was hired: the SDK filters
+    // results by that author, so no unverified note and no third-party substitution.
+    const agentDir = mkdtempSync(join(tmpdir(), 'elisym-get-job-result-'));
+    try {
+      const provider = 'b'.repeat(64);
+      await appendCustomerJob(agentDir, {
+        jobEventId: JOB_ID,
+        capability: 'translate',
+        providerPubkey: provider,
+        status: 'pending',
+        submittedAt: 1_700_000_000_000,
+        completedAt: 1_700_000_000_000,
+      });
+      const agent = buildAgent((cb) => cb.onResult('the answer', 'evt'));
+      agent.agentDir = agentDir;
+      const result = await runGetJobResult(agent);
+
+      expect(result.isError).toBeFalsy();
+      expect(result.content[0]?.text).not.toMatch(/not verified/i);
+      const subscribe = vi.mocked(agent.client.marketplace.subscribeToJobUpdates);
+      expect(subscribe.mock.calls[0]?.[0]).toMatchObject({ providerPubkey: provider });
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 
   it('omits the unauthenticated note when provider_npub is supplied', async () => {
