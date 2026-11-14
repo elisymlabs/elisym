@@ -2,7 +2,7 @@ import { type StoreConfig, buildTicket, checkTicket, parseAddress } from '@elisy
 import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { ServerState } from '../state/types';
 import { WindowLimiter, ipKey } from './limits';
 import { type EarlierWidget, type WidgetBundle, pinnedIdOf } from './widget';

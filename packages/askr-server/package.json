@@ -24,8 +24,8 @@
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",
     "pg": "~8.23.1",
-    "ws": "~8.20.0",
-    "zod": "~3.25.0"
+    "ws": "~8.21.0",
+    "zod": "~4.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "~0.5.13",
@@ -36,7 +36,7 @@
     "@types/ws": "~8.18.1",
     "tsup": "~8.4.0",
     "typescript": "~5.7.0",
-    "vitest": "~3.2.6"
+    "vitest": "~4.1.12"
   },
   "engines": {
     "node": ">=20"

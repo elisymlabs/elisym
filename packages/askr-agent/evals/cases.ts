@@ -3,7 +3,7 @@
  * the lint the tests run over them.
  */
 import { CatalogItemInputSchema, PolicyInputSchema, StoreConfigInputSchema } from '@elisym/askr';
-import { z } from 'zod';
+import * as z from 'zod';
 
 export const CATEGORIES = [
   'search',

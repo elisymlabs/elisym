@@ -4,7 +4,7 @@
  * provider's pricing page and never hard-coded; API keys come only from the
  * environment and are never printed.
  */
-import { z } from 'zod';
+import * as z from 'zod';
 import { EFFORTS, type Effort, createAnthropicProvider } from '../src/llm/anthropic';
 import { createOpenAiCompatibleProvider } from '../src/llm/openai-compatible';
 import type { LlmProvider, ModelPrice } from '../src/llm/types';
@@ -39,7 +39,7 @@ const EntrySchema = z
     /** Measured for comparison only: never a tier default. */
     reference: z.boolean().default(false),
     note: z.string().optional(),
-    extraBody: z.record(z.unknown()).optional(),
+    extraBody: z.record(z.string(), z.unknown()).optional(),
     /** Anthropic only: output_config.effort (the 5.5 models think by default). */
     effort: z.enum(EFFORTS).optional(),
     /** max_tokens per model call, thinking included; runTurn's default (2048) when absent. */
@@ -74,7 +74,7 @@ const JudgeSchema = z
     /** Anthropic only; low by default. */
     effort: z.enum(EFFORTS).optional(),
     note: z.string().optional(),
-    extraBody: z.record(z.unknown()).optional(),
+    extraBody: z.record(z.string(), z.unknown()).optional(),
     price: PriceSchema,
   })
   .strict();

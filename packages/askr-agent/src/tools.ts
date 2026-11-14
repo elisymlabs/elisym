@@ -1,6 +1,6 @@
 import { type CatalogItem, type Component, LIMITS, catalogAddress } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   AVAILABILITY,
   type StoreCatalog,

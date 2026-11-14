@@ -1,5 +1,5 @@
 import { type CatalogAttr, LIMITS, type PolicyInput } from '@elisym/askr';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   FETCH_TIMEOUT_MS,
   MAX_PAGE_BYTES,

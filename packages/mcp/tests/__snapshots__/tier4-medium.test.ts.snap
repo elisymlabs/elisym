@@ -47,6 +47,494 @@ exports[`tool input schemas are what clients have always been sent > every tool 
     ],
     "type": "object",
   },
+  "askr_hide_products": {
+    "additionalProperties": false,
+    "properties": {
+      "dry_run": {
+        "default": false,
+        "description": "Report what would change, publish nothing.",
+        "type": "boolean",
+      },
+      "ids": {
+        "description": "The \`d\` ids of products to hide from the store.",
+        "items": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "maxItems": 200,
+        "minItems": 1,
+        "type": "array",
+      },
+    },
+    "required": [
+      "ids",
+    ],
+    "type": "object",
+  },
+  "askr_preview_diff": {
+    "additionalProperties": false,
+    "properties": {
+      "products": {
+        "description": "Products, at most 200 per call. Each: d (the product id, unique in the store), title, price {amount as a decimal string, currency}, and optionally summary, description, images (https), url (the product page, https, on one of the store origins or link origins, else not shown), topics, attrs, options, variants, visibility.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "attrs": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 32,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "value": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "name",
+                  "value",
+                ],
+                "type": "object",
+              },
+              "maxItems": 30,
+              "type": "array",
+            },
+            "d": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "type": "string",
+            },
+            "description": {
+              "default": "",
+              "maxLength": 65536,
+              "type": "string",
+            },
+            "images": {
+              "default": [],
+              "items": {
+                "format": "uri",
+                "maxLength": 1024,
+                "pattern": "^https:\\/\\/.*",
+                "type": "string",
+              },
+              "maxItems": 8,
+              "type": "array",
+            },
+            "options": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 32,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "values": {
+                    "items": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "maxItems": 10,
+                    "minItems": 1,
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "name",
+                  "values",
+                ],
+                "type": "object",
+              },
+              "maxItems": 5,
+              "type": "array",
+            },
+            "price": {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "pattern": "^(0|[1-9]\\d{0,11})(\\.\\d{1,18})?$",
+                  "type": "string",
+                },
+                "currency": {
+                  "pattern": "^[A-Z]{3}$",
+                  "type": "string",
+                },
+                "frequency": {
+                  "enum": [
+                    "hour",
+                    "day",
+                    "week",
+                    "month",
+                    "year",
+                  ],
+                  "type": "string",
+                },
+              },
+              "required": [
+                "amount",
+                "currency",
+              ],
+              "type": "object",
+            },
+            "priceFrom": {
+              "type": "boolean",
+            },
+            "sku": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "sourceId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "summary": {
+              "maxLength": 1024,
+              "type": "string",
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string",
+            },
+            "topics": {
+              "default": [],
+              "items": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 20,
+              "type": "array",
+            },
+            "url": {
+              "format": "uri",
+              "maxLength": 1024,
+              "pattern": "^https:\\/\\/.*",
+              "type": "string",
+            },
+            "variants": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "available": {
+                    "type": "boolean",
+                  },
+                  "id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "price": {
+                    "pattern": "^(0|[1-9]\\d{0,11})(\\.\\d{1,18})?$",
+                    "type": "string",
+                  },
+                  "values": {
+                    "items": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "id",
+                  "price",
+                  "available",
+                  "values",
+                ],
+                "type": "object",
+              },
+              "maxItems": 100,
+              "type": "array",
+            },
+            "visibility": {
+              "default": "on-sale",
+              "enum": [
+                "on-sale",
+                "pre-order",
+                "sold-out",
+                "hidden",
+              ],
+              "type": "string",
+            },
+          },
+          "required": [
+            "d",
+            "title",
+            "price",
+          ],
+          "type": "object",
+        },
+        "maxItems": 200,
+        "minItems": 1,
+        "type": "array",
+      },
+      "replace": {
+        "default": false,
+        "description": "true: \`products\` is the whole catalog, and every listed product missing from it would be hidden (a call takes at most 200 products, so a larger catalog cannot be previewed as a replace). false: only these products are compared.",
+        "type": "boolean",
+      },
+    },
+    "required": [
+      "products",
+    ],
+    "type": "object",
+  },
+  "askr_set_policy": {
+    "additionalProperties": false,
+    "properties": {
+      "body": {
+        "description": "Policy text in markdown.",
+        "minLength": 1,
+        "type": "string",
+      },
+      "slug": {
+        "description": "Policy id, such as "returns" or "shipping".",
+        "minLength": 1,
+        "type": "string",
+      },
+      "title": {
+        "description": "Policy title shown to visitors.",
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "slug",
+      "title",
+      "body",
+    ],
+    "type": "object",
+  },
+  "askr_upsert_products": {
+    "additionalProperties": false,
+    "properties": {
+      "dry_run": {
+        "default": false,
+        "description": "Report what would change, publish nothing.",
+        "type": "boolean",
+      },
+      "products": {
+        "description": "Products, at most 200 per call. Each: d (the product id, unique in the store), title, price {amount as a decimal string, currency}, and optionally summary, description, images (https), url (the product page, https, on one of the store origins or link origins, else not shown), topics, attrs, options, variants, visibility.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "attrs": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 32,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "value": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "name",
+                  "value",
+                ],
+                "type": "object",
+              },
+              "maxItems": 30,
+              "type": "array",
+            },
+            "d": {
+              "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+              "type": "string",
+            },
+            "description": {
+              "default": "",
+              "maxLength": 65536,
+              "type": "string",
+            },
+            "images": {
+              "default": [],
+              "items": {
+                "format": "uri",
+                "maxLength": 1024,
+                "pattern": "^https:\\/\\/.*",
+                "type": "string",
+              },
+              "maxItems": 8,
+              "type": "array",
+            },
+            "options": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 32,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "values": {
+                    "items": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "maxItems": 10,
+                    "minItems": 1,
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "name",
+                  "values",
+                ],
+                "type": "object",
+              },
+              "maxItems": 5,
+              "type": "array",
+            },
+            "price": {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "pattern": "^(0|[1-9]\\d{0,11})(\\.\\d{1,18})?$",
+                  "type": "string",
+                },
+                "currency": {
+                  "pattern": "^[A-Z]{3}$",
+                  "type": "string",
+                },
+                "frequency": {
+                  "enum": [
+                    "hour",
+                    "day",
+                    "week",
+                    "month",
+                    "year",
+                  ],
+                  "type": "string",
+                },
+              },
+              "required": [
+                "amount",
+                "currency",
+              ],
+              "type": "object",
+            },
+            "priceFrom": {
+              "type": "boolean",
+            },
+            "sku": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "sourceId": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string",
+            },
+            "summary": {
+              "maxLength": 1024,
+              "type": "string",
+            },
+            "title": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "type": "string",
+            },
+            "topics": {
+              "default": [],
+              "items": {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 20,
+              "type": "array",
+            },
+            "url": {
+              "format": "uri",
+              "maxLength": 1024,
+              "pattern": "^https:\\/\\/.*",
+              "type": "string",
+            },
+            "variants": {
+              "default": [],
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "available": {
+                    "type": "boolean",
+                  },
+                  "id": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "price": {
+                    "pattern": "^(0|[1-9]\\d{0,11})(\\.\\d{1,18})?$",
+                    "type": "string",
+                  },
+                  "values": {
+                    "items": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "id",
+                  "price",
+                  "available",
+                  "values",
+                ],
+                "type": "object",
+              },
+              "maxItems": 100,
+              "type": "array",
+            },
+            "visibility": {
+              "default": "on-sale",
+              "enum": [
+                "on-sale",
+                "pre-order",
+                "sold-out",
+                "hidden",
+              ],
+              "type": "string",
+            },
+          },
+          "required": [
+            "d",
+            "title",
+            "price",
+          ],
+          "type": "object",
+        },
+        "maxItems": 200,
+        "minItems": 1,
+        "type": "array",
+      },
+    },
+    "required": [
+      "products",
+    ],
+    "type": "object",
+  },
   "buy_capability": {
     "additionalProperties": false,
     "properties": {

@@ -1,7 +1,7 @@
 import { type ProductPrice, nowSecs, parseProduct, tagsNamed, tagValues } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   ANY_OPTION_VALUE,
   LIMITS,
@@ -264,101 +264,106 @@ const variantSchema = z.object({
   values: z.array(z.string().min(1).max(LIMITS.ATTR_VALUE_CHARS)),
 });
 
-export const CatalogItemInputSchema = z
-  .object({
-    d: z.string().regex(D_TAG_RE),
-    title: z.string().min(1).max(LIMITS.TAG_VALUE_CHARS),
-    summary: z.string().max(LIMITS.TAG_VALUE_CHARS).optional(),
-    description: z.string().max(LIMITS.DESCRIPTION_CHARS).default(''),
-    price: z.object({
-      amount: z.string().regex(PRICE_AMOUNT_RE),
-      currency: z.string().regex(CURRENCY_RE),
-      frequency: z.enum(FREQUENCIES).optional(),
-    }),
-    images: z
-      .array(z.string().url().startsWith('https://').max(LIMITS.TAG_VALUE_CHARS))
-      .max(LIMITS.MAX_IMAGES)
-      .default([]),
-    topics: z.array(z.string().min(1).max(LIMITS.TOPIC_CHARS)).max(LIMITS.MAX_TOPICS).default([]),
-    url: z.string().url().startsWith('https://').max(LIMITS.TAG_VALUE_CHARS).optional(),
-    sku: z.string().min(1).max(LIMITS.ATTR_VALUE_CHARS).optional(),
-    sourceId: z.string().min(1).max(LIMITS.ATTR_VALUE_CHARS).optional(),
-    attrs: z.array(attrSchema).max(LIMITS.MAX_ATTRS).default([]),
-    options: z.array(optionSchema).max(LIMITS.MAX_OPTIONS).default([]),
-    variants: z.array(variantSchema).max(LIMITS.MAX_VARIANTS).default([]),
-    visibility: z.enum(VISIBILITIES).default('on-sale'),
-    /**
-     * Prices differ over all the product's variants, not only the ones listed
-     * (a connector that had to cut the variant of the other price, 7.4). Only
-     * `true` adds anything: `price-from` is set anyway when the listed variants
-     * differ, and `false` never takes it away.
-     */
-    priceFrom: z.boolean().optional(),
-    createdAt: z.number().int().positive().optional(),
-  })
-  .superRefine((input, context) => {
-    const optionNames = input.options.map((option) => option.name);
-    if (new Set(optionNames).size !== optionNames.length) {
+/**
+ * The product input's fields, without the rules across them. For deriving
+ * another schema (zod refuses `.omit` on a refined object); a product is
+ * always checked with `CatalogItemInputSchema`.
+ */
+export const CatalogItemFieldsSchema = z.object({
+  d: z.string().regex(D_TAG_RE),
+  title: z.string().min(1).max(LIMITS.TAG_VALUE_CHARS),
+  summary: z.string().max(LIMITS.TAG_VALUE_CHARS).optional(),
+  description: z.string().max(LIMITS.DESCRIPTION_CHARS).default(''),
+  price: z.object({
+    amount: z.string().regex(PRICE_AMOUNT_RE),
+    currency: z.string().regex(CURRENCY_RE),
+    frequency: z.enum(FREQUENCIES).optional(),
+  }),
+  images: z
+    .array(z.string().startsWith('https://').url().max(LIMITS.TAG_VALUE_CHARS))
+    .max(LIMITS.MAX_IMAGES)
+    .default([]),
+  topics: z.array(z.string().min(1).max(LIMITS.TOPIC_CHARS)).max(LIMITS.MAX_TOPICS).default([]),
+  url: z.string().startsWith('https://').url().max(LIMITS.TAG_VALUE_CHARS).optional(),
+  sku: z.string().min(1).max(LIMITS.ATTR_VALUE_CHARS).optional(),
+  sourceId: z.string().min(1).max(LIMITS.ATTR_VALUE_CHARS).optional(),
+  attrs: z.array(attrSchema).max(LIMITS.MAX_ATTRS).default([]),
+  options: z.array(optionSchema).max(LIMITS.MAX_OPTIONS).default([]),
+  variants: z.array(variantSchema).max(LIMITS.MAX_VARIANTS).default([]),
+  visibility: z.enum(VISIBILITIES).default('on-sale'),
+  /**
+   * Prices differ over all the product's variants, not only the ones listed
+   * (a connector that had to cut the variant of the other price, 7.4). Only
+   * `true` adds anything: `price-from` is set anyway when the listed variants
+   * differ, and `false` never takes it away.
+   */
+  priceFrom: z.boolean().optional(),
+  createdAt: z.number().int().positive().optional(),
+});
+
+export const CatalogItemInputSchema = CatalogItemFieldsSchema.superRefine((input, context) => {
+  const optionNames = input.options.map((option) => option.name);
+  if (new Set(optionNames).size !== optionNames.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['options'],
+      message: 'option names must be unique',
+    });
+  }
+  const variantIds = input.variants.map((variant) => variant.id);
+  if (new Set(variantIds).size !== variantIds.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['variants'],
+      message: 'variant ids must be unique',
+    });
+  }
+  // 2.1: with variants, the listing price is the lowest available variant's,
+  // or the lowest overall when none is available (then not on-sale: sold-out,
+  // pre-order or hidden).
+  if (input.variants.length > 0) {
+    const available = input.variants.filter((variant) => variant.available);
+    const pool = available.length > 0 ? available : input.variants;
+    const lowest = pool
+      .map((variant) => new Decimal(variant.price))
+      .reduce((min, price) => (price.lessThan(min) ? price : min));
+    if (!new Decimal(input.price.amount).equals(lowest)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['options'],
-        message: 'option names must be unique',
+        path: ['price', 'amount'],
+        message: 'the price must be the lowest available variant price',
       });
     }
-    const variantIds = input.variants.map((variant) => variant.id);
-    if (new Set(variantIds).size !== variantIds.length) {
+    // Only on-sale is wrong with nothing available: hidden and pre-order stay allowed.
+    if (available.length === 0 && input.visibility === 'on-sale') {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['variants'],
-        message: 'variant ids must be unique',
+        path: ['visibility'],
+        message: 'a listing with no available variant is sold-out',
       });
     }
-    // 2.1: with variants, the listing price is the lowest available variant's,
-    // or the lowest overall when none is available (then not on-sale: sold-out,
-    // pre-order or hidden).
-    if (input.variants.length > 0) {
-      const available = input.variants.filter((variant) => variant.available);
-      const pool = available.length > 0 ? available : input.variants;
-      const lowest = pool
-        .map((variant) => new Decimal(variant.price))
-        .reduce((min, price) => (price.lessThan(min) ? price : min));
-      if (!new Decimal(input.price.amount).equals(lowest)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['price', 'amount'],
-          message: 'the price must be the lowest available variant price',
-        });
-      }
-      // Only on-sale is wrong with nothing available: hidden and pre-order stay allowed.
-      if (available.length === 0 && input.visibility === 'on-sale') {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['visibility'],
-          message: 'a listing with no available variant is sold-out',
-        });
-      }
-    }
-    input.variants.forEach((variant, variantIndex) => {
-      if (variant.values.length !== input.options.length) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['variants', variantIndex, 'values'],
-          message: 'a variant needs exactly one value per option',
-        });
-        return;
-      }
-      variant.values.forEach((value, optionIndex) => {
-        const option = input.options[optionIndex];
-        if (value !== ANY_OPTION_VALUE && !option?.values.includes(value)) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['variants', variantIndex, 'values', optionIndex],
-            message: 'a variant value must be one of its option values, or *',
-          });
-        }
+  }
+  input.variants.forEach((variant, variantIndex) => {
+    if (variant.values.length !== input.options.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['variants', variantIndex, 'values'],
+        message: 'a variant needs exactly one value per option',
       });
+      return;
+    }
+    variant.values.forEach((value, optionIndex) => {
+      const option = input.options[optionIndex];
+      if (value !== ANY_OPTION_VALUE && !option?.values.includes(value)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['variants', variantIndex, 'values', optionIndex],
+          message: 'a variant value must be one of its option values, or *',
+        });
+      }
     });
   });
+});
 
 export type CatalogItemInput = z.input<typeof CatalogItemInputSchema>;
 

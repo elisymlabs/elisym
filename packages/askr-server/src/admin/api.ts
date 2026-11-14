@@ -15,7 +15,7 @@ import {
 import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
-import { z } from 'zod';
+import * as z from 'zod';
 import { publicBaseOf } from '../config';
 import type { ConnectorService } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';

@@ -1,7 +1,7 @@
 import { HEX_PUBKEY_RE, nowSecs, tagValue, tagValues, tagsNamed } from '@elisym/commerce';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import * as nip44 from 'nostr-tools/nip44';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   CONFIG_D_TAG,
   CONNECTOR_PLATFORMS,
@@ -106,7 +106,7 @@ export const StoreConfigInputSchema = z.object({
   linkOrigins: z.array(httpsOrigin).max(LIMITS.MAX_ORIGINS).default([]),
   name: z.string().min(1).max(LIMITS.TITLE_CHARS),
   displayName: z.string().min(1).max(LIMITS.TITLE_CHARS).optional(),
-  avatar: z.string().url().startsWith('https://').max(LIMITS.TAG_VALUE_CHARS).optional(),
+  avatar: z.string().startsWith('https://').url().max(LIMITS.TAG_VALUE_CHARS).optional(),
   greeting: z.string().min(1).max(LIMITS.GREETING_CHARS).optional(),
   language: z.string().regex(LANGUAGE_RE).max(LIMITS.LOCALE_CHARS),
   currency: z.string().regex(CURRENCY_RE),
@@ -120,14 +120,15 @@ export const StoreConfigInputSchema = z.object({
   }),
   catalogKey: hexKey,
   policyKey: hexKey.optional(),
-  contact: z.string().url().startsWith('https://').max(LIMITS.TAG_VALUE_CHARS).optional(),
+  contact: z.string().startsWith('https://').url().max(LIMITS.TAG_VALUE_CHARS).optional(),
   private: z
     .object({
       voice: z.string().max(LIMITS.CONFIG_VOICE_CHARS).default(''),
       instructions: z.string().max(LIMITS.CONFIG_INSTRUCTIONS_CHARS).default(''),
       notes: z.string().max(LIMITS.CONFIG_NOTES_CHARS).default(''),
     })
-    .default({}),
+    // Parsed like a given value, so a missing block gets the field defaults.
+    .prefault({}),
   createdAt: z.number().int().positive().optional(),
 });
 

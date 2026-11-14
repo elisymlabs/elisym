@@ -10,7 +10,7 @@
  * counting toward max_tokens: the client sends no temperature to it, sets a low
  * effort and leaves max_tokens room for the thinking.
  */
-import { z } from 'zod';
+import * as z from 'zod';
 import { type StoreCatalog, availabilityOf } from '../src/catalog/store-catalog';
 import { fence } from '../src/fence';
 import {

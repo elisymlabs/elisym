@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 import { LIMITS } from '../constants';
 
 /** 16 random bytes, hex: one per visitor question, kept on every resend. */
