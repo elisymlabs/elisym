@@ -59,17 +59,16 @@ export interface StorePrivateConfig {
   notes: string;
 }
 
-const httpsOrigin = z
-  .string()
-  .url()
-  .refine((value) => {
-    try {
-      const url = new URL(value);
-      return url.protocol === 'https:' && url.origin === value;
-    } catch {
-      return false;
-    }
-  }, 'an https origin without a path');
+// No .url(): zod 4 checks a trimmed copy with tabs and newlines removed, and the
+// origin must equal the value as written, so the refine parses it itself.
+const httpsOrigin = z.string().refine((value) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.origin === value;
+  } catch {
+    return false;
+  }
+}, 'an https origin without a path');
 
 const hexKey = z.string().regex(HEX_PUBKEY_RE);
 

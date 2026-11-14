@@ -324,15 +324,23 @@ export const CatalogItemInputSchema = CatalogItemFieldsSchema.superRefine((input
   if (input.variants.length > 0) {
     const available = input.variants.filter((variant) => variant.available);
     const pool = available.length > 0 ? available : input.variants;
-    const lowest = pool
-      .map((variant) => new Decimal(variant.price))
-      .reduce((min, price) => (price.lessThan(min) ? price : min));
-    if (!new Decimal(input.price.amount).equals(lowest)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['price', 'amount'],
-        message: 'the price must be the lowest available variant price',
-      });
+    // Compared only when every price is a number: a malformed one is already
+    // reported, and Decimal would throw out of safeParse (zod runs these rules
+    // after a field fails its pattern).
+    const pricesAreNumbers =
+      PRICE_AMOUNT_RE.test(input.price.amount) &&
+      pool.every((variant) => PRICE_AMOUNT_RE.test(variant.price));
+    if (pricesAreNumbers) {
+      const lowest = pool
+        .map((variant) => new Decimal(variant.price))
+        .reduce((min, price) => (price.lessThan(min) ? price : min));
+      if (!new Decimal(input.price.amount).equals(lowest)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['price', 'amount'],
+          message: 'the price must be the lowest available variant price',
+        });
+      }
     }
     // Only on-sale is wrong with nothing available: hidden and pre-order stay allowed.
     if (available.length === 0 && input.visibility === 'on-sale') {
