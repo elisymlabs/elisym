@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { LIMITS } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import YAML from 'yaml';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { MerchantOrder } from './ledger';
 
 /** The file of a product, in its directory. */
@@ -71,7 +71,10 @@ const frontmatterSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
     priceUsd: z
-      .string({ invalid_type_error: `${QUOTE_IT}, such as "49" or "0.50"` })
+      .string({
+        error: (issue) =>
+          issue.input === undefined ? undefined : `${QUOTE_IT}, such as "49" or "0.50"`,
+      })
       .refine((value) => PRICE_RE.test(value) && new Decimal(value).gt(0), {
         message: 'must be a USD amount above 0, such as "49" or "0.50"',
       }),

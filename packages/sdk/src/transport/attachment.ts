@@ -12,7 +12,7 @@
  * `iroh`. A future HTTP/Blossom transport is added as another union member without
  * changing this contract.
  */
-import { z } from 'zod';
+import * as z from 'zod';
 import { LIMITS } from '../constants';
 
 /** Current envelope version. Bumped only on a breaking envelope-shape change. */
@@ -106,11 +106,11 @@ const JobPayloadEnvelopeSchema = z.object({
   // in the provider transport, which would give the customer no feedback at all.
   session: z
     .unknown()
-    .optional()
     .transform((value): SessionRef | undefined => {
       const parsed = SessionRefSchema.safeParse(value);
       return parsed.success ? parsed.data : undefined;
-    }),
+    })
+    .optional(),
 });
 
 export type FileTransport = z.infer<typeof FileTransportSchema>;

@@ -25,7 +25,7 @@ import {
   ensureGitignoreHasJobSessionsEntry,
   writeFileAtomic,
 } from '@elisym/sdk/agent-store';
-import { z } from 'zod';
+import * as z from 'zod';
 import { sanitizeField } from '../sanitize.js';
 import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 

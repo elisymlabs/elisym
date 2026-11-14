@@ -85,8 +85,14 @@ function deleted(event: NostrEvent, deletions: readonly NostrEvent[]): boolean {
  */
 export type ConfigRead =
   | { state: 'none' }
-  | { state: 'ok'; config: StoreConfig }
-  | { state: 'unreadable'; newestAt: number; fallback: StoreConfig | undefined };
+  | { state: 'ok'; config: StoreConfig; id: string }
+  | {
+      state: 'unreadable';
+      newestAt: number;
+      fallback: StoreConfig | undefined;
+      /** The event `fallback` was read from. */
+      fallbackId: string | undefined;
+    };
 
 export async function readConfig(
   reader: RelayReader,
@@ -104,19 +110,23 @@ export async function readConfig(
   }
   const config = parseConfig(newest);
   if (config !== undefined) {
-    return { state: 'ok', config };
+    return { state: 'ok', config, id: newest.id };
   }
   const older = events
     .filter((event) => event.id !== newest.id && event.created_at <= newest.created_at)
     .sort((left, right) => right.created_at - left.created_at || left.id.localeCompare(right.id));
-  let fallback: StoreConfig | undefined;
   for (const event of newestByDAll(older, owner, now)) {
-    fallback = parseConfig(event);
+    const fallback = parseConfig(event);
     if (fallback !== undefined) {
-      break;
+      return { state: 'unreadable', newestAt: newest.created_at, fallback, fallbackId: event.id };
     }
   }
-  return { state: 'unreadable', newestAt: newest.created_at, fallback };
+  return {
+    state: 'unreadable',
+    newestAt: newest.created_at,
+    fallback: undefined,
+    fallbackId: undefined,
+  };
 }
 
 /** Signed configs of `owner`, newest first, each passing the same checks as `newestByD`. */

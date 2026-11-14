@@ -21,6 +21,11 @@ export interface StoreUsage {
   month: { spent: string };
   /** Conversations still open. */
   sessions: number;
+  /**
+   * Conversations so far: visitor sessions (up to 24 hours from their first
+   * message) that got at least one answer, each counted once.
+   */
+  conversations: number;
   /** Advisory product link clicks, by listing address. */
   clicks: { address: string; count: number }[];
 }
@@ -46,6 +51,22 @@ export interface ConnectorRecord {
 export interface StoreEventStatus {
   pending: number;
   failing: { id: string; kind: number; failures: number; attempts: number; stopped: boolean }[];
+}
+
+/** `GET /v1/admin/store/events`: the O-signed events the relay does not have yet, newest first. */
+export interface StoredEventsRead {
+  /** As the server returns them: checked like relay data before use (`lib/stored-events.ts`). */
+  events: unknown[];
+  /** Older events were left out for the response's size bound. */
+  truncated: boolean;
+}
+
+/** The current bundle's pinned address and SRI value, as `GET /v1/widget` gives them. */
+export interface PinnedWidget {
+  /** `<the API base this admin reads>/widget/<id>.js` */
+  src: string;
+  /** `sha384-<base64>` */
+  integrity: string;
 }
 
 /** `GET /v1/admin/store` (the server's `view()`). */

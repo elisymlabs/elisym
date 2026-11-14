@@ -115,29 +115,31 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   const actual = (await importOriginal()) as any;
   return {
     ...actual,
-    SolanaPaymentStrategy: vi.fn().mockImplementation(() => ({
-      // Deliberately already past its own window. Recovery refuses to issue a
-      // terminal "nobody paid" verdict before `created_at + expiry_secs` - a
-      // customer is entitled to the whole window the provider advertised - and
-      // these tests are about what happens after it. The gate itself has its own
-      // tests in `runtime-payment-dedup.test.ts`.
-      createPaymentRequest: vi
-        .fn()
-        .mockImplementation(() => expiredPaymentRequest(PAYMENT_REFERENCE)),
-      verifyPayment: vi
-        .fn()
-        .mockImplementation(
-          (_rpc: unknown, _req: unknown, _cfg: unknown, options?: { txSignature?: string }) => {
-            const txSignature = options?.txSignature;
-            // A candidate the provider found by enumerating the reference itself is
-            // still "the reference path" - route it to `mockVerifyResult`.
-            if (txSignature === undefined || txSignature === REF_SCAN_CANDIDATE) {
-              return Promise.resolve(mockVerifyResult);
-            }
-            return Promise.resolve(mockSigVerifyResult);
-          },
-        ),
-    })),
+    SolanaPaymentStrategy: vi.fn().mockImplementation(function () {
+      return {
+        // Deliberately already past its own window. Recovery refuses to issue a
+        // terminal "nobody paid" verdict before `created_at + expiry_secs` - a
+        // customer is entitled to the whole window the provider advertised - and
+        // these tests are about what happens after it. The gate itself has its own
+        // tests in `runtime-payment-dedup.test.ts`.
+        createPaymentRequest: vi
+          .fn()
+          .mockImplementation(() => expiredPaymentRequest(PAYMENT_REFERENCE)),
+        verifyPayment: vi
+          .fn()
+          .mockImplementation(
+            (_rpc: unknown, _req: unknown, _cfg: unknown, options?: { txSignature?: string }) => {
+              const txSignature = options?.txSignature;
+              // A candidate the provider found by enumerating the reference itself is
+              // still "the reference path" - route it to `mockVerifyResult`.
+              if (txSignature === undefined || txSignature === REF_SCAN_CANDIDATE) {
+                return Promise.resolve(mockVerifyResult);
+              }
+              return Promise.resolve(mockSigVerifyResult);
+            },
+          ),
+      };
+    }),
     calculateProtocolFee: actual.calculateProtocolFee,
     getProtocolConfig: vi.fn().mockResolvedValue({
       feeBps: 300,

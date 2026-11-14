@@ -1,6 +1,6 @@
-import { buildConfigEvent } from '@elisym/askr';
+import { buildCatalogAuth, buildConfigEvent } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
-import { finalizeEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { CATALOG_PAGE_LIMIT } from '../src/constants';
 import { StoreEventPublisher } from '../src/publisher';
@@ -309,7 +309,7 @@ describe('server core review 2: stored events and the relay (7.3)', () => {
     expect((await directory.eventStatus(store.owner)).pending).toBe(1);
   });
 
-  it('a published config is pruned only by a newer published one', async () => {
+  it('a published config is pruned only by a newer published one; a waiting one by any newer one', async () => {
     const store = syntheticStore();
     const { directory, db } = await stateWith([storeRecord(store)]);
     const stored = async () =>
@@ -324,24 +324,156 @@ describe('server core review 2: stored events and the relay (7.3)', () => {
     const second = configAt(store, NOW - 200);
     expect(await directory.addEvents(store.owner, [second])).toEqual({ ok: true });
     // The newer one is not on the relay yet: the published one it will replace stays.
+    expect(await stored()).toEqual([first.id, second.id].sort());
+    // A waiting one a newer one replaces is pruned at once: the relay would keep only the newer.
     const third = configAt(store, NOW - 100);
     expect(await directory.addEvents(store.owner, [third])).toEqual({ ok: true });
-    expect(await stored()).toEqual([first.id, second.id, third.id].sort());
+    expect(await stored()).toEqual([first.id, third.id].sort());
     // Two published configs of the same second replace neither.
-    await directory.markPublished(second.id);
+    await directory.markPublished(third.id);
     await db.query(
       `update store_events set event = jsonb_set(event, '{created_at}', to_jsonb($2::bigint))
        where id = $1`,
-      [first.id, NOW - 200],
+      [first.id, NOW - 100],
     );
     const fourth = configAt(store, NOW - 50);
     expect(await directory.addEvents(store.owner, [fourth])).toEqual({ ok: true });
-    expect(await stored()).toEqual([first.id, second.id, third.id, fourth.id].sort());
+    expect(await stored()).toEqual([first.id, third.id, fourth.id].sort());
     // Once the newer one is published, the older are pruned on the next store.
-    await directory.markPublished(third.id);
-    expect(await directory.addEvents(store.owner, [configAt(store, NOW)])).toEqual({ ok: true });
-    expect(await stored()).not.toContain(first.id);
-    expect(await stored()).not.toContain(second.id);
+    await directory.markPublished(fourth.id);
+    const fifth = configAt(store, NOW);
+    expect(await directory.addEvents(store.owner, [fifth])).toEqual({ ok: true });
+    expect(await stored()).toEqual([fourth.id, fifth.id].sort());
+  });
+
+  it("prunes within a store only: another store's newer published config leaves this one's intact", async () => {
+    const shop = syntheticStore();
+    const other = syntheticStore();
+    const { directory, db } = await stateWith([storeRecord(shop), storeRecord(other)]);
+    const ids = async (owner: string) =>
+      (
+        await db.query<{ id: string }>('select id from store_events where owner = $1 order by id', [
+          owner,
+        ])
+      ).map((row) => row.id);
+    const published = configAt(shop, NOW - 300);
+    expect(await directory.addEvents(shop.owner, [published])).toEqual({ ok: true });
+    await directory.markPublished(published.id);
+    const waiting = configAt(shop, NOW - 200);
+    expect(await directory.addEvents(shop.owner, [waiting])).toEqual({ ok: true });
+    // The other store's configs share the d tag and are newer, published and waiting.
+    const otherPublished = configAt(other, NOW - 100);
+    expect(await directory.addEvents(other.owner, [otherPublished])).toEqual({ ok: true });
+    await directory.markPublished(otherPublished.id);
+    expect(await directory.addEvents(other.owner, [configAt(other, NOW)])).toEqual({ ok: true });
+    // This store's next store runs the prune over its own rows: the other store's never count.
+    const auth = finalizeEvent(
+      buildCatalogAuth({
+        key: getPublicKey(generateSecretKey()),
+        mode: 'self-host',
+        createdAt: NOW,
+      }),
+      shop.ownerSecret,
+    );
+    expect(await directory.addEvents(shop.owner, [auth])).toEqual({ ok: true });
+    expect(await ids(shop.owner)).toEqual([published.id, waiting.id, auth.id].sort());
+  });
+
+  it('a newer waiting deletion of the same addresses, in any order, replaces an older waiting one', async () => {
+    const store = syntheticStore();
+    const { directory, db } = await stateWith([storeRecord(store)]);
+    const first = `30497:${store.owner}:${getPublicKey(generateSecretKey())}`;
+    const second = `30497:${store.owner}:${getPublicKey(generateSecretKey())}`;
+    const deletionAt = (createdAt: number, targets: string[]) =>
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: createdAt,
+          tags: targets.map((target) => ['a', target]),
+          content: '',
+        },
+        store.ownerSecret,
+      );
+    const ids = async () =>
+      (
+        await db.query<{ id: string }>('select id from store_events where owner = $1 order by id', [
+          store.owner,
+        ])
+      ).map((row) => row.id);
+    const older = deletionAt(NOW - 100, [first, second]);
+    const ofFirstOnly = deletionAt(NOW - 90, [first]);
+    expect(await directory.addEvents(store.owner, [older, ofFirstOnly])).toEqual({ ok: true });
+    // Another target set replaces nothing.
+    expect(await ids()).toEqual([older.id, ofFirstOnly.id].sort());
+    // A newer one stopped by the relay replaces nothing either.
+    const stopped = deletionAt(NOW - 50, [second, first]);
+    await db.query(
+      `insert into store_events (id, owner, event, publish_failures) values ($1, $2, ($3::text)::jsonb, $4)`,
+      [stopped.id, store.owner, JSON.stringify(stopped), MAX_PUBLISH_ATTEMPTS],
+    );
+    expect(await directory.addEvents(store.owner, [deletionAt(NOW - 80, [second])])).toEqual({
+      ok: true,
+    });
+    expect(await ids()).toContain(older.id);
+    const newer = deletionAt(NOW, [second, first]);
+    expect(await directory.addEvents(store.owner, [newer])).toEqual({ ok: true });
+    const after = await ids();
+    expect(after).not.toContain(older.id);
+    expect(after).toContain(ofFirstOnly.id);
+    expect(after).toContain(newer.id);
+  });
+
+  it('prunes by kind as well as key: a config never replaces an authorization of the same d', async () => {
+    const store = syntheticStore();
+    const { directory, db } = await stateWith([storeRecord(store)]);
+    const key = getPublicKey(generateSecretKey());
+    const auth = finalizeEvent(
+      buildCatalogAuth({ key, mode: 'self-host', createdAt: NOW - 100 }),
+      store.ownerSecret,
+    );
+    expect(await directory.addEvents(store.owner, [auth])).toEqual({ ok: true });
+    // A config event whose d tag is that key (the admin API refuses it; the store keys by kind too).
+    const config = configAt(store, NOW);
+    const clash = finalizeEvent(
+      {
+        kind: config.kind,
+        created_at: NOW,
+        tags: config.tags.map((tag) => (tag[0] === 'd' ? ['d', key] : tag)),
+        content: config.content,
+      },
+      store.ownerSecret,
+    );
+    expect(await directory.addEvents(store.owner, [clash])).toEqual({ ok: true });
+    const ids = (
+      await db.query<{ id: string }>('select id from store_events where owner = $1', [store.owner])
+    ).map((row) => row.id);
+    expect(ids).toContain(auth.id);
+  });
+
+  it('a waiting config whose newer one the relay refused for good stays', async () => {
+    const store = syntheticStore();
+    const { directory, db } = await stateWith([storeRecord(store)]);
+    const older = configAt(store, NOW - 200);
+    expect(await directory.addEvents(store.owner, [older])).toEqual({ ok: true });
+    const newer = configAt(store, NOW - 100);
+    await db.query(
+      `insert into store_events (id, owner, event, publish_failures) values ($1, $2, ($3::text)::jsonb, $4)`,
+      [newer.id, store.owner, JSON.stringify(newer), MAX_PUBLISH_ATTEMPTS],
+    );
+    // Any store runs the prune: an authorization of another key.
+    const auth = finalizeEvent(
+      buildCatalogAuth({
+        key: getPublicKey(generateSecretKey()),
+        mode: 'self-host',
+        createdAt: NOW,
+      }),
+      store.ownerSecret,
+    );
+    expect(await directory.addEvents(store.owner, [auth])).toEqual({ ok: true });
+    const ids = (
+      await db.query<{ id: string }>('select id from store_events where owner = $1', [store.owner])
+    ).map((row) => row.id);
+    expect(ids).toContain(older.id);
   });
 });
 

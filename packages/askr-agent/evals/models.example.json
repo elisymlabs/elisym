@@ -1,0 +1,97 @@
+{
+  "judge": {
+    "label": "Claude Opus 5.5 (judge)",
+    "provider": "anthropic",
+    "model": "claude-opus-5-5",
+    "effort": "low",
+    "note": "Grades every rubric for every model (ANTHROPIC_API_KEY), no sampling parameters (Opus 5.5 rejects them), effort low, thinking always on. Fixed for the whole sweep and never one of the models under test.",
+    "price": {
+      "input": "",
+      "cachedInput": "",
+      "cacheWrite": "",
+      "output": ""
+    }
+  },
+  "models": [
+    {
+      "id": "claude-haiku-5-5",
+      "label": "Claude Haiku 5.5",
+      "provider": "anthropic",
+      "model": "claude-haiku-5-5",
+      "effort": "low",
+      "note": "Anthropic native API (ANTHROPIC_API_KEY), explicit cache breakpoints. effort low, as production sends (ASKR_EFFORT): keep the two equal.",
+      "price": {
+        "input": "",
+        "cachedInput": "",
+        "cacheWrite": "",
+        "output": ""
+      }
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "label": "Claude Sonnet 5.5",
+      "provider": "anthropic",
+      "model": "claude-sonnet-5-5",
+      "effort": "low",
+      "note": "Anthropic native API (ANTHROPIC_API_KEY), explicit cache breakpoints. effort low, as production sends (ASKR_EFFORT): keep the two equal.",
+      "price": {
+        "input": "",
+        "cachedInput": "",
+        "cacheWrite": "",
+        "output": ""
+      }
+    },
+    {
+      "id": "deepseek-openrouter",
+      "label": "DeepSeek via OpenRouter (US/EU host)",
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-chat",
+      "note": "OPENROUTER_API_KEY. Fill provider.only with US/EU-hosted providers from the model's OpenRouter providers page before the run (never the China-hosted DeepSeek endpoint); data_collection deny keeps prompts out of training. Price at the chosen host's rate.",
+      "extraBody": {
+        "provider": {
+          "data_collection": "deny",
+          "only": [],
+          "allow_fallbacks": false
+        }
+      },
+      "price": {
+        "input": "",
+        "cachedInput": "",
+        "cacheWrite": "",
+        "output": ""
+      }
+    },
+    {
+      "id": "deepseek-direct",
+      "label": "DeepSeek direct API",
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "reference": true,
+      "note": "REFERENCE ONLY (DEEPSEEK_API_KEY): China-hosted endpoint, never a default for visitor data. Synthetic store only.",
+      "price": {
+        "input": "",
+        "cachedInput": "",
+        "cacheWrite": "",
+        "output": ""
+      }
+    },
+    {
+      "id": "gemini-flash-openrouter",
+      "label": "Gemini Flash via OpenRouter",
+      "provider": "openrouter",
+      "model": "google/gemini-2.5-flash",
+      "note": "OPENROUTER_API_KEY. Check the current Gemini Flash model id on OpenRouter before the run.",
+      "extraBody": {
+        "provider": {
+          "data_collection": "deny"
+        }
+      },
+      "price": {
+        "input": "",
+        "cachedInput": "",
+        "cacheWrite": "",
+        "output": ""
+      }
+    }
+  ]
+}

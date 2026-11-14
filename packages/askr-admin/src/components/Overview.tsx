@@ -12,6 +12,8 @@ import { UsageMeter } from './UsageMeter';
 interface Props {
   view: StoreView;
   config: StoreConfig | undefined;
+  /** The settings shown are the ones O signed and the server holds until activation. */
+  configFromServer: boolean;
 }
 
 const STATUS_TEXT: Readonly<Record<StoreStatus, string>> = {
@@ -34,7 +36,7 @@ function dOfAddress(address: string): string {
   return parts.slice(2).join(':') || address;
 }
 
-export function Overview({ view, config }: Props) {
+export function Overview({ view, config, configFromServer }: Props) {
   const { tier, usage, events } = view;
   return (
     <div className="flex flex-col gap-16">
@@ -44,6 +46,12 @@ export function Overview({ view, config }: Props) {
         </Notice>
         {config === undefined ? (
           <p className="text-14 text-text-2">Your settings are not on the relay yet.</p>
+        ) : null}
+        {config !== undefined && configFromServer ? (
+          <p className="text-14 text-text-2">
+            Your settings are shown as you signed them. They are published once your store is{' '}
+            {view.status === 'suspended' ? 'reactivated' : 'activated'}.
+          </p>
         ) : null}
         {view.nextAssistant === null ? null : (
           <Notice tone="info">
@@ -82,11 +90,17 @@ export function Overview({ view, config }: Props) {
           </div>
         )}
         <dl className="text-14 grid grid-cols-[auto_1fr] gap-x-16 gap-y-4">
+          <dt className="text-text-2">Conversations so far</dt>
+          <dd id="usage-conversations">{usage.conversations}</dd>
           <dt className="text-text-2">Open conversations</dt>
           <dd>{usage.sessions}</dd>
           <dt className="text-text-2">Reserved today</dt>
           <dd>{usd(usage.today.reserved)}</dd>
         </dl>
+        <p className="text-13 text-text-2">
+          A conversation is one visitor's chat, up to 24 hours from their first message, that got at
+          least one answer. Open conversations are the chats started in the last 24 hours.
+        </p>
       </Section>
 
       <Section

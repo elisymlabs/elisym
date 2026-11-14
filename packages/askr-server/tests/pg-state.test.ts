@@ -1,8 +1,10 @@
+import { PGlite } from '@electric-sql/pglite';
 import { buildConfigEvent } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { ORPHAN_RESERVATION_SECS } from '../src/constants';
+import { MIGRATIONS, migrate } from '../src/db/migrations';
 import { PgState, monthStartDay, utcDay } from '../src/state/pg-state';
 import type { StoreDirectory } from '../src/state/stores';
 import type { SessionState } from '../src/state/types';
@@ -17,6 +19,7 @@ import {
   storeRecord,
   syntheticStore,
 } from './fixtures';
+import { pgliteDb } from './pglite-db';
 
 const VISITOR = 'b'.repeat(64);
 const ASK_ID = 'a'.repeat(32);
@@ -611,5 +614,135 @@ describe('server core review: rotation, suspension and counters (5.8)', () => {
     expect((await state.storedSession(store.assistant, VISITOR))?.visitorMessages).toEqual([
       'something warm?',
     ]);
+  });
+});
+
+describe('conversation count (7.3)', () => {
+  const conversations = async (directory: StoreDirectory, store: SyntheticStore) =>
+    (await directory.usage(store.owner, store.assistant, NOW)).conversations;
+
+  it('counts a session once, on its first answered turn, however many follow', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect(await conversations(directory, store)).toBe(0);
+    const first = await runningAttempt(state, session, ASK_ID, epoch, NOW * 1000 + 120_000);
+    expect(await state.answerAsk(session, ASK_ID, first, epoch, WRAP, '0.01', NOW)).toBe(true);
+    expect(await conversations(directory, store)).toBe(1);
+    // The same answer again is no transition and no count.
+    expect(await state.answerAsk(session, ASK_ID, first, epoch, WRAP, '0.01', NOW)).toBe(false);
+    const second = await runningAttempt(state, session, OTHER_ASK, epoch, NOW * 1000 + 120_000);
+    expect(await state.answerAsk(session, OTHER_ASK, second, epoch, WRAP, '0.01', NOW)).toBe(true);
+    expect(await conversations(directory, store)).toBe(1);
+  });
+
+  it('does not count a session whose turns all failed, nor one with no turn', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    await state.session(store.owner, store.assistant, 'd'.repeat(64), NOW);
+    const attemptId = await runningAttempt(state, session, ASK_ID, epoch, NOW * 1000 + 120_000);
+    expect(await state.failAsk(session, ASK_ID, attemptId, epoch, '0.01')).toBe(true);
+    expect(await conversations(directory, store)).toBe(0);
+  });
+
+  it('a turn retried after its lease moved counts once, by the attempt that answers', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const stale = await runningAttempt(state, session, ASK_ID, epoch, NOW * 1000 + 120_000);
+    const [taken] = await state.acquireLeases('other', NOW + 61, 60);
+    const newEpoch = taken?.epoch ?? 0;
+    expect(await state.answerAsk(session, ASK_ID, stale, epoch, WRAP, '0.01', NOW + 61)).toBe(
+      false,
+    );
+    expect(await conversations(directory, store)).toBe(0);
+    const retry = await state.retryAsk(session, ASK_ID, stale, '0.05', newEpoch, NOW + 61);
+    if (!retry.admitted) {
+      throw new Error('not admitted');
+    }
+    const deadline = (NOW + 61) * 1000 + 120_000;
+    const { attemptId } = retry.record;
+    expect(await state.startAsk(session, ASK_ID, attemptId, newEpoch, deadline)).toBe(true);
+    expect(
+      await state.answerAsk(session, ASK_ID, attemptId, newEpoch, WRAP, '0.01', NOW + 62),
+    ).toBe(true);
+    // The superseded attempt finishing late changes nothing.
+    expect(await state.answerAsk(session, ASK_ID, stale, epoch, WRAP, '0.01', NOW + 62)).toBe(
+      false,
+    );
+    expect(await conversations(directory, store)).toBe(1);
+  });
+
+  it("a visitor's next session is another conversation, and each store counts its own", async () => {
+    const store = syntheticStore();
+    const neighbour = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store), storeRecord(neighbour)]);
+    const answerOne = async (now: number) => {
+      const epoch = await leaseEpoch(state, store.assistant, now);
+      const session = await state.session(store.owner, store.assistant, VISITOR, now);
+      const admitted = await state.admitAsk(session, ASK_ID, '0.05', epoch, now);
+      if (!admitted.admitted) {
+        throw new Error('not admitted');
+      }
+      const { attemptId } = admitted.record;
+      expect(await state.startAsk(session, ASK_ID, attemptId, epoch, now * 1000 + 120_000)).toBe(
+        true,
+      );
+      expect(await state.answerAsk(session, ASK_ID, attemptId, epoch, WRAP, '0.01', now)).toBe(
+        true,
+      );
+    };
+    await answerOne(NOW);
+    // A day later the session has ended: the same visitor starts a new one.
+    await answerOne(NOW + SECS_PER_DAY);
+    expect(await conversations(directory, store)).toBe(2);
+    expect(await conversations(directory, neighbour)).toBe(0);
+  });
+
+  it('the migration counts the sessions already answered when it runs', async () => {
+    const client = await PGlite.create();
+    const db = pgliteDb(client);
+    const [initial] = MIGRATIONS;
+    if (initial === undefined) {
+      throw new Error('no migrations');
+    }
+    await db.script(
+      `create table migrations (id text primary key, applied_at timestamptz not null default now());
+       ${initial.sql}`,
+    );
+    await db.query('insert into migrations (id) values ($1)', [initial.id]);
+    const owner = 'a'.repeat(64);
+    const seed = async (id: string, visitor: string, states: string[]) => {
+      await db.query(
+        `insert into sessions (owner, assistant, visitor, id, session_end, data)
+         values ($1, 'e', $2, $3, 0, '{}'::jsonb)`,
+        [owner, visitor, id],
+      );
+      for (const [index, askState] of states.entries()) {
+        await db.query(
+          `insert into asks (session_id, ask_id, state, attempt_id, lease_epoch, deadline)
+           values ($1, $2, $3, $4, 1, 0)`,
+          [id, `ask-${index}`, askState, `${id}-${index}`],
+        );
+      }
+    };
+    await seed('answered-twice', 'v1', ['answered', 'answered']);
+    await seed('answered-once', 'v2', ['failed', 'answered']);
+    await seed('never-answered', 'v3', ['failed', 'queued']);
+    await migrate(db);
+    const [totals] = await db.query<{ conversations: number }>(
+      'select conversations from store_totals where owner = $1',
+      [owner],
+    );
+    expect(totals?.conversations).toBe(2);
+    const counted = await db.query<{ id: string }>(
+      'select id from sessions where counted order by id',
+    );
+    expect(counted.map((row) => row.id)).toEqual(['answered-once', 'answered-twice']);
+    await client.close();
   });
 });

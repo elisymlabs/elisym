@@ -1,6 +1,6 @@
 import type { CatalogAttr, Visibility } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   FETCH_TIMEOUT_MS,
   MAX_PAGE_BYTES,

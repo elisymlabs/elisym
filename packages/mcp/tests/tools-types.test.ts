@@ -1,5 +1,5 @@
 import { describe, it, expect, expectTypeOf } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   defineTool,
   textResult,

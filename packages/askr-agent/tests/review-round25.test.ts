@@ -1,7 +1,7 @@
 import type { Answer } from '@elisym/askr';
 import { describe, expect, it } from 'vitest';
 import { StoreCatalog } from '../src/catalog/store-catalog';
-import { checkPrices, extractAmounts } from '../src/price-check';
+import { checkPrices } from '../src/price-check';
 import { CONFIG, item } from './fixtures';
 
 const answer = (text: string): Answer => ({
@@ -12,23 +12,6 @@ const answer = (text: string): Answer => ({
   components: [],
   chips: [],
 });
-
-interface Options {
-  visitor?: string[];
-  policies?: string[];
-}
-
-function violationsIn(currency: string, language: string, text: string, options: Options = {}) {
-  const jacket = item({ d: 'jacket', title: 'Jacket', price: { amount: '1200', currency } });
-  const store = new StoreCatalog({ ...CONFIG, currency, language }, undefined, [jacket], []);
-  return checkPrices(answer(text), {
-    storeCurrency: currency,
-    items: store.items,
-    visitorMessages: options.visitor ?? [],
-    policyPassages: options.policies ?? [],
-    locales: [language, language],
-  }).length;
-}
 
 function store(currency: string, language: string, text: string) {
   const jacket = item({ d: 'jacket', title: 'Jacket', price: { amount: '1200', currency } });

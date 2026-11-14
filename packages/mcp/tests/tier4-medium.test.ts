@@ -2,15 +2,15 @@
  * Tier 4 MEDIUM regression tests.
  *
  * sliding window rate limiter
- * zodToJsonSchema options / $schema stripped
+ * tool input schemas: draft-07, $schema stripped
  * sanitize injection scan budget
  * include_offline (renamed from recently_active_only) schema shape
  */
 import { describe, it, expect } from 'vitest';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentContext } from '../src/context.js';
 import { sanitizeUntrusted } from '../src/sanitize.js';
-import { registeredTools } from '../src/server.js';
+import { listToolsResult, registeredTools } from '../src/server.js';
+import { toolInputSchema } from '../src/tool-schema.js';
 
 describe('sliding window RateLimiter', () => {
   it('admits burst at the rate limit', () => {
@@ -43,15 +43,55 @@ describe('sliding window RateLimiter', () => {
 describe('tool input schemas omit $schema and use jsonSchema7', () => {
   for (const tool of registeredTools) {
     it(`${tool.name} produces a $schema-free JSON Schema`, () => {
-      const raw = zodToJsonSchema(tool.schema, {
-        target: 'jsonSchema7',
-        $refStrategy: 'none',
-      }) as Record<string, unknown> & { $schema?: string };
-      delete raw.$schema;
+      const raw = toolInputSchema(tool.schema);
       expect(raw).not.toHaveProperty('$schema');
       expect(raw.type).toBe('object');
     });
   }
+});
+
+/** The draft-07 formats (and the 2019+ ones every validator knows). */
+const JSON_SCHEMA_FORMATS = [
+  'date-time',
+  'date',
+  'time',
+  'duration',
+  'email',
+  'idn-email',
+  'hostname',
+  'idn-hostname',
+  'ipv4',
+  'ipv6',
+  'uri',
+  'uri-reference',
+  'iri',
+  'iri-reference',
+  'uri-template',
+  'uuid',
+  'json-pointer',
+  'relative-json-pointer',
+  'regex',
+];
+
+describe('tool input schemas are what clients have always been sent', () => {
+  // Pinned whole: objects closed (additionalProperties: false), defaulted fields not
+  // required (the input side), everything inlined.
+  it('every tool input schema matches the snapshot', () => {
+    // What tools/list sends, not the helper alone.
+    const schemas = Object.fromEntries(
+      listToolsResult().tools.map((tool) => [tool.name, tool.inputSchema]),
+    );
+    expect(JSON.stringify(schemas)).not.toMatch(/"\$ref"|"definitions"|"\$defs"/);
+    // zod names its own string checks as formats (starts_with, ends_with...) when one
+    // comes last; a strict client refuses an unknown format, so only standard ones go out.
+    const formats = new Set(
+      [...JSON.stringify(schemas).matchAll(/"format":"([^"]+)"/g)].map((match) => match[1]),
+    );
+    for (const format of formats) {
+      expect(JSON_SCHEMA_FORMATS).toContain(format);
+    }
+    expect(schemas).toMatchSnapshot();
+  });
 });
 
 describe('sanitize injection scan is bounded', () => {
@@ -73,9 +113,7 @@ describe('search_agents uses include_offline', () => {
   it('search_agents schema field is renamed', () => {
     const searchAgents = registeredTools.find((t) => t.name === 'search_agents');
     expect(searchAgents).toBeDefined();
-    const schema = zodToJsonSchema(searchAgents!.schema) as {
-      properties: Record<string, unknown>;
-    };
+    const schema = toolInputSchema(searchAgents!.schema);
     expect(schema.properties).toHaveProperty('include_offline');
     expect(schema.properties).not.toHaveProperty('recently_active_only');
     expect(schema.properties).not.toHaveProperty('online_only');

@@ -11,9 +11,21 @@ import {
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 
+// cspell:disable-next-line
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type Effort = (typeof EFFORTS)[number];
+
 export interface AnthropicConfig {
   apiKey: string;
   model: string;
+  /**
+   * `output_config.effort`: how much the model thinks. Claude Haiku, Sonnet and
+   * Opus 5.5 think by default (Opus 5.5 cannot turn it off), and the thinking
+   * counts toward max_tokens, which stays the caller's: a lower effort is how a
+   * short answer fits. Unset leaves the model's default (medium on Opus and
+   * Haiku 5.5, high on Sonnet 5.5).
+   */
+  effort?: Effort;
   baseUrl?: string;
   fetch?: typeof fetch;
 }
@@ -24,6 +36,12 @@ function toAnthropicContent(block: ContentBlock): Record<string, unknown> {
   }
   if (block.type === 'tool_use') {
     return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+  }
+  if (block.type === 'thinking') {
+    return { type: 'thinking', thinking: block.thinking, signature: block.signature };
+  }
+  if (block.type === 'redacted_thinking') {
+    return { type: 'redacted_thinking', data: block.data };
   }
   return {
     type: 'tool_result',
@@ -70,7 +88,11 @@ export function createAnthropicProvider(config: AnthropicConfig): LlmProvider {
     async turn(request: TurnRequest): Promise<TurnResponse> {
       const body: Record<string, unknown> = {
         model: config.model,
+        // The caller's ceiling, never raised: the server sizes its spend reservation on it.
         max_tokens: request.maxTokens,
+        // No temperature / top_p / top_k: Opus 5.5 rejects them, Haiku and Sonnet 5.5 reject
+        // non-default values, and API version 2026-10-21 rejects them on every model.
+        ...(config.effort ? { output_config: { effort: config.effort } } : {}),
         system: request.system.map((block) => ({
           type: 'text',
           text: block.text,
@@ -87,8 +109,7 @@ export function createAnthropicProvider(config: AnthropicConfig): LlmProvider {
         })),
       };
       const choice = request.toolChoice ?? 'auto';
-      body.tool_choice =
-        typeof choice === 'string' ? { type: choice } : { type: 'tool', name: choice.name };
+      body.tool_choice = { type: choice };
       const response = await doFetch(config.baseUrl ?? ANTHROPIC_URL, {
         method: 'POST',
         headers: {
@@ -111,27 +132,41 @@ export function createAnthropicProvider(config: AnthropicConfig): LlmProvider {
       const content = Array.isArray(json.content) ? json.content : [];
       let text = '';
       const toolCalls: ToolUseBlock[] = [];
+      const assistantContent: ContentBlock[] = [];
       for (const entry of content) {
         const block = recordOf(entry);
         if (block.type === 'text' && typeof block.text === 'string') {
           text += text.length > 0 ? `\n\n${block.text}` : block.text;
+          assistantContent.push({ type: 'text', text: block.text });
         } else if (
           block.type === 'tool_use' &&
           typeof block.id === 'string' &&
           typeof block.name === 'string'
         ) {
-          toolCalls.push({
+          const call: ToolUseBlock = {
             type: 'tool_use',
             id: block.id,
             name: block.name,
             input: recordOf(block.input),
+          };
+          toolCalls.push(call);
+          assistantContent.push(call);
+        } else if (block.type === 'thinking' && typeof block.signature === 'string') {
+          // Kept even with empty text (the default display): the tool loop sends it back.
+          assistantContent.push({
+            type: 'thinking',
+            thinking: typeof block.thinking === 'string' ? block.thinking : '',
+            signature: block.signature,
           });
+        } else if (block.type === 'redacted_thinking' && typeof block.data === 'string') {
+          assistantContent.push({ type: 'redacted_thinking', data: block.data });
         }
       }
       return {
         text,
         toolCalls,
         stopReason: typeof json.stop_reason === 'string' ? json.stop_reason : 'unknown',
+        assistantContent,
         usage: {
           inputTokens: numberOr(usage.input_tokens, 0),
           cachedInputTokens: numberOr(usage.cache_read_input_tokens, 0),

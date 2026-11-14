@@ -16,7 +16,7 @@ import {
   ensureGitignoreHasPrivateStateEntries,
   writeFileAtomic,
 } from '@elisym/sdk/agent-store';
-import { z } from 'zod';
+import * as z from 'zod';
 import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 
 export const CONTACTS_FILENAME = '.contacts.json';

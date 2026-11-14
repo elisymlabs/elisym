@@ -19,6 +19,10 @@ interface Props {
   view: StoreView;
   /** The published config, if the relay has one. */
   config: StoreConfig | undefined;
+  /** The config is read from what the server holds for the relay (a store that is not active). */
+  configFromServer: boolean;
+  /** The server left older stored events out of its read-back for size. */
+  storedTruncated: boolean;
   configError: string;
   /** Set when the relay's newest config does not parse: its date (`config` is then an older one). */
   configUnreadableAt: number | undefined;
@@ -33,6 +37,8 @@ export function Shell({
   deps,
   view,
   config,
+  configFromServer,
+  storedTruncated,
   configError,
   configUnreadableAt,
   reloadWarning,
@@ -47,7 +53,7 @@ export function Shell({
   };
   let content;
   if (tab === 'overview') {
-    content = <Overview view={view} config={config} />;
+    content = <Overview view={view} config={config} configFromServer={configFromServer} />;
   } else if (tab === 'settings') {
     content = (
       <SettingsSection
@@ -82,7 +88,7 @@ export function Shell({
       />
     );
   } else {
-    content = <EmbedSection owner={view.owner} config={config} />;
+    content = <EmbedSection api={deps.api} owner={view.owner} config={config} />;
   }
   return (
     <main className="mx-auto flex max-w-960 flex-col gap-16 px-16 py-24">
@@ -117,6 +123,12 @@ export function Shell({
           </button>
         </Notice>
       )}
+      {storedTruncated ? (
+        <Notice tone="warn">
+          Some older changes you signed are not shown here: there were too many to read back at
+          once. Your current settings are shown; nothing is lost on the server.
+        </Notice>
+      ) : null}
       {configUnreadableAt === undefined ? null : (
         <Notice tone="error">
           Your newest published settings could not be read, so the assistant may not answer. Open

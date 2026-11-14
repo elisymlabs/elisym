@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import { sinkProblems } from '../scripts/check-size';
+import { lazyLoadProblems, sinkProblems } from '../scripts/check-size';
 import { parseBlocks, renderText } from '../src/ui/render-text';
 
 function rendered(text: string): HTMLElement {
@@ -53,5 +53,15 @@ describe('renderText', () => {
 
   it('no source file writes HTML strings into the DOM', () => {
     expect(sinkProblems()).toEqual([]);
+  });
+
+  it('the built bundle loads no other code, so a pinned integrity covers all of it', () => {
+    expect(lazyLoadProblems()).toEqual([]);
+    expect(lazyLoadProblems('a();import("./chunk.js")')).toEqual([
+      'widget.js loads more code: a dynamic import()',
+    ]);
+    expect(lazyLoadProblems('document.createElement( "script" )')).toHaveLength(1);
+    expect(lazyLoadProblems('new Worker(url)')).toHaveLength(1);
+    expect(lazyLoadProblems('self.importScripts (x)')).toHaveLength(1);
   });
 });

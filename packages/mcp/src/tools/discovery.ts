@@ -7,7 +7,7 @@ import {
   type CapabilityCard,
 } from '@elisym/sdk';
 import { createSolanaRpc } from '@solana/kit';
-import { z } from 'zod';
+import * as z from 'zod';
 import { rpcUrlFor } from '../context.js';
 import { withPayableCards } from '../payable-cards.js';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';

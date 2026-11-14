@@ -8,7 +8,7 @@
 import {
   ASKR_RELAYS,
   CONFIG_D_TAG,
-  CatalogItemInputSchema,
+  CatalogItemFieldsSchema,
   KIND_CONFIG,
   type SyncDiff,
   type SyncRelayClient,
@@ -20,7 +20,7 @@ import {
 import { newestSigned, nowSecs } from '@elisym/commerce';
 import { nip19 } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AgentInstance } from '../context.js';
 import type { ToolDefinition } from './types.js';
 import { defineTool, errorResult, textResult } from './types.js';
@@ -45,7 +45,7 @@ const NO_KEY =
  * which the sync always sets itself. The whole input schema still checks each
  * product inside `syncCatalog`.
  */
-const ProductSchema = CatalogItemInputSchema.innerType().omit({ createdAt: true });
+const ProductSchema = CatalogItemFieldsSchema.omit({ createdAt: true });
 
 const ProductsSchema = z
   .array(ProductSchema)

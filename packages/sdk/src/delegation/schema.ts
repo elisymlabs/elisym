@@ -19,7 +19,7 @@
  * to `undefined` rather than dropping the whole card.
  */
 
-import { z } from 'zod';
+import * as z from 'zod';
 
 /** The only delegation mechanism in v1. */
 export const DELEGATION_MECHANISM = 'spl-approve' as const;

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
-import { z } from 'zod';
+import * as z from 'zod';
 
 export const KIND_HTTP_AUTH = 27235;
 /** An authorization is accepted only this close to the server's clock (7.3). */

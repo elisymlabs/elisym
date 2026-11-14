@@ -1,6 +1,6 @@
 import { nowSecs, tagValue } from '@elisym/commerce';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import { KIND_POLICY, LIMITS } from '../constants';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;

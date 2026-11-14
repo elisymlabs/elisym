@@ -107,6 +107,31 @@ describe('a newest config that does not parse', () => {
     const read = await readConfig(fakeReader([older, unparseableConfig(NOW - 10)]), OWNER, NOW);
     expect(read).toMatchObject({ state: 'unreadable', newestAt: NOW - 10 });
     expect(read.state === 'unreadable' ? read.fallback?.name : undefined).toBe('Tea Shop');
+    expect(read.state === 'unreadable' ? read.fallbackId : undefined).toBe(older.id);
+    const alone = await readConfig(fakeReader([unparseableConfig(NOW - 10)]), OWNER, NOW);
+    expect(alone).toMatchObject({
+      state: 'unreadable',
+      fallback: undefined,
+      fallbackId: undefined,
+    });
+    const ok = await readConfig(fakeReader([older]), OWNER, NOW);
+    expect(ok.state === 'ok' ? ok.id : undefined).toBe(older.id);
+  });
+
+  it('a pending store whose stored newest config does not parse names the stored one it falls back to', async () => {
+    const stored = signedConfig('Stored Tea', NOW - 50);
+    const api = fakeApi({
+      store: vi.fn(async () => storeView({ status: 'pending', tier: null })),
+      storedEvents: vi.fn(async () => ({
+        events: [stored, unparseableConfig(NOW - 10)],
+        truncated: false,
+      })),
+    });
+    const reader = fakeReader([signedConfig('Relay Tea', NOW - 100)]);
+    mounted = await mount(<Session deps={sessionDeps(api, reader)} onSignOut={() => undefined} />);
+    const { container } = mounted;
+    await settle(() => container.querySelector('h1')?.textContent === 'Stored Tea');
+    expect(container.textContent).toContain('shown as you signed them');
   });
 
   it('keeps the owner out of onboarding and says the settings must be saved again', async () => {

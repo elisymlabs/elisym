@@ -56,7 +56,7 @@
   },
   "dependencies": {
     "@elisym/commerce": "~0.14.0",
-    "zod": "~3.25.0"
+    "zod": "~4.6.7"
   },
   "devDependencies": {
     "@types/node": "~25.5.0",
@@ -64,7 +64,7 @@
     "nostr-tools": "~2.23.0",
     "tsup": "~8.4.0",
     "typescript": "~5.7.0",
-    "vitest": "~3.2.6"
+    "vitest": "~4.1.12"
   },
   "peerDependencies": {
     "decimal.js-light": "~2.5.0",

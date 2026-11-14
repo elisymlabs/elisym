@@ -1,7 +1,7 @@
 /**
  * ToolDefinition - the building block for modular tool registration.
  */
-import type { z } from 'zod';
+import type * as z from 'zod';
 import type { AgentContext } from '../context.js';
 
 /**

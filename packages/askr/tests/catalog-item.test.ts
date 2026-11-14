@@ -7,6 +7,7 @@ import {
   parseCatalogItem,
   productPageUrl,
 } from '../src/events/catalog-item';
+import { CatalogItemInputSchema } from '../src/index';
 import { NOW, sign, testKey } from './fixtures';
 
 const key = testKey();
@@ -36,6 +37,38 @@ function shirt() {
     createdAt: NOW - 10,
   });
 }
+
+describe('catalog item input, malformed prices', () => {
+  it('reports a malformed price on a product with variants, never throws', () => {
+    const base = {
+      d: 'p1',
+      title: 'Shirt',
+      price: { amount: '10', currency: 'USD' },
+      options: [{ name: 'size', values: ['S'] }],
+      variants: [{ id: 'v1', price: '10', available: true, values: ['S'] }],
+    };
+    for (const bad of ['x', '', 'en', '1e3']) {
+      const listing = { ...base, price: { amount: bad, currency: 'USD' } };
+      expect(() => CatalogItemInputSchema.safeParse(listing)).not.toThrow();
+      expect(CatalogItemInputSchema.safeParse(listing).success).toBe(false);
+      const variant = { ...base, variants: [{ ...base.variants[0], price: bad }] };
+      expect(() => CatalogItemInputSchema.safeParse(variant)).not.toThrow();
+      expect(CatalogItemInputSchema.safeParse(variant).success).toBe(false);
+    }
+    // The cross-field rules still run next to a malformed price.
+    const twice = {
+      ...base,
+      price: { amount: 'x', currency: 'USD' },
+      variants: [base.variants[0], base.variants[0]],
+    };
+    const parsed = CatalogItemInputSchema.safeParse(twice);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.map((issue) => issue.message)).toContain(
+      'variant ids must be unique',
+    );
+    expect(CatalogItemInputSchema.safeParse(base).success).toBe(true);
+  });
+});
 
 describe('catalog items', () => {
   it('round-trips through the builder and the reader', () => {

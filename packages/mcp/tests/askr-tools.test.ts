@@ -235,6 +235,29 @@ describe('Askr catalog tools', () => {
     expect(run.relay.published).toEqual([]);
   });
 
+  it('a product only the rules across fields refuse is a readable error, not a publish', async () => {
+    // Duplicate option names pass the tool's field schema; the whole input schema in
+    // the sync refuses them, and the agent reads "path: message", not a zod dump.
+    const run = world();
+    const tool = tools(run.relay);
+    const result = await tool('askr_upsert_products').handler(run.ctx, {
+      products: [
+        {
+          ...SOCKS,
+          options: [
+            { name: 'size', values: ['S'] },
+            { name: 'size', values: ['M'] },
+          ],
+        },
+      ],
+      dry_run: false,
+    });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain('options: option names must be unique');
+    expect(text(result)).not.toContain('"code"');
+    expect(run.relay.published).toHaveLength(0);
+  });
+
   it('a product input the protocol refuses is an error, not a publish', async () => {
     const run = world();
     const [tool] = createAskrTools({ connect: async () => run.relay }).filter(

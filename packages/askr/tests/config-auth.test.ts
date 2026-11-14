@@ -18,6 +18,7 @@ import {
   parseConfig,
 } from '../src/events/config';
 import { buildPolicyEvent, parsePolicy } from '../src/events/policy';
+import { StoreConfigInputSchema } from '../src/index';
 import { NOW, sign, testKey } from './fixtures';
 
 const owner = testKey();
@@ -44,6 +45,66 @@ function config(overrides: Record<string, unknown> = {}) {
     owner,
   );
 }
+
+describe('config, zod 4 parity', () => {
+  function unsignedConfig(overrides: Record<string, unknown> = {}) {
+    return buildConfigEvent(
+      {
+        assistant: assistant.pubkey,
+        origins: ['https://shop.example.com'],
+        name: 'Example Shop',
+        language: 'en',
+        currency: 'USD',
+        source: { kind: 'catalog' },
+        catalogKey: catalog.pubkey,
+        createdAt: NOW - 100,
+        ...overrides,
+      },
+      owner.secretKey,
+    );
+  }
+
+  it('refuses an origin tag with a stray space, tab or newline (fail closed)', () => {
+    for (const origin of [
+      'https://shop.example.com\n',
+      ' https://shop.example.com',
+      'https://shop.example.com ',
+      'https://sh\top.example.com',
+    ]) {
+      for (const tagName of ['origin', 'link-origin']) {
+        const template = unsignedConfig();
+        template.tags = [...template.tags, [tagName, origin]];
+        expect(parseConfig(sign(template, owner))).toBeUndefined();
+      }
+      const input = {
+        assistant: assistant.pubkey,
+        origins: [origin],
+        name: 'Example Shop',
+        language: 'en',
+        currency: 'USD',
+        source: { kind: 'catalog' },
+        catalogKey: catalog.pubkey,
+      };
+      expect(StoreConfigInputSchema.safeParse(input).success).toBe(false);
+    }
+  });
+
+  it('a config built without a private block decrypts to its empty fields', () => {
+    const parsed = parseConfig(sign(unsignedConfig(), owner));
+    expect(parsed && decryptPrivateConfig(parsed, assistant.secretKey)).toEqual({
+      voice: '',
+      instructions: '',
+      notes: '',
+    });
+  });
+
+  it('refuses an avatar or contact with a leading space instead of trimming it', () => {
+    for (const field of ['avatar', 'contact']) {
+      expect(() => unsignedConfig({ [field]: ' https://shop.example.com/a.png' })).toThrow();
+      expect(() => unsignedConfig({ [field]: 'https://shop.example.com/a.png' })).not.toThrow();
+    }
+  });
+});
 
 describe('config', () => {
   it('reads the public part and decrypts the private part only with A', () => {

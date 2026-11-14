@@ -3,7 +3,13 @@ import type { NostrEvent } from 'nostr-tools';
 import { apiBase } from '../constants';
 import { nip98Header } from './nip98';
 import type { Signer } from './signer';
-import type { ConnectorRecord, ConnectorSyncResult, StoreView } from './types';
+import type {
+  ConnectorRecord,
+  ConnectorSyncResult,
+  PinnedWidget,
+  StoreView,
+  StoredEventsRead,
+} from './types';
 
 /** An admin API refusal (`packages/askr-server/src/admin/api.ts`), or `network` when no answer came. */
 export class ApiError extends Error {
@@ -34,6 +40,10 @@ export interface AdminApiOptions {
   base?: string;
   fetch?: typeof fetch;
 }
+
+/** The server's pinned widget path and SRI value (`packages/askr-server/src/gateway/widget.ts`). */
+const PINNED_PATH_RE = /^\/widget\/[0-9a-f]{32}\.js$/;
+const INTEGRITY_RE = /^sha384-[A-Za-z0-9+/]{64}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -107,6 +117,37 @@ export class AdminApi {
 
   storeEvents(events: NostrEvent[]): Promise<{ stored: string[] }> {
     return this.call('POST', '/v1/admin/store/events', { events });
+  }
+
+  /** What O signed and the server holds for the relay: a store that is not active shows it (7.3). */
+  storedEvents(): Promise<StoredEventsRead> {
+    return this.call('GET', '/v1/admin/store/events');
+  }
+
+  /**
+   * The widget bundle's pinned address and integrity. Public, so not signed:
+   * no extension prompt for it. The path is checked strictly, as it ends up
+   * in an HTML attribute the merchant pastes.
+   */
+  async pinnedWidget(): Promise<PinnedWidget> {
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.base}/v1/widget`, { cache: 'no-store' });
+    } catch {
+      throw new ApiError(0, 'network');
+    }
+    const parsed = response.ok ? await readJson(response) : undefined;
+    if (
+      !isRecord(parsed) ||
+      typeof parsed.path !== 'string' ||
+      !PINNED_PATH_RE.test(parsed.path) ||
+      typeof parsed.integrity !== 'string' ||
+      !INTEGRITY_RE.test(parsed.integrity)
+    ) {
+      throw new ApiError(response.status, 'unexpected');
+    }
+    // The host it was read from, so the snippet names the server that has this bundle.
+    return { src: `${this.base}${parsed.path}`, integrity: parsed.integrity };
   }
 
   catalog(

@@ -1,7 +1,7 @@
 import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import { nip19 } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import { positiveUsd } from './config';
 import type { StoreDirectory } from './state/stores';
 import type { Tier } from './state/types';

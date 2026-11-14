@@ -6,6 +6,7 @@ export {
   type CatalogOption,
   type CatalogVariant,
   type ParseCatalogItemOptions,
+  CatalogItemFieldsSchema,
   CatalogItemInputSchema,
   D_TAG_RE,
   buildCatalogItemEvent,

@@ -3,18 +3,12 @@ import type { Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
-import {
-  type LlmProvider,
-  type ModelPrice,
-  createAnthropicProvider,
-  createOpenAiCompatibleProvider,
-} from '@elisym/askr-agent';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { runCli } from './cli';
-import { DEFAULT_TURN_RESERVE_USD, positiveUsd, publicBaseOf } from './config';
+import { publicBaseOf, serveConfigFromEnv, workerSettings } from './config';
 import { ShopRateLimiter } from './connectors/http';
 import { ConnectorService } from './connectors/service';
 import type { Db } from './db/db';
@@ -24,6 +18,7 @@ import { migrate } from './db/migrations';
 import { createPgDb } from './db/pg';
 import { type GatewayRequest, createGateway } from './gateway/gateway';
 import { serveGateway } from './gateway/http';
+import { WidgetVersions, widgetBundle } from './gateway/widget';
 import { StoreEventPublisher } from './publisher';
 import { createServerPool } from './relay/pool';
 import { poolSyncClient } from './relay/sync-client';
@@ -41,33 +36,6 @@ function required(name: string): string {
     throw new Error(`${name} is required`);
   }
   return value;
-}
-
-function providerFromEnv(): LlmProvider {
-  const openRouterModel = process.env.ASKR_OPENROUTER_MODEL;
-  if (openRouterModel) {
-    return createOpenAiCompatibleProvider({
-      apiKey: required('OPENROUTER_API_KEY'),
-      model: openRouterModel,
-      baseUrl: 'https://openrouter.ai/api/v1',
-      passCacheMarks: openRouterModel.startsWith('anthropic/'),
-      // No training and zero data retention where offered (4.4).
-      extraBody: { provider: { data_collection: 'deny' } },
-    });
-  }
-  return createAnthropicProvider({
-    apiKey: required('ANTHROPIC_API_KEY'),
-    model: required('ASKR_MODEL'),
-  });
-}
-
-function priceFromEnv(): ModelPrice {
-  return {
-    input: positiveUsd('ASKR_PRICE_INPUT', required('ASKR_PRICE_INPUT')),
-    cachedInput: positiveUsd('ASKR_PRICE_CACHED_INPUT', required('ASKR_PRICE_CACHED_INPUT')),
-    cacheWrite: positiveUsd('ASKR_PRICE_CACHE_WRITE', required('ASKR_PRICE_CACHE_WRITE')),
-    output: positiveUsd('ASKR_PRICE_OUTPUT', required('ASKR_PRICE_OUTPUT')),
-  };
 }
 
 /** The built widget, from `ASKR_WIDGET_FILE` or the workspace's `@elisym/askr-widget`. */
@@ -111,11 +79,8 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const gatewaySecretKey = hexToBytes(required('ASKR_GATEWAY_SECRET'));
   const state = new PgState(db, vault, log);
   const directory = new StoreDirectory(db, vault);
-  const provider = providerFromEnv();
-  const reserveUsd = positiveUsd(
-    'ASKR_TURN_RESERVE_USD',
-    process.env.ASKR_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
-  );
+  // Refuses to start on a bad model setting or a max_tokens the reservation cannot pay for.
+  const config = serveConfigFromEnv(process.env);
   let leasedBy: Worker | undefined;
   const pool = createServerPool((pubkey) => leasedBy?.isLeased(pubkey) ?? false);
   const worker = new Worker({
@@ -123,9 +88,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     state,
     pool,
     gatewayKeys: [getPublicKey(gatewaySecretKey)],
-    providerFor: () => provider,
-    price: priceFromEnv(),
-    reserveUsd,
+    ...workerSettings(config),
     log,
   });
   leasedBy = worker;
@@ -197,14 +160,18 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     connectors.stop();
     return;
   }
+  // Kept in the database, so its pinned path stays served after the next release (6).
+  const widget = widgetBundle(widgetScript());
+  const widgetVersions = new WidgetVersions(db);
+  await widgetVersions.record(widget, Math.floor(Date.now() / 1000));
   const gateway = createGateway({
     state,
     gatewaySecretKey,
-    widgetScript: widgetScript(),
+    widget: { current: widget, earlier: (id, mayQuery) => widgetVersions.script(id, mayQuery) },
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),
-    reserveUsd,
+    reserveUsd: config.reserveUsd,
   });
   const admin = createAdminApi({
     directory,

@@ -116,7 +116,7 @@ describe('the snippets', () => {
     expect(docsPage('embed')).toContain(snippet);
     expect(WIDGET_SRC.endsWith('/widget.js')).toBe(true);
     expect(readFileSync(join(PACKAGES, 'askr-server/src/gateway/gateway.ts'), 'utf8')).toContain(
-      "url.pathname === '/widget.js'",
+      "pathname === '/widget.js'",
     );
     const page = await render(<App />);
     expect(page.querySelector('#embed-snippet')?.textContent).toBe(snippet);

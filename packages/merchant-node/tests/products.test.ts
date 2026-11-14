@@ -210,6 +210,10 @@ describe('the PRODUCT.md file', () => {
       expect(problemsOf(VALID.replace(line, ''))).toHaveLength(1);
     }
     expect(problemsOf(productText(['title: x', 'priceUsd: "1"'].join('\n')))).toEqual([]);
+    // A missing price is reported as missing, not as a bare number to quote.
+    const missing = problemsOf(VALID.replace('priceUsd: "10"', '')).join(' ');
+    expect(missing).toContain('priceUsd');
+    expect(missing).not.toContain('quote it');
   });
 
   it('M34: refuses YAML scalars of the wrong type, never reinterpreted', () => {

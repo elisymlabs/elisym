@@ -148,10 +148,7 @@ export function createOpenAiCompatibleProvider(config: OpenAiCompatibleConfig): 
             parameters: tool.inputSchema,
           },
         })),
-        tool_choice:
-          typeof choice === 'string'
-            ? choice
-            : { type: 'function', function: { name: choice.name } },
+        tool_choice: choice,
       };
       const response = await doFetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',

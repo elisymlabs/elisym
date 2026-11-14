@@ -1,7 +1,7 @@
 import type { Answer } from '@elisym/askr';
 import { describe, expect, it } from 'vitest';
 import { StoreCatalog } from '../src/catalog/store-catalog';
-import { checkPrices, extractAmounts } from '../src/price-check';
+import { checkPrices } from '../src/price-check';
 import { CONFIG, item } from './fixtures';
 
 const answer = (text: string): Answer => ({

@@ -34,23 +34,25 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
-    SolanaPaymentStrategy: vi.fn().mockImplementation(() => ({
-      // The SHAPE the real `createPaymentRequest` returns: base58 addresses it
-      // would actually accept, and the fee fields it always emits. (Nothing in
-      // this file routes a PAID live job today, so the strategy mock is inert -
-      // but a fixture the real code would reject is a trap for whoever does.)
-      createPaymentRequest: vi.fn().mockReturnValue({
-        recipient: 'So11111111111111111111111111111111111111112',
-        amount: 100_000,
-        reference: 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms',
-        fee_address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
-        fee_amount: 3_000,
-        created_at: Math.floor(Date.now() / 1000),
-        expiry_secs: 600,
-        network: 'devnet',
-      }),
-      verifyPayment: vi.fn().mockImplementation(() => Promise.resolve(mockVerifyResult)),
-    })),
+    SolanaPaymentStrategy: vi.fn().mockImplementation(function () {
+      return {
+        // The SHAPE the real `createPaymentRequest` returns: base58 addresses it
+        // would actually accept, and the fee fields it always emits. (Nothing in
+        // this file routes a PAID live job today, so the strategy mock is inert -
+        // but a fixture the real code would reject is a trap for whoever does.)
+        createPaymentRequest: vi.fn().mockReturnValue({
+          recipient: 'So11111111111111111111111111111111111111112',
+          amount: 100_000,
+          reference: 'DLZ1JYbYLEe4QowxxuNtGEzeYkJiSqmNHZhQSiAfzHms',
+          fee_address: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',
+          fee_amount: 3_000,
+          created_at: Math.floor(Date.now() / 1000),
+          expiry_secs: 600,
+          network: 'devnet',
+        }),
+        verifyPayment: vi.fn().mockImplementation(() => Promise.resolve(mockVerifyResult)),
+      };
+    }),
     getProtocolConfig: vi.fn().mockResolvedValue({
       feeBps: 300,
       treasury: 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy',

@@ -8,7 +8,7 @@
  */
 
 import { nip19 } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import { sanitizeField, sanitizeUntrusted } from '../sanitize.js';
 import { readContacts, removeContact, upsertContact } from '../storage/contacts.js';
 import {

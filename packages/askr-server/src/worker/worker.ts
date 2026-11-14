@@ -9,6 +9,8 @@ import {
   type LlmProvider,
   type ModelPrice,
   type StoreCatalog,
+  LlmError,
+  StopReasonError,
   TurnError,
   costOf,
   runTurn,
@@ -44,6 +46,21 @@ const KIND_GIFT_WRAP = 1059;
  * ask), so a turn's input cost stays bounded; phase 3 compacts instead (5.8).
  */
 const MAX_HISTORY_MESSAGES = 20;
+
+/**
+ * What kind of failure ended a turn, with no content (4.4): a stop reason ("StopReasonError
+ * max_tokens"), a provider status ("LlmError 429"), or the error's name.
+ */
+export function failureKind(error: unknown): string {
+  const reason = error instanceof TurnError ? error.reason : error;
+  if (reason instanceof StopReasonError) {
+    return `StopReasonError ${reason.kind}`;
+  }
+  if (reason instanceof LlmError) {
+    return `LlmError ${reason.status ?? 'no status'}`;
+  }
+  return reason instanceof Error ? reason.name : 'unknown';
+}
 
 /** Wrap a provider so a turn stops calling the model once its spend reaches `maxUsd`. */
 export function cappedProvider(
@@ -82,6 +99,8 @@ export interface WorkerDeps {
    * its daily budget by at most the last model call of each turn in flight.
    */
   reserveUsd: string;
+  /** max_tokens per model call, thinking included; runTurn's default when absent. */
+  maxTokens?: number;
   /** A history read with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
   /** Pay Core default relays' timeouts (5.1); tests shorten them. */
@@ -558,6 +577,7 @@ export class Worker {
         earlierVisitorMessages: session.visitorMessages,
         earlierPolicyPassages: session.policyPassages,
         earlierAllowedIds: session.allowedIds,
+        ...(this.deps.maxTokens === undefined ? {} : { maxTokens: this.deps.maxTokens }),
         signal: controller.signal,
         onStatus: (text) => {
           void this.send(
@@ -605,6 +625,7 @@ export class Worker {
         await this.refuse(store, session, ask.ask_id, 'error');
       }
     } catch (error) {
+      this.log(`turn failed: ${failureKind(error)}`);
       const charged =
         spent ??
         (error instanceof TurnError ? costOf(error.usage, this.deps.price).toString() : '0');

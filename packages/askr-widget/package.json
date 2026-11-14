@@ -37,14 +37,14 @@
     "@elisym/commerce": "~0.14.0",
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",
-    "zod": "~3.25.0"
+    "zod": "~4.6.7"
   },
   "devDependencies": {
     "@types/node": "~25.5.0",
-    "happy-dom": "~20.14.5",
+    "happy-dom": "~21.0.4",
     "tsup": "~8.4.0",
     "typescript": "~5.7.0",
-    "vitest": "~3.2.6"
+    "vitest": "~4.1.12"
   },
   "engines": {
     "node": ">=20"
