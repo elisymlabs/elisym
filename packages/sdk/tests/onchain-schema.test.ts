@@ -293,6 +293,11 @@ describe('validateSkillOnchain', () => {
     expect(() => validateSkillOnchain('withdraw', { ...block, max_per_call: 'lots' })).toThrow(
       /invalid "onchain" block/,
     );
+    // A field error does not hide the cross-field rules: the operator sees the
+    // 500-SOL trap (a mint next to token sol) in the same run as a bad kind.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, kind: 'BAD KIND', token: 'sol' }),
+    ).toThrow(/onchain\.mint must be absent when onchain\.token is sol/);
     // The cross-field rules read max_authority as a Decimal: a malformed one is reported
     // as an invalid block, never thrown as a Decimal error.
     expect(() =>

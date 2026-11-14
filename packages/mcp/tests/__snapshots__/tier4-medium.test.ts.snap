@@ -1,0 +1,1001 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`tool input schemas are what clients have always been sent > every tool input schema matches the snapshot 1`] = `
+{
+  "add_contact": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "maxLength": 200,
+        "type": "string",
+      },
+      "note": {
+        "maxLength": 500,
+        "type": "string",
+      },
+      "npub": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "npub",
+    ],
+    "type": "object",
+  },
+  "approve_delegation": {
+    "additionalProperties": false,
+    "properties": {
+      "cap_usdc": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "provider": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string",
+      },
+      "replace_existing": {
+        "type": "boolean",
+      },
+    },
+    "required": [
+      "provider",
+      "cap_usdc",
+    ],
+    "type": "object",
+  },
+  "buy_capability": {
+    "additionalProperties": false,
+    "properties": {
+      "capability": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "input": {
+        "default": "",
+        "type": "string",
+      },
+      "max_price_lamports": {
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991,
+        "type": "integer",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "timeout_secs": {
+        "default": 120,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "provider_npub",
+      "capability",
+    ],
+    "type": "object",
+  },
+  "buy_product": {
+    "additionalProperties": false,
+    "properties": {
+      "accept_warnings": {
+        "description": "The confirm-warnings of the quote, each confirmed by the user.",
+        "items": {
+          "maxLength": 64,
+          "type": "string",
+        },
+        "maxItems": 10,
+        "type": "array",
+      },
+      "buy_again": {
+        "description": "Buy a product this agent already has a completed purchase of.",
+        "type": "boolean",
+      },
+      "email": {
+        "description": "Sent with the order only if the user gave it.",
+        "maxLength": 254,
+        "type": "string",
+      },
+      "product": {
+        "description": "The product (naddr1...). Without quote_id: returns a quote and orders nothing.",
+        "pattern": "^naddr1[0-9a-z]+$",
+        "type": "string",
+      },
+      "quote_id": {
+        "description": "A quote the user approved: buys on exactly its terms.",
+        "format": "uuid",
+        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
+  "create_agent": {
+    "additionalProperties": false,
+    "properties": {
+      "activate": {
+        "default": true,
+        "type": "boolean",
+      },
+      "description": {
+        "default": "Elisym MCP agent",
+        "type": "string",
+      },
+      "name": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "network": {
+        "default": "mainnet",
+        "description": "Solana network this agent is bound to. FIXED AT CREATION: an agent can never change networks - switching networks means creating (or switch_agent-ing to) another agent bound to the other network. Defaults to mainnet, where payments move REAL funds; pass "devnet" for an agent to experiment with.",
+        "enum": [
+          "devnet",
+          "mainnet",
+        ],
+        "type": "string",
+      },
+      "passphrase": {
+        "description": "Optional passphrase; if set, secret keys are encrypted at rest.",
+        "type": "string",
+      },
+    },
+    "required": [
+      "name",
+    ],
+    "type": "object",
+  },
+  "create_job": {
+    "additionalProperties": false,
+    "properties": {
+      "capability": {
+        "default": "general",
+        "description": "Short tag selecting which capability of the provider to invoke.",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "input": {
+        "description": "The job prompt/input sent to the provider.",
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "description": "NIP-90 kind offset (5000+offset for requests, 6000+offset for results).",
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "provider_npub": {
+        "description": "Target provider by Nostr npub (required).",
+        "type": "string",
+      },
+      "session_id": {
+        "anyOf": [
+          {
+            "const": "new",
+            "type": "string",
+          },
+          {
+            "const": "none",
+            "type": "string",
+          },
+          {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string",
+          },
+        ],
+        "description": "Conversation control. Omit for automatic session management (providers advertising context support get a conversation auto-started on first contact; an ongoing conversation triggers a continue/new/one-off question before anything is published). Pass "new" to force a fresh conversation, "none" to force a stateless one-off, or a session_id from a previous result to continue that conversation. The provider answers with the conversation context of prior exchanges under the same id.",
+      },
+    },
+    "required": [
+      "input",
+      "provider_npub",
+    ],
+    "type": "object",
+  },
+  "estimate_payment_cost": {
+    "additionalProperties": false,
+    "properties": {
+      "payment_request": {
+        "description": "JSON-serialized payment_request blob (as received from a provider job-feedback event).",
+        "type": "string",
+      },
+    },
+    "required": [
+      "payment_request",
+    ],
+    "type": "object",
+  },
+  "fetch_job_file": {
+    "additionalProperties": false,
+    "properties": {
+      "allow_outside_cwd": {
+        "default": false,
+        "description": "Allow writing outside the MCP server working directory. Off by default: the bytes come from an untrusted provider, so writes are confined to the working directory subtree (and never to a secret/auto-run path) unless this is set.",
+        "type": "boolean",
+      },
+      "attachment_index": {
+        "default": 0,
+        "description": "Which file to download when the result has MULTIPLE files (0-based; default 0). The download message reports the total count so you can fetch the others.",
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "job_event_id": {
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "output_path": {
+        "description": "Local path to write the downloaded result file to.",
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "timeout_secs": {
+        "default": 300,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "job_event_id",
+      "output_path",
+    ],
+    "type": "object",
+  },
+  "get_agent_policies": {
+    "additionalProperties": false,
+    "properties": {
+      "agent_npub": {
+        "description": "Agent npub (bech32 nostr identifier, starts with \`npub1...\`).",
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "agent_npub",
+    ],
+    "type": "object",
+  },
+  "get_balance": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "get_dashboard": {
+    "additionalProperties": false,
+    "properties": {
+      "chain": {
+        "default": "solana",
+        "enum": [
+          "solana",
+        ],
+        "type": "string",
+      },
+      "network": {
+        "enum": [
+          "devnet",
+          "mainnet",
+        ],
+        "type": "string",
+      },
+      "timeout_secs": {
+        "default": 15,
+        "maximum": 60,
+        "minimum": 1,
+        "type": "integer",
+      },
+      "top_n": {
+        "default": 10,
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "type": "object",
+  },
+  "get_delegation": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "get_identity": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "get_job_result": {
+    "additionalProperties": false,
+    "properties": {
+      "job_event_id": {
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "lookback_secs": {
+        "default": 86400,
+        "description": "How far back to search for the result. Defaults to 24h.",
+        "maximum": 604800,
+        "minimum": 60,
+        "type": "integer",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "timeout_secs": {
+        "default": 60,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "job_event_id",
+    ],
+    "type": "object",
+  },
+  "get_messages": {
+    "additionalProperties": false,
+    "properties": {
+      "counterpart": {
+        "description": "Conversation partner: 64-hex pubkey, npub, or a saved contact name.",
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string",
+      },
+      "max_messages": {
+        "default": 50,
+        "maximum": 1000,
+        "minimum": 1,
+        "type": "integer",
+      },
+      "since": {
+        "description": "Unix seconds. Fetch messages from this time on. Pass the next_since value from a truncated response to page forward; omit to re-fetch the default window.",
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "counterpart",
+    ],
+    "type": "object",
+  },
+  "get_order": {
+    "additionalProperties": false,
+    "properties": {
+      "order_id": {
+        "description": "An order id. Without it: lists the orders.",
+        "maxLength": 200,
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
+  "list_agents": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "list_capabilities": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "list_contacts": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "default": 50,
+        "maximum": 200,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "type": "object",
+  },
+  "list_conversations": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "list_job_sessions": {
+    "additionalProperties": false,
+    "properties": {
+      "limit": {
+        "default": 20,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "type": "object",
+  },
+  "list_my_jobs": {
+    "additionalProperties": false,
+    "properties": {
+      "include_nostr": {
+        "default": false,
+        "description": "When true, also pull jobs from Nostr relays and merge them with the local cache. Default is false - the local cache is the source of truth and avoids a network roundtrip per call. Use true when looking for jobs submitted from outside this MCP (e.g. the web app) or to recover after a local-cache wipe.",
+        "type": "boolean",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "limit": {
+        "default": 20,
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer",
+      },
+      "session_id": {
+        "description": "Only jobs belonging to this conversation (membership in the locally recorded session job list, which covers the last 100 jobs per session). Jobs submitted outside this MCP have no local session mapping and never match.",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
+  "remove_contact": {
+    "additionalProperties": false,
+    "properties": {
+      "npub": {
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "npub",
+    ],
+    "type": "object",
+  },
+  "revoke_delegation": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object",
+  },
+  "search_agents": {
+    "additionalProperties": false,
+    "properties": {
+      "capabilities": {
+        "description": "OR-matched substring filter on agent names, descriptions, and capability tags.",
+        "items": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "minItems": 1,
+        "type": "array",
+      },
+      "contacts_only": {
+        "default": false,
+        "description": "If true, restrict results to providers saved in the active agent's .contacts.json. Each returned item gains a \`last_worked_at\` field.",
+        "type": "boolean",
+      },
+      "include_offline": {
+        "default": false,
+        "description": "If true, skip the live online check and return agents regardless of reachability. Default: false - only currently-online agents are returned.",
+        "type": "boolean",
+      },
+      "max_price_lamports": {
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991,
+        "type": "integer",
+      },
+      "query": {
+        "description": "Optional secondary scoring for re-ranking. Omit when you have precise tokens.",
+        "type": "string",
+      },
+    },
+    "required": [
+      "capabilities",
+    ],
+    "type": "object",
+  },
+  "send_message": {
+    "additionalProperties": false,
+    "properties": {
+      "message": {
+        "description": "Plaintext message body (end-to-end encrypted in transport).",
+        "maxLength": 10000,
+        "minLength": 1,
+        "type": "string",
+      },
+      "recipient": {
+        "description": "Recipient: 64-hex pubkey, npub, or a saved contact name.",
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "recipient",
+      "message",
+    ],
+    "type": "object",
+  },
+  "send_payment": {
+    "additionalProperties": false,
+    "properties": {
+      "expected_asset": {
+        "description": "Required: the asset you expect to pay ('sol', 'usdc', or 'lsm' - lsm is mainnet-only). The payment is refused if the payment_request debits a different asset, closing a currency bait-and-switch where a hostile request swaps one asset for another. Verify BOTH the recipient AND the asset independently before paying.",
+        "enum": [
+          "sol",
+          "usdc",
+          "lsm",
+        ],
+        "type": "string",
+      },
+      "expected_solana_recipient": {
+        "description": "Base58 Solana address you expect to receive the payment (from the provider card).",
+        "type": "string",
+      },
+      "job_event_id": {
+        "description": "Optional: the Nostr job request event id this payment is for. When given, the payment embeds an elisym memo so it is linkable to the job, and the job is recorded locally so a later submit_feedback rating carries the payment proof.",
+        "maxLength": 128,
+        "type": "string",
+      },
+      "payment_request": {
+        "type": "string",
+      },
+    },
+    "required": [
+      "payment_request",
+      "expected_solana_recipient",
+      "expected_asset",
+    ],
+    "type": "object",
+  },
+  "sign_onchain_call": {
+    "additionalProperties": false,
+    "properties": {
+      "accept_unattributed": {
+        "description": "Sign even though the call changes who controls a token account that is not this wallet's own (a new owner, delegate or close authority, a freeze) or a token mint (its mint or freeze authority). An ordinary swap never does that, and the token vaults behind a lending position or an escrow are such accounts. Default false: such a call is refused and the accounts are listed, so this is a deliberate decision, never a default. Accounts a call merely WRITES to without changing hands - pool state, a pool vault - are listed in the preview as a notice and do not need this.",
+        "type": "boolean",
+      },
+      "job_id": {
+        "description": "The job whose result is the call (from submit_and_pay_job). Required for a preview: the call, the provider and the capability are all read from the job itself, never from the caller, so a call can never be checked against a capability that did not build it.",
+        "pattern": "^[0-9a-f]{64}$",
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "description": "NIP-90 kind offset the job was submitted with. Pass the same value here that was passed to submit_and_pay_job; the default is right unless that call overrode it.",
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "max_authority": {
+        "description": "Lower the authority ceiling (approve-shaped calls), in display units.",
+        "type": "string",
+      },
+      "max_spend": {
+        "description": "Lower the spend ceiling for this call, in display units (e.g. "25"). Cannot raise it above what the capability published.",
+        "type": "string",
+      },
+      "nonce": {
+        "description": "Confirmation nonce from a previous preview. Omit to request a preview.",
+        "type": "string",
+      },
+    },
+    "type": "object",
+  },
+  "stop_agent": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+      },
+    },
+    "required": [
+      "name",
+    ],
+    "type": "object",
+  },
+  "submit_and_pay_job": {
+    "additionalProperties": false,
+    "properties": {
+      "capability": {
+        "default": "general",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "input": {
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "max_price_lamports": {
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991,
+        "type": "integer",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "session_id": {
+        "anyOf": [
+          {
+            "const": "new",
+            "type": "string",
+          },
+          {
+            "const": "none",
+            "type": "string",
+          },
+          {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string",
+          },
+        ],
+        "description": "Conversation control. Omit for automatic session management (providers advertising context support get a conversation auto-started on first contact; an ongoing conversation triggers a continue/new/one-off question before anything is published). Pass "new" to force a fresh conversation, "none" to force a stateless one-off, or a session_id from a previous result to continue that conversation. The provider answers with the conversation context of prior exchanges under the same id.",
+      },
+      "timeout_secs": {
+        "default": 300,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "input",
+      "provider_npub",
+    ],
+    "type": "object",
+  },
+  "submit_and_pay_job_from_file": {
+    "additionalProperties": false,
+    "properties": {
+      "allow_outside_cwd": {
+        "default": false,
+        "description": "Allow reading a file outside the MCP server working directory. Off by default - the file content is forwarded to the provider before payment and is invisible in the transcript, so reads are confined to the working dir unless this is set. Sensitive files (secret keys, .env, SSH/keypair, ~/.elisym, /proc) are always refused.",
+        "type": "boolean",
+      },
+      "capability": {
+        "default": "general",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "input_path": {
+        "description": "Path to a regular file whose contents become the job input. Absolute or relative to the MCP server's working directory.",
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "max_price_lamports": {
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991,
+        "type": "integer",
+      },
+      "prompt": {
+        "default": "",
+        "description": "Optional text instruction sent alongside the file (e.g. how to edit an image: "make it night", "add a hat"). It rides inline (NIP-44 encrypted) in the job event while the file travels peer-to-peer via iroh. The single attachment slot holds the file, so the prompt cannot spill to a second transfer - keep it short.",
+        "maxLength": 100000,
+        "type": "string",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "session_id": {
+        "anyOf": [
+          {
+            "const": "new",
+            "type": "string",
+          },
+          {
+            "const": "none",
+            "type": "string",
+          },
+          {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string",
+          },
+        ],
+        "description": "Conversation control. Omit for automatic session management (providers advertising context support get a conversation auto-started on first contact; an ongoing conversation triggers a continue/new/one-off question before anything is published). Pass "new" to force a fresh conversation, "none" to force a stateless one-off, or a session_id from a previous result to continue that conversation. The provider answers with the conversation context of prior exchanges under the same id.",
+      },
+      "timeout_secs": {
+        "default": 300,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "input_path",
+      "provider_npub",
+    ],
+    "type": "object",
+  },
+  "submit_delegated_job": {
+    "additionalProperties": false,
+    "properties": {
+      "capability": {
+        "default": "general",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "input": {
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "max_price_lamports": {
+        "description": "Confirmation cap in the card asset subunits (USDC has 6 decimals). The advertised price must not exceed it. Omit to get a price confirmation without publishing.",
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991,
+        "type": "integer",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "timeout_secs": {
+        "default": 300,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "input",
+      "provider_npub",
+    ],
+    "type": "object",
+  },
+  "submit_delegated_job_from_file": {
+    "additionalProperties": false,
+    "properties": {
+      "allow_outside_cwd": {
+        "default": false,
+        "description": "Allow reading a file outside the MCP server working directory. Off by default - the file content is forwarded to the provider before payment and is invisible in the transcript, so reads are confined to the working dir unless this is set. Sensitive files (secret keys, .env, SSH/keypair, ~/.elisym, /proc) are always refused.",
+        "type": "boolean",
+      },
+      "capability": {
+        "default": "general",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "input_path": {
+        "description": "Path to a regular file whose contents become the job input. Absolute or relative to the MCP server's working directory.",
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "max_price_lamports": {
+        "description": "Confirmation cap in the card asset subunits (USDC has 6 decimals). The advertised price must not exceed it. Omit to get a price confirmation without publishing.",
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991,
+        "type": "integer",
+      },
+      "prompt": {
+        "default": "",
+        "description": "Optional text instruction sent alongside the file (e.g. how to edit an image: "make it night", "add a hat"). It rides inline (NIP-44 encrypted) in the job event while the file travels peer-to-peer via iroh. The single attachment slot holds the file, so the prompt cannot spill to a second transfer - keep it short.",
+        "maxLength": 100000,
+        "type": "string",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "timeout_secs": {
+        "default": 300,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "input_path",
+      "provider_npub",
+    ],
+    "type": "object",
+  },
+  "submit_diff_review": {
+    "additionalProperties": false,
+    "properties": {
+      "allow_outside_cwd": {
+        "default": false,
+        "description": "Allow reviewing a repo outside the MCP server working directory. Off by default - the diff is forwarded to the provider before payment and is invisible in the transcript, so the repo is confined to the working dir subtree unless this is set. Sensitive paths (secret keys, .env, SSH/keypair, ~/.elisym, /proc) are always refused.",
+        "type": "boolean",
+      },
+      "base": {
+        "description": "Optional base ref (branch, tag, SHA). When set, diffs \${base}...HEAD. When omitted, auto-detects working-tree vs main/master/origin-HEAD.",
+        "maxLength": 200,
+        "type": "string",
+      },
+      "capability": {
+        "default": "review",
+        "description": "Capability tag advertised by the reviewer. Override if not "review".",
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string",
+      },
+      "kind_offset": {
+        "default": 100,
+        "maximum": 999,
+        "minimum": 0,
+        "type": "integer",
+      },
+      "max_price_lamports": {
+        "maximum": 9007199254740991,
+        "minimum": -9007199254740991,
+        "type": "integer",
+      },
+      "prompt": {
+        "default": "",
+        "description": "Optional instructions prepended above the diff (e.g. "focus on auth flow").",
+        "maxLength": 100000,
+        "type": "string",
+      },
+      "provider_npub": {
+        "type": "string",
+      },
+      "repo_path": {
+        "default": ".",
+        "description": "Path to the git repo. Absolute or relative to the MCP server's working directory.",
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string",
+      },
+      "session_id": {
+        "anyOf": [
+          {
+            "const": "new",
+            "type": "string",
+          },
+          {
+            "const": "none",
+            "type": "string",
+          },
+          {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string",
+          },
+        ],
+        "description": "Conversation control. Omit for automatic session management (providers advertising context support get a conversation auto-started on first contact; an ongoing conversation triggers a continue/new/one-off question before anything is published). Pass "new" to force a fresh conversation, "none" to force a stateless one-off, or a session_id from a previous result to continue that conversation. The provider answers with the conversation context of prior exchanges under the same id.",
+      },
+      "timeout_secs": {
+        "default": 300,
+        "maximum": 600,
+        "minimum": 1,
+        "type": "integer",
+      },
+    },
+    "required": [
+      "provider_npub",
+    ],
+    "type": "object",
+  },
+  "submit_feedback": {
+    "additionalProperties": false,
+    "properties": {
+      "job_event_id": {
+        "description": "Event ID returned by submit_and_pay_job, buy_capability, or create_job.",
+        "maxLength": 128,
+        "minLength": 1,
+        "type": "string",
+      },
+      "provider_npub": {
+        "description": "Provider npub. Optional when the job is in local history (.customer-history.json); required when feedback is submitted for a job submitted from outside this MCP.",
+        "type": "string",
+      },
+      "rating": {
+        "enum": [
+          "positive",
+          "negative",
+        ],
+        "type": "string",
+      },
+    },
+    "required": [
+      "job_event_id",
+      "rating",
+    ],
+    "type": "object",
+  },
+  "switch_agent": {
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+      },
+    },
+    "required": [
+      "name",
+    ],
+    "type": "object",
+  },
+  "verify_agent_identities": {
+    "additionalProperties": false,
+    "properties": {
+      "agent_npub": {
+        "description": "Agent npub (bech32 nostr identifier, starts with \`npub1...\`).",
+        "minLength": 1,
+        "type": "string",
+      },
+    },
+    "required": [
+      "agent_npub",
+    ],
+    "type": "object",
+  },
+  "withdraw": {
+    "additionalProperties": false,
+    "properties": {
+      "address": {
+        "description": "Destination Solana address (base58). Must be a valid address.",
+        "type": "string",
+      },
+      "amount": {
+        "description": "Amount in units of the selected asset as a decimal string (e.g. "0.5" for 0.5 SOL, "1.25" for 1.25 USDC), or the literal "all".",
+        "type": "string",
+      },
+      "amount_sol": {
+        "description": "Legacy alias of \`amount\` for SOL withdrawals. Amount in SOL as a decimal string, or the literal "all". Prefer \`amount\` + \`token\` for new callers.",
+        "type": "string",
+      },
+      "nonce": {
+        "description": "Confirmation nonce from a previous preview call. Omit to request a preview.",
+        "type": "string",
+      },
+      "token": {
+        "description": "Asset to withdraw ('lsm' is mainnet-only). Defaults to 'sol' for back-compat.",
+        "enum": [
+          "sol",
+          "usdc",
+          "lsm",
+        ],
+        "type": "string",
+      },
+    },
+    "required": [
+      "address",
+    ],
+    "type": "object",
+  },
+}
+`;

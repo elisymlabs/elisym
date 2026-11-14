@@ -141,52 +141,55 @@ export const SkillOnchainSchema = z
     max_authority: z.string().regex(DISPLAY_AMOUNT_REGEX).default('0'),
   })
   .strip()
-  .superRefine(
-    (value, ctx) => {
-      const authorizesSomething = new Decimal(value.max_authority).gt(0);
-      if (value.grants_authority && !authorizesSomething) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'onchain.max_authority must be positive when onchain.grants_authority is true',
-        });
-      }
-      if (!value.grants_authority && authorizesSomething) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'onchain.max_authority must be "0" unless onchain.grants_authority is true',
-        });
-      }
-      // Mirrors the card rule: an approval is always over an SPL mint, and a
-      // native SOL capability has none, so the promise could never be kept.
-      // Not gated on `mint`: the loader resolves `token: 'sol'` to native SOL and
-      // discards whatever mint was written, so a block carrying one would
-      // otherwise slip past here and fail later as an unreadable card.
-      if (value.token === 'sol' && value.grants_authority) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            'onchain.grants_authority cannot be set on a native SOL capability - an approval is ' +
-            'always over an SPL mint, so price the ceiling in a token the agent resolves (usdc, lsm)',
-        });
-      }
-      // The descriptor schema already forbids this pairing, but the loader
-      // resolves `token: 'sol'` to native SOL and DISCARDS the mint before a
-      // descriptor is ever built, so that rule never fires and the mistake is
-      // silent. It is also expensive: a block written as 500 USDC publishes a
-      // ceiling of 500 SOL, because the number is re-denominated at 9 decimals
-      // rather than 6. Refused here, where the operator can still see it - the
-      // same posture as the LSM price fallback, which a bound may not take.
-      if (value.token === 'sol' && value.mint !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            'onchain.mint must be absent when onchain.token is sol - a mint alongside it reads as ' +
-            'a ceiling priced in that token but publishes one priced in SOL',
-        });
-      }
-    },
-    { when: (payload) => payload.issues.length === 0 },
-  );
+  .superRefine((value, ctx) => {
+    // Object rules run even when a field failed a non-aborting check, so this one
+    // reads max_authority only when it is a number: a malformed one is already
+    // reported, and a throw would escape safeParse.
+    const authority = DISPLAY_AMOUNT_REGEX.test(value.max_authority)
+      ? new Decimal(value.max_authority)
+      : undefined;
+    const authorizesSomething = authority !== undefined && authority.gt(0);
+    if (authority !== undefined && value.grants_authority && !authorizesSomething) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'onchain.max_authority must be positive when onchain.grants_authority is true',
+      });
+    }
+    if (!value.grants_authority && authorizesSomething) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'onchain.max_authority must be "0" unless onchain.grants_authority is true',
+      });
+    }
+    // Mirrors the card rule: an approval is always over an SPL mint, and a
+    // native SOL capability has none, so the promise could never be kept.
+    // Not gated on `mint`: the loader resolves `token: 'sol'` to native SOL and
+    // discards whatever mint was written, so a block carrying one would
+    // otherwise slip past here and fail later as an unreadable card.
+    if (value.token === 'sol' && value.grants_authority) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'onchain.grants_authority cannot be set on a native SOL capability - an approval is ' +
+          'always over an SPL mint, so price the ceiling in a token the agent resolves (usdc, lsm)',
+      });
+    }
+    // The descriptor schema already forbids this pairing, but the loader
+    // resolves `token: 'sol'` to native SOL and DISCARDS the mint before a
+    // descriptor is ever built, so that rule never fires and the mistake is
+    // silent. It is also expensive: a block written as 500 USDC publishes a
+    // ceiling of 500 SOL, because the number is re-denominated at 9 decimals
+    // rather than 6. Refused here, where the operator can still see it - the
+    // same posture as the LSM price fallback, which a bound may not take.
+    if (value.token === 'sol' && value.mint !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'onchain.mint must be absent when onchain.token is sol - a mint alongside it reads as ' +
+          'a ceiling priced in that token but publishes one priced in SOL',
+      });
+    }
+  });
 
 export type SkillOnchain = z.infer<typeof SkillOnchainSchema>;
 
@@ -213,47 +216,48 @@ export const OnchainDescriptorSchema = z
     max_authority_subunits: z.string().regex(SUBUNITS_STRING_REGEX).refine(isWithinU64),
   })
   .strip()
-  .superRefine(
-    (value, ctx) => {
-      const authorizesSomething = BigInt(value.max_authority_subunits) > 0n;
-      if (value.grants_authority !== authorizesSomething) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            'onchain.grants_authority and a positive onchain.max_authority_subunits must agree',
-        });
-      }
-      // The verifier matches simulated balance deltas by mint, so a non-native
-      // asset without one cannot be bounded at all - every outflow would read as
-      // "some other asset" and the capability would be unusable rather than
-      // permissive. Native SOL is the only asset identified without a mint.
-      if (value.token !== 'sol' && value.mint === undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'onchain.mint is required for a capability priced in anything but native SOL',
-        });
-      }
-      if (value.token === 'sol' && value.mint !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'onchain.mint must be absent when the asset is native SOL',
-        });
-      }
-      // Every approval a call can leave is an SPL delegate, which carries a mint;
-      // the verifier refuses one whose mint is not the card's, and a native card
-      // has none. Such a promise could therefore never be kept - a customer would
-      // be shown an authority ceiling that refuses every call it describes.
-      if (value.token === 'sol' && value.mint === undefined && value.grants_authority) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            'onchain.grants_authority cannot be set on a native SOL capability - an approval is ' +
-            'always over an SPL mint, so price the ceiling in a token the agent resolves (usdc, lsm)',
-        });
-      }
-    },
-    { when: (payload) => payload.issues.length === 0 },
-  );
+  .superRefine((value, ctx) => {
+    // As above: a malformed max_authority_subunits is already reported, and BigInt
+    // would throw out of safeParse on it.
+    if (
+      SUBUNITS_STRING_REGEX.test(value.max_authority_subunits) &&
+      value.grants_authority !== BigInt(value.max_authority_subunits) > 0n
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'onchain.grants_authority and a positive onchain.max_authority_subunits must agree',
+      });
+    }
+    // The verifier matches simulated balance deltas by mint, so a non-native
+    // asset without one cannot be bounded at all - every outflow would read as
+    // "some other asset" and the capability would be unusable rather than
+    // permissive. Native SOL is the only asset identified without a mint.
+    if (value.token !== 'sol' && value.mint === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'onchain.mint is required for a capability priced in anything but native SOL',
+      });
+    }
+    if (value.token === 'sol' && value.mint !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'onchain.mint must be absent when the asset is native SOL',
+      });
+    }
+    // Every approval a call can leave is an SPL delegate, which carries a mint;
+    // the verifier refuses one whose mint is not the card's, and a native card
+    // has none. Such a promise could therefore never be kept - a customer would
+    // be shown an authority ceiling that refuses every call it describes.
+    if (value.token === 'sol' && value.mint === undefined && value.grants_authority) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'onchain.grants_authority cannot be set on a native SOL capability - an approval is ' +
+          'always over an SPL mint, so price the ceiling in a token the agent resolves (usdc, lsm)',
+      });
+    }
+  });
 
 export type OnchainDescriptor = z.infer<typeof OnchainDescriptorSchema>;
 
