@@ -107,6 +107,18 @@ describe('parseOnchainDescriptor', () => {
     expect(parseOnchainDescriptor(raw)).toBeNull();
   });
 
+  it('returns null, never throws, when a field the cross-field rules read is malformed', () => {
+    // The object-level rules call BigInt on max_authority_subunits; a card from the
+    // network carrying a non-number there must be dropped, not crash discovery.
+    for (const value of ['lots', '-1', '1e3', '']) {
+      expect(() =>
+        parseOnchainDescriptor(validDescriptor({ max_authority_subunits: value })),
+      ).not.toThrow();
+      expect(parseOnchainDescriptor(validDescriptor({ max_authority_subunits: value }))).toBeNull();
+    }
+    expect(parseOnchainDescriptor(validDescriptor({ max_authority_subunits: 7 }))).toBeNull();
+  });
+
   it('rejects a non-native asset with no mint - the verifier could not bound it', () => {
     const descriptor = validDescriptor();
     delete descriptor.mint;
@@ -281,6 +293,11 @@ describe('validateSkillOnchain', () => {
     expect(() => validateSkillOnchain('withdraw', { ...block, max_per_call: 'lots' })).toThrow(
       /invalid "onchain" block/,
     );
+    // The cross-field rules read max_authority as a Decimal: a malformed one is reported
+    // as an invalid block, never thrown as a Decimal error.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, grants_authority: true, max_authority: 'lots' }),
+    ).toThrow(/invalid "onchain" block/);
   });
 
   it('throws when the authority flag and ceiling disagree', () => {

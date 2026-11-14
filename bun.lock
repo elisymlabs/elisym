@@ -59,7 +59,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@elisym/commerce": "~0.13.0",
-        "@elisym/pay-core": "~0.4.0",
+        "@elisym/pay-core": "~0.5.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
         "@solana-program/token": "~0.14.0",
@@ -114,7 +114,7 @@
       "name": "@elisym/commerce",
       "version": "0.13.0",
       "dependencies": {
-        "@elisym/pay-core": "~0.4.0",
+        "@elisym/pay-core": "~0.5.0",
         "@noble/curves": "~2.0.1",
         "@noble/hashes": "~2.0.1",
         "@scure/base": "~2.0.0",
@@ -181,7 +181,7 @@
       },
       "dependencies": {
         "@elisym/commerce": "~0.13.0",
-        "@elisym/pay-core": "~0.4.0",
+        "@elisym/pay-core": "~0.5.0",
         "@elisym/sdk": "~0.44.0",
         "@modelcontextprotocol/sdk": "~1.32.2",
         "@solana-program/memo": "~0.11.0",
@@ -207,7 +207,7 @@
       "version": "0.0.1",
       "dependencies": {
         "@elisym/commerce": "~0.13.0",
-        "@elisym/pay-core": "~0.4.0",
+        "@elisym/pay-core": "~0.5.0",
         "@solana/kit": "~6.8.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -256,7 +256,7 @@
       },
       "dependencies": {
         "@elisym/commerce": "~0.13.0",
-        "@elisym/pay-core": "~0.4.1",
+        "@elisym/pay-core": "~0.5.0",
         "@solana-program/token": "~0.14.0",
         "@solana/kit": "~6.8.0",
         "decimal.js-light": "~2.5.1",
@@ -306,7 +306,7 @@
       "name": "@elisym/pay-stats",
       "version": "0.0.1",
       "dependencies": {
-        "@elisym/pay-core": "~0.4.0",
+        "@elisym/pay-core": "~0.5.0",
         "@solana/kit": "~6.8.0",
         "decimal.js-light": "~2.5.1",
       },
@@ -338,7 +338,7 @@
       "name": "@elisym/sdk",
       "version": "0.44.0",
       "dependencies": {
-        "@elisym/pay-core": "~0.4.0",
+        "@elisym/pay-core": "~0.5.0",
         "yaml": "~2.8.3",
         "zod": "~4.6.7",
       },
