@@ -10,7 +10,7 @@
  */
 import type { DirectMessage } from '@elisym/sdk';
 import { nip19 } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AgentInstance } from '../context.js';
 import { sanitizeInner, sanitizeUntrusted, scanForInjections } from '../sanitize.js';
 import { readContacts } from '../storage/contacts.js';

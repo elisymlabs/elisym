@@ -26,7 +26,7 @@
  * `undefined` rather than dropping the whole card.
  */
 
-import { z } from 'zod';
+import * as z from 'zod';
 
 /**
  * Positive integer string in the asset's subunits (6-decimal USDC: "1000" =

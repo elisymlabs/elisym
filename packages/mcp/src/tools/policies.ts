@@ -1,5 +1,5 @@
 import { LIMITS } from '@elisym/sdk';
-import { z } from 'zod';
+import * as z from 'zod';
 import { sanitizeField, sanitizeInner, sanitizeUntrusted, scanForInjections } from '../sanitize.js';
 import { decodeNpub } from '../utils.js';
 import type { ToolDefinition } from './types.js';

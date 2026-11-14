@@ -276,7 +276,7 @@ describe('validateSkillOnchain', () => {
     // constant prefix every message in this function carries, so it could not
     // tell one failure from another - or from a message about a different rule.
     expect(() => validateSkillOnchain('withdraw', { ...block, programs: [] })).toThrow(
-      /invalid "onchain" block: Array must contain at least 1 element/,
+      /invalid "onchain" block: Too small: expected array to have >=1 items/,
     );
     expect(() => validateSkillOnchain('withdraw', { ...block, max_per_call: 'lots' })).toThrow(
       /invalid "onchain" block/,

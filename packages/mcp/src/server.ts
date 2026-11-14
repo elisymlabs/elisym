@@ -12,11 +12,11 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { address, createSolanaRpc } from '@solana/kit';
 import { ZodError } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentContext, rpcUrlFor } from './context.js';
 import { markAgentsScrubbed, shutdownIrohTransport } from './iroh.js';
 import { logger } from './logger.js';
 import { buildEffectiveLimits } from './session-limits.js';
+import { toolInputSchema } from './tool-schema.js';
 import { agentTools } from './tools/agent.js';
 import { commerceTools } from './tools/commerce.js';
 import { customerTools } from './tools/customer.js';
@@ -199,22 +199,12 @@ export async function startServer(ctx: AgentContext): Promise<void> {
   );
 
   // List tools
-  // pass explicit zodToJsonSchema options and strip the `$schema` meta field so
-  // the inputSchema is a minimal, spec-compliant JSON Schema that every MCP client
-  // can consume.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: allTools.map((t) => {
-      const schema = zodToJsonSchema(t.schema, {
-        target: 'jsonSchema7',
-        $refStrategy: 'none',
-      }) as Record<string, unknown> & { $schema?: string };
-      delete schema.$schema;
-      return {
-        name: t.name,
-        description: t.description,
-        inputSchema: schema,
-      };
-    }),
+    tools: allTools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: toolInputSchema(t.schema),
+    })),
   }));
 
   // Call tool

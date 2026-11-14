@@ -45,7 +45,7 @@ import {
   getSignatureFromTransaction,
   sendAndConfirmTransactionFactory,
 } from '@solana/kit';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AgentContext, AgentInstance } from '../context.js';
 import {
   assertCanSpend,

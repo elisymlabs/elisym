@@ -2,7 +2,7 @@ import { type Asset, parseAssetAmount } from '@elisym/pay-core';
 import Decimal from 'decimal.js-light';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import * as nip19 from 'nostr-tools/nip19';
-import { z } from 'zod';
+import * as z from 'zod';
 import { parseCaip19 } from '../caip';
 import {
   DELIVERY_METHODS,

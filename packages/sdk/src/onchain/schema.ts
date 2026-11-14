@@ -26,7 +26,7 @@
  */
 
 import Decimal from 'decimal.js-light';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   MAX_CALL_BASE64_CHARS,
   MAX_EXPLAIN_ENTRIES,

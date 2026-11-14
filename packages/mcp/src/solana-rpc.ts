@@ -12,7 +12,7 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { z } from 'zod';
+import * as z from 'zod';
 import { type SolanaNetwork, rpcUrlFor } from './context.js';
 
 export const SOLANA_RPC_FILE = join(homedir(), '.elisym', 'solana-rpc.json');

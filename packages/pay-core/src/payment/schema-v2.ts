@@ -17,7 +17,7 @@
  * per request - the twin of the Solana reference key.
  */
 
-import { z } from 'zod';
+import * as z from 'zod';
 import { assetKey, assetsFor } from './assets';
 import type { Asset } from './assets';
 import { chainByCaip2, isEvmWireAddress, isTempoChain, isVirtualEvmAddress } from './chains';
