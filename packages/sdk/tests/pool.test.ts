@@ -11,12 +11,14 @@ vi.mock('nostr-tools', async (importOriginal) => {
   const orig = await importOriginal<typeof import('nostr-tools')>();
   return {
     ...orig,
-    SimplePool: vi.fn().mockImplementation(() => ({
-      querySync: mockQuerySync,
-      publish: mockPublish,
-      subscribeMany: mockSubscribeMany,
-      close: mockClose,
-    })),
+    SimplePool: vi.fn().mockImplementation(function () {
+      return {
+        querySync: mockQuerySync,
+        publish: mockPublish,
+        subscribeMany: mockSubscribeMany,
+        close: mockClose,
+      };
+    }),
   };
 });
 

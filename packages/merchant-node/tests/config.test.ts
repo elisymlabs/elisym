@@ -40,6 +40,20 @@ describe('the merchant config', () => {
     ).toEqual([]);
   });
 
+  it('reports a malformed list or webhook as a problem, never throws', () => {
+    // The cross-field rules walk inboxRelays and payouts and read the webhook url;
+    // zod skips them after a wrong type, and they take any string.
+    for (const broken of [
+      { ...valid(), inboxRelays: 'wss://relay.example.com' },
+      { ...valid(), payouts: { caip19: USDC_DEVNET_CAIP19 } },
+      { ...valid(), payouts: [{ caip19: 7, address: PAYOUT }] },
+      { ...valid(), webhook: { url: 7 } },
+    ]) {
+      expect(() => configProblems(broken)).not.toThrow();
+      expect(configProblems(broken).length).toBeGreaterThan(0);
+    }
+  });
+
   it('refuses the template as written: the payout address is a placeholder', () => {
     expect(configProblems(configTemplate('devnet'))).toEqual([
       'payouts.0.address: is not a Solana address',

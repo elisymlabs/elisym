@@ -53,7 +53,7 @@ import { NATIVE_SOL, formatAssetAmount } from '@elisym/sdk';
 import { createGuardedFetch } from '@elisym/sdk/node';
 import { createKeyPairSignerFromBytes, createSolanaRpc, isSignature } from '@solana/kit';
 import { finalizeEvent } from 'nostr-tools/pure';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   type AgentContext,
   type AgentInstance,

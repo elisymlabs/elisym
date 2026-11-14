@@ -13,7 +13,7 @@ import {
   getBase58Encoder,
 } from '@solana/kit';
 import { generateSecretKey, nip19 } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import { listAgentNames, loadAgentConfig, saveAgentConfig } from '../config.js';
 import { DEFAULT_NETWORK } from '../context.js';
 import type { AgentContext, AgentInstance, AgentSecurityFlags, SolanaNetwork } from '../context.js';

@@ -51,7 +51,7 @@ import {
   signTransactionMessageWithSigners,
 } from '@solana/kit';
 import { verifyEvent } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import type { AgentInstance, SolanaNetwork } from '../context.js';
 import {
   AgentContext,

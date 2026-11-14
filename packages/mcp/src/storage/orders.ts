@@ -11,7 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { OrderBackend, OrderRecord, StorePinsRecord } from '@elisym/commerce/buyer';
 import { ensureGitignoreHasPrivateStateEntries } from '@elisym/sdk/agent-store';
-import { z } from 'zod';
+import * as z from 'zod';
 import { writeFileDurable } from './durable-storage.js';
 import { migrateGitignoreBestEffort } from './gitignore-migration.js';
 import { withOrdersLock } from './orders-lock.js';

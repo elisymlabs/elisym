@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { nsecEncode } from 'nostr-tools/nip19';
 import { getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import { z } from 'zod';
+import * as z from 'zod';
 import { HOSTED_ADMIN_URL } from './constants';
 import { replaceFileDurably } from './durable-file';
 import { decryptSecret, encryptSecret, isEncrypted } from './secret-box';

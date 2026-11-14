@@ -51,7 +51,7 @@ import {
   type Signature,
 } from '@solana/kit';
 import { nip19, verifyEvent } from 'nostr-tools';
-import { z } from 'zod';
+import * as z from 'zod';
 import {
   explorerQuerySuffixFor,
   releaseSpend,

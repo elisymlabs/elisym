@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod';
 import { PAYMENT_LIMITS } from '../constants';
 
 const MAX_DESCRIPTION_LENGTH = PAYMENT_LIMITS.MAX_DESCRIPTION_LENGTH;

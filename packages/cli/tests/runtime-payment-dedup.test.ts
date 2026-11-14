@@ -247,37 +247,39 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
   const actual = (await importOriginal()) as any;
   return {
     ...actual,
-    SolanaPaymentStrategy: vi.fn().mockImplementation(() => ({
-      // The SHAPE the real `createPaymentRequest` returns, fee fields included:
-      // a request without `fee_address`/`fee_amount`/`network` is one the SDK's
-      // own `validatePaymentRequest` would reject, so a fixture missing them
-      // persists a `payment_request` no real customer or verifier would accept.
-      createPaymentRequest: vi.fn().mockImplementation(() => paymentRequestFixture()),
-      verifyPayment: vi
-        .fn()
-        .mockImplementation(
-          (
-            _rpc: unknown,
-            _req: unknown,
-            _cfg: unknown,
-            options?: { txSignature?: string; retries?: number },
-          ) => {
-            const txSignature = options?.txSignature;
-            verifyCalls.push({ txSignature, retries: options?.retries });
-            // No signature: the SDK's own reference path, which only the LIVE
-            // verify race still uses. A signature the scan produced routes to
-            // `refPathVerify`; anything else is the customer-asserted one.
-            if (txSignature === undefined) {
-              return Promise.resolve(refPathVerify());
-            }
-            return Promise.resolve(
-              isRefScanCandidate(txSignature)
-                ? refPathVerify(txSignature)
-                : sigPathVerify(txSignature),
-            );
-          },
-        ),
-    })),
+    SolanaPaymentStrategy: vi.fn().mockImplementation(function () {
+      return {
+        // The SHAPE the real `createPaymentRequest` returns, fee fields included:
+        // a request without `fee_address`/`fee_amount`/`network` is one the SDK's
+        // own `validatePaymentRequest` would reject, so a fixture missing them
+        // persists a `payment_request` no real customer or verifier would accept.
+        createPaymentRequest: vi.fn().mockImplementation(() => paymentRequestFixture()),
+        verifyPayment: vi
+          .fn()
+          .mockImplementation(
+            (
+              _rpc: unknown,
+              _req: unknown,
+              _cfg: unknown,
+              options?: { txSignature?: string; retries?: number },
+            ) => {
+              const txSignature = options?.txSignature;
+              verifyCalls.push({ txSignature, retries: options?.retries });
+              // No signature: the SDK's own reference path, which only the LIVE
+              // verify race still uses. A signature the scan produced routes to
+              // `refPathVerify`; anything else is the customer-asserted one.
+              if (txSignature === undefined) {
+                return Promise.resolve(refPathVerify());
+              }
+              return Promise.resolve(
+                isRefScanCandidate(txSignature)
+                  ? refPathVerify(txSignature)
+                  : sigPathVerify(txSignature),
+              );
+            },
+          ),
+      };
+    }),
     calculateProtocolFee: actual.calculateProtocolFee,
     getProtocolConfig: vi.fn().mockResolvedValue({
       feeBps: 300,
