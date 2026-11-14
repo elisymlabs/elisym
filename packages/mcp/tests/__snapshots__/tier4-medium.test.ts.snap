@@ -263,6 +263,7 @@ exports[`tool input schemas are what clients have always been sent > every tool 
     "properties": {
       "agent_npub": {
         "description": "Agent npub (bech32 nostr identifier, starts with \`npub1...\`).",
+        "maxLength": 128,
         "minLength": 1,
         "type": "string",
       },

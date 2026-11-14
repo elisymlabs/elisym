@@ -2367,6 +2367,12 @@ export const customerTools: ToolDefinition[] = [
       let providerPubkey: string | undefined;
       if (input.provider_npub) {
         providerPubkey = decodeNpub(input.provider_npub);
+      } else if (agent.agentDir !== undefined) {
+        // A job submitted here has its provider in the local history: bind the result
+        // to it, as fetch_job_file does, so a third party who knows the public job id
+        // cannot substitute its own result.
+        providerPubkey = (await findCustomerJob(agent.agentDir, input.job_event_id))
+          ?.providerPubkey;
       }
 
       // honor caller-provided lookback_secs (default 24h).
@@ -2428,8 +2434,8 @@ export const customerTools: ToolDefinition[] = [
       // via the conditional pending|timeout -> completed transition (a re-poll
       // of an already-completed job transitions nothing), and authenticated:
       // it fires only when the SDK enforced the result author (provider_npub
-      // given) AND that author matches the entry recorded at submit time. An
-      // unauthenticated fetch never bumps - the gate must not overstate on the
+      // given, or the provider recorded at submit time) AND that author matches the
+      // entry recorded at submit time. An unauthenticated fetch never bumps - the gate must not overstate on the
       // strength of a spoofable result.
       if (agent.agentDir !== undefined && providerPubkey !== undefined) {
         // Best-effort (pinned failure semantics): the result is already

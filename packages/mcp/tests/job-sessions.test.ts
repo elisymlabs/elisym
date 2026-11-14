@@ -692,18 +692,18 @@ describe('get_job_result late bump (integration)', () => {
     expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(1);
   });
 
-  it('never bumps for an unauthenticated fetch or a mismatched author', async () => {
+  it('never bumps for a mismatched author; without provider_npub it binds to the recorded one', async () => {
     await seedPendingJob(PROVIDER_B_PUBKEY);
     const tool = findTool('get_job_result');
-    // No provider_npub: the SDK skipped its author check - the bump must not
-    // trust a spoofable result.
-    await tool.handler(ctxWith(resultAgent()), tool.schema.parse({ job_event_id: LATE_JOB }));
-    expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(0);
     // provider_npub differing from the author recorded at submit: no bump.
     await tool.handler(
       ctxWith(resultAgent()),
       tool.schema.parse({ job_event_id: LATE_JOB, provider_npub: PROVIDER_A_NPUB }),
     );
     expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(0);
+    // No provider_npub: the fetch is bound to the provider recorded at submit (the SDK
+    // filters by that author), so the result is authenticated and the bump fires.
+    await tool.handler(ctxWith(resultAgent()), tool.schema.parse({ job_event_id: LATE_JOB }));
+    expect((await findSessionById(handle, UUID_LATE))?.turnCount).toBe(1);
   });
 });
