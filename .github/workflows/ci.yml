@@ -35,6 +35,7 @@ jobs:
       - name: Run QA
         run: bun run qa
         env:
-          # Ten test suites at once (each with a worker per core) ran the runner out of
-          # memory once the Askr packages and vitest 4 came in.
-          TURBO_TEST_CONCURRENCY: '3'
+          # One test suite at a time: each runs a worker per core, and the askr-server
+          # suite alone takes about 0.9 GB per worker (an in-memory Postgres each);
+          # several suites at once ran the runner out of memory.
+          TURBO_TEST_CONCURRENCY: '1'
