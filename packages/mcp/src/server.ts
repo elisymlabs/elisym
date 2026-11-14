@@ -180,6 +180,19 @@ export async function teardownRegistry(ctx: AgentContext): Promise<void> {
   }
 }
 
+/** The tools/list answer: every tool with the input schema clients validate against. */
+export function listToolsResult(): {
+  tools: { name: string; description: string; inputSchema: Record<string, unknown> }[];
+} {
+  return {
+    tools: allTools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: toolInputSchema(tool.schema),
+    })),
+  };
+}
+
 export async function startServer(ctx: AgentContext): Promise<void> {
   // Materialize session-spend caps before any tool can fire. Fail fast on
   // malformed YAML or unknown assets in the override file - silently falling
@@ -199,13 +212,7 @@ export async function startServer(ctx: AgentContext): Promise<void> {
   );
 
   // List tools
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: allTools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: toolInputSchema(t.schema),
-    })),
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => listToolsResult());
 
   // Call tool
   server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {

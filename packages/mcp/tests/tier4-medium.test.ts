@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import { AgentContext } from '../src/context.js';
 import { sanitizeUntrusted } from '../src/sanitize.js';
-import { registeredTools } from '../src/server.js';
+import { listToolsResult, registeredTools } from '../src/server.js';
 import { toolInputSchema } from '../src/tool-schema.js';
 
 describe('sliding window RateLimiter', () => {
@@ -54,8 +54,9 @@ describe('tool input schemas are what clients have always been sent', () => {
   // Pinned whole: objects closed (additionalProperties: false), defaulted fields not
   // required (the input side), everything inlined.
   it('every tool input schema matches the snapshot', () => {
+    // What tools/list sends, not the helper alone.
     const schemas = Object.fromEntries(
-      registeredTools.map((tool) => [tool.name, toolInputSchema(tool.schema)]),
+      listToolsResult().tools.map((tool) => [tool.name, tool.inputSchema]),
     );
     expect(JSON.stringify(schemas)).not.toMatch(/"\$ref"|"definitions"|"\$defs"/);
     expect(schemas).toMatchSnapshot();

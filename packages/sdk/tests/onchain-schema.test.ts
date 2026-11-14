@@ -110,7 +110,7 @@ describe('parseOnchainDescriptor', () => {
   it('returns null, never throws, when a field the cross-field rules read is malformed', () => {
     // The object-level rules call BigInt on max_authority_subunits; a card from the
     // network carrying a non-number there must be dropped, not crash discovery.
-    for (const value of ['lots', '-1', '1e3', '']) {
+    for (const value of ['lots', '-1', '1e3', '', '1.5', '0.5']) {
       expect(() =>
         parseOnchainDescriptor(validDescriptor({ max_authority_subunits: value })),
       ).not.toThrow();
@@ -298,6 +298,19 @@ describe('validateSkillOnchain', () => {
     expect(() =>
       validateSkillOnchain('withdraw', { ...block, kind: 'BAD KIND', token: 'sol' }),
     ).toThrow(/onchain\.mint must be absent when onchain\.token is sol/);
+    // ...and so does a malformed max_authority, the one field those rules read.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, max_authority: 'lots', token: 'sol' }),
+    ).toThrow(/onchain\.mint must be absent when onchain\.token is sol/);
+    // A malformed max_authority is reported as the field error alone, not also as
+    // a ceiling that is not positive.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, grants_authority: true, max_authority: 'lots' }),
+    ).not.toThrow(/must be positive/);
+    // A decimal ceiling without the flag is refused like a whole one.
+    expect(() =>
+      validateSkillOnchain('withdraw', { ...block, grants_authority: false, max_authority: '0.5' }),
+    ).toThrow(/onchain\.max_authority must be "0" unless onchain\.grants_authority is true/);
     // The cross-field rules read max_authority as a Decimal: a malformed one is reported
     // as an invalid block, never thrown as a Decimal error.
     expect(() =>
