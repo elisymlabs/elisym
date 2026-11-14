@@ -1,6 +1,5 @@
 import './styles.css';
-import { OrderStore, readChainTime } from '@elisym/commerce/buyer';
-import { createRelayClient } from '@elisym/commerce/buyer';
+import { OrderStore, readChainTime, createRelayClient } from '@elisym/commerce/buyer';
 import { type ChainConfig, type Network, chainByCaip2 } from '@elisym/pay-core';
 import { type Eip1193Client, createJsonRpcClient } from '@elisym/pay-core/evm';
 import { type Rpc, type SolanaRpcApi, createSolanaRpc } from '@solana/kit';

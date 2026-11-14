@@ -8,12 +8,15 @@
  * Devnet only: the key must hold devnet SOL for fees and devnet USDC.
  */
 import { readFileSync } from 'node:fs';
-import { loadOffer } from '@elisym/commerce/buyer';
-import { type OrderDeps, applyStatus, listenForStatus, placeOrder } from '@elisym/commerce/buyer';
-import { isTerminal } from '@elisym/commerce/buyer';
-import { OrderStore } from '@elisym/commerce/buyer';
-import { createRelayClient } from '@elisym/commerce/buyer';
 import {
+  loadOffer,
+  type OrderDeps,
+  applyStatus,
+  listenForStatus,
+  placeOrder,
+  isTerminal,
+  OrderStore,
+  createRelayClient,
   type SolanaPayDeps,
   type SolanaWallet,
   composeOrderPayment,
