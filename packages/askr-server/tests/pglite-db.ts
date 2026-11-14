@@ -47,8 +47,23 @@ async function migratedTemplate(): Promise<PGliteInterface> {
   return client;
 }
 
+/** The clones the running test opened; tests/setup.ts closes them after it. */
+const OPEN_CLONES: PGliteInterface[] = [];
+
 /** A fresh migrated database, cloned from one migrated per test file. */
 export async function freshDb(): Promise<Db> {
   template ??= migratedTemplate();
-  return pgliteDb(await (await template).clone());
+  const clone = await (await template).clone();
+  OPEN_CLONES.push(clone);
+  return pgliteDb(clone);
+}
+
+/**
+ * Close every clone the test opened. Each is a whole Postgres in WebAssembly
+ * memory (several hundred MB); left open, one test file grew past 7 GB and the
+ * suite ran a CI runner out of memory.
+ */
+export async function closeOpenClones(): Promise<void> {
+  const clones = OPEN_CLONES.splice(0);
+  await Promise.all(clones.map((clone) => (clone.closed ? undefined : clone.close())));
 }
