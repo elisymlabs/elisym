@@ -2,6 +2,8 @@ import type { CatalogItemInput } from '@elisym/askr';
 import { useRef, useState } from 'react';
 import {
   CSV_COLUMNS,
+  CSV_EXAMPLE,
+  CSV_VARIANT_COLUMNS,
   type CsvImport as CsvResult,
   csvSizeProblem,
   productsFromCsv,
@@ -16,6 +18,7 @@ interface Props {
 }
 
 const MAX_SHOWN_ERRORS = 50;
+const EXAMPLE_HREF = `data:text/csv;charset=utf-8,${encodeURIComponent(CSV_EXAMPLE)}`;
 
 /** A CSV file read in the browser, every row checked before anything is kept. */
 export function CsvImport({ currency, current, onImport }: Props) {
@@ -44,8 +47,9 @@ export function CsvImport({ currency, current, onImport }: Props) {
     }
   };
 
-  // A CSV row carries no variants, options or attributes and its own availability: it replaces
-  // the product whole.
+  // A file's product replaces the current one whole: say so when the current one has
+  // variants, options or attributes the file's lacks, came from a connector, or its
+  // availability changes.
   const richer =
     result === undefined
       ? []
@@ -53,9 +57,9 @@ export function CsvImport({ currency, current, onImport }: Props) {
           current.some(
             (existing) =>
               existing.d === item.d &&
-              ((existing.variants?.length ?? 0) > 0 ||
-                (existing.options?.length ?? 0) > 0 ||
-                (existing.attrs?.length ?? 0) > 0 ||
+              (((existing.variants?.length ?? 0) > 0 && (item.variants?.length ?? 0) === 0) ||
+                ((existing.options?.length ?? 0) > 0 && (item.options?.length ?? 0) === 0) ||
+                ((existing.attrs?.length ?? 0) > 0 && (item.attrs?.length ?? 0) === 0) ||
                 existing.sourceId !== undefined ||
                 (existing.visibility ?? 'on-sale') !== (item.visibility ?? 'on-sale')),
           ),
@@ -64,10 +68,29 @@ export function CsvImport({ currency, current, onImport }: Props) {
   return (
     <div className="border-line rounded-12 flex flex-col gap-12 border p-16">
       <h3 className="text-15 font-semibold">Import a CSV file</h3>
-      <p className="text-13 text-text-2">
-        Columns: {CSV_COLUMNS.join(', ')}. The first row names them; d, title and price are
-        required. Put several images or topics in one cell separated by |.
-      </p>
+      <div className="text-13 text-text-2 flex flex-col gap-4">
+        <p>
+          Columns: {CSV_COLUMNS.join(', ')}. The first row names them; d, title and price are
+          required. Put several images or topics in one cell separated by |. frequency is hour, day,
+          week, month or year for a subscription.
+        </p>
+        <p>
+          Attributes: a column named attr:Material (any name after attr:) gives every product that
+          fills it that attribute.
+        </p>
+        <p>
+          Sizes, colors and other variants: name a column per option, such as option:Size and
+          option:Color, plus {CSV_VARIANT_COLUMNS.join(', ')} if you need them. Each variant is one
+          row with the same d; the product&apos;s other columns go on its first row only. An empty
+          variant_price is the product&apos;s price, variant_available is yes or no (yes when
+          empty), and the listing shows the lowest in-stock variant price.
+        </p>
+        <p>
+          <a className="underline" href={EXAMPLE_HREF} download="askr-products-example.csv">
+            Download an example file
+          </a>
+        </p>
+      </div>
       <input
         type="file"
         ref={fileInput}

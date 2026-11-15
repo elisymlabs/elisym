@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_CSV_BYTES, csvSizeProblem, parseCsv, productsFromCsv } from '../src/lib/csv';
+import {
+  CSV_EXAMPLE,
+  MAX_CSV_BYTES,
+  csvSizeProblem,
+  parseCsv,
+  productsFromCsv,
+} from '../src/lib/csv';
 
 describe('parseCsv', () => {
   it('reads quoted fields with commas, quotes and line breaks, CRLF and a BOM', () => {
@@ -113,5 +119,109 @@ describe('productsFromCsv', () => {
   it('refuses a file over the server catalog cap', () => {
     expect(csvSizeProblem(MAX_CSV_BYTES)).toBeUndefined();
     expect(csvSizeProblem(MAX_CSV_BYTES + 1)).toContain('larger than 8 MB');
+  });
+
+  it('reads frequency, attr: columns and option: variant rows into one product', () => {
+    const text = [
+      'd,title,price,frequency,attr:Material,attr:Fit,option:Size,option:Color,variant_id,variant_price,variant_available',
+      'tee,Tee,99,,Cotton,,S,Black,t-s,20,yes',
+      'tee,,,,,,M,Black,,22,',
+      'tee,,,,,,L,White,t-l,,no',
+      'box,Coffee box,15,Month,,,,,,,',
+    ].join('\n');
+    const result = productsFromCsv(text, 'USD');
+    expect(result.errors).toEqual([]);
+    expect(result.ignoredColumns).toEqual([]);
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0]).toMatchObject({
+      d: 'tee',
+      // The lowest in-stock variant price, not the 99 of the price cell.
+      price: { amount: '20', currency: 'USD' },
+      attrs: [{ name: 'Material', value: 'Cotton' }],
+      options: [
+        { name: 'Size', values: ['S', 'M', 'L'] },
+        { name: 'Color', values: ['Black', 'White'] },
+      ],
+      variants: [
+        { id: 't-s', price: '20', available: true, values: ['S', 'Black'] },
+        { id: '2', price: '22', available: true, values: ['M', 'Black'] },
+        { id: 't-l', price: '99', available: false, values: ['L', 'White'] },
+      ],
+      visibility: 'on-sale',
+    });
+    expect(result.items[1]).toMatchObject({
+      d: 'box',
+      price: { amount: '15', currency: 'USD', frequency: 'month' },
+      attrs: [],
+      options: [],
+      variants: [],
+    });
+  });
+
+  it('uses only the options a product fills, and a product with nothing in stock is sold out', () => {
+    const text = [
+      'd,title,price,visibility,option:Size,option:Color,variant_available',
+      'cap,Cap,10,,,Red,no',
+      'cap,,,,,Blue,no',
+      'hat,Hat,12,pre-order,M,,no',
+    ].join('\n');
+    const result = productsFromCsv(text, 'USD');
+    expect(result.errors).toEqual([]);
+    expect(result.items[0]).toMatchObject({
+      options: [{ name: 'Color', values: ['Red', 'Blue'] }],
+      visibility: 'sold-out',
+    });
+    expect(result.items[1]).toMatchObject({
+      options: [{ name: 'Size', values: ['M'] }],
+      visibility: 'pre-order',
+    });
+  });
+
+  it('leaves out a whole product when one of its variant rows is wrong, with the lines', () => {
+    const text = [
+      'd,title,price,summary,option:Size,option:Color,variant_available,variant_price',
+      'tee,Tee,20,,S,Red,,',
+      'tee,,,,,Blue,,',
+      'tee,,,,M,Red,maybe,',
+      'tee,,,more,L,Red,,',
+      'mug,Mug,5,,,,,',
+      'mug,Mug again,6,,,,,',
+      'cup,Cup,3,,S,,,abc',
+      'ok,Ok,1,,,,,',
+    ].join('\n');
+    const result = productsFromCsv(text, 'USD');
+    expect(result.items.map((item) => item.d)).toEqual(['mug', 'ok']);
+    const messagesOf = (line: number) =>
+      result.errors.find((error) => error.line === line)?.messages.join(' | ') ?? '';
+    expect(result.errors.map((error) => error.line)).toEqual([3, 4, 5, 7, 8]);
+    expect(messagesOf(3)).toContain('option:Size: this variant needs a value');
+    expect(messagesOf(4)).toContain('variant_available: write yes or no');
+    expect(messagesOf(5)).toContain('fills only d');
+    expect(messagesOf(7)).toContain('used by an earlier row');
+    expect(messagesOf(8)).toContain('variants.0.price');
+  });
+
+  it('refuses a column named twice, attr:/option: names compared without case', () => {
+    expect(productsFromCsv('d,title,price,Price\na,A,1,2', 'USD').fileErrors).toEqual([
+      'The file names the column price more than once.',
+    ]);
+    expect(
+      productsFromCsv('d,title,price,option:Size,option:size\na,A,1,S,M', 'USD').fileErrors,
+    ).toEqual(['The file names the column option:size more than once.']);
+    expect(
+      productsFromCsv('d,title,price,attr:,option: \na,A,1,x,y', 'USD').ignoredColumns,
+    ).toEqual(['attr:', 'option:']);
+  });
+
+  it('reads the example file without a problem', () => {
+    const result = productsFromCsv(CSV_EXAMPLE, 'USD');
+    expect(result.errors).toEqual([]);
+    expect(result.fileErrors).toEqual([]);
+    expect(result.ignoredColumns).toEqual([]);
+    expect(result.items.map((item) => [item.d, item.variants?.length ?? 0])).toEqual([
+      ['mug-1', 0],
+      ['tee-1', 3],
+      ['box-1', 0],
+    ]);
   });
 });

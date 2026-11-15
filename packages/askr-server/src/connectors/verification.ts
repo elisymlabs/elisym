@@ -13,14 +13,26 @@ export type VerificationFailureReason =
   /** Neither the meta tag nor `/.well-known/askr` names the owner. */
   | 'not_found'
   /** Neither page could be read. */
-  | 'fetch_failed';
+  | 'fetch_failed'
+  /**
+   * The home page refused the connector (401, 403, 429 or 503): most often a
+   * bot check in front of the shop, so adding the tag would not help.
+   */
+  | 'blocked';
 
 export interface VerificationFailure {
   origin: string;
   reason: VerificationFailureReason;
 }
 
-type PageRead = { kind: 'page'; body: string } | { kind: 'missing' } | { kind: 'failed' };
+type PageRead =
+  | { kind: 'page'; body: string }
+  | { kind: 'missing' }
+  | { kind: 'blocked' }
+  | { kind: 'failed' };
+
+/** Statuses a bot check or a locked site answers with: the page is there, the reader is refused. */
+const REFUSED_STATUSES = new Set([401, 403, 429, 503]);
 
 /**
  * A page of `origin` itself: a 200 whose final URL (after redirects) is still
@@ -33,7 +45,13 @@ async function readOwnPage(http: ShopHttp, origin: string, path: string): Promis
       timeoutMs: FETCH_TIMEOUT_MS,
       accept: 'text/html, text/plain',
     });
-    if (response.status !== 200 || new URL(response.url).origin !== origin) {
+    if (new URL(response.url).origin !== origin) {
+      return { kind: 'missing' };
+    }
+    if (REFUSED_STATUSES.has(response.status)) {
+      return { kind: 'blocked' };
+    }
+    if (response.status !== 200) {
       return { kind: 'missing' };
     }
     return { kind: 'page', body: response.body };
@@ -63,6 +81,9 @@ export async function verifyOrigin(
   const home = await readOwnPage(http, origin, '/');
   if (home.kind === 'page' && metaContents(home.body, VERIFICATION_META_NAME).includes(npub)) {
     return undefined;
+  }
+  if (home.kind === 'blocked') {
+    return 'blocked';
   }
   return wellKnown.kind === 'failed' && home.kind === 'failed' ? 'fetch_failed' : 'not_found';
 }

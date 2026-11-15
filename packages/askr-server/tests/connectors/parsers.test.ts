@@ -328,6 +328,10 @@ describe('Google feed', () => {
   it('rejects bodies that are not feeds', () => {
     expect(() => parseGoogleFeed('<html><body>hi</body></html>')).toThrow(FeedFormatError);
     expect(() => parseGoogleFeed('title\tprice\nA\t1 USD')).toThrow(FeedFormatError);
+    // A feed saved from a browser view starts with the browser's note, not with `<`.
+    expect(() =>
+      parseGoogleFeed('This XML file does not appear to have any style information.\n<rss></rss>'),
+    ).toThrow(/not a product feed: an XML feed \(RSS or Atom\) starts with </);
     expect(() => parseGoogleFeed('<rss><channel>')).toThrow(FeedFormatError);
   });
 });

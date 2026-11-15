@@ -1,9 +1,18 @@
 import { type CatalogItemInput, CatalogItemInputSchema, VISIBILITIES } from '@elisym/askr';
 import { useState } from 'react';
+import {
+  type VariantInput,
+  listingPriceOf,
+  optionValuesOf,
+  variantsFromOptions,
+} from '../lib/variants';
+import { type AttrRow, AttrsEditor } from './AttrsEditor';
 import { Notice } from './Notice';
+import { type OptionRow, OptionsEditor } from './OptionsEditor';
 import { SelectField } from './SelectField';
 import { TextAreaField } from './TextAreaField';
 import { TextField } from './TextField';
+import { VariantsTable } from './VariantsTable';
 
 interface Props {
   /** The product being edited, or undefined for a new one. */
@@ -20,18 +29,79 @@ const VISIBILITY_OPTIONS = VISIBILITIES.map((visibility) => ({
   label: visibility.replace('-', ' '),
 }));
 
-/** One product's main fields; anything else it carries (variants, attributes) is kept as is. */
+const FREQUENCY_OPTIONS = [
+  { value: '', label: 'One-time price' },
+  { value: 'hour', label: 'Per hour' },
+  { value: 'day', label: 'Per day' },
+  { value: 'week', label: 'Per week' },
+  { value: 'month', label: 'Per month' },
+  { value: 'year', label: 'Per year' },
+];
+
+/** `kitchen, gifts` as topics: trimmed, empty ones dropped. */
+function topicsOf(text: string): string[] {
+  return text
+    .split(',')
+    .map((topic) => topic.trim())
+    .filter((topic) => topic !== '');
+}
+
+function optionRowsOf(item: CatalogItemInput | undefined): OptionRow[] {
+  return (item?.options ?? []).map((option) => ({
+    name: option.name,
+    values: option.values.join(', '),
+  }));
+}
+
+/** The options as typed, without rows left wholly empty. */
+function optionsOf(rows: readonly OptionRow[]) {
+  return rows
+    .map((row) => ({ name: row.name.trim(), values: optionValuesOf(row.values) }))
+    .filter((option) => option.name !== '' || option.values.length > 0);
+}
+
+/**
+ * One product's fields, attributes, options and variants. Its connector source
+ * id and anything else the form does not show are kept as they are.
+ */
 export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }: Props) {
   const [d, setD] = useState(initial?.d ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
   const [price, setPrice] = useState(initial?.price.amount ?? '');
   const [priceCurrency, setPriceCurrency] = useState(initial?.price.currency ?? currency);
+  const [frequency, setFrequency] = useState<string>(initial?.price.frequency ?? '');
   const [summary, setSummary] = useState(initial?.summary ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
   const [url, setUrl] = useState(initial?.url ?? '');
   const [images, setImages] = useState((initial?.images ?? []).join('\n'));
+  const [topics, setTopics] = useState((initial?.topics ?? []).join(', '));
+  const [sku, setSku] = useState(initial?.sku ?? '');
   const [visibility, setVisibility] = useState<string>(initial?.visibility ?? 'on-sale');
+  const [attrs, setAttrs] = useState<AttrRow[]>(
+    (initial?.attrs ?? []).map((attr) => ({ name: attr.name, value: attr.value })),
+  );
+  const [optionRows, setOptionRows] = useState<OptionRow[]>(optionRowsOf(initial));
+  const [variants, setVariants] = useState<VariantInput[]>(initial?.variants ?? []);
+  const [optionProblem, setOptionProblem] = useState('');
   const [errors, setErrors] = useState<string[]>([]);
+
+  const listingPrice = listingPriceOf(variants);
+
+  // Every change to the options rebuilds the variants: a combination that stays keeps its
+  // price and stock, a new one starts at the current price.
+  const changeOptions = (rows: OptionRow[]) => {
+    setOptionRows(rows);
+    const complete = optionsOf(rows).filter(
+      (option) => option.name !== '' && option.values.length > 0,
+    );
+    const next = variantsFromOptions(complete, variants, listingPrice ?? price.trim());
+    if (next.ok) {
+      setVariants(next.variants);
+      setOptionProblem('');
+    } else {
+      setOptionProblem(next.reason);
+    }
+  };
 
   const save = () => {
     const id = d.trim();
@@ -45,25 +115,38 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       title: title.trim(),
       price: {
         ...initial?.price,
-        amount: price.trim(),
+        // With variants the listing carries the lowest in-stock variant price (2.1).
+        amount: variants.length > 0 ? (listingPrice ?? '') : price.trim(),
         currency: priceCurrency.trim().toUpperCase(),
+        frequency: frequency === '' ? undefined : frequency,
       },
       description,
       images: images
         .split(/\s+/u)
         .map((image) => image.trim())
         .filter((image) => image !== ''),
+      topics: topicsOf(topics),
+      attrs: attrs
+        .map((attr) => ({ name: attr.name.trim(), value: attr.value.trim() }))
+        .filter((attr) => attr.name !== '' || attr.value !== ''),
+      options: optionsOf(optionRows),
+      variants,
       visibility,
     };
     candidate.summary = summary.trim() === '' ? undefined : summary.trim();
     candidate.url = url.trim() === '' ? undefined : url.trim();
+    candidate.sku = sku.trim() === '' ? undefined : sku.trim();
+    const problems = optionProblem === '' ? [] : [`options: ${optionProblem}`];
     const checked = CatalogItemInputSchema.safeParse(candidate);
     if (!checked.success) {
-      setErrors(
-        checked.error.issues.map(
+      problems.push(
+        ...checked.error.issues.map(
           (issue) => `${issue.path.join('.') || 'product'}: ${issue.message}`,
         ),
       );
+    }
+    if (!checked.success || problems.length > 0) {
+      setErrors(problems);
       return;
     }
     setErrors([]);
@@ -92,19 +175,38 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         }}
       />
       <TextField id="product-title" label="Title" value={title} onChange={setTitle} />
-      <div className="grid gap-12 sm:grid-cols-2">
-        <TextField
-          id="product-price"
-          label="Price"
-          value={price}
-          placeholder="19.90"
-          onChange={setPrice}
-        />
+      <div className="grid gap-12 sm:grid-cols-3">
+        {variants.length > 0 ? (
+          <TextField
+            id="product-price"
+            label="Price"
+            value={listingPrice ?? ''}
+            readOnly
+            hint="The lowest in-stock variant price, from the variants below."
+            onChange={() => undefined}
+          />
+        ) : (
+          <TextField
+            id="product-price"
+            label="Price"
+            value={price}
+            placeholder="19.90"
+            onChange={setPrice}
+          />
+        )}
         <TextField
           id="product-currency"
           label="Currency"
           value={priceCurrency}
           onChange={setPriceCurrency}
+        />
+        <SelectField
+          id="product-frequency"
+          label="Billing"
+          value={frequency}
+          options={FREQUENCY_OPTIONS}
+          hint="Per month and the like for a subscription."
+          onChange={setFrequency}
         />
       </div>
       <TextField
@@ -133,6 +235,21 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         value={images}
         onChange={setImages}
       />
+      <div className="grid gap-12 sm:grid-cols-2">
+        <TextField
+          id="product-topics"
+          label="Topics (optional)"
+          value={topics}
+          placeholder="tents, camping"
+          hint="Words shoppers search by, separated by commas."
+          onChange={setTopics}
+        />
+        <TextField id="product-sku" label="SKU (optional)" value={sku} onChange={setSku} />
+      </div>
+      <AttrsEditor rows={attrs} onChange={setAttrs} />
+      <OptionsEditor rows={optionRows} onChange={changeOptions} />
+      {optionProblem === '' ? null : <Notice tone="error">{optionProblem}</Notice>}
+      {variants.length === 0 ? null : <VariantsTable variants={variants} onChange={setVariants} />}
       <SelectField
         id="product-visibility"
         label="Availability"
