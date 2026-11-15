@@ -1,8 +1,14 @@
+const BOT_CHECK_WAY_OUT =
+  'let the AskrConnector user agent through, or import a CSV file or a product feed instead';
+/** Statuses a bot check in front of a shop answers with. */
+const REFUSED_STATUSES = new Set([401, 403, 429, 503]);
+
 const VERIFICATION_REASONS: Readonly<Record<string, string>> = {
   not_configured: 'is not among your allowed or link origins',
   not_found:
     'does not show your store ID (add the askr-verification meta tag or /.well-known/askr)',
   fetch_failed: 'could not be read',
+  blocked: `refuses automated readers (often a bot check such as Cloudflare, or a password or maintenance page): ${BOT_CHECK_WAY_OUT}`,
 };
 
 const DIFF_WORDS: readonly (readonly [string, string])[] = [
@@ -39,7 +45,12 @@ export function connectorResultSentence(result: unknown): string {
     return `Your site could not be verified, so nothing was synced: ${failures.join('; ')}.`;
   }
   if (status === 'source_closed') {
-    return `The source is closed: ${String(field(result, 'url') ?? '')} answered ${String(field(result, 'reason') ?? 'with an error')}. Check that your products are public.`;
+    const answered = `The source is closed: ${String(field(result, 'url') ?? '')} answered ${String(field(result, 'reason') ?? 'with an error')}.`;
+    const httpStatus = field(result, 'httpStatus');
+    if (typeof httpStatus === 'number' && REFUSED_STATUSES.has(httpStatus)) {
+      return `${answered} The shop may refuse automated readers (often a bot check such as Cloudflare, or a password or maintenance page): ${BOT_CHECK_WAY_OUT}.`;
+    }
+    return `${answered} Check that your products are public.`;
   }
   if (status === 'error') {
     return `The sync failed: ${String(field(result, 'message') ?? 'unknown error')}.`;

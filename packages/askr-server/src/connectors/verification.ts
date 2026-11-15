@@ -13,14 +13,27 @@ export type VerificationFailureReason =
   /** Neither the meta tag nor `/.well-known/askr` names the owner. */
   | 'not_found'
   /** Neither page could be read. */
-  | 'fetch_failed';
+  | 'fetch_failed'
+  /**
+   * Neither the home page nor `/.well-known/askr` could be read, and at
+   * least one refused the connector (401, 403, 429 or 503): most often a bot
+   * check in front of the whole shop, so neither proof can be seen.
+   */
+  | 'blocked';
 
 export interface VerificationFailure {
   origin: string;
   reason: VerificationFailureReason;
 }
 
-type PageRead = { kind: 'page'; body: string } | { kind: 'missing' } | { kind: 'failed' };
+type PageRead =
+  | { kind: 'page'; body: string }
+  | { kind: 'missing' }
+  | { kind: 'blocked' }
+  | { kind: 'failed' };
+
+/** Statuses a bot check or a locked site answers with: the page is there, the reader is refused. */
+const REFUSED_STATUSES = new Set([401, 403, 429, 503]);
 
 /**
  * A page of `origin` itself: a 200 whose final URL (after redirects) is still
@@ -33,7 +46,13 @@ async function readOwnPage(http: ShopHttp, origin: string, path: string): Promis
       timeoutMs: FETCH_TIMEOUT_MS,
       accept: 'text/html, text/plain',
     });
-    if (response.status !== 200 || new URL(response.url).origin !== origin) {
+    if (new URL(response.url).origin !== origin) {
+      return { kind: 'missing' };
+    }
+    if (REFUSED_STATUSES.has(response.status)) {
+      return { kind: 'blocked' };
+    }
+    if (response.status !== 200) {
       return { kind: 'missing' };
     }
     return { kind: 'page', body: response.body };
@@ -46,8 +65,23 @@ async function readOwnPage(http: ShopHttp, origin: string, path: string): Promis
 }
 
 /**
- * Domain verification (7.4): `/.well-known/askr` containing the owner's npub,
- * or `<meta name="askr-verification" content="{npub}">` on the home page.
+ * A well-known file is a few lines, one of them the npub alone. Anything larger
+ * is no such file: a shop that answers every unknown path with a page (an SPA
+ * catch-all, a soft 404) would otherwise prove whatever npub its page shows.
+ */
+const MAX_WELL_KNOWN_BYTES = 1024;
+
+function wellKnownNames(body: string, npub: string): boolean {
+  return (
+    new TextEncoder().encode(body).length <= MAX_WELL_KNOWN_BYTES &&
+    body.split(/\r?\n/u).some((line) => line.trim() === npub)
+  );
+}
+
+/**
+ * Domain verification (7.4): `/.well-known/askr` with the owner's npub on a
+ * line of its own, or `<meta name="askr-verification" content="{npub}">` on
+ * the home page.
  * Returns the failure reason, or undefined when verified.
  */
 export async function verifyOrigin(
@@ -57,12 +91,22 @@ export async function verifyOrigin(
 ): Promise<VerificationFailureReason | undefined> {
   const npub = npubEncode(owner);
   const wellKnown = await readOwnPage(http, origin, WELL_KNOWN_PATH);
-  if (wellKnown.kind === 'page' && wellKnown.body.split(/\s+/u).includes(npub)) {
+  if (wellKnown.kind === 'page' && wellKnownNames(wellKnown.body, npub)) {
     return undefined;
   }
   const home = await readOwnPage(http, origin, '/');
   if (home.kind === 'page' && metaContents(home.body, VERIFICATION_META_NAME).includes(npub)) {
     return undefined;
+  }
+  // Blocked when neither proof could be read and one was refused; a readable page (missing,
+  // or without the npub) is still a way in.
+  const unread = (read: PageRead) => read.kind === 'blocked' || read.kind === 'failed';
+  if (
+    (home.kind === 'blocked' || wellKnown.kind === 'blocked') &&
+    unread(home) &&
+    unread(wellKnown)
+  ) {
+    return 'blocked';
   }
   return wellKnown.kind === 'failed' && home.kind === 'failed' ? 'fetch_failed' : 'not_found';
 }

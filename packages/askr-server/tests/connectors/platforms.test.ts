@@ -6,6 +6,7 @@ import {
   type ShopifyProduct,
   mapShopifyProduct,
   parseShopifyPage,
+  searchableTags,
 } from '../../src/connectors/shopify';
 import {
   type WooProduct,
@@ -72,6 +73,36 @@ describe('Shopify /products.json (real, trimmed responses)', () => {
       malformed: 1,
       rawCount: 1,
     });
+  });
+
+  it('keeps only searchable Shopify tags: no bookkeeping key: value tags, each once', () => {
+    expect(
+      searchableTags([
+        ' Gifting ',
+        'Discount Codes: Allow',
+        'DY Category 1: Bedding',
+        'allbirds::cfId => color-f67a',
+        'size=10',
+        '<b>x</b>',
+        'gifting',
+        '',
+        'organic-cotton',
+        'Work & Office',
+      ]),
+    ).toEqual(['Gifting', 'organic-cotton', 'Work & Office']);
+    const [product] = shopifyProducts();
+    if (product === undefined) {
+      throw new Error('no product');
+    }
+    const fromString = mapShopifyProduct(
+      { ...product, tags: 'Merch, Discount Codes: Allow, merch, DY Feed' },
+      SHOP,
+    );
+    expect(fromString.topics).toEqual(['Merch', 'DY Feed']);
+    const fromList = mapShopifyProduct({ ...product, tags: ['a::b', 'Tees'] }, SHOP);
+    expect(fromList.topics).toEqual(['Tees']);
+    // Repeats differ only in case: the first spelling is kept, once.
+    expect(searchableTags(['MERCH', 'Merch', 'merch ', 'Tees'])).toEqual(['MERCH', 'Tees']);
   });
 
   it('single-variant product: one variant, its SKU, the product page, attrs and topics', () => {

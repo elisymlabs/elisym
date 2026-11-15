@@ -19,9 +19,9 @@ A catalog key writes products only once the owner key authorizes it. The owner c
 
 A store reads its products from exactly one source, chosen in the admin:
 
-- **Admin**: import a CSV or edit products in the admin. They are signed by the server's catalog key.
+- **Admin**: import a CSV or edit products in the admin, attributes, sizes, colors and other variants included. They are signed by the server's catalog key. In a CSV file, a column such as `attr:Material` is an attribute and `option:Size` an option; each variant is one row with the same `d`, with optional `variant_id`, `variant_price` and `variant_available` columns, and `*` in an option cell means any value of that option. The admin offers an example file.
 - **Your catalog key**: publish from your own code with the SDK, or from an agent with the MCP tools.
-- **Connector**: Shopify, WooCommerce or a Google product feed, imported on a schedule. Only public endpoints are read: no store token is needed. Shopify and WooCommerce also get native add-to-cart on the shop's own site.
+- **Connector**: Shopify, WooCommerce or a Google product feed, imported on a schedule. Only public endpoints are read: no store token is needed. A shop behind a bot check (such as Cloudflare's) that refuses automated readers cannot be read; let the `AskrConnector` user agent through, or use a CSV file or a feed. Shopify tags that are the shop's own bookkeeping (`key: value` and the like) are not imported as topics. Shopify and WooCommerce also get native add-to-cart on the shop's own site.
 - **Pay Core**: an existing [Pay Core](/commerce/quickstart) store's listings, read as they are. Give each product a `url` on one of the store's origins or link origins, so its card links to the product page.
 
 ## Onboarding

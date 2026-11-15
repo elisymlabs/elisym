@@ -81,9 +81,34 @@ function isDefaultTitleOnly(product: ShopifyProduct): boolean {
 }
 
 /**
+ * Shopify tags are often a shop's own bookkeeping, never shown to buyers:
+ * `Discount Codes: Allow`, `DY Category 1: Bedding`, `brand::cfId => color-f67a`.
+ * Those carry `:`, `=`, `<` or `>`; they would crowd the 20 topics and match
+ * searches they have nothing to do with, so only the other tags are kept,
+ * once each whatever their case.
+ */
+const BOOKKEEPING_TAG_RE = /[:=<>]/u;
+
+export function searchableTags(tags: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of tags) {
+    const tag = raw.trim();
+    const key = tag.toLowerCase();
+    if (tag === '' || BOOKKEEPING_TAG_RE.test(tag) || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    kept.push(tag);
+  }
+  return kept;
+}
+
+/**
  * A Shopify product (`/products.json`) as a draft listing (7.4): every
  * variant (the "Default Title" option of a single-variant product is not an
- * option), `r` = `/products/{handle}`, vendor and type as attrs, tags as topics.
+ * option), `r` = `/products/{handle}`, vendor and type as attrs, tags as topics
+ * (except the shop's own bookkeeping tags, see `searchableTags`).
  */
 export function mapShopifyProduct(
   product: ShopifyProduct,
@@ -129,7 +154,7 @@ export function mapShopifyProduct(
     description: htmlToText(product.body_html ?? ''),
     currency: shop.currency,
     images: (product.images ?? []).map((image) => image.src),
-    topics: tags.map((tag) => tag.trim()).filter((tag) => tag !== ''),
+    topics: searchableTags(tags),
     url: `${shop.origin}/products/${encodeURIComponent(product.handle)}`,
     attrs,
     options,

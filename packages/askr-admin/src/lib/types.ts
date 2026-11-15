@@ -92,7 +92,7 @@ export interface SkippedProduct {
 
 export interface VerificationFailure {
   origin: string;
-  reason: 'not_configured' | 'not_found' | 'fetch_failed';
+  reason: 'not_configured' | 'not_found' | 'fetch_failed' | 'blocked';
 }
 
 /** A connector preview's result (`packages/askr-server/src/connectors/runner.ts`). */

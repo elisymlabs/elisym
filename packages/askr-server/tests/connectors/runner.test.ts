@@ -302,11 +302,92 @@ describe('verifyOrigin', () => {
       const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
       expect(await verifyOrigin(http, SHOP, keys.owner)).toBe('not_found');
     }
+    // On a line of its own, with other lines around it, it proves the site.
     const web = new FakeWeb().route(`${SHOP}/.well-known/askr`, {
-      body: `owner\t${keys.ownerNpub}\r\n`,
+      body: `# Askr store\r\n  ${keys.ownerNpub} \r\n`,
     });
     const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
     expect(await verifyOrigin(http, SHOP, keys.owner)).toBeUndefined();
+    // Next to other words on its line, or in a page served for every path, it does not.
+    for (const body of [
+      `owner\t${keys.ownerNpub}\n`,
+      `<html><body><p>Reviews</p>\n${keys.ownerNpub}\n${'<p>x</p>'.repeat(200)}</body></html>`,
+    ]) {
+      const page = new FakeWeb().route(`${SHOP}/.well-known/askr`, { body });
+      const pageHttp = new ShopHttp({ fetch: page.deps(), limiter: new ShopRateLimiter(0) });
+      expect(await verifyOrigin(pageHttp, SHOP, keys.owner)).toBe('not_found');
+    }
+  });
+
+  it('names a shop that refuses both proofs (a bot check) as blocked', async () => {
+    const keys = storeKeys();
+    for (const status of [401, 403, 429, 503]) {
+      for (const otherStatus of [401, 403, 429, 503]) {
+        const web = new FakeWeb()
+          .route(`${SHOP}/.well-known/askr`, { status: otherStatus })
+          .route(`${SHOP}/`, { status, body: '<title>Just a moment...</title>' });
+        const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
+        expect(await verifyOrigin(http, SHOP, keys.owner)).toBe('blocked');
+      }
+    }
+    // A well-known read the fetch guard stops (a redirect to plain http) is no way in either.
+    const failing = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, {
+        status: 302,
+        headers: { location: 'http://shop.example/.well-known/askr' },
+      })
+      .route(`${SHOP}/`, { status: 403 });
+    const failingHttp = new ShopHttp({ fetch: failing.deps(), limiter: new ShopRateLimiter(0) });
+    expect(await verifyOrigin(failingHttp, SHOP, keys.owner)).toBe('blocked');
+    // And the other way round: a refused well-known path with a home page that fails.
+    const homeFails = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, { status: 403 })
+      .route(`${SHOP}/`, { status: 302, headers: { location: 'http://shop.example/' } });
+    const homeFailsHttp = new ShopHttp({
+      fetch: homeFails.deps(),
+      limiter: new ShopRateLimiter(0),
+    });
+    expect(await verifyOrigin(homeFailsHttp, SHOP, keys.owner)).toBe('blocked');
+  });
+
+  it('a refused home page with a readable well-known path is not found: the file is still a way in', async () => {
+    const keys = storeKeys();
+    for (const wellKnown of [{ status: 404 }, { body: 'someone else' }]) {
+      const web = new FakeWeb()
+        .route(`${SHOP}/.well-known/askr`, wellKnown)
+        .route(`${SHOP}/`, { status: 403 });
+      const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
+      expect(await verifyOrigin(http, SHOP, keys.owner)).toBe('not_found');
+    }
+    const proven = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, { body: keys.ownerNpub })
+      .route(`${SHOP}/`, { status: 403 });
+    const provenHttp = new ShopHttp({ fetch: proven.deps(), limiter: new ShopRateLimiter(0) });
+    expect(await verifyOrigin(provenHttp, SHOP, keys.owner)).toBeUndefined();
+  });
+
+  it('a refused well-known path alone is no block: the home page decides', async () => {
+    const keys = storeKeys();
+    const plain = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, { status: 403 })
+      .route(`${SHOP}/`, { body: '<html><head></head></html>' });
+    const plainHttp = new ShopHttp({ fetch: plain.deps(), limiter: new ShopRateLimiter(0) });
+    expect(await verifyOrigin(plainHttp, SHOP, keys.owner)).toBe('not_found');
+    const tagged = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, { status: 403 })
+      .route(`${SHOP}/`, { body: homeWithMeta(keys.ownerNpub) });
+    const taggedHttp = new ShopHttp({ fetch: tagged.deps(), limiter: new ShopRateLimiter(0) });
+    expect(await verifyOrigin(taggedHttp, SHOP, keys.owner)).toBeUndefined();
+  });
+
+  it('a home page refused after a redirect to another origin is not found, not blocked', async () => {
+    const keys = storeKeys();
+    const web = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, { status: 403 })
+      .route(`${SHOP}/`, { status: 301, headers: { location: 'https://elsewhere.example/' } })
+      .route('https://elsewhere.example/', { status: 403 });
+    const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
+    expect(await verifyOrigin(http, SHOP, keys.owner)).toBe('not_found');
   });
 
   it('does not accept a proof served after a redirect to another origin', async () => {

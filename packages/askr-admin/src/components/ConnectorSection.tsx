@@ -156,7 +156,8 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
         <div className="flex flex-col gap-8">
           <p className="text-14 font-medium">Prove the site is yours</p>
           <p className="text-13 text-text-2">
-            Add this tag to your shop's home page, or serve your store ID at /.well-known/askr.
+            Add this tag to your shop's home page, or serve a small text file at /.well-known/askr
+            with your store ID on a line of its own.
             {platform === 'google'
               ? ' For a feed, every site its product links point to needs it.'
               : ''}
