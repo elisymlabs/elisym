@@ -18,6 +18,15 @@ function labelled(container: HTMLElement, label: string): HTMLInputElement {
   return found;
 }
 
+/** A button or select by its aria-label. */
+function control(container: HTMLElement, label: string): HTMLElement {
+  const found = container.querySelector(`[aria-label="${label}"]`);
+  if (!(found instanceof HTMLButtonElement || found instanceof HTMLSelectElement)) {
+    throw new Error(`no control "${label}"`);
+  }
+  return found;
+}
+
 async function choose(field: HTMLElement, value: string): Promise<void> {
   if (!(field instanceof HTMLSelectElement)) {
     throw new Error('not a select');
@@ -74,86 +83,6 @@ describe('the product editor fields', () => {
       options: [],
       variants: [],
     });
-  });
-
-  it('turns options into variants with their own price and stock, the listing at the lowest in stock', async () => {
-    const { container, onSave } = await editor();
-    await typeInto(byId(container, 'product-d'), 'tee');
-    await typeInto(byId(container, 'product-title'), 'Tee');
-    await typeInto(byId(container, 'product-price'), '20');
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 1 name'), 'Size');
-    await typeInto(labelled(container, 'Option 1 values'), 'S, M, L');
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 2 name'), 'Color');
-    await typeInto(labelled(container, 'Option 2 values'), 'Black');
-    expect(container.querySelectorAll('tbody tr')).toHaveLength(3);
-    await typeInto(labelled(container, 'Price of S / Black'), '18');
-    await click(labelled(container, 'S / Black in stock'));
-    await typeInto(labelled(container, 'Price of L / Black'), '25');
-    // The price follows the variants and is no longer typed.
-    const price = byId(container, 'product-price');
-    expect(price instanceof HTMLInputElement && price.readOnly && price.value).toBe('20');
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave)).toMatchObject({
-      price: { amount: '20' },
-      options: [
-        { name: 'Size', values: ['S', 'M', 'L'] },
-        { name: 'Color', values: ['Black'] },
-      ],
-      variants: [
-        { price: '18', available: false, values: ['S', 'Black'] },
-        { price: '20', available: true, values: ['M', 'Black'] },
-        { price: '25', available: true, values: ['L', 'Black'] },
-      ],
-    });
-  });
-
-  it('keeps an edited variant when another value is added, and drops it when its value goes', async () => {
-    const { container } = await editor({
-      d: 'tee',
-      title: 'Tee',
-      price: { amount: '20', currency: 'USD' },
-      options: [{ name: 'Size', values: ['S', 'M'] }],
-      variants: [
-        { id: 'tee-s', price: '20', available: true, values: ['S'] },
-        { id: 'tee-m', price: '24', available: false, values: ['M'] },
-      ],
-    });
-    await typeInto(labelled(container, 'Option 1 values'), 'S, M, L');
-    expect(labelled(container, 'Price of M').value).toBe('24');
-    expect(labelled(container, 'M in stock').checked).toBe(false);
-    expect(labelled(container, 'Price of L').value).toBe('20');
-    await typeInto(labelled(container, 'Option 1 values'), 'S, L');
-    expect(container.querySelector('[aria-label="Price of M"]')).toBeNull();
-    const remove = container.querySelector('[aria-label="Remove option 1"]');
-    if (!(remove instanceof HTMLButtonElement)) {
-      throw new Error('no remove button');
-    }
-    await click(remove);
-    expect(container.querySelectorAll('tbody tr')).toHaveLength(0);
-    const price = byId(container, 'product-price');
-    expect(price instanceof HTMLInputElement && !price.readOnly && price.value).toBe('20');
-  });
-
-  it('says why options with too many combinations are not saved', async () => {
-    const { container, onSave } = await editor({
-      d: 'x',
-      title: 'X',
-      price: { amount: '1', currency: 'USD' },
-    });
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 1 name'), 'A');
-    await typeInto(labelled(container, 'Option 1 values'), '1,2,3,4,5,6,7,8,9,10');
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 2 name'), 'B');
-    await typeInto(labelled(container, 'Option 2 values'), '1,2,3,4,5,6,7,8,9,10');
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 3 name'), 'C');
-    await typeInto(labelled(container, 'Option 3 values'), 'x, y');
-    expect(container.textContent).toContain('These options make 200 combinations');
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(onSave).not.toHaveBeenCalled();
   });
 
   it('refuses a product whose variants are all out of stock while it says on sale', async () => {
@@ -231,65 +160,6 @@ describe('the product editor fields', () => {
     expect(saved(onSave)).toMatchObject({ price: { amount: '24' } });
   });
 
-  it('sets one price for every variant at once', async () => {
-    const { container, onSave } = await editor();
-    await typeInto(byId(container, 'product-d'), 'tee');
-    await typeInto(byId(container, 'product-title'), 'Tee');
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 1 name'), 'Size');
-    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
-    expect(labelled(container, 'Price of S').value).toBe('');
-    await typeInto(byId(container, 'variants-same-price'), ' 15 ');
-    await click(buttonNamed(container, 'Set for all'));
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave)).toMatchObject({
-      price: { amount: '15' },
-      variants: [{ price: '15' }, { price: '15' }],
-    });
-  });
-
-  it('with options that make no variants, says only that and saves nothing', async () => {
-    const { container, onSave } = await editor({
-      d: 'x',
-      title: 'X',
-      price: { amount: '1', currency: 'USD' },
-      options: [{ name: 'A', values: ['1'] }],
-      variants: [{ id: '1', price: '1', available: true, values: ['1'] }],
-    });
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 2 name'), 'B');
-    await typeInto(
-      labelled(container, 'Option 2 values'),
-      Array.from({ length: 101 }, (_value, index) => String(index)).join(','),
-    );
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(onSave).not.toHaveBeenCalled();
-    const items = [...container.querySelectorAll('li')].map((item) => item.textContent);
-    expect(items).toEqual([
-      'options: These options make 101 combinations; a product holds at most 100 variants.',
-    ]);
-  });
-
-  it('never gives a published variant id to another combination', async () => {
-    const { container, onSave } = await editor({
-      d: 'tee',
-      title: 'Tee',
-      price: { amount: '20', currency: 'USD' },
-      options: [{ name: 'Size', values: ['S', 'M'] }],
-      variants: [
-        { id: '1', price: '20', available: true, values: ['S'] },
-        { id: '2', price: '20', available: true, values: ['M'] },
-      ],
-    });
-    await typeInto(labelled(container, 'Option 1 values'), 'S');
-    await typeInto(labelled(container, 'Option 1 values'), 'S, XL');
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave).variants?.map((variant) => [variant.id, variant.values[0]])).toEqual([
-      ['1', 'S'],
-      ['3', 'XL'],
-    ]);
-  });
-
   it('renaming an option keeps a sparse grid and a * variant exactly', async () => {
     const variants = [
       { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
@@ -340,123 +210,6 @@ describe('the product editor fields', () => {
     });
   });
 
-  it('refuses to save while an option has a name and no values', async () => {
-    const { container, onSave } = await editor({
-      d: 'x',
-      title: 'X',
-      price: { amount: '1', currency: 'USD' },
-    });
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 1 name'), 'Size');
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(onSave).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('each option needs a name and at least one value');
-  });
-
-  it('a new value starts at the listing price, and * is never a value', async () => {
-    const { container, onSave } = await editor({
-      d: 'tee',
-      title: 'Tee',
-      price: { amount: '18', currency: 'USD' },
-      options: [{ name: 'Size', values: ['S', 'M'] }],
-      variants: [
-        { id: '1', price: '18', available: true, values: ['S'] },
-        { id: '2', price: '25', available: true, values: ['M'] },
-      ],
-    });
-    await typeInto(labelled(container, 'Price of S'), '22');
-    await typeInto(labelled(container, 'Option 1 values'), 'S, M, L, *');
-    expect(labelled(container, 'Price of L').value).toBe('22');
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave).options).toEqual([{ name: 'Size', values: ['S', 'M', 'L'] }]);
-  });
-
-  it('an untouched equal listing price keeps its spelling, and removing every option keeps the price shown', async () => {
-    const { container, onSave } = await editor({
-      d: 'tee',
-      title: 'Tee',
-      price: { amount: '20.0', currency: 'USD' },
-      options: [{ name: 'Size', values: ['S'] }],
-      variants: [{ id: '1', price: '20', available: true, values: ['S'] }],
-    });
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave).price.amount).toBe('20.0');
-    await typeInto(labelled(container, 'Price of S'), '27');
-    const remove = container.querySelector('[aria-label="Remove option 1"]');
-    if (!(remove instanceof HTMLButtonElement)) {
-      throw new Error('no remove button');
-    }
-    await click(remove);
-    const price = byId(container, 'product-price');
-    expect(price instanceof HTMLInputElement && !price.readOnly && price.value).toBe('27');
-  });
-
-  it('removing an option, adding a new one and changing its values never puts one id twice', async () => {
-    const { container, onSave } = await editor({
-      d: 'tee',
-      title: 'Tee',
-      price: { amount: '1', currency: 'USD' },
-      options: [
-        { name: 'Color', values: ['Red', 'Blue'] },
-        { name: 'Size', values: ['S', 'M'] },
-      ],
-      variants: [
-        { id: 'a', price: '1', available: true, values: ['Red', 'S'] },
-        { id: 'b', price: '2', available: true, values: ['Red', 'M'] },
-        { id: 'c', price: '3', available: true, values: ['Blue', 'S'] },
-        { id: 'd', price: '4', available: true, values: ['Blue', 'M'] },
-      ],
-    });
-    const remove = container.querySelector('[aria-label="Remove option 2"]');
-    if (!(remove instanceof HTMLButtonElement)) {
-      throw new Error('no remove button');
-    }
-    await click(remove);
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 2 name'), 'Size');
-    await typeInto(labelled(container, 'Option 2 values'), 'M');
-    await typeInto(labelled(container, 'Option 2 values'), 'M, S');
-    await click(buttonNamed(container, 'Keep this product'));
-    const ids = saved(onSave).variants?.map((variant) => variant.id) ?? [];
-    expect(ids).toHaveLength(4);
-    expect(new Set(ids).size).toBe(4);
-  });
-
-  it('an option added while another is removed keeps each variant, its stock and id', async () => {
-    const { container, onSave } = await editor({
-      d: 'tee',
-      title: 'Tee',
-      price: { amount: '1', currency: 'USD' },
-      options: [
-        { name: 'Size', values: ['S', 'M'] },
-        { name: 'Color', values: ['Red'] },
-      ],
-      variants: [
-        { id: 'a', price: '1', available: true, values: ['S', 'Red'] },
-        { id: 'b', price: '2', available: false, values: ['M', 'Red'] },
-      ],
-    });
-    await click(buttonNamed(container, 'Add an option'));
-    await typeInto(labelled(container, 'Option 3 name'), 'Fit');
-    const remove = container.querySelector('[aria-label="Remove option 2"]');
-    if (!(remove instanceof HTMLButtonElement)) {
-      throw new Error('no remove button');
-    }
-    await click(remove);
-    await typeInto(labelled(container, 'Option 2 values'), 'Slim');
-    await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave)).toMatchObject({
-      options: [
-        { name: 'Size', values: ['S', 'M'] },
-        { name: 'Fit', values: ['Slim'] },
-      ],
-      variants: [
-        { id: 'a', price: '1', available: true, values: ['S', 'Slim'] },
-        { id: 'b', price: '2', available: false, values: ['M', 'Slim'] },
-      ],
-    });
-  });
-
   it('a product whose connector cut its variants keeps none when an option is renamed', async () => {
     const { container, onSave } = await editor({
       d: 'shopify:9',
@@ -476,28 +229,224 @@ describe('the product editor fields', () => {
     });
   });
 
-  it('a variant price edited in the table comes back with its value', async () => {
+  it('makes variants only on request: every missing combination at the price, then each its own', async () => {
+    const { container, onSave } = await editor();
+    await typeInto(byId(container, 'product-d'), 'tee');
+    await typeInto(byId(container, 'product-title'), 'Tee');
+    await typeInto(byId(container, 'product-price'), '20');
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 1 name'), 'Size');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M, L, *');
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 2 name'), 'Color');
+    await typeInto(labelled(container, 'Option 2 values'), 'Black');
+    // Typing options made nothing.
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(0);
+    await click(buttonNamed(container, 'Add every missing combination'));
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(3);
+    await typeInto(labelled(container, 'Price of S / Black'), '18');
+    await click(labelled(container, 'S / Black in stock'));
+    await typeInto(labelled(container, 'Price of L / Black'), '25');
+    const price = byId(container, 'product-price');
+    expect(price instanceof HTMLInputElement && price.readOnly && price.value).toBe('20');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      price: { amount: '20' },
+      options: [
+        { name: 'Size', values: ['S', 'M', 'L'] },
+        { name: 'Color', values: ['Black'] },
+      ],
+      variants: [
+        { id: '1', price: '18', available: false, values: ['S', 'Black'] },
+        { id: '2', price: '20', available: true, values: ['M', 'Black'] },
+        { id: '3', price: '25', available: true, values: ['L', 'Black'] },
+      ],
+    });
+  });
+
+  const SPARSE: CatalogItemInput = {
+    d: 'tee',
+    title: 'Tee',
+    price: { amount: '20', currency: 'USD' },
+    options: [
+      { name: 'Size', values: ['S', 'M'] },
+      { name: 'Color', values: ['Red', 'Blue'] },
+    ],
+    variants: [
+      { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
+      { id: 'b', price: '30', available: false, values: ['M', 'Blue'] },
+    ],
+  };
+
+  it('editing option names and values never makes or drops a variant', async () => {
+    const { container, onSave } = await editor(SPARSE);
+    // A backspace and the letter typed again: renamed in the variant and back.
+    await typeInto(labelled(container, 'Option 2 values'), 'Red, Blu');
+    await typeInto(labelled(container, 'Option 2 values'), 'Red, Blue');
+    await typeInto(labelled(container, 'Option 2 values'), 'Red, Blue, Green');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
+    await typeInto(labelled(container, 'Option 2 values'), 'Red, Blue');
+    await typeInto(labelled(container, 'Option 2 name'), '');
+    await typeInto(labelled(container, 'Option 2 name'), 'Colour');
+    await typeInto(labelled(container, 'Option 1 values'), '');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Colour', values: ['Red', 'Blue'] },
+      ],
+      variants: SPARSE.variants,
+    });
+  });
+
+  it('a value renamed in place, letter by letter, is renamed in the variants too', async () => {
+    const { container, onSave } = await editor({
+      ...SPARSE,
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Color', values: ['Red', 'Blak'] },
+      ],
+      variants: [
+        { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
+        { id: 'b', price: '30', available: false, values: ['M', 'Blak'] },
+      ],
+    });
+    await typeInto(labelled(container, 'Option 2 values'), 'Red, Bla');
+    await typeInto(labelled(container, 'Option 2 values'), 'Red, Blac');
+    await typeInto(labelled(container, 'Option 2 values'), 'Red, Black');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).variants).toEqual([
+      { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
+      { id: 'b', price: '30', available: false, values: ['M', 'Black'] },
+    ]);
+  });
+
+  it('a removed value leaves its variant to fix or remove, and says so', async () => {
+    const { container, onSave } = await editor(SPARSE);
+    await typeInto(labelled(container, 'Option 2 values'), 'Red');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      'Variant M / Blue uses Blue, which Color no longer has: pick another value or remove the variant.',
+    );
+    await click(control(container, 'Remove variant M / Blue'));
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).variants).toEqual([SPARSE.variants?.[0]]);
+  });
+
+  it('a removed option takes its value out of every variant, and an overlap is named', async () => {
+    const { container, onSave } = await editor({
+      ...SPARSE,
+      variants: [
+        { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
+        { id: 'b', price: '22', available: true, values: ['S', 'Blue'] },
+        { id: 'c', price: '30', available: false, values: ['M', 'Blue'] },
+      ],
+    });
+    await click(control(container, 'Remove option 2'));
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Variants S and S are the same choice for a shopper');
+    await click(control(container, 'Remove variant S'));
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [
+        { id: 'b', price: '22', available: true, values: ['S'] },
+        { id: 'c', price: '30', available: false, values: ['M'] },
+      ],
+    });
+  });
+
+  it('a new option asks each variant to pick a value, keeping its id, price and stock', async () => {
     const { container, onSave } = await editor({
       d: 'tee',
       title: 'Tee',
       price: { amount: '20', currency: 'USD' },
       options: [{ name: 'Size', values: ['S', 'M'] }],
       variants: [
+        { id: 'tee-s', price: '20', available: true, values: ['S'] },
+        { id: 'tee-m', price: '24', available: false, values: ['M'] },
+      ],
+    });
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 2 name'), 'Fit');
+    await typeInto(labelled(container, 'Option 2 values'), 'Slim, Wide');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Variant 1 (S / ?): pick its Fit.');
+    await choose(control(container, 'Fit of variant 1'), 'Slim');
+    await choose(control(container, 'Fit of variant 2'), '*');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).variants).toEqual([
+      { id: 'tee-s', price: '20', available: true, values: ['S', 'Slim'] },
+      { id: 'tee-m', price: '24', available: false, values: ['M', '*'] },
+    ]);
+  });
+
+  it('a new variant never gets an id a variant of the edit has had', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S', 'M', 'L'] }],
+      variants: [
         { id: '1', price: '20', available: true, values: ['S'] },
         { id: '2', price: '20', available: true, values: ['M'] },
       ],
     });
-    await typeInto(labelled(container, 'Price of M'), '31');
-    await typeInto(labelled(container, 'Option 1 values'), 'S');
-    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
+    await click(control(container, 'Remove variant M'));
+    await click(buttonNamed(container, 'Add a variant'));
+    await choose(control(container, 'Size of variant 2'), 'L');
+    await click(buttonNamed(container, 'Add every missing combination'));
     await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave).variants).toEqual([
-      { id: '1', price: '20', available: true, values: ['S'] },
-      { id: '2', price: '31', available: true, values: ['M'] },
+    expect(saved(onSave).variants?.map((variant) => [variant.id, variant.values[0]])).toEqual([
+      ['1', 'S'],
+      ['3', 'L'],
+      ['4', 'M'],
     ]);
   });
 
-  it('an options problem goes once the options are fixed, and no error shows while typing', async () => {
+  it('says why too many combinations are not added, and saves nothing new', async () => {
+    const { container } = await editor({
+      d: 'x',
+      title: 'X',
+      price: { amount: '1', currency: 'USD' },
+    });
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 1 name'), 'A');
+    await typeInto(
+      labelled(container, 'Option 1 values'),
+      Array.from({ length: 101 }, (_value, index) => String(index)).join(','),
+    );
+    await click(buttonNamed(container, 'Add every missing combination'));
+    expect(container.textContent).toContain(
+      'These options make 101 combinations; a product holds at most 100 variants.',
+    );
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(0);
+  });
+
+  it('sets one price for every variant at once', async () => {
+    const { container, onSave } = await editor();
+    await typeInto(byId(container, 'product-d'), 'tee');
+    await typeInto(byId(container, 'product-title'), 'Tee');
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 1 name'), 'Size');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
+    await click(buttonNamed(container, 'Add every missing combination'));
+    expect(labelled(container, 'Price of S').value).toBe('');
+    await typeInto(byId(container, 'variants-same-price'), ' 15 ');
+    await click(buttonNamed(container, 'Set for all'));
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      price: { amount: '15' },
+      variants: [{ price: '15' }, { price: '15' }],
+    });
+  });
+
+  it('refuses to save an option without values or without a name', async () => {
     const { container, onSave } = await editor({
       d: 'x',
       title: 'X',
@@ -505,15 +454,29 @@ describe('the product editor fields', () => {
     });
     await click(buttonNamed(container, 'Add an option'));
     await typeInto(labelled(container, 'Option 1 name'), 'Size');
-    expect(container.textContent).not.toContain('needs at least one value');
-    const many = Array.from({ length: 101 }, (_value, index) => String(index)).join(',');
-    await typeInto(labelled(container, 'Option 1 values'), many);
-    expect(container.textContent).toContain('These options make 101 combinations');
-    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
-    expect(container.textContent).not.toContain('These options make');
-    await typeInto(byId(container, 'variants-same-price'), '5');
-    await click(buttonNamed(container, 'Set for all'));
+    await click(buttonNamed(container, 'Add an option'));
     await click(buttonNamed(container, 'Keep this product'));
-    expect(saved(onSave).variants).toHaveLength(2);
+    expect(onSave).not.toHaveBeenCalled();
+    const items = [...container.querySelectorAll('li')].map((item) => item.textContent);
+    expect(items).toEqual([
+      'Option 1 needs a name and at least one value, or remove it.',
+      'Option 2 needs a name and at least one value, or remove it.',
+    ]);
+  });
+
+  it('an untouched equal listing price keeps its spelling, and removing every variant keeps the price shown', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20.0', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S'] }],
+      variants: [{ id: '1', price: '20', available: true, values: ['S'] }],
+    });
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).price.amount).toBe('20.0');
+    await typeInto(labelled(container, 'Price of S'), '27');
+    await click(control(container, 'Remove variant S'));
+    const price = byId(container, 'product-price');
+    expect(price instanceof HTMLInputElement && !price.readOnly && price.value).toBe('27');
   });
 });

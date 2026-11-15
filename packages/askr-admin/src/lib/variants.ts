@@ -50,206 +50,132 @@ function combinations(lists: readonly (readonly string[])[]): string[][] {
   return rows;
 }
 
-/** An option with the identity of its editor row, so a rename or a removal is never guessed. */
-export interface KeyedOption {
-  key: string;
-  name: string;
-  values: string[];
-}
-
-/** A variant's values by option key. */
-type Assignment = ReadonlyMap<string, string>;
-
-function assignmentOf(options: readonly KeyedOption[], values: readonly string[]): Assignment {
-  return new Map(options.map((option, index) => [option.key, values[index] ?? '']));
-}
-
-function assignmentKey(assignment: Assignment): string {
-  return JSON.stringify(
-    [...assignment.entries()].sort(([left], [right]) => (left < right ? -1 : 1)),
+/** Two variants overlap when each option has equal values or a `*` on either side. */
+function overlaps(left: readonly string[], right: readonly string[]): boolean {
+  return left.every(
+    (value, index) =>
+      value === right[index] || value === ANY_OPTION_VALUE || right[index] === ANY_OPTION_VALUE,
   );
 }
 
-/** The key a variant of `options` with these values is remembered under. */
-export function rememberedKey(options: readonly KeyedOption[], values: readonly string[]): string {
-  return assignmentKey(assignmentOf(options, values));
-}
-
-/** Two variants overlap when every option they share has equal values or a `*`. */
-function overlaps(left: Assignment, right: Assignment): boolean {
-  for (const [key, value] of left) {
-    const other = right.get(key);
-    if (
-      other !== undefined &&
-      value !== ANY_OPTION_VALUE &&
-      other !== ANY_OPTION_VALUE &&
-      value !== other
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-export type VariantsFromOptions =
-  | { ok: true; variants: VariantInput[] }
-  | { ok: false; reason: string };
-
-export interface RebuildVariants {
-  /** The options the current variants were made for, in order. */
-  previous: readonly KeyedOption[];
-  /** The options now, each with a name and at least one value, in order. */
-  next: readonly KeyedOption[];
-  variants: readonly VariantInput[];
-  /** Every variant this edit has seen, by `rememberedKey`: a combination that comes back gets its own back. */
-  remembered: ReadonlyMap<string, VariantInput>;
-  /** The price of a combination never seen before. */
-  price: string;
-}
-
-interface Built {
-  assignment: Assignment;
-  variant: Omit<VariantInput, 'values'>;
+/** A variant as a shopper reads it: `M / Red`, `Any` for `*`, `?` for no value yet. */
+export function variantLabel(values: readonly string[]): string {
+  return values
+    .map((value) => {
+      if (value === ANY_OPTION_VALUE) {
+        return 'Any';
+      }
+      return value === '' ? '?' : value;
+    })
+    .join(' / ');
 }
 
 /**
- * The variants after an options change, matched by the options' row keys:
- * - a renamed option changes no variant;
- * - a variant whose value is gone goes; a removed option merges the variants it
- *   told apart (the first of overlapping ones stays);
- * - a new option spreads each variant over its values (the first keeps the id);
- * - a new value adds the combinations it makes that no variant (counting `*`)
- *   stands for yet;
- * - a product that had no options gets every combination; one that had options
- *   and no variants (a connector cut them) keeps none.
- * A combination seen earlier in the edit comes back with its price and stock,
- * and its id unless another combination holds it now; a new one gets `price`,
- * in stock, and a numeric id no variant of this edit has had.
+ * The value an edit of one option's values renamed: the same number of values
+ * with exactly one changed in place (`Navy` to `Navy blue`, letter by letter).
+ * Anything else (a value added, removed or reordered) renames nothing.
  */
-export function rebuildVariants(input: RebuildVariants): VariantsFromOptions {
-  const { previous, next, variants, remembered, price } = input;
-  if (next.length === 0) {
-    return { ok: true, variants: [] };
+export function renamedValue(
+  before: readonly string[],
+  after: readonly string[],
+): { from: string; to: string } | undefined {
+  if (before.length !== after.length) {
+    return undefined;
   }
-  if (next.some((option) => option.values.length === 0)) {
-    return { ok: false, reason: 'Every option needs at least one value.' };
+  const changed = before.flatMap((value, index) => (value === after[index] ? [] : [index]));
+  const [index] = changed;
+  if (changed.length !== 1 || index === undefined) {
+    return undefined;
   }
-  if (previous.length > 0 && variants.length === 0) {
-    return { ok: true, variants: [] };
-  }
-  const overLimit = (count: number): VariantsFromOptions => ({
+  const from = before[index];
+  const to = after[index];
+  return from === undefined || to === undefined ? undefined : { from, to };
+}
+
+/** Above this many combinations the options are not even walked. */
+const MAX_COMBINATIONS_WALKED = 10_000;
+
+export type MissingCombinations =
+  | { ok: true; variants: VariantInput[] }
+  | { ok: false; reason: string };
+
+/**
+ * The variants plus one for every combination of the options' values that no
+ * variant (counting `*`) stands for yet, at `price` and in stock, with ids
+ * from `freshId`.
+ */
+export function withMissingCombinations(
+  options: readonly OptionInput[],
+  variants: readonly VariantInput[],
+  price: string,
+  freshId: () => string,
+): MissingCombinations {
+  const grid = options.reduce((total, option) => total * option.values.length, 1);
+  const overLimit = (count: number): MissingCombinations => ({
     ok: false,
     reason: `These options make ${count} combinations; a product holds at most ${LIMITS.MAX_VARIANTS} variants.`,
   });
-  const taken = new Set([...remembered.values(), ...variants].map((variant) => variant.id));
-  const used = new Set<string>();
-  let nextId = 1;
-  const freshId = () => {
-    while (taken.has(String(nextId)) || used.has(String(nextId))) {
-      nextId += 1;
-    }
-    taken.add(String(nextId));
-    return String(nextId);
+  if (options.length === 0 || grid === 0) {
+    return { ok: false, reason: 'Every option needs a name and at least one value first.' };
+  }
+  if (grid > MAX_COMBINATIONS_WALKED) {
+    return overLimit(grid);
+  }
+  const missing = combinations(options.map((option) => option.values)).filter(
+    (values) => !variants.some((variant) => overlaps(variant.values, values)),
+  );
+  if (variants.length + missing.length > LIMITS.MAX_VARIANTS) {
+    return overLimit(variants.length + missing.length);
+  }
+  return {
+    ok: true,
+    variants: [
+      ...variants,
+      ...missing.map((values) => ({ id: freshId(), price, available: true, values })),
+    ],
   };
-  const built: Built[] = [];
-  /** A remembered combination first, else `fallback` (an `id` of its own only for the first spread copy). */
-  const place = (
-    assignment: Assignment,
-    fallback: { id?: string; price: string; available: boolean } | undefined,
-  ) => {
-    const known = remembered.get(assignmentKey(assignment));
-    const source = known ?? fallback;
-    const ownId = source?.id;
-    const id = ownId !== undefined && !used.has(ownId) ? ownId : freshId();
-    used.add(id);
-    built.push({
-      assignment,
-      variant: {
-        id,
-        price: source?.price ?? price,
-        available: source?.available ?? true,
-      },
-    });
-  };
+}
 
-  if (previous.length === 0) {
-    const grid = next.reduce((total, option) => total * option.values.length, 1);
-    if (grid > LIMITS.MAX_VARIANTS) {
-      return overLimit(grid);
-    }
-    for (const values of combinations(next.map((option) => option.values))) {
-      place(assignmentOf(next, values), undefined);
-    }
-  } else {
-    const nextByKey = new Map(next.map((option) => [option.key, option]));
-    const previousKeys = new Set(previous.map((option) => option.key));
-    const merging = previous.some((option) => !nextByKey.has(option.key));
-    const kept: { assignment: Map<string, string>; variant: VariantInput }[] = [];
-    for (const variant of variants) {
-      const assignment = new Map<string, string>();
-      let valid = true;
-      assignmentOf(previous, variant.values).forEach((value, key) => {
-        const option = nextByKey.get(key);
-        if (option === undefined) {
-          return;
-        }
-        if (value !== ANY_OPTION_VALUE && !option.values.includes(value)) {
-          valid = false;
-        }
-        assignment.set(key, value);
-      });
-      // Only a removed option makes new overlaps; variants that overlapped before stay as they are.
-      if (valid && !(merging && kept.some((other) => overlaps(other.assignment, assignment)))) {
-        kept.push({ assignment, variant });
+/** What keeps these variants from being saved with these options, in plain words. */
+export function variantProblems(
+  options: readonly OptionInput[],
+  variants: readonly VariantInput[],
+): string[] {
+  if (variants.length === 0) {
+    return [];
+  }
+  if (options.length === 0) {
+    return ['Variants need an option: add one, or remove the variants.'];
+  }
+  const problems: string[] = [];
+  variants.forEach((variant, index) => {
+    options.forEach((option, optionIndex) => {
+      const value = variant.values[optionIndex] ?? '';
+      if (option.name === '' || option.values.length === 0) {
+        // The option itself is reported; its variants' choices wait for it.
+        return;
       }
-    }
-    const added = next.filter((option) => !previousKeys.has(option.key));
-    for (const { assignment, variant } of kept) {
-      const spread = combinations(added.map((option) => option.values));
-      spread.forEach((values, spreadIndex) => {
-        const full = new Map(assignment);
-        added.forEach((option, index) => full.set(option.key, values[index] ?? ''));
-        place(
-          full,
-          spreadIndex === 0 ? variant : { price: variant.price, available: variant.available },
+      if (value === '') {
+        problems.push(
+          `Variant ${index + 1} (${variantLabel(variant.values)}): pick its ${option.name}.`,
         );
-      });
-    }
-    for (const option of next) {
-      const before = previous.find((earlier) => earlier.key === option.key);
-      if (before === undefined) {
-        continue;
+      } else if (value !== ANY_OPTION_VALUE && !option.values.includes(value)) {
+        problems.push(
+          `Variant ${variantLabel(variant.values)} uses ${value}, which ${option.name} no longer has: pick another value or remove the variant.`,
+        );
       }
-      const newValues = option.values.filter((value) => !before.values.includes(value));
-      if (newValues.length === 0) {
-        continue;
-      }
-      const lists = next.map((other) => (other.key === option.key ? newValues : other.values));
-      for (const values of combinations(lists)) {
-        const assignment = assignmentOf(next, values);
-        if (!built.some((existing) => overlaps(existing.assignment, assignment))) {
-          place(assignment, undefined);
-        }
-      }
-    }
-  }
-
-  if (built.length > LIMITS.MAX_VARIANTS) {
-    return overLimit(built.length);
-  }
-  const result = built.map(({ assignment, variant }) => ({
-    ...variant,
-    values: next.map((option) => assignment.get(option.key) ?? ''),
-  }));
-  const rank = (values: readonly string[]) =>
-    values.map((value, index) =>
-      value === ANY_OPTION_VALUE ? -1 : (next[index]?.values.indexOf(value) ?? -1),
-    );
-  result.sort((left, right) => {
-    const leftRank = rank(left.values);
-    const rightRank = rank(right.values);
-    const differs = leftRank.findIndex((value, index) => value !== rightRank[index]);
-    return differs === -1 ? 0 : (leftRank[differs] ?? 0) - (rightRank[differs] ?? 0);
+    });
   });
-  return { ok: true, variants: result };
+  variants.forEach((variant, index) => {
+    const later = variants.slice(index + 1).find((other) => overlaps(variant.values, other.values));
+    if (later !== undefined && variant.values.every((value) => value !== '')) {
+      problems.push(
+        `Variants ${variantLabel(variant.values)} and ${variantLabel(later.values)} are the same choice for a shopper (Any stands for every value): change one or remove it.`,
+      );
+    }
+  });
+  if (variants.length > LIMITS.MAX_VARIANTS) {
+    problems.push(`A product holds at most ${LIMITS.MAX_VARIANTS} variants.`);
+  }
+  return problems;
 }

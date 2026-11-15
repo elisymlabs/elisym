@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  type KeyedOption,
   type VariantInput,
   listingPriceOf,
   optionValuesOf,
-  rebuildVariants,
-  rememberedKey,
+  renamedValue,
+  variantLabel,
+  variantProblems,
+  withMissingCombinations,
 } from '../src/lib/variants';
 
 describe('listingPriceOf', () => {
@@ -52,247 +53,121 @@ describe('optionValuesOf', () => {
   });
 });
 
-const SIZE = (values: string[]): KeyedOption => ({ key: 'size', name: 'Size', values });
-const COLOR = (values: string[]): KeyedOption => ({ key: 'color', name: 'Color', values });
-const FIT = (values: string[]): KeyedOption => ({ key: 'fit', name: 'Fit', values });
+const SIZE = (values: string[]) => ({ name: 'Size', values });
+const COLOR = (values: string[]) => ({ name: 'Color', values });
 
-function memory(
-  options: readonly KeyedOption[],
-  variants: readonly VariantInput[],
-): Map<string, VariantInput> {
-  return new Map(variants.map((variant) => [rememberedKey(options, variant.values), variant]));
+function counter(start = 1): () => string {
+  let next = start;
+  return () => {
+    const id = String(next);
+    next += 1;
+    return id;
+  };
 }
 
-function rebuilt(
-  previous: KeyedOption[],
-  next: KeyedOption[],
-  variants: VariantInput[],
-  remembered: ReadonlyMap<string, VariantInput> = memory(previous, variants),
-): VariantInput[] {
-  const result = rebuildVariants({ previous, next, variants, remembered, price: '20' });
-  if (!result.ok) {
-    throw new Error(result.reason);
-  }
-  return result.variants;
-}
-
-const GRID: VariantInput[] = [
-  { id: 'a', price: '1', available: true, values: ['S', 'Red'] },
-  { id: 'b', price: '2', available: false, values: ['S', 'Blue'] },
-  { id: 'c', price: '3', available: true, values: ['M', 'Red'] },
-  { id: 'd', price: '4', available: true, values: ['M', 'Blue'] },
-];
-
-describe('rebuildVariants', () => {
-  const SPARSE: VariantInput[] = [
-    { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
-    { id: 'b', price: '30', available: false, values: ['M', '*'] },
-  ];
-
-  it('gives a product that had no options every combination at the price, with fresh ids', () => {
-    expect(rebuilt([], [SIZE(['S', 'M']), COLOR(['Red', 'Blue'])], [])).toEqual([
-      { id: '1', price: '20', available: true, values: ['S', 'Red'] },
-      { id: '2', price: '20', available: true, values: ['S', 'Blue'] },
-      { id: '3', price: '20', available: true, values: ['M', 'Red'] },
-      { id: '4', price: '20', available: true, values: ['M', 'Blue'] },
-    ]);
+describe('renamedValue', () => {
+  it('names the one value changed in place, nothing for an add, a removal or a reorder', () => {
+    expect(renamedValue(['S', 'Blak'], ['S', 'Black'])).toEqual({ from: 'Blak', to: 'Black' });
+    expect(renamedValue(['S', 'M'], ['S', 'M', 'L'])).toBeUndefined();
+    expect(renamedValue(['S', 'M'], ['S'])).toBeUndefined();
+    expect(renamedValue(['S', 'M'], ['M', 'S'])).toBeUndefined();
+    expect(renamedValue(['S', 'M'], ['S', 'M'])).toBeUndefined();
   });
+});
 
-  it('keeps none for a product with options and no variants (a connector cut them), even on a rename', () => {
-    expect(rebuilt([SIZE(['S', 'M'])], [{ ...SIZE(['S', 'M']), name: 'Sizes' }], [])).toEqual([]);
-    expect(rebuilt([SIZE(['S', 'M'])], [SIZE(['S', 'M', 'L'])], [])).toEqual([]);
+describe('variantLabel', () => {
+  it('reads * as Any and a missing value as ?', () => {
+    expect(variantLabel(['M', '*', ''])).toBe('M / Any / ?');
   });
+});
 
-  it('a renamed option changes no variant, a sparse grid and * included', () => {
-    const before = [SIZE(['S', 'M']), COLOR(['Red', 'Blue'])];
-    const after = [SIZE(['S', 'M']), { ...COLOR(['Red', 'Blue']), name: 'Colour' }];
-    expect(rebuilt(before, after, SPARSE)).toEqual(SPARSE);
-  });
-
-  it('a new value adds only the combinations no variant stands for yet', () => {
-    const before = [SIZE(['S', 'M']), COLOR(['Red', 'Blue'])];
-    const after = [SIZE(['S', 'M']), COLOR(['Red', 'Blue', 'Green'])];
-    // M/Green is covered by the M/* variant, so only S/Green is new.
-    expect(rebuilt(before, after, SPARSE)).toEqual([
-      SPARSE[0],
-      { id: '1', price: '20', available: true, values: ['S', 'Green'] },
-      SPARSE[1],
-    ]);
-  });
-
-  it('a removed value takes its variants away, and they come back as they were', () => {
+describe('withMissingCombinations', () => {
+  it('adds every combination no variant stands for, counting *, at the price and in stock', () => {
     const variants: VariantInput[] = [
-      { id: 'tee-s', price: '20', available: true, values: ['S'] },
-      { id: 'tee-m', price: '24', available: false, values: ['M'] },
-    ];
-    const remembered = memory([SIZE(['S', 'M'])], variants);
-    const without = rebuilt([SIZE(['S', 'M'])], [SIZE(['S'])], variants, remembered);
-    expect(without).toEqual([variants[0]]);
-    expect(rebuilt([SIZE(['S'])], [SIZE(['S', 'M'])], without, remembered)).toEqual(variants);
-  });
-
-  it('a new option spreads each variant over its values, the first keeping the id', () => {
-    const variants: VariantInput[] = [
-      { id: 'tee-s', price: '20', available: true, values: ['S'] },
-      { id: 'tee-m', price: '24', available: false, values: ['M'] },
+      { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
+      { id: 'b', price: '30', available: false, values: ['M', '*'] },
     ];
     expect(
-      rebuilt([SIZE(['S', 'M'])], [SIZE(['S', 'M']), COLOR(['Red', 'Blue'])], variants),
-    ).toEqual([
-      { id: 'tee-s', price: '20', available: true, values: ['S', 'Red'] },
-      { id: '1', price: '20', available: true, values: ['S', 'Blue'] },
-      { id: 'tee-m', price: '24', available: false, values: ['M', 'Red'] },
-      { id: '2', price: '24', available: false, values: ['M', 'Blue'] },
-    ]);
-  });
-
-  it('a removed option merges the variants it told apart, the first of each kept', () => {
-    const before = [SIZE(['S', 'M']), COLOR(['Red', 'Blue'])];
-    expect(rebuilt(before, [SIZE(['S', 'M'])], GRID)).toEqual([
-      { id: 'a', price: '1', available: true, values: ['S'] },
-      { id: 'c', price: '3', available: true, values: ['M'] },
-    ]);
-    expect(rebuilt(before, [COLOR(['Red', 'Blue'])], GRID)).toEqual([
-      { id: 'a', price: '1', available: true, values: ['Red'] },
-      { id: 'b', price: '2', available: false, values: ['Blue'] },
-    ]);
-  });
-
-  it('a removed option never leaves a * variant overlapping another', () => {
-    const variants: VariantInput[] = [
-      { id: 'a', price: '1', available: true, values: ['S', 'Black'] },
-      { id: 'b', price: '2', available: true, values: ['XL', '*'] },
-    ];
-    expect(rebuilt([SIZE(['S', 'XL']), COLOR(['Black'])], [COLOR(['Black'])], variants)).toEqual([
-      { id: 'a', price: '1', available: true, values: ['Black'] },
-    ]);
-  });
-
-  it('an option cleared and typed again (same row) brings every variant back as it was', () => {
-    const before = [SIZE(['S', 'M']), COLOR(['Red', 'Blue'])];
-    const remembered = memory(before, GRID);
-    const merged = rebuilt(before, [SIZE(['S', 'M'])], GRID, remembered);
-    expect(rebuilt([SIZE(['S', 'M'])], before, merged, remembered)).toEqual(GRID);
-  });
-
-  it('never puts one id on two combinations, even when a remembered one comes back elsewhere', () => {
-    const before = [COLOR(['Red', 'Blue']), SIZE(['S', 'M'])];
-    const grid: VariantInput[] = [
-      { id: 'a', price: '1', available: true, values: ['Red', 'S'] },
-      { id: 'b', price: '2', available: true, values: ['Red', 'M'] },
-      { id: 'c', price: '3', available: true, values: ['Blue', 'S'] },
-      { id: 'd', price: '4', available: true, values: ['Blue', 'M'] },
-    ];
-    const remembered = memory(before, grid);
-    const merged = rebuilt(before, [COLOR(['Red', 'Blue'])], grid, remembered);
-    // A new Size row (another key): it spreads the merged variants, no remembered one matches.
-    const newSize: KeyedOption = { key: 'size-2', name: 'Size', values: ['M', 'S'] };
-    const spread = rebuilt(
-      [COLOR(['Red', 'Blue'])],
-      [COLOR(['Red', 'Blue']), newSize],
-      merged,
-      remembered,
-    );
-    const ids = spread.map((variant) => variant.id);
-    expect(new Set(ids).size).toBe(ids.length);
-    expect(spread).toHaveLength(4);
-    // The same row back: the remembered combinations return, and a's id stays on one of them.
-    const back = rebuilt([COLOR(['Red', 'Blue'])], before, merged, remembered);
-    expect(back).toEqual(grid);
-  });
-
-  it('a new option added while another is removed spreads the merged variants by row, never guessing', () => {
-    const variants: VariantInput[] = [
-      { id: 'a', price: '1', available: true, values: ['S', 'Red'] },
-      { id: 'b', price: '2', available: false, values: ['M', 'Red'] },
-    ];
-    // Same option count, but Color (removed) and Fit (new) are different rows.
-    expect(
-      rebuilt([SIZE(['S', 'M']), COLOR(['Red'])], [SIZE(['S', 'M']), FIT(['Slim'])], variants),
-    ).toEqual([
-      { id: 'a', price: '1', available: true, values: ['S', 'Slim'] },
-      { id: 'b', price: '2', available: false, values: ['M', 'Slim'] },
-    ]);
-    // A rename together with a new option: the renamed row keeps its variants.
-    const sizes = [SIZE(['S', 'M'])];
-    const kept: VariantInput[] = [
-      { id: '1', price: '10', available: true, values: ['S'] },
-      { id: '2', price: '20', available: false, values: ['M'] },
-    ];
-    expect(
-      rebuilt(sizes, [{ ...SIZE(['S', 'M']), name: 'Shoe size' }, COLOR(['Red'])], kept),
-    ).toEqual([
-      { id: '1', price: '10', available: true, values: ['S', 'Red'] },
-      { id: '2', price: '20', available: false, values: ['M', 'Red'] },
-    ]);
-  });
-
-  it('never gives a new combination an id any variant of the edit has had', () => {
-    const all: VariantInput[] = [
-      { id: '1', price: '5', available: true, values: ['S'] },
-      { id: '2', price: '5', available: true, values: ['M'] },
-      { id: '3', price: '5', available: true, values: ['L'] },
-    ];
-    const remembered = memory([SIZE(['S', 'M', 'L'])], all);
-    const current = all.slice(0, 1);
-    expect(
-      rebuilt([SIZE(['S'])], [SIZE(['S', 'XL'])], current, remembered).map((variant) => variant.id),
-    ).toEqual(['1', '4']);
-  });
-
-  it('sorts by option value order, * first', () => {
-    const variants: VariantInput[] = [
-      { id: 'm', price: '1', available: true, values: ['M'] },
-      { id: 'any', price: '1', available: true, values: ['*'] },
-    ];
-    expect(
-      rebuilt([SIZE(['S', 'M'])], [SIZE(['M', 'S'])], variants).map((variant) => variant.id),
-    ).toEqual(['any', 'm']);
-  });
-
-  it('refuses an option without values and more than 100 variants, takes exactly 100 on every path', () => {
-    const none = new Map<string, VariantInput>();
-    const fail = rebuildVariants({
-      previous: [],
-      next: [SIZE([])],
-      variants: [],
-      remembered: none,
-      price: '1',
+      withMissingCombinations(
+        [SIZE(['S', 'M']), COLOR(['Red', 'Blue'])],
+        variants,
+        '25',
+        counter(),
+      ),
+    ).toEqual({
+      ok: true,
+      variants: [...variants, { id: '1', price: '25', available: true, values: ['S', 'Blue'] }],
     });
-    expect(fail.ok).toBe(false);
+  });
+
+  it('refuses incomplete options, over 100 variants, and a grid too large to walk', () => {
+    expect(withMissingCombinations([SIZE([])], [], '1', counter()).ok).toBe(false);
+    expect(withMissingCombinations([], [], '1', counter()).ok).toBe(false);
     const values = (count: number) => Array.from({ length: count }, (_value, index) => `v${index}`);
-    const fresh = (next: KeyedOption[]) =>
-      rebuildVariants({ previous: [], next, variants: [], remembered: none, price: '1' });
-    expect(fresh([SIZE(values(100))]).ok).toBe(true);
-    expect(fresh([SIZE(values(101))])).toEqual({
+    const atCap = withMissingCombinations([SIZE(values(100))], [], '1', counter());
+    expect(atCap.ok && atCap.variants.length).toBe(100);
+    expect(withMissingCombinations([SIZE(values(101))], [], '1', counter())).toEqual({
       ok: false,
       reason: 'These options make 101 combinations; a product holds at most 100 variants.',
     });
-    const sizes = values(10).map((value, index) => ({
-      id: String(index + 1),
+    const huge = withMissingCombinations(
+      [SIZE(values(200)), COLOR(values(200))],
+      [],
+      '1',
+      counter(),
+    );
+    expect(huge).toEqual({
+      ok: false,
+      reason: 'These options make 40000 combinations; a product holds at most 100 variants.',
+    });
+    // Variants already there count towards the cap.
+    const existing = values(99).map((value, index) => ({
+      id: String(index),
       price: '1',
       available: true,
       values: [value],
     }));
-    const spread = (colors: number) =>
-      rebuildVariants({
-        previous: [SIZE(values(10))],
-        next: [SIZE(values(10)), COLOR(values(colors))],
-        variants: sizes,
-        remembered: none,
-        price: '1',
-      });
-    const atCap = spread(10);
-    expect(atCap.ok && atCap.variants.length).toBe(100);
-    expect(spread(11)).toEqual({
-      ok: false,
-      reason: 'These options make 110 combinations; a product holds at most 100 variants.',
-    });
+    expect(withMissingCombinations([SIZE(values(101))], existing, '1', counter(500)).ok).toBe(
+      false,
+    );
+  });
+});
+
+describe('variantProblems', () => {
+  it('names a missing choice, a value the option no longer has, and an overlap', () => {
+    const options = [SIZE(['S', 'M']), COLOR(['Red'])];
+    expect(
+      variantProblems(options, [
+        { id: '1', price: '1', available: true, values: ['S', ''] },
+        { id: '2', price: '1', available: true, values: ['L', 'Red'] },
+        { id: '3', price: '1', available: true, values: ['M', '*'] },
+        { id: '4', price: '1', available: true, values: ['M', 'Red'] },
+      ]),
+    ).toEqual([
+      'Variant 1 (S / ?): pick its Color.',
+      'Variant L / Red uses L, which Size no longer has: pick another value or remove the variant.',
+      'Variants M / Any and M / Red are the same choice for a shopper (Any stands for every value): change one or remove it.',
+    ]);
   });
 
-  it('has no variants without options', () => {
+  it('has nothing to say about fine variants, and waits for an incomplete option', () => {
     expect(
-      rebuilt([SIZE(['S'])], [], [{ id: '1', price: '1', available: true, values: ['S'] }]),
+      variantProblems(
+        [SIZE(['S', 'M'])],
+        [
+          { id: '1', price: '1', available: true, values: ['S'] },
+          { id: '2', price: '1', available: true, values: ['M'] },
+        ],
+      ),
     ).toEqual([]);
+    expect(
+      variantProblems(
+        [SIZE(['S']), { name: '', values: [] }],
+        [{ id: '1', price: '1', available: true, values: ['S', ''] }],
+      ),
+    ).toEqual([]);
+    expect(variantProblems([], [{ id: '1', price: '1', available: true, values: [] }])).toEqual([
+      'Variants need an option: add one, or remove the variants.',
+    ]);
   });
 });

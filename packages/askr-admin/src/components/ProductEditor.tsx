@@ -2,11 +2,11 @@ import { type CatalogItemInput, CatalogItemInputSchema, VISIBILITIES } from '@el
 import Decimal from 'decimal.js-light';
 import { useState } from 'react';
 import {
-  type KeyedOption,
   type VariantInput,
   listingPriceOf,
-  rebuildVariants,
-  rememberedKey,
+  renamedValue,
+  variantProblems,
+  withMissingCombinations,
 } from '../lib/variants';
 import { type AttrRow, AttrsEditor } from './AttrsEditor';
 import { Notice } from './Notice';
@@ -57,25 +57,9 @@ function optionRowsOf(item: CatalogItemInput | undefined): OptionRow[] {
   }));
 }
 
-/** The options as typed, without rows left wholly empty. */
+/** The options as typed, one per row, in row order (the order of every variant's values). */
 function optionsOf(rows: readonly OptionRow[]) {
-  return rows
-    .map((row) => ({ name: row.name.trim(), values: row.values }))
-    .filter((option) => option.name !== '' || option.values.length > 0);
-}
-
-/** The rows that make variants: a name and at least one value. */
-function completeOptionsOf(rows: readonly OptionRow[]): KeyedOption[] {
-  return rows
-    .map((row) => ({ key: row.key, name: row.name.trim(), values: row.values }))
-    .filter((option) => option.name !== '' && option.values.length > 0);
-}
-
-function rememberedOf(
-  options: readonly KeyedOption[],
-  variants: readonly VariantInput[],
-): Map<string, VariantInput> {
-  return new Map(variants.map((variant) => [rememberedKey(options, variant.values), variant]));
+  return rows.map((row) => ({ name: row.name.trim(), values: row.values }));
 }
 
 /**
@@ -102,27 +86,48 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   );
   const [optionRows, setOptionRows] = useState<OptionRow[]>(optionRowsOf(initial));
   const [rowsMade, setRowsMade] = useState(initial?.options?.length ?? 0);
-  // The options the variants were last built for, by row: a change is compared with these.
-  const [appliedOptions, setAppliedOptions] = useState(completeOptionsOf(optionRowsOf(initial)));
+  // Every variant's values follow the option rows, in row order.
   const [variants, setVariants] = useState<VariantInput[]>(initial?.variants ?? []);
-  // Every variant this edit has seen, by its values per option row: a combination that comes
-  // back (a value retyped, an option name cleared and typed again) gets its price, stock and
-  // id back, and no id is ever handed to another combination.
-  const [remembered, setRemembered] = useState<ReadonlyMap<string, VariantInput>>(() =>
-    rememberedOf(completeOptionsOf(optionRowsOf(initial)), initial?.variants ?? []),
+  // Ids the product's variants have had in this edit: a new variant never gets one, so a
+  // published id never moves to another choice.
+  const [usedIds, setUsedIds] = useState<ReadonlySet<string>>(
+    () => new Set((initial?.variants ?? []).map((variant) => variant.id)),
   );
-  const [optionProblem, setOptionProblem] = useState('');
+  const [variantNotice, setVariantNotice] = useState('');
   const [errors, setErrors] = useState<string[]>([]);
 
   const listingPrice = listingPriceOf(variants);
 
-  const changeVariants = (next: VariantInput[], options: readonly KeyedOption[]) => {
+  const changeVariants = (next: VariantInput[]) => {
+    if (next.length === 0 && listingPrice !== undefined) {
+      // The product goes back to one price: start from the one it showed.
+      setPrice(listingPrice);
+    }
     setVariants(next);
-    setRemembered(new Map([...remembered, ...rememberedOf(options, next)]));
+    setVariantNotice('');
   };
 
+  /** Ids for new variants: numbers no variant of this edit has had. */
+  const idMaker = () => {
+    const taken = new Set([...usedIds, ...variants.map((variant) => variant.id)]);
+    let next = 1;
+    const made: string[] = [];
+    const freshId = () => {
+      while (taken.has(String(next))) {
+        next += 1;
+      }
+      taken.add(String(next));
+      made.push(String(next));
+      return String(next);
+    };
+    const keep = () => setUsedIds(new Set([...usedIds, ...made]));
+    return { freshId, keep };
+  };
+
+  // Editing the options never makes or drops a variant: a removed row takes its value out of
+  // every variant, a new row asks each variant to pick one, and a value renamed in place
+  // (the same values with one changed) is renamed in the variants too.
   const changeOptions = (rows: OptionRow[]) => {
-    // A new row gets its own key: renames and removals are told by row, never guessed.
     let made = rowsMade;
     const keyed = rows.map((row) => {
       if (row.key !== '') {
@@ -132,28 +137,52 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       return { ...row, key: `row-${made}` };
     });
     setRowsMade(made);
-    setOptionRows(keyed);
-    // A row still being typed (a name and no values, or values and no name) makes no
-    // variants yet; a remembered combination comes back once it is complete again.
-    const complete = completeOptionsOf(keyed);
-    const next = rebuildVariants({
-      previous: appliedOptions,
-      next: complete,
-      variants,
-      remembered,
-      price: listingPrice ?? price.trim(),
+    const renames = keyed.map((row) => {
+      const before = optionRows.find((earlier) => earlier.key === row.key);
+      return before === undefined ? undefined : renamedValue(before.values, row.values);
     });
+    setVariants(
+      variants.map((variant) => ({
+        ...variant,
+        values: keyed.map((row, index) => {
+          const earlier = optionRows.findIndex((candidate) => candidate.key === row.key);
+          const value = earlier === -1 ? '' : (variant.values[earlier] ?? '');
+          const rename = renames[index];
+          return rename !== undefined && rename.from === value ? rename.to : value;
+        }),
+      })),
+    );
+    setOptionRows(keyed);
+  };
+
+  const addVariant = () => {
+    const ids = idMaker();
+    changeVariants([
+      ...variants,
+      {
+        id: ids.freshId(),
+        price: listingPrice ?? price.trim(),
+        available: true,
+        values: optionRows.map(() => ''),
+      },
+    ]);
+    ids.keep();
+  };
+
+  const addMissing = () => {
+    const ids = idMaker();
+    const next = withMissingCombinations(
+      optionsOf(optionRows),
+      variants,
+      listingPrice ?? price.trim(),
+      ids.freshId,
+    );
     if (!next.ok) {
-      setOptionProblem(next.reason);
+      setVariantNotice(next.reason);
       return;
     }
-    if (next.variants.length === 0 && listingPrice !== undefined) {
-      // The product goes back to one price: start from the one it showed.
-      setPrice(listingPrice);
-    }
-    setAppliedOptions(complete);
-    changeVariants(next.variants, complete);
-    setOptionProblem('');
+    changeVariants(next.variants);
+    ids.keep();
   };
 
   /** The listing price with variants; an untouched equal amount keeps its spelling (`20.0`). */
@@ -177,13 +206,14 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       return;
     }
     const typed = optionsOf(optionRows);
-    if (typed.some((option) => option.name === '' || option.values.length === 0)) {
-      setErrors(['options: each option needs a name and at least one value.']);
-      return;
-    }
-    if (optionProblem !== '') {
-      // The variants are those of the last options that made sense: fix the options first.
-      setErrors([`options: ${optionProblem}`]);
+    const optionProblems = typed.flatMap((option, index) =>
+      option.name === '' || option.values.length === 0
+        ? [`Option ${index + 1} needs a name and at least one value, or remove it.`]
+        : [],
+    );
+    const problems = [...optionProblems, ...variantProblems(typed, variants)];
+    if (problems.length > 0) {
+      setErrors(problems);
       return;
     }
     const candidate: Record<string, unknown> = {
@@ -324,13 +354,16 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       </div>
       <AttrsEditor rows={attrs} onChange={setAttrs} />
       <OptionsEditor rows={optionRows} onChange={changeOptions} />
-      {optionProblem === '' ? null : <Notice tone="error">{optionProblem}</Notice>}
-      {variants.length === 0 ? null : (
+      {optionRows.length === 0 && variants.length === 0 ? null : (
         <VariantsTable
+          options={optionsOf(optionRows)}
           variants={variants}
-          onChange={(next) => changeVariants(next, appliedOptions)}
+          onChange={changeVariants}
+          onAdd={addVariant}
+          onAddMissing={addMissing}
         />
       )}
+      {variantNotice === '' ? null : <Notice tone="error">{variantNotice}</Notice>}
       <SelectField
         id="product-visibility"
         label="Availability"

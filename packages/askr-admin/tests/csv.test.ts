@@ -336,4 +336,20 @@ describe('productsFromCsv', () => {
       },
     ]);
   });
+
+  it('refuses a * row after a specific one it overlaps, naming that row', () => {
+    const result = productsFromCsv(
+      ['d,title,price,option:Size,option:Color', 'a,A,5,M,Blue', 'a,,,S,Red', 'a,,,S,*'].join('\n'),
+      'USD',
+    );
+    expect(result.items).toEqual([]);
+    expect(result.errors).toEqual([
+      {
+        line: 4,
+        messages: [
+          "this variant overlaps the one on line 3: * stands for any value, so a shopper's choice would match both",
+        ],
+      },
+    ]);
+  });
 });

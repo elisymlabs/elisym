@@ -28,10 +28,9 @@ export function OptionsEditor({ rows, onChange }: Props) {
     <fieldset className="flex flex-col gap-8">
       <legend className="field-label">Options (optional)</legend>
       <span className="field-hint">
-        Sizes, colors and the like. Separate values with commas; each combination becomes a variant
-        with its own price and stock. Renaming an option keeps the variants; a new value adds its
-        combinations and a removed one takes them away; a new option spreads each variant over its
-        values and a removed one merges the variants it told apart.
+        Sizes, colors and the like. Separate values with commas. Editing options never adds or
+        removes a variant: a value renamed in place is renamed in the variants too, and the variants
+        below say what still needs a choice.
       </span>
       {rows.map((row, index) => (
         <div key={row.key === '' ? `new-${index}` : row.key} className="flex items-center gap-8">
