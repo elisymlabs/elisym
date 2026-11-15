@@ -220,6 +220,7 @@ export class CatalogLoader {
       store.owner,
       store.assistantSecretKey,
       this.deps.now(),
+      store.tier?.maxProducts,
     );
     this.settle(store.owner, catalog);
     return true;

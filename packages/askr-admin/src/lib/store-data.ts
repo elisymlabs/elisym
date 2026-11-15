@@ -204,6 +204,24 @@ export async function readListings(
     });
 }
 
+/**
+ * How many products a catalog key shows shoppers now (hidden and deleted ones
+ * left out), read as the assistant reads them: `paycore` for a Pay Core store's
+ * key, which may carry payment terms, `catalog` otherwise.
+ */
+export async function countListed(
+  reader: RelayReader,
+  key: string,
+  role: CatalogKeyRole,
+  now: number = nowSecs(),
+): Promise<number> {
+  const events = await reader.query({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [key] });
+  const deletions = events.filter((event) => event.kind === KIND_DELETION);
+  return newestByD(events, KIND_PRODUCT, key, now).filter(
+    (event) => !deleted(event, deletions) && parseCatalogItem(event, { role, now }) !== undefined,
+  ).length;
+}
+
 /** The policies a policy key shows now, by slug. */
 export async function readPolicies(
   reader: RelayReader,

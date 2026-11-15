@@ -74,6 +74,46 @@ describe('operator CLI (7.3)', () => {
     expect(parseOwner('nope')).toBeUndefined();
   });
 
+  it('lists tiers with their limits and stores, and says when there are none', async () => {
+    const store = syntheticStore();
+    const { directory } = await stateWith([{ ...storeRecord(store), status: 'pending' }]);
+    // The fixture store is on its own tier; a fresh tier has no store yet.
+    await runCli(['tier', 'set', 'starter', ...TIER_ARGS], directory);
+    const listed = (await runCli(['tier', 'list'], directory)).split('\n');
+    expect(listed).toContain(
+      'starter: 0 stores, --messages 30 --daily 2.5 --monthly 50 --tickets 60 --products 500 --sync-minutes 30 --branding false',
+    );
+    const fixtureTier = (await directory.statusOf(store.owner))?.tier ?? '';
+    expect(listed.some((line) => line.startsWith(`${fixtureTier}: 1 store,`))).toBe(true);
+    const empty = await stateWith([]);
+    for (const { tier } of await empty.directory.listTiers()) {
+      await empty.directory.deleteTier(tier.name);
+    }
+    expect(await runCli(['tier', 'list'], empty.directory)).toBe(
+      'No tiers yet: add one with tier set',
+    );
+  });
+
+  it('deletes a tier no store is on, and refuses one with stores, naming them', async () => {
+    const store = syntheticStore();
+    const { directory } = await stateWith([{ ...storeRecord(store), status: 'suspended' }]);
+    await runCli(['tier', 'set', 'spare', ...TIER_ARGS], directory);
+    expect(await runCli(['tier', 'delete', 'spare'], directory)).toBe('tier spare deleted');
+    expect(await directory.tierExists('spare')).toBe(false);
+    await expect(runCli(['tier', 'delete', 'spare'], directory)).rejects.toThrow(
+      'No such tier: spare',
+    );
+    // A suspended store keeps its tier, so that tier is not deleted.
+    const fixtureTier = (await directory.statusOf(store.owner))?.tier ?? '';
+    await expect(runCli(['tier', 'delete', fixtureTier], directory)).rejects.toThrow(
+      `Tier ${fixtureTier} has 1 store; move each to another tier with store activate <npub> --tier <name> first:\n  ${nip19.npubEncode(store.owner)}`,
+    );
+    expect(await directory.tierExists(fixtureTier)).toBe(true);
+    await expect(runCli(['tier', 'delete', 'spare', 'extra'], directory)).rejects.toThrow(
+      CLI_USAGE,
+    );
+  });
+
   it('sets a tier, activates a pending store with it and notifies the server', async () => {
     const store = syntheticStore();
     const { db, directory, state } = await stateWith([

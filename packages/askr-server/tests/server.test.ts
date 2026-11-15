@@ -141,6 +141,17 @@ describe('catalog build (5.1)', () => {
     expect(catalog?.policies).toHaveLength(1);
   });
 
+  it("indexes at most the tier's products, the first by product ID", () => {
+    const store = syntheticStore();
+    const capped = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW, 1);
+    expect([...(capped?.items.keys() ?? [])]).toEqual(['jacket-rain']);
+    for (const cap of [2, 3, undefined]) {
+      expect(
+        buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW, cap)?.items.size,
+      ).toBe(2);
+    }
+  });
+
   it('refuses a config naming another assistant', () => {
     const store = syntheticStore();
     expect(buildStoreCatalog(store.events, store.owner, generateSecretKey(), NOW)).toBeUndefined();

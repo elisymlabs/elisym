@@ -53,7 +53,14 @@ export function Shell({
   };
   let content;
   if (tab === 'overview') {
-    content = <Overview view={view} config={config} configFromServer={configFromServer} />;
+    content = (
+      <Overview
+        view={view}
+        config={config}
+        configFromServer={configFromServer}
+        catalogReader={{ reader: deps.reader, now: deps.now }}
+      />
+    );
   } else if (tab === 'settings') {
     content = (
       <SettingsSection

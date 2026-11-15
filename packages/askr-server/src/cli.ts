@@ -11,8 +11,10 @@ export const CLI_USAGE = `Usage:
   askr-server store list
   askr-server store activate <O npub|hex> --tier <name>
   askr-server store suspend <O npub|hex>
+  askr-server tier list
   askr-server tier set <name> --messages <n> --daily <usd> --monthly <usd>
-      --tickets <n> --products <n> --sync-minutes <n> --branding <true|false>`;
+      --tickets <n> --products <n> --sync-minutes <n> --branding <true|false>
+  askr-server tier delete <name>`;
 
 const POSITIVE_INT_RE = /^[1-9]\d{0,8}$/;
 const TIER_NAME_RE = /^[a-z0-9-]{1,32}$/;
@@ -134,6 +136,31 @@ export async function runCli(args: readonly string[], directory: StoreDirectory)
       throw new Error('The store changed meanwhile; try again');
     }
     return `${nip19.npubEncode(owner)} is ${status}`;
+  }
+  if (group === 'tier' && command === 'list' && subject === undefined) {
+    const tiers = await directory.listTiers();
+    if (tiers.length === 0) {
+      return 'No tiers yet: add one with tier set';
+    }
+    return tiers
+      .map(
+        ({ tier, stores }) =>
+          `${tier.name}: ${stores} store${stores === 1 ? '' : 's'}, --messages ${tier.messagesPerSessionPerDay} --daily ${new Decimal(tier.dailyBudgetUsd).toString()} --monthly ${new Decimal(tier.monthlyBudgetUsd).toString()} --tickets ${tier.ticketsPerStorePerMinute} --products ${tier.maxProducts} --sync-minutes ${tier.syncIntervalMinutes} --branding ${tier.branding}`,
+      )
+      .join('\n');
+  }
+  if (group === 'tier' && command === 'delete' && subject !== undefined && rest.length === 0) {
+    const result = await directory.deleteTier(subject);
+    if (result === undefined) {
+      throw new Error(`No such tier: ${subject}`);
+    }
+    if (!result.deleted) {
+      const owners = result.stores.map((owner) => nip19.npubEncode(owner)).join('\n  ');
+      throw new Error(
+        `Tier ${subject} has ${result.stores.length} store${result.stores.length === 1 ? '' : 's'}; move each to another tier with store activate <npub> --tier <name> first:\n  ${owners}`,
+      );
+    }
+    return `tier ${subject} deleted`;
   }
   if (group === 'tier' && command === 'set' && subject !== undefined) {
     const tier = tierFrom(subject, rest);
