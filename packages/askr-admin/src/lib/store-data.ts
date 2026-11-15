@@ -13,10 +13,15 @@ import {
   parsePolicy,
   readCatalogAuthority,
 } from '@elisym/askr';
-import { KIND_DELETION, KIND_PRODUCT, KIND_STORE_AUTH } from '@elisym/commerce';
+import {
+  KIND_DELETION,
+  KIND_PRODUCT,
+  KIND_STORE_AUTH,
+  MAX_FUTURE_SKEW_SECS,
+  newestDeletion,
+} from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
-import { MAX_FUTURE_SKEW_SECS } from '../constants';
 import type { RelayReader } from './relay';
 
 function dOf(event: NostrEvent): string | undefined {
@@ -66,17 +71,15 @@ export function newestByD(
   return [...newest.values()];
 }
 
-/** Whether a deletion by the author names the event's address at or after it. */
-function deleted(event: NostrEvent, deletions: readonly NostrEvent[]): boolean {
+/**
+ * Whether a deletion by the author names the event's address at or after it,
+ * read as the assistant's server reads it: the newest signed one, not dated
+ * past the clock skew.
+ */
+function deleted(event: NostrEvent, deletions: readonly NostrEvent[], now: number): boolean {
   const address = `${event.kind}:${event.pubkey}:${dOf(event) ?? ''}`;
-  return deletions.some(
-    (deletion) =>
-      deletion.kind === KIND_DELETION &&
-      deletion.pubkey === event.pubkey &&
-      deletion.created_at >= event.created_at &&
-      deletion.tags.some((tag) => tag[0] === 'a' && tag[1] === address) &&
-      verifyEvent(deletion),
-  );
+  const deletion = newestDeletion(deletions, address, event.pubkey, now);
+  return deletion !== undefined && deletion.created_at >= event.created_at;
 }
 
 /**
@@ -188,7 +191,7 @@ export async function readListings(
   const deletions = events.filter((event) => event.kind === KIND_DELETION);
   // A deleted listing is gone, not hidden: it must not come back, count or be re-created.
   return newestByD(events, KIND_PRODUCT, key, now)
-    .filter((event) => !deleted(event, deletions))
+    .filter((event) => !deleted(event, deletions, now))
     .flatMap((event) => {
       const hidden = isHidden(event);
       const readable = hidden
@@ -208,8 +211,9 @@ export async function readListings(
  * How many products in `currency` a catalog key shows shoppers now (hidden and
  * deleted ones left out), read as the assistant reads them: `paycore` for a
  * Pay Core store's key, which may carry payment terms, `catalog` otherwise.
- * Read from the Askr relay only: listings a Pay Core store published only to
- * other relays are not counted (the admin reads no other relay).
+ * Read from the Askr relay only: listings, and a Pay Core store's
+ * authorization, published only to other relays are not counted (the admin
+ * reads no other relay, while the server also reads Pay Core's).
  */
 export async function countListed(
   reader: RelayReader,
@@ -221,7 +225,7 @@ export async function countListed(
   const events = await reader.query({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [key] });
   const deletions = events.filter((event) => event.kind === KIND_DELETION);
   return newestByD(events, KIND_PRODUCT, key, now).filter((event) => {
-    if (deleted(event, deletions)) {
+    if (deleted(event, deletions, now)) {
       return false;
     }
     // Only the store's currency counts against the plan: the assistant leaves the rest out.
@@ -238,7 +242,7 @@ export async function readPolicies(
   const events = await reader.query({ kinds: [KIND_POLICY, KIND_DELETION], authors: [key] });
   const deletions = events.filter((event) => event.kind === KIND_DELETION);
   return newestByD(events, KIND_POLICY, key, now)
-    .filter((event) => !deleted(event, deletions))
+    .filter((event) => !deleted(event, deletions, now))
     .flatMap((event) => {
       const policy = parsePolicy(event);
       return policy === undefined ? [] : [policy];

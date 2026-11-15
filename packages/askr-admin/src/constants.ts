@@ -41,9 +41,6 @@ export const SYNC_POLL_MS = 3_000;
  */
 export const EXTENSION_SYNC_POLL_MS = 30_000;
 
-/** How far ahead of the local clock a relay event may be dated and still count. */
-export const MAX_FUTURE_SKEW_SECS = 10 * 60;
-
 /** Languages offered first in the onboarding form; any BCP 47 tag is accepted. */
 export const DEFAULT_LANGUAGE = 'en';
 export const DEFAULT_CURRENCY = 'USD';

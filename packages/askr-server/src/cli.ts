@@ -10,7 +10,7 @@ export const CLI_USAGE = `Usage:
   askr-server                                   run the server
   askr-server store list
   askr-server store activate <O npub|hex> --tier <name>
-  askr-server store suspend <O npub|hex>
+  askr-server store suspend <O npub|hex> [--tier <name>]
   askr-server tier list
   askr-server tier set <name> --messages <n> --daily <usd> --monthly <usd>
       --tickets <n> --products <n> --sync-minutes <n> --branding <true|false>
@@ -115,7 +115,8 @@ export async function runCli(args: readonly string[], directory: StoreDirectory)
     if (owner === undefined) {
       throw new Error('Give the store as its owner npub or hex key');
     }
-    const tier = flags(rest, command === 'activate' ? ['tier'] : []).get('tier');
+    // `suspend --tier` moves a suspended store to another tier without serving it.
+    const tier = flags(rest, ['tier']).get('tier');
     if (command === 'activate' && tier === undefined) {
       throw new Error('activate needs --tier <name>');
     }
@@ -157,7 +158,7 @@ export async function runCli(args: readonly string[], directory: StoreDirectory)
     if (!result.deleted) {
       const owners = result.stores.map((owner) => nip19.npubEncode(owner)).join('\n  ');
       throw new Error(
-        `Tier ${subject} has ${result.stores.length} store${result.stores.length === 1 ? '' : 's'}; move each to another tier with store activate <npub> --tier <name> first:\n  ${owners}`,
+        `Tier ${subject} has ${result.stores.length} store${result.stores.length === 1 ? '' : 's'}; move each to another tier first (store activate <npub> --tier <name> serves it, store suspend <npub> --tier <name> keeps it suspended):\n  ${owners}`,
       );
     }
     return `tier ${subject} deleted`;

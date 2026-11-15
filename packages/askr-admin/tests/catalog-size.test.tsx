@@ -125,4 +125,44 @@ describe('the catalog size against the plan', () => {
     await settle(() => (container.textContent ?? '').includes('indexes up to'));
     expect(container.textContent).toContain('Your catalog has 4 products');
   });
+
+  it('counts as the server does: the newest version per product, unexpired, future deletions ignored', async () => {
+    const older = listing(
+      { d: 'p-0', title: 'Old', price: { amount: '1', currency: 'EUR' } },
+      NOW - 500,
+    );
+    const expired = finalizeEvent(
+      {
+        ...listing({ d: 'gone', title: 'Gone', price: { amount: '1', currency: 'USD' } }),
+        tags: [
+          ...listing({ d: 'gone', title: 'Gone', price: { amount: '1', currency: 'USD' } }).tags,
+          ['expiration', String(NOW - 1)],
+        ],
+        created_at: NOW - 50,
+      },
+      SERVER_KEY_SECRET,
+    );
+    const futureDeletion = finalizeEvent(
+      {
+        kind: KIND_DELETION,
+        created_at: NOW + 3600,
+        tags: [['a', `30402:${SERVER_KEY}:p-1`]],
+        content: '',
+      },
+      SERVER_KEY_SECRET,
+    );
+    const reader = fakeReader([older, ...products(2), expired, futureDeletion]);
+    expect(await countListed(reader, SERVER_KEY, 'catalog', 'USD', NOW)).toBe(2);
+    expect(await countListed(reader, SERVER_KEY, 'catalog', 'EUR', NOW)).toBe(0);
+  });
+
+  it('says nothing when the key holds another role than the source needs', async () => {
+    const container = await overview(
+      [CATALOG_AUTH, ...products(5)],
+      2,
+      adminConfig({ source: { kind: 'paycore' } }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.textContent).not.toContain('indexes up to');
+  });
 });

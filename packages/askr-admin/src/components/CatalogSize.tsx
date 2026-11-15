@@ -23,8 +23,10 @@ export function CatalogSize({ reader, now, config, maxProducts }: Props) {
 
   useEffect(() => {
     let current = true;
+    setCount(undefined);
     const read = async () => {
-      // A key the owner does not authorize now gives the assistant no products at all.
+      // A key the owner does not authorize now gives the assistant no products at all. Read
+      // from the Askr relay only, like the listings (see countListed).
       const authority = await readAuthority(reader, config.owner, now());
       if (!(authority.keys.get(config.catalogKey)?.has(role) ?? false)) {
         return 0;

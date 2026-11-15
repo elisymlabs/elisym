@@ -174,6 +174,16 @@ describe('catalog build (5.1)', () => {
     );
     expect([...(catalog?.items.keys() ?? [])].sort()).toEqual(['jacket-rain', 'jacket-wool']);
     expect([...(catalog?.otherCurrency ?? [])].sort()).toEqual(['a-euro-1', 'a-euro-2']);
+    // Over the cap, the other-currency listings are still named.
+    const capped = buildStoreCatalog(
+      [...store.events, ...euro],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+      1,
+    );
+    expect([...(capped?.items.keys() ?? [])]).toEqual(['jacket-rain']);
+    expect([...(capped?.otherCurrency ?? [])].sort()).toEqual(['a-euro-1', 'a-euro-2']);
   });
 
   it('refuses a config naming another assistant', () => {
