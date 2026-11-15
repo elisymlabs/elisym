@@ -75,11 +75,11 @@ function tagOf(event: NostrEvent, name: string): string | undefined {
 }
 
 /**
- * The `d`s K shows on the relay now: the newest signed version of each, unless
- * it is hidden. A sync removes a product with a hidden version and a deletion,
- * so a removed one is either hidden or gone from the relay.
+ * The `d`s K lists on the relay now, hidden ones included (a replace counts
+ * a hidden product too): the newest signed version of each. A product a sync
+ * removed is deleted (NIP-09), so the relay no longer holds it.
  */
-async function shownListings(client: SyncRelayClient, key: string): Promise<Set<string>> {
+async function listedOnRelay(client: SyncRelayClient, key: string): Promise<Set<string>> {
   const events = await client.query(ASKR_RELAYS, { kinds: [KIND_PRODUCT], authors: [key] });
   const newest = new Map<string, NostrEvent>();
   for (const event of events) {
@@ -101,9 +101,7 @@ async function shownListings(client: SyncRelayClient, key: string): Promise<Set<
       newest.set(d, event);
     }
   }
-  return new Set(
-    [...newest].flatMap(([d, event]) => (tagOf(event, 'visibility') === 'hidden' ? [] : [d])),
-  );
+  return new Set(newest.keys());
 }
 
 const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
@@ -297,38 +295,47 @@ export function createAdminApi(
       return json({ error: 'bad_request' }, 400);
     }
     const hide = parsed.data.hide ?? [];
-    if (store.tier !== undefined) {
-      let total = items.data.length;
-      if (upsert) {
-        // The catalog after this change: what K shows now, changed as asked.
-        let shown: Set<string>;
-        try {
-          shown = await shownListings(deps.syncClient, store.catalogKey);
-        } catch (error) {
-          return json({ error: 'sync_refused', message: errorText(error) }, 409);
-        }
-        for (const d of hide) {
-          shown.delete(d);
-        }
-        for (const item of items.data) {
-          if (item.visibility === 'hidden') {
-            shown.delete(item.d);
-          } else {
-            shown.add(item.d);
-          }
-        }
-        total = shown.size;
-      }
-      if (total > store.tier.maxProducts) {
-        return json({ error: 'too_many_products', max: store.tier.maxProducts }, 400);
-      }
-    }
     const dryRun = parsed.data.dryRun === true;
     const change = upsert ? { mode: 'upsert' as const, hide } : {};
     const started = await withSyncGuard(store.owner, (holder, release) =>
       startSync(store, items.data, change, dryRun, holder, release),
     );
     return started ?? json({ error: 'sync_running' }, 409);
+  };
+
+  /**
+   * The catalog's size after this request, or a refusal: a replace is its
+   * items; an upsert is what K lists on the relay, changed as asked. Run
+   * under the sync guard, so two requests cannot both pass against the same
+   * catalog.
+   */
+  const overTier = async (
+    store: StoreRecord,
+    items: readonly CatalogItemInput[],
+    change: { mode?: 'upsert'; hide?: string[] },
+  ): Promise<Response | undefined> => {
+    if (store.tier === undefined) {
+      return undefined;
+    }
+    let total = items.length;
+    if (change.mode === 'upsert') {
+      let listed: Set<string>;
+      try {
+        listed = await listedOnRelay(deps.syncClient, store.catalogKey);
+      } catch (error) {
+        return json({ error: 'sync_refused', message: errorText(error) }, 409);
+      }
+      for (const d of change.hide ?? []) {
+        listed.delete(d);
+      }
+      for (const item of items) {
+        listed.add(item.d);
+      }
+      total = listed.size;
+    }
+    return total > store.tier.maxProducts
+      ? json({ error: 'too_many_products', max: store.tier.maxProducts }, 400)
+      : undefined;
   };
 
   const startSync = async (
@@ -339,6 +346,14 @@ export function createAdminApi(
     holder: string,
     release: (ended?: CatalogSyncStatus) => Promise<void>,
   ): Promise<Response> => {
+    const refused = await overTier(store, items, change).catch(async (error: unknown) => {
+      await release();
+      throw error;
+    });
+    if (refused !== undefined) {
+      await release();
+      return refused;
+    }
     const options = {
       signer: store.catalogSecretKey,
       store: store.owner,

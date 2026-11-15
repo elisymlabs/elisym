@@ -556,27 +556,22 @@ describe('admin API (7.3)', () => {
         })
       ).body,
     ).toEqual({ error: 'bad_request' });
-    // The tier counts what K shows (a and c) plus the change: 998 more reach 1000, 999 do not.
+    // The tier counts every listing K has on the relay (a, c, and b's hidden version: this test
+    // relay keeps deleted events) plus the change, hidden products included, as a replace does.
     const many = (count: number) =>
       Array.from({ length: count }, (_unused, index) => product(`n-${index}`));
+    const upsertDry = (body: Record<string, unknown>) =>
+      call('POST', '/v1/admin/catalog', { mode: 'upsert', dryRun: true, ...body });
+    expect((await upsertDry({ items: many(997) })).status).toBe(200);
+    expect((await upsertDry({ items: many(998) })).body).toEqual({
+      error: 'too_many_products',
+      max: 1000,
+    });
+    // A hidden product still takes a place; hiding one by ID frees it.
     expect(
-      (await call('POST', '/v1/admin/catalog', { mode: 'upsert', items: many(998), dryRun: true }))
-        .status,
-    ).toBe(200);
-    expect(
-      (await call('POST', '/v1/admin/catalog', { mode: 'upsert', items: many(999), dryRun: true }))
-        .body,
+      (await upsertDry({ items: [...many(997), { ...product('h'), visibility: 'hidden' }] })).body,
     ).toEqual({ error: 'too_many_products', max: 1000 });
-    // Hiding one and sending a hidden product make room again.
-    expect(
-      (
-        await call('POST', '/v1/admin/catalog', {
-          mode: 'upsert',
-          items: [...many(999), { ...product('c'), visibility: 'hidden' }],
-          dryRun: true,
-        })
-      ).status,
-    ).toBe(200);
+    expect((await upsertDry({ items: many(998), hide: ['c'] })).status).toBe(200);
   });
 
   it('policies are set and removed by the server K', async () => {
