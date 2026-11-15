@@ -1,7 +1,7 @@
 import type { StoreConfig } from '@elisym/askr';
 import { useEffect, useState } from 'react';
 import type { RelayReader } from '../lib/relay';
-import { countListed } from '../lib/store-data';
+import { countListed, readAuthority } from '../lib/store-data';
 import { Notice } from './Notice';
 
 interface Props {
@@ -23,17 +23,26 @@ export function CatalogSize({ reader, now, config, maxProducts }: Props) {
 
   useEffect(() => {
     let current = true;
-    countListed(reader, config.catalogKey, role, now())
+    const read = async () => {
+      // A key the owner does not authorize now gives the assistant no products at all.
+      const authority = await readAuthority(reader, config.owner, now());
+      if (!(authority.keys.get(config.catalogKey)?.has(role) ?? false)) {
+        return 0;
+      }
+      return countListed(reader, config.catalogKey, role, config.currency, now());
+    };
+    read()
       .then((listed) => {
         if (current) {
           setCount(listed);
         }
       })
+      // Advisory only: a relay that does not answer leaves the notice out.
       .catch(() => undefined);
     return () => {
       current = false;
     };
-  }, [reader, now, config.catalogKey, role]);
+  }, [reader, now, config.owner, config.catalogKey, config.currency, role]);
 
   if (count === undefined || count <= maxProducts) {
     return null;
@@ -41,8 +50,8 @@ export function CatalogSize({ reader, now, config, maxProducts }: Props) {
   return (
     <Notice tone="warn">
       Your catalog has {count} products and your plan indexes up to {maxProducts}, so the assistant
-      does not see the last {count - maxProducts} by product ID. Remove products or move to a larger
-      plan.
+      does not see the last {count - maxProducts} by product ID (in character order). Remove
+      products or move to a larger plan.
     </Notice>
   );
 }

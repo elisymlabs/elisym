@@ -205,21 +205,28 @@ export async function readListings(
 }
 
 /**
- * How many products a catalog key shows shoppers now (hidden and deleted ones
- * left out), read as the assistant reads them: `paycore` for a Pay Core store's
- * key, which may carry payment terms, `catalog` otherwise.
+ * How many products in `currency` a catalog key shows shoppers now (hidden and
+ * deleted ones left out), read as the assistant reads them: `paycore` for a
+ * Pay Core store's key, which may carry payment terms, `catalog` otherwise.
+ * Read from the Askr relay only: listings a Pay Core store published only to
+ * other relays are not counted (the admin reads no other relay).
  */
 export async function countListed(
   reader: RelayReader,
   key: string,
   role: CatalogKeyRole,
+  currency: string,
   now: number = nowSecs(),
 ): Promise<number> {
   const events = await reader.query({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [key] });
   const deletions = events.filter((event) => event.kind === KIND_DELETION);
-  return newestByD(events, KIND_PRODUCT, key, now).filter(
-    (event) => !deleted(event, deletions) && parseCatalogItem(event, { role, now }) !== undefined,
-  ).length;
+  return newestByD(events, KIND_PRODUCT, key, now).filter((event) => {
+    if (deleted(event, deletions)) {
+      return false;
+    }
+    // Only the store's currency counts against the plan: the assistant leaves the rest out.
+    return parseCatalogItem(event, { role, now })?.price.currency === currency;
+  }).length;
 }
 
 /** The policies a policy key shows now, by slug. */

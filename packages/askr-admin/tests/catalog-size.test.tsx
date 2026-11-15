@@ -1,8 +1,21 @@
-import type { CatalogItemInput } from '@elisym/askr';
+// cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+import { type CatalogItemInput, buildCatalogAuth } from '@elisym/askr';
+import { KIND_DELETION, buildProductEvent, buildStoreAuthEvent } from '@elisym/commerce';
+import type { NostrEvent } from 'nostr-tools';
+import { finalizeEvent } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Overview } from '../src/components/Overview';
 import { countListed } from '../src/lib/store-data';
-import { NOW, SERVER_KEY, adminConfig, fakeReader, listing, storeView } from './fakes';
+import {
+  NOW,
+  OWNER_KEY,
+  SERVER_KEY,
+  SERVER_KEY_SECRET,
+  adminConfig,
+  fakeReader,
+  listing,
+  storeView,
+} from './fakes';
 import { type Mounted, mount, settle } from './mount';
 
 let mounted: Mounted | undefined;
@@ -11,26 +24,39 @@ afterEach(async () => {
   mounted = undefined;
 });
 
-function products(count: number, visibility?: CatalogItemInput['visibility']) {
+const CATALOG_AUTH = finalizeEvent(
+  buildCatalogAuth({ key: SERVER_KEY, mode: 'hosted', createdAt: NOW - 100 }),
+  OWNER_KEY,
+);
+const PAYCORE_AUTH = finalizeEvent(
+  { ...buildStoreAuthEvent({ storePubkey: SERVER_KEY, mode: 'self-host' }), created_at: NOW - 100 },
+  OWNER_KEY,
+);
+
+function products(count: number, extra: Partial<CatalogItemInput> = {}, prefix = 'p') {
   return Array.from({ length: count }, (_value, index) =>
     listing({
-      d: `p-${index}`,
+      d: `${prefix}-${index}`,
       title: `Product ${index}`,
       price: { amount: '1', currency: 'USD' },
-      ...(visibility === undefined ? {} : { visibility }),
+      ...extra,
     }),
   );
 }
 
-async function overview(count: number, maxProducts: number) {
+async function overview(
+  events: readonly NostrEvent[],
+  maxProducts: number,
+  config = adminConfig({ source: { kind: 'catalog' } }),
+) {
   const view = storeView();
   const tier = view.tier === null ? null : { ...view.tier, maxProducts };
   mounted = await mount(
     <Overview
       view={{ ...view, tier }}
-      config={adminConfig({ source: { kind: 'catalog' } })}
+      config={config}
       configFromServer={false}
-      catalogReader={{ reader: fakeReader(products(count)), now: () => NOW }}
+      catalogReader={{ reader: fakeReader(events), now: () => NOW }}
     />,
   );
   return mounted.container;
@@ -38,21 +64,65 @@ async function overview(count: number, maxProducts: number) {
 
 describe('the catalog size against the plan', () => {
   it('says how many products the assistant leaves out when the catalog is over the plan', async () => {
-    const container = await overview(5, 3);
+    const container = await overview([CATALOG_AUTH, ...products(5)], 3);
     await settle(() => (container.textContent ?? '').includes('indexes up to'));
     expect(container.textContent).toContain(
-      'Your catalog has 5 products and your plan indexes up to 3, so the assistant does not see the last 2 by product ID.',
+      'Your catalog has 5 products and your plan indexes up to 3, so the assistant does not see the last 2 by product ID (in character order).',
     );
   });
 
-  it('says nothing at or under the plan', async () => {
-    const container = await overview(3, 3);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(container.textContent).not.toContain('indexes up to');
+  it('says nothing at or under the plan, and nothing for a key the owner does not authorize', async () => {
+    for (const events of [[CATALOG_AUTH, ...products(3)], products(5)]) {
+      const container = await overview(events, 3);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(container.textContent).not.toContain('indexes up to');
+      await mounted?.unmount();
+      mounted = undefined;
+    }
   });
 
-  it('counts only what shoppers see: no hidden products', async () => {
-    const reader = fakeReader([...products(2), ...products(3, 'hidden').slice(2)]);
-    expect(await countListed(reader, SERVER_KEY, 'catalog', NOW)).toBe(2);
+  it('counts only what shoppers see in the store currency: no hidden, deleted or other-currency products', async () => {
+    const deletion = finalizeEvent(
+      {
+        kind: KIND_DELETION,
+        created_at: NOW - 10,
+        tags: [['a', `30402:${SERVER_KEY}:p-1`]],
+        content: '',
+      },
+      SERVER_KEY_SECRET,
+    );
+    const reader = fakeReader([
+      ...products(3),
+      ...products(2, { visibility: 'hidden' }, 'h'),
+      ...products(2, { price: { amount: '1', currency: 'EUR' } }, 'e'),
+      deletion,
+    ]);
+    expect(await countListed(reader, SERVER_KEY, 'catalog', 'USD', NOW)).toBe(2);
+    expect(await countListed(reader, SERVER_KEY, 'catalog', 'EUR', NOW)).toBe(2);
+  });
+
+  it('reads a Pay Core store as the assistant does: listings with payment terms count', async () => {
+    const payCore = Array.from({ length: 4 }, (_value, index) =>
+      finalizeEvent(
+        buildProductEvent({
+          d: `pc-${index}`,
+          title: 'P',
+          description: '',
+          price: { amount: '5', currency: 'USD' },
+          accept: [
+            'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+          ],
+          createdAt: NOW - 1,
+        }),
+        SERVER_KEY_SECRET,
+      ),
+    );
+    const container = await overview(
+      [PAYCORE_AUTH, ...payCore],
+      2,
+      adminConfig({ source: { kind: 'paycore' } }),
+    );
+    await settle(() => (container.textContent ?? '').includes('indexes up to'));
+    expect(container.textContent).toContain('Your catalog has 4 products');
   });
 });

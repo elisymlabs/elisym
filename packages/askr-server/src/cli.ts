@@ -145,7 +145,7 @@ export async function runCli(args: readonly string[], directory: StoreDirectory)
     return tiers
       .map(
         ({ tier, stores }) =>
-          `${tier.name}: ${stores} store${stores === 1 ? '' : 's'}, --messages ${tier.messagesPerSessionPerDay} --daily ${new Decimal(tier.dailyBudgetUsd).toString()} --monthly ${new Decimal(tier.monthlyBudgetUsd).toString()} --tickets ${tier.ticketsPerStorePerMinute} --products ${tier.maxProducts} --sync-minutes ${tier.syncIntervalMinutes} --branding ${tier.branding}`,
+          `${tier.name}: ${stores} store${stores === 1 ? '' : 's'}, --messages ${tier.messagesPerSessionPerDay} --daily ${new Decimal(tier.dailyBudgetUsd).toFixed()} --monthly ${new Decimal(tier.monthlyBudgetUsd).toFixed()} --tickets ${tier.ticketsPerStorePerMinute} --products ${tier.maxProducts} --sync-minutes ${tier.syncIntervalMinutes} --branding ${tier.branding}`,
       )
       .join('\n');
   }

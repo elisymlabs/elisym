@@ -317,7 +317,8 @@ export class StoreDirectory {
   async setStatus(owner: string, status: StoreStatus, tierName?: string): Promise<boolean> {
     return this.db.transaction(async (tx) => {
       if (tierName !== undefined) {
-        const tiers = await tx.query('select 1 from tiers where name = $1', [tierName]);
+        // `for share` waits for a `tier delete` under way, so a deleted tier reads as none.
+        const tiers = await tx.query('select 1 from tiers where name = $1 for share', [tierName]);
         if (tiers.length === 0) {
           return false;
         }
