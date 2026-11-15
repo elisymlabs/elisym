@@ -15,9 +15,9 @@ export type VerificationFailureReason =
   /** Neither page could be read. */
   | 'fetch_failed'
   /**
-   * The home page refused the connector (401, 403, 429 or 503), and
-   * `/.well-known/askr` could not be read either: most often a bot check in
-   * front of the whole shop, so neither proof can be seen.
+   * Neither the home page nor `/.well-known/askr` could be read, and at
+   * least one refused the connector (401, 403, 429 or 503): most often a bot
+   * check in front of the whole shop, so neither proof can be seen.
    */
   | 'blocked';
 
@@ -83,8 +83,14 @@ export async function verifyOrigin(
   if (home.kind === 'page' && metaContents(home.body, VERIFICATION_META_NAME).includes(npub)) {
     return undefined;
   }
-  // A readable well-known path (missing, or without the npub) is still a way in: not blocked.
-  if (home.kind === 'blocked' && (wellKnown.kind === 'blocked' || wellKnown.kind === 'failed')) {
+  // Blocked when neither proof could be read and one was refused; a readable page (missing,
+  // or without the npub) is still a way in.
+  const unread = (read: PageRead) => read.kind === 'blocked' || read.kind === 'failed';
+  if (
+    (home.kind === 'blocked' || wellKnown.kind === 'blocked') &&
+    unread(home) &&
+    unread(wellKnown)
+  ) {
     return 'blocked';
   }
   return wellKnown.kind === 'failed' && home.kind === 'failed' ? 'fetch_failed' : 'not_found';

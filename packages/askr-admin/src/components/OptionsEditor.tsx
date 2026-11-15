@@ -27,7 +27,8 @@ export function OptionsEditor({ rows, onChange }: Props) {
       <legend className="field-label">Options (optional)</legend>
       <span className="field-hint">
         Sizes, colors and the like. Separate values with commas; each combination becomes a variant
-        with its own price and stock.
+        with its own price and stock. Renaming an option keeps the variants; a new value adds its
+        combinations, a removed one takes them away.
       </span>
       {rows.map((row, index) => (
         <div key={index} className="flex items-center gap-8">

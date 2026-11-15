@@ -460,6 +460,24 @@ describe('the CSV import', () => {
     await chooseFile(container, 'd,title,price\nteapot,Teapot,30\nmug,Mug,12.50');
     await settle(() => (container.textContent ?? '').includes('2 products read'));
     expect(container.textContent).toContain('are lost: teapot, mug.');
+    // A file that carries everything the current product has replaces it without a warning.
+    await chooseFile(
+      container,
+      [
+        'd,title,price,url,image,sku,attr:material',
+        'mug,Mug,12.50,https://tea.example/mug,https://cdn.example/mug.jpg,SKU-MUG,clay',
+      ].join('\n'),
+    );
+    await settle(() => (container.textContent ?? '').includes('1 product read'));
+    expect(container.textContent).not.toContain('are lost');
+    await chooseFile(
+      container,
+      [
+        'd,title,price,url,image,attr:material',
+        'mug,Mug,12.50,https://tea.example/mug,https://cdn.example/mug.jpg,clay',
+      ].join('\n'),
+    );
+    await settle(() => (container.textContent ?? '').includes('are lost: mug.'));
   });
 
   it('refuses a file larger than the server takes, without reading it', async () => {

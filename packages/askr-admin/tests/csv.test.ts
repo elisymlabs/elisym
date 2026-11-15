@@ -220,7 +220,7 @@ describe('productsFromCsv', () => {
     expect(result.ignoredColumns).toEqual([]);
     expect(result.items.map((item) => [item.d, item.variants?.length ?? 0])).toEqual([
       ['mug-1', 0],
-      ['tee-1', 3],
+      ['tee-1', 4],
       ['box-1', 0],
     ]);
   });

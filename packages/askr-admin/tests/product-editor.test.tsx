@@ -289,4 +289,105 @@ describe('the product editor fields', () => {
       ['3', 'XL'],
     ]);
   });
+
+  it('renaming an option keeps a sparse grid and a * variant exactly', async () => {
+    const variants = [
+      { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
+      { id: 'b', price: '30', available: false, values: ['M', '*'] },
+    ];
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20', currency: 'USD' },
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Color', values: ['Red', 'Blue'] },
+      ],
+      variants,
+    });
+    await typeInto(labelled(container, 'Option 2 name'), 'Colour');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Colour', values: ['Red', 'Blue'] },
+      ],
+      variants,
+    });
+  });
+
+  it('clearing an option name to retype it, or a value passing through, loses nothing', async () => {
+    const variants = [
+      { id: 'tee-s', price: '20', available: true, values: ['S'] },
+      { id: 'tee-m', price: '24', available: false, values: ['M'] },
+      { id: 'tee-l', price: '26', available: true, values: ['L'] },
+    ];
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S', 'M', 'L'] }],
+      variants,
+    });
+    await typeInto(labelled(container, 'Option 1 name'), '');
+    await typeInto(labelled(container, 'Option 1 name'), 'Sizes');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M, ');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M, L');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      options: [{ name: 'Sizes', values: ['S', 'M', 'L'] }],
+      variants,
+    });
+  });
+
+  it('refuses to save while an option has a name and no values', async () => {
+    const { container, onSave } = await editor({
+      d: 'x',
+      title: 'X',
+      price: { amount: '1', currency: 'USD' },
+    });
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 1 name'), 'Size');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('each option needs a name and at least one value');
+  });
+
+  it('a new value starts at the listing price, and * is never a value', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '18', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [
+        { id: '1', price: '18', available: true, values: ['S'] },
+        { id: '2', price: '25', available: true, values: ['M'] },
+      ],
+    });
+    await typeInto(labelled(container, 'Price of S'), '22');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M, L, *');
+    expect(labelled(container, 'Price of L').value).toBe('22');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).options).toEqual([{ name: 'Size', values: ['S', 'M', 'L'] }]);
+  });
+
+  it('an untouched equal listing price keeps its spelling, and removing every option keeps the price shown', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20.0', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S'] }],
+      variants: [{ id: '1', price: '20', available: true, values: ['S'] }],
+    });
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).price.amount).toBe('20.0');
+    await typeInto(labelled(container, 'Price of S'), '27');
+    const remove = container.querySelector('[aria-label="Remove option 1"]');
+    if (!(remove instanceof HTMLButtonElement)) {
+      throw new Error('no remove button');
+    }
+    await click(remove);
+    const price = byId(container, 'product-price');
+    expect(price instanceof HTMLInputElement && !price.readOnly && price.value).toBe('27');
+  });
 });

@@ -21,13 +21,14 @@ export const CSV_VARIANT_COLUMNS = ['variant_id', 'variant_price', 'variant_avai
 /** `attr:Material` is an attribute named Material; `option:Size` an option named Size. */
 export const CSV_ATTR_PREFIX = 'attr:';
 export const CSV_OPTION_PREFIX = 'option:';
-/** A small file that shows every column: a plain product, then one with two options. */
+/** A small file that shows every column: a plain product, one with two options (`*` = any color), a subscription. */
 export const CSV_EXAMPLE = [
   'd,title,price,currency,frequency,summary,description,url,image,visibility,topics,sku,attr:Material,option:Size,option:Color,variant_id,variant_price,variant_available',
   'mug-1,Stoneware mug,12.50,USD,,Holds 350 ml,A heavy mug for hot drinks.,https://shop.example/mug,https://shop.example/mug.jpg,on-sale,kitchen|gifts,MUG-1,Stoneware,,,,,',
   'tee-1,Cotton tee,20,USD,,,Soft everyday tee.,https://shop.example/tee,https://shop.example/tee.jpg,,clothing,TEE-1,Cotton,S,Black,tee-s-black,20,yes',
   'tee-1,,,,,,,,,,,,,M,Black,tee-m-black,20,yes',
   'tee-1,,,,,,,,,,,,,L,Black,tee-l-black,22,no',
+  'tee-1,,,,,,,,,,,,,XL,*,tee-xl,24,yes',
   'box-1,Coffee subscription,15,USD,month,,A bag of fresh coffee every month.,,,,coffee,BOX-1,,,,,,',
 ].join('\n');
 type CsvColumn = (typeof CSV_COLUMNS)[number];

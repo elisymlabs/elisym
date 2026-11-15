@@ -1,6 +1,7 @@
 import { type CatalogItemInput, CatalogItemInputSchema, VISIBILITIES } from '@elisym/askr';
+import Decimal from 'decimal.js-light';
 import { useState } from 'react';
-import { type VariantInput, listingPriceOf, variantsFromOptions } from '../lib/variants';
+import { type VariantInput, listingPriceOf, rebuildVariants } from '../lib/variants';
 import { type AttrRow, AttrsEditor } from './AttrsEditor';
 import { Notice } from './Notice';
 import { type OptionRow, OptionsEditor } from './OptionsEditor';
@@ -79,37 +80,81 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
     (initial?.attrs ?? []).map((attr) => ({ name: attr.name, value: attr.value })),
   );
   const [optionRows, setOptionRows] = useState<OptionRow[]>(optionRowsOf(initial));
+  // The options the variants were last built for: a change is compared with these.
+  const [appliedOptions, setAppliedOptions] = useState(optionsOf(optionRowsOf(initial)));
   const [variants, setVariants] = useState<VariantInput[]>(initial?.variants ?? []);
+  // Every variant this edit has seen, latest last: a combination that comes back (a value
+  // retyped, an option cleared and filled again) gets its id, price and stock back, and no
+  // id is ever handed to another combination.
+  const [remembered, setRemembered] = useState<VariantInput[]>(initial?.variants ?? []);
   const [optionProblem, setOptionProblem] = useState('');
-  // Ids the product's variants carried or this edit gave out: never handed to another combination.
-  const [retiredIds, setRetiredIds] = useState<ReadonlySet<string>>(
-    () => new Set((initial?.variants ?? []).map((variant) => variant.id)),
-  );
   const [errors, setErrors] = useState<string[]>([]);
 
   const listingPrice = listingPriceOf(variants);
 
-  // Every change to the options rebuilds the variants: a combination that stays keeps its
-  // price and stock, a new one starts at the current price.
+  const changeVariants = (next: VariantInput[]) => {
+    setVariants(next);
+    const byValues = new Map(
+      remembered.map((variant) => [JSON.stringify(variant.values), variant]),
+    );
+    for (const variant of next) {
+      byValues.delete(JSON.stringify(variant.values));
+      byValues.set(JSON.stringify(variant.values), variant);
+    }
+    setRemembered([...byValues.values()]);
+  };
+
   const changeOptions = (rows: OptionRow[]) => {
     setOptionRows(rows);
-    const complete = optionsOf(rows).filter(
-      (option) => option.name !== '' && option.values.length > 0,
-    );
-    const next = variantsFromOptions(complete, variants, listingPrice ?? price.trim(), retiredIds);
-    if (next.ok) {
-      setVariants(next.variants);
-      setRetiredIds(new Set([...retiredIds, ...next.variants.map((variant) => variant.id)]));
-      setOptionProblem('');
-    } else {
-      setOptionProblem(next.reason);
+    const typed = optionsOf(rows);
+    // A row with a name and no values yet, or values and no name, is being typed: the
+    // variants wait for it rather than lose a dimension.
+    if (typed.some((option) => option.name === '' || option.values.length === 0)) {
+      return;
     }
+    const next = rebuildVariants({
+      previous: appliedOptions,
+      next: typed,
+      variants,
+      remembered,
+      price: listingPrice ?? price.trim(),
+    });
+    if (!next.ok) {
+      setOptionProblem(next.reason);
+      return;
+    }
+    if (next.variants.length === 0 && listingPrice !== undefined) {
+      // The product goes back to one price: start from the one it showed.
+      setPrice(listingPrice);
+    }
+    setAppliedOptions(typed);
+    changeVariants(next.variants);
+    setOptionProblem('');
+  };
+
+  /** The listing price with variants; an untouched equal amount keeps its spelling (`20.0`). */
+  const variantListingAmount = () => {
+    const initialAmount = initial?.price.amount;
+    if (
+      listingPrice !== undefined &&
+      initialAmount !== undefined &&
+      /^\d+(\.\d+)?$/u.test(initialAmount) &&
+      new Decimal(initialAmount).equals(listingPrice)
+    ) {
+      return initialAmount;
+    }
+    return listingPrice ?? '';
   };
 
   const save = () => {
     const id = d.trim();
     if (initial === undefined && takenIds.includes(id)) {
       setErrors([`ID: another product already uses "${id}".`]);
+      return;
+    }
+    const typed = optionsOf(optionRows);
+    if (typed.some((option) => option.name === '' || option.values.length === 0)) {
+      setErrors(['options: each option needs a name and at least one value.']);
       return;
     }
     if (optionProblem !== '') {
@@ -124,7 +169,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       price: {
         ...initial?.price,
         // With variants the listing carries the lowest in-stock variant price (2.1).
-        amount: variants.length > 0 ? (listingPrice ?? '') : price.trim(),
+        amount: variants.length > 0 ? variantListingAmount() : price.trim(),
         currency: priceCurrency.trim().toUpperCase(),
         frequency: frequency === '' ? undefined : frequency,
       },
@@ -137,7 +182,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       attrs: attrs
         .map((attr) => ({ name: attr.name.trim(), value: attr.value.trim() }))
         .filter((attr) => attr.name !== '' || attr.value !== ''),
-      options: optionsOf(optionRows),
+      options: typed,
       variants,
       visibility,
     };
@@ -256,7 +301,9 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       <AttrsEditor rows={attrs} onChange={setAttrs} />
       <OptionsEditor rows={optionRows} onChange={changeOptions} />
       {optionProblem === '' ? null : <Notice tone="error">{optionProblem}</Notice>}
-      {variants.length === 0 ? null : <VariantsTable variants={variants} onChange={setVariants} />}
+      {variants.length === 0 ? null : (
+        <VariantsTable variants={variants} onChange={changeVariants} />
+      )}
       <SelectField
         id="product-visibility"
         label="Availability"

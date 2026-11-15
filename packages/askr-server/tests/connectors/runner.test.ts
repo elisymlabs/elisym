@@ -329,6 +329,15 @@ describe('verifyOrigin', () => {
       .route(`${SHOP}/`, { status: 403 });
     const failingHttp = new ShopHttp({ fetch: failing.deps(), limiter: new ShopRateLimiter(0) });
     expect(await verifyOrigin(failingHttp, SHOP, keys.owner)).toBe('blocked');
+    // And the other way round: a refused well-known path with a home page that fails.
+    const homeFails = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, { status: 403 })
+      .route(`${SHOP}/`, { status: 302, headers: { location: 'http://shop.example/' } });
+    const homeFailsHttp = new ShopHttp({
+      fetch: homeFails.deps(),
+      limiter: new ShopRateLimiter(0),
+    });
+    expect(await verifyOrigin(homeFailsHttp, SHOP, keys.owner)).toBe('blocked');
   });
 
   it('a refused home page with a readable well-known path is not found: the file is still a way in', async () => {
@@ -364,6 +373,7 @@ describe('verifyOrigin', () => {
   it('a home page refused after a redirect to another origin is not found, not blocked', async () => {
     const keys = storeKeys();
     const web = new FakeWeb()
+      .route(`${SHOP}/.well-known/askr`, { status: 403 })
       .route(`${SHOP}/`, { status: 301, headers: { location: 'https://elsewhere.example/' } })
       .route('https://elsewhere.example/', { status: 403 });
     const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
