@@ -244,6 +244,61 @@ export class StoreDirectory {
     return row;
   }
 
+  /** Every tier with how many stores are on it, by name. */
+  async listTiers(): Promise<{ tier: Tier; stores: number }[]> {
+    const rows = await this.db.query<{
+      name: string;
+      messages_per_session_per_day: number;
+      daily_budget_usd: string;
+      monthly_budget_usd: string;
+      tickets_per_store_per_minute: number;
+      max_products: number;
+      sync_interval_minutes: number;
+      branding: boolean;
+      stores: number;
+    }>(
+      `select t.*, (select count(*)::int from stores s where s.tier = t.name) as stores
+       from tiers t order by t.name`,
+    );
+    return rows.map((row) => ({
+      tier: {
+        name: row.name,
+        messagesPerSessionPerDay: row.messages_per_session_per_day,
+        dailyBudgetUsd: row.daily_budget_usd,
+        monthlyBudgetUsd: row.monthly_budget_usd,
+        ticketsPerStorePerMinute: row.tickets_per_store_per_minute,
+        maxProducts: row.max_products,
+        syncIntervalMinutes: row.sync_interval_minutes,
+        branding: row.branding,
+      },
+      stores: row.stores,
+    }));
+  }
+
+  /**
+   * Delete a tier no store is on. A store keeps its tier name while suspended
+   * too, so the stores on it are named instead and nothing is deleted.
+   */
+  async deleteTier(
+    name: string,
+  ): Promise<{ deleted: true } | { deleted: false; stores: string[] } | undefined> {
+    return this.db.transaction(async (tx) => {
+      const tiers = await tx.query('select 1 from tiers where name = $1 for update', [name]);
+      if (tiers.length === 0) {
+        return undefined;
+      }
+      const stores = await tx.query<{ owner: string }>(
+        'select owner from stores where tier = $1 order by created_at',
+        [name],
+      );
+      if (stores.length > 0) {
+        return { deleted: false, stores: stores.map((store) => store.owner) };
+      }
+      await tx.query('delete from tiers where name = $1', [name]);
+      return { deleted: true };
+    });
+  }
+
   async tierExists(name: string): Promise<boolean> {
     return (await this.db.query('select 1 from tiers where name = $1', [name])).length > 0;
   }
@@ -262,7 +317,8 @@ export class StoreDirectory {
   async setStatus(owner: string, status: StoreStatus, tierName?: string): Promise<boolean> {
     return this.db.transaction(async (tx) => {
       if (tierName !== undefined) {
-        const tiers = await tx.query('select 1 from tiers where name = $1', [tierName]);
+        // `for share` waits for a `tier delete` under way, so a deleted tier reads as none.
+        const tiers = await tx.query('select 1 from tiers where name = $1 for share', [tierName]);
         if (tiers.length === 0) {
           return false;
         }

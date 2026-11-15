@@ -172,6 +172,13 @@ export function buildStoreCatalog(
   owner: string,
   assistantSecretKey: Uint8Array,
   now: number,
+  /**
+   * The tier's products indexed at most (9). The admin, CSV and connectors
+   * refuse a larger catalog; one published with the store's own catalog key
+   * or a Pay Core store reaches the relay anyway, so only the first this many
+   * in the store's currency by product ID (character order) are used.
+   */
+  maxProducts?: number,
 ): StoreCatalog | undefined {
   const config = storeConfig(events, owner, now);
   if (!config || config.assistant !== getPublicKey(assistantSecretKey)) {
@@ -191,6 +198,18 @@ export function buildStoreCatalog(
       }
     }
   }
+  // The cap counts only products in the store's currency: the catalog leaves the others out
+  // anyway (and names them), so they must not take a place on the plan.
+  const inCurrency = items.filter((item) => item.price.currency === config.currency);
+  const indexed =
+    maxProducts === undefined || inCurrency.length <= maxProducts
+      ? items
+      : [
+          ...[...inCurrency]
+            .sort((left, right) => (left.d < right.d ? -1 : 1))
+            .slice(0, maxProducts),
+          ...items.filter((item) => item.price.currency !== config.currency),
+        ];
   const policies: Policy[] = [];
   if (keys.policyKey !== undefined) {
     for (const event of newestPerAddress(events, KIND_POLICY, keys.policyKey, now)) {
@@ -203,7 +222,7 @@ export function buildStoreCatalog(
   return new StoreCatalog(
     config,
     decryptPrivateConfig(config, assistantSecretKey),
-    items,
+    indexed,
     policies,
   );
 }

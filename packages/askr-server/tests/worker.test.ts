@@ -507,6 +507,27 @@ describe('worker wraps (2.4)', () => {
     expect(setup.worker.catalogs.size).toBe(40);
   });
 
+  it("a tier that now indexes fewer or more products reloads the store's catalog", async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(2);
+    const setCap = (cap: number) =>
+      setup.db.query(
+        'update tiers set max_products = $2 where name = (select tier from stores where owner = $1)',
+        [store.owner, cap],
+      );
+    await setCap(1);
+    await setup.worker.refreshLeases();
+    await setup.worker.catalogsSettled();
+    expect([...(setup.worker.catalogs.get(store.owner)?.items.keys() ?? [])]).toEqual([
+      'jacket-rain',
+    ]);
+    await setCap(500);
+    await setup.worker.refreshLeases();
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(2);
+  });
+
   it('a store that stops being active is no longer leased, and its catalog is dropped', async () => {
     const store = syntheticStore();
     const setup = await harness({ stores: [store] });

@@ -1,8 +1,10 @@
 import type { StoreConfig } from '@elisym/askr';
 import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
 import { KIND_DELETION } from '@elisym/commerce';
+import type { RelayReader } from '../lib/relay';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { usd } from '../lib/usage';
+import { CatalogSize } from './CatalogSize';
 import { ConnectorStatus } from './ConnectorStatus';
 import { Notice } from './Notice';
 import { Section } from './Section';
@@ -14,6 +16,8 @@ interface Props {
   config: StoreConfig | undefined;
   /** The settings shown are the ones O signed and the server holds until activation. */
   configFromServer: boolean;
+  /** Reads the catalog to say when it is larger than the plan indexes. */
+  catalogReader?: { reader: RelayReader; now: () => number };
 }
 
 const STATUS_TEXT: Readonly<Record<StoreStatus, string>> = {
@@ -36,7 +40,7 @@ function dOfAddress(address: string): string {
   return parts.slice(2).join(':') || address;
 }
 
-export function Overview({ view, config, configFromServer }: Props) {
+export function Overview({ view, config, configFromServer, catalogReader }: Props) {
   const { tier, usage, events } = view;
   return (
     <div className="flex flex-col gap-16">
@@ -87,6 +91,14 @@ export function Overview({ view, config, configFromServer }: Props) {
               Up to {tier.maxProducts} products, {tier.messagesPerSessionPerDay} questions per
               visitor per day, connector sync every {tier.syncIntervalMinutes} minutes.
             </p>
+            {catalogReader === undefined || config === undefined ? null : (
+              <CatalogSize
+                reader={catalogReader.reader}
+                now={catalogReader.now}
+                config={config}
+                maxProducts={tier.maxProducts}
+              />
+            )}
           </div>
         )}
         <dl className="text-14 grid grid-cols-[auto_1fr] gap-x-16 gap-y-4">

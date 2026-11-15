@@ -1,4 +1,4 @@
-import { buildTicket, wrapChatMessage } from '@elisym/askr';
+import { buildCatalogItemEvent, buildTicket, wrapChatMessage } from '@elisym/askr';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { createGateway } from '../src/gateway/gateway';
@@ -139,6 +139,51 @@ describe('catalog build (5.1)', () => {
     const catalog = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW);
     expect(catalog?.items.size).toBe(2);
     expect(catalog?.policies).toHaveLength(1);
+  });
+
+  it("indexes at most the tier's products, the first by product ID", () => {
+    const store = syntheticStore();
+    const capped = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW, 1);
+    expect([...(capped?.items.keys() ?? [])]).toEqual(['jacket-rain']);
+    for (const cap of [2, 3, undefined]) {
+      expect(
+        buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW, cap)?.items.size,
+      ).toBe(2);
+    }
+  });
+
+  it('counts only products in the store currency against the cap, and keeps the others named', () => {
+    const store = syntheticStore();
+    const euro = ['a-euro-1', 'a-euro-2'].map((d) =>
+      finalizeEvent(
+        buildCatalogItemEvent({
+          d,
+          title: d,
+          price: { amount: '5', currency: 'EUR' },
+          createdAt: NOW - 50,
+        }),
+        store.catalogSecret,
+      ),
+    );
+    const catalog = buildStoreCatalog(
+      [...store.events, ...euro],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+      2,
+    );
+    expect([...(catalog?.items.keys() ?? [])].sort()).toEqual(['jacket-rain', 'jacket-wool']);
+    expect([...(catalog?.otherCurrency ?? [])].sort()).toEqual(['a-euro-1', 'a-euro-2']);
+    // Over the cap, the other-currency listings are still named.
+    const capped = buildStoreCatalog(
+      [...store.events, ...euro],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+      1,
+    );
+    expect([...(capped?.items.keys() ?? [])]).toEqual(['jacket-rain']);
+    expect([...(capped?.otherCurrency ?? [])].sort()).toEqual(['a-euro-1', 'a-euro-2']);
   });
 
   it('refuses a config naming another assistant', () => {

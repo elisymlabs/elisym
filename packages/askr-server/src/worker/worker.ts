@@ -218,7 +218,20 @@ export class Worker {
     this.leases = next;
     const changed =
       next.size !== previous.size || [...next.keys()].some((key) => !previous.has(key));
-    if (!changed || this.stopped) {
+    if (this.stopped) {
+      return;
+    }
+    // A store whose tier now indexes a different number of products is read again (9).
+    for (const [assistant, lease] of next) {
+      const before = previous.get(assistant);
+      if (
+        before !== undefined &&
+        before.store.tier?.maxProducts !== lease.store.tier?.maxProducts
+      ) {
+        this.loader.enqueue(lease.store.owner);
+      }
+    }
+    if (!changed) {
       return;
     }
     for (const [assistant, lease] of previous) {

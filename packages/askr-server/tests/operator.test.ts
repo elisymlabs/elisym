@@ -74,6 +74,65 @@ describe('operator CLI (7.3)', () => {
     expect(parseOwner('nope')).toBeUndefined();
   });
 
+  it('lists tiers with their limits and stores, and says when there are none', async () => {
+    const store = syntheticStore();
+    const { directory } = await stateWith([{ ...storeRecord(store), status: 'pending' }]);
+    // The fixture store is on its own tier; a fresh tier has no store yet.
+    await runCli(['tier', 'set', 'starter', ...TIER_ARGS], directory);
+    const listed = (await runCli(['tier', 'list'], directory)).split('\n');
+    expect(listed).toContain(
+      'starter: 0 stores, --messages 30 --daily 2.5 --monthly 50 --tickets 60 --products 500 --sync-minutes 30 --branding false',
+    );
+    const fixtureTier = (await directory.statusOf(store.owner))?.tier ?? '';
+    expect(listed.some((line) => line.startsWith(`${fixtureTier}: 1 store,`))).toBe(true);
+    // A budget below 1e-6 is still printed so it can be pasted back into tier set.
+    await runCli(
+      ['tier', 'set', 'tiny', ...TIER_ARGS.map((arg) => (arg === '2.5' ? '0.000000001' : arg))],
+      directory,
+    );
+    expect((await runCli(['tier', 'list'], directory)).split('\n')).toContain(
+      'tiny: 0 stores, --messages 30 --daily 0.000000001 --monthly 50 --tickets 60 --products 500 --sync-minutes 30 --branding false',
+    );
+    await expect(runCli(['tier', 'list', 'extra'], directory)).rejects.toThrow(CLI_USAGE);
+    const empty = await stateWith([]);
+    for (const { tier } of await empty.directory.listTiers()) {
+      await empty.directory.deleteTier(tier.name);
+    }
+    expect(await runCli(['tier', 'list'], empty.directory)).toBe(
+      'No tiers yet: add one with tier set',
+    );
+  });
+
+  it('deletes a tier no store is on, and refuses one with stores, naming them', async () => {
+    const store = syntheticStore();
+    const { directory } = await stateWith([{ ...storeRecord(store), status: 'suspended' }]);
+    await runCli(['tier', 'set', 'spare', ...TIER_ARGS], directory);
+    expect(await runCli(['tier', 'delete', 'spare'], directory)).toBe('tier spare deleted');
+    expect(await directory.tierExists('spare')).toBe(false);
+    await expect(runCli(['tier', 'delete', 'spare'], directory)).rejects.toThrow(
+      'No such tier: spare',
+    );
+    // A suspended store keeps its tier, so that tier is not deleted.
+    const fixtureTier = (await directory.statusOf(store.owner))?.tier ?? '';
+    await expect(runCli(['tier', 'delete', fixtureTier], directory)).rejects.toThrow(
+      `Tier ${fixtureTier} has 1 store; move each to another tier first (store activate <npub> --tier <name> serves it, store suspend <npub> --tier <name> keeps it suspended):\n  ${nip19.npubEncode(store.owner)}`,
+    );
+    expect(await directory.tierExists(fixtureTier)).toBe(true);
+    // Moving the suspended store to another tier keeps it suspended; then the tier goes.
+    await runCli(['tier', 'set', 'other', ...TIER_ARGS], directory);
+    const npub = nip19.npubEncode(store.owner);
+    expect(await runCli(['store', 'suspend', npub, '--tier', 'other'], directory)).toBe(
+      `${npub} is suspended`,
+    );
+    expect(await directory.statusOf(store.owner)).toEqual({ status: 'suspended', tier: 'other' });
+    expect(await runCli(['tier', 'delete', fixtureTier], directory)).toBe(
+      `tier ${fixtureTier} deleted`,
+    );
+    await expect(runCli(['tier', 'delete', 'spare', 'extra'], directory)).rejects.toThrow(
+      CLI_USAGE,
+    );
+  });
+
   it('sets a tier, activates a pending store with it and notifies the server', async () => {
     const store = syntheticStore();
     const { db, directory, state } = await stateWith([
@@ -274,8 +333,8 @@ describe('server core review: operator CLI and amounts', () => {
     await expect(
       runCli(['store', 'activate', store, '--tier', 'ok-1', '--tier', 'ok-1'], directory),
     ).rejects.toThrow('--tier is given twice');
-    await expect(runCli(['store', 'suspend', store, '--tier', 'ok-1'], directory)).rejects.toThrow(
-      'Unknown flag --tier',
+    await expect(runCli(['store', 'suspend', store, '--other', 'ok-1'], directory)).rejects.toThrow(
+      'Unknown flag --other',
     );
   });
 
