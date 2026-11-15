@@ -168,6 +168,12 @@ describe('variantProblems', () => {
         { id: '2', price: '1', available: true, values: [''] },
       ]),
     ).toEqual(['Variant 2 (?): pick its Size.']);
+    expect(
+      variantProblems(options, [
+        { id: '1', price: '1', available: true, values: [''] },
+        { id: '2', price: '1', available: true, values: [''] },
+      ]),
+    ).toEqual(['Variant 1 (?): pick its Size.', 'Variant 2 (?): pick its Size.']);
   });
 
   it('leaves overlaps the product came with, and refuses one an edit made', () => {

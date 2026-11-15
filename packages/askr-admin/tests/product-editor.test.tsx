@@ -738,8 +738,11 @@ describe('the product editor fields', () => {
         { name: 'Size', values: ['M'] },
       ],
       attrs: [{ name: 'Fit', value: 'Slim' }],
+      variants: [{ id: '1', price: '1', available: true, values: ['S', 'M'] }],
     });
     expect(container.querySelectorAll('[aria-label="Size of variant 1"]')).toHaveLength(0);
+    expect(control(container, 'Option 1 of variant 1')).toBeDefined();
+    expect(control(container, 'Option 2 of variant 1')).toBeDefined();
     await click(buttonNamed(container, 'Add an attribute'));
     await typeInto(labelled(container, 'Attribute 2 value'), 'Wool');
     await click(buttonNamed(container, 'Add an attribute'));
@@ -750,7 +753,7 @@ describe('the product editor fields', () => {
     expect([...container.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
       'Option 2: option 1 is already called Size.',
       'Attribute 2 needs a name.',
-      'Attribute 3: sku is not an attribute name (the SKU has its own field).',
+      'Attribute 3: use the SKU field for the SKU.',
     ]);
   });
 
@@ -775,5 +778,46 @@ describe('the product editor fields', () => {
     await typeInto(labelled(edited.container, 'Price of variant 2'), '90');
     await click(buttonNamed(edited.container, 'Keep this product'));
     expect(saved(edited.onSave).priceFrom).toBeUndefined();
+  });
+
+  it('refuses an overlapping pair the product came with once both are moved onto another choice', async () => {
+    const { container, onSave } = await editor({
+      d: 'woocommerce:8',
+      title: 'Cap',
+      price: { amount: '10', currency: 'USD' },
+      options: [
+        { name: 'Size', values: ['S', 'M', 'L'] },
+        { name: 'Color', values: ['Red', 'Blue'] },
+      ],
+      variants: [
+        { id: '1', price: '10', available: true, values: ['*', 'Red'] },
+        { id: '2', price: '10', available: true, values: ['S', 'Red'] },
+        { id: '3', price: '10', available: true, values: ['M', 'Blue'] },
+      ],
+    });
+    for (const variant of ['1', '2']) {
+      await choose(control(container, `Size of variant ${variant}`), 'L');
+      await choose(control(container, `Color of variant ${variant}`), 'Blue');
+    }
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      'Variant 1 (L / Blue) and Variant 2 (L / Blue) are the same choice for a shopper',
+    );
+  });
+
+  it('the price after the last variant goes is the last listing price, not a price being typed', async () => {
+    const { container } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '25', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S'] }],
+      variants: [{ id: '1', price: '25', available: true, values: ['S'] }],
+    });
+    await typeInto(labelled(container, 'Price of variant 1'), '27');
+    await typeInto(labelled(container, 'Price of variant 1'), '27x');
+    await click(control(container, 'Remove variant 1'));
+    const price = byId(container, 'product-price');
+    expect(price instanceof HTMLInputElement && price.value).toBe('27');
   });
 });

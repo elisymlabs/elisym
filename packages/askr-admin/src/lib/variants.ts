@@ -182,14 +182,30 @@ export function variantProblems(
       }
     });
   });
-  // A pair the product came with overlapping (by id, so a value renamed in both keeps it).
+  // A pair the product came with overlapping, told by id and still in the same shape: the
+  // same values equal between them and the same `*`s, so a renamed value keeps it but moving
+  // the pair onto another choice does not.
+  const sameShape = (
+    now: readonly string[],
+    before: readonly string[],
+    other: readonly string[],
+    otherBefore: readonly string[],
+  ) =>
+    now.length === before.length &&
+    now.every(
+      (value, index) =>
+        (value === ANY_OPTION_VALUE) === (before[index] === ANY_OPTION_VALUE) &&
+        (value === other[index]) === (before[index] === otherBefore[index]),
+    );
   const cameOverlapping = (left: VariantInput, right: VariantInput) => {
     const leftBefore = initial.find((kept) => kept.id === left.id);
     const rightBefore = initial.find((kept) => kept.id === right.id);
     return (
       leftBefore !== undefined &&
       rightBefore !== undefined &&
-      overlaps(leftBefore.values, rightBefore.values)
+      overlaps(leftBefore.values, rightBefore.values) &&
+      sameShape(left.values, leftBefore.values, right.values, rightBefore.values) &&
+      sameShape(right.values, rightBefore.values, left.values, leftBefore.values)
     );
   };
   variants.forEach((variant, index) => {

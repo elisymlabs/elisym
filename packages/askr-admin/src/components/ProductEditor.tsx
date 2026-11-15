@@ -247,10 +247,11 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       if (attrName !== '' && attr.value.trim() === '') {
         return [`Attribute ${index + 1} (${attrName}) needs a value.`];
       }
+      if (attrName === 'sku') {
+        return [`Attribute ${index + 1}: use the SKU field for the SKU.`];
+      }
       return RESERVED_ATTRS.includes(attrName)
-        ? [
-            `Attribute ${index + 1}: ${attrName} is not an attribute name (the SKU has its own field).`,
-          ]
+        ? [`Attribute ${index + 1}: ${attrName} is kept for connectors, pick another name.`]
         : [];
     });
     const problems = [
