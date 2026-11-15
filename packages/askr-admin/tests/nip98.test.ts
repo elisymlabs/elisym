@@ -88,6 +88,7 @@ describe('the NIP-98 authorization', () => {
 
 describe('the API client', () => {
   it('signs every call over the exact body and URL it sends, reads included', async () => {
+    const bodies: unknown[] = [];
     const seen: { method: string; url: string; ok: boolean; cache: RequestCache | undefined }[] =
       [];
     const fakeFetch: typeof fetch = async (input, init) => {
@@ -103,6 +104,9 @@ describe('the API client', () => {
         now: Math.floor(Date.now() / 1000),
       });
       seen.push({ method, url, ok: result.ok, cache: init?.cache });
+      if (url.endsWith('/v1/admin/catalog')) {
+        bodies.push(typeof init?.body === 'string' ? JSON.parse(init.body) : undefined);
+      }
       return new Response(
         JSON.stringify({ diff: { created: [], updated: [], hidden: [], unchanged: [] } }),
         {
@@ -116,6 +120,15 @@ describe('the API client', () => {
       { items: [{ d: 'a', title: 'A', price: { amount: '1', currency: 'USD' } }], hide: ['b'] },
       true,
     );
+    // Only the change goes out, as an upsert.
+    expect(bodies).toEqual([
+      {
+        mode: 'upsert',
+        items: [{ d: 'a', title: 'A', price: { amount: '1', currency: 'USD' } }],
+        hide: ['b'],
+        dryRun: true,
+      },
+    ]);
     await api.deletePolicy('returns');
     await api.rotateAssistant();
     expect(seen).toEqual([

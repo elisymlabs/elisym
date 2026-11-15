@@ -1,9 +1,8 @@
 import type { CatalogItemInput } from '@elisym/askr';
 
 /**
- * The whole catalog after one change. `POST /v1/admin/catalog` replaces the
- * catalog: whatever is not in the list it gets is deleted, so every change
- * here returns the full list.
+ * The whole draft after one change: the editor holds the catalog as it should
+ * be, and a publish sends what it changed (`changesOf`).
  */
 export function upsertItem(
   catalog: readonly CatalogItemInput[],
@@ -34,7 +33,10 @@ export function importItems(
   return imported.reduce((list, item) => upsertItem(list, item), base);
 }
 
-/** A value with its object keys sorted, so two equal products compare equal however built. */
+/**
+ * A value with its object keys sorted, so two equal products compare equal
+ * however built (`JSON.stringify` leaves out undefined fields itself).
+ */
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map((entry) => canonical(entry));
@@ -42,7 +44,6 @@ function canonical(value: unknown): unknown {
   if (typeof value === 'object' && value !== null) {
     return Object.fromEntries(
       Object.entries(value)
-        .filter(([, entry]) => entry !== undefined)
         .sort(([left], [right]) => (left < right ? -1 : 1))
         .map(([key, entry]) => [key, canonical(entry)]),
     );
@@ -70,6 +71,8 @@ export interface CatalogChange {
 export function changesOf(
   baseline: readonly CatalogItemInput[],
   draft: readonly CatalogItemInput[],
+  /** Every product ID the key has on the relay, also ones the baseline could not read. */
+  listedIds: readonly string[] = [],
 ): CatalogChange {
   const before = new Map(baseline.map((item) => [item.d, item]));
   const kept = new Set(draft.map((item) => item.d));
@@ -82,6 +85,7 @@ export function changesOf(
       change.items.push(item);
     }
   }
-  change.hide = baseline.filter((item) => !kept.has(item.d)).map((item) => item.d);
+  const gone = new Set([...baseline.map((item) => item.d), ...listedIds]);
+  change.hide = [...gone].filter((d) => !kept.has(d));
   return change;
 }

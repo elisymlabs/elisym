@@ -572,6 +572,26 @@ describe('admin API (7.3)', () => {
       (await upsertDry({ items: [...many(997), { ...product('h'), visibility: 'hidden' }] })).body,
     ).toEqual({ error: 'too_many_products', max: 1000 });
     expect((await upsertDry({ items: many(998), hide: ['c'] })).status).toBe(200);
+    // A forged listing, or one by another key, takes no place.
+    const forged = finalizeEvent(
+      { kind: 30402, created_at: NOW, tags: [['d', 'forged']], content: '' },
+      server.catalogSecretKey,
+    );
+    // Through JSON, as from a relay: no cached verification travels with it.
+    const fromRelay: NostrEvent = JSON.parse(JSON.stringify({ ...forged, sig: '0'.repeat(128) }));
+    relay.events.push(fromRelay);
+    relay.events.push(
+      finalizeEvent(
+        { kind: 30402, created_at: NOW, tags: [['d', 'other']], content: '' },
+        generateSecretKey(),
+      ),
+    );
+    expect((await upsertDry({ items: many(997) })).status).toBe(200);
+    // A product cannot be both sent and hidden.
+    expect((await upsertDry({ items: [product('a')], hide: ['a'] })).body).toEqual({
+      error: 'bad_request',
+      message: 'a product cannot be sent and hidden',
+    });
   });
 
   it('policies are set and removed by the server K', async () => {

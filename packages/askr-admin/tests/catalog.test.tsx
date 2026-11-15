@@ -4,6 +4,7 @@ import {
   buildCatalogItemEvent,
   parseCatalogItem,
 } from '@elisym/askr';
+import { finalizeEvent } from 'nostr-tools/pure';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CsvImport } from '../src/components/CsvImport';
@@ -12,6 +13,8 @@ import { changesOf, importItems, removeItem, upsertItem } from '../src/lib/catal
 import { MAX_CSV_BYTES } from '../src/lib/csv';
 import { inputOfListing } from '../src/lib/store-data';
 import {
+  NOW,
+  SERVER_KEY_SECRET,
   adminConfig,
   failingReader,
   fakeApi,
@@ -127,9 +130,51 @@ describe('the change a publish sends', () => {
       summary: undefined,
     };
     expect(changesOf([MUG], [item])).toEqual({ items: [], hide: [], untouched: ['mug'] });
+    // Inside arrays too: variants with their keys in another order.
+    const teapot: CatalogItemInput = {
+      ...TEAPOT,
+      variants: (TEAPOT.variants ?? []).map((variant) => ({
+        values: variant.values,
+        available: variant.available,
+        price: variant.price,
+        id: variant.id,
+      })),
+    };
+    expect(changesOf([TEAPOT], [teapot]).items).toEqual([]);
     expect(
       changesOf([MUG], [{ ...MUG, price: { ...MUG.price, amount: '12.5' } }]).items,
     ).toHaveLength(1);
+  });
+});
+
+describe('a publish with products the editor could not read', () => {
+  it('removes a product ID the relay holds but the editor could not read', async () => {
+    const api = fakeApi();
+    const unreadable = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: NOW - 40,
+        tags: [['d', 'broken']],
+        content: '',
+      },
+      SERVER_KEY_SECRET,
+    );
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG), unreadable]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Mug'));
+    expect(container.textContent).not.toContain('broken');
+    await click(rowButton(container, 'Edit', 'Mug'));
+    await typeInto(byId(container, 'product-title'), 'Big mug');
+    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(vi.mocked(api.catalog).mock.calls[0]?.[0]).toMatchObject({ hide: ['broken'] });
   });
 });
 
@@ -161,6 +206,8 @@ describe('the product editor', () => {
     await click(buttonNamed(container, 'Keep this product'));
 
     await click(buttonNamed(container, 'Review changes'));
+    // The products not sent show as unchanged in the review.
+    expect(container.textContent).toContain('Unchanged: 3');
     await click(buttonNamed(container, 'Publish'));
 
     const calls = vi.mocked(api.catalog).mock.calls;
@@ -283,7 +330,8 @@ describe('the product editor', () => {
 
     await mounted.rerender(section(done));
     await settle(() => (container.textContent ?? '').includes('Teapot'));
-    expect(query).toHaveBeenCalledTimes(1);
+    // One read of the listings, one of every product ID K has.
+    expect(query).toHaveBeenCalledTimes(2);
     expect(buttonNamed(container, 'Review changes').disabled).toBe(false);
   });
 

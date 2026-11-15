@@ -233,6 +233,29 @@ export async function countListed(
   }).length;
 }
 
+/**
+ * Every product ID a catalog key has on the relay, whatever its versions:
+ * also ones `readListings` leaves out (unreadable, dated ahead, deleted). The
+ * server counts them against the plan, so a publish removes the ones the
+ * draft does not hold, as replacing the whole catalog did.
+ */
+export async function readListedIds(reader: RelayReader, key: string): Promise<string[]> {
+  const events = await reader.query({ kinds: [KIND_PRODUCT], authors: [key] });
+  const ids = new Set<string>();
+  for (const event of events) {
+    const d = dOf(event);
+    if (
+      event.kind === KIND_PRODUCT &&
+      event.pubkey === key &&
+      d !== undefined &&
+      verifyEvent(event)
+    ) {
+      ids.add(d);
+    }
+  }
+  return [...ids];
+}
+
 /** The policies a policy key shows now, by slug. */
 export async function readPolicies(
   reader: RelayReader,

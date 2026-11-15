@@ -55,7 +55,7 @@ const EventsRequestSchema = z.object({
   events: z.array(EventSchema).min(1).max(MAX_EVENTS_PER_REQUEST),
 });
 
-/** More `d`s to hide than any tier's catalog: a larger list is no admin's request. */
+/** A bound on `hide`; the 8 MB body cap usually ends a long list first. */
 const MAX_HIDE = 100_000;
 
 /**
@@ -70,38 +70,27 @@ const CatalogRequestSchema = z.object({
   hide: z.array(z.string().regex(D_TAG_RE)).max(MAX_HIDE).optional(),
 });
 
-function tagOf(event: NostrEvent, name: string): string | undefined {
-  return event.tags.find((tag) => tag[0] === name)?.[1];
-}
-
 /**
- * The `d`s K lists on the relay now, hidden ones included (a replace counts
- * a hidden product too): the newest signed version of each. A product a sync
- * removed is deleted (NIP-09), so the relay no longer holds it.
+ * Every product ID K has on the relay, whatever its versions and visibility:
+ * a replace counts hidden products too, and a product a sync removed is
+ * deleted (NIP-09), so the relay no longer holds it. The admin reads the same
+ * IDs (`readListedIds`) and removes the ones its draft does not hold.
  */
 async function listedOnRelay(client: SyncRelayClient, key: string): Promise<Set<string>> {
   const events = await client.query(ASKR_RELAYS, { kinds: [KIND_PRODUCT], authors: [key] });
-  const newest = new Map<string, NostrEvent>();
+  const ids = new Set<string>();
   for (const event of events) {
-    const d = tagOf(event, 'd');
+    const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
     if (
-      event.kind !== KIND_PRODUCT ||
-      event.pubkey !== key ||
-      d === undefined ||
-      !verifyEvent(event)
+      event.kind === KIND_PRODUCT &&
+      event.pubkey === key &&
+      d !== undefined &&
+      verifyEvent(event)
     ) {
-      continue;
-    }
-    const kept = newest.get(d);
-    if (
-      kept === undefined ||
-      event.created_at > kept.created_at ||
-      (event.created_at === kept.created_at && event.id < kept.id)
-    ) {
-      newest.set(d, event);
+      ids.add(d);
     }
   }
-  return new Set(newest.keys());
+  return ids;
 }
 
 const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
@@ -295,6 +284,10 @@ export function createAdminApi(
       return json({ error: 'bad_request' }, 400);
     }
     const hide = parsed.data.hide ?? [];
+    const sent = new Set(items.data.map((item) => item.d));
+    if (hide.some((d) => sent.has(d))) {
+      return json({ error: 'bad_request', message: 'a product cannot be sent and hidden' }, 400);
+    }
     const dryRun = parsed.data.dryRun === true;
     const change = upsert ? { mode: 'upsert' as const, hide } : {};
     const started = await withSyncGuard(store.owner, (holder, release) =>

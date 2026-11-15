@@ -5,7 +5,7 @@ import { type CatalogChange, changesOf, importItems, removeItem, upsertItem } fr
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage, invalidItemIssues } from '../lib/errors';
 import { SOURCE_LABELS } from '../lib/labels';
-import { readListings } from '../lib/store-data';
+import { readListedIds, readListings } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
 import { CsvImport } from './CsvImport';
 import { DiffSummary } from './DiffSummary';
@@ -41,6 +41,8 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const [draft, setDraft] = useState<CatalogItemInput[]>();
   /** The catalog as last read from the relay: the draft is compared with it. */
   const [baseline, setBaseline] = useState<CatalogItemInput[]>();
+  /** Every product ID K has on the relay at that read, readable or not. */
+  const [listedIds, setListedIds] = useState<string[]>([]);
   const [readError, setReadError] = useState('');
   const [editing, setEditing] = useState<Editing>();
   const [reviewed, setReviewed] = useState<Reviewed>();
@@ -60,9 +62,11 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     async (isCurrent: () => boolean = () => true) => {
       try {
         const listings = await readListings(deps.reader, view.catalogKey, deps.now());
+        const ids = await readListedIds(deps.reader, view.catalogKey);
         if (isCurrent()) {
           const sorted = listings.sort((left, right) => left.d.localeCompare(right.d));
           setBaseline(sorted);
+          setListedIds(ids);
           setDraft(sorted);
           setReads((count) => count + 1);
           setReadError('');
@@ -72,7 +76,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           setDraft(undefined);
           setBaseline(undefined);
           setReadError(
-            'Your current products could not be read from the relay. Nothing can be changed until they are, since a save replaces the whole catalog.',
+            'Your current products could not be read from the relay. Nothing can be changed until they are, since a publish is worked out against them.',
           );
         }
       }
@@ -136,7 +140,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     if (sent === undefined || baseline === undefined) {
       return;
     }
-    const sentChange = changesOf(baseline, sent);
+    const sentChange = changesOf(baseline, sent, listedIds);
     if (sentChange.items.length === 0 && sentChange.hide.length === 0) {
       setReviewed(undefined);
       setError('');
@@ -213,7 +217,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     <div className="flex flex-col gap-16">
       <Section
         title="Products"
-        description="Changes stay here until you review and publish them. Publishing replaces your whole catalog: a product you remove here is deleted for good when you publish. To take one off sale for a while, set its availability to hidden instead."
+        description="Changes stay here until you review and publish them. Publishing makes your catalog this list: only what changed is sent, and a product you remove here is deleted for good when you publish. To take one off sale for a while, set its availability to hidden instead."
       >
         {running ? (
           <Notice tone="info">
