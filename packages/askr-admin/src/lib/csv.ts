@@ -295,6 +295,20 @@ function variantsOf(group: ProductRows): ReadVariants {
     const earlierLine = combinations.get(combination);
     if (messages.length === 0 && earlierLine !== undefined) {
       messages.push(`this combination of option values is already on line ${earlierLine}`);
+    } else if (messages.length === 0) {
+      const overlapped = read.variants.findIndex((variant) =>
+        variant.values.every(
+          (value, index) =>
+            value === values[index] ||
+            value === ANY_OPTION_VALUE ||
+            values[index] === ANY_OPTION_VALUE,
+        ),
+      );
+      if (overlapped !== -1) {
+        messages.push(
+          `this variant overlaps the one on line ${read.lines[overlapped] ?? group.first.line}: * stands for any value, so a shopper's choice would match both`,
+        );
+      }
     }
     if (messages.length > 0) {
       group.rowErrors.push({ line: row.line, messages });

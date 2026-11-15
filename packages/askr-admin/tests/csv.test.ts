@@ -263,16 +263,16 @@ describe('productsFromCsv', () => {
 
   it('reads * as any value, never as a choice, and refuses an option that has only *', () => {
     const any = productsFromCsv(
-      ['d,title,price,option:Size,option:Color', 'a,A,5,*,Red', 'a,,,M,Red'].join('\n'),
+      ['d,title,price,option:Size,option:Color', 'a,A,5,*,Red', 'a,,,M,Blue'].join('\n'),
       'USD',
     );
     expect(any.errors).toEqual([]);
     expect(any.items[0]).toMatchObject({
       options: [
         { name: 'Size', values: ['M'] },
-        { name: 'Color', values: ['Red'] },
+        { name: 'Color', values: ['Red', 'Blue'] },
       ],
-      variants: [{ values: ['*', 'Red'] }, { values: ['M', 'Red'] }],
+      variants: [{ values: ['*', 'Red'] }, { values: ['M', 'Blue'] }],
     });
     const only = productsFromCsv(['d,title,price,option:Size', 'a,A,5,*'].join('\n'), 'USD');
     expect(only.items).toEqual([]);
@@ -317,5 +317,23 @@ describe('productsFromCsv', () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]?.line).toBe(2);
     expect(result.errors[0]?.messages.length).toBeGreaterThan(1);
+  });
+
+  it('refuses a variant that a * variant already stands for, with both lines', () => {
+    const result = productsFromCsv(
+      ['d,title,price,option:Size,option:Color', 'a,A,5,XL,*', 'a,,,XL,Black', 'a,,,S,Black'].join(
+        '\n',
+      ),
+      'USD',
+    );
+    expect(result.items).toEqual([]);
+    expect(result.errors).toEqual([
+      {
+        line: 3,
+        messages: [
+          "this variant overlaps the one on line 2: * stands for any value, so a shopper's choice would match both",
+        ],
+      },
+    ]);
   });
 });

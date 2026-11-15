@@ -1,7 +1,13 @@
 import { type CatalogItemInput, CatalogItemInputSchema, VISIBILITIES } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
 import { useState } from 'react';
-import { type VariantInput, listingPriceOf, rebuildVariants } from '../lib/variants';
+import {
+  type KeyedOption,
+  type VariantInput,
+  listingPriceOf,
+  rebuildVariants,
+  rememberedKey,
+} from '../lib/variants';
 import { type AttrRow, AttrsEditor } from './AttrsEditor';
 import { Notice } from './Notice';
 import { type OptionRow, OptionsEditor } from './OptionsEditor';
@@ -43,7 +49,8 @@ function topicsOfText(text: string): string[] {
 }
 
 function optionRowsOf(item: CatalogItemInput | undefined): OptionRow[] {
-  return (item?.options ?? []).map((option) => ({
+  return (item?.options ?? []).map((option, index) => ({
+    key: `row-${index}`,
     name: option.name,
     text: option.values.join(', '),
     values: option.values,
@@ -55,6 +62,20 @@ function optionsOf(rows: readonly OptionRow[]) {
   return rows
     .map((row) => ({ name: row.name.trim(), values: row.values }))
     .filter((option) => option.name !== '' || option.values.length > 0);
+}
+
+/** The rows that make variants: a name and at least one value. */
+function completeOptionsOf(rows: readonly OptionRow[]): KeyedOption[] {
+  return rows
+    .map((row) => ({ key: row.key, name: row.name.trim(), values: row.values }))
+    .filter((option) => option.name !== '' && option.values.length > 0);
+}
+
+function rememberedOf(
+  options: readonly KeyedOption[],
+  variants: readonly VariantInput[],
+): Map<string, VariantInput> {
+  return new Map(variants.map((variant) => [rememberedKey(options, variant.values), variant]));
 }
 
 /**
@@ -80,41 +101,44 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
     (initial?.attrs ?? []).map((attr) => ({ name: attr.name, value: attr.value })),
   );
   const [optionRows, setOptionRows] = useState<OptionRow[]>(optionRowsOf(initial));
-  // The options the variants were last built for: a change is compared with these.
-  const [appliedOptions, setAppliedOptions] = useState(optionsOf(optionRowsOf(initial)));
+  const [rowsMade, setRowsMade] = useState(initial?.options?.length ?? 0);
+  // The options the variants were last built for, by row: a change is compared with these.
+  const [appliedOptions, setAppliedOptions] = useState(completeOptionsOf(optionRowsOf(initial)));
   const [variants, setVariants] = useState<VariantInput[]>(initial?.variants ?? []);
-  // Every variant this edit has seen, latest last: a combination that comes back (a value
-  // retyped, an option cleared and filled again) gets its id, price and stock back, and no
-  // id is ever handed to another combination.
-  const [remembered, setRemembered] = useState<VariantInput[]>(initial?.variants ?? []);
+  // Every variant this edit has seen, by its values per option row: a combination that comes
+  // back (a value retyped, an option name cleared and typed again) gets its price, stock and
+  // id back, and no id is ever handed to another combination.
+  const [remembered, setRemembered] = useState<ReadonlyMap<string, VariantInput>>(() =>
+    rememberedOf(completeOptionsOf(optionRowsOf(initial)), initial?.variants ?? []),
+  );
   const [optionProblem, setOptionProblem] = useState('');
   const [errors, setErrors] = useState<string[]>([]);
 
   const listingPrice = listingPriceOf(variants);
 
-  const changeVariants = (next: VariantInput[]) => {
+  const changeVariants = (next: VariantInput[], options: readonly KeyedOption[]) => {
     setVariants(next);
-    const byValues = new Map(
-      remembered.map((variant) => [JSON.stringify(variant.values), variant]),
-    );
-    for (const variant of next) {
-      byValues.delete(JSON.stringify(variant.values));
-      byValues.set(JSON.stringify(variant.values), variant);
-    }
-    setRemembered([...byValues.values()]);
+    setRemembered(new Map([...remembered, ...rememberedOf(options, next)]));
   };
 
   const changeOptions = (rows: OptionRow[]) => {
-    setOptionRows(rows);
-    const typed = optionsOf(rows);
-    // A row with a name and no values yet, or values and no name, is being typed: the
-    // variants wait for it rather than lose a dimension.
-    if (typed.some((option) => option.name === '' || option.values.length === 0)) {
-      return;
-    }
+    // A new row gets its own key: renames and removals are told by row, never guessed.
+    let made = rowsMade;
+    const keyed = rows.map((row) => {
+      if (row.key !== '') {
+        return row;
+      }
+      made += 1;
+      return { ...row, key: `row-${made}` };
+    });
+    setRowsMade(made);
+    setOptionRows(keyed);
+    // A row still being typed (a name and no values, or values and no name) makes no
+    // variants yet; a remembered combination comes back once it is complete again.
+    const complete = completeOptionsOf(keyed);
     const next = rebuildVariants({
       previous: appliedOptions,
-      next: typed,
+      next: complete,
       variants,
       remembered,
       price: listingPrice ?? price.trim(),
@@ -127,8 +151,8 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       // The product goes back to one price: start from the one it showed.
       setPrice(listingPrice);
     }
-    setAppliedOptions(typed);
-    changeVariants(next.variants);
+    setAppliedOptions(complete);
+    changeVariants(next.variants, complete);
     setOptionProblem('');
   };
 
@@ -302,7 +326,10 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       <OptionsEditor rows={optionRows} onChange={changeOptions} />
       {optionProblem === '' ? null : <Notice tone="error">{optionProblem}</Notice>}
       {variants.length === 0 ? null : (
-        <VariantsTable variants={variants} onChange={changeVariants} />
+        <VariantsTable
+          variants={variants}
+          onChange={(next) => changeVariants(next, appliedOptions)}
+        />
       )}
       <SelectField
         id="product-visibility"

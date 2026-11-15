@@ -2,6 +2,8 @@ import { LIMITS } from '@elisym/askr';
 import { optionValuesOf } from '../lib/variants';
 
 export interface OptionRow {
+  /** The row's identity while it is edited; empty for a row just added. */
+  key: string;
   name: string;
   /** The values as shown and typed, comma-separated: `S, M, L`. */
   text: string;
@@ -28,10 +30,11 @@ export function OptionsEditor({ rows, onChange }: Props) {
       <span className="field-hint">
         Sizes, colors and the like. Separate values with commas; each combination becomes a variant
         with its own price and stock. Renaming an option keeps the variants; a new value adds its
-        combinations, a removed one takes them away.
+        combinations and a removed one takes them away; a new option spreads each variant over its
+        values and a removed one merges the variants it told apart.
       </span>
       {rows.map((row, index) => (
-        <div key={index} className="flex items-center gap-8">
+        <div key={row.key === '' ? `new-${index}` : row.key} className="flex items-center gap-8">
           <input
             className="input"
             aria-label={`Option ${index + 1} name`}
@@ -66,7 +69,7 @@ export function OptionsEditor({ rows, onChange }: Props) {
           <button
             type="button"
             className="btn"
-            onClick={() => onChange([...rows, { name: '', text: '', values: [] }])}
+            onClick={() => onChange([...rows, { key: '', name: '', text: '', values: [] }])}
           >
             Add an option
           </button>

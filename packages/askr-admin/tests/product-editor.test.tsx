@@ -390,4 +390,130 @@ describe('the product editor fields', () => {
     const price = byId(container, 'product-price');
     expect(price instanceof HTMLInputElement && !price.readOnly && price.value).toBe('27');
   });
+
+  it('removing an option, adding a new one and changing its values never puts one id twice', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '1', currency: 'USD' },
+      options: [
+        { name: 'Color', values: ['Red', 'Blue'] },
+        { name: 'Size', values: ['S', 'M'] },
+      ],
+      variants: [
+        { id: 'a', price: '1', available: true, values: ['Red', 'S'] },
+        { id: 'b', price: '2', available: true, values: ['Red', 'M'] },
+        { id: 'c', price: '3', available: true, values: ['Blue', 'S'] },
+        { id: 'd', price: '4', available: true, values: ['Blue', 'M'] },
+      ],
+    });
+    const remove = container.querySelector('[aria-label="Remove option 2"]');
+    if (!(remove instanceof HTMLButtonElement)) {
+      throw new Error('no remove button');
+    }
+    await click(remove);
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 2 name'), 'Size');
+    await typeInto(labelled(container, 'Option 2 values'), 'M');
+    await typeInto(labelled(container, 'Option 2 values'), 'M, S');
+    await click(buttonNamed(container, 'Keep this product'));
+    const ids = saved(onSave).variants?.map((variant) => variant.id) ?? [];
+    expect(ids).toHaveLength(4);
+    expect(new Set(ids).size).toBe(4);
+  });
+
+  it('an option added while another is removed keeps each variant, its stock and id', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '1', currency: 'USD' },
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Color', values: ['Red'] },
+      ],
+      variants: [
+        { id: 'a', price: '1', available: true, values: ['S', 'Red'] },
+        { id: 'b', price: '2', available: false, values: ['M', 'Red'] },
+      ],
+    });
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 3 name'), 'Fit');
+    const remove = container.querySelector('[aria-label="Remove option 2"]');
+    if (!(remove instanceof HTMLButtonElement)) {
+      throw new Error('no remove button');
+    }
+    await click(remove);
+    await typeInto(labelled(container, 'Option 2 values'), 'Slim');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Fit', values: ['Slim'] },
+      ],
+      variants: [
+        { id: 'a', price: '1', available: true, values: ['S', 'Slim'] },
+        { id: 'b', price: '2', available: false, values: ['M', 'Slim'] },
+      ],
+    });
+  });
+
+  it('a product whose connector cut its variants keeps none when an option is renamed', async () => {
+    const { container, onSave } = await editor({
+      d: 'shopify:9',
+      title: 'Cut',
+      price: { amount: '5', currency: 'USD' },
+      sourceId: '9',
+      options: [{ name: 'Color', values: ['Red', 'Blue'] }],
+      variants: [],
+    });
+    await typeInto(labelled(container, 'Option 1 name'), 'Colour');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(0);
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      options: [{ name: 'Colour', values: ['Red', 'Blue'] }],
+      variants: [],
+      price: { amount: '5' },
+    });
+  });
+
+  it('a variant price edited in the table comes back with its value', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [
+        { id: '1', price: '20', available: true, values: ['S'] },
+        { id: '2', price: '20', available: true, values: ['M'] },
+      ],
+    });
+    await typeInto(labelled(container, 'Price of M'), '31');
+    await typeInto(labelled(container, 'Option 1 values'), 'S');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).variants).toEqual([
+      { id: '1', price: '20', available: true, values: ['S'] },
+      { id: '2', price: '31', available: true, values: ['M'] },
+    ]);
+  });
+
+  it('an options problem goes once the options are fixed, and no error shows while typing', async () => {
+    const { container, onSave } = await editor({
+      d: 'x',
+      title: 'X',
+      price: { amount: '1', currency: 'USD' },
+    });
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 1 name'), 'Size');
+    expect(container.textContent).not.toContain('needs at least one value');
+    const many = Array.from({ length: 101 }, (_value, index) => String(index)).join(',');
+    await typeInto(labelled(container, 'Option 1 values'), many);
+    expect(container.textContent).toContain('These options make 101 combinations');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
+    expect(container.textContent).not.toContain('These options make');
+    await typeInto(byId(container, 'variants-same-price'), '5');
+    await click(buttonNamed(container, 'Set for all'));
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).variants).toHaveLength(2);
+  });
 });
