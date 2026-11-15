@@ -596,7 +596,8 @@ describe('admin API (7.3)', () => {
       finalizeEvent(
         {
           kind: 5,
-          created_at: NOW + 5,
+          // After c's newest version, however the sync dated it.
+          created_at: (newestOf('c')?.created_at ?? NOW) + 1,
           tags: [['a', `30402:${server.catalogKey}:c`]],
           content: '',
         },
