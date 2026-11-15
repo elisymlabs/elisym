@@ -121,7 +121,8 @@ export function VariantsTable({ options, variants, onChange, onAdd, onAddMissing
                     <td className="py-4 pr-8">
                       <input
                         className="input"
-                        aria-label={`Price of ${label}`}
+                        aria-label={`Price of variant ${index + 1}`}
+                        title={label}
                         value={variant.price}
                         onChange={(event) => update(index, { price: event.target.value.trim() })}
                       />
@@ -129,7 +130,7 @@ export function VariantsTable({ options, variants, onChange, onAdd, onAddMissing
                     <td className="py-4 pr-8">
                       <input
                         type="checkbox"
-                        aria-label={`${label} in stock`}
+                        aria-label={`Variant ${index + 1} in stock`}
                         checked={variant.available}
                         onChange={(event) => update(index, { available: event.target.checked })}
                       />
@@ -138,7 +139,7 @@ export function VariantsTable({ options, variants, onChange, onAdd, onAddMissing
                       <button
                         type="button"
                         className="btn"
-                        aria-label={`Remove variant ${label}`}
+                        aria-label={`Remove variant ${index + 1}`}
                         onClick={() =>
                           onChange(variants.filter((_other, otherIndex) => otherIndex !== index))
                         }

@@ -88,8 +88,8 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   const [rowsMade, setRowsMade] = useState(initial?.options?.length ?? 0);
   // Every variant's values follow the option rows, in row order.
   const [variants, setVariants] = useState<VariantInput[]>(initial?.variants ?? []);
-  // Ids the product's variants have had in this edit: a new variant never gets one, so a
-  // published id never moves to another choice.
+  // Ids the product's variants have had in this edit: a new variant never gets one, so an id
+  // never moves to another choice while the product is edited.
   const [usedIds, setUsedIds] = useState<ReadonlySet<string>>(
     () => new Set((initial?.variants ?? []).map((variant) => variant.id)),
   );
@@ -97,11 +97,18 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   const [errors, setErrors] = useState<string[]>([]);
 
   const listingPrice = listingPriceOf(variants);
+  // The last listing price the variants made, for when a price being typed is not a number.
+  const [lastListingPrice, setLastListingPrice] = useState(listingPrice);
 
   const changeVariants = (next: VariantInput[]) => {
-    if (next.length === 0 && listingPrice !== undefined) {
-      // The product goes back to one price: start from the one it showed.
-      setPrice(listingPrice);
+    const shown = listingPrice ?? lastListingPrice;
+    if (next.length === 0 && shown !== undefined) {
+      // The product goes back to one price: start from the last one it showed.
+      setPrice(shown);
+    }
+    const nextListing = listingPriceOf(next);
+    if (nextListing !== undefined) {
+      setLastListingPrice(nextListing);
     }
     setVariants(next);
     setVariantNotice('');
@@ -125,8 +132,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   };
 
   // Editing the options never makes or drops a variant: a removed row takes its value out of
-  // every variant, a new row asks each variant to pick one, and a value renamed in place
-  // (the same values with one changed) is renamed in the variants too.
+  // every variant and a new row asks each variant to pick one.
   const changeOptions = (rows: OptionRow[]) => {
     let made = rowsMade;
     const keyed = rows.map((row) => {
@@ -137,22 +143,35 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       return { ...row, key: `row-${made}` };
     });
     setRowsMade(made);
-    const renames = keyed.map((row) => {
-      const before = optionRows.find((earlier) => earlier.key === row.key);
-      return before === undefined ? undefined : renamedValue(before.values, row.values);
-    });
     setVariants(
       variants.map((variant) => ({
         ...variant,
-        values: keyed.map((row, index) => {
+        values: keyed.map((row) => {
           const earlier = optionRows.findIndex((candidate) => candidate.key === row.key);
-          const value = earlier === -1 ? '' : (variant.values[earlier] ?? '');
-          const rename = renames[index];
-          return rename !== undefined && rename.from === value ? rename.to : value;
+          return earlier === -1 ? '' : (variant.values[earlier] ?? '');
         }),
       })),
     );
     setOptionRows(keyed);
+  };
+
+  // A values field left with one value replaced by another (the same values otherwise, in
+  // place): that value is renamed in the variants too. Judged against the field as it was
+  // entered, so typing a new value in the middle of the list renames nothing.
+  const valuesDone = (key: string, before: readonly string[], after: readonly string[]) => {
+    const rename = renamedValue(before, after);
+    const index = optionRows.findIndex((row) => row.key === key);
+    if (rename === undefined || index === -1) {
+      return;
+    }
+    setVariants(
+      variants.map((variant) => ({
+        ...variant,
+        values: variant.values.map((value, valueIndex) =>
+          valueIndex === index && value === rename.from ? rename.to : value,
+        ),
+      })),
+    );
   };
 
   const addVariant = () => {
@@ -211,7 +230,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         ? [`Option ${index + 1} needs a name and at least one value, or remove it.`]
         : [],
     );
-    const problems = [...optionProblems, ...variantProblems(typed, variants)];
+    const problems = [...optionProblems, ...variantProblems(typed, variants, initial?.variants)];
     if (problems.length > 0) {
       setErrors(problems);
       return;
@@ -353,7 +372,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         <TextField id="product-sku" label="SKU (optional)" value={sku} onChange={setSku} />
       </div>
       <AttrsEditor rows={attrs} onChange={setAttrs} />
-      <OptionsEditor rows={optionRows} onChange={changeOptions} />
+      <OptionsEditor rows={optionRows} onChange={changeOptions} onValuesDone={valuesDone} />
       {optionRows.length === 0 && variants.length === 0 ? null : (
         <VariantsTable
           options={optionsOf(optionRows)}
@@ -374,8 +393,8 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       {errors.length === 0 ? null : (
         <Notice tone="error">
           <ul>
-            {errors.map((message) => (
-              <li key={message}>{message}</li>
+            {errors.map((message, index) => (
+              <li key={`${index}-${message}`}>{message}</li>
             ))}
           </ul>
         </Notice>

@@ -115,7 +115,7 @@ export function withMissingCombinations(
     ok: false,
     reason: `These options make ${count} combinations; a product holds at most ${LIMITS.MAX_VARIANTS} variants.`,
   });
-  if (options.length === 0 || grid === 0) {
+  if (options.length === 0 || grid === 0 || options.some((option) => option.name === '')) {
     return { ok: false, reason: 'Every option needs a name and at least one value first.' };
   }
   if (grid > MAX_COMBINATIONS_WALKED) {
@@ -136,19 +136,40 @@ export function withMissingCombinations(
   };
 }
 
-/** What keeps these variants from being saved with these options, in plain words. */
+function sameVariant(left: VariantInput, right: VariantInput): boolean {
+  return (
+    left.id === right.id &&
+    left.values.length === right.values.length &&
+    left.values.every((value, index) => value === right.values[index])
+  );
+}
+
+/**
+ * What keeps these variants from being saved with these options, in plain
+ * words. `initial` are the variants the product came with: two that overlapped
+ * there already (a connector's "any size" next to "size S") are left as they
+ * are, and a product without options may keep its one variant.
+ */
 export function variantProblems(
   options: readonly OptionInput[],
   variants: readonly VariantInput[],
+  initial: readonly VariantInput[] = [],
 ): string[] {
   if (variants.length === 0) {
     return [];
   }
   if (options.length === 0) {
-    return ['Variants need an option: add one, or remove the variants.'];
+    return variants.length === 1
+      ? []
+      : ['Several variants need an option to tell them apart: add one, or remove variants.'];
   }
+  const name = (variant: VariantInput, index: number) =>
+    `Variant ${index + 1} (${variantLabel(variant.values)})`;
   const problems: string[] = [];
   variants.forEach((variant, index) => {
+    if (!PRICE_RE.test(variant.price)) {
+      problems.push(`${name(variant, index)}: the price is not a number like 19.90.`);
+    }
     options.forEach((option, optionIndex) => {
       const value = variant.values[optionIndex] ?? '';
       if (option.name === '' || option.values.length === 0) {
@@ -156,23 +177,30 @@ export function variantProblems(
         return;
       }
       if (value === '') {
-        problems.push(
-          `Variant ${index + 1} (${variantLabel(variant.values)}): pick its ${option.name}.`,
-        );
+        problems.push(`${name(variant, index)}: pick its ${option.name}.`);
       } else if (value !== ANY_OPTION_VALUE && !option.values.includes(value)) {
         problems.push(
-          `Variant ${variantLabel(variant.values)} uses ${value}, which ${option.name} no longer has: pick another value or remove the variant.`,
+          `${name(variant, index)} uses ${value}, which ${option.name} no longer has: pick another value or remove the variant.`,
         );
       }
     });
   });
+  const untouched = (variant: VariantInput) => initial.some((kept) => sameVariant(kept, variant));
   variants.forEach((variant, index) => {
-    const later = variants.slice(index + 1).find((other) => overlaps(variant.values, other.values));
-    if (later !== undefined && variant.values.every((value) => value !== '')) {
+    variants.forEach((other, otherIndex) => {
+      if (
+        otherIndex <= index ||
+        variant.values.some((value) => value === '') ||
+        other.values.some((value) => value === '') ||
+        !overlaps(variant.values, other.values) ||
+        (untouched(variant) && untouched(other))
+      ) {
+        return;
+      }
       problems.push(
-        `Variants ${variantLabel(variant.values)} and ${variantLabel(later.values)} are the same choice for a shopper (Any stands for every value): change one or remove it.`,
+        `${name(variant, index)} and ${name(other, otherIndex)} are the same choice for a shopper (Any stands for every value): change one or remove it.`,
       );
-    }
+    });
   });
   if (variants.length > LIMITS.MAX_VARIANTS) {
     problems.push(`A product holds at most ${LIMITS.MAX_VARIANTS} variants.`);

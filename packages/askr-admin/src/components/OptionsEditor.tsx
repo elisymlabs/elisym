@@ -1,4 +1,5 @@
 import { LIMITS } from '@elisym/askr';
+import { useRef } from 'react';
 import { optionValuesOf } from '../lib/variants';
 
 export interface OptionRow {
@@ -17,10 +18,16 @@ export interface OptionRow {
 interface Props {
   rows: readonly OptionRow[];
   onChange: (rows: OptionRow[]) => void;
+  /** A values field was left: its values when it was entered and now. */
+  onValuesDone: (key: string, before: readonly string[], after: readonly string[]) => void;
 }
 
 /** The ways a product varies (Size, Color); every combination of values becomes a variant. */
-export function OptionsEditor({ rows, onChange }: Props) {
+export function OptionsEditor({ rows, onChange, onValuesDone }: Props) {
+  // The values of the field being typed in, as they were when it was entered: a rename is
+  // judged once it is left, never from a half-typed value.
+  const entered = useRef<{ index: number; values: string[] } | undefined>(undefined);
+
   const update = (index: number, change: Partial<OptionRow>) =>
     onChange(rows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...change } : row)));
 
@@ -29,8 +36,8 @@ export function OptionsEditor({ rows, onChange }: Props) {
       <legend className="field-label">Options (optional)</legend>
       <span className="field-hint">
         Sizes, colors and the like. Separate values with commas. Editing options never adds or
-        removes a variant: a value renamed in place is renamed in the variants too, and the variants
-        below say what still needs a choice.
+        removes a variant: a value you replace by another is renamed in the variants too, and the
+        variants below say what still needs a choice.
       </span>
       {rows.map((row, index) => (
         <div key={row.key === '' ? `new-${index}` : row.key} className="flex items-center gap-8">
@@ -46,6 +53,16 @@ export function OptionsEditor({ rows, onChange }: Props) {
             aria-label={`Option ${index + 1} values`}
             placeholder="S, M, L"
             value={row.text}
+            onFocus={() => {
+              entered.current = { index, values: row.values };
+            }}
+            onBlur={() => {
+              const before = entered.current;
+              entered.current = undefined;
+              if (before !== undefined && before.index === index) {
+                onValuesDone(row.key, before.values, row.values);
+              }
+            }}
             onChange={(event) =>
               update(index, {
                 text: event.target.value,

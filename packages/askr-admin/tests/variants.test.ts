@@ -103,6 +103,9 @@ describe('withMissingCombinations', () => {
   it('refuses incomplete options, over 100 variants, and a grid too large to walk', () => {
     expect(withMissingCombinations([SIZE([])], [], '1', counter()).ok).toBe(false);
     expect(withMissingCombinations([], [], '1', counter()).ok).toBe(false);
+    expect(withMissingCombinations([{ name: '', values: ['S'] }], [], '1', counter()).ok).toBe(
+      false,
+    );
     const values = (count: number) => Array.from({ length: count }, (_value, index) => `v${index}`);
     const atCap = withMissingCombinations([SIZE(values(100))], [], '1', counter());
     expect(atCap.ok && atCap.variants.length).toBe(100);
@@ -134,23 +137,53 @@ describe('withMissingCombinations', () => {
 });
 
 describe('variantProblems', () => {
-  it('names a missing choice, a value the option no longer has, and an overlap', () => {
+  it('names a missing choice, a value the option no longer has, a bad price and an overlap', () => {
     const options = [SIZE(['S', 'M']), COLOR(['Red'])];
     expect(
       variantProblems(options, [
         { id: '1', price: '1', available: true, values: ['S', ''] },
         { id: '2', price: '1', available: true, values: ['L', 'Red'] },
-        { id: '3', price: '1', available: true, values: ['M', '*'] },
-        { id: '4', price: '1', available: true, values: ['M', 'Red'] },
+        { id: '3', price: '1.', available: true, values: ['M', 'Red'] },
+        { id: '4', price: '1', available: true, values: ['M', '*'] },
       ]),
     ).toEqual([
       'Variant 1 (S / ?): pick its Color.',
-      'Variant L / Red uses L, which Size no longer has: pick another value or remove the variant.',
-      'Variants M / Any and M / Red are the same choice for a shopper (Any stands for every value): change one or remove it.',
+      'Variant 2 (L / Red) uses L, which Size no longer has: pick another value or remove the variant.',
+      'Variant 3 (M / Red): the price is not a number like 19.90.',
+      'Variant 3 (M / Red) and Variant 4 (M / Any) are the same choice for a shopper (Any stands for every value): change one or remove it.',
     ]);
   });
 
-  it('has nothing to say about fine variants, and waits for an incomplete option', () => {
+  it('names each overlapping pair once, with numbers, and skips a variant not picked yet', () => {
+    const options = [SIZE(['S', 'M'])];
+    const three = ['1', '2', '3'].map((id) => ({ id, price: '1', available: true, values: ['S'] }));
+    expect(variantProblems(options, three)).toEqual([
+      'Variant 1 (S) and Variant 2 (S) are the same choice for a shopper (Any stands for every value): change one or remove it.',
+      'Variant 1 (S) and Variant 3 (S) are the same choice for a shopper (Any stands for every value): change one or remove it.',
+      'Variant 2 (S) and Variant 3 (S) are the same choice for a shopper (Any stands for every value): change one or remove it.',
+    ]);
+    expect(
+      variantProblems(options, [
+        { id: '1', price: '1', available: true, values: ['S'] },
+        { id: '2', price: '1', available: true, values: [''] },
+      ]),
+    ).toEqual(['Variant 2 (?): pick its Size.']);
+  });
+
+  it('leaves overlaps the product came with, and refuses one an edit made', () => {
+    const options = [SIZE(['S', 'M'])];
+    const initial: VariantInput[] = [
+      { id: '11', price: '1', available: true, values: ['*'] },
+      { id: '12', price: '1', available: true, values: ['S'] },
+    ];
+    expect(variantProblems(options, initial, initial)).toEqual([]);
+    const moved = [initial[0], { id: '12', price: '1', available: true, values: ['M'] }].filter(
+      (variant) => variant !== undefined,
+    );
+    expect(variantProblems(options, moved, initial)).toHaveLength(1);
+  });
+
+  it('has nothing to say about fine variants, waits for an incomplete option, takes one option-less variant', () => {
     expect(
       variantProblems(
         [SIZE(['S', 'M'])],
@@ -166,8 +199,15 @@ describe('variantProblems', () => {
         [{ id: '1', price: '1', available: true, values: ['S', ''] }],
       ),
     ).toEqual([]);
-    expect(variantProblems([], [{ id: '1', price: '1', available: true, values: [] }])).toEqual([
-      'Variants need an option: add one, or remove the variants.',
-    ]);
+    expect(variantProblems([], [{ id: '1', price: '1', available: true, values: [] }])).toEqual([]);
+    expect(
+      variantProblems(
+        [],
+        [
+          { id: '1', price: '1', available: true, values: [] },
+          { id: '2', price: '2', available: true, values: [] },
+        ],
+      ),
+    ).toEqual(['Several variants need an option to tell them apart: add one, or remove variants.']);
   });
 });
