@@ -65,8 +65,23 @@ async function readOwnPage(http: ShopHttp, origin: string, path: string): Promis
 }
 
 /**
- * Domain verification (7.4): `/.well-known/askr` containing the owner's npub,
- * or `<meta name="askr-verification" content="{npub}">` on the home page.
+ * A well-known file is a few lines, one of them the npub alone. Anything larger
+ * is no such file: a shop that answers every unknown path with a page (an SPA
+ * catch-all, a soft 404) would otherwise prove whatever npub its page shows.
+ */
+const MAX_WELL_KNOWN_BYTES = 1024;
+
+function wellKnownNames(body: string, npub: string): boolean {
+  return (
+    new TextEncoder().encode(body).length <= MAX_WELL_KNOWN_BYTES &&
+    body.split(/\r?\n/u).some((line) => line.trim() === npub)
+  );
+}
+
+/**
+ * Domain verification (7.4): `/.well-known/askr` with the owner's npub on a
+ * line of its own, or `<meta name="askr-verification" content="{npub}">` on
+ * the home page.
  * Returns the failure reason, or undefined when verified.
  */
 export async function verifyOrigin(
@@ -76,7 +91,7 @@ export async function verifyOrigin(
 ): Promise<VerificationFailureReason | undefined> {
   const npub = npubEncode(owner);
   const wellKnown = await readOwnPage(http, origin, WELL_KNOWN_PATH);
-  if (wellKnown.kind === 'page' && wellKnown.body.split(/\s+/u).includes(npub)) {
+  if (wellKnown.kind === 'page' && wellKnownNames(wellKnown.body, npub)) {
     return undefined;
   }
   const home = await readOwnPage(http, origin, '/');

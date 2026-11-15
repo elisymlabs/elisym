@@ -302,11 +302,21 @@ describe('verifyOrigin', () => {
       const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
       expect(await verifyOrigin(http, SHOP, keys.owner)).toBe('not_found');
     }
+    // On a line of its own, with other lines around it, it proves the site.
     const web = new FakeWeb().route(`${SHOP}/.well-known/askr`, {
-      body: `owner\t${keys.ownerNpub}\r\n`,
+      body: `# Askr store\r\n  ${keys.ownerNpub} \r\n`,
     });
     const http = new ShopHttp({ fetch: web.deps(), limiter: new ShopRateLimiter(0) });
     expect(await verifyOrigin(http, SHOP, keys.owner)).toBeUndefined();
+    // Next to other words on its line, or in a page served for every path, it does not.
+    for (const body of [
+      `owner\t${keys.ownerNpub}\n`,
+      `<html><body><p>Reviews</p>\n${keys.ownerNpub}\n${'<p>x</p>'.repeat(200)}</body></html>`,
+    ]) {
+      const page = new FakeWeb().route(`${SHOP}/.well-known/askr`, { body });
+      const pageHttp = new ShopHttp({ fetch: page.deps(), limiter: new ShopRateLimiter(0) });
+      expect(await verifyOrigin(pageHttp, SHOP, keys.owner)).toBe('not_found');
+    }
   });
 
   it('names a shop that refuses both proofs (a bot check) as blocked', async () => {
