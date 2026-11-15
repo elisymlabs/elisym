@@ -1,4 +1,9 @@
-import { type CatalogItemInput, CatalogItemInputSchema, VISIBILITIES } from '@elisym/askr';
+import {
+  type CatalogItemInput,
+  CatalogItemInputSchema,
+  RESERVED_ATTRS,
+  VISIBILITIES,
+} from '@elisym/askr';
 import Decimal from 'decimal.js-light';
 import { useState } from 'react';
 import {
@@ -225,12 +230,34 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       return;
     }
     const typed = optionsOf(optionRows);
-    const optionProblems = typed.flatMap((option, index) =>
-      option.name === '' || option.values.length === 0
-        ? [`Option ${index + 1} needs a name and at least one value, or remove it.`]
-        : [],
-    );
-    const problems = [...optionProblems, ...variantProblems(typed, variants, initial?.variants)];
+    const optionProblems = typed.flatMap((option, index) => {
+      if (option.name === '' || option.values.length === 0) {
+        return [`Option ${index + 1} needs a name and at least one value, or remove it.`];
+      }
+      const earlier = typed.findIndex((other) => other.name === option.name);
+      return earlier < index
+        ? [`Option ${index + 1}: option ${earlier + 1} is already called ${option.name}.`]
+        : [];
+    });
+    const attrProblems = attrs.flatMap((attr, index) => {
+      const attrName = attr.name.trim();
+      if (attrName === '' && attr.value.trim() !== '') {
+        return [`Attribute ${index + 1} needs a name.`];
+      }
+      if (attrName !== '' && attr.value.trim() === '') {
+        return [`Attribute ${index + 1} (${attrName}) needs a value.`];
+      }
+      return RESERVED_ATTRS.includes(attrName)
+        ? [
+            `Attribute ${index + 1}: ${attrName} is not an attribute name (the SKU has its own field).`,
+          ]
+        : [];
+    });
+    const problems = [
+      ...optionProblems,
+      ...attrProblems,
+      ...variantProblems(typed, variants, initial?.variants),
+    ];
     if (problems.length > 0) {
       setErrors(problems);
       return;
@@ -259,6 +286,10 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       variants,
       visibility,
     };
+    // A connector's "from" price stood for variants it could not list; edited variants say it themselves.
+    if (JSON.stringify(variants) !== JSON.stringify(initial?.variants ?? [])) {
+      candidate.priceFrom = undefined;
+    }
     candidate.summary = summary.trim() === '' ? undefined : summary.trim();
     candidate.url = url.trim() === '' ? undefined : url.trim();
     candidate.sku = sku.trim() === '' ? undefined : sku.trim();

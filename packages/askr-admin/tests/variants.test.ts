@@ -147,9 +147,9 @@ describe('variantProblems', () => {
         { id: '4', price: '1', available: true, values: ['M', '*'] },
       ]),
     ).toEqual([
+      'Variant 3 (M / Red): the price is not a number like 19.90.',
       'Variant 1 (S / ?): pick its Color.',
       'Variant 2 (L / Red) uses L, which Size no longer has: pick another value or remove the variant.',
-      'Variant 3 (M / Red): the price is not a number like 19.90.',
       'Variant 3 (M / Red) and Variant 4 (M / Any) are the same choice for a shopper (Any stands for every value): change one or remove it.',
     ]);
   });
@@ -177,10 +177,15 @@ describe('variantProblems', () => {
       { id: '12', price: '1', available: true, values: ['S'] },
     ];
     expect(variantProblems(options, initial, initial)).toEqual([]);
-    const moved = [initial[0], { id: '12', price: '1', available: true, values: ['M'] }].filter(
+    // The pair is told by id: renamed values keep the exemption, a new variant does not get it.
+    const renamed = [initial[0], { id: '12', price: '1', available: true, values: ['M'] }].filter(
       (variant) => variant !== undefined,
     );
-    expect(variantProblems(options, moved, initial)).toHaveLength(1);
+    expect(variantProblems(options, renamed, initial)).toEqual([]);
+    const added = [...initial, { id: '13', price: '1', available: true, values: ['M'] }];
+    expect(variantProblems(options, added, initial)).toEqual([
+      'Variant 1 (Any) and Variant 3 (M) are the same choice for a shopper (Any stands for every value): change one or remove it.',
+    ]);
   });
 
   it('has nothing to say about fine variants, waits for an incomplete option, takes one option-less variant', () => {

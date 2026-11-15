@@ -636,4 +636,144 @@ describe('the product editor fields', () => {
     const price = byId(container, 'product-price');
     expect(price instanceof HTMLInputElement && price.value).toBe('20');
   });
+
+  it('renaming a value keeps the overlap a product came with, in one option or two', async () => {
+    const woo: CatalogItemInput = {
+      d: 'woocommerce:7',
+      title: 'Cap',
+      price: { amount: '10', currency: 'USD' },
+      sourceId: '7',
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [
+        { id: '11', price: '10', available: true, values: ['*'] },
+        { id: '12', price: '12', available: true, values: ['S'] },
+      ],
+    };
+    const first = await editor(woo);
+    await typeAll(labelled(first.container, 'Option 1 values'), ['Small, M']);
+    await click(buttonNamed(first.container, 'Keep this product'));
+    expect(saved(first.onSave).variants?.map((variant) => variant.values)).toEqual([
+      ['*'],
+      ['Small'],
+    ]);
+    await mounted?.unmount();
+    mounted = undefined;
+    const second = await editor({
+      ...woo,
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Color', values: ['Red'] },
+      ],
+      variants: [
+        { id: '11', price: '10', available: true, values: ['*', 'Red'] },
+        { id: '12', price: '12', available: true, values: ['M', 'Red'] },
+      ],
+    });
+    await typeAll(labelled(second.container, 'Option 2 values'), ['Crimson']);
+    await click(buttonNamed(second.container, 'Keep this product'));
+    expect(saved(second.onSave).variants?.map((variant) => variant.values)).toEqual([
+      ['*', 'Crimson'],
+      ['M', 'Crimson'],
+    ]);
+  });
+
+  it('a rename touches only its own option, even when another option has the same value', async () => {
+    const { container, onSave } = await editor({
+      d: 'rug',
+      title: 'Rug',
+      price: { amount: '50', currency: 'USD' },
+      options: [
+        { name: 'Length', values: ['M', 'L'] },
+        { name: 'Width', values: ['M', 'L'] },
+      ],
+      variants: [{ id: '1', price: '50', available: true, values: ['M', 'M'] }],
+    });
+    await typeAll(labelled(container, 'Option 1 values'), ['Medium, L']);
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).variants?.[0]?.values).toEqual(['Medium', 'M']);
+  });
+
+  it('says plainly when a simple product price is not a number, and when there are over 100 variants', async () => {
+    const simple = await editor({
+      d: 'shopify:1',
+      title: 'Jacket',
+      price: { amount: '120', currency: 'USD' },
+      options: [],
+      variants: [{ id: 'only', price: '120', available: true, values: [] }],
+    });
+    await typeInto(labelled(simple.container, 'Price of variant 1'), '9,5');
+    await click(buttonNamed(simple.container, 'Keep this product'));
+    expect([...simple.container.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
+      'Variant 1 (): the price is not a number like 19.90.',
+    ]);
+    await mounted?.unmount();
+    mounted = undefined;
+    const values = Array.from({ length: 101 }, (_value, index) => `v${index}`);
+    const many = await editor({
+      d: 'many',
+      title: 'Many',
+      price: { amount: '1', currency: 'USD' },
+      options: [{ name: 'Size', values }],
+      variants: values.map((value, index) => ({
+        id: String(index + 1),
+        price: '1',
+        available: true,
+        values: [value],
+      })),
+    });
+    await click(buttonNamed(many.container, 'Keep this product'));
+    expect(many.onSave).not.toHaveBeenCalled();
+    expect([...many.container.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
+      'A product holds at most 100 variants.',
+    ]);
+  });
+
+  it('names an option called like an earlier one, and attributes without a name or value', async () => {
+    const { container, onSave } = await editor({
+      d: 'x',
+      title: 'X',
+      price: { amount: '1', currency: 'USD' },
+      options: [
+        { name: 'Size', values: ['S'] },
+        { name: 'Size', values: ['M'] },
+      ],
+      attrs: [{ name: 'Fit', value: 'Slim' }],
+    });
+    expect(container.querySelectorAll('[aria-label="Size of variant 1"]')).toHaveLength(0);
+    await click(buttonNamed(container, 'Add an attribute'));
+    await typeInto(labelled(container, 'Attribute 2 value'), 'Wool');
+    await click(buttonNamed(container, 'Add an attribute'));
+    await typeInto(labelled(container, 'Attribute 3 name'), 'sku');
+    await typeInto(labelled(container, 'Attribute 3 value'), 'X-1');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(onSave).not.toHaveBeenCalled();
+    expect([...container.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
+      'Option 2: option 1 is already called Size.',
+      'Attribute 2 needs a name.',
+      'Attribute 3: sku is not an attribute name (the SKU has its own field).',
+    ]);
+  });
+
+  it('drops a connector "from" price once the variants are edited, keeps it untouched', async () => {
+    const cut: CatalogItemInput = {
+      d: 'shopify:5',
+      title: 'Boot',
+      price: { amount: '90', currency: 'USD' },
+      priceFrom: true,
+      options: [{ name: 'Size', values: ['40', '41'] }],
+      variants: [
+        { id: 'a', price: '90', available: true, values: ['40'] },
+        { id: 'b', price: '95', available: true, values: ['41'] },
+      ],
+    };
+    const untouched = await editor(cut);
+    await click(buttonNamed(untouched.container, 'Keep this product'));
+    expect(saved(untouched.onSave).priceFrom).toBe(true);
+    await mounted?.unmount();
+    mounted = undefined;
+    const edited = await editor(cut);
+    await typeInto(labelled(edited.container, 'Price of variant 2'), '90');
+    await click(buttonNamed(edited.container, 'Keep this product'));
+    expect(saved(edited.onSave).priceFrom).toBeUndefined();
+  });
 });

@@ -33,6 +33,12 @@ function choicesOf(option: OptionInput, current: string) {
  */
 export function VariantsTable({ options, variants, onChange, onAdd, onAddMissing }: Props) {
   const [samePrice, setSamePrice] = useState('');
+  /** An option's name, or its number when it has none or shares its name with another. */
+  const selectName = (optionIndex: number) => {
+    const optionName = options[optionIndex]?.name ?? '';
+    const shared = options.filter((option) => option.name === optionName).length > 1;
+    return optionName === '' || shared ? `Option ${optionIndex + 1}` : optionName;
+  };
   const update = (index: number, change: Partial<VariantInput>) =>
     onChange(
       variants.map((variant, variantIndex) =>
@@ -97,7 +103,7 @@ export function VariantsTable({ options, variants, onChange, onAdd, onAddMissing
                         <td key={optionIndex} className="py-4 pr-8">
                           <select
                             className="input"
-                            aria-label={`${option.name || `Option ${optionIndex + 1}`} of variant ${index + 1}`}
+                            aria-label={`${selectName(optionIndex)} of variant ${index + 1}`}
                             value={current}
                             onChange={(event) =>
                               update(index, {

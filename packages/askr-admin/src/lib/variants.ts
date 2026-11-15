@@ -136,19 +136,11 @@ export function withMissingCombinations(
   };
 }
 
-function sameVariant(left: VariantInput, right: VariantInput): boolean {
-  return (
-    left.id === right.id &&
-    left.values.length === right.values.length &&
-    left.values.every((value, index) => value === right.values[index])
-  );
-}
-
 /**
  * What keeps these variants from being saved with these options, in plain
  * words. `initial` are the variants the product came with: two that overlapped
- * there already (a connector's "any size" next to "size S") are left as they
- * are, and a product without options may keep its one variant.
+ * there already (a connector's "any size" next to "size S") may keep
+ * overlapping, and a product without options may keep its one variant.
  */
 export function variantProblems(
   options: readonly OptionInput[],
@@ -158,11 +150,6 @@ export function variantProblems(
   if (variants.length === 0) {
     return [];
   }
-  if (options.length === 0) {
-    return variants.length === 1
-      ? []
-      : ['Several variants need an option to tell them apart: add one, or remove variants.'];
-  }
   const name = (variant: VariantInput, index: number) =>
     `Variant ${index + 1} (${variantLabel(variant.values)})`;
   const problems: string[] = [];
@@ -170,6 +157,16 @@ export function variantProblems(
     if (!PRICE_RE.test(variant.price)) {
       problems.push(`${name(variant, index)}: the price is not a number like 19.90.`);
     }
+  });
+  if (options.length === 0) {
+    if (variants.length > 1) {
+      problems.push(
+        'Several variants need an option to tell them apart: add one, or remove variants.',
+      );
+    }
+    return problems;
+  }
+  variants.forEach((variant, index) => {
     options.forEach((option, optionIndex) => {
       const value = variant.values[optionIndex] ?? '';
       if (option.name === '' || option.values.length === 0) {
@@ -185,7 +182,16 @@ export function variantProblems(
       }
     });
   });
-  const untouched = (variant: VariantInput) => initial.some((kept) => sameVariant(kept, variant));
+  // A pair the product came with overlapping (by id, so a value renamed in both keeps it).
+  const cameOverlapping = (left: VariantInput, right: VariantInput) => {
+    const leftBefore = initial.find((kept) => kept.id === left.id);
+    const rightBefore = initial.find((kept) => kept.id === right.id);
+    return (
+      leftBefore !== undefined &&
+      rightBefore !== undefined &&
+      overlaps(leftBefore.values, rightBefore.values)
+    );
+  };
   variants.forEach((variant, index) => {
     variants.forEach((other, otherIndex) => {
       if (
@@ -193,7 +199,7 @@ export function variantProblems(
         variant.values.some((value) => value === '') ||
         other.values.some((value) => value === '') ||
         !overlaps(variant.values, other.values) ||
-        (untouched(variant) && untouched(other))
+        cameOverlapping(variant, other)
       ) {
         return;
       }
