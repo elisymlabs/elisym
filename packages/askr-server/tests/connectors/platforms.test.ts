@@ -101,6 +101,8 @@ describe('Shopify /products.json (real, trimmed responses)', () => {
     expect(fromString.topics).toEqual(['Merch', 'DY Feed']);
     const fromList = mapShopifyProduct({ ...product, tags: ['a::b', 'Tees'] }, SHOP);
     expect(fromList.topics).toEqual(['Tees']);
+    // Repeats differ only in case: the first spelling is kept, once.
+    expect(searchableTags(['MERCH', 'Merch', 'merch ', 'Tees'])).toEqual(['MERCH', 'Tees']);
   });
 
   it('single-variant product: one variant, its SKU, the product page, attrs and topics', () => {

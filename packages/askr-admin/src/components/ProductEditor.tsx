@@ -1,11 +1,6 @@
 import { type CatalogItemInput, CatalogItemInputSchema, VISIBILITIES } from '@elisym/askr';
 import { useState } from 'react';
-import {
-  type VariantInput,
-  listingPriceOf,
-  optionValuesOf,
-  variantsFromOptions,
-} from '../lib/variants';
+import { type VariantInput, listingPriceOf, variantsFromOptions } from '../lib/variants';
 import { type AttrRow, AttrsEditor } from './AttrsEditor';
 import { Notice } from './Notice';
 import { type OptionRow, OptionsEditor } from './OptionsEditor';
@@ -39,7 +34,7 @@ const FREQUENCY_OPTIONS = [
 ];
 
 /** `kitchen, gifts` as topics: trimmed, empty ones dropped. */
-function topicsOf(text: string): string[] {
+function topicsOfText(text: string): string[] {
   return text
     .split(',')
     .map((topic) => topic.trim())
@@ -49,14 +44,15 @@ function topicsOf(text: string): string[] {
 function optionRowsOf(item: CatalogItemInput | undefined): OptionRow[] {
   return (item?.options ?? []).map((option) => ({
     name: option.name,
-    values: option.values.join(', '),
+    text: option.values.join(', '),
+    values: option.values,
   }));
 }
 
 /** The options as typed, without rows left wholly empty. */
 function optionsOf(rows: readonly OptionRow[]) {
   return rows
-    .map((row) => ({ name: row.name.trim(), values: optionValuesOf(row.values) }))
+    .map((row) => ({ name: row.name.trim(), values: row.values }))
     .filter((option) => option.name !== '' || option.values.length > 0);
 }
 
@@ -74,7 +70,9 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   const [description, setDescription] = useState(initial?.description ?? '');
   const [url, setUrl] = useState(initial?.url ?? '');
   const [images, setImages] = useState((initial?.images ?? []).join('\n'));
-  const [topics, setTopics] = useState((initial?.topics ?? []).join(', '));
+  const [topicsText, setTopicsText] = useState((initial?.topics ?? []).join(', '));
+  // Read from the text only once it is edited, so a topic with a comma stays whole.
+  const [topics, setTopics] = useState<string[]>(initial?.topics ?? []);
   const [sku, setSku] = useState(initial?.sku ?? '');
   const [visibility, setVisibility] = useState<string>(initial?.visibility ?? 'on-sale');
   const [attrs, setAttrs] = useState<AttrRow[]>(
@@ -83,6 +81,10 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   const [optionRows, setOptionRows] = useState<OptionRow[]>(optionRowsOf(initial));
   const [variants, setVariants] = useState<VariantInput[]>(initial?.variants ?? []);
   const [optionProblem, setOptionProblem] = useState('');
+  // Ids the product's variants carried or this edit gave out: never handed to another combination.
+  const [retiredIds, setRetiredIds] = useState<ReadonlySet<string>>(
+    () => new Set((initial?.variants ?? []).map((variant) => variant.id)),
+  );
   const [errors, setErrors] = useState<string[]>([]);
 
   const listingPrice = listingPriceOf(variants);
@@ -94,9 +96,10 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
     const complete = optionsOf(rows).filter(
       (option) => option.name !== '' && option.values.length > 0,
     );
-    const next = variantsFromOptions(complete, variants, listingPrice ?? price.trim());
+    const next = variantsFromOptions(complete, variants, listingPrice ?? price.trim(), retiredIds);
     if (next.ok) {
       setVariants(next.variants);
+      setRetiredIds(new Set([...retiredIds, ...next.variants.map((variant) => variant.id)]));
       setOptionProblem('');
     } else {
       setOptionProblem(next.reason);
@@ -107,6 +110,11 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
     const id = d.trim();
     if (initial === undefined && takenIds.includes(id)) {
       setErrors([`ID: another product already uses "${id}".`]);
+      return;
+    }
+    if (optionProblem !== '') {
+      // The variants are those of the last options that made sense: fix the options first.
+      setErrors([`options: ${optionProblem}`]);
       return;
     }
     const candidate: Record<string, unknown> = {
@@ -125,7 +133,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         .split(/\s+/u)
         .map((image) => image.trim())
         .filter((image) => image !== ''),
-      topics: topicsOf(topics),
+      topics,
       attrs: attrs
         .map((attr) => ({ name: attr.name.trim(), value: attr.value.trim() }))
         .filter((attr) => attr.name !== '' || attr.value !== ''),
@@ -136,17 +144,13 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
     candidate.summary = summary.trim() === '' ? undefined : summary.trim();
     candidate.url = url.trim() === '' ? undefined : url.trim();
     candidate.sku = sku.trim() === '' ? undefined : sku.trim();
-    const problems = optionProblem === '' ? [] : [`options: ${optionProblem}`];
     const checked = CatalogItemInputSchema.safeParse(candidate);
     if (!checked.success) {
-      problems.push(
-        ...checked.error.issues.map(
+      setErrors(
+        checked.error.issues.map(
           (issue) => `${issue.path.join('.') || 'product'}: ${issue.message}`,
         ),
       );
-    }
-    if (!checked.success || problems.length > 0) {
-      setErrors(problems);
       return;
     }
     setErrors([]);
@@ -239,10 +243,13 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         <TextField
           id="product-topics"
           label="Topics (optional)"
-          value={topics}
+          value={topicsText}
           placeholder="tents, camping"
           hint="Words shoppers search by, separated by commas."
-          onChange={setTopics}
+          onChange={(text) => {
+            setTopicsText(text);
+            setTopics(topicsOfText(text));
+          }}
         />
         <TextField id="product-sku" label="SKU (optional)" value={sku} onChange={setSku} />
       </div>

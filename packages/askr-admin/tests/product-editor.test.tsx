@@ -193,4 +193,100 @@ describe('the product editor fields', () => {
       variants: [{ id: 'v1', values: ['S', '*'] }],
     });
   });
+
+  it('keeps option values and topics with a comma whole while their rows are untouched', async () => {
+    const { container, onSave } = await editor({
+      d: 'flag',
+      title: 'Flag',
+      price: { amount: '9', currency: 'USD' },
+      topics: ['salt, pepper', 'flags'],
+      options: [{ name: 'Color', values: ['Red, White', 'Blue'] }],
+      variants: [
+        { id: 'a', price: '9', available: true, values: ['Red, White'] },
+        { id: 'b', price: '9', available: true, values: ['Blue'] },
+      ],
+    });
+    await typeInto(byId(container, 'product-title'), 'Big flag');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      topics: ['salt, pepper', 'flags'],
+      options: [{ name: 'Color', values: ['Red, White', 'Blue'] }],
+      variants: [{ values: ['Red, White'] }, { values: ['Blue'] }],
+    });
+  });
+
+  it('the listing price follows a variant price edit', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [
+        { id: '1', price: '20', available: true, values: ['S'] },
+        { id: '2', price: '24', available: true, values: ['M'] },
+      ],
+    });
+    await typeInto(labelled(container, 'Price of S'), '30');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({ price: { amount: '24' } });
+  });
+
+  it('sets one price for every variant at once', async () => {
+    const { container, onSave } = await editor();
+    await typeInto(byId(container, 'product-d'), 'tee');
+    await typeInto(byId(container, 'product-title'), 'Tee');
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 1 name'), 'Size');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, M');
+    expect(labelled(container, 'Price of S').value).toBe('');
+    await typeInto(byId(container, 'variants-same-price'), ' 15 ');
+    await click(buttonNamed(container, 'Set for all'));
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave)).toMatchObject({
+      price: { amount: '15' },
+      variants: [{ price: '15' }, { price: '15' }],
+    });
+  });
+
+  it('with options that make no variants, says only that and saves nothing', async () => {
+    const { container, onSave } = await editor({
+      d: 'x',
+      title: 'X',
+      price: { amount: '1', currency: 'USD' },
+      options: [{ name: 'A', values: ['1'] }],
+      variants: [{ id: '1', price: '1', available: true, values: ['1'] }],
+    });
+    await click(buttonNamed(container, 'Add an option'));
+    await typeInto(labelled(container, 'Option 2 name'), 'B');
+    await typeInto(
+      labelled(container, 'Option 2 values'),
+      Array.from({ length: 101 }, (_value, index) => String(index)).join(','),
+    );
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(onSave).not.toHaveBeenCalled();
+    const items = [...container.querySelectorAll('li')].map((item) => item.textContent);
+    expect(items).toEqual([
+      'options: These options make 101 combinations; a product holds at most 100 variants.',
+    ]);
+  });
+
+  it('never gives a published variant id to another combination', async () => {
+    const { container, onSave } = await editor({
+      d: 'tee',
+      title: 'Tee',
+      price: { amount: '20', currency: 'USD' },
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [
+        { id: '1', price: '20', available: true, values: ['S'] },
+        { id: '2', price: '20', available: true, values: ['M'] },
+      ],
+    });
+    await typeInto(labelled(container, 'Option 1 values'), 'S');
+    await typeInto(labelled(container, 'Option 1 values'), 'S, XL');
+    await click(buttonNamed(container, 'Keep this product'));
+    expect(saved(onSave).variants?.map((variant) => [variant.id, variant.values[0]])).toEqual([
+      ['1', 'S'],
+      ['3', 'XL'],
+    ]);
+  });
 });

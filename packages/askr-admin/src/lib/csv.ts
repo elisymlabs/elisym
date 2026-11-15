@@ -1,4 +1,4 @@
-import { type CatalogItemInput, CatalogItemInputSchema } from '@elisym/askr';
+import { ANY_OPTION_VALUE, type CatalogItemInput, CatalogItemInputSchema } from '@elisym/askr';
 import { type VariantInput, listingPriceOf } from './variants';
 
 /** Product columns the import reads; `d`, `title` and `price` are required. */
@@ -211,12 +211,13 @@ function rowCellsOf(line: number, row: readonly string[], header: readonly Heade
   return cells;
 }
 
-/** A row describes a variant when any option or variant cell is filled. */
-function hasVariantCells(cells: RowCells): boolean {
-  return (
-    cells.options.some((option) => option.value !== '') ||
-    [...cells.variant.values()].some((value) => value !== '')
-  );
+/** A row is a variant when it fills an option cell. */
+function fillsOption(cells: RowCells): boolean {
+  return cells.options.some((option) => option.value !== '');
+}
+
+function fillsVariantColumn(cells: RowCells): boolean {
+  return [...cells.variant.values()].some((value) => value !== '');
 }
 
 /** A later row of a product may fill only `d`, the option and the variant cells. */
@@ -227,23 +228,28 @@ function hasProductCells(cells: RowCells): boolean {
   );
 }
 
-/** One product's rows: the first carries the product, every row with variant cells a variant. */
+/** One product's rows: the first carries the product, every row with an option value a variant. */
 interface ProductRows {
   first: RowCells;
   variantRows: RowCells[];
-  /** Problems with single rows, by line. */
+  /** Problems with the product's own rows, by line: any of them leaves the product out. */
   rowErrors: CsvRowError[];
+}
+
+/** The product's options and variants, each variant with the line it came from. */
+interface ReadVariants {
+  options: { name: string; values: string[] }[];
+  variants: VariantInput[];
+  lines: number[];
 }
 
 /**
  * The product's variants from its rows: an option is used when any row fills
- * it, each variant needs a value for every used option, a missing variant
- * price is the product's price and a missing id the row's number among them.
+ * it, each variant needs a value for every used option (`*` = any value), a
+ * missing variant price is the product's price and a missing id the next
+ * number no row of the product names.
  */
-function variantsOf(group: ProductRows): {
-  options: { name: string; values: string[] }[];
-  variants: VariantInput[];
-} {
+function variantsOf(group: ProductRows): ReadVariants {
   const usedNames = group.first.options
     .map((option) => option.name)
     .filter((name) =>
@@ -251,19 +257,31 @@ function variantsOf(group: ProductRows): {
         row.options.some((option) => option.name === name && option.value !== ''),
       ),
     );
-  const options: { name: string; values: string[] }[] = usedNames.map((name) => ({
-    name,
-    values: [],
-  }));
+  const read: ReadVariants = {
+    options: usedNames.map((name) => ({ name, values: [] })),
+    variants: [],
+    lines: [],
+  };
   const fallbackPrice = group.first.product.get('price')?.trim() ?? '';
-  const variants: VariantInput[] = [];
-  group.variantRows.forEach((row, rowIndex) => {
+  const takenIds = new Set(
+    group.variantRows.map((row) => row.variant.get('variant_id') ?? '').filter((id) => id !== ''),
+  );
+  let nextId = 1;
+  const freshId = () => {
+    while (takenIds.has(String(nextId))) {
+      nextId += 1;
+    }
+    takenIds.add(String(nextId));
+    return String(nextId);
+  };
+  const combinations = new Map<string, number>();
+  for (const row of group.variantRows) {
     const messages: string[] = [];
-    const values = options.map((option) => {
+    const values = read.options.map((option) => {
       const value = row.options.find((cell) => cell.name === option.name)?.value ?? '';
       if (value === '') {
         messages.push(`option:${option.name}: this variant needs a value`);
-      } else if (!option.values.includes(value)) {
+      } else if (value !== ANY_OPTION_VALUE && !option.values.includes(value)) {
         option.values.push(value);
       }
       return value;
@@ -272,22 +290,42 @@ function variantsOf(group: ProductRows): {
     if (!AVAILABLE_WORDS.has(availableWord) && !UNAVAILABLE_WORDS.has(availableWord)) {
       messages.push('variant_available: write yes or no');
     }
+    const combination = JSON.stringify(values);
+    const earlierLine = combinations.get(combination);
+    if (messages.length === 0 && earlierLine !== undefined) {
+      messages.push(`this combination of option values is already on line ${earlierLine}`);
+    }
     if (messages.length > 0) {
       group.rowErrors.push({ line: row.line, messages });
-      return;
+      continue;
     }
-    variants.push({
-      id: row.variant.get('variant_id') || String(rowIndex + 1),
+    combinations.set(combination, row.line);
+    read.variants.push({
+      id: row.variant.get('variant_id') || freshId(),
       price: row.variant.get('variant_price') || fallbackPrice,
       available: !UNAVAILABLE_WORDS.has(availableWord),
       values,
     });
-  });
-  return { options, variants };
+    read.lines.push(row.line);
+  }
+  for (const option of read.options) {
+    if (option.values.length === 0) {
+      group.rowErrors.push({
+        line: group.first.line,
+        messages: [
+          `option:${option.name}: needs at least one value other than ${ANY_OPTION_VALUE}`,
+        ],
+      });
+    }
+  }
+  return read;
 }
 
-/** One product as the catalog API takes it; empty cells are left out. */
-function itemOf(group: ProductRows, defaultCurrency: string): Record<string, unknown> {
+/** One product as the catalog API takes it, empty cells left out, and its variants' lines. */
+function itemOf(
+  group: ProductRows,
+  defaultCurrency: string,
+): { item: Record<string, unknown>; variantLines: number[] } {
   const cells = group.first.product;
   const cell = (column: CsvColumn) => cells.get(column)?.trim() ?? '';
   const price: Record<string, unknown> = {
@@ -317,18 +355,39 @@ function itemOf(group: ProductRows, defaultCurrency: string): Record<string, unk
   if (attrs.length > 0) {
     item.attrs = attrs;
   }
-  if (group.variantRows.length > 0) {
-    const { options, variants } = variantsOf(group);
-    item.options = options;
-    item.variants = variants;
-    // With variants the listing shows the lowest available variant price (2.1), and a
-    // product with none available is sold out unless the file says otherwise.
-    price.amount = listingPriceOf(variants) ?? price.amount;
-    if (cell('visibility') === '' && !variants.some((variant) => variant.available)) {
-      item.visibility = 'sold-out';
-    }
+  if (group.variantRows.length === 0) {
+    return { item, variantLines: [] };
   }
-  return item;
+  const { options, variants, lines } = variantsOf(group);
+  item.options = options;
+  item.variants = variants;
+  // With variants the listing shows the lowest available variant price (2.1), and a
+  // product with none available is sold out unless the file says otherwise.
+  price.amount = listingPriceOf(variants) ?? price.amount;
+  if (cell('visibility') === '' && !variants.some((variant) => variant.available)) {
+    item.visibility = 'sold-out';
+  }
+  return { item, variantLines: lines };
+}
+
+/** A schema issue at `variants.N...` belongs to that variant's row; any other to the first row. */
+function lineOfIssue(path: readonly PropertyKey[], firstLine: number, variantLines: number[]) {
+  const [field, index] = path;
+  if (field === 'variants' && typeof index === 'number') {
+    return variantLines[index] ?? firstLine;
+  }
+  return firstLine;
+}
+
+/** Messages on the same line as one entry, in line order. */
+function mergedByLine(errors: readonly CsvRowError[]): CsvRowError[] {
+  const byLine = new Map<number, string[]>();
+  for (const error of errors) {
+    byLine.set(error.line, [...(byLine.get(error.line) ?? []), ...error.messages]);
+  }
+  return [...byLine.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([line, messages]) => ({ line, messages }));
 }
 
 /**
@@ -359,15 +418,16 @@ export function productsFromCsv(text: string, defaultCurrency: string): CsvImpor
     );
     return result;
   }
-  const named = header.flatMap((cell) =>
-    cell.kind === 'ignored'
-      ? []
-      : [
-          cell.kind === 'product' || cell.kind === 'variant'
-            ? cell.column
-            : `${cell.kind}:${cell.name.toLowerCase()}`,
-        ],
-  );
+  const named = header.flatMap((cell) => {
+    if (cell.kind === 'ignored') {
+      return [];
+    }
+    return [
+      cell.kind === 'product' || cell.kind === 'variant'
+        ? cell.column
+        : `${cell.kind}:${cell.name.toLowerCase()}`,
+    ];
+  });
   const repeated = named.filter((name, index) => named.indexOf(name) !== index);
   if (repeated.length > 0) {
     result.fileErrors.push(
@@ -380,6 +440,8 @@ export function productsFromCsv(text: string, defaultCurrency: string): CsvImpor
   );
   const groups = new Map<string, ProductRows>();
   const order: ProductRows[] = [];
+  const errors: CsvRowError[] = [];
+  const variantColumnsAlone = `the ${CSV_VARIANT_COLUMNS.join(', ')} columns describe a variant: fill its option:... values too`;
   for (const { line, cells: row } of rows) {
     const cells = rowCellsOf(line, row, header);
     const d = cells.product.get('d')?.trim() ?? '';
@@ -387,18 +449,25 @@ export function productsFromCsv(text: string, defaultCurrency: string): CsvImpor
     if (earlier === undefined) {
       const group: ProductRows = {
         first: cells,
-        variantRows: hasVariantCells(cells) ? [cells] : [],
+        variantRows: fillsOption(cells) ? [cells] : [],
         rowErrors: [],
       };
+      if (!fillsOption(cells) && fillsVariantColumn(cells)) {
+        group.rowErrors.push({ line, messages: [variantColumnsAlone] });
+      }
       if (d !== '') {
         groups.set(d, group);
       }
       order.push(group);
       continue;
     }
-    if (earlier.variantRows.length === 0 || !hasVariantCells(cells)) {
-      // A plain repeat is its own mistake: the earlier product stays as it is.
-      result.errors.push({ line, messages: [`d: "${d}" is used by an earlier row`] });
+    if (!fillsOption(cells)) {
+      if (fillsVariantColumn(cells) && !hasProductCells(cells)) {
+        earlier.rowErrors.push({ line, messages: [variantColumnsAlone] });
+      } else {
+        // A plain repeat is its own mistake: the earlier product stays as it is.
+        errors.push({ line, messages: [`d: "${d}" is used by an earlier row`] });
+      }
     } else if (hasProductCells(cells)) {
       earlier.rowErrors.push({
         line,
@@ -411,19 +480,24 @@ export function productsFromCsv(text: string, defaultCurrency: string): CsvImpor
     }
   }
   for (const group of order) {
-    const parsed = CatalogItemInputSchema.safeParse(itemOf(group, defaultCurrency));
-    const messages = parsed.success
-      ? []
-      : parsed.error.issues.map((issue) => `${issue.path.join('.') || 'row'}: ${issue.message}`);
-    if (!parsed.success || group.rowErrors.length > 0) {
-      if (messages.length > 0) {
-        result.errors.push({ line: group.first.line, messages });
-      }
-      result.errors.push(...group.rowErrors);
+    const { item, variantLines } = itemOf(group, defaultCurrency);
+    if (group.rowErrors.length > 0) {
+      // The product's own rows are wrong: what the schema would add follows from those.
+      errors.push(...group.rowErrors);
+      continue;
+    }
+    const parsed = CatalogItemInputSchema.safeParse(item);
+    if (!parsed.success) {
+      errors.push(
+        ...parsed.error.issues.map((issue) => ({
+          line: lineOfIssue(issue.path, group.first.line, variantLines),
+          messages: [`${issue.path.join('.') || 'row'}: ${issue.message}`],
+        })),
+      );
       continue;
     }
     result.items.push(parsed.data);
   }
-  result.errors.sort((left, right) => left.line - right.line);
+  result.errors = mergedByLine(errors);
   return result;
 }

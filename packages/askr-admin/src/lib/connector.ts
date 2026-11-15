@@ -8,7 +8,7 @@ const VERIFICATION_REASONS: Readonly<Record<string, string>> = {
   not_found:
     'does not show your store ID (add the askr-verification meta tag or /.well-known/askr)',
   fetch_failed: 'could not be read',
-  blocked: `refuses automated readers (often a bot check such as Cloudflare): ${BOT_CHECK_WAY_OUT}`,
+  blocked: `refuses automated readers (often a bot check such as Cloudflare, or a password or maintenance page): ${BOT_CHECK_WAY_OUT}`,
 };
 
 const DIFF_WORDS: readonly (readonly [string, string])[] = [
@@ -48,7 +48,7 @@ export function connectorResultSentence(result: unknown): string {
     const answered = `The source is closed: ${String(field(result, 'url') ?? '')} answered ${String(field(result, 'reason') ?? 'with an error')}.`;
     const httpStatus = field(result, 'httpStatus');
     if (typeof httpStatus === 'number' && REFUSED_STATUSES.has(httpStatus)) {
-      return `${answered} The shop may refuse automated readers (often a bot check such as Cloudflare): ${BOT_CHECK_WAY_OUT}.`;
+      return `${answered} The shop may refuse automated readers (often a bot check such as Cloudflare, or a password or maintenance page): ${BOT_CHECK_WAY_OUT}.`;
     }
     return `${answered} Check that your products are public.`;
   }

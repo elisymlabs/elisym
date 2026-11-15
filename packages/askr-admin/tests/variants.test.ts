@@ -112,4 +112,19 @@ describe('variantsFromOptions', () => {
       reason: 'These options make 200 combinations; a product holds at most 100 variants.',
     });
   });
+
+  it('takes exactly 100 combinations, not 101, and never gives out a retired id', () => {
+    const hundredOne = Array.from({ length: 101 }, (_value, index) => `v${index}`);
+    expect(variantsFromOptions([{ name: 'A', values: hundredOne }], [], '1').ok).toBe(false);
+    expect(variantsFromOptions([{ name: 'A', values: hundredOne.slice(0, 100) }], [], '1').ok).toBe(
+      true,
+    );
+    const result = variantsFromOptions(
+      [{ name: 'Size', values: ['S', 'XL'] }],
+      [{ id: '1', price: '5', available: true, values: ['S'] }],
+      '5',
+      new Set(['2', '3']),
+    );
+    expect(result.ok && result.variants.map((variant) => variant.id)).toEqual(['1', '4']);
+  });
 });

@@ -144,7 +144,7 @@ describe('productsFromCsv', () => {
       ],
       variants: [
         { id: 't-s', price: '20', available: true, values: ['S', 'Black'] },
-        { id: '2', price: '22', available: true, values: ['M', 'Black'] },
+        { id: '1', price: '22', available: true, values: ['M', 'Black'] },
         { id: 't-l', price: '99', available: false, values: ['L', 'White'] },
       ],
       visibility: 'on-sale',
@@ -223,5 +223,99 @@ describe('productsFromCsv', () => {
       ['tee-1', 3],
       ['box-1', 0],
     ]);
+  });
+
+  it('reads a plain first row followed by its variant rows, the usual export layout', () => {
+    const text = [
+      'd,title,price,attr:Fit,option:Size,variant_price',
+      'a,A,5,Loose,,',
+      'a,,,,S,',
+      'a,,,,M,7',
+    ].join('\n');
+    const result = productsFromCsv(text, 'USD');
+    expect(result.errors).toEqual([]);
+    expect(result.items[0]).toMatchObject({
+      attrs: [{ name: 'Fit', value: 'Loose' }],
+      options: [{ name: 'Size', values: ['S', 'M'] }],
+      variants: [
+        { id: '1', price: '5', values: ['S'] },
+        { id: '2', price: '7', values: ['M'] },
+      ],
+    });
+  });
+
+  it('gives automatic variant ids no row names, and reports a repeated combination on its row', () => {
+    const ids = productsFromCsv(
+      ['d,title,price,option:Size,variant_id', 'a,A,5,S,2', 'a,,,M,', 'a,,,L,1'].join('\n'),
+      'USD',
+    );
+    expect(ids.errors).toEqual([]);
+    expect(ids.items[0]?.variants?.map((variant) => variant.id)).toEqual(['2', '3', '1']);
+    const repeated = productsFromCsv(
+      ['d,title,price,option:Size,variant_price', 'a,A,5,S,6', 'a,,,S,7'].join('\n'),
+      'USD',
+    );
+    expect(repeated.items).toEqual([]);
+    expect(repeated.errors).toEqual([
+      { line: 3, messages: ['this combination of option values is already on line 2'] },
+    ]);
+  });
+
+  it('reads * as any value, never as a choice, and refuses an option that has only *', () => {
+    const any = productsFromCsv(
+      ['d,title,price,option:Size,option:Color', 'a,A,5,*,Red', 'a,,,M,Red'].join('\n'),
+      'USD',
+    );
+    expect(any.errors).toEqual([]);
+    expect(any.items[0]).toMatchObject({
+      options: [
+        { name: 'Size', values: ['M'] },
+        { name: 'Color', values: ['Red'] },
+      ],
+      variants: [{ values: ['*', 'Red'] }, { values: ['M', 'Red'] }],
+    });
+    const only = productsFromCsv(['d,title,price,option:Size', 'a,A,5,*'].join('\n'), 'USD');
+    expect(only.items).toEqual([]);
+    expect(only.errors).toEqual([
+      { line: 2, messages: ['option:Size: needs at least one value other than *'] },
+    ]);
+  });
+
+  it('puts a variant problem the schema finds on that variant row', () => {
+    const result = productsFromCsv(
+      ['d,title,price,option:Size,variant_price', 'a,A,5,S,', 'a,,,M,abc', 'a,,,L,7'].join('\n'),
+      'USD',
+    );
+    expect(result.items).toEqual([]);
+    expect(result.errors.map((error) => error.line)).toEqual([3]);
+    expect(result.errors[0]?.messages.join(' ')).toContain('variants.1.price');
+  });
+
+  it('refuses variant columns without an option value, and attributes on a further row', () => {
+    const lone = productsFromCsv(
+      ['d,title,price,option:Size,variant_available', 'a,A,5,,no', 'b,B,5,S,', 'b,,,,no'].join(
+        '\n',
+      ),
+      'USD',
+    );
+    expect(lone.items).toEqual([]);
+    expect(lone.errors.map((error) => [error.line, error.messages.join(' ')])).toEqual([
+      [2, expect.stringContaining('fill its option:... values too')],
+      [4, expect.stringContaining('fill its option:... values too')],
+    ]);
+    const attr = productsFromCsv(
+      ['d,title,price,attr:Fit,option:Size', 'a,A,5,,S', 'a,,,Loose,M'].join('\n'),
+      'USD',
+    );
+    expect(attr.items).toEqual([]);
+    expect(attr.errors[0]).toMatchObject({ line: 3 });
+    expect(attr.errors[0]?.messages.join(' ')).toContain('fills only d');
+  });
+
+  it('puts every message for one line into one entry', () => {
+    const result = productsFromCsv('d,title,price\n,,x', 'USD');
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.line).toBe(2);
+    expect(result.errors[0]?.messages.length).toBeGreaterThan(1);
   });
 });

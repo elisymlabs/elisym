@@ -9,7 +9,7 @@ describe('connectorResultSentence', () => {
         failures: [{ origin: 'https://shop.example', reason: 'blocked' }],
       }),
     ).toBe(
-      'Your site could not be verified, so nothing was synced: https://shop.example refuses automated readers (often a bot check such as Cloudflare): let the AskrConnector user agent through, or import a CSV file or a product feed instead.',
+      'Your site could not be verified, so nothing was synced: https://shop.example refuses automated readers (often a bot check such as Cloudflare, or a password or maintenance page): let the AskrConnector user agent through, or import a CSV file or a product feed instead.',
     );
   });
 

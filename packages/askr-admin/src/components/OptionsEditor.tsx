@@ -1,9 +1,15 @@
 import { LIMITS } from '@elisym/askr';
+import { optionValuesOf } from '../lib/variants';
 
 export interface OptionRow {
   name: string;
-  /** The values as typed, comma-separated: `S, M, L`. */
-  values: string;
+  /** The values as shown and typed, comma-separated: `S, M, L`. */
+  text: string;
+  /**
+   * The values. Read from `text` only once it is edited, so a value with a
+   * comma in it (`Red, White`, `10,5`) stays whole while the row is untouched.
+   */
+  values: string[];
 }
 
 interface Props {
@@ -36,8 +42,13 @@ export function OptionsEditor({ rows, onChange }: Props) {
             className="input"
             aria-label={`Option ${index + 1} values`}
             placeholder="S, M, L"
-            value={row.values}
-            onChange={(event) => update(index, { values: event.target.value })}
+            value={row.text}
+            onChange={(event) =>
+              update(index, {
+                text: event.target.value,
+                values: optionValuesOf(event.target.value),
+              })
+            }
           />
           <button
             type="button"
@@ -54,7 +65,7 @@ export function OptionsEditor({ rows, onChange }: Props) {
           <button
             type="button"
             className="btn"
-            onClick={() => onChange([...rows, { name: '', values: '' }])}
+            onClick={() => onChange([...rows, { name: '', text: '', values: [] }])}
           >
             Add an option
           </button>

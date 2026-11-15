@@ -128,7 +128,7 @@ function parseTsv(body: string): GoogleFeedItem[] {
   const columns = header.split('\t').map((column) => headerName(column));
   if (!columns.includes('id')) {
     throw new FeedFormatError(
-      'This is not a product feed: an XML feed (RSS or Atom) starts with <, and a TSV feed needs an id column',
+      'No product feed found: an XML feed (RSS or Atom) must start with <, and a TSV feed needs a column named id',
     );
   }
   return rows.map((row) => {

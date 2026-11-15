@@ -58,12 +58,14 @@ export type VariantsFromOptions =
 /**
  * One variant per combination of the options' values. A combination that
  * already had a variant keeps its id, price and availability; a new one gets
- * `price` and the next free numeric id.
+ * `price` and the next numeric id that is neither in `existing` nor in
+ * `retired` (ids once published for another combination).
  */
 export function variantsFromOptions(
   options: readonly OptionInput[],
   existing: readonly VariantInput[],
   price: string,
+  retired: ReadonlySet<string> = new Set(),
 ): VariantsFromOptions {
   if (options.length === 0) {
     return { ok: true, variants: [] };
@@ -78,7 +80,7 @@ export function variantsFromOptions(
       reason: `These options make ${count} combinations; a product holds at most ${LIMITS.MAX_VARIANTS} variants.`,
     };
   }
-  const taken = new Set(existing.map((variant) => variant.id));
+  const taken = new Set([...retired, ...existing.map((variant) => variant.id)]);
   let next = 1;
   const freshId = () => {
     while (taken.has(String(next))) {

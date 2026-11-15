@@ -15,8 +15,9 @@ export type VerificationFailureReason =
   /** Neither page could be read. */
   | 'fetch_failed'
   /**
-   * The home page refused the connector (401, 403, 429 or 503): most often a
-   * bot check in front of the shop, so adding the tag would not help.
+   * The home page refused the connector (401, 403, 429 or 503), and
+   * `/.well-known/askr` could not be read either: most often a bot check in
+   * front of the whole shop, so neither proof can be seen.
    */
   | 'blocked';
 
@@ -82,7 +83,8 @@ export async function verifyOrigin(
   if (home.kind === 'page' && metaContents(home.body, VERIFICATION_META_NAME).includes(npub)) {
     return undefined;
   }
-  if (home.kind === 'blocked') {
+  // A readable well-known path (missing, or without the npub) is still a way in: not blocked.
+  if (home.kind === 'blocked' && (wellKnown.kind === 'blocked' || wellKnown.kind === 'failed')) {
     return 'blocked';
   }
   return wellKnown.kind === 'failed' && home.kind === 'failed' ? 'fetch_failed' : 'not_found';

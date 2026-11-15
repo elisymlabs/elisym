@@ -447,6 +447,21 @@ describe('the CSV import', () => {
     expect(onImport).toHaveBeenCalledWith([expect.objectContaining({ d: 'a' })], 'replace');
   });
 
+  it('warns before a merge drops variants, options or attributes, not when the file carries them', async () => {
+    const onImport = vi.fn();
+    mounted = await mount(<CsvImport currency="USD" current={[TEAPOT, MUG]} onImport={onImport} />);
+    const { container } = mounted;
+    await chooseFile(
+      container,
+      ['d,title,price,option:Size', 'teapot,Teapot,30,S', 'teapot,,,L'].join('\n'),
+    );
+    await settle(() => (container.textContent ?? '').includes('1 product read'));
+    expect(container.textContent).not.toContain('are lost');
+    await chooseFile(container, 'd,title,price\nteapot,Teapot,30\nmug,Mug,12.50');
+    await settle(() => (container.textContent ?? '').includes('2 products read'));
+    expect(container.textContent).toContain('are lost: teapot, mug.');
+  });
+
   it('refuses a file larger than the server takes, without reading it', async () => {
     mounted = await mount(<CsvImport currency="USD" current={[]} onImport={() => undefined} />);
     const { container } = mounted;

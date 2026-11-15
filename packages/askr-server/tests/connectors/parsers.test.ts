@@ -331,7 +331,7 @@ describe('Google feed', () => {
     // A feed saved from a browser view starts with the browser's note, not with `<`.
     expect(() =>
       parseGoogleFeed('This XML file does not appear to have any style information.\n<rss></rss>'),
-    ).toThrow(/not a product feed: an XML feed \(RSS or Atom\) starts with </);
+    ).toThrow(/No product feed found: an XML feed \(RSS or Atom\) must start with </);
     expect(() => parseGoogleFeed('<rss><channel>')).toThrow(FeedFormatError);
   });
 });
