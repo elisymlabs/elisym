@@ -71,26 +71,38 @@ const CatalogRequestSchema = z.object({
 });
 
 /**
- * Every product ID K has on the relay, whatever its versions and visibility:
- * a replace counts hidden products too, and a product a sync removed is
- * deleted (NIP-09), so the relay no longer holds it. The admin reads the same
- * IDs (`readListedIds`) and removes the ones its draft does not hold.
+ * Every product ID K lists on the relay, hidden ones included (a replace
+ * counts hidden products too): a valid `d` whose newest signed version,
+ * however dated, is not deleted (NIP-09) at or after it. The admin reads the
+ * same IDs (`readCatalog`) and removes the ones its draft does not hold.
  */
 async function listedOnRelay(client: SyncRelayClient, key: string): Promise<Set<string>> {
-  const events = await client.query(ASKR_RELAYS, { kinds: [KIND_PRODUCT], authors: [key] });
-  const ids = new Set<string>();
-  for (const event of events) {
+  const events = await client.query(ASKR_RELAYS, {
+    kinds: [KIND_PRODUCT, KIND_DELETION],
+    authors: [key],
+  });
+  const genuine = events.filter((event) => event.pubkey === key && verifyEvent(event));
+  const newest = new Map<string, number>();
+  for (const event of genuine) {
     const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
-    if (
-      event.kind === KIND_PRODUCT &&
-      event.pubkey === key &&
-      d !== undefined &&
-      verifyEvent(event)
-    ) {
-      ids.add(d);
+    if (event.kind === KIND_PRODUCT && d !== undefined && D_TAG_RE.test(d)) {
+      newest.set(d, Math.max(newest.get(d) ?? -1, event.created_at));
     }
   }
-  return ids;
+  const deletedAt = new Map<string, number>();
+  const prefix = `${KIND_PRODUCT}:${key}:`;
+  for (const event of genuine) {
+    if (event.kind !== KIND_DELETION) {
+      continue;
+    }
+    for (const tag of event.tags) {
+      if (tag[0] === 'a' && tag[1]?.startsWith(prefix)) {
+        const d = tag[1].slice(prefix.length);
+        deletedAt.set(d, Math.max(deletedAt.get(d) ?? -1, event.created_at));
+      }
+    }
+  }
+  return new Set([...newest].flatMap(([d, at]) => ((deletedAt.get(d) ?? -1) >= at ? [] : [d])));
 }
 
 const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
@@ -339,10 +351,7 @@ export function createAdminApi(
     holder: string,
     release: (ended?: CatalogSyncStatus) => Promise<void>,
   ): Promise<Response> => {
-    const refused = await overTier(store, items, change).catch(async (error: unknown) => {
-      await release();
-      throw error;
-    });
+    const refused = await overTier(store, items, change);
     if (refused !== undefined) {
       await release();
       return refused;

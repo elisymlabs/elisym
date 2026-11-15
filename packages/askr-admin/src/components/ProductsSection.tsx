@@ -5,7 +5,7 @@ import { type CatalogChange, changesOf, importItems, removeItem, upsertItem } fr
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage, invalidItemIssues } from '../lib/errors';
 import { SOURCE_LABELS } from '../lib/labels';
-import { readListedIds, readListings } from '../lib/store-data';
+import { readCatalog } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
 import { CsvImport } from './CsvImport';
 import { DiffSummary } from './DiffSummary';
@@ -61,8 +61,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const read = useCallback(
     async (isCurrent: () => boolean = () => true) => {
       try {
-        const listings = await readListings(deps.reader, view.catalogKey, deps.now());
-        const ids = await readListedIds(deps.reader, view.catalogKey);
+        const { listings, ids } = await readCatalog(deps.reader, view.catalogKey, deps.now());
         if (isCurrent()) {
           const sorted = listings.sort((left, right) => left.d.localeCompare(right.d));
           setBaseline(sorted);

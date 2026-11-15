@@ -4,6 +4,7 @@ import {
   buildCatalogItemEvent,
   parseCatalogItem,
 } from '@elisym/askr';
+import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +15,7 @@ import { MAX_CSV_BYTES } from '../src/lib/csv';
 import { inputOfListing } from '../src/lib/store-data';
 import {
   NOW,
+  SERVER_KEY,
   SERVER_KEY_SECRET,
   adminConfig,
   failingReader,
@@ -176,6 +178,46 @@ describe('a publish with products the editor could not read', () => {
     await click(buttonNamed(container, 'Review changes'));
     expect(vi.mocked(api.catalog).mock.calls[0]?.[0]).toMatchObject({ hide: ['broken'] });
   });
+
+  it('leaves out deleted products, IDs off the pattern and forged listings, so nothing is left to publish', async () => {
+    const api = fakeApi();
+    const gone = listing({ ...TEAPOT, visibility: 'hidden' }, NOW - 60);
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: NOW - 30,
+        tags: [['a', `30402:${SERVER_KEY}:teapot`]],
+        content: '',
+      },
+      SERVER_KEY_SECRET,
+    );
+    const offPattern = finalizeEvent(
+      { kind: 30402, created_at: NOW - 40, tags: [['d', 'odd id']], content: '' },
+      SERVER_KEY_SECRET,
+    );
+    const forged: NostrEvent = JSON.parse(
+      JSON.stringify({
+        ...finalizeEvent(
+          { kind: 30402, created_at: NOW - 40, tags: [['d', 'forged']], content: '' },
+          SERVER_KEY_SECRET,
+        ),
+        sig: '0'.repeat(128),
+      }),
+    );
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG), gone, deletion, offPattern, forged]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Mug'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(container.textContent).toContain('Nothing to publish');
+    expect(api.catalog).not.toHaveBeenCalled();
+  });
 });
 
 describe('the product editor', () => {
@@ -330,8 +372,8 @@ describe('the product editor', () => {
 
     await mounted.rerender(section(done));
     await settle(() => (container.textContent ?? '').includes('Teapot'));
-    // One read of the listings, one of every product ID K has.
-    expect(query).toHaveBeenCalledTimes(2);
+    // One read gives the listings and every product ID K has.
+    expect(query).toHaveBeenCalledTimes(1);
     expect(buttonNamed(container, 'Review changes').disabled).toBe(false);
   });
 

@@ -1,5 +1,6 @@
 import {
   CONFIG_D_TAG,
+  D_TAG_RE,
   type CatalogItem,
   type CatalogItemInput,
   type CatalogKeyRole,
@@ -187,7 +188,20 @@ export async function readListings(
   key: string,
   now: number = nowSecs(),
 ): Promise<CatalogItemInput[]> {
+  return (await readCatalog(reader, key, now)).listings;
+}
+
+/** The editor's listings and every product ID the key has, from one read of the relay. */
+export async function readCatalog(
+  reader: RelayReader,
+  key: string,
+  now: number = nowSecs(),
+): Promise<{ listings: CatalogItemInput[]; ids: string[] }> {
   const events = await reader.query({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [key] });
+  return { listings: listingsOf(events, key, now), ids: listedIdsOf(events, key, now) };
+}
+
+function listingsOf(events: readonly NostrEvent[], key: string, now: number): CatalogItemInput[] {
   const deletions = events.filter((event) => event.kind === KIND_DELETION);
   // A deleted listing is gone, not hidden: it must not come back, count or be re-created.
   return newestByD(events, KIND_PRODUCT, key, now)
@@ -205,6 +219,35 @@ export async function readListings(
       const item = parseCatalogItem(readable, { role: 'catalog', now });
       return item === undefined ? [] : [inputOfListing(item, hidden)];
     });
+}
+
+/**
+ * Every product ID the key lists on the relay: a valid `d` whose newest signed
+ * version, however dated, is not deleted after it; also ones `listingsOf`
+ * leaves out (unreadable, dated ahead). The server counts these same IDs
+ * against the plan, so a publish removes the ones the draft does not hold, as
+ * replacing the whole catalog did.
+ */
+function listedIdsOf(events: readonly NostrEvent[], key: string, now: number): string[] {
+  const newest = new Map<string, NostrEvent>();
+  for (const event of events) {
+    const d = dOf(event);
+    if (
+      event.kind !== KIND_PRODUCT ||
+      event.pubkey !== key ||
+      d === undefined ||
+      !D_TAG_RE.test(d) ||
+      !verifyEvent(event)
+    ) {
+      continue;
+    }
+    const kept = newest.get(d);
+    if (kept === undefined || event.created_at > kept.created_at) {
+      newest.set(d, event);
+    }
+  }
+  const deletions = events.filter((event) => event.kind === KIND_DELETION);
+  return [...newest].filter(([, event]) => !deleted(event, deletions, now)).map(([d]) => d);
 }
 
 /**
@@ -231,29 +274,6 @@ export async function countListed(
     // Only the store's currency counts against the plan: the assistant leaves the rest out.
     return parseCatalogItem(event, { role, now })?.price.currency === currency;
   }).length;
-}
-
-/**
- * Every product ID a catalog key has on the relay, whatever its versions:
- * also ones `readListings` leaves out (unreadable, dated ahead, deleted). The
- * server counts them against the plan, so a publish removes the ones the
- * draft does not hold, as replacing the whole catalog did.
- */
-export async function readListedIds(reader: RelayReader, key: string): Promise<string[]> {
-  const events = await reader.query({ kinds: [KIND_PRODUCT], authors: [key] });
-  const ids = new Set<string>();
-  for (const event of events) {
-    const d = dOf(event);
-    if (
-      event.kind === KIND_PRODUCT &&
-      event.pubkey === key &&
-      d !== undefined &&
-      verifyEvent(event)
-    ) {
-      ids.add(d);
-    }
-  }
-  return [...ids];
 }
 
 /** The policies a policy key shows now, by slug. */

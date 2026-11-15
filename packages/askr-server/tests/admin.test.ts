@@ -556,37 +556,54 @@ describe('admin API (7.3)', () => {
         })
       ).body,
     ).toEqual({ error: 'bad_request' });
-    // The tier counts every listing K has on the relay (a, c, and b's hidden version: this test
-    // relay keeps deleted events) plus the change, hidden products included, as a replace does.
+    // The tier counts every product ID K lists on the relay (a and c: b's hidden version is
+    // there, but deleted after it) plus the change, hidden products included, as a replace does.
     const many = (count: number) =>
       Array.from({ length: count }, (_unused, index) => product(`n-${index}`));
     const upsertDry = (body: Record<string, unknown>) =>
       call('POST', '/v1/admin/catalog', { mode: 'upsert', dryRun: true, ...body });
-    expect((await upsertDry({ items: many(997) })).status).toBe(200);
-    expect((await upsertDry({ items: many(998) })).body).toEqual({
+    expect((await upsertDry({ items: many(998) })).status).toBe(200);
+    expect((await upsertDry({ items: many(999) })).body).toEqual({
       error: 'too_many_products',
       max: 1000,
     });
     // A hidden product still takes a place; hiding one by ID frees it.
     expect(
-      (await upsertDry({ items: [...many(997), { ...product('h'), visibility: 'hidden' }] })).body,
+      (await upsertDry({ items: [...many(998), { ...product('h'), visibility: 'hidden' }] })).body,
     ).toEqual({ error: 'too_many_products', max: 1000 });
-    expect((await upsertDry({ items: many(998), hide: ['c'] })).status).toBe(200);
-    // A forged listing, or one by another key, takes no place.
+    expect((await upsertDry({ items: many(999), hide: ['c'] })).status).toBe(200);
+    // A forged listing, one by another key, and an ID off the pattern take no place.
     const forged = finalizeEvent(
       { kind: 30402, created_at: NOW, tags: [['d', 'forged']], content: '' },
       server.catalogSecretKey,
     );
     // Through JSON, as from a relay: no cached verification travels with it.
     const fromRelay: NostrEvent = JSON.parse(JSON.stringify({ ...forged, sig: '0'.repeat(128) }));
-    relay.events.push(fromRelay);
     relay.events.push(
+      fromRelay,
       finalizeEvent(
         { kind: 30402, created_at: NOW, tags: [['d', 'other']], content: '' },
         generateSecretKey(),
       ),
+      finalizeEvent(
+        { kind: 30402, created_at: NOW, tags: [['d', 'odd id']], content: '' },
+        server.catalogSecretKey,
+      ),
     );
-    expect((await upsertDry({ items: many(997) })).status).toBe(200);
+    expect((await upsertDry({ items: many(998) })).status).toBe(200);
+    // A product deleted after its newest version takes none either.
+    relay.events.push(
+      finalizeEvent(
+        {
+          kind: 5,
+          created_at: NOW + 5,
+          tags: [['a', `30402:${server.catalogKey}:c`]],
+          content: '',
+        },
+        server.catalogSecretKey,
+      ),
+    );
+    expect((await upsertDry({ items: many(999) })).status).toBe(200);
     // A product cannot be both sent and hidden.
     expect((await upsertDry({ items: [product('a')], hide: ['a'] })).body).toEqual({
       error: 'bad_request',
