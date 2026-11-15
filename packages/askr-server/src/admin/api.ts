@@ -22,6 +22,7 @@ import { publicBaseOf } from '../config';
 import type { ConnectorService } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
+import { WindowLimiter, ipKey } from '../gateway/limits';
 import { randomId } from '../state/pg-state';
 import type { CatalogSyncStatus, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
@@ -29,6 +30,9 @@ import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
 export const ADMIN_PREFIX = '/v1/admin/';
 const KIND_DELETION = 5;
+/** New stores one client address may create per hour (the onboarding needs one). */
+const NEW_STORES_PER_IP_PER_HOUR = 5;
+const HOUR_MS = 60 * 60 * 1000;
 const MAX_EVENTS_PER_REQUEST = 20;
 const MAX_EVENT_BYTES = 64 * 1024;
 /**
@@ -413,7 +417,9 @@ export function createAdminApi(
     }
   };
 
-  return async ({ request }) => {
+  const storesPerIp = new WindowLimiter(NEW_STORES_PER_IP_PER_HOUR, HOUR_MS);
+
+  return async ({ request, clientAddress }) => {
     const url = new URL(request.url);
     if (!url.pathname.startsWith(ADMIN_PREFIX)) {
       return undefined;
@@ -438,7 +444,16 @@ export function createAdminApi(
     const owner = auth.pubkey;
     const route = `${request.method} ${url.pathname}`;
     if (route === 'POST /v1/admin/store') {
-      // Onboarding (7.3): anyone may create a store, which starts pending (K19).
+      // Onboarding (7.3): anyone may create a store, which starts pending (K19). Opening an
+      // existing one is free; a new one counts per client address, so fresh keys cannot fill
+      // the database with pending stores.
+      const existing = await deps.directory.store(owner);
+      if (existing !== undefined) {
+        return json(await view(existing), 200);
+      }
+      if (!storesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
+        return json({ error: 'rate_limited' }, 429);
+      }
       return json(await view(await deps.directory.createStore(owner, now())), 200);
     }
     const store = await deps.directory.store(owner);

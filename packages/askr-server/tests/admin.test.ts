@@ -612,6 +612,22 @@ describe('admin API (7.3)', () => {
     });
   });
 
+  it('one client address creates at most 5 new stores an hour; opening an existing one is free', async () => {
+    const { call, store } = await setup();
+    for (let index = 0; index < 5; index += 1) {
+      expect((await call('POST', '/v1/admin/store', undefined, generateSecretKey())).status).toBe(
+        200,
+      );
+    }
+    expect((await call('POST', '/v1/admin/store', undefined, generateSecretKey())).body).toEqual({
+      error: 'rate_limited',
+    });
+    // The owner of an existing store still opens it.
+    const own = await call('POST', '/v1/admin/store', undefined, store.ownerSecret);
+    expect(own.status).toBe(200);
+    expect(own.body.owner).toBe(getPublicKey(store.ownerSecret));
+  });
+
   it('policies are set and removed by the server K', async () => {
     const { call, store, relay, state } = await setup();
     const server = await state.store(store.owner);
