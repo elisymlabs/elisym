@@ -112,7 +112,10 @@ describe('the API client', () => {
     };
     const api = new AdminApi({ signer, base: BASE, fetch: fakeFetch });
     await api.store();
-    await api.catalog([{ d: 'a', title: 'A', price: { amount: '1', currency: 'USD' } }], true);
+    await api.catalog(
+      { items: [{ d: 'a', title: 'A', price: { amount: '1', currency: 'USD' } }], hide: ['b'] },
+      true,
+    );
     await api.deletePolicy('returns');
     await api.rotateAssistant();
     expect(seen).toEqual([

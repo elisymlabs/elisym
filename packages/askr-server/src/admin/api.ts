@@ -1,7 +1,9 @@
 import {
+  ASKR_RELAYS,
   CONNECTOR_PLATFORMS,
   type CatalogItemInput,
   CatalogItemInputSchema,
+  D_TAG_RE,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
   PolicyInputSchema,
@@ -12,7 +14,7 @@ import {
   setPolicy,
   syncCatalog,
 } from '@elisym/askr';
-import { HEX_PUBKEY_RE } from '@elisym/commerce';
+import { HEX_PUBKEY_RE, KIND_PRODUCT } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
@@ -53,10 +55,56 @@ const EventsRequestSchema = z.object({
   events: z.array(EventSchema).min(1).max(MAX_EVENTS_PER_REQUEST),
 });
 
+/** More `d`s to hide than any tier's catalog: a larger list is no admin's request. */
+const MAX_HIDE = 100_000;
+
+/**
+ * `replace` (default): `items` is the whole catalog. `upsert`: `items` are the
+ * new and changed products and `hide` the removed ones; every other product
+ * stays as it is, so the admin sends only what changed.
+ */
 const CatalogRequestSchema = z.object({
   items: z.array(z.unknown()),
   dryRun: z.boolean().optional(),
+  mode: z.enum(['replace', 'upsert']).optional(),
+  hide: z.array(z.string().regex(D_TAG_RE)).max(MAX_HIDE).optional(),
 });
+
+function tagOf(event: NostrEvent, name: string): string | undefined {
+  return event.tags.find((tag) => tag[0] === name)?.[1];
+}
+
+/**
+ * The `d`s K shows on the relay now: the newest signed version of each, unless
+ * it is hidden. A sync removes a product with a hidden version and a deletion,
+ * so a removed one is either hidden or gone from the relay.
+ */
+async function shownListings(client: SyncRelayClient, key: string): Promise<Set<string>> {
+  const events = await client.query(ASKR_RELAYS, { kinds: [KIND_PRODUCT], authors: [key] });
+  const newest = new Map<string, NostrEvent>();
+  for (const event of events) {
+    const d = tagOf(event, 'd');
+    if (
+      event.kind !== KIND_PRODUCT ||
+      event.pubkey !== key ||
+      d === undefined ||
+      !verifyEvent(event)
+    ) {
+      continue;
+    }
+    const kept = newest.get(d);
+    if (
+      kept === undefined ||
+      event.created_at > kept.created_at ||
+      (event.created_at === kept.created_at && event.id < kept.id)
+    ) {
+      newest.set(d, event);
+    }
+  }
+  return new Set(
+    [...newest].flatMap(([d, event]) => (tagOf(event, 'visibility') === 'hidden' ? [] : [d])),
+  );
+}
 
 const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
 
@@ -244,12 +292,41 @@ export function createAdminApi(
     if (!items.success) {
       return json({ error: 'invalid_items', issues: items.error.issues.slice(0, 20) }, 400);
     }
-    if (store.tier !== undefined && items.data.length > store.tier.maxProducts) {
-      return json({ error: 'too_many_products', max: store.tier.maxProducts }, 400);
+    const upsert = parsed.data.mode === 'upsert';
+    if (!upsert && parsed.data.hide !== undefined) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    const hide = parsed.data.hide ?? [];
+    if (store.tier !== undefined) {
+      let total = items.data.length;
+      if (upsert) {
+        // The catalog after this change: what K shows now, changed as asked.
+        let shown: Set<string>;
+        try {
+          shown = await shownListings(deps.syncClient, store.catalogKey);
+        } catch (error) {
+          return json({ error: 'sync_refused', message: errorText(error) }, 409);
+        }
+        for (const d of hide) {
+          shown.delete(d);
+        }
+        for (const item of items.data) {
+          if (item.visibility === 'hidden') {
+            shown.delete(item.d);
+          } else {
+            shown.add(item.d);
+          }
+        }
+        total = shown.size;
+      }
+      if (total > store.tier.maxProducts) {
+        return json({ error: 'too_many_products', max: store.tier.maxProducts }, 400);
+      }
     }
     const dryRun = parsed.data.dryRun === true;
+    const change = upsert ? { mode: 'upsert' as const, hide } : {};
     const started = await withSyncGuard(store.owner, (holder, release) =>
-      startSync(store, items.data, dryRun, holder, release),
+      startSync(store, items.data, change, dryRun, holder, release),
     );
     return started ?? json({ error: 'sync_running' }, 409);
   };
@@ -257,6 +334,7 @@ export function createAdminApi(
   const startSync = async (
     store: StoreRecord,
     items: CatalogItemInput[],
+    change: { mode?: 'upsert'; hide?: string[] },
     dryRun: boolean,
     holder: string,
     release: (ended?: CatalogSyncStatus) => Promise<void>,
@@ -265,6 +343,7 @@ export function createAdminApi(
       signer: store.catalogSecretKey,
       store: store.owner,
       items,
+      ...change,
       client: deps.syncClient,
       ...(deps.syncPace === undefined ? {} : { pace: deps.syncPace }),
     };
