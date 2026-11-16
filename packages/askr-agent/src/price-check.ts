@@ -2274,7 +2274,9 @@ const DATE_YUAN_AFTER: readonly string[] = ['旦', '宵', '気', '氣'];
  * qualified 圆 lists (圆形, 圆桌, 圆顶, 圆床, 圆管): "3日圆满结束", "15日圆顶帐篷到货",
  * "15日圆通快递发出", "15日圆领T恤". Anything else stays yen money ("约15日圆左右").
  */
-const DATE_ROUND_WORD_RE = /^(?:[通领領梦夢形桌顶頂床管]|明[园園]|[满滿](?![额額减減]))/u;
+// 顶多 / 頂多 (at most) and 管够 / 管饱 (all you want) after a yen amount are money talk, not 圆顶 / 圆管.
+const DATE_ROUND_WORD_RE =
+  /^(?:[通领領梦夢形桌床]|[顶頂](?!多)|管(?![够夠饱飽])|明[园園]|[满滿](?![额額减減]))/u;
 /** A day of the month, the only number before a date's 日. */
 const DAY_RE =
   /^(?:0?[1-9]|[12]\d|3[01]|[一二三四五六七八九十]|十[一二三四五六七八九]|二十[一二三四五六七八九]?|三十一?)$/u;

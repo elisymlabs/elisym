@@ -721,6 +721,16 @@ describe('review round 5', () => {
     expect(failures(store, amount, text, language)).toBeGreaterThan(0);
   });
 
+  it.each([
+    ['运费15日圆顶多。'],
+    ['运费十五日圆顶多。'],
+    ['運費15日圓頂多。'],
+    ['小菜15日圆管够。'],
+    ['米饭15日圆管饱。'],
+  ])('a yen amount before 顶多 or 管够 stays money: %s', (text) => {
+    expect(failures('USD', '49', `帐篷49美元。${text}`, 'zh')).toBeGreaterThan(0);
+  });
+
   it('20日圆明园门票 stays a date', () => {
     expect(failures('CNY', '199', '20日圆明园门票199元。', 'zh')).toBe(0);
   });
