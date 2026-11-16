@@ -314,6 +314,8 @@ export function createAdminApi(
   };
 
   const recoveriesPerIp = new WindowLimiter(RECOVERIES_PER_IP_PER_HOUR, HOUR_MS);
+  /** Stores whose sites a replacement is reading now, on this instance. */
+  const proving = new Set<string>();
 
   /**
    * Replace a store's owner key (K21, 1.6): `owner` is the new key O', which
@@ -334,14 +336,10 @@ export function createAdminApi(
     }
     // A store that moved on is recovered where it is now: an owner can take it back from a thief.
     const from = (await deps.directory.movedTo(asked)) ?? asked;
-    // A retry of a move that went through, whose answer was lost: answer it again.
-    const done = await deps.directory.movedFrom(owner);
-    if (done !== undefined && (done.from === from || done.from === asked)) {
+    // The store is already on this key: a retry of a move whose answer was lost. Answer it again.
+    if (from === owner) {
       const store = await deps.directory.store(owner);
       return store === undefined ? json({ error: 'no_store' }, 404) : json(await view(store), 200);
-    }
-    if (from === owner) {
-      return json({ error: 'bad_request' }, 400);
     }
     if (
       (await deps.directory.statusOf(owner)) !== undefined ||
@@ -352,20 +350,35 @@ export function createAdminApi(
     if ((await deps.directory.statusOf(from)) === undefined) {
       return json({ error: 'no_store' }, 404);
     }
-    const { origins, readyAt } = proofOrigins(await deps.directory.originsHeld(from), now());
-    if (origins.length === 0) {
-      return json({ error: 'no_site_yet', readyAt: readyAt ?? null }, 409);
-    }
-    if (parsed.success && parsed.data.dryRun === true) {
-      return json({ ok: true }, 200);
-    }
     let settings: { config: StoreConfig; event: NostrEvent } | undefined;
     try {
       settings = await newestConfigOf(from);
     } catch {
       return json({ error: 'read_failed' }, 503);
     }
-    const proof = await deps.connectors.proveSite(origins, owner);
+    // The sites the settings list now count as seen now: a quiet store's are not reloaded often.
+    const { origins, readyAt } = proofOrigins(
+      await deps.directory.originsHeld(from),
+      now(),
+      settings?.config.origins ?? [],
+    );
+    if (origins.length === 0) {
+      return json({ error: 'no_site_yet', readyAt: readyAt ?? null }, 409);
+    }
+    if (parsed.success && parsed.data.dryRun === true) {
+      return json({ ok: true }, 200);
+    }
+    // One proof at a time per store: each reads its sites, which anyone may ask for.
+    if (proving.has(from)) {
+      return json({ error: 'proof_running' }, 409);
+    }
+    proving.add(from);
+    let proof: Awaited<ReturnType<typeof deps.connectors.proveSite>>;
+    try {
+      proof = await deps.connectors.proveSite(origins, owner);
+    } finally {
+      proving.delete(from);
+    }
     if ('failures' in proof) {
       // Only the sites the settings list now are named: older ones stay private.
       const listed = new Set(settings?.config.origins ?? []);
@@ -380,9 +393,13 @@ export function createAdminApi(
     }
     const moved = await deps.directory.moveStore(from, owner, now(), settings?.event);
     if (!moved.ok) {
-      return moved.reason === 'taken'
-        ? json({ error: 'key_in_use' }, 409)
-        : json({ error: moved.reason }, moved.reason === 'no_store' ? 404 : 409);
+      if (moved.reason === 'taken') {
+        return json({ error: 'key_in_use' }, 409);
+      }
+      // Another replacement moved the store while this one read the site: retrying finds it.
+      return moved.reason === 'moved'
+        ? json({ error: 'moved_meanwhile' }, 409)
+        : json({ error: 'no_store' }, 404);
     }
     log(`store ${from} moved to owner ${owner}, proven by ${proof.proven}`);
     const store = await deps.directory.store(owner);

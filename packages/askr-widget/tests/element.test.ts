@@ -56,6 +56,7 @@ describe('<askr-chat>', () => {
     const config = parseConfig(sign(buildConfigEvent(makeStore().configInput, key.secretKey), key));
     view.update({ phase: 'moved', branding: true, turns: [], ...(config ? { config } : {}) });
     expect(view.panel.querySelector('a')).toBeNull();
+    expect(view.panel.textContent).toContain('unavailable');
     view.update({ phase: 'unavailable', branding: true, turns: [], ...(config ? { config } : {}) });
     expect(view.panel.querySelector('a')?.getAttribute('href')).toBe(
       'https://shop.example/contact',

@@ -11,14 +11,8 @@ import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { type Db, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
-import {
-  NOTE_ORIGINS_SQL,
-  STORE_SELECT,
-  followMoves,
-  monthStartDay,
-  storeOf,
-  utcDay,
-} from './pg-state';
+import { type HeldOrigin, noteOrigins } from './origins';
+import { STORE_SELECT, followMoves, monthStartDay, storeOf, utcDay } from './pg-state';
 import type { StoreRecord, StoreStatus, Tier } from './types';
 
 /** Postgres' unique_violation. */
@@ -27,74 +21,15 @@ const UNIQUE_VIOLATION = '23505';
 /** Tables keyed by a store's owner without a foreign key: moved along with it (K21). */
 const OWNER_TABLES = ['sessions', 'store_days', 'reservations', 'clicks', 'store_totals'] as const;
 
-/** How long a store must have had a site before it proves an owner key replacement (K21, 1.6). */
-export const ORIGIN_PROOF_AGE_SECS = 72 * 60 * 60;
-/**
- * How long after a config last listed a site it still proves a replacement:
- * enough for an owner whose site a thief dropped from the settings, short
- * enough that a domain the owner let go cannot be bought to take the store.
- */
-export const ORIGIN_DROPPED_GRACE_SECS = 30 * 24 * 60 * 60;
-/** Sites one replacement reads at most: the ones listed most recently. */
-export const MAX_PROOF_ORIGINS = 10;
-/**
- * Hosts where anyone can claim a name another let go (preview deployments,
- * free subdomains): a site there never proves who owns a store.
- */
-export const SHARED_HOST_SUFFIXES: readonly string[] = [
-  '.vercel.app',
-  '.netlify.app',
-  '.github.io',
-  '.gitlab.io',
-  '.pages.dev',
-  '.workers.dev',
-  '.web.app',
-  '.firebaseapp.com',
-  '.herokuapp.com',
-  '.onrender.com',
-  '.fly.dev',
-  '.glitch.me',
-  '.repl.co',
-  '.surge.sh',
-  '.ngrok.io',
-  '.ngrok-free.app',
-];
+export {
+  type HeldOrigin,
+  MAX_PROOF_ORIGINS,
+  ORIGIN_DROPPED_GRACE_SECS,
+  ORIGIN_PROOF_AGE_SECS,
+  SHARED_HOST_SUFFIXES,
+  proofOrigins,
+} from './origins';
 
-export interface HeldOrigin {
-  origin: string;
-  /** Unix seconds, by the server's clock. */
-  firstSeen: number;
-  lastSeen: number;
-}
-
-/**
- * The sites that may prove a replacement now (K21, 1.6): held for
- * ORIGIN_PROOF_AGE_SECS, listed within ORIGIN_DROPPED_GRACE_SECS, not on a
- * shared host; most recently listed first, at most MAX_PROOF_ORIGINS. With
- * none, when the first one will count, if any will.
- */
-export function proofOrigins(
-  held: readonly HeldOrigin[],
-  now: number,
-): { origins: string[]; readyAt: number | undefined } {
-  const own = held.filter((entry) => {
-    const host = new URL(entry.origin).hostname;
-    return (
-      entry.lastSeen >= now - ORIGIN_DROPPED_GRACE_SECS &&
-      !SHARED_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))
-    );
-  });
-  const origins = own
-    .filter((entry) => entry.firstSeen <= now - ORIGIN_PROOF_AGE_SECS)
-    .sort((left, right) => right.lastSeen - left.lastSeen)
-    .slice(0, MAX_PROOF_ORIGINS)
-    .map((entry) => entry.origin);
-  const waiting = own.map((entry) => entry.firstSeen + ORIGIN_PROOF_AGE_SECS);
-  return {
-    origins,
-    readyAt: origins.length > 0 || waiting.length === 0 ? undefined : Math.min(...waiting),
-  };
-}
 export type MoveResult = { ok: true } | { ok: false; reason: 'no_store' | 'moved' | 'taken' };
 
 /** O-signed events awaiting publication per store at most, so nobody can fill the table (7.3). */
@@ -506,7 +441,7 @@ export class StoreDirectory {
         const origins = event.kind === KIND_CONFIG ? parseConfig(event)?.origins : undefined;
         if (origins !== undefined && origins.length > 0) {
           // Dated by the server's clock, never the event's: a backdated config proves nothing.
-          await tx.query(NOTE_ORIGINS_SQL, [owner, [...new Set(origins)], nowSecs()]);
+          await noteOrigins(tx, owner, origins, nowSecs());
         }
       }
       // After the batch is in, so what it replaces makes room for it; past a cap the throw rolls it back.
@@ -540,7 +475,7 @@ export class StoreDirectory {
     if (origins.length === 0) {
       return;
     }
-    await this.db.query(NOTE_ORIGINS_SQL, [owner, [...new Set(origins)], now]);
+    await noteOrigins(this.db, owner, origins, now);
   }
 
   /** Every origin a config of `owner` has listed, with when it was first seen, oldest first (K21). */

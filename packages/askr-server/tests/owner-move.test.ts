@@ -7,6 +7,7 @@ import { KIND_HTTP_AUTH, sha256Hex } from '../src/admin/nip98';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { createGateway } from '../src/gateway/gateway';
+import { onSharedHost } from '../src/state/origins';
 import { ORIGIN_DROPPED_GRACE_SECS, ORIGIN_PROOF_AGE_SECS } from '../src/state/stores';
 import { FakeWeb, MemoryRelay } from './connectors/helpers';
 import { HOLDER, NOW, stateWith, storeRecord, syntheticStore } from './fixtures';
@@ -93,6 +94,7 @@ async function setup(options: Options = {}) {
     client: relay,
     configFor: () => undefined,
     limiter: new ShopRateLimiter(0),
+    proofLimiter: new ShopRateLimiter(0),
     fetch: web.deps(),
   });
   const api = createAdminApi({
@@ -294,9 +296,14 @@ describe('replacing an owner key through the site (K21)', () => {
     ).toMatchObject({ error: 'no_site_yet' });
   });
 
-  it('a site stops counting 30 days after the settings last listed it, and a shared host never counts', async () => {
+  it('a dropped site counts until 30 days after the settings last listed it; a listed one always', async () => {
+    const DROPPED = 'https://dropped.example';
     const dropped = await setup();
-    await dropped.seeded.directory.noteOrigins(dropped.store.owner, [SHOP], LONG_AGO);
+    await dropped.seeded.directory.noteOrigins(dropped.store.owner, [DROPPED], LONG_AGO);
+    dropped.web.route(`${DROPPED}/.well-known/askr`, {
+      headers: { 'content-type': 'text/plain' },
+      body: npubEncode(dropped.newOwner),
+    });
     await dropped.seeded.db.query('update store_origins set last_seen = $1', [
       NOW - ORIGIN_DROPPED_GRACE_SECS - 1,
     ]);
@@ -307,17 +314,48 @@ describe('replacing an owner key through the site (K21)', () => {
     await dropped.seeded.db.query('update store_origins set last_seen = $1', [
       NOW - ORIGIN_DROPPED_GRACE_SECS + 60,
     ]);
-    expect((await dropped.recover(dropped.store.owner)).status).toBe(200);
+    expect((await dropped.recover(dropped.store.owner)).body).toMatchObject({ proven: DROPPED });
 
-    const shared = await setup();
-    await shared.seeded.directory.noteOrigins(
-      shared.store.owner,
-      ['https://my-shop.vercel.app'],
-      LONG_AGO,
-    );
-    expect((await shared.recover(shared.store.owner)).body).toMatchObject({
-      error: 'no_site_yet',
+    // A quiet store: its listed site was last noted long ago, and still counts.
+    const quiet = await setup({ siteSeenAt: LONG_AGO });
+    await quiet.seeded.db.query('update store_origins set last_seen = $1', [
+      NOW - 10 * ORIGIN_DROPPED_GRACE_SECS,
+    ]);
+    expect((await quiet.recover(quiet.store.owner)).body).toMatchObject({ proven: SHOP });
+  });
+
+  it('never counts a site on a shared host, however its name is written', async () => {
+    for (const origin of ['https://my-shop.vercel.app', 'https://my-shop.vercel.app.']) {
+      const shared = await setup();
+      await shared.seeded.directory.noteOrigins(shared.store.owner, [origin], LONG_AGO);
+      expect((await shared.recover(shared.store.owner)).body).toMatchObject({
+        error: 'no_site_yet',
+      });
+    }
+    expect(onSharedHost('https://vercel.app')).toBe(false);
+    expect(onSharedHost('https://shop.WixSite.com')).toBe(true);
+  });
+
+  it('reads the sites held longest first, so ones a thief added later never crowd out the owner', async () => {
+    const { store, seeded, web, recover, newOwner } = await setup({
+      siteSeenAt: LONG_AGO - 600,
+      page: () => '<html></html>',
     });
+    const later = Array.from({ length: 12 }, (_unused, index) => `https://t${index}.thief.example`);
+    await seeded.directory.noteOrigins(store.owner, later, LONG_AGO);
+    web.route(`${SHOP}/.well-known/askr`, {
+      headers: { 'content-type': 'text/plain' },
+      body: npubEncode(newOwner),
+    });
+    const moved = await recover(store.owner);
+    expect(moved.body).toMatchObject({ proven: SHOP });
+    expect(web.urls.some((url) => url.includes('thief.example'))).toBe(false);
+    // At most ten sites are read, the oldest ones.
+    const second = await setup({ siteSeenAt: LONG_AGO, page: () => '<html></html>' });
+    await second.seeded.directory.noteOrigins(second.store.owner, later, LONG_AGO);
+    const refused = await second.recover(second.store.owner);
+    expect(refused.body).toMatchObject({ error: 'site_not_proven', unlisted: 9 });
+    expect(second.web.urls.some((url) => url.includes('t9.thief'))).toBe(false);
   });
 
   it('names only the sites the settings list now when none proves it', async () => {
@@ -449,18 +487,17 @@ describe('the gateway after a move (K21)', () => {
 });
 
 describe('moves and origins in the state (K21)', () => {
-  it('follows a store across moves, at most three, from any key it left', async () => {
+  it('follows a store across every move, from any key it left', async () => {
     const { store, seeded } = await setup();
-    const keys = Array.from({ length: 4 }, () => getPublicKey(generateSecretKey()));
+    const keys = Array.from({ length: 6 }, () => getPublicKey(generateSecretKey()));
     let from = store.owner;
     for (const key of keys) {
       expect(await seeded.directory.moveStore(from, key, NOW, undefined)).toEqual({ ok: true });
       from = key;
     }
-    expect(await seeded.state.movedTo(keys[2] ?? '')).toBe(keys[3]);
-    // Four moves away: the first key reaches the third hop, never further.
-    expect(await seeded.state.movedTo(store.owner)).toBe(keys[2]);
-    expect(await seeded.state.movedTo(keys[3] ?? '')).toBeUndefined();
+    expect(await seeded.state.movedTo(store.owner)).toBe(keys[5]);
+    expect(await seeded.state.movedTo(keys[2] ?? '')).toBe(keys[5]);
+    expect(await seeded.state.movedTo(keys[5] ?? '')).toBeUndefined();
     expect(await seeded.directory.moveStore(store.owner, keys[0] ?? '', NOW, undefined)).toEqual({
       ok: false,
       reason: 'moved',
@@ -557,5 +594,72 @@ describe('the move itself (K21)', () => {
       await seeded.state.noteOrigins(store.owner, many.slice(start, start + 10), NOW);
     }
     expect((await seeded.directory.originsHeld(store.owner)).length).toBe(100);
+  });
+});
+
+describe('origin records and retries (K21, review round 2)', () => {
+  it('forgets sites past the grace period before the cap, so junk never keeps new sites out', async () => {
+    const { store, seeded } = await setup();
+    const junk = Array.from({ length: 100 }, (_unused, index) => `https://j${index}.example`);
+    for (let start = 0; start < junk.length; start += 20) {
+      await seeded.state.noteOrigins(store.owner, junk.slice(start, start + 20), LONG_AGO);
+    }
+    // While the junk may still prove a replacement it holds its places; sites held before it stay.
+    await seeded.state.noteOrigins(store.owner, ['https://new.example'], NOW);
+    const full = (await seeded.directory.originsHeld(store.owner)).map((entry) => entry.origin);
+    expect(full).toHaveLength(100);
+    expect(full).not.toContain('https://new.example');
+    // Once past the grace period it is forgotten, and the store's new site is recorded.
+    const later = LONG_AGO + ORIGIN_DROPPED_GRACE_SECS + 1;
+    await seeded.state.noteOrigins(store.owner, ['https://newer.example'], later);
+    const held = (await seeded.directory.originsHeld(store.owner)).map((entry) => entry.origin);
+    expect(held).toEqual(['https://newer.example']);
+  });
+
+  it('never dates a site last seen back, and keeps its first sighting when listed again after long', async () => {
+    const { store, seeded } = await setup();
+    await seeded.state.noteOrigins(store.owner, [SHOP], NOW - 100);
+    await seeded.state.noteOrigins(store.owner, [SHOP], NOW);
+    await seeded.state.noteOrigins(store.owner, [SHOP], NOW - 50);
+    expect(await seeded.directory.originsHeld(store.owner)).toEqual([
+      { origin: SHOP, firstSeen: NOW - 100, lastSeen: NOW },
+    ]);
+    await seeded.state.noteOrigins(store.owner, [SHOP], NOW + 2 * ORIGIN_DROPPED_GRACE_SECS);
+    expect((await seeded.directory.originsHeld(store.owner))[0]?.firstSeen).toBe(NOW - 100);
+  });
+
+  it('says when the first of several young sites will count', async () => {
+    const { store, seeded, recover } = await setup();
+    await seeded.state.noteOrigins(store.owner, ['https://b.example'], NOW - 100);
+    await seeded.state.noteOrigins(store.owner, ['https://a.example'], NOW - 200);
+    expect((await recover(store.owner)).body).toMatchObject({
+      error: 'no_site_yet',
+      readyAt: NOW - 200 + ORIGIN_PROOF_AGE_SECS,
+    });
+  });
+
+  it('answers a retried take-back with its result', async () => {
+    const { store, site, recover } = await setup({ siteSeenAt: LONG_AGO });
+    expect((await recover(store.owner)).status).toBe(200);
+    const again = generateSecretKey();
+    site.owner = getPublicKey(again);
+    expect((await recover(store.owner, again)).status).toBe(200);
+    const retried = await recover(store.owner, again);
+    expect(retried).toMatchObject({ status: 200, body: { owner: getPublicKey(again) } });
+  });
+
+  it('keeps the old settings only when genuinely signed by the old key', async () => {
+    const { store, relay, recover, call, newSecret, configEvent } = await setup({
+      siteSeenAt: LONG_AGO,
+    });
+    const forged = {
+      ...configEvent,
+      created_at: NOW - 5,
+      sig: configEvent.sig.replace(/^./u, '0'),
+    };
+    relay.events.push(forged);
+    expect((await recover(store.owner)).status).toBe(200);
+    const settings = await call('GET', '/v1/admin/store/moved-settings', newSecret);
+    expect(settings.body.config.id).toBe(configEvent.id);
   });
 });

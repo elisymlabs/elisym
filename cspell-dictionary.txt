@@ -297,3 +297,11 @@ fkey
 firebaseapp
 herokuapp
 onrender
+appspot
+azurestaticapps
+wixsite
+blogspot
+webflow
+weebly
+squarespace
+carrd

@@ -5,7 +5,7 @@ import type { ConnectorRecord, ScheduledConnector, StoreDirectory } from '../sta
 import type { StoreRecord } from '../state/types';
 import { MAX_REDIRECTS, PREVIEW_DEADLINE_MS } from './constants';
 import type { FetchGuardDeps } from './fetch-guard';
-import { ShopHttp, type ShopRateLimiter } from './http';
+import { ShopHttp, ShopRateLimiter } from './http';
 import { type ConnectorSyncResult, syncConnector } from './runner';
 import { ConnectorScheduler, type SchedulerTimers } from './scheduler';
 import { type VerificationFailure, verifyOrigin } from './verification';
@@ -24,6 +24,8 @@ export interface ConnectorServiceDeps {
   readConfig?: (owner: string) => Promise<StoreConfig | undefined>;
   /** One per process, so the per-shop limit holds across stores (7.4). */
   limiter: ShopRateLimiter;
+  /** Paces the site reads of owner key replacements (K21); one of its own by default. */
+  proofLimiter?: ShopRateLimiter;
   fetch?: FetchGuardDeps;
   timers?: SchedulerTimers;
   now?: () => number;
@@ -80,7 +82,10 @@ function configRefusal(
 export class ConnectorService {
   private readonly scheduler: ConnectorScheduler<ScheduledConnector>;
 
+  private readonly proofLimiter: ShopRateLimiter;
+
   constructor(private readonly deps: ConnectorServiceDeps) {
+    this.proofLimiter = deps.proofLimiter ?? new ShopRateLimiter();
     this.scheduler = new ConnectorScheduler<ScheduledConnector>({
       loadStores: () =>
         deps.directory.scheduledConnectors(
@@ -97,10 +102,11 @@ export class ConnectorService {
     });
   }
 
-  /** One sync of a store's connector; a dry run returns the preview without publishing. */
   /**
    * Whether one of `origins` names `owner` (the connector's site proof, 7.4),
    * tried in order until one does: the proof of an owner key replacement (K21).
+   * Paced by a limiter of its own, so replacements anyone may ask for never
+   * hold up a shop's connector syncs.
    */
   async proveSite(
     origins: readonly string[],
@@ -112,7 +118,7 @@ export class ConnectorService {
       this.deps.previewDeadlineMs ?? PREVIEW_DEADLINE_MS,
     );
     const http = new ShopHttp({
-      limiter: this.deps.limiter,
+      limiter: this.proofLimiter,
       // Two pages per origin, each with its redirects.
       maxRequests: origins.length * 2 * (MAX_REDIRECTS + 1),
       signal: deadline.signal,
@@ -138,6 +144,7 @@ export class ConnectorService {
     return { failures };
   }
 
+  /** One sync of a store's connector; a dry run returns the preview without publishing. */
   async sync(
     store: StoreRecord,
     connector: ConnectorRecord,

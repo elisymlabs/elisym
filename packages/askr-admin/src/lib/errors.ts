@@ -38,6 +38,9 @@ const CODES: Readonly<Record<string, string>> = {
   moved:
     'This secret key was replaced by a new one, so it opens no store. Sign in with the new key.',
   read_failed: "Your store's settings could not be read just now. Retry in a moment.",
+  proof_running:
+    "Your store's site is being checked for another request right now. Retry in a minute.",
+  moved_meanwhile: 'Your store was moved by another request while your site was checked. Retry.',
   not_found: 'The server does not know this action.',
   bad_request: 'The server could not read the request. Check the fields and retry.',
   rate_limited: 'Too many tries from this address. Try again in an hour.',
@@ -109,7 +112,7 @@ export function errorMessage(error: unknown): string {
     const readyAt = error.detail.readyAt;
     return typeof readyAt === 'number'
       ? `Your store has not listed its site long enough to prove it is yours. Try again after ${new Date(readyAt * 1000).toLocaleString()}.`
-      : 'Your store lists no site in its settings, so it cannot be proven through one. Contact us.';
+      : "None of your store's sites can prove it: none is listed, they are on shared hosting (like vercel.app), or they were dropped from the settings over 30 days ago. Contact us.";
   }
   if (error.code === 'site_not_proven') {
     const unlisted = error.detail.unlisted;

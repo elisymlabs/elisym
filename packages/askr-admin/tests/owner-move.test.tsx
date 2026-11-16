@@ -164,7 +164,7 @@ describe('finishing a move to a new secret key (K21)', () => {
     expect(nameField(lost)).toBe('Moved Tea');
     await mounted?.unmount();
     const paycore = await mountMoved(movedDeps(oldConfig('paycore')));
-    expect(paycore.textContent).toContain('PayCore');
+    expect(paycore.textContent).toContain('must be linked to your new key with our help');
   });
 
   it('shows a failed read and retries on request', async () => {
@@ -239,7 +239,9 @@ describe('replacing the key from the admin (K21)', () => {
 describe('recovery errors in plain words (K21)', () => {
   it.each([
     [new ApiError(409, 'no_site_yet', { readyAt: NOW }), 'Try again after'],
-    [new ApiError(409, 'no_site_yet', { readyAt: null }), 'lists no site'],
+    [new ApiError(409, 'no_site_yet', { readyAt: null }), 'shared hosting'],
+    [new ApiError(409, 'proof_running'), 'Retry in a minute'],
+    [new ApiError(409, 'moved_meanwhile'), 'moved by another request'],
     [new ApiError(409, 'site_not_proven', { failures: 'x' }), "None of your store's sites"],
     [
       new ApiError(409, 'site_not_proven', {

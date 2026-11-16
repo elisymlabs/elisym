@@ -140,7 +140,7 @@ describe('replacing a lost secret key (K21)', () => {
     const { container } = await toStore(recover);
     await typeInto(byId(container, 'recover-store'), nip19.npubEncode(STORE));
     await click(buttonNamed(container, 'Continue'));
-    expect(container.textContent).toContain('lists no site');
+    expect(container.textContent).toContain('none is listed');
     expect(container.textContent).not.toMatch(/nsec1/);
   });
 
