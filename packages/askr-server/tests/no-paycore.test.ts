@@ -1,4 +1,6 @@
+// cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
+import { buildProductEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
@@ -71,5 +73,30 @@ describe('no paycore source on the server', () => {
     const catalog = buildStoreCatalog(events, store.owner, store.assistantSecret, NOW);
     expect(catalog?.items.size).toBe(0);
     expect(catalog?.policies).toEqual([]);
+  });
+
+  it('a listing of the catalog key that carries payment terms is left out', () => {
+    const store = syntheticStore();
+    const paid = finalizeEvent(
+      buildProductEvent({
+        d: 'paid',
+        title: 'Paid',
+        description: '',
+        price: { amount: '5', currency: 'USD' },
+        accept: [
+          'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+        ],
+        createdAt: NOW - 50,
+      }),
+      store.catalogSecret,
+    );
+    const catalog = buildStoreCatalog(
+      [...store.events, paid],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+    );
+    expect(catalog?.items.size).toBe(2);
+    expect(catalog?.items.has('paid')).toBe(false);
   });
 });

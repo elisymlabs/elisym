@@ -249,7 +249,7 @@ export interface SignOptions {
   now: number;
   /** The stored config's date: a new one is dated after it (the server refuses an older one). */
   previousCreatedAt?: number;
-  /** Keys already authorized with the catalog role: their 30497 is not signed again. */
+  /** Catalog keys the owner already authorizes: their 30497 is not signed again. */
   authorized?: ReadonlySet<string>;
   /** The date of a 30497 signed here: after the key's newest one (default: the config's date). */
   authCreatedAt?: number;

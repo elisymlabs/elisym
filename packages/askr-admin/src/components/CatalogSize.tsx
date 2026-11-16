@@ -13,8 +13,9 @@ interface Props {
 
 /**
  * The admin, CSV and connectors refuse a catalog over the plan, but one
- * published with the store's own catalog key reaches the relay anyway; the assistant then uses only the plan's number of products.
- * Says so when that happens.
+ * published with the store's own catalog key reaches the relay anyway; the
+ * assistant then uses only the plan's number of products. Says so when that
+ * happens.
  */
 export function CatalogSize({ reader, now, config, maxProducts }: Props) {
   const [count, setCount] = useState<number>();

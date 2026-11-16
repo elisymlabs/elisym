@@ -1,3 +1,4 @@
+// cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 import {
   type StoreConfig,
   buildCatalogAuth,
@@ -5,6 +6,7 @@ import {
   buildConfigEvent,
   parseConfig,
 } from '@elisym/askr';
+import { buildProductEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 import { describe, expect, it } from 'vitest';
@@ -21,6 +23,9 @@ import {
   FakeRelay,
   publishItem,
 } from './fixtures';
+
+const PAYMENT_TERM =
+  'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 
 function setup(sourceOverride?: Partial<TestStore['configInput']>): {
   store: TestStore;
@@ -135,7 +140,7 @@ describe('resolveCards', () => {
     expect(cards.size).toBe(0);
   });
 
-  it('never fetches an address whose author is not the store product key with its role', async () => {
+  it('never fetches an address whose author is not the store product key, authorized now', async () => {
     const context = setup();
     const stranger = testKey();
     publishItem(context.relay, stranger, { ...ITEM, d: 'fake' });
@@ -170,6 +175,34 @@ describe('resolveCards', () => {
       ).size,
     ).toBe(0);
     expect(context.queries).toHaveLength(0);
+  });
+
+  it('shows no card for a listing of the product key that carries payment terms', async () => {
+    const context = setup();
+    const key = context.store.catalogKey;
+    publishItem(context.relay, key, { ...ITEM, d: 'scarf' });
+    context.relay.storeOnly(
+      MAIN_RELAY,
+      sign(
+        buildProductEvent({
+          d: 'paid',
+          title: 'Paid',
+          description: '',
+          price: { amount: '5', currency: 'USD' },
+          accept: [PAYMENT_TERM],
+          createdAt: localSecs() - 50,
+        }),
+        key,
+      ),
+    );
+    const cards = await resolveCards([address(key, 'scarf'), address(key, 'paid')], {
+      config: context.config,
+      authorityEvents: context.authority,
+      query: context.query,
+      cache: new CardCache(new MemoryStorage()),
+      now: localSecs(),
+    });
+    expect([...cards.keys()]).toEqual([address(key, 'scarf')]);
   });
 
   it('a product key the owner authorized only with a 30490 gets no cards and no fetch', async () => {

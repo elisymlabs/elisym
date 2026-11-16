@@ -29,7 +29,7 @@ export interface SaveInput {
   view: StoreView;
   form: StoreForm;
   previousCreatedAt?: number;
-  /** Keys the relay shows with the catalog role. */
+  /** Catalog keys the relay shows the owner authorizes now. */
   authorized?: ReadonlySet<string>;
   /** The newest 30497 per key on the relay, so a new one is dated after it. */
   relayNewestAt?: ReadonlyMap<string, number>;
