@@ -57,7 +57,7 @@ export type ChatPhase =
   | 'waiting'
   | 'retry'
   | 'unavailable'
-  /** The store moved to a new owner key (K20): `movedTo` names it, checked; the host follows. */
+  /** The store moved to a new owner key (K21): `movedTo` names it, checked; the host follows. */
   | 'moved'
   | 'failed';
 
@@ -521,6 +521,18 @@ export class ChatClient {
           return;
         }
         if (!store) {
+          // No readable config: the store may have moved to a new owner key (K21), whose old key
+          // can still delete or spoil its config. Only the gateway can say.
+          const moved = await this.gateway.openSession(this.owner, this.visitor.pubkey);
+          if (this.stopped) {
+            return;
+          }
+          if (moved.kind === 'moved') {
+            if ((await this.followMove(moved.owner)) === 'error') {
+              this.scheduleRecovery();
+            }
+            return;
+          }
           this.setPhase('failed');
           this.stop();
           return;
@@ -599,9 +611,9 @@ export class ChatClient {
   }
 
   /**
-   * The gateway says the store moved to `owner` (K20). Follow it only when the
-   * new owner's own signed config lists this page's origin: the gateway alone
-   * never sends visitors to another store.
+   * The gateway says the store moved to `owner` (K21). Follow it only when the
+   * new owner's own signed config lists this page's origin: a store that does
+   * not name this site is never followed, whatever the gateway says.
    */
   private async followMove(owner: string): Promise<'unavailable' | 'error'> {
     let moved: StoreData | undefined;

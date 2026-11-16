@@ -7,7 +7,7 @@ import { KIND_HTTP_AUTH, sha256Hex } from '../src/admin/nip98';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { createGateway } from '../src/gateway/gateway';
-import { ORIGIN_PROOF_AGE_SECS } from '../src/state/stores';
+import { ORIGIN_DROPPED_GRACE_SECS, ORIGIN_PROOF_AGE_SECS } from '../src/state/stores';
 import { FakeWeb, MemoryRelay } from './connectors/helpers';
 import { HOLDER, NOW, stateWith, storeRecord, syntheticStore } from './fixtures';
 
@@ -81,10 +81,12 @@ async function setup(options: Options = {}) {
     options.page ??
     ((npub: string) =>
       `<html><head><meta name="askr-verification" content="${npub}"></head></html>`);
-  const web = new FakeWeb().route(`${SHOP}/`, {
+  /** The key the shop's page names: the new one unless a test changes it. */
+  const site = { owner: newOwner };
+  const web = new FakeWeb().route(`${SHOP}/`, () => ({
     headers: { 'content-type': 'text/html' },
-    body: page(npubEncode(newOwner)),
-  });
+    body: page(npubEncode(site.owner)),
+  }));
   const connectors = new ConnectorService({
     directory: seeded.directory,
     holder: HOLDER,
@@ -124,12 +126,18 @@ async function setup(options: Options = {}) {
     }
     return { status: response.status, body: await response.json() };
   };
-  const recover = (from: string, secret = newSecret, clientAddress?: string) =>
-    call('POST', '/v1/admin/store/recover', secret, { from }, clientAddress);
-  return { store, seeded, relay, web, newSecret, newOwner, call, recover, configEvent };
+  const recover = (from: string, secret = newSecret, clientAddress?: string, dryRun?: boolean) =>
+    call(
+      'POST',
+      '/v1/admin/store/recover',
+      secret,
+      { from, ...(dryRun === undefined ? {} : { dryRun }) },
+      clientAddress,
+    );
+  return { store, seeded, relay, web, site, newSecret, newOwner, call, recover, configEvent };
 }
 
-describe('replacing an owner key through the site (K20)', () => {
+describe('replacing an owner key through the site (K21)', () => {
   it('moves the store to the new key: keys kept and readable, rows renamed, old events dropped', async () => {
     const { store, seeded, newOwner, recover, configEvent } = await setup({
       siteSeenAt: LONG_AGO,
@@ -229,9 +237,9 @@ describe('replacing an owner key through the site (K20)', () => {
     expect((await recover(store.owner)).status).toBe(200);
   });
 
-  it('refuses a Pay Core store: its key is authorized in Pay Core', async () => {
+  it('moves a Pay Core store too: a thief cannot turn recovery into "contact us" by its source', async () => {
     const { store, recover } = await setup({ siteSeenAt: LONG_AGO, source: 'paycore' });
-    expect((await recover(store.owner)).body).toMatchObject({ error: 'paycore_source' });
+    expect((await recover(store.owner)).status).toBe(200);
   });
 
   it('refuses a new key that is a store or a key a store left, and an unknown or bad store', async () => {
@@ -249,23 +257,135 @@ describe('replacing an owner key through the site (K20)', () => {
     expect((await recover(getPublicKey(fresh), fresh)).status).toBe(400);
   });
 
-  it('a key a store moved away from never opens a store again, nor moves it twice', async () => {
+  it('a key a store moved away from never opens a store again', async () => {
     const { store, recover, call } = await setup({ siteSeenAt: LONG_AGO });
     expect((await recover(store.owner)).status).toBe(200);
     expect((await call('POST', '/v1/admin/store', store.ownerSecret)).body).toMatchObject({
       error: 'moved',
     });
-    expect((await recover(store.owner, generateSecretKey())).body).toMatchObject({
-      error: 'moved',
+  });
+
+  it('takes a store back from where a thief moved it, starting from the original Store ID', async () => {
+    const { store, seeded, site, recover } = await setup({ siteSeenAt: LONG_AGO });
+    expect((await recover(store.owner)).status).toBe(200);
+    const ownerAgain = generateSecretKey();
+    site.owner = getPublicKey(ownerAgain);
+    const back = await recover(store.owner, ownerAgain);
+    expect(back.status).toBe(200);
+    expect(await seeded.directory.movedTo(store.owner)).toBe(getPublicKey(ownerAgain));
+  });
+
+  it('answers a retried move with its result, not an error', async () => {
+    const { store, recover, newOwner } = await setup({ siteSeenAt: LONG_AGO });
+    expect((await recover(store.owner)).status).toBe(200);
+    const again = await recover(npubEncode(store.owner));
+    expect(again).toMatchObject({ status: 200, body: { owner: newOwner } });
+  });
+
+  it('checks all but the site on a dry run, reading no site and moving nothing', async () => {
+    const { store, seeded, web, recover } = await setup({ siteSeenAt: LONG_AGO });
+    const dry = await recover(store.owner, generateSecretKey(), undefined, true);
+    expect(dry).toMatchObject({ status: 200, body: { ok: true } });
+    expect(web.requests).toHaveLength(0);
+    expect(await seeded.directory.store(store.owner)).toBeDefined();
+    const early = await setup({ siteSeenAt: NOW });
+    expect(
+      (await early.recover(early.store.owner, generateSecretKey(), undefined, true)).body,
+    ).toMatchObject({ error: 'no_site_yet' });
+  });
+
+  it('a site stops counting 30 days after the settings last listed it, and a shared host never counts', async () => {
+    const dropped = await setup();
+    await dropped.seeded.directory.noteOrigins(dropped.store.owner, [SHOP], LONG_AGO);
+    await dropped.seeded.db.query('update store_origins set last_seen = $1', [
+      NOW - ORIGIN_DROPPED_GRACE_SECS - 1,
+    ]);
+    expect((await dropped.recover(dropped.store.owner)).body).toMatchObject({
+      error: 'no_site_yet',
+      readyAt: null,
+    });
+    await dropped.seeded.db.query('update store_origins set last_seen = $1', [
+      NOW - ORIGIN_DROPPED_GRACE_SECS + 60,
+    ]);
+    expect((await dropped.recover(dropped.store.owner)).status).toBe(200);
+
+    const shared = await setup();
+    await shared.seeded.directory.noteOrigins(
+      shared.store.owner,
+      ['https://my-shop.vercel.app'],
+      LONG_AGO,
+    );
+    expect((await shared.recover(shared.store.owner)).body).toMatchObject({
+      error: 'no_site_yet',
     });
   });
 
-  it('limits tries per client address and per store', async () => {
+  it('names only the sites the settings list now when none proves it', async () => {
+    const { store, seeded, recover } = await setup({
+      siteSeenAt: LONG_AGO,
+      page: () => '<html></html>',
+    });
+    await seeded.directory.noteOrigins(store.owner, ['https://old.example'], LONG_AGO);
+    const refused = await recover(store.owner);
+    expect(refused.body).toMatchObject({
+      error: 'site_not_proven',
+      failures: [{ origin: SHOP, reason: 'not_found' }],
+      unlisted: 1,
+    });
+    expect(JSON.stringify(refused.body)).not.toContain('old.example');
+  });
+
+  it('tries the next site when the first does not prove it', async () => {
+    const { store, seeded, web, recover, newOwner } = await setup({
+      siteSeenAt: LONG_AGO,
+      page: () => '<html></html>',
+    });
+    await seeded.directory.noteOrigins(store.owner, ['https://second.example'], LONG_AGO);
+    await seeded.db.query('update store_origins set last_seen = $1 where origin = $2', [
+      LONG_AGO,
+      'https://second.example',
+    ]);
+    web.route('https://second.example/.well-known/askr', {
+      headers: { 'content-type': 'text/plain' },
+      body: npubEncode(newOwner),
+    });
+    expect((await recover(store.owner)).body).toMatchObject({ proven: 'https://second.example' });
+  });
+
+  it('ignores a config dated far ahead: a thief cannot pin the settings the owner signs again', async () => {
+    const { store, relay, recover, newSecret, call } = await setup({ siteSeenAt: LONG_AGO });
+    relay.events.push(
+      finalizeEvent(
+        buildConfigEvent(
+          {
+            assistant: store.assistant,
+            origins: ['https://thief.example'],
+            linkOrigins: [],
+            name: 'Thief',
+            language: 'en',
+            currency: 'USD',
+            source: { kind: 'admin' },
+            catalogKey: store.catalogKey,
+            createdAt: NOW + 3_600,
+          },
+          store.ownerSecret,
+        ),
+        store.ownerSecret,
+      ),
+    );
+    expect((await recover(store.owner)).status).toBe(200);
+    const settings = await call('GET', '/v1/admin/store/moved-settings', newSecret);
+    expect(settings.body.config.content).not.toContain('Thief');
+    expect(JSON.stringify(settings.body.config.tags)).toContain('Shop');
+  });
+
+  it('limits tries per client address, never per store, so nobody can lock its owner out', async () => {
     const { store, recover } = await setup({ siteSeenAt: NOW });
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      expect((await recover(store.owner, generateSecretKey())).status).toBe(409);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect((await recover(store.owner, generateSecretKey(), '198.51.100.1')).status).toBe(409);
     }
-    expect((await recover(store.owner, generateSecretKey())).status).toBe(429);
+    expect((await recover(store.owner, generateSecretKey(), '198.51.100.1')).status).toBe(429);
+    expect((await recover(store.owner, generateSecretKey(), '198.51.100.2')).status).toBe(409);
   });
 
   it('records the origins of a config the admin stores, dated by the server', async () => {
@@ -295,7 +415,7 @@ describe('replacing an owner key through the site (K20)', () => {
   });
 });
 
-describe('the gateway after a move (K20)', () => {
+describe('the gateway after a move (K21)', () => {
   it('points a widget embedded with the old key at the new one, and refuses an unknown store', async () => {
     const { store, seeded, recover, newOwner } = await setup({ siteSeenAt: LONG_AGO });
     expect((await recover(store.owner)).status).toBe(200);
@@ -328,7 +448,7 @@ describe('the gateway after a move (K20)', () => {
   });
 });
 
-describe('moves and origins in the state (K20)', () => {
+describe('moves and origins in the state (K21)', () => {
   it('follows a store across moves, at most three, from any key it left', async () => {
     const { store, seeded } = await setup();
     const keys = Array.from({ length: 4 }, () => getPublicKey(generateSecretKey()));
@@ -353,8 +473,89 @@ describe('moves and origins in the state (K20)', () => {
     await seeded.state.noteOrigins(store.owner, [SHOP], NOW);
     await seeded.state.noteOrigins(getPublicKey(generateSecretKey()), [SHOP], NOW);
     expect(await seeded.directory.originsHeld(store.owner)).toEqual([
-      { origin: SHOP, firstSeen: NOW - 100 },
+      { origin: SHOP, firstSeen: NOW - 100, lastSeen: NOW },
     ]);
     expect(await seeded.db.query('select 1 from store_origins')).toHaveLength(1);
+  });
+});
+
+describe('the move itself (K21)', () => {
+  it('carries sessions, budgets and reservations, drops the lease, frees a sync guard, keeps the newest move', async () => {
+    const { store, seeded } = await setup();
+    const { db, directory, state } = seeded;
+    const visitor = getPublicKey(generateSecretKey());
+    await state.session(store.owner, store.assistant, visitor, NOW);
+    await db.query(`insert into store_days (owner, day, spent) values ($1, 1, 2)`, [store.owner]);
+    await db.query(
+      `insert into reservations (attempt_id, owner, day, amount, created_at) values ('r', $1, 1, 1, 0)`,
+      [store.owner],
+    );
+    await state.acquireLeases(HOLDER, NOW, 60);
+    await db.query(
+      `insert into catalog_syncs (owner, holder, expires_at, state) values ($1, 'h', $2, 'running')`,
+      [store.owner, NOW + 600],
+    );
+    const middle = getPublicKey(generateSecretKey());
+    const last = getPublicKey(generateSecretKey());
+    expect(await directory.moveStore(store.owner, middle, NOW, undefined)).toEqual({ ok: true });
+    for (const table of ['sessions', 'store_days', 'reservations']) {
+      const rows = await db.query<{ owner: string }>(`select owner from ${table}`);
+      expect(rows.map((row) => row.owner)).toEqual([middle]);
+    }
+    expect(await db.query('select 1 from leases')).toHaveLength(0);
+    const [guard] = await db.query<{ holder: string | null }>('select holder from catalog_syncs');
+    expect(guard?.holder).toBeNull();
+    expect(await directory.moveStore(middle, last, NOW + 10, undefined)).toEqual({ ok: true });
+    expect((await directory.movedFrom(last))?.from).toBe(middle);
+    // A key a store left, or one that is a store, is taken.
+    expect(await directory.moveStore(last, middle, NOW + 20, undefined)).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+  });
+
+  it('reads the private part sealed for the next assistant key mid-rotation', async () => {
+    const { store, seeded, call, newSecret, newOwner } = await setup({ siteSeenAt: LONG_AGO });
+    const next = await seeded.directory.beginRotation(store.owner);
+    const nextSecret = await seeded.directory.nextAssistantSecret(store.owner);
+    if (next === undefined || nextSecret === undefined) {
+      throw new Error('no rotation');
+    }
+    const rotated = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant: next,
+          origins: [SHOP],
+          linkOrigins: [],
+          name: 'Rotated',
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'admin' },
+          catalogKey: store.catalogKey,
+          private: { voice: 'calm', instructions: 'i', notes: '' },
+          createdAt: NOW - 10,
+        },
+        store.ownerSecret,
+      ),
+      store.ownerSecret,
+    );
+    await seeded.db.query(
+      `insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)`,
+      [rotated.id, store.owner, JSON.stringify(rotated)],
+    );
+    expect(
+      (await call('POST', '/v1/admin/store/recover', newSecret, { from: store.owner })).body,
+    ).toMatchObject({ owner: newOwner });
+    const settings = await call('GET', '/v1/admin/store/moved-settings', newSecret);
+    expect(settings.body.private).toEqual({ voice: 'calm', instructions: 'i', notes: '' });
+  });
+
+  it('keeps at most a hundred origins per store on record', async () => {
+    const { store, seeded } = await setup();
+    const many = Array.from({ length: 120 }, (_unused, index) => `https://s${index}.example`);
+    for (let start = 0; start < many.length; start += 10) {
+      await seeded.state.noteOrigins(store.owner, many.slice(start, start + 10), NOW);
+    }
+    expect((await seeded.directory.originsHeld(store.owner)).length).toBe(100);
   });
 });

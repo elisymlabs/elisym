@@ -14,6 +14,7 @@ Then authorize that npub in the admin, under Advanced, catalog keys, signed by t
 
 - `--show` prints the key and store again.
 - An agent writes one store. To move it to another store, or to replace a key that may have leaked, run it again with `--rotate`, then revoke the old key in the admin.
+- After you replace your store's secret key, the agent's key is not authorized for the store any more: run `askr-key` again with `--store <new Store ID> --rotate`, then authorize the printed npub under Advanced.
 
 ## MCP tools
 

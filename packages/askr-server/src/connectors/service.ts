@@ -100,7 +100,7 @@ export class ConnectorService {
   /** One sync of a store's connector; a dry run returns the preview without publishing. */
   /**
    * Whether one of `origins` names `owner` (the connector's site proof, 7.4),
-   * tried in order until one does: the proof of an owner key replacement (K20).
+   * tried in order until one does: the proof of an owner key replacement (K21).
    */
   async proveSite(
     origins: readonly string[],

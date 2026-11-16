@@ -43,7 +43,7 @@ const ASSISTANT = getPublicKey(ASSISTANT_KEY);
 const BACKEND = getPublicKey(generateSecretKey());
 const PRIVATE_PART = { voice: 'warm', instructions: 'Sell tea', notes: 'n' };
 
-function oldConfig(): NostrEvent {
+function oldConfig(source: 'admin' | 'paycore' = 'admin'): NostrEvent {
   return finalizeEvent(
     buildConfigEvent(
       {
@@ -52,8 +52,9 @@ function oldConfig(): NostrEvent {
         name: 'Moved Tea',
         language: 'en',
         currency: 'USD',
-        source: { kind: 'admin' },
-        catalogKey: SERVER_KEY,
+        source: { kind: source },
+        catalogKey: source === 'paycore' ? BACKEND : SERVER_KEY,
+        ...(source === 'paycore' ? { policyKey: SERVER_KEY } : {}),
         private: PRIVATE_PART,
         createdAt: NOW - 500,
       },
@@ -96,20 +97,37 @@ function oldAuthorizations(): NostrEvent[] {
   );
 }
 
-function movedDeps(config: NostrEvent | null): SessionDeps {
+function movedDeps(config: NostrEvent | null, privatePart: unknown = PRIVATE_PART): SessionDeps {
   const api = fakeApi({
     store: vi.fn(async () => storeView({ movedFrom: OLD, assistant: ASSISTANT })),
-    movedSettings: vi.fn(async () => ({ from: OLD, config, private: PRIVATE_PART })),
+    movedSettings: vi.fn(async () => ({ from: OLD, config, private: privatePart })),
   });
   return sessionDeps(api, fakeReader(oldAuthorizations()));
 }
 
-describe('finishing a move to a new secret key (K20)', () => {
-  it('signs the previous settings again with the new key, and every catalog key it authorized', async () => {
+async function mountMoved(deps: SessionDeps) {
+  mounted = await mount(
+    <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
+  );
+  const { container } = mounted;
+  await settle(() => (container.textContent ?? '').includes('Check and sign your settings'));
+  return container;
+}
+
+function nameField(container: HTMLElement): string {
+  const field = container.querySelector('#store-name');
+  return field instanceof HTMLInputElement ? field.value : '';
+}
+
+describe('finishing a move to a new secret key (K21)', () => {
+  it('shows the previous settings for review and signs them only when asked, authorizing only the source key', async () => {
     const deps = movedDeps(oldConfig());
-    mounted = await mount(
-      <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
-    );
+    const container = await mountMoved(deps);
+    expect(nameField(container)).toBe('Moved Tea');
+    expect(container.textContent).toContain('may have changed them');
+    expect(container.textContent).toContain('not carried over');
+    expect(deps.api.storeEvents).not.toHaveBeenCalled();
+    await click(buttonNamed(container, 'Sign with my new key'));
     await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length > 0);
     const signed = vi.mocked(deps.api.storeEvents).mock.calls[0]?.[0] ?? [];
     expect(signed.every((event) => event.pubkey === OWNER)).toBe(true);
@@ -122,45 +140,60 @@ describe('finishing a move to a new secret key (K20)', () => {
     expect(parsed === undefined ? undefined : decryptPrivateConfig(parsed, ASSISTANT_KEY)).toEqual(
       PRIVATE_PART,
     );
+    // The backend key the old key authorized is not carried over: it may be a thief's.
     const authorized = signed
       .filter((event) => event.kind === KIND_CATALOG_AUTH)
       .map((event) => event.tags.find((tag) => tag[0] === 'd')?.[1]);
-    expect(authorized.sort()).toEqual([SERVER_KEY, BACKEND].sort());
+    expect(authorized).toEqual([SERVER_KEY]);
   });
 
-  it('sets up anew when the previous settings are not found', async () => {
-    const deps = movedDeps(null);
-    mounted = await mount(
-      <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
-    );
-    await settle(() => (mounted?.container.textContent ?? '').includes('Set up your assistant'));
-    expect(deps.api.storeEvents).not.toHaveBeenCalled();
-  });
-
-  it('refuses settings the server says the old key signed but did not', async () => {
+  it('starts from an empty form when the previous settings are missing or not the old key own', async () => {
+    const missing = await mountMoved(movedDeps(null));
+    expect(missing.textContent).toContain('could not be found');
+    expect(nameField(missing)).toBe('');
+    await mounted?.unmount();
     const forged = finalizeEvent({ ...oldConfig(), created_at: NOW - 400 }, OWNER_KEY);
-    const deps = movedDeps(forged);
-    mounted = await mount(
-      <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
-    );
-    await settle(() => (mounted?.container.textContent ?? '').includes('Set up your assistant'));
-    expect(deps.api.storeEvents).not.toHaveBeenCalled();
+    const notOld = await mountMoved(movedDeps(forged));
+    expect(notOld.textContent).toContain('could not be found');
+    expect(nameField(notOld)).toBe('');
   });
 
-  it('shows the failure and retries on request', async () => {
+  it('says when the private instructions could not be read, and when PayCore needs relinking', async () => {
+    const lost = await mountMoved(movedDeps(oldConfig(), null));
+    expect(lost.textContent).toContain('private instructions could not be read');
+    expect(nameField(lost)).toBe('Moved Tea');
+    await mounted?.unmount();
+    const paycore = await mountMoved(movedDeps(oldConfig('paycore')));
+    expect(paycore.textContent).toContain('PayCore');
+  });
+
+  it('shows a failed read and retries on request', async () => {
     const deps = movedDeps(oldConfig());
-    vi.mocked(deps.api.storeEvents).mockRejectedValueOnce(new ApiError(0, 'network'));
+    vi.mocked(deps.api.movedSettings).mockRejectedValueOnce(new ApiError(0, 'network'));
     mounted = await mount(
       <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
     );
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('could not be reached'));
     await click(buttonNamed(container, 'Retry'));
-    await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length === 2);
+    await settle(() => nameField(container) === 'Moved Tea');
+  });
+
+  it('is shown only for a store that moved: a new one without settings is set up', async () => {
+    const api = fakeApi({ store: vi.fn(async () => storeView({ assistant: ASSISTANT })) });
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(api, fakeReader([]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('Set up your assistant'));
+    expect(api.movedSettings).not.toHaveBeenCalled();
   });
 });
 
-describe('replacing the key from the admin (K20)', () => {
+describe('replacing the key from the admin (K21)', () => {
   it('asks first, then hands over to the replacement', async () => {
     const onReplaceKey = vi.fn();
     mounted = await mount(
@@ -203,7 +236,7 @@ describe('replacing the key from the admin (K20)', () => {
   });
 });
 
-describe('recovery errors in plain words (K20)', () => {
+describe('recovery errors in plain words (K21)', () => {
   it.each([
     [new ApiError(409, 'no_site_yet', { readyAt: NOW }), 'Try again after'],
     [new ApiError(409, 'no_site_yet', { readyAt: null }), 'lists no site'],
@@ -219,9 +252,14 @@ describe('recovery errors in plain words (K20)', () => {
       }),
       'https://a.example: refused our check (often a bot filter in front of the site); https://b.example: could not be reached; https://c.example: not proven.',
     ],
-    [new ApiError(409, 'paycore_source'), 'Contact us'],
+    [new ApiError(503, 'read_failed'), 'could not be read just now'],
+    [new ApiError(429, 'rate_limited'), 'Too many tries'],
+    [
+      new ApiError(409, 'site_not_proven', { failures: [], unlisted: 2 }),
+      '2 sites your store listed earlier',
+    ],
     [new ApiError(409, 'key_in_use'), 'already belongs to a store'],
-    [new ApiError(409, 'moved'), 'already moved'],
+    [new ApiError(409, 'moved'), 'was replaced by a new one'],
     [new ApiError(404, 'no_store'), 'no store with this Store ID'],
   ])('%s', (error, text) => {
     expect(errorMessage(error)).toContain(text);

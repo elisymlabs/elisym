@@ -194,7 +194,7 @@ create table widget_versions (
   {
     id: '0004_owner_moves',
     sql: `
--- A store moves to a new owner key O' (K20, 1.6): the rows that reference its owner follow it.
+-- A store moves to a new owner key O' (K21, 1.6): the rows that reference its owner follow it.
 alter table store_events drop constraint store_events_owner_fkey,
   add constraint store_events_owner_fkey foreign key (owner) references stores (owner)
   on delete cascade on update cascade;
@@ -208,12 +208,14 @@ alter table catalog_syncs drop constraint catalog_syncs_owner_fkey,
   add constraint catalog_syncs_owner_fkey foreign key (owner) references stores (owner)
   on delete cascade on update cascade;
 
--- Every origin a store's config has listed, from when the server first saw it: a site proves a key
--- replacement only once the store has had it a while, and stays able to after a config drops it.
+-- Every origin a store's config has listed, from when the server first saw it to when it last did:
+-- a site proves a key replacement only once the store has had it a while, and for a while after a
+-- config drops it, never long after (a dropped domain may change hands).
 create table store_origins (
   owner text not null references stores (owner) on delete cascade on update cascade,
   origin text not null,
   first_seen bigint not null,
+  last_seen bigint not null,
   primary key (owner, origin)
 );
 

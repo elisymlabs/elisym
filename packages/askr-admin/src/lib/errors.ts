@@ -36,12 +36,11 @@ const CODES: Readonly<Record<string, string>> = {
   key_in_use:
     'This new key already belongs to a store. Go back and start again: a fresh key is made for you.',
   moved:
-    'This store was already moved to another secret key. Sign in with that key, or replace it starting from the same Store ID.',
-  paycore_source:
-    'Your store gets its products from PayCore, so its secret key is replaced with our help. Contact us.',
+    'This secret key was replaced by a new one, so it opens no store. Sign in with the new key.',
+  read_failed: "Your store's settings could not be read just now. Retry in a moment.",
   not_found: 'The server does not know this action.',
   bad_request: 'The server could not read the request. Check the fields and retry.',
-  rate_limited: 'Too many new stores were created from this address. Try again in an hour.',
+  rate_limited: 'Too many tries from this address. Try again in an hour.',
   too_many_events:
     'Too many changes are waiting to be published. Wait until your store is active and the waiting changes are published, then retry.',
   invalid_items: 'Some products are not valid. Fix the rows shown and retry.',
@@ -113,7 +112,12 @@ export function errorMessage(error: unknown): string {
       : 'Your store lists no site in its settings, so it cannot be proven through one. Contact us.';
   }
   if (error.code === 'site_not_proven') {
-    return `None of your store's sites shows the new Store ID yet. ${siteFailures(error.detail.failures)}Check the tag or file, wait a minute if your site caches pages, and retry.`;
+    const unlisted = error.detail.unlisted;
+    const older =
+      typeof unlisted === 'number' && unlisted > 0
+        ? `${unlisted} site${unlisted === 1 ? '' : 's'} your store listed earlier did not either. `
+        : '';
+    return `None of your store's sites shows the new Store ID yet. ${siteFailures(error.detail.failures)}${older}Check the tag or file, wait a minute if your site caches pages, and retry.`;
   }
   if (error.code === 'sync_refused') {
     return `The product sync could not start: ${detailMessage(error)}`;

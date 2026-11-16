@@ -17,7 +17,7 @@ export interface SessionGrant {
  */
 export type SessionResult =
   | { kind: 'granted'; grant: SessionGrant }
-  /** The store's owner key was replaced (K20): the client checks the new one before following. */
+  /** The store's owner key was replaced (K21): the client checks the new one before following. */
   | { kind: 'moved'; owner: string }
   | { kind: 'unavailable' }
   | { kind: 'error' };

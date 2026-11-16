@@ -184,9 +184,9 @@ export interface ServerState {
   budgetExhausted(owner: string, now: number, reserveUsd: string): Promise<boolean>;
   /** Count a handoff click (advisory, 3). */
   countClick(owner: string, address: string): Promise<void>;
-  /** Record the origins a loaded config lists, each from when first seen (K20). */
+  /** Record the origins a loaded config lists, each from when first seen (K21). */
   noteOrigins(owner: string, origins: readonly string[], now: number): Promise<void>;
-  /** The owner a store embedded as `owner` moved to, if it did (K20). */
+  /** The owner a store embedded as `owner` moved to, if it did (K21). */
   movedTo(owner: string): Promise<string | undefined>;
   /**
    * Delete what has ended (5.8, K14): sessions past their end with their

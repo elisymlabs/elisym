@@ -69,14 +69,24 @@ export function parsePublicKey(input: string): string | undefined {
   }
 }
 
-/** A new owner key, to be shown once. */
-export function generateOwnerKey(): { secretKey: Uint8Array; nsec: string; npub: string } {
-  const secretKey = generateSecretKey();
+export interface OwnerKey {
+  secretKey: Uint8Array;
+  nsec: string;
+  npub: string;
+}
+
+/** An owner key in the forms the admin shows. */
+export function ownerKeyOf(secretKey: Uint8Array): OwnerKey {
   return {
     secretKey,
     nsec: nip19.nsecEncode(secretKey),
     npub: nip19.npubEncode(getPublicKey(secretKey)),
   };
+}
+
+/** A new owner key, to be shown once. */
+export function generateOwnerKey(): OwnerKey {
+  return ownerKeyOf(generateSecretKey());
 }
 
 export function npubOf(pubkey: string): string {

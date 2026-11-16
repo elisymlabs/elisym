@@ -21,6 +21,7 @@ import {
   CONNECTION_TIMEOUT_MS,
   LEASE_RENEW_MS,
   LEASE_TTL_SECS,
+  ORIGINS_NOTE_EVERY_SECS,
   RELOAD_SLOTS,
   SHUTDOWN_WAIT_MS,
   SUBSCRIPTION_BUDGET,
@@ -166,22 +167,24 @@ export class Worker {
     });
   }
 
-  /** Origins already recorded per store, so a reload writes only what is new (K20). */
-  private readonly notedOrigins = new Map<string, Set<string>>();
+  /**
+   * When each store's origins were last recorded (unix seconds), so a reload
+   * writes them again only once they are due (K21): their `last_seen` says
+   * they are still listed.
+   */
+  private readonly notedOrigins = new Map<string, { at: number; origins: string }>();
 
   private noteOrigins(owner: string, origins: readonly string[]): void {
-    const noted = this.notedOrigins.get(owner) ?? new Set<string>();
-    const fresh = origins.filter((origin) => !noted.has(origin));
-    if (fresh.length === 0) {
+    const now = this.now();
+    const key = [...origins].sort().join(' ');
+    const noted = this.notedOrigins.get(owner);
+    if (noted !== undefined && noted.origins === key && now - noted.at < ORIGINS_NOTE_EVERY_SECS) {
       return;
     }
     this.deps.state
-      .noteOrigins(owner, fresh, this.now())
+      .noteOrigins(owner, origins, now)
       .then(() => {
-        for (const origin of fresh) {
-          noted.add(origin);
-        }
-        this.notedOrigins.set(owner, noted);
+        this.notedOrigins.set(owner, { at: now, origins: key });
       })
       .catch((error: unknown) => this.log(`origins of ${owner} not recorded: ${String(error)}`));
   }
@@ -237,8 +240,12 @@ export class Worker {
     const next = new Map(held.map((lease) => [lease.store.assistant, lease]));
     const previous = this.leases;
     this.leases = next;
+    // The same A under another owner is a store that moved to a new owner key (K21): its catalog
+    // and live REQ are keyed by the owner, so it is dropped and taken up again.
+    const ownerOf = (lease: LeasedStore | undefined) => lease?.store.owner;
     const changed =
-      next.size !== previous.size || [...next.keys()].some((key) => !previous.has(key));
+      next.size !== previous.size ||
+      [...next.entries()].some(([key, lease]) => ownerOf(previous.get(key)) !== lease.store.owner);
     if (this.stopped) {
       return;
     }
@@ -256,12 +263,13 @@ export class Worker {
       return;
     }
     for (const [assistant, lease] of previous) {
-      if (!next.has(assistant)) {
+      if (ownerOf(next.get(assistant)) !== lease.store.owner) {
         this.loader.drop(lease.store.owner);
+        this.notedOrigins.delete(lease.store.owner);
       }
     }
     for (const [assistant, lease] of next) {
-      if (!previous.has(assistant)) {
+      if (ownerOf(previous.get(assistant)) !== lease.store.owner) {
         this.loader.enqueue(lease.store.owner);
       }
     }

@@ -193,14 +193,14 @@ export class AdminApi {
   }
 
   /**
-   * Move the store with owner key `from` to this signer's key (K20): one of
-   * the store's sites must name this key.
+   * Move the store with owner key `from` to this signer's key (K21): one of
+   * the store's sites must name this key. `dryRun` checks all but the site.
    */
-  recover(from: string): Promise<StoreView> {
-    return this.call('POST', '/v1/admin/store/recover', { from });
+  recover(from: string, dryRun = false): Promise<StoreView> {
+    return this.call('POST', '/v1/admin/store/recover', { from, ...(dryRun ? { dryRun } : {}) });
   }
 
-  /** The settings the store's previous owner key signed, private part read by the server (K20). */
+  /** The settings the store's previous owner key signed, private part read by the server (K21). */
   movedSettings(): Promise<MovedSettings> {
     return this.call('GET', '/v1/admin/store/moved-settings');
   }

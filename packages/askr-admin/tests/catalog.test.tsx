@@ -311,7 +311,7 @@ describe('the product editor', () => {
     await click(buttonNamed(container, 'Keep this product'));
     await click(buttonNamed(container, 'Review changes'));
     expect(container.textContent).toContain(
-      'Nothing to publish: your products are as on the relay.',
+      'Nothing to publish: your products are already as shown.',
     );
     expect(api.catalog).not.toHaveBeenCalled();
     expect(buttonNamed(container, 'Publish').disabled).toBe(true);

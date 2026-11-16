@@ -21,11 +21,80 @@ import {
 } from './pg-state';
 import type { StoreRecord, StoreStatus, Tier } from './types';
 
-/** Tables keyed by a store's owner without a foreign key: moved along with it (K20). */
+/** Postgres' unique_violation. */
+const UNIQUE_VIOLATION = '23505';
+
+/** Tables keyed by a store's owner without a foreign key: moved along with it (K21). */
 const OWNER_TABLES = ['sessions', 'store_days', 'reservations', 'clicks', 'store_totals'] as const;
 
-/** How long a store must have had a site before it proves an owner key replacement (K20, 1.6). */
+/** How long a store must have had a site before it proves an owner key replacement (K21, 1.6). */
 export const ORIGIN_PROOF_AGE_SECS = 72 * 60 * 60;
+/**
+ * How long after a config last listed a site it still proves a replacement:
+ * enough for an owner whose site a thief dropped from the settings, short
+ * enough that a domain the owner let go cannot be bought to take the store.
+ */
+export const ORIGIN_DROPPED_GRACE_SECS = 30 * 24 * 60 * 60;
+/** Sites one replacement reads at most: the ones listed most recently. */
+export const MAX_PROOF_ORIGINS = 10;
+/**
+ * Hosts where anyone can claim a name another let go (preview deployments,
+ * free subdomains): a site there never proves who owns a store.
+ */
+export const SHARED_HOST_SUFFIXES: readonly string[] = [
+  '.vercel.app',
+  '.netlify.app',
+  '.github.io',
+  '.gitlab.io',
+  '.pages.dev',
+  '.workers.dev',
+  '.web.app',
+  '.firebaseapp.com',
+  '.herokuapp.com',
+  '.onrender.com',
+  '.fly.dev',
+  '.glitch.me',
+  '.repl.co',
+  '.surge.sh',
+  '.ngrok.io',
+  '.ngrok-free.app',
+];
+
+export interface HeldOrigin {
+  origin: string;
+  /** Unix seconds, by the server's clock. */
+  firstSeen: number;
+  lastSeen: number;
+}
+
+/**
+ * The sites that may prove a replacement now (K21, 1.6): held for
+ * ORIGIN_PROOF_AGE_SECS, listed within ORIGIN_DROPPED_GRACE_SECS, not on a
+ * shared host; most recently listed first, at most MAX_PROOF_ORIGINS. With
+ * none, when the first one will count, if any will.
+ */
+export function proofOrigins(
+  held: readonly HeldOrigin[],
+  now: number,
+): { origins: string[]; readyAt: number | undefined } {
+  const own = held.filter((entry) => {
+    const host = new URL(entry.origin).hostname;
+    return (
+      entry.lastSeen >= now - ORIGIN_DROPPED_GRACE_SECS &&
+      !SHARED_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix))
+    );
+  });
+  const origins = own
+    .filter((entry) => entry.firstSeen <= now - ORIGIN_PROOF_AGE_SECS)
+    .sort((left, right) => right.lastSeen - left.lastSeen)
+    .slice(0, MAX_PROOF_ORIGINS)
+    .map((entry) => entry.origin);
+  const waiting = own.map((entry) => entry.firstSeen + ORIGIN_PROOF_AGE_SECS);
+  return {
+    origins,
+    readyAt: origins.length > 0 || waiting.length === 0 ? undefined : Math.min(...waiting),
+  };
+}
 export type MoveResult = { ok: true } | { ok: false; reason: 'no_store' | 'moved' | 'taken' };
 
 /** O-signed events awaiting publication per store at most, so nobody can fill the table (7.3). */
@@ -465,7 +534,7 @@ export class StoreDirectory {
 
   /**
    * Remember the origins a config of `owner` lists, each from when it was
-   * first seen (K20): never forgotten when a later config drops it.
+   * first seen (K21): never forgotten when a later config drops it.
    */
   async noteOrigins(owner: string, origins: readonly string[], now: number): Promise<void> {
     if (origins.length === 0) {
@@ -474,16 +543,35 @@ export class StoreDirectory {
     await this.db.query(NOTE_ORIGINS_SQL, [owner, [...new Set(origins)], now]);
   }
 
-  /** Every origin a config of `owner` has listed, with when it was first seen, oldest first (K20). */
-  async originsHeld(owner: string): Promise<{ origin: string; firstSeen: number }[]> {
-    const rows = await this.db.query<{ origin: string; first_seen: string | number }>(
-      'select origin, first_seen from store_origins where owner = $1 order by first_seen, origin',
+  /** Every origin a config of `owner` has listed, with when it was first seen, oldest first (K21). */
+  async originsHeld(owner: string): Promise<HeldOrigin[]> {
+    const rows = await this.db.query<{
+      origin: string;
+      first_seen: string | number;
+      last_seen: string | number;
+    }>(
+      `select origin, first_seen, last_seen from store_origins where owner = $1
+       order by first_seen, origin`,
       [owner],
     );
-    return rows.map((row) => ({ origin: row.origin, firstSeen: Number(row.first_seen) }));
+    return rows.map((row) => ({
+      origin: row.origin,
+      firstSeen: Number(row.first_seen),
+      lastSeen: Number(row.last_seen),
+    }));
   }
 
-  /** The owner a store embedded as `owner` moved to (K20). */
+  /** The secret key of the next A while a rotation is under way (1.5). */
+  async nextAssistantSecret(owner: string): Promise<Uint8Array | undefined> {
+    const [row] = await this.db.query<{ next_assistant_key: Uint8Array | null }>(
+      'select next_assistant_key from stores where owner = $1',
+      [owner],
+    );
+    const sealed = row?.next_assistant_key ?? null;
+    return sealed === null ? undefined : this.vault.open(sealed, owner, 'assistant');
+  }
+
+  /** The owner a store embedded as `owner` moved to (K21). */
   movedTo(owner: string): Promise<string | undefined> {
     return followMoves(this.db, owner);
   }
@@ -494,7 +582,7 @@ export class StoreDirectory {
     return rows.length > 0;
   }
 
-  /** The owner key this store last moved from, and the settings it had signed (K20). */
+  /** The owner key this store last moved from, and the settings it had signed (K21). */
   async movedFrom(owner: string): Promise<{ from: string; config: NostrEvent | null } | undefined> {
     const [row] = await this.db.query<{ from_owner: string; config: NostrEvent | null }>(
       `select from_owner, config from store_moves where to_owner = $1
@@ -505,11 +593,28 @@ export class StoreDirectory {
   }
 
   /**
-   * Move a store from owner key `from` to `to` (K20, 1.6): the row and all
+   * Move a store from owner key `from` to `to` (K21, 1.6): the row and all
    * that is keyed by its owner follow; A and K are kept, sealed again for
    * `to`; the events `from` signed are dropped. The caller checked the proof.
    */
   async moveStore(
+    from: string,
+    to: string,
+    now: number,
+    config: NostrEvent | undefined,
+  ): Promise<MoveResult> {
+    try {
+      return await this.moveStoreOnce(from, to, now, config);
+    } catch (error) {
+      // Another move to `to`, or `to` opening a store, won the race: that key is taken.
+      if (Reflect.get(Object(error), 'code') === UNIQUE_VIOLATION) {
+        return { ok: false, reason: 'taken' };
+      }
+      throw error;
+    }
+  }
+
+  private async moveStoreOnce(
     from: string,
     to: string,
     now: number,
@@ -540,6 +645,10 @@ export class StoreDirectory {
         this.vault.seal(this.vault.open(sealed, from, purpose), to, purpose);
       await tx.query('delete from store_events where owner = $1', [from]);
       await tx.query('delete from leases where owner = $1', [from]);
+      // A sync running under the old key releases under it, which no longer matches: free the guard.
+      await tx.query('update catalog_syncs set holder = null, expires_at = 0 where owner = $1', [
+        from,
+      ]);
       await tx.query(
         `update stores set owner = $2, assistant_key = $3, catalog_key_secret = $4,
            next_assistant_key = $5

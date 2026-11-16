@@ -189,7 +189,7 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     }
     const record = await deps.state.store(owner);
     if (record === undefined) {
-      // A store whose owner key was replaced (K20): the widget follows it once it has checked the
+      // A store whose owner key was replaced (K21): the widget follows it once it has checked the
       // new owner's own config lists this page; an older widget reads it as unavailable.
       const moved = await deps.state.movedTo(owner);
       return moved === undefined

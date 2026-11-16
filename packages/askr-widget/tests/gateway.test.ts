@@ -63,7 +63,7 @@ describe('httpGateway.openSession', () => {
     });
   });
 
-  it('a moved store names its new owner key; a malformed or same one is just unavailable (K20)', async () => {
+  it('a moved store names its new owner key; a malformed or same one is just unavailable (K21)', async () => {
     const moved = 'c'.repeat(64);
     expect(
       (await open(() => json(410, { unavailable: true, reason: 'moved', moved }))).result,

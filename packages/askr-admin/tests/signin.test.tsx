@@ -80,20 +80,27 @@ describe('the key field', () => {
   });
 });
 
-describe('replacing a lost secret key (K20)', () => {
+describe('replacing a lost secret key (K21)', () => {
   const STORE = getPublicKey(generateSecretKey());
+  type Recover = (signer: Signer, from: string, dryRun: boolean) => Promise<void>;
 
-  async function toProof(recover: (signer: Signer, from: string) => Promise<void>) {
+  async function toStore(recover: Recover) {
     const onSigner = vi.fn<(signer: Signer) => void>();
     mounted = await mount(<SignIn onSigner={onSigner} recover={recover} />);
     const { container } = mounted;
     await click(buttonNamed(container, 'Lost your secret key?'));
+    return { container, onSigner };
+  }
+
+  async function toProof(recover: Recover) {
+    const { container, onSigner } = await toStore(recover);
     const field = byId(container, 'recover-store');
     await typeInto(field, 'not a store id');
-    await click(buttonNamed(container, 'Make a new secret key'));
+    await click(buttonNamed(container, 'Continue'));
     expect(container.textContent).toContain('That is not a Store ID');
+    expect(recover).not.toHaveBeenCalled();
     await typeInto(field, nip19.npubEncode(STORE));
-    await click(buttonNamed(container, 'Make a new secret key'));
+    await click(buttonNamed(container, 'Continue'));
     const text = container.textContent ?? '';
     const nsec = /nsec1[02-9ac-hj-np-z]+/.exec(text)?.[0];
     const checkbox = container.querySelector('input[type="checkbox"]');
@@ -109,24 +116,66 @@ describe('replacing a lost secret key (K20)', () => {
     return { container, onSigner, newKey: getPublicKey(decoded.data) };
   }
 
-  it('makes a new key, shows the site proof for it, and signs in once the store moved', async () => {
-    const recover = vi.fn(async (_signer: Signer, _from: string) => undefined);
+  it('checks first, makes a new key, shows the site proof for it, and signs in once the store moved', async () => {
+    const recover = vi.fn<Recover>(async () => undefined);
     const { container, onSigner, newKey } = await toProof(recover);
+    expect(recover.mock.calls[0]?.[0].pubkey).toBe(newKey);
+    expect(recover.mock.calls[0]?.[1]).toBe(STORE);
+    expect(recover.mock.calls[0]?.[2]).toBe(true);
     expect(container.textContent).toContain(
       `<meta name="askr-verification" content="${nip19.npubEncode(newKey)}">`,
     );
+    expect(container.textContent).toContain('Keep it on your site');
     await click(buttonNamed(container, 'Check my site and move the store'));
-    expect(recover).toHaveBeenCalledTimes(1);
-    expect(recover.mock.calls[0]?.[0].pubkey).toBe(newKey);
-    expect(recover.mock.calls[0]?.[1]).toBe(STORE);
+    expect(recover).toHaveBeenCalledTimes(2);
+    expect(recover.mock.calls[1]?.[0].pubkey).toBe(newKey);
+    expect(recover.mock.calls[1]?.[2]).toBe(false);
     expect(onSigner.mock.calls[0]?.[0].pubkey).toBe(newKey);
   });
 
+  it('shows no key when the check says what stands in the way', async () => {
+    const recover = vi.fn<Recover>(async () => {
+      throw new ApiError(409, 'no_site_yet', { readyAt: null });
+    });
+    const { container } = await toStore(recover);
+    await typeInto(byId(container, 'recover-store'), nip19.npubEncode(STORE));
+    await click(buttonNamed(container, 'Continue'));
+    expect(container.textContent).toContain('lists no site');
+    expect(container.textContent).not.toMatch(/nsec1/);
+  });
+
+  it('goes on with a new key saved earlier, straight to the proof', async () => {
+    const recover = vi.fn<Recover>(async () => undefined);
+    const saved = generateSecretKey();
+    const { container, onSigner } = await toStore(recover);
+    await typeInto(byId(container, 'recover-store'), nip19.npubEncode(STORE));
+    const checkbox = container.querySelector('input[type="checkbox"]');
+    if (!(checkbox instanceof HTMLInputElement)) {
+      throw new Error('no checkbox');
+    }
+    await click(checkbox);
+    const keyField = byId(container, 'recover-key');
+    if (!(keyField instanceof HTMLInputElement)) {
+      throw new Error('no key field');
+    }
+    keyField.value = 'nope';
+    await click(buttonNamed(container, 'Continue'));
+    expect(container.textContent).toContain('That is not a secret key');
+    keyField.value = nip19.nsecEncode(saved);
+    await click(buttonNamed(container, 'Continue'));
+    expect(container.textContent).toContain(nip19.npubEncode(getPublicKey(saved)));
+    expect(container.textContent).not.toContain('It is shown only once');
+    await click(buttonNamed(container, 'Check my site and move the store'));
+    expect(onSigner.mock.calls[0]?.[0].pubkey).toBe(getPublicKey(saved));
+  });
+
   it('says why the site did not prove it, and stays on the step to retry', async () => {
-    const recover = vi.fn(async () => {
-      throw new ApiError(409, 'site_not_proven', {
-        failures: [{ origin: 'https://shop.example', reason: 'not_found' }],
-      });
+    const recover = vi.fn<Recover>(async (_signer, _from, dryRun) => {
+      if (!dryRun) {
+        throw new ApiError(409, 'site_not_proven', {
+          failures: [{ origin: 'https://shop.example', reason: 'not_found' }],
+        });
+      }
     });
     const { container, onSigner } = await toProof(recover);
     await click(buttonNamed(container, 'Check my site and move the store'));

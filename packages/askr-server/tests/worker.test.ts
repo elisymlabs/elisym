@@ -23,14 +23,17 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SUBSCRIPTION_BUDGET } from '../src/constants';
 import type { Db } from '../src/db/db';
+import { KeyVault } from '../src/db/keys';
 import { passesWrapPreCheck } from '../src/relay/pool';
 import { PgState } from '../src/state/pg-state';
+import { StoreDirectory } from '../src/state/stores';
 import type { LeasedStore, StoreStatus } from '../src/state/types';
 import { Worker, failureKind } from '../src/worker/worker';
 import { FakePool } from './fake-pool';
 import {
   HOLDER,
   NOW,
+  MASTER_KEY,
   ORIGIN,
   type StoreSpec,
   type SyntheticStore,
@@ -528,12 +531,29 @@ describe('worker wraps (2.4)', () => {
     expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(2);
   });
 
-  it('records the origins of each config it loads, once (K20)', async () => {
+  it('records the origins of each config it loads, once (K21)', async () => {
     const store = syntheticStore();
     const setup = await harness({ stores: [store] });
     expect(setup.worker.catalogs.has(store.owner)).toBe(true);
     await waitUntil(async () => (await originsOf(setup, store.owner)).length > 0);
     expect(await originsOf(setup, store.owner)).toEqual([ORIGIN]);
+  });
+
+  it('takes up a store that moved to a new owner key under that key, the same A (K21)', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    expect(setup.worker.catalogs.has(store.owner)).toBe(true);
+    const newOwner = getPublicKey(generateSecretKey());
+    const directory = new StoreDirectory(setup.db, new KeyVault(MASTER_KEY));
+    expect(await directory.moveStore(store.owner, newOwner, setup.clock.now, undefined)).toEqual({
+      ok: true,
+    });
+    await setup.worker.refreshLeases();
+    expect(setup.worker.isLeased(store.assistant)).toBe(true);
+    // The old owner's catalog is gone; the new owner's is read (empty: it signed nothing yet).
+    expect(setup.worker.catalogs.has(store.owner)).toBe(false);
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.isUnservable(newOwner)).toBe(true);
   });
 
   it('a store that stops being active is no longer leased, and its catalog is dropped', async () => {

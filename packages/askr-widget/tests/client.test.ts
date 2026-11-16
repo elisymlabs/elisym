@@ -123,7 +123,7 @@ describe('bootstrap', () => {
     expect(setup.client.snapshot().phase).toBe('unavailable');
   });
 
-  it('follows a moved store only when the new owner signed a config listing this page (K20)', async () => {
+  it('follows a moved store only when the new owner signed a config listing this page (K21)', async () => {
     const setup = harness();
     const moved = makeStore({ assistant: setup.store.assistant.pubkey });
     publishStore(setup.relay, moved);
@@ -133,7 +133,18 @@ describe('bootstrap', () => {
     expect(setup.client.snapshot().movedTo).toBe(moved.owner.pubkey);
   });
 
-  it('stays unavailable when the moved store does not list this page, or has no config (K20)', async () => {
+  it('asks the gateway when the old key left no readable config, and follows a move (K21)', async () => {
+    const relay = new FakeRelay();
+    const setup = harness({}, { relay });
+    const moved = makeStore({ assistant: setup.store.assistant.pubkey });
+    publishStore(relay, moved);
+    setup.gateway.movedTo = moved.owner.pubkey;
+    await started(setup);
+    expect(setup.client.snapshot().phase).toBe('moved');
+    expect(setup.client.snapshot().movedTo).toBe(moved.owner.pubkey);
+  });
+
+  it('stays unavailable when the moved store does not list this page, or has no config (K21)', async () => {
     const elsewhere = harness();
     const moved = makeStore({ origins: ['https://other.example'] });
     publishStore(elsewhere.relay, moved);

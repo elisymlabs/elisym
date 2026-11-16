@@ -6,8 +6,8 @@ import { RecoverStore } from './RecoverStore';
 
 interface Props {
   onSigner: (signer: Signer) => void;
-  /** Move a store to a new key (K20); the server checks the store's site. */
-  recover: (signer: Signer, from: string) => Promise<void>;
+  /** Move a store to a new key (K21); the server checks the store's site, or all but it. */
+  recover: (signer: Signer, from: string, dryRun: boolean) => Promise<void>;
   /** Open on replacing the key of this store (Store ID), as the admin's own button does. */
   replaceKeyOf?: string;
 }

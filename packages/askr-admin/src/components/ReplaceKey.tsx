@@ -6,7 +6,7 @@ interface Props {
   onReplaceKey: () => void;
 }
 
-/** Replace the secret key (K20): signs out and starts the replacement for this store. */
+/** Replace the secret key (K21): signs out and starts the replacement for this store. */
 export function ReplaceKey({ onReplaceKey }: Props) {
   const [confirming, setConfirming] = useState(false);
   return (

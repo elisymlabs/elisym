@@ -17,7 +17,7 @@ import { Shell } from './Shell';
 interface Props {
   deps: SessionDeps;
   onSignOut: () => void;
-  /** Sign out and replace the secret key of this store (Store ID), K20. */
+  /** Sign out and replace the secret key of this store (Store ID), K21. */
   onReplaceKey: (storeId: string) => void;
 }
 
@@ -48,8 +48,6 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   const [configFromServer, setConfigFromServer] = useState(false);
   /** The store's state as last read, for the config read that follows. */
   const status = useRef<StoreStatus | undefined>(undefined);
-  /** A moved store whose previous settings were not found: set up anew instead (K20). */
-  const [noMovedSettings, setNoMovedSettings] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -162,16 +160,9 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       configError === '' &&
       unreadableAt === undefined &&
       view.events.pending === 0);
-  if (needsSetup && view !== undefined && view.movedFrom !== null && !noMovedSettings) {
-    return (
-      <FinishMove
-        deps={deps}
-        view={view}
-        onDone={reloadAll}
-        onNoSettings={() => setNoMovedSettings(true)}
-        onSignOut={onSignOut}
-      />
-    );
+  // A store moved to this key (K21) whose settings this key has not signed yet.
+  if (needsSetup && view !== undefined && view.movedFrom !== null) {
+    return <FinishMove deps={deps} view={view} onDone={reloadAll} onSignOut={onSignOut} />;
   }
   if (needsSetup) {
     return (

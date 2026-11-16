@@ -60,7 +60,7 @@ const STORE_COLUMNS = `
 const STORE_FROM = 'from stores s left join tiers t on t.name = s.tier';
 export const STORE_SELECT = `select ${STORE_COLUMNS} ${STORE_FROM}`;
 
-/** Moves a widget follows at most from the owner it was embedded with (K20). */
+/** Moves a widget follows at most from the owner it was embedded with (K21). */
 export const MAX_MOVE_HOPS = 3;
 
 /** The owner a store embedded as `owner` moved to, following at most MAX_MOVE_HOPS moves. */
@@ -79,12 +79,18 @@ export async function followMoves(db: Db, owner: string): Promise<string | undef
   return current === owner ? undefined : current;
 }
 
+/** Origins a store keeps on record at most (K21): a config lists few; this bounds a churning one. */
+export const MAX_ORIGINS_HELD = 100;
+
 /** Record origins a config lists, each from when first seen ($1 owner, $2 origins, $3 unix seconds). */
 export const NOTE_ORIGINS_SQL = `
-insert into store_origins (owner, origin, first_seen)
-select $1, origin, $3 from unnest($2::text[]) as origin
+insert into store_origins (owner, origin, first_seen, last_seen)
+select $1, noted.value, $3, $3 from unnest($2::text[]) as noted(value)
 where exists (select 1 from stores where owner = $1)
-on conflict (owner, origin) do nothing`;
+  and (exists (select 1 from store_origins held where held.owner = $1 and held.origin = noted.value)
+    or (select count(*) from store_origins held where held.owner = $1) < ${MAX_ORIGINS_HELD})
+on conflict (owner, origin) do update set
+  last_seen = greatest(store_origins.last_seen, excluded.last_seen)`;
 
 function tierOf(row: StoreRow): Tier | undefined {
   if (

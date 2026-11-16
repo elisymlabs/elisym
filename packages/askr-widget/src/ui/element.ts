@@ -170,8 +170,11 @@ export class WidgetView {
         ),
         retry,
       );
-    } else if (snapshot.phase === 'unavailable' || snapshot.phase === 'moved') {
-      // A move past what the element follows reads as unavailable.
+    } else if (snapshot.phase === 'moved') {
+      // A move past what the element follows reads as unavailable, with no link from the old
+      // owner's config: a thief holding that key may have written it.
+      this.status.append(element(document, 'span', undefined, STRINGS.unavailable));
+    } else if (snapshot.phase === 'unavailable') {
       this.status.append(element(document, 'span', undefined, STRINGS.unavailable));
       const contact = httpsUrl(snapshot.config?.contact);
       if (contact !== undefined) {
@@ -201,7 +204,7 @@ export class WidgetView {
   }
 }
 
-/** Owner key moves (K20) the element follows per page at most: the gateway names the last one. */
+/** Owner key moves (K21) the element follows per page at most: the gateway names the last one. */
 const MAX_MOVES = 1;
 
 /**
@@ -218,7 +221,7 @@ export function defineAskrElement(
   }
   class AskrChatElement extends scope.HTMLElement {
     private client: ChatClient | undefined;
-    /** The owner key the store moved to (K20), followed at most MAX_MOVES times per page. */
+    /** The owner key the store moved to (K21), followed at most MAX_MOVES times per page. */
     private movedTo: string | undefined;
     private moves = 0;
     private view: WidgetView | undefined;

@@ -28,7 +28,7 @@ export interface CatalogLoaderDeps {
   leased: () => StoreRecord[];
   now: () => number;
   log: (message: string) => void;
-  /** Called with a store's config origins each time its catalog loads (K20). */
+  /** Called with a store's config origins each time its catalog loads (K21). */
   onConfig?: (owner: string, origins: readonly string[]) => void;
   /** A page with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
