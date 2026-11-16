@@ -39,3 +39,6 @@ export const SYNC_POLL_MS = 3_000;
 /** Languages offered first in the onboarding form; any BCP 47 tag is accepted. */
 export const DEFAULT_LANGUAGE = 'en';
 export const DEFAULT_CURRENCY = 'USD';
+
+/** The public guide to embedding the chat: add to cart, CSP, pinning. */
+export const EMBED_DOCS_URL = 'https://docs.elisym.network/askr/embed';

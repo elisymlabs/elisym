@@ -98,7 +98,7 @@ export function Shell({
       />
     );
   } else {
-    content = <EmbedSection api={deps.api} owner={view.owner} config={config} />;
+    content = <EmbedSection api={deps.api} view={view} config={config} />;
   }
   return (
     <main className="mx-auto flex max-w-960 flex-col gap-16 px-16 py-24">

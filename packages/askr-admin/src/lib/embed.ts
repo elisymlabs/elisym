@@ -59,3 +59,41 @@ export function cspSources(): CspSource[] {
     },
   ];
 }
+
+/** A page's hook for the add-to-cart button, for a site without a native cart. */
+export const ADD_TO_CART_SNIPPET = `<script>
+  window.Askr = window.Askr || {};
+  window.Askr.onAddToCart = function (detail) {
+    // detail.d: the product ID; detail.sku: its SKU, if it has one;
+    // detail.variant: the variant ID, when the shopper's pick determines one;
+    // detail.options: { "Size": "M", ... }, whenever a choice is made.
+    // Put the product in your cart here.
+  };
+</script>`;
+
+/** Where to paste the embed code on common site builders. */
+export const PLATFORM_HINTS: ReadonlyArray<{ platform: string; where: string }> = [
+  {
+    platform: 'Shopify',
+    where:
+      'Online Store, Themes, then Edit code in the theme menu: open theme.liquid and paste it before </body>.',
+  },
+  {
+    platform: 'WordPress and WooCommerce',
+    where: 'a plugin that adds code to every page (such as WPCode), set to the footer.',
+  },
+  {
+    platform: 'Wix',
+    where:
+      'Settings, Custom Code, on all pages (a paid plan with a connected domain). Not the Embed HTML element: it runs on another address, where the chat does not answer.',
+  },
+  {
+    platform: 'Squarespace',
+    where:
+      'Settings, Code Injection, in the footer (a Core plan or higher). A code block on a page shows the chat on that page only.',
+  },
+  {
+    platform: 'Other site builders',
+    where: 'the site-wide custom code setting, never a block on one page.',
+  },
+];
