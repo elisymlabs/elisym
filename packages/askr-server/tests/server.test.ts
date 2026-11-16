@@ -292,6 +292,36 @@ describe('deletions dated ahead (one rule for the server, the admin and the widg
     expect(servable(NOW + SKEW - 60)).toBe(false);
     expect(servable(NOW + SKEW + 60)).toBe(true);
   });
+
+  it('a far-ahead deletion does not mask one within the skew', () => {
+    const store = syntheticStore();
+    const address = `30496:${store.owner}:askr`;
+    const catalog = buildStoreCatalog(
+      [
+        ...store.events,
+        deletionOf(address, store.ownerSecret, NOW),
+        deletionOf(address, store.ownerSecret, NOW + 86_400),
+      ],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+    );
+    expect(catalog).toBeUndefined();
+  });
+
+  it('a policy deletion within the clock skew counts; one further ahead is ignored', () => {
+    const store = syntheticStore();
+    const address = `30495:${store.catalogKey}:returns`;
+    const policies = (createdAt: number) =>
+      buildStoreCatalog(
+        [...store.events, deletionOf(address, store.catalogSecret, createdAt)],
+        store.owner,
+        store.assistantSecret,
+        NOW,
+      )?.policies.length;
+    expect(policies(NOW + SKEW - 60)).toBe(0);
+    expect(policies(NOW + SKEW + 60)).toBe(1);
+  });
 });
 
 describe('gateway (3)', () => {

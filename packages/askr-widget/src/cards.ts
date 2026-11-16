@@ -112,7 +112,7 @@ function liveListing(
     return null;
   }
   // Dated past the clock skew, a deletion counts no more than a listing would: the same rule as
-  // the assistant's server, so a card is never hidden for a product the assistant offers.
+  // the assistant's server and the admin, so all three read a deletion alike.
   const deletion = newestDeletion(events, address, author, now);
   return deletion && deletion.created_at >= listing.created_at ? null : listing;
 }
