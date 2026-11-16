@@ -12,6 +12,7 @@ import {
   parseCatalogItem,
   parseConfig,
   parsePolicy,
+  policiesInUse,
   resolveStoreKeys,
 } from '@elisym/askr';
 import { StoreCatalog } from '@elisym/askr-agent';
@@ -219,11 +220,14 @@ export function buildStoreCatalog(
       }
     }
   }
+  // The admin refuses a policy past the cap; one published with the store's own key or by a
+  // connector reaches the relay anyway, so only the ones `policiesInUse` keeps are used.
+  const usedPolicies = policiesInUse(policies);
   return new StoreCatalog(
     config,
     decryptPrivateConfig(config, assistantSecretKey),
     indexed,
-    policies,
+    usedPolicies,
   );
 }
 

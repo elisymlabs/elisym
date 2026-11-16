@@ -108,3 +108,18 @@ export type ProductSourceKind = (typeof PRODUCT_SOURCES)[number];
 
 export const CONNECTOR_PLATFORMS = ['shopify', 'woocommerce', 'google'] as const;
 export type ConnectorPlatform = (typeof CONNECTOR_PLATFORMS)[number];
+
+/**
+ * Shopify policy pages a connector imports as 30495 (7.4), by their public
+ * handle. While a Shopify connector imports policies, these slugs are its own:
+ * each sync puts back the shop's version, so they are changed in Shopify.
+ */
+export const SHOPIFY_POLICY_SLUGS: ReadonlyArray<{
+  handle: string;
+  slug: string;
+}> = [
+  { handle: 'refund-policy', slug: 'returns' },
+  { handle: 'shipping-policy', slug: 'shipping' },
+  { handle: 'privacy-policy', slug: 'privacy' },
+  { handle: 'terms-of-service', slug: 'terms' },
+];

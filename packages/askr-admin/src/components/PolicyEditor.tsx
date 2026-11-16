@@ -10,11 +10,13 @@ interface Props {
   initial: Policy | undefined;
   /** Slugs already published: a new policy needs its own, or it would replace one. */
   takenSlugs: readonly string[];
+  /** Slugs the Shopify connector imports: one made here would be replaced by its next sync. */
+  importedSlugs: readonly string[];
   onSave: (policy: { slug: string; title: string; body: string }) => Promise<void>;
   onCancel: () => void;
 }
 
-export function PolicyEditor({ initial, takenSlugs, onSave, onCancel }: Props) {
+export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCancel }: Props) {
   const [slug, setSlug] = useState(initial?.slug ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
   const [body, setBody] = useState(initial?.body ?? '');
@@ -32,6 +34,12 @@ export function PolicyEditor({ initial, takenSlugs, onSave, onCancel }: Props) {
     if (initial === undefined && takenSlugs.includes(checked.data.slug)) {
       setError(
         `Short name: a policy named "${checked.data.slug}" already exists. Edit that one, or pick another name.`,
+      );
+      return;
+    }
+    if (initial === undefined && importedSlugs.includes(checked.data.slug)) {
+      setError(
+        `Short name: "${checked.data.slug}" is imported from your Shopify store, and each sync would replace this text. Pick another name, or turn off policy import in Connector.`,
       );
       return;
     }

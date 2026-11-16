@@ -1,4 +1,10 @@
-import { buildCatalogItemEvent, buildTicket, wrapChatMessage } from '@elisym/askr';
+import {
+  LIMITS,
+  buildCatalogItemEvent,
+  buildPolicyEvent,
+  buildTicket,
+  wrapChatMessage,
+} from '@elisym/askr';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { createGateway } from '../src/gateway/gateway';
@@ -139,6 +145,33 @@ describe('catalog build (5.1)', () => {
     const catalog = buildStoreCatalog(store.events, store.owner, store.assistantSecret, NOW);
     expect(catalog?.items.size).toBe(2);
     expect(catalog?.policies).toHaveLength(1);
+  });
+
+  it('uses at most MAX_POLICIES policies, the Shopify-imported slugs first, then by slug', () => {
+    const store = syntheticStore();
+    const extra = Array.from({ length: LIMITS.MAX_POLICIES }, (_unused, index) =>
+      finalizeEvent(
+        buildPolicyEvent({
+          slug: `p${String(index).padStart(2, '0')}`,
+          title: `Policy ${index}`,
+          body: 'Text.',
+          createdAt: NOW - 50,
+        }),
+        store.catalogSecret,
+      ),
+    );
+    const catalog = buildStoreCatalog(
+      [...store.events, ...extra],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+    );
+    const slugs = catalog?.policies.map((policy) => policy.slug) ?? [];
+    expect(slugs).toHaveLength(LIMITS.MAX_POLICIES);
+    // The slugs a Shopify import brings come first, so `returns` stays and `p49` is left out.
+    expect(slugs[0]).toBe('returns');
+    expect(slugs[1]).toBe('p00');
+    expect(slugs).not.toContain('p49');
   });
 
   it("indexes at most the tier's products, the first by product ID", () => {

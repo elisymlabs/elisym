@@ -87,6 +87,11 @@ describe('error messages', () => {
     expect(errorMessage(new ApiError(400, 'too_many_products', { max: 250 }))).toContain(
       'at most 250 products',
     );
+    expect(errorMessage(new ApiError(409, 'too_many_policies', { max: 50 }))).toContain(
+      'at most 50 policies',
+    );
+    expect(errorMessage(new ApiError(409, 'too_many_policies'))).toContain('Delete one');
+    expect(errorMessage(new ApiError(409, 'policy_imported'))).toContain('Change it in Shopify');
     expect(
       errorMessage(new ApiError(409, 'sync_refused', { message: 'K is not authorized' })),
     ).toContain('K is not authorized');

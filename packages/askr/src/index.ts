@@ -22,6 +22,7 @@ export {
   PolicyInputSchema,
   buildPolicyEvent,
   parsePolicy,
+  policiesInUse,
 } from './events/policy';
 export {
   type ProductSource,

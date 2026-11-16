@@ -1,5 +1,6 @@
 import { request as httpRequest } from 'node:http';
 import {
+  LIMITS,
   type SyncRelayClient,
   buildCatalogAuth,
   buildConfigEvent,
@@ -653,6 +654,97 @@ describe('admin API (7.3)', () => {
     expect(removed.status).toBe(200);
     expect(relay.events.find((event) => event.id === removed.body.id)?.kind).toBe(5);
     expect((await call('PUT', '/v1/admin/policies/Bad_Slug', {})).status).toBe(404);
+  });
+
+  it('a slug a Shopify connector imports is refused while the import is on, and free once off', async () => {
+    const { call, store, relay, directory, state } = await setup();
+    const server = await state.store(store.owner);
+    if (!server) {
+      throw new Error('store missing');
+    }
+    await relay.publish(
+      [],
+      finalizeEvent(
+        buildCatalogAuth({ key: server.catalogKey, mode: 'hosted', createdAt: NOW - 10 }),
+        store.ownerSecret,
+      ),
+    );
+    const settings = { platform: 'shopify' as const, url: 'https://shop.example.com' };
+    await directory.setConnector(store.owner, { ...settings, importPolicies: true });
+    const body = { title: 'Returns', body: 'Within 30 days.' };
+    for (const slug of ['returns', 'shipping', 'privacy', 'terms']) {
+      const put = await call('PUT', `/v1/admin/policies/${slug}`, body);
+      expect(put).toMatchObject({ status: 409, body: { error: 'policy_imported' } });
+      const removed = await call('DELETE', `/v1/admin/policies/${slug}`);
+      expect(removed).toMatchObject({ status: 409, body: { error: 'policy_imported' } });
+    }
+    expect((await call('PUT', '/v1/admin/policies/sizing', body)).status).toBe(200);
+    // Another platform, or the import turned off, leaves the slugs to the admin.
+    await directory.setConnector(store.owner, { ...settings, importPolicies: false });
+    expect((await call('PUT', '/v1/admin/policies/returns', body)).status).toBe(200);
+    await directory.setConnector(store.owner, {
+      platform: 'woocommerce',
+      url: 'https://shop.example.com',
+      importPolicies: true,
+    });
+    expect((await call('DELETE', '/v1/admin/policies/returns')).status).toBe(200);
+  });
+
+  it('a new policy past the cap is refused; one already there is still changed, and a deleted one frees its place', async () => {
+    const { call, store, relay, directory, state } = await setup();
+    const server = await state.store(store.owner);
+    if (!server) {
+      throw new Error('store missing');
+    }
+    await relay.publish(
+      [],
+      finalizeEvent(
+        buildCatalogAuth({ key: server.catalogKey, mode: 'hosted', createdAt: NOW - 10 }),
+        store.ownerSecret,
+      ),
+    );
+    const body = { title: 'A policy', body: 'Text.' };
+    for (let index = 0; index < LIMITS.MAX_POLICIES; index += 1) {
+      expect((await call('PUT', `/v1/admin/policies/p${index}`, body)).status).toBe(200);
+    }
+    const over = await call('PUT', '/v1/admin/policies/one-more', body);
+    expect(over).toMatchObject({
+      status: 409,
+      body: { error: 'too_many_policies', max: LIMITS.MAX_POLICIES },
+    });
+    expect(
+      (await call('PUT', '/v1/admin/policies/p0', { ...body, body: 'New text.' })).status,
+    ).toBe(200);
+    expect((await call('DELETE', '/v1/admin/policies/p1')).status).toBe(200);
+    expect((await call('PUT', '/v1/admin/policies/one-more', body)).status).toBe(200);
+  });
+
+  it('keeps places for the policies a Shopify import brings while it is on', async () => {
+    const { call, store, relay, directory, state } = await setup();
+    const server = await state.store(store.owner);
+    if (!server) {
+      throw new Error('store missing');
+    }
+    await relay.publish(
+      [],
+      finalizeEvent(
+        buildCatalogAuth({ key: server.catalogKey, mode: 'hosted', createdAt: NOW - 10 }),
+        store.ownerSecret,
+      ),
+    );
+    const body = { title: 'A policy', body: 'Text.' };
+    const imported = 4;
+    for (let index = 0; index < LIMITS.MAX_POLICIES - imported; index += 1) {
+      expect((await call('PUT', `/v1/admin/policies/p${index}`, body)).status).toBe(200);
+    }
+    const settings = { platform: 'shopify' as const, url: 'https://shop.example.com' };
+    await directory.setConnector(store.owner, { ...settings, importPolicies: true });
+    expect(await call('PUT', '/v1/admin/policies/one-more', body)).toMatchObject({
+      status: 409,
+      body: { error: 'too_many_policies' },
+    });
+    await directory.setConnector(store.owner, { ...settings, importPolicies: false });
+    expect((await call('PUT', '/v1/admin/policies/one-more', body)).status).toBe(200);
   });
 });
 

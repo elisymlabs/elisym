@@ -4,13 +4,17 @@ import { useState } from 'react';
 interface Props {
   policy: Policy;
   editable: boolean;
+  /** Imported by the Shopify connector, which puts the shop's version back on each sync. */
+  imported: boolean;
+  /** Past the cap: the assistant does not read it. */
+  unread: boolean;
   busy: boolean;
   onEdit: () => void;
   onDelete: () => Promise<void>;
 }
 
 /** One policy; deleting asks first. */
-export function PolicyRow({ policy, editable, busy, onEdit, onDelete }: Props) {
+export function PolicyRow({ policy, editable, imported, unread, busy, onEdit, onDelete }: Props) {
   const [confirming, setConfirming] = useState(false);
   let actions = null;
   if (editable && confirming) {
@@ -62,7 +66,11 @@ export function PolicyRow({ policy, editable, busy, onEdit, onDelete }: Props) {
     <li className="border-line rounded-10 flex flex-wrap items-center justify-between gap-8 border p-12">
       <div className="flex min-w-0 flex-col">
         <span className="text-14 font-medium">{policy.title}</span>
-        <span className="text-12 text-text-3 font-mono">{policy.slug}</span>
+        <span className="text-12 text-text-3">
+          <span className="font-mono">{policy.slug}</span>
+          {imported ? ' - from Shopify' : null}
+          {unread ? ' - not read by the assistant' : null}
+        </span>
       </div>
       {actions}
     </li>

@@ -11,6 +11,12 @@ import {
 } from './catalog/store-catalog';
 import { fence, sanitizeText } from './fence';
 import type { ToolSpec, ToolUseBlock } from './llm/types';
+import {
+  MAX_POLICY_RESULTS,
+  POLICY_RESULT_CHARS,
+  passagesWithin,
+  rankPolicies,
+} from './policy-search';
 import { SKILL_NAMES, skillText } from './skills';
 import { type IdsToStrip, sanitizeAnswerText, idsToStrip, stripProductIds } from './text-sanitize';
 
@@ -18,8 +24,6 @@ export const MAX_SEARCH_RESULTS = 12;
 const DEFAULT_SEARCH_RESULTS = 8;
 const TOP_ATTRS = 5;
 const DESCRIPTION_FENCE_CHARS = 6_000;
-const POLICY_FENCE_CHARS = 3_000;
-const MAX_POLICY_RESULTS = 3;
 const MAX_STATUS_LINES_PER_TURN = 2;
 const PRICE_DIMENSION = 'Price';
 const READ_TOOLS: readonly string[] = ['search_products', 'get_product_details', 'search_policies'];
@@ -92,11 +96,20 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: 'search_policies',
-    description: 'Search the store policies and FAQ (shipping, returns, sizing...).',
+    description:
+      'Read the store policies and FAQ (shipping, returns, sizing...). Pick the policies whose titles in the policy list answer the question, by meaning and in any language, and pass their slugs. Add a query of key words in the policy language to find the right passage in a long policy, or pass a query alone to search every policy when no title fits.',
     inputSchema: {
       type: 'object',
-      properties: { query: { type: 'string' }, ...statusProperty },
-      required: ['query'],
+      properties: {
+        slugs: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: MAX_POLICY_RESULTS,
+          description: 'Slugs from the policy list.',
+        },
+        query: { type: 'string', description: 'Key words, in the policy language.' },
+        ...statusProperty,
+      },
       additionalProperties: false,
     },
   },
@@ -443,27 +456,57 @@ function productDetails(
   };
 }
 
+/**
+ * Policies by the slugs the model chose from the list in the prompt, which
+ * lets it match by meaning; else (or when none of them exists) the ones whose
+ * words best match the query. Each long policy keeps the passages the query
+ * points at, within a budget the results share.
+ */
 function searchPolicies(catalog: StoreCatalog, input: Record<string, unknown>, state: TurnState) {
   const query = tokenize(typeof input.query === 'string' ? input.query : '');
-  const ranked = catalog.policies
-    .map((policy) => {
-      const terms = new Set(tokenize(`${policy.slug} ${policy.title} ${policy.body}`));
-      return { policy, score: query.filter((term) => terms.has(term)).length };
-    })
-    .filter((entry) => entry.score > 0 || query.length === 0)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, MAX_POLICY_RESULTS);
-  for (const entry of ranked) {
-    if (!state.policyPassages.includes(entry.policy.body)) {
-      state.policyPassages.push(entry.policy.body);
+  // The schema's own cap is advice to the model: what it sends is cut here.
+  const asked = [
+    ...new Set(
+      Array.isArray(input.slugs)
+        ? input.slugs
+            .filter((slug): slug is string => typeof slug === 'string')
+            // Slugs are lowercase: `Returns` or ` shipping` still names the policy.
+            .map((slug) => slug.trim().toLowerCase())
+        : [],
+    ),
+  ].slice(0, MAX_POLICY_RESULTS);
+  const bySlug = asked.flatMap((slug) => catalog.policies.filter((policy) => policy.slug === slug));
+  const unknown = asked.filter((slug) => !catalog.policies.some((policy) => policy.slug === slug));
+  const found =
+    bySlug.length > 0 ? bySlug : rankPolicies(catalog.policies, query, MAX_POLICY_RESULTS);
+  const passages = passagesWithin(
+    found.map((policy) => policy.body),
+    query,
+    POLICY_RESULT_CHARS,
+  );
+  // Only what the model is shown may be quoted: an amount in a part left out is not in it.
+  for (const passage of passages) {
+    if (!state.policyPassages.includes(passage)) {
+      state.policyPassages.push(passage);
     }
   }
   return {
-    results: ranked.map((entry) => ({
-      slug: entry.policy.slug,
-      title: sanitizeText(entry.policy.title, LIMITS.TITLE_CHARS),
-      passage: fence('policy', entry.policy.body, POLICY_FENCE_CHARS),
-    })),
+    results: found.map((policy, index) => {
+      const passage = passages[index] ?? '';
+      return {
+        slug: policy.slug,
+        title: sanitizeText(policy.title, LIMITS.TITLE_CHARS),
+        // Sanitizing lengthens a line that forges a turn (`user:` becomes `user -`) by one
+        // character, and nothing else: it must not cut what was chosen to fit.
+        passage: fence('policy', passage, passage.length + passage.split('\n').length),
+      };
+    }),
+    ...(unknown.length > 0
+      ? { unknown_slugs: unknown.map((slug) => sanitizeText(slug, LIMITS.TITLE_CHARS)) }
+      : {}),
+    ...(found.length === 0
+      ? { note: 'No policy matched: try the slugs from the policy list, or other key words.' }
+      : {}),
   };
 }
 

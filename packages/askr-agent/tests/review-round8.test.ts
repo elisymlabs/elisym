@@ -119,8 +119,8 @@ describe('5. the range pass is linear', () => {
 
   it('a policy returned twice is kept once', () => {
     const state = newTurnState(new Set(), []);
-    executeTool(catalog(), state, toolCall('search_policies', { query: '' }));
-    executeTool(catalog(), state, toolCall('search_policies', { query: '' }));
+    executeTool(catalog(), state, toolCall('search_policies', { slugs: ['shipping'] }));
+    executeTool(catalog(), state, toolCall('search_policies', { slugs: ['shipping'] }));
     expect(state.policyPassages.length).toBe(new Set(state.policyPassages).size);
     expect(state.policyPassages.length).toBeGreaterThan(0);
   });
