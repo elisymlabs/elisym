@@ -1,4 +1,4 @@
-import type { Policy, StoreConfig } from '@elisym/askr';
+import { LIMITS, type Policy, SHOPIFY_POLICY_SLUGS, type StoreConfig } from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
@@ -25,6 +25,11 @@ export function PoliciesSection({ deps, view, config }: Props) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const editable = config !== undefined && config.policyKey === view.catalogKey;
+  // While a Shopify connector imports policies, each sync puts the shop's version of these back.
+  const importedSlugs =
+    view.connector?.platform === 'shopify' && view.connector.importPolicies
+      ? SHOPIFY_POLICY_SLUGS.map((entry) => entry.slug)
+      : [];
 
   const read = useCallback(async () => {
     if (config === undefined) {
@@ -71,28 +76,36 @@ export function PoliciesSection({ deps, view, config }: Props) {
   }
 
   let editor: ReactNode = null;
+  let limitNote = '';
+  if (policies !== undefined && policies.length > LIMITS.MAX_POLICIES) {
+    limitNote = `A store has at most ${LIMITS.MAX_POLICIES} policies: the assistant reads only the first ${LIMITS.MAX_POLICIES} by short name. Delete the ones it does not need.`;
+  } else if (editable && policies !== undefined && policies.length === LIMITS.MAX_POLICIES) {
+    limitNote = `This store has ${LIMITS.MAX_POLICIES} policies, as many as it can have. Delete one to add another.`;
+  }
   // A new policy must not reuse a published slug, which only a whole read can tell.
-  if (editable && policies !== undefined) {
-    editor =
-      editing === undefined ? (
-        <div>
-          <button type="button" className="btn" onClick={() => setEditing({ mode: 'new' })}>
-            Add a policy
-          </button>
-        </div>
-      ) : (
-        <PolicyEditor
-          key={editing.mode === 'edit' ? editing.policy.slug : 'new'}
-          initial={editing.mode === 'edit' ? editing.policy : undefined}
-          takenSlugs={policies.map((existing) => existing.slug)}
-          onCancel={() => setEditing(undefined)}
-          onSave={async (policy) => {
-            await deps.api.putPolicy(policy.slug, { title: policy.title, body: policy.body });
-            setEditing(undefined);
-            await read();
-          }}
-        />
-      );
+  if (editable && policies !== undefined && editing !== undefined) {
+    editor = (
+      <PolicyEditor
+        key={editing.mode === 'edit' ? editing.policy.slug : 'new'}
+        initial={editing.mode === 'edit' ? editing.policy : undefined}
+        takenSlugs={policies.map((existing) => existing.slug)}
+        importedSlugs={importedSlugs}
+        onCancel={() => setEditing(undefined)}
+        onSave={async (policy) => {
+          await deps.api.putPolicy(policy.slug, { title: policy.title, body: policy.body });
+          setEditing(undefined);
+          await read();
+        }}
+      />
+    );
+  } else if (editable && policies !== undefined && policies.length < LIMITS.MAX_POLICIES) {
+    editor = (
+      <div>
+        <button type="button" className="btn" onClick={() => setEditing({ mode: 'new' })}>
+          Add a policy
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -101,6 +114,14 @@ export function PoliciesSection({ deps, view, config }: Props) {
       description="Shipping, returns, sizing and other answers the assistant may quote."
     >
       {note === '' ? null : <Notice tone="info">{note}</Notice>}
+      {editable && importedSlugs.length > 0 ? (
+        <Notice tone="info">
+          Your Shopify connector imports the {importedSlugs.join(', ')} policies, and each sync puts
+          the shop&apos;s version back. Change those in Shopify, or turn off policy import in
+          Connector to edit them here.
+        </Notice>
+      ) : null}
+      {limitNote === '' ? null : <Notice tone="info">{limitNote}</Notice>}
       {readError === '' ? null : (
         <Notice tone="error">
           {readError}{' '}
@@ -116,7 +137,8 @@ export function PoliciesSection({ deps, view, config }: Props) {
             <PolicyRow
               key={policy.slug}
               policy={policy}
-              editable={editable}
+              editable={editable && !importedSlugs.includes(policy.slug)}
+              imported={importedSlugs.includes(policy.slug)}
               busy={busy}
               onEdit={() => setEditing({ mode: 'edit', policy })}
               onDelete={() => remove(policy.slug)}

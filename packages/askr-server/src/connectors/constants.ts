@@ -42,13 +42,5 @@ export const DEFAULT_MAX_CONCURRENT_SYNCS = 2;
 /** Bytes of SHA-256 kept for a hashed `d` (7.4): 16 base64url characters. */
 export const D_HASH_BYTES = 12;
 
-/** Shopify policy pages imported as 30495 (7.4), by their public handle. */
-export const SHOPIFY_POLICY_SLUGS: ReadonlyArray<{
-  handle: string;
-  slug: string;
-}> = [
-  { handle: 'refund-policy', slug: 'returns' },
-  { handle: 'shipping-policy', slug: 'shipping' },
-  { handle: 'privacy-policy', slug: 'privacy' },
-  { handle: 'terms-of-service', slug: 'terms' },
-];
+/** Shopify policy pages imported as 30495 (7.4): shared with the admin, which shows them read-only. */
+export { SHOPIFY_POLICY_SLUGS } from '@elisym/askr';

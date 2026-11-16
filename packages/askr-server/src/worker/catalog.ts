@@ -5,6 +5,7 @@ import {
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
   KIND_POLICY,
+  LIMITS,
   type Policy,
   type StoreConfig,
   decryptPrivateConfig,
@@ -219,11 +220,16 @@ export function buildStoreCatalog(
       }
     }
   }
+  // The admin refuses a policy past the cap; one published with the store's own key reaches
+  // the relay anyway, so only the first this many by slug (character order) are used.
+  const usedPolicies = [...policies]
+    .sort((left, right) => (left.slug < right.slug ? -1 : 1))
+    .slice(0, LIMITS.MAX_POLICIES);
   return new StoreCatalog(
     config,
     decryptPrivateConfig(config, assistantSecretKey),
     indexed,
-    policies,
+    usedPolicies,
   );
 }
 

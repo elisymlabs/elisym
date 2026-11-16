@@ -6,7 +6,9 @@ import {
   D_TAG_RE,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
+  LIMITS,
   PolicyInputSchema,
+  SHOPIFY_POLICY_SLUGS,
   type SyncDiff,
   type SyncRelayClient,
   parseConfig,
@@ -19,6 +21,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
 import { publicBaseOf } from '../config';
+import { livePolicies } from '../connectors/policies';
 import type { ConnectorService } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
@@ -398,6 +401,16 @@ export function createAdminApi(
     body: string,
   ): Promise<Response> => {
     const options = { signer: store.catalogSecretKey, store: store.owner, client: deps.syncClient };
+    // While a Shopify connector imports policies, its slugs are its own: each sync would put
+    // the shop's version back over a change made here.
+    const connector = await deps.directory.connector(store.owner);
+    const imported =
+      connector?.platform === 'shopify' &&
+      connector.importPolicies &&
+      SHOPIFY_POLICY_SLUGS.some((entry) => entry.slug === slug);
+    if (imported) {
+      return json({ error: 'policy_imported' }, 409);
+    }
     try {
       if (method === 'DELETE') {
         const event = await removePolicy({ ...options, slug });
@@ -409,6 +422,12 @@ export function createAdminApi(
         : undefined;
       if (!input?.success) {
         return json({ error: 'bad_request' }, 400);
+      }
+      // A new policy past the cap is refused. Two at once may both pass: the worker uses
+      // only the first MAX_POLICIES by slug anyway, so the cap holds where it matters.
+      const live = await livePolicies(deps.syncClient, store.catalogKey);
+      if (!live.has(slug) && live.size >= LIMITS.MAX_POLICIES) {
+        return json({ error: 'too_many_policies', max: LIMITS.MAX_POLICIES }, 409);
       }
       const event = await setPolicy({ ...options, policy: input.data });
       return json({ id: event.id }, 200);

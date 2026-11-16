@@ -31,7 +31,7 @@ export interface SyncImportedPoliciesOptions {
 }
 
 /** The live title and body of each of `key`'s policies: newest version, not deleted since. */
-async function livePolicies(
+export async function livePolicies(
   client: SyncRelayClient,
   key: string,
 ): Promise<Map<string, { title: string; body: string }>> {

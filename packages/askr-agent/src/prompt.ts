@@ -111,7 +111,9 @@ export function storeBlock(catalog: StoreCatalog): StoreBlockResult {
   }
   if (catalog.policies.length > 0) {
     parts.push(
-      `Policies (search_policies reads them): ${[...catalog.policies]
+      `Policies, by slug and title (pass the slugs that fit to search_policies): ${[
+        ...catalog.policies,
+      ]
         .sort((left, right) => left.slug.localeCompare(right.slug, 'en'))
         .map((policy) => `${policy.slug} (${sanitizeText(policy.title, 80)})`)
         .join(', ')}.`,

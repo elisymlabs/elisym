@@ -43,6 +43,8 @@ const CODES: Readonly<Record<string, string>> = {
   inactive:
     'Your store is not active yet. Products, policies and the connector work once the operator has activated it.',
   no_connector: 'No connector is set up for this store. Save the connector settings first.',
+  policy_imported:
+    'This policy comes from your Shopify store, and each connector sync puts its version back. Change it in Shopify, or turn off policy import in Connector to change it here.',
 };
 
 /** A plain sentence for any error the admin shows. */
@@ -66,6 +68,12 @@ export function errorMessage(error: unknown): string {
     return typeof max === 'number'
       ? `Your plan allows at most ${max} products. Remove some and retry.`
       : 'Your plan does not allow this many products. Remove some and retry.';
+  }
+  if (error.code === 'too_many_policies') {
+    const max = error.detail.max;
+    return typeof max === 'number'
+      ? `A store has at most ${max} policies. Delete one, or add this text to an existing policy.`
+      : 'This store has as many policies as it can have. Delete one, or add this text to an existing policy.';
   }
   if (error.code === 'sync_refused') {
     return `The product sync could not start: ${detailMessage(error)}`;
