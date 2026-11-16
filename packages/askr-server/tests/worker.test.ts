@@ -1,5 +1,6 @@
 import {
   CONFIG_D_TAG,
+  KIND_CATALOG_AUTH,
   KIND_CONFIG,
   buildCatalogAuth,
   buildCatalogItemEvent,
@@ -153,7 +154,6 @@ async function harness(input: {
   reserveUsd?: string;
   maxTokens?: number;
   historyTimeoutMs?: number;
-  extraRelayBudgetMs?: number;
   stableConnectionMs?: number;
   configurePool?: (pool: FakePool) => void;
   /** Leave the worker unstarted (the test starts it). */
@@ -189,9 +189,6 @@ async function harness(input: {
     now: () => clock.now,
     log: (message) => logs.push(message),
     ...(input.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: input.historyTimeoutMs }),
-    ...(input.extraRelayBudgetMs === undefined
-      ? {}
-      : { extraRelayBudgetMs: input.extraRelayBudgetMs, extraRelayTimeoutMs: 1_000 }),
     ...(input.stableConnectionMs === undefined
       ? {}
       : { stableConnectionMs: input.stableConnectionMs }),
@@ -730,57 +727,50 @@ describe('worker catalogs (5.1, 2.4)', () => {
     await waitUntil(() => !setup.worker.catalogs.has(store.owner));
   });
 
-  it('a Pay Core source reads the store key authority (30490) from the default relays too', async () => {
-    const ownerSecret = generateSecretKey();
-    const assistantSecret = generateSecretKey();
-    const storeSecret = generateSecretKey();
-    const policySecret = generateSecretKey();
-    const owner = getPublicKey(ownerSecret);
-    const storeKey = getPublicKey(storeSecret);
-    const policyKey = getPublicKey(policySecret);
-    const config = finalizeEvent(
-      buildConfigEvent(
-        {
-          assistant: getPublicKey(assistantSecret),
-          origins: [ORIGIN],
-          name: 'Pay Core Shop',
-          language: 'en',
-          currency: 'USD',
-          source: { kind: 'paycore' },
-          catalogKey: storeKey,
-          policyKey,
-          createdAt: NOW - 100,
-        },
-        ownerSecret,
-      ),
-      ownerSecret,
+  it('a config naming a paycore source is unservable, and no other relay or 30490 is read', async () => {
+    const store = syntheticStore();
+    const signed = store.events.find((event) => event.kind === KIND_CONFIG);
+    if (signed === undefined) {
+      throw new Error('no config');
+    }
+    const tags = signed.tags.map((tag) => (tag[0] === 'source' ? ['source', 'paycore'] : tag));
+    const paycoreConfig = finalizeEvent(
+      { kind: signed.kind, created_at: signed.created_at, tags, content: signed.content },
+      store.ownerSecret,
     );
-    const store: SyntheticStore = {
-      ownerSecret,
-      owner,
-      assistantSecret,
-      assistant: getPublicKey(assistantSecret),
-      catalogSecret: storeSecret,
-      catalogKey: storeKey,
-      events: [config, listing(storeSecret, 'paycore-item', NOW - 50)],
-    };
     const storeAuth = finalizeEvent(
-      buildStoreAuthEvent({ storePubkey: storeKey, mode: 'hosted', createdAt: NOW - 100 }),
-      ownerSecret,
+      buildStoreAuthEvent({
+        storePubkey: store.catalogKey,
+        mode: 'hosted',
+        createdAt: NOW - 100,
+      }),
+      store.ownerSecret,
     );
-    const setup = await harness({ stores: [store] });
-    expect(setup.worker.catalogs.get(owner)?.items.size).toBe(0);
-    setup.pool.relay('wss://nos.lol').accept(storeAuth);
-    // Any owner event queues a full reload, which reads the default relays again.
-    setup.pool
-      .relay(RELAY)
-      .accept(
-        finalizeEvent(
-          buildCatalogAuth({ key: policyKey, mode: 'hosted', createdAt: NOW - 90 }),
-          ownerSecret,
-        ),
-      );
-    await waitUntil(() => setup.worker.catalogs.get(owner)?.items.size === 1);
+    const setup = await harness({
+      stores: [
+        {
+          ...store,
+          events: [
+            ...store.events.filter((event) => event.kind !== KIND_CONFIG),
+            paycoreConfig,
+            storeAuth,
+          ],
+        },
+      ],
+      configurePool: (pool) => {
+        pool.relay('wss://nos.lol').accept(storeAuth);
+      },
+    });
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.catalogs.has(store.owner)).toBe(false);
+    expect(setup.worker.isUnservable(store.owner)).toBe(true);
+    expect(setup.pool.relays.get('wss://nos.lol')?.requests).toEqual([]);
+    expect([...setup.pool.relays.keys()].sort()).toEqual(['wss://nos.lol', RELAY].sort());
+    expect(
+      setup.pool
+        .relay(RELAY)
+        .requests.some((filters) => filters.some((filter) => filter.kinds?.includes(30490))),
+    ).toBe(false);
   });
 });
 
@@ -949,53 +939,30 @@ describe('worker review round 2', () => {
     ).toBeGreaterThanOrEqual(1);
   });
 
-  it('a Pay Core store loads while one default relay is unreachable', async () => {
-    const ownerSecret = generateSecretKey();
-    const storeSecret = generateSecretKey();
-    const assistantSecret = generateSecretKey();
-    const policyKey = getPublicKey(generateSecretKey());
-    const storeKey = getPublicKey(storeSecret);
-    const config = finalizeEvent(
-      buildConfigEvent(
-        {
-          assistant: getPublicKey(assistantSecret),
-          origins: [ORIGIN],
-          name: 'Pay Core Shop',
-          language: 'en',
-          currency: 'USD',
-          source: { kind: 'paycore' },
-          catalogKey: storeKey,
-          policyKey,
-          createdAt: NOW - 100,
-        },
-        ownerSecret,
-      ),
-      ownerSecret,
+  it('a catalog key the owner authorized only with a 30490 gives the store no products', async () => {
+    const store = syntheticStore();
+    const storeAuth = finalizeEvent(
+      buildStoreAuthEvent({
+        storePubkey: store.catalogKey,
+        mode: 'hosted',
+        createdAt: NOW - 100,
+      }),
+      store.ownerSecret,
     );
-    const store: SyntheticStore = {
-      ownerSecret,
-      owner: getPublicKey(ownerSecret),
-      assistantSecret,
-      assistant: getPublicKey(assistantSecret),
-      catalogSecret: storeSecret,
-      catalogKey: storeKey,
-      events: [config, listing(storeSecret, 'paycore-item', NOW - 50)],
-    };
     const setup = await harness({
-      stores: [store],
+      stores: [
+        {
+          ...store,
+          events: [...store.events.filter((event) => event.kind !== KIND_CATALOG_AUTH), storeAuth],
+        },
+      ],
       configurePool: (pool) => {
-        pool.unreachable.add('wss://relay.damus.io');
-        pool
-          .relay('wss://nos.lol')
-          .accept(
-            finalizeEvent(
-              buildStoreAuthEvent({ storePubkey: storeKey, mode: 'hosted', createdAt: NOW - 100 }),
-              ownerSecret,
-            ),
-          );
+        pool.relay('wss://nos.lol').accept(storeAuth);
       },
     });
-    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(1);
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(0);
+    expect(setup.pool.relays.get('wss://nos.lol')?.requests).toEqual([]);
   });
 
   it('events during a pending retry wait for it instead of reloading at once', async () => {
@@ -1151,44 +1118,6 @@ function endlessPages(author: string, pages: number) {
   };
 }
 
-function paycoreStore() {
-  const ownerSecret = generateSecretKey();
-  const storeSecret = generateSecretKey();
-  const assistantSecret = generateSecretKey();
-  const storeKey = getPublicKey(storeSecret);
-  const config = finalizeEvent(
-    buildConfigEvent(
-      {
-        assistant: getPublicKey(assistantSecret),
-        origins: [ORIGIN],
-        name: 'Pay Core Shop',
-        language: 'en',
-        currency: 'USD',
-        source: { kind: 'paycore' },
-        catalogKey: storeKey,
-        policyKey: getPublicKey(generateSecretKey()),
-        createdAt: NOW - 100,
-      },
-      ownerSecret,
-    ),
-    ownerSecret,
-  );
-  const store: SyntheticStore = {
-    ownerSecret,
-    owner: getPublicKey(ownerSecret),
-    assistantSecret,
-    assistant: getPublicKey(assistantSecret),
-    catalogSecret: storeSecret,
-    catalogKey: storeKey,
-    events: [config, listing(storeSecret, 'paycore-item', NOW - 50)],
-  };
-  const storeAuth = finalizeEvent(
-    buildStoreAuthEvent({ storePubkey: storeKey, mode: 'hosted', createdAt: NOW - 100 }),
-    ownerSecret,
-  );
-  return { store, storeAuth };
-}
-
 describe('worker review round 3', () => {
   it('a turn that ends after its session ended is charged what it spent, and a queued ask is not started', async () => {
     const store = syntheticStore();
@@ -1250,23 +1179,6 @@ describe('worker review round 3', () => {
     await setup.worker.catalogsSettled();
     await waitUntil(() => setup.worker.catalogs.get(store.owner)?.items.size === 3);
     expect(ownerReloads(setup, store) - before).toBe(40);
-  });
-
-  it('a slow default relay holds a Pay Core reload only for its time budget', async () => {
-    const { store, storeAuth } = paycoreStore();
-    const started = Date.now();
-    const setup = await harness({
-      stores: [store],
-      extraRelayBudgetMs: 200,
-      configurePool: (pool) => {
-        pool.relay('wss://relay.damus.io').accept(storeAuth);
-        const slow = pool.relay('wss://nos.lol');
-        slow.delayMs = 60;
-        slow.stray = endlessPages(store.owner, 1_000);
-      },
-    });
-    expect(Date.now() - started).toBeLessThan(1_500);
-    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(1);
   });
 
   it('a store read in full that names another assistant is unservable, not loading', async () => {

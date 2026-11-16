@@ -13,7 +13,6 @@ export {
   CardCache,
   componentAddresses,
   isProductAuthor,
-  productRole,
   resolveCards,
 } from './cards';
 export { type Gateway, type SessionGrant, type SessionResult, httpGateway } from './gateway';
@@ -33,7 +32,6 @@ export {
   type RelayQuery,
   type StoreData,
   loadStoreData,
-  productRelays,
   readStoreConfig,
   storeFilters,
 } from './store-data';

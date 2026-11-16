@@ -174,6 +174,49 @@ describe('bootstrap', () => {
     expect(setup.client.snapshot().phase).toBe('failed');
   });
 
+  it('a config naming a paycore source is no readable config, and nothing but the Askr relay is read', async () => {
+    const store = makeStore();
+    const relay = new FakeRelay();
+    publishStore(relay, store);
+    const signed = relay.events.get(MAIN_RELAY)?.find((event) => event.kind === 30496);
+    if (signed === undefined) {
+      throw new Error('no config');
+    }
+    const tags = signed.tags.map((tag) => (tag[0] === 'source' ? ['source', 'paycore'] : tag));
+    relay.events.set(
+      MAIN_RELAY,
+      (relay.events.get(MAIN_RELAY) ?? []).map((event) =>
+        event.kind === 30496 ? sign({ ...signed, tags }, store.owner) : event,
+      ),
+    );
+    relay.storeOnly(
+      'wss://nos.lol',
+      sign(
+        {
+          kind: 30490,
+          created_at: localSecs() - 100,
+          tags: [
+            ['d', store.catalogKey.pubkey],
+            ['p', store.catalogKey.pubkey],
+            ['mode', 'self-host'],
+          ],
+          content: '',
+        },
+        store.owner,
+      ),
+    );
+    const setup = harness({}, { store, relay });
+    await started(setup);
+    expect(setup.client.snapshot().phase).toBe('failed');
+    expect(relay.connections.map((connection) => connection.url)).not.toContain('wss://nos.lol');
+    expect(relay.connections.every((connection) => connection.url === MAIN_RELAY)).toBe(true);
+    expect(
+      relay.requests.some((request) =>
+        request.filters.some((filter) => filter.kinds?.includes(30490)),
+      ),
+    ).toBe(false);
+  });
+
   it('a ticket naming another A than the config re-reads the config once, then is unavailable', async () => {
     const setup = harness();
     setup.gateway.assistant = testKey().pubkey;

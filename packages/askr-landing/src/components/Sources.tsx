@@ -22,12 +22,6 @@ const SOURCES: { icon: IconName; title: string; body: string; tags: string[] }[]
     body: "Imported on a schedule from your shop's public endpoints only. No store token, no admin access to hand over.",
     tags: ['Shopify', 'WooCommerce', 'Google product feed'],
   },
-  {
-    icon: 'store',
-    title: 'A Pay Core store',
-    body: "An existing Pay Core store's listings, read as they are. Give each product a url so its card links to the product page.",
-    tags: ['Pay Core'],
-  },
 ];
 
 export function Sources() {
@@ -36,7 +30,7 @@ export function Sources() {
       <SectionHeading eyebrow="Product sources" title="Bring the catalog you already have">
         {`A store reads its products from one source, chosen in the admin. ${PRODUCT_NAME} answers from that catalog and from the policies you publish: returns, shipping, warranty and FAQ.`}
       </SectionHeading>
-      <ul className="mt-48 grid gap-16 sm:grid-cols-2">
+      <ul className="mt-48 grid gap-16 md:grid-cols-3">
         {SOURCES.map((source) => (
           <li
             key={source.title}

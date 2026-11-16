@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCatalogAuth,
   buildCatalogRevocation,
-  hasRole,
+  isCatalogKey,
   readCatalogAuthority,
   resolveStoreKeys,
 } from '../src/events/catalog-auth';
@@ -18,7 +18,7 @@ import {
   parseConfig,
 } from '../src/events/config';
 import { buildPolicyEvent, parsePolicy } from '../src/events/policy';
-import { StoreConfigInputSchema } from '../src/index';
+import { PRODUCT_SOURCES, StoreConfigInputSchema } from '../src/index';
 import { NOW, sign, testKey } from './fixtures';
 
 const owner = testKey();
@@ -319,28 +319,22 @@ describe('policies', () => {
 });
 
 describe('catalog key authority', () => {
-  it('grants catalog to a 30497 key and paycore to a 30490 key, never mixed', () => {
+  it('grants a 30497 key; a key the owner authorized only with a 30490 holds nothing', () => {
     const catalogAuth = sign(
       buildCatalogAuth({ key: catalog.pubkey, mode: 'self-host', createdAt: NOW - 10 }),
       owner,
     );
     const store = testKey();
-    const payCoreAuth = sign(
+    const storeAuth = sign(
       buildStoreAuthEvent({ storePubkey: store.pubkey, mode: 'self-host', createdAt: NOW - 10 }),
       owner,
     );
-    const events = [catalogAuth, payCoreAuth];
-    expect(hasRole(events, owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(true);
-    expect(hasRole(events, owner.pubkey, catalog.pubkey, 'paycore', NOW)).toBe(false);
-    expect(hasRole(events, owner.pubkey, store.pubkey, 'paycore', NOW)).toBe(true);
-    expect(hasRole(events, owner.pubkey, store.pubkey, 'catalog', NOW)).toBe(false);
-    expect(readCatalogAuthority(events, owner.pubkey, NOW)).toEqual(
-      new Map([
-        [catalog.pubkey, new Set(['catalog'])],
-        [store.pubkey, new Set(['paycore'])],
-      ]),
-    );
-    expect(hasRole(events, testKey().pubkey, catalog.pubkey, 'catalog', NOW)).toBe(false);
+    const events = [catalogAuth, storeAuth];
+    expect(isCatalogKey(events, owner.pubkey, catalog.pubkey, NOW)).toBe(true);
+    expect(isCatalogKey(events, owner.pubkey, store.pubkey, NOW)).toBe(false);
+    expect(readCatalogAuthority(events, owner.pubkey, NOW)).toEqual(new Set([catalog.pubkey]));
+    expect(readCatalogAuthority([storeAuth], owner.pubkey, NOW).size).toBe(0);
+    expect(isCatalogKey(events, testKey().pubkey, catalog.pubkey, NOW)).toBe(false);
   });
 
   it('ignores a 30497 signed by someone other than the owner', () => {
@@ -348,24 +342,26 @@ describe('catalog key authority', () => {
       buildCatalogAuth({ key: catalog.pubkey, mode: 'self-host', createdAt: NOW - 10 }),
       catalog,
     );
-    expect(hasRole([forged], owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(false);
+    expect(isCatalogKey([forged], owner.pubkey, catalog.pubkey, NOW)).toBe(false);
     expect(readCatalogAuthority([forged], owner.pubkey, NOW).size).toBe(0);
   });
 
-  it('a Pay Core revocation does not revoke a catalog key, a catalog revocation does', () => {
+  it('a 30490 revocation does not revoke a catalog key, a catalog revocation does', () => {
     const grant = sign(
       buildCatalogAuth({ key: catalog.pubkey, mode: 'hosted', createdAt: NOW - 10 }),
       owner,
     );
-    const payCoreRevoke = sign(buildStoreRevocationEvent(catalog.pubkey, NOW - 5), owner);
-    expect(hasRole([grant, payCoreRevoke], owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(
-      true,
+    const storeRevoke = sign(buildStoreRevocationEvent(catalog.pubkey, NOW - 5), owner);
+    expect(isCatalogKey([grant, storeRevoke], owner.pubkey, catalog.pubkey, NOW)).toBe(true);
+    expect(readCatalogAuthority([grant, storeRevoke], owner.pubkey, NOW)).toEqual(
+      new Set([catalog.pubkey]),
     );
     const revoke = sign(buildCatalogRevocation(catalog.pubkey, NOW - 5), owner);
-    expect(hasRole([grant, revoke], owner.pubkey, catalog.pubkey, 'catalog', NOW)).toBe(false);
+    expect(isCatalogKey([grant, revoke], owner.pubkey, catalog.pubkey, NOW)).toBe(false);
+    expect(readCatalogAuthority([grant, revoke], owner.pubkey, NOW).size).toBe(0);
   });
 
-  it('resolves product and policy keys by the role the source needs', () => {
+  it('resolves product and policy keys only while each is an authorized catalog key', () => {
     const parsed = parseConfig(config());
     const grant = sign(
       buildCatalogAuth({ key: catalog.pubkey, mode: 'self-host', createdAt: NOW - 10 }),
@@ -373,29 +369,62 @@ describe('catalog key authority', () => {
     );
     expect(parsed && resolveStoreKeys(parsed, [grant], NOW)).toEqual({
       productKey: catalog.pubkey,
-      productRole: 'catalog',
       policyKey: catalog.pubkey,
     });
     expect(parsed && resolveStoreKeys(parsed, [], NOW)).toEqual({});
+    const policyOnly = testKey();
+    const split = parseConfig(config({ catalogKey: policyOnly.pubkey, policyKey: catalog.pubkey }));
+    expect(split && resolveStoreKeys(split, [grant], NOW)).toEqual({ policyKey: catalog.pubkey });
   });
 
-  it('takes a paycore source only from a 30490 key', () => {
+  it('a key authorized only with a 30490 is never a product or policy key', () => {
     const store = testKey();
-    const parsed = parseConfig(
-      config({ source: { kind: 'paycore' }, catalogKey: store.pubkey, policyKey: catalog.pubkey }),
-    );
-    const payCoreAuth = sign(
+    const parsed = parseConfig(config({ catalogKey: store.pubkey, policyKey: store.pubkey }));
+    const storeAuth = sign(
       buildStoreAuthEvent({ storePubkey: store.pubkey, mode: 'hosted', createdAt: NOW - 10 }),
       owner,
     );
-    const catalogGrant = sign(
-      buildCatalogAuth({ key: catalog.pubkey, mode: 'hosted', createdAt: NOW - 10 }),
-      owner,
-    );
-    expect(parsed && resolveStoreKeys(parsed, [payCoreAuth, catalogGrant], NOW)).toEqual({
-      productKey: store.pubkey,
-      productRole: 'paycore',
+    expect(parsed && resolveStoreKeys(parsed, [storeAuth], NOW)).toEqual({});
+  });
+});
+
+describe('a paycore product source is refused', () => {
+  it('is not a product source', () => {
+    expect(PRODUCT_SOURCES).toEqual(['catalog', 'admin', 'connector']);
+    expect(PRODUCT_SOURCES.some((kind) => kind === 'paycore')).toBe(false);
+  });
+
+  it('a config naming it is not built', () => {
+    expect(() => config({ source: { kind: 'paycore' }, policyKey: catalog.pubkey })).toThrow();
+    expect(() => config({ source: { kind: 'paycore' } })).toThrow();
+  });
+
+  it('a signed config naming it reads as no config at all, without throwing', () => {
+    const valid = config();
+    expect(parseConfig(valid)).toBeDefined();
+    for (const sourceTag of [
+      ['source', 'paycore'],
+      ['source', 'paycore', 'shopify'],
+      ['source', 'PayCore'],
+    ]) {
+      const tags = valid.tags.map((tag) => (tag[0] === 'source' ? sourceTag : tag));
+      const signed = sign({ ...valid, tags }, owner);
+      expect(() => parseConfig(signed)).not.toThrow();
+      expect(parseConfig(signed)).toBeUndefined();
+    }
+  });
+
+  it('the schema refuses it', () => {
+    const parsed = StoreConfigInputSchema.safeParse({
+      assistant: assistant.pubkey,
+      origins: ['https://shop.example.com'],
+      name: 'Example Shop',
+      language: 'en',
+      currency: 'USD',
+      source: { kind: 'paycore' },
+      catalogKey: catalog.pubkey,
       policyKey: catalog.pubkey,
     });
+    expect(parsed.success).toBe(false);
   });
 });

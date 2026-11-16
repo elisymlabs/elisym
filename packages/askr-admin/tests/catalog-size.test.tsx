@@ -5,9 +5,10 @@ import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Overview } from '../src/components/Overview';
-import { countListed } from '../src/lib/store-data';
+import { countListed, readAuthority } from '../src/lib/store-data';
 import {
   NOW,
+  OWNER,
   OWNER_KEY,
   SERVER_KEY,
   SERVER_KEY_SECRET,
@@ -28,7 +29,7 @@ const CATALOG_AUTH = finalizeEvent(
   buildCatalogAuth({ key: SERVER_KEY, mode: 'hosted', createdAt: NOW - 100 }),
   OWNER_KEY,
 );
-const PAYCORE_AUTH = finalizeEvent(
+const STORE_AUTH = finalizeEvent(
   { ...buildStoreAuthEvent({ storePubkey: SERVER_KEY, mode: 'self-host' }), created_at: NOW - 100 },
   OWNER_KEY,
 );
@@ -97,12 +98,12 @@ describe('the catalog size against the plan', () => {
       ...products(2, { price: { amount: '1', currency: 'EUR' } }, 'e'),
       deletion,
     ]);
-    expect(await countListed(reader, SERVER_KEY, 'catalog', 'USD', NOW)).toBe(2);
-    expect(await countListed(reader, SERVER_KEY, 'catalog', 'EUR', NOW)).toBe(2);
+    expect(await countListed(reader, SERVER_KEY, 'USD', NOW)).toBe(2);
+    expect(await countListed(reader, SERVER_KEY, 'EUR', NOW)).toBe(2);
   });
 
-  it('reads a Pay Core store as the assistant does: listings with payment terms count', async () => {
-    const payCore = Array.from({ length: 4 }, (_value, index) =>
+  it('leaves out listings with payment terms, as the assistant does', async () => {
+    const paid = Array.from({ length: 4 }, (_value, index) =>
       finalizeEvent(
         buildProductEvent({
           d: `pc-${index}`,
@@ -117,13 +118,10 @@ describe('the catalog size against the plan', () => {
         SERVER_KEY_SECRET,
       ),
     );
-    const container = await overview(
-      [PAYCORE_AUTH, ...payCore],
-      2,
-      adminConfig({ source: { kind: 'paycore' } }),
-    );
+    const container = await overview([CATALOG_AUTH, ...paid, ...products(3)], 2);
     await settle(() => (container.textContent ?? '').includes('indexes up to'));
-    expect(container.textContent).toContain('Your catalog has 4 products');
+    expect(container.textContent).toContain('Your catalog has 3 products');
+    expect(await countListed(fakeReader(paid), SERVER_KEY, 'USD', NOW)).toBe(0);
   });
 
   it('counts as the server does: the newest version per product, unexpired, future deletions ignored', async () => {
@@ -152,16 +150,29 @@ describe('the catalog size against the plan', () => {
       SERVER_KEY_SECRET,
     );
     const reader = fakeReader([older, ...products(2), expired, futureDeletion]);
-    expect(await countListed(reader, SERVER_KEY, 'catalog', 'USD', NOW)).toBe(2);
-    expect(await countListed(reader, SERVER_KEY, 'catalog', 'EUR', NOW)).toBe(0);
+    expect(await countListed(reader, SERVER_KEY, 'USD', NOW)).toBe(2);
+    expect(await countListed(reader, SERVER_KEY, 'EUR', NOW)).toBe(0);
   });
 
-  it('says nothing when the key holds another role than the source needs', async () => {
-    const container = await overview(
-      [CATALOG_AUTH, ...products(5)],
-      2,
-      adminConfig({ source: { kind: 'paycore' } }),
+  it('reads authority as 30497 and kind 5 only, never a 30490', async () => {
+    const asked: number[] = [];
+    const reader = fakeReader([STORE_AUTH, CATALOG_AUTH]);
+    const authority = await readAuthority(
+      {
+        query: async (filter) => {
+          asked.push(...(filter.kinds ?? []));
+          return reader.query(filter);
+        },
+      },
+      OWNER,
+      NOW,
     );
+    expect(asked.sort((left, right) => left - right)).toEqual([5, 30497]);
+    expect(authority.keys).toEqual(new Set([SERVER_KEY]));
+  });
+
+  it('says nothing when the owner authorized the key only with a 30490', async () => {
+    const container = await overview([STORE_AUTH, ...products(5)], 2);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(container.textContent).not.toContain('indexes up to');
   });

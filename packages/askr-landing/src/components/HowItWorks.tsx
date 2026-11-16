@@ -12,8 +12,8 @@ const STEPS = [
   },
   {
     title: 'Choose the product source',
-    body: "A CSV or the editor in the admin, your own catalog key, a Shopify, WooCommerce or Google feed connector, or a Pay Core store. Add the origins your site runs on and the assistant's voice.",
-    code: 'CSV, SDK, MCP, Shopify, WooCommerce, Google feed, Pay Core',
+    body: "A CSV or the editor in the admin, your own catalog key, or a Shopify, WooCommerce or Google feed connector. Add the origins your site runs on and the assistant's voice.",
+    code: 'CSV, SDK, MCP, Shopify, WooCommerce, Google feed',
     link: { href: '#sources', label: 'Product sources' },
   },
   {

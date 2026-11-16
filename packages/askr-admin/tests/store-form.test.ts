@@ -10,6 +10,7 @@ import {
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
+import { SOURCE_LABELS, SOURCE_OPTIONS, sourceKindOf } from '../src/lib/labels';
 import { npubOf, secretKeySigner } from '../src/lib/signer';
 import {
   EMPTY_FORM,
@@ -26,7 +27,7 @@ const assistantKey = generateSecretKey();
 const assistant = getPublicKey(assistantKey);
 const serverKey = getPublicKey(generateSecretKey());
 const merchantKey = getPublicKey(generateSecretKey());
-const paycoreKey = getPublicKey(generateSecretKey());
+const policyOnlyKey = getPublicKey(generateSecretKey());
 const NOW = 1_800_000_000;
 
 const BASE_FORM: StoreForm = {
@@ -113,16 +114,12 @@ describe('the onboarding events', () => {
     expect(tag(auth, 'mode')).toEqual(['mode', 'self-host']);
   });
 
-  it('paycore source: S holds products, the server K policies, and only K is authorized here', async () => {
-    const [config, auth] = await sign({ ...BASE_FORM, source: 'paycore', paycoreKey });
-    if (config === undefined || auth === undefined) {
-      throw new Error('two events expected');
-    }
-    expect(tag(config, 'source')).toEqual(['source', 'paycore']);
-    expect(tag(config, 'catalog-key')).toEqual(['catalog-key', paycoreKey]);
-    expect(tag(config, 'policy-key')).toEqual(['policy-key', serverKey]);
-    expect(tag(auth, 'd')).toEqual(['d', serverKey]);
-    expect(tag(auth, 'mode')).toEqual(['mode', 'hosted']);
+  it('offers no paycore source: the choices are the admin, a catalog key and a connector', () => {
+    expect(SOURCE_OPTIONS.map((option) => option.value)).toEqual(['catalog', 'admin', 'connector']);
+    expect(Object.keys(SOURCE_LABELS).sort()).toEqual(['admin', 'catalog', 'connector']);
+    expect(sourceKindOf('paycore')).toBeUndefined();
+    expect(sourceKindOf('catalog')).toBe('catalog');
+    expect(Object.keys(EMPTY_FORM)).not.toContain('paycoreKey');
   });
 
   it('connector source: the shop URL rides on the source tag, normalized, and the server K is hosted', async () => {
@@ -222,7 +219,7 @@ describe('the onboarding events', () => {
   });
 
   it('keeps a non-default policy key through a read and a save, while the source stays', async () => {
-    // A Pay Core store reading its policies from a merchant K, not the server K default.
+    // A merchant K store reading its policies from another key, not its own K default.
     const event = finalizeEvent(
       buildConfigEvent(
         {
@@ -231,9 +228,9 @@ describe('the onboarding events', () => {
           name: 'Tea Shop',
           language: 'en',
           currency: 'EUR',
-          source: { kind: 'paycore' },
-          catalogKey: paycoreKey,
-          policyKey: merchantKey,
+          source: { kind: 'catalog' },
+          catalogKey: merchantKey,
+          policyKey: policyOnlyKey,
         },
         ownerKey,
       ),
@@ -247,7 +244,7 @@ describe('the onboarding events', () => {
     const [saved] = await sign({ ...form, greeting: 'Hello' });
     expect(saved === undefined ? undefined : tag(saved, 'policy-key')).toEqual([
       'policy-key',
-      merchantKey,
+      policyOnlyKey,
     ]);
     const [moved] = await sign({ ...form, source: 'admin' });
     expect(moved === undefined ? undefined : tag(moved, 'policy-key')).toEqual([

@@ -103,7 +103,7 @@ describe('the catalog helpers', () => {
     };
     for (const input of [MUG, TEAPOT, CUP, SYNCED]) {
       const event = listing(input);
-      const item = parseCatalogItem(event, { role: 'catalog' });
+      const item = parseCatalogItem(event);
       if (item === undefined) {
         throw new Error(`${input.d} does not parse`);
       }

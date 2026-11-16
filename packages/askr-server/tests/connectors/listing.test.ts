@@ -43,7 +43,7 @@ function fitted(result: FitResult): Extract<FitResult, { ok: true }> {
     ...buildCatalogItemEvent(result.listing),
     pubkey: 'a'.repeat(64),
   };
-  expect(parseCatalogItem(event, { role: 'catalog', now: 1 })).toBeDefined();
+  expect(parseCatalogItem(event, { now: 1 })).toBeDefined();
   return result;
 }
 
@@ -406,7 +406,7 @@ describe('(3) at most 5 options, preferring those that differ', () => {
     expect(result.listing.price.amount).toBe('5');
     const event = { ...buildCatalogItemEvent(result.listing), pubkey: 'a'.repeat(64) };
     expect(event.tags).toContainEqual(['price-from', '1']);
-    expect(parseCatalogItem(event, { role: 'catalog', now: 1 })?.priceFrom).toBe(true);
+    expect(parseCatalogItem(event, { now: 1 })?.priceFrom).toBe(true);
   });
 
   it('drops an unnamed option or a repeated option name', () => {

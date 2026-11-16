@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { newestConfig, saveSettings, savedMessage } from '../lib/save';
 import { npubOf } from '../lib/signer';
-import { type AuthorityRead, catalogKeysOf, readAuthority } from '../lib/store-data';
+import { type AuthorityRead, readAuthority } from '../lib/store-data';
 import { EMPTY_FORM, formOfConfig, withConnector } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
 import { ConfigUnreadable } from './ConfigUnreadable';
@@ -192,7 +192,7 @@ export function SettingsSection({
             view,
             form,
             previousCreatedAt: Math.max(source?.createdAt ?? 0, configUnreadableAt ?? 0),
-            authorized: catalogKeysOf(authorities),
+            authorized: authorities.keys,
             relayNewestAt: authorities.newestAt,
           });
           setSaved(

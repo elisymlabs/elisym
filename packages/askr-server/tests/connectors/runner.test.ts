@@ -106,7 +106,7 @@ describe('syncConnector: Shopify', () => {
     expect(listings).toHaveLength(3);
     for (const event of listings) {
       expect(event.pubkey).toBe(keys.server);
-      expect(parseCatalogItem(event, { role: 'catalog', now: NOW })).toBeDefined();
+      expect(parseCatalogItem(event, { now: NOW })).toBeDefined();
     }
     const policy = keys.relay.published.find((event) => event.kind === KIND_POLICY);
     expect(policy && parsePolicy(policy)).toMatchObject({
@@ -526,7 +526,7 @@ describe('syncConnector: Google feed', () => {
     ]);
     expect(web.urls).toEqual([FEED, `${SHOP}/.well-known/askr`]);
     const listing = keys.relay.published.find((event) => event.kind === 30402);
-    expect(listing && parseCatalogItem(listing, { role: 'catalog', now: NOW })?.sku).toBe('ITEM-0');
+    expect(listing && parseCatalogItem(listing, { now: NOW })?.sku).toBe('ITEM-0');
   });
 
   it('fails when a product links to an origin the config does not list', async () => {

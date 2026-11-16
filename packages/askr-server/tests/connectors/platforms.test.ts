@@ -139,7 +139,7 @@ describe('Shopify /products.json (real, trimmed responses)', () => {
     expect(fitted.listing.price.amount).toBe('19.99');
     const event = { ...buildCatalogItemEvent(fitted.listing), pubkey: 'b'.repeat(64) };
     expect(event.tags).toContainEqual(['price-from', '1']);
-    const item = parseCatalogItem(event, { role: 'catalog', now: 1 });
+    const item = parseCatalogItem(event, { now: 1 });
     expect(item && determinedVariant(item, { Type: 'Whole Bean', Size: '2 lbs' })?.id).toBe(
       '42123932500023',
     );
@@ -323,7 +323,7 @@ describe('WooCommerce Store API (real, trimmed responses)', () => {
       'https://websitedemos.net/clothing-store-02/product/timeless-classic-collection/',
     );
     const event = { ...buildCatalogItemEvent(fitted.listing), pubkey: 'c'.repeat(64) };
-    const item = parseCatalogItem(event, { role: 'catalog', now: 1 });
+    const item = parseCatalogItem(event, { now: 1 });
     // A variant holding `*` is never a determined variant.
     expect(item && determinedVariant(item, { Size: 'M', Color: 'Black' })).toBeUndefined();
   });

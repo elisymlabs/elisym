@@ -41,11 +41,10 @@ export {
 } from './events/config';
 export {
   type CatalogAuthInput,
-  type CatalogKeyRole,
   type StoreKeys,
   buildCatalogAuth,
   buildCatalogRevocation,
-  hasRole,
+  isCatalogKey,
   readCatalogAuthority,
   resolveStoreKeys,
 } from './events/catalog-auth';

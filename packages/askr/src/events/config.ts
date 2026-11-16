@@ -43,7 +43,7 @@ export interface StoreConfig {
   /** ISO 4217: the store's one currency. */
   currency: string;
   source: ProductSource;
-  /** The K (or a Pay Core S) whose 30402 the store's products come from. */
+  /** The catalog key K whose 30402 the store's products come from. */
   catalogKey: string;
   /** The key whose 30495 policies are read. */
   policyKey: string;
@@ -174,10 +174,6 @@ function configTemplate(input: StoreConfigInput): {
   const config = StoreConfigInputSchema.parse(input);
   if ((config.source.kind === 'connector') !== (config.source.platform !== undefined)) {
     throw new Error('A connector source names its platform, and only a connector source does');
-  }
-  // A Pay Core store key S never holds the catalog role, so it cannot be the policy key (1.4).
-  if (config.source.kind === 'paycore' && config.policyKey === undefined) {
-    throw new Error('A paycore source needs an explicit policyKey (the server or a merchant K)');
   }
   const shopUrl =
     config.source.shopUrl === undefined ? undefined : normalizeShopUrl(config.source.shopUrl);

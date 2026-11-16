@@ -1,5 +1,4 @@
 import {
-  ASKR_RELAYS,
   CONFIG_D_TAG,
   type CatalogItem,
   KIND_CATALOG_AUTH,
@@ -19,40 +18,18 @@ import { StoreCatalog } from '@elisym/askr-agent';
 import {
   KIND_DELETION,
   KIND_PRODUCT,
-  KIND_STORE_AUTH,
   NO_FUTURE_LIMIT,
   newestDeletion,
   newestSigned,
 } from '@elisym/commerce';
-import { DEFAULT_RELAYS } from '@elisym/commerce/buyer';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
 
-const AUTHORITY_KINDS: readonly number[] = [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_DELETION];
+const AUTHORITY_KINDS: readonly number[] = [KIND_CATALOG_AUTH, KIND_DELETION];
 
-/** The owner's events a store needs first: its config, authority (30497 and Pay Core's 30490) and deletions. */
+/** The owner's events a store needs first: its config, authority (30497) and deletions. */
 export function ownerFilters(owner: string): Filter[] {
   return [{ kinds: [KIND_CONFIG, ...AUTHORITY_KINDS], authors: [owner] }];
-}
-
-/**
- * Relays a `paycore` source is also read from (2.4): commerce's
- * `DEFAULT_RELAYS`, where Pay Core publishes, best effort next to the Askr
- * relay; none for any other source.
- */
-export function extraRelaysFor(config: Pick<StoreConfig, 'source'>): string[] {
-  return config.source.kind === 'paycore'
-    ? DEFAULT_RELAYS.filter((relay) => !ASKR_RELAYS.includes(relay))
-    : [];
-}
-
-/** On an extra relay: the owner's 30490/kind 5 and the source key's listings. */
-export function extraFilters(owner: string, productKey: string | undefined): Filter[] {
-  const filters: Filter[] = [{ kinds: [KIND_STORE_AUTH, KIND_DELETION], authors: [owner] }];
-  if (productKey !== undefined) {
-    filters.push({ kinds: [KIND_PRODUCT, KIND_DELETION], authors: [productKey] });
-  }
-  return filters;
 }
 
 /**
@@ -176,7 +153,7 @@ export function buildStoreCatalog(
   /**
    * The tier's products indexed at most (9). The admin, CSV and connectors
    * refuse a larger catalog; one published with the store's own catalog key
-   * or a Pay Core store reaches the relay anyway, so only the first this many
+   * reaches the relay anyway, so only the first this many
    * in the store's currency by product ID (character order) are used.
    */
   maxProducts?: number,
@@ -190,10 +167,9 @@ export function buildStoreCatalog(
   );
   const keys = resolveStoreKeys(config, authority, now);
   const items: CatalogItem[] = [];
-  if (keys.productKey !== undefined && keys.productRole !== undefined) {
-    const role = keys.productRole;
+  if (keys.productKey !== undefined) {
     for (const event of newestPerAddress(events, KIND_PRODUCT, keys.productKey, now)) {
-      const item = parseCatalogItem(event, { now, role });
+      const item = parseCatalogItem(event, { now });
       if (item) {
         items.push(item);
       }

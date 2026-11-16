@@ -36,10 +36,6 @@ export const SWEEP_INTERVAL_MS = 60_000;
 export const STABLE_CONNECTION_MS = 60_000;
 /** Pages read per filter at most, so no relay can hold the reload queue (5.1). */
 export const CATALOG_PAGES_PER_FILTER = 40;
-/** A third-party relay of a `paycore` source gets this long to connect and per page (5.1). */
-export const EXTRA_RELAY_TIMEOUT_MS = 5_000;
-/** ...and this long in all per reload, so a dead one holds the queue at most this (5.1). */
-export const EXTRA_RELAY_BUDGET_MS = 10_000;
 /** How long a shutdown waits for turns in flight before giving the leases up (Docker stops after 10 s). */
 export const SHUTDOWN_WAIT_MS = 8_000;
 /** A worker's lease on a store lasts this long unless renewed (5.8). */

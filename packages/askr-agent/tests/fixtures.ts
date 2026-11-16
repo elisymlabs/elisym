@@ -18,7 +18,6 @@ export const CATALOG_KEY = getPublicKey(catalogSecret);
 export function item(input: CatalogItemInput) {
   const parsed = parseCatalogItem(finalizeEvent(buildCatalogItemEvent(input), catalogSecret), {
     now: NOW,
-    role: 'catalog',
   });
   if (!parsed) {
     throw new Error(`fixture item ${input.d} did not parse`);

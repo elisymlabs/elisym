@@ -1,6 +1,5 @@
 import {
   type CatalogItem,
-  type CatalogKeyRole,
   type StoreConfig,
   parseAddress,
   parseCatalogItem,
@@ -22,7 +21,7 @@ import {
   MAX_CARD_ADDRESSES,
 } from './constants';
 import { type KeyValueStorage, readItem, writeItem } from './storage';
-import { type RelayQuery, productRelays } from './store-data';
+import type { RelayQuery } from './store-data';
 
 /** Every product address an answer's components name, in order of first mention. */
 export function componentAddresses(components: readonly Component[]): string[] {
@@ -41,26 +40,20 @@ export function componentAddresses(components: readonly Component[]): string[] {
   return [...new Set(addresses)];
 }
 
-/** The role a listing's author must hold for the config's source (1.4). */
-export function productRole(config: Pick<StoreConfig, 'source'>): CatalogKeyRole {
-  return config.source.kind === 'paycore' ? 'paycore' : 'catalog';
-}
-
 /**
  * Whether `author` is the store's product key right now: the config's
- * `catalog-key`, holding the role its source needs per `readCatalogAuthority`.
+ * `catalog-key`, an authorized catalog key per `readCatalogAuthority`.
  */
 export function isProductAuthor(
   author: string,
-  config: Pick<StoreConfig, 'owner' | 'source' | 'catalogKey'>,
+  config: Pick<StoreConfig, 'owner' | 'catalogKey'>,
   authorityEvents: readonly NostrEvent[],
   now: number,
 ): boolean {
   if (author !== config.catalogKey) {
     return false;
   }
-  const roles = readCatalogAuthority(authorityEvents, config.owner, now).get(author);
-  return roles?.has(productRole(config)) ?? false;
+  return readCatalogAuthority(authorityEvents, config.owner, now).has(author);
 }
 
 interface CachedCard {
@@ -142,7 +135,6 @@ export async function resolveCards(
   options: ResolveCardsOptions,
 ): Promise<Map<string, CatalogItem>> {
   const { config, now } = options;
-  const role = productRole(config);
   const budgeted = [...new Set(addresses)].slice(0, MAX_CARD_ADDRESSES);
   const wanted = budgeted.filter((address) => {
     const parsed = parseAddress(address);
@@ -164,7 +156,7 @@ export async function resolveCards(
   }
   if (missing.length > 0) {
     const ds = missing.map((address) => parseAddress(address)?.d ?? '');
-    const events = await options.query(productRelays(config), [
+    const events = await options.query([
       { kinds: [KIND_PRODUCT], authors: [config.catalogKey], '#d': ds },
       { kinds: [KIND_DELETION], authors: [config.catalogKey], '#a': missing },
     ]);
@@ -176,7 +168,7 @@ export async function resolveCards(
   }
   const cards = new Map<string, CatalogItem>();
   for (const [address, listing] of listings) {
-    const item = listing ? parseCatalogItem(listing, { role, now }) : undefined;
+    const item = listing ? parseCatalogItem(listing, { now }) : undefined;
     if (item && item.address === address) {
       cards.set(address, item);
     }

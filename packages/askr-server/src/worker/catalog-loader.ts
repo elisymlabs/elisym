@@ -1,20 +1,13 @@
 import type { StoreCatalog } from '@elisym/askr-agent';
 import type { Filter, NostrEvent } from 'nostr-tools';
-import {
-  CONNECTION_TIMEOUT_MS,
-  EXTRA_RELAY_BUDGET_MS,
-  EXTRA_RELAY_TIMEOUT_MS,
-  STABLE_CONNECTION_MS,
-} from '../constants';
+import { CONNECTION_TIMEOUT_MS, STABLE_CONNECTION_MS } from '../constants';
 import { Backoff } from '../relay/backoff';
 import { chunkByBytes } from '../relay/chunks';
 import type { RelayLike, ServerPool } from '../relay/pool';
-import { type PageLimits, readAllPages } from '../relay/read-all';
+import { readAllPages } from '../relay/read-all';
 import type { StoreRecord } from '../state/types';
 import {
   buildStoreCatalog,
-  extraFilters,
-  extraRelaysFor,
   deletionFilters,
   keyFilters,
   ownerFilters,
@@ -32,9 +25,6 @@ export interface CatalogLoaderDeps {
   onConfig?: (owner: string, origins: readonly string[]) => void;
   /** A page with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
-  /** A Pay Core default relay's connect and page timeout, and its budget per reload (5.1); tests shorten them. */
-  extraRelayTimeoutMs?: number;
-  extraRelayBudgetMs?: number;
   /** How long a connection must stay up to reset the live backoff (2.4); tests shorten it. */
   stableConnectionMs?: number;
 }
@@ -153,44 +143,21 @@ export class CatalogLoader {
     }
   }
 
-  private async readAll(
-    url: string,
-    filters: Filter[],
-    limits: PageLimits = {
+  /** Every page of `filters` on the Askr relay; the page cap returns what it read (5.1). */
+  private async readAll(filters: Filter[]): Promise<NostrEvent[] | undefined> {
+    const read = await readAllPages(this.deps.pool, this.deps.relayUrl, filters, {
       connectionTimeoutMs: CONNECTION_TIMEOUT_MS,
       ...(this.deps.historyTimeoutMs === undefined
         ? {}
         : { pageTimeoutMs: this.deps.historyTimeoutMs }),
-    },
-  ): Promise<NostrEvent[] | undefined> {
-    // The page cap returns what it read (5.1).
-    return (await readAllPages(this.deps.pool, url, filters, limits))?.events;
-  }
-
-  /**
-   * Best effort: what a third-party relay returns within its time budget is
-   * merged; a dead or slow one changes nothing and holds the queue at most
-   * that budget.
-   */
-  private async readExtra(owner: string, productKey: string | undefined, relays: string[]) {
-    const deadline = Date.now() + (this.deps.extraRelayBudgetMs ?? EXTRA_RELAY_BUDGET_MS);
-    const timeoutMs = this.deps.extraRelayTimeoutMs ?? EXTRA_RELAY_TIMEOUT_MS;
-    const reads = await Promise.all(
-      relays.map((url) =>
-        this.readAll(url, extraFilters(owner, productKey), {
-          connectionTimeoutMs: timeoutMs,
-          pageTimeoutMs: timeoutMs,
-          deadline,
-        }),
-      ),
-    );
-    return reads.flatMap((events) => events ?? []);
+    });
+    return read?.events;
   }
 
   /** True when the cache now reflects the relay (5.1); false keeps the old cache. */
   private async reload(store: StoreRecord): Promise<boolean> {
     const now = this.deps.now();
-    const ownerEvents = await this.readAll(this.deps.relayUrl, ownerFilters(store.owner));
+    const ownerEvents = await this.readAll(ownerFilters(store.owner));
     if (!ownerEvents) {
       return false;
     }
@@ -199,22 +166,17 @@ export class CatalogLoader {
       this.settle(store.owner, undefined);
       return true;
     }
-    const keyEvents = await this.readAll(
-      this.deps.relayUrl,
-      keyFilters(config.catalogKey, config.policyKey),
-    );
+    const keyEvents = await this.readAll(keyFilters(config.catalogKey, config.policyKey));
     if (!keyEvents) {
       return false;
     }
     const deletions = deletionFilters(keyEvents, config.catalogKey, config.policyKey);
-    const deletionEvents =
-      deletions.length === 0 ? [] : await this.readAll(this.deps.relayUrl, deletions);
+    const deletionEvents = deletions.length === 0 ? [] : await this.readAll(deletions);
     if (!deletionEvents) {
       return false;
     }
-    const extra = await this.readExtra(store.owner, config.catalogKey, extraRelaysFor(config));
     const byId = new Map<string, NostrEvent>();
-    for (const event of [...ownerEvents, ...keyEvents, ...deletionEvents, ...extra]) {
+    for (const event of [...ownerEvents, ...keyEvents, ...deletionEvents]) {
       byId.set(event.id, event);
     }
     const catalog = buildStoreCatalog(

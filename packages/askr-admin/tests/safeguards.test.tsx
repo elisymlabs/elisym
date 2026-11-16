@@ -292,7 +292,7 @@ describe('settings while the authorizations are unread', () => {
     await settle(() => !buttonNamed(container, 'Sign and save').disabled);
   });
 
-  it('counts only keys with the catalog role as authorized: a Pay Core role alone gets a 30497', async () => {
+  it('a key the owner authorized only with a 30490 is not authorized: saving signs a 30497 for it', async () => {
     const merchantKey = getPublicKey(generateSecretKey());
     const config = configOf(
       finalizeEvent(
@@ -315,7 +315,7 @@ describe('settings while the authorizations are unread', () => {
         OWNER_KEY,
       ),
     );
-    const paycoreRole = finalizeEvent(
+    const storeAuth = finalizeEvent(
       {
         ...buildStoreAuthEvent({ storePubkey: merchantKey, mode: 'self-host' }),
         created_at: NOW - 50,
@@ -325,7 +325,7 @@ describe('settings while the authorizations are unread', () => {
     const api = fakeApi();
     mounted = await mount(
       <SettingsSection
-        deps={sessionDeps(api, fakeReader([paycoreRole]))}
+        deps={sessionDeps(api, fakeReader([storeAuth]))}
         view={storeView()}
         config={config}
         configError=""
@@ -533,9 +533,9 @@ describe('the CSV import', () => {
 });
 
 describe('keys and policy keys', () => {
-  it('offers no 30497 revoke for a key holding only the Pay Core role', async () => {
+  it('lists no key the owner authorized only with a 30490; a catalog key can be revoked', async () => {
     const storeKey = getPublicKey(generateSecretKey());
-    const paycoreRole = finalizeEvent(
+    const storeAuth = finalizeEvent(
       {
         ...buildStoreAuthEvent({ storePubkey: storeKey, mode: 'self-host' }),
         created_at: NOW - 50,
@@ -548,22 +548,22 @@ describe('keys and policy keys', () => {
     );
     mounted = await mount(
       <CatalogKeys
-        deps={sessionDeps(fakeApi(), fakeReader([paycoreRole, serverAuth]))}
+        deps={sessionDeps(fakeApi(), fakeReader([storeAuth, serverAuth]))}
         view={storeView()}
         config={undefined}
       />,
     );
     const { container } = mounted;
-    await settle(() => (container.textContent ?? '').includes(npubOf(storeKey)));
+    await settle(() => (container.textContent ?? '').includes(npubOf(SERVER_KEY)));
+    expect(container.textContent).not.toContain(npubOf(storeKey));
+    expect(container.textContent).not.toContain('Pay Core');
     const rows = [...container.querySelectorAll('li')];
-    const paycoreRow = rows.find((row) => (row.textContent ?? '').includes(npubOf(storeKey)));
-    expect(paycoreRow?.textContent).toContain('Pay Core store key');
-    expect(paycoreRow?.querySelector('button')).toBeNull();
-    const serverRow = rows.find((row) => (row.textContent ?? '').includes(npubOf(SERVER_KEY)));
-    expect(serverRow?.querySelector('button')?.textContent).toBe('Revoke');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.textContent).toContain('catalog key');
+    expect(rows[0]?.querySelector('button')?.textContent).toBe('Revoke');
   });
 
-  it('drops a kept policy key when the Pay Core store key changes', async () => {
+  it('drops a kept policy key when the merchant catalog key changes', async () => {
     const first = getPublicKey(generateSecretKey());
     const second = getPublicKey(generateSecretKey());
     const merchant = getPublicKey(generateSecretKey());
@@ -576,7 +576,7 @@ describe('keys and policy keys', () => {
             name: 'Tea Shop',
             language: 'en',
             currency: 'USD',
-            source: { kind: 'paycore' },
+            source: { kind: 'catalog' },
             catalogKey: first,
             policyKey: merchant,
           },
@@ -586,9 +586,9 @@ describe('keys and policy keys', () => {
       ),
     );
     const form = formOfConfig(config, PRIVATE_PART);
-    const sign = async (paycoreKey: string) => {
+    const sign = async (merchantKey: string) => {
       const [event] = await signStoreEvents({
-        form: { ...form, paycoreKey },
+        form: { ...form, merchantKey },
         keys: { assistant: ASSISTANT, serverKey: SERVER_KEY },
         signer: secretKeySigner(OWNER_KEY),
         now: NOW,
@@ -596,6 +596,7 @@ describe('keys and policy keys', () => {
       return tagOf(event, 'policy-key');
     };
     expect(await sign(first)).toBe(merchant);
-    expect(await sign(second)).toBe(SERVER_KEY);
+    expect(await sign(npubOf(first))).toBe(merchant);
+    expect(await sign(second)).toBe(second);
   });
 });

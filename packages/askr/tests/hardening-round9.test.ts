@@ -28,7 +28,7 @@ describe('determinedVariant with a single variant', () => {
         }),
         key,
       ),
-      { now: NOW, role: 'catalog' },
+      { now: NOW },
     );
 
   it('is determined without a pick or by a matching one, never by a contradicting one', () => {
