@@ -184,6 +184,17 @@ describe('the copy', () => {
     }
   });
 
+  it('offers the three product sources the admin has, and no Pay Core store', async () => {
+    const page = await render(<App />);
+    const sources = page.querySelector('#sources');
+    expect(sources?.querySelectorAll('h3')).toHaveLength(3);
+    expect(page.textContent).not.toMatch(/pay ?core/i);
+    for (const file of filesIn(join(PACKAGE, 'src'))) {
+      expect(readFileSync(file, 'utf8'), file).not.toMatch(/pay ?core/i);
+    }
+    expect(docsPage('overview')).not.toMatch(/pay ?core/i);
+  });
+
   it('gives no plan prices: plans are set up on request', async () => {
     const page = await render(<App />);
     const plans = page.querySelector('#plans')?.textContent ?? '';

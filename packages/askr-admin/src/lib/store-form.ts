@@ -39,15 +39,13 @@ export interface StoreForm {
   importPolicies: boolean;
   /** `catalog`: the merchant K (npub or hex). */
   merchantKey: string;
-  /** `paycore`: the Pay Core store key S (npub or hex). */
-  paycoreKey: string;
   voice: string;
   instructions: string;
   notes: string;
   /**
-   * A policy key the read config names other than its source's default (a
-   * Pay Core store reading policies from a merchant K): kept as long as the
-   * source and its key stay the same.
+   * A policy key the read config names other than its source's default (one
+   * signed elsewhere, such as with the SDK): kept as long as the source and
+   * its key stay the same.
    */
   keptPolicy?: KeptPolicy;
 }
@@ -83,7 +81,6 @@ export const EMPTY_FORM: StoreForm = {
   connectorCurrency: '',
   importPolicies: true,
   merchantKey: '',
-  paycoreKey: '',
   voice: '',
   instructions: '',
   notes: '',
@@ -152,7 +149,7 @@ function keyOf(value: string, label: string): string {
 
 /** Which key holds the products and which the policies, for the chosen source (1.4). */
 export function sourceKeysOf(
-  form: Pick<StoreForm, 'source' | 'merchantKey' | 'paycoreKey' | 'keptPolicy'>,
+  form: Pick<StoreForm, 'source' | 'merchantKey' | 'keptPolicy'>,
   serverKey: string,
 ): { catalogKey: string; policyKey: string } {
   const defaults = defaultSourceKeysOf(form, serverKey);
@@ -165,23 +162,19 @@ export function sourceKeysOf(
 }
 
 function defaultSourceKeysOf(
-  form: Pick<StoreForm, 'source' | 'merchantKey' | 'paycoreKey'>,
+  form: Pick<StoreForm, 'source' | 'merchantKey'>,
   serverKey: string,
 ): { catalogKey: string; policyKey: string } {
   if (form.source === 'catalog') {
     const merchantKey = keyOf(form.merchantKey, 'Merchant catalog key');
     return { catalogKey: merchantKey, policyKey: merchantKey };
   }
-  if (form.source === 'paycore') {
-    // A Pay Core S never holds the catalog role: its policies are edited here, with the server K.
-    return { catalogKey: keyOf(form.paycoreKey, 'Pay Core store key'), policyKey: serverKey };
-  }
   return { catalogKey: serverKey, policyKey: serverKey };
 }
 
 /** The 30497 the source needs: `hosted` for the server K, `self-host` for a merchant K. */
 export function authorizationOf(
-  form: Pick<StoreForm, 'source' | 'merchantKey' | 'paycoreKey'>,
+  form: Pick<StoreForm, 'source' | 'merchantKey'>,
   serverKey: string,
 ): Pick<CatalogAuthInput, 'key' | 'mode'> {
   if (form.source === 'catalog') {
@@ -256,7 +249,7 @@ export interface SignOptions {
   now: number;
   /** The stored config's date: a new one is dated after it (the server refuses an older one). */
   previousCreatedAt?: number;
-  /** Keys already authorized with the catalog role: their 30497 is not signed again. */
+  /** Catalog keys the owner already authorizes: their 30497 is not signed again. */
   authorized?: ReadonlySet<string>;
   /** The date of a 30497 signed here: after the key's newest one (default: the config's date). */
   authCreatedAt?: number;
@@ -313,13 +306,12 @@ export function formOfConfig(
     connectorCurrency: '',
     importPolicies: true,
     merchantKey: config.source.kind === 'catalog' ? npubOf(config.catalogKey) : '',
-    paycoreKey: config.source.kind === 'paycore' ? npubOf(config.catalogKey) : '',
     voice: privatePart?.voice ?? '',
     instructions: privatePart?.instructions ?? '',
     notes: privatePart?.notes ?? '',
   };
   // The read config's policy key stays while the source and its key do: a key other than the
-  // default (a Pay Core store reading policies from a merchant K) is never rewritten by a save.
+  // default (one signed elsewhere, such as with the SDK) is never rewritten by a save.
   form.keptPolicy = {
     source: config.source.kind,
     catalogKey: config.catalogKey,

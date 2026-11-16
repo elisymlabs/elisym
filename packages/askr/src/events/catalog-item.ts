@@ -9,7 +9,6 @@ import {
   VISIBILITIES,
   type Visibility,
 } from '../constants';
-import type { CatalogKeyRole } from './catalog-auth';
 
 const KIND_PRODUCT = 30402;
 /** The `d` pattern `parseProduct` accepts; anything else is dropped by every reader. */
@@ -58,8 +57,6 @@ export interface CatalogItem {
   options: CatalogOption[];
   variants: CatalogVariant[];
   visibility: Exclude<Visibility, 'hidden'>;
-  /** Whether the listing carries Pay Core payment tags. */
-  hasAccept: boolean;
   createdAt: number;
 }
 
@@ -138,28 +135,24 @@ function readVariants(tags: NostrEvent['tags'], options: CatalogOption[]): Catal
 /**
  * Read a 30402 listing for Askr, or `undefined` when it is not shown:
  * unreadable by `parseProduct`, `hidden`, an unknown visibility, or expired.
- * The caller has checked the signature and that the author is authorized.
+ * A catalog key K never publishes payment tags (1.1), so a listing that
+ * carries `accept` is dropped too. The caller has checked the signature and
+ * that the author is authorized.
  */
 export interface ParseCatalogItemOptions {
   now?: number;
-  /**
-   * The role of the listing's author, required so no caller can forget it: a
-   * `catalog` key K never publishes payment tags (1.1), so a K listing that
-   * carries `accept` is dropped.
-   */
-  role: CatalogKeyRole;
 }
 
 export function parseCatalogItem(
   event: Pick<NostrEvent, 'kind' | 'pubkey' | 'tags' | 'content' | 'created_at'>,
-  parseOptions: ParseCatalogItemOptions,
+  parseOptions: ParseCatalogItemOptions = {},
 ): CatalogItem | undefined {
   const now = parseOptions.now ?? nowSecs();
   const product = parseProduct(event);
   if (!product) {
     return undefined;
   }
-  if (parseOptions.role === 'catalog' && product.accept.length > 0) {
+  if (product.accept.length > 0) {
     return undefined;
   }
   const expiration = tagsNamed(event.tags, 'expiration');
@@ -208,7 +201,6 @@ export function parseCatalogItem(
     options,
     variants: readVariants(event.tags, options),
     visibility: product.visibility,
-    hasAccept: product.accept.length > 0,
     createdAt: event.created_at,
   };
   if (product.summary !== undefined) {
@@ -377,7 +369,7 @@ export type CatalogItemInput = z.input<typeof CatalogItemInputSchema>;
 
 /**
  * Build an Askr 30402 listing: no payment tags, ever. The caller signs it
- * with an authorized catalog key K (never a Pay Core store key S).
+ * with an authorized catalog key K.
  */
 export function buildCatalogItemEvent(input: CatalogItemInput): EventTemplate {
   const item = CatalogItemInputSchema.parse(input);

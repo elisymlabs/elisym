@@ -1,3 +1,4 @@
+// cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 import {
   type StoreConfig,
   buildCatalogAuth,
@@ -5,6 +6,7 @@ import {
   buildConfigEvent,
   parseConfig,
 } from '@elisym/askr';
+import { buildProductEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 import { describe, expect, it } from 'vitest';
@@ -22,13 +24,16 @@ import {
   publishItem,
 } from './fixtures';
 
+const PAYMENT_TERM =
+  'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
+
 function setup(sourceOverride?: Partial<TestStore['configInput']>): {
   store: TestStore;
   config: StoreConfig;
   authority: NostrEvent[];
   relay: FakeRelay;
-  queries: { relays: readonly string[]; filters: Filter[] }[];
-  query: (relays: readonly string[], filters: Filter[]) => Promise<NostrEvent[]>;
+  queries: { filters: Filter[] }[];
+  query: (filters: Filter[]) => Promise<NostrEvent[]>;
 } {
   const store = makeStore(sourceOverride);
   const config = parseConfig(
@@ -48,10 +53,10 @@ function setup(sourceOverride?: Partial<TestStore['configInput']>): {
     ),
   ];
   const relay = new FakeRelay();
-  const queries: { relays: readonly string[]; filters: Filter[] }[] = [];
-  const query = async (relays: readonly string[], filters: Filter[]): Promise<NostrEvent[]> => {
-    queries.push({ relays, filters });
-    return relays.flatMap((url) => relay.stored(url, filters));
+  const queries: { filters: Filter[] }[] = [];
+  const query = async (filters: Filter[]): Promise<NostrEvent[]> => {
+    queries.push({ filters });
+    return relay.stored(MAIN_RELAY, filters);
   };
   return { store, config, authority, relay, queries, query };
 }
@@ -135,7 +140,7 @@ describe('resolveCards', () => {
     expect(cards.size).toBe(0);
   });
 
-  it('never fetches an address whose author is not the store product key with its role', async () => {
+  it('never fetches an address whose author is not the store product key, authorized now', async () => {
     const context = setup();
     const stranger = testKey();
     publishItem(context.relay, stranger, { ...ITEM, d: 'fake' });
@@ -172,25 +177,39 @@ describe('resolveCards', () => {
     expect(context.queries).toHaveLength(0);
   });
 
-  it('a Pay Core source reads the default relays too and needs the paycore role', async () => {
-    const context = setup({ source: { kind: 'paycore' }, policyKey: testKey().pubkey });
+  it('shows no card for a listing of the product key that carries payment terms', async () => {
+    const context = setup();
     const key = context.store.catalogKey;
-    publishItem(context.relay, key, { ...ITEM, d: 'scarf' }, 'wss://nos.lol');
-    const options = {
+    publishItem(context.relay, key, { ...ITEM, d: 'scarf' });
+    context.relay.storeOnly(
+      MAIN_RELAY,
+      sign(
+        buildProductEvent({
+          d: 'paid',
+          title: 'Paid',
+          description: '',
+          price: { amount: '5', currency: 'USD' },
+          accept: [PAYMENT_TERM],
+          createdAt: localSecs() - 50,
+        }),
+        key,
+      ),
+    );
+    const cards = await resolveCards([address(key, 'scarf'), address(key, 'paid')], {
       config: context.config,
+      authorityEvents: context.authority,
       query: context.query,
       cache: new CardCache(new MemoryStorage()),
       now: localSecs(),
-    };
-    expect(
-      (
-        await resolveCards([address(key, 'scarf')], {
-          ...options,
-          authorityEvents: context.authority,
-        })
-      ).size,
-    ).toBe(0);
-    const payCoreAuth = sign(
+    });
+    expect([...cards.keys()]).toEqual([address(key, 'scarf')]);
+  });
+
+  it('a product key the owner authorized only with a 30490 gets no cards and no fetch', async () => {
+    const context = setup();
+    const key = context.store.catalogKey;
+    publishItem(context.relay, key, { ...ITEM, d: 'scarf' });
+    const storeAuth = sign(
       {
         kind: 30490,
         created_at: localSecs() - 100,
@@ -204,12 +223,14 @@ describe('resolveCards', () => {
       context.store.owner,
     );
     const cards = await resolveCards([address(key, 'scarf')], {
-      ...options,
-      authorityEvents: [payCoreAuth],
+      config: context.config,
+      authorityEvents: [storeAuth],
+      query: context.query,
+      cache: new CardCache(new MemoryStorage()),
+      now: localSecs(),
     });
-    expect(cards.size).toBe(1);
-    expect(context.queries[0]?.relays).toContain('wss://nos.lol');
-    expect(context.queries[0]?.relays).toContain(MAIN_RELAY);
+    expect(cards.size).toBe(0);
+    expect(context.queries).toHaveLength(0);
   });
 
   it('caches results in sessionStorage, and fetches at most 50 addresses per answer', async () => {

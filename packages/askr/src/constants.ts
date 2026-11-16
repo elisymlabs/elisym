@@ -1,8 +1,7 @@
 /**
  * Askr event kinds. Every number except 30402 (NIP-99) is PROVISIONAL: not
  * registered anywhere yet, and named only here so that changing one is a
- * one-line change. 30490 (Pay Core's store authorization) comes from
- * `@elisym/commerce` as `KIND_STORE_AUTH` and is never redefined here.
+ * one-line change.
  */
 export const KIND_POLICY = 30495;
 export const KIND_CONFIG = 30496;
@@ -103,7 +102,7 @@ export const RESERVED_ATTRS: readonly string[] = ['sku', 'source-id'];
 /** The wildcard a variant carries for an option it accepts any value of (a Woo "Any" variation). */
 export const ANY_OPTION_VALUE = '*';
 
-export const PRODUCT_SOURCES = ['paycore', 'catalog', 'admin', 'connector'] as const;
+export const PRODUCT_SOURCES = ['catalog', 'admin', 'connector'] as const;
 export type ProductSourceKind = (typeof PRODUCT_SOURCES)[number];
 
 export const CONNECTOR_PLATFORMS = ['shopify', 'woocommerce', 'google'] as const;

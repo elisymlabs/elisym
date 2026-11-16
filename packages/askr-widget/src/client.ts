@@ -326,7 +326,7 @@ export class ChatClient {
     return resolveCards(addresses, {
       config: store.config,
       authorityEvents: store.authorityEvents,
-      query: (relays, filters) => this.query(relays, filters),
+      query: (filters) => this.query(filters),
       cache: this.cardCache,
       now: this.now(),
     });
@@ -463,18 +463,10 @@ export class ChatClient {
   }
 
   /**
-   * A history read on the main relay, re-run when a reconnect cut it (4.1:
-   * card fetches cut by the timeout's close are re-run), plus, for a Pay Core
-   * source, the default relays (best effort: a failure there is ignored).
+   * A history read on the Askr relay, re-run when a reconnect cut it (4.1:
+   * card fetches cut by the timeout's close are re-run).
    */
-  private async query(relays: readonly string[], filters: Filter[]): Promise<NostrEvent[]> {
-    const others = relays.filter((relay) => relay !== this.relayUrl);
-    const extra = Promise.all(others.map((relay) => this.queryOther(relay, filters)));
-    const main = relays.includes(this.relayUrl) ? await this.queryMain(filters) : [];
-    return [...main, ...(await extra).flat()];
-  }
-
-  private async queryMain(filters: Filter[]): Promise<NostrEvent[]> {
+  private async query(filters: Filter[]): Promise<NostrEvent[]> {
     for (let attempt = 0; attempt < MAX_QUERY_ATTEMPTS; attempt += 1) {
       const connection = await this.whenConnected();
       if (!connection) {
@@ -492,18 +484,6 @@ export class ChatClient {
     throw new Error('The Askr relay could not be read');
   }
 
-  private async queryOther(relay: string, filters: Filter[]): Promise<NostrEvent[]> {
-    let connection: RelayConnection | undefined;
-    try {
-      connection = await this.relayConnect(relay);
-      return await queryHistory(connection, filters);
-    } catch {
-      return [];
-    } finally {
-      connection?.close();
-    }
-  }
-
   // Config, ticket and the A check
 
   private async bootstrap(): Promise<void> {
@@ -515,11 +495,7 @@ export class ChatClient {
       if (!this.store) {
         let store: StoreData | undefined;
         try {
-          store = await loadStoreData(
-            this.owner,
-            (relays, filters) => this.query(relays, filters),
-            this.now(),
-          );
+          store = await loadStoreData(this.owner, (filters) => this.query(filters), this.now());
         } catch {
           this.scheduleRecovery();
           return;
@@ -600,11 +576,7 @@ export class ChatClient {
     if (assistant !== this.assistant) {
       let reread: StoreData | undefined;
       try {
-        reread = await loadStoreData(
-          this.owner,
-          (relays, filters) => this.query(relays, filters),
-          this.now(),
-        );
+        reread = await loadStoreData(this.owner, (filters) => this.query(filters), this.now());
       } catch {
         return 'error';
       }
@@ -628,11 +600,7 @@ export class ChatClient {
     this.movedAway = true;
     let moved: StoreData | undefined;
     try {
-      moved = await loadStoreData(
-        owner,
-        (relays, filters) => this.query(relays, filters),
-        this.now(),
-      );
+      moved = await loadStoreData(owner, (filters) => this.query(filters), this.now());
     } catch {
       return 'error';
     }

@@ -166,15 +166,6 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
             onChange={(value) => set('merchantKey', value)}
           />
         ) : null}
-        {form.source === 'paycore' ? (
-          <TextField
-            id="store-paycore-key"
-            label="Pay Core store key (npub1...)"
-            value={form.paycoreKey}
-            hint="Policies are then edited here in the admin."
-            onChange={(value) => set('paycoreKey', value)}
-          />
-        ) : null}
       </fieldset>
 
       <fieldset className="flex flex-col gap-12">

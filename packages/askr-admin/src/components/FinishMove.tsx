@@ -109,12 +109,6 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
             Your private instructions could not be read, so they are empty below. Enter them again.
           </Notice>
         ) : null}
-        {load.form.source === 'paycore' ? (
-          <Notice tone="warn">
-            Your products come from Pay Core, which must be linked to your new key with our help.
-            Contact us once you have signed.
-          </Notice>
-        ) : null}
         <StoreSettingsForm
           // The connector's own fields (a feed, a currency) join at render: a reload of the store
           // must not read the moved settings again and drop what the merchant typed.

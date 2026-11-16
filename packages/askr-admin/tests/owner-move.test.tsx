@@ -43,7 +43,7 @@ const ASSISTANT = getPublicKey(ASSISTANT_KEY);
 const BACKEND = getPublicKey(generateSecretKey());
 const PRIVATE_PART = { voice: 'warm', instructions: 'Sell tea', notes: 'n' };
 
-function oldConfig(source: 'admin' | 'paycore' = 'admin'): NostrEvent {
+function oldConfig(source: 'admin' | 'catalog' = 'admin'): NostrEvent {
   return finalizeEvent(
     buildConfigEvent(
       {
@@ -53,13 +53,26 @@ function oldConfig(source: 'admin' | 'paycore' = 'admin'): NostrEvent {
         language: 'en',
         currency: 'USD',
         source: { kind: source },
-        catalogKey: source === 'paycore' ? BACKEND : SERVER_KEY,
-        ...(source === 'paycore' ? { policyKey: SERVER_KEY } : {}),
+        catalogKey: source === 'catalog' ? BACKEND : SERVER_KEY,
         private: PRIVATE_PART,
         createdAt: NOW - 500,
       },
       OLD_KEY,
     ),
+    OLD_KEY,
+  );
+}
+
+/** The old config, signed again by the old key with a paycore source, which no reader takes. */
+function paycoreConfig(): NostrEvent {
+  const valid = oldConfig();
+  return finalizeEvent(
+    {
+      kind: valid.kind,
+      created_at: valid.created_at,
+      tags: valid.tags.map((tag) => (tag[0] === 'source' ? ['source', 'paycore'] : tag)),
+      content: valid.content,
+    },
     OLD_KEY,
   );
 }
@@ -176,13 +189,22 @@ describe('finishing a move to a new secret key (K21)', () => {
     expect(nameField(wrong)).toBe('');
   });
 
-  it('says when the private instructions could not be read, and when Pay Core needs relinking', async () => {
+  it('says when the private instructions could not be read; a catalog key store needs no relinking', async () => {
     const lost = await mountMoved(movedDeps(oldConfig(), null));
     expect(lost.textContent).toContain('private instructions could not be read');
     expect(nameField(lost)).toBe('Moved Tea');
     await mounted?.unmount();
-    const paycore = await mountMoved(movedDeps(oldConfig('paycore')));
-    expect(paycore.textContent).toContain('must be linked to your new key with our help');
+    const catalog = await mountMoved(movedDeps(oldConfig('catalog')));
+    expect(nameField(catalog)).toBe('Moved Tea');
+    expect(catalog.textContent).not.toContain('with our help');
+    expect(catalog.textContent).not.toContain('Pay Core');
+  });
+
+  it('previous settings naming a paycore source are not found: the form starts empty, nothing breaks', async () => {
+    const container = await mountMoved(movedDeps(paycoreConfig()));
+    expect(container.textContent).toContain('Your previous settings could not be found');
+    expect(nameField(container)).toBe('');
+    expect(container.textContent).not.toContain('Pay Core');
   });
 
   it('shows a failed read and retries on request', async () => {

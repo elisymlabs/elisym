@@ -104,9 +104,6 @@ export interface WorkerDeps {
   maxTokens?: number;
   /** A history read with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
-  /** Pay Core default relays' timeouts (5.1); tests shorten them. */
-  extraRelayTimeoutMs?: number;
-  extraRelayBudgetMs?: number;
   /** How long a connection must stay up to reset a backoff (2.4); tests shorten it. */
   stableConnectionMs?: number;
   now?: () => number;
@@ -152,12 +149,6 @@ export class Worker {
       pool: deps.pool,
       leased: () => this.leasedStores(),
       ...(deps.historyTimeoutMs === undefined ? {} : { historyTimeoutMs: deps.historyTimeoutMs }),
-      ...(deps.extraRelayTimeoutMs === undefined
-        ? {}
-        : { extraRelayTimeoutMs: deps.extraRelayTimeoutMs }),
-      ...(deps.extraRelayBudgetMs === undefined
-        ? {}
-        : { extraRelayBudgetMs: deps.extraRelayBudgetMs }),
       ...(deps.stableConnectionMs === undefined
         ? {}
         : { stableConnectionMs: deps.stableConnectionMs }),

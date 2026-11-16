@@ -367,8 +367,44 @@ describe('admin API (7.3)', () => {
       },
       store.ownerSecret,
     );
+    const ownConfig = buildConfigEvent(
+      {
+        assistant: store.assistant,
+        origins: [ORIGIN],
+        name: 'Shop',
+        language: 'en',
+        currency: 'USD',
+        source: { kind: 'catalog' },
+        catalogKey: store.catalogKey,
+        createdAt: NOW,
+      },
+      store.ownerSecret,
+    );
+    // A config naming a paycore source reads as no config, so it names no assistant of this store.
+    const paycoreConfig = finalizeEvent(
+      {
+        ...ownConfig,
+        tags: ownConfig.tags.map((tag) => (tag[0] === 'source' ? ['source', 'paycore'] : tag)),
+      },
+      store.ownerSecret,
+    );
+    const storeAuth = finalizeEvent(
+      {
+        kind: 30490,
+        created_at: NOW,
+        tags: [
+          ['d', store.catalogKey],
+          ['p', store.catalogKey],
+          ['mode', 'hosted'],
+        ],
+        content: '',
+      },
+      store.ownerSecret,
+    );
     const cases: [NostrEvent, string][] = [
       [foreignConfig, 'config_assistant'],
+      [paycoreConfig, 'config_assistant'],
+      [storeAuth, 'kind'],
       [note, 'kind'],
       [byStranger, 'signature'],
       [future, 'future'],
@@ -481,9 +517,7 @@ describe('admin API (7.3)', () => {
       .toBe('done');
     const listings = relay.events.filter((event) => event.kind === 30402);
     expect(listings.map((event) => event.pubkey)).toEqual([server.catalogKey]);
-    expect(
-      parseCatalogItem(listings[0] ?? relay.events[0], { now: NOW, role: 'catalog' }),
-    ).toBeTruthy();
+    expect(parseCatalogItem(listings[0] ?? relay.events[0], { now: NOW })).toBeTruthy();
     const invalid = await call('POST', '/v1/admin/catalog', { items: [{ d: 'x' }] });
     expect(invalid.body.error).toBe('invalid_items');
     const tooMany = await call('POST', '/v1/admin/catalog', {

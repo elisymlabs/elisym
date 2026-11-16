@@ -67,7 +67,7 @@ describe('catalog item gaps', () => {
       variants: [{ id: 'v', price: '1', available: true, values: ['S'] }],
     });
   const read = (template: ReturnType<typeof base>) =>
-    parseCatalogItem(sign(template, key), { now: NOW, role: 'catalog' });
+    parseCatalogItem(sign(template, key), { now: NOW });
 
   it('rejects look-alike product page origins', () => {
     for (const link of [

@@ -7,8 +7,6 @@ import type { ServerPool } from './pool';
 export interface PageLimits {
   connectionTimeoutMs: number;
   pageTimeoutMs?: number;
-  /** Unix ms after which the read gives up. */
-  deadline?: number;
 }
 
 /**
@@ -39,9 +37,6 @@ export async function readAllPages(
     let until: number | undefined;
     let ended = false;
     for (let pages = 0; pages < CATALOG_PAGES_PER_FILTER; pages += 1) {
-      if (limits.deadline !== undefined && Date.now() >= limits.deadline) {
-        return undefined;
-      }
       const page: NostrEvent[] = [];
       // Everything the relay sent, matching or not: what tells a full page from the last one.
       let received = 0;

@@ -25,7 +25,6 @@ function item(overrides: Partial<CatalogItem> = {}): CatalogItem {
       { id: '103', price: '20', available: true, values: ['S', 'Blue'] },
     ],
     visibility: 'on-sale',
-    hasAccept: false,
     createdAt: 1,
     ...overrides,
   };

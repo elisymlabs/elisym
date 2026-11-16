@@ -97,9 +97,7 @@ describe('readCatalogAuthority tolerates malformed entries', () => {
       { pubkey: owner.pubkey, kind: 30497, tags: [null] },
     ];
     const events = [grant(), ...malformed] as Parameters<typeof readCatalogAuthority>[0];
-    expect(readCatalogAuthority(events, owner.pubkey, NOW)).toEqual(
-      new Map([[catalog.pubkey, new Set(['catalog'])]]),
-    );
+    expect(readCatalogAuthority(events, owner.pubkey, NOW)).toEqual(new Set([catalog.pubkey]));
   });
 });
 

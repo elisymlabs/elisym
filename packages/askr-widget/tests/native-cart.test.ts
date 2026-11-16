@@ -61,7 +61,7 @@ describe('nativeCartPlatform', () => {
     expect(
       nativeCartPlatform(config({ kind: 'connector', platform: 'google', shopUrl: SHOP }), SHOP),
     ).toBe(undefined);
-    for (const kind of ['paycore', 'catalog', 'admin'] as const) {
+    for (const kind of ['catalog', 'admin'] as const) {
       expect(nativeCartPlatform(config({ kind }), SHOP)).toBeUndefined();
     }
   });

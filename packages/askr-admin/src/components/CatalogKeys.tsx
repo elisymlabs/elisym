@@ -1,9 +1,4 @@
-import {
-  type CatalogKeyRole,
-  type StoreConfig,
-  buildCatalogAuth,
-  buildCatalogRevocation,
-} from '@elisym/askr';
+import { type StoreConfig, buildCatalogAuth, buildCatalogRevocation } from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { ASKR_KEY_COMMAND } from '../constants';
 import { type SessionDeps, postSigned } from '../lib/deps';
@@ -22,11 +17,6 @@ interface Props {
   view: StoreView;
   config: StoreConfig | undefined;
 }
-
-const ROLE_NAMES: Readonly<Record<CatalogKeyRole, string>> = {
-  catalog: 'catalog key',
-  paycore: 'Pay Core store key',
-};
 
 /** Authorize or revoke catalog keys K with O-signed 30497 events (1.1). */
 export function CatalogKeys({ deps, view, config }: Props) {
@@ -111,13 +101,11 @@ export function CatalogKeys({ deps, view, config }: Props) {
   } else if (keys !== undefined) {
     list = (
       <ul className="flex flex-col gap-8">
-        {keys.map(([key, roles]) => (
+        {keys.map((key) => (
           <KeyRow
             key={key}
             npub={npubOf(key)}
-            roles={[...roles].map((role) => ROLE_NAMES[role])}
             uses={labelsOf(key)}
-            revocable={roles.has('catalog')}
             busy={busy}
             onRevoke={() => revoke(key)}
           />

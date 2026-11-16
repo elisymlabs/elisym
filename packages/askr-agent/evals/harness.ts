@@ -61,10 +61,7 @@ export function buildCatalog(store: EvalStore, now: number): BuiltCatalog {
   const key = getPublicKey(secret);
   const rejected: string[] = [];
   const items = store.items.flatMap((input) => {
-    const parsed = parseCatalogItem(finalizeEvent(buildCatalogItemEvent(input), secret), {
-      now,
-      role: 'catalog',
-    });
+    const parsed = parseCatalogItem(finalizeEvent(buildCatalogItemEvent(input), secret), { now });
     if (!parsed) {
       rejected.push(input.d);
       return [];

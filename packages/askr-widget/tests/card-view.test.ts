@@ -40,7 +40,6 @@ function catalogItem(overrides: Partial<CatalogItem> = {}): CatalogItem {
       }),
       key,
     ),
-    { role: 'catalog' },
   );
   if (!item) {
     throw new Error('item did not parse');

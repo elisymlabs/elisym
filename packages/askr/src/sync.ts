@@ -11,7 +11,7 @@ import {
 import type { EventTemplate, Filter, NostrEvent } from 'nostr-tools';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { ASKR_RELAYS, KIND_CATALOG_AUTH, KIND_POLICY } from './constants';
-import { hasRole } from './events/catalog-auth';
+import { isCatalogKey } from './events/catalog-auth';
 import {
   type CatalogItemInput,
   CatalogItemInputSchema,
@@ -35,7 +35,7 @@ export interface SyncRelayClient {
 }
 
 export interface SyncCatalogOptions {
-  /** The catalog key K: must be 30497-authorized by `store` (never a Pay Core S). */
+  /** The catalog key K: must be 30497-authorized by `store`. */
   signer: Uint8Array;
   /** The store owner O. */
   store: string;
@@ -119,7 +119,7 @@ async function requireCatalogKey(
       authors: [store],
     })
   ).filter((event) => isEventShaped(event));
-  if (!hasRole(authorityEvents, store, key, 'catalog', now)) {
+  if (!isCatalogKey(authorityEvents, store, key, now)) {
     throw new Error('This key is not authorized as a catalog key by the store owner');
   }
 }

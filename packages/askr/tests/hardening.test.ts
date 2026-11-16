@@ -145,8 +145,8 @@ describe('checkTicket refuses each forgery', () => {
 describe('catalog item rules', () => {
   const key = testKey();
 
-  it('drops a catalog-key listing with payment tags, keeps it for a Pay Core key', () => {
-    const payCoreListing = sign(
+  it('drops a listing with payment tags', () => {
+    const paidListing = sign(
       buildProductEvent({
         d: 'p1',
         title: 'P',
@@ -159,8 +159,8 @@ describe('catalog item rules', () => {
       }),
       key,
     );
-    expect(parseCatalogItem(payCoreListing, { now: NOW, role: 'catalog' })).toBeUndefined();
-    expect(parseCatalogItem(payCoreListing, { now: NOW, role: 'paycore' })?.hasAccept).toBe(true);
+    expect(parseCatalogItem(paidListing, { now: NOW })).toBeUndefined();
+    expect(parseCatalogItem(paidListing)).toBeUndefined();
   });
 
   const base = { d: 'x', title: 'X', options: [{ name: 'size', values: ['S', 'M'] }] };
@@ -279,10 +279,13 @@ describe('config sizing', () => {
     ).toThrow(/too large/);
   });
 
-  it('requires an explicit policy key for a paycore source', () => {
-    expect(() =>
-      buildConfigEvent({ ...baseConfig, source: { kind: 'paycore' } }, owner.secretKey),
-    ).toThrow(/policyKey/);
+  it('refuses a paycore source, with or without a policy key', () => {
+    for (const config of [
+      { ...baseConfig, source: { kind: 'paycore' } },
+      { ...baseConfig, source: { kind: 'paycore' }, policyKey: owner.pubkey },
+    ]) {
+      expect(() => buildConfigEvent(config, owner.secretKey)).toThrow();
+    }
   });
 });
 

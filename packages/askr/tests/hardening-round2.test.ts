@@ -114,7 +114,7 @@ describe('sync dating', () => {
 });
 
 describe('authority and builder rules', () => {
-  it('enumerates authority with deletions and dual roles', () => {
+  it('enumerates authority with deletions; a 30490 next to a 30497 adds nothing', () => {
     const both = testKey();
     const events = [
       grant(),
@@ -133,9 +133,7 @@ describe('authority and builder rules', () => {
         owner,
       ),
     ];
-    expect(readCatalogAuthority(events, owner.pubkey, NOW)).toEqual(
-      new Map([[both.pubkey, new Set(['catalog', 'paycore'])]]),
-    );
+    expect(readCatalogAuthority(events, owner.pubkey, NOW)).toEqual(new Set([both.pubkey]));
   });
 
   const options = [{ name: 'size', values: ['S', 'M'] }];
@@ -176,10 +174,7 @@ describe('authority and builder rules', () => {
     });
     const variantCounts = [noVariants, oneVariant].map((template) => {
       expect(template.tags).toContainEqual(['price-from', '1']);
-      const read = parseCatalogItem(
-        { ...template, pubkey: catalog.pubkey },
-        { role: 'catalog', now: NOW },
-      );
+      const read = parseCatalogItem({ ...template, pubkey: catalog.pubkey }, { now: NOW });
       expect(read?.priceFrom).toBe(true);
       return read?.variants.length;
     });

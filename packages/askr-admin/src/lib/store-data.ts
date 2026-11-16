@@ -3,7 +3,6 @@ import {
   D_TAG_RE,
   type CatalogItem,
   type CatalogItemInput,
-  type CatalogKeyRole,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
   KIND_POLICY,
@@ -17,7 +16,6 @@ import {
 import {
   KIND_DELETION,
   KIND_PRODUCT,
-  KIND_STORE_AUTH,
   MAX_FUTURE_SKEW_SECS,
   newestDeletion,
 } from '@elisym/commerce';
@@ -139,8 +137,8 @@ function newestByDAll(events: readonly NostrEvent[], owner: string, now: number)
 }
 
 export interface AuthorityRead {
-  /** The keys the owner authorizes now, with their roles (1.2). */
-  keys: Map<string, Set<CatalogKeyRole>>;
+  /** The catalog keys the owner authorizes now (1.2). */
+  keys: Set<string>;
   /** The date of the newest 30497 per key: a new one for that key must be dated after it. */
   newestAt: Map<string, number>;
 }
@@ -153,7 +151,7 @@ export async function readAuthority(
 ): Promise<AuthorityRead> {
   const events = (
     await reader.query({
-      kinds: [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_DELETION],
+      kinds: [KIND_CATALOG_AUTH, KIND_DELETION],
       authors: [owner],
     })
   ).filter((event) => verifyEvent(event));
@@ -165,13 +163,6 @@ export async function readAuthority(
     }
   }
   return { keys: readCatalogAuthority(events, owner, now), newestAt };
-}
-
-/** Keys holding the catalog role now. */
-export function catalogKeysOf(authority: AuthorityRead): Set<string> {
-  return new Set(
-    [...authority.keys].filter(([, roles]) => roles.has('catalog')).map(([key]) => key),
-  );
 }
 
 function isHidden(event: NostrEvent): boolean {
@@ -216,7 +207,7 @@ function listingsOf(events: readonly NostrEvent[], key: string, now: number): Ca
             ),
           }
         : event;
-      const item = parseCatalogItem(readable, { role: 'catalog', now });
+      const item = parseCatalogItem(readable, { now });
       return item === undefined ? [] : [inputOfListing(item, hidden)];
     });
 }
@@ -252,16 +243,11 @@ function listedIdsOf(events: readonly NostrEvent[], key: string, now: number): s
 
 /**
  * How many products in `currency` a catalog key shows shoppers now (hidden and
- * deleted ones left out), read as the assistant reads them: `paycore` for a
- * Pay Core store's key, which may carry payment terms, `catalog` otherwise.
- * Read from the Askr relay only: listings, and a Pay Core store's
- * authorization, published only to other relays are not counted (the admin
- * reads no other relay, while the server also reads Pay Core's).
+ * deleted ones left out), read as the assistant reads them, from the Askr relay.
  */
 export async function countListed(
   reader: RelayReader,
   key: string,
-  role: CatalogKeyRole,
   currency: string,
   now: number = nowSecs(),
 ): Promise<number> {
@@ -272,7 +258,7 @@ export async function countListed(
       return false;
     }
     // Only the store's currency counts against the plan: the assistant leaves the rest out.
-    return parseCatalogItem(event, { role, now })?.price.currency === currency;
+    return parseCatalogItem(event, { now })?.price.currency === currency;
   }).length;
 }
 

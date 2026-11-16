@@ -35,7 +35,8 @@ function header(secret: Uint8Array, method: string, path: string, body: string):
 }
 
 interface Options {
-  source?: 'admin' | 'paycore';
+  /** A newer config naming a paycore source, which no reader takes, signed over the store's. */
+  paycoreOnTop?: boolean;
   /** When the store's site was first seen; undefined records none. */
   siteSeenAt?: number | undefined;
   /** What the shop's home page carries, given the new key's npub. */
@@ -52,7 +53,6 @@ async function setup(options: Options = {}) {
       store.ownerSecret,
     ),
   );
-  const paycoreKey = getPublicKey(generateSecretKey());
   const configEvent = finalizeEvent(
     buildConfigEvent(
       {
@@ -62,9 +62,8 @@ async function setup(options: Options = {}) {
         name: 'Shop',
         language: 'en',
         currency: 'USD',
-        source: { kind: options.source ?? 'admin' },
-        catalogKey: options.source === 'paycore' ? paycoreKey : store.catalogKey,
-        ...(options.source === 'paycore' ? { policyKey: store.catalogKey } : {}),
+        source: { kind: 'admin' },
+        catalogKey: store.catalogKey,
         private: { voice: 'warm', instructions: 'Sell tea', notes: 'n' },
         createdAt: NOW - 50,
       },
@@ -73,6 +72,19 @@ async function setup(options: Options = {}) {
     store.ownerSecret,
   );
   relay.events.push(configEvent);
+  if (options.paycoreOnTop === true) {
+    relay.events.push(
+      finalizeEvent(
+        {
+          kind: configEvent.kind,
+          created_at: NOW - 10,
+          tags: configEvent.tags.map((tag) => (tag[0] === 'source' ? ['source', 'paycore'] : tag)),
+          content: configEvent.content,
+        },
+        store.ownerSecret,
+      ),
+    );
+  }
   if (options.siteSeenAt !== undefined) {
     await seeded.directory.noteOrigins(store.owner, [SHOP], options.siteSeenAt);
   }
@@ -253,8 +265,8 @@ describe('replacing an owner key through the site (K21)', () => {
     expect((await recover(store.owner)).status).toBe(200);
   });
 
-  it('moves a Pay Core store too: a thief cannot turn recovery into "contact us" by its source', async () => {
-    const { store, recover } = await setup({ siteSeenAt: LONG_AGO, source: 'paycore' });
+  it('moves a store whose newest config names a paycore source: that config is skipped, never a crash', async () => {
+    const { store, recover } = await setup({ siteSeenAt: LONG_AGO, paycoreOnTop: true });
     expect((await recover(store.owner)).status).toBe(200);
   });
 
