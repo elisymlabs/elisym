@@ -29,7 +29,11 @@ export const REMEMBER_LOG_N = 16;
  */
 const MAX_READ_LOG_N = 18;
 
-export const MIN_PASSWORD_LENGTH = 10;
+/**
+ * Kept low on purpose: the merchant chooses the strength. The form says plainly that whoever
+ * copies the browser's storage can guess offline, so a longer password holds better.
+ */
+export const MIN_PASSWORD_LENGTH = 6;
 
 const STORAGE_KEY = 'askr-admin.remembered-keys';
 const PROBE_KEY = 'askr-admin.probe';

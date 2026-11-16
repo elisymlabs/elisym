@@ -102,8 +102,10 @@ export function RememberOption({ ref, label, id, username }: Props) {
           />
           <p className="text-13 text-text-2">
             Your key is kept on this device locked with a password you choose, and is never sent
-            anywhere. Use this only on your own device. The password cannot be reset: if you forget
-            it, sign in with your secret key.
+            anywhere. Use this only on your own device. Whoever copies this browser's storage can
+            try passwords offline, so a short or common one will not hold them off for long: a
+            longer one does. The password cannot be reset: if you forget it, sign in with your
+            secret key.
           </p>
           <label className="field" htmlFor={`${id}-password`}>
             <span className="field-label">

@@ -101,10 +101,12 @@ describe('a new secret key', () => {
       throw new Error('no saved checkbox');
     }
     await click(saved);
+    expect(text(container)).toContain('Password (at least 6 characters)');
+    expect(text(container)).toContain('can try passwords offline');
     inputById(container, 'new-key-password').value = 'short';
     inputById(container, 'new-key-repeat').value = 'short';
     await click(buttonNamed(container, 'Continue'));
-    expect(text(container)).toContain('at least 10 characters');
+    expect(text(container)).toContain('at least 6 characters');
     expect(onSigner).not.toHaveBeenCalled();
     inputById(container, 'new-key-password').value = PASSWORD;
     inputById(container, 'new-key-repeat').value = `${PASSWORD}!`;
@@ -182,7 +184,7 @@ describe('signing in with a pasted key and remembering it', () => {
     field.value = nip19.nsecEncode(OWNER_KEY);
     await chooseRemember(container, 'sign-in', 'short');
     await click(buttonNamed(container, 'Sign in'));
-    expect(text(container)).toContain('at least 10 characters');
+    expect(text(container)).toContain('at least 6 characters');
     expect(field.value).toBe(nip19.nsecEncode(OWNER_KEY));
     expect(onSigner).not.toHaveBeenCalled();
   });
@@ -428,7 +430,7 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     const { container } = await toProof(recover);
     await chooseRemember(container, 'moved-key', 'short');
     await click(buttonNamed(container, 'Check my site and move the store'));
-    expect(text(container)).toContain('at least 10 characters');
+    expect(text(container)).toContain('at least 6 characters');
     expect(recover).toHaveBeenCalledTimes(1);
   });
 });
