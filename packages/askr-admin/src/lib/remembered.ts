@@ -29,7 +29,8 @@ export const REMEMBER_LOG_N = 16;
  */
 const MAX_READ_LOG_N = 18;
 
-export const MIN_PASSWORD_LENGTH = 10;
+/** Kept low on purpose: the merchant chooses; the key file and the secret key itself stay the way back. */
+export const MIN_PASSWORD_LENGTH = 6;
 
 const STORAGE_KEY = 'askr-admin.remembered-keys';
 const PROBE_KEY = 'askr-admin.probe';

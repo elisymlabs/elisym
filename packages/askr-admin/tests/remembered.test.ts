@@ -243,10 +243,12 @@ describe('a browser that keeps nothing', () => {
 
 describe('the password', () => {
   it(`needs ${MIN_PASSWORD_LENGTH} characters, typed the same twice`, () => {
-    expect(passwordProblem('short', 'short')).toContain('at least 10 characters');
-    expect(passwordProblem('123456789', '123456789')).toContain('at least 10');
-    expect(passwordProblem('1234567890', '1234567891')).toContain('not the same');
-    expect(passwordProblem('1234567890', '1234567890')).toBeUndefined();
+    expect(passwordProblem('short', 'short')).toContain('at least 6 characters');
+    expect(passwordProblem('12345', '12345')).toContain('at least 6');
+    expect(passwordProblem('123456', '123457')).toContain('not the same');
+    expect(passwordProblem('123456', '123456')).toBeUndefined();
+    // Counted by character, not UTF-16 unit: six emoji are six characters.
+    expect(passwordProblem('🔑🔑🔑🔑🔑🔑', '🔑🔑🔑🔑🔑🔑')).toBeUndefined();
   });
 });
 
