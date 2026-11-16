@@ -31,6 +31,7 @@ interface Props {
   reload: () => Promise<void>;
   reloadConfig: () => Promise<void>;
   onSignOut: () => void;
+  onReplaceKey: () => void;
 }
 
 export function Shell({
@@ -45,6 +46,7 @@ export function Shell({
   reload,
   reloadConfig,
   onSignOut,
+  onReplaceKey,
 }: Props) {
   const [tab, setTab] = useState<TabId>('overview');
   const refresh = async () => {
@@ -92,6 +94,7 @@ export function Shell({
         }
         onRetry={reloadConfig}
         onChanged={refresh}
+        onReplaceKey={onReplaceKey}
       />
     );
   } else {

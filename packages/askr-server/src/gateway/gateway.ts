@@ -189,7 +189,12 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     }
     const record = await deps.state.store(owner);
     if (record === undefined) {
-      return json({ error: 'forbidden' }, 403, requestOrigin);
+      // A store whose owner key was replaced (K21): the widget follows it once it has checked the
+      // new owner's own config lists this page; an older widget reads it as unavailable.
+      const moved = await deps.state.movedTo(owner);
+      return moved === undefined
+        ? json({ error: 'forbidden' }, 403, requestOrigin)
+        : json({ unavailable: true, reason: 'moved', moved, contact: null }, 410, requestOrigin);
     }
     // Only active stores are leased, so a store that is not has no config here (3, 4.1).
     if (record.status !== 'active' || record.tier === undefined) {

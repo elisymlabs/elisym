@@ -103,7 +103,7 @@ function storedEvents(deps: SessionDeps, call: number): NostrEvent[] {
 
 describe('the settings save', () => {
   it.each([
-    ['active', storeView(), 'published to the relay in a moment'],
+    ['active', storeView(), 'are published in a moment'],
     [
       'pending',
       storeView({ status: 'pending', tier: null }),
@@ -186,7 +186,7 @@ describe('an undecryptable private part', () => {
     const signer = decliningOnce();
     const deps = sessionDeps(fakeApi(), fakeReader([event]), signer);
     const { container } = await mountSettings({ deps, config: configOf(event) });
-    expect(container.textContent).toContain('could not be decrypted');
+    expect(container.textContent).toContain('could not be read, so the fields');
     expect(buttonNamed(container, 'Sign and save').disabled).toBe(true);
     const replace = container.querySelector('input[type="checkbox"]');
     if (!(replace instanceof HTMLInputElement)) {
@@ -198,7 +198,7 @@ describe('an undecryptable private part', () => {
     await click(buttonNamed(container, 'Try decrypting again'));
     await settle(() => instructionsOf(container) !== '');
     expect(instructionsOf(container)).toBe('Recommend oolong.');
-    expect(container.textContent).not.toContain('could not be decrypted');
+    expect(container.textContent).not.toContain('could not be read, so the fields');
     await click(buttonNamed(container, 'Sign and save'));
     await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length === 1);
     const saved = configOf(storedEvents(deps, 0)[0] ?? event);

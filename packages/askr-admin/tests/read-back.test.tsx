@@ -82,7 +82,9 @@ function fieldValue(container: HTMLElement, id: string): string {
 
 async function mountSession(api: AdminClient, relay: NostrEvent[] = []) {
   const deps = sessionDeps(api, fakeReader(relay));
-  mounted = await mount(<Session deps={deps} onSignOut={() => undefined} />);
+  mounted = await mount(
+    <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
+  );
   const { container } = mounted;
   await settle(() => /Overview|Set up your assistant|could not/.test(container.textContent ?? ''));
   return { container, deps };
@@ -140,7 +142,7 @@ describe('a pending store read back from the server (7.3)', () => {
     expect(container.textContent).not.toContain('Set up your assistant');
     expect(container.querySelector('h1')?.textContent).toBe('Saved Tea');
     expect(container.textContent).toContain('published once your store is activated');
-    expect(container.textContent).not.toContain('not on the relay yet');
+    expect(container.textContent).not.toContain('Your settings are not published yet');
     expect(container.textContent).not.toContain('not shown here');
     await click(buttonNamed(container, 'Settings'));
     await settle(() => container.querySelector('#store-name') !== null);
@@ -187,7 +189,7 @@ describe('a pending store read back from the server (7.3)', () => {
     const api = pendingApi([configSignedBy(generateSecretKey(), 'Not Yours', NOW)], 1);
     const { container } = await mountSession(api);
     expect(container.querySelector('h1')?.textContent).toBe('Your store');
-    expect(container.textContent).toContain('not on the relay yet');
+    expect(container.textContent).toContain('Your settings are not published yet');
     expect(container.textContent).not.toContain('Not Yours');
   });
 

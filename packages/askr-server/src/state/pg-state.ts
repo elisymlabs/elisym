@@ -5,6 +5,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { ORPHAN_RESERVATION_SECS, RUMOR_DEDUP_SECS } from '../constants';
 import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
+import { noteOrigins } from './origins';
 import type {
   Admission,
   AskRecord,
@@ -59,6 +60,29 @@ const STORE_COLUMNS = `
   t.tickets_per_store_per_minute, t.max_products, t.sync_interval_minutes, t.branding`;
 const STORE_FROM = 'from stores s left join tiers t on t.name = s.tier';
 export const STORE_SELECT = `select ${STORE_COLUMNS} ${STORE_FROM}`;
+
+/**
+ * Moves followed at most from a key to where its store is now (K21). A key is
+ * moved to only if it never was a store or moved from one, so moves form no
+ * cycle; the bound only stops a damaged table.
+ */
+export const MAX_MOVE_HOPS = 1_000;
+
+/** Where the store that had owner key `owner` is now, if it moved: the end of its chain of moves. */
+export async function followMoves(db: Db, owner: string): Promise<string | undefined> {
+  const [row] = await db.query<{ to_owner: string | null }>(
+    `with recursive chain (owner, hops) as (
+       select $1::text, 0
+       union all
+       select m.to_owner, chain.hops + 1 from store_moves m
+       join chain on m.from_owner = chain.owner
+       where chain.hops < $2
+     )
+     select owner as to_owner from chain where hops > 0 order by hops desc limit 1`,
+    [owner, MAX_MOVE_HOPS],
+  );
+  return row?.to_owner ?? undefined;
+}
 
 function tierOf(row: StoreRow): Tier | undefined {
   if (
@@ -709,6 +733,16 @@ export class PgState implements ServerState {
       // The same test a reservation makes: no ticket when not even one turn's reservation fits.
       return (await this.fits(tx, owner, tier, reserveUsd, now)) === undefined;
     });
+  }
+
+  async noteOrigins(owner: string, origins: readonly string[], now: number): Promise<void> {
+    if (origins.length > 0) {
+      await noteOrigins(this.db, owner, origins, now);
+    }
+  }
+
+  movedTo(owner: string): Promise<string | undefined> {
+    return followMoves(this.db, owner);
   }
 
   async countClick(owner: string, address: string): Promise<void> {

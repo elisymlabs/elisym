@@ -5,12 +5,15 @@ import {
   CatalogItemInputSchema,
   D_TAG_RE,
   KIND_CATALOG_AUTH,
+  CONFIG_D_TAG,
   KIND_CONFIG,
   LIMITS,
   PolicyInputSchema,
   SHOPIFY_POLICY_SLUGS,
   type SyncDiff,
+  type StoreConfig,
   type SyncRelayClient,
+  decryptPrivateConfig,
   parseConfig,
   removePolicy,
   setPolicy,
@@ -18,6 +21,7 @@ import {
 } from '@elisym/askr';
 import { HEX_PUBKEY_RE, KIND_PRODUCT } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
+import { decode } from 'nostr-tools/nip19';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
 import { publicBaseOf } from '../config';
@@ -27,7 +31,7 @@ import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
 import { randomId } from '../state/pg-state';
-import type { CatalogSyncStatus, StoreDirectory } from '../state/stores';
+import { type CatalogSyncStatus, proofOrigins, type StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
@@ -36,6 +40,8 @@ const KIND_DELETION = 5;
 /** New stores one client address may create per hour (the onboarding needs one). */
 const NEW_STORES_PER_IP_PER_HOUR = 5;
 const HOUR_MS = 60 * 60 * 1000;
+/** Owner key replacements one client address may try per hour (K21): each reads shop sites. */
+const RECOVERIES_PER_IP_PER_HOUR = 10;
 const MAX_EVENTS_PER_REQUEST = 20;
 const MAX_EVENT_BYTES = 64 * 1024;
 /**
@@ -47,6 +53,25 @@ export const MAX_READ_BACK_BYTES = 1024 * 1024;
 /** A stored event may be dated at most this far ahead (clock skew of the signer). */
 const MAX_AHEAD_SECS = 10 * 60;
 const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
+
+const RecoverRequestSchema = z.object({
+  from: z.string().max(100),
+  dryRun: z.boolean().optional(),
+});
+
+/** An owner key as hex, from hex or an npub; undefined for anything else. */
+function ownerKeyOf(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (HEX_PUBKEY_RE.test(trimmed.toLowerCase())) {
+    return trimmed.toLowerCase();
+  }
+  try {
+    const decoded = decode(trimmed);
+    return decoded.type === 'npub' ? decoded.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const EventSchema = z.object({
   id: z.string(),
@@ -253,6 +278,138 @@ export function createAdminApi(
     }
   };
 
+  /**
+   * The newest genuine config `owner` signed: on the relay, or stored here
+   * and not published yet.
+   */
+  const newestConfigOf = async (
+    owner: string,
+  ): Promise<{ config: StoreConfig; event: NostrEvent } | undefined> => {
+    const relayEvents = await deps.syncClient.query(ASKR_RELAYS, {
+      kinds: [KIND_CONFIG],
+      authors: [owner],
+      '#d': [CONFIG_D_TAG],
+    });
+    const stored = (await deps.directory.storedEvents(owner, MAX_READ_BACK_BYTES)).events;
+    let newest: { config: StoreConfig; event: NostrEvent } | undefined;
+    for (const event of [...relayEvents, ...stored]) {
+      // Dated far ahead, a config would outrank every later one: a thief's trick, never the owner's.
+      if (
+        event.kind !== KIND_CONFIG ||
+        event.pubkey !== owner ||
+        event.created_at > now() + MAX_AHEAD_SECS ||
+        !verifyEvent(event)
+      ) {
+        continue;
+      }
+      const config = parseConfig(event);
+      if (
+        config !== undefined &&
+        (newest === undefined || config.createdAt > newest.config.createdAt)
+      ) {
+        newest = { config, event };
+      }
+    }
+    return newest;
+  };
+
+  const recoveriesPerIp = new WindowLimiter(RECOVERIES_PER_IP_PER_HOUR, HOUR_MS);
+  /** Replacements (store and new key) whose site reads run now, on this instance. */
+  const proving = new Set<string>();
+
+  /**
+   * Replace a store's owner key (K21, 1.6): `owner` is the new key O', which
+   * signed the request; `from` a key the store had. One of the sites the store
+   * has had long enough, and listed lately (`proofOrigins`), must name O'.
+   * `dryRun` checks everything but the site, so the admin can say what stands
+   * in the way before the merchant edits their site. No limit per store: its
+   * ID is public, and a limit anyone can use up would lock its owner out.
+   */
+  const recover = async (owner: string, body: string, clientAddress: string): Promise<Response> => {
+    const parsed = RecoverRequestSchema.safeParse(parseJson(body));
+    const asked = parsed.success ? ownerKeyOf(parsed.data.from) : undefined;
+    if (asked === undefined || asked === owner) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    if (!recoveriesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
+      return json({ error: 'rate_limited' }, 429);
+    }
+    // A store that moved on is recovered where it is now: an owner can take it back from a thief.
+    const from = (await deps.directory.movedTo(asked)) ?? asked;
+    // The store is already on this key: a retry of a move whose answer was lost. Answer it again.
+    if (from === owner) {
+      const store = await deps.directory.store(owner);
+      return store === undefined ? json({ error: 'no_store' }, 404) : json(await view(store), 200);
+    }
+    if (
+      (await deps.directory.statusOf(owner)) !== undefined ||
+      (await deps.directory.wasMoved(owner))
+    ) {
+      return json({ error: 'key_in_use' }, 409);
+    }
+    if ((await deps.directory.statusOf(from)) === undefined) {
+      return json({ error: 'no_store' }, 404);
+    }
+    let settings: { config: StoreConfig; event: NostrEvent } | undefined;
+    try {
+      settings = await newestConfigOf(from);
+    } catch {
+      return json({ error: 'read_failed' }, 503);
+    }
+    const { origins, readyAt } = proofOrigins(await deps.directory.originsHeld(from), now());
+    if (origins.length === 0) {
+      return json({ error: 'no_site_yet', readyAt: readyAt ?? null }, 409);
+    }
+    if (parsed.success && parsed.data.dryRun === true) {
+      return json({ ok: true }, 200);
+    }
+    // One proof at a time per store and new key: a double click reads the sites once, and
+    // others' tries never hold up the owner's (moveStore settles a race between keys).
+    const attempt = `${from}:${owner}`;
+    if (proving.has(attempt)) {
+      return json({ error: 'proof_running' }, 409);
+    }
+    proving.add(attempt);
+    let proof: Awaited<ReturnType<typeof deps.connectors.proveSite>>;
+    try {
+      proof = await deps.connectors.proveSite(origins, owner);
+    } finally {
+      proving.delete(attempt);
+    }
+    if ('failures' in proof) {
+      // Only the sites the settings list now are named: older ones stay private. A key that
+      // signed nothing passes on the settings of the move before.
+      const passedOn = (await deps.directory.movedFrom(from))?.config ?? null;
+      const passedOnConfig = passedOn === null ? undefined : parseConfig(passedOn);
+      const listed = new Set(settings?.config.origins ?? passedOnConfig?.origins ?? []);
+      return json(
+        {
+          error: 'site_not_proven',
+          failures: proof.failures.filter((failure) => listed.has(failure.origin)),
+          unlisted: proof.failures.filter((failure) => !listed.has(failure.origin)).length,
+        },
+        409,
+      );
+    }
+    // A key that signed nothing (moved on before it could) leaves the settings of the move before.
+    const previous = settings?.event ?? (await deps.directory.movedFrom(from))?.config ?? undefined;
+    const moved = await deps.directory.moveStore(from, owner, now(), previous);
+    if (!moved.ok) {
+      if (moved.reason === 'taken') {
+        return json({ error: 'key_in_use' }, 409);
+      }
+      // Another replacement moved the store while this one read the site: retrying finds it.
+      return moved.reason === 'moved'
+        ? json({ error: 'moved_meanwhile' }, 409)
+        : json({ error: 'no_store' }, 404);
+    }
+    log(`store ${from} moved to owner ${owner}, proven by ${proof.proven}`);
+    const store = await deps.directory.store(owner);
+    return store === undefined
+      ? json({ error: 'no_store' }, 404)
+      : json({ ...(await view(store)), proven: proof.proven }, 200);
+  };
+
   const view = async (store: StoreRecord) => ({
     owner: store.owner,
     status: store.status,
@@ -264,6 +421,7 @@ export function createAdminApi(
     catalogSync: await deps.directory.catalogSync(store.owner, now()),
     connector: (await deps.directory.connector(store.owner)) ?? null,
     events: await deps.directory.eventStatus(store.owner),
+    movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
   });
 
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -467,6 +625,9 @@ export function createAdminApi(
     }
     const owner = auth.pubkey;
     const route = `${request.method} ${url.pathname}`;
+    if (route === 'POST /v1/admin/store/recover') {
+      return recover(owner, body, clientAddress);
+    }
     if (route === 'POST /v1/admin/store') {
       // Onboarding (7.3): anyone may create a store, which starts pending (K19). Opening an
       // existing one is free; a new one counts per client address, so fresh keys cannot fill
@@ -475,6 +636,10 @@ export function createAdminApi(
       if (existing !== undefined) {
         return json(await view(existing), 200);
       }
+      // A key a store moved away from never opens a store again: its embeds lead to the new one.
+      if (await deps.directory.wasMoved(owner)) {
+        return json({ error: 'moved' }, 409);
+      }
       if (!storesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
         return json({ error: 'rate_limited' }, 429);
       }
@@ -482,7 +647,10 @@ export function createAdminApi(
     }
     const store = await deps.directory.store(owner);
     if (store === undefined) {
-      return json({ error: 'no_store' }, 404);
+      // A key the store moved away from: its admin says where to go, or how to take it back.
+      return (await deps.directory.wasMoved(owner))
+        ? json({ error: 'moved' }, 409)
+        : json({ error: 'no_store' }, 404);
     }
     if (route === 'GET /v1/admin/store') {
       return json(await view(store), 200);
@@ -495,6 +663,37 @@ export function createAdminApi(
       // shows the events O signed from here. Only the caller's own store; the admin checks each
       // signature and author as it does the relay's.
       return json(await deps.directory.storedEvents(owner, MAX_READ_BACK_BYTES), 200);
+    }
+    if (route === 'GET /v1/admin/store/moved-settings') {
+      // The private part of the settings the old owner key signed, which only A can read now that
+      // the old key is gone: the admin signs it again as the new owner (K21).
+      const moved = await deps.directory.movedFrom(owner);
+      if (moved === undefined) {
+        return json({ error: 'not_found' }, 404);
+      }
+      const config = moved.config === null ? undefined : parseConfig(moved.config);
+      // Sealed for the A it names: the current one, or the next while a rotation was under way.
+      const next = await deps.directory.nextAssistantSecret(owner);
+      const keys =
+        next === undefined ? [store.assistantSecretKey] : [store.assistantSecretKey, next];
+      const privatePart =
+        config === undefined
+          ? undefined
+          : keys.map((key) => decryptPrivateConfig(config, key)).find((part) => part !== undefined);
+      // The key that signed them: the one moved from, or an earlier key of this store when that one
+      // signed nothing. Any other signer is not this store's, and the settings are not given.
+      const former = await deps.directory.formerOwners(owner);
+      const signedBy =
+        moved.config !== null && former.includes(moved.config.pubkey) ? moved.config.pubkey : null;
+      return json(
+        {
+          from: moved.from,
+          signedBy,
+          config: signedBy === null ? null : moved.config,
+          private: signedBy === null ? null : (privatePart ?? null),
+        },
+        200,
+      );
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);

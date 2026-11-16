@@ -3,11 +3,17 @@ import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import { randomId } from '../state/pg-state';
 import type { ConnectorRecord, ScheduledConnector, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
-import { PREVIEW_DEADLINE_MS } from './constants';
+import {
+  MAX_REDIRECTS,
+  PREVIEW_DEADLINE_MS,
+  PROOF_PAGE_CACHE_MS,
+  PROOF_SLOT_WAIT_MS,
+} from './constants';
 import type { FetchGuardDeps } from './fetch-guard';
-import type { ShopRateLimiter } from './http';
+import { PageCache, RequestBudgetError, ShopHttp, ShopRateLimiter } from './http';
 import { type ConnectorSyncResult, syncConnector } from './runner';
 import { ConnectorScheduler, type SchedulerTimers } from './scheduler';
+import { type VerificationFailure, verifyOrigin } from './verification';
 
 export interface ConnectorServiceDeps {
   directory: StoreDirectory;
@@ -23,6 +29,10 @@ export interface ConnectorServiceDeps {
   readConfig?: (owner: string) => Promise<StoreConfig | undefined>;
   /** One per process, so the per-shop limit holds across stores (7.4). */
   limiter: ShopRateLimiter;
+  /** Paces the site reads of owner key replacements (K21); one of its own by default. */
+  proofLimiter?: ShopRateLimiter;
+  /** How long a proof's page read answers later proofs (default `PROOF_PAGE_CACHE_MS`). */
+  proofPageCacheMs?: number;
   fetch?: FetchGuardDeps;
   timers?: SchedulerTimers;
   now?: () => number;
@@ -79,7 +89,12 @@ function configRefusal(
 export class ConnectorService {
   private readonly scheduler: ConnectorScheduler<ScheduledConnector>;
 
+  private readonly proofLimiter: ShopRateLimiter;
+  private readonly proofPages: PageCache;
+
   constructor(private readonly deps: ConnectorServiceDeps) {
+    this.proofLimiter = deps.proofLimiter ?? new ShopRateLimiter();
+    this.proofPages = new PageCache(deps.proofPageCacheMs ?? PROOF_PAGE_CACHE_MS);
     this.scheduler = new ConnectorScheduler<ScheduledConnector>({
       loadStores: () =>
         deps.directory.scheduledConnectors(
@@ -94,6 +109,61 @@ export class ConnectorService {
       onError: (error) =>
         deps.log?.(`connector sync failed: ${error instanceof Error ? error.message : 'unknown'}`),
     });
+  }
+
+  /**
+   * Whether one of `origins` names `owner` (the connector's site proof, 7.4),
+   * tried in order until one does: the proof of an owner key replacement (K21).
+   * Paced by a limiter of its own, so replacements anyone may ask for never
+   * hold up a shop's connector syncs.
+   */
+  async proveSite(
+    origins: readonly string[],
+    owner: string,
+  ): Promise<{ proven: string } | { failures: VerificationFailure[] }> {
+    const deadline = new AbortController();
+    const timer = setTimeout(
+      () => deadline.abort(),
+      this.deps.previewDeadlineMs ?? PREVIEW_DEADLINE_MS,
+    );
+    const http = new ShopHttp({
+      limiter: this.proofLimiter,
+      // Two pages per origin, each with its redirects.
+      maxRequests: origins.length * 2 * (MAX_REDIRECTS + 1),
+      // A shop flooded with proofs answers this one "could not be read" at once, never after a
+      // queue that would outlast the deadline.
+      maxSlotWaitMs: PROOF_SLOT_WAIT_MS,
+      // Shared by every proof: a flood of tries on one store reads its pages once a while.
+      cache: this.proofPages,
+      signal: deadline.signal,
+      ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
+    });
+    const failures: VerificationFailure[] = [];
+    try {
+      for (const origin of origins) {
+        let reason: VerificationFailure['reason'] | undefined;
+        try {
+          reason = await verifyOrigin(http, origin, owner);
+        } catch (error) {
+          // Out of time or requests: the origins not tried yet could not be read either.
+          if (deadline.signal.aborted || error instanceof RequestBudgetError) {
+            for (const untried of origins.slice(failures.length)) {
+              failures.push({ origin: untried, reason: 'fetch_failed' });
+            }
+            break;
+          }
+          // One site busy or broken never stops the others from being tried.
+          reason = 'fetch_failed';
+        }
+        if (reason === undefined) {
+          return { proven: origin };
+        }
+        failures.push({ origin, reason });
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    return { failures };
   }
 
   /** One sync of a store's connector; a dry run returns the preview without publishing. */

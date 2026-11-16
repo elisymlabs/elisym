@@ -57,6 +57,8 @@ export type ChatPhase =
   | 'waiting'
   | 'retry'
   | 'unavailable'
+  /** The store moved to a new owner key (K21): `movedTo` names it, checked; the host follows. */
+  | 'moved'
   | 'failed';
 
 export type RetryReason = 'timeout' | 'error';
@@ -79,6 +81,8 @@ export interface ChatSnapshot {
   branding: boolean;
   turns: readonly ChatTurn[];
   inFlightAskId?: string;
+  /** Set with the `moved` phase: the store's new owner key, hex. */
+  movedTo?: string;
 }
 
 export interface ChatClientOptions {
@@ -163,6 +167,10 @@ export class ChatClient {
   private readonly gateway: Gateway;
   private readonly cardCache: CardCache;
   private readonly pageUrl: () => string | undefined;
+  /** The new owner key, once the gateway said the store moved and its config checked out. */
+  private movedTo: string | undefined;
+  /** The gateway said the store moved away from this owner key, followed or not. */
+  private movedAway = false;
   private readonly locale: () => string | undefined;
   private readonly backoff: Backoff;
 
@@ -234,11 +242,16 @@ export class ChatClient {
     if (this.retryReason !== undefined && this.phase === 'retry') {
       snapshot.retryReason = this.retryReason;
     }
-    if (this.store) {
+    // Once the store moved away from this owner key, nothing of its config is shown: whoever
+    // holds the old key may have written it (K21).
+    if (this.store && !this.movedAway) {
       snapshot.config = this.store.config;
     }
     if (this.inFlight) {
       snapshot.inFlightAskId = this.inFlight.askId;
+    }
+    if (this.movedTo !== undefined && this.phase === 'moved') {
+      snapshot.movedTo = this.movedTo;
     }
     return snapshot;
   }
@@ -512,6 +525,23 @@ export class ChatClient {
           return;
         }
         if (!store) {
+          // No readable config: the store may have moved to a new owner key (K21), whose old key
+          // can still delete or spoil its config. Only the gateway can say.
+          const moved = await this.gateway.openSession(this.owner, this.visitor.pubkey);
+          if (this.stopped) {
+            return;
+          }
+          if (moved.kind === 'moved') {
+            if ((await this.followMove(moved.owner)) === 'error') {
+              this.scheduleRecovery();
+            }
+            return;
+          }
+          // The gateway could not be asked: try again later rather than give up on the page.
+          if (moved.kind === 'error') {
+            this.scheduleRecovery();
+            return;
+          }
           this.setPhase('failed');
           this.stop();
           return;
@@ -552,6 +582,9 @@ export class ChatClient {
     if (result.kind === 'error') {
       return 'error';
     }
+    if (result.kind === 'moved') {
+      return this.followMove(result.owner);
+    }
     const { ticket, assistant, branding } = result.grant;
     if (
       ticket.kind !== KIND_SESSION_TICKET ||
@@ -584,6 +617,40 @@ export class ChatClient {
       this.emit();
     }
     return 'ok';
+  }
+
+  /**
+   * The gateway says the store moved to `owner` (K21). Follow it only when the
+   * new owner's own signed config lists this page's origin: a store that does
+   * not name this site is never followed, whatever the gateway says.
+   */
+  private async followMove(owner: string): Promise<'unavailable' | 'error'> {
+    this.movedAway = true;
+    let moved: StoreData | undefined;
+    try {
+      moved = await loadStoreData(
+        owner,
+        (relays, filters) => this.query(relays, filters),
+        this.now(),
+      );
+    } catch {
+      return 'error';
+    }
+    if (this.stopped) {
+      return 'error';
+    }
+    const page = validPageUrl(this.pageUrl());
+    const origin = page === undefined ? undefined : new URL(page).origin;
+    if (!moved || origin === undefined || !moved.config.origins.includes(origin)) {
+      this.becomeUnavailable();
+      return 'unavailable';
+    }
+    this.clearAnswerTimer();
+    this.inFlight = undefined;
+    this.movedTo = owner;
+    this.setPhase('moved');
+    this.stop();
+    return 'unavailable';
   }
 
   private ticketExpired(): boolean {

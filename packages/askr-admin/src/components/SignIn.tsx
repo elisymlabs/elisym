@@ -1,27 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
-import { errorMessage } from '../lib/errors';
-import {
-  type Nip07Provider,
-  type Signer,
-  extensionSigner,
-  generateOwnerKey,
-  parseSecretKey,
-  secretKeySigner,
-} from '../lib/signer';
+import { type Signer, generateOwnerKey, parseSecretKey, secretKeySigner } from '../lib/signer';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
+import { RecoverStore } from './RecoverStore';
 
 interface Props {
   onSigner: (signer: Signer) => void;
-  /** The page's NIP-07 extension, looked up when used (extensions inject it late). */
-  findExtension: () => Nip07Provider | undefined;
+  /** Move a store to a new key (K21); the server checks the store's site, or all but it. */
+  recover: (signer: Signer, from: string, dryRun: boolean) => Promise<void>;
+  /** Open on replacing the key of this store (Store ID), as the admin's own button does. */
+  replaceKeyOf?: string;
 }
 
-/** Sign in with the store owner key O: paste it, use an extension, or make a new one. */
-export function SignIn({ onSigner, findExtension }: Props) {
+/** Sign in with the store's secret key, make a new one, or replace a lost one. */
+export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [error, setError] = useState('');
   const [generated, setGenerated] = useState<ReturnType<typeof generateOwnerKey>>();
+  const [recovering, setRecovering] = useState(replaceKeyOf !== undefined);
 
   // Leaving the page keeps it in the back/forward cache: a typed key must not come back.
   useEffect(() => {
@@ -42,25 +38,23 @@ export function SignIn({ onSigner, findExtension }: Props) {
     const secretKey = parseSecretKey(field.value);
     field.value = '';
     if (secretKey === undefined) {
-      setError('That is not a secret key: paste an nsec or 64 hex characters.');
+      setError('That is not a secret key: it starts with nsec1.');
       return;
     }
     setError('');
     onSigner(secretKeySigner(secretKey));
   };
 
-  const useExtension = async () => {
-    const extension = findExtension();
-    if (extension === undefined) {
-      setError('No Nostr signing extension was found in this browser. Paste your key instead.');
-      return;
-    }
-    try {
-      onSigner(await extensionSigner(extension));
-    } catch (failure) {
-      setError(errorMessage(failure));
-    }
-  };
+  if (recovering) {
+    return (
+      <RecoverStore
+        storeId={replaceKeyOf ?? ''}
+        recover={recover}
+        onDone={onSigner}
+        onCancel={() => setRecovering(false)}
+      />
+    );
+  }
 
   if (generated !== undefined) {
     return (
@@ -78,19 +72,19 @@ export function SignIn({ onSigner, findExtension }: Props) {
       <div className="flex flex-col gap-6">
         <h1 className="text-24 font-semibold">Askr admin</h1>
         <p className="text-15 text-text-2">
-          Sign in with your store owner key. It stays in this browser tab and is never sent
+          Sign in with your store&apos;s secret key. It stays in this browser tab and is never sent
           anywhere.
         </p>
       </div>
       <div className="card flex flex-col gap-12">
         <label className="field" htmlFor="owner-key">
-          <span className="field-label">Owner secret key</span>
+          <span className="field-label">Secret key</span>
           <input
             id="owner-key"
             ref={input}
             className="input masked font-mono"
             type="text"
-            placeholder="nsec1... or 64 hex characters"
+            placeholder="nsec1..."
             autoComplete="off"
             autoCapitalize="off"
             autoCorrect="off"
@@ -105,18 +99,18 @@ export function SignIn({ onSigner, findExtension }: Props) {
         <button type="button" className="btn btn-primary" onClick={pasteKey}>
           Sign in
         </button>
-        <button type="button" className="btn" onClick={() => void useExtension()}>
-          Sign in with a browser extension
-        </button>
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
+        <button type="button" className="text-14 underline" onClick={() => setRecovering(true)}>
+          Lost your secret key?
+        </button>
       </div>
       <div className="card flex flex-col gap-8">
         <p className="text-14 font-medium">New to Askr?</p>
         <p className="text-14 text-text-2">
-          Make a new owner key for your store. You will see it once, so save it somewhere safe.
+          Make a secret key for your store. You will see it once, so save it somewhere safe.
         </p>
         <button type="button" className="btn" onClick={() => setGenerated(generateOwnerKey())}>
-          Create a new owner key
+          Create a secret key
         </button>
       </div>
     </main>

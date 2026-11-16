@@ -5,14 +5,39 @@ import {
   type SyncDiff,
   parseConfig,
 } from '@elisym/askr';
-import { KIND_DELETION } from '@elisym/commerce';
+import { KIND_DELETION, nowSecs } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { type Db, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
-import { STORE_SELECT, monthStartDay, storeOf, utcDay } from './pg-state';
+import { type HeldOrigin, ORIGIN_PROOF_AGE_SECS, noteOrigins, noteOriginsLocked } from './origins';
+import {
+  MAX_MOVE_HOPS,
+  STORE_SELECT,
+  followMoves,
+  monthStartDay,
+  storeOf,
+  utcDay,
+} from './pg-state';
 import type { StoreRecord, StoreStatus, Tier } from './types';
+
+/** Postgres' unique_violation. */
+const UNIQUE_VIOLATION = '23505';
+
+/** Tables keyed by a store's owner without a foreign key: moved along with it (K21). */
+const OWNER_TABLES = ['sessions', 'store_days', 'reservations', 'clicks', 'store_totals'] as const;
+
+export {
+  type HeldOrigin,
+  MAX_PROOF_ORIGINS,
+  ORIGIN_DROPPED_GRACE_SECS,
+  ORIGIN_PROOF_AGE_SECS,
+  SHARED_HOST_SUFFIXES,
+  proofOrigins,
+} from './origins';
+
+export type MoveResult = { ok: true } | { ok: false; reason: 'no_store' | 'moved' | 'taken' };
 
 /** O-signed events awaiting publication per store at most, so nobody can fill the table (7.3). */
 export const MAX_UNPUBLISHED_EVENTS = 50;
@@ -420,6 +445,11 @@ export class StoreDirectory {
           'insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)',
           [event.id, owner, JSON.stringify(event)],
         );
+        const origins = event.kind === KIND_CONFIG ? parseConfig(event)?.origins : undefined;
+        if (origins !== undefined && origins.length > 0) {
+          // Dated by the server's clock, never the event's: a backdated config proves nothing.
+          await noteOriginsLocked(tx, owner, origins, nowSecs());
+        }
       }
       // After the batch is in, so what it replaces makes room for it; past a cap the throw rolls it back.
       await tx.query(PRUNE_REPLACED_SQL, [owner, MAX_PUBLISH_ATTEMPTS]);
@@ -440,6 +470,173 @@ export class StoreDirectory {
         [owner, ids, MAX_PUBLISH_ATTEMPTS],
       );
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, owner]);
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Remember the origins a config of `owner` lists, each from when it was
+   * first seen (K21): never forgotten when a later config drops it.
+   */
+  async noteOrigins(owner: string, origins: readonly string[], now: number): Promise<void> {
+    if (origins.length === 0) {
+      return;
+    }
+    await noteOrigins(this.db, owner, origins, now);
+  }
+
+  /** Every origin a config of `owner` has listed, with when it was first seen, oldest first (K21). */
+  async originsHeld(owner: string): Promise<HeldOrigin[]> {
+    const rows = await this.db.query<{
+      origin: string;
+      first_seen: string | number;
+      last_seen: string | number;
+    }>(
+      `select origin, first_seen, last_seen from store_origins where owner = $1
+       order by first_seen, origin`,
+      [owner],
+    );
+    return rows.map((row) => ({
+      origin: row.origin,
+      firstSeen: Number(row.first_seen),
+      lastSeen: Number(row.last_seen),
+    }));
+  }
+
+  /** The secret key of the next A while a rotation is under way (1.5). */
+  async nextAssistantSecret(owner: string): Promise<Uint8Array | undefined> {
+    const [row] = await this.db.query<{ next_assistant_key: Uint8Array | null }>(
+      'select next_assistant_key from stores where owner = $1',
+      [owner],
+    );
+    const sealed = row?.next_assistant_key ?? null;
+    return sealed === null ? undefined : this.vault.open(sealed, owner, 'assistant');
+  }
+
+  /** The owner a store embedded as `owner` moved to (K21). */
+  movedTo(owner: string): Promise<string | undefined> {
+    return followMoves(this.db, owner);
+  }
+
+  /** Whether `owner` is a key a store moved away from: it can never be a store again. */
+  async wasMoved(owner: string): Promise<boolean> {
+    const rows = await this.db.query('select 1 from store_moves where from_owner = $1', [owner]);
+    return rows.length > 0;
+  }
+
+  /** Every owner key this store had before `owner`, the most recent first (K21). */
+  async formerOwners(owner: string): Promise<string[]> {
+    const rows = await this.db.query<{ owner: string }>(
+      `with recursive chain (owner, hops) as (
+         select $1::text, 0
+         union all
+         select m.from_owner, chain.hops + 1 from store_moves m
+         join chain on m.to_owner = chain.owner
+         where chain.hops < $2
+       )
+       select owner from chain where hops > 0 order by hops`,
+      [owner, MAX_MOVE_HOPS],
+    );
+    return rows.map((row) => row.owner);
+  }
+
+  /** The owner key this store last moved from, and the settings it had signed (K21). */
+  async movedFrom(owner: string): Promise<{ from: string; config: NostrEvent | null } | undefined> {
+    const [row] = await this.db.query<{ from_owner: string; config: NostrEvent | null }>(
+      `select from_owner, config from store_moves where to_owner = $1
+       order by moved_at desc limit 1`,
+      [owner],
+    );
+    return row === undefined ? undefined : { from: row.from_owner, config: row.config };
+  }
+
+  /**
+   * Move a store from owner key `from` to `to` (K21, 1.6): the row and all
+   * that is keyed by its owner follow; A and K are kept, sealed again for
+   * `to`; the events `from` signed are dropped. The caller checked the proof.
+   */
+  async moveStore(
+    from: string,
+    to: string,
+    now: number,
+    config: NostrEvent | undefined,
+  ): Promise<MoveResult> {
+    try {
+      return await this.moveStoreOnce(from, to, now, config);
+    } catch (error) {
+      // Another move to `to`, or `to` opening a store, won the race: that key is taken.
+      if (Reflect.get(Object(error), 'code') === UNIQUE_VIOLATION) {
+        return { ok: false, reason: 'taken' };
+      }
+      throw error;
+    }
+  }
+
+  private async moveStoreOnce(
+    from: string,
+    to: string,
+    now: number,
+    config: NostrEvent | undefined,
+  ): Promise<MoveResult> {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.query<{
+        assistant_key: Uint8Array;
+        catalog_key_secret: Uint8Array;
+        next_assistant_key: Uint8Array | null;
+      }>(
+        'select assistant_key, catalog_key_secret, next_assistant_key from stores where owner = $1 for update',
+        [from],
+      );
+      if (row === undefined) {
+        const moved = await tx.query('select 1 from store_moves where from_owner = $1', [from]);
+        return { ok: false, reason: moved.length > 0 ? 'moved' : 'no_store' };
+      }
+      const taken = await tx.query(
+        `select 1 from stores where owner = $1
+         union all select 1 from store_moves where from_owner = $1`,
+        [to],
+      );
+      if (taken.length > 0) {
+        return { ok: false, reason: 'taken' };
+      }
+      const reseal = (sealed: Uint8Array, purpose: 'assistant' | 'catalog') =>
+        this.vault.seal(this.vault.open(sealed, from, purpose), to, purpose);
+      await tx.query('delete from store_events where owner = $1', [from]);
+      // Expired, not deleted: whoever takes it next does so under a new epoch, so an ask of the old
+      // lease never looks live again.
+      await tx.query('update leases set expires_at = 0 where owner = $1', [from]);
+      // Sites too young to prove anything yet go: one a thief listed just before the owner moved
+      // the store would otherwise come of age under the new key and take it back.
+      await tx.query('delete from store_origins where owner = $1 and first_seen > $2', [
+        from,
+        now - ORIGIN_PROOF_AGE_SECS,
+      ]);
+      // A sync running under the old key releases under it, which no longer matches: free the guard.
+      await tx.query('update catalog_syncs set holder = null, expires_at = 0 where owner = $1', [
+        from,
+      ]);
+      await tx.query(
+        `update stores set owner = $2, assistant_key = $3, catalog_key_secret = $4,
+           next_assistant_key = $5
+         where owner = $1`,
+        [
+          from,
+          to,
+          reseal(row.assistant_key, 'assistant'),
+          reseal(row.catalog_key_secret, 'catalog'),
+          row.next_assistant_key === null ? null : reseal(row.next_assistant_key, 'assistant'),
+        ],
+      );
+      for (const table of OWNER_TABLES) {
+        await tx.query(`update ${table} set owner = $2 where owner = $1`, [from, to]);
+      }
+      await tx.query(
+        `insert into store_moves (from_owner, to_owner, moved_at, config)
+         values ($1, $2, $3, ($4::text)::jsonb)`,
+        [from, to, now, config === undefined ? null : JSON.stringify(config)],
+      );
+      await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, from]);
+      await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, to]);
       return { ok: true };
     });
   }

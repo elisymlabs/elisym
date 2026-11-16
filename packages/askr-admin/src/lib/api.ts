@@ -7,6 +7,7 @@ import type {
   ConnectorRecord,
   ConnectorSyncResult,
   PinnedWidget,
+  MovedSettings,
   StoreView,
   StoredEventsRead,
 } from './types';
@@ -125,8 +126,8 @@ export class AdminApi {
   }
 
   /**
-   * The widget bundle's pinned address and integrity. Public, so not signed:
-   * no extension prompt for it. The path is checked strictly, as it ends up
+   * The widget bundle's pinned address and integrity. Public, so not signed.
+   * The path is checked strictly, as it ends up
    * in an HTML attribute the merchant pastes.
    */
   async pinnedWidget(): Promise<PinnedWidget> {
@@ -189,5 +190,18 @@ export class AdminApi {
 
   rotateAssistant(): Promise<{ nextAssistant: string }> {
     return this.call('POST', '/v1/admin/store/assistant/rotate');
+  }
+
+  /**
+   * Move the store with owner key `from` to this signer's key (K21): one of
+   * the store's sites must name this key. `dryRun` checks all but the site.
+   */
+  recover(from: string, dryRun = false): Promise<StoreView> {
+    return this.call('POST', '/v1/admin/store/recover', { from, ...(dryRun ? { dryRun } : {}) });
+  }
+
+  /** The settings the store's previous owner key signed, private part read by the server (K21). */
+  movedSettings(): Promise<MovedSettings> {
+    return this.call('GET', '/v1/admin/store/moved-settings');
   }
 }

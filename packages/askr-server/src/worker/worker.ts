@@ -21,6 +21,7 @@ import {
   CONNECTION_TIMEOUT_MS,
   LEASE_RENEW_MS,
   LEASE_TTL_SECS,
+  ORIGINS_NOTE_EVERY_SECS,
   RELOAD_SLOTS,
   SHUTDOWN_WAIT_MS,
   SUBSCRIPTION_BUDGET,
@@ -162,7 +163,48 @@ export class Worker {
         : { stableConnectionMs: deps.stableConnectionMs }),
       now: this.now,
       log: this.log,
+      onConfig: (owner, origins) => this.noteOrigins(owner, origins),
     });
+  }
+
+  /**
+   * When each store's origins were last recorded (unix seconds), so a reload
+   * writes them again only once they are due (K21): their `last_seen` says
+   * they are still listed.
+   */
+  private readonly notedOrigins = new Map<string, { at: number; origins: string }>();
+
+  /** One run of the periodic sweep: stale state, and the origins due to be noted again. */
+  sweepTick(): void {
+    this.deps.state.sweep(this.now()).catch((error: unknown) => {
+      this.log(`sweep failed: ${error instanceof Error ? error.message : 'unknown'}`);
+    });
+    this.noteLoadedOrigins();
+  }
+
+  /**
+   * Record again the origins of every store served here, once they are due:
+   * a quiet store is not reloaded, yet its sites are still listed (K21).
+   */
+  noteLoadedOrigins(): void {
+    for (const [owner, catalog] of this.loader.catalogs) {
+      this.noteOrigins(owner, catalog.config.origins);
+    }
+  }
+
+  private noteOrigins(owner: string, origins: readonly string[]): void {
+    const now = this.now();
+    const key = [...origins].sort().join(' ');
+    const noted = this.notedOrigins.get(owner);
+    if (noted !== undefined && noted.origins === key && now - noted.at < ORIGINS_NOTE_EVERY_SECS) {
+      return;
+    }
+    this.deps.state
+      .noteOrigins(owner, origins, now)
+      .then(() => {
+        this.notedOrigins.set(owner, { at: now, origins: key });
+      })
+      .catch((error: unknown) => this.log(`origins of ${owner} not recorded: ${String(error)}`));
   }
 
   get catalogs(): ReadonlyMap<string, StoreCatalog> {
@@ -216,8 +258,12 @@ export class Worker {
     const next = new Map(held.map((lease) => [lease.store.assistant, lease]));
     const previous = this.leases;
     this.leases = next;
+    // The same A under another owner is a store that moved to a new owner key (K21): its catalog
+    // and live REQ are keyed by the owner, so it is dropped and taken up again.
+    const ownerOf = (lease: LeasedStore | undefined) => lease?.store.owner;
     const changed =
-      next.size !== previous.size || [...next.keys()].some((key) => !previous.has(key));
+      next.size !== previous.size ||
+      [...next.entries()].some(([key, lease]) => ownerOf(previous.get(key)) !== lease.store.owner);
     if (this.stopped) {
       return;
     }
@@ -235,12 +281,13 @@ export class Worker {
       return;
     }
     for (const [assistant, lease] of previous) {
-      if (!next.has(assistant)) {
+      if (ownerOf(next.get(assistant)) !== lease.store.owner) {
         this.loader.drop(lease.store.owner);
+        this.notedOrigins.delete(lease.store.owner);
       }
     }
     for (const [assistant, lease] of next) {
-      if (!previous.has(assistant)) {
+      if (ownerOf(previous.get(assistant)) !== lease.store.owner) {
         this.loader.enqueue(lease.store.owner);
       }
     }
@@ -264,11 +311,7 @@ export class Worker {
     }
     this.openWraps();
     this.leaseTimer = setInterval(() => void this.refreshLeases(), LEASE_RENEW_MS);
-    this.sweepTimer = setInterval(() => {
-      this.deps.state.sweep(this.now()).catch((error: unknown) => {
-        this.log(`sweep failed: ${error instanceof Error ? error.message : 'unknown'}`);
-      });
-    }, SWEEP_INTERVAL_MS);
+    this.sweepTimer = setInterval(() => this.sweepTick(), SWEEP_INTERVAL_MS);
   }
 
   /**

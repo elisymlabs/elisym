@@ -1,12 +1,16 @@
 import type { StoreConfig } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SYNC_POLL_MS } from '../constants';
 import { ApiError } from '../lib/api';
-import { type SessionDeps, syncPollMs } from '../lib/deps';
+import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { npubOf } from '../lib/signer';
 import { readConfig } from '../lib/store-data';
 import { ownSignedEvents, withStoredEvents } from '../lib/stored-events';
 import type { StoreStatus, StoreView } from '../lib/types';
+import { FinishMove } from './FinishMove';
+import { MovedAway } from './MovedAway';
 import { Notice } from './Notice';
 import { Onboarding } from './Onboarding';
 import { Shell } from './Shell';
@@ -14,11 +18,15 @@ import { Shell } from './Shell';
 interface Props {
   deps: SessionDeps;
   onSignOut: () => void;
+  /** Sign out and replace the secret key of this store (Store ID), K21. */
+  onReplaceKey: (storeId: string) => void;
 }
 
 type Load =
   | { state: 'loading' }
   | { state: 'missing' }
+  /** This key is one the store moved away from (K21). */
+  | { state: 'moved' }
   | { state: 'failed'; error: string }
   | { state: 'ready'; view: StoreView };
 
@@ -27,7 +35,7 @@ type Load =
  * or, while the store is not active, from what O signed and the server holds
  * for the relay (7.3).
  */
-export function Session({ deps, onSignOut }: Props) {
+export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
   const [config, setConfig] = useState<StoreConfig>();
   const [configError, setConfigError] = useState('');
@@ -52,11 +60,15 @@ export function Session({ deps, onSignOut }: Props) {
       setReloadWarning('');
     } catch (error) {
       const missing = error instanceof ApiError && error.code === 'no_store';
+      const moved = error instanceof ApiError && error.code === 'moved';
       // Only the first load may fail the page: later, the last view stays with a warning, so a
       // failed poll or a reload after an action never wipes the dashboard or unsaved edits.
       setLoad((previous) => {
         if (previous.state === 'ready') {
           return previous;
+        }
+        if (moved) {
+          return { state: 'moved' };
         }
         return missing ? { state: 'missing' } : { state: 'failed', error: errorMessage(error) };
       });
@@ -96,7 +108,9 @@ export function Session({ deps, onSignOut }: Props) {
       setConfigFromServer(own.some((event) => event.id === shownId));
       setConfigError('');
     } catch {
-      setConfigError('The relay could not be read, so the published settings are not shown.');
+      setConfigError(
+        'Your published settings could not be read, so they are not shown. Retry in a moment.',
+      );
     } finally {
       setConfigRead(true);
     }
@@ -123,10 +137,18 @@ export function Session({ deps, onSignOut }: Props) {
     if (!syncRunning) {
       return undefined;
     }
-    const timer = setInterval(() => void reload(), syncPollMs(deps.signer));
+    const timer = setInterval(() => void reload(), SYNC_POLL_MS);
     return () => clearInterval(timer);
   }, [syncRunning, reload, deps]);
 
+  if (load.state === 'moved') {
+    return (
+      <MovedAway
+        onTakeBack={() => onReplaceKey(npubOf(deps.signer.pubkey))}
+        onSignOut={onSignOut}
+      />
+    );
+  }
   if (load.state === 'loading' || (load.state === 'ready' && !configRead)) {
     return <p className="text-14 text-text-2 p-24">Loading your store...</p>;
   }
@@ -153,6 +175,10 @@ export function Session({ deps, onSignOut }: Props) {
       configError === '' &&
       unreadableAt === undefined &&
       view.events.pending === 0);
+  // A store moved to this key (K21) whose settings this key has not signed yet.
+  if (needsSetup && view !== undefined && view.movedFrom !== null) {
+    return <FinishMove deps={deps} view={view} onDone={reloadAll} onSignOut={onSignOut} />;
+  }
   if (needsSetup) {
     return (
       <Onboarding
@@ -177,6 +203,7 @@ export function Session({ deps, onSignOut }: Props) {
       reload={reload}
       reloadConfig={reloadConfig}
       onSignOut={onSignOut}
+      onReplaceKey={() => onReplaceKey(npubOf(view.owner))}
     />
   );
 }

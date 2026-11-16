@@ -83,6 +83,23 @@ export interface StoreView {
   catalogSync: CatalogSyncStatus | null;
   connector: ConnectorRecord | null;
   events: StoreEventStatus;
+  /** The owner key this store moved from (K21), hex; its settings are signed again by the new one. */
+  movedFrom: string | null;
+}
+
+/** `GET /v1/admin/store/moved-settings`: what the previous owner key signed (K21). */
+export interface MovedSettings {
+  /** The previous owner key, hex. */
+  from: string;
+  /**
+   * The store's earlier key that signed `config`: `from`, or one before it when
+   * `from` signed nothing. Null with no settings.
+   */
+  signedBy: string | null;
+  /** Its newest config event, unchecked: the admin checks it like relay data. */
+  config: unknown;
+  /** Its private part, as the server read it with the assistant key. */
+  private: unknown;
 }
 
 export interface SkippedProduct {

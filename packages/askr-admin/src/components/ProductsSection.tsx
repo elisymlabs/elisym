@@ -75,7 +75,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           setDraft(undefined);
           setBaseline(undefined);
           setReadError(
-            'Your current products could not be read from the relay. Nothing can be changed until they are, since a publish is worked out against them.',
+            'Your current products could not be read. Nothing can be changed until they are, since a publish is worked out against them. Retry in a moment.',
           );
         }
       }
@@ -143,7 +143,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     if (sentChange.items.length === 0 && sentChange.hide.length === 0) {
       setReviewed(undefined);
       setError('');
-      setNotice('Nothing to publish: your products are as on the relay.');
+      setNotice('Nothing to publish: your products are already as shown.');
       return;
     }
     setBusy(true);
@@ -195,8 +195,8 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     failedNotice =
       reads > lastSent.readsBefore ? (
         <Notice tone="warn">
-          The last publish failed, so the list below was read again from the relay and may miss
-          changes that did not go out.{' '}
+          The last publish failed, so the list below was read again and may miss changes that did
+          not go out.{' '}
           <button type="button" className="underline" onClick={() => change(lastSent.items)}>
             Restore the list you tried to publish
           </button>

@@ -170,6 +170,10 @@ export class WidgetView {
         ),
         retry,
       );
+    } else if (snapshot.phase === 'moved') {
+      // A move past what the element follows reads as unavailable, with no link from the old
+      // owner's config: a thief holding that key may have written it.
+      this.status.append(element(document, 'span', undefined, STRINGS.unavailable));
     } else if (snapshot.phase === 'unavailable') {
       this.status.append(element(document, 'span', undefined, STRINGS.unavailable));
       const contact = httpsUrl(snapshot.config?.contact);
@@ -200,6 +204,9 @@ export class WidgetView {
   }
 }
 
+/** Owner key moves (K21) the element follows per page at most: the gateway names the last one. */
+const MAX_MOVES = 1;
+
 /**
  * Define `<askr-chat store="npub...">` (6): a web component in shadow DOM.
  * The client starts on the first open (no gateway session for a visitor who
@@ -214,6 +221,9 @@ export function defineAskrElement(
   }
   class AskrChatElement extends scope.HTMLElement {
     private client: ChatClient | undefined;
+    /** The owner key the store moved to (K21), followed at most MAX_MOVES times per page. */
+    private movedTo: string | undefined;
+    private moves = 0;
     private view: WidgetView | undefined;
     private unsubscribe: (() => void) | undefined;
 
@@ -261,11 +271,36 @@ export function defineAskrElement(
         removeItem(session, `${PANEL_OPEN_PREFIX}${owner}`);
       }
       if (open && !this.client && this.view) {
-        const view = this.view;
-        this.client = createClient(owner);
-        this.unsubscribe = this.client.subscribe((snapshot) => view.update(snapshot));
-        this.client.start();
+        this.startClient(this.movedTo ?? owner);
       }
+    }
+
+    private startClient(owner: string): void {
+      const view = this.view;
+      if (!view) {
+        return;
+      }
+      const client = createClient(owner);
+      this.client = client;
+      this.unsubscribe = client.subscribe((snapshot) => {
+        if (
+          snapshot.phase === 'moved' &&
+          snapshot.movedTo !== undefined &&
+          this.moves < MAX_MOVES
+        ) {
+          // The client checked the new owner's config lists this page; start over as that store.
+          const next = snapshot.movedTo;
+          this.moves += 1;
+          this.movedTo = next;
+          this.unsubscribe?.();
+          client.stop();
+          this.client = undefined;
+          this.startClient(next);
+          return;
+        }
+        view.update(snapshot);
+      });
+      client.start();
     }
   }
   scope.customElements.define(ELEMENT_NAME, AskrChatElement);

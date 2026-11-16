@@ -50,6 +50,7 @@ export function storeView(overrides: Partial<StoreView> = {}): StoreView {
     catalogSync: null,
     connector: null,
     events: { pending: 0, failing: [] },
+    movedFrom: null,
     ...overrides,
   };
 }
@@ -112,6 +113,13 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     previewConnector: vi.fn(async () => ({ result: { status: 'error' as const, message: 'x' } })),
     enableConnector: vi.fn(async () => ({ connector: null })),
     rotateAssistant: vi.fn(async () => ({ nextAssistant: ASSISTANT })),
+    movedSettings: vi.fn(async () => ({
+      from: ASSISTANT,
+      signedBy: null,
+      config: null,
+      private: null,
+    })),
+    recover: vi.fn(async () => storeView()),
     ...overrides,
   };
 }
@@ -123,9 +131,3 @@ export function sessionDeps(
 ): SessionDeps {
   return { signer, api, reader, now: () => NOW, journal: new SignedJournal() };
 }
-
-/** A NIP-44 capability for a test extension that never encrypts anything real. */
-export const NIP44_STUB = {
-  encrypt: async (_pubkey: string, plaintext: string) => plaintext,
-  decrypt: async (_pubkey: string, ciphertext: string) => ciphertext,
-};

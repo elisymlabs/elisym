@@ -45,7 +45,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
     } catch {
       setAuthority(undefined);
       setReadError(
-        'The relay could not be read, so the authorized keys are not shown and none can be authorized or revoked until they are.',
+        'The authorized keys could not be read, so none can be authorized or revoked until they are. Retry in a moment.',
       );
     }
   }, [deps]);
@@ -73,7 +73,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
     submit(async () => {
       const key = parsePublicKey(pasted);
       if (key === undefined) {
-        throw new Error('Paste the catalog key as an npub or 64 hex characters.');
+        throw new Error('Paste the key: it starts with npub1.');
       }
       const mode = key === view.catalogKey ? 'hosted' : 'self-host';
       const createdAt = nextAuthDate(key, deps.now(), authority?.newestAt, deps.journal);
@@ -107,7 +107,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
   const keys = authority === undefined ? undefined : [...authority.keys];
   let list: ReactNode = null;
   if (keys !== undefined && keys.length === 0) {
-    list = <p className="text-14 text-text-2">No key is authorized on the relay yet.</p>;
+    list = <p className="text-14 text-text-2">No key is authorized yet.</p>;
   } else if (keys !== undefined) {
     list = (
       <ul className="flex flex-col gap-8">
@@ -145,8 +145,8 @@ export function CatalogKeys({ deps, view, config }: Props) {
           id="authorize-key"
           label="Authorize a catalog key"
           value={pasted}
-          placeholder="npub1... or 64 hex characters"
-          hint={`Print yours with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
+          placeholder="npub1..."
+          hint={`The key your backend or SDK publishes with. For an elisym agent, print it with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
           onChange={setPasted}
         />
         <div>

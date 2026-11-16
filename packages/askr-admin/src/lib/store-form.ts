@@ -136,7 +136,7 @@ export function parseOrigins(text: string, label: string): string[] {
 function keyOf(value: string, label: string): string {
   const key = parsePublicKey(value);
   if (key === undefined) {
-    throw new FormError(`${label}: paste an npub or 64 hex characters.`);
+    throw new FormError(`${label}: paste the key, it starts with npub1.`);
   }
   return key;
 }

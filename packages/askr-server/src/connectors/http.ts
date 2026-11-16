@@ -25,8 +25,12 @@ export class ShopRateLimiter {
     private readonly sleep: (ms: number) => Promise<void> = defaultSleep,
   ) {}
 
-  /** Wait for this origin's next slot and take it. */
-  async acquire(origin: string): Promise<void> {
+  /**
+   * Wait for this origin's next slot and take it. With `maxWaitMs`, a slot
+   * further off is not booked: the caller gives up at once instead of holding
+   * a place in a long queue (an owner key proof, K21).
+   */
+  async acquire(origin: string, maxWaitMs?: number): Promise<void> {
     const now = this.clock();
     if (this.nextAt.size > MAX_TRACKED_SHOPS) {
       for (const [stored, at] of this.nextAt) {
@@ -36,10 +40,21 @@ export class ShopRateLimiter {
       }
     }
     const at = Math.max(now, this.nextAt.get(origin) ?? 0);
+    if (maxWaitMs !== undefined && at - now > maxWaitMs) {
+      throw new ShopBusyError();
+    }
     this.nextAt.set(origin, at + this.gapMs);
     if (at > now) {
       await this.sleep(at - now);
     }
+  }
+}
+
+/** An origin's next slot is further off than the caller would wait. */
+export class ShopBusyError extends Error {
+  constructor() {
+    super('The shop is busy with other reads');
+    this.name = 'ShopBusyError';
   }
 }
 
@@ -64,7 +79,53 @@ export interface ShopHttpDeps {
   maxRequests?: number;
   /** The sync's overall deadline: once aborted, every request in flight or to come fails. */
   signal?: AbortSignal;
+  /** Wait at most this long for an origin's slot; a later one fails the request at once. */
+  maxSlotWaitMs?: number;
+  /**
+   * Pages read lately, shared by every ShopHttp given the same cache: a page
+   * read within `ttlMs` is answered from it, with no request and no slot.
+   */
+  cache?: PageCache;
 }
+
+/**
+ * Recent page reads by URL (K21): many proofs of one store read its pages
+ * once. Only reads that succeeded are kept: a read still running belongs to
+ * its own proof (its deadline, its budget), and a failed one says nothing of
+ * the page.
+ */
+export class PageCache {
+  private readonly pages = new Map<string, { at: number; response: GuardedResponse }>();
+
+  constructor(
+    private readonly ttlMs: number,
+    private readonly clock: () => number = Date.now,
+  ) {}
+
+  /** A recent successful read of `url`, or `read`'s, kept once it succeeds. */
+  async get(url: string, read: () => Promise<GuardedResponse>): Promise<GuardedResponse> {
+    const cached = this.pages.get(url);
+    if (cached !== undefined && this.clock() - cached.at < this.ttlMs) {
+      return cached.response;
+    }
+    const response = await read();
+    const now = this.clock();
+    if (this.pages.size >= MAX_CACHED_PAGES) {
+      for (const [stored, entry] of this.pages) {
+        if (now - entry.at >= this.ttlMs) {
+          this.pages.delete(stored);
+        }
+      }
+    }
+    if (this.pages.size < MAX_CACHED_PAGES) {
+      this.pages.set(url, { at: now, response });
+    }
+    return response;
+  }
+}
+
+/** Pages a PageCache keeps at most. */
+const MAX_CACHED_PAGES = 1_000;
 
 function originOf(url: string): string {
   try {
@@ -105,10 +166,17 @@ export class ShopHttp {
     if (this.requests > this.maxRequests) {
       throw new RequestBudgetError();
     }
-    await this.limiter.acquire(origin);
+    await this.limiter.acquire(origin, this.deps.maxSlotWaitMs);
   }
 
   async get(url: string, request: GuardedRequest): Promise<GuardedResponse> {
+    const cache = this.deps.cache;
+    return cache === undefined
+      ? this.read(url, request)
+      : cache.get(url, () => this.read(url, request));
+  }
+
+  private async read(url: string, request: GuardedRequest): Promise<GuardedResponse> {
     await this.take(originOf(url));
     try {
       return await guardedFetch(

@@ -21,6 +21,7 @@ export function KeyRow({ npub, roles, uses, revocable, busy, onRevoke }: Props) 
           <span className="text-13 truncate font-mono">{npub}</span>
           <span className="text-12 text-text-3">{[...roles, ...uses].join(', ')}</span>
         </div>
+        {revocable ? null : <span className="text-12 text-text-3">Revoke it in Pay Core</span>}
         {revocable && !confirming ? (
           <button
             type="button"

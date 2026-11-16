@@ -49,7 +49,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
           {STATUS_TEXT[view.status]}
         </Notice>
         {config === undefined ? (
-          <p className="text-14 text-text-2">Your settings are not on the relay yet.</p>
+          <p className="text-14 text-text-2">Your settings are not published yet.</p>
         ) : null}
         {config !== undefined && configFromServer ? (
           <p className="text-14 text-text-2">
@@ -135,7 +135,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
 
       <Section
         title="Waiting to publish"
-        description="Changes you signed that the relay has not accepted yet."
+        description="Changes you signed that are not published yet."
       >
         {events.pending === 0 ? (
           <p className="text-14 text-text-2">Nothing is waiting.</p>
@@ -147,7 +147,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         )}
         {events.failing.map((failing) => (
           <Notice key={failing.id} tone={failing.stopped ? 'error' : 'warn'}>
-            The relay refused a {KIND_NAMES[failing.kind] ?? `kind ${failing.kind} event`}{' '}
+            Publishing was refused for a {KIND_NAMES[failing.kind] ?? `kind ${failing.kind} event`}{' '}
             {failing.failures} time{failing.failures === 1 ? '' : 's'}.{' '}
             {failing.stopped ? 'It is no longer retried: sign it again.' : 'It is retried.'}
           </Notice>

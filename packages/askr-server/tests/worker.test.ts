@@ -21,16 +21,19 @@ import { KIND_DELETION, buildStoreAuthEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SUBSCRIPTION_BUDGET } from '../src/constants';
+import { ORIGINS_NOTE_EVERY_SECS, SUBSCRIPTION_BUDGET } from '../src/constants';
 import type { Db } from '../src/db/db';
+import { KeyVault } from '../src/db/keys';
 import { passesWrapPreCheck } from '../src/relay/pool';
 import { PgState } from '../src/state/pg-state';
+import { StoreDirectory } from '../src/state/stores';
 import type { LeasedStore, StoreStatus } from '../src/state/types';
 import { Worker, failureKind } from '../src/worker/worker';
 import { FakePool } from './fake-pool';
 import {
   HOLDER,
   NOW,
+  MASTER_KEY,
   ORIGIN,
   type StoreSpec,
   type SyntheticStore,
@@ -526,6 +529,45 @@ describe('worker wraps (2.4)', () => {
     await setup.worker.refreshLeases();
     await setup.worker.catalogsSettled();
     expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(2);
+  });
+
+  it('records the origins of each config it loads, once (K21)', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    expect(setup.worker.catalogs.has(store.owner)).toBe(true);
+    await waitUntil(async () => (await originsOf(setup, store.owner)).length > 0);
+    expect(await originsOf(setup, store.owner)).toEqual([ORIGIN]);
+  });
+
+  it('notes the origins of a quiet store again once due, never sooner (K21)', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    await waitUntil(async () => (await originsOf(setup, store.owner)).length > 0);
+    await setup.db.query('update store_origins set last_seen = 0');
+    setup.worker.noteLoadedOrigins();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((await lastSeenOf(setup, store.owner))[0]).toBe(0);
+    setup.clock.now += ORIGINS_NOTE_EVERY_SECS + 1;
+    // The periodic sweep is what notes them again.
+    setup.worker.sweepTick();
+    await waitUntil(async () => (await lastSeenOf(setup, store.owner))[0] === setup.clock.now);
+  });
+
+  it('takes up a store that moved to a new owner key under that key, the same A (K21)', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    expect(setup.worker.catalogs.has(store.owner)).toBe(true);
+    const newOwner = getPublicKey(generateSecretKey());
+    const directory = new StoreDirectory(setup.db, new KeyVault(MASTER_KEY));
+    expect(await directory.moveStore(store.owner, newOwner, setup.clock.now, undefined)).toEqual({
+      ok: true,
+    });
+    await setup.worker.refreshLeases();
+    expect(setup.worker.isLeased(store.assistant)).toBe(true);
+    // The old owner's catalog is gone; the new owner's is read (empty: it signed nothing yet).
+    expect(setup.worker.catalogs.has(store.owner)).toBe(false);
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.isUnservable(newOwner)).toBe(true);
   });
 
   it('a store that stops being active is no longer leased, and its catalog is dropped', async () => {
@@ -1521,3 +1563,19 @@ describe('server core review 2: worker', () => {
     expect(taken.map((lease) => lease.store.owner)).toEqual([store.owner]);
   });
 });
+
+async function originsOf(setup: { db: Db }, owner: string): Promise<string[]> {
+  const rows = await setup.db.query<{ origin: string }>(
+    'select origin from store_origins where owner = $1',
+    [owner],
+  );
+  return rows.map((row) => row.origin);
+}
+
+async function lastSeenOf(setup: { db: Db }, owner: string): Promise<number[]> {
+  const rows = await setup.db.query<{ last_seen: string | number }>(
+    'select last_seen from store_origins where owner = $1',
+    [owner],
+  );
+  return rows.map((row) => Number(row.last_seen));
+}

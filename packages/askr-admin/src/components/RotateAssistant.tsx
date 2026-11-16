@@ -66,7 +66,7 @@ export function RotateAssistant({ deps, view, config, configError, onRetry, onCh
       });
       await postSigned(deps, events);
       setDone(
-        'Signed. The current assistant keeps answering until the relay has accepted the new settings; then the new one takes over.',
+        'Signed. The current assistant keeps answering until the new settings are published; then the new one takes over.',
       );
       await onChanged();
     } catch (failure) {

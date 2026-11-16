@@ -15,12 +15,10 @@ import { PoliciesSection } from '../src/components/PoliciesSection';
 import { Session } from '../src/components/Session';
 import { SettingsSection } from '../src/components/SettingsSection';
 import type { AdminClient } from '../src/lib/deps';
-import { extensionSigner, secretKeySigner } from '../src/lib/signer';
 import type { ConnectorRecord, ConnectorSyncResult } from '../src/lib/types';
 import {
   ASSISTANT,
   NOW,
-  NIP44_STUB,
   OWNER,
   OWNER_KEY,
   SERVER_KEY,
@@ -165,7 +163,11 @@ describe('the session', () => {
       ),
     });
     mounted = await mount(
-      <Session deps={sessionDeps(api, fakeReader([]))} onSignOut={() => undefined} />,
+      <Session
+        deps={sessionDeps(api, fakeReader([]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
     );
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('Overview'));
@@ -177,7 +179,13 @@ describe('the session', () => {
     const api = fakeApi();
     const reader = failingReader();
     const query = vi.spyOn(reader, 'query');
-    mounted = await mount(<Session deps={sessionDeps(api, reader)} onSignOut={() => undefined} />);
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(api, reader)}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('Overview'));
     expect(container.textContent).not.toContain('Set up your assistant');
@@ -191,14 +199,20 @@ describe('the session', () => {
       store: vi.fn(async () => storeView({ status: 'pending', tier: null })),
     });
     mounted = await mount(
-      <Session deps={sessionDeps(api, fakeReader([]))} onSignOut={() => undefined} />,
+      <Session
+        deps={sessionDeps(api, fakeReader([]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
     );
     await settle(() => (mounted?.container.textContent ?? '').includes('Set up your assistant'));
   });
 
   async function storeReadsDuringSync(api: AdminClient, deps: ReturnType<typeof sessionDeps>) {
     vi.useFakeTimers();
-    mounted = await mount(<Session deps={deps} onSignOut={() => undefined} />);
+    mounted = await mount(
+      <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10);
     });
@@ -221,20 +235,6 @@ describe('the session', () => {
       sessionDeps(api, fakeReader([publishedConfig(NOW - 10)])),
     );
     expect(reads).toBeGreaterThanOrEqual(3);
-  });
-
-  it('re-reads it only every 30 seconds with an extension, which may prompt for each', async () => {
-    const api = runningApi();
-    const signer = await extensionSigner({
-      getPublicKey: async () => OWNER,
-      nip44: NIP44_STUB,
-      signEvent: async (template) => secretKeySigner(OWNER_KEY).signEvent(template),
-    });
-    const reads = await storeReadsDuringSync(
-      api,
-      sessionDeps(api, fakeReader([publishedConfig(NOW - 10)]), signer),
-    );
-    expect(reads).toBe(0);
   });
 });
 

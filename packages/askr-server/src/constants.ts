@@ -53,3 +53,9 @@ export const LEASE_RENEW_MS = 20_000;
 export const SYNC_HOLD_SECS = 2 * 60;
 /** ...and renews it this often while it runs. */
 export const SYNC_RENEW_MS = 30_000;
+
+/**
+ * How often a worker records a loaded store's origins again (K21): their
+ * `last_seen` shows they are still listed, which a site proof needs.
+ */
+export const ORIGINS_NOTE_EVERY_SECS = 6 * 60 * 60;

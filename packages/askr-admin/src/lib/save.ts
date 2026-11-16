@@ -98,6 +98,6 @@ export function nextAuthDate(
 /** What the merchant is told after a save, by store status. */
 export function savedMessage(view: Pick<StoreView, 'status'>): string {
   return view.status === 'active'
-    ? 'Saved. The new settings are published to the relay in a moment.'
+    ? 'Saved. The new settings are published in a moment.'
     : 'Saved. Your settings are kept on the server and published once your store is activated.';
 }

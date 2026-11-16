@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { buildConfigEvent, parseConfig } from '@elisym/askr';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatClient } from '../src/client';
 import { WidgetView, defineAskrElement, parseStoreKey } from '../src/ui/element';
@@ -11,6 +12,8 @@ import {
   makeStore,
   publishItem,
   publishStore,
+  sign,
+  testKey,
   wrapFrom,
 } from './fixtures';
 
@@ -41,6 +44,23 @@ describe('<askr-chat>', () => {
     expect(footer?.hidden).toBe(true);
     view.update({ phase: 'ready', branding: true, turns: [] });
     expect(footer?.hidden).toBe(false);
+  });
+
+  it('shows no link from the old config once the store moved on (K21)', () => {
+    const view = new WidgetView(
+      document,
+      () => undefined,
+      () => undefined,
+    );
+    const key = testKey();
+    const config = parseConfig(sign(buildConfigEvent(makeStore().configInput, key.secretKey), key));
+    view.update({ phase: 'moved', branding: true, turns: [], ...(config ? { config } : {}) });
+    expect(view.panel.querySelector('a')).toBeNull();
+    expect(view.panel.textContent).toContain('unavailable');
+    view.update({ phase: 'unavailable', branding: true, turns: [], ...(config ? { config } : {}) });
+    expect(view.panel.querySelector('a')?.getAttribute('href')).toBe(
+      'https://shop.example/contact',
+    );
   });
 
   it('parses npub and hex store keys', () => {

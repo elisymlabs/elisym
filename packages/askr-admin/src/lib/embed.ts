@@ -50,7 +50,7 @@ export function cspSources(): CspSource[] {
     {
       directive: 'connect-src',
       sources: [ASKR_API_BASE, ...relayOrigins],
-      why: 'session tickets from the API, the chat over the relay',
+      why: 'the chat itself and its connection to the assistant',
     },
     {
       directive: 'img-src',

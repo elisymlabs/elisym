@@ -123,6 +123,51 @@ describe('bootstrap', () => {
     expect(setup.client.snapshot().phase).toBe('unavailable');
   });
 
+  it('follows a moved store only when the new owner signed a config listing this page (K21)', async () => {
+    const setup = harness();
+    const moved = makeStore({ assistant: setup.store.assistant.pubkey });
+    publishStore(setup.relay, moved);
+    setup.gateway.movedTo = moved.owner.pubkey;
+    await started(setup);
+    expect(setup.client.snapshot().phase).toBe('moved');
+    expect(setup.client.snapshot().movedTo).toBe(moved.owner.pubkey);
+  });
+
+  it('asks the gateway when the old key left no readable config, and follows a move (K21)', async () => {
+    const relay = new FakeRelay();
+    const setup = harness({}, { relay });
+    const moved = makeStore({ assistant: setup.store.assistant.pubkey });
+    publishStore(relay, moved);
+    setup.gateway.movedTo = moved.owner.pubkey;
+    await started(setup);
+    expect(setup.client.snapshot().phase).toBe('moved');
+    expect(setup.client.snapshot().movedTo).toBe(moved.owner.pubkey);
+  });
+
+  it('tries again later, never fails, when the gateway cannot be asked about a store with no config (K21)', async () => {
+    const setup = harness({}, { relay: new FakeRelay() });
+    setup.gateway.mode = 'error';
+    await started(setup);
+    expect(setup.client.snapshot().phase).not.toBe('failed');
+  });
+
+  it('stays unavailable when the moved store does not list this page, or has no config (K21)', async () => {
+    const elsewhere = harness();
+    const moved = makeStore({ origins: ['https://other.example'] });
+    publishStore(elsewhere.relay, moved);
+    elsewhere.gateway.movedTo = moved.owner.pubkey;
+    await started(elsewhere);
+    expect(elsewhere.client.snapshot().phase).toBe('unavailable');
+    expect(elsewhere.client.snapshot().movedTo).toBeUndefined();
+    // Nothing of the old key's config is shown: its contact link may be a thief's.
+    expect(elsewhere.client.snapshot().config).toBeUndefined();
+
+    const nowhere = harness();
+    nowhere.gateway.movedTo = makeStore().owner.pubkey;
+    await started(nowhere);
+    expect(nowhere.client.snapshot().phase).toBe('unavailable');
+  });
+
   it('fails when the store has no readable config', async () => {
     const setup = harness({}, { relay: new FakeRelay() });
     await started(setup);
