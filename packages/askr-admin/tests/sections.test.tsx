@@ -500,14 +500,14 @@ describe('policies', () => {
     expect(buttonNamed(container, 'Edit')).toBeDefined();
   });
 
-  function manyPolicies(count: number): NostrEvent[] {
+  function manyPolicies(count: number, secret: Uint8Array = SERVER_KEY_SECRET): NostrEvent[] {
     return Array.from({ length: count }, (_unused, index) =>
       finalizeEvent(
         {
           ...buildPolicyEvent({ slug: `p${index}`, title: `Policy ${index}`, body: 'Text' }),
           created_at: NOW - 5,
         },
-        SERVER_KEY_SECRET,
+        secret,
       ),
     );
   }
@@ -539,6 +539,52 @@ describe('policies', () => {
       (row.textContent ?? '').includes('not read by the assistant'),
     );
     expect(unread.map((row) => row.textContent)).toEqual([expect.stringContaining('p9')]);
+  });
+
+  it('marks as unread what the worker leaves out, imported slugs first whatever the read order', async () => {
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader([...manyPolicies(LIMITS.MAX_POLICIES), RETURNS]))}
+        view={storeView()}
+        config={adminConfig()}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('Policy 0'));
+    const unread = [...mounted.container.querySelectorAll('li')]
+      .filter((row) => (row.textContent ?? '').includes('not read by the assistant'))
+      .map((row) => row.textContent);
+    expect(unread).toEqual([expect.stringContaining('p9')]);
+  });
+
+  it('counts the policies an import has yet to bring when marking unread ones', async () => {
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader(manyPolicies(LIMITS.MAX_POLICIES)))}
+        view={storeView({ connector: SHOPIFY_IMPORT })}
+        config={adminConfig()}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('Policy 0'));
+    const unread = [...mounted.container.querySelectorAll('li')].filter((row) =>
+      (row.textContent ?? '').includes('not read by the assistant'),
+    );
+    expect(unread).toHaveLength(4);
+    expect(mounted.container.textContent).toContain('Delete the ones it does not need');
+  });
+
+  it('tells a store on its own key to remove extra policies where it publishes them', async () => {
+    const ownSecret = generateSecretKey();
+    const other = getPublicKey(ownSecret);
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader(manyPolicies(LIMITS.MAX_POLICIES + 1, ownSecret)))}
+        view={storeView()}
+        config={adminConfig({ policyKey: other })}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('Policy 0'));
+    expect(mounted.container.textContent).toContain('where you publish them');
+    expect(mounted.container.textContent).not.toContain('Delete the ones it does not need');
   });
 
   it('offers a new policy one below the cap', async () => {
@@ -581,15 +627,17 @@ describe('policies', () => {
   });
 
   it('shows no editing notes when the policies are read from another key', async () => {
-    const other = getPublicKey(generateSecretKey());
+    const ownSecret = generateSecretKey();
+    const other = getPublicKey(ownSecret);
     mounted = await mount(
       <PoliciesSection
-        deps={sessionDeps(fakeApi(), fakeReader(manyPolicies(LIMITS.MAX_POLICIES)))}
+        deps={sessionDeps(fakeApi(), fakeReader(manyPolicies(LIMITS.MAX_POLICIES, ownSecret)))}
         view={storeView({ connector: SHOPIFY_IMPORT })}
         config={adminConfig({ policyKey: other })}
       />,
     );
     await settle(() => (mounted?.container.textContent ?? '').includes('your own catalog key'));
+    expect(mounted.container.textContent).toContain('Policy 49');
     expect(mounted.container.textContent).not.toContain('Delete one to add another');
     expect(mounted.container.textContent).not.toContain('Change those in Shopify');
   });

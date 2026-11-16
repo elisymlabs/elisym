@@ -5,12 +5,12 @@ import { tokenize } from './catalog/store-catalog';
 export const MAX_POLICY_RESULTS = 3;
 /** Policy text one search returns at most, shared by its results. */
 export const POLICY_RESULT_CHARS = 12_000;
-/** Room `sanitizeText` may add to a passage (a forged turn marker gains a dash). */
-export const SANITIZE_MARGIN_CHARS = 64;
 /** Two words of at least this many characters match when one starts the other. */
 const STEM_MIN_CHARS = 4;
-/** Characters a matching word may differ by at its end: return / returns / returned. */
+/** Characters the shorter word may have past what both share: returns / returned. */
 const STEM_SLACK_CHARS = 2;
+/** Characters the longer word may have past what both share: ship / shipping, not internet / international. */
+const STEM_TAIL_CHARS = 4;
 /** What stands between two passages of a policy that were not next to each other. */
 export const PASSAGE_GAP = '[...]';
 const PASSAGE_SEPARATOR = '\n\n';
@@ -25,6 +25,7 @@ export function wordsMatch(left: string, right: string): boolean {
     return true;
   }
   const shorter = Math.min(left.length, right.length);
+  const longer = Math.max(left.length, right.length);
   if (shorter < STEM_MIN_CHARS) {
     return false;
   }
@@ -32,7 +33,10 @@ export function wordsMatch(left: string, right: string): boolean {
   while (shared < shorter && left[shared] === right[shared]) {
     shared += 1;
   }
-  return shared >= Math.max(STEM_MIN_CHARS, shorter - STEM_SLACK_CHARS);
+  return (
+    shared >= Math.max(STEM_MIN_CHARS, shorter - STEM_SLACK_CHARS) &&
+    longer - shared <= STEM_TAIL_CHARS
+  );
 }
 
 /** How many of the query's words the text has, each counted once. */
@@ -79,6 +83,8 @@ const PIECE_BUDGET_DIVISOR = 3;
 const MIN_PIECE_CHARS = 200;
 /** The least room worth filling with the start of a piece that does not fit whole. */
 const MIN_TAIL_CHARS = 40;
+const HIGH_SURROGATE_FIRST = 0xd800;
+const HIGH_SURROGATE_LAST = 0xdbff;
 /** How a piece too long is split, in turn: by line, then by sentence, then cut. */
 const SPLITS: ReadonlyArray<{ pattern: RegExp; glue: string }> = [
   { pattern: /\n/, glue: '\n' },
@@ -93,8 +99,11 @@ function split(text: string, maxPiece: number, level: number): Piece[] {
   const rule = SPLITS[level];
   if (rule === undefined) {
     const cuts: Piece[] = [];
-    for (let start = 0; start < text.length; start += maxPiece) {
-      cuts.push({ text: text.slice(start, start + maxPiece), glue: '' });
+    let start = 0;
+    while (start < text.length) {
+      const end = cutPoint(text, start + maxPiece);
+      cuts.push({ text: text.slice(start, end), glue: '' });
+      start = end;
     }
     return cuts;
   }
@@ -132,9 +141,23 @@ function split(text: string, maxPiece: number, level: number): Piece[] {
   return pieces;
 }
 
+/**
+ * Where to cut `text` at or before `at`, never between the two halves of a
+ * character outside the BMP (an emoji): a lone half is invalid text an LLM API
+ * may refuse. Always past 0 for a positive `at`, so a cut loop moves on.
+ */
+function cutPoint(text: string, at: number): number {
+  if (at >= text.length) {
+    return text.length;
+  }
+  const before = text.charCodeAt(at - 1);
+  const isHighHalf = before >= HIGH_SURROGATE_FIRST && before <= HIGH_SURROGATE_LAST;
+  return isHighHalf && at > 1 ? at - 1 : at;
+}
+
 /** The start of `text` within `maxChars`, cut after its last whole word there when it has one. */
 function headOf(text: string, maxChars: number): string {
-  const head = text.slice(0, maxChars);
+  const head = text.slice(0, cutPoint(text, maxChars));
   const lastSpace = head.search(/\s\S*$/);
   return lastSpace > 0 ? head.slice(0, lastSpace) : head;
 }
@@ -210,8 +233,13 @@ export function policyPassage(body: string, query: readonly string[], maxChars: 
     }
   }
   if (kept.size === 0) {
-    const first = ranked[0];
-    return first === undefined ? '' : (pieces[first.index]?.text ?? '').slice(0, maxChars);
+    // Not even one piece fits (a budget of a few hundred characters): the start of the best one,
+    // marked as cut when there is room for the mark.
+    const best = pieces[ranked[0]?.index ?? 0]?.text ?? '';
+    const mark = `${PASSAGE_SEPARATOR}${PASSAGE_GAP}`;
+    return maxChars > mark.length * 2
+      ? `${headOf(best, maxChars - mark.length)}${mark}`
+      : headOf(best, maxChars);
   }
   let passage = '';
   let previous = -1;
@@ -221,7 +249,8 @@ export function policyPassage(body: string, query: readonly string[], maxChars: 
     if (shown === undefined) {
       continue;
     }
-    if (index !== previous + 1) {
+    // A gap after a piece shown cut too, even when the next one is kept: text is missing there.
+    if (index !== previous + 1 || !whole) {
       passage += passage === '' ? PASSAGE_GAP : `${PASSAGE_SEPARATOR}${PASSAGE_GAP}`;
       passage += `${PASSAGE_SEPARATOR}${shown}`;
     } else {

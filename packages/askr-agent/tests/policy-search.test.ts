@@ -18,6 +18,8 @@ function policy(slug: string, title: string, body: string): Policy {
   return { author: CATALOG_KEY, slug, title, body, createdAt: NOW };
 }
 
+const PASSAGE_SEPARATOR_FOR_TEST = '\n\n';
+
 const FILLER = 'Our team packs every order with care and checks it twice. '.repeat(40).trim();
 
 /** A long returns policy whose answer sits at its very end. */
@@ -77,6 +79,9 @@ describe('wordsMatch', () => {
     ['return', 'retail'],
     ['size', 'sizing'],
     ['shipping', 'shipment'],
+    ['deliver', 'delight'],
+    ['internet', 'international'],
+    ['store', 'storefront'],
   ])('%s does not match %s', (left, right) => {
     expect(wordsMatch(left, right)).toBe(false);
   });
@@ -182,6 +187,106 @@ describe('policyPassage', () => {
   });
 });
 
+describe('policyPassage, piece by piece', () => {
+  const para = (letter: string, words: number) => Array(words).fill(letter.repeat(5)).join(' ');
+
+  it('joins kept paragraphs with a blank line and marks the ones left out', () => {
+    const body = [para('a', 20), para('b', 20), 'Swimwear is final sale.', para('c', 400)].join(
+      '\n\n',
+    );
+    const passage = policyPassage(body, [], 400);
+    // The rest of the room shows the start of the next paragraph, then the mark.
+    expect(
+      passage.startsWith(
+        `${para('a', 20)}\n\n${para('b', 20)}\n\nSwimwear is final sale.\n\nccccc`,
+      ),
+    ).toBe(true);
+    expect(passage.endsWith(`ccccc\n\n${PASSAGE_GAP}`)).toBe(true);
+  });
+
+  it('marks a piece shown cut even when the next one is kept', () => {
+    const body = [para('l', 55), para('i', 55), 'Swimwear final sale.', para('f', 400)].join(
+      '\n\n',
+    );
+    // Swimwear first, then from the start: the first paragraph whole, the second cut to the room.
+    const passage = policyPassage(body, ['swimwear'], 700);
+    expect(passage).toContain(`iiiii\n\n${PASSAGE_GAP}\n\nSwimwear final sale.`);
+    expect(passage.length).toBeLessThanOrEqual(700);
+  });
+
+  it('cuts a filled-in tail after a whole word', () => {
+    const passage = policyPassage(['Lead.', para('w', 400)].join('\n\n'), [], 600);
+    const lastShown = passage.split(PASSAGE_SEPARATOR_FOR_TEST).at(-2) ?? '';
+    expect(lastShown.endsWith('wwwww')).toBe(true);
+  });
+
+  it('keeps filling after a matched piece that does not fit', () => {
+    // Three matched pieces at the piece size: the third does not fit; the short fourth still does.
+    const big = (index: number) => `Swimwear ${index}. ${para('x', 53)}`;
+    const body = [big(1), big(2), big(3), 'Swimwear 4 is short.'].join('\n\n');
+    const passage = policyPassage(body, ['swimwear'], 1_000);
+    expect(passage).toContain('Swimwear 4 is short.');
+    expect(passage).not.toContain('Swimwear 3.');
+  });
+
+  it('starts a piece of a long sentence run on a sentence', () => {
+    const sentences = Array.from(
+      { length: 80 },
+      (_unused, index) => `Sentence ${index} is filler.`,
+    );
+    sentences.splice(40, 0, 'Swimwear is final sale.');
+    const passage = policyPassage(sentences.join(' '), ['swimwear'], 900);
+    const matched = passage
+      .split(PASSAGE_SEPARATOR_FOR_TEST)
+      .find((part) => part.includes('Swimwear'));
+    expect(matched).toMatch(/^Sentence \d+ is filler\.|^Swimwear/);
+    expect(matched?.length).toBeLessThanOrEqual(300);
+  });
+
+  it('finds an answer in the middle of a long list, with its neighbours', () => {
+    const lines = Array.from({ length: 200 }, (_unused, index) => `- Item ${index}: plain text`);
+    lines[100] = '- Swimwear is final sale.';
+    const passage = policyPassage(lines.join('\n'), ['swimwear'], 900);
+    expect(passage).toContain('- Item 99: plain text\n- Swimwear is final sale.');
+  });
+
+  it('keeps a heading on its own line apart from a heading-looking first line', () => {
+    const body = ['# Title\nnot a lone heading', para('z', 400), 'Swimwear ok.'].join('\n\n');
+    const passage = policyPassage(body, ['swimwear'], 500);
+    expect(passage).toContain('Swimwear ok.');
+    expect(passage).not.toContain('# Title\nnot a lone heading\nSwimwear');
+  });
+
+  it('returns a short policy normalized: one kind of line end, compatibility forms folded', () => {
+    expect(policyPassage('Ｓｗｉｍ\r\nok\rfine', [], 1_000)).toBe('Swim\nok\nfine');
+  });
+
+  it('never cuts a character outside the BMP in two', () => {
+    const body = `${'a😀'.repeat(300)}\n\nSwimwear ok.`;
+    for (const maxChars of [100, 250, 251, 400]) {
+      const passage = policyPassage(body, ['swimwear'], maxChars);
+      expect(passage).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+      expect(passage.length).toBeLessThanOrEqual(maxChars);
+    }
+  });
+
+  it('marks the cut when not even one piece fits', () => {
+    const passage = policyPassage('swimwear '.repeat(100), ['swimwear'], 30);
+    expect(passage).toBe(`swimwear swimwear\n\n${PASSAGE_GAP}`);
+  });
+
+  it('never goes over the budget with many short paragraphs and a partial query', () => {
+    for (let count = 3; count <= 30; count += 3) {
+      const body = Array.from({ length: count }, (_unused, index) =>
+        index % 3 === 0 ? `Swimwear ${index} ${para('q', index * 4)}` : para('n', 5 + index * 3),
+      ).join('\n\n');
+      for (let maxChars = 100; maxChars <= 1_000; maxChars += 3) {
+        expect(policyPassage(body, ['swimwear'], maxChars).length).toBeLessThanOrEqual(maxChars);
+      }
+    }
+  });
+});
+
 describe('passagesWithin', () => {
   it('splits the budget evenly among long policies', () => {
     const long = 'word '.repeat(5_000);
@@ -221,6 +326,32 @@ describe('search_policies', () => {
     expect(json.unknown_slugs).toBeUndefined();
     expect(state.policyPassages).toHaveLength(1);
     expect(search({ slugs: 'shipping', query: 'ship' }).json.results[0]?.slug).toBe('shipping');
+  });
+
+  it('gives every picked slug back when a query comes too, and reads slugs in any case', () => {
+    const { json } = search({ slugs: ['Sizing', ' faq ', 'shipping'], query: 'swimwear' });
+    expect(json.results.map((result) => result.slug)).toEqual(['sizing', 'faq', 'shipping']);
+    expect(json.unknown_slugs).toBeUndefined();
+  });
+
+  it('lets the price check quote only what the model was shown', () => {
+    const tail = 'Restocking fee: $73.';
+    const long = policy(
+      'long',
+      'Long',
+      [...Array(800).fill('Plain words here.'), tail].join('\n\n'),
+    );
+    const { state } = search({ slugs: ['long'] }, [long]);
+    expect(state.policyPassages[0]).not.toContain('$73');
+  });
+
+  it('keeps a chat-style policy whole under its fence', () => {
+    const chat = Array.from({ length: 200 }, (_unused, index) => `user: question ${index}`).join(
+      '\n',
+    );
+    const { json } = search({ slugs: ['chat'] }, [policy('chat', 'Chat FAQ', chat)]);
+    expect(json.results[0]?.passage).toContain('question 199');
+    expect(json.results[0]?.passage).not.toContain('…');
   });
 
   it('sanitizes an unknown slug before naming it back', () => {

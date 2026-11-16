@@ -89,11 +89,22 @@ export function PoliciesSection({ deps, view, config }: Props) {
     policies === undefined
       ? 0
       : new Set([...policies.map((policy) => policy.slug), ...importedSlugs]).size;
-  // The ones the assistant reads, exactly as the worker picks them.
-  const inUse = new Set(policiesInUse(policies ?? []).map((policy) => policy.slug));
+  // The ones the assistant reads, exactly as the worker picks them, counting the policies the
+  // import has yet to bring: they come first, so they may push a store's own ones out.
+  const slugsThere = (policies ?? []).map((policy) => policy.slug);
+  const inUse = new Set(
+    policiesInUse([...new Set([...slugsThere, ...importedSlugs])].map((slug) => ({ slug }))).map(
+      (policy) => policy.slug,
+    ),
+  );
+  const unreadCount = slugsThere.filter((slug) => !inUse.has(slug)).length;
   let limitNote = '';
-  if (policies !== undefined && policies.length > LIMITS.MAX_POLICIES) {
-    limitNote = `A store has at most ${LIMITS.MAX_POLICIES} policies, so the assistant does not read the ones marked below. Delete the ones it does not need.`;
+  if (unreadCount > 0) {
+    limitNote = `A store has at most ${LIMITS.MAX_POLICIES} policies, counting the ones Shopify imports, so the assistant does not read the ones marked below. ${
+      editable
+        ? 'Delete the ones it does not need.'
+        : 'Remove the ones it does not need where you publish them.'
+    }`;
   } else if (editable && taken >= LIMITS.MAX_POLICIES) {
     limitNote = `This store has as many policies as it can have (${LIMITS.MAX_POLICIES}, counting the ones Shopify imports). Delete one to add another.`;
   }

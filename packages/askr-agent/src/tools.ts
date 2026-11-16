@@ -14,7 +14,6 @@ import type { ToolSpec, ToolUseBlock } from './llm/types';
 import {
   MAX_POLICY_RESULTS,
   POLICY_RESULT_CHARS,
-  SANITIZE_MARGIN_CHARS,
   passagesWithin,
   rankPolicies,
 } from './policy-search';
@@ -469,7 +468,10 @@ function searchPolicies(catalog: StoreCatalog, input: Record<string, unknown>, s
   const asked = [
     ...new Set(
       Array.isArray(input.slugs)
-        ? input.slugs.filter((slug): slug is string => typeof slug === 'string')
+        ? input.slugs
+            .filter((slug): slug is string => typeof slug === 'string')
+            // Slugs are lowercase: `Returns` or ` shipping` still names the policy.
+            .map((slug) => slug.trim().toLowerCase())
         : [],
     ),
   ].slice(0, MAX_POLICY_RESULTS);
@@ -477,24 +479,26 @@ function searchPolicies(catalog: StoreCatalog, input: Record<string, unknown>, s
   const unknown = asked.filter((slug) => !catalog.policies.some((policy) => policy.slug === slug));
   const found =
     bySlug.length > 0 ? bySlug : rankPolicies(catalog.policies, query, MAX_POLICY_RESULTS);
-  for (const policy of found) {
-    if (!state.policyPassages.includes(policy.body)) {
-      state.policyPassages.push(policy.body);
-    }
-  }
   const passages = passagesWithin(
     found.map((policy) => policy.body),
     query,
     POLICY_RESULT_CHARS,
   );
+  // Only what the model is shown may be quoted: an amount in a part left out is not in it.
+  for (const passage of passages) {
+    if (!state.policyPassages.includes(passage)) {
+      state.policyPassages.push(passage);
+    }
+  }
   return {
     results: found.map((policy, index) => {
       const passage = passages[index] ?? '';
       return {
         slug: policy.slug,
         title: sanitizeText(policy.title, LIMITS.TITLE_CHARS),
-        // Sanitizing may lengthen the text a little; it must not cut what was chosen to fit.
-        passage: fence('policy', passage, passage.length + SANITIZE_MARGIN_CHARS),
+        // Sanitizing lengthens a line that forges a turn (`user:` becomes `user -`) by one
+        // character, and nothing else: it must not cut what was chosen to fit.
+        passage: fence('policy', passage, passage.length + passage.split('\n').length),
       };
     }),
     ...(unknown.length > 0
