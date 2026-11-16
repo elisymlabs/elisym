@@ -76,7 +76,10 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
             ownerNpub={ownerNpub}
             submitLabel="Sign and save"
             onSubmit={async (form) => {
-              await saveSettings({ deps, view, form });
+              const outcome = await saveSettings({ deps, view, form });
+              if (outcome.connectorError !== undefined) {
+                throw new Error(outcome.connectorError);
+              }
               await onDone();
               return 'Saved.';
             }}

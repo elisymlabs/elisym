@@ -31,7 +31,7 @@ A store reads its products from exactly one source, chosen in the admin:
 3. The store stays pending until it is activated on a plan. Meanwhile the admin shows your settings from what you signed, which the server holds; your browser checks every signature, as it does for the relay. Once active, the server publishes what you signed, the relay becomes the source, and the assistant starts answering.
 4. [Embed the widget](/askr/embed) on your site.
 
-From the admin you can later edit the settings, import products, edit policies, set up a connector, and see usage against your plan; under Advanced, manage catalog keys, rotate the assistant key, and replace your secret key.
+From the admin you can later edit the settings (a connector is set up there, as your product source, then previewed and turned on or off in the Connector tab), import products, edit policies, and see usage against your plan; under Advanced, manage catalog keys, rotate the assistant key, and replace your secret key.
 
 The overview counts **conversations**: a conversation is one visitor's chat, up to 24 hours from their first message, that got at least one answer. Each is counted once, on its first answer, however many questions follow or however often a turn is retried; a chat whose questions all failed is not counted. The count starts around the server upgrade that introduced it: chats still open then are included, older ones are not. A server operator should not run instances of the old and new version side by side during that upgrade, since an old instance answers without counting. Next to it are the open conversations (chats started in the last 24 hours) and the advisory product link clicks.
 

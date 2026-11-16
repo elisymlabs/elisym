@@ -1,17 +1,16 @@
-import type { ConnectorPlatform, StoreConfig } from '@elisym/askr';
-import { useState } from 'react';
+import type { StoreConfig } from '@elisym/askr';
+import { type ReactNode, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
-import { PLATFORM_OPTIONS, platformOf } from '../lib/labels';
+import { PLATFORM_LABELS } from '../lib/labels';
+import { newestConfig } from '../lib/save';
 import { npubOf } from '../lib/signer';
-import type { ConnectorSyncResult, StoreView } from '../lib/types';
+import type { ConnectorRecord, ConnectorSyncResult, StoreView } from '../lib/types';
 import { ConnectorStatus } from './ConnectorStatus';
 import { CopyBlock } from './CopyBlock';
 import { Notice } from './Notice';
 import { PreviewResult } from './PreviewResult';
 import { Section } from './Section';
-import { SelectField } from './SelectField';
-import { TextField } from './TextField';
 
 interface Props {
   deps: SessionDeps;
@@ -20,16 +19,54 @@ interface Props {
   reload: () => Promise<void>;
 }
 
-/** A Shopify, WooCommerce or Google feed connector (7.4): set up, preview, turn on, remove. */
+/** `{origin}{path}` without a trailing slash: how the server compares a shop's address. */
+function shopIdentity(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/u, '')}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Why the server would refuse to sync this connector with these settings
+ * (`configRefusal` in the server's connector service), in the merchant's words.
+ * Settings saved here never disagree; settings signed elsewhere (the SDK, an
+ * agent) might.
+ */
+function disagreement(
+  config: StoreConfig,
+  connector: ConnectorRecord,
+  serverKey: string,
+): string | undefined {
+  const { source } = config;
+  if (source.kind !== 'connector' || source.platform !== connector.platform) {
+    return 'Your settings do not name this connector as your product source.';
+  }
+  if (config.catalogKey !== serverKey) {
+    return 'Your settings name another key for your products than the one this connector publishes with.';
+  }
+  if (connector.platform !== 'google' && source.shopUrl === undefined) {
+    return 'Your settings do not name your shop address.';
+  }
+  if (
+    source.shopUrl !== undefined &&
+    shopIdentity(source.shopUrl) !== shopIdentity(connector.url)
+  ) {
+    return 'Your settings name another shop address than this connector.';
+  }
+  return undefined;
+}
+
+/**
+ * A Shopify, WooCommerce or Google feed connector at work (7.4): its status,
+ * the site proof, the first import's preview, syncing on and off. It is set
+ * up in Settings, with the product source it is part of.
+ */
 export function ConnectorSection({ deps, view, config, reload }: Props) {
-  const saved = view.connector;
-  const [platform, setPlatform] = useState<ConnectorPlatform>(
-    saved?.platform ?? config?.source.platform ?? 'shopify',
-  );
-  const [url, setUrl] = useState(saved?.url ?? config?.source.shopUrl ?? '');
-  const [currency, setCurrency] = useState(saved?.currency ?? '');
-  const [importPolicies, setImportPolicies] = useState(saved?.importPolicies ?? true);
-  /** The last preview, with the saved address it was of. */
+  const connector = view.connector;
+  /** The last preview, of the connector as it was then. */
   const [preview, setPreview] = useState<{ result: ConnectorSyncResult; url: string }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -48,171 +85,124 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
     }
   };
 
-  // A preview is of the saved connector: any change means a new preview before syncing turns on.
-  const edited =
-    <Value,>(set: (value: Value) => void) =>
-    (value: Value) => {
-      set(value);
-      setPreview(undefined);
-    };
-
-  const save = () =>
-    run(async () => {
-      setPreview(undefined);
-      const trimmedCurrency = currency.trim().toUpperCase();
-      await deps.api.putConnector({
-        platform,
-        url: url.trim(),
-        ...(trimmedCurrency === '' ? {} : { currency: trimmedCurrency }),
-        importPolicies,
-      });
-      await reload();
-      return 'Connector saved. Preview the first import next.';
-    });
+  if (connector === null) {
+    return (
+      <Section title="Connector">
+        <p className="text-14 text-text-2">
+          No shop is connected. To keep your products in sync with a Shopify or WooCommerce shop or
+          a Google product feed, choose it as your product source in Settings and save.
+        </p>
+      </Section>
+    );
+  }
 
   const runPreview = () =>
     run(async () => {
       setPreview(undefined);
       const { result } = await deps.api.previewConnector();
-      setPreview({ result, url: saved?.url ?? '' });
+      setPreview({ result, url: connector.url });
       return '';
     });
 
-  const enable = () =>
+  const turnOn = () =>
     run(async () => {
       await deps.api.enableConnector();
       await reload();
       return 'Syncing is on. The first sync starts now.';
     });
 
-  const remove = () =>
+  const turnOff = () =>
     run(async () => {
-      await deps.api.deleteConnector();
+      await deps.api.disableConnector();
       setPreview(undefined);
       await reload();
-      return 'Connector removed. Products already published stay until you change them.';
+      return 'Syncing is off. Your products stay as last synced.';
     });
 
-  // Preview and syncing act on the saved connector: while the form differs, it must be saved first.
-  const unsaved =
-    saved === null ||
-    platform !== saved.platform ||
-    url.trim() !== saved.url ||
-    currency.trim().toUpperCase() !== (saved.currency ?? '') ||
-    importPolicies !== saved.importPolicies;
+  // The settings this session signed last count before the relay has them: a save in Settings
+  // changes the connector at once, the relay a moment later.
+  const signed = newestConfig(config, deps.journal);
+  const problem =
+    signed === undefined ? undefined : disagreement(signed, connector, view.catalogKey);
+  const active = view.status === 'active';
+  // A preview is of the connector as it was: one of another address is no ground to turn it on.
+  const previewOk = preview?.result.status === 'ok' && preview.url === connector.url;
 
-  const sourceMismatch =
-    config !== undefined &&
-    (config.source.kind !== 'connector' || config.source.platform !== platform);
+  let statusNotice: ReactNode = null;
+  if (problem !== undefined) {
+    statusNotice = (
+      <Notice tone="warn">
+        {problem} Syncs are refused until they agree: open Settings, check your product source and
+        save.
+      </Notice>
+    );
+  } else if (!active) {
+    statusNotice = (
+      <Notice tone="info">
+        Previews and syncs run once your store is{' '}
+        {view.status === 'pending' ? 'activated' : 'active again'}.
+      </Notice>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-16">
-      <Section title="Connector status">
-        <ConnectorStatus connector={saved} />
+      <Section
+        title={`${PLATFORM_LABELS[connector.platform]} connector`}
+        description="Askr reads only what your shop shows the public, with no access token, and keeps your products in sync. Change the shop or its options in Settings."
+      >
+        <ConnectorStatus connector={connector} tier={view.tier} />
+        {statusNotice}
+      </Section>
+      <Section title="Prove the site is yours">
+        <p className="text-13 text-text-2">
+          Add this tag to your shop&apos;s home page, or serve a small text file at
+          /.well-known/askr with your Store ID on a line of its own. Keep it there: every sync
+          checks it.
+          {connector.platform === 'google'
+            ? ' For a feed, every site its products link to needs it.'
+            : ''}
+        </p>
+        <CopyBlock
+          label="Meta tag"
+          text={`<meta name="askr-verification" content="${npubOf(view.owner)}">`}
+        />
       </Section>
       <Section
-        title="Connect your shop"
-        description="Askr reads only what your shop shows the public, with no access token, and keeps your products in sync."
+        title="Sync"
+        description="Preview what the first import would publish, then turn syncing on. Nothing is published by a preview."
       >
-        {sourceMismatch ? (
-          <Notice tone="warn">
-            Your settings do not name this connector as the product source. In Settings, choose your
-            shop as the product source (with its shop address) and save, or syncs are refused.
-          </Notice>
-        ) : null}
-        <SelectField
-          id="connector-platform"
-          label="Platform"
-          value={platform}
-          options={PLATFORM_OPTIONS}
-          onChange={edited((value: string) => setPlatform(platformOf(value) ?? platform))}
-        />
-        <TextField
-          id="connector-url"
-          label={platform === 'google' ? 'Feed address' : 'Shop address'}
-          value={url}
-          placeholder={
-            platform === 'google' ? 'https://shop.example/feed.xml' : 'https://shop.example'
-          }
-          onChange={edited(setUrl)}
-        />
-        <TextField
-          id="connector-currency"
-          label="Currency override (optional)"
-          value={currency}
-          hint="Only if the shop reports another currency than it sells in."
-          onChange={edited(setCurrency)}
-        />
-        {platform === 'shopify' ? (
-          <label className="text-14 flex items-center gap-8">
-            <input
-              type="checkbox"
-              checked={importPolicies}
-              onChange={(event) => edited(setImportPolicies)(event.target.checked)}
-            />
-            Import the shop's refund, shipping, privacy and terms pages as policies
-          </label>
-        ) : null}
-        <div className="flex flex-col gap-8">
-          <p className="text-14 font-medium">Prove the site is yours</p>
-          <p className="text-13 text-text-2">
-            Add this tag to your shop's home page, or serve a small text file at /.well-known/askr
-            with your store ID on a line of its own.
-            {platform === 'google'
-              ? ' For a feed, every site its product links point to needs it.'
-              : ''}
-          </p>
-          <CopyBlock
-            label="Meta tag"
-            text={`<meta name="askr-verification" content="${npubOf(view.owner)}">`}
-          />
-        </div>
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
         {done === '' ? null : <Notice tone="success">{done}</Notice>}
-        {saved !== null && unsaved ? (
-          <Notice tone="info">Save the connector to preview these settings.</Notice>
-        ) : null}
         <div className="flex flex-wrap gap-8">
           <button
             type="button"
-            className="btn btn-primary"
-            disabled={busy || url.trim() === ''}
-            onClick={() => void save()}
-          >
-            Save connector
-          </button>
-          <button
-            type="button"
             className="btn"
-            disabled={busy || unsaved}
+            disabled={busy || !active || problem !== undefined}
             onClick={() => void runPreview()}
           >
             Preview first import
           </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={
-              busy || unsaved || saved === null || saved.enabled || preview?.result.status !== 'ok'
-            }
-            onClick={() => void enable()}
-          >
-            Turn on syncing
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger"
-            disabled={busy || saved === null}
-            onClick={() => void remove()}
-          >
-            Remove
-          </button>
+          {connector.enabled ? (
+            <button type="button" className="btn" disabled={busy} onClick={() => void turnOff()}>
+              Turn off syncing
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || !active || problem !== undefined || !previewOk}
+              onClick={() => void turnOn()}
+            >
+              Turn on syncing
+            </button>
+          )}
         </div>
       </Section>
       {preview === undefined ? null : (
         <Section
           title="First import preview"
-          description={`Of ${preview.url}, as saved. Nothing is published yet.`}
+          description={`Of ${preview.url}. Nothing is published yet.`}
         >
           <PreviewResult result={preview.result} />
         </Section>

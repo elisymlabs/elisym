@@ -4,9 +4,9 @@ const BOT_CHECK_WAY_OUT =
 const REFUSED_STATUSES = new Set([401, 403, 429, 503]);
 
 const VERIFICATION_REASONS: Readonly<Record<string, string>> = {
-  not_configured: 'is not among your allowed or link origins',
+  not_configured: 'is not one of your allowed sites (add it in Settings)',
   not_found:
-    'does not show your store ID (add the askr-verification meta tag or /.well-known/askr)',
+    'does not show your Store ID (add the askr-verification meta tag or /.well-known/askr)',
   fetch_failed: 'could not be read',
   blocked: `refuses automated readers (often a bot check such as Cloudflare, or a password or maintenance page): ${BOT_CHECK_WAY_OUT}`,
 };

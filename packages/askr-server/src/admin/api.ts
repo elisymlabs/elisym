@@ -26,7 +26,7 @@ import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
 import { publicBaseOf } from '../config';
 import { livePolicies } from '../connectors/policies';
-import type { ConnectorService } from '../connectors/service';
+import { type ConnectorService, shopIdentity } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
@@ -58,6 +58,11 @@ const RecoverRequestSchema = z.object({
   from: z.string().max(100),
   dryRun: z.boolean().optional(),
 });
+
+/** A shop's address as the connector compares it (origin and path), https only. */
+function httpsShopIdentity(url: string): string | undefined {
+  return url.startsWith('https://') ? shopIdentity(url) : undefined;
+}
 
 /** An owner key as hex, from hex or an npub; undefined for anything else. */
 function ownerKeyOf(value: string): string | undefined {
@@ -700,15 +705,29 @@ export function createAdminApi(
     }
     if (route === 'PUT /v1/admin/connector') {
       const parsed = ConnectorRequestSchema.safeParse(parseJson(body));
-      if (!parsed.success) {
+      // A shop's address in one form, as the config holds it: the same shop typed another way
+      // (a final slash, capitals) is no new shop and keeps syncing on.
+      const url =
+        parsed.success && parsed.data.platform !== 'google'
+          ? httpsShopIdentity(parsed.data.url)
+          : parsed.data?.url;
+      if (!parsed.success || url === undefined) {
         return json({ error: 'bad_request' }, 400);
       }
       await deps.directory.setConnector(owner, {
         platform: parsed.data.platform,
-        url: parsed.data.url,
+        url,
         ...(parsed.data.currency === undefined ? {} : { currency: parsed.data.currency }),
         importPolicies: parsed.data.importPolicies ?? true,
       });
+      await deps.connectors.refresh();
+      return json({ connector: await deps.directory.connector(owner) }, 200);
+    }
+    if (route === 'POST /v1/admin/connector/disable') {
+      // A pause: the connector stays as set up, and is turned on again after a preview, as at first.
+      if (!(await deps.directory.disableConnector(owner))) {
+        return json({ error: 'no_connector' }, 404);
+      }
       await deps.connectors.refresh();
       return json({ connector: await deps.directory.connector(owner) }, 200);
     }

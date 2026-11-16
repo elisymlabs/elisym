@@ -4,7 +4,7 @@ import type { SessionDeps } from '../lib/deps';
 import { newestConfig, saveSettings, savedMessage } from '../lib/save';
 import { npubOf } from '../lib/signer';
 import { type AuthorityRead, catalogKeysOf, readAuthority } from '../lib/store-data';
-import { EMPTY_FORM, formOfConfig } from '../lib/store-form';
+import { EMPTY_FORM, formOfConfig, withConnector } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
 import { ConfigUnreadable } from './ConfigUnreadable';
 import { Notice } from './Notice';
@@ -121,7 +121,10 @@ export function SettingsSection({
   const { source } = loaded;
   const authorities = authority.state === 'read' ? authority.read : undefined;
   const undecryptable = source !== undefined && loaded.privatePart === undefined;
-  const initial = source === undefined ? EMPTY_FORM : formOfConfig(source, loaded.privatePart);
+  const initial = withConnector(
+    source === undefined ? EMPTY_FORM : formOfConfig(source, loaded.privatePart),
+    view.connector,
+  );
   return (
     <Section
       title="Settings"
@@ -184,7 +187,7 @@ export function SettingsSection({
           if (authorities === undefined) {
             throw new Error('Your catalog key authorizations are not read yet. Retry above.');
           }
-          await saveSettings({
+          const outcome = await saveSettings({
             deps,
             view,
             form,
@@ -192,8 +195,15 @@ export function SettingsSection({
             authorized: catalogKeysOf(authorities),
             relayNewestAt: authorities.newestAt,
           });
-          setSaved(savedMessage(view));
+          setSaved(
+            outcome.note === undefined
+              ? savedMessage(view)
+              : `${savedMessage(view)} ${outcome.note}`,
+          );
           await onSaved();
+          if (outcome.connectorError !== undefined) {
+            throw new Error(outcome.connectorError);
+          }
           return '';
         }}
       >

@@ -4,7 +4,7 @@ import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { saveSettings } from '../lib/save';
 import { npubOf } from '../lib/signer';
-import { EMPTY_FORM, type StoreForm, formOfConfig } from '../lib/store-form';
+import { EMPTY_FORM, type StoreForm, formOfConfig, withConnector } from '../lib/store-form';
 import { ownSignedEvents } from '../lib/stored-events';
 import type { StoreView } from '../lib/types';
 import { Notice } from './Notice';
@@ -116,11 +116,16 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
           </Notice>
         ) : null}
         <StoreSettingsForm
-          initial={load.form}
+          // The connector's own fields (a feed, a currency) join at render: a reload of the store
+          // must not read the moved settings again and drop what the merchant typed.
+          initial={withConnector(load.form, view.connector)}
           ownerNpub={npubOf(deps.signer.pubkey)}
           submitLabel="Sign with my new key"
           onSubmit={async (form) => {
-            await saveSettings({ deps, view, form });
+            const outcome = await saveSettings({ deps, view, form });
+            if (outcome.connectorError !== undefined) {
+              throw new Error(outcome.connectorError);
+            }
             await onDone();
             return 'Signed.';
           }}

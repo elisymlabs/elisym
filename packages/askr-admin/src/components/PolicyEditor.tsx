@@ -39,7 +39,7 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
     }
     if (initial === undefined && importedSlugs.includes(checked.data.slug)) {
       setError(
-        `Short name: "${checked.data.slug}" is imported from your Shopify store, and each sync would replace this text. Pick another name, or turn off policy import in Connector.`,
+        `Short name: "${checked.data.slug}" is imported from your Shopify store, and each sync would replace this text. Pick another name, or turn off policy import in Settings.`,
       );
       return;
     }

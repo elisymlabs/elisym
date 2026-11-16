@@ -991,6 +991,14 @@ export class StoreDirectory {
     return rows.length > 0;
   }
 
+  async disableConnector(owner: string): Promise<boolean> {
+    const rows = await this.db.query(
+      'update connectors set enabled = false where owner = $1 returning 1',
+      [owner],
+    );
+    return rows.length > 0;
+  }
+
   async removeConnector(owner: string): Promise<void> {
     await this.db.query('delete from connectors where owner = $1', [owner]);
   }

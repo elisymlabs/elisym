@@ -192,6 +192,37 @@ describe('admin connector setup (7.3, 7.4)', () => {
     connectors.stop();
   });
 
+  it('keeps a shop address in one form, so the same shop typed another way keeps syncing on', async () => {
+    const { call } = await setup();
+    await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: `${SHOP}/` });
+    await call('POST', '/v1/admin/connector/enable');
+    const again = await call('PUT', '/v1/admin/connector', {
+      platform: 'shopify',
+      url: SHOP.toUpperCase().replace('HTTPS', 'https'),
+    });
+    expect(again.body.connector).toMatchObject({ url: SHOP, enabled: true });
+    expect(
+      (await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: 'http://x.example' }))
+        .status,
+    ).toBe(400);
+  });
+
+  it('pauses syncing and keeps the connector as set up; nothing to pause without one', async () => {
+    const { call } = await setup();
+    await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP, currency: 'EUR' });
+    await call('POST', '/v1/admin/connector/enable');
+    const paused = await call('POST', '/v1/admin/connector/disable');
+    expect(paused).toMatchObject({
+      status: 200,
+      body: { connector: { enabled: false, url: SHOP, currency: 'EUR' } },
+    });
+    await call('DELETE', '/v1/admin/connector');
+    expect(await call('POST', '/v1/admin/connector/disable')).toMatchObject({
+      status: 404,
+      body: { error: 'no_connector' },
+    });
+  });
+
   it('a changed source is disabled until previewed and enabled again', async () => {
     const { call } = await setup();
     await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });

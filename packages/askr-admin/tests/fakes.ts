@@ -112,6 +112,7 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     deleteConnector: vi.fn(async () => ({ connector: null })),
     previewConnector: vi.fn(async () => ({ result: { status: 'error' as const, message: 'x' } })),
     enableConnector: vi.fn(async () => ({ connector: null })),
+    disableConnector: vi.fn(async () => ({ connector: null })),
     rotateAssistant: vi.fn(async () => ({ nextAssistant: ASSISTANT })),
     movedSettings: vi.fn(async () => ({
       from: ASSISTANT,

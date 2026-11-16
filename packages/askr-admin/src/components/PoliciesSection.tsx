@@ -144,7 +144,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
         <Notice tone="info">
           Your Shopify connector is set to import the {importedSlugs.join(', ')} policies, and each
           sync puts the shop&apos;s version back. Change those in Shopify, or turn off policy import
-          in Connector to edit them here.
+          in Settings to edit them here.
         </Notice>
       ) : null}
       {limitNote === '' ? null : <Notice tone="info">{limitNote}</Notice>}

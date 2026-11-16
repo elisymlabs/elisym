@@ -1,16 +1,18 @@
 import { connectorResultSentence } from '../lib/connector';
 import { PLATFORM_LABELS } from '../lib/labels';
-import type { ConnectorRecord } from '../lib/types';
+import type { ConnectorRecord, Tier } from '../lib/types';
 
 interface Props {
   connector: ConnectorRecord | null;
+  /** The store's plan: how often it syncs and how many products it holds. */
+  tier?: Tier | null;
 }
 
 function timeOf(ms: number | null): string {
   return ms === null ? 'not yet' : new Date(ms).toLocaleString();
 }
 
-export function ConnectorStatus({ connector }: Props) {
+export function ConnectorStatus({ connector, tier }: Props) {
   if (connector === null) {
     return <p className="text-14 text-text-2">No connector is set up.</p>;
   }
@@ -22,6 +24,15 @@ export function ConnectorStatus({ connector }: Props) {
       <dd className="break-all">{connector.url}</dd>
       <dt className="text-text-2">Syncing</dt>
       <dd>{connector.enabled ? 'On' : 'Off (preview it, then turn it on)'}</dd>
+      {tier === undefined || tier === null ? null : (
+        <>
+          <dt className="text-text-2">Your plan</dt>
+          <dd>
+            Syncs every {tier.syncIntervalMinutes} minute{tier.syncIntervalMinutes === 1 ? '' : 's'}
+            , up to {tier.maxProducts} products
+          </dd>
+        </>
+      )}
       <dt className="text-text-2">Last run</dt>
       <dd>{timeOf(connector.lastRunAt)}</dd>
       <dt className="text-text-2">Next run</dt>
