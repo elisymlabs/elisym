@@ -65,7 +65,8 @@ export const ADD_TO_CART_SNIPPET = `<script>
   window.Askr = window.Askr || {};
   window.Askr.onAddToCart = function (detail) {
     // detail.d: the product ID; detail.sku: its SKU, if it has one;
-    // detail.variant and detail.options: the size, color and so on the shopper picked.
+    // detail.variant: the variant ID, when the shopper's pick determines one;
+    // detail.options: { "Size": "M", ... }, whenever a choice is made.
     // Put the product in your cart here.
   };
 </script>`;
@@ -74,14 +75,20 @@ export const ADD_TO_CART_SNIPPET = `<script>
 export const PLATFORM_HINTS: ReadonlyArray<{ platform: string; where: string }> = [
   {
     platform: 'Shopify',
-    where: 'Online Store, Themes, Edit code: open theme.liquid and paste it before </body>.',
+    where:
+      'Online Store, Themes, then Edit code in the theme menu: open theme.liquid and paste it before </body>.',
   },
   {
     platform: 'WordPress and WooCommerce',
-    where: 'a plugin that adds code to the footer (such as WPCode), or your theme footer.',
+    where: 'a plugin that adds code to every page (such as WPCode), set to the footer.',
   },
   {
-    platform: 'Wix, Squarespace, Tilda and others',
-    where: 'the custom code or HTML block in the site settings, set to load on every page.',
+    platform: 'Wix and Squarespace',
+    where:
+      'Custom Code (Wix) or Code Injection (Squarespace) in the site settings, on every page. Both need a paid plan; Wix also a connected domain. A page HTML block does not work: it runs the chat in a box of its own.',
+  },
+  {
+    platform: 'Other site builders',
+    where: 'the site-wide custom code setting, never a block on one page.',
   },
 ];

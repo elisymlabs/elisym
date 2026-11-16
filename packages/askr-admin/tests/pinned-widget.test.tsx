@@ -127,56 +127,83 @@ describe('the embed section', () => {
 
 describe('the embed section for a merchant', () => {
   const API = { pinnedWidget: async () => PINNED_WIDGET };
-  const SHOPIFY = {
-    owner: OWNER,
-    platform: 'shopify' as const,
-    url: 'https://tea.example',
-    importPolicies: true,
-    enabled: true,
-    lastStatus: null,
-    lastRunAt: null,
-    nextRunAt: null,
-  };
+  const connectorSource = (platform: 'shopify' | 'woocommerce' | 'google', shopUrl?: string) =>
+    adminConfig({
+      source: { kind: 'connector', platform, ...(shopUrl === undefined ? {} : { shopUrl }) },
+    });
 
-  it('says a store not active yet answers once activated, and only then', async () => {
-    mounted = await mount(
-      <EmbedSection api={API} view={storeView({ status: 'pending' })} config={adminConfig()} />,
-    );
-    expect(mounted.container.textContent).toContain('not active yet');
-    await mounted.unmount();
-    mounted = await mount(<EmbedSection api={API} view={storeView()} config={adminConfig()} />);
-    expect(mounted.container.textContent).not.toContain('not active yet');
+  async function mountWith(view = storeView(), config = adminConfig()) {
+    mounted = await mount(<EmbedSection api={API} view={view} config={config} />);
+    return mounted.container;
+  }
+
+  it('says what a pending store shows and to reload once activated, and what a suspended one shows', async () => {
+    const pending = await mountWith(storeView({ status: 'pending' }));
+    expect(pending.textContent).toContain('The assistant is not set up for this store');
+    expect(pending.textContent).toContain('reload');
+    await mounted?.unmount();
+    const suspended = await mountWith(storeView({ status: 'suspended' }));
+    expect(suspended.textContent).toContain('suspended');
+    expect(suspended.textContent).toContain('reactivate');
+    await mounted?.unmount();
+    const active = await mountWith();
+    expect(active.textContent).not.toContain('not set up for this store');
+    expect(active.textContent).not.toContain('suspended');
   });
 
-  it('offers the add to cart hook without a native cart, and says a Shopify connector needs none', async () => {
-    mounted = await mount(<EmbedSection api={API} view={storeView()} config={adminConfig()} />);
-    expect(mounted.container.textContent).toContain('window.Askr.onAddToCart');
-    await mounted.unmount();
-    mounted = await mount(
-      <EmbedSection api={API} view={storeView({ connector: SHOPIFY })} config={adminConfig()} />,
-    );
-    expect(mounted.container.textContent).toContain('Shopify connector gives the cards');
-    expect(mounted.container.textContent).not.toContain('window.Askr.onAddToCart');
-    await mounted.unmount();
-    mounted = await mount(
-      <EmbedSection
-        api={API}
-        view={storeView({ connector: { ...SHOPIFY, platform: 'google' } })}
-        config={adminConfig()}
-      />,
-    );
-    expect(mounted.container.textContent).toContain('window.Askr.onAddToCart');
+  it('decides add to cart from the published settings, as the widget does', async () => {
+    for (const [platform, label] of [
+      ['shopify', 'Shopify'],
+      ['woocommerce', 'WooCommerce'],
+    ] as const) {
+      const native = await mountWith(storeView(), connectorSource(platform, 'https://tea.example'));
+      expect(native.textContent).toContain(`come from your ${label} shop`);
+      expect(native.textContent).not.toContain('window.Askr.onAddToCart');
+      expect(native.textContent).toContain('takes its place');
+      await mounted?.unmount();
+    }
+    // No shop URL, another platform or source: no native cart, so the hook is offered.
+    for (const config of [connectorSource('shopify'), connectorSource('google'), adminConfig()]) {
+      const hook = await mountWith(storeView(), config);
+      expect(hook.textContent).toContain('window.Askr = window.Askr || {};');
+      expect(hook.textContent).toContain('window.Askr.onAddToCart');
+      expect(hook.textContent).toContain('adds a button that does nothing');
+      await mounted?.unmount();
+    }
+    // A default parameter would fill in undefined: mount it directly.
+    mounted = await mount(<EmbedSection api={API} view={storeView()} config={undefined} />);
+    const unknown = mounted.container;
+    expect(unknown.textContent).toContain('Once your settings are published');
+    expect(unknown.textContent).not.toContain('window.Askr.onAddToCart');
   });
 
-  it('says where to paste the code, and keeps the pinned version and CSP under Advanced', async () => {
-    mounted = await mount(<EmbedSection api={API} view={storeView()} config={adminConfig()} />);
-    const { container } = mounted;
-    expect(container.textContent).toContain('theme.liquid');
+  it('links the guide and names the allowed sites', async () => {
+    const container = await mountWith();
+    const link = [...container.querySelectorAll('a')].find((anchor) =>
+      (anchor.textContent ?? '').includes('guide'),
+    );
+    expect(link?.getAttribute('href')).toBe('https://docs.elisym.network/askr/embed');
+    expect(container.textContent).toContain('allowed sites: https://tea.example');
+  });
+
+  it('says where to paste the code on each builder, never in a page block', async () => {
+    const container = await mountWith();
+    for (const hint of ['theme.liquid', 'WPCode', 'Code Injection', 'paid plan', 'never a block']) {
+      expect(container.textContent).toContain(hint);
+    }
+  });
+
+  it('keeps the chat element, the pinned version and CSP under Advanced only', async () => {
+    const container = await mountWith();
     const advanced = container.querySelector('details');
     expect(advanced?.querySelector('summary')?.textContent).toBe('Advanced');
     expect(advanced?.hasAttribute('open')).toBe(false);
     expect(advanced?.textContent).toContain('Only if your security policy requires it');
     expect(advanced?.textContent).toContain('script-src');
     expect(advanced?.textContent).toContain('<askr-chat');
+    expect(advanced?.textContent).toContain('nonce or hash');
+    advanced?.remove();
+    expect(container.textContent).not.toContain('script-src');
+    expect(container.textContent).not.toContain('<askr-chat');
   });
 });

@@ -1,5 +1,5 @@
 import type { StoreConfig } from '@elisym/askr';
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import { EMBED_DOCS_URL } from '../constants';
 import type { AdminClient } from '../lib/deps';
 import {
@@ -18,7 +18,7 @@ import { Section } from './Section';
 
 interface Props {
   api: Pick<AdminClient, 'pinnedWidget'>;
-  view: Pick<StoreView, 'owner' | 'status' | 'connector'>;
+  view: Pick<StoreView, 'owner' | 'status'>;
   config: StoreConfig | undefined;
 }
 
@@ -28,11 +28,26 @@ type PinnedLoad =
   | { state: 'ready'; widget: PinnedWidget };
 
 /** Connector platforms whose own cart the chat fills by itself, on the shop's site. */
-const NATIVE_CART_PLATFORMS: readonly string[] = ['shopify', 'woocommerce'];
+const NATIVE_CART_PLATFORMS: Readonly<Record<string, string>> = {
+  shopify: 'Shopify',
+  woocommerce: 'WooCommerce',
+};
 
 /**
- * The embed code, where to paste it and what add to cart needs; the pinned
- * version and the CSP sources under Advanced, for the sites that need them (6).
+ * The platform whose own cart the widget fills, as it decides it: from the
+ * published settings, a connector source with a shop URL (`native-cart.ts`).
+ */
+function nativeCartOf(config: StoreConfig): string | undefined {
+  const { source } = config;
+  if (source.kind !== 'connector' || source.shopUrl === undefined) {
+    return undefined;
+  }
+  return source.platform === undefined ? undefined : NATIVE_CART_PLATFORMS[source.platform];
+}
+
+/**
+ * The embed code, where to paste it and what add to cart needs; the chat
+ * element, the pinned version and the CSP sources under Advanced (6).
  */
 export function EmbedSection({ api, view, config }: Props) {
   const npub = npubOf(view.owner);
@@ -70,8 +85,57 @@ export function EmbedSection({ api, view, config }: Props) {
     pinnedContent = <p className="text-14 text-text-2">Reading the current version...</p>;
   }
 
-  const platform = view.connector?.platform;
-  const nativeCart = platform !== undefined && NATIVE_CART_PLATFORMS.includes(platform);
+  // What the widget shows on a store that is not active (its client and the gateway).
+  let statusNotice: ReactNode = null;
+  if (view.status === 'pending') {
+    statusNotice = (
+      <Notice tone="info">
+        Your store is not active yet. Until it is, the chat says &quot;The assistant is not set up
+        for this store&quot;. You can add the code now; once your store is activated, reload your
+        site&apos;s page and the chat answers.
+      </Notice>
+    );
+  } else if (view.status === 'suspended') {
+    statusNotice = (
+      <Notice tone="warn">
+        Your store is suspended, so the chat says the assistant is unavailable. Contact the Askr
+        operator to reactivate it.
+      </Notice>
+    );
+  }
+
+  let cart: ReactNode;
+  const native = config === undefined ? undefined : nativeCartOf(config);
+  if (config === undefined) {
+    cart = (
+      <p className="text-14 text-text-2">
+        Once your settings are published, this says whether the cards get an add to cart button.
+      </p>
+    );
+  } else if (native !== undefined) {
+    cart = (
+      <Notice tone="info">
+        Your products come from your {native} shop, so on your shop&apos;s own site the cards get an
+        add to cart button that fills its cart, once the shopper has picked the size, color and so
+        on. Nothing to add. A hook of your own, if your pages have one, takes its place.
+      </Notice>
+    );
+  } else {
+    cart = (
+      <>
+        <p className="text-14 text-text-2">
+          Your products do not come from a Shopify or WooCommerce shop, so the cards have no add to
+          cart button unless your site says how to add a product. If yours can, have your developer
+          fill in this hook on every page with the chat.
+        </p>
+        <CopyBlock label="Add to cart hook (for your developer)" text={ADD_TO_CART_SNIPPET} />
+        <Notice tone="warn">
+          Pasted as it is, it adds a button that does nothing: it needs your cart&apos;s own code
+          where it says so.
+        </Notice>
+      </>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-16">
@@ -79,12 +143,7 @@ export function EmbedSection({ api, view, config }: Props) {
         title="Add the chat to your site"
         description="Paste this before the closing body tag on every page that should show the chat. It always loads the current version, so fixes reach your site within minutes."
       >
-        {view.status === 'active' ? null : (
-          <Notice tone="info">
-            Your store is not active yet, so the chat says it is unavailable until it is. You can
-            add the code now: it starts answering once your store is activated.
-          </Notice>
-        )}
+        {statusNotice}
         <CopyBlock label="Embed code" text={scriptSnippet(npub)} />
         <p className="text-13 text-text-2">
           The chat answers only on your allowed sites
@@ -101,30 +160,15 @@ export function EmbedSection({ api, view, config }: Props) {
       </Section>
       <Section
         title="Add to cart"
-        description="Each product card links to its page. Whether it also has an add to cart button depends on your site."
+        description="Each product card links to its page. Whether it also has an add to cart button depends on where your products come from."
       >
-        {nativeCart ? (
-          <Notice tone="info">
-            Your {platform === 'shopify' ? 'Shopify' : 'WooCommerce'} connector gives the cards an
-            add to cart button that fills your shop&apos;s own cart, on your shop&apos;s site.
-            Nothing to add.
-          </Notice>
-        ) : (
-          <>
-            <p className="text-14 text-text-2">
-              Without a Shopify or WooCommerce connector, the cards have no add to cart button
-              unless your site says how to add a product. If yours can, have your developer fill in
-              this hook on every page with the chat:
-            </p>
-            <CopyBlock label="Add to cart hook" text={ADD_TO_CART_SNIPPET} />
-          </>
-        )}
+        {cart}
         <a className="text-14 underline" href={EMBED_DOCS_URL} target="_blank" rel="noreferrer">
           More on add to cart in the guide
         </a>
       </Section>
-      <details className="card flex flex-col gap-16">
-        <summary className="text-15 cursor-pointer font-medium">Advanced</summary>
+      <details>
+        <summary className="text-18 cursor-pointer font-semibold">Advanced</summary>
         <div className="mt-16 flex flex-col gap-16">
           <Section
             title="Place the chat element yourself"
@@ -140,7 +184,7 @@ export function EmbedSection({ api, view, config }: Props) {
           </Section>
           <Section
             title="Content Security Policy"
-            description="If your site sends a Content-Security-Policy header, add these sources to it."
+            description="If your site sends a Content-Security-Policy header, add these sources to it. An add to cart hook written inline needs a nonce or hash of its own, or a file of its own."
           >
             <table className="text-14 w-full">
               <tbody>
