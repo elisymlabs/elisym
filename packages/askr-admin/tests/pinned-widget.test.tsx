@@ -4,7 +4,7 @@ import { EmbedSection } from '../src/components/EmbedSection';
 import { AdminApi } from '../src/lib/api';
 import { pinnedScriptSnippet, scriptSnippet } from '../src/lib/embed';
 import { npubOf, secretKeySigner } from '../src/lib/signer';
-import { OWNER, OWNER_KEY, PINNED_WIDGET, adminConfig } from './fakes';
+import { OWNER, OWNER_KEY, PINNED_WIDGET, adminConfig, storeView } from './fakes';
 import { type Mounted, mount, settle } from './mount';
 
 let mounted: Mounted | undefined;
@@ -103,7 +103,7 @@ describe('the pinned widget the server serves', () => {
 describe('the embed section', () => {
   it('offers the auto-updating snippet and the pinned one, and says what pinning trades', async () => {
     const api = { pinnedWidget: vi.fn(async () => PINNED_WIDGET) };
-    mounted = await mount(<EmbedSection api={api} owner={OWNER} config={adminConfig()} />);
+    mounted = await mount(<EmbedSection api={api} view={storeView()} config={adminConfig()} />);
     const { container } = mounted;
     const npub = npubOf(OWNER);
     await settle(() =>
@@ -117,10 +117,66 @@ describe('the embed section', () => {
 
   it('keeps the auto-updating snippet when the pinned version cannot be read', async () => {
     const api = { pinnedWidget: vi.fn(async () => Promise.reject(new Error('offline'))) };
-    mounted = await mount(<EmbedSection api={api} owner={OWNER} config={undefined} />);
+    mounted = await mount(<EmbedSection api={api} view={storeView()} config={undefined} />);
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('could not be read'));
     expect(container.textContent).toContain(scriptSnippet(npubOf(OWNER)));
     expect(container.textContent).not.toContain('integrity=');
+  });
+});
+
+describe('the embed section for a merchant', () => {
+  const API = { pinnedWidget: async () => PINNED_WIDGET };
+  const SHOPIFY = {
+    owner: OWNER,
+    platform: 'shopify' as const,
+    url: 'https://tea.example',
+    importPolicies: true,
+    enabled: true,
+    lastStatus: null,
+    lastRunAt: null,
+    nextRunAt: null,
+  };
+
+  it('says a store not active yet answers once activated, and only then', async () => {
+    mounted = await mount(
+      <EmbedSection api={API} view={storeView({ status: 'pending' })} config={adminConfig()} />,
+    );
+    expect(mounted.container.textContent).toContain('not active yet');
+    await mounted.unmount();
+    mounted = await mount(<EmbedSection api={API} view={storeView()} config={adminConfig()} />);
+    expect(mounted.container.textContent).not.toContain('not active yet');
+  });
+
+  it('offers the add to cart hook without a native cart, and says a Shopify connector needs none', async () => {
+    mounted = await mount(<EmbedSection api={API} view={storeView()} config={adminConfig()} />);
+    expect(mounted.container.textContent).toContain('window.Askr.onAddToCart');
+    await mounted.unmount();
+    mounted = await mount(
+      <EmbedSection api={API} view={storeView({ connector: SHOPIFY })} config={adminConfig()} />,
+    );
+    expect(mounted.container.textContent).toContain('Shopify connector gives the cards');
+    expect(mounted.container.textContent).not.toContain('window.Askr.onAddToCart');
+    await mounted.unmount();
+    mounted = await mount(
+      <EmbedSection
+        api={API}
+        view={storeView({ connector: { ...SHOPIFY, platform: 'google' } })}
+        config={adminConfig()}
+      />,
+    );
+    expect(mounted.container.textContent).toContain('window.Askr.onAddToCart');
+  });
+
+  it('says where to paste the code, and keeps the pinned version and CSP under Advanced', async () => {
+    mounted = await mount(<EmbedSection api={API} view={storeView()} config={adminConfig()} />);
+    const { container } = mounted;
+    expect(container.textContent).toContain('theme.liquid');
+    const advanced = container.querySelector('details');
+    expect(advanced?.querySelector('summary')?.textContent).toBe('Advanced');
+    expect(advanced?.hasAttribute('open')).toBe(false);
+    expect(advanced?.textContent).toContain('Only if your security policy requires it');
+    expect(advanced?.textContent).toContain('script-src');
+    expect(advanced?.textContent).toContain('<askr-chat');
   });
 });

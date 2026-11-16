@@ -59,3 +59,29 @@ export function cspSources(): CspSource[] {
     },
   ];
 }
+
+/** A page's hook for the add-to-cart button, for a site without a native cart. */
+export const ADD_TO_CART_SNIPPET = `<script>
+  window.Askr = window.Askr || {};
+  window.Askr.onAddToCart = function (detail) {
+    // detail.d: the product ID; detail.sku: its SKU, if it has one;
+    // detail.variant and detail.options: the size, color and so on the shopper picked.
+    // Put the product in your cart here.
+  };
+</script>`;
+
+/** Where to paste the embed code on common site builders. */
+export const PLATFORM_HINTS: ReadonlyArray<{ platform: string; where: string }> = [
+  {
+    platform: 'Shopify',
+    where: 'Online Store, Themes, Edit code: open theme.liquid and paste it before </body>.',
+  },
+  {
+    platform: 'WordPress and WooCommerce',
+    where: 'a plugin that adds code to the footer (such as WPCode), or your theme footer.',
+  },
+  {
+    platform: 'Wix, Squarespace, Tilda and others',
+    where: 'the custom code or HTML block in the site settings, set to load on every page.',
+  },
+];
