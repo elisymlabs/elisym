@@ -743,6 +743,44 @@ describe('review round 5', () => {
   );
 });
 
+describe('review round 6', () => {
+  it.each([
+    ['15日圓領T恤上新。'],
+    ['12日圓夢價。'],
+    ['15日圓頂帳篷到貨。'],
+    ['20日圓明園門票。'],
+    ['三十一日圆满落幕。'],
+    ['二十日圆满落幕。'],
+    ['星期一15日圆满落幕。'],
+    ['週一15日圓滿落幕。'],
+    ['周日15日圆满落幕。'],
+    ['周天15日圆满落幕。'],
+  ])('a day before 日圆 and a listed word is a date: %s', (text) => {
+    expect(failures('USD', '49', `帐篷49美元。${text}`, 'zh')).toBe(0);
+  });
+
+  it.each([
+    ['5日圓滿減。'],
+    ['支付15日圆领取优惠券。'],
+    ['再付10日圆通过审核。'],
+    ['约30日圆满足需求。'],
+  ])('a yen amount before money talk stays money: %s', (text) => {
+    expect(failures('USD', '49', `帐篷49美元。${text}`, 'zh')).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['USD', '49', '할인가 39 USD 원래 가격 49 USD예요.', 'ko'],
+    ['USD', '49', '텐트는 69 USD 원정 할인가예요.', 'ko'],
+    ['USD', '49', 'テント49ドル、約7,500 usd円高め。', 'ja'],
+  ])('a currency code before the unit never makes a word: %s', (store, amount, text, language) => {
+    expect(failures(store, amount, text, language)).toBeGreaterThan(0);
+  });
+
+  it('円満 after a non-code qualifier is a word', () => {
+    expect(failures('JPY', '8900', '2025 EU 円満解決の記念品は8,900円です。', 'ja')).toBe(0);
+  });
+});
+
 describe('the new forms stay linear', () => {
   it.each(['1MX', '1ニュー台湾', '1南ア', '1ユ-', '1HK$', '1 미 ', '1サウジ・', '1ランド'])(
     '"%s" repeated',

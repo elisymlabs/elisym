@@ -1991,19 +1991,17 @@ function qualifierUse(
   if (cjkCurrencies(`${qualifier}${token}`) !== undefined) {
     return 'applies';
   }
-  // An ISO code naming the token's own currency ("7,500 JPY円高め") restates it: it applies.
-  if (cjkCurrencies(token)?.includes(qualifier.trim().toUpperCase()) === true) {
-    return 'applies';
-  }
   const rest = text.slice(tokenEnd);
   const next = text[tokenEnd] ?? '';
   if (HAN_RE.test(token[0] ?? '') && qualifier.length === 1 && HAN_RE.test(qualifier)) {
     return 'word';
   }
-  // A currency code before the unit names money, never a word ("7,500 USD円高め" fails closed).
-  const hanWord = CODE_QUALIFIER_RE.test(qualifier.trim())
-    ? []
-    : (QUALIFIED_HAN_WORD_AFTER.find(([unit]) => unit === token)?.[1] ?? []);
+  // A currency code before the unit names money, never a word: "7,500 USD円高め",
+  // "39 USD 원래 가격" fail closed.
+  if (CODE_QUALIFIER_RE.test(qualifier.trim())) {
+    return 'applies';
+  }
+  const hanWord = QUALIFIED_HAN_WORD_AFTER.find(([unit]) => unit === token)?.[1] ?? [];
   if (hanWord.includes(next)) {
     return 'word';
   }
@@ -2274,9 +2272,10 @@ const DATE_YUAN_AFTER: readonly string[] = ['旦', '宵', '気', '氣'];
  * qualified 圆 lists (圆形, 圆桌, 圆顶, 圆床, 圆管): "3日圆满结束", "15日圆顶帐篷到货",
  * "15日圆通快递发出", "15日圆领T恤". Anything else stays yen money ("约15日圆左右").
  */
-// 顶多 / 頂多 (at most) and 管够 / 管饱 (all you want) after a yen amount are money talk, not 圆顶 / 圆管.
+// Money talk after a yen amount is no 圆 word: 顶多 (at most), 管够 / 管饱 (all you want),
+// 领取 (to claim), 通过 (to pass), 满足 (to satisfy).
 const DATE_ROUND_WORD_RE =
-  /^(?:[通领領梦夢形桌床]|[顶頂](?!多)|管(?![够夠饱飽])|明[园園]|[满滿](?![额額减減]))/u;
+  /^(?:通(?![过過])|[领領](?!取)|[梦夢形桌床]|[顶頂](?!多)|管(?![够夠饱飽])|明[园園]|[满滿](?![额額减減足]))/u;
 /** A day of the month, the only number before a date's 日. */
 const DAY_RE =
   /^(?:0?[1-9]|[12]\d|3[01]|[一二三四五六七八九十]|十[一二三四五六七八九]|二十[一二三四五六七八九]?|三十一?)$/u;
