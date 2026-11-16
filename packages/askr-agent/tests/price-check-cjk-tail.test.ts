@@ -179,7 +179,7 @@ describe('spelled-out and variant currency words', () => {
     ['約100ヨーロッパユーロです。', 'ja', ['EUR']],
     ['約100 EUユーロです。', 'ja', ['EUR']],
     ['約100欧州ユーロです。', 'ja', ['EUR']],
-    ['約100パウンドです。', 'ja', ['GBP']],
+    ['約100英パウンドです。', 'ja', ['GBP']],
     ['約100ﾎﾟﾝﾄﾞです。', 'ja', ['GBP']],
     ['約100UKポンドです。', 'ja', ['GBP']],
     ['約100スターリングポンドです。', 'ja', ['GBP']],
@@ -265,7 +265,7 @@ describe('spelled-out and variant currency words', () => {
   it.each([
     ['JPY', '100', '約100ユウロです。', 'ja'],
     ['JPY', '100', '約100ユ-ロです。', 'ja'],
-    ['JPY', '100', '約100パウンドです。', 'ja'],
+    ['JPY', '100', '約100UKパウンドです。', 'ja'],
     ['JPY', '130000', '約13万ウオンです。', 'ja'],
     ['JPY', '2000', '約2000ルーブリです。', 'ja'],
     ['JPY', '100', '約100ダラーです。', 'ja'],
@@ -347,6 +347,158 @@ describe('words that only look like the new currency words are no price', () => 
 
   it('3000日圆满额 is still money', () => {
     expect(currenciesOf('3000日圆满额包邮。', 'zh', 'CNY')).toEqual([['JPY']]);
+  });
+});
+
+describe('review round 1', () => {
+  it.each([
+    ['19.99', 'Kids S$19.99, Adult $19.99.'],
+    ['40', 'Sizes S/M/L$40.'],
+    ['120', 'Size S$120 bundle.'],
+    ['5', 'Use code SAVE10S$5.'],
+    ['40', 'Plan B$40.'],
+    ['40', 'Pack of 4 L$40.'],
+    ['40', 'Size J$40.'],
+  ])(
+    'MAJOR-1. a one-letter prefix after a space or a letter is a size: USD %s "%s" passes',
+    (amount, text) => {
+      expect(failures('USD', amount, text, 'en')).toBe(0);
+    },
+  );
+
+  it.each([
+    ['S$45です。', 'ja', 'SGD'],
+    ['售价S$45。', 'zh', 'SGD'],
+    ['価格:S$45です。', 'ja', 'SGD'],
+    ['售价J$45。', 'zh', 'JMD'],
+  ])(
+    'MAJOR-1. a one-letter prefix at the start or glued to CJK pins the sign: "%s"',
+    (text, language, currency) => {
+      expect(currenciesOf(text, language, 'USD')).toEqual([[currency]]);
+      expect(failures('USD', '45', text, language)).toBe(1);
+    },
+  );
+
+  it.each([
+    ['TT$1,200です。', 'TTD'],
+    ['BZ$1,200です。', 'BZD'],
+    ['FJ$1,200です。', 'FJD'],
+    ['EC$1,200です。', 'XCD'],
+    ['BD$1,200です。', 'BMD'],
+    ['Bds$1,200です。', 'BBD'],
+    ['CI$1,200です。', 'KYD'],
+    ['SI$1,200です。', 'SBD'],
+    ['AU$1,200です。', 'AUD'],
+    ['CA$1,200です。', 'CAD'],
+    ['NZ$1,200です。', 'NZD'],
+    ['MX$1,200です。', 'MXN'],
+    ['SG$1,200です。', 'SGD'],
+    ['HK$1,200です。', 'HKD'],
+    ['NT$1,200です。', 'TWD'],
+    ['J$1,200です。', 'JMD'],
+  ])('every new dollar prefix: "%s" is %s', (text, currency) => {
+    expect(currenciesOf(text, 'ja', 'USD')).toEqual([[currency]]);
+  });
+
+  it.each([
+    ['TRY', '約150リラです。', 'ja'],
+    ['ZAR', '約150ランドです。', 'ja'],
+    ['VND', '約60万ドンです。', 'ja'],
+    ['PEN', '約150ソルです。', 'ja'],
+    ['BRL', '約150リアルです。', 'ja'],
+    ['GBP', '約150パウンドです。', 'ja'],
+    ['HUF', '150福林。', 'zh'],
+    ['PEN', '약 150솔이에요.', 'ko'],
+    ['VND', '약 60만 동이에요.', 'ko'],
+    ['TRY', '약 150리라예요.', 'ko'],
+    ['BRL', '약 150 레알이에요.', 'ko'],
+    ['TRY', 'リラで約150です。', 'ja'],
+    ['TRY', '리라로 약 150이에요.', 'ko'],
+  ])('an invented price in the store own word fails: %s "%s"', (currency, text, language) => {
+    expect(failures(currency, '100', text, language)).toBe(1);
+  });
+
+  it.each([
+    ['TRY', 'リラで約100です。', 'ja'],
+    ['TRY', '리라로 약 100이에요.', 'ko'],
+    ['BRL', '約100ブラジルリアルです。', 'ja'],
+    ['BRL', '約100リアルです。', 'ja'],
+  ])('the store own word passes: %s "%s"', (currency, text, language) => {
+    expect(failures(currency, '100', text, language)).toBe(0);
+  });
+
+  it.each([
+    ['リラで約100です。', 'ja'],
+    ['リラ 100です。', 'ja'],
+    ['리라로 약 100이에요.', 'ko'],
+    ['동 100이에요.', 'ko'],
+  ])(
+    'a currency-first word that needs a qualifier names nothing in another store: "%s"',
+    (text, language) => {
+      expect(currenciesOf(text, language, 'JPY')).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['ZAR', '100', '2ランドセルは100ランドです。', 'ja'],
+    ['TRY', '100', '2リラックスチェアは100リラです。', 'ja'],
+    ['PEN', '100', '2ソルトは100ソルです。', 'ja'],
+    ['VND', '500000', '3ドンキで買えます。50万ドンです。', 'ja'],
+    ['VND', '500000', '3ドン・キホーテで買えます。50万ドンです。', 'ja'],
+    ['SAR', '100', '3リアルレザーは100リヤルです。', 'ja'],
+    ['BRL', '100', '3リアルタイム配送で100レアルです。', 'ja'],
+    ['VND', '500000', '100동안 사용해요. 50만 동이에요.', 'ko'],
+    ['VND', '500000', '3동 2층이에요. 50만 동이에요.', 'ko'],
+    ['BRL', '100', '2 레알 마드리드 유니폼은 100헤알이에요.', 'ko'],
+  ])(
+    'look-alike words in a store of that currency: %s %s "%s" passes',
+    (currency, amount, text, language) => {
+      expect(failures(currency, amount, text, language)).toBe(0);
+    },
+  );
+
+  it.each([
+    ['JPY', '3980', '10パウンドのダンベルは3,980円です。', 'ja'],
+    ['JPY', '3980', '5パウンドのプロテインは3,980円です。', 'ja'],
+    ['JPY', '4980', '3レアルタイムは4980円です。', 'ja'],
+    ['JPY', '4980', '2クローネンブルグは4980円です。', 'ja'],
+    ['JPY', '4980', '3ディナールームは4980円です。', 'ja'],
+    ['CNY', '199', '活动3日圆满落幕，售价199元。', 'zh'],
+    ['CNY', '199', '活动3日圆满举行，售价199元。', 'zh'],
+    ['CNY', '199', '活动3日圓滿閉幕，售价199元。', 'zh'],
+    ['CNY', '199', '买2蚊拍，售价199元。', 'zh'],
+    ['CNY', '199', '2蚊灯，售价199元。', 'zh'],
+    ['CNY', '199', '3蚊液，售价199元。', 'zh'],
+  ])('no false positive: %s %s "%s" passes', (currency, amount, text, language) => {
+    expect(failures(currency, amount, text, language)).toBe(0);
+  });
+
+  it.each(['3000日圆满额包邮。', '3000日圆满减。'])('"%s" is still JPY money', (text) => {
+    expect(currenciesOf(text, 'zh', 'CNY')).toEqual([['JPY']]);
+  });
+
+  it.each([
+    ['약 100 피지 달러예요.', 'FJD'],
+    ['약 100 뉴타이완 달러예요.', 'TWD'],
+    ['약 100 신대만 달러예요.', 'TWD'],
+    ['約100UKパウンドです。', 'GBP'],
+  ])('more listed qualifiers: "%s" is %s', (text, currency) => {
+    const language = /\p{Script=Hangul}/u.test(text) ? 'ko' : 'ja';
+    expect(currenciesOf(text, language, 'USD')).toEqual([[currency]]);
+    expect(failures('USD', '100', text, language)).toBe(1);
+  });
+
+  it('십오만 원 is the won, not an Oman qualifier', () => {
+    expect(currenciesOf('십오만 원이에요.', 'ko', 'KRW')).toEqual([['KRW']]);
+  });
+
+  it('パウンド alone is a weight outside a GBP store (a qualifier makes it the pound)', () => {
+    expect(currenciesOf('約100パウンドです。', 'ja', 'JPY')).toEqual([]);
+    expect(currenciesOf('約100英パウンドです。', 'ja', 'JPY')).toEqual([['GBP']]);
+  });
+
+  it('accepted false positive: a weight in a GBP store, 10パウンドのダンベル, fails closed', () => {
+    expect(failures('GBP', '100', '10パウンドのダンベルは100パウンドです。', 'ja')).toBe(1);
   });
 });
 

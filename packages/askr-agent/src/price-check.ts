@@ -26,10 +26,6 @@ const SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
   ['Bds$', ['BBD']],
   ['CI$', ['KYD']],
   ['SI$', ['SBD']],
-  ['N$', ['NAD']],
-  ['L$', ['LRD']],
-  ['G$', ['GYD']],
-  ['B$', ['BND', 'BSD']],
   ['$', ['USD', 'CAD', 'AUD', 'NZD', 'MXN', 'SGD', 'HKD', 'ARS', 'CLP', 'COP']],
   ['€', ['EUR']],
   ['£', ['GBP']],
@@ -45,6 +41,15 @@ const SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
 ];
 
 // cspell:disable
+/**
+ * One-letter dollar prefixes are size letters as often ("Kids S$19.99", "S/M/L$40"): they pin
+ * the sign only at the start of a string or glued after CJK text or a colon ("售价S$45"); anywhere
+ * else the sign is read alone, as before.
+ */
+const ONE_LETTER_DOLLARS: readonly string[] = ['S$', 'J$'];
+const ONE_LETTER_DOLLAR_AFTER_RE =
+  /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}ー:]$/u;
+
 /** Currency words: a stem and its explicit endings only, so "buckles" or "рубашки" are not money. */
 const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
   [/^(us[\s-]?dollars?|u\.s\.[\s-]?dollars?)$/i, ['USD']],
@@ -958,7 +963,19 @@ function scan(
       !tokenFirst &&
       /[-–]/.test(text.slice(numberEnd, tokenStart)) &&
       /^\s*\d/.test(text.slice(matchEnd, matchEnd + 4));
-    if (!currencies || number === undefined || isHours || closesPrevious || opensNext) {
+    const charBefore = text[match.index - 1];
+    const looseLetterDollar =
+      token !== undefined &&
+      ONE_LETTER_DOLLARS.includes(token) &&
+      (!tokenFirst || (charBefore !== undefined && !ONE_LETTER_DOLLAR_AFTER_RE.test(charBefore)));
+    if (
+      !currencies ||
+      number === undefined ||
+      isHours ||
+      closesPrevious ||
+      opensNext ||
+      looseLetterDollar
+    ) {
       regex.lastIndex = match.index + 1;
       continue;
     }
@@ -1556,7 +1573,7 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['ランド', ['ZAR']],
   ['リラ', ['TRY']],
   ['ドン', ['VND']],
-  ['リアル', RIYALS],
+  ['リアル', [...RIYALS, 'BRL']],
   ['ソル', ['PEN']],
   ['솔', ['PEN']],
   ['索尔', ['PEN']],
@@ -1637,10 +1654,12 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
 const GLUED_ONLY: readonly string[] = ['불', '刀', '蚊'];
 /**
  * Currency words that are ordinary words as often ("3ランドセル", "2リラックス", "3동",
+ * "10パウンドのダンベル" a weight,
  * "리라" a name, "福林路", "ソルト", "솔"): money only after a listed qualifier
  * ("南アフリカランド", "튀르키예 리라", "匈牙利福林") or in a store of their own currency.
  */
 const QUALIFIED_ONLY: readonly string[] = [
+  'パウンド',
   'ランド',
   'リラ',
   'ドン',
@@ -1696,12 +1715,12 @@ const CJK_QUALIFIERS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['米国', '合衆国', 'アメリカ合衆国', '미'], ['USD']],
   [['豪州'], ['AUD']],
   [['MX'], ['MXN']],
-  [['TW', 'タイワン', '타이완', 'ニュー台湾', '新台湾', '新台灣'], ['TWD']],
+  [['TW', 'タイワン', '타이완', '뉴타이완', '신대만', 'ニュー台湾', '新台湾', '新台灣'], ['TWD']],
   [['UK', 'U.K.', 'U.K', 'スターリング'], ['GBP']],
   [['EU', '欧州', 'ヨーロッパ', '欧洲', '歐洲', '유럽'], ['EUR']],
   [['南ア'], ['ZAR']],
   [['JM', 'ジャマイカ', '牙买加', '牙買加', '자메이카'], ['JMD']],
-  [['FJ', 'フィジー', '斐济', '斐濟'], ['FJD']],
+  [['FJ', 'フィジー', '斐济', '斐濟', '피지'], ['FJD']],
   [['ブルネイ', '文莱', '汶莱', '汶萊', '브루나이'], ['BND']],
   [['バハマ', '巴哈马', '巴哈馬', '바하마'], ['BSD']],
   [['バルバドス', '巴巴多斯', '巴貝多', '바베이도스'], ['BBD']],
@@ -1741,7 +1760,8 @@ const CJK_QUALIFIERS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['ブルガリア', '保加利亚', '保加利亞', '불가리아'], ['BGN']],
   [['サウジアラビア', 'サウジ', '沙特阿拉伯', '沙特', '사우디아라비아', '사우디'], ['SAR']],
   [['カタール', '卡塔尔', '卡達', '카타르'], ['QAR']],
-  [['オマーン', '阿曼', '오만'], ['OMR']],
+  // Not 오만: it is the numeral of "십오만 원".
+  [['オマーン', '阿曼'], ['OMR']],
   [['クウェート', '科威特', '쿠웨이트'], ['KWD']],
   [['バーレーン', '巴林', '바레인'], ['BHD']],
   [['ヨルダン', '约旦', '約旦', '요르단'], ['JOD']],
@@ -2178,16 +2198,23 @@ const NAME_AFTER: ReadonlyArray<[string, RegExp]> = [
   ['克朗', /^姆/u],
   ['里拉', /^[链鏈杆桿手]/u],
   ['パウンド', /^ケーキ/u],
+  ['レアル', /^タイム/u],
+  ['クローネ', /^ン/u],
+  ['ディナール', /^ー/u],
+  ['ソル', /^ト/u],
+  ['ドン', /^・?キ/u],
   ['ルーブリ', /^ック/u],
   ['レアル', /^[・\s]?マドリ/u],
   ['コルナ', /^ゴ/u],
   ['リラ', /^[ック]/u],
   ['ランド', /^(?:セル|リー|マーク)/u],
-  ['동', /^안/u],
+  ['リアル', /^(?:レザー|タイム)/u],
+  ['동', /^(?:안|\s?\d+층)/u],
+  ['레알', /^\s?마드/u],
   ['欧罗', /^巴/u],
   ['歐羅', /^巴/u],
   // Mosquito, not the Hong Kong dollar: 蚊帐, 蚊香, 蚊子.
-  ['蚊', /^[帐帳香子虫蟲叮咬]/u],
+  ['蚊', /^[帐帳香子虫蟲叮咬拍灯燈液片]/u],
 ];
 /** 元 after a four-digit year starts a date word: "2026元旦活动" is New Year's Day of 2026. */
 const YEAR_YUAN_AFTER: readonly string[] = ['旦', '宵节', '宵節', '宇宙'];
@@ -2236,8 +2263,8 @@ const YUAN_WORD_AFTER: readonly string[] = ['化', '论', '論', '素', '复', '
 const TERNARY_AFTER: readonly string[] = ['锂', '鋰', '系'];
 /** 日元 in a date: 元旦, 元宵, 元気 ("1月1日元旦", "3日元気に"). */
 const DATE_YUAN_AFTER: readonly string[] = ['旦', '宵', '気', '氣'];
-/** 日圆 / 日圓 in a date: 圆满结束, 圓滿完成, 圆满成功 ("3日圆满结束"). */
-const DATE_ROUND_AFTER: readonly string[] = ['满结', '滿結', '满完', '滿完', '满成', '滿成'];
+/** 日圆 / 日圓 in a date before 圆满 ("3日圆满结束", "3日圆满落幕"); 满额 / 满减 stay money. */
+const DATE_ROUND_RE = /^[满滿](?![额額减減])/u;
 /** 一円 as "the whole area" (関東一円に): a place before it, a particle after it... */
 const AREA_PARTICLES: readonly string[] = ['に', 'で', 'の', 'を', 'へ'];
 /** ...but not a fee or a price before it (税込一円で, 送料一円で). */
@@ -2360,7 +2387,7 @@ function notMoney(context: TokenContext): boolean {
     return (
       startsWithAny(DATE_YUAN_AFTER) ||
       previous === '月' ||
-      (token !== '日元' && startsWithAny(DATE_ROUND_AFTER))
+      (token !== '日元' && DATE_ROUND_RE.test(rest))
     );
   }
   if (token === '円' && (rest.startsWith('玉') || rest.startsWith('ショップ'))) {
