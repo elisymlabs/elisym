@@ -401,14 +401,15 @@ export function createAdminApi(
     body: string,
   ): Promise<Response> => {
     const options = { signer: store.catalogSecretKey, store: store.owner, client: deps.syncClient };
-    // While a Shopify connector imports policies, its slugs are its own: each sync would put
-    // the shop's version back over a change made here.
+    // While a Shopify connector is set to import policies, its slugs are its own: each sync
+    // puts the shop's version back over a change made here. A connector saved but not enabled
+    // yet counts too: enabling it would replace the change just the same.
     const connector = await deps.directory.connector(store.owner);
-    const imported =
-      connector?.platform === 'shopify' &&
-      connector.importPolicies &&
-      SHOPIFY_POLICY_SLUGS.some((entry) => entry.slug === slug);
-    if (imported) {
+    const importedSlugs =
+      connector?.platform === 'shopify' && connector.importPolicies
+        ? SHOPIFY_POLICY_SLUGS.map((entry) => entry.slug)
+        : [];
+    if (importedSlugs.includes(slug)) {
       return json({ error: 'policy_imported' }, 409);
     }
     try {
@@ -423,10 +424,14 @@ export function createAdminApi(
       if (!input?.success) {
         return json({ error: 'bad_request' }, 400);
       }
-      // A new policy past the cap is refused. Two at once may both pass: the worker uses
-      // only the first MAX_POLICIES by slug anyway, so the cap holds where it matters.
-      const live = await livePolicies(deps.syncClient, store.catalogKey);
-      if (!live.has(slug) && live.size >= LIMITS.MAX_POLICIES) {
+      // A new policy past the cap is refused, counting the places the import takes or will
+      // take. Two at once may both pass: the worker reads only `policiesInUse` anyway, so the
+      // cap holds where it matters.
+      const counted = new Set([
+        ...(await livePolicies(deps.syncClient, store.catalogKey)).keys(),
+        ...importedSlugs,
+      ]);
+      if (!counted.has(slug) && counted.size >= LIMITS.MAX_POLICIES) {
         return json({ error: 'too_many_policies', max: LIMITS.MAX_POLICIES }, 409);
       }
       const event = await setPolicy({ ...options, policy: input.data });

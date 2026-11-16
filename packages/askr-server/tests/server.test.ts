@@ -147,7 +147,7 @@ describe('catalog build (5.1)', () => {
     expect(catalog?.policies).toHaveLength(1);
   });
 
-  it('uses at most MAX_POLICIES policies, the first by slug', () => {
+  it('uses at most MAX_POLICIES policies, the Shopify-imported slugs first, then by slug', () => {
     const store = syntheticStore();
     const extra = Array.from({ length: LIMITS.MAX_POLICIES }, (_unused, index) =>
       finalizeEvent(
@@ -168,9 +168,10 @@ describe('catalog build (5.1)', () => {
     );
     const slugs = catalog?.policies.map((policy) => policy.slug) ?? [];
     expect(slugs).toHaveLength(LIMITS.MAX_POLICIES);
-    // `returns` sorts after every `pNN`, so it is the one left out.
-    expect(slugs).not.toContain('returns');
-    expect(slugs[0]).toBe('p00');
+    // The slugs a Shopify import brings come first, so `returns` stays and `p49` is left out.
+    expect(slugs[0]).toBe('returns');
+    expect(slugs[1]).toBe('p00');
+    expect(slugs).not.toContain('p49');
   });
 
   it("indexes at most the tier's products, the first by product ID", () => {

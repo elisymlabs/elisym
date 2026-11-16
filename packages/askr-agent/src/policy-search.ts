@@ -5,6 +5,8 @@ import { tokenize } from './catalog/store-catalog';
 export const MAX_POLICY_RESULTS = 3;
 /** Policy text one search returns at most, shared by its results. */
 export const POLICY_RESULT_CHARS = 12_000;
+/** Room `sanitizeText` may add to a passage (a forged turn marker gains a dash). */
+export const SANITIZE_MARGIN_CHARS = 64;
 /** Two words of at least this many characters match when one starts the other. */
 const STEM_MIN_CHARS = 4;
 /** Characters a matching word may differ by at its end: return / returns / returned. */
@@ -65,11 +67,86 @@ export function rankPolicies(
     .map((entry) => entry.policy);
 }
 
-/** A policy's paragraphs; a heading stays with the paragraph under it. */
-function paragraphsOf(body: string): string[] {
+/** A piece of a policy, and what joins it to the piece before it when both are kept. */
+interface Piece {
+  text: string;
+  glue: string;
+}
+
+/** A piece is at most this share of the budget, so one long list or paragraph never fills it. */
+const PIECE_BUDGET_DIVISOR = 3;
+/** ...and never shorter than this, so a small budget still gets whole sentences. */
+const MIN_PIECE_CHARS = 200;
+/** The least room worth filling with the start of a piece that does not fit whole. */
+const MIN_TAIL_CHARS = 40;
+/** How a piece too long is split, in turn: by line, then by sentence, then cut. */
+const SPLITS: ReadonlyArray<{ pattern: RegExp; glue: string }> = [
+  { pattern: /\n/, glue: '\n' },
+  { pattern: /(?<=[.!?。！？])\s+/u, glue: ' ' },
+];
+
+/** `text` in pieces of at most `maxPiece` characters, split as `SPLITS` says from `level` on. */
+function split(text: string, maxPiece: number, level: number): Piece[] {
+  if (text.length <= maxPiece) {
+    return [{ text, glue: '' }];
+  }
+  const rule = SPLITS[level];
+  if (rule === undefined) {
+    const cuts: Piece[] = [];
+    for (let start = 0; start < text.length; start += maxPiece) {
+      cuts.push({ text: text.slice(start, start + maxPiece), glue: '' });
+    }
+    return cuts;
+  }
+  const pieces: Piece[] = [];
+  let current = '';
+  const flush = () => {
+    if (current !== '') {
+      pieces.push({ text: current, glue: pieces.length === 0 ? '' : rule.glue });
+      current = '';
+    }
+  };
+  for (const unit of text.split(rule.pattern)) {
+    if (unit.trim() === '') {
+      continue;
+    }
+    if (unit.length > maxPiece) {
+      flush();
+      // The first of its pieces follows the unit before at this level; the rest keep their own
+      // glue (none between the cuts of one long word run).
+      for (const [index, piece] of split(unit, maxPiece, level + 1).entries()) {
+        pieces.push(index === 0 && pieces.length > 0 ? { ...piece, glue: rule.glue } : piece);
+      }
+      continue;
+    }
+    if (current === '') {
+      current = unit;
+    } else if (current.length + rule.glue.length + unit.length <= maxPiece) {
+      current = `${current}${rule.glue}${unit}`;
+    } else {
+      flush();
+      current = unit;
+    }
+  }
+  flush();
+  return pieces;
+}
+
+/** The start of `text` within `maxChars`, cut after its last whole word there when it has one. */
+function headOf(text: string, maxChars: number): string {
+  const head = text.slice(0, maxChars);
+  const lastSpace = head.search(/\s\S*$/);
+  return lastSpace > 0 ? head.slice(0, lastSpace) : head;
+}
+
+/**
+ * A policy's pieces: its paragraphs, a heading kept with the paragraph under
+ * it, and a paragraph over `maxPiece` split by line, then sentence.
+ */
+function piecesOf(body: string, maxPiece: number): Piece[] {
   const paragraphs: string[] = [];
   let heading = '';
-  for (const block of body.split(/\n[ \t]*\n/)) {
+  for (const block of body.split(/\n[^\S\n]*\n/)) {
     const text = block.trim();
     if (text === '') {
       continue;
@@ -84,56 +161,100 @@ function paragraphsOf(body: string): string[] {
   if (heading !== '') {
     paragraphs.push(heading);
   }
-  return paragraphs;
+  return paragraphs.flatMap((paragraph) =>
+    split(paragraph, maxPiece, 0).map((piece, index) =>
+      index === 0 ? { ...piece, glue: PASSAGE_SEPARATOR } : piece,
+    ),
+  );
 }
 
 /**
- * A policy's text within `maxChars`. A longer policy keeps the paragraphs with
- * the most query words, then the ones from its start that still fit, in their
- * own order, with `[...]` where it skips; with no query it keeps the start.
- * Never cut mid-paragraph unless one paragraph alone is over the budget.
+ * A policy's text within `maxChars`. A longer policy keeps the pieces (its
+ * paragraphs, a long one split by line or sentence) with the most query words,
+ * then the ones from its start that still fit, in their own order, with `[...]`
+ * where it skips; with no query it keeps the start.
  */
 export function policyPassage(body: string, query: readonly string[], maxChars: number): string {
-  if (body.length <= maxChars) {
-    return body;
+  // The length is judged on the text as the fence will show it, with one kind of line end.
+  const text = body.normalize('NFKC').replace(/\r\n?/g, '\n');
+  if (text.length <= maxChars) {
+    return text;
   }
-  const paragraphs = paragraphsOf(body);
-  const ranked = paragraphs
-    .map((text, index) => ({ index, score: matchedWords(query, text) }))
+  const pieces = piecesOf(
+    text,
+    Math.max(MIN_PIECE_CHARS, Math.floor(maxChars / PIECE_BUDGET_DIVISOR)),
+  );
+  const ranked = pieces
+    .map((piece, index) => ({ index, score: matchedWords(query, piece.text) }))
     .sort((left, right) => right.score - left.score || left.index - right.index);
-  const kept = new Set<number>();
-  // The gap markers and separators count against the budget too.
+  // What each kept piece shows: all of it, or for the last one filled in, as much as fits.
+  const kept = new Map<number, string>();
+  // Each kept piece may bring a gap marker and two separators; one more gap may close the text.
   const reserve = PASSAGE_GAP.length + PASSAGE_SEPARATOR.length * 2;
-  let used = 0;
+  let used = PASSAGE_GAP.length + PASSAGE_SEPARATOR.length;
   for (const entry of ranked) {
-    const length = (paragraphs[entry.index] ?? '').length + reserve;
+    const pieceText = pieces[entry.index]?.text ?? '';
+    const length = pieceText.length + reserve;
     if (used + length <= maxChars) {
-      kept.add(entry.index);
+      kept.set(entry.index, pieceText);
       used += length;
     } else if (entry.score === 0) {
       // The rest match nothing: they fill in from the start and stop at the first that does
-      // not fit, so the text read is one piece, not scraps from all over the policy.
+      // not fit, so the text read is one piece, not scraps from all over the policy. That one
+      // shows what still fits of it, up to its last whole word there.
+      const room = maxChars - used - reserve;
+      if (room >= MIN_TAIL_CHARS) {
+        kept.set(entry.index, headOf(pieceText, room));
+      }
       break;
     }
   }
   if (kept.size === 0) {
     const first = ranked[0];
-    return first === undefined ? '' : (paragraphs[first.index] ?? '').slice(0, maxChars);
+    return first === undefined ? '' : (pieces[first.index]?.text ?? '').slice(0, maxChars);
   }
-  const parts: string[] = [];
+  let passage = '';
   let previous = -1;
-  for (const [index, text] of paragraphs.entries()) {
-    if (!kept.has(index)) {
+  let whole = true;
+  for (const [index, piece] of pieces.entries()) {
+    const shown = kept.get(index);
+    if (shown === undefined) {
       continue;
     }
     if (index !== previous + 1) {
-      parts.push(PASSAGE_GAP);
+      passage += passage === '' ? PASSAGE_GAP : `${PASSAGE_SEPARATOR}${PASSAGE_GAP}`;
+      passage += `${PASSAGE_SEPARATOR}${shown}`;
+    } else {
+      passage += passage === '' ? shown : `${piece.glue}${shown}`;
     }
-    parts.push(text);
+    whole = shown === piece.text;
     previous = index;
   }
-  if (previous !== paragraphs.length - 1) {
-    parts.push(PASSAGE_GAP);
+  if (previous !== pieces.length - 1 || !whole) {
+    passage += `${PASSAGE_SEPARATOR}${PASSAGE_GAP}`;
   }
-  return parts.join(PASSAGE_SEPARATOR);
+  return passage;
+}
+
+/**
+ * Passages of `bodies` sharing `totalChars`, in their order. The shortest is
+ * served first, so what a short policy leaves unused goes to the longer ones.
+ */
+export function passagesWithin(
+  bodies: readonly string[],
+  query: readonly string[],
+  totalChars: number,
+): string[] {
+  const passages: string[] = bodies.map(() => '');
+  const order = bodies
+    .map((body, index) => ({ index, length: body.length }))
+    .sort((left, right) => left.length - right.length || left.index - right.index);
+  let remaining = totalChars;
+  for (const [position, entry] of order.entries()) {
+    const share = Math.floor(remaining / (order.length - position));
+    const passage = policyPassage(bodies[entry.index] ?? '', query, share);
+    passages[entry.index] = passage;
+    remaining -= passage.length;
+  }
+  return passages;
 }

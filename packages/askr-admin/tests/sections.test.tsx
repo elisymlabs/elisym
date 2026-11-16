@@ -533,6 +533,64 @@ describe('policies', () => {
       />,
     );
     await settle(() => (mounted?.container.textContent ?? '').includes('Policy 0'));
-    expect(mounted.container.textContent).toContain('the assistant reads only the first');
+    expect(mounted.container.textContent).toContain('the assistant does not read the ones marked');
+    // The worker's pick: `p9` sorts last of p0..p50 by character order, so it is left out.
+    const unread = [...mounted.container.querySelectorAll('li')].filter((row) =>
+      (row.textContent ?? '').includes('not read by the assistant'),
+    );
+    expect(unread.map((row) => row.textContent)).toEqual([expect.stringContaining('p9')]);
+  });
+
+  it('offers a new policy one below the cap', async () => {
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader(manyPolicies(LIMITS.MAX_POLICIES - 1)))}
+        view={storeView()}
+        config={adminConfig()}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('Policy 0'));
+    expect(buttonNamed(mounted.container, 'Add a policy')).toBeDefined();
+    expect(mounted.container.textContent).not.toContain('not read by the assistant');
+  });
+
+  it('counts the places a Shopify import will take, as the server does', async () => {
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader(manyPolicies(LIMITS.MAX_POLICIES - 4)))}
+        view={storeView({ connector: SHOPIFY_IMPORT })}
+        config={adminConfig()}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('Policy 0'));
+    expect(mounted.container.textContent).toContain('counting the ones Shopify imports');
+    expect(mounted.container.textContent).not.toContain('Add a policy');
+  });
+
+  it('treats a non-Shopify connector as importing nothing', async () => {
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader([RETURNS]))}
+        view={storeView({ connector: { ...SHOPIFY_IMPORT, platform: 'woocommerce' } })}
+        config={adminConfig()}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('Returns'));
+    expect(mounted.container.textContent).not.toContain('from Shopify');
+    expect(buttonNamed(mounted.container, 'Edit')).toBeDefined();
+  });
+
+  it('shows no editing notes when the policies are read from another key', async () => {
+    const other = getPublicKey(generateSecretKey());
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader(manyPolicies(LIMITS.MAX_POLICIES)))}
+        view={storeView({ connector: SHOPIFY_IMPORT })}
+        config={adminConfig({ policyKey: other })}
+      />,
+    );
+    await settle(() => (mounted?.container.textContent ?? '').includes('your own catalog key'));
+    expect(mounted.container.textContent).not.toContain('Delete one to add another');
+    expect(mounted.container.textContent).not.toContain('Change those in Shopify');
   });
 });

@@ -14,7 +14,8 @@ import type { ToolSpec, ToolUseBlock } from './llm/types';
 import {
   MAX_POLICY_RESULTS,
   POLICY_RESULT_CHARS,
-  policyPassage,
+  SANITIZE_MARGIN_CHARS,
+  passagesWithin,
   rankPolicies,
 } from './policy-search';
 import { SKILL_NAMES, skillText } from './skills';
@@ -481,14 +482,21 @@ function searchPolicies(catalog: StoreCatalog, input: Record<string, unknown>, s
       state.policyPassages.push(policy.body);
     }
   }
-  const share =
-    found.length === 0 ? POLICY_RESULT_CHARS : Math.floor(POLICY_RESULT_CHARS / found.length);
+  const passages = passagesWithin(
+    found.map((policy) => policy.body),
+    query,
+    POLICY_RESULT_CHARS,
+  );
   return {
-    results: found.map((policy) => ({
-      slug: policy.slug,
-      title: sanitizeText(policy.title, LIMITS.TITLE_CHARS),
-      passage: fence('policy', policyPassage(policy.body, query, share), share),
-    })),
+    results: found.map((policy, index) => {
+      const passage = passages[index] ?? '';
+      return {
+        slug: policy.slug,
+        title: sanitizeText(policy.title, LIMITS.TITLE_CHARS),
+        // Sanitizing may lengthen the text a little; it must not cut what was chosen to fit.
+        passage: fence('policy', passage, passage.length + SANITIZE_MARGIN_CHARS),
+      };
+    }),
     ...(unknown.length > 0
       ? { unknown_slugs: unknown.map((slug) => sanitizeText(slug, LIMITS.TITLE_CHARS)) }
       : {}),

@@ -44,7 +44,7 @@ const CODES: Readonly<Record<string, string>> = {
     'Your store is not active yet. Products, policies and the connector work once the operator has activated it.',
   no_connector: 'No connector is set up for this store. Save the connector settings first.',
   policy_imported:
-    'This policy comes from your Shopify store, and each connector sync puts its version back. Change it in Shopify, or turn off policy import in Connector to change it here.',
+    'Your Shopify connector is set to import this policy, and each sync puts the shop version back. Change it in Shopify, or turn off policy import in Connector to change it here.',
 };
 
 /** A plain sentence for any error the admin shows. */

@@ -6,13 +6,15 @@ interface Props {
   editable: boolean;
   /** Imported by the Shopify connector, which puts the shop's version back on each sync. */
   imported: boolean;
+  /** Past the cap: the assistant does not read it. */
+  unread: boolean;
   busy: boolean;
   onEdit: () => void;
   onDelete: () => Promise<void>;
 }
 
 /** One policy; deleting asks first. */
-export function PolicyRow({ policy, editable, imported, busy, onEdit, onDelete }: Props) {
+export function PolicyRow({ policy, editable, imported, unread, busy, onEdit, onDelete }: Props) {
   const [confirming, setConfirming] = useState(false);
   let actions = null;
   if (editable && confirming) {
@@ -67,6 +69,7 @@ export function PolicyRow({ policy, editable, imported, busy, onEdit, onDelete }
         <span className="text-12 text-text-3">
           <span className="font-mono">{policy.slug}</span>
           {imported ? ' - from Shopify' : null}
+          {unread ? ' - not read by the assistant' : null}
         </span>
       </div>
       {actions}

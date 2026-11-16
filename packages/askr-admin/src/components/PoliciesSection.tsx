@@ -1,4 +1,10 @@
-import { LIMITS, type Policy, SHOPIFY_POLICY_SLUGS, type StoreConfig } from '@elisym/askr';
+import {
+  LIMITS,
+  type Policy,
+  SHOPIFY_POLICY_SLUGS,
+  type StoreConfig,
+  policiesInUse,
+} from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
@@ -25,7 +31,8 @@ export function PoliciesSection({ deps, view, config }: Props) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const editable = config !== undefined && config.policyKey === view.catalogKey;
-  // While a Shopify connector imports policies, each sync puts the shop's version of these back.
+  // While a Shopify connector is set to import policies, each sync puts the shop's version of
+  // these back; one saved but not enabled yet would on its first sync.
   const importedSlugs =
     view.connector?.platform === 'shopify' && view.connector.importPolicies
       ? SHOPIFY_POLICY_SLUGS.map((entry) => entry.slug)
@@ -76,11 +83,19 @@ export function PoliciesSection({ deps, view, config }: Props) {
   }
 
   let editor: ReactNode = null;
+  // The places taken: the policies there, and the ones the import has yet to bring (as the server
+  // counts them).
+  const taken =
+    policies === undefined
+      ? 0
+      : new Set([...policies.map((policy) => policy.slug), ...importedSlugs]).size;
+  // The ones the assistant reads, exactly as the worker picks them.
+  const inUse = new Set(policiesInUse(policies ?? []).map((policy) => policy.slug));
   let limitNote = '';
   if (policies !== undefined && policies.length > LIMITS.MAX_POLICIES) {
-    limitNote = `A store has at most ${LIMITS.MAX_POLICIES} policies: the assistant reads only the first ${LIMITS.MAX_POLICIES} by short name. Delete the ones it does not need.`;
-  } else if (editable && policies !== undefined && policies.length === LIMITS.MAX_POLICIES) {
-    limitNote = `This store has ${LIMITS.MAX_POLICIES} policies, as many as it can have. Delete one to add another.`;
+    limitNote = `A store has at most ${LIMITS.MAX_POLICIES} policies, so the assistant does not read the ones marked below. Delete the ones it does not need.`;
+  } else if (editable && taken >= LIMITS.MAX_POLICIES) {
+    limitNote = `This store has as many policies as it can have (${LIMITS.MAX_POLICIES}, counting the ones Shopify imports). Delete one to add another.`;
   }
   // A new policy must not reuse a published slug, which only a whole read can tell.
   if (editable && policies !== undefined && editing !== undefined) {
@@ -98,7 +113,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
         }}
       />
     );
-  } else if (editable && policies !== undefined && policies.length < LIMITS.MAX_POLICIES) {
+  } else if (editable && policies !== undefined && taken < LIMITS.MAX_POLICIES) {
     editor = (
       <div>
         <button type="button" className="btn" onClick={() => setEditing({ mode: 'new' })}>
@@ -116,9 +131,9 @@ export function PoliciesSection({ deps, view, config }: Props) {
       {note === '' ? null : <Notice tone="info">{note}</Notice>}
       {editable && importedSlugs.length > 0 ? (
         <Notice tone="info">
-          Your Shopify connector imports the {importedSlugs.join(', ')} policies, and each sync puts
-          the shop&apos;s version back. Change those in Shopify, or turn off policy import in
-          Connector to edit them here.
+          Your Shopify connector is set to import the {importedSlugs.join(', ')} policies, and each
+          sync puts the shop&apos;s version back. Change those in Shopify, or turn off policy import
+          in Connector to edit them here.
         </Notice>
       ) : null}
       {limitNote === '' ? null : <Notice tone="info">{limitNote}</Notice>}
@@ -139,6 +154,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
               policy={policy}
               editable={editable && !importedSlugs.includes(policy.slug)}
               imported={importedSlugs.includes(policy.slug)}
+              unread={!inUse.has(policy.slug)}
               busy={busy}
               onEdit={() => setEditing({ mode: 'edit', policy })}
               onDelete={() => remove(policy.slug)}

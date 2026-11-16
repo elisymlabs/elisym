@@ -5,7 +5,6 @@ import {
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
   KIND_POLICY,
-  LIMITS,
   type Policy,
   type StoreConfig,
   decryptPrivateConfig,
@@ -13,6 +12,7 @@ import {
   parseCatalogItem,
   parseConfig,
   parsePolicy,
+  policiesInUse,
   resolveStoreKeys,
 } from '@elisym/askr';
 import { StoreCatalog } from '@elisym/askr-agent';
@@ -220,11 +220,9 @@ export function buildStoreCatalog(
       }
     }
   }
-  // The admin refuses a policy past the cap; one published with the store's own key reaches
-  // the relay anyway, so only the first this many by slug (character order) are used.
-  const usedPolicies = [...policies]
-    .sort((left, right) => (left.slug < right.slug ? -1 : 1))
-    .slice(0, LIMITS.MAX_POLICIES);
+  // The admin refuses a policy past the cap; one published with the store's own key or by a
+  // connector reaches the relay anyway, so only the ones `policiesInUse` keeps are used.
+  const usedPolicies = policiesInUse(policies);
   return new StoreCatalog(
     config,
     decryptPrivateConfig(config, assistantSecretKey),
