@@ -74,8 +74,12 @@ describe('MAJOR-1. only listed qualifiers and ISO codes qualify', () => {
     expect(failures('CNY', '299', text, 'zh')).toBe(0);
   });
 
-  it('an unknown Latin word before ドル is no qualifier (backlog: no reading at all)', () => {
-    expect(currenciesOf('約100 MXドルです。', 'ja', 'USD')).toEqual([]);
+  it('an unknown Latin word before ドル is no qualifier (no reading at all)', () => {
+    expect(currenciesOf('約100 XYドルです。', 'ja', 'USD')).toEqual([]);
+  });
+
+  it('MX is a listed qualifier now (price-check-cjk-tail)', () => {
+    expect(currenciesOf('約100 MXドルです。', 'ja', 'USD')).toEqual([['MXN']]);
   });
 
   it.each([
