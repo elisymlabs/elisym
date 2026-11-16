@@ -1814,6 +1814,8 @@ const SIGN_TOKENS: readonly string[] = ['¥', '￥', '₩', '€', '£'];
  * 元素 ("5中国元素").
  * Anything else after a qualified unit is money ("199美国元件" fails closed).
  */
+/** A three-letter currency code as a qualifier. */
+const CODE_QUALIFIER_RE = /^[A-Za-z]{3}$/u;
 const QUALIFIED_HAN_WORD_AFTER: ReadonlyArray<[string, readonly string[]]> = [
   ['元', ['素']],
   ['圆', ['形', '桌', '顶', '頂', '床', '管', '领', '領']],
@@ -1998,7 +2000,10 @@ function qualifierUse(
   if (HAN_RE.test(token[0] ?? '') && qualifier.length === 1 && HAN_RE.test(qualifier)) {
     return 'word';
   }
-  const hanWord = QUALIFIED_HAN_WORD_AFTER.find(([unit]) => unit === token)?.[1] ?? [];
+  // A currency code before the unit names money, never a word ("7,500 USD円高め" fails closed).
+  const hanWord = CODE_QUALIFIER_RE.test(qualifier.trim())
+    ? []
+    : (QUALIFIED_HAN_WORD_AFTER.find(([unit]) => unit === token)?.[1] ?? []);
   if (hanWord.includes(next)) {
     return 'word';
   }
@@ -2198,7 +2203,7 @@ const NAME_AFTER: ReadonlyArray<[string, RegExp]> = [
   ['克朗', /^姆/u],
   ['里拉', /^[链鏈杆桿手]/u],
   ['パウンド', /^ケーキ/u],
-  ['レアル', /^(?:タイム|映像|画質|感)/u],
+  ['レアル', /^(?:タイム|映像|画質|感(?!謝))/u],
   ['クローネ', /^ン/u],
   ['ディナール', /^ー/u],
   ['ソル', /^ト/u],
@@ -2265,12 +2270,30 @@ const TERNARY_AFTER: readonly string[] = ['锂', '鋰', '系'];
 const DATE_YUAN_AFTER: readonly string[] = ['旦', '宵', '気', '氣'];
 /**
  * 日圆 / 日圓 after a day number is a date before a listed word that starts with 圆: 圆满 (not
- * 满额 / 满减), 圆通 (YTO Express), 圆领 (a round neck), 圆梦, 圆明园: "3日圆满结束",
+ * 满额 / 满减), 圆通 (YTO Express), 圆领 (a round neck), 圆梦, 圆明园, and the round things the
+ * qualified 圆 lists (圆形, 圆桌, 圆顶, 圆床, 圆管): "3日圆满结束", "15日圆顶帐篷到货",
  * "15日圆通快递发出", "15日圆领T恤". Anything else stays yen money ("约15日圆左右").
  */
-const DATE_ROUND_WORD_RE = /^(?:[通领領梦夢明]|[满滿](?![额額减減]))/u;
+const DATE_ROUND_WORD_RE = /^(?:[通领領梦夢形桌顶頂床管]|明[园園]|[满滿](?![额額减減]))/u;
 /** A day of the month, the only number before a date's 日. */
-const DAY_RE = /^(?:[1-9]|[12]\d|3[01])$/u;
+const DAY_RE =
+  /^(?:0?[1-9]|[12]\d|3[01]|[一二三四五六七八九十]|十[一二三四五六七八九]|二十[一二三四五六七八九]?|三十一?)$/u;
+/** A weekday's numeral glued before a day number: 周一15日, 星期三15日, 礼拜五15日. */
+const WEEKDAY_BEFORE_DAY = ['周', '週', '期', '拜'];
+
+/** Whether `expression` is a day of the month, a weekday's numeral before it included. */
+function isDay(expression: string, previous: string | undefined): boolean {
+  if (DAY_RE.test(expression)) {
+    return true;
+  }
+  return (
+    previous !== undefined &&
+    WEEKDAY_BEFORE_DAY.includes(previous) &&
+    /^[一二三四五六日天]/u.test(expression) &&
+    DAY_RE.test(expression.slice(1))
+  );
+}
+
 /** 一円 as "the whole area" (関東一円に): a place before it, a particle after it... */
 const AREA_PARTICLES: readonly string[] = ['に', 'で', 'の', 'を', 'へ'];
 /** ...but not a fee or a price before it (税込一円で, 送料一円で). */
@@ -2393,7 +2416,7 @@ function notMoney(context: TokenContext): boolean {
     return (
       startsWithAny(DATE_YUAN_AFTER) ||
       previous === '月' ||
-      (token !== '日元' && DAY_RE.test(expression) && DATE_ROUND_WORD_RE.test(rest))
+      (token !== '日元' && isDay(expression, previous) && DATE_ROUND_WORD_RE.test(rest))
     );
   }
   if (token === '円' && (rest.startsWith('玉') || rest.startsWith('ショップ'))) {

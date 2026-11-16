@@ -584,7 +584,7 @@ describe('review round 3', () => {
     ['20日圆明园门票199元。'],
     ['預計15日圓通快遞發出，帳篷199元。'],
     ['3日圆满结束，帐篷199元。'],
-  ])('MAJOR-1 a day number before 日圆 and a Han word is a date: %s', (text) => {
+  ])('MAJOR-1 a day number before 日圆 and a listed word is a date: %s', (text) => {
     expect(failures('CNY', '199', text, 'zh')).toBe(0);
   });
 
@@ -695,6 +695,42 @@ describe('review round 4', () => {
   it('an ISO code naming the token own currency restates it', () => {
     expect(currenciesOf('約7,500 JPY円高めです', 'ja', 'USD')).toEqual([['JPY']]);
   });
+});
+
+describe('review round 5', () => {
+  it.each([
+    ['15日圆顶帐篷到货。'],
+    ['15日圆形帐篷上新。'],
+    ['15日圆桌会议。'],
+    ['15日圆管支架补货。'],
+    ['下周一15日圆床上市。'],
+    ['十五日圆满落幕。'],
+    ['05日圆满落幕。'],
+  ])('MAJOR-1 a day before 日圆 and a round thing or a listed word is a date: %s', (text) => {
+    expect(failures('USD', '49', `帐篷49美元。${text}`, 'zh')).toBe(0);
+    expect(failures('CNY', '49', `帐篷49元。${text}`, 'zh')).toBe(0);
+  });
+
+  it.each([
+    ['USD', '49', '帐篷49美元。約25日圓明細如下。', 'zh'],
+    ['USD', '49', 'テント49ドル、約7,500 USD円高め。', 'ja'],
+    ['BRL', '49', '送料30レアル感謝セールです。', 'ja'],
+    ['KRW', '89000', '89,000원이에요. 65,000 한국원정품이에요.', 'ko'],
+    ['USD', '49', 'テント49ドル、約7,500 JPY円熟。', 'ja'],
+  ])('stays money, as on base: %s %s', (store, amount, text, language) => {
+    expect(failures(store, amount, text, language)).toBeGreaterThan(0);
+  });
+
+  it('20日圆明园门票 stays a date', () => {
+    expect(failures('CNY', '199', '20日圆明园门票199元。', 'zh')).toBe(0);
+  });
+
+  it.each([['2025 EU 円熟の味は8,900円です。']])(
+    '円熟 after a non-code qualifier is a word: %s',
+    (text) => {
+      expect(failures('JPY', '8900', text, 'ja')).toBe(0);
+    },
+  );
 });
 
 describe('the new forms stay linear', () => {
