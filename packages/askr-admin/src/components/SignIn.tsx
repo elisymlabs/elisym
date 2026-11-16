@@ -33,6 +33,9 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
   const remember = useRef<RememberHandle>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /** Set at once on a press, before React re-renders: a double press remembers and signs in once. */
+  const working = useRef(false);
+  const [confirmingClear, setConfirmingClear] = useState(false);
   const [generated, setGenerated] = useState<ReturnType<typeof generateOwnerKey>>();
   const [recovering, setRecovering] = useState(replaceKeyOf !== undefined);
   const [remembered, setRemembered] = useState(readRemembered);
@@ -48,20 +51,31 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
     return () => window.removeEventListener('pagehide', clear);
   }, []);
 
-  /** Sign in as `secretKey`, after remembering it on this device when chosen. */
-  const signInAs = async (secretKey: Uint8Array, choice: RememberChoice) => {
+  /**
+   * Sign in as `secretKey`, after remembering it on this device when chosen.
+   * `beforeSignIn` runs only once nothing is left to retry (it clears the key field).
+   */
+  const signInAs = async (
+    secretKey: Uint8Array,
+    choice: RememberChoice,
+    beforeSignIn: () => void,
+  ) => {
+    working.current = true;
     if (choice.kind === 'on') {
       setBusy(true);
       setError('');
       const problem = await rememberWith(secretKey, choice.password);
       setBusy(false);
       if (problem !== undefined) {
+        working.current = false;
         setError(problem);
         return;
       }
     }
     setError('');
+    beforeSignIn();
     onSigner(secretKeySigner(secretKey));
+    working.current = false;
   };
 
   /** What the merchant chose about remembering, or undefined after showing why it cannot be. */
@@ -76,7 +90,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
 
   const pasteKey = () => {
     const field = input.current;
-    if (field === null || busy) {
+    if (field === null || working.current) {
       return;
     }
     const secretKey = parseSecretKey(field.value);
@@ -85,19 +99,21 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
       setError('That is not a secret key: it starts with nsec1.');
       return;
     }
-    // A password problem keeps the pasted key, so fixing the password needs no second paste.
+    // A password or storage problem keeps the pasted key, so a retry needs no second paste
+    // (the field is still cleared when the page is hidden).
     const choice = rememberChoice();
     if (choice === undefined) {
       return;
     }
-    field.value = '';
-    void signInAs(secretKey, choice);
+    void signInAs(secretKey, choice, () => {
+      field.value = '';
+    });
   };
 
   const continueWithNew = (secretKey: Uint8Array) => {
-    const choice = busy ? undefined : rememberChoice();
+    const choice = working.current ? undefined : rememberChoice();
     if (choice !== undefined) {
-      void signInAs(secretKey, choice);
+      void signInAs(secretKey, choice, () => undefined);
     }
   };
 
@@ -126,7 +142,12 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
           setError('');
         }}
       >
-        <RememberOption ref={remember} id="new-key" label="Remember this key on this device" />
+        <RememberOption
+          ref={remember}
+          id="new-key"
+          label="Remember this key on this device"
+          username={generated.npub}
+        />
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
       </NewOwnerKey>
     );
@@ -145,29 +166,47 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
       {hasRemembered ? (
         <UnlockRemembered
           keys={remembered.keys}
-          onUnlocked={(secretKey) => {
-            const signer = secretKeySigner(secretKey);
-            secretKey.fill(0);
-            onSigner(signer);
-          }}
+          onUnlocked={(secretKey) => onSigner(secretKeySigner(secretKey))}
           onForgotten={() => setRemembered(readRemembered())}
         />
       ) : null}
-      {remembered.damaged ? (
+      {remembered.newer === true ? (
+        <Notice tone="warn">
+          A newer version of this admin remembered a key on this device. Reload the page to unlock
+          it; until then, sign in with your secret key.
+        </Notice>
+      ) : null}
+      {remembered.damaged && !confirmingClear ? (
         <Notice tone="warn">
           A key remembered on this device could not be read, so it is not offered. Sign in with your
           secret key.{' '}
-          <button
-            type="button"
-            className="underline"
-            onClick={() => {
-              forgetDamaged();
-              setRemembered(readRemembered());
-            }}
-          >
+          <button type="button" className="underline" onClick={() => setConfirmingClear(true)}>
             Clear it
           </button>
         </Notice>
+      ) : null}
+      {remembered.damaged && confirmingClear ? (
+        <div className="flex flex-col gap-8">
+          <Notice tone="warn">
+            Clear what could not be read? Keys this device remembers that can be read stay.
+          </Notice>
+          <div className="flex gap-8">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => {
+                forgetDamaged();
+                setConfirmingClear(false);
+                setRemembered(readRemembered());
+              }}
+            >
+              Clear
+            </button>
+            <button type="button" className="btn" onClick={() => setConfirmingClear(false)}>
+              Keep it
+            </button>
+          </div>
+        </div>
       ) : null}
       <div className="card flex flex-col gap-12">
         {hasRemembered ? (
@@ -192,7 +231,12 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
             }}
           />
         </label>
-        <RememberOption ref={remember} id="sign-in" label="Remember my key on this device" />
+        <RememberOption
+          ref={remember}
+          id="sign-in"
+          label="Remember my key on this device"
+          username="Askr store"
+        />
         <button type="button" className="btn btn-primary" disabled={busy} onClick={pasteKey}>
           {busy ? 'Signing in...' : 'Sign in'}
         </button>

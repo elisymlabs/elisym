@@ -31,7 +31,9 @@ interface Props {
 type Step =
   | { step: 'store' }
   | { step: 'key'; from: string; key: OwnerKey }
-  | { step: 'proof'; from: string; key: OwnerKey };
+  | { step: 'proof'; from: string; key: OwnerKey }
+  /** Moved, but this device refused to forget the old key or remember the new one. */
+  | { step: 'moved'; signer: Signer; problem: string };
 
 /**
  * Replace a lost or leaked secret key (K21): a new key is made here (or one
@@ -70,6 +72,21 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
     );
   }
 
+  if (state.step === 'moved') {
+    const { signer, problem } = state;
+    return (
+      <main className="mx-auto flex min-h-screen max-w-560 flex-col justify-center gap-16 px-16 py-40">
+        <h1 className="text-24 font-semibold">Your store moved</h1>
+        <Notice tone="warn">{problem}</Notice>
+        <div>
+          <button type="button" className="btn btn-primary" onClick={() => onDone(signer)}>
+            Continue
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   if (state.step === 'proof') {
     const { from, key } = state;
     const move = async () => {
@@ -88,16 +105,25 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
         setBusy(false);
         return;
       }
-      // The old key opens no store any more: this device stops remembering it either way. The
-      // store has moved by now, so a browser refusing either write only means signing in with
-      // the key next time (the option is offered only where storage works).
-      forgetKey(from);
+      // The old key opens no store any more: this device stops remembering it either way.
+      const forgot = forgetKey(from);
+      let remembered = true;
       if (choice.kind === 'on') {
         await nextTask();
-        rememberKey(key.secretKey, choice.password);
+        remembered = rememberKey(key.secretKey, choice.password);
       }
       setBusy(false);
-      onDone(signer);
+      if (forgot && remembered) {
+        onDone(signer);
+        return;
+      }
+      setState({
+        step: 'moved',
+        signer,
+        problem: remembered
+          ? 'Your store moved to the new key, but this browser did not let the admin forget the old key on this device. Forget it from the sign-in page later.'
+          : 'Your store moved to the new key, but this browser did not let the admin remember it on this device. Keep the new key you saved: you sign in with it next time.',
+      });
     };
     return (
       <main className="mx-auto flex min-h-screen max-w-640 flex-col justify-center gap-16 px-16 py-40">
@@ -123,6 +149,7 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
             ref={remember}
             id="moved-key"
             label="Remember the new key on this device once the store moved"
+            username={key.npub}
           />
           {error === '' ? null : <Notice tone="error">{error}</Notice>}
           <div className="flex gap-8">

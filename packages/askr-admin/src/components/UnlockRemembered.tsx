@@ -24,6 +24,8 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
   const [chosen, setChosen] = useState(keys[0]?.store ?? '');
   const password = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  /** Set at once on a press, before React re-renders: a double press unlocks once. */
+  const working = useRef(false);
   const [error, setError] = useState('');
   const [confirming, setConfirming] = useState(false);
   const selected = keys.find((key) => key.store === chosen) ?? keys[0];
@@ -45,7 +47,7 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
 
   const unlock = async () => {
     const field = password.current;
-    if (field === null || busy) {
+    if (field === null || working.current) {
       return;
     }
     const typed = field.value;
@@ -54,13 +56,20 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
       setError('Type the password you chose for this device.');
       return;
     }
+    working.current = true;
     setBusy(true);
     setError('');
     await nextTask();
     const outcome = unlockKey(selected, typed);
     setBusy(false);
+    working.current = false;
     if (outcome.ok) {
-      onUnlocked(outcome.secretKey);
+      try {
+        onUnlocked(outcome.secretKey);
+      } finally {
+        // The signer keeps its own copy: this one is not left behind in memory.
+        outcome.secretKey.fill(0);
+      }
       return;
     }
     setError(

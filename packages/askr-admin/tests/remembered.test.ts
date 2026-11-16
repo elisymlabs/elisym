@@ -16,7 +16,7 @@ import {
   rememberKey,
   unlockKey,
 } from '../src/lib/remembered';
-import { type MemoryStorage, blockStorage, installStorage, plainForms } from './stored';
+import { type MemoryStorage, blockStorage, installStorage, plainForms, withByte } from './stored';
 
 const PASSWORD = 'correct horse battery';
 const STORAGE_KEY = 'askr-admin.remembered-keys';
@@ -121,7 +121,8 @@ describe('what is stored, read back carefully', () => {
     for (const raw of [
       'not json',
       '[]',
-      { version: 2, keys: [] },
+      { version: 0, keys: [] },
+      { version: '2', keys: [] },
       { version: 1 },
       { version: 1, keys: {} },
     ]) {
@@ -130,34 +131,56 @@ describe('what is stored, read back carefully', () => {
     }
   });
 
-  it('drops an entry that is damaged, of another cost, or a second one for the same store', () => {
-    const good = encrypt(secretKey, PASSWORD, REMEMBER_LOG_N);
-    const flipped = `${good.slice(0, 20)}${good[20] === 'q' ? 'p' : 'q'}${good.slice(21)}`;
-    const other = generateSecretKey();
-    const cheap = encrypt(other, PASSWORD, 10);
-    writeRaw({
-      version: 1,
-      keys: [
-        { store, locked: good },
-        { store, locked: good },
-        { store: getPublicKey(other), locked: cheap },
-        { store: getPublicKey(generateSecretKey()), locked: flipped },
-        { store: 'NOTHEX', locked: good },
-        { store: getPublicKey(generateSecretKey()), locked: 7 },
-        { store: getPublicKey(generateSecretKey()), locked: `${good}q` },
-        { store: getPublicKey(generateSecretKey()), locked: 'npub1qqqq' },
-        'loose',
-      ],
+  const good = encrypt(secretKey, PASSWORD, REMEMBER_LOG_N);
+  const flipped = `${good.slice(0, 20)}${good[20] === 'q' ? 'p' : 'q'}${good.slice(21)}`;
+  const someone = getPublicKey(generateSecretKey());
+  it.each([
+    ['a changed character', { store: someone, locked: flipped }],
+    ['a cost below the one written', { store: someone, locked: withByte(good, 1, 15) }],
+    ['a cost too high to run', { store: someone, locked: withByte(good, 1, 19) }],
+    ['another format version', { store: someone, locked: withByte(good, 0, 3) }],
+    ['a Store ID that is not one', { store: 'NOTHEX', locked: good }],
+    ['a locked key that is not text', { store: someone, locked: 7 }],
+    ['a locked key with more after it', { store: someone, locked: `${good}q` }],
+    ['something else bech32-shaped', { store: someone, locked: 'npub1qqqq' }],
+    ['a second entry for the same store', { store, locked: good }],
+    ['not an entry at all', 'loose'],
+  ])('drops and flags %s, keeping the readable key', (_name, entry) => {
+    writeRaw({ version: 1, keys: [{ store, locked: good }, entry] });
+    expect(readRemembered()).toEqual({
+      available: true,
+      keys: [{ store, locked: good }],
+      damaged: true,
     });
-    const read = readRemembered();
-    expect(read.damaged).toBe(true);
-    expect(read.keys).toEqual([{ store, locked: good }]);
     expect(forgetDamaged()).toBe(true);
     expect(readRemembered()).toEqual({
       available: true,
       keys: [{ store, locked: good }],
       damaged: false,
     });
+  });
+
+  it('reads a key locked at a higher cost, so raising it later locks nobody out', () => {
+    // The helper re-encodes faithfully: the same byte gives back the same value.
+    expect(withByte(good, 1, REMEMBER_LOG_N)).toBe(good);
+    const costlier = encrypt(secretKey, PASSWORD, REMEMBER_LOG_N + 1);
+    writeRaw({ version: 1, keys: [{ store, locked: costlier }] });
+    const [key] = readRemembered().keys;
+    if (key === undefined) {
+      throw new Error('not read');
+    }
+    expect(unlockKey(key, PASSWORD).ok).toBe(true);
+    writeRaw({ version: 1, keys: [{ store, locked: withByte(good, 1, 18) }] });
+    expect(readRemembered().keys).toHaveLength(1);
+  });
+
+  it('leaves what a newer admin remembered untouched', () => {
+    const newer = JSON.stringify({ version: 2, keys: [{ anything: true }] });
+    writeRaw(newer);
+    expect(readRemembered()).toEqual({ available: true, keys: [], damaged: false, newer: true });
+    expect(rememberKey(secretKey, PASSWORD)).toBe(false);
+    expect(forgetKey(store)).toBe(false);
+    expect(storage.getItem(STORAGE_KEY)).toBe(newer);
   });
 
   it('forgetting a store clears damaged leftovers too', () => {

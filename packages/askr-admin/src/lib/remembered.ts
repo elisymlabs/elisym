@@ -21,6 +21,12 @@ import { getPublicKey } from 'nostr-tools/pure';
  * near a second while each password guess stays costly.
  */
 export const REMEMBER_LOG_N = 16;
+/**
+ * The costs read back: up to 2^18 (256 MiB), so a later release may raise
+ * the cost without old keys turning unreadable, and a damaged value never
+ * asks for a run the browser cannot afford.
+ */
+const MAX_READ_LOG_N = 18;
 
 export const MIN_PASSWORD_LENGTH = 10;
 
@@ -37,7 +43,6 @@ const BECH32_CHECKSUM_WORDS = 6;
 /** version, log_n, salt (16), nonce (24), key security byte, ciphertext (32) and tag (16). */
 const NCRYPTSEC_BYTES = 1 + 1 + 16 + 24 + 1 + 48;
 const NCRYPTSEC_VERSION = 2;
-const KSB_OFFSET = 2 + 16 + 24;
 const SECRET_KEY_BYTES = 32;
 
 export interface RememberedKey {
@@ -53,6 +58,8 @@ export interface RememberedRead {
   keys: RememberedKey[];
   /** Something was stored but could not be read: it is not offered. */
   damaged: boolean;
+  /** A newer admin remembered keys here in a form this one does not know: left untouched. */
+  newer?: true;
 }
 
 export type UnlockOutcome =
@@ -147,13 +154,8 @@ function wellFormedLocked(value: string): boolean {
   if (bytes === undefined || bytes.length !== NCRYPTSEC_BYTES) {
     return false;
   }
-  const keySecurity = bytes[KSB_OFFSET] ?? -1;
-  return (
-    bytes[0] === NCRYPTSEC_VERSION &&
-    bytes[1] === REMEMBER_LOG_N &&
-    keySecurity >= 0 &&
-    keySecurity <= 2
-  );
+  const logN = bytes[1] ?? 0;
+  return bytes[0] === NCRYPTSEC_VERSION && logN >= REMEMBER_LOG_N && logN <= MAX_READ_LOG_N;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -192,6 +194,9 @@ export function readRemembered(): RememberedRead {
     parsed = JSON.parse(raw);
   } catch {
     return { available, keys: [], damaged: true };
+  }
+  if (isRecord(parsed) && typeof parsed.version === 'number' && parsed.version > FORMAT_VERSION) {
+    return { available, keys: [], damaged: false, newer: true };
   }
   if (!isRecord(parsed) || parsed.version !== FORMAT_VERSION || !Array.isArray(parsed.keys)) {
     return { available, keys: [], damaged: true };
@@ -239,22 +244,29 @@ export function passwordProblem(password: string, repeated: string): string | un
 
 /** Remember `secretKey` on this device, locked with `password`, in place of any for its store. */
 export function rememberKey(secretKey: Uint8Array, password: string): boolean {
+  const read = readRemembered();
+  if (read.newer === true) {
+    return false;
+  }
   const store = getPublicKey(secretKey);
   const locked = encrypt(secretKey, password, REMEMBER_LOG_N);
-  const others = readRemembered().keys.filter((key) => key.store !== store);
+  const others = read.keys.filter((key) => key.store !== store);
   return writeKeys([{ store, locked }, ...others]);
 }
 
 /** Forget the key remembered for this Store ID (hex). True when nothing of it is left. */
 export function forgetKey(store: string): boolean {
   const read = readRemembered();
+  if (read.newer === true) {
+    return false;
+  }
   if (!read.damaged && !read.keys.some((key) => key.store === store)) {
     return true;
   }
   return writeKeys(read.keys.filter((key) => key.store !== store));
 }
 
-/** Drop whatever could not be read, keeping the keys that can. */
+/** Drop whatever could not be read (the merchant confirmed), keeping the keys that can. */
 export function forgetDamaged(): boolean {
   return writeKeys(readRemembered().keys);
 }

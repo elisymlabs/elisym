@@ -69,3 +69,58 @@ export function blockStorage(): void {
 export function plainForms(secretKey: Uint8Array): string[] {
   return [nip19.nsecEncode(secretKey), bytesToHex(secretKey)];
 }
+
+// cspell:disable-next-line
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const BECH32_GENERATORS = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+
+function checksumOf(values: readonly number[]): number {
+  let checksum = 1;
+  for (const value of values) {
+    const top = checksum >>> 25;
+    checksum = ((checksum & 0x1ffffff) << 5) ^ value;
+    BECH32_GENERATORS.forEach((generator, index) => {
+      if (((top >>> index) & 1) === 1) {
+        checksum ^= generator;
+      }
+    });
+  }
+  return checksum;
+}
+
+function regroup(values: readonly number[], from: number, to: number, pad: boolean): number[] {
+  const out: number[] = [];
+  let accumulator = 0;
+  let bits = 0;
+  for (const value of values) {
+    accumulator = (accumulator << from) | value;
+    bits += from;
+    while (bits >= to) {
+      bits -= to;
+      out.push((accumulator >>> bits) & ((1 << to) - 1));
+    }
+  }
+  if (pad && bits > 0) {
+    out.push((accumulator << (to - bits)) & ((1 << to) - 1));
+  }
+  return out;
+}
+
+/**
+ * A well-formed locked key (valid checksum) with one byte changed: what a
+ * damaged or crafted value looks like, e.g. one asking for a huge scrypt cost.
+ */
+export function withByte(locked: string, offset: number, value: number): string {
+  const prefix = 'ncryptsec';
+  const words = [...locked.slice(prefix.length + 1, -6)].map((character) =>
+    BECH32_CHARSET.indexOf(character),
+  );
+  const bytes = regroup(words, 5, 8, false);
+  bytes[offset] = value;
+  const data = regroup(bytes, 8, 5, true);
+  const codes = [...prefix].map((character) => character.charCodeAt(0));
+  const expanded = [...codes.map((code) => code >>> 5), 0, ...codes.map((code) => code & 31)];
+  const polymod = checksumOf([...expanded, ...data, 0, 0, 0, 0, 0, 0]) ^ 1;
+  const checksum = [0, 1, 2, 3, 4, 5].map((index) => (polymod >>> (5 * (5 - index))) & 31);
+  return `${prefix}1${[...data, ...checksum].map((word) => BECH32_CHARSET[word] ?? '').join('')}`;
+}

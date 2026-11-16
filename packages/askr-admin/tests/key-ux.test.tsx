@@ -1,13 +1,15 @@
 import { nip19 } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import { KeysSection } from '../src/components/KeysSection';
 import { Session } from '../src/components/Session';
 import { SignIn } from '../src/components/SignIn';
+import { UnlockRemembered } from '../src/components/UnlockRemembered';
 import { ApiError } from '../src/lib/api';
-import { readRemembered, rememberKey } from '../src/lib/remembered';
-import type { Signer } from '../src/lib/signer';
+import { readRemembered, rememberKey, unlockKey } from '../src/lib/remembered';
+import { type Signer, secretKeySigner } from '../src/lib/signer';
 import { OWNER, OWNER_KEY, fakeApi, fakeReader, sessionDeps, storeView } from './fakes';
 import { type Mounted, buttonNamed, byId, click, mount, settle, typeInto } from './mount';
 import { type MemoryStorage, installStorage, plainForms } from './stored';
@@ -193,7 +195,13 @@ describe('signing in with a pasted key and remembering it', () => {
     await click(buttonNamed(container, 'Sign in'));
     await settle(() => text(container).includes('could not be remembered'));
     expect(onSigner).not.toHaveBeenCalled();
+    // The key stays for the retry the message suggests.
+    expect(inputById(container, 'owner-key').value).toBe(nip19.nsecEncode(OWNER_KEY));
+    storage.failing.delete('setItem');
+    await click(buttonNamed(container, 'Sign in'));
+    await settle(() => onSigner.mock.calls.length > 0);
     expect(inputById(container, 'owner-key').value).toBe('');
+    expect(readRemembered().keys.map((key) => key.store)).toEqual([OWNER]);
   });
 });
 
@@ -242,6 +250,10 @@ describe('the sign-in page with keys remembered', () => {
     expect(text(container)).toContain('could not be read, so it is not offered');
     expect(text(container)).not.toContain('Unlock with your password');
     await click(buttonNamed(container, 'Clear it'));
+    await click(buttonNamed(container, 'Keep it'));
+    expect(storage.getItem('askr-admin.remembered-keys')).toBe('{not json');
+    await click(buttonNamed(container, 'Clear it'));
+    await click(buttonNamed(container, 'Clear'));
     expect(storage.getItem('askr-admin.remembered-keys')).toBeNull();
     expect(text(container)).not.toContain('could not be read');
   });
@@ -380,7 +392,12 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     await chooseRemember(container, 'moved-key', 'the new password');
     await click(buttonNamed(container, 'Check my site and move the store'));
     await settle(() => onSigner.mock.calls.length > 0);
-    expect(readRemembered().keys.map((key) => key.store)).toEqual([getPublicKey(newKey)]);
+    const keys = readRemembered().keys;
+    expect(keys.map((key) => key.store)).toEqual([getPublicKey(newKey)]);
+    const [remembered] = keys;
+    expect(remembered === undefined ? false : unlockKey(remembered, 'the new password').ok).toBe(
+      true,
+    );
     expectNoPlainKey(newKey);
   });
 
@@ -413,6 +430,143 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     await click(buttonNamed(container, 'Check my site and move the store'));
     expect(text(container)).toContain('at least 10 characters');
     expect(recover).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a move that this browser does not let the admin record', () => {
+  const OLD_KEY = generateSecretKey();
+
+  async function proofWith(prepare: () => void, rememberNew: boolean) {
+    rememberKey(OLD_KEY, PASSWORD);
+    const onSigner = vi.fn<(signer: Signer) => void>();
+    mounted = await mount(
+      <SignIn
+        onSigner={onSigner}
+        recover={async () => undefined}
+        replaceKeyOf={nip19.npubEncode(getPublicKey(OLD_KEY))}
+      />,
+    );
+    const { container } = mounted;
+    await click(buttonNamed(container, 'Continue'));
+    const saved = container.querySelector('input[type="checkbox"]');
+    if (!(saved instanceof HTMLInputElement)) {
+      throw new Error('no saved checkbox');
+    }
+    await click(saved);
+    await click(buttonNamed(container, 'Continue'));
+    if (rememberNew) {
+      await chooseRemember(container, 'moved-key', 'the new password');
+    }
+    prepare();
+    await click(buttonNamed(container, 'Check my site and move the store'));
+    await settle(() => text(container).includes('Your store moved'));
+    expect(onSigner).not.toHaveBeenCalled();
+    await click(buttonNamed(container, 'Continue'));
+    expect(onSigner).toHaveBeenCalledTimes(1);
+    return text(container);
+  }
+
+  it('says the new key was not remembered, then goes on', async () => {
+    const said = await proofWith(() => storage.failing.add('setItem'), true);
+    expect(said).toContain('did not let the admin remember it');
+    expect(said).toContain('Keep the new key you saved');
+  });
+
+  it('says the old key was not forgotten, then goes on', async () => {
+    const said = await proofWith(() => {
+      storage.failing.add('removeItem');
+      storage.failing.add('setItem');
+    }, false);
+    expect(said).toContain('did not let the admin forget the old key');
+  });
+});
+
+describe('presses and leftovers', () => {
+  it('unlocks once on a double press, without a stray error', async () => {
+    rememberKey(OWNER_KEY, PASSWORD);
+    const { container, onSigner } = await signInScreen();
+    inputById(container, 'unlock-password').value = PASSWORD;
+    const unlock = buttonNamed(container, 'Unlock');
+    await act(async () => {
+      unlock.click();
+      unlock.click();
+    });
+    await settle(() => onSigner.mock.calls.length > 0);
+    expect(text(container)).not.toContain('Type the password');
+    expect(onSigner).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers and signs in once on a double press', async () => {
+    const { container, onSigner } = await signInScreen();
+    inputById(container, 'owner-key').value = nip19.nsecEncode(OWNER_KEY);
+    await chooseRemember(container, 'sign-in', PASSWORD);
+    const signIn = buttonNamed(container, 'Sign in');
+    await act(async () => {
+      signIn.click();
+      signIn.click();
+    });
+    await settle(() => onSigner.mock.calls.length > 0);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    expect(onSigner).toHaveBeenCalledTimes(1);
+  });
+
+  it('wipes the unlocked key once the signer has its own copy', async () => {
+    rememberKey(OWNER_KEY, PASSWORD);
+    const handed: Uint8Array[] = [];
+    const signers: Signer[] = [];
+    mounted = await mount(
+      <UnlockRemembered
+        keys={readRemembered().keys}
+        onUnlocked={(secretKey) => {
+          handed.push(secretKey);
+          signers.push(secretKeySigner(secretKey));
+        }}
+        onForgotten={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    inputById(container, 'unlock-password').value = PASSWORD;
+    await click(buttonNamed(container, 'Unlock'));
+    await settle(() => handed.length > 0);
+    expect(handed[0]?.every((byte) => byte === 0)).toBe(true);
+    expect(signers[0]?.pubkey).toBe(OWNER);
+  });
+
+  it('shows a key remembered meanwhile after coming back from the replacement', async () => {
+    const { container } = await signInScreen();
+    expect(text(container)).not.toContain('Unlock with your password');
+    await click(buttonNamed(container, 'Lost your secret key?'));
+    rememberKey(OWNER_KEY, PASSWORD);
+    await click(buttonNamed(container, 'Back'));
+    expect(text(container)).toContain('Unlock with your password');
+  });
+
+  it('leaves keys a newer admin remembered alone, and says to reload', async () => {
+    storage.setItem('askr-admin.remembered-keys', JSON.stringify({ version: 9, keys: [] }));
+    const { container } = await signInScreen();
+    expect(text(container)).toContain('A newer version of this admin');
+    expect(text(container)).not.toContain('Clear it');
+  });
+
+  it('gives a password manager the Store ID as the user name, never the secret key field', async () => {
+    const { container } = await signInScreen();
+    await click(inputById(container, 'sign-in-remember'));
+    const username = inputById(container, 'sign-in-username');
+    expect(username.autocomplete).toBe('username');
+    expect(username.value).toBe('Askr store');
+    const form = username.closest('form');
+    expect(form).not.toBeNull();
+    expect(form?.contains(inputById(container, 'sign-in-password'))).toBe(true);
+    expect(inputById(container, 'owner-key').closest('form')).toBeNull();
+    await mounted?.unmount();
+
+    const fresh = await signInScreen();
+    await click(buttonNamed(fresh.container, 'Create a secret key'));
+    await click(inputById(fresh.container, 'new-key-remember'));
+    const npub = /npub1[02-9ac-hj-np-z]+/.exec(text(fresh.container))?.[0];
+    expect(inputById(fresh.container, 'new-key-username').value).toBe(npub);
   });
 });
 

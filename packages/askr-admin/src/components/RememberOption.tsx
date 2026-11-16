@@ -17,6 +17,12 @@ interface Props {
   label: string;
   /** Prefix for the field ids, unique on the page. */
   id: string;
+  /**
+   * What a password manager files the password under: the Store ID when it is
+   * known. Without it, a manager would take the secret key field above as the
+   * user name and offer to save the key itself.
+   */
+  username: string;
 }
 
 /**
@@ -25,7 +31,7 @@ interface Props {
  * remembered, and cleared when the page is hidden, so the back/forward cache
  * keeps none.
  */
-export function RememberOption({ ref, label, id }: Props) {
+export function RememberOption({ ref, label, id, username }: Props) {
   const [available] = useState(canRemember);
   const [on, setOn] = useState(false);
   const password = useRef<HTMLInputElement>(null);
@@ -82,7 +88,18 @@ export function RememberOption({ ref, label, id }: Props) {
         {label}
       </label>
       {on ? (
-        <div className="flex flex-col gap-8">
+        <form className="flex flex-col gap-8" onSubmit={(event) => event.preventDefault()}>
+          <input
+            id={`${id}-username`}
+            className="sr-only"
+            type="text"
+            name="username"
+            autoComplete="username"
+            value={username}
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+          />
           <p className="text-13 text-text-2">
             Your key is kept on this device locked with a password you choose, and is never sent
             anywhere. Use this only on your own device. The password cannot be reset: if you forget
@@ -110,7 +127,7 @@ export function RememberOption({ ref, label, id }: Props) {
               autoComplete="new-password"
             />
           </label>
-        </div>
+        </form>
       ) : null}
     </div>
   );
