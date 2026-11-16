@@ -3,7 +3,6 @@ import { type ReactNode, useEffect, useState } from 'react';
 import { EMBED_DOCS_URL } from '../constants';
 import type { AdminClient } from '../lib/deps';
 import {
-  ADD_TO_CART_SNIPPET,
   PLATFORM_HINTS,
   cspSources,
   elementSnippet,
@@ -12,6 +11,7 @@ import {
 } from '../lib/embed';
 import { npubOf } from '../lib/signer';
 import type { PinnedWidget, StoreView } from '../lib/types';
+import { AddToCartHook } from './AddToCartHook';
 import { CopyBlock } from './CopyBlock';
 import { Notice } from './Notice';
 import { Section } from './Section';
@@ -34,15 +34,25 @@ const NATIVE_CART_PLATFORMS: Readonly<Record<string, string>> = {
 };
 
 /**
- * The platform whose own cart the widget fills, as it decides it: from the
- * published settings, a connector source with a shop URL (`native-cart.ts`).
+ * The platform whose own cart the widget fills, as it decides it from the
+ * published settings (`native-cart.ts`): a Shopify or WooCommerce connector,
+ * with or without the shop URL the cart needs.
  */
-function nativeCartOf(config: StoreConfig): string | undefined {
+function nativeCartOf(
+  config: StoreConfig,
+): { platform: string; shopOrigin: string | undefined } | undefined {
   const { source } = config;
-  if (source.kind !== 'connector' || source.shopUrl === undefined) {
+  const platform =
+    source.kind === 'connector' && source.platform !== undefined
+      ? NATIVE_CART_PLATFORMS[source.platform]
+      : undefined;
+  if (platform === undefined) {
     return undefined;
   }
-  return source.platform === undefined ? undefined : NATIVE_CART_PLATFORMS[source.platform];
+  return {
+    platform,
+    shopOrigin: source.shopUrl === undefined ? undefined : new URL(source.shopUrl).origin,
+  };
 }
 
 /**
@@ -112,27 +122,46 @@ export function EmbedSection({ api, view, config }: Props) {
         Once your settings are published, this says whether the cards get an add to cart button.
       </p>
     );
-  } else if (native !== undefined) {
+  } else if (native !== undefined && native.shopOrigin === undefined) {
     cart = (
-      <Notice tone="info">
-        Your products come from your {native} shop, so on your shop&apos;s own site the cards get an
-        add to cart button that fills its cart, once the shopper has picked the size, color and so
-        on. Nothing to add. A hook of your own, if your pages have one, takes its place.
+      <Notice tone="warn">
+        Your products come from your {native.platform} shop, but your settings do not name its
+        address. Add it in Settings, and the cards on your shop&apos;s site get an add to cart
+        button that fills its cart.
       </Notice>
+    );
+  } else if (native !== undefined) {
+    const otherSites = config.origins.filter((origin) => origin !== native.shopOrigin);
+    cart = (
+      <>
+        <Notice tone="info">
+          Your products come from your {native.platform} shop, so on your shop&apos;s own site (
+          {native.shopOrigin}) the cards get an add to cart button that fills its cart, once the
+          shopper has picked the size, color and so on. Nothing to add. A product whose choice the
+          shop leaves open opens its page instead. A hook of your own, if your pages have one, takes
+          the cart&apos;s place.
+        </Notice>
+        {otherSites.length === 0 ? null : (
+          <details>
+            <summary className="text-14 cursor-pointer">
+              Your other sites ({otherSites.join(', ')}) get no button: a hook for them
+            </summary>
+            <div className="mt-8 flex flex-col gap-8">
+              <AddToCartHook />
+            </div>
+          </details>
+        )}
+      </>
     );
   } else {
     cart = (
       <>
         <p className="text-14 text-text-2">
-          Your products do not come from a Shopify or WooCommerce shop, so the cards have no add to
-          cart button unless your site says how to add a product. If yours can, have your developer
-          fill in this hook on every page with the chat.
+          The cards get an add to cart button only from a Shopify or WooCommerce connector, or when
+          your site says how to add a product. If yours can, have your developer fill in this hook
+          on every page with the chat.
         </p>
-        <CopyBlock label="Add to cart hook (for your developer)" text={ADD_TO_CART_SNIPPET} />
-        <Notice tone="warn">
-          Pasted as it is, it adds a button that does nothing: it needs your cart&apos;s own code
-          where it says so.
-        </Notice>
+        <AddToCartHook />
       </>
     );
   }
@@ -150,7 +179,8 @@ export function EmbedSection({ api, view, config }: Props) {
           {config === undefined ? '' : `: ${config.origins.join(', ')}`}. Add data-theme="light" or
           data-theme="dark" to the script tag to fix its colors.
         </p>
-        <ul className="text-13 text-text-2 flex flex-col gap-4">
+        <p className="text-13 font-medium">Where to paste it:</p>
+        <ul className="text-13 text-text-2 flex flex-col gap-4" aria-label="Where to paste it">
           {PLATFORM_HINTS.map((hint) => (
             <li key={hint.platform}>
               <span className="text-text font-medium">{hint.platform}:</span> {hint.where}

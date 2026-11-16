@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { widgetBundle } from '../../askr-server/src/gateway/widget';
 import { EmbedSection } from '../src/components/EmbedSection';
 import { AdminApi } from '../src/lib/api';
-import { pinnedScriptSnippet, scriptSnippet } from '../src/lib/embed';
+import { ADD_TO_CART_SNIPPET, pinnedScriptSnippet, scriptSnippet } from '../src/lib/embed';
 import { npubOf, secretKeySigner } from '../src/lib/signer';
 import { OWNER, OWNER_KEY, PINNED_WIDGET, adminConfig, storeView } from './fakes';
 import { type Mounted, mount, settle } from './mount';
@@ -144,7 +144,9 @@ describe('the embed section for a merchant', () => {
     await mounted?.unmount();
     const suspended = await mountWith(storeView({ status: 'suspended' }));
     expect(suspended.textContent).toContain('suspended');
+    expect(suspended.textContent).toContain('the chat says the assistant is unavailable');
     expect(suspended.textContent).toContain('reactivate');
+    expect(suspended.textContent).not.toContain('not set up for this store');
     await mounted?.unmount();
     const active = await mountWith();
     expect(active.textContent).not.toContain('not set up for this store');
@@ -158,15 +160,23 @@ describe('the embed section for a merchant', () => {
     ] as const) {
       const native = await mountWith(storeView(), connectorSource(platform, 'https://tea.example'));
       expect(native.textContent).toContain(`come from your ${label} shop`);
+      expect(native.textContent).toContain('(https://tea.example)');
+      expect(native.textContent).toContain('once the shopper has picked');
       expect(native.textContent).not.toContain('window.Askr.onAddToCart');
-      expect(native.textContent).toContain('takes its place');
+      expect(native.textContent).toContain("takes the cart's place");
       await mounted?.unmount();
     }
-    // No shop URL, another platform or source: no native cart, so the hook is offered.
-    for (const config of [connectorSource('shopify'), connectorSource('google'), adminConfig()]) {
+    // A Shopify connector whose settings lack the shop's address: add it, not a hook.
+    const noAddress = await mountWith(storeView(), connectorSource('shopify'));
+    expect(noAddress.textContent).toContain('do not name its address');
+    expect(noAddress.textContent).not.toContain('window.Askr.onAddToCart');
+    await mounted?.unmount();
+    // Another platform or source: no native cart, so the hook is offered.
+    for (const config of [connectorSource('google'), adminConfig()]) {
       const hook = await mountWith(storeView(), config);
       expect(hook.textContent).toContain('window.Askr = window.Askr || {};');
       expect(hook.textContent).toContain('window.Askr.onAddToCart');
+      expect(hook.textContent).toContain(ADD_TO_CART_SNIPPET);
       expect(hook.textContent).toContain('adds a button that does nothing');
       await mounted?.unmount();
     }
@@ -188,7 +198,16 @@ describe('the embed section for a merchant', () => {
 
   it('says where to paste the code on each builder, never in a page block', async () => {
     const container = await mountWith();
-    for (const hint of ['theme.liquid', 'WPCode', 'Code Injection', 'paid plan', 'never a block']) {
+    expect(container.querySelector('ul[aria-label="Where to paste it"]')).not.toBeNull();
+    for (const hint of [
+      'theme.liquid',
+      'WPCode',
+      'set to the footer',
+      'with a connected domain',
+      'Not the Embed HTML element',
+      'Code Injection, in the footer (a Core plan or higher)',
+      'never a block on one page',
+    ]) {
       expect(container.textContent).toContain(hint);
     }
   });
@@ -199,11 +218,38 @@ describe('the embed section for a merchant', () => {
     expect(advanced?.querySelector('summary')?.textContent).toBe('Advanced');
     expect(advanced?.hasAttribute('open')).toBe(false);
     expect(advanced?.textContent).toContain('Only if your security policy requires it');
+    expect(advanced?.textContent).toContain('security fixes included');
     expect(advanced?.textContent).toContain('script-src');
     expect(advanced?.textContent).toContain('<askr-chat');
     expect(advanced?.textContent).toContain('nonce or hash');
     advanced?.remove();
     expect(container.textContent).not.toContain('script-src');
     expect(container.textContent).not.toContain('<askr-chat');
+  });
+});
+
+describe('add to cart on the other sites of a store with a native cart', () => {
+  const API = { pinnedWidget: async () => PINNED_WIDGET };
+
+  it('offers the hook, folded, for the allowed sites that are not the shop', async () => {
+    const config = adminConfig({
+      origins: ['https://tea.example', 'https://blog.tea.example'],
+      source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+    });
+    mounted = await mount(<EmbedSection api={API} view={storeView()} config={config} />);
+    const folded = [...mounted.container.querySelectorAll('details')].find((details) =>
+      (details.textContent ?? '').includes('Your other sites'),
+    );
+    expect(folded?.textContent).toContain('https://blog.tea.example');
+    expect(folded?.textContent).toContain(ADD_TO_CART_SNIPPET);
+  });
+
+  it('names each copy button by what it copies', async () => {
+    mounted = await mount(<EmbedSection api={API} view={storeView()} config={adminConfig()} />);
+    const names = [...mounted.container.querySelectorAll('button')].map((button) =>
+      button.getAttribute('aria-label'),
+    );
+    expect(names).toContain('Copy: Embed code');
+    expect(names).toContain('Copy: Add to cart hook (for your developer)');
   });
 });

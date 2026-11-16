@@ -83,9 +83,14 @@ export const PLATFORM_HINTS: ReadonlyArray<{ platform: string; where: string }> 
     where: 'a plugin that adds code to every page (such as WPCode), set to the footer.',
   },
   {
-    platform: 'Wix and Squarespace',
+    platform: 'Wix',
     where:
-      'Custom Code (Wix) or Code Injection (Squarespace) in the site settings, on every page. Both need a paid plan; Wix also a connected domain. A page HTML block does not work: it runs the chat in a box of its own.',
+      'Settings, Custom Code, on all pages (a paid plan with a connected domain). Not the Embed HTML element: it runs on another address, where the chat does not answer.',
+  },
+  {
+    platform: 'Squarespace',
+    where:
+      'Settings, Code Injection, in the footer (a Core plan or higher). A code block on a page shows the chat on that page only.',
   },
   {
     platform: 'Other site builders',
