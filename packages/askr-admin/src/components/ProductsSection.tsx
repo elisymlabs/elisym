@@ -1,11 +1,11 @@
 import type { CatalogItemInput, StoreConfig, SyncDiff } from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { DEFAULT_CURRENCY } from '../constants';
-import { importItems, removeItem, upsertItem } from '../lib/catalog';
+import { type CatalogChange, changesOf, importItems, removeItem, upsertItem } from '../lib/catalog';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage, invalidItemIssues } from '../lib/errors';
 import { SOURCE_LABELS } from '../lib/labels';
-import { readListings } from '../lib/store-data';
+import { readCatalog } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
 import { CsvImport } from './CsvImport';
 import { DiffSummary } from './DiffSummary';
@@ -24,19 +24,25 @@ interface Props {
 
 type Editing = { mode: 'new' } | { mode: 'edit'; item: CatalogItemInput } | undefined;
 
-/** A dry run's answer, with exactly the list it was for: Publish sends that list. */
+/** A dry run's answer, with exactly the draft and change it was for: Publish sends that change. */
 interface Reviewed {
   items: CatalogItemInput[];
+  change: CatalogChange;
   diff: SyncDiff;
 }
 
 /**
- * The catalog of the server K (source `admin`). The catalog API replaces the
- * whole catalog, so the draft starts from every listing K shows on the relay
- * and the whole draft is sent, first as a dry run, then for real.
+ * The catalog of the server K (source `admin`). The draft starts from every
+ * listing K shows on the relay; a publish sends only what the draft changed
+ * against that read (new and changed products, removed IDs), first as a dry
+ * run, then for real.
  */
 export function ProductsSection({ deps, view, config, reload }: Props) {
   const [draft, setDraft] = useState<CatalogItemInput[]>();
+  /** The catalog as last read from the relay: the draft is compared with it. */
+  const [baseline, setBaseline] = useState<CatalogItemInput[]>();
+  /** Every product ID K has on the relay at that read, readable or not. */
+  const [listedIds, setListedIds] = useState<string[]>([]);
   const [readError, setReadError] = useState('');
   const [editing, setEditing] = useState<Editing>();
   const [reviewed, setReviewed] = useState<Reviewed>();
@@ -55,17 +61,21 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const read = useCallback(
     async (isCurrent: () => boolean = () => true) => {
       try {
-        const listings = await readListings(deps.reader, view.catalogKey, deps.now());
+        const { listings, ids } = await readCatalog(deps.reader, view.catalogKey, deps.now());
         if (isCurrent()) {
-          setDraft(listings.sort((left, right) => left.d.localeCompare(right.d)));
+          const sorted = listings.sort((left, right) => left.d.localeCompare(right.d));
+          setBaseline(sorted);
+          setListedIds(ids);
+          setDraft(sorted);
           setReads((count) => count + 1);
           setReadError('');
         }
       } catch {
         if (isCurrent()) {
           setDraft(undefined);
+          setBaseline(undefined);
           setReadError(
-            'Your current products could not be read from the relay. Nothing can be changed until they are, since a save replaces the whole catalog.',
+            'Your current products could not be read from the relay. Nothing can be changed until they are, since a publish is worked out against them.',
           );
         }
       }
@@ -126,17 +136,30 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
 
   const review = async () => {
     const sent = draft;
-    if (sent === undefined) {
+    if (sent === undefined || baseline === undefined) {
+      return;
+    }
+    const sentChange = changesOf(baseline, sent, listedIds);
+    if (sentChange.items.length === 0 && sentChange.hide.length === 0) {
+      setReviewed(undefined);
+      setError('');
+      setNotice('Nothing to publish: your products are as on the relay.');
       return;
     }
     setBusy(true);
     setError('');
     setIssues([]);
+    setNotice('');
     try {
-      const result = await deps.api.catalog(sent, true);
+      const result = await deps.api.catalog(sentChange, true);
       // An answer about a list that has changed since is dropped, never shown as this one's.
       if (draftNow.current === sent) {
-        setReviewed({ items: sent, diff: result.diff });
+        setReviewed({
+          items: sent,
+          change: sentChange,
+          // Products not sent at all are unchanged too.
+          diff: { ...result.diff, unchanged: [...result.diff.unchanged, ...sentChange.untouched] },
+        });
       }
     } catch (failure) {
       setError(errorMessage(failure));
@@ -154,7 +177,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     setError('');
     setIssues([]);
     try {
-      await deps.api.catalog(reviewed.items, false);
+      await deps.api.catalog(reviewed.change, false);
       setLastSent({ items: reviewed.items, readsBefore: reads });
       setReviewed(undefined);
       setNotice('Publishing started. Progress shows below.');
@@ -193,7 +216,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
     <div className="flex flex-col gap-16">
       <Section
         title="Products"
-        description="Changes stay here until you review and publish them. Publishing replaces your whole catalog: a product you remove here is deleted for good when you publish. To take one off sale for a while, set its availability to hidden instead."
+        description="Changes stay here until you review and publish them. Publishing makes your catalog this list: only what changed is sent, and a product you remove here is deleted for good when you publish. To take one off sale for a while, set its availability to hidden instead."
       >
         {running ? (
           <Notice tone="info">

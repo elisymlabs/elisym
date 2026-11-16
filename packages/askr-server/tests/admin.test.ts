@@ -491,6 +491,143 @@ describe('admin API (7.3)', () => {
     expect(tooMany.body).toEqual({ error: 'too_many_products', max: 1000 });
   });
 
+  it('an upsert publishes only what it is sent, hides by ID, and counts the tier on the whole catalog', async () => {
+    const { call, store, relay, state } = await setup();
+    const server = await state.store(store.owner);
+    if (!server) {
+      throw new Error('store missing');
+    }
+    await relay.publish(
+      [],
+      finalizeEvent(
+        buildCatalogAuth({ key: server.catalogKey, mode: 'hosted', createdAt: NOW - 10 }),
+        store.ownerSecret,
+      ),
+    );
+    const product = (d: string, title = d) => ({
+      d,
+      title,
+      price: { amount: '5', currency: 'USD' },
+    });
+    const done = async () =>
+      expect
+        .poll(async () => (await call('GET', '/v1/admin/store')).body.catalogSync?.state)
+        .toBe('done');
+    // A whole catalog of three first.
+    await call('POST', '/v1/admin/catalog', { items: ['a', 'b', 'c'].map((d) => product(d)) });
+    await done();
+    const newestOf = (d: string) =>
+      relay.events.find(
+        (event) => event.kind === 30402 && event.tags.some((tag) => tag[0] === 'd' && tag[1] === d),
+      );
+    const untouched = newestOf('c');
+    // One changed product and one removed: the third is not sent and stays.
+    const preview = await call('POST', '/v1/admin/catalog', {
+      mode: 'upsert',
+      items: [product('a', 'A new')],
+      hide: ['b'],
+      dryRun: true,
+    });
+    expect(preview.body).toEqual({
+      diff: { created: [], updated: ['a'], hidden: ['b'], unchanged: [] },
+    });
+    await call('POST', '/v1/admin/catalog', {
+      mode: 'upsert',
+      items: [product('a', 'A new')],
+      hide: ['b'],
+    });
+    await done();
+    // A new version of a, a hidden version of b; c is the very event it was.
+    expect(newestOf('a')?.tags.find((tag) => tag[0] === 'title')?.[1]).toBe('A new');
+    expect(newestOf('c')).toBe(untouched);
+    expect(newestOf('c')?.tags.find((tag) => tag[0] === 'visibility')?.[1]).toBe('on-sale');
+    expect(newestOf('b')?.tags.find((tag) => tag[0] === 'visibility')?.[1]).toBe('hidden');
+    // hide only goes with upsert.
+    expect(
+      (await call('POST', '/v1/admin/catalog', { items: [], hide: ['a'], dryRun: true })).body,
+    ).toEqual({ error: 'bad_request' });
+    expect(
+      (
+        await call('POST', '/v1/admin/catalog', {
+          mode: 'upsert',
+          items: [],
+          hide: ['not a d!'],
+          dryRun: true,
+        })
+      ).body,
+    ).toEqual({ error: 'bad_request' });
+    // The tier counts every product ID K lists on the relay (a and c: b's hidden version is
+    // there, but deleted after it) plus the change, hidden products included, as a replace does.
+    const many = (count: number) =>
+      Array.from({ length: count }, (_unused, index) => product(`n-${index}`));
+    const upsertDry = (body: Record<string, unknown>) =>
+      call('POST', '/v1/admin/catalog', { mode: 'upsert', dryRun: true, ...body });
+    expect((await upsertDry({ items: many(998) })).status).toBe(200);
+    expect((await upsertDry({ items: many(999) })).body).toEqual({
+      error: 'too_many_products',
+      max: 1000,
+    });
+    // A hidden product still takes a place; hiding one by ID frees it.
+    expect(
+      (await upsertDry({ items: [...many(998), { ...product('h'), visibility: 'hidden' }] })).body,
+    ).toEqual({ error: 'too_many_products', max: 1000 });
+    expect((await upsertDry({ items: many(999), hide: ['c'] })).status).toBe(200);
+    // A forged listing, one by another key, and an ID off the pattern take no place.
+    const forged = finalizeEvent(
+      { kind: 30402, created_at: NOW, tags: [['d', 'forged']], content: '' },
+      server.catalogSecretKey,
+    );
+    // Through JSON, as from a relay: no cached verification travels with it.
+    const fromRelay: NostrEvent = JSON.parse(JSON.stringify({ ...forged, sig: '0'.repeat(128) }));
+    relay.events.push(
+      fromRelay,
+      finalizeEvent(
+        { kind: 30402, created_at: NOW, tags: [['d', 'other']], content: '' },
+        generateSecretKey(),
+      ),
+      finalizeEvent(
+        { kind: 30402, created_at: NOW, tags: [['d', 'odd id']], content: '' },
+        server.catalogSecretKey,
+      ),
+    );
+    expect((await upsertDry({ items: many(998) })).status).toBe(200);
+    // A product deleted after its newest version takes none either.
+    relay.events.push(
+      finalizeEvent(
+        {
+          kind: 5,
+          // After c's newest version, however the sync dated it.
+          created_at: (newestOf('c')?.created_at ?? NOW) + 1,
+          tags: [['a', `30402:${server.catalogKey}:c`]],
+          content: '',
+        },
+        server.catalogSecretKey,
+      ),
+    );
+    expect((await upsertDry({ items: many(999) })).status).toBe(200);
+    // A product cannot be both sent and hidden.
+    expect((await upsertDry({ items: [product('a')], hide: ['a'] })).body).toEqual({
+      error: 'bad_request',
+      message: 'a product cannot be sent and hidden',
+    });
+  });
+
+  it('one client address creates at most 5 new stores an hour; opening an existing one is free', async () => {
+    const { call, store } = await setup();
+    for (let index = 0; index < 5; index += 1) {
+      expect((await call('POST', '/v1/admin/store', undefined, generateSecretKey())).status).toBe(
+        200,
+      );
+    }
+    expect((await call('POST', '/v1/admin/store', undefined, generateSecretKey())).body).toEqual({
+      error: 'rate_limited',
+    });
+    // The owner of an existing store still opens it.
+    const own = await call('POST', '/v1/admin/store', undefined, store.ownerSecret);
+    expect(own.status).toBe(200);
+    expect(own.body.owner).toBe(getPublicKey(store.ownerSecret));
+  });
+
   it('policies are set and removed by the server K', async () => {
     const { call, store, relay, state } = await setup();
     const server = await state.store(store.owner);

@@ -150,11 +150,17 @@ export class AdminApi {
     return { src: `${this.base}${parsed.path}`, integrity: parsed.integrity };
   }
 
+  /** Publish only what changed: new and changed products, and the IDs of removed ones. */
   catalog(
-    items: readonly CatalogItemInput[],
+    change: { items: readonly CatalogItemInput[]; hide: readonly string[] },
     dryRun: boolean,
   ): Promise<{ diff: SyncDiff; started?: boolean }> {
-    return this.call('POST', '/v1/admin/catalog', { items, dryRun });
+    return this.call('POST', '/v1/admin/catalog', {
+      mode: 'upsert',
+      items: change.items,
+      hide: change.hide,
+      dryRun,
+    });
   }
 
   putPolicy(slug: string, policy: { title: string; body: string }): Promise<{ id: string }> {

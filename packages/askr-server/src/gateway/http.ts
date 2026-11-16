@@ -4,7 +4,7 @@ import type { GatewayRequest } from './gateway';
 const MAX_BODY_BYTES = 16 * 1024;
 /** Other admin calls: at most 20 O-signed events of 64 KiB each (7.3). */
 const MAX_ADMIN_BODY_BYTES = 2 * 1024 * 1024;
-/** `POST /v1/admin/catalog` carries a whole catalog (7.3). */
+/** `POST /v1/admin/catalog` carries a whole catalog (replace) or its changes (upsert) (7.3). */
 const MAX_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
 const ADMIN_PATH_PREFIX = '/v1/admin/';
 const CATALOG_PATH = '/v1/admin/catalog';

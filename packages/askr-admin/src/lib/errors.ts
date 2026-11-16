@@ -34,6 +34,7 @@ const CODES: Readonly<Record<string, string>> = {
   no_store: 'There is no store for this owner key yet.',
   not_found: 'The server does not know this action.',
   bad_request: 'The server could not read the request. Check the fields and retry.',
+  rate_limited: 'Too many new stores were created from this address. Try again in an hour.',
   too_many_events:
     'Too many changes are waiting to be published. Wait until your store is active and the waiting changes are published, then retry.',
   invalid_items: 'Some products are not valid. Fix the rows shown and retry.',

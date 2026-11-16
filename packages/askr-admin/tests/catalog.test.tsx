@@ -4,14 +4,19 @@ import {
   buildCatalogItemEvent,
   parseCatalogItem,
 } from '@elisym/askr';
+import type { NostrEvent } from 'nostr-tools';
+import { finalizeEvent } from 'nostr-tools/pure';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CsvImport } from '../src/components/CsvImport';
 import { ProductsSection } from '../src/components/ProductsSection';
-import { importItems, removeItem, upsertItem } from '../src/lib/catalog';
+import { changesOf, importItems, removeItem, upsertItem } from '../src/lib/catalog';
 import { MAX_CSV_BYTES } from '../src/lib/csv';
 import { inputOfListing } from '../src/lib/store-data';
 import {
+  NOW,
+  SERVER_KEY,
+  SERVER_KEY_SECRET,
   adminConfig,
   failingReader,
   fakeApi,
@@ -108,8 +113,115 @@ describe('the catalog helpers', () => {
   });
 });
 
+describe('the change a publish sends', () => {
+  it('holds new and changed products and removed IDs, nothing about the rest', () => {
+    const baseline = [MUG, TEAPOT, CUP];
+    const draft = [{ ...MUG, title: 'Big mug' }, TEAPOT, HIDDEN];
+    expect(changesOf(baseline, draft)).toEqual({
+      items: [{ ...MUG, title: 'Big mug' }, HIDDEN],
+      hide: ['cup'],
+      untouched: ['teapot'],
+    });
+  });
+
+  it('takes an equal product built another way (other key order, undefined fields) as unchanged', () => {
+    // The same fields in the reverse order, plus a field left undefined.
+    const item: CatalogItemInput = {
+      ...Object.fromEntries(Object.entries(MUG).reverse()),
+      ...MUG,
+      summary: undefined,
+    };
+    expect(changesOf([MUG], [item])).toEqual({ items: [], hide: [], untouched: ['mug'] });
+    // Inside arrays too: variants with their keys in another order.
+    const teapot: CatalogItemInput = {
+      ...TEAPOT,
+      variants: (TEAPOT.variants ?? []).map((variant) => ({
+        values: variant.values,
+        available: variant.available,
+        price: variant.price,
+        id: variant.id,
+      })),
+    };
+    expect(changesOf([TEAPOT], [teapot]).items).toEqual([]);
+    expect(
+      changesOf([MUG], [{ ...MUG, price: { ...MUG.price, amount: '12.5' } }]).items,
+    ).toHaveLength(1);
+  });
+});
+
+describe('a publish with products the editor could not read', () => {
+  it('removes a product ID the relay holds but the editor could not read', async () => {
+    const api = fakeApi();
+    const unreadable = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: NOW - 40,
+        tags: [['d', 'broken']],
+        content: '',
+      },
+      SERVER_KEY_SECRET,
+    );
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG), unreadable]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Mug'));
+    expect(container.textContent).not.toContain('broken');
+    await click(rowButton(container, 'Edit', 'Mug'));
+    await typeInto(byId(container, 'product-title'), 'Big mug');
+    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(vi.mocked(api.catalog).mock.calls[0]?.[0]).toMatchObject({ hide: ['broken'] });
+  });
+
+  it('leaves out deleted products, IDs off the pattern and forged listings, so nothing is left to publish', async () => {
+    const api = fakeApi();
+    const gone = listing({ ...TEAPOT, visibility: 'hidden' }, NOW - 60);
+    const deletion = finalizeEvent(
+      {
+        kind: 5,
+        created_at: NOW - 30,
+        tags: [['a', `30402:${SERVER_KEY}:teapot`]],
+        content: '',
+      },
+      SERVER_KEY_SECRET,
+    );
+    const offPattern = finalizeEvent(
+      { kind: 30402, created_at: NOW - 40, tags: [['d', 'odd id']], content: '' },
+      SERVER_KEY_SECRET,
+    );
+    const forged: NostrEvent = JSON.parse(
+      JSON.stringify({
+        ...finalizeEvent(
+          { kind: 30402, created_at: NOW - 40, tags: [['d', 'forged']], content: '' },
+          SERVER_KEY_SECRET,
+        ),
+        sig: '0'.repeat(128),
+      }),
+    );
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG), gone, deletion, offPattern, forged]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Mug'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(container.textContent).toContain('Nothing to publish');
+    expect(api.catalog).not.toHaveBeenCalled();
+  });
+});
+
 describe('the product editor', () => {
-  it('sends the full current list with one edit, first as a dry run, then to publish', async () => {
+  it('sends only the edited product, first as a dry run, then to publish', async () => {
     const api = fakeApi();
     const reader = fakeReader([listing(MUG), listing(TEAPOT), listing(CUP), listing(HIDDEN)]);
     const reload = vi.fn(async () => undefined);
@@ -136,25 +248,26 @@ describe('the product editor', () => {
     await click(buttonNamed(container, 'Keep this product'));
 
     await click(buttonNamed(container, 'Review changes'));
+    // The products not sent show as unchanged in the review.
+    expect(container.textContent).toContain('Unchanged: 3');
     await click(buttonNamed(container, 'Publish'));
 
     const calls = vi.mocked(api.catalog).mock.calls;
     expect(calls.map((call) => call[1])).toEqual([true, false]);
-    for (const [items] of calls) {
-      expect(items.map((item) => item.d).sort()).toEqual(['cup', 'mug', 'old', 'teapot']);
-      expect(items.find((item) => item.d === 'old')?.visibility).toBe('hidden');
-      const mug = items.find((item) => item.d === 'mug');
-      expect(mug).toMatchObject({
+    for (const [change] of calls) {
+      expect(change.hide).toEqual([]);
+      expect(change.items).toHaveLength(1);
+      expect(change.items[0]).toMatchObject({
+        d: 'mug',
         title: 'Big mug',
         sku: 'SKU-MUG',
         attrs: [{ name: 'material', value: 'clay' }],
       });
-      expect(items.find((item) => item.d === 'teapot')?.variants).toHaveLength(2);
     }
     expect(reload).toHaveBeenCalled();
   });
 
-  it('a removed product is left out, everything else is sent', async () => {
+  it('a removed product is sent by ID only, and nothing else is sent', async () => {
     const api = fakeApi();
     mounted = await mount(
       <ProductsSection
@@ -175,7 +288,33 @@ describe('the product editor', () => {
     }
     await click(removeTeapot);
     await click(buttonNamed(container, 'Review changes'));
-    expect(vi.mocked(api.catalog).mock.calls[0]?.[0].map((item) => item.d)).toEqual(['mug']);
+    expect(vi.mocked(api.catalog).mock.calls[0]?.[0]).toMatchObject({
+      items: [],
+      hide: ['teapot'],
+    });
+  });
+
+  it('says there is nothing to publish when the draft is as read, and sends nothing', async () => {
+    const api = fakeApi();
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(api, fakeReader([listing(MUG), listing(TEAPOT)]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    // Opening a product and keeping it as it is changes nothing either.
+    await click(rowButton(container, 'Edit', 'Teapot'));
+    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Review changes'));
+    expect(container.textContent).toContain(
+      'Nothing to publish: your products are as on the relay.',
+    );
+    expect(api.catalog).not.toHaveBeenCalled();
+    expect(buttonNamed(container, 'Publish').disabled).toBe(true);
   });
 
   it('sends nothing when the current catalog could not be read', async () => {
@@ -233,6 +372,7 @@ describe('the product editor', () => {
 
     await mounted.rerender(section(done));
     await settle(() => (container.textContent ?? '').includes('Teapot'));
+    // One read gives the listings and every product ID K has.
     expect(query).toHaveBeenCalledTimes(1);
     expect(buttonNamed(container, 'Review changes').disabled).toBe(false);
   });
@@ -249,6 +389,7 @@ describe('the product editor', () => {
     );
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(rowButton(container, 'Remove', 'Mug'));
     await click(buttonNamed(container, 'Review changes'));
     expect(buttonNamed(container, 'Publish').disabled).toBe(false);
     await click(rowButton(container, 'Remove', 'Teapot'));
@@ -275,7 +416,8 @@ describe('the product editor', () => {
     expect(container.textContent).toContain('another product already uses "mug"');
     await click(buttonNamed(container, 'Cancel'));
     await click(buttonNamed(container, 'Review changes'));
-    expect(vi.mocked(api.catalog).mock.calls[0]?.[0].map((item) => item.title)).toEqual(['Mug']);
+    expect(container.textContent).toContain('Nothing to publish');
+    expect(api.catalog).not.toHaveBeenCalled();
   });
 
   it('keeps the ID of a product being edited', async () => {
@@ -292,21 +434,23 @@ describe('the product editor', () => {
     await settle(() => (container.textContent ?? '').includes('Mug'));
     await click(rowButton(container, 'Edit', 'Mug'));
     await typeInto(byId(container, 'product-d'), 'renamed');
+    await typeInto(byId(container, 'product-title'), 'Mug 2');
     await click(buttonNamed(container, 'Keep this product'));
     await click(buttonNamed(container, 'Review changes'));
-    expect(vi.mocked(api.catalog).mock.calls[0]?.[0].map((item) => item.d)).toEqual(['mug']);
+    expect(vi.mocked(api.catalog).mock.calls[0]?.[0].items.map((item) => item.d)).toEqual(['mug']);
   });
 });
 
 describe('a review in flight', () => {
   function pendingCatalog() {
     let answer: (diff: typeof EMPTY_DIFF) => void = () => undefined;
-    const catalog = vi.fn((_items: readonly CatalogItemInput[], dryRun: boolean) =>
-      dryRun
-        ? new Promise<{ diff: typeof EMPTY_DIFF }>((resolve) => {
-            answer = (diff) => resolve({ diff });
-          })
-        : Promise.resolve({ diff: EMPTY_DIFF, started: true }),
+    const catalog = vi.fn(
+      (_change: { items: readonly CatalogItemInput[]; hide: readonly string[] }, dryRun: boolean) =>
+        dryRun
+          ? new Promise<{ diff: typeof EMPTY_DIFF }>((resolve) => {
+              answer = (diff) => resolve({ diff });
+            })
+          : Promise.resolve({ diff: EMPTY_DIFF, started: true }),
     );
     return { catalog, answer: (diff: typeof EMPTY_DIFF) => answer(diff) };
   }
@@ -324,6 +468,9 @@ describe('a review in flight', () => {
     );
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(rowButton(container, 'Edit', 'Mug'));
+    await typeInto(byId(container, 'product-title'), 'Big mug');
+    await click(buttonNamed(container, 'Keep this product'));
     await click(buttonNamed(container, 'Review changes'));
     // Every editing control is switched off while the review is out.
     expect(rowButton(container, 'Remove', 'Teapot').closest('fieldset')?.disabled).toBe(true);
@@ -334,10 +481,14 @@ describe('a review in flight', () => {
     expect(container.textContent).toContain('Teapot');
     await click(buttonNamed(container, 'Publish'));
     expect(
-      pending.catalog.mock.calls.map((call) => [call[0].map((item) => item.d), call[1]]),
+      pending.catalog.mock.calls.map((call) => [
+        call[0].items.map((item) => item.d),
+        call[0].hide,
+        call[1],
+      ]),
     ).toEqual([
-      [['mug', 'teapot'], true],
-      [['mug', 'teapot'], false],
+      [['mug'], [], true],
+      [['mug'], [], false],
     ]);
   });
 
@@ -356,6 +507,7 @@ describe('a review in flight', () => {
     mounted = await mount(section(storeView()));
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(rowButton(container, 'Remove', 'Teapot'));
     await click(rowButton(container, 'Edit', 'Mug'));
     expect(container.querySelector('#product-title')).not.toBeNull();
     await click(buttonNamed(container, 'Review changes'));

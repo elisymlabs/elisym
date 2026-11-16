@@ -1,7 +1,9 @@
 import {
+  ASKR_RELAYS,
   CONNECTOR_PLATFORMS,
   type CatalogItemInput,
   CatalogItemInputSchema,
+  D_TAG_RE,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
   PolicyInputSchema,
@@ -12,7 +14,7 @@ import {
   setPolicy,
   syncCatalog,
 } from '@elisym/askr';
-import { HEX_PUBKEY_RE } from '@elisym/commerce';
+import { HEX_PUBKEY_RE, KIND_PRODUCT } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
@@ -20,6 +22,7 @@ import { publicBaseOf } from '../config';
 import type { ConnectorService } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
+import { WindowLimiter, ipKey } from '../gateway/limits';
 import { randomId } from '../state/pg-state';
 import type { CatalogSyncStatus, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
@@ -27,6 +30,9 @@ import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
 export const ADMIN_PREFIX = '/v1/admin/';
 const KIND_DELETION = 5;
+/** New stores one client address may create per hour (the onboarding needs one). */
+const NEW_STORES_PER_IP_PER_HOUR = 5;
+const HOUR_MS = 60 * 60 * 1000;
 const MAX_EVENTS_PER_REQUEST = 20;
 const MAX_EVENT_BYTES = 64 * 1024;
 /**
@@ -53,10 +59,55 @@ const EventsRequestSchema = z.object({
   events: z.array(EventSchema).min(1).max(MAX_EVENTS_PER_REQUEST),
 });
 
+/** A bound on `hide`; the 8 MB body cap usually ends a long list first. */
+const MAX_HIDE = 100_000;
+
+/**
+ * `replace` (default): `items` is the whole catalog. `upsert`: `items` are the
+ * new and changed products and `hide` the removed ones; every other product
+ * stays as it is, so the admin sends only what changed.
+ */
 const CatalogRequestSchema = z.object({
   items: z.array(z.unknown()),
   dryRun: z.boolean().optional(),
+  mode: z.enum(['replace', 'upsert']).optional(),
+  hide: z.array(z.string().regex(D_TAG_RE)).max(MAX_HIDE).optional(),
 });
+
+/**
+ * Every product ID K lists on the relay, hidden ones included (a replace
+ * counts hidden products too): a valid `d` whose newest signed version,
+ * however dated, is not deleted (NIP-09) at or after it. The admin reads the
+ * same IDs (`readCatalog`) and removes the ones its draft does not hold.
+ */
+async function listedOnRelay(client: SyncRelayClient, key: string): Promise<Set<string>> {
+  const events = await client.query(ASKR_RELAYS, {
+    kinds: [KIND_PRODUCT, KIND_DELETION],
+    authors: [key],
+  });
+  const genuine = events.filter((event) => event.pubkey === key && verifyEvent(event));
+  const newest = new Map<string, number>();
+  for (const event of genuine) {
+    const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
+    if (event.kind === KIND_PRODUCT && d !== undefined && D_TAG_RE.test(d)) {
+      newest.set(d, Math.max(newest.get(d) ?? -1, event.created_at));
+    }
+  }
+  const deletedAt = new Map<string, number>();
+  const prefix = `${KIND_PRODUCT}:${key}:`;
+  for (const event of genuine) {
+    if (event.kind !== KIND_DELETION) {
+      continue;
+    }
+    for (const tag of event.tags) {
+      if (tag[0] === 'a' && tag[1]?.startsWith(prefix)) {
+        const d = tag[1].slice(prefix.length);
+        deletedAt.set(d, Math.max(deletedAt.get(d) ?? -1, event.created_at));
+      }
+    }
+  }
+  return new Set([...newest].flatMap(([d, at]) => ((deletedAt.get(d) ?? -1) >= at ? [] : [d])));
+}
 
 const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
 
@@ -244,27 +295,76 @@ export function createAdminApi(
     if (!items.success) {
       return json({ error: 'invalid_items', issues: items.error.issues.slice(0, 20) }, 400);
     }
-    if (store.tier !== undefined && items.data.length > store.tier.maxProducts) {
-      return json({ error: 'too_many_products', max: store.tier.maxProducts }, 400);
+    const upsert = parsed.data.mode === 'upsert';
+    if (!upsert && parsed.data.hide !== undefined) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    const hide = parsed.data.hide ?? [];
+    const sent = new Set(items.data.map((item) => item.d));
+    if (hide.some((d) => sent.has(d))) {
+      return json({ error: 'bad_request', message: 'a product cannot be sent and hidden' }, 400);
     }
     const dryRun = parsed.data.dryRun === true;
+    const change = upsert ? { mode: 'upsert' as const, hide } : {};
     const started = await withSyncGuard(store.owner, (holder, release) =>
-      startSync(store, items.data, dryRun, holder, release),
+      startSync(store, items.data, change, dryRun, holder, release),
     );
     return started ?? json({ error: 'sync_running' }, 409);
+  };
+
+  /**
+   * The catalog's size after this request, or a refusal: a replace is its
+   * items; an upsert is what K lists on the relay, changed as asked. Run
+   * under the sync guard, so two requests cannot both pass against the same
+   * catalog.
+   */
+  const overTier = async (
+    store: StoreRecord,
+    items: readonly CatalogItemInput[],
+    change: { mode?: 'upsert'; hide?: string[] },
+  ): Promise<Response | undefined> => {
+    if (store.tier === undefined) {
+      return undefined;
+    }
+    let total = items.length;
+    if (change.mode === 'upsert') {
+      let listed: Set<string>;
+      try {
+        listed = await listedOnRelay(deps.syncClient, store.catalogKey);
+      } catch (error) {
+        return json({ error: 'sync_refused', message: errorText(error) }, 409);
+      }
+      for (const d of change.hide ?? []) {
+        listed.delete(d);
+      }
+      for (const item of items) {
+        listed.add(item.d);
+      }
+      total = listed.size;
+    }
+    return total > store.tier.maxProducts
+      ? json({ error: 'too_many_products', max: store.tier.maxProducts }, 400)
+      : undefined;
   };
 
   const startSync = async (
     store: StoreRecord,
     items: CatalogItemInput[],
+    change: { mode?: 'upsert'; hide?: string[] },
     dryRun: boolean,
     holder: string,
     release: (ended?: CatalogSyncStatus) => Promise<void>,
   ): Promise<Response> => {
+    const refused = await overTier(store, items, change);
+    if (refused !== undefined) {
+      await release();
+      return refused;
+    }
     const options = {
       signer: store.catalogSecretKey,
       store: store.owner,
       items,
+      ...change,
       client: deps.syncClient,
       ...(deps.syncPace === undefined ? {} : { pace: deps.syncPace }),
     };
@@ -317,7 +417,9 @@ export function createAdminApi(
     }
   };
 
-  return async ({ request }) => {
+  const storesPerIp = new WindowLimiter(NEW_STORES_PER_IP_PER_HOUR, HOUR_MS);
+
+  return async ({ request, clientAddress }) => {
     const url = new URL(request.url);
     if (!url.pathname.startsWith(ADMIN_PREFIX)) {
       return undefined;
@@ -342,7 +444,16 @@ export function createAdminApi(
     const owner = auth.pubkey;
     const route = `${request.method} ${url.pathname}`;
     if (route === 'POST /v1/admin/store') {
-      // Onboarding (7.3): anyone may create a store, which starts pending (K19).
+      // Onboarding (7.3): anyone may create a store, which starts pending (K19). Opening an
+      // existing one is free; a new one counts per client address, so fresh keys cannot fill
+      // the database with pending stores.
+      const existing = await deps.directory.store(owner);
+      if (existing !== undefined) {
+        return json(await view(existing), 200);
+      }
+      if (!storesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
+        return json({ error: 'rate_limited' }, 429);
+      }
       return json(await view(await deps.directory.createStore(owner, now())), 200);
     }
     const store = await deps.directory.store(owner);
