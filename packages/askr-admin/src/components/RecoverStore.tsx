@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../lib/errors';
+import { forgetKey, nextTask, rememberKey } from '../lib/remembered';
 import {
   type OwnerKey,
   type Signer,
@@ -12,6 +13,7 @@ import {
 import { CopyBlock } from './CopyBlock';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
+import { type RememberHandle, RememberOption } from './RememberOption';
 import { TextField } from './TextField';
 
 interface Props {
@@ -42,6 +44,7 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
   const [typed, setTyped] = useState(storeId);
   const [haveKey, setHaveKey] = useState(false);
   const keyInput = useRef<HTMLInputElement>(null);
+  const remember = useRef<RememberHandle>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -70,17 +73,31 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
   if (state.step === 'proof') {
     const { from, key } = state;
     const move = async () => {
+      const choice = remember.current?.read() ?? { kind: 'off' };
+      if (choice.kind === 'invalid') {
+        setError(choice.message);
+        return;
+      }
       setBusy(true);
       setError('');
       const signer = secretKeySigner(key.secretKey);
       try {
         await recover(signer, from, false);
-        onDone(signer);
       } catch (failure) {
         setError(errorMessage(failure));
-      } finally {
         setBusy(false);
+        return;
       }
+      // The old key opens no store any more: this device stops remembering it either way. The
+      // store has moved by now, so a browser refusing either write only means signing in with
+      // the key next time (the option is offered only where storage works).
+      forgetKey(from);
+      if (choice.kind === 'on') {
+        await nextTask();
+        rememberKey(key.secretKey, choice.password);
+      }
+      setBusy(false);
+      onDone(signer);
     };
     return (
       <main className="mx-auto flex min-h-screen max-w-640 flex-col justify-center gap-16 px-16 py-40">
@@ -102,6 +119,11 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
             Only a site your store has listed for at least three days counts, so someone who stole
             your key cannot add a site of their own and take the store.
           </p>
+          <RememberOption
+            ref={remember}
+            id="moved-key"
+            label="Remember the new key on this device once the store moved"
+          />
           {error === '' ? null : <Notice tone="error">{error}</Notice>}
           <div className="flex gap-8">
             <button

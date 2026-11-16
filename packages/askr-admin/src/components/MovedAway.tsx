@@ -1,12 +1,15 @@
+import { ForgetOnDevice } from './ForgetOnDevice';
 import { Notice } from './Notice';
 
 interface Props {
   onTakeBack: () => void;
   onSignOut: () => void;
+  /** The key signed in with (hex), which this device may still remember. */
+  store: string;
 }
 
 /** Signed in with a key the store moved away from (K21): sign in with the new one, or take it back. */
-export function MovedAway({ onTakeBack, onSignOut }: Props) {
+export function MovedAway({ onTakeBack, onSignOut, store }: Props) {
   return (
     <main className="mx-auto flex min-h-screen max-w-560 flex-col justify-center gap-16 px-16 py-40">
       <h1 className="text-24 font-semibold">Your store moved to another secret key</h1>
@@ -23,6 +26,7 @@ export function MovedAway({ onTakeBack, onSignOut }: Props) {
           Sign out
         </button>
       </div>
+      <ForgetOnDevice store={store} />
     </main>
   );
 }

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { CopyBlock } from './CopyBlock';
+import { DownloadKey } from './DownloadKey';
 import { Notice } from './Notice';
 
 interface Props {
@@ -7,10 +8,12 @@ interface Props {
   npub: string;
   onContinue: () => void;
   onCancel: () => void;
+  /** More choices before Continue, such as remembering the key on this device. */
+  children?: ReactNode;
 }
 
 /** A new owner key, shown once, with a clear warning to save it. */
-export function NewOwnerKey({ nsec, npub, onContinue, onCancel }: Props) {
+export function NewOwnerKey({ nsec, npub, onContinue, onCancel, children }: Props) {
   const [saved, setSaved] = useState(false);
   return (
     <main className="mx-auto flex min-h-screen max-w-560 flex-col justify-center gap-16 px-16 py-40">
@@ -22,6 +25,7 @@ export function NewOwnerKey({ nsec, npub, onContinue, onCancel }: Props) {
       <div className="card flex flex-col gap-16">
         <CopyBlock label="Secret key (keep private)" text={nsec} />
         <CopyBlock label="Store ID (public: it names your store in the chat code)" text={npub} />
+        <DownloadKey nsec={nsec} npub={npub} />
         <label className="text-14 flex items-center gap-8">
           <input
             type="checkbox"
@@ -30,6 +34,7 @@ export function NewOwnerKey({ nsec, npub, onContinue, onCancel }: Props) {
           />
           I saved the secret key somewhere safe
         </label>
+        {children}
         <div className="flex gap-8">
           <button type="button" className="btn btn-primary" disabled={!saved} onClick={onContinue}>
             Continue
