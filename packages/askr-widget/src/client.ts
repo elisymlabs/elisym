@@ -537,6 +537,11 @@ export class ChatClient {
             }
             return;
           }
+          // The gateway could not be asked: try again later rather than give up on the page.
+          if (moved.kind === 'error') {
+            this.scheduleRecovery();
+            return;
+          }
           this.setPhase('failed');
           this.stop();
           return;

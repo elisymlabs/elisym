@@ -81,7 +81,48 @@ export interface ShopHttpDeps {
   signal?: AbortSignal;
   /** Wait at most this long for an origin's slot; a later one fails the request at once. */
   maxSlotWaitMs?: number;
+  /**
+   * Pages read lately, shared by every ShopHttp given the same cache: a page
+   * read within `ttlMs` is answered from it, with no request and no slot.
+   */
+  cache?: PageCache;
 }
+
+/** Recent page reads by URL (K21): many proofs of one store read its pages once. */
+export class PageCache {
+  private readonly pages = new Map<string, { at: number; response: Promise<GuardedResponse> }>();
+
+  constructor(
+    private readonly ttlMs: number,
+    private readonly clock: () => number = Date.now,
+  ) {}
+
+  /** A recent read of `url`, or the one `read` starts now and leaves here while it is fresh. */
+  get(url: string, read: () => Promise<GuardedResponse>): Promise<GuardedResponse> {
+    const now = this.clock();
+    const cached = this.pages.get(url);
+    if (cached !== undefined && now - cached.at < this.ttlMs) {
+      return cached.response;
+    }
+    if (this.pages.size >= MAX_CACHED_PAGES) {
+      for (const [stored, entry] of this.pages) {
+        if (now - entry.at >= this.ttlMs) {
+          this.pages.delete(stored);
+        }
+      }
+    }
+    const response = read();
+    // A failed read is not kept: the next proof tries again.
+    response.catch(() => this.pages.delete(url));
+    if (this.pages.size < MAX_CACHED_PAGES) {
+      this.pages.set(url, { at: now, response });
+    }
+    return response;
+  }
+}
+
+/** Pages a PageCache keeps at most. */
+const MAX_CACHED_PAGES = 1_000;
 
 function originOf(url: string): string {
   try {
@@ -126,6 +167,13 @@ export class ShopHttp {
   }
 
   async get(url: string, request: GuardedRequest): Promise<GuardedResponse> {
+    const cache = this.deps.cache;
+    return cache === undefined
+      ? this.read(url, request)
+      : cache.get(url, () => this.read(url, request));
+  }
+
+  private async read(url: string, request: GuardedRequest): Promise<GuardedResponse> {
     await this.take(originOf(url));
     try {
       return await guardedFetch(

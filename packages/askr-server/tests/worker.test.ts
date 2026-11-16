@@ -548,7 +548,8 @@ describe('worker wraps (2.4)', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect((await lastSeenOf(setup, store.owner))[0]).toBe(0);
     setup.clock.now += ORIGINS_NOTE_EVERY_SECS + 1;
-    setup.worker.noteLoadedOrigins();
+    // The periodic sweep is what notes them again.
+    setup.worker.sweepTick();
     await waitUntil(async () => (await lastSeenOf(setup, store.owner))[0] === setup.clock.now);
   });
 

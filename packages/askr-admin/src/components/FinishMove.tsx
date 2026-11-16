@@ -58,7 +58,9 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
     setLoad({ state: 'loading' });
     try {
       const moved = await deps.api.movedSettings();
-      const [event] = ownSignedEvents([moved.config], moved.from);
+      // Signed by the key named, or it is not taken: the server holds the settings, the old key signed them.
+      const [event] =
+        moved.signedBy === null ? [] : ownSignedEvents([moved.config], moved.signedBy);
       const config = event === undefined ? undefined : parseConfig(event);
       if (config === undefined) {
         setLoad({ state: 'ready', form: EMPTY_FORM, found: false, privateLost: false });

@@ -113,7 +113,12 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     previewConnector: vi.fn(async () => ({ result: { status: 'error' as const, message: 'x' } })),
     enableConnector: vi.fn(async () => ({ connector: null })),
     rotateAssistant: vi.fn(async () => ({ nextAssistant: ASSISTANT })),
-    movedSettings: vi.fn(async () => ({ from: ASSISTANT, config: null, private: null })),
+    movedSettings: vi.fn(async () => ({
+      from: ASSISTANT,
+      signedBy: null,
+      config: null,
+      private: null,
+    })),
     recover: vi.fn(async () => storeView()),
     ...overrides,
   };

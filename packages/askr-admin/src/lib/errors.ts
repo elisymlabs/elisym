@@ -112,7 +112,7 @@ export function errorMessage(error: unknown): string {
     const readyAt = error.detail.readyAt;
     return typeof readyAt === 'number'
       ? `Your store has not listed its site long enough to prove it is yours. Try again after ${new Date(readyAt * 1000).toLocaleString()}.`
-      : "None of your store's sites can prove it: none is listed, they are on shared hosting (like vercel.app), or they were dropped from the settings over 30 days ago. Contact us.";
+      : "None of your store's sites can prove it: none is listed, they are on shared hosting (like vercel.app), or they were dropped from the settings, or the store has not been served, for over 30 days. Contact us.";
   }
   if (error.code === 'site_not_proven') {
     const unlisted = error.detail.unlisted;

@@ -95,6 +95,8 @@ async function setup(options: Options = {}) {
     configFor: () => undefined,
     limiter: new ShopRateLimiter(0),
     proofLimiter: new ShopRateLimiter(0),
+    // A test changes the shop's page between proofs: none is kept.
+    proofPageCacheMs: 0,
     fetch: web.deps(),
   });
   const api = createAdminApi({
@@ -699,6 +701,8 @@ describe('review round 3 (K21)', () => {
     expect((await recover(store.owner, owner)).status).toBe(200);
     const settings = await call('GET', '/v1/admin/store/moved-settings', owner);
     expect(settings.body.config.pubkey).toBe(store.owner);
+    expect(settings.body.from).toBe(getPublicKey(thief));
+    expect(settings.body.signedBy).toBe(store.owner);
     expect(settings.body.private).toEqual({ voice: 'warm', instructions: 'Sell tea', notes: 'n' });
   });
 
@@ -766,5 +770,86 @@ describe('the proof limiter (K21)', () => {
     await expect(limiter.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
     await expect(limiter.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
     await limiter.acquire(SHOP);
+  });
+});
+
+describe('site reads of a proof (K21, review round 4)', () => {
+  async function service(
+    web: FakeWeb,
+    options: { proofLimiter?: ShopRateLimiter; deadlineMs?: number; slowMs?: number },
+  ) {
+    const fast = web.deps();
+    const slowMs = options.slowMs ?? 0;
+    const fetch = {
+      ...fast,
+      transport: async (request: Parameters<NonNullable<typeof fast.transport>>[0]) => {
+        await new Promise((resolve) => setTimeout(resolve, slowMs));
+        if (fast.transport === undefined) {
+          throw new Error('no transport');
+        }
+        return fast.transport(request);
+      },
+    };
+    return new ConnectorService({
+      directory: (await stateWith([])).directory,
+      holder: HOLDER,
+      client: new MemoryRelay(),
+      configFor: () => undefined,
+      limiter: new ShopRateLimiter(3_600_000),
+      ...(options.proofLimiter === undefined ? {} : { proofLimiter: options.proofLimiter }),
+      fetch,
+      ...(options.deadlineMs === undefined ? {} : { previewDeadlineMs: options.deadlineMs }),
+    });
+  }
+  const OWNER_NPUB_OF = (owner: string) => npubEncode(owner);
+
+  it('tries the next site when one is busy, and paces with its own limiter, never the connector one', async () => {
+    const owner = getPublicKey(generateSecretKey());
+    const second = 'https://second.example';
+    const web = new FakeWeb().route(`${second}/.well-known/askr`, {
+      headers: { 'content-type': 'text/plain' },
+      body: OWNER_NPUB_OF(owner),
+    });
+    const proofLimiter = new ShopRateLimiter(
+      60_000,
+      () => 0,
+      async () => undefined,
+    );
+    // The first site's next slot is a minute off: busy for a proof.
+    await proofLimiter.acquire(SHOP);
+    // The connector limiter here would hold every read an hour: a proof using it would never end.
+    const result = await (await service(web, { proofLimiter })).proveSite([SHOP, second], owner);
+    expect(result).toEqual({ proven: second });
+  });
+
+  it('reads a page once for many proofs within half a minute', async () => {
+    const owner = getPublicKey(generateSecretKey());
+    const web = new FakeWeb().route(`${SHOP}/`, {
+      headers: { 'content-type': 'text/html' },
+      body: '<html></html>',
+    });
+    const proofs = await service(web, { proofLimiter: new ShopRateLimiter(0) });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await proofs.proveSite([SHOP], owner);
+    }
+    expect(web.urls.filter((url) => url === `${SHOP}/`)).toHaveLength(1);
+  });
+
+  it('names every site not tried yet as unread once out of time', async () => {
+    const owner = getPublicKey(generateSecretKey());
+    const web = new FakeWeb();
+    const proofs = await service(web, {
+      proofLimiter: new ShopRateLimiter(0),
+      deadlineMs: 5,
+      slowMs: 30,
+    });
+    const result = await proofs.proveSite([SHOP, 'https://b.example', 'https://c.example'], owner);
+    expect(result).toEqual({
+      failures: [
+        { origin: SHOP, reason: 'fetch_failed' },
+        { origin: 'https://b.example', reason: 'fetch_failed' },
+        { origin: 'https://c.example', reason: 'fetch_failed' },
+      ],
+    });
   });
 });

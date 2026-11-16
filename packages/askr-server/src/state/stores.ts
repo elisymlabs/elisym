@@ -12,7 +12,14 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { type Db, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import { type HeldOrigin, ORIGIN_PROOF_AGE_SECS, noteOrigins } from './origins';
-import { STORE_SELECT, followMoves, monthStartDay, storeOf, utcDay } from './pg-state';
+import {
+  MAX_MOVE_HOPS,
+  STORE_SELECT,
+  followMoves,
+  monthStartDay,
+  storeOf,
+  utcDay,
+} from './pg-state';
 import type { StoreRecord, StoreStatus, Tier } from './types';
 
 /** Postgres' unique_violation. */
@@ -515,6 +522,22 @@ export class StoreDirectory {
   async wasMoved(owner: string): Promise<boolean> {
     const rows = await this.db.query('select 1 from store_moves where from_owner = $1', [owner]);
     return rows.length > 0;
+  }
+
+  /** Every owner key this store had before `owner`, the most recent first (K21). */
+  async formerOwners(owner: string): Promise<string[]> {
+    const rows = await this.db.query<{ owner: string }>(
+      `with recursive chain (owner, hops) as (
+         select $1::text, 0
+         union all
+         select m.from_owner, chain.hops + 1 from store_moves m
+         join chain on m.to_owner = chain.owner
+         where chain.hops < $2
+       )
+       select owner from chain where hops > 0 order by hops`,
+      [owner, MAX_MOVE_HOPS],
+    );
+    return rows.map((row) => row.owner);
   }
 
   /** The owner key this store last moved from, and the settings it had signed (K21). */

@@ -70,6 +70,17 @@ export const SHARED_HOST_SUFFIXES: readonly string[] = [
   '.deno.dev',
   '.up.railway.app',
   '.r2.dev',
+  '.amazonaws.com',
+  '.elasticbeanstalk.com',
+  '.azureedge.net',
+  '.trafficmanager.net',
+  '.cloudapp.net',
+  '.replit.app',
+  '.replit.dev',
+  '.ghost.io',
+  '.bitbucket.io',
+  '.readthedocs.io',
+  '.myportfolio.com',
 ];
 
 export interface HeldOrigin {

@@ -97,10 +97,14 @@ function oldAuthorizations(): NostrEvent[] {
   );
 }
 
-function movedDeps(config: NostrEvent | null, privatePart: unknown = PRIVATE_PART): SessionDeps {
+function movedDeps(
+  config: NostrEvent | null,
+  privatePart: unknown = PRIVATE_PART,
+  chain: { from: string; signedBy: string | null } = { from: OLD, signedBy: OLD },
+): SessionDeps {
   const api = fakeApi({
-    store: vi.fn(async () => storeView({ movedFrom: OLD, assistant: ASSISTANT })),
-    movedSettings: vi.fn(async () => ({ from: OLD, config, private: privatePart })),
+    store: vi.fn(async () => storeView({ movedFrom: chain.from, assistant: ASSISTANT })),
+    movedSettings: vi.fn(async () => ({ ...chain, config, private: privatePart })),
   });
   return sessionDeps(api, fakeReader(oldAuthorizations()));
 }
@@ -156,6 +160,20 @@ describe('finishing a move to a new secret key (K21)', () => {
     const notOld = await mountMoved(movedDeps(forged));
     expect(notOld.textContent).toContain('could not be found');
     expect(nameField(notOld)).toBe('');
+  });
+
+  it('takes the settings an earlier key signed when the key moved from signed none', async () => {
+    const thief = getPublicKey(generateSecretKey());
+    const container = await mountMoved(
+      movedDeps(oldConfig(), PRIVATE_PART, { from: thief, signedBy: OLD }),
+    );
+    expect(nameField(container)).toBe('Moved Tea');
+    await mounted?.unmount();
+    // Named as signed by the key moved from, but it was not: not taken.
+    const wrong = await mountMoved(
+      movedDeps(oldConfig(), PRIVATE_PART, { from: thief, signedBy: thief }),
+    );
+    expect(nameField(wrong)).toBe('');
   });
 
   it('says when the private instructions could not be read, and when Pay Core needs relinking', async () => {

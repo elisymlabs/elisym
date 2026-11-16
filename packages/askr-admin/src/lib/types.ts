@@ -91,6 +91,11 @@ export interface StoreView {
 export interface MovedSettings {
   /** The previous owner key, hex. */
   from: string;
+  /**
+   * The store's earlier key that signed `config`: `from`, or one before it when
+   * `from` signed nothing. Null with no settings.
+   */
+  signedBy: string | null;
   /** Its newest config event, unchecked: the admin checks it like relay data. */
   config: unknown;
   /** Its private part, as the server read it with the assistant key. */

@@ -174,6 +174,14 @@ export class Worker {
    */
   private readonly notedOrigins = new Map<string, { at: number; origins: string }>();
 
+  /** One run of the periodic sweep: stale state, and the origins due to be noted again. */
+  sweepTick(): void {
+    this.deps.state.sweep(this.now()).catch((error: unknown) => {
+      this.log(`sweep failed: ${error instanceof Error ? error.message : 'unknown'}`);
+    });
+    this.noteLoadedOrigins();
+  }
+
   /**
    * Record again the origins of every store served here, once they are due:
    * a quiet store is not reloaded, yet its sites are still listed (K21).
@@ -303,12 +311,7 @@ export class Worker {
     }
     this.openWraps();
     this.leaseTimer = setInterval(() => void this.refreshLeases(), LEASE_RENEW_MS);
-    this.sweepTimer = setInterval(() => {
-      this.deps.state.sweep(this.now()).catch((error: unknown) => {
-        this.log(`sweep failed: ${error instanceof Error ? error.message : 'unknown'}`);
-      });
-      this.noteLoadedOrigins();
-    }, SWEEP_INTERVAL_MS);
+    this.sweepTimer = setInterval(() => this.sweepTick(), SWEEP_INTERVAL_MS);
   }
 
   /**

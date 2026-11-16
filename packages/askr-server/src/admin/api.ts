@@ -677,7 +677,20 @@ export function createAdminApi(
         config === undefined
           ? undefined
           : keys.map((key) => decryptPrivateConfig(config, key)).find((part) => part !== undefined);
-      return json({ from: moved.from, config: moved.config, private: privatePart ?? null }, 200);
+      // The key that signed them: the one moved from, or an earlier key of this store when that one
+      // signed nothing. Any other signer is not this store's, and the settings are not given.
+      const former = await deps.directory.formerOwners(owner);
+      const signedBy =
+        moved.config !== null && former.includes(moved.config.pubkey) ? moved.config.pubkey : null;
+      return json(
+        {
+          from: moved.from,
+          signedBy,
+          config: signedBy === null ? null : moved.config,
+          private: signedBy === null ? null : (privatePart ?? null),
+        },
+        200,
+      );
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);

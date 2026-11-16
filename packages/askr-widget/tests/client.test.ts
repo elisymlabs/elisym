@@ -144,6 +144,13 @@ describe('bootstrap', () => {
     expect(setup.client.snapshot().movedTo).toBe(moved.owner.pubkey);
   });
 
+  it('tries again later, never fails, when the gateway cannot be asked about a store with no config (K21)', async () => {
+    const setup = harness({}, { relay: new FakeRelay() });
+    setup.gateway.mode = 'error';
+    await started(setup);
+    expect(setup.client.snapshot().phase).not.toBe('failed');
+  });
+
   it('stays unavailable when the moved store does not list this page, or has no config (K21)', async () => {
     const elsewhere = harness();
     const moved = makeStore({ origins: ['https://other.example'] });
