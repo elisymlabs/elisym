@@ -43,12 +43,11 @@ const SYMBOLS: ReadonlyArray<[string, readonly string[]]> = [
 // cspell:disable
 /**
  * One-letter dollar prefixes are size letters as often ("Kids S$19.99", "S/M/L$40"): they pin
- * the sign only at the start of a string or glued after CJK text or a colon ("售价S$45"); anywhere
- * else the sign is read alone, as before.
+ * the sign only at the start of a string or glued after Han, hiragana or Hangul ("售价S$45",
+ * "価格はS$45"); after katakana ("サイズS$59"), a colon or a space the sign is read alone.
  */
 const ONE_LETTER_DOLLARS: readonly string[] = ['S$', 'J$'];
-const ONE_LETTER_DOLLAR_AFTER_RE =
-  /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}ー:]$/u;
+const ONE_LETTER_DOLLAR_AFTER_RE = /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Hangul}]$/u;
 
 /** Currency words: a stem and its explicit endings only, so "buckles" or "рубашки" are not money. */
 const WORDS: ReadonlyArray<[RegExp, readonly string[]]> = [
@@ -1579,6 +1578,11 @@ const CJK_CURRENCIES: ReadonlyArray<[string, readonly string[]]> = [
   ['索尔', ['PEN']],
   ['索爾', ['PEN']],
   ['딸라', ['USD']],
+  // 미 alone is no qualifier: "미원 3,000원" is a seasoning brand.
+  ['미 달러', ['USD']],
+  ['미달러', ['USD']],
+  ['미 달러화', ['USD']],
+  ['미달러화', ['USD']],
   ['달러화', ['USD']],
   ['딸라화', ['USD']],
   ['엔화', ['JPY']],
@@ -1712,7 +1716,7 @@ const CJK_QUALIFIERS: ReadonlyArray<[readonly string[], readonly string[]]> = [
   [['南アフリカ', '南非', '남아공', '남아프리카'], ['ZAR']],
   [['アルゼンチン', '阿根廷', '아르헨티나'], ['ARS']],
   [['トルコ', '土耳其', '튀르키예', '터키'], ['TRY']],
-  [['米国', '合衆国', 'アメリカ合衆国', '미'], ['USD']],
+  [['米国', '合衆国', 'アメリカ合衆国'], ['USD']],
   [['豪州'], ['AUD']],
   [['MX'], ['MXN']],
   [['TW', 'タイワン', '타이완', '뉴타이완', '신대만', 'ニュー台湾', '新台湾', '新台灣'], ['TWD']],
@@ -1859,7 +1863,7 @@ const CJK_SUBUNITS = String.raw`(?:\s?零?(?<tenths>[\d一二三四五六七八�
 /** Cents after a dollar word: "249ドル50セント". */
 const CJK_CENTS = String.raw`\s?(?<cents>\d{1,2})\s?(?:セント|센트|美分)`;
 const CJK_AMOUNT_RE = new RegExp(
-  String.raw`(?:(?:(?<beforeQualifier>${KNOWN_QUALIFIER})[\s・]?)?(?<before>${CJK_CURRENCY})${CJK_PREFIX_GAP})?(?<lower>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC})(?:${CJK_RANGE}(?<upper>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC}))?${CJK_APPROXIMATE}(?<gap>\s?)(?:(?:(?<afterQualifier>${CJK_QUALIFIER})[\s・]?)?(?<after>${CJK_CURRENCY})(?:${CJK_CENTS}|${CJK_SUBUNITS})|(?<latin>${LATIN_CURRENCY}))?`,
+  String.raw`(?:(?:(?<beforeQualifier>${KNOWN_QUALIFIER})[\s・ー]?)?(?<before>${CJK_CURRENCY})${CJK_PREFIX_GAP})?(?<lower>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC})(?:${CJK_RANGE}(?<upper>${CJK_EXPRESSION}|${WESTERN_THOUSANDS}|${CJK_ARABIC}))?${CJK_APPROXIMATE}(?<gap>\s?)(?:(?:(?<afterQualifier>${CJK_QUALIFIER})[\s・ー]?)?(?<after>${CJK_CURRENCY})(?:${CJK_CENTS}|${CJK_SUBUNITS})|(?<latin>${LATIN_CURRENCY}))?`,
   'gu',
 );
 const HAN_RE = /^\p{Script=Han}$/u;
@@ -2265,6 +2269,8 @@ const TERNARY_AFTER: readonly string[] = ['锂', '鋰', '系'];
 const DATE_YUAN_AFTER: readonly string[] = ['旦', '宵', '気', '氣'];
 /** 日圆 / 日圓 in a date before 圆满 ("3日圆满结束", "3日圆满落幕"); 满额 / 满减 stay money. */
 const DATE_ROUND_RE = /^[满滿](?![额額减減])/u;
+/** A day of the month, the only number before a date's 日. */
+const DAY_RE = /^(?:[1-9]|[12]\d|3[01])$/u;
 /** 一円 as "the whole area" (関東一円に): a place before it, a particle after it... */
 const AREA_PARTICLES: readonly string[] = ['に', 'で', 'の', 'を', 'へ'];
 /** ...but not a fee or a price before it (税込一円で, 送料一円で). */
@@ -2387,7 +2393,7 @@ function notMoney(context: TokenContext): boolean {
     return (
       startsWithAny(DATE_YUAN_AFTER) ||
       previous === '月' ||
-      (token !== '日元' && DATE_ROUND_RE.test(rest))
+      (token !== '日元' && DAY_RE.test(expression) && DATE_ROUND_RE.test(rest))
     );
   }
   if (token === '円' && (rest.startsWith('玉') || rest.startsWith('ショップ'))) {
@@ -2537,11 +2543,6 @@ function subunitsOf(
 }
 
 /**
- * Add the CJK amounts. A token reading of the same amount cut short ("¥3.7" of "¥3.7万",
- * "7000円" of "3万7000円") is replaced; any other reading stays and must pass on its own,
- * and a reading glued to a CJK magnitude ("$3.7万", "US$249万") loses its value.
- */
-/**
  * Whether a currency word counts on its own: a QUALIFIED_ONLY word only after a qualifier that
  * applies, or in a store of its own currency.
  */
@@ -2557,6 +2558,11 @@ function standsAsMoney(
   );
 }
 
+/**
+ * Add the CJK amounts. A token reading of the same amount cut short ("¥3.7" of "¥3.7万",
+ * "7000円" of "3万7000円") is replaced; any other reading stays and must pass on its own,
+ * and a reading glued to a CJK magnitude ("$3.7万", "US$249万") loses its value.
+ */
 function scanCjk(
   text: string,
   found: MoneyAmount[],
@@ -2613,16 +2619,13 @@ function scanCjk(
       groups.after === undefined
         ? 'none'
         : qualifierUse(groups.afterQualifier, groups.after, text, afterEnd);
+    const afterQualifier = afterUse === 'applies' ? groups.afterQualifier : undefined;
     const afterCounts =
       afterToken !== undefined &&
       afterUse !== 'word' &&
       // 불 and 刀 are money only glued to the number; after 多 too ("300多刀"), with no value.
       !(GLUED_ONLY.includes(afterToken) && gapBeforeToken.length > 0) &&
-      standsAsMoney(
-        afterToken,
-        afterUse === 'applies' ? groups.afterQualifier : undefined,
-        storeCurrency,
-      ) &&
+      standsAsMoney(afterToken, afterQualifier, storeCurrency) &&
       !notMoney({
         text,
         token: afterToken,
@@ -2633,7 +2636,9 @@ function scanCjk(
         gapBeforeToken,
       });
     if (afterToken !== undefined && !afterCounts) {
-      // A word, not money ("3원색", "3元系"): no token reading of it either.
+      // A word, not money ("3원색", "3元系"): no token reading of it either. A reading with its
+      // own sign or code before the number ("$49 동일", "₩49,000 동시") starts before the span
+      // and stays.
       exempt.push({ from: lowerAt, to: afterEnd });
     }
     const sides = [
@@ -2642,7 +2647,7 @@ function scanCjk(
         ? [
             {
               token: afterToken,
-              qualifier: afterUse === 'applies' ? groups.afterQualifier : undefined,
+              qualifier: afterQualifier,
             },
           ]
         : []),
@@ -2720,7 +2725,7 @@ function scanCjk(
   const kept = found.filter(
     (amount) =>
       !exempt.some(
-        (span) => amount.numberIndex >= span.from && amount.index + amount.raw.length <= span.to,
+        (span) => amount.index >= span.from && amount.index + amount.raw.length <= span.to,
       ) &&
       !trailingToken(text, amount) &&
       !tokenInWord(text, amount) &&

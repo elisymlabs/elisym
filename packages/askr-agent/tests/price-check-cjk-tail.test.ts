@@ -53,6 +53,7 @@ describe('a country prefix before a dollar word names its country', () => {
     ['約100合衆国ドルです。', 'ja', 'USD'],
     ['約100アメリカ合衆国ドルです。', 'ja', 'USD'],
     ['약 100 미 달러예요.', 'ko', 'USD'],
+    ['약 100미달러예요.', 'ko', 'USD'],
     ['約100豪州ドルです。', 'ja', 'AUD'],
     ['約100加ドルです。', 'ja', 'CAD'],
     ['約100ジャマイカドルです。', 'ja', 'JMD'],
@@ -369,7 +370,7 @@ describe('review round 1', () => {
   it.each([
     ['S$45です。', 'ja', 'SGD'],
     ['售价S$45。', 'zh', 'SGD'],
-    ['価格:S$45です。', 'ja', 'SGD'],
+    ['価格はS$45です。', 'ja', 'SGD'],
     ['售价J$45。', 'zh', 'JMD'],
   ])(
     'MAJOR-1. a one-letter prefix at the start or glued to CJK pins the sign: "%s"',
@@ -499,6 +500,78 @@ describe('review round 1', () => {
 
   it('accepted false positive: a weight in a GBP store, 10パウンドのダンベル, fails closed', () => {
     expect(failures('GBP', '100', '10パウンドのダンベルは100パウンドです。', 'ja')).toBe(1);
+  });
+});
+
+describe('review round 2', () => {
+  it.each([
+    ['USD', '49', '전 사이즈 $49 동일합니다.', 'ko'],
+    ['USD', '49', 'US$49 동일 적용', 'ko'],
+    ['USD', '49', '$49 동봉된 쿠폰', 'ko'],
+    ['USD', '45', 'US$45 동시 구매 시', 'ko'],
+    ['USD', '45', '$45 솔직히 저렴해요', 'ko'],
+    ['KRW', '49000', '전 사이즈 ₩49,000 동일합니다.', 'ko'],
+    ['KRW', '49000', '₩49,000 동시 구매 시 할인', 'ko'],
+    ['KRW', '49000', '모든 색상 ₩49,000동일', 'ko'],
+    ['KRW', '49000', '₩49,000 솔직히 최저가', 'ko'],
+    ['KRW', '49000', '₩49,000 랜드마크 매장', 'ko'],
+    ['KRW', '49000', '₩49,000 리라 님 추천', 'ko'],
+    ['JPY', '4900', '¥4,900 リラックスタイムに', 'ja'],
+    ['JPY', '4900', '¥4,900 ランドセルカバー付き', 'ja'],
+    ['JPY', '4900', '¥4,900 パウンドケーキ', 'ja'],
+    ['JPY', '4900', '¥4,900 ソルトスクラブ', 'ja'],
+    ['JPY', '4900', '¥4,900 ドンキでも', 'ja'],
+    ['USD', '45', '$45 リラックスできるチェア', 'ja'],
+    ['CNY', '45', '¥45 蚊香液套装', 'zh'],
+    ['CNY', '45', '¥45 蚊帐', 'zh'],
+    ['HKD', '45', 'HK$45 蚊帐', 'zh'],
+  ])(
+    'MAJOR-A. a sign price before a look-alike word stays read: %s "%s"',
+    (currency, amount, text, language) => {
+      expect(failures(currency, amount, text, language)).toBe(0);
+      expect(failures(currency, '1', text, language)).toBe(1);
+    },
+  );
+
+  it.each(['미원 3,000원', '미원 3,000원에 판매 중', '미원 1kg 3,000원'])(
+    'MAJOR-B. 미원 is a brand, not US won: KRW 3000 "%s" passes',
+    (text) => {
+      expect(failures('KRW', '3000', text, 'ko')).toBe(0);
+      expect(currenciesOf(text, 'ko', 'KRW')).toEqual([['KRW']]);
+    },
+  );
+
+  it.each([
+    ['约3000日圆满足需求。', 'JPY'],
+    ['约3000日元满足需求。', 'JPY'],
+    ['3000日元满结束。', 'JPY'],
+    ['售价3日元满足条件。', 'JPY'],
+  ])('MINOR-2. a number that is no day before 圆满 or 日元 stays money: "%s"', (text, currency) => {
+    expect(currenciesOf(text, 'zh', 'CNY')).toEqual([[currency]]);
+  });
+
+  it.each(['サイズS$19.99です。', 'Size:S$19.99', 'サイズ: S$19.99'])(
+    'MINOR-3. a size letter after katakana or a colon reads the sign alone: USD 19.99 "%s" passes',
+    (text) => {
+      expect(currenciesOf(text, 'ja', 'USD')).toEqual([['USD']]);
+      expect(failures('USD', '19.99', text, 'ja')).toBe(0);
+    },
+  );
+
+  it.each(['45 S$です。', '45S$です。', '售价45J$。'])(
+    'MINOR-4. a one-letter prefix after the number never pins the sign: "%s"',
+    (text) => {
+      expect(currenciesOf(text, 'ja', 'SGD').flat()).not.toContain('SGD');
+      expect(currenciesOf(text, 'ja', 'JMD').flat()).not.toContain('JMD');
+    },
+  );
+
+  it.each([
+    ['約100ニュージーランド-ドルです。', 'NZD'],
+    ['約100トルコ-リラです。', 'TRY'],
+    ['約100アメリカ–ドルです。', 'USD'],
+  ])('a dash between the country and the currency word: "%s" is %s', (text, currency) => {
+    expect(currenciesOf(text, 'ja', 'JPY')).toEqual([[currency]]);
   });
 });
 
