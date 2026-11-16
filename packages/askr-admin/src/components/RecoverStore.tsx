@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../lib/errors';
+import { forgetKey, nextTask, rememberKey } from '../lib/remembered';
 import {
   type OwnerKey,
   type Signer,
@@ -12,6 +13,7 @@ import {
 import { CopyBlock } from './CopyBlock';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
+import { type RememberHandle, RememberOption } from './RememberOption';
 import { TextField } from './TextField';
 
 interface Props {
@@ -26,10 +28,25 @@ interface Props {
   onCancel: () => void;
 }
 
+const NOT_FORGOTTEN =
+  'This browser did not let the admin forget the old key on this device: it opens no store any more, so forget it from the sign-in page later.';
+const NOT_REMEMBERED =
+  'This browser did not let the admin remember the new key on this device. Keep the new key you saved: you sign in with it next time.';
+
+/** What to say when the store moved but this device did not record it fully. */
+function movedProblem(forgot: boolean, remembered: boolean): string {
+  const problems = [forgot ? '' : NOT_FORGOTTEN, remembered ? '' : NOT_REMEMBERED].filter(
+    (problem) => problem !== '',
+  );
+  return `Your store moved to the new key. ${problems.join(' ')}`;
+}
+
 type Step =
   | { step: 'store' }
   | { step: 'key'; from: string; key: OwnerKey }
-  | { step: 'proof'; from: string; key: OwnerKey };
+  | { step: 'proof'; from: string; key: OwnerKey }
+  /** Moved, but this device refused to forget the old key or remember the new one. */
+  | { step: 'moved'; signer: Signer; problem: string };
 
 /**
  * Replace a lost or leaked secret key (K21): a new key is made here (or one
@@ -42,6 +59,7 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
   const [typed, setTyped] = useState(storeId);
   const [haveKey, setHaveKey] = useState(false);
   const keyInput = useRef<HTMLInputElement>(null);
+  const remember = useRef<RememberHandle>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -67,20 +85,56 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
     );
   }
 
+  if (state.step === 'moved') {
+    const { signer, problem } = state;
+    return (
+      <main className="mx-auto flex min-h-screen max-w-560 flex-col justify-center gap-16 px-16 py-40">
+        <h1 className="text-24 font-semibold">Your store moved</h1>
+        <Notice tone="warn">{problem}</Notice>
+        <div>
+          <button type="button" className="btn btn-primary" onClick={() => onDone(signer)}>
+            Continue
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   if (state.step === 'proof') {
     const { from, key } = state;
     const move = async () => {
+      const choice = remember.current?.read() ?? { kind: 'off' };
+      if (choice.kind === 'invalid') {
+        setError(choice.message);
+        return;
+      }
       setBusy(true);
       setError('');
       const signer = secretKeySigner(key.secretKey);
       try {
         await recover(signer, from, false);
-        onDone(signer);
       } catch (failure) {
         setError(errorMessage(failure));
-      } finally {
         setBusy(false);
+        return;
       }
+      // The old key opens no store any more: this device stops remembering it either way.
+      const forgot = forgetKey(from);
+      let remembered = true;
+      if (choice.kind === 'on') {
+        await nextTask();
+        remembered = rememberKey(key.secretKey, choice.password);
+      }
+      setBusy(false);
+      if (forgot && remembered) {
+        onDone(signer);
+        return;
+      }
+      setState({
+        step: 'moved',
+        signer,
+        problem: movedProblem(forgot, remembered),
+      });
     };
     return (
       <main className="mx-auto flex min-h-screen max-w-640 flex-col justify-center gap-16 px-16 py-40">
@@ -102,6 +156,12 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
             Only a site your store has listed for at least three days counts, so someone who stole
             your key cannot add a site of their own and take the store.
           </p>
+          <RememberOption
+            ref={remember}
+            id="moved-key"
+            label="Remember the new key on this device once the store moved"
+            username={key.npub}
+          />
           {error === '' ? null : <Notice tone="error">{error}</Notice>}
           <div className="flex gap-8">
             <button

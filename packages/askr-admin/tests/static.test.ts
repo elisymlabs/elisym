@@ -25,11 +25,14 @@ describe('the source', () => {
     );
   });
 
-  it('never puts anything in browser storage, so no key outlives the tab', () => {
+  it('touches browser storage in one module only, which writes nothing but password-locked keys', () => {
     expect(
       files
         .filter((file) => /localStorage|sessionStorage|indexedDB/.test(file.text))
         .map((file) => file.path),
+    ).toEqual([join(SRC, 'lib/remembered.ts')]);
+    expect(
+      files.filter((file) => /sessionStorage|indexedDB|document\.cookie/.test(file.text)),
     ).toEqual([]);
   });
 });

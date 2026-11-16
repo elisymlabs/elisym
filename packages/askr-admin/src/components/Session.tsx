@@ -146,6 +146,7 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       <MovedAway
         onTakeBack={() => onReplaceKey(npubOf(deps.signer.pubkey))}
         onSignOut={onSignOut}
+        store={deps.signer.pubkey}
       />
     );
   }

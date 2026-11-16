@@ -2,6 +2,7 @@ import type { StoreConfig } from '@elisym/askr';
 import type { SessionDeps } from '../lib/deps';
 import type { StoreView } from '../lib/types';
 import { CatalogKeys } from './CatalogKeys';
+import { ForgetOnDevice } from './ForgetOnDevice';
 import { ReplaceKey } from './ReplaceKey';
 import { RotateAssistant } from './RotateAssistant';
 
@@ -27,7 +28,9 @@ export function KeysSection({
 }: Props) {
   return (
     <div className="flex flex-col gap-16">
-      <ReplaceKey onReplaceKey={onReplaceKey} />
+      <ReplaceKey onReplaceKey={onReplaceKey}>
+        <ForgetOnDevice store={deps.signer.pubkey} />
+      </ReplaceKey>
       <CatalogKeys deps={deps} view={view} config={config} />
       <RotateAssistant
         deps={deps}

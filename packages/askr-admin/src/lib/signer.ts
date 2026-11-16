@@ -38,15 +38,25 @@ export function secretKeySigner(secretKey: Uint8Array): Signer {
 /** A secret key from an nsec or 64 hex characters, or undefined. */
 export function parseSecretKey(input: string): Uint8Array | undefined {
   const value = input.trim();
+  let secretKey: Uint8Array | undefined;
   if (HEX_KEY_RE.test(value.toLowerCase())) {
-    return hexToBytes(value.toLowerCase());
+    secretKey = hexToBytes(value.toLowerCase());
+  } else if (value.startsWith('nsec1')) {
+    try {
+      const decoded = nip19.decode(value);
+      secretKey = decoded.type === 'nsec' ? decoded.data : undefined;
+    } catch {
+      secretKey = undefined;
+    }
   }
-  if (!value.startsWith('nsec1')) {
-    return undefined;
-  }
+  // Zero or past the curve order: no public key, so no signer either.
+  return secretKey !== undefined && publicKeyOf(secretKey) !== undefined ? secretKey : undefined;
+}
+
+/** The public key (hex) of a secret key, or undefined when it is not a valid one. */
+export function publicKeyOf(secretKey: Uint8Array): string | undefined {
   try {
-    const decoded = nip19.decode(value);
-    return decoded.type === 'nsec' ? decoded.data : undefined;
+    return getPublicKey(secretKey);
   } catch {
     return undefined;
   }

@@ -15,6 +15,15 @@ describe('the API base', () => {
   });
 });
 
+describe('a pasted secret key', () => {
+  it('is refused when it is zero or past the curve order, as no signer can use it', () => {
+    expect(signer.parseSecretKey('0'.repeat(64))).toBeUndefined();
+    expect(signer.parseSecretKey('f'.repeat(64))).toBeUndefined();
+    expect(signer.parseSecretKey(`${'0'.repeat(63)}1`)).toBeDefined();
+    expect(signer.publicKeyOf(new Uint8Array(32))).toBeUndefined();
+  });
+});
+
 describe('signing in', () => {
   it('takes a secret key only: no browser extension signer is offered', () => {
     expect(Object.keys(signer)).not.toContain('extensionSigner');

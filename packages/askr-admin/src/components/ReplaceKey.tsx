@@ -1,13 +1,15 @@
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { Notice } from './Notice';
 import { Section } from './Section';
 
 interface Props {
   onReplaceKey: () => void;
+  /** More about the key on this device, such as forgetting it here. */
+  children?: ReactNode;
 }
 
 /** Replace the secret key (K21): signs out and starts the replacement for this store. */
-export function ReplaceKey({ onReplaceKey }: Props) {
+export function ReplaceKey({ onReplaceKey, children }: Props) {
   const [confirming, setConfirming] = useState(false);
   return (
     <Section
@@ -36,6 +38,7 @@ export function ReplaceKey({ onReplaceKey }: Props) {
           </button>
         </div>
       )}
+      {children}
     </Section>
   );
 }
