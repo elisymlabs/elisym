@@ -712,6 +712,14 @@ export function createAdminApi(
       await deps.connectors.refresh();
       return json({ connector: await deps.directory.connector(owner) }, 200);
     }
+    if (route === 'POST /v1/admin/connector/disable') {
+      // A pause: the connector stays as set up, and is turned on again after a preview, as at first.
+      if (!(await deps.directory.disableConnector(owner))) {
+        return json({ error: 'no_connector' }, 404);
+      }
+      await deps.connectors.refresh();
+      return json({ connector: await deps.directory.connector(owner) }, 200);
+    }
     if (route === 'DELETE /v1/admin/connector') {
       await deps.directory.removeConnector(owner);
       await deps.connectors.refresh();

@@ -4,7 +4,7 @@ import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { saveSettings } from '../lib/save';
 import { npubOf } from '../lib/signer';
-import { EMPTY_FORM, type StoreForm, formOfConfig } from '../lib/store-form';
+import { EMPTY_FORM, type StoreForm, formOfConfig, withConnector } from '../lib/store-form';
 import { ownSignedEvents } from '../lib/stored-events';
 import type { StoreView } from '../lib/types';
 import { Notice } from './Notice';
@@ -69,14 +69,14 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
       const privatePart = privatePartOf(moved.private);
       setLoad({
         state: 'ready',
-        form: formOfConfig(config, privatePart),
+        form: withConnector(formOfConfig(config, privatePart), view.connector),
         found: true,
         privateLost: privatePart === undefined,
       });
     } catch (failure) {
       setLoad({ state: 'failed', error: errorMessage(failure) });
     }
-  }, [deps]);
+  }, [deps, view.connector]);
 
   useEffect(() => {
     void read();

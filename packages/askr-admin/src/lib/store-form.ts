@@ -31,6 +31,12 @@ export interface StoreForm {
   platform: ConnectorPlatform;
   /** Shopify / WooCommerce: the shop's address. */
   shopUrl: string;
+  /** Google: the product feed's address (kept by the connector, not in the signed settings). */
+  feedUrl: string;
+  /** The connector's currency override, when the shop reports another than it sells in. */
+  connectorCurrency: string;
+  /** Shopify: import the shop's policy pages. */
+  importPolicies: boolean;
   /** `catalog`: the merchant K (npub or hex). */
   merchantKey: string;
   /** `paycore`: the Pay Core store key S (npub or hex). */
@@ -73,6 +79,9 @@ export const EMPTY_FORM: StoreForm = {
   source: 'admin',
   platform: 'shopify',
   shopUrl: '',
+  feedUrl: '',
+  connectorCurrency: '',
+  importPolicies: true,
   merchantKey: '',
   paycoreKey: '',
   voice: '',
@@ -300,6 +309,9 @@ export function formOfConfig(
     source: config.source.kind,
     platform,
     shopUrl: config.source.shopUrl ?? '',
+    feedUrl: '',
+    connectorCurrency: '',
+    importPolicies: true,
     merchantKey: config.source.kind === 'catalog' ? npubOf(config.catalogKey) : '',
     paycoreKey: config.source.kind === 'paycore' ? npubOf(config.catalogKey) : '',
     voice: privatePart?.voice ?? '',
@@ -314,4 +326,72 @@ export function formOfConfig(
     policyKey: config.policyKey,
   };
   return form;
+}
+
+/** The connector settings the server keeps beside the signed ones: feed, currency, policies. */
+export interface ConnectorFields {
+  platform: ConnectorPlatform;
+  url: string;
+  currency?: string;
+  importPolicies: boolean;
+}
+
+/** The form with what the server's connector record adds to the signed settings. */
+export function withConnector(
+  form: StoreForm,
+  connector: Pick<ConnectorFields, 'platform' | 'url' | 'currency' | 'importPolicies'> | null,
+): StoreForm {
+  if (connector === null) {
+    return form;
+  }
+  return {
+    ...form,
+    feedUrl: connector.platform === 'google' ? connector.url : '',
+    connectorCurrency: connector.currency ?? '',
+    importPolicies: connector.importPolicies,
+  };
+}
+
+const CURRENCY_RE = /^[A-Z]{3}$/;
+
+/**
+ * The connector the form sets up, checked; undefined when the product source
+ * is not a connector. The shop's address is the signed one, so the two never
+ * disagree; a feed's lives only here.
+ */
+export function connectorOf(form: StoreForm): ConnectorFields | undefined {
+  if (form.source !== 'connector') {
+    return undefined;
+  }
+  let url: string | undefined;
+  if (form.platform === 'google') {
+    url = httpsUrl(form.feedUrl.trim());
+    if (url === undefined) {
+      throw new FormError('Feed address: paste the https address of your product feed.');
+    }
+  } else {
+    url = normalizeShopUrl(form.shopUrl.trim());
+    if (url === undefined) {
+      throw new FormError("Shop address: paste your shop's https address.");
+    }
+  }
+  const currency = form.connectorCurrency.trim().toUpperCase();
+  if (currency !== '' && !CURRENCY_RE.test(currency)) {
+    throw new FormError('Currency override: three letters, like USD or EUR.');
+  }
+  return {
+    platform: form.platform,
+    url,
+    ...(currency === '' ? {} : { currency }),
+    importPolicies: form.platform === 'shopify' ? form.importPolicies : false,
+  };
+}
+
+/** `value` when it is an https URL, else undefined. */
+function httpsUrl(value: string): string | undefined {
+  try {
+    return new URL(value).protocol === 'https:' ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }

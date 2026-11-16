@@ -285,6 +285,10 @@ describe('the connector', () => {
     expect(api.enableConnector).toHaveBeenCalledTimes(1);
   });
 
+  const SHOP_CONFIG = adminConfig({
+    source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+  });
+
   it('does not turn syncing on after a preview that failed verification', async () => {
     const api = fakeApi({
       previewConnector: vi.fn(async () => ({
@@ -298,7 +302,7 @@ describe('the connector', () => {
       <ConnectorSection
         deps={sessionDeps(api, fakeReader([]))}
         view={storeView({ connector: CONNECTOR })}
-        config={adminConfig()}
+        config={SHOP_CONFIG}
         reload={async () => undefined}
       />,
     );
@@ -308,25 +312,7 @@ describe('the connector', () => {
     expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
   });
 
-  it('drops the preview on any edit and on a save, so another shop is never turned on unseen', async () => {
-    const { container } = await mountConnector();
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
-    await typeInto(byId(container, 'connector-currency'), 'EUR');
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
-    // Back to what is saved: a new preview is still needed.
-    await typeInto(byId(container, 'connector-currency'), '');
-    expect(buttonNamed(container, 'Preview first import').disabled).toBe(false);
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
-
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
-    await click(buttonNamed(container, 'Save connector'));
-    await settle(() => (container.textContent ?? '').includes('Connector saved'));
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
-  });
-
-  it('turns syncing off when the saved connector changes elsewhere after a preview', async () => {
+  it('turns syncing on only for a preview of the connector as it is now', async () => {
     const { container, render } = await mountConnector();
     await click(buttonNamed(container, 'Preview first import'));
     await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
@@ -334,23 +320,105 @@ describe('the connector', () => {
     expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
   });
 
-  it('previews only the saved connector: unsaved edits need a save first, and the preview names its address', async () => {
-    const { api, container, render } = await mountConnector();
-    await typeInto(byId(container, 'connector-url'), 'https://other.example');
-    expect(buttonNamed(container, 'Preview first import').disabled).toBe(true);
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
-    expect(container.textContent).toContain('Save the connector to preview these settings');
-    await click(buttonNamed(container, 'Preview first import'));
-    expect(api.previewConnector).not.toHaveBeenCalled();
+  it('has no form of its own: the shop is set up in Settings', async () => {
+    const { container } = await mountConnector();
+    expect(container.querySelector('input')).toBeNull();
+    expect(container.textContent).toContain('Change the shop or its options in Settings');
+  });
 
-    await click(buttonNamed(container, 'Save connector'));
-    await settle(() => vi.mocked(api.putConnector).mock.calls.length === 1);
-    await mounted?.rerender(render({ ...CONNECTOR, url: 'https://other.example' }));
-    expect(buttonNamed(container, 'Preview first import').disabled).toBe(false);
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() =>
-      (container.textContent ?? '').includes('Of https://other.example, as saved'),
+  it('says how to connect a shop when there is none', async () => {
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(fakeApi(), fakeReader([]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
     );
+    expect(mounted.container.textContent).toContain('choose it as your product source in Settings');
+    expect(mounted.container.querySelector('button')).toBeNull();
+  });
+
+  it.each([
+    [adminConfig(), 'do not name this connector'],
+    [
+      adminConfig({ source: { kind: 'connector', platform: 'shopify' } }),
+      'do not name your shop address',
+    ],
+    [
+      adminConfig({
+        source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://other.example' },
+      }),
+      'another shop address',
+    ],
+    [
+      adminConfig({
+        catalogKey: OWNER,
+        source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+      }),
+      'another key for your products',
+    ],
+  ])(
+    'says what the settings and the connector disagree on, and previews nothing: %#',
+    async (config, text) => {
+      const api = fakeApi();
+      mounted = await mount(
+        <ConnectorSection
+          deps={sessionDeps(api, fakeReader([]))}
+          view={storeView({ connector: CONNECTOR })}
+          config={config}
+          reload={async () => undefined}
+        />,
+      );
+      expect(mounted.container.textContent).toContain(text);
+      expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(true);
+    },
+  );
+
+  it('a feed needs no shop address in the settings', async () => {
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(fakeApi(), fakeReader([]))}
+        view={storeView({
+          connector: { ...CONNECTOR, platform: 'google', url: 'https://tea.example/feed.xml' },
+        })}
+        config={adminConfig({ source: { kind: 'connector', platform: 'google' } })}
+        reload={async () => undefined}
+      />,
+    );
+    expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(false);
+    expect(mounted.container.textContent).toContain('every site its products link to');
+  });
+
+  it('turns syncing off, and says when a store not active cannot sync', async () => {
+    const api = fakeApi();
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(api, fakeReader([]))}
+        view={storeView({ connector: { ...CONNECTOR, enabled: true } })}
+        config={SHOP_CONFIG}
+        reload={async () => undefined}
+      />,
+    );
+    await click(buttonNamed(mounted.container, 'Turn off syncing'));
+    expect(api.disableConnector).toHaveBeenCalledTimes(1);
+    await settle(() => (mounted?.container.textContent ?? '').includes('Syncing is off'));
+    await mounted.unmount();
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(api, fakeReader([]))}
+        view={storeView({ status: 'pending', tier: null, connector: CONNECTOR })}
+        config={SHOP_CONFIG}
+        reload={async () => undefined}
+      />,
+    );
+    expect(mounted.container.textContent).toContain('once your store is activated');
+    expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(true);
+  });
+
+  it('shows what the plan allows', async () => {
+    const { container } = await mountConnector();
+    expect(container.textContent).toMatch(/Syncs every \d+ minutes?, up to \d+ products/);
   });
 });
 

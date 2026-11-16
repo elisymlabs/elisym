@@ -80,6 +80,18 @@ export async function typeInto(field: HTMLElement, value: string): Promise<void>
   });
 }
 
+/** Pick an option of a React-controlled select. */
+export async function chooseOption(field: HTMLElement, value: string): Promise<void> {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+  if (setter === undefined) {
+    throw new Error('no value setter');
+  }
+  await act(async () => {
+    setter.call(field, value);
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
 export async function click(element: HTMLElement): Promise<void> {
   await act(async () => {
     element.click();

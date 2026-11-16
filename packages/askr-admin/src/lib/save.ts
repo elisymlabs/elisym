@@ -7,7 +7,13 @@ import {
 } from '@elisym/askr';
 import { type SessionDeps, postSigned } from './deps';
 import type { SignedJournal } from './journal';
-import { type ServerKeys, type StoreForm, authorizationOf, signStoreEvents } from './store-form';
+import {
+  type ServerKeys,
+  type StoreForm,
+  authorizationOf,
+  connectorOf,
+  signStoreEvents,
+} from './store-form';
 import type { StoreView } from './types';
 
 /** The assistant a new config names: the next A while a rotation is under way (1.5). */
@@ -46,6 +52,8 @@ export function authorizedNow(relay: ReadonlySet<string>, journal: SignedJournal
 export async function saveSettings(input: SaveInput): Promise<void> {
   const { journal } = input.deps;
   const now = input.deps.now();
+  // Checked before anything is signed: a bad feed address must not leave half a save.
+  const connector = connectorOf(input.form);
   const authKey = authorizationOf(input.form, input.view.catalogKey).key;
   const events = await signStoreEvents({
     form: input.form,
@@ -62,6 +70,12 @@ export async function saveSettings(input: SaveInput): Promise<void> {
     authCreatedAt: nextAuthDate(authKey, now, input.relayNewestAt, journal),
   });
   await postSigned(input.deps, events);
+  // The connector follows the settings it is part of: set up with them, gone with them.
+  if (connector !== undefined) {
+    await input.deps.api.putConnector(connector);
+  } else if (input.view.connector !== null) {
+    await input.deps.api.deleteConnector();
+  }
 }
 
 /**

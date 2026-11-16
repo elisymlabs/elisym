@@ -19,6 +19,7 @@ export type AdminClient = Pick<
   | 'deleteConnector'
   | 'previewConnector'
   | 'enableConnector'
+  | 'disableConnector'
   | 'rotateAssistant'
   | 'movedSettings'
   | 'recover'

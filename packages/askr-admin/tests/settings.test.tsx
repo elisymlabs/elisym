@@ -16,6 +16,7 @@ import type { StoreView } from '../src/lib/types';
 import {
   ASSISTANT,
   NOW,
+  OWNER,
   OWNER_KEY,
   SERVER_KEY,
   fakeApi,
@@ -23,7 +24,16 @@ import {
   sessionDeps,
   storeView,
 } from './fakes';
-import { type Mounted, buttonNamed, byId, click, mount, settle, typeInto } from './mount';
+import {
+  type Mounted,
+  buttonNamed,
+  byId,
+  chooseOption,
+  click,
+  mount,
+  settle,
+  typeInto,
+} from './mount';
 
 let mounted: Mounted | undefined;
 afterEach(async () => {
@@ -215,5 +225,91 @@ describe('an undecryptable private part', () => {
     await mounted?.rerender(render(configOf(event)));
     await mounted?.rerender(render(configOf(event)));
     expect(signer.decrypt).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the connector, set up with the settings', () => {
+  const CONNECTOR = {
+    owner: OWNER,
+    platform: 'shopify' as const,
+    url: 'https://tea.example',
+    currency: 'EUR',
+    importPolicies: false,
+    enabled: true,
+    lastStatus: null,
+    lastRunAt: null,
+    nextRunAt: null,
+  };
+
+  it('saves the shop as the connector, with its options, after signing the settings', async () => {
+    const event = publishedConfig(NOW - 100);
+    const deps = sessionDeps(fakeApi(), fakeReader([event]));
+    const { container } = await mountSettings({ deps, config: configOf(event) });
+    await chooseOption(byId(container, 'store-source'), 'connector');
+    await chooseOption(byId(container, 'store-platform'), 'shopify');
+    await typeInto(byId(container, 'store-shop-url'), 'https://tea.example/');
+    await typeInto(byId(container, 'store-connector-currency'), 'eur');
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => vi.mocked(deps.api.putConnector).mock.calls.length === 1);
+    expect(deps.api.putConnector).toHaveBeenCalledWith({
+      platform: 'shopify',
+      url: 'https://tea.example',
+      currency: 'EUR',
+      importPolicies: true,
+    });
+    const signed = configOf(storedEvents(deps, 0)[0] ?? event);
+    expect(signed.source).toMatchObject({ kind: 'connector', shopUrl: 'https://tea.example' });
+  });
+
+  it('keeps a feed address, the currency and the policy import from the connector the form opens with', async () => {
+    const config = configOf(publishedConfig(NOW - 100));
+    const deps = sessionDeps(fakeApi(), fakeReader([publishedConfig(NOW - 100)]));
+    const { container } = await mountSettings({
+      deps,
+      config: { ...config, source: { kind: 'connector', platform: 'google' } },
+      view: storeView({
+        connector: { ...CONNECTOR, platform: 'google', url: 'https://tea.example/feed.xml' },
+      }),
+    });
+    const feed = byId(container, 'store-feed-url');
+    expect(feed instanceof HTMLInputElement && feed.value).toBe('https://tea.example/feed.xml');
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => vi.mocked(deps.api.putConnector).mock.calls.length === 1);
+    expect(deps.api.putConnector).toHaveBeenCalledWith({
+      platform: 'google',
+      url: 'https://tea.example/feed.xml',
+      currency: 'EUR',
+      importPolicies: false,
+    });
+  });
+
+  it('refuses a bad feed address or currency before signing anything', async () => {
+    const event = publishedConfig(NOW - 100);
+    const deps = sessionDeps(fakeApi(), fakeReader([event]));
+    const { container } = await mountSettings({ deps, config: configOf(event) });
+    await chooseOption(byId(container, 'store-source'), 'connector');
+    await chooseOption(byId(container, 'store-platform'), 'google');
+    await typeInto(byId(container, 'store-feed-url'), 'http://tea.example/feed.xml');
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => (container.textContent ?? '').includes('Feed address'));
+    await typeInto(byId(container, 'store-feed-url'), 'https://tea.example/feed.xml');
+    await typeInto(byId(container, 'store-connector-currency'), 'EURO');
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => (container.textContent ?? '').includes('three letters'));
+    expect(deps.api.storeEvents).not.toHaveBeenCalled();
+    expect(deps.api.putConnector).not.toHaveBeenCalled();
+  });
+
+  it('removes the connector when the products no longer come from it', async () => {
+    const event = publishedConfig(NOW - 100);
+    const deps = sessionDeps(fakeApi(), fakeReader([event]));
+    const { container } = await mountSettings({
+      deps,
+      config: configOf(event),
+      view: storeView({ connector: CONNECTOR }),
+    });
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => vi.mocked(deps.api.deleteConnector).mock.calls.length === 1);
+    expect(deps.api.putConnector).not.toHaveBeenCalled();
   });
 });

@@ -188,6 +188,11 @@ export class AdminApi {
     return this.call('POST', '/v1/admin/connector/enable');
   }
 
+  /** Pause syncing; the connector stays as set up. */
+  disableConnector(): Promise<{ connector: ConnectorRecord | null }> {
+    return this.call('POST', '/v1/admin/connector/disable');
+  }
+
   rotateAssistant(): Promise<{ nextAssistant: string }> {
     return this.call('POST', '/v1/admin/store/assistant/rotate');
   }

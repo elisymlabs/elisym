@@ -116,16 +116,45 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
               options={PLATFORM_OPTIONS}
               onChange={(value) => set('platform', platformOf(value) ?? form.platform)}
             />
-            {form.platform === 'google' ? null : (
+            {form.platform === 'google' ? (
+              <TextField
+                id="store-feed-url"
+                label="Feed address"
+                value={form.feedUrl}
+                placeholder="https://shop.example/feed.xml"
+                hint="Your Google product feed. Every site its products link to must be one of your allowed sites."
+                onChange={(value) => set('feedUrl', value)}
+              />
+            ) : (
               <TextField
                 id="store-shop-url"
                 label="Shop address"
                 value={form.shopUrl}
                 placeholder="https://shop.example"
-                hint="Its origin must be one of the allowed origins, so the chat can add to the cart."
+                hint="It must be one of your allowed sites, so the chat can add to its cart."
                 onChange={(value) => set('shopUrl', value)}
               />
             )}
+            <TextField
+              id="store-connector-currency"
+              label="Currency override (optional)"
+              value={form.connectorCurrency}
+              hint="Only if the shop reports another currency than it sells in."
+              onChange={(value) => set('connectorCurrency', value)}
+            />
+            {form.platform === 'shopify' ? (
+              <label className="text-14 flex items-center gap-8">
+                <input
+                  type="checkbox"
+                  checked={form.importPolicies}
+                  onChange={(event) => set('importPolicies', event.target.checked)}
+                />
+                Import the shop&apos;s refund, shipping, privacy and terms pages as policies
+              </label>
+            ) : null}
+            <p className="text-13 text-text-2">
+              Saving sets up the connector; preview and turn on syncing in the Connector tab.
+            </p>
           </>
         ) : null}
         {form.source === 'catalog' ? (
