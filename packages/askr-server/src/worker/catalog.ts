@@ -15,13 +15,7 @@ import {
   resolveStoreKeys,
 } from '@elisym/askr';
 import { StoreCatalog } from '@elisym/askr-agent';
-import {
-  KIND_DELETION,
-  KIND_PRODUCT,
-  NO_FUTURE_LIMIT,
-  newestDeletion,
-  newestSigned,
-} from '@elisym/commerce';
+import { KIND_DELETION, KIND_PRODUCT, newestDeletion, newestSigned } from '@elisym/commerce';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
 
@@ -130,12 +124,9 @@ export function storeConfig(
   if (!event) {
     return undefined;
   }
-  const deletion = newestDeletion(
-    events,
-    `${KIND_CONFIG}:${owner}:${CONFIG_D_TAG}`,
-    owner,
-    NO_FUTURE_LIMIT,
-  );
+  // A deletion dated past the clock skew is ignored, like the config versions and the listings'
+  // deletions: one rule for the server, the admin and the widget.
+  const deletion = newestDeletion(events, `${KIND_CONFIG}:${owner}:${CONFIG_D_TAG}`, owner, now);
   return deletion && deletion.created_at >= event.created_at ? undefined : parseConfig(event);
 }
 

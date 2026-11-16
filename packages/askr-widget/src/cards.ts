@@ -6,13 +6,7 @@ import {
   readCatalogAuthority,
 } from '@elisym/askr';
 import type { Component } from '@elisym/askr/chat';
-import {
-  KIND_DELETION,
-  NO_FUTURE_LIMIT,
-  isEventShaped,
-  newestDeletion,
-  newestSigned,
-} from '@elisym/commerce';
+import { KIND_DELETION, isEventShaped, newestDeletion, newestSigned } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import {
   CARD_CACHE_PREFIX,
@@ -117,7 +111,9 @@ function liveListing(
   if (!listing) {
     return null;
   }
-  const deletion = newestDeletion(events, address, author, NO_FUTURE_LIMIT);
+  // Dated past the clock skew, a deletion counts no more than a listing would: the same rule as
+  // the assistant's server and the admin, so all three read a deletion alike.
+  const deletion = newestDeletion(events, address, author, now);
   return deletion && deletion.created_at >= listing.created_at ? null : listing;
 }
 

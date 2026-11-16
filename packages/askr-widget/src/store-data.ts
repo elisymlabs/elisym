@@ -5,7 +5,7 @@ import {
   type StoreConfig,
   parseConfig,
 } from '@elisym/askr';
-import { KIND_DELETION, NO_FUTURE_LIMIT, newestDeletion, newestSigned } from '@elisym/commerce';
+import { KIND_DELETION, newestDeletion, newestSigned } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 
@@ -35,12 +35,8 @@ export function readStoreConfig(
   if (!newest) {
     return undefined;
   }
-  const deletion = newestDeletion(
-    events,
-    `${KIND_CONFIG}:${owner}:${CONFIG_D_TAG}`,
-    owner,
-    NO_FUTURE_LIMIT,
-  );
+  // A deletion dated past the clock skew is ignored, like a config would be (the server's rule).
+  const deletion = newestDeletion(events, `${KIND_CONFIG}:${owner}:${CONFIG_D_TAG}`, owner, now);
   if (deletion && deletion.created_at >= newest.created_at) {
     return undefined;
   }

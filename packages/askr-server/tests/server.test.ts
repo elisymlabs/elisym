@@ -253,6 +253,77 @@ describe('catalog build (5.1)', () => {
   });
 });
 
+describe('deletions dated ahead (one rule for the server, the admin and the widget)', () => {
+  const SKEW = 15 * 60;
+
+  function deletionOf(address: string, secret: Uint8Array, createdAt: number) {
+    return finalizeEvent(
+      { kind: 5, created_at: createdAt, tags: [['a', address]], content: '' },
+      secret,
+    );
+  }
+
+  it('a listing deletion within the clock skew counts; one further ahead is ignored', () => {
+    const store = syntheticStore();
+    const address = `30402:${store.catalogKey}:jacket-wool`;
+    const ids = (createdAt: number) =>
+      [
+        ...(buildStoreCatalog(
+          [...store.events, deletionOf(address, store.catalogSecret, createdAt)],
+          store.owner,
+          store.assistantSecret,
+          NOW,
+        )?.items.keys() ?? []),
+      ].sort();
+    expect(ids(NOW + SKEW - 60)).toEqual(['jacket-rain']);
+    expect(ids(NOW + SKEW + 60)).toEqual(['jacket-rain', 'jacket-wool']);
+  });
+
+  it('a config deletion within the clock skew counts; one further ahead is ignored', () => {
+    const store = syntheticStore();
+    const address = `30496:${store.owner}:askr`;
+    const servable = (createdAt: number) =>
+      buildStoreCatalog(
+        [...store.events, deletionOf(address, store.ownerSecret, createdAt)],
+        store.owner,
+        store.assistantSecret,
+        NOW,
+      ) !== undefined;
+    expect(servable(NOW + SKEW - 60)).toBe(false);
+    expect(servable(NOW + SKEW + 60)).toBe(true);
+  });
+
+  it('a far-ahead deletion does not mask one within the skew', () => {
+    const store = syntheticStore();
+    const address = `30496:${store.owner}:askr`;
+    const catalog = buildStoreCatalog(
+      [
+        ...store.events,
+        deletionOf(address, store.ownerSecret, NOW),
+        deletionOf(address, store.ownerSecret, NOW + 86_400),
+      ],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+    );
+    expect(catalog).toBeUndefined();
+  });
+
+  it('a policy deletion within the clock skew counts; one further ahead is ignored', () => {
+    const store = syntheticStore();
+    const address = `30495:${store.catalogKey}:returns`;
+    const policies = (createdAt: number) =>
+      buildStoreCatalog(
+        [...store.events, deletionOf(address, store.catalogSecret, createdAt)],
+        store.owner,
+        store.assistantSecret,
+        NOW,
+      )?.policies.length;
+    expect(policies(NOW + SKEW - 60)).toBe(0);
+    expect(policies(NOW + SKEW + 60)).toBe(1);
+  });
+});
+
 describe('gateway (3)', () => {
   async function setup(status: 'active' | 'suspended' = 'active') {
     const store = syntheticStore();
