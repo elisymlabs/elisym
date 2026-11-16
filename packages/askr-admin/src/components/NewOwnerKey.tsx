@@ -14,14 +14,14 @@ export function NewOwnerKey({ nsec, npub, onContinue, onCancel }: Props) {
   const [saved, setSaved] = useState(false);
   return (
     <main className="mx-auto flex min-h-screen max-w-560 flex-col justify-center gap-16 px-16 py-40">
-      <h1 className="text-24 font-semibold">Your new owner key</h1>
+      <h1 className="text-24 font-semibold">Your new secret key</h1>
       <Notice tone="warn">
         Save this secret key now, in a password manager or on paper. It is shown only once. Anyone
         who has it controls your store, and nobody can recover it for you if you lose it.
       </Notice>
       <div className="card flex flex-col gap-16">
         <CopyBlock label="Secret key (keep private)" text={nsec} />
-        <CopyBlock label="Store ID (public, goes in the embed code)" text={npub} />
+        <CopyBlock label="Store ID (public: it names your store in the chat code)" text={npub} />
         <label className="text-14 flex items-center gap-8">
           <input
             type="checkbox"

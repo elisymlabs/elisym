@@ -49,7 +49,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
       setPolicies(undefined);
       setEditing(undefined);
       setReadError(
-        'The policies could not be read from the relay, so none can be added or changed until they are.',
+        'The policies could not be read, so none can be added or changed until they are. Retry in a moment.',
       );
     }
   }, [deps, config]);

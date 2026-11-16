@@ -17,6 +17,8 @@ export interface SessionGrant {
  */
 export type SessionResult =
   | { kind: 'granted'; grant: SessionGrant }
+  /** The store's owner key was replaced (K20): the client checks the new one before following. */
+  | { kind: 'moved'; owner: string }
   | { kind: 'unavailable' }
   | { kind: 'error' };
 
@@ -40,6 +42,15 @@ function readGrant(body: unknown): SessionGrant | undefined {
     return undefined;
   }
   return { ticket, assistant, branding: branding !== false };
+}
+
+/** The new owner key a moved store's answer names, hex. */
+function movedOwner(body: unknown): string | undefined {
+  if (typeof body !== 'object' || body === null) {
+    return undefined;
+  }
+  const moved: unknown = Reflect.get(body, 'moved');
+  return typeof moved === 'string' && HEX_PUBKEY_RE.test(moved) ? moved : undefined;
 }
 
 function saysUnavailable(body: unknown): boolean {
@@ -74,6 +85,10 @@ export function httpGateway(
         return { kind: 'error' };
       }
       const body = await readJson(response);
+      const moved = movedOwner(body);
+      if (moved !== undefined && moved !== store) {
+        return { kind: 'moved', owner: moved };
+      }
       if (saysUnavailable(body) || REFUSED_STATUSES.includes(response.status)) {
         return { kind: 'unavailable' };
       }

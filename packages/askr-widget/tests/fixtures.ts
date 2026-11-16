@@ -223,6 +223,8 @@ export class FakeGateway implements Gateway {
   skewSecs = 0;
   /** Names this key in the ticket's `p` instead of the visitor's. */
   ticketVisitor: string | undefined;
+  /** The store moved to this owner key (K20): any other store is answered as moved. */
+  movedTo: string | undefined;
 
   constructor(
     public gatewayKey: TestKey,
@@ -231,6 +233,9 @@ export class FakeGateway implements Gateway {
 
   async openSession(store: string, visitor: string): Promise<SessionResult> {
     this.sessions.push({ store, visitor });
+    if (this.movedTo !== undefined && store !== this.movedTo) {
+      return { kind: 'moved', owner: this.movedTo };
+    }
     if (this.mode !== 'grant') {
       return { kind: this.mode };
     }

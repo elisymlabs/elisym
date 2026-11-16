@@ -136,7 +136,7 @@ export function parseOrigins(text: string, label: string): string[] {
 function keyOf(value: string, label: string): string {
   const key = parsePublicKey(value);
   if (key === undefined) {
-    throw new FormError(`${label}: paste an npub or 64 hex characters.`);
+    throw new FormError(`${label}: paste the key, it starts with npub1.`);
   }
   return key;
 }
@@ -165,7 +165,7 @@ function defaultSourceKeysOf(
   }
   if (form.source === 'paycore') {
     // A Pay Core S never holds the catalog role: its policies are edited here, with the server K.
-    return { catalogKey: keyOf(form.paycoreKey, 'Pay Core store key'), policyKey: serverKey };
+    return { catalogKey: keyOf(form.paycoreKey, 'PayCore store key'), policyKey: serverKey };
   }
   return { catalogKey: serverKey, policyKey: serverKey };
 }

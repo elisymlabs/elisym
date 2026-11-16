@@ -5,12 +5,15 @@ import {
   CatalogItemInputSchema,
   D_TAG_RE,
   KIND_CATALOG_AUTH,
+  CONFIG_D_TAG,
   KIND_CONFIG,
   LIMITS,
   PolicyInputSchema,
   SHOPIFY_POLICY_SLUGS,
   type SyncDiff,
+  type StoreConfig,
   type SyncRelayClient,
+  decryptPrivateConfig,
   parseConfig,
   removePolicy,
   setPolicy,
@@ -18,6 +21,7 @@ import {
 } from '@elisym/askr';
 import { HEX_PUBKEY_RE, KIND_PRODUCT } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
+import { decode } from 'nostr-tools/nip19';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
 import { publicBaseOf } from '../config';
@@ -27,7 +31,11 @@ import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
 import { randomId } from '../state/pg-state';
-import type { CatalogSyncStatus, StoreDirectory } from '../state/stores';
+import {
+  type CatalogSyncStatus,
+  ORIGIN_PROOF_AGE_SECS,
+  type StoreDirectory,
+} from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
@@ -36,6 +44,10 @@ const KIND_DELETION = 5;
 /** New stores one client address may create per hour (the onboarding needs one). */
 const NEW_STORES_PER_IP_PER_HOUR = 5;
 const HOUR_MS = 60 * 60 * 1000;
+/** Owner key replacements one client address may try per hour (K20): each reads shop sites. */
+const RECOVERIES_PER_IP_PER_HOUR = 10;
+/** ...and one store may be tried for per hour, from any address. */
+const RECOVERIES_PER_STORE_PER_HOUR = 5;
 const MAX_EVENTS_PER_REQUEST = 20;
 const MAX_EVENT_BYTES = 64 * 1024;
 /**
@@ -47,6 +59,22 @@ export const MAX_READ_BACK_BYTES = 1024 * 1024;
 /** A stored event may be dated at most this far ahead (clock skew of the signer). */
 const MAX_AHEAD_SECS = 10 * 60;
 const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
+
+const RecoverRequestSchema = z.object({ from: z.string().max(100) });
+
+/** An owner key as hex, from hex or an npub; undefined for anything else. */
+function ownerKeyOf(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (HEX_PUBKEY_RE.test(trimmed.toLowerCase())) {
+    return trimmed.toLowerCase();
+  }
+  try {
+    const decoded = decode(trimmed);
+    return decoded.type === 'npub' ? decoded.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 const EventSchema = z.object({
   id: z.string(),
@@ -253,6 +281,106 @@ export function createAdminApi(
     }
   };
 
+  /**
+   * The newest genuine config `owner` signed: on the relay, or stored here
+   * and not published yet.
+   */
+  const newestConfigOf = async (
+    owner: string,
+  ): Promise<{ config: StoreConfig; event: NostrEvent } | undefined> => {
+    const relayEvents = await deps.syncClient.query(ASKR_RELAYS, {
+      kinds: [KIND_CONFIG],
+      authors: [owner],
+      '#d': [CONFIG_D_TAG],
+    });
+    const stored = (await deps.directory.storedEvents(owner, MAX_READ_BACK_BYTES)).events;
+    let newest: { config: StoreConfig; event: NostrEvent } | undefined;
+    for (const event of [...relayEvents, ...stored]) {
+      if (event.kind !== KIND_CONFIG || event.pubkey !== owner || !verifyEvent(event)) {
+        continue;
+      }
+      const config = parseConfig(event);
+      if (
+        config !== undefined &&
+        (newest === undefined || config.createdAt > newest.config.createdAt)
+      ) {
+        newest = { config, event };
+      }
+    }
+    return newest;
+  };
+
+  const recoveriesPerIp = new WindowLimiter(RECOVERIES_PER_IP_PER_HOUR, HOUR_MS);
+  const recoveriesPerStore = new WindowLimiter(RECOVERIES_PER_STORE_PER_HOUR, HOUR_MS);
+
+  /**
+   * Replace a store's owner key (K20, 1.6): `owner` is the new key O', which
+   * signed the request; `from` the store's current owner key O. One of the
+   * sites the store has had for ORIGIN_PROOF_AGE_SECS must name O'.
+   */
+  const recover = async (owner: string, body: string, clientAddress: string): Promise<Response> => {
+    const parsed = RecoverRequestSchema.safeParse(parseJson(body));
+    const from = parsed.success ? ownerKeyOf(parsed.data.from) : undefined;
+    if (from === undefined || from === owner) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    const nowMs = now() * 1000;
+    if (!recoveriesPerIp.hit(ipKey(clientAddress), nowMs) || !recoveriesPerStore.hit(from, nowMs)) {
+      return json({ error: 'rate_limited' }, 429);
+    }
+    if (
+      (await deps.directory.statusOf(owner)) !== undefined ||
+      (await deps.directory.wasMoved(owner))
+    ) {
+      return json({ error: 'key_in_use' }, 409);
+    }
+    if ((await deps.directory.statusOf(from)) === undefined) {
+      return (await deps.directory.wasMoved(from))
+        ? json({ error: 'moved' }, 409)
+        : json({ error: 'no_store' }, 404);
+    }
+    let settings: { config: StoreConfig; event: NostrEvent } | undefined;
+    try {
+      settings = await newestConfigOf(from);
+    } catch (error) {
+      return json({ error: 'publish_refused', message: errorText(error) }, 409);
+    }
+    // A Pay Core store key is authorized in Pay Core, under the old owner key: support moves it.
+    if (settings?.config.source.kind === 'paycore') {
+      return json({ error: 'paycore_source' }, 409);
+    }
+    const held = await deps.directory.originsHeld(from);
+    const proven = held.filter((entry) => entry.firstSeen <= now() - ORIGIN_PROOF_AGE_SECS);
+    if (proven.length === 0) {
+      const first = held[0];
+      return json(
+        {
+          error: 'no_site_yet',
+          readyAt: first === undefined ? null : first.firstSeen + ORIGIN_PROOF_AGE_SECS,
+        },
+        409,
+      );
+    }
+    const proof = await deps.connectors.proveSite(
+      proven.map((entry) => entry.origin),
+      owner,
+    );
+    if ('failures' in proof) {
+      return json({ error: 'site_not_proven', failures: proof.failures }, 409);
+    }
+    const moved = await deps.directory.moveStore(from, owner, now(), settings?.event);
+    if (!moved.ok) {
+      return moved.reason === 'taken'
+        ? json({ error: 'key_in_use' }, 409)
+        : json({ error: moved.reason }, moved.reason === 'no_store' ? 404 : 409);
+    }
+    log(`store ${from} moved to owner ${owner}, proven by ${proof.proven}`);
+    const store = await deps.directory.store(owner);
+    return store === undefined
+      ? json({ error: 'no_store' }, 404)
+      : json({ ...(await view(store)), proven: proof.proven }, 200);
+  };
+
   const view = async (store: StoreRecord) => ({
     owner: store.owner,
     status: store.status,
@@ -264,6 +392,7 @@ export function createAdminApi(
     catalogSync: await deps.directory.catalogSync(store.owner, now()),
     connector: (await deps.directory.connector(store.owner)) ?? null,
     events: await deps.directory.eventStatus(store.owner),
+    movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
   });
 
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -467,6 +596,9 @@ export function createAdminApi(
     }
     const owner = auth.pubkey;
     const route = `${request.method} ${url.pathname}`;
+    if (route === 'POST /v1/admin/store/recover') {
+      return recover(owner, body, clientAddress);
+    }
     if (route === 'POST /v1/admin/store') {
       // Onboarding (7.3): anyone may create a store, which starts pending (K19). Opening an
       // existing one is free; a new one counts per client address, so fresh keys cannot fill
@@ -474,6 +606,10 @@ export function createAdminApi(
       const existing = await deps.directory.store(owner);
       if (existing !== undefined) {
         return json(await view(existing), 200);
+      }
+      // A key a store moved away from never opens a store again: its embeds lead to the new one.
+      if (await deps.directory.wasMoved(owner)) {
+        return json({ error: 'moved' }, 409);
       }
       if (!storesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
         return json({ error: 'rate_limited' }, 429);
@@ -495,6 +631,26 @@ export function createAdminApi(
       // shows the events O signed from here. Only the caller's own store; the admin checks each
       // signature and author as it does the relay's.
       return json(await deps.directory.storedEvents(owner, MAX_READ_BACK_BYTES), 200);
+    }
+    if (route === 'GET /v1/admin/store/moved-settings') {
+      // The private part of the settings the old owner key signed, which only A can read now that
+      // the old key is gone: the admin signs it again as the new owner (K20).
+      const moved = await deps.directory.movedFrom(owner);
+      if (moved === undefined) {
+        return json({ error: 'not_found' }, 404);
+      }
+      const config = moved.config === null ? undefined : parseConfig(moved.config);
+      return json(
+        {
+          from: moved.from,
+          config: moved.config,
+          private:
+            config === undefined
+              ? null
+              : (decryptPrivateConfig(config, store.assistantSecretKey) ?? null),
+        },
+        200,
+      );
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);

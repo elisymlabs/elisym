@@ -51,7 +51,7 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
       {view === undefined ? (
         <Section
           title="1. Create your store"
-          description="This sets up your assistant and a product key on the Askr server for this owner key."
+          description="This sets up your assistant on the Askr server for this Store ID."
         >
           <p className="text-13 text-text-3 font-mono break-all">{ownerNpub}</p>
           {error === '' ? null : <Notice tone="error">{error}</Notice>}
@@ -69,7 +69,7 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
       ) : (
         <Section
           title="2. Describe your store"
-          description="You sign these settings with your owner key. They tell the assistant what to sell and where it may run."
+          description="You sign these settings with your secret key. They tell the assistant what to sell and where it may run."
         >
           <StoreSettingsForm
             initial={EMPTY_FORM}

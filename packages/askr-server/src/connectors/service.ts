@@ -3,11 +3,12 @@ import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import { randomId } from '../state/pg-state';
 import type { ConnectorRecord, ScheduledConnector, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
-import { PREVIEW_DEADLINE_MS } from './constants';
+import { MAX_REDIRECTS, PREVIEW_DEADLINE_MS } from './constants';
 import type { FetchGuardDeps } from './fetch-guard';
-import type { ShopRateLimiter } from './http';
+import { ShopHttp, type ShopRateLimiter } from './http';
 import { type ConnectorSyncResult, syncConnector } from './runner';
 import { ConnectorScheduler, type SchedulerTimers } from './scheduler';
+import { type VerificationFailure, verifyOrigin } from './verification';
 
 export interface ConnectorServiceDeps {
   directory: StoreDirectory;
@@ -97,6 +98,46 @@ export class ConnectorService {
   }
 
   /** One sync of a store's connector; a dry run returns the preview without publishing. */
+  /**
+   * Whether one of `origins` names `owner` (the connector's site proof, 7.4),
+   * tried in order until one does: the proof of an owner key replacement (K20).
+   */
+  async proveSite(
+    origins: readonly string[],
+    owner: string,
+  ): Promise<{ proven: string } | { failures: VerificationFailure[] }> {
+    const deadline = new AbortController();
+    const timer = setTimeout(
+      () => deadline.abort(),
+      this.deps.previewDeadlineMs ?? PREVIEW_DEADLINE_MS,
+    );
+    const http = new ShopHttp({
+      limiter: this.deps.limiter,
+      // Two pages per origin, each with its redirects.
+      maxRequests: origins.length * 2 * (MAX_REDIRECTS + 1),
+      signal: deadline.signal,
+      ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
+    });
+    const failures: VerificationFailure[] = [];
+    try {
+      for (const origin of origins) {
+        const reason = await verifyOrigin(http, origin, owner);
+        if (reason === undefined) {
+          return { proven: origin };
+        }
+        failures.push({ origin, reason });
+      }
+    } catch {
+      // Out of time or requests: the origins not tried yet could not be read.
+      for (const origin of origins.slice(failures.length)) {
+        failures.push({ origin, reason: 'fetch_failed' });
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    return { failures };
+  }
+
   async sync(
     store: StoreRecord,
     connector: ConnectorRecord,

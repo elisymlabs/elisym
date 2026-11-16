@@ -63,6 +63,20 @@ describe('httpGateway.openSession', () => {
     });
   });
 
+  it('a moved store names its new owner key; a malformed or same one is just unavailable (K20)', async () => {
+    const moved = 'c'.repeat(64);
+    expect(
+      (await open(() => json(410, { unavailable: true, reason: 'moved', moved }))).result,
+    ).toEqual({ kind: 'moved', owner: moved });
+    expect(
+      (await open(() => json(410, { unavailable: true, reason: 'moved', moved: 'npub1x' }))).result,
+    ).toEqual({ kind: 'unavailable' });
+    expect(
+      (await open(() => json(410, { unavailable: true, reason: 'moved', moved: 'a'.repeat(64) })))
+        .result,
+    ).toEqual({ kind: 'unavailable' });
+  });
+
   it('a network failure is an error', async () => {
     const failing: typeof fetch = async () => {
       throw new TypeError('network');

@@ -28,6 +28,8 @@ export interface CatalogLoaderDeps {
   leased: () => StoreRecord[];
   now: () => number;
   log: (message: string) => void;
+  /** Called with a store's config origins each time its catalog loads (K20). */
+  onConfig?: (owner: string, origins: readonly string[]) => void;
   /** A page with no real EOSE in this long fails (2.4); tests shorten it. */
   historyTimeoutMs?: number;
   /** A Pay Core default relay's connect and page timeout, and its budget per reload (5.1); tests shorten them. */
@@ -239,6 +241,7 @@ export class CatalogLoader {
     if (catalog) {
       this.catalogs.set(owner, catalog);
       this.unservable.delete(owner);
+      this.deps.onConfig?.(owner, catalog.config.origins);
     } else {
       this.catalogs.delete(owner);
       this.unservable.add(owner);

@@ -162,7 +162,28 @@ export class Worker {
         : { stableConnectionMs: deps.stableConnectionMs }),
       now: this.now,
       log: this.log,
+      onConfig: (owner, origins) => this.noteOrigins(owner, origins),
     });
+  }
+
+  /** Origins already recorded per store, so a reload writes only what is new (K20). */
+  private readonly notedOrigins = new Map<string, Set<string>>();
+
+  private noteOrigins(owner: string, origins: readonly string[]): void {
+    const noted = this.notedOrigins.get(owner) ?? new Set<string>();
+    const fresh = origins.filter((origin) => !noted.has(origin));
+    if (fresh.length === 0) {
+      return;
+    }
+    this.deps.state
+      .noteOrigins(owner, fresh, this.now())
+      .then(() => {
+        for (const origin of fresh) {
+          noted.add(origin);
+        }
+        this.notedOrigins.set(owner, noted);
+      })
+      .catch((error: unknown) => this.log(`origins of ${owner} not recorded: ${String(error)}`));
   }
 
   get catalogs(): ReadonlyMap<string, StoreCatalog> {

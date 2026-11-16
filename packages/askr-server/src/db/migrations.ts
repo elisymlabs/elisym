@@ -191,6 +191,44 @@ create table widget_versions (
 );
 `,
   },
+  {
+    id: '0004_owner_moves',
+    sql: `
+-- A store moves to a new owner key O' (K20, 1.6): the rows that reference its owner follow it.
+alter table store_events drop constraint store_events_owner_fkey,
+  add constraint store_events_owner_fkey foreign key (owner) references stores (owner)
+  on delete cascade on update cascade;
+alter table leases drop constraint leases_owner_fkey,
+  add constraint leases_owner_fkey foreign key (owner) references stores (owner)
+  on delete cascade on update cascade;
+alter table connectors drop constraint connectors_owner_fkey,
+  add constraint connectors_owner_fkey foreign key (owner) references stores (owner)
+  on delete cascade on update cascade;
+alter table catalog_syncs drop constraint catalog_syncs_owner_fkey,
+  add constraint catalog_syncs_owner_fkey foreign key (owner) references stores (owner)
+  on delete cascade on update cascade;
+
+-- Every origin a store's config has listed, from when the server first saw it: a site proves a key
+-- replacement only once the store has had it a while, and stays able to after a config drops it.
+create table store_origins (
+  owner text not null references stores (owner) on delete cascade on update cascade,
+  origin text not null,
+  first_seen bigint not null,
+  primary key (owner, origin)
+);
+
+-- Each replacement of an owner key: a widget embedded with the old one is pointed at the new one.
+create table store_moves (
+  from_owner text primary key,
+  to_owner text not null,
+  moved_at bigint not null,
+  -- The newest settings the old key signed: the new owner signs them again, even ones the relay
+  -- never had (a store not active yet keeps them only here, and the move drops them).
+  config jsonb
+);
+create index store_moves_to on store_moves (to_owner);
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

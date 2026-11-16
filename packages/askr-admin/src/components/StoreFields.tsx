@@ -131,16 +131,16 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
         {form.source === 'catalog' ? (
           <TextField
             id="store-merchant-key"
-            label="Your catalog key (npub or hex)"
+            label="Your catalog key (npub1...)"
             value={form.merchantKey}
-            hint={`Print it with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
+            hint={`The key your backend or SDK publishes with. For an elisym agent, print it with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
             onChange={(value) => set('merchantKey', value)}
           />
         ) : null}
         {form.source === 'paycore' ? (
           <TextField
             id="store-paycore-key"
-            label="Pay Core store key (npub or hex)"
+            label="PayCore store key (npub1...)"
             value={form.paycoreKey}
             hint="Policies are then edited here in the admin."
             onChange={(value) => set('paycoreKey', value)}

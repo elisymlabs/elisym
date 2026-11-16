@@ -57,6 +57,8 @@ export type ChatPhase =
   | 'waiting'
   | 'retry'
   | 'unavailable'
+  /** The store moved to a new owner key (K20): `movedTo` names it, checked; the host follows. */
+  | 'moved'
   | 'failed';
 
 export type RetryReason = 'timeout' | 'error';
@@ -79,6 +81,8 @@ export interface ChatSnapshot {
   branding: boolean;
   turns: readonly ChatTurn[];
   inFlightAskId?: string;
+  /** Set with the `moved` phase: the store's new owner key, hex. */
+  movedTo?: string;
 }
 
 export interface ChatClientOptions {
@@ -163,6 +167,8 @@ export class ChatClient {
   private readonly gateway: Gateway;
   private readonly cardCache: CardCache;
   private readonly pageUrl: () => string | undefined;
+  /** The new owner key, once the gateway said the store moved and its config checked out. */
+  private movedTo: string | undefined;
   private readonly locale: () => string | undefined;
   private readonly backoff: Backoff;
 
@@ -239,6 +245,9 @@ export class ChatClient {
     }
     if (this.inFlight) {
       snapshot.inFlightAskId = this.inFlight.askId;
+    }
+    if (this.movedTo !== undefined && this.phase === 'moved') {
+      snapshot.movedTo = this.movedTo;
     }
     return snapshot;
   }
@@ -552,6 +561,9 @@ export class ChatClient {
     if (result.kind === 'error') {
       return 'error';
     }
+    if (result.kind === 'moved') {
+      return this.followMove(result.owner);
+    }
     const { ticket, assistant, branding } = result.grant;
     if (
       ticket.kind !== KIND_SESSION_TICKET ||
@@ -584,6 +596,39 @@ export class ChatClient {
       this.emit();
     }
     return 'ok';
+  }
+
+  /**
+   * The gateway says the store moved to `owner` (K20). Follow it only when the
+   * new owner's own signed config lists this page's origin: the gateway alone
+   * never sends visitors to another store.
+   */
+  private async followMove(owner: string): Promise<'unavailable' | 'error'> {
+    let moved: StoreData | undefined;
+    try {
+      moved = await loadStoreData(
+        owner,
+        (relays, filters) => this.query(relays, filters),
+        this.now(),
+      );
+    } catch {
+      return 'error';
+    }
+    if (this.stopped) {
+      return 'error';
+    }
+    const page = validPageUrl(this.pageUrl());
+    const origin = page === undefined ? undefined : new URL(page).origin;
+    if (!moved || origin === undefined || !moved.config.origins.includes(origin)) {
+      this.becomeUnavailable();
+      return 'unavailable';
+    }
+    this.clearAnswerTimer();
+    this.inFlight = undefined;
+    this.movedTo = owner;
+    this.setPhase('moved');
+    this.stop();
+    return 'unavailable';
   }
 
   private ticketExpired(): boolean {

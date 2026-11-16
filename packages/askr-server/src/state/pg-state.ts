@@ -60,6 +60,32 @@ const STORE_COLUMNS = `
 const STORE_FROM = 'from stores s left join tiers t on t.name = s.tier';
 export const STORE_SELECT = `select ${STORE_COLUMNS} ${STORE_FROM}`;
 
+/** Moves a widget follows at most from the owner it was embedded with (K20). */
+export const MAX_MOVE_HOPS = 3;
+
+/** The owner a store embedded as `owner` moved to, following at most MAX_MOVE_HOPS moves. */
+export async function followMoves(db: Db, owner: string): Promise<string | undefined> {
+  let current = owner;
+  for (let hop = 0; hop < MAX_MOVE_HOPS; hop += 1) {
+    const [row] = await db.query<{ to_owner: string }>(
+      'select to_owner from store_moves where from_owner = $1',
+      [current],
+    );
+    if (row === undefined) {
+      break;
+    }
+    current = row.to_owner;
+  }
+  return current === owner ? undefined : current;
+}
+
+/** Record origins a config lists, each from when first seen ($1 owner, $2 origins, $3 unix seconds). */
+export const NOTE_ORIGINS_SQL = `
+insert into store_origins (owner, origin, first_seen)
+select $1, origin, $3 from unnest($2::text[]) as origin
+where exists (select 1 from stores where owner = $1)
+on conflict (owner, origin) do nothing`;
+
 function tierOf(row: StoreRow): Tier | undefined {
   if (
     row.tier === null ||
@@ -709,6 +735,16 @@ export class PgState implements ServerState {
       // The same test a reservation makes: no ticket when not even one turn's reservation fits.
       return (await this.fits(tx, owner, tier, reserveUsd, now)) === undefined;
     });
+  }
+
+  async noteOrigins(owner: string, origins: readonly string[], now: number): Promise<void> {
+    if (origins.length > 0) {
+      await this.db.query(NOTE_ORIGINS_SQL, [owner, [...new Set(origins)], now]);
+    }
+  }
+
+  movedTo(owner: string): Promise<string | undefined> {
+    return followMoves(this.db, owner);
   }
 
   async countClick(owner: string, address: string): Promise<void> {

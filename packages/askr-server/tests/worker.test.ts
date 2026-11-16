@@ -528,6 +528,14 @@ describe('worker wraps (2.4)', () => {
     expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(2);
   });
 
+  it('records the origins of each config it loads, once (K20)', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    expect(setup.worker.catalogs.has(store.owner)).toBe(true);
+    await waitUntil(async () => (await originsOf(setup, store.owner)).length > 0);
+    expect(await originsOf(setup, store.owner)).toEqual([ORIGIN]);
+  });
+
   it('a store that stops being active is no longer leased, and its catalog is dropped', async () => {
     const store = syntheticStore();
     const setup = await harness({ stores: [store] });
@@ -1521,3 +1529,11 @@ describe('server core review 2: worker', () => {
     expect(taken.map((lease) => lease.store.owner)).toEqual([store.owner]);
   });
 });
+
+async function originsOf(setup: { db: Db }, owner: string): Promise<string[]> {
+  const rows = await setup.db.query<{ origin: string }>(
+    'select origin from store_origins where owner = $1',
+    [owner],
+  );
+  return rows.map((row) => row.origin);
+}

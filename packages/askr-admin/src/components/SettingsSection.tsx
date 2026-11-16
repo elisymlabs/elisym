@@ -125,13 +125,13 @@ export function SettingsSection({
   return (
     <Section
       title="Settings"
-      description="Every save is signed with your owner key and replaces the previous settings."
+      description="Every save is signed with your secret key and replaces the previous settings."
     >
       {configUnreadableAt === undefined ? null : (
         <Notice tone="error">
           Your newest published settings could not be read.{' '}
           {source === undefined
-            ? 'No older readable version is on the relay, so the form starts empty.'
+            ? 'No older readable version was found, so the form starts empty.'
             : 'The form starts from the newest version that can be read.'}{' '}
           Saving replaces them.
         </Notice>
@@ -145,9 +145,8 @@ export function SettingsSection({
       {undecryptable ? (
         <div className="flex flex-col gap-8">
           <Notice tone="warn">
-            The private instructions could not be decrypted, so the fields below are empty. If your
-            extension asked to decrypt and you declined, try again; otherwise they were sealed for
-            another key.
+            The private instructions could not be read, so the fields below are empty: they were
+            sealed for another key.
           </Notice>
           <div>
             <button

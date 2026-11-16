@@ -35,11 +35,6 @@ export const ASKR_KEY_COMMAND = 'npx @elisym/cli askr-key <agent> --store';
 
 /** How often the dashboard re-reads the store while a catalog sync runs. */
 export const SYNC_POLL_MS = 3_000;
-/**
- * The same with a browser extension, which may ask the merchant to approve
- * every NIP-98 signature: rarely, with the Refresh button for the impatient.
- */
-export const EXTENSION_SYNC_POLL_MS = 30_000;
 
 /** Languages offered first in the onboarding form; any BCP 47 tag is accepted. */
 export const DEFAULT_LANGUAGE = 'en';

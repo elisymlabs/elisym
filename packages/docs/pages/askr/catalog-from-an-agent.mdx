@@ -10,7 +10,7 @@ npx @elisym/cli askr-key my-agent --store npub1...
 
 `--store` is the store owner's npub. The command generates a catalog key, keeps it with the agent's other secrets (encrypted when `ELISYM_PASSPHRASE` is set), writes the store into the agent's `elisym.yaml`, and prints only the key's npub. It never prints the secret.
 
-Then authorize that npub in the admin, under catalog keys, signed by the owner key. Until then the store refuses what the key signs.
+Then authorize that npub in the admin, under Advanced, catalog keys, signed by the owner key. Until then the store refuses what the key signs.
 
 - `--show` prints the key and store again.
 - An agent writes one store. To move it to another store, or to replace a key that may have leaked, run it again with `--rotate`, then revoke the old key in the admin.

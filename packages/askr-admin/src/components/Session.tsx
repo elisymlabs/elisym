@@ -1,12 +1,15 @@
 import type { StoreConfig } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SYNC_POLL_MS } from '../constants';
 import { ApiError } from '../lib/api';
-import { type SessionDeps, syncPollMs } from '../lib/deps';
+import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { npubOf } from '../lib/signer';
 import { readConfig } from '../lib/store-data';
 import { ownSignedEvents, withStoredEvents } from '../lib/stored-events';
 import type { StoreStatus, StoreView } from '../lib/types';
+import { FinishMove } from './FinishMove';
 import { Notice } from './Notice';
 import { Onboarding } from './Onboarding';
 import { Shell } from './Shell';
@@ -14,6 +17,8 @@ import { Shell } from './Shell';
 interface Props {
   deps: SessionDeps;
   onSignOut: () => void;
+  /** Sign out and replace the secret key of this store (Store ID), K20. */
+  onReplaceKey: (storeId: string) => void;
 }
 
 type Load =
@@ -27,7 +32,7 @@ type Load =
  * or, while the store is not active, from what O signed and the server holds
  * for the relay (7.3).
  */
-export function Session({ deps, onSignOut }: Props) {
+export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
   const [config, setConfig] = useState<StoreConfig>();
   const [configError, setConfigError] = useState('');
@@ -43,6 +48,8 @@ export function Session({ deps, onSignOut }: Props) {
   const [configFromServer, setConfigFromServer] = useState(false);
   /** The store's state as last read, for the config read that follows. */
   const status = useRef<StoreStatus | undefined>(undefined);
+  /** A moved store whose previous settings were not found: set up anew instead (K20). */
+  const [noMovedSettings, setNoMovedSettings] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -96,7 +103,9 @@ export function Session({ deps, onSignOut }: Props) {
       setConfigFromServer(own.some((event) => event.id === shownId));
       setConfigError('');
     } catch {
-      setConfigError('The relay could not be read, so the published settings are not shown.');
+      setConfigError(
+        'Your published settings could not be read, so they are not shown. Retry in a moment.',
+      );
     } finally {
       setConfigRead(true);
     }
@@ -123,7 +132,7 @@ export function Session({ deps, onSignOut }: Props) {
     if (!syncRunning) {
       return undefined;
     }
-    const timer = setInterval(() => void reload(), syncPollMs(deps.signer));
+    const timer = setInterval(() => void reload(), SYNC_POLL_MS);
     return () => clearInterval(timer);
   }, [syncRunning, reload, deps]);
 
@@ -153,6 +162,17 @@ export function Session({ deps, onSignOut }: Props) {
       configError === '' &&
       unreadableAt === undefined &&
       view.events.pending === 0);
+  if (needsSetup && view !== undefined && view.movedFrom !== null && !noMovedSettings) {
+    return (
+      <FinishMove
+        deps={deps}
+        view={view}
+        onDone={reloadAll}
+        onNoSettings={() => setNoMovedSettings(true)}
+        onSignOut={onSignOut}
+      />
+    );
+  }
   if (needsSetup) {
     return (
       <Onboarding
@@ -177,6 +197,7 @@ export function Session({ deps, onSignOut }: Props) {
       reload={reload}
       reloadConfig={reloadConfig}
       onSignOut={onSignOut}
+      onReplaceKey={() => onReplaceKey(npubOf(view.owner))}
     />
   );
 }

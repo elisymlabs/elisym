@@ -5,8 +5,8 @@ import { SectionHeading } from './SectionHeading';
 
 const STEPS = [
   {
-    title: 'Sign in with your owner key',
-    body: 'Open the admin and paste an nsec, use a NIP-07 browser extension, or let the admin make a key for you. That key is your store: keep it safe.',
+    title: 'Get your secret key',
+    body: 'Open the admin and let it make a secret key for your store, or paste the one you have. Keep it safe; if you lose it, you replace it through your own site.',
     code: ADMIN_URL,
     link: { href: DOCS.overview, label: 'Onboarding' },
   },

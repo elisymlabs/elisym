@@ -8,7 +8,7 @@ import {
   parseConfig,
 } from '@elisym/askr';
 import { buildStoreAuthEvent } from '@elisym/commerce';
-import type { EventTemplate, NostrEvent } from 'nostr-tools';
+import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,15 +20,13 @@ import { ProductList } from '../src/components/ProductList';
 import { ProductsSection } from '../src/components/ProductsSection';
 import { Session } from '../src/components/Session';
 import { SettingsSection } from '../src/components/SettingsSection';
-import { SignIn } from '../src/components/SignIn';
 import type { RelayReader } from '../src/lib/relay';
-import { type Nip07Provider, extensionSigner, npubOf, secretKeySigner } from '../src/lib/signer';
+import { npubOf, secretKeySigner } from '../src/lib/signer';
 import { readConfig } from '../src/lib/store-data';
 import { formOfConfig, signStoreEvents } from '../src/lib/store-form';
 import type { StoreView } from '../src/lib/types';
 import {
   ASSISTANT,
-  NIP44_STUB,
   NOW,
   OWNER,
   OWNER_KEY,
@@ -128,7 +126,13 @@ describe('a newest config that does not parse', () => {
       })),
     });
     const reader = fakeReader([signedConfig('Relay Tea', NOW - 100)]);
-    mounted = await mount(<Session deps={sessionDeps(api, reader)} onSignOut={() => undefined} />);
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(api, reader)}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
     const { container } = mounted;
     await settle(() => container.querySelector('h1')?.textContent === 'Stored Tea');
     expect(container.textContent).toContain('shown as you signed them');
@@ -137,7 +141,13 @@ describe('a newest config that does not parse', () => {
   it('keeps the owner out of onboarding and says the settings must be saved again', async () => {
     const api = fakeApi();
     const reader = fakeReader([signedConfig('Tea Shop', NOW - 100), unparseableConfig(NOW - 10)]);
-    mounted = await mount(<Session deps={sessionDeps(api, reader)} onSignOut={() => undefined} />);
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(api, reader)}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('Overview'));
     expect(container.textContent).not.toContain('Set up your assistant');
@@ -185,6 +195,7 @@ describe('a later refresh that fails', () => {
       <Session
         deps={sessionDeps(api, fakeReader([signedConfig('Tea Shop', NOW - 10)]))}
         onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
       />,
     );
     const { container } = mounted;
@@ -203,7 +214,11 @@ describe('a later refresh that fails', () => {
       }),
     });
     mounted = await mount(
-      <Session deps={sessionDeps(api, fakeReader([]))} onSignOut={() => undefined} />,
+      <Session
+        deps={sessionDeps(api, fakeReader([]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
     );
     await settle(() => (mounted?.container.textContent ?? '').includes('Bad gateway'));
     expect(mounted.container.textContent).not.toContain('Overview');
@@ -348,7 +363,7 @@ describe('settings while the authorizations are unread', () => {
     );
     mounted = await mount(render(configOf(signedConfig('Tea Shop', NOW - 100))));
     const { container } = mounted;
-    await settle(() => (container.textContent ?? '').includes('could not be decrypted'));
+    await settle(() => (container.textContent ?? '').includes('could not be read, so the fields'));
     await settle(() => container.querySelector('input[type="checkbox"]') !== null);
     const consent = () => {
       const box = container.querySelector('input[type="checkbox"]');
@@ -517,44 +532,6 @@ describe('the CSV import', () => {
   });
 });
 
-describe('the extension signer', () => {
-  const key = generateSecretKey();
-  const pubkey = getPublicKey(key);
-  const TEMPLATE: EventTemplate = { kind: 27235, created_at: NOW, tags: [['u', 'x']], content: '' };
-
-  function provider(sign: (template: EventTemplate) => EventTemplate): Nip07Provider {
-    return {
-      getPublicKey: async () => pubkey,
-      signEvent: async (template) => finalizeEvent(sign(template), key),
-      nip44: NIP44_STUB,
-    };
-  }
-
-  it.each([
-    [
-      'another date',
-      (template: EventTemplate) => ({ ...template, created_at: template.created_at + 1 }),
-    ],
-    ['other tags', (template: EventTemplate) => ({ ...template, tags: [['u', 'y']] })],
-    ['other content', (template: EventTemplate) => ({ ...template, content: 'x' })],
-  ])('refuses an event signed with %s than asked', async (_what, change) => {
-    const signer = await extensionSigner(provider(change));
-    await expect(signer.signEvent(TEMPLATE)).rejects.toThrow('not signed by your key');
-  });
-
-  it('refuses at sign-in an extension without NIP-44, in plain words', async () => {
-    const onSigner = vi.fn();
-    const without: Nip07Provider = {
-      getPublicKey: async () => pubkey,
-      signEvent: async (template) => finalizeEvent(template, key),
-    };
-    mounted = await mount(<SignIn onSigner={onSigner} findExtension={() => without} />);
-    await click(buttonNamed(mounted.container, 'Sign in with a browser extension'));
-    await settle(() => (mounted?.container.textContent ?? '').includes('does not support NIP-44'));
-    expect(onSigner).not.toHaveBeenCalled();
-  });
-});
-
 describe('keys and policy keys', () => {
   it('offers no 30497 revoke for a key holding only the Pay Core role', async () => {
     const storeKey = getPublicKey(generateSecretKey());
@@ -580,7 +557,7 @@ describe('keys and policy keys', () => {
     await settle(() => (container.textContent ?? '').includes(npubOf(storeKey)));
     const rows = [...container.querySelectorAll('li')];
     const paycoreRow = rows.find((row) => (row.textContent ?? '').includes(npubOf(storeKey)));
-    expect(paycoreRow?.textContent).toContain('Pay Core store key');
+    expect(paycoreRow?.textContent).toContain('PayCore store key');
     expect(paycoreRow?.querySelector('button')).toBeNull();
     const serverRow = rows.find((row) => (row.textContent ?? '').includes(npubOf(SERVER_KEY)));
     expect(serverRow?.querySelector('button')?.textContent).toBe('Revoke');
