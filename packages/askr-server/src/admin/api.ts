@@ -377,8 +377,11 @@ export function createAdminApi(
       proving.delete(attempt);
     }
     if ('failures' in proof) {
-      // Only the sites the settings list now are named: older ones stay private.
-      const listed = new Set(settings?.config.origins ?? []);
+      // Only the sites the settings list now are named: older ones stay private. A key that
+      // signed nothing passes on the settings of the move before.
+      const passedOn = (await deps.directory.movedFrom(from))?.config ?? null;
+      const passedOnConfig = passedOn === null ? undefined : parseConfig(passedOn);
+      const listed = new Set(settings?.config.origins ?? passedOnConfig?.origins ?? []);
       return json(
         {
           error: 'site_not_proven',

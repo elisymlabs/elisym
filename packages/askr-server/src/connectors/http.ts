@@ -88,22 +88,28 @@ export interface ShopHttpDeps {
   cache?: PageCache;
 }
 
-/** Recent page reads by URL (K21): many proofs of one store read its pages once. */
+/**
+ * Recent page reads by URL (K21): many proofs of one store read its pages
+ * once. Only reads that succeeded are kept: a read still running belongs to
+ * its own proof (its deadline, its budget), and a failed one says nothing of
+ * the page.
+ */
 export class PageCache {
-  private readonly pages = new Map<string, { at: number; response: Promise<GuardedResponse> }>();
+  private readonly pages = new Map<string, { at: number; response: GuardedResponse }>();
 
   constructor(
     private readonly ttlMs: number,
     private readonly clock: () => number = Date.now,
   ) {}
 
-  /** A recent read of `url`, or the one `read` starts now and leaves here while it is fresh. */
-  get(url: string, read: () => Promise<GuardedResponse>): Promise<GuardedResponse> {
-    const now = this.clock();
+  /** A recent successful read of `url`, or `read`'s, kept once it succeeds. */
+  async get(url: string, read: () => Promise<GuardedResponse>): Promise<GuardedResponse> {
     const cached = this.pages.get(url);
-    if (cached !== undefined && now - cached.at < this.ttlMs) {
+    if (cached !== undefined && this.clock() - cached.at < this.ttlMs) {
       return cached.response;
     }
+    const response = await read();
+    const now = this.clock();
     if (this.pages.size >= MAX_CACHED_PAGES) {
       for (const [stored, entry] of this.pages) {
         if (now - entry.at >= this.ttlMs) {
@@ -111,9 +117,6 @@ export class PageCache {
         }
       }
     }
-    const response = read();
-    // A failed read is not kept: the next proof tries again.
-    response.catch(() => this.pages.delete(url));
     if (this.pages.size < MAX_CACHED_PAGES) {
       this.pages.set(url, { at: now, response });
     }

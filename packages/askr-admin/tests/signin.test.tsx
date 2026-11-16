@@ -162,6 +162,9 @@ describe('replacing a lost secret key (K21)', () => {
     await click(buttonNamed(container, 'Continue'));
     expect(container.textContent).toContain('That is not a secret key');
     keyField.value = nip19.nsecEncode(saved);
+    window.dispatchEvent(new Event('pagehide'));
+    expect(keyField.value).toBe('');
+    keyField.value = nip19.nsecEncode(saved);
     await click(buttonNamed(container, 'Continue'));
     expect(container.textContent).toContain(nip19.npubEncode(getPublicKey(saved)));
     expect(container.textContent).not.toContain('It is shown only once');

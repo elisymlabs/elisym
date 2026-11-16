@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../lib/errors';
 import {
   type OwnerKey,
@@ -44,6 +44,17 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
   const keyInput = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  // Leaving the page keeps it in the back/forward cache: a typed key must not come back.
+  useEffect(() => {
+    const clear = () => {
+      if (keyInput.current !== null) {
+        keyInput.current.value = '';
+      }
+    };
+    window.addEventListener('pagehide', clear);
+    return () => window.removeEventListener('pagehide', clear);
+  }, []);
 
   if (state.step === 'key') {
     return (
@@ -120,6 +131,9 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
     if (haveKey) {
       const field = keyInput.current;
       const secretKey = field === null ? undefined : parseSecretKey(field.value);
+      if (field !== null) {
+        field.value = '';
+      }
       if (secretKey === undefined) {
         setError('That is not a secret key: it starts with nsec1.');
         return;

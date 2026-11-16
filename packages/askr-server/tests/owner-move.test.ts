@@ -4,7 +4,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import { describe, expect, it, vi } from 'vitest';
 import { createAdminApi } from '../src/admin/api';
 import { KIND_HTTP_AUTH, sha256Hex } from '../src/admin/nip98';
-import { ShopBusyError, ShopRateLimiter } from '../src/connectors/http';
+import { PageCache, ShopBusyError, ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { createGateway } from '../src/gateway/gateway';
 import { onSharedHost } from '../src/state/origins';
@@ -766,9 +766,20 @@ describe('the proof limiter (K21)', () => {
       () => 0,
       async () => undefined,
     );
-    await limiter.acquire(SHOP, 10_000);
-    await expect(limiter.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
-    await expect(limiter.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
+    const waits: number[] = [];
+    const counting = new ShopRateLimiter(
+      60_000,
+      () => 0,
+      async (ms) => {
+        waits.push(ms);
+      },
+    );
+    await counting.acquire(SHOP, 10_000);
+    await expect(counting.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
+    await expect(counting.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
+    // The refused tries booked nothing: the next taker waits one gap, not three.
+    await counting.acquire(SHOP);
+    expect(waits).toEqual([60_000]);
     await limiter.acquire(SHOP);
   });
 });
@@ -820,6 +831,8 @@ describe('site reads of a proof (K21, review round 4)', () => {
     // The connector limiter here would hold every read an hour: a proof using it would never end.
     const result = await (await service(web, { proofLimiter })).proveSite([SHOP, second], owner);
     expect(result).toEqual({ proven: second });
+    // The busy site was not read at all: its turn was too far off.
+    expect(web.urls.some((url) => url.startsWith(SHOP))).toBe(false);
   });
 
   it('reads a page once for many proofs within half a minute', async () => {
@@ -851,5 +864,68 @@ describe('site reads of a proof (K21, review round 4)', () => {
         { origin: 'https://c.example', reason: 'fetch_failed' },
       ],
     });
+  });
+});
+
+describe('review round 5 (K21)', () => {
+  it('keeps no failed read: the next proof reads the page again', async () => {
+    let calls = 0;
+    const cache = new PageCache(30_000, () => 0);
+    const page = { url: `${SHOP}/`, status: 200, contentType: 'text/html', headers: {}, body: 'x' };
+    const read = async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error('broke');
+      }
+      return page;
+    };
+    await expect(cache.get(`${SHOP}/`, read)).rejects.toThrow('broke');
+    expect(await cache.get(`${SHOP}/`, read)).toBe(page);
+    expect(await cache.get(`${SHOP}/`, read)).toBe(page);
+    expect(calls).toBe(2);
+  });
+
+  it('answers read_failed, moving nothing, when the old settings cannot be read', async () => {
+    const { store, seeded, relay, recover } = await setup({ siteSeenAt: LONG_AGO });
+    vi.spyOn(relay, 'query').mockRejectedValue(new Error('relay down'));
+    expect(await recover(store.owner)).toMatchObject({
+      status: 503,
+      body: { error: 'read_failed' },
+    });
+    expect(await seeded.directory.store(store.owner)).toBeDefined();
+  });
+
+  it('has no moved settings for a store that never moved', async () => {
+    const { store, call } = await setup();
+    const settings = await call('GET', '/v1/admin/store/moved-settings', store.ownerSecret);
+    expect(settings).toMatchObject({ status: 404, body: { error: 'not_found' } });
+  });
+
+  it('gives no kept settings signed by a key that was never this store own', async () => {
+    const { store, seeded, call } = await setup();
+    const foreign = generateSecretKey();
+    const event = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant: store.assistant,
+          origins: [SHOP],
+          linkOrigins: [],
+          name: 'Foreign',
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'admin' },
+          catalogKey: store.catalogKey,
+          createdAt: NOW - 10,
+        },
+        foreign,
+      ),
+      foreign,
+    );
+    const to = generateSecretKey();
+    expect(await seeded.directory.moveStore(store.owner, getPublicKey(to), NOW, event)).toEqual({
+      ok: true,
+    });
+    const settings = await call('GET', '/v1/admin/store/moved-settings', to);
+    expect(settings.body).toMatchObject({ from: store.owner, signedBy: null, config: null });
   });
 });
