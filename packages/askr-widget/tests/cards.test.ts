@@ -71,6 +71,35 @@ const ITEM = {
   url: 'https://shop.example/p/scarf',
 };
 
+describe('a deletion dated ahead', () => {
+  it('hides a card within the clock skew, and is ignored further ahead, as the server reads it', async () => {
+    const context = setup();
+    const key = context.store.catalogKey;
+    publishItem(context.relay, key, { ...ITEM, d: 'near' });
+    publishItem(context.relay, key, { ...ITEM, d: 'far' });
+    for (const [d, ahead] of [
+      ['near', 14 * 60],
+      ['far', 16 * 60],
+    ] as const) {
+      context.relay.storeOnly(
+        MAIN_RELAY,
+        sign(
+          { kind: 5, created_at: localSecs() + ahead, tags: [['a', address(key, d)]], content: '' },
+          key,
+        ),
+      );
+    }
+    const cards = await resolveCards([address(key, 'near'), address(key, 'far')], {
+      config: context.config,
+      authorityEvents: context.authority,
+      query: context.query,
+      cache: new CardCache(new MemoryStorage()),
+      now: localSecs(),
+    });
+    expect([...cards.keys()]).toEqual([address(key, 'far')]);
+  });
+});
+
 describe('resolveCards', () => {
   it('fetches listings and deletions in one batched REQ and keeps only live, visible ones', async () => {
     const context = setup();

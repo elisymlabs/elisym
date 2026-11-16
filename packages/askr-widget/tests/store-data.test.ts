@@ -77,4 +77,32 @@ describe('store data', () => {
     expect(data).toBeUndefined();
     expect(calls).toBe(1);
   });
+
+  it('a config deletion within the clock skew removes the store; one further ahead is ignored', async () => {
+    const store = makeStore();
+    const now = localSecs();
+    const config = sign(
+      buildConfigEvent({ ...store.configInput, createdAt: now - 100 }, store.owner.secretKey),
+      store.owner,
+    );
+    const load = (ahead: number) =>
+      loadStoreData(
+        store.owner.pubkey,
+        async () => [
+          config,
+          sign(
+            {
+              kind: 5,
+              created_at: now + ahead,
+              tags: [['a', `30496:${store.owner.pubkey}:askr`]],
+              content: '',
+            },
+            store.owner,
+          ),
+        ],
+        now,
+      );
+    expect(await load(14 * 60)).toBeUndefined();
+    expect((await load(16 * 60))?.config.name).toBe(store.configInput.name);
+  });
 });
