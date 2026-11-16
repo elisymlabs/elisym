@@ -11,7 +11,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { type Db, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
-import { type HeldOrigin, ORIGIN_PROOF_AGE_SECS, noteOrigins } from './origins';
+import { type HeldOrigin, ORIGIN_PROOF_AGE_SECS, noteOrigins, noteOriginsLocked } from './origins';
 import {
   MAX_MOVE_HOPS,
   STORE_SELECT,
@@ -448,7 +448,7 @@ export class StoreDirectory {
         const origins = event.kind === KIND_CONFIG ? parseConfig(event)?.origins : undefined;
         if (origins !== undefined && origins.length > 0) {
           // Dated by the server's clock, never the event's: a backdated config proves nothing.
-          await noteOrigins(tx, owner, origins, nowSecs());
+          await noteOriginsLocked(tx, owner, origins, nowSecs());
         }
       }
       // After the batch is in, so what it replaces makes room for it; past a cap the throw rolls it back.

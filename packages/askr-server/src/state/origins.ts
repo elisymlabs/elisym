@@ -1,4 +1,4 @@
-import type { Queryable } from '../db/db';
+import type { Db, Queryable } from '../db/db';
 
 /**
  * The sites a store has listed, and which of them may prove an owner key
@@ -124,11 +124,31 @@ export function proofOrigins(
 }
 
 /**
- * Record the origins a config of `owner` lists, each from when first seen and
- * until last seen (`now`, unix seconds by the server's clock). Sites past the
- * grace period are forgotten first, so the cap counts only live ones.
+ * `noteOriginsLocked` in a transaction of its own, holding the store's row, so
+ * two notes of one store never both pass the cap.
  */
 export async function noteOrigins(
+  db: Db,
+  owner: string,
+  origins: readonly string[],
+  now: number,
+): Promise<void> {
+  if (origins.length === 0) {
+    return;
+  }
+  await db.transaction(async (tx) => {
+    await tx.query('select 1 from stores where owner = $1 for update', [owner]);
+    await noteOriginsLocked(tx, owner, origins, now);
+  });
+}
+
+/**
+ * Record the origins a config of `owner` lists, each from when first seen and
+ * until last seen (`now`, unix seconds by the server's clock). Sites past the
+ * grace period are forgotten first, so the cap counts only live ones. The
+ * caller holds the store's row in a transaction.
+ */
+export async function noteOriginsLocked(
   db: Queryable,
   owner: string,
   origins: readonly string[],
