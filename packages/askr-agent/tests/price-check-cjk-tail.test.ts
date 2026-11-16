@@ -575,6 +575,71 @@ describe('review round 2', () => {
   });
 });
 
+describe('review round 3', () => {
+  it.each([
+    ['订单预计15日圆通快递发出，帐篷199元。'],
+    ['我们会在3日圆通发货，帐篷199元。'],
+    ['15日圆领T恤上新，199元。'],
+    ['活动12日圆梦价199元。'],
+    ['20日圆明园门票199元。'],
+    ['預計15日圓通快遞發出，帳篷199元。'],
+    ['3日圆满结束，帐篷199元。'],
+  ])('MAJOR-1 a day number before 日圆 and a Han word is a date: %s', (text) => {
+    expect(failures('CNY', '199', text, 'zh')).toBe(0);
+  });
+
+  it.each([['5日圆满额立减，帐篷199元。'], ['3日圆满减，帐篷199元。'], ['约3000日圆满额包邮。']])(
+    'a day number before 日圆满额 / 满减 stays yen money: %s',
+    (text) => {
+      expect(failures('CNY', '199', text, 'zh')).toBeGreaterThan(0);
+    },
+  );
+
+  it.each([
+    ['2025 유럽 원정 유니폼은 89,000원이에요.'],
+    ['2025 페루 원정 유니폼은 89,000원이에요.'],
+    ['TOP 3 피지 원인을 잡는 클렌저는 89,000원이에요.'],
+    ['10 US 원피스는 89,000원이에요.'],
+  ])('MAJOR-2 원 glued to a Hangul syllable after a qualifier is a word: %s', (text) => {
+    expect(failures('KRW', '89000', text, 'ko')).toBe(0);
+  });
+
+  it.each([['89,000 한국원이에요.'], ['89,000 유럽 원인데 할인돼요.'], ['89,000 한국 원이에요.']])(
+    'an invented won price after a qualifier still fails, whatever follows: %s',
+    (text) => {
+      expect(failures('KRW', '50000', text, 'ko')).toBeGreaterThan(0);
+    },
+  );
+
+  it.each([['2025 EU 円安でも8,900円です。'], ['2025 サウジ円卓会議の記念品は8,900円です。']])(
+    '円 glued to a Han word after a qualifier is a word: %s',
+    (text) => {
+      expect(failures('JPY', '8900', text, 'ja')).toBe(0);
+    },
+  );
+
+  it('4K レアル映像 is a picture quality, not reais', () => {
+    expect(failures('JPY', '4980', '4Kレアル映像のモニターは4,980円です。', 'ja')).toBe(0);
+  });
+
+  it('a lowercase one-letter dollar prefix after a space reads the sign alone, as the uppercase one', () => {
+    expect(currenciesOf('Kids s$19.99', 'en', 'USD')).toEqual(
+      currenciesOf('Kids S$19.99', 'en', 'USD'),
+    );
+  });
+
+  // Accepted false positives (fail closed): a sign or code right before a look-alike word.
+  it.each([
+    ['KRW', 'KRW 3원색 세트는 29,000원이에요.', 'ko'],
+    ['USD', 'USD 3元系电池 $49.', 'zh'],
+  ])(
+    'a code right before a look-alike word reads the number (accepted): %s',
+    (store, text, language) => {
+      expect(failures(store, store === 'KRW' ? '29000' : '49', text, language)).toBeGreaterThan(0);
+    },
+  );
+});
+
 describe('the new forms stay linear', () => {
   it.each(['1MX', '1ニュー台湾', '1南ア', '1ユ-', '1HK$', '1 미 ', '1サウジ・', '1ランド'])(
     '"%s" repeated',
