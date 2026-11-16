@@ -640,6 +640,63 @@ describe('review round 3', () => {
   );
 });
 
+describe('review round 4', () => {
+  it.each([
+    ['TWD', '約15日圓左右，帳篷199元。'],
+    ['TWD', '手續費3日圓的手續費，帳篷199元。'],
+    ['TWD', '帳篷199元，約合30日圓起。'],
+    ['CNY', '约15日圆左右，帐篷199元。'],
+    ['CNY', '帐篷199元，运费15日圆起。'],
+    ['TWD', '運費15日圓。帳篷199元。'],
+    ['CNY', '帐篷199元，约32日圆通关费。'],
+  ])(
+    'MAJOR-1 a day number before 日圆 and an unlisted word stays yen money: %s %s',
+    (store, text) => {
+      expect(failures(store, '199', text, 'zh')).toBeGreaterThan(0);
+    },
+  );
+
+  it('MAJOR-1 an invented price in a JPY store with a day-number fee still fails', () => {
+    expect(failures('JPY', '5980', '帳篷4980日圓，運費15日圓起。', 'zh')).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['USD', '49', '$49입니다. 약 65,000 한국 원정도예요.'],
+    ['USD', '49', '$49입니다. 약 65,000 한국원정도예요.'],
+    ['KRW', '89000', '89,000원이에요. 배송비는 3,000 한국원정도예요.'],
+    ['KRW', '89000', '89,000원이에요. 65,000 한국원정가예요.'],
+  ])('MAJOR-2 원정도 / 원정가 after a qualifier stay money: %s %s', (store, amount, text) => {
+    expect(failures(store, amount, text, 'ko')).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['TOP 3 피지 원인이 뭔가요? 클렌저는 89,000원이에요.'],
+    ['TOP 3 피지 원인은 모공이에요. 클렌저는 89,000원이에요.'],
+    ['TOP 3 피지 원인으로 꼽혀요. 클렌저는 89,000원이에요.'],
+    ['TOP 3 피지 원인과 해결책: 클렌저는 89,000원이에요.'],
+  ])('원인 with each case ending after a qualifier is a word: %s', (text) => {
+    expect(failures('KRW', '89000', text, 'ko')).toBe(0);
+  });
+
+  it.each([['2025 EU 円高でも8,900円です。'], ['2025 EU 円形のケースは8,900円です。']])(
+    '円 glued to a listed Han word after a qualifier is a word: %s',
+    (text) => {
+      expect(failures('JPY', '8900', text, 'ja')).toBe(0);
+    },
+  );
+
+  it.each([['4Kレアル画質のモニターは4,980円です。'], ['このレアル感のモニターは4,980円です。']])(
+    'レアル before a picture word is no reais: %s',
+    (text) => {
+      expect(failures('JPY', '4980', text, 'ja')).toBe(0);
+    },
+  );
+
+  it('an ISO code naming the token own currency restates it', () => {
+    expect(currenciesOf('約7,500 JPY円高めです', 'ja', 'USD')).toEqual([['JPY']]);
+  });
+});
+
 describe('the new forms stay linear', () => {
   it.each(['1MX', '1ニュー台湾', '1南ア', '1ユ-', '1HK$', '1 미 ', '1サウジ・', '1ランド'])(
     '"%s" repeated',

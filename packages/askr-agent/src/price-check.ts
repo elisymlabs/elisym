@@ -965,7 +965,7 @@ function scan(
     const charBefore = text[match.index - 1];
     const looseLetterDollar =
       token !== undefined &&
-      ONE_LETTER_DOLLARS.includes(token.toUpperCase()) &&
+      ONE_LETTER_DOLLARS.includes(token) &&
       (!tokenFirst || (charBefore !== undefined && !ONE_LETTER_DOLLAR_AFTER_RE.test(charBefore)));
     if (
       !currencies ||
@@ -1823,29 +1823,12 @@ const QUALIFIED_HAN_WORD_AFTER: ReadonlyArray<[string, readonly string[]]> = [
 ];
 /**
  * 원 after a qualifier in a noun: 원피스, 원형, 원단, 원격, 원래, 원두, 원산지, 원료, 원목, 원작,
- * 원룸, 원칙, 원정, 원인 with a case ending ("10 US 원피스", "TOP 3 한국 원두", "2025 유럽 원정",
- * "TOP 3 피지 원인을"). Only listed nouns: 원이에요, 원인데 and the like stay money.
+ * 원룸, 원칙, 원정 (not 원정도 "about N won", 원정가, 원정품), 원인 with a case ending
+ * ("10 US 원피스", "TOP 3 한국 원두", "2025 유럽 원정", "TOP 3 피지 원인을"). Only these:
+ * 원이에요, 원인데, 원정도 and the like stay money.
  */
-const QUALIFIED_WON_WORD_AFTER: readonly string[] = [
-  '피스',
-  '형',
-  '단',
-  '격',
-  '래',
-  '두',
-  '산',
-  '료',
-  '목',
-  '작',
-  '룸',
-  '칙',
-  '정',
-  '인을',
-  '인이',
-  '인은',
-  '인으',
-  '인과',
-];
+const QUALIFIED_WON_WORD_RE =
+  /^(?:피스|형|단|격|래|두|산|료|목|작|룸|칙|정(?![도가품])|인[을이은으과])/u;
 const LATIN_CURRENCY = String.raw`(?:dollars?|bucks?|yen|yuan|won|euros?|[A-Za-z]{3})(?![A-Za-z])`;
 /** Read by the token scanners when the number is plain digits ("37,000円"): left to them. */
 const SCANNED_CJK_TOKENS: readonly string[] = ['円', '元', '원', '¥', '￥', '₩'];
@@ -2006,6 +1989,10 @@ function qualifierUse(
   if (cjkCurrencies(`${qualifier}${token}`) !== undefined) {
     return 'applies';
   }
+  // An ISO code naming the token's own currency ("7,500 JPY円高め") restates it: it applies.
+  if (cjkCurrencies(token)?.includes(qualifier.trim().toUpperCase()) === true) {
+    return 'applies';
+  }
   const rest = text.slice(tokenEnd);
   const next = text[tokenEnd] ?? '';
   if (HAN_RE.test(token[0] ?? '') && qualifier.length === 1 && HAN_RE.test(qualifier)) {
@@ -2015,7 +2002,7 @@ function qualifierUse(
   if (hanWord.includes(next)) {
     return 'word';
   }
-  if (token === '원' && QUALIFIED_WON_WORD_AFTER.some((word) => rest.startsWith(word))) {
+  if (token === '원' && QUALIFIED_WON_WORD_RE.test(rest)) {
     return 'word';
   }
   return 'applies';
@@ -2277,11 +2264,11 @@ const TERNARY_AFTER: readonly string[] = ['锂', '鋰', '系'];
 /** 日元 in a date: 元旦, 元宵, 元気 ("1月1日元旦", "3日元気に"). */
 const DATE_YUAN_AFTER: readonly string[] = ['旦', '宵', '気', '氣'];
 /**
- * 日圆 / 日圓 after a day number and before a Han word is a date and a word: "3日圆满结束"
- * (it ended well on the 3rd), "15日圆通快递发出" (YTO Express on the 15th), "15日圆领T恤".
- * Only 满额 / 满减 after it stays money ("5日圆满额立减").
+ * 日圆 / 日圓 after a day number is a date before a listed word that starts with 圆: 圆满 (not
+ * 满额 / 满减), 圆通 (YTO Express), 圆领 (a round neck), 圆梦, 圆明园: "3日圆满结束",
+ * "15日圆通快递发出", "15日圆领T恤". Anything else stays yen money ("约15日圆左右").
  */
-const MONEY_AFTER_DAY_ROUND_RE = /^[满滿][额額减減]/u;
+const DATE_ROUND_WORD_RE = /^(?:[通领領梦夢明]|[满滿](?![额額减減]))/u;
 /** A day of the month, the only number before a date's 日. */
 const DAY_RE = /^(?:[1-9]|[12]\d|3[01])$/u;
 /** 一円 as "the whole area" (関東一円に): a place before it, a particle after it... */
@@ -2402,14 +2389,11 @@ function notMoney(context: TokenContext): boolean {
     );
   }
   if (token === '日元' || token === '日圓' || token === '日圆') {
-    // A date before a Han word too: "3日圆满结束", "15日圆通快递"; "3000日圆满额" is money.
+    // A date before a listed word too: "3日圆满结束", "15日圆通快递"; "3000日圆满额" is money.
     return (
       startsWithAny(DATE_YUAN_AFTER) ||
       previous === '月' ||
-      (token !== '日元' &&
-        DAY_RE.test(expression) &&
-        HAN_RE.test(rest[0] ?? '') &&
-        !MONEY_AFTER_DAY_ROUND_RE.test(rest))
+      (token !== '日元' && DAY_RE.test(expression) && DATE_ROUND_WORD_RE.test(rest))
     );
   }
   if (token === '円' && (rest.startsWith('玉') || rest.startsWith('ショップ'))) {
