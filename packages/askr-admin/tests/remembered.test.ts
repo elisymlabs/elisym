@@ -247,7 +247,8 @@ describe('the password', () => {
     expect(passwordProblem('12345', '12345')).toContain('at least 6');
     expect(passwordProblem('123456', '123457')).toContain('not the same');
     expect(passwordProblem('123456', '123456')).toBeUndefined();
-    // Counted by character, not UTF-16 unit: six emoji are six characters.
+    // Counted by character, not UTF-16 unit: three emoji are three characters, not six.
+    expect(passwordProblem('🔑🔑🔑', '🔑🔑🔑')).toContain('at least 6');
     expect(passwordProblem('🔑🔑🔑🔑🔑🔑', '🔑🔑🔑🔑🔑🔑')).toBeUndefined();
   });
 });

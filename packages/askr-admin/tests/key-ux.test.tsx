@@ -101,6 +101,8 @@ describe('a new secret key', () => {
       throw new Error('no saved checkbox');
     }
     await click(saved);
+    expect(text(container)).toContain('Password (at least 6 characters)');
+    expect(text(container)).toContain('can try passwords offline');
     inputById(container, 'new-key-password').value = 'short';
     inputById(container, 'new-key-repeat').value = 'short';
     await click(buttonNamed(container, 'Continue'));
