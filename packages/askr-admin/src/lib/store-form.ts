@@ -165,7 +165,7 @@ function defaultSourceKeysOf(
   }
   if (form.source === 'paycore') {
     // A Pay Core S never holds the catalog role: its policies are edited here, with the server K.
-    return { catalogKey: keyOf(form.paycoreKey, 'PayCore store key'), policyKey: serverKey };
+    return { catalogKey: keyOf(form.paycoreKey, 'Pay Core store key'), policyKey: serverKey };
   }
   return { catalogKey: serverKey, policyKey: serverKey };
 }

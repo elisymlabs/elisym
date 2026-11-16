@@ -1,10 +1,10 @@
 import { buildCatalogAuth, buildConfigEvent } from '@elisym/askr';
 import { npubEncode } from 'nostr-tools/nip19';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createAdminApi } from '../src/admin/api';
 import { KIND_HTTP_AUTH, sha256Hex } from '../src/admin/nip98';
-import { ShopRateLimiter } from '../src/connectors/http';
+import { ShopBusyError, ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { createGateway } from '../src/gateway/gateway';
 import { onSharedHost } from '../src/state/origins';
@@ -136,7 +136,19 @@ async function setup(options: Options = {}) {
       { from, ...(dryRun === undefined ? {} : { dryRun }) },
       clientAddress,
     );
-  return { store, seeded, relay, web, site, newSecret, newOwner, call, recover, configEvent };
+  return {
+    store,
+    seeded,
+    relay,
+    web,
+    site,
+    connectors,
+    newSecret,
+    newOwner,
+    call,
+    recover,
+    configEvent,
+  };
 }
 
 describe('replacing an owner key through the site (K21)', () => {
@@ -540,7 +552,10 @@ describe('the move itself (K21)', () => {
       const rows = await db.query<{ owner: string }>(`select owner from ${table}`);
       expect(rows.map((row) => row.owner)).toEqual([middle]);
     }
-    expect(await db.query('select 1 from leases')).toHaveLength(0);
+    const [lease] = await db.query<{ expires_at: string | number }>(
+      'select expires_at from leases',
+    );
+    expect(Number(lease?.expires_at)).toBe(0);
     const [guard] = await db.query<{ holder: string | null }>('select holder from catalog_syncs');
     expect(guard?.holder).toBeNull();
     expect(await directory.moveStore(middle, last, NOW + 10, undefined)).toEqual({ ok: true });
@@ -662,5 +677,94 @@ describe('origin records and retries (K21, review round 2)', () => {
     expect((await recover(store.owner)).status).toBe(200);
     const settings = await call('GET', '/v1/admin/store/moved-settings', newSecret);
     expect(settings.body.config.id).toBe(configEvent.id);
+  });
+});
+
+describe('review round 3 (K21)', () => {
+  it("drops sites too young to prove anything when the store moves, so a thief's new domain never comes of age", async () => {
+    const { store, seeded, recover, newOwner } = await setup({ siteSeenAt: LONG_AGO });
+    await seeded.directory.noteOrigins(store.owner, ['https://thief.example'], NOW - 3_600);
+    expect((await recover(store.owner)).status).toBe(200);
+    const held = (await seeded.directory.originsHeld(newOwner)).map((entry) => entry.origin);
+    expect(held).toEqual([SHOP]);
+  });
+
+  it('keeps the settings of the move before when the key moved from signed none', async () => {
+    const { store, site, recover, call } = await setup({ siteSeenAt: LONG_AGO });
+    const thief = generateSecretKey();
+    site.owner = getPublicKey(thief);
+    expect((await recover(store.owner, thief)).status).toBe(200);
+    const owner = generateSecretKey();
+    site.owner = getPublicKey(owner);
+    expect((await recover(store.owner, owner)).status).toBe(200);
+    const settings = await call('GET', '/v1/admin/store/moved-settings', owner);
+    expect(settings.body.config.pubkey).toBe(store.owner);
+    expect(settings.body.private).toEqual({ voice: 'warm', instructions: 'Sell tea', notes: 'n' });
+  });
+
+  it('tells a key the store moved away from so, instead of offering a new store', async () => {
+    const { store, recover, call } = await setup({ siteSeenAt: LONG_AGO });
+    expect((await recover(store.owner)).status).toBe(200);
+    expect(await call('GET', '/v1/admin/store', store.ownerSecret)).toMatchObject({
+      status: 409,
+      body: { error: 'moved' },
+    });
+    expect((await call('GET', '/v1/admin/store', generateSecretKey())).status).toBe(404);
+  });
+
+  it('takes the lease up again under a new epoch after a move', async () => {
+    const { store, seeded } = await setup();
+    const [before] = await seeded.state.acquireLeases(HOLDER, NOW, 60);
+    const to = getPublicKey(generateSecretKey());
+    expect(await seeded.directory.moveStore(store.owner, to, NOW, undefined)).toEqual({ ok: true });
+    const [after] = await seeded.state.acquireLeases(HOLDER, NOW + 1, 60);
+    expect(after?.store.owner).toBe(to);
+    expect(after?.epoch).toBe((before?.epoch ?? 0) + 1);
+  });
+
+  it('runs one proof per store and new key at a time, freed once it ends, whatever its outcome', async () => {
+    const { store, connectors, recover, newSecret } = await setup({ siteSeenAt: LONG_AGO });
+    let finish: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const spy = vi.spyOn(connectors, 'proveSite').mockImplementationOnce(async () => {
+      await held;
+      throw new Error('site read broke');
+    });
+    const first = recover(store.owner, newSecret).catch(() => undefined);
+    await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect((await recover(store.owner, newSecret)).body).toMatchObject({ error: 'proof_running' });
+    // Another new key is not held up by it.
+    const other = await recover(store.owner, generateSecretKey());
+    expect(other.body).toMatchObject({ error: 'site_not_proven' });
+    finish();
+    await first;
+    expect((await recover(store.owner, newSecret)).status).toBe(200);
+  });
+
+  it('says on a dry run that a key a store left cannot be the new one', async () => {
+    const { store, seeded, recover } = await setup({ siteSeenAt: LONG_AGO });
+    const left = generateSecretKey();
+    await seeded.db.query(
+      `insert into store_moves (from_owner, to_owner, moved_at) values ($1, $2, $3)`,
+      [getPublicKey(left), getPublicKey(generateSecretKey()), NOW],
+    );
+    const dry = await recover(store.owner, left, undefined, true);
+    expect(dry.body).toMatchObject({ error: 'key_in_use' });
+  });
+});
+
+describe('the proof limiter (K21)', () => {
+  it('refuses a slot further off than the caller waits, and books none', async () => {
+    const limiter = new ShopRateLimiter(
+      60_000,
+      () => 0,
+      async () => undefined,
+    );
+    await limiter.acquire(SHOP, 10_000);
+    await expect(limiter.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
+    await expect(limiter.acquire(SHOP, 10_000)).rejects.toBeInstanceOf(ShopBusyError);
+    await limiter.acquire(SHOP);
   });
 });

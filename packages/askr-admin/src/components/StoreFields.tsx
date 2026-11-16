@@ -140,7 +140,7 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
         {form.source === 'paycore' ? (
           <TextField
             id="store-paycore-key"
-            label="PayCore store key (npub1...)"
+            label="Pay Core store key (npub1...)"
             value={form.paycoreKey}
             hint="Policies are then edited here in the admin."
             onChange={(value) => set('paycoreKey', value)}

@@ -25,8 +25,12 @@ export class ShopRateLimiter {
     private readonly sleep: (ms: number) => Promise<void> = defaultSleep,
   ) {}
 
-  /** Wait for this origin's next slot and take it. */
-  async acquire(origin: string): Promise<void> {
+  /**
+   * Wait for this origin's next slot and take it. With `maxWaitMs`, a slot
+   * further off is not booked: the caller gives up at once instead of holding
+   * a place in a long queue (an owner key proof, K21).
+   */
+  async acquire(origin: string, maxWaitMs?: number): Promise<void> {
     const now = this.clock();
     if (this.nextAt.size > MAX_TRACKED_SHOPS) {
       for (const [stored, at] of this.nextAt) {
@@ -36,10 +40,21 @@ export class ShopRateLimiter {
       }
     }
     const at = Math.max(now, this.nextAt.get(origin) ?? 0);
+    if (maxWaitMs !== undefined && at - now > maxWaitMs) {
+      throw new ShopBusyError();
+    }
     this.nextAt.set(origin, at + this.gapMs);
     if (at > now) {
       await this.sleep(at - now);
     }
+  }
+}
+
+/** An origin's next slot is further off than the caller would wait. */
+export class ShopBusyError extends Error {
+  constructor() {
+    super('The shop is busy with other reads');
+    this.name = 'ShopBusyError';
   }
 }
 
@@ -64,6 +79,8 @@ export interface ShopHttpDeps {
   maxRequests?: number;
   /** The sync's overall deadline: once aborted, every request in flight or to come fails. */
   signal?: AbortSignal;
+  /** Wait at most this long for an origin's slot; a later one fails the request at once. */
+  maxSlotWaitMs?: number;
 }
 
 function originOf(url: string): string {
@@ -105,7 +122,7 @@ export class ShopHttp {
     if (this.requests > this.maxRequests) {
       throw new RequestBudgetError();
     }
-    await this.limiter.acquire(origin);
+    await this.limiter.acquire(origin, this.deps.maxSlotWaitMs);
   }
 
   async get(url: string, request: GuardedRequest): Promise<GuardedResponse> {

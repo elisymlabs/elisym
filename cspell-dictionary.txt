@@ -305,3 +305,8 @@ webflow
 weebly
 squarespace
 carrd
+gumroad
+bigcartel
+godaddysites
+jimdosite
+mystrikingly

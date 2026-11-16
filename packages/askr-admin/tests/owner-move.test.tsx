@@ -158,7 +158,7 @@ describe('finishing a move to a new secret key (K21)', () => {
     expect(nameField(notOld)).toBe('');
   });
 
-  it('says when the private instructions could not be read, and when PayCore needs relinking', async () => {
+  it('says when the private instructions could not be read, and when Pay Core needs relinking', async () => {
     const lost = await mountMoved(movedDeps(oldConfig(), null));
     expect(lost.textContent).toContain('private instructions could not be read');
     expect(nameField(lost)).toBe('Moved Tea');
@@ -190,6 +190,29 @@ describe('finishing a move to a new secret key (K21)', () => {
     );
     await settle(() => (mounted?.container.textContent ?? '').includes('Set up your assistant'));
     expect(api.movedSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe('signing in with a key the store moved away from (K21)', () => {
+  it('says so and offers to take the store back for this Store ID', async () => {
+    const onReplaceKey = vi.fn();
+    const api = fakeApi({
+      store: vi.fn(async () => {
+        throw new ApiError(409, 'moved');
+      }),
+    });
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(api, fakeReader([]))}
+        onSignOut={() => undefined}
+        onReplaceKey={onReplaceKey}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('moved to another secret key'));
+    expect(container.textContent).not.toContain('Create my store');
+    await click(buttonNamed(container, 'Take my store back'));
+    expect(onReplaceKey).toHaveBeenCalledWith(npubEncode(OWNER));
   });
 });
 
@@ -261,7 +284,7 @@ describe('recovery errors in plain words (K21)', () => {
       '2 sites your store listed earlier',
     ],
     [new ApiError(409, 'key_in_use'), 'already belongs to a store'],
-    [new ApiError(409, 'moved'), 'was replaced by a new one'],
+    [new ApiError(409, 'moved'), 'take your store back'],
     [new ApiError(404, 'no_store'), 'no store with this Store ID'],
   ])('%s', (error, text) => {
     expect(errorMessage(error)).toContain(text);

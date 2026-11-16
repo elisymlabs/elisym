@@ -109,7 +109,7 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
         ) : null}
         {load.form.source === 'paycore' ? (
           <Notice tone="warn">
-            Your products come from PayCore, which must be linked to your new key with our help.
+            Your products come from Pay Core, which must be linked to your new key with our help.
             Contact us once you have signed.
           </Notice>
         ) : null}
@@ -138,8 +138,9 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
       <Notice tone="info">
         Your products, policies, plan and chats stayed. Two things for your site: keep the
         askr-verification tag (or file) with your new Store ID there, as the connector checks it;
-        and once you have signed, replace the chat code with the new one from the Embed tab. The old
-        code keeps working, but the new one no longer depends on your old key.
+        and once you have signed, replace the chat code with the new one from the Embed tab. Until
+        you sign, the chat on your site is unavailable; then the old code works again, but the new
+        one no longer depends on your old key.
       </Notice>
       <Notice tone="info">
         Keys you authorized for your own backend or an agent are not carried over, since one may be

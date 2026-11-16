@@ -34,9 +34,9 @@ const CODES: Readonly<Record<string, string>> = {
   unexpected: 'The server gave an unexpected answer. Retry in a moment.',
   no_store: 'There is no store with this Store ID.',
   key_in_use:
-    'This new key already belongs to a store. Go back and start again: a fresh key is made for you.',
+    'This new key already belongs to a store, or once did. Go back and use another: clear "I already made and saved a new secret key" to get a fresh one.',
   moved:
-    'This secret key was replaced by a new one, so it opens no store. Sign in with the new key.',
+    'This secret key was replaced, so it opens no store. Sign in with the new key; if you did not replace it, take your store back with "Lost your secret key?" on the sign-in page.',
   read_failed: "Your store's settings could not be read just now. Retry in a moment.",
   proof_running:
     "Your store's site is being checked for another request right now. Retry in a minute.",

@@ -25,7 +25,7 @@ interface Props {
 
 const ROLE_NAMES: Readonly<Record<CatalogKeyRole, string>> = {
   catalog: 'catalog key',
-  paycore: 'PayCore store key',
+  paycore: 'Pay Core store key',
 };
 
 /** Authorize or revoke catalog keys K with O-signed 30497 events (1.1). */

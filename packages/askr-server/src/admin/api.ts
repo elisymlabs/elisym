@@ -388,7 +388,9 @@ export function createAdminApi(
         409,
       );
     }
-    const moved = await deps.directory.moveStore(from, owner, now(), settings?.event);
+    // A key that signed nothing (moved on before it could) leaves the settings of the move before.
+    const previous = settings?.event ?? (await deps.directory.movedFrom(from))?.config ?? undefined;
+    const moved = await deps.directory.moveStore(from, owner, now(), previous);
     if (!moved.ok) {
       if (moved.reason === 'taken') {
         return json({ error: 'key_in_use' }, 409);
@@ -642,7 +644,10 @@ export function createAdminApi(
     }
     const store = await deps.directory.store(owner);
     if (store === undefined) {
-      return json({ error: 'no_store' }, 404);
+      // A key the store moved away from: its admin says where to go, or how to take it back.
+      return (await deps.directory.wasMoved(owner))
+        ? json({ error: 'moved' }, 409)
+        : json({ error: 'no_store' }, 404);
     }
     if (route === 'GET /v1/admin/store') {
       return json(await view(store), 200);

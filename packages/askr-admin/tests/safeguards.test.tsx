@@ -557,7 +557,7 @@ describe('keys and policy keys', () => {
     await settle(() => (container.textContent ?? '').includes(npubOf(storeKey)));
     const rows = [...container.querySelectorAll('li')];
     const paycoreRow = rows.find((row) => (row.textContent ?? '').includes(npubOf(storeKey)));
-    expect(paycoreRow?.textContent).toContain('PayCore store key');
+    expect(paycoreRow?.textContent).toContain('Pay Core store key');
     expect(paycoreRow?.querySelector('button')).toBeNull();
     const serverRow = rows.find((row) => (row.textContent ?? '').includes(npubOf(SERVER_KEY)));
     expect(serverRow?.querySelector('button')?.textContent).toBe('Revoke');

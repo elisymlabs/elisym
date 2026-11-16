@@ -152,6 +152,8 @@ describe('bootstrap', () => {
     await started(elsewhere);
     expect(elsewhere.client.snapshot().phase).toBe('unavailable');
     expect(elsewhere.client.snapshot().movedTo).toBeUndefined();
+    // Nothing of the old key's config is shown: its contact link may be a thief's.
+    expect(elsewhere.client.snapshot().config).toBeUndefined();
 
     const nowhere = harness();
     nowhere.gateway.movedTo = makeStore().owner.pubkey;

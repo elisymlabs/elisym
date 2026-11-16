@@ -61,6 +61,15 @@ export const SHARED_HOST_SUFFIXES: readonly string[] = [
   '.framer.website',
   '.notion.site',
   '.tumblr.com',
+  '.square.site',
+  '.gumroad.com',
+  '.bigcartel.com',
+  '.godaddysites.com',
+  '.jimdosite.com',
+  '.mystrikingly.com',
+  '.deno.dev',
+  '.up.railway.app',
+  '.r2.dev',
 ];
 
 export interface HeldOrigin {

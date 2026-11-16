@@ -169,6 +169,8 @@ export class ChatClient {
   private readonly pageUrl: () => string | undefined;
   /** The new owner key, once the gateway said the store moved and its config checked out. */
   private movedTo: string | undefined;
+  /** The gateway said the store moved away from this owner key, followed or not. */
+  private movedAway = false;
   private readonly locale: () => string | undefined;
   private readonly backoff: Backoff;
 
@@ -240,7 +242,9 @@ export class ChatClient {
     if (this.retryReason !== undefined && this.phase === 'retry') {
       snapshot.retryReason = this.retryReason;
     }
-    if (this.store) {
+    // Once the store moved away from this owner key, nothing of its config is shown: whoever
+    // holds the old key may have written it (K21).
+    if (this.store && !this.movedAway) {
       snapshot.config = this.store.config;
     }
     if (this.inFlight) {
@@ -616,6 +620,7 @@ export class ChatClient {
    * not name this site is never followed, whatever the gateway says.
    */
   private async followMove(owner: string): Promise<'unavailable' | 'error'> {
+    this.movedAway = true;
     let moved: StoreData | undefined;
     try {
       moved = await loadStoreData(

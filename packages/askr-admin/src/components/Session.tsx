@@ -10,6 +10,7 @@ import { readConfig } from '../lib/store-data';
 import { ownSignedEvents, withStoredEvents } from '../lib/stored-events';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { FinishMove } from './FinishMove';
+import { MovedAway } from './MovedAway';
 import { Notice } from './Notice';
 import { Onboarding } from './Onboarding';
 import { Shell } from './Shell';
@@ -24,6 +25,8 @@ interface Props {
 type Load =
   | { state: 'loading' }
   | { state: 'missing' }
+  /** This key is one the store moved away from (K21). */
+  | { state: 'moved' }
   | { state: 'failed'; error: string }
   | { state: 'ready'; view: StoreView };
 
@@ -57,11 +60,15 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       setReloadWarning('');
     } catch (error) {
       const missing = error instanceof ApiError && error.code === 'no_store';
+      const moved = error instanceof ApiError && error.code === 'moved';
       // Only the first load may fail the page: later, the last view stays with a warning, so a
       // failed poll or a reload after an action never wipes the dashboard or unsaved edits.
       setLoad((previous) => {
         if (previous.state === 'ready') {
           return previous;
+        }
+        if (moved) {
+          return { state: 'moved' };
         }
         return missing ? { state: 'missing' } : { state: 'failed', error: errorMessage(error) };
       });
@@ -134,6 +141,14 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
     return () => clearInterval(timer);
   }, [syncRunning, reload, deps]);
 
+  if (load.state === 'moved') {
+    return (
+      <MovedAway
+        onTakeBack={() => onReplaceKey(npubOf(deps.signer.pubkey))}
+        onSignOut={onSignOut}
+      />
+    );
+  }
   if (load.state === 'loading' || (load.state === 'ready' && !configRead)) {
     return <p className="text-14 text-text-2 p-24">Loading your store...</p>;
   }

@@ -3,7 +3,7 @@ import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import { randomId } from '../state/pg-state';
 import type { ConnectorRecord, ScheduledConnector, StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
-import { MAX_REDIRECTS, PREVIEW_DEADLINE_MS } from './constants';
+import { MAX_REDIRECTS, PREVIEW_DEADLINE_MS, PROOF_SLOT_WAIT_MS } from './constants';
 import type { FetchGuardDeps } from './fetch-guard';
 import { ShopHttp, ShopRateLimiter } from './http';
 import { type ConnectorSyncResult, syncConnector } from './runner';
@@ -121,6 +121,9 @@ export class ConnectorService {
       limiter: this.proofLimiter,
       // Two pages per origin, each with its redirects.
       maxRequests: origins.length * 2 * (MAX_REDIRECTS + 1),
+      // A shop flooded with proofs answers this one "could not be read" at once, never after a
+      // queue that would outlast the deadline.
+      maxSlotWaitMs: PROOF_SLOT_WAIT_MS,
       signal: deadline.signal,
       ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
     });

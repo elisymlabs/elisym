@@ -11,7 +11,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { type Db, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
-import { type HeldOrigin, noteOrigins } from './origins';
+import { type HeldOrigin, ORIGIN_PROOF_AGE_SECS, noteOrigins } from './origins';
 import { STORE_SELECT, followMoves, monthStartDay, storeOf, utcDay } from './pg-state';
 import type { StoreRecord, StoreStatus, Tier } from './types';
 
@@ -579,7 +579,15 @@ export class StoreDirectory {
       const reseal = (sealed: Uint8Array, purpose: 'assistant' | 'catalog') =>
         this.vault.seal(this.vault.open(sealed, from, purpose), to, purpose);
       await tx.query('delete from store_events where owner = $1', [from]);
-      await tx.query('delete from leases where owner = $1', [from]);
+      // Expired, not deleted: whoever takes it next does so under a new epoch, so an ask of the old
+      // lease never looks live again.
+      await tx.query('update leases set expires_at = 0 where owner = $1', [from]);
+      // Sites too young to prove anything yet go: one a thief listed just before the owner moved
+      // the store would otherwise come of age under the new key and take it back.
+      await tx.query('delete from store_origins where owner = $1 and first_seen > $2', [
+        from,
+        now - ORIGIN_PROOF_AGE_SECS,
+      ]);
       // A sync running under the old key releases under it, which no longer matches: free the guard.
       await tx.query('update catalog_syncs set holder = null, expires_at = 0 where owner = $1', [
         from,

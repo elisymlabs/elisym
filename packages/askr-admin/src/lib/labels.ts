@@ -9,7 +9,7 @@ export const SOURCE_LABELS: Readonly<Record<ProductSourceKind, string>> = {
   admin: 'Here in the admin (CSV import and product editor)',
   catalog: 'My own catalog key (SDK, MCP or my backend)',
   connector: 'My online shop or product feed (connector)',
-  paycore: 'An existing PayCore store',
+  paycore: 'An existing Pay Core store',
 };
 
 export const PLATFORM_LABELS: Readonly<Record<ConnectorPlatform, string>> = {

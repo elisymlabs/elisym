@@ -44,3 +44,6 @@ export const D_HASH_BYTES = 12;
 
 /** Shopify policy pages imported as 30495 (7.4): shared with the admin, which shows them read-only. */
 export { SHOPIFY_POLICY_SLUGS } from '@elisym/askr';
+
+/** How long an owner key proof (K21) waits at most for its turn to read a shop's page. */
+export const PROOF_SLOT_WAIT_MS = 10_000;
