@@ -375,6 +375,42 @@ describe('the connector', () => {
     },
   );
 
+  it('names a platform the settings do not, and takes the same shop typed another way as agreeing', async () => {
+    const wrongPlatform = adminConfig({
+      source: { kind: 'connector', platform: 'woocommerce', shopUrl: 'https://tea.example' },
+    });
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(fakeApi(), fakeReader([]))}
+        view={storeView({ connector: CONNECTOR })}
+        config={wrongPlatform}
+        reload={async () => undefined}
+      />,
+    );
+    expect(mounted.container.textContent).toContain('do not name this connector');
+    await mounted.unmount();
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(fakeApi(), fakeReader([]))}
+        view={storeView({ connector: { ...CONNECTOR, url: 'https://tea.example/' } })}
+        config={SHOP_CONFIG}
+        reload={async () => undefined}
+      />,
+    );
+    expect(mounted.container.textContent).not.toContain('disagree');
+    expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(false);
+  });
+
+  it('never turns on after a preview of an earlier address, even while the settings agree', async () => {
+    const { container, render } = await mountConnector();
+    await click(buttonNamed(container, 'Preview first import'));
+    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
+    // Same shop for the settings (a final slash), another string for the connector.
+    await mounted?.rerender(render({ ...CONNECTOR, url: 'https://tea.example/' }));
+    expect(container.textContent).not.toContain('disagree');
+    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+  });
+
   it('a feed needs no shop address in the settings', async () => {
     mounted = await mount(
       <ConnectorSection

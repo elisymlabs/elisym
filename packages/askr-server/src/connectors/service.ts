@@ -45,7 +45,7 @@ export interface ConnectorServiceDeps {
 }
 
 /** `{origin}{path}` without a trailing slash, query or fragment: how a shop URL compares. */
-function shopIdentity(url: string): string | undefined {
+export function shopIdentity(url: string): string | undefined {
   try {
     const parsed = new URL(url);
     return `${parsed.origin}${parsed.pathname.replace(/\/+$/u, '')}`;

@@ -6,6 +6,7 @@ import {
   parseConfig,
 } from '@elisym/askr';
 import { type SessionDeps, postSigned } from './deps';
+import { errorMessage } from './errors';
 import type { SignedJournal } from './journal';
 import {
   type ServerKeys,
@@ -49,7 +50,15 @@ export function authorizedNow(relay: ReadonlySet<string>, journal: SignedJournal
 }
 
 /** Sign the config (and the source key's authorization when needed) and store it on the server. */
-export async function saveSettings(input: SaveInput): Promise<void> {
+/** What a save did beyond the settings, for the merchant. */
+export interface SaveOutcome {
+  /** Syncing paused or the connector removed by this save. */
+  note?: string;
+  /** The settings are saved, but the connector step failed: a save again retries it. */
+  connectorError?: string;
+}
+
+export async function saveSettings(input: SaveInput): Promise<SaveOutcome> {
   const { journal } = input.deps;
   const now = input.deps.now();
   // Checked before anything is signed: a bad feed address must not leave half a save.
@@ -71,10 +80,27 @@ export async function saveSettings(input: SaveInput): Promise<void> {
   });
   await postSigned(input.deps, events);
   // The connector follows the settings it is part of: set up with them, gone with them.
-  if (connector !== undefined) {
-    await input.deps.api.putConnector(connector);
-  } else if (input.view.connector !== null) {
-    await input.deps.api.deleteConnector();
+  const before = input.view.connector;
+  try {
+    if (connector !== undefined) {
+      const { connector: after } = await input.deps.api.putConnector(connector);
+      return before?.enabled === true && after?.enabled === false
+        ? {
+            note: 'Syncing is paused, since the shop changed: preview it and turn it on again in the Connector tab.',
+          }
+        : {};
+    }
+    if (before !== null) {
+      await input.deps.api.deleteConnector();
+      return {
+        note: 'The connector is removed: your products no longer sync. Products already published stay until you change them.',
+      };
+    }
+    return {};
+  } catch (failure) {
+    return {
+      connectorError: `Your settings are saved, but the connector could not be updated: ${errorMessage(failure)} Save again to retry.`,
+    };
   }
 }
 

@@ -337,10 +337,7 @@ export interface ConnectorFields {
 }
 
 /** The form with what the server's connector record adds to the signed settings. */
-export function withConnector(
-  form: StoreForm,
-  connector: Pick<ConnectorFields, 'platform' | 'url' | 'currency' | 'importPolicies'> | null,
-): StoreForm {
+export function withConnector(form: StoreForm, connector: ConnectorFields | null): StoreForm {
   if (connector === null) {
     return form;
   }
@@ -387,8 +384,14 @@ export function connectorOf(form: StoreForm): ConnectorFields | undefined {
   };
 }
 
-/** `value` when it is an https URL, else undefined. */
+/** The longest address the server keeps for a connector. */
+const MAX_CONNECTOR_URL_CHARS = 2_048;
+
+/** `value` when it is an https URL the server takes, else undefined. */
 function httpsUrl(value: string): string | undefined {
+  if (value.length > MAX_CONNECTOR_URL_CHARS) {
+    return undefined;
+  }
   try {
     return new URL(value).protocol === 'https:' ? value : undefined;
   } catch {

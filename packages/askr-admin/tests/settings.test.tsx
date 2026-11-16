@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsSection } from '../src/components/SettingsSection';
 import type { SessionDeps } from '../src/lib/deps';
 import { type Signer, secretKeySigner } from '../src/lib/signer';
+import { EMPTY_FORM, withConnector } from '../src/lib/store-form';
 import type { StoreView } from '../src/lib/types';
 import {
   ASSISTANT,
@@ -311,5 +312,119 @@ describe('the connector, set up with the settings', () => {
     await click(buttonNamed(container, 'Sign and save'));
     await settle(() => vi.mocked(deps.api.deleteConnector).mock.calls.length === 1);
     expect(deps.api.putConnector).not.toHaveBeenCalled();
+  });
+
+  it('says when a save pauses syncing or removes the connector, and puts nothing when there was none', async () => {
+    const event = publishedConfig(NOW - 100);
+    const paused = sessionDeps(
+      fakeApi({
+        putConnector: vi.fn(async () => ({ connector: { ...CONNECTOR, enabled: false } })),
+      }),
+      fakeReader([event]),
+    );
+    const first = await mountSettings({
+      deps: paused,
+      config: {
+        ...configOf(event),
+        source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+      },
+      view: storeView({ connector: CONNECTOR }),
+    });
+    await typeInto(byId(first.container, 'store-shop-url'), 'https://tea.example/shop');
+    await click(buttonNamed(first.container, 'Sign and save'));
+    await settle(() => (first.container.textContent ?? '').includes('Syncing is paused'));
+    await mounted?.unmount();
+
+    const removed = sessionDeps(fakeApi(), fakeReader([event]));
+    const second = await mountSettings({
+      deps: removed,
+      config: configOf(event),
+      view: storeView({ connector: CONNECTOR }),
+    });
+    await click(buttonNamed(second.container, 'Sign and save'));
+    await settle(() => (second.container.textContent ?? '').includes('The connector is removed'));
+    await mounted?.unmount();
+
+    const none = sessionDeps(fakeApi(), fakeReader([event]));
+    const third = await mountSettings({ deps: none, config: configOf(event) });
+    await click(buttonNamed(third.container, 'Sign and save'));
+    await settle(() => vi.mocked(none.api.storeEvents).mock.calls.length === 1);
+    expect(none.api.deleteConnector).not.toHaveBeenCalled();
+    expect(none.api.putConnector).not.toHaveBeenCalled();
+  });
+
+  it('says the settings are saved when only the connector step failed, and puts nothing when signing failed', async () => {
+    const event = publishedConfig(NOW - 100);
+    const deps = sessionDeps(
+      fakeApi({ putConnector: vi.fn(async () => Promise.reject(new Error('down'))) }),
+      fakeReader([event]),
+    );
+    const { container } = await mountSettings({
+      deps,
+      config: {
+        ...configOf(event),
+        source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+      },
+      view: storeView({ connector: CONNECTOR }),
+    });
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() =>
+      (container.textContent ?? '').includes(
+        'Your settings are saved, but the connector could not be updated',
+      ),
+    );
+    expect(deps.api.storeEvents).toHaveBeenCalledTimes(1);
+    await mounted?.unmount();
+
+    const failing = sessionDeps(
+      fakeApi({ storeEvents: vi.fn(async () => Promise.reject(new Error('refused'))) }),
+      fakeReader([event]),
+    );
+    const again = await mountSettings({
+      deps: failing,
+      config: {
+        ...configOf(event),
+        source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+      },
+      view: storeView({ connector: CONNECTOR }),
+    });
+    await click(buttonNamed(again.container, 'Sign and save'));
+    await settle(() => (again.container.textContent ?? '').includes('refused'));
+    expect(failing.api.putConnector).not.toHaveBeenCalled();
+  });
+
+  it('offers the policy import for Shopify only, and sends it off for WooCommerce', async () => {
+    const event = publishedConfig(NOW - 100);
+    const deps = sessionDeps(fakeApi(), fakeReader([event]));
+    const { container } = await mountSettings({ deps, config: configOf(event) });
+    await chooseOption(byId(container, 'store-source'), 'connector');
+    await chooseOption(byId(container, 'store-platform'), 'woocommerce');
+    expect(container.textContent).not.toContain('Import the shop');
+    await typeInto(byId(container, 'store-shop-url'), 'https://tea.example');
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => vi.mocked(deps.api.putConnector).mock.calls.length === 1);
+    expect(vi.mocked(deps.api.putConnector).mock.calls[0]?.[0]).toMatchObject({
+      platform: 'woocommerce',
+      importPolicies: false,
+    });
+  });
+});
+
+describe('withConnector', () => {
+  it('takes a feed only from a Google connector, and the currency and policy import from any', () => {
+    const shop = withConnector(EMPTY_FORM, {
+      platform: 'shopify',
+      url: 'https://tea.example',
+      currency: 'EUR',
+      importPolicies: false,
+    });
+    expect(shop).toMatchObject({ feedUrl: '', connectorCurrency: 'EUR', importPolicies: false });
+    const feed = withConnector(EMPTY_FORM, {
+      platform: 'google',
+      url: 'https://tea.example/feed.xml',
+      importPolicies: true,
+    });
+    expect(feed).toMatchObject({ feedUrl: 'https://tea.example/feed.xml', connectorCurrency: '' });
+    expect(withConnector(EMPTY_FORM, null)).toBe(EMPTY_FORM);
   });
 });

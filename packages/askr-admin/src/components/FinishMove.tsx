@@ -69,14 +69,14 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
       const privatePart = privatePartOf(moved.private);
       setLoad({
         state: 'ready',
-        form: withConnector(formOfConfig(config, privatePart), view.connector),
+        form: formOfConfig(config, privatePart),
         found: true,
         privateLost: privatePart === undefined,
       });
     } catch (failure) {
       setLoad({ state: 'failed', error: errorMessage(failure) });
     }
-  }, [deps, view.connector]);
+  }, [deps]);
 
   useEffect(() => {
     void read();
@@ -116,11 +116,16 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
           </Notice>
         ) : null}
         <StoreSettingsForm
-          initial={load.form}
+          // The connector's own fields (a feed, a currency) join at render: a reload of the store
+          // must not read the moved settings again and drop what the merchant typed.
+          initial={withConnector(load.form, view.connector)}
           ownerNpub={npubOf(deps.signer.pubkey)}
           submitLabel="Sign with my new key"
           onSubmit={async (form) => {
-            await saveSettings({ deps, view, form });
+            const outcome = await saveSettings({ deps, view, form });
+            if (outcome.connectorError !== undefined) {
+              throw new Error(outcome.connectorError);
+            }
             await onDone();
             return 'Signed.';
           }}

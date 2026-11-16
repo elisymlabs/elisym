@@ -3,6 +3,7 @@ import { type ReactNode, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { PLATFORM_LABELS } from '../lib/labels';
+import { newestConfig } from '../lib/save';
 import { npubOf } from '../lib/signer';
 import type { ConnectorRecord, ConnectorSyncResult, StoreView } from '../lib/types';
 import { ConnectorStatus } from './ConnectorStatus';
@@ -118,8 +119,11 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
       return 'Syncing is off. Your products stay as last synced.';
     });
 
+  // The settings this session signed last count before the relay has them: a save in Settings
+  // changes the connector at once, the relay a moment later.
+  const signed = newestConfig(config, deps.journal);
   const problem =
-    config === undefined ? undefined : disagreement(config, connector, view.catalogKey);
+    signed === undefined ? undefined : disagreement(signed, connector, view.catalogKey);
   const active = view.status === 'active';
   // A preview is of the connector as it was: one of another address is no ground to turn it on.
   const previewOk = preview?.result.status === 'ok' && preview.url === connector.url;

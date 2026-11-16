@@ -51,9 +51,10 @@ const CODES: Readonly<Record<string, string>> = {
     'A product sync or connector preview is already running for this store. Wait for it to finish, then retry.',
   inactive:
     'Your store is not active yet. Products, policies and the connector work once the operator has activated it.',
-  no_connector: 'No connector is set up for this store. Save the connector settings first.',
+  no_connector:
+    'No connector is set up for this store. Choose your shop as the product source in Settings and save first.',
   policy_imported:
-    'Your Shopify connector is set to import this policy, and each sync puts the shop version back. Change it in Shopify, or turn off policy import in Connector to change it here.',
+    'Your Shopify connector is set to import this policy, and each sync puts the shop version back. Change it in Shopify, or turn off policy import in Settings to change it here.',
 };
 
 const SITE_FAILURES: Readonly<Record<string, string>> = {

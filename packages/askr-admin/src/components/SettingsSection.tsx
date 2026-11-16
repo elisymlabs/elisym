@@ -187,7 +187,7 @@ export function SettingsSection({
           if (authorities === undefined) {
             throw new Error('Your catalog key authorizations are not read yet. Retry above.');
           }
-          await saveSettings({
+          const outcome = await saveSettings({
             deps,
             view,
             form,
@@ -195,8 +195,15 @@ export function SettingsSection({
             authorized: catalogKeysOf(authorities),
             relayNewestAt: authorities.newestAt,
           });
-          setSaved(savedMessage(view));
+          setSaved(
+            outcome.note === undefined
+              ? savedMessage(view)
+              : `${savedMessage(view)} ${outcome.note}`,
+          );
           await onSaved();
+          if (outcome.connectorError !== undefined) {
+            throw new Error(outcome.connectorError);
+          }
           return '';
         }}
       >
