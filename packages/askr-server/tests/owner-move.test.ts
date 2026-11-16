@@ -296,7 +296,7 @@ describe('replacing an owner key through the site (K21)', () => {
     ).toMatchObject({ error: 'no_site_yet' });
   });
 
-  it('a dropped site counts until 30 days after the settings last listed it; a listed one always', async () => {
+  it('a site counts until 30 days after it was last seen listed', async () => {
     const DROPPED = 'https://dropped.example';
     const dropped = await setup();
     await dropped.seeded.directory.noteOrigins(dropped.store.owner, [DROPPED], LONG_AGO);
@@ -316,12 +316,13 @@ describe('replacing an owner key through the site (K21)', () => {
     ]);
     expect((await dropped.recover(dropped.store.owner)).body).toMatchObject({ proven: DROPPED });
 
-    // A quiet store: its listed site was last noted long ago, and still counts.
-    const quiet = await setup({ siteSeenAt: LONG_AGO });
-    await quiet.seeded.db.query('update store_origins set last_seen = $1', [
+    // A site still listed but not seen for longer (a store nobody serves, a domain that may have
+    // lapsed) does not count either: a served store's sites are noted again every few hours.
+    const lapsed = await setup({ siteSeenAt: LONG_AGO });
+    await lapsed.seeded.db.query('update store_origins set last_seen = $1', [
       NOW - 10 * ORIGIN_DROPPED_GRACE_SECS,
     ]);
-    expect((await quiet.recover(quiet.store.owner)).body).toMatchObject({ proven: SHOP });
+    expect((await lapsed.recover(lapsed.store.owner)).body).toMatchObject({ error: 'no_site_yet' });
   });
 
   it('never counts a site on a shared host, however its name is written', async () => {

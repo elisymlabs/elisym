@@ -314,7 +314,7 @@ export function createAdminApi(
   };
 
   const recoveriesPerIp = new WindowLimiter(RECOVERIES_PER_IP_PER_HOUR, HOUR_MS);
-  /** Stores whose sites a replacement is reading now, on this instance. */
+  /** Replacements (store and new key) whose site reads run now, on this instance. */
   const proving = new Set<string>();
 
   /**
@@ -356,28 +356,25 @@ export function createAdminApi(
     } catch {
       return json({ error: 'read_failed' }, 503);
     }
-    // The sites the settings list now count as seen now: a quiet store's are not reloaded often.
-    const { origins, readyAt } = proofOrigins(
-      await deps.directory.originsHeld(from),
-      now(),
-      settings?.config.origins ?? [],
-    );
+    const { origins, readyAt } = proofOrigins(await deps.directory.originsHeld(from), now());
     if (origins.length === 0) {
       return json({ error: 'no_site_yet', readyAt: readyAt ?? null }, 409);
     }
     if (parsed.success && parsed.data.dryRun === true) {
       return json({ ok: true }, 200);
     }
-    // One proof at a time per store: each reads its sites, which anyone may ask for.
-    if (proving.has(from)) {
+    // One proof at a time per store and new key: a double click reads the sites once, and
+    // others' tries never hold up the owner's (moveStore settles a race between keys).
+    const attempt = `${from}:${owner}`;
+    if (proving.has(attempt)) {
       return json({ error: 'proof_running' }, 409);
     }
-    proving.add(from);
+    proving.add(attempt);
     let proof: Awaited<ReturnType<typeof deps.connectors.proveSite>>;
     try {
       proof = await deps.connectors.proveSite(origins, owner);
     } finally {
-      proving.delete(from);
+      proving.delete(attempt);
     }
     if ('failures' in proof) {
       // Only the sites the settings list now are named: older ones stay private.

@@ -21,7 +21,7 @@ import { KIND_DELETION, buildStoreAuthEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { SUBSCRIPTION_BUDGET } from '../src/constants';
+import { ORIGINS_NOTE_EVERY_SECS, SUBSCRIPTION_BUDGET } from '../src/constants';
 import type { Db } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
 import { passesWrapPreCheck } from '../src/relay/pool';
@@ -537,6 +537,19 @@ describe('worker wraps (2.4)', () => {
     expect(setup.worker.catalogs.has(store.owner)).toBe(true);
     await waitUntil(async () => (await originsOf(setup, store.owner)).length > 0);
     expect(await originsOf(setup, store.owner)).toEqual([ORIGIN]);
+  });
+
+  it('notes the origins of a quiet store again once due, never sooner (K21)', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store] });
+    await waitUntil(async () => (await originsOf(setup, store.owner)).length > 0);
+    await setup.db.query('update store_origins set last_seen = 0');
+    setup.worker.noteLoadedOrigins();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((await lastSeenOf(setup, store.owner))[0]).toBe(0);
+    setup.clock.now += ORIGINS_NOTE_EVERY_SECS + 1;
+    setup.worker.noteLoadedOrigins();
+    await waitUntil(async () => (await lastSeenOf(setup, store.owner))[0] === setup.clock.now);
   });
 
   it('takes up a store that moved to a new owner key under that key, the same A (K21)', async () => {
@@ -1556,4 +1569,12 @@ async function originsOf(setup: { db: Db }, owner: string): Promise<string[]> {
     [owner],
   );
   return rows.map((row) => row.origin);
+}
+
+async function lastSeenOf(setup: { db: Db }, owner: string): Promise<number[]> {
+  const rows = await setup.db.query<{ last_seen: string | number }>(
+    'select last_seen from store_origins where owner = $1',
+    [owner],
+  );
+  return rows.map((row) => Number(row.last_seen));
 }

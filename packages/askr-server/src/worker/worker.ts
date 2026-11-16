@@ -174,6 +174,16 @@ export class Worker {
    */
   private readonly notedOrigins = new Map<string, { at: number; origins: string }>();
 
+  /**
+   * Record again the origins of every store served here, once they are due:
+   * a quiet store is not reloaded, yet its sites are still listed (K21).
+   */
+  noteLoadedOrigins(): void {
+    for (const [owner, catalog] of this.loader.catalogs) {
+      this.noteOrigins(owner, catalog.config.origins);
+    }
+  }
+
   private noteOrigins(owner: string, origins: readonly string[]): void {
     const now = this.now();
     const key = [...origins].sort().join(' ');
@@ -297,6 +307,7 @@ export class Worker {
       this.deps.state.sweep(this.now()).catch((error: unknown) => {
         this.log(`sweep failed: ${error instanceof Error ? error.message : 'unknown'}`);
       });
+      this.noteLoadedOrigins();
     }, SWEEP_INTERVAL_MS);
   }
 

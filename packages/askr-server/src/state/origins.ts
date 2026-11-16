@@ -78,19 +78,16 @@ export function onSharedHost(origin: string): boolean {
 
 /**
  * The sites that may prove a replacement now: held for ORIGIN_PROOF_AGE_SECS,
- * listed within ORIGIN_DROPPED_GRACE_SECS (or listed now, in `listed`), not on
- * a shared host; the longest held first, at most MAX_PROOF_ORIGINS. With none,
+ * listed within ORIGIN_DROPPED_GRACE_SECS (a served store's are noted again
+ * every few hours), not on a shared host; the longest held first, at most MAX_PROOF_ORIGINS. With none,
  * when the first one will count, if any will.
  */
 export function proofOrigins(
   held: readonly HeldOrigin[],
   now: number,
-  listed: readonly string[] = [],
 ): { origins: string[]; readyAt: number | undefined } {
   const own = held.filter(
-    (entry) =>
-      (listed.includes(entry.origin) || entry.lastSeen >= now - ORIGIN_DROPPED_GRACE_SECS) &&
-      !onSharedHost(entry.origin),
+    (entry) => entry.lastSeen >= now - ORIGIN_DROPPED_GRACE_SECS && !onSharedHost(entry.origin),
   );
   const origins = own
     .filter((entry) => entry.firstSeen <= now - ORIGIN_PROOF_AGE_SECS)
