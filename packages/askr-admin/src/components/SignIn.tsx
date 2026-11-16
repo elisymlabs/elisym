@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { forgetDamaged, nextTask, readRemembered, rememberKey } from '../lib/remembered';
-import { type Signer, generateOwnerKey, parseSecretKey, secretKeySigner } from '../lib/signer';
+import {
+  type Signer,
+  generateOwnerKey,
+  npubOf,
+  parseSecretKey,
+  publicKeyOf,
+  secretKeySigner,
+} from '../lib/signer';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
 import { RecoverStore } from './RecoverStore';
@@ -39,6 +46,8 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
   const [generated, setGenerated] = useState<ReturnType<typeof generateOwnerKey>>();
   const [recovering, setRecovering] = useState(replaceKeyOf !== undefined);
   const [remembered, setRemembered] = useState(readRemembered);
+  /** The Store ID of what the key field holds, for a password manager: public, never the key. */
+  const [typedStore, setTypedStore] = useState('');
 
   // Leaving the page keeps it in the back/forward cache: a typed key must not come back.
   useEffect(() => {
@@ -61,21 +70,27 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
     beforeSignIn: () => void,
   ) => {
     working.current = true;
-    if (choice.kind === 'on') {
-      setBusy(true);
-      setError('');
-      const problem = await rememberWith(secretKey, choice.password);
-      setBusy(false);
-      if (problem !== undefined) {
-        working.current = false;
-        setError(problem);
-        return;
+    try {
+      if (choice.kind === 'on') {
+        setBusy(true);
+        setError('');
+        const problem = await rememberWith(secretKey, choice.password);
+        if (problem !== undefined) {
+          setError(
+            remembered.damaged ? `${problem} Or clear what could not be read first.` : problem,
+          );
+          return;
+        }
       }
+      setError('');
+      beforeSignIn();
+      onSigner(secretKeySigner(secretKey));
+    } catch {
+      setError('That secret key could not be used. Check it and try again.');
+    } finally {
+      working.current = false;
+      setBusy(false);
     }
-    setError('');
-    beforeSignIn();
-    onSigner(secretKeySigner(secretKey));
-    working.current = false;
   };
 
   /** What the merchant chose about remembering, or undefined after showing why it cannot be. */
@@ -136,6 +151,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
       <NewOwnerKey
         nsec={generated.nsec}
         npub={generated.npub}
+        busy={busy}
         onContinue={() => continueWithNew(generated.secretKey)}
         onCancel={() => {
           setGenerated(undefined);
@@ -224,6 +240,12 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
+            onChange={(event) => {
+              const typed = parseSecretKey(event.target.value);
+              const pubkey = typed === undefined ? undefined : publicKeyOf(typed);
+              typed?.fill(0);
+              setTypedStore(pubkey === undefined ? '' : npubOf(pubkey));
+            }}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
                 pasteKey();
@@ -235,7 +257,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
           ref={remember}
           id="sign-in"
           label="Remember my key on this device"
-          username="Askr store"
+          username={typedStore === '' ? 'Askr store' : typedStore}
         />
         <button type="button" className="btn btn-primary" disabled={busy} onClick={pasteKey}>
           {busy ? 'Signing in...' : 'Sign in'}

@@ -8,12 +8,14 @@ interface Props {
   npub: string;
   onContinue: () => void;
   onCancel: () => void;
+  /** Continue is at work (remembering the key): it waits and says so. */
+  busy?: boolean;
   /** More choices before Continue, such as remembering the key on this device. */
   children?: ReactNode;
 }
 
 /** A new owner key, shown once, with a clear warning to save it. */
-export function NewOwnerKey({ nsec, npub, onContinue, onCancel, children }: Props) {
+export function NewOwnerKey({ nsec, npub, onContinue, onCancel, busy = false, children }: Props) {
   const [saved, setSaved] = useState(false);
   return (
     <main className="mx-auto flex min-h-screen max-w-560 flex-col justify-center gap-16 px-16 py-40">
@@ -36,10 +38,15 @@ export function NewOwnerKey({ nsec, npub, onContinue, onCancel, children }: Prop
         </label>
         {children}
         <div className="flex gap-8">
-          <button type="button" className="btn btn-primary" disabled={!saved} onClick={onContinue}>
-            Continue
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!saved || busy}
+            onClick={onContinue}
+          >
+            {busy ? 'Saving on this device...' : 'Continue'}
           </button>
-          <button type="button" className="btn" onClick={onCancel}>
+          <button type="button" className="btn" disabled={busy} onClick={onCancel}>
             Back
           </button>
         </div>

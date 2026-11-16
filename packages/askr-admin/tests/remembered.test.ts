@@ -180,13 +180,41 @@ describe('what is stored, read back carefully', () => {
     expect(readRemembered()).toEqual({ available: true, keys: [], damaged: false, newer: true });
     expect(rememberKey(secretKey, PASSWORD)).toBe(false);
     expect(forgetKey(store)).toBe(false);
+    expect(forgetDamaged()).toBe(false);
     expect(storage.getItem(STORAGE_KEY)).toBe(newer);
   });
 
-  it('forgetting a store clears damaged leftovers too', () => {
+  it('writes nothing over a value it cannot read at all, until it is cleared', () => {
     writeRaw('not json');
     expect(forgetKey(store)).toBe(true);
+    expect(rememberKey(secretKey, PASSWORD)).toBe(false);
+    expect(storage.getItem(STORAGE_KEY)).toBe('not json');
+    expect(forgetDamaged()).toBe(true);
     expect(storage.getItem(STORAGE_KEY)).toBeNull();
+    expect(rememberKey(secretKey, PASSWORD)).toBe(true);
+  });
+
+  it('keeps unreadable entries through remembering and forgetting other stores', () => {
+    const other = generateSecretKey();
+    const unreadable = { store: someone, locked: withByte(good, 1, 19) };
+    writeRaw({ version: 1, keys: [{ store, locked: good }, unreadable] });
+    expect(rememberKey(other, PASSWORD)).toBe(true);
+    expect(forgetKey(store)).toBe(true);
+    const kept = storage.getItem(STORAGE_KEY) ?? '';
+    expect(JSON.parse(kept).keys).toContainEqual(unreadable);
+    expect(readRemembered()).toMatchObject({ damaged: true });
+    expect(readRemembered().keys.map((key) => key.store)).toEqual([getPublicKey(other)]);
+  });
+
+  it('drops unreadable entries naming the store it forgets or replaces', () => {
+    const naming = { store, locked: withByte(good, 1, 19) };
+    writeRaw({ version: 1, keys: [naming] });
+    expect(readRemembered()).toMatchObject({ keys: [], damaged: true });
+    expect(forgetKey(store)).toBe(true);
+    expect(storage.getItem(STORAGE_KEY)).toBeNull();
+    writeRaw({ version: 1, keys: [naming] });
+    expect(rememberKey(secretKey, PASSWORD)).toBe(true);
+    expect(readRemembered()).toMatchObject({ damaged: false });
   });
 });
 

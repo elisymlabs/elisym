@@ -28,6 +28,19 @@ interface Props {
   onCancel: () => void;
 }
 
+const NOT_FORGOTTEN =
+  'This browser did not let the admin forget the old key on this device: it opens no store any more, so forget it from the sign-in page later.';
+const NOT_REMEMBERED =
+  'This browser did not let the admin remember the new key on this device. Keep the new key you saved: you sign in with it next time.';
+
+/** What to say when the store moved but this device did not record it fully. */
+function movedProblem(forgot: boolean, remembered: boolean): string {
+  const problems = [forgot ? '' : NOT_FORGOTTEN, remembered ? '' : NOT_REMEMBERED].filter(
+    (problem) => problem !== '',
+  );
+  return `Your store moved to the new key. ${problems.join(' ')}`;
+}
+
 type Step =
   | { step: 'store' }
   | { step: 'key'; from: string; key: OwnerKey }
@@ -120,9 +133,7 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
       setState({
         step: 'moved',
         signer,
-        problem: remembered
-          ? 'Your store moved to the new key, but this browser did not let the admin forget the old key on this device. Forget it from the sign-in page later.'
-          : 'Your store moved to the new key, but this browser did not let the admin remember it on this device. Keep the new key you saved: you sign in with it next time.',
+        problem: movedProblem(forgot, remembered),
       });
     };
     return (

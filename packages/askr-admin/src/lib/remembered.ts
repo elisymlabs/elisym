@@ -1,6 +1,7 @@
 // cspell:words ncryptsec
 import { decrypt, encrypt } from 'nostr-tools/nip49';
 import { getPublicKey } from 'nostr-tools/pure';
+import { publicKeyOf } from './signer';
 
 /**
  * Secret keys remembered on this device, each locked with a password the
@@ -176,54 +177,75 @@ function parseEntry(value: unknown): RememberedKey | undefined {
   return { store, locked };
 }
 
-/** What is remembered here, newest first; anything unreadable is left out and flagged. */
-export function readRemembered(): RememberedRead {
+interface Inspected extends RememberedRead {
+  /** Entries that could not be read: kept until the merchant clears them. */
+  leftovers: unknown[];
+  /** The whole value could not be read: nothing is written over it until cleared. */
+  unreadable: boolean;
+}
+
+function inspect(): Inspected {
+  const nothing = { keys: [], damaged: false, leftovers: [], unreadable: false };
   const available = canRemember();
   const store = storage();
   let raw: string | null = null;
   try {
     raw = store === undefined ? null : store.getItem(STORAGE_KEY);
   } catch {
-    return { available: false, keys: [], damaged: false };
+    return { ...nothing, available: false };
   }
   if (raw === null) {
-    return { available, keys: [], damaged: false };
+    return { ...nothing, available };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { available, keys: [], damaged: true };
+    return { ...nothing, available, damaged: true, unreadable: true };
   }
   if (isRecord(parsed) && typeof parsed.version === 'number' && parsed.version > FORMAT_VERSION) {
-    return { available, keys: [], damaged: false, newer: true };
+    return { ...nothing, available, newer: true };
   }
   if (!isRecord(parsed) || parsed.version !== FORMAT_VERSION || !Array.isArray(parsed.keys)) {
-    return { available, keys: [], damaged: true };
+    return { ...nothing, available, damaged: true, unreadable: true };
   }
   const keys: RememberedKey[] = [];
-  let damaged = false;
+  const leftovers: unknown[] = [];
   for (const entry of parsed.keys) {
     const key = parseEntry(entry);
     if (key === undefined || keys.some((known) => known.store === key.store)) {
-      damaged = true;
+      leftovers.push(entry);
     } else {
       keys.push(key);
     }
   }
-  return { available, keys, damaged };
+  return { available, keys, damaged: leftovers.length > 0, leftovers, unreadable: false };
 }
 
-function writeKeys(keys: readonly RememberedKey[]): boolean {
+/** What is remembered here, newest first; anything unreadable is left out and flagged. */
+export function readRemembered(): RememberedRead {
+  const { available, keys, damaged, newer } = inspect();
+  return newer === true ? { available, keys, damaged, newer } : { available, keys, damaged };
+}
+
+/** An unreadable entry naming this Store ID (hex): forgetting or replacing the store drops it. */
+function namesStore(entry: unknown, store: string): boolean {
+  return isRecord(entry) && entry.store === store;
+}
+
+function writeKeys(keys: readonly RememberedKey[], leftovers: readonly unknown[]): boolean {
   const store = storage();
   if (store === undefined) {
     return false;
   }
   try {
-    if (keys.length === 0) {
+    if (keys.length === 0 && leftovers.length === 0) {
       store.removeItem(STORAGE_KEY);
     } else {
-      store.setItem(STORAGE_KEY, JSON.stringify({ version: FORMAT_VERSION, keys }));
+      store.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ version: FORMAT_VERSION, keys: [...keys, ...leftovers] }),
+      );
     }
     return true;
   } catch {
@@ -242,33 +264,50 @@ export function passwordProblem(password: string, repeated: string): string | un
   return undefined;
 }
 
-/** Remember `secretKey` on this device, locked with `password`, in place of any for its store. */
+/**
+ * Remember `secretKey` on this device, locked with `password`, in place of any
+ * for its store. Refused over a newer admin's value or a wholly unreadable one,
+ * which only the merchant clears.
+ */
 export function rememberKey(secretKey: Uint8Array, password: string): boolean {
-  const read = readRemembered();
-  if (read.newer === true) {
+  const read = inspect();
+  if (read.newer === true || read.unreadable) {
     return false;
   }
   const store = getPublicKey(secretKey);
   const locked = encrypt(secretKey, password, REMEMBER_LOG_N);
-  const others = read.keys.filter((key) => key.store !== store);
-  return writeKeys([{ store, locked }, ...others]);
+  return writeKeys(
+    [{ store, locked }, ...read.keys.filter((key) => key.store !== store)],
+    read.leftovers.filter((entry) => !namesStore(entry, store)),
+  );
 }
 
-/** Forget the key remembered for this Store ID (hex). True when nothing of it is left. */
+/**
+ * Forget the key remembered for this Store ID (hex), and unreadable entries
+ * naming it. True when nothing of it is left that could be unlocked.
+ */
 export function forgetKey(store: string): boolean {
-  const read = readRemembered();
+  const read = inspect();
   if (read.newer === true) {
     return false;
   }
-  if (!read.damaged && !read.keys.some((key) => key.store === store)) {
+  const leftovers = read.leftovers.filter((entry) => !namesStore(entry, store));
+  if (!read.keys.some((key) => key.store === store) && leftovers.length === read.leftovers.length) {
     return true;
   }
-  return writeKeys(read.keys.filter((key) => key.store !== store));
+  return writeKeys(
+    read.keys.filter((key) => key.store !== store),
+    leftovers,
+  );
 }
 
 /** Drop whatever could not be read (the merchant confirmed), keeping the keys that can. */
 export function forgetDamaged(): boolean {
-  return writeKeys(readRemembered().keys);
+  const read = inspect();
+  if (read.newer === true) {
+    return false;
+  }
+  return writeKeys(read.keys, []);
 }
 
 export function isRemembered(store: string): boolean {
@@ -286,7 +325,7 @@ export function unlockKey(key: RememberedKey, password: string): UnlockOutcome {
   } catch {
     return { ok: false, reason: 'password' };
   }
-  if (secretKey.length !== SECRET_KEY_BYTES || safePublicKey(secretKey) !== key.store) {
+  if (secretKey.length !== SECRET_KEY_BYTES || publicKeyOf(secretKey) !== key.store) {
     secretKey.fill(0);
     return { ok: false, reason: 'mismatch' };
   }
@@ -296,12 +335,4 @@ export function unlockKey(key: RememberedKey, password: string): UnlockOutcome {
 /** Let a slow step (scrypt) start after React painted its busy label. */
 export function nextTask(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
-}
-
-function safePublicKey(secretKey: Uint8Array): string | undefined {
-  try {
-    return getPublicKey(secretKey);
-  } catch {
-    return undefined;
-  }
 }

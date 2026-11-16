@@ -468,7 +468,8 @@ describe('a move that this browser does not let the admin record', () => {
 
   it('says the new key was not remembered, then goes on', async () => {
     const said = await proofWith(() => storage.failing.add('setItem'), true);
-    expect(said).toContain('did not let the admin remember it');
+    expect(said).toContain('did not let the admin remember the new key');
+    expect(said).not.toContain('forget the old key');
     expect(said).toContain('Keep the new key you saved');
   });
 
@@ -478,6 +479,16 @@ describe('a move that this browser does not let the admin record', () => {
       storage.failing.add('setItem');
     }, false);
     expect(said).toContain('did not let the admin forget the old key');
+    expect(said).not.toContain('remember the new key');
+  });
+
+  it('says both when neither could be recorded', async () => {
+    const said = await proofWith(() => {
+      storage.failing.add('removeItem');
+      storage.failing.add('setItem');
+    }, true);
+    expect(said).toContain('did not let the admin forget the old key');
+    expect(said).toContain('did not let the admin remember the new key');
   });
 });
 
@@ -510,6 +521,50 @@ describe('presses and leftovers', () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
     });
     expect(onSigner).toHaveBeenCalledTimes(1);
+  });
+
+  it('remembers a new key and signs in once on a double press of Continue', async () => {
+    const { container, onSigner } = await signInScreen();
+    await click(buttonNamed(container, 'Create a secret key'));
+    const saved = [...container.querySelectorAll('input[type="checkbox"]')].find(
+      (box) => box.id === '',
+    );
+    if (!(saved instanceof HTMLInputElement)) {
+      throw new Error('no saved checkbox');
+    }
+    await click(saved);
+    await chooseRemember(container, 'new-key', PASSWORD);
+    const next = buttonNamed(container, 'Continue');
+    await act(async () => {
+      next.click();
+      next.click();
+    });
+    await settle(() => onSigner.mock.calls.length > 0);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    expect(onSigner).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a key no signer can use, and the next good one still signs in', async () => {
+    const { container, onSigner } = await signInScreen();
+    inputById(container, 'owner-key').value = '0'.repeat(64);
+    await click(buttonNamed(container, 'Sign in'));
+    expect(text(container)).toContain('That is not a secret key');
+    inputById(container, 'owner-key').value = nip19.nsecEncode(OWNER_KEY);
+    await click(buttonNamed(container, 'Sign in'));
+    expect(onSigner).toHaveBeenCalledTimes(1);
+  });
+
+  it('says to clear what could not be read when that blocks remembering', async () => {
+    storage.setItem('askr-admin.remembered-keys', '{not json');
+    const { container, onSigner } = await signInScreen();
+    inputById(container, 'owner-key').value = nip19.nsecEncode(OWNER_KEY);
+    await chooseRemember(container, 'sign-in', PASSWORD);
+    await click(buttonNamed(container, 'Sign in'));
+    await settle(() => text(container).includes('could not be remembered'));
+    expect(text(container)).toContain('clear what could not be read first');
+    expect(onSigner).not.toHaveBeenCalled();
   });
 
   it('wipes the unlocked key once the signer has its own copy', async () => {
@@ -555,6 +610,10 @@ describe('presses and leftovers', () => {
     await click(inputById(container, 'sign-in-remember'));
     const username = inputById(container, 'sign-in-username');
     expect(username.autocomplete).toBe('username');
+    expect(username.value).toBe('Askr store');
+    await typeInto(inputById(container, 'owner-key'), nip19.nsecEncode(OWNER_KEY));
+    expect(username.value).toBe(nip19.npubEncode(OWNER));
+    await typeInto(inputById(container, 'owner-key'), 'nsec1nope');
     expect(username.value).toBe('Askr store');
     const form = username.closest('form');
     expect(form).not.toBeNull();
