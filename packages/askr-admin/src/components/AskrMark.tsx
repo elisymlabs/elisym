@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react';
+
 /** The Askr mark, drawn still: the rim and six rings, ink and paper by turns. */
 const MARK_PATHS = [
   'M59.67 24.84 A11.00 11.00 0 0 0 40.33 24.84 L13.81 73.76 A11.00 11.00 0 0 0 23.48 90.00 L76.52 90.00 A11.00 11.00 0 0 0 86.19 73.76Z',
@@ -11,11 +13,18 @@ const MARK_PATHS = [
 
 interface Props {
   className?: string;
+  style?: CSSProperties;
 }
 
-export function AskrMark({ className }: Props) {
+export function AskrMark({ className, style }: Props) {
   return (
-    <svg viewBox="0 0 100 100" className={className} aria-hidden="true" focusable="false">
+    <svg
+      viewBox="0 0 100 100"
+      className={className}
+      style={style}
+      aria-hidden="true"
+      focusable="false"
+    >
       {MARK_PATHS.map((path, index) => (
         <path key={path} d={path} className={index % 2 === 0 ? 'mark-ink' : 'mark-paper'} />
       ))}

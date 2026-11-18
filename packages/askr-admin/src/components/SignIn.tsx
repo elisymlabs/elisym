@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { forgetDamaged, readRemembered, rememberKey } from '../lib/remembered';
 import { type Signer, generateOwnerKey, parseSecretKey, secretKeySigner } from '../lib/signer';
-import { AskrMark } from './AskrMark';
+import { AskrLogo } from './AskrLogo';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
 import { RecoverStore } from './RecoverStore';
@@ -146,8 +146,10 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
   return (
     <main className="mx-auto flex min-h-screen max-w-440 flex-col justify-center gap-24 px-16 py-40">
       <div className="flex flex-col items-center gap-8 text-center">
-        <AskrMark className="mb-8 size-40" />
-        <h1 className="text-24 font-semibold">Askr admin</h1>
+        <h1 className="mb-4">
+          <AskrLogo height={34} />
+          <span className="sr-only">Askr admin</span>
+        </h1>
         <p className="text-14 text-text-2">
           Sign in with your store&apos;s secret key. It is never sent anywhere: it stays in this
           browser tab, and on this device unless you clear the remember box.
