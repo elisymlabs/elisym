@@ -148,10 +148,23 @@ describe('remembering a key on this device', () => {
     const joined = new Uint8Array(SEALED_BYTES);
     joined.set(iv);
     joined.set(cipher, 12);
+    // Keep what the decrypt hands back: the opened key is a view over it.
+    const opened: ArrayBuffer[] = [];
+    const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+    vi.spyOn(crypto.subtle, 'decrypt').mockImplementation(async (...args) => {
+      const plain = await decrypt(...args);
+      opened.push(plain);
+      return plain;
+    });
     expect(await unlockKey({ store, sealed: base64Of(joined) })).toEqual({
       ok: false,
       reason: 'mismatch',
     });
+    expect(opened).toHaveLength(1);
+    const [plain] = opened;
+    expect(plain === undefined ? false : new Uint8Array(plain).every((byte) => byte === 0)).toBe(
+      true,
+    );
   });
 
   it('says storage did not answer, not that the key is lost, when IndexedDB fails to open', async () => {

@@ -292,11 +292,11 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           <fieldset disabled={busy} className="contents">
             <ProductList
               items={draft}
-              onEdit={(d) => {
-                const item = draft.find((candidate) => candidate.d === d);
+              onEdit={(productId) => {
+                const item = draft.find((candidate) => candidate.d === productId);
                 openEditor(item === undefined ? undefined : { mode: 'edit', item });
               }}
-              onRemove={(d) => change(removeItem(draft, d))}
+              onRemove={(productId) => change(removeItem(draft, productId))}
             />
             <p className="border-line text-12 text-text-3 border-t px-20 py-10">
               {draft.length} product{draft.length === 1 ? '' : 's'}
