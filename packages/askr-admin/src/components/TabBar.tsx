@@ -1,19 +1,21 @@
-import { TABS, type TabId } from '../lib/tabs';
+import type { TABS, TabId } from '../lib/tabs';
 import { NavIcon } from './NavIcon';
 
 interface Props {
+  /** The sections this store has: Connector only once a connector is set up. */
+  tabs: readonly (typeof TABS)[number][];
   active: TabId;
   onSelect: (tab: TabId) => void;
 }
 
 /** The sections: a column in the sidebar, a scrolling row on a narrow screen. */
-export function TabBar({ active, onSelect }: Props) {
+export function TabBar({ tabs, active, onSelect }: Props) {
   return (
     <nav
       className="-mx-4 flex gap-2 overflow-x-auto md:mx-0 md:flex-col md:overflow-visible"
       aria-label="Sections"
     >
-      {TABS.map((tab) => (
+      {tabs.map((tab) => (
         <button
           key={tab.id}
           type="button"

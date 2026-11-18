@@ -331,6 +331,55 @@ describe('the overview', () => {
     expect(mounted.container.textContent).toContain('https://shop.example');
   });
 
+  it('leaves the Connector section out of the sidebar until a connector is set up', async () => {
+    const sections = (container: HTMLElement) =>
+      [...container.querySelectorAll('nav[aria-label="Sections"] button')].map(
+        (button) => button.textContent,
+      );
+    const store = vi.fn(async () => storeView());
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi({ store }), fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => sections(container).includes('Overview'));
+    expect(sections(container)).not.toContain('Connector');
+    expect(sections(container)).toEqual([
+      'Overview',
+      'Settings',
+      'Products',
+      'Policies',
+      'Embed',
+      'Advanced',
+    ]);
+    store.mockImplementation(async () =>
+      storeView({
+        connector: {
+          owner: OWNER,
+          platform: 'shopify',
+          url: 'https://shop.example',
+          importPolicies: false,
+          enabled: false,
+          lastRunAt: null,
+          nextRunAt: null,
+          lastStatus: null,
+        },
+      }),
+    );
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => sections(container).includes('Connector'));
+    await click(buttonNamed(container, 'Connector'));
+    await settle(() => (container.textContent ?? '').includes('Turn on syncing'));
+    // Gone again (removed elsewhere), the page falls back to the overview.
+    store.mockImplementation(async () => storeView());
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => !sections(container).includes('Connector'));
+    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+  });
+
   it('says no clicks yet with none', async () => {
     mounted = await mount(
       <Overview view={storeView()} config={undefined} configFromServer={false} />,

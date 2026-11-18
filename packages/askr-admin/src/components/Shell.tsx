@@ -49,7 +49,10 @@ export function Shell({
   onSignOut,
   onReplaceKey,
 }: Props) {
-  const [tab, setTab] = useState<TabId>('overview');
+  const [chosen, setTab] = useState<TabId>('overview');
+  // The Connector section is for a connector set up in Settings: without one it is left out.
+  const tabs = view.connector === null ? TABS.filter((entry) => entry.id !== 'connector') : TABS;
+  const tab = tabs.some((entry) => entry.id === chosen) ? chosen : 'overview';
   const refresh = async () => {
     await reload();
     await reloadConfig();
@@ -116,7 +119,7 @@ export function Shell({
             </span>
           </div>
         </div>
-        <TabBar active={tab} onSelect={setTab} />
+        <TabBar tabs={tabs} active={tab} onSelect={setTab} />
         <div className="mt-auto hidden flex-col gap-2 md:flex">
           <button
             type="button"
