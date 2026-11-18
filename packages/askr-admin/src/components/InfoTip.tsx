@@ -52,11 +52,15 @@ export function InfoTip({ help, about }: Props) {
         }
       }
     };
+    // Its shift was measured for the width it opened at: a resize or a turned phone closes it.
+    const closeOnResize = () => setOpen(false);
     document.addEventListener('pointerdown', closeOutside);
     document.addEventListener('keydown', closeOnEscape);
+    window.addEventListener('resize', closeOnResize);
     return () => {
       document.removeEventListener('pointerdown', closeOutside);
       document.removeEventListener('keydown', closeOnEscape);
+      window.removeEventListener('resize', closeOnResize);
     };
   }, [open]);
 

@@ -135,6 +135,64 @@ describe('the info button', () => {
     }
   });
 
+  it('keeps 16px from the left edge where the room runs out, and narrows on a small phone', () => {
+    // The left clamp binds: a button 10px from the window's edge on a phone.
+    expect(panelShift(10, 375, 375)).toBe(6);
+    // A container whose right edge leaves less than the panel: the left edge wins.
+    const shift = panelShift(100, 250, 1280);
+    expect(shift).toBe(16 - 100);
+    expect(100 + shift).toBe(16);
+    // A 320px phone: the panel narrows to 272px (the window less 48px).
+    expect(panelShift(290, 320, 320)).toBe(320 - 16 - 272 - 290);
+    for (const left of [16, 100, 200, 290]) {
+      const moved = panelShift(left, 320, 320);
+      expect(left + moved, `left ${left}`).toBeGreaterThanOrEqual(16);
+      expect(left + moved + 272, `left ${left}`).toBeLessThanOrEqual(320 - 16);
+    }
+  });
+
+  it("measures to main's right edge when main ends before the window", async () => {
+    mounted = await mount(
+      <main>
+        <InfoTip help={HELP.storeName} about="Store name" />
+      </main>,
+    );
+    const main = mounted.container.querySelector('main');
+    const button = mounted.container.querySelector<HTMLButtonElement>('button');
+    const box = button?.parentElement;
+    if (main === null || button === null || box === null || box === undefined) {
+      throw new Error('not rendered');
+    }
+    const windowWidth = window.innerWidth;
+    vi.spyOn(main, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(0, 0, windowWidth - 200, 500),
+    );
+    vi.spyOn(box, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(windowWidth - 400, 0, 14, 14),
+    );
+    await click(button);
+    const note = mounted.container.querySelector<HTMLElement>('[role="note"]');
+    expect(note?.style.left).toBe(
+      `${panelShift(windowWidth - 400, windowWidth - 200, windowWidth)}px`,
+    );
+    expect(Number.parseFloat(note?.style.left ?? '0')).toBeLessThan(
+      panelShift(windowWidth - 400, windowWidth, windowWidth) + 1,
+    );
+    expect(note?.style.left).not.toBe(
+      `${panelShift(windowWidth - 400, windowWidth, windowWidth)}px`,
+    );
+  });
+
+  it('closes when the window is resized, its shift being for the old width', async () => {
+    const { container, button } = await tip();
+    await click(button);
+    expect(container.querySelector('[role="note"]')).not.toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
+    expect(container.querySelector('[role="note"]')).toBeNull();
+  });
+
   it('sets the shift on the panel when it opens', async () => {
     const { container, button } = await tip();
     const box = button.parentElement;
