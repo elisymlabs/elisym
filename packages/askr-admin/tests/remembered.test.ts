@@ -182,6 +182,47 @@ describe('remembering a key on this device', () => {
     expect((await unlockKey(key)).ok).toBe(true);
   });
 
+  it('replaces an extractable key put in the device slot, and opens nothing sealed under it', async () => {
+    const planted = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+      'encrypt',
+      'decrypt',
+    ]);
+    const store = getPublicKey(generateSecretKey());
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const secretKey = generateSecretKey();
+    const cipher = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(store) },
+        planted,
+        secretKey,
+      ),
+    );
+    const request = indexedDB.open('askr-admin', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('device');
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      request.onsuccess = () => resolve(request.result);
+    });
+    const put = db
+      .transaction('device', 'readwrite')
+      .objectStore('device')
+      .put(planted, 'remember-key');
+    await new Promise((resolve) => {
+      put.onsuccess = resolve;
+    });
+    db.close();
+    const joined = new Uint8Array(SEALED_BYTES);
+    joined.set(iv);
+    joined.set(cipher, 12);
+    expect(await unlockKey({ store, sealed: base64Of(joined) })).toEqual({
+      ok: false,
+      reason: 'lost',
+    });
+    const key = await rememberedOf(generateSecretKey());
+    const device = await storedDeviceKey();
+    expect(device.extractable).toBe(false);
+    expect((await unlockKey(key)).ok).toBe(true);
+  });
+
   it('refuses a sealed key moved under another Store ID', async () => {
     const key = await rememberedOf(generateSecretKey());
     const other = getPublicKey(generateSecretKey());

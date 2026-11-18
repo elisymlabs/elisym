@@ -29,6 +29,7 @@ let mounted: Mounted | undefined;
 afterEach(async () => {
   await mounted?.unmount();
   mounted = undefined;
+  vi.restoreAllMocks();
 });
 
 describe('the help', () => {
@@ -70,6 +71,8 @@ describe('the info button', () => {
     const { container, button } = await tip();
     expect(button.getAttribute('aria-label')).toBe('About Store name');
     expect(button.getAttribute('aria-expanded')).toBe('false');
+    // Closed, it points at nothing: the panel is not in the page.
+    expect(button.hasAttribute('aria-controls')).toBe(false);
     expect(container.querySelector('[role="note"]')).toBeNull();
     await click(button);
     expect(button.getAttribute('aria-expanded')).toBe('true');
@@ -81,6 +84,23 @@ describe('the info button', () => {
     expect(link?.target).toBe('_blank');
     expect(link?.rel).toBe('noreferrer');
     await click(button);
+    expect(container.querySelector('[role="note"]')).toBeNull();
+    expect(button.hasAttribute('aria-controls')).toBe(false);
+  });
+
+  it('closes on a press elsewhere, but not on a press inside it', async () => {
+    const { container, button } = await tip();
+    await click(button);
+    const note = container.querySelector('[role="note"]');
+    await act(async () => {
+      note?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    });
+    expect(container.querySelector('[role="note"]')).not.toBeNull();
+    await act(async () => {
+      container
+        .querySelector('#elsewhere')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    });
     expect(container.querySelector('[role="note"]')).toBeNull();
   });
 
