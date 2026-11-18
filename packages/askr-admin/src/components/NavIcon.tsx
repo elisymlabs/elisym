@@ -11,7 +11,12 @@ const ICON_PATHS: Readonly<Record<TabId, readonly string[]>> = {
   policies: ['M7 3h7l5 5v13H7z', 'M14 3v5h5', 'M10 13h6', 'M10 17h6'],
   connector: ['M8 7h-1a5 5 0 0 0 0 10h1', 'M16 7h1a5 5 0 0 1 0 10h-1', 'M8 12h8'],
   embed: ['M9 8l-5 4 5 4', 'M15 8l5 4-5 4'],
-  keys: ['M15 7a4 4 0 1 1-3.9 5H4v3H2', 'M7 12v3', 'M16 9h.01'],
+  keys: [
+    'M8 20.5a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9z',
+    'M11.2 12.8 20 4',
+    'M16.5 7.5l2.5 2.5',
+    'M18.5 5.5l2 2',
+  ],
 };
 
 interface Props {
