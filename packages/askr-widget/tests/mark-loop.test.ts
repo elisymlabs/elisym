@@ -10,6 +10,7 @@ const DRIFT_SPEED = 0.18;
 
 let queued: FrameCallback[] = [];
 let still = false;
+let changeListeners: Array<() => void> = [];
 
 /** Run every frame the loop asked for, at `now`. */
 function runFrames(now: number): void {
@@ -37,9 +38,13 @@ beforeEach(() => {
     queued.push(callback);
     return queued.length;
   });
+  changeListeners = [];
   vi.stubGlobal('matchMedia', (query: string) => ({
     get matches() {
       return query.includes('reduce') && still;
+    },
+    addEventListener: (_type: string, listener: () => void) => {
+      changeListeners.push(listener);
     },
   }));
 });
@@ -116,7 +121,13 @@ describe('the mark loop', () => {
     still = true;
     runFrames(200);
     expect(ringPath(svg)).toBe(moved);
+    // The loop parks instead of spinning while the visitor wants things still.
+    expect(queued).toHaveLength(0);
     still = false;
+    for (const listener of changeListeners) {
+      listener();
+    }
+    expect(queued).toHaveLength(1);
     runFrames(300);
     expect(ringPath(svg)).not.toBe(moved);
   });

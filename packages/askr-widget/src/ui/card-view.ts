@@ -45,9 +45,9 @@ function cartIcon(document: Document): SVGSVGElement {
     'M3 4h2.2l2.3 10.1a1.2 1.2 0 0 0 1.2.9h8.6a1.2 1.2 0 0 0 1.2-.9L20 8H6.1',
   );
   svg.append(basket);
-  for (const x of [9.5, 16.5]) {
+  for (const wheelX of [9.5, 16.5]) {
     const wheel = document.createElementNS(SVG_NS, 'circle');
-    wheel.setAttribute('cx', String(x));
+    wheel.setAttribute('cx', String(wheelX));
     wheel.setAttribute('cy', '19.5');
     wheel.setAttribute('r', '1.4');
     svg.append(wheel);
@@ -120,31 +120,40 @@ function fitsAsChoices(values: readonly string[]): boolean {
   );
 }
 
-/** Short values as a row of toggle buttons: one tap picks, the picked one is marked. */
+/**
+ * Short values as toggle buttons under the option's name: one tap picks (aria-pressed marks
+ * it), a tap on the picked one changes nothing, so an add in flight is never dropped.
+ */
 function choiceGroup(
   document: Document,
   name: string,
   values: readonly string[],
   choose: (value: string) => void,
 ): HTMLElement {
+  const box = element(document, 'div', 'choice-group');
+  const label = element(document, 'span', 'choice-name', name);
   const group = element(document, 'div', 'choices');
-  group.setAttribute('role', 'radiogroup');
+  group.setAttribute('role', 'group');
   group.setAttribute('aria-label', name);
   const buttons = values.map((value) => {
     const button = element(document, 'button', 'choice', value);
     button.type = 'button';
-    button.setAttribute('role', 'radio');
-    button.setAttribute('aria-checked', 'false');
+    button.setAttribute('aria-pressed', 'false');
     button.addEventListener('click', () => {
+      if (button.getAttribute('aria-pressed') === 'true') {
+        return;
+      }
       for (const other of buttons) {
-        other.setAttribute('aria-checked', String(other === button));
+        other.setAttribute('aria-pressed', String(other === button));
       }
       choose(value);
     });
     return button;
   });
   group.append(...buttons);
-  return group;
+  label.setAttribute('aria-hidden', 'true');
+  box.append(label, group);
+  return box;
 }
 
 /** Many or long values in a select, its placeholder naming the option. */

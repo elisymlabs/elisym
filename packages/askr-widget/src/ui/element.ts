@@ -50,6 +50,8 @@ export class WidgetView {
   private readonly aiLabel: HTMLElement;
   private readonly close: HTMLButtonElement;
   private readonly poweredBy: HTMLElement;
+  private readonly header: HTMLElement;
+  private readonly composer: HTMLFormElement;
   private language: string;
   private readonly turnViews = new Map<string, TurnView>();
   private config: StoreConfig | undefined;
@@ -78,6 +80,7 @@ export class WidgetView {
     this.panel = element(document, 'section', 'panel');
     this.panel.setAttribute('role', 'dialog');
     const header = element(document, 'div', 'header');
+    this.header = header;
     const who = element(document, 'div', 'who');
     this.name = element(document, 'div', 'name');
     this.aiLabel = element(document, 'div', 'ai');
@@ -97,6 +100,7 @@ export class WidgetView {
     this.chips = element(document, 'div', 'chips');
 
     const composer = element(document, 'form', 'composer');
+    this.composer = composer;
     this.input = element(document, 'input');
     this.input.type = 'text';
     this.input.maxLength = LIMITS.ASK_TEXT_CHARS;
@@ -120,7 +124,7 @@ export class WidgetView {
       this.poweredBy,
       createMark(document, 'mark footer-mark'),
       createWordmark(document, 'wordmark'),
-      element(document, 'span', 'visually-hidden', 'Askr'),
+      element(document, 'span', 'visually-hidden', ' Askr'),
     );
     this.footer.append(link);
     this.panel.append(header, this.log, this.status, this.chips, composer, this.footer);
@@ -129,11 +133,13 @@ export class WidgetView {
 
   /** Every fixed text in the current language: run at start and when the language changes. */
   private applyTexts(): void {
-    this.panel.lang = this.language;
-    this.launcher.lang = this.language;
+    // Only the widget's own texts carry its language: the store's greeting and the answers
+    // keep the page's, which is what they are written in more often.
+    for (const own of [this.launcher, this.header, this.status, this.composer, this.footer]) {
+      own.lang = this.language;
+    }
     this.launcherLabel.textContent = STRINGS.launcher;
     this.launcherHint.textContent = STRINGS.launcherHint;
-    this.launcher.setAttribute('aria-label', STRINGS.open);
     this.aiLabel.textContent = STRINGS.aiLabel;
     this.close.setAttribute('aria-label', STRINGS.close);
     this.greeting.textContent = this.config?.greeting ?? STRINGS.greeting;
@@ -143,6 +149,8 @@ export class WidgetView {
   }
 
   update(snapshot: ChatSnapshot): void {
+    // The texts object is one per page: take this widget's language back before drawing.
+    applyLanguage(this.language);
     this.footer.hidden = !snapshot.branding;
     if (snapshot.config && snapshot.config !== this.config) {
       this.config = snapshot.config;

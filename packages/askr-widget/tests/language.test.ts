@@ -76,7 +76,10 @@ describe('the widget language', () => {
   it("the snippet's data-lang wins over the page and the store", () => {
     const widget = view(['ru', 'de']);
     expect(launcherText(widget)).toBe('Спросить ИИ');
-    expect(widget.panel.lang).toBe('ru');
+    // Its own texts carry its language; the answers keep the page's.
+    expect(widget.panel.querySelector<HTMLElement>('.header')?.lang).toBe('ru');
+    expect(widget.launcher.lang).toBe('ru');
+    expect(widget.panel.lang).toBe('');
     expect(widget.launcher.querySelector('.launcher-hint')?.textContent).toBe(
       'О любом товаре здесь',
     );
@@ -92,9 +95,10 @@ describe('the widget language', () => {
     expect(launcherText(stored)).toBe('Ask AI');
     stored.update({ phase: 'ready', branding: true, turns: [], config: storeIn('fr') });
     expect(launcherText(stored)).toBe("Demander à l'IA");
-    expect(stored.launcher.getAttribute('aria-label')).toBe(
-      "Discuter avec l'assistant de la boutique",
+    expect(stored.launcher.querySelector('.launcher-hint')?.textContent).toBe(
+      'Sur tous nos produits',
     );
+    expect(stored.panel.querySelector('.close')?.getAttribute('aria-label')).toBe('Fermer');
     expect(stored.panel.querySelector('.powered span')?.textContent).toBe('Propulsé par');
     expect(STRINGS.addToCart).toBe('Ajouter au panier');
   });
@@ -127,5 +131,47 @@ describe('the embed snippet', () => {
     expect(snippetAttributes(script({ 'data-theme': 'blue' }))).toEqual([]);
     expect(snippetAttributes(script({ 'data-lang': '  ' }))).toEqual([]);
     expect(snippetAttributes(null)).toEqual([]);
+  });
+});
+
+describe('a price from', () => {
+  it('puts the word where the language puts it', async () => {
+    const { formatPrice } = await import('../src/ui/price');
+    const item = { price: { amount: '1000', currency: 'JPY' }, priceFrom: true };
+    expect(formatPrice(item)).toBe('from 1000 JPY');
+    applyLanguage('ja');
+    expect(formatPrice(item)).toBe('1000 JPYから');
+    applyLanguage('ru');
+    expect(formatPrice(item)).toBe('от 1000 JPY');
+  });
+});
+
+describe('the language on the page', () => {
+  it("an element's own lang wins over the page's", async () => {
+    const { defineAskrElement } = await import('../src/ui/element');
+    defineAskrElement(window, () => {
+      throw new Error('no client: the element has no store');
+    });
+    document.documentElement.lang = 'de';
+    const widget = document.createElement('askr-chat');
+    widget.setAttribute('lang', 'ru');
+    document.body.append(widget);
+    expect(widget.shadowRoot?.querySelector('.launcher-label')?.textContent).toBe('Спросить ИИ');
+    widget.remove();
+    const paged = document.createElement('askr-chat');
+    document.body.append(paged);
+    expect(paged.shadowRoot?.querySelector('.launcher-label')?.textContent).toBe('KI fragen');
+    paged.remove();
+    document.documentElement.lang = '';
+  });
+});
+
+describe('the embed snippet language', () => {
+  it('keeps only a language the widget speaks', () => {
+    const script = (value: string) => ({
+      getAttribute: (name: string) => (name === 'data-lang' ? value : null),
+    });
+    expect(snippetAttributes(script('pt-BR'))).toEqual([['lang', 'pt']]);
+    expect(snippetAttributes(script('nl'))).toEqual([]);
   });
 });

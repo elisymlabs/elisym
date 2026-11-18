@@ -31,5 +31,5 @@ export function formatPrice(
   }
   const base = formatAmount(item.price.amount, item.price.currency);
   const withFrequency = item.price.frequency ? `${base} / ${item.price.frequency}` : base;
-  return item.priceFrom ? `${STRINGS.from} ${withFrequency}` : withFrequency;
+  return item.priceFrom ? STRINGS.from.replace('{price}', withFrequency) : withFrequency;
 }

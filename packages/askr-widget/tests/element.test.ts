@@ -108,7 +108,7 @@ describe('<askr-chat>', () => {
     await waitFor(() => client?.snapshot().phase === 'ready');
     expect(shadow.querySelector('.name')?.textContent).toBe('Ava');
     expect(shadow.querySelector('.ai')?.textContent).toBe('AI assistant');
-    expect(shadow.querySelector('.footer .powered')?.textContent).toBe('Powered byAskr');
+    expect(shadow.querySelector('.footer .powered')?.textContent).toBe('Powered by Askr');
     expect(shadow.querySelector('.footer .powered')?.getAttribute('href')).toBe(
       'https://askr.elisym.network',
     );

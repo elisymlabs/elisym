@@ -500,17 +500,47 @@ describe('the cart button keeps its width', () => {
 
   it('short values are toggle buttons in a group named for the option', () => {
     const card = renderCard(context(connectorConfig('shopify')), catalogItem(SIZED));
-    const group = card.querySelector('[role="radiogroup"]');
+    const group = card.querySelector('[role="group"]');
     expect(group?.getAttribute('aria-label')).toBe('Size');
+    expect(card.querySelector('.choice-name')?.textContent).toBe('Size');
     const choices = [...card.querySelectorAll<HTMLButtonElement>('button.choice')];
     expect(choices.map((choice) => choice.textContent)).toEqual(['S', 'M']);
-    expect(choices.map((choice) => choice.getAttribute('aria-checked'))).toEqual([
+    expect(choices.map((choice) => choice.getAttribute('aria-pressed'))).toEqual([
       'false',
       'false',
     ]);
     choices[1]?.click();
-    expect(choices.map((choice) => choice.getAttribute('aria-checked'))).toEqual(['false', 'true']);
+    expect(choices.map((choice) => choice.getAttribute('aria-pressed'))).toEqual(['false', 'true']);
     expect(card.querySelector('select')).toBeNull();
+  });
+
+  it('six short values are buttons, seven go in a select', () => {
+    const option = (count: number) => {
+      const values = Array.from({ length: count }, (_unused, index) => `V${index + 1}`);
+      return catalogItem({
+        options: [{ name: 'Size', values }],
+        variants: values.map((value, index) => ({
+          id: String(400 + index),
+          price: '49.9',
+          available: true,
+          values: [value],
+        })),
+      });
+    };
+    const six = renderCard(context(connectorConfig('shopify')), option(6));
+    expect(six.querySelectorAll('button.choice')).toHaveLength(6);
+    const seven = renderCard(context(connectorConfig('shopify')), option(7));
+    expect(seven.querySelector('button.choice')).toBeNull();
+    expect(seven.querySelector('select')).not.toBeNull();
+  });
+
+  it('a tap on the picked value changes nothing: an add in flight keeps its button', () => {
+    Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
+    const card = renderCard(context(), catalogItem(SIZED));
+    pick(card, 'M');
+    const button = cartButtonOf(card);
+    pick(card, 'M');
+    expect(cartButtonOf(card)).toBe(button);
   });
 
   it('many or long values go in a select named for the option, its placeholder showing it', () => {
@@ -572,6 +602,8 @@ describe('the widget stylesheet', () => {
     );
     expect(WIDGET_CSS).toContain(".cart[data-state='done'] .cart-done { visibility: visible; }");
     expect(WIDGET_CSS).toContain('.card-options:empty { display: none; }');
+    expect(WIDGET_CSS).toContain('.cards > .card:only-child { flex-basis: 100%; }');
+    expect(WIDGET_CSS).toMatch(/@media \(max-width: 480px\) \{\s*\.launcher \{ width: 50px;/u);
     expect(WIDGET_CSS).toContain('min-width: 0; min-height: 36px; }');
   });
 });

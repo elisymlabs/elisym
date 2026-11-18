@@ -94,7 +94,10 @@ describe('the mark in the widget', () => {
     const { launcher } = view();
     expect(launcher.querySelector('svg.launcher-mark')).not.toBeNull();
     expect(launcher.querySelector('.launcher-label')?.textContent).toBe('Ask AI');
-    expect(launcher.getAttribute('aria-label')).toBe('Chat with the store assistant');
+    // Its name is the words it shows (voice control says "Ask AI"); a narrow screen hides them
+    // from sight only.
+    expect(launcher.hasAttribute('aria-label')).toBe(false);
+    expect(launcher.textContent).toBe('Ask AIAbout any product here');
   });
 
   it('turns beside the status while the assistant is thinking', () => {

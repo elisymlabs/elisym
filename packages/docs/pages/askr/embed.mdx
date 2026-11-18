@@ -15,7 +15,7 @@ Optional settings on the same script tag:
 | `data-theme` | `light`, `dark` | follows the visitor's system |
 | `data-lang` | `en`, `ru`, `es`, `de`, `fr`, `pt`, `it`, `zh`, `ja`, `ko` | the page's own `lang` (`<html lang="de">`), then your store's language, then English |
 
-The language sets the widget's own texts: the button, the placeholder, statuses and the cart buttons. Your greeting and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
+The language sets the widget's own texts: the button, the placeholder, statuses and the cart buttons. Your store's language is read when the chat opens, so with neither `data-lang` nor a `lang` on the page the button shows English until then. `<askr-chat lang="ru">` works the same way when you place the element yourself. Your greeting and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
 
 To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` where it should go and load the script without `data-store`.
 

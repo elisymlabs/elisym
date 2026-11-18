@@ -72,26 +72,20 @@ button:disabled { cursor: default; opacity: 0.4; }
   border: 1px solid var(--cc-border); border-radius: 15px; background: var(--cc-bg);
   color: var(--cc-text); box-shadow: 0 14px 32px -12px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.06);
   text-align: left; white-space: nowrap; position: relative; overflow: hidden; isolation: isolate;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
   animation: askr-pop 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
-.launcher:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 18px 36px -12px rgba(0, 0, 0, 0.42), 0 2px 6px rgba(0, 0, 0, 0.06);
-}
-.launcher:active { transform: translateY(0); }
 .launcher:focus-visible { outline: 2px solid var(--cc-text); outline-offset: 3px; }
 .launcher-mark { display: block; flex: none; width: 30px; height: 30px; margin-top: -2px; }
 .launcher-text { display: flex; flex-direction: column; gap: 1px; }
 .launcher-label { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
 .launcher-hint { font-size: 11.5px; color: var(--cc-muted); line-height: 1.2; }
+/* On a narrow screen the words leave the screen but not the button's name. */
 @media (max-width: 480px) {
   .launcher { width: 50px; padding: 0; justify-content: center; }
-  .launcher-text { display: none; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .launcher { transition: none; }
-  .launcher:hover { transform: none; }
+  .launcher-text {
+    position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap;
+  }
 }
 .panel {
   display: none; flex-direction: column;
@@ -114,10 +108,12 @@ button:disabled { cursor: default; opacity: 0.4; }
 .log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 /* A thin scrollbar that stays out of sight until the pointer is over the conversation. */
 .log { scrollbar-width: thin; scrollbar-color: transparent transparent; scrollbar-gutter: stable; }
+.log:hover, .log:focus-within { scrollbar-color: var(--cc-border) transparent; }
 .log:hover, .log:focus-within { scrollbar-color: color-mix(in srgb, var(--cc-muted) 45%, transparent) transparent; }
 .log::-webkit-scrollbar { width: 10px; }
 .log::-webkit-scrollbar-track { background: transparent; }
 .log::-webkit-scrollbar-thumb { border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; background-color: transparent; }
+.log:hover::-webkit-scrollbar-thumb { background-color: var(--cc-border); }
 .log:hover::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--cc-muted) 45%, transparent); }
 .log::-webkit-scrollbar-thumb:hover { background-color: var(--cc-muted); }
 .bubble { max-width: 88%; overflow-wrap: anywhere; }
@@ -167,13 +163,15 @@ a.card-title:hover { text-decoration: underline; }
 .label.recommended { color: var(--cc-text); }
 .card-options { display: flex; flex-direction: column; gap: 6px; }
 .card-options:empty { display: none; }
+.choice-group { display: flex; flex-direction: column; gap: 5px; }
+.choice-name { font-size: 11.5px; color: var(--cc-muted); }
 .choices { display: flex; flex-wrap: wrap; gap: 6px; }
 .choice {
   min-width: 34px; height: 30px; padding: 0 10px; border: 1px solid var(--cc-border);
   border-radius: 999px; background: transparent; font-size: 12.5px; font-weight: 500;
 }
 .choice:hover { border-color: var(--cc-muted); }
-.choice[aria-checked='true'] { border-color: var(--cc-text); background: var(--cc-text); color: var(--cc-bg); }
+.choice[aria-pressed='true'] { border-color: var(--cc-text); background: var(--cc-text); color: var(--cc-bg); }
 .selector { display: block; min-width: 0; }
 /* The browser's own arrow sits differently in every engine and under every host's CSS, so it
    is turned off and a thin chevron is drawn from two gradient strokes, with room on the right. */
@@ -288,6 +286,7 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
 .chip:nth-child(4) { animation-delay: 0.15s; }
 .status > span { animation: askr-fade 0.3s ease both; }
 .card { transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease; }
+.card:hover { border-color: var(--cc-muted); }
 .card:hover { border-color: color-mix(in srgb, var(--cc-muted) 50%, var(--cc-border)); }
 .card-media img { transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1); }
 .card:hover .card-media img { transform: scale(1.04); }

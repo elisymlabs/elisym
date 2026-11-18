@@ -105,12 +105,22 @@ function draw(mark: LiveMark, moment: number): void {
   });
 }
 
-/** Read live, so a visitor who turns on reduced motion mid-visit stops the drift at once. */
+/**
+ * Read live, so a visitor who turns on reduced motion mid-visit stops the drift at once; the
+ * loop parks meanwhile and starts again when the setting is turned off.
+ */
 function prefersStill(scope: typeof globalThis): boolean {
   if (stillQuery === undefined && typeof scope.matchMedia === 'function') {
     stillQuery = scope.matchMedia('(prefers-reduced-motion: reduce)');
+    stillQuery.addEventListener?.('change', resume);
   }
   return stillQuery?.matches ?? false;
+}
+
+function resume(): void {
+  if (frame === undefined && LIVE_MARKS.size > 0 && !prefersStill(globalThis)) {
+    frame = globalThis.requestAnimationFrame(tick);
+  }
 }
 
 /** A mark the visitor cannot see (the launcher behind the open panel, the closed panel's) waits. */
@@ -120,15 +130,21 @@ function shown(svg: SVGSVGElement): boolean {
 
 function tick(now: number): void {
   frame = undefined;
+  for (const mark of LIVE_MARKS) {
+    if (!mark.svg.isConnected) {
+      LIVE_MARKS.delete(mark);
+    }
+  }
+  if (prefersStill(globalThis)) {
+    return;
+  }
   const elapsed = now - lastDraw;
-  if (elapsed >= FRAME_MS && !prefersStill(globalThis)) {
+  if (elapsed >= FRAME_MS) {
     // A long gap (a background tab) moves the drift on by a few frames only: never a jump.
     time += (Math.min(elapsed, 4 * FRAME_MS) / 1000) * DRIFT_SPEED;
     lastDraw = now;
     for (const mark of LIVE_MARKS) {
-      if (!mark.svg.isConnected) {
-        LIVE_MARKS.delete(mark);
-      } else if (shown(mark.svg)) {
+      if (shown(mark.svg)) {
         draw(mark, time);
       }
     }
