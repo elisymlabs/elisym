@@ -28,6 +28,7 @@ const EN = {
   viewProduct: 'View product',
   recommended: 'Recommended',
   choose: 'Choose',
+  products: 'Products',
 };
 
 export type Strings = typeof EN;
@@ -64,6 +65,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: 'Открыть товар',
     recommended: 'Рекомендуем',
     choose: 'Выберите',
+    products: 'Товары',
   },
   es: {
     launcher: 'Pregunta a la IA',
@@ -93,6 +95,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: 'Ver producto',
     recommended: 'Recomendado',
     choose: 'Elige',
+    products: 'Productos',
   },
   de: {
     launcher: 'KI fragen',
@@ -122,6 +125,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: 'Produkt ansehen',
     recommended: 'Empfohlen',
     choose: 'Wählen Sie',
+    products: 'Produkte',
   },
   fr: {
     launcher: "Demander à l'IA",
@@ -151,6 +155,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: 'Voir le produit',
     recommended: 'Recommandé',
     choose: 'Choisir',
+    products: 'Produits',
   },
   pt: {
     launcher: 'Pergunte à IA',
@@ -180,6 +185,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: 'Ver produto',
     recommended: 'Recomendado',
     choose: 'Escolha',
+    products: 'Produtos',
   },
   it: {
     launcher: "Chiedi all'IA",
@@ -209,6 +215,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: 'Vedi prodotto',
     recommended: 'Consigliato',
     choose: 'Scegli',
+    products: 'Prodotti',
   },
   zh: {
     launcher: '问 AI',
@@ -238,6 +245,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: '查看商品',
     recommended: '推荐',
     choose: '选择',
+    products: '商品',
   },
   ja: {
     launcher: 'AIに質問',
@@ -267,6 +275,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: '商品を見る',
     recommended: 'おすすめ',
     choose: '選択:',
+    products: '商品',
   },
   ko: {
     launcher: 'AI에게 묻기',
@@ -296,6 +305,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     viewProduct: '상품 보기',
     recommended: '추천',
     choose: '선택:',
+    products: '상품',
   },
 };
 

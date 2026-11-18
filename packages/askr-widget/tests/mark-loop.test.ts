@@ -131,4 +131,17 @@ describe('the mark loop', () => {
     runFrames(300);
     expect(ringPath(svg)).not.toBe(moved);
   });
+
+  it('a change event while still asks for no frame', async () => {
+    const { createMark } = await freshMark();
+    const svg = createMark(document, 'mark');
+    document.body.append(svg);
+    still = true;
+    runFrames(100);
+    expect(queued).toHaveLength(0);
+    for (const listener of changeListeners) {
+      listener();
+    }
+    expect(queued).toHaveLength(0);
+  });
 });

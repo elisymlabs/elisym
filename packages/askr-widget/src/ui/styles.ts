@@ -56,7 +56,7 @@ export const WIDGET_CSS = `
 button, input, select { font: inherit; color: inherit; margin: 0; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: 0.4; }
-.cart[data-state='done']:disabled { opacity: 1; }
+.cart[data-state='done'] { cursor: default; }
 .cart[data-state='busy']:disabled { opacity: 0.75; }
 :focus-visible { outline: 2px solid var(--cc-text); outline-offset: 2px; }
 .visually-hidden {
@@ -72,8 +72,13 @@ button:disabled { cursor: default; opacity: 0.4; }
   border: 1px solid var(--cc-border); border-radius: 15px; background: var(--cc-bg);
   color: var(--cc-text); box-shadow: 0 14px 32px -12px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.06);
   text-align: left; white-space: nowrap; position: relative; overflow: hidden; isolation: isolate;
+  transition: border-color 0.25s ease;
   animation: askr-pop 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
+/* While the pointer stays, the border takes a slightly firmer color, the same width and
+   shadow: the button still reads as hovered once the highlight has passed. */
+.launcher:hover { border-color: var(--cc-muted); }
+.launcher:hover { border-color: color-mix(in srgb, var(--cc-muted) 55%, var(--cc-border)); }
 .launcher:focus-visible { outline: 2px solid var(--cc-text); outline-offset: 3px; }
 .launcher-mark { display: block; flex: none; width: 30px; height: 30px; margin-top: -2px; }
 .launcher-text { display: flex; flex-direction: column; gap: 1px; }
@@ -133,6 +138,8 @@ button:disabled { cursor: default; opacity: 0.4; }
   margin: 0 -16px; padding: 2px 16px 6px; scroll-padding-inline: 16px; scrollbar-width: none;
 }
 .cards::-webkit-scrollbar { display: none; }
+/* The row bleeds into the log's padding: its focus ring goes inside, never clipped. */
+.cards:focus-visible { outline-offset: -2px; border-radius: 12px; }
 /* Several products scroll sideways, the next one peeking in; a single one takes the width. */
 .card {
   flex: 0 0 232px; scroll-snap-align: start; display: flex; flex-direction: column;
@@ -257,23 +264,21 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
   background: linear-gradient(105deg, transparent 30%, var(--cc-sheen) 50%, transparent 70%);
   transform: translateX(-130%);
 }
-.launcher:hover::after, .cart:not(:disabled):hover::after {
+.launcher:hover::after, .cart:not(:disabled):not([aria-disabled='true']):hover::after {
   transform: translateX(130%); transition: transform 0.85s cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 :host { --cc-sheen: rgba(18, 19, 22, 0.08); }
 :host([theme='dark']) { --cc-sheen: rgba(255, 255, 255, 0.14); }
 @media (prefers-color-scheme: dark) { :host(:not([theme='light'])) { --cc-sheen: rgba(255, 255, 255, 0.14); } }
 .cart { position: relative; overflow: hidden; isolation: isolate; transition: filter 0.2s ease, transform 0.15s ease; }
-.cart:not(:disabled):hover { filter: brightness(1.08); }
-.cart:not(:disabled):active { transform: scale(0.98); }
-.cart-label { transition: visibility 0s; }
+.cart:not(:disabled):not([aria-disabled='true']):hover { filter: brightness(1.08); }
+.cart:not(:disabled):not([aria-disabled='true']):active { transform: scale(0.98); }
 .cart[data-state='done'] .cart-done { animation: askr-fade 0.25s ease both; }
 /* The panel grows out of the corner it opens from, and fades back into it. */
 .panel { transform-origin: bottom right; }
 :host([open]) .panel { animation: askr-panel-in 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both; }
 :host([closing]) .panel { animation: askr-panel-out 0.18s ease-in both; }
 /* Messages, answers and their cards rise in; the cards one after another. */
-.log { scroll-behavior: smooth; }
 .bubble, .component-title, .component > table, .component > .steps, .chip {
   animation: askr-rise 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
@@ -297,7 +302,7 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
 .composer input:focus { border-color: var(--cc-muted); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
-  .log { scroll-behavior: auto; }
+  .card:hover .card-media img { transform: none; }
 }
 `;
 

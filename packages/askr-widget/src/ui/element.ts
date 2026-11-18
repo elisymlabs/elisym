@@ -200,6 +200,7 @@ export class WidgetView {
             reportClick: (address) => client.reportClick(address),
             pageOrigin: globalThis.location?.origin,
             resolveCards: (addresses) => client.resolveCards(addresses),
+            language: this.language,
           },
           turn.answer,
         ),
@@ -208,13 +209,28 @@ export class WidgetView {
     return view;
   }
 
+  /** What the status line shows: unchanged, it is left alone so its entrance never replays. */
+  private statusKey = '';
+  private chipsKey = '';
+
   private renderStatus(snapshot: ChatSnapshot): void {
     const { document } = this;
+    const turn = snapshot.turns.find((candidate) => candidate.askId === snapshot.inFlightAskId);
+    const key = [
+      snapshot.phase,
+      this.language,
+      turn?.status ?? '',
+      snapshot.retryReason ?? '',
+      snapshot.config?.contact ?? '',
+    ].join('\u0000');
+    if (key === this.statusKey) {
+      return;
+    }
+    this.statusKey = key;
     this.status.replaceChildren();
     if (snapshot.phase === 'loading') {
       this.status.textContent = STRINGS.connecting;
     } else if (snapshot.phase === 'waiting') {
-      const turn = snapshot.turns.find((candidate) => candidate.askId === snapshot.inFlightAskId);
       this.status.append(
         this.statusMark,
         element(document, 'span', undefined, turn?.status ?? STRINGS.thinking),
@@ -253,8 +269,14 @@ export class WidgetView {
   }
 
   private renderChips(snapshot: ChatSnapshot): void {
-    this.chips.replaceChildren();
     const last = snapshot.turns[snapshot.turns.length - 1];
+    const shown = snapshot.phase === 'ready' && last?.answer ? last.answer.chips : [];
+    const key = [last?.askId ?? '', ...shown].join('\u0000');
+    if (key === this.chipsKey) {
+      return;
+    }
+    this.chipsKey = key;
+    this.chips.replaceChildren();
     if (snapshot.phase !== 'ready' || !last?.answer) {
       return;
     }
@@ -336,6 +358,11 @@ export function defineAskrElement(
     }
 
     disconnectedCallback(): void {
+      if (this.closing !== undefined) {
+        clearTimeout(this.closing);
+        this.closing = undefined;
+      }
+      this.removeAttribute('closing');
       this.unsubscribe?.();
       this.client?.stop();
       this.client = undefined;
@@ -370,19 +397,38 @@ export function defineAskrElement(
         this.closing = undefined;
       }
       this.removeAttribute('closing');
+      const panel = this.view?.panel;
+      panel?.removeAttribute('inert');
       const still =
         this.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ??
         true;
       if (open || still || !this.hasAttribute('open')) {
+        const wasOpen = this.hasAttribute('open');
         this.toggleAttribute('open', open);
+        if (!open && wasOpen) {
+          this.returnFocus();
+        }
         return;
       }
+      // The panel takes no input while it fades: a tap there would land on a closing chat.
+      panel?.setAttribute('inert', '');
       this.setAttribute('closing', '');
       this.closing = setTimeout(() => {
         this.closing = undefined;
+        panel?.removeAttribute('inert');
         this.removeAttribute('closing');
         this.removeAttribute('open');
+        this.returnFocus();
       }, CLOSE_MS);
+    }
+
+    /** Focus left in the closed panel goes back to the launcher, never to the top of the page. */
+    private returnFocus(): void {
+      const view = this.view;
+      const active = this.shadowRoot?.activeElement;
+      if (view && active && view.panel.contains(active)) {
+        view.launcher.focus();
+      }
     }
 
     private startClient(owner: string): void {

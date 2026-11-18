@@ -67,3 +67,39 @@ describe('the panel opening and closing', () => {
     expect(widget.hasAttribute('open')).toBe(true);
   });
 });
+
+describe('closing details', () => {
+  it('a widget already closed is not set closing', () => {
+    const { widget, close } = mount();
+    close.click();
+    expect(widget.hasAttribute('closing')).toBe(false);
+  });
+
+  it('closes at once where the browser has no matchMedia', () => {
+    vi.stubGlobal('matchMedia', undefined);
+    const { widget, launcher, close } = mount();
+    launcher.click();
+    close.click();
+    expect(widget.hasAttribute('open')).toBe(false);
+  });
+
+  it('takes no input while it fades, and gives focus back to the launcher', () => {
+    const { widget, launcher, close } = mount();
+    launcher.click();
+    close.focus();
+    close.click();
+    const panel = widget.shadowRoot?.querySelector('.panel');
+    expect(panel?.hasAttribute('inert')).toBe(true);
+    vi.advanceTimersByTime(CLOSE_MS);
+    expect(panel?.hasAttribute('inert')).toBe(false);
+    expect(widget.shadowRoot?.activeElement).toBe(launcher);
+  });
+
+  it('a widget taken off the page while it fades forgets the fade', () => {
+    const { widget, launcher, close } = mount();
+    launcher.click();
+    close.click();
+    widget.remove();
+    expect(widget.hasAttribute('closing')).toBe(false);
+  });
+});

@@ -175,3 +175,34 @@ describe('the embed snippet language', () => {
     expect(snippetAttributes(script('nl'))).toEqual([]);
   });
 });
+
+describe('two widgets, two languages', () => {
+  it('each takes its own language back before it draws', () => {
+    const russian = view(['ru']);
+    view(['en']);
+    expect(STRINGS.addToCart).toBe('Add to cart');
+    russian.update({ phase: 'ready', branding: true, turns: [] });
+    expect(STRINGS.addToCart).toBe('В корзину');
+  });
+
+  it('marks the status, the composer and the footer with its language', () => {
+    const widget = view(['ja']);
+    for (const selector of ['.status', '.composer', '.footer', '.header']) {
+      expect(widget.panel.querySelector<HTMLElement>(selector)?.lang, selector).toBe('ja');
+    }
+  });
+});
+
+describe('a price from, in the languages that put the word after it', () => {
+  it.each([
+    ['zh', '1000 JPY 起'],
+    ['ko', '1000 JPY부터'],
+    ['de', 'ab 1000 JPY'],
+  ])('%s', async (language, expected) => {
+    const { formatPrice } = await import('../src/ui/price');
+    applyLanguage(language);
+    expect(formatPrice({ price: { amount: '1000', currency: 'JPY' }, priceFrom: true })).toBe(
+      expected,
+    );
+  });
+});

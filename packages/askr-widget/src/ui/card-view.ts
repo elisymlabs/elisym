@@ -90,19 +90,29 @@ function cartButtonElement(document: Document): CartControl {
     button.dataset.state = state;
     button.setAttribute('aria-label', state === 'done' ? STRINGS.addedToCart : cartLabel(state));
     announcer.textContent = state === 'done' ? STRINGS.addedToCart : '';
+    if (state === 'done') {
+      button.setAttribute('aria-disabled', 'true');
+    } else {
+      button.removeAttribute('aria-disabled');
+    }
     if (state === 'busy') {
       button.setAttribute('aria-busy', 'true');
     } else {
       button.removeAttribute('aria-busy');
     }
   };
-  // While it says added the button takes no click: a second tap would add the product again.
+  // While it says added the button takes no click (a second tap would add the product
+  // again). It stays enabled to the browser, marked aria-disabled, so a keyboard user's focus
+  // stays on it instead of falling to the top of the page.
+  button.addEventListener('click', (event) => {
+    if (button.dataset.state === 'done') {
+      event.stopImmediatePropagation();
+    }
+  });
   const showAdded = (): void => {
     setState('done');
-    button.disabled = true;
     addedTimer = setTimeout(() => {
       addedTimer = undefined;
-      button.disabled = false;
       setState('ready');
     }, ADDED_MS);
   };
@@ -186,6 +196,8 @@ export interface CardContext {
   /** Advisory handoff count (3). */
   reportClick: (address: string) => void;
   pageOrigin: string | undefined;
+  /** The widget's language, for the card's own texts (the reason is the model's). */
+  language?: string;
 }
 
 /** The product page: the first `r` on one of the store's `origin`/`link-origin` entries (K12). */
@@ -254,6 +266,14 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
   const price = element(document, 'span', 'price');
   const actionBox = element(document, 'div', 'card-actions');
   foot.append(price, actionBox);
+  if (context.language !== undefined) {
+    for (const own of [foot, selectorsBox]) {
+      own.lang = context.language;
+    }
+    if (badge) {
+      badge.lang = context.language;
+    }
+  }
   body.append(selectorsBox, foot);
   card.append(body);
 

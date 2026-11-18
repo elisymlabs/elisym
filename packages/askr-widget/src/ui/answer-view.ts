@@ -14,9 +14,11 @@ export interface AnswerContext extends CardContext {
  * A row of cards that scrolls sideways. It takes focus itself, so a keyboard can scroll it
  * even when no card in it has a control.
  */
-function cardsRow(document: Document): HTMLElement {
+function cardsRow(document: Document, title?: string): HTMLElement {
   const row = element(document, 'div', 'cards');
   row.tabIndex = 0;
+  row.setAttribute('role', 'region');
+  row.setAttribute('aria-label', title ?? STRINGS.products);
   return row;
 }
 
@@ -50,7 +52,7 @@ function renderComponent(
   const { document } = context;
   if (component.type === 'products') {
     const box = titled(context, component.title);
-    const row = cardsRow(document);
+    const row = cardsRow(document, component.title);
     for (const pick of component.picks) {
       const item = cards.get(pick.address);
       if (item) {

@@ -247,8 +247,10 @@ describe('card native add-to-cart', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://shop.example/cart/add.js');
     await answer(200);
-    // It says added and takes no click for a moment (see "takes no click while it says added").
-    expect(button.disabled).toBe(true);
+    // It says added and takes no click for a moment (see "takes no click while it says added"),
+    // aria-disabled rather than disabled, so a keyboard user keeps focus on it.
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(button.getAttribute('aria-label')).toBe('Added to cart');
     expect(ctx.clicks).toEqual([item.address]);
     card.remove();
@@ -452,7 +454,8 @@ describe('the cart button keeps its width', () => {
       expect(announcer?.textContent).toBe('');
       button.click();
       expect(announcer?.textContent).toBe('Added to cart');
-      expect(button.disabled).toBe(true);
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+      expect(button.disabled).toBe(false);
       vi.advanceTimersByTime(1000);
       button.click();
       expect(onAddToCart).toHaveBeenCalledTimes(1);
@@ -460,7 +463,7 @@ describe('the cart button keeps its width', () => {
       expect(button.dataset.state).toBe('done');
       vi.advanceTimersByTime(1);
       expect(button.dataset.state).toBe('ready');
-      expect(button.disabled).toBe(false);
+      expect(button.hasAttribute('aria-disabled')).toBe(false);
       expect(announcer?.textContent).toBe('');
       button.click();
       expect(onAddToCart).toHaveBeenCalledTimes(2);
@@ -503,6 +506,8 @@ describe('the cart button keeps its width', () => {
     const group = card.querySelector('[role="group"]');
     expect(group?.getAttribute('aria-label')).toBe('Size');
     expect(card.querySelector('.choice-name')?.textContent).toBe('Size');
+    // The group's name is read once, from aria-label; the visible name is not read again.
+    expect(card.querySelector('.choice-name')?.getAttribute('aria-hidden')).toBe('true');
     const choices = [...card.querySelectorAll<HTMLButtonElement>('button.choice')];
     expect(choices.map((choice) => choice.textContent)).toEqual(['S', 'M']);
     expect(choices.map((choice) => choice.getAttribute('aria-pressed'))).toEqual([
@@ -603,6 +608,14 @@ describe('the widget stylesheet', () => {
     expect(WIDGET_CSS).toContain(".cart[data-state='done'] .cart-done { visibility: visible; }");
     expect(WIDGET_CSS).toContain('.card-options:empty { display: none; }');
     expect(WIDGET_CSS).toContain('.cards > .card:only-child { flex-basis: 100%; }');
+    expect(WIDGET_CSS).toContain(':host([closing]) .panel { animation: askr-panel-out');
+    expect(WIDGET_CSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before, \*::after \{ animation: none !important; transition: none !important; \}/u,
+    );
+    // A plain color first, for a browser without color-mix.
+    expect(WIDGET_CSS.indexOf('scrollbar-color: var(--cc-border) transparent;')).toBeLessThan(
+      WIDGET_CSS.indexOf('scrollbar-color: color-mix('),
+    );
     expect(WIDGET_CSS).toMatch(/@media \(max-width: 480px\) \{\s*\.launcher \{ width: 50px;/u);
     expect(WIDGET_CSS).toContain('min-width: 0; min-height: 36px; }');
   });
