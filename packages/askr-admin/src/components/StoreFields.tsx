@@ -140,7 +140,7 @@ export function StoreFields({ form, onChange }: Props) {
               info={HELP.currencyOverride}
               label="Currency override (optional)"
               value={form.connectorCurrency}
-              hint="Only if the shop reports another currency than it sells in."
+              hint="Shopify only: if the shop reports another currency than it sells in."
               onChange={(value) => set('connectorCurrency', value)}
             />
             {form.platform === 'shopify' ? (

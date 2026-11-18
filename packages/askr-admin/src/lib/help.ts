@@ -94,7 +94,7 @@ export const HELP = {
     anchor: 'feed-address',
   },
   currencyOverride: {
-    text: 'Only if your shop reports its prices in another currency than it sells in. Leave it empty otherwise.',
+    text: 'For Shopify only: the currency of your prices, when the shop does not say it or says another one than it sells in. Leave it empty otherwise. WooCommerce and Google feeds give the currency with each price.',
     anchor: 'currency-override',
   },
   importPolicies: {
