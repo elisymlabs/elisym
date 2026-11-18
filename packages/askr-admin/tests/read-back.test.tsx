@@ -413,6 +413,8 @@ describe('the overview', () => {
     await click(refresh);
     expect(said()).toBe('Refreshing...');
     expect(refresh.getAttribute('aria-busy')).toBe('true');
+    expect(refresh.querySelector('svg.animate-spin')).not.toBeNull();
+    expect(refresh.querySelector('svg.text-error')).toBeNull();
     expect(store.mock.calls.length).toBe(before + 1);
     await act(async () => {
       release();
