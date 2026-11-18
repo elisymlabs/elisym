@@ -146,6 +146,18 @@ describe('the info button', () => {
     expect(container.querySelector('[role="note"]')?.textContent).toContain(HELP.currency.text);
   });
 
+  it('stays open when the window loses focus, as when Read more opens a new tab', async () => {
+    const { container, button } = await tip();
+    await click(button);
+    const link = container.querySelector<HTMLAnchorElement>('[role="note"] a');
+    link?.focus();
+    await act(async () => {
+      link?.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: null }));
+      window.dispatchEvent(new Event('blur'));
+    });
+    expect(container.querySelector('[role="note"]')).not.toBeNull();
+  });
+
   it('closes on Escape, giving focus back to the button from inside the tip', async () => {
     const { container, button } = await tip();
     await click(button);

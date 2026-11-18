@@ -24,7 +24,8 @@ interface Props {
 
 /**
  * An "i" button that opens a short explanation with a link to the guide. A press
- * opens and closes it; Escape or a press elsewhere closes it.
+ * opens and closes it; Escape, a press elsewhere, focus moving to something outside it
+ * and a new window width close it. The window losing focus (a new tab) does not.
  */
 export function InfoTip({ help, about }: Props) {
   const [open, setOpen] = useState(false);

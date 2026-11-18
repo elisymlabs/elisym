@@ -622,7 +622,7 @@ describe('product clicks in the usage (7.3)', () => {
     const store = syntheticStore();
     const { state, directory } = await stateWith([storeRecord(store)]);
     const [mug, scarf, tent] = ['mug', 'scarf', 'tent'].map(
-      (d) => `30402:${store.catalogKey}:${d}`,
+      (dTag) => `30402:${store.catalogKey}:${dTag}`,
     );
     if (mug === undefined || scarf === undefined || tent === undefined) {
       throw new Error('no addresses');
@@ -645,7 +645,7 @@ describe('product clicks in the usage (7.3)', () => {
     const store = syntheticStore();
     const { state, directory } = await stateWith([storeRecord(store)]);
     const [opened, added] = ['aaa-opened', 'zzz-added'].map(
-      (d) => `30402:${store.catalogKey}:${d}`,
+      (dTag) => `30402:${store.catalogKey}:${dTag}`,
     );
     if (opened === undefined || added === undefined) {
       throw new Error('no addresses');
