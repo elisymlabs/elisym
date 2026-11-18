@@ -1,5 +1,5 @@
 /** Sent on every connector request so a merchant can recognize (and allowlist) Askr. */
-export const CONNECTOR_USER_AGENT = 'AskrConnector/0.1 (+https://api.askr.elisym.network)';
+export const CONNECTOR_USER_AGENT = 'AskrConnector/0.1 (+https://app.askr.elisym.network)';
 
 /** Redirects followed per request, each re-checked by the fetch guard (7.4). */
 export const MAX_REDIRECTS = 3;

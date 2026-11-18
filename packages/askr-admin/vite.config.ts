@@ -2,7 +2,7 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-/** The Askr server serves this build at `https://api.askr.elisym.network/admin/` (7.3). */
+/** The Askr server serves this build at `https://app.askr.elisym.network/admin/` (7.3). */
 export const ADMIN_BASE = '/admin/';
 
 export default defineConfig({

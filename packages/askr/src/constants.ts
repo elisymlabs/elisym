@@ -15,7 +15,7 @@ export const KIND_SESSION_TICKET = 27495;
 export const ASKR_RELAYS: readonly string[] = ['wss://relay.elisym.network'];
 
 /** The public API host: gateway, `widget.js`, admin. NIP-98 `u` is checked against it. */
-export const ASKR_API_BASE = 'https://api.askr.elisym.network';
+export const ASKR_API_BASE = 'https://app.askr.elisym.network';
 
 /** `d` of the store's Askr config event (30496). */
 export const CONFIG_D_TAG = 'askr';

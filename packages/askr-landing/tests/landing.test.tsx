@@ -55,7 +55,7 @@ function filesIn(dir: string): string[] {
 
 describe('the links', () => {
   it('open the admin on the Askr server, with no handle and no referrer', async () => {
-    expect(ADMIN_URL).toBe('https://api.askr.elisym.network/admin/');
+    expect(ADMIN_URL).toBe('https://app.askr.elisym.network/admin/');
     const page = await render(<App />);
     const links = [...page.querySelectorAll('a')].filter((link) => link.href === ADMIN_URL);
     expect(links.length).toBeGreaterThanOrEqual(3);
@@ -111,7 +111,7 @@ describe('the snippets', () => {
   it('the hero shows the embed tag the docs give, naming the widget the server serves', async () => {
     const snippet = embedSnippet();
     expect(snippet).toBe(
-      '<script src="https://api.askr.elisym.network/widget.js" data-store="npub1..." async></script>',
+      '<script src="https://app.askr.elisym.network/widget.js" data-store="npub1..." async></script>',
     );
     expect(docsPage('embed')).toContain(snippet);
     expect(WIDGET_SRC.endsWith('/widget.js')).toBe(true);

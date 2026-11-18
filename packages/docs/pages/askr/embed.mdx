@@ -3,7 +3,7 @@
 One script tag with your store's owner npub puts the assistant on a page:
 
 ```html
-<script src="https://api.askr.elisym.network/widget.js" data-store="npub1..." async></script>
+<script src="https://app.askr.elisym.network/widget.js" data-store="npub1..." async></script>
 ```
 
 The script adds an `<askr-chat>` element to the page: an **Ask AI** button with the Askr mark that opens the assistant (the mark alone on a narrow screen). It runs in a shadow root, so your page's styles do not leak into it.
@@ -27,7 +27,7 @@ The page must be on one of the origins in your store's config: the server issues
 
 ```html
 <script
-  src="https://api.askr.elisym.network/widget/<id>.js"
+  src="https://app.askr.elisym.network/widget/<id>.js"
   integrity="sha384-..."
   crossorigin="anonymous"
   data-store="npub1..."
@@ -37,7 +37,7 @@ The page must be on one of the origins in your store's config: the server issues
 
 The path names the bundle by its SHA-384, and the browser runs it only if it matches `integrity`. It never changes under you, and the server keeps serving it after later releases. The trade-off: fixes and new features do not reach a pinned page until you paste a newer snippet from the admin. The bundle is the whole widget: it loads no other script.
 
-The current pinned path and integrity are also at `https://api.askr.elisym.network/v1/widget`, as `{ "path": "/widget/<id>.js", "integrity": "sha384-..." }`.
+The current pinned path and integrity are also at `https://app.askr.elisym.network/v1/widget`, as `{ "path": "/widget/<id>.js", "integrity": "sha384-..." }`.
 
 ## Add to cart
 
@@ -68,8 +68,8 @@ If your site sends a CSP, allow:
 
 | Directive     | Source                                                         | Why                                                               |
 | ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `script-src`  | `https://api.askr.elisym.network`                              | `widget.js`, or the pinned `/widget/<id>.js`                      |
-| `connect-src` | `https://api.askr.elisym.network` `wss://relay.elisym.network` | the chat session and the chat itself                              |
+| `script-src`  | `https://app.askr.elisym.network`                              | `widget.js`, or the pinned `/widget/<id>.js`                      |
+| `connect-src` | `https://app.askr.elisym.network` `wss://relay.elisym.network` | the chat session and the chat itself                              |
 | `img-src`     | `https:`                                                       | product images, wherever you host them |
 
 The widget adds no inline scripts or styles, so a strict `script-src` and `style-src` hold.
