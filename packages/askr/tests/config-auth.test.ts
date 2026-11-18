@@ -98,8 +98,8 @@ describe('config, zod 4 parity', () => {
     });
   });
 
-  it('refuses an avatar or contact with a leading space instead of trimming it', () => {
-    for (const field of ['avatar', 'contact']) {
+  it('refuses a contact with a leading space instead of trimming it', () => {
+    for (const field of ['contact']) {
       expect(() => unsignedConfig({ [field]: ' https://shop.example.com/a.png' })).toThrow();
       expect(() => unsignedConfig({ [field]: 'https://shop.example.com/a.png' })).not.toThrow();
     }

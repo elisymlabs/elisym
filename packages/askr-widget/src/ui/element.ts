@@ -6,8 +6,10 @@ import { ELEMENT_NAME, PANEL_OPEN_PREFIX } from '../constants';
 import { readItem, removeItem, storageArea, writeItem } from '../storage';
 import { renderAnswer } from './answer-view';
 import { element, httpsUrl } from './dom';
-import { STRINGS } from './strings';
+import { animateMark, createMark } from './mark';
+import { STRINGS, applyLanguage, resolveLanguage } from './strings';
 import { widgetStyleSheet } from './styles';
+import { createWordmark } from './wordmark';
 
 /** O from the snippet: an npub, or 64 lowercase hex characters. */
 export function parseStoreKey(value: string | null): string | undefined {
@@ -34,7 +36,7 @@ interface TurnView {
 export class WidgetView {
   readonly launcher: HTMLButtonElement;
   readonly panel: HTMLElement;
-  private readonly avatar: HTMLImageElement;
+  private readonly statusMark: SVGSVGElement;
   private readonly name: HTMLElement;
   private readonly log: HTMLElement;
   private readonly greeting: HTMLElement;
@@ -43,47 +45,66 @@ export class WidgetView {
   private readonly input: HTMLInputElement;
   private readonly send: HTMLButtonElement;
   private readonly footer: HTMLElement;
+  private readonly launcherLabel: HTMLElement;
+  private readonly launcherHint: HTMLElement;
+  private readonly aiLabel: HTMLElement;
+  private readonly close: HTMLButtonElement;
+  private readonly poweredBy: HTMLElement;
+  private readonly header: HTMLElement;
+  private readonly composer: HTMLFormElement;
+  private language: string;
   private readonly turnViews = new Map<string, TurnView>();
   private config: StoreConfig | undefined;
 
+  /**
+   * @param languageHints the page's say on the language, strongest first (the snippet's
+   *   `data-lang`, then the page's own `lang`); the store's language comes after them.
+   */
   constructor(
     private readonly document: Document,
     private readonly client: () => ChatClient | undefined,
     onClose: () => void,
+    private readonly languageHints: () => ReadonlyArray<string | null | undefined> = () => [],
   ) {
-    this.launcher = element(document, 'button', 'launcher', '\u{1F4AC}');
+    this.language = resolveLanguage(languageHints());
+    applyLanguage(this.language);
+    this.launcher = element(document, 'button', 'launcher');
     this.launcher.type = 'button';
-    this.launcher.setAttribute('aria-label', STRINGS.open);
+    // The mark, "Ask AI" and a line that says what it does.
+    this.launcherLabel = element(document, 'span', 'launcher-label');
+    this.launcherHint = element(document, 'span', 'launcher-hint');
+    const words = element(document, 'span', 'launcher-text');
+    words.append(this.launcherLabel, this.launcherHint);
+    this.launcher.append(createMark(document, 'mark launcher-mark'), words);
 
     this.panel = element(document, 'section', 'panel');
     this.panel.setAttribute('role', 'dialog');
     const header = element(document, 'div', 'header');
-    this.avatar = element(document, 'img', 'avatar');
-    this.avatar.alt = '';
-    this.avatar.referrerPolicy = 'no-referrer';
-    this.avatar.hidden = true;
+    this.header = header;
     const who = element(document, 'div', 'who');
     this.name = element(document, 'div', 'name');
-    who.append(this.name, element(document, 'div', 'ai', STRINGS.aiLabel));
-    const close = element(document, 'button', 'close', '×');
-    close.type = 'button';
-    close.setAttribute('aria-label', STRINGS.close);
-    close.addEventListener('click', onClose);
-    header.append(this.avatar, who, close);
+    this.aiLabel = element(document, 'div', 'ai');
+    who.append(this.name, this.aiLabel);
+    this.close = element(document, 'button', 'close');
+    this.close.type = 'button';
+    this.close.append(closeIcon(document));
+    this.close.addEventListener('click', onClose);
+    header.append(who, this.close);
 
     this.log = element(document, 'div', 'log');
     this.log.setAttribute('aria-live', 'polite');
-    this.greeting = element(document, 'div', 'bubble theirs', STRINGS.greeting);
+    this.greeting = element(document, 'div', 'bubble theirs');
     this.log.append(this.greeting);
     this.status = element(document, 'div', 'status');
+    this.statusMark = createMark(document, 'mark status-mark');
     this.chips = element(document, 'div', 'chips');
 
     const composer = element(document, 'form', 'composer');
+    this.composer = composer;
     this.input = element(document, 'input');
     this.input.type = 'text';
     this.input.maxLength = LIMITS.ASK_TEXT_CHARS;
-    this.input.placeholder = STRINGS.placeholder;
-    this.send = element(document, 'button', undefined, STRINGS.send);
+    this.send = element(document, 'button');
     this.send.type = 'submit';
     composer.append(this.input, this.send);
     composer.addEventListener('submit', (event) => {
@@ -92,25 +113,63 @@ export class WidgetView {
         this.input.value = '';
       }
     });
-    this.footer = element(document, 'div', 'footer', STRINGS.byAskr);
+    // "Powered by Askr", with the mark, linking to Askr; centered under the composer.
+    this.footer = element(document, 'div', 'footer');
+    const link = element(document, 'a', 'powered');
+    link.href = ASKR_SITE;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    this.poweredBy = element(document, 'span');
+    link.append(
+      this.poweredBy,
+      createMark(document, 'mark footer-mark'),
+      createWordmark(document, 'wordmark'),
+      element(document, 'span', 'visually-hidden', ' Askr'),
+    );
+    this.footer.append(link);
     this.panel.append(header, this.log, this.status, this.chips, composer, this.footer);
+    this.applyTexts();
+  }
+
+  /** Every fixed text in the current language: run at start and when the language changes. */
+  private applyTexts(): void {
+    // Only the widget's own texts carry its language: the store's greeting and the answers
+    // keep the page's, which is what they are written in more often.
+    for (const own of [this.launcher, this.header, this.status, this.composer, this.footer]) {
+      own.lang = this.language;
+    }
+    this.launcherLabel.textContent = STRINGS.launcher;
+    this.launcherHint.textContent = STRINGS.launcherHint;
+    this.aiLabel.textContent = STRINGS.aiLabel;
+    this.close.setAttribute('aria-label', STRINGS.close);
+    this.greeting.textContent = this.config?.greeting ?? STRINGS.greeting;
+    this.input.placeholder = STRINGS.placeholder;
+    this.send.textContent = STRINGS.send;
+    this.poweredBy.textContent = STRINGS.poweredBy;
   }
 
   update(snapshot: ChatSnapshot): void {
+    // The texts object is one per page: take this widget's language back before drawing.
+    applyLanguage(this.language);
     this.footer.hidden = !snapshot.branding;
     if (snapshot.config && snapshot.config !== this.config) {
       this.config = snapshot.config;
       this.name.textContent = assistantDisplayName(snapshot.config);
-      const avatar = httpsUrl(snapshot.config.avatar);
-      this.avatar.hidden = avatar === undefined;
-      if (avatar !== undefined) {
-        this.avatar.src = avatar;
+      // The store's language counts when the page says nothing the widget speaks.
+      const language = resolveLanguage([...this.languageHints(), snapshot.config.language]);
+      if (language !== this.language) {
+        this.language = language;
+        applyLanguage(language);
       }
-      this.greeting.textContent = snapshot.config.greeting ?? STRINGS.greeting;
+      this.applyTexts();
     }
     const before = this.log.scrollHeight;
     for (const turn of snapshot.turns) {
-      this.log.append(this.turnView(turn).root);
+      // Appended once: moving a node already in place would replay its entrance.
+      const { root } = this.turnView(turn);
+      if (root.parentNode !== this.log) {
+        this.log.append(root);
+      }
     }
     this.renderStatus(snapshot);
     this.renderChips(snapshot);
@@ -141,6 +200,7 @@ export class WidgetView {
             reportClick: (address) => client.reportClick(address),
             pageOrigin: globalThis.location?.origin,
             resolveCards: (addresses) => client.resolveCards(addresses),
+            language: this.language,
           },
           turn.answer,
         ),
@@ -149,14 +209,33 @@ export class WidgetView {
     return view;
   }
 
+  /** What the status line shows: unchanged, it is left alone so its entrance never replays. */
+  private statusKey = '';
+  private chipsKey = '';
+
   private renderStatus(snapshot: ChatSnapshot): void {
     const { document } = this;
+    const turn = snapshot.turns.find((candidate) => candidate.askId === snapshot.inFlightAskId);
+    const key = [
+      snapshot.phase,
+      this.language,
+      turn?.status ?? '',
+      snapshot.retryReason ?? '',
+      snapshot.config?.contact ?? '',
+    ].join('\u0000');
+    if (key === this.statusKey) {
+      return;
+    }
+    this.statusKey = key;
     this.status.replaceChildren();
     if (snapshot.phase === 'loading') {
       this.status.textContent = STRINGS.connecting;
     } else if (snapshot.phase === 'waiting') {
-      const turn = snapshot.turns.find((candidate) => candidate.askId === snapshot.inFlightAskId);
-      this.status.textContent = turn?.status ?? STRINGS.thinking;
+      this.status.append(
+        this.statusMark,
+        element(document, 'span', undefined, turn?.status ?? STRINGS.thinking),
+      );
+      animateMark(this.statusMark);
     } else if (snapshot.phase === 'retry') {
       const retry = element(document, 'button', undefined, STRINGS.retry);
       retry.type = 'button';
@@ -190,8 +269,14 @@ export class WidgetView {
   }
 
   private renderChips(snapshot: ChatSnapshot): void {
-    this.chips.replaceChildren();
     const last = snapshot.turns[snapshot.turns.length - 1];
+    const shown = snapshot.phase === 'ready' && last?.answer ? last.answer.chips : [];
+    const key = [last?.askId ?? '', ...shown].join('\u0000');
+    if (key === this.chipsKey) {
+      return;
+    }
+    this.chipsKey = key;
+    this.chips.replaceChildren();
     if (snapshot.phase !== 'ready' || !last?.answer) {
       return;
     }
@@ -203,6 +288,26 @@ export class WidgetView {
     }
   }
 }
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** A drawn cross: a text "×" sits off center by each font's own metrics. */
+function closeIcon(document: Document): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', 'M3.5 3.5l9 9M12.5 3.5l-9 9');
+  svg.append(path);
+  return svg;
+}
+
+/** How long the panel takes to fade out on close (its CSS exit runs as long). */
+const CLOSE_MS = 180;
+
+/** Where "Powered by Askr" leads. */
+const ASKR_SITE = 'https://askr.elisym.network';
 
 /** Owner key moves (K21) the element follows per page at most: the gateway names the last one. */
 const MAX_MOVES = 1;
@@ -221,6 +326,7 @@ export function defineAskrElement(
   }
   class AskrChatElement extends scope.HTMLElement {
     private client: ChatClient | undefined;
+    private closing: ReturnType<typeof setTimeout> | undefined;
     /** The owner key the store moved to (K21), followed at most MAX_MOVES times per page. */
     private movedTo: string | undefined;
     private moves = 0;
@@ -237,6 +343,7 @@ export function defineAskrElement(
         this.ownerDocument,
         () => this.client,
         () => this.setOpen(false),
+        () => [this.getAttribute('lang'), this.ownerDocument.documentElement.lang],
       );
       view.launcher.addEventListener('click', () => this.setOpen(true));
       shadow.replaceChildren(view.launcher, view.panel);
@@ -251,6 +358,11 @@ export function defineAskrElement(
     }
 
     disconnectedCallback(): void {
+      if (this.closing !== undefined) {
+        clearTimeout(this.closing);
+        this.closing = undefined;
+      }
+      this.removeAttribute('closing');
       this.unsubscribe?.();
       this.client?.stop();
       this.client = undefined;
@@ -260,7 +372,7 @@ export function defineAskrElement(
 
     private setOpen(open: boolean): void {
       const owner = parseStoreKey(this.getAttribute('store'));
-      this.toggleAttribute('open', open);
+      this.showPanel(open);
       const session = storageArea('sessionStorage');
       if (owner === undefined) {
         return;
@@ -272,6 +384,50 @@ export function defineAskrElement(
       }
       if (open && !this.client && this.view) {
         this.startClient(this.movedTo ?? owner);
+      }
+    }
+
+    /**
+     * Open at once (the panel's entrance is CSS); close after a short exit, so the panel fades
+     * out before the launcher returns. Reduced motion closes at once.
+     */
+    private showPanel(open: boolean): void {
+      if (this.closing !== undefined) {
+        clearTimeout(this.closing);
+        this.closing = undefined;
+      }
+      this.removeAttribute('closing');
+      const panel = this.view?.panel;
+      panel?.removeAttribute('inert');
+      const still =
+        this.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ??
+        true;
+      if (open || still || !this.hasAttribute('open')) {
+        const wasOpen = this.hasAttribute('open');
+        this.toggleAttribute('open', open);
+        if (!open && wasOpen) {
+          this.returnFocus();
+        }
+        return;
+      }
+      // The panel takes no input while it fades: a tap there would land on a closing chat.
+      panel?.setAttribute('inert', '');
+      this.setAttribute('closing', '');
+      this.closing = setTimeout(() => {
+        this.closing = undefined;
+        panel?.removeAttribute('inert');
+        this.removeAttribute('closing');
+        this.removeAttribute('open');
+        this.returnFocus();
+      }, CLOSE_MS);
+    }
+
+    /** Focus left in the closed panel goes back to the launcher, never to the top of the page. */
+    private returnFocus(): void {
+      const view = this.view;
+      const active = this.shadowRoot?.activeElement;
+      if (view && active && view.panel.contains(active)) {
+        view.launcher.focus();
       }
     }
 

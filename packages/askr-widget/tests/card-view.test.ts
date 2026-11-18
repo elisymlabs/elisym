@@ -9,7 +9,7 @@ import {
   parseConfig,
 } from '@elisym/askr';
 import { type MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
-import { type CardContext, cardPageUrl, renderCard } from '../src/ui/card-view';
+import { ADDED_MS, type CardContext, cardPageUrl, renderCard } from '../src/ui/card-view';
 import { httpsUrl } from '../src/ui/dom';
 import { localSecs, makeStore, sign, testKey } from './fixtures';
 
@@ -89,6 +89,13 @@ const SINGLE: Partial<CatalogItem> = {
 };
 
 function pick(card: HTMLElement, value: string): void {
+  const choice = [...card.querySelectorAll<HTMLButtonElement>('button.choice')].find(
+    (button) => button.textContent === value,
+  );
+  if (choice) {
+    choice.click();
+    return;
+  }
   const select = card.querySelector('select');
   if (!select) {
     throw new Error('no selector');
@@ -231,17 +238,20 @@ describe('card native add-to-cart', () => {
     const card = renderCard(ctx, item);
     document.body.append(card);
     const button = cartButtonOf(card);
-    expect(button.textContent).toBe('Add to cart');
+    expect(button.getAttribute('aria-label')).toBe('Add to cart');
     button.click();
     expect(button.disabled).toBe(true);
-    expect(button.textContent).toBe('Adding...');
+    expect(button.getAttribute('aria-label')).toBe('Adding...');
     expect(button.getAttribute('aria-busy')).toBe('true');
     button.click();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://shop.example/cart/add.js');
     await answer(200);
+    // It says added and takes no click for a moment (see "takes no click while it says added"),
+    // aria-disabled rather than disabled, so a keyboard user keeps focus on it.
     expect(button.disabled).toBe(false);
-    expect(button.textContent).toBe('Added to cart');
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.getAttribute('aria-label')).toBe('Added to cart');
     expect(ctx.clicks).toEqual([item.address]);
     card.remove();
   });
@@ -254,7 +264,7 @@ describe('card native add-to-cart', () => {
     cartButtonOf(card).click();
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://shop.example/?add-to-cart=102');
     await answer(302);
-    expect(cartButtonOf(card).textContent).toBe('Added to cart');
+    expect(cartButtonOf(card).getAttribute('aria-label')).toBe('Added to cart');
     card.remove();
   });
 
@@ -309,7 +319,7 @@ describe('card native add-to-cart', () => {
     expect(card.querySelector('.cart-failed')).toBeNull();
     expect(card.querySelector('a.view')).toBeNull();
     expect(cartButtonOf(card)).toBe(fresh);
-    expect(fresh.textContent).toBe('Add to cart');
+    expect(fresh.getAttribute('aria-label')).toBe('Add to cart');
     expect(fresh.disabled).toBe(false);
     card.remove();
   });
@@ -324,7 +334,7 @@ describe('card native add-to-cart', () => {
     cartButtonOf(card).click();
     await answer(500);
     expect(cartButtonOf(card).disabled).toBe(false);
-    expect(cartButtonOf(card).textContent).toBe('Add to cart');
+    expect(cartButtonOf(card).getAttribute('aria-label')).toBe('Add to cart');
     expect(card.querySelector('.cart-failed')).not.toBeNull();
     card.remove();
   });
@@ -335,7 +345,7 @@ describe('card native add-to-cart', () => {
     expect(card.querySelector('a.view')).not.toBeNull();
     pick(card, 'S');
     expect(card.querySelector('a.view')).toBeNull();
-    expect(cartButtonOf(card).textContent).toBe('Add to cart');
+    expect(cartButtonOf(card).getAttribute('aria-label')).toBe('Add to cart');
   });
 
   it('never native for a * variant or a non-numeric id', () => {
@@ -385,5 +395,228 @@ describe('card native add-to-cart', () => {
     cartButtonOf(card).click();
     expect(onAddToCart).toHaveBeenCalledWith({ d: 'scarf', variant: '4242' });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('the cart button keeps its width', () => {
+  function visibleLabel(button: HTMLButtonElement): string | undefined {
+    return button.querySelector(`.cart-${button.dataset.state ?? ''}`)?.textContent ?? undefined;
+  }
+
+  it('holds all three labels in one button, the current one named and shown', () => {
+    Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
+    const button = cartButtonOf(renderCard(context(), catalogItem(SINGLE)));
+    expect([...button.querySelectorAll('.cart-label')].map((label) => label.textContent)).toEqual([
+      'Add to cart',
+      'Adding...',
+      'Added',
+    ]);
+    expect(
+      [...button.querySelectorAll('.cart-label')].every(
+        (label) => label.getAttribute('aria-hidden') === 'true',
+      ),
+    ).toBe(true);
+    expect(button.dataset.state).toBe('ready');
+    expect(visibleLabel(button)).toBe('Add to cart');
+    // A cart icon leads the label; a screen reader hears the label alone.
+    expect(button.firstElementChild?.getAttribute('class')).toBe('cart-icon');
+    expect(button.firstElementChild?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it("says added after the host's hook takes the product, then offers to add again", () => {
+    vi.useFakeTimers();
+    try {
+      const onAddToCart = vi.fn();
+      Reflect.set(window, 'Askr', { onAddToCart });
+      const button = cartButtonOf(renderCard(context(), catalogItem(SINGLE)));
+      button.click();
+      expect(onAddToCart).toHaveBeenCalledTimes(1);
+      expect(button.dataset.state).toBe('done');
+      expect(button.getAttribute('aria-label')).toBe('Added to cart');
+      vi.advanceTimersByTime(ADDED_MS - 1);
+      expect(button.dataset.state).toBe('done');
+      vi.advanceTimersByTime(1);
+      expect(button.dataset.state).toBe('ready');
+      expect(button.getAttribute('aria-label')).toBe('Add to cart');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes no click while it says added, and tells a screen reader', () => {
+    vi.useFakeTimers();
+    try {
+      const onAddToCart = vi.fn();
+      Reflect.set(window, 'Askr', { onAddToCart });
+      const card = renderCard(context(), catalogItem(SINGLE));
+      const button = cartButtonOf(card);
+      const announcer = card.querySelector('.card-actions [role="status"]');
+      expect(announcer?.textContent).toBe('');
+      button.click();
+      expect(announcer?.textContent).toBe('Added to cart');
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+      expect(button.disabled).toBe(false);
+      vi.advanceTimersByTime(1000);
+      button.click();
+      expect(onAddToCart).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(ADDED_MS - 1001);
+      expect(button.dataset.state).toBe('done');
+      vi.advanceTimersByTime(1);
+      expect(button.dataset.state).toBe('ready');
+      expect(button.hasAttribute('aria-disabled')).toBe(false);
+      expect(announcer?.textContent).toBe('');
+      button.click();
+      expect(onAddToCart).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a hook that throws leaves the button ready: nothing says it was added', () => {
+    Reflect.set(window, 'Askr', {
+      onAddToCart: () => {
+        throw new Error('the host cart failed');
+      },
+    });
+    const button = cartButtonOf(renderCard(context(), catalogItem(SINGLE)));
+    button.click();
+    expect(button.dataset.state).toBe('ready');
+  });
+
+  it('a native add says added, then offers to add again', async () => {
+    const { answer } = pendingFetch();
+    const card = renderCard(context(connectorConfig('shopify')), catalogItem(SINGLE));
+    document.body.append(card);
+    const button = cartButtonOf(card);
+    button.click();
+    expect(button.dataset.state).toBe('busy');
+    await answer(200);
+    expect(button.dataset.state).toBe('done');
+    await vi.waitFor(
+      () => {
+        expect(button.dataset.state).toBe('ready');
+      },
+      { timeout: ADDED_MS + 1000 },
+    );
+    card.remove();
+  });
+
+  it('short values are toggle buttons in a group named for the option', () => {
+    const card = renderCard(context(connectorConfig('shopify')), catalogItem(SIZED));
+    const group = card.querySelector('[role="group"]');
+    expect(group?.getAttribute('aria-label')).toBe('Size');
+    expect(card.querySelector('.choice-name')?.textContent).toBe('Size');
+    // The group's name is read once, from aria-label; the visible name is not read again.
+    expect(card.querySelector('.choice-name')?.getAttribute('aria-hidden')).toBe('true');
+    const choices = [...card.querySelectorAll<HTMLButtonElement>('button.choice')];
+    expect(choices.map((choice) => choice.textContent)).toEqual(['S', 'M']);
+    expect(choices.map((choice) => choice.getAttribute('aria-pressed'))).toEqual([
+      'false',
+      'false',
+    ]);
+    choices[1]?.click();
+    expect(choices.map((choice) => choice.getAttribute('aria-pressed'))).toEqual(['false', 'true']);
+    expect(card.querySelector('select')).toBeNull();
+  });
+
+  it('six short values are buttons, seven go in a select', () => {
+    const option = (count: number) => {
+      const values = Array.from({ length: count }, (_unused, index) => `V${index + 1}`);
+      return catalogItem({
+        options: [{ name: 'Size', values }],
+        variants: values.map((value, index) => ({
+          id: String(400 + index),
+          price: '49.9',
+          available: true,
+          values: [value],
+        })),
+      });
+    };
+    const six = renderCard(context(connectorConfig('shopify')), option(6));
+    expect(six.querySelectorAll('button.choice')).toHaveLength(6);
+    const seven = renderCard(context(connectorConfig('shopify')), option(7));
+    expect(seven.querySelector('button.choice')).toBeNull();
+    expect(seven.querySelector('select')).not.toBeNull();
+  });
+
+  it('a tap on the picked value changes nothing: an add in flight keeps its button', () => {
+    Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
+    const card = renderCard(context(), catalogItem(SIZED));
+    pick(card, 'M');
+    const button = cartButtonOf(card);
+    pick(card, 'M');
+    expect(cartButtonOf(card)).toBe(button);
+  });
+
+  it('many or long values go in a select named for the option, its placeholder showing it', () => {
+    const many = Array.from({ length: 7 }, (_unused, index) => `Shade ${index + 1}`);
+    const card = renderCard(
+      context(connectorConfig('shopify')),
+      catalogItem({
+        options: [{ name: 'Colour', values: many }],
+        variants: many.map((value, index) => ({
+          id: String(200 + index),
+          price: '49.9',
+          available: true,
+          values: [value],
+        })),
+      }),
+    );
+    const label = card.querySelector('label.selector');
+    expect(label?.querySelector('.visually-hidden')?.textContent).toBe('Colour');
+    expect(label?.querySelector('option')?.textContent).toBe('Choose Colour');
+    expect(card.querySelector('button.choice')).toBeNull();
+    const long = renderCard(
+      context(connectorConfig('shopify')),
+      catalogItem({
+        options: [{ name: 'Fit', values: ['Regular fit, long', 'Slim'] }],
+        variants: [
+          { id: '301', price: '49.9', available: true, values: ['Regular fit, long'] },
+          { id: '302', price: '49.9', available: true, values: ['Slim'] },
+        ],
+      }),
+    );
+    expect(long.querySelector('select')).not.toBeNull();
+  });
+
+  it('puts the photo on top, the badge over it, and the price beside the button', () => {
+    Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
+    const card = renderCard(
+      context(),
+      catalogItem({ ...SINGLE, visibility: 'pre-order', images: ['https://cdn.example/a.png'] }),
+    );
+    expect(card.firstElementChild?.className).toBe('card-media');
+    expect(card.querySelector('.card-media .label')?.textContent).toBe('Pre-order');
+    const foot = card.querySelector('.card-foot');
+    expect(foot?.querySelector('.price')).not.toBeNull();
+    expect(foot?.querySelector('button.cart')).not.toBeNull();
+    const plain = renderCard(
+      context(),
+      catalogItem({ ...SINGLE, visibility: 'pre-order', images: [] }),
+    );
+    expect(plain.querySelector('.card-media')).toBeNull();
+    expect(plain.querySelector('.card-body .label')?.textContent).toBe('Pre-order');
+  });
+});
+
+describe('the widget stylesheet', () => {
+  it('shows only the current cart label and hides empty card rows', async () => {
+    const { WIDGET_CSS } = await import('../src/ui/styles');
+    expect(WIDGET_CSS).toContain(
+      '.cart-label { grid-area: 1 / 1; text-align: center; visibility: hidden; }',
+    );
+    expect(WIDGET_CSS).toContain(".cart[data-state='done'] .cart-done { visibility: visible; }");
+    expect(WIDGET_CSS).toContain('.card-options:empty { display: none; }');
+    expect(WIDGET_CSS).toContain('.cards > .card:only-child { flex-basis: 100%; }');
+    expect(WIDGET_CSS).toContain(':host([closing]) .panel { animation: askr-panel-out');
+    expect(WIDGET_CSS).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before, \*::after \{ animation: none !important; transition: none !important; \}/u,
+    );
+    // A plain color first, for a browser without color-mix.
+    expect(WIDGET_CSS.indexOf('scrollbar-color: var(--cc-border) transparent;')).toBeLessThan(
+      WIDGET_CSS.indexOf('scrollbar-color: color-mix('),
+    );
+    expect(WIDGET_CSS).toMatch(/@media \(max-width: 480px\) \{\s*\.launcher \{ width: 50px;/u);
+    expect(WIDGET_CSS).toContain('min-width: 0; min-height: 36px; }');
   });
 });

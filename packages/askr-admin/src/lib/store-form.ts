@@ -24,7 +24,6 @@ export interface StoreForm {
   origins: string;
   linkOrigins: string;
   displayName: string;
-  avatar: string;
   greeting: string;
   contact: string;
   source: ProductSourceKind;
@@ -71,7 +70,6 @@ export const EMPTY_FORM: StoreForm = {
   origins: '',
   linkOrigins: '',
   displayName: '',
-  avatar: '',
   greeting: '',
   contact: '',
   source: 'admin',
@@ -99,7 +97,6 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   linkOrigins: 'Link origins',
   name: 'Store name',
   displayName: 'Assistant name',
-  avatar: 'Avatar URL',
   greeting: 'Greeting',
   language: 'Language',
   currency: 'Currency',
@@ -213,7 +210,6 @@ export function configInputOf(
     }
   }
   const displayName = optional(form.displayName);
-  const avatar = optional(form.avatar);
   const greeting = optional(form.greeting);
   const contact = optional(form.contact);
   const input: StoreConfigInput = {
@@ -227,7 +223,6 @@ export function configInputOf(
     catalogKey,
     ...(policyKey === catalogKey ? {} : { policyKey }),
     ...(displayName === undefined ? {} : { displayName }),
-    ...(avatar === undefined ? {} : { avatar }),
     ...(greeting === undefined ? {} : { greeting }),
     ...(contact === undefined ? {} : { contact }),
     private: { voice: form.voice, instructions: form.instructions, notes: form.notes },
@@ -296,7 +291,6 @@ export function formOfConfig(
     origins: config.origins.join('\n'),
     linkOrigins: config.linkOrigins.join('\n'),
     displayName: config.displayName ?? '',
-    avatar: config.avatar ?? '',
     greeting: config.greeting ?? '',
     contact: config.contact ?? '',
     source: config.source.kind,

@@ -6,7 +6,16 @@ One script tag with your store's owner npub puts the assistant on a page:
 <script src="https://api.askr.elisym.network/widget.js" data-store="npub1..." async></script>
 ```
 
-The script adds an `<askr-chat>` element to the page: a chat button that opens the assistant. It runs in a shadow root, so your page's styles do not leak into it. Set `data-theme="light"` or `data-theme="dark"` to fix its colors; without it, it follows the visitor's system.
+The script adds an `<askr-chat>` element to the page: an **Ask AI** button with the Askr mark that opens the assistant (the mark alone on a narrow screen). It runs in a shadow root, so your page's styles do not leak into it.
+
+Optional settings on the same script tag:
+
+| Attribute | Values | Without it |
+| --- | --- | --- |
+| `data-theme` | `light`, `dark` | follows the visitor's system |
+| `data-lang` | `en`, `ru`, `es`, `de`, `fr`, `pt`, `it`, `zh`, `ja`, `ko` | the page's own `lang` (`<html lang="de">`), then your store's language, then English |
+
+The language sets the widget's own texts: the button, the placeholder, statuses and the cart buttons. Your store's language is read when the chat opens, so with neither `data-lang` nor a `lang` on the page the button shows English until then. `<askr-chat lang="ru">` works the same way when you place the element yourself. Your greeting and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
 
 To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` where it should go and load the script without `data-store`.
 
@@ -61,7 +70,7 @@ If your site sends a CSP, allow:
 | ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `script-src`  | `https://api.askr.elisym.network`                              | `widget.js`, or the pinned `/widget/<id>.js`                      |
 | `connect-src` | `https://api.askr.elisym.network` `wss://relay.elisym.network` | the chat session and the chat itself                              |
-| `img-src`     | `https:`                                                       | product images and the assistant's avatar, wherever you host them |
+| `img-src`     | `https:`                                                       | product images, wherever you host them |
 
 The widget adds no inline scripts or styles, so a strict `script-src` and `style-src` hold.
 

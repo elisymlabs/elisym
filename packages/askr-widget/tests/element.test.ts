@@ -55,10 +55,10 @@ describe('<askr-chat>', () => {
     const key = testKey();
     const config = parseConfig(sign(buildConfigEvent(makeStore().configInput, key.secretKey), key));
     view.update({ phase: 'moved', branding: true, turns: [], ...(config ? { config } : {}) });
-    expect(view.panel.querySelector('a')).toBeNull();
+    expect(view.panel.querySelector('.status a')).toBeNull();
     expect(view.panel.textContent).toContain('unavailable');
     view.update({ phase: 'unavailable', branding: true, turns: [], ...(config ? { config } : {}) });
-    expect(view.panel.querySelector('a')?.getAttribute('href')).toBe(
+    expect(view.panel.querySelector('.status a')?.getAttribute('href')).toBe(
       'https://shop.example/contact',
     );
   });
@@ -71,7 +71,7 @@ describe('<askr-chat>', () => {
   });
 
   it('renders in shadow DOM with adopted styles, the AI label, the name and by Askr, then an answer with a card', async () => {
-    const store = makeStore({ displayName: 'Ava', avatar: 'https://cdn.example/ava.png' });
+    const store = makeStore({ displayName: 'Ava' });
     const relay = new FakeRelay();
     publishStore(relay, store);
     publishItem(relay, store.catalogKey, {
@@ -108,11 +108,13 @@ describe('<askr-chat>', () => {
     await waitFor(() => client?.snapshot().phase === 'ready');
     expect(shadow.querySelector('.name')?.textContent).toBe('Ava');
     expect(shadow.querySelector('.ai')?.textContent).toBe('AI assistant');
-    expect(shadow.querySelector('.footer')?.textContent).toBe('by Askr');
-    expect(shadow.querySelector<HTMLElement>('.footer')?.hidden).toBe(false);
-    expect(shadow.querySelector<HTMLImageElement>('.avatar')?.src).toBe(
-      'https://cdn.example/ava.png',
+    expect(shadow.querySelector('.footer .powered')?.textContent).toBe('Powered by Askr');
+    expect(shadow.querySelector('.footer .powered')?.getAttribute('href')).toBe(
+      'https://askr.elisym.network',
     );
+    expect(shadow.querySelector<HTMLElement>('.footer')?.hidden).toBe(false);
+    // The header is the name and the AI label alone: no avatar, no mark.
+    expect(shadow.querySelector('.header img, .header .mark')).toBeNull();
 
     const input = shadow.querySelector('input');
     const form = shadow.querySelector('form');

@@ -70,13 +70,6 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
           onChange={(value) => set('displayName', value)}
         />
         <TextField
-          id="store-avatar"
-          label="Avatar URL (optional)"
-          value={form.avatar}
-          placeholder="https://..."
-          onChange={(value) => set('avatar', value)}
-        />
-        <TextField
           id="store-greeting"
           label="Greeting (optional)"
           value={form.greeting}

@@ -55,7 +55,7 @@ export function cspSources(): CspSource[] {
     {
       directive: 'img-src',
       sources: ['https:'],
-      why: 'product images and the avatar live on any https host',
+      why: 'product images live on any https host',
     },
   ];
 }

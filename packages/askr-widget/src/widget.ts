@@ -1,5 +1,6 @@
 import { createBrowserClient } from './browser-client';
 import { ELEMENT_NAME } from './constants';
+import { snippetAttributes } from './snippet';
 import { defineAskrElement, parseStoreKey } from './ui/element';
 
 /**
@@ -15,9 +16,8 @@ function mount(script: HTMLOrSVGScriptElement | null): void {
   }
   const widget = document.createElement(ELEMENT_NAME);
   widget.setAttribute('store', store ?? '');
-  const theme = script?.getAttribute('data-theme');
-  if (theme === 'light' || theme === 'dark') {
-    widget.setAttribute('theme', theme);
+  for (const [name, value] of snippetAttributes(script)) {
+    widget.setAttribute(name, value);
   }
   const attach = (): void => {
     document.body.append(widget);

@@ -15,7 +15,7 @@ export function element<Tag extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-/** An https URL, or none: avatars, images and links from signed events still get checked. */
+/** An https URL, or none: images and links from signed events still get checked. */
 export function httpsUrl(value: string | undefined): string | undefined {
   if (value === undefined) {
     return undefined;
