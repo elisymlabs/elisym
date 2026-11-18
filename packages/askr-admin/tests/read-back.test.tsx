@@ -512,6 +512,8 @@ describe('the overview', () => {
     await settle(() => (container.textContent ?? '').includes('could not be read'));
     failing = false;
     await click(buttonNamed(container, 'Settings'));
+    // The page's heading follows the section chosen.
+    expect(container.querySelector('h1')?.textContent).toBe('Settings');
     expect(container.querySelector('#store-name')).toBeNull();
     const retries = [...container.querySelectorAll('button')].filter(
       (button) => button.textContent === 'Retry',
@@ -571,6 +573,19 @@ describe('the overview', () => {
     const rows = mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr');
     expect(rows).toHaveLength(10);
     expect(mounted.container.textContent).not.toContain('item-10');
+  });
+
+  it.each([
+    ['pending', 'Pending', 'badge-warn'],
+    ['active', 'Active', 'badge-green'],
+    ['suspended', 'Suspended', 'badge-error'],
+  ] as const)('shows a %s store as a %s badge', async (status, label, tone) => {
+    mounted = await mount(
+      <Overview view={storeView({ status })} config={undefined} configFromServer={false} />,
+    );
+    const badge = mounted.container.querySelector('.badge');
+    expect(badge?.textContent).toBe(label);
+    expect(badge?.classList.contains(tone)).toBe(true);
   });
 
   it('says no clicks yet with none', async () => {

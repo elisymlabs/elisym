@@ -455,6 +455,37 @@ describe('a review in flight', () => {
     return { catalog, answer: (diff: typeof EMPTY_DIFF) => answer(diff) };
   }
 
+  it('locks the open editor and the CSV import while a review is out, so nothing is lost', async () => {
+    const pending = pendingCatalog();
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(
+          fakeApi({ catalog: pending.catalog }),
+          fakeReader([listing(MUG), listing(TEAPOT)]),
+        )}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(rowButton(container, 'Remove', 'Teapot'));
+    await click(rowButton(container, 'Edit', 'Mug'));
+    await click(buttonNamed(container, 'Review changes'));
+    const keep = buttonNamed(container, 'Keep this product');
+    const file = container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(keep.closest('fieldset')?.disabled).toBe(true);
+    expect(file?.closest('fieldset')?.disabled).toBe(true);
+    await act(async () => {
+      pending.answer({ ...EMPTY_DIFF, hidden: ['teapot'], unchanged: ['mug'] });
+    });
+    expect(buttonNamed(container, 'Keep this product').closest('fieldset')?.disabled).toBe(false);
+    expect(container.querySelector('input[type="file"]')?.closest('fieldset')?.disabled).toBe(
+      false,
+    );
+  });
+
   it('gives focus back to what opened the editor once it closes', async () => {
     mounted = await mount(
       <ProductsSection
