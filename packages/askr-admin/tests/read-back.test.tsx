@@ -13,6 +13,7 @@ import { Session } from '../src/components/Session';
 import { ApiError } from '../src/lib/api';
 import type { AdminClient } from '../src/lib/deps';
 import { ownSignedEvents, withStoredEvents } from '../src/lib/stored-events';
+import type { ConnectorRecord } from '../src/lib/types';
 import {
   ASSISTANT,
   NOW,
@@ -304,6 +305,30 @@ describe('the overview', () => {
       ['size:m', '0', '4'],
     ]);
     expect(mounted.container.textContent).toContain('Page openedAdded to cart');
+  });
+
+  it('shows the connector only once one is set up', async () => {
+    mounted = await mount(
+      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+    );
+    expect(mounted.container.textContent).not.toContain('Connector');
+    expect(mounted.container.textContent).not.toContain('No connector is set up');
+    await mounted.unmount();
+    const connector: ConnectorRecord = {
+      owner: OWNER,
+      platform: 'shopify',
+      url: 'https://shop.example',
+      importPolicies: false,
+      enabled: true,
+      lastRunAt: null,
+      nextRunAt: null,
+      lastStatus: null,
+    };
+    mounted = await mount(
+      <Overview view={storeView({ connector })} config={undefined} configFromServer={false} />,
+    );
+    expect(mounted.container.textContent).toContain('Connector');
+    expect(mounted.container.textContent).toContain('https://shop.example');
   });
 
   it('says no clicks yet with none', async () => {

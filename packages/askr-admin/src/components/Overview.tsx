@@ -191,9 +191,11 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         <SyncStatus sync={view.catalogSync} />
       </Section>
 
-      <Section title="Connector">
-        <ConnectorStatus connector={view.connector} />
-      </Section>
+      {view.connector === null ? null : (
+        <Section title="Connector">
+          <ConnectorStatus connector={view.connector} />
+        </Section>
+      )}
     </div>
   );
 }
