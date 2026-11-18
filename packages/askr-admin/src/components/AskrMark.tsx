@@ -11,15 +11,20 @@ const MARK_PATHS = [
   'M60.32 59.60 A2.45 2.45 0 0 0 56.01 59.60 L50.10 70.51 A2.45 2.45 0 0 0 52.25 74.13 L64.08 74.13 A2.45 2.45 0 0 0 66.24 70.51Z',
 ];
 
+/** The box of the rim itself, with none of the square's empty margin: for setting beside text. */
+const TIGHT_BOX = '12.48 19.08 75.04 70.92';
+
 interface Props {
   className?: string;
   style?: CSSProperties;
+  /** Drawn to the rim's edges, with no margin around it. */
+  tight?: boolean;
 }
 
-export function AskrMark({ className, style }: Props) {
+export function AskrMark({ className, style, tight = false }: Props) {
   return (
     <svg
-      viewBox="0 0 100 100"
+      viewBox={tight ? TIGHT_BOX : '0 0 100 100'}
       className={className}
       style={style}
       aria-hidden="true"
