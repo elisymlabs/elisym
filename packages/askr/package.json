@@ -1,6 +1,6 @@
 {
   "name": "@elisym/askr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Askr protocol: catalog, policy and assistant config events on Nostr, catalog-key authority, encrypted assistant chat, session tickets and catalog sync.",
   "keywords": [
     "commerce",

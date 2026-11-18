@@ -78,7 +78,7 @@
       "name": "@elisym/askr-admin",
       "version": "0.1.0",
       "dependencies": {
-        "@elisym/askr": "~0.1.0",
+        "@elisym/askr": "~0.2.0",
         "@elisym/commerce": "~0.14.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -103,7 +103,7 @@
       "name": "@elisym/askr-agent",
       "version": "0.1.0",
       "dependencies": {
-        "@elisym/askr": "~0.1.0",
+        "@elisym/askr": "~0.2.0",
         "decimal.js-light": "~2.5.1",
         "zod": "~4.6.7",
       },
@@ -142,8 +142,8 @@
       "name": "@elisym/askr-server",
       "version": "0.1.0",
       "dependencies": {
-        "@elisym/askr": "~0.1.0",
-        "@elisym/askr-agent": "~0.1.0",
+        "@elisym/askr": "~0.2.0",
+        "@elisym/askr-agent": "~0.2.0",
         "@elisym/commerce": "~0.14.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -167,7 +167,7 @@
       "name": "@elisym/askr-widget",
       "version": "0.1.0",
       "dependencies": {
-        "@elisym/askr": "~0.1.0",
+        "@elisym/askr": "~0.2.0",
         "@elisym/commerce": "~0.14.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -307,7 +307,7 @@
         "elisym-mcp": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/askr": "~0.1.0",
+        "@elisym/askr": "~0.2.0",
         "@elisym/commerce": "~0.14.0",
         "@elisym/pay-core": "~0.5.0",
         "@elisym/sdk": "~0.45.0",
