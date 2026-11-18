@@ -2,7 +2,7 @@
 export const PRODUCT_NAME = 'Askr';
 
 /** The Askr server: it serves the widget, the chat sessions and the admin. */
-export const API_ORIGIN = 'https://api.askr.elisym.network';
+export const API_ORIGIN = 'https://app.askr.elisym.network';
 
 /** The merchant admin: its own origin, never this page's (it holds the owner key). */
 export const ADMIN_URL = `${API_ORIGIN}/admin/`;

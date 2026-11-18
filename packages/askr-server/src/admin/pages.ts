@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, join, relative, sep } from 'node:path';
 import type { GatewayRequest } from '../gateway/gateway';
 
-/** Where the admin app is served (7.3): `https://api.askr.elisym.network/admin/`. */
+/** Where the admin app is served (7.3): `https://app.askr.elisym.network/admin/`. */
 export const ADMIN_PAGES_PREFIX = '/admin/';
 const ADMIN_INDEX = `${ADMIN_PAGES_PREFIX}index.html`;
 /** Vite's content-hashed output: safe to cache for good. */

@@ -156,7 +156,7 @@ const ConnectorRequestSchema = z.object({
 
 export interface AdminDeps {
   directory: StoreDirectory;
-  /** The configured public base, e.g. `https://api.askr.elisym.network`: NIP-98 `u` is compared with it (7.3). */
+  /** The configured public base, e.g. `https://app.askr.elisym.network`: NIP-98 `u` is compared with it (7.3). */
   publicBase: string;
   syncClient: SyncRelayClient;
   /** Called after O-signed events were stored, so an active store's are published at once. */
@@ -235,7 +235,7 @@ export function createAdminApi(
   deps: AdminDeps,
 ): (input: GatewayRequest) => Promise<Response | undefined> {
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  // `https://api.askr.elisym.network/` and without the slash name the same base.
+  // `https://app.askr.elisym.network/` and without the slash name the same base.
   const publicBase = publicBaseOf(deps.publicBase);
   const log = deps.log ?? (() => undefined);
 

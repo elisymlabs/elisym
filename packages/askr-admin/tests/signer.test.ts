@@ -4,8 +4,8 @@ import * as signer from '../src/lib/signer';
 
 describe('the API base', () => {
   it('is the page origin unless a development override is set', () => {
-    expect(apiBase(undefined, 'https://api.askr.elisym.network')).toBe(
-      'https://api.askr.elisym.network',
+    expect(apiBase(undefined, 'https://app.askr.elisym.network')).toBe(
+      'https://app.askr.elisym.network',
     );
     expect(apiBase('', 'https://admin.example')).toBe('https://admin.example');
     expect(apiBase('http://localhost:8787/', 'https://admin.example')).toBe(

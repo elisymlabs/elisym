@@ -355,10 +355,10 @@ describe('server core review: operator CLI and amounts', () => {
   });
 
   it('the public base is compared without a trailing slash', () => {
-    expect(publicBaseOf('https://api.askr.elisym.network/')).toBe(
-      'https://api.askr.elisym.network',
+    expect(publicBaseOf('https://app.askr.elisym.network/')).toBe(
+      'https://app.askr.elisym.network',
     );
-    expect(publicBaseOf('https://api.askr.elisym.network')).toBe('https://api.askr.elisym.network');
+    expect(publicBaseOf('https://app.askr.elisym.network')).toBe('https://app.askr.elisym.network');
   });
 });
 
