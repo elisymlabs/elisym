@@ -2,6 +2,7 @@ import { type StoreConfig, decryptPrivateConfigWith } from '@elisym/askr';
 import { useState } from 'react';
 import { type SessionDeps, postSigned } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { newestConfig } from '../lib/save';
 import { npubOf } from '../lib/signer';
 import { authorizationOf, formOfConfig, signStoreEvents } from '../lib/store-form';
@@ -79,6 +80,7 @@ export function RotateAssistant({ deps, view, config, configError, onRetry, onCh
   return (
     <Section
       title="Assistant key"
+      info={HELP.assistantKey}
       description="Rotate it if you think it leaked. Your settings are signed again for the new key, and its private instructions are encrypted to it."
     >
       <dl className="kv">

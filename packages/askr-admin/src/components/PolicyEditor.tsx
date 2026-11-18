@@ -1,6 +1,7 @@
 import { type Policy, PolicyInputSchema } from '@elisym/askr';
 import { useState } from 'react';
 import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { Notice } from './Notice';
 import { TextAreaField } from './TextAreaField';
 import { TextField } from './TextField';
@@ -61,6 +62,7 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
       </h2>
       <TextField
         id="policy-slug"
+        info={HELP.policySlug}
         label="Short name"
         value={slug}
         readOnly={initial !== undefined}
@@ -75,8 +77,21 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
           }
         }}
       />
-      <TextField id="policy-title" label="Title" value={title} onChange={setTitle} />
-      <TextAreaField id="policy-body" label="Text" rows={8} value={body} onChange={setBody} />
+      <TextField
+        id="policy-title"
+        info={HELP.policyTitle}
+        label="Title"
+        value={title}
+        onChange={setTitle}
+      />
+      <TextAreaField
+        id="policy-body"
+        info={HELP.policyText}
+        label="Text"
+        rows={8}
+        value={body}
+        onChange={setBody}
+      />
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
       <div className="border-line -mx-24 -mb-24 flex justify-end gap-8 border-t px-24 py-14">
         <button type="button" className="btn" onClick={onCancel}>

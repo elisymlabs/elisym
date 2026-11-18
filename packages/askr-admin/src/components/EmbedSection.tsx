@@ -9,6 +9,7 @@ import {
   pinnedScriptSnippet,
   scriptSnippet,
 } from '../lib/embed';
+import { HELP } from '../lib/help';
 import { npubOf } from '../lib/signer';
 import type { PinnedWidget, StoreView } from '../lib/types';
 import { AddToCartHook } from './AddToCartHook';
@@ -170,6 +171,7 @@ export function EmbedSection({ api, view, config }: Props) {
     <div className="flex flex-col gap-32">
       <Section
         title="Add the chat to your site"
+        info={HELP.embedCode}
         description="Paste this before the closing body tag on every page that should show the chat. It always loads the current version, so fixes reach your site within minutes."
       >
         {statusNotice}
@@ -195,6 +197,7 @@ export function EmbedSection({ api, view, config }: Props) {
       </Section>
       <Section
         title="Add to cart"
+        info={HELP.addToCart}
         description="Each product card links to its page. Whether it also has an add to cart button depends on where your products come from."
       >
         {cart}

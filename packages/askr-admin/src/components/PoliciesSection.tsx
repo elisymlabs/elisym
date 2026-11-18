@@ -8,6 +8,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { readPolicies } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
 import { Notice } from './Notice';
@@ -155,6 +156,7 @@ export function PoliciesSection({ deps, view, config }: Props) {
       {editor}
       <Section
         title="Policies and FAQ"
+        info={HELP.policies}
         description="Shipping, returns, sizing and other answers the assistant may quote."
         actions={addButton}
         flush

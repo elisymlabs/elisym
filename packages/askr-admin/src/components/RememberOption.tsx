@@ -1,5 +1,7 @@
 import { type Ref, useImperativeHandle, useState } from 'react';
+import { HELP } from '../lib/help';
 import { canRemember } from '../lib/remembered';
+import { InfoTip } from './InfoTip';
 
 export type RememberChoice = { kind: 'off' } | { kind: 'on' };
 
@@ -37,15 +39,18 @@ export function RememberOption({ ref, label, id }: Props) {
   }
   return (
     <div className="flex flex-col gap-4">
-      <label className="text-14 flex items-center gap-8">
-        <input
-          id={`${id}-remember`}
-          type="checkbox"
-          checked={on}
-          onChange={(event) => setOn(event.target.checked)}
-        />
-        {label}
-      </label>
+      <div className="flex items-center gap-6">
+        <label className="text-14 flex items-center gap-8">
+          <input
+            id={`${id}-remember`}
+            type="checkbox"
+            checked={on}
+            onChange={(event) => setOn(event.target.checked)}
+          />
+          {label}
+        </label>
+        <InfoTip help={HELP.rememberKey} about="Remembering the key" />
+      </div>
       {on ? (
         <p className="text-12 text-text-3 pl-21">
           Kept encrypted in this browser and never sent anywhere. Anyone who can use this browser

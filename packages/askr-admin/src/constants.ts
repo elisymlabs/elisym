@@ -39,3 +39,6 @@ export const DEFAULT_CURRENCY = 'USD';
 
 /** The public guide to embedding the chat: add to cart, CSP, pinning. */
 export const EMBED_DOCS_URL = 'https://docs.elisym.network/askr/embed';
+
+/** The guide to every field and section of this admin; info buttons link into it. */
+export const ADMIN_DOCS_URL = 'https://docs.elisym.network/askr/admin';

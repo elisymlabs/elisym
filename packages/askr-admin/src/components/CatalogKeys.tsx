@@ -2,6 +2,7 @@ import { type StoreConfig, buildCatalogAuth, buildCatalogRevocation } from '@eli
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { type SessionDeps, postSigned } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { nextAuthDate, savedMessage } from '../lib/save';
 import { npubOf, parsePublicKey } from '../lib/signer';
 import { type AuthorityRead, readAuthority } from '../lib/store-data';
@@ -115,6 +116,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
   return (
     <Section
       title="Catalog keys"
+      info={HELP.catalogKeys}
       description="A catalog key publishes your products and policies. Authorize your own key to publish from your backend, the SDK or an AI agent, and revoke a key you no longer use."
     >
       {readError === '' ? null : (
@@ -129,6 +131,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
       <div className="flex flex-col gap-12">
         <TextField
           id="authorize-key"
+          info={HELP.catalogKey}
           label="Authorize a catalog key"
           value={pasted}
           placeholder="npub1..."

@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from 'react';
+import { HELP } from '../lib/help';
 import { Notice } from './Notice';
 import { Section } from './Section';
 
@@ -14,6 +15,7 @@ export function ReplaceKey({ onReplaceKey, children }: Props) {
   return (
     <Section
       title="Secret key"
+      info={HELP.secretKey}
       description="If someone else may have your secret key, replace it: you make a new one and prove the store is yours through your site. Your products, policies, plan and chat history stay, and the old key stops working."
     >
       {confirming ? (

@@ -52,12 +52,14 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   /** The store's state as last read, for the config read that follows. */
   const status = useRef<StoreStatus | undefined>(undefined);
 
-  const reload = useCallback(async () => {
+  /** Read the store again: true once it was read. */
+  const reload = useCallback(async (): Promise<boolean> => {
     try {
       const view = await deps.api.store();
       status.current = view.status;
       setLoad({ state: 'ready', view });
       setReloadWarning('');
+      return true;
     } catch (error) {
       const missing = error instanceof ApiError && error.code === 'no_store';
       const moved = error instanceof ApiError && error.code === 'moved';
@@ -73,6 +75,7 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
         return missing ? { state: 'missing' } : { state: 'failed', error: errorMessage(error) };
       });
       setReloadWarning(`The store could not be refreshed: ${errorMessage(error)}`);
+      return false;
     }
   }, [deps]);
 

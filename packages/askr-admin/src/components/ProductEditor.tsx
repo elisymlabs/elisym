@@ -6,6 +6,7 @@ import {
 } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
 import { useEffect, useRef, useState } from 'react';
+import { HELP } from '../lib/help';
 import {
   type VariantInput,
   listingPriceOf,
@@ -319,6 +320,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       </h2>
       <TextField
         id="product-d"
+        info={HELP.productId}
         label="ID"
         value={d}
         readOnly={initial !== undefined}
@@ -333,11 +335,18 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
           }
         }}
       />
-      <TextField id="product-title" label="Title" value={title} onChange={setTitle} />
+      <TextField
+        id="product-title"
+        info={HELP.productTitle}
+        label="Title"
+        value={title}
+        onChange={setTitle}
+      />
       <div className="grid gap-12 sm:grid-cols-3">
         {variants.length > 0 ? (
           <TextField
             id="product-price"
+            info={HELP.productPrice}
             label="Price"
             value={listingPrice ?? ''}
             readOnly
@@ -347,6 +356,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         ) : (
           <TextField
             id="product-price"
+            info={HELP.productPrice}
             label="Price"
             value={price}
             placeholder="19.90"
@@ -355,12 +365,14 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         )}
         <TextField
           id="product-currency"
+          info={HELP.productCurrency}
           label="Currency"
           value={priceCurrency}
           onChange={setPriceCurrency}
         />
         <SelectField
           id="product-frequency"
+          info={HELP.productBilling}
           label="Billing"
           value={frequency}
           options={FREQUENCY_OPTIONS}
@@ -370,12 +382,14 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       </div>
       <TextField
         id="product-summary"
+        info={HELP.productSummary}
         label="Summary (optional)"
         value={summary}
         onChange={setSummary}
       />
       <TextAreaField
         id="product-description"
+        info={HELP.productDescription}
         label="Description"
         value={description}
         rows={4}
@@ -383,6 +397,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       />
       <TextField
         id="product-url"
+        info={HELP.productPage}
         label="Product page (optional)"
         value={url}
         placeholder="https://..."
@@ -390,6 +405,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       />
       <TextAreaField
         id="product-images"
+        info={HELP.productImages}
         label="Image URLs (one per line)"
         value={images}
         onChange={setImages}
@@ -397,6 +413,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       <div className="grid gap-12 sm:grid-cols-2">
         <TextField
           id="product-topics"
+          info={HELP.productTopics}
           label="Topics (optional)"
           value={topicsText}
           placeholder="tents, camping"
@@ -406,7 +423,13 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
             setTopics(topicsOfText(text));
           }}
         />
-        <TextField id="product-sku" label="SKU (optional)" value={sku} onChange={setSku} />
+        <TextField
+          id="product-sku"
+          info={HELP.productSku}
+          label="SKU (optional)"
+          value={sku}
+          onChange={setSku}
+        />
       </div>
       <AttrsEditor rows={attrs} onChange={setAttrs} />
       <OptionsEditor rows={optionRows} onChange={changeOptions} onValuesDone={valuesDone} />
@@ -422,6 +445,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       {variantNotice === '' ? null : <Notice tone="error">{variantNotice}</Notice>}
       <SelectField
         id="product-visibility"
+        info={HELP.productAvailability}
         label="Availability"
         value={visibility}
         options={VISIBILITY_OPTIONS}

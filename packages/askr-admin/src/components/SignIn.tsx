@@ -150,7 +150,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
         <h1 className="text-24 font-semibold">Askr admin</h1>
         <p className="text-14 text-text-2">
           Sign in with your store&apos;s secret key. It is never sent anywhere: it stays in this
-          browser tab, and on this device if you choose to remember it.
+          browser tab, and on this device unless you clear the remember box.
         </p>
       </div>
       {hasRemembered ? (

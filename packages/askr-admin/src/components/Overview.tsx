@@ -1,6 +1,7 @@
 import type { StoreConfig } from '@elisym/askr';
 import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
 import { KIND_DELETION } from '@elisym/commerce';
+import { HELP } from '../lib/help';
 import type { RelayReader } from '../lib/relay';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { usd } from '../lib/usage';
@@ -51,7 +52,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
   const badge = STATUS_BADGE[view.status];
   return (
     <div className="flex flex-col gap-32">
-      <Section title="Status">
+      <Section title="Status" info={HELP.status}>
         <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:gap-12">
           <span className={`badge self-start sm:self-auto ${badge.tone}`}>{badge.label}</span>
           <p className="text-14 text-text-2" role="status">
@@ -77,6 +78,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
 
       <Section
         title="Usage"
+        info={HELP.usage}
         description={
           tier === null
             ? 'No plan is assigned until your store is activated.'
@@ -135,6 +137,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
 
       <Section
         title="Product clicks"
+        info={HELP.productClicks}
         description="Product pages opened and add to cart presses from the chat's cards. Advisory: a click is counted as the visitor's browser reports it."
         flush
       >
@@ -168,6 +171,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
 
       <Section
         title="Waiting to publish"
+        info={HELP.waiting}
         description="Changes you signed that are not published yet."
       >
         {events.pending === 0 ? (
@@ -187,12 +191,12 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         ))}
       </Section>
 
-      <Section title="Product sync">
+      <Section title="Product sync" info={HELP.productSync}>
         <SyncStatus sync={view.catalogSync} />
       </Section>
 
       {view.connector === null ? null : (
-        <Section title="Connector">
+        <Section title="Connector" info={HELP.connector}>
           <ConnectorStatus connector={view.connector} />
         </Section>
       )}

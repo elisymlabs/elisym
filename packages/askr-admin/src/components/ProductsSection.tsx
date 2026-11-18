@@ -4,6 +4,7 @@ import { DEFAULT_CURRENCY } from '../constants';
 import { type CatalogChange, changesOf, importItems, removeItem, upsertItem } from '../lib/catalog';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage, invalidItemIssues } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { SOURCE_LABELS } from '../lib/labels';
 import { readCatalog } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
@@ -252,6 +253,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
       )}
       <Section
         title="Catalog"
+        info={HELP.catalog}
         description="Changes stay here until you review and publish them. A product you remove here is deleted for good when you publish; to take one off sale for a while, set its availability to hidden instead."
         actions={
           draft === undefined || editing !== undefined ? undefined : (
@@ -290,6 +292,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
 
       <Section
         title="Publish"
+        info={HELP.publish}
         description="Publishing makes your catalog this list: only what changed is sent. Review the changes first."
       >
         <SyncStatus sync={view.catalogSync} />
@@ -330,6 +333,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
       {draft === undefined ? null : (
         <Section
           title="Import from a CSV file"
+          info={HELP.csvImport}
           description="Add products from a spreadsheet, or replace all of them."
         >
           <fieldset disabled={busy} className="contents">
