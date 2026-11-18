@@ -58,7 +58,7 @@ function filesIn(dir: string): string[] {
 
 describe('the links', () => {
   it('open the admin on the Askr server, with no handle and no referrer', async () => {
-    expect(ADMIN_URL).toBe('https://api.askr.elisym.network/admin/');
+    expect(ADMIN_URL).toBe('https://app.askr.elisym.network/admin/');
     const page = await render(<App />);
     const links = [...page.querySelectorAll('a')].filter((link) => link.href === ADMIN_URL);
     expect(links.length).toBeGreaterThanOrEqual(3);
@@ -114,7 +114,7 @@ describe('the snippets', () => {
   it('the hero shows the embed tag the docs give, naming the widget the server serves', async () => {
     const snippet = embedSnippet();
     expect(snippet).toBe(
-      '<script src="https://api.askr.elisym.network/widget.js" data-store="npub1..." async></script>',
+      '<script src="https://app.askr.elisym.network/widget.js" data-store="npub1..." async></script>',
     );
     expect(docsPage('embed')).toContain(snippet);
     expect(WIDGET_SRC.endsWith('/widget.js')).toBe(true);
@@ -189,6 +189,16 @@ describe('the snippets', () => {
 });
 
 describe('the copy', () => {
+  it('offers the three product sources the admin has, and no PayCore store', async () => {
+    const page = await render(<App />);
+    expect(page.querySelectorAll('#sources h3')).toHaveLength(3);
+    expect(page.textContent).not.toMatch(/pay ?core/i);
+    for (const file of filesIn(join(PACKAGE, 'src')).filter((path) => /\.tsx?$/.test(path))) {
+      expect(readFileSync(file, 'utf8'), file).not.toMatch(/pay ?core/i);
+    }
+    expect(docsPage('overview')).not.toMatch(/pay ?core/i);
+  });
+
   it('has no em dash, rendered or in the page source', async () => {
     const page = await render(<App />);
     expect(page.textContent).not.toContain(EM_DASH);

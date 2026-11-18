@@ -3,7 +3,6 @@ const ITEMS = [
   'WooCommerce',
   'Google product feed',
   'CSV',
-  'PayCore',
   'Your own code',
   'AI agents over MCP',
 ];

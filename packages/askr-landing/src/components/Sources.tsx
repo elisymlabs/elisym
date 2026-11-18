@@ -21,11 +21,6 @@ const SOURCES: { title: string; body: string; tags: string[] }[] = [
     body: 'Publish from your backend or CI with the SDK, or let an AI agent keep the catalog with the MCP tools.',
     tags: ['SDK', 'MCP'],
   },
-  {
-    title: 'A PayCore store',
-    body: "Already sell with PayCore? The assistant reads that store's listings as they are.",
-    tags: ['PayCore'],
-  },
 ];
 
 export function Sources() {

@@ -3,7 +3,7 @@
 The landing page is a static page on `https://askr.elisym.network`. It runs no widget and no
 demo: the Askr server (`packages/askr-server`) serves `widget.js`, the chat sessions and the
 admin on `https://app.askr.elisym.network`, so the landing never shares an origin with the admin
-that holds the owner key.
+that holds the store's secret key.
 
 ## The Vercel project (once)
 

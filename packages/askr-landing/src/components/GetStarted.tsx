@@ -11,7 +11,7 @@ import { Reveal } from './Reveal';
 const STEPS = [
   {
     title: 'Create your store',
-    body: 'Sign in to the admin with your owner key, or let it make one for you. Set the name, language, currency, your sites and where your products come from.',
+    body: 'Open the admin and let it make a secret key for your store, or paste the one you have. Set the name, language, currency, your sites and where your products come from.',
   },
   {
     title: 'Pick a plan',

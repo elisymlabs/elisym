@@ -62,8 +62,8 @@ export function Trust() {
               {`Your catalog, policies and the assistant's settings live on Nostr, an open network, signed by keys only you hold. ${PRODUCT_NAME} runs the assistant on them, but does not own them: you are never locked in with us.`}
             </p>
             <p className="border-line-2 text-15 text-text-2 flex max-w-600 gap-12 border-l-2 pl-16 leading-relaxed">
-              Your owner key is the store's identity. It decides which keys may write your products,
-              and you revoke any of them in the admin at any time.
+              Your secret key is your store. Lost or leaked, you replace it through your own site,
+              and the store moves to the new key with its products, plan and chats.
             </p>
           </Reveal>
           <Reveal delay={1}>

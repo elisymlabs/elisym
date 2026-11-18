@@ -62,7 +62,7 @@ export function AdminPreview() {
               <span className="bg-line-2 size-10 rounded-full" />
               <span className="bg-line-2 size-10 rounded-full" />
               <span className="bg-bg text-12 text-text-3 mx-auto truncate rounded-full px-12 py-4">
-                api.askr.elisym.network/admin
+                app.askr.elisym.network/admin
               </span>
             </div>
             <div className="grid sm:grid-cols-[176px_1fr]">
