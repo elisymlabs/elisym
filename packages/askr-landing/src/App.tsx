@@ -9,7 +9,6 @@ import { GetStarted } from './components/GetStarted';
 import { Hero } from './components/Hero';
 import { Languages } from './components/Languages';
 import { Manifesto } from './components/Manifesto';
-import { Numbers } from './components/Numbers';
 import { Pricing } from './components/Pricing';
 import { SiteHeader } from './components/SiteHeader';
 import { Sources } from './components/Sources';
@@ -29,7 +28,6 @@ export function App() {
         <ForAgents />
         <Sources />
         <Trust />
-        <Numbers />
         <AdminPreview />
         <GetStarted />
         <Developers />

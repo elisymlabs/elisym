@@ -36,16 +36,6 @@ export const MCP_TOOLS: readonly { name: string; body: string }[] = [
   },
 ];
 
-/**
- * What the default model did on the Askr evals (`packages/askr-agent/evals`),
- * rounded for the page: 90 scenarios, 95.6% passed, about $0.0013 per passing
- * conversation. The cost is shown only as "a fraction of a cent".
- */
-export const EVALS = {
-  scenarios: '90',
-  passed: '95.6%',
-};
-
 export interface Plan {
   name: string;
   /** The monthly price as shown, or `undefined` for a plan priced per store. */
