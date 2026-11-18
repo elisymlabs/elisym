@@ -36,7 +36,6 @@ export interface StoreConfig {
   linkOrigins: string[];
   name: string;
   displayName?: string;
-  avatar?: string;
   greeting?: string;
   /** BCP 47 language of the catalog. */
   language: string;
@@ -105,7 +104,6 @@ export const StoreConfigInputSchema = z.object({
   linkOrigins: z.array(httpsOrigin).max(LIMITS.MAX_ORIGINS).default([]),
   name: z.string().min(1).max(LIMITS.TITLE_CHARS),
   displayName: z.string().min(1).max(LIMITS.TITLE_CHARS).optional(),
-  avatar: z.string().startsWith('https://').url().max(LIMITS.TAG_VALUE_CHARS).optional(),
   greeting: z.string().min(1).max(LIMITS.GREETING_CHARS).optional(),
   language: z.string().regex(LANGUAGE_RE).max(LIMITS.LOCALE_CHARS),
   currency: z.string().regex(CURRENCY_RE),
@@ -209,9 +207,6 @@ function configTemplate(input: StoreConfigInput): {
   }
   if (config.displayName !== undefined) {
     tags.push(['display-name', config.displayName]);
-  }
-  if (config.avatar !== undefined) {
-    tags.push(['avatar', config.avatar]);
   }
   if (config.greeting !== undefined) {
     tags.push(['greeting', config.greeting]);
@@ -342,10 +337,6 @@ export function parseConfig(
   const displayName = single(tags, 'display-name');
   if (displayName && displayName.length <= LIMITS.TITLE_CHARS) {
     config.displayName = displayName;
-  }
-  const avatar = single(tags, 'avatar');
-  if (avatar?.startsWith('https://') && avatar.length <= LIMITS.TAG_VALUE_CHARS) {
-    config.avatar = avatar;
   }
   const greeting = single(tags, 'greeting');
   if (greeting && greeting.length <= LIMITS.GREETING_CHARS) {

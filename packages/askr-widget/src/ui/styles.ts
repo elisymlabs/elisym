@@ -63,24 +63,32 @@ button:disabled { cursor: default; opacity: 0.4; }
 }
 .mark-ink { fill: var(--cc-text); }
 .mark-paper { fill: var(--cc-bg); }
-.mark-off { display: none; }
-/* A pill: the mark and "Ask AI". A narrow screen, or launcher="icon", keeps the mark alone. */
+/* A card: the mark, "Ask AI" and a line that says what it does. A narrow screen keeps the
+   mark alone in a square of the same height. */
 .launcher {
-  display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 20px 0 8px;
-  border: 1px solid var(--cc-border); border-radius: 999px; background: var(--cc-bg);
-  color: var(--cc-text); box-shadow: var(--cc-shadow); font-weight: 600; font-size: 15px;
-  letter-spacing: -0.01em; white-space: nowrap;
+  display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 18px 0 10px;
+  border: 1px solid var(--cc-border); border-radius: 15px; background: var(--cc-bg);
+  color: var(--cc-text); box-shadow: 0 14px 32px -12px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.06);
+  text-align: left; white-space: nowrap;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.launcher:hover { border-color: var(--cc-muted); }
-/* The launcher sits on the host's page: its own background inside the ink ring keeps the focus
-   visible on a light site and on a dark one. */
+.launcher:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 36px -12px rgba(0, 0, 0, 0.42), 0 2px 6px rgba(0, 0, 0, 0.06);
+}
+.launcher:active { transform: translateY(0); }
 .launcher:focus-visible { outline: 2px solid var(--cc-text); outline-offset: 3px; }
-.launcher-mark { display: block; flex: none; width: 40px; height: 40px; }
-:host([launcher='icon']) .launcher { width: 56px; padding: 0; justify-content: center; }
-:host([launcher='icon']) .launcher-label { display: none; }
+.launcher-mark { display: block; flex: none; width: 30px; height: 30px; margin-top: -2px; }
+.launcher-text { display: flex; flex-direction: column; gap: 1px; }
+.launcher-label { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+.launcher-hint { font-size: 11.5px; color: var(--cc-muted); line-height: 1.2; }
 @media (max-width: 480px) {
-  .launcher { width: 56px; padding: 0; justify-content: center; }
-  .launcher-label { display: none; }
+  .launcher { width: 50px; padding: 0; justify-content: center; }
+  .launcher-text { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .launcher { transition: none; }
+  .launcher:hover { transform: none; }
 }
 .panel {
   display: none; flex-direction: column;
@@ -91,17 +99,24 @@ button:disabled { cursor: default; opacity: 0.4; }
 :host([open]) .panel { display: flex; }
 :host([open]) .launcher { display: none; }
 .header { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--cc-border); }
-.avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; background: var(--cc-surface); }
-.header-mark { flex: none; width: 28px; height: 28px; }
 .who { flex: 1; min-width: 0; }
 .name { font-weight: 600; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai { font-size: 12px; color: var(--cc-muted); }
 .close {
-  flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px;
-  background: transparent; font-size: 20px; line-height: 1; color: var(--cc-muted);
+  flex: none; display: grid; place-items: center; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: 8px; background: transparent; color: var(--cc-muted);
 }
+.close svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; }
 .close:hover { background: var(--cc-surface); }
 .log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+/* A thin scrollbar that stays out of sight until the pointer is over the conversation. */
+.log { scrollbar-width: thin; scrollbar-color: transparent transparent; scrollbar-gutter: stable; }
+.log:hover, .log:focus-within { scrollbar-color: color-mix(in srgb, var(--cc-muted) 45%, transparent) transparent; }
+.log::-webkit-scrollbar { width: 10px; }
+.log::-webkit-scrollbar-track { background: transparent; }
+.log::-webkit-scrollbar-thumb { border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; background-color: transparent; }
+.log:hover::-webkit-scrollbar-thumb { background-color: color-mix(in srgb, var(--cc-muted) 45%, transparent); }
+.log::-webkit-scrollbar-thumb:hover { background-color: var(--cc-muted); }
 .bubble { max-width: 88%; overflow-wrap: anywhere; }
 .bubble p { margin: 0 0 6px; }
 .bubble p:last-child, .bubble ul:last-child, .bubble ol:last-child { margin-bottom: 0; }
@@ -184,7 +199,12 @@ a.card-title:hover { text-decoration: underline; }
   text-decoration: none; white-space: nowrap;
 }
 /* The three labels share one cell: the button keeps the widest one's width, so nothing moves. */
-.cart { display: grid; align-items: center; width: 100%; }
+.cart { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; }
+.cart-icon {
+  flex: none; width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.cart-labels { display: grid; }
 .cart-label { grid-area: 1 / 1; text-align: center; visibility: hidden; }
 .cart[data-state='ready'] .cart-ready,
 .cart[data-state='busy'] .cart-busy,
@@ -202,7 +222,7 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
 }
 .chip:hover { border-color: var(--cc-muted); }
 .status { padding: 0 16px 8px; font-size: 12.5px; color: var(--cc-muted); min-height: 18px; display: flex; gap: 8px; align-items: center; }
-.status-mark { flex: none; width: 20px; height: 20px; }
+.status-mark { flex: none; width: 24px; height: 24px; margin-top: -2px; }
 .status button { border: 0; background: transparent; color: var(--cc-text); text-decoration: underline; padding: 0; }
 .status a { color: var(--cc-text); }
 .composer { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--cc-border); }
@@ -219,9 +239,11 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
   display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--cc-muted);
   text-decoration: none;
 }
-.powered b { color: var(--cc-text); font-weight: 600; }
-.powered:hover b { text-decoration: underline; }
-.footer-mark { display: block; width: 14px; height: 14px; }
+.wordmark { display: block; height: 12px; width: auto; color: var(--cc-text); }
+.powered:hover .wordmark { opacity: 0.75; }
+/* The mark a little taller than the wordmark's A and set close to it: one lockup, all three
+   centered on one line. */
+.footer-mark { display: block; width: 19px; height: 19px; margin-right: -2px; }
 `;
 
 /** The shared stylesheet, built once per page and adopted by every widget instance. */

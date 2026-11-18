@@ -201,7 +201,6 @@ describe('the onboarding events', () => {
       currency: 'EUR',
       origins: 'https://tea.example\nhttps://www.tea.example',
       displayName: 'Tea helper',
-      avatar: 'https://tea.example/a.png',
       contact: 'https://tea.example/contact',
       source: 'catalog',
       merchantKey: npubOf(merchantKey),

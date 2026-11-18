@@ -1,6 +1,7 @@
 /** Every fixed text the widget shows, in English, the fallback language. */
 const EN = {
   launcher: 'Ask AI',
+  launcherHint: 'About any product here',
   open: 'Chat with the store assistant',
   close: 'Close',
   aiLabel: 'AI assistant',
@@ -37,6 +38,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   en: EN,
   ru: {
     launcher: 'Спросить ИИ',
+    launcherHint: 'О любом товаре здесь',
     open: 'Чат с ассистентом магазина',
     close: 'Закрыть',
     aiLabel: 'ИИ-ассистент',
@@ -66,6 +68,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   es: {
     launcher: 'Pregunta a la IA',
+    launcherHint: 'Sobre cualquier producto',
     open: 'Chatear con el asistente de la tienda',
     close: 'Cerrar',
     aiLabel: 'Asistente de IA',
@@ -95,6 +98,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   de: {
     launcher: 'KI fragen',
+    launcherHint: 'Zu jedem Produkt hier',
     open: 'Mit dem Shop-Assistenten chatten',
     close: 'Schließen',
     aiLabel: 'KI-Assistent',
@@ -124,6 +128,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   fr: {
     launcher: "Demander à l'IA",
+    launcherHint: 'Sur tous nos produits',
     open: "Discuter avec l'assistant de la boutique",
     close: 'Fermer',
     aiLabel: 'Assistant IA',
@@ -153,6 +158,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   pt: {
     launcher: 'Pergunte à IA',
+    launcherHint: 'Sobre qualquer produto',
     open: 'Conversar com o assistente da loja',
     close: 'Fechar',
     aiLabel: 'Assistente de IA',
@@ -182,6 +188,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   it: {
     launcher: "Chiedi all'IA",
+    launcherHint: 'Su qualsiasi prodotto',
     open: "Chatta con l'assistente del negozio",
     close: 'Chiudi',
     aiLabel: 'Assistente IA',
@@ -211,6 +218,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   zh: {
     launcher: '问 AI',
+    launcherHint: '关于这里的任何商品',
     open: '与店铺助手聊天',
     close: '关闭',
     aiLabel: 'AI 助手',
@@ -240,6 +248,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   ja: {
     launcher: 'AIに質問',
+    launcherHint: '商品について何でも',
     open: 'ストアのアシスタントとチャット',
     close: '閉じる',
     aiLabel: 'AIアシスタント',
@@ -269,6 +278,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
   },
   ko: {
     launcher: 'AI에게 묻기',
+    launcherHint: '모든 상품에 대해',
     open: '스토어 어시스턴트와 채팅',
     close: '닫기',
     aiLabel: 'AI 어시스턴트',

@@ -89,7 +89,7 @@ describe('remaining untested paths', () => {
     }
   });
 
-  it('caps language, avatar and contact on read', () => {
+  it('caps language and contact on read, and reads no avatar (the widget shows none)', () => {
     const event = sign(
       buildConfigEvent(
         {
@@ -116,10 +116,11 @@ describe('remaining untested paths', () => {
     const longUrl = 'https://x.example.com/' + 'a'.repeat(1_100);
     const withLinks = {
       ...event,
-      tags: [...event.tags, ['avatar', longUrl], ['contact', longUrl]],
+      tags: [...event.tags, ['avatar', 'https://x.example.com/a.png'], ['contact', longUrl]],
     };
     const parsed = parseConfig(withLinks);
-    expect(parsed?.avatar).toBeUndefined();
+    expect(parsed).toBeDefined();
+    expect(parsed !== undefined && 'avatar' in parsed).toBe(false);
     expect(parsed?.contact).toBeUndefined();
   });
 

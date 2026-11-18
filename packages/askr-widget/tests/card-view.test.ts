@@ -415,6 +415,9 @@ describe('the cart button keeps its width', () => {
     ).toBe(true);
     expect(button.dataset.state).toBe('ready');
     expect(visibleLabel(button)).toBe('Add to cart');
+    // A cart icon leads the label; a screen reader hears the label alone.
+    expect(button.firstElementChild?.getAttribute('class')).toBe('cart-icon');
+    expect(button.firstElementChild?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it("says added after the host's hook takes the product, then offers to add again", () => {

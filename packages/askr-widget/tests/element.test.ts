@@ -71,7 +71,7 @@ describe('<askr-chat>', () => {
   });
 
   it('renders in shadow DOM with adopted styles, the AI label, the name and by Askr, then an answer with a card', async () => {
-    const store = makeStore({ displayName: 'Ava', avatar: 'https://cdn.example/ava.png' });
+    const store = makeStore({ displayName: 'Ava' });
     const relay = new FakeRelay();
     publishStore(relay, store);
     publishItem(relay, store.catalogKey, {
@@ -113,9 +113,8 @@ describe('<askr-chat>', () => {
       'https://askr.elisym.network',
     );
     expect(shadow.querySelector<HTMLElement>('.footer')?.hidden).toBe(false);
-    expect(shadow.querySelector<HTMLImageElement>('.avatar')?.src).toBe(
-      'https://cdn.example/ava.png',
-    );
+    // The header is the name and the AI label alone: no avatar, no mark.
+    expect(shadow.querySelector('.header img, .header .mark')).toBeNull();
 
     const input = shadow.querySelector('input');
     const form = shadow.querySelector('form');

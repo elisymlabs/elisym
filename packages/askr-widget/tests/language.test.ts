@@ -77,6 +77,9 @@ describe('the widget language', () => {
     const widget = view(['ru', 'de']);
     expect(launcherText(widget)).toBe('Спросить ИИ');
     expect(widget.panel.lang).toBe('ru');
+    expect(widget.launcher.querySelector('.launcher-hint')?.textContent).toBe(
+      'О любом товаре здесь',
+    );
     widget.update({ phase: 'ready', branding: true, turns: [], config: storeIn('fr') });
     expect(launcherText(widget)).toBe('Спросить ИИ');
     expect(widget.panel.querySelector('input')?.placeholder).toBe('Спросите о товарах...');
@@ -109,7 +112,7 @@ describe('the embed snippet', () => {
     return { getAttribute: (name: string) => attributes[name] ?? null };
   }
 
-  it('turns data-theme, data-lang and data-launcher into element attributes', () => {
+  it('turns data-theme and data-lang into element attributes, and nothing else', () => {
     expect(
       snippetAttributes(
         script({ 'data-theme': 'dark', 'data-lang': ' ru ', 'data-launcher': 'icon' }),
@@ -117,14 +120,11 @@ describe('the embed snippet', () => {
     ).toEqual([
       ['theme', 'dark'],
       ['lang', 'ru'],
-      ['launcher', 'icon'],
     ]);
   });
 
   it('leaves out unknown values and absent settings', () => {
-    expect(snippetAttributes(script({ 'data-theme': 'blue', 'data-launcher': 'pill' }))).toEqual(
-      [],
-    );
+    expect(snippetAttributes(script({ 'data-theme': 'blue' }))).toEqual([]);
     expect(snippetAttributes(script({ 'data-lang': '  ' }))).toEqual([]);
     expect(snippetAttributes(null)).toEqual([]);
   });

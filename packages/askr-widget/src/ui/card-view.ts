@@ -30,6 +30,31 @@ function cartLabel(state: CartState): string {
   return state === 'done' ? STRINGS.added : STRINGS.addToCart;
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** A cart, drawn in the button's text color. */
+function cartIcon(document: Document): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'cart-icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const basket = document.createElementNS(SVG_NS, 'path');
+  basket.setAttribute(
+    'd',
+    'M3 4h2.2l2.3 10.1a1.2 1.2 0 0 0 1.2.9h8.6a1.2 1.2 0 0 0 1.2-.9L20 8H6.1',
+  );
+  svg.append(basket);
+  for (const x of [9.5, 16.5]) {
+    const wheel = document.createElementNS(SVG_NS, 'circle');
+    wheel.setAttribute('cx', String(x));
+    wheel.setAttribute('cy', '19.5');
+    wheel.setAttribute('r', '1.4');
+    svg.append(wheel);
+  }
+  return svg;
+}
+
 interface CartControl {
   button: HTMLButtonElement;
   /** A visually hidden live region beside the button: it announces a finished add. */
@@ -47,11 +72,13 @@ interface CartControl {
 function cartButtonElement(document: Document): CartControl {
   const button = element(document, 'button', 'cart');
   button.type = 'button';
+  const labels = element(document, 'span', 'cart-labels');
   for (const state of ['ready', 'busy', 'done'] as const) {
     const label = element(document, 'span', `cart-label cart-${state}`, cartLabel(state));
     label.setAttribute('aria-hidden', 'true');
-    button.append(label);
+    labels.append(label);
   }
+  button.append(cartIcon(document), labels);
   const announcer = element(document, 'span', 'visually-hidden');
   announcer.setAttribute('role', 'status');
   let addedTimer: ReturnType<typeof setTimeout> | undefined;

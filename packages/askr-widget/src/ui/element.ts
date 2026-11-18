@@ -9,6 +9,7 @@ import { element, httpsUrl } from './dom';
 import { animateMark, createMark } from './mark';
 import { STRINGS, applyLanguage, resolveLanguage } from './strings';
 import { widgetStyleSheet } from './styles';
+import { createWordmark } from './wordmark';
 
 /** O from the snippet: an npub, or 64 lowercase hex characters. */
 export function parseStoreKey(value: string | null): string | undefined {
@@ -35,8 +36,6 @@ interface TurnView {
 export class WidgetView {
   readonly launcher: HTMLButtonElement;
   readonly panel: HTMLElement;
-  private readonly avatar: HTMLImageElement;
-  private readonly headerMark: SVGSVGElement;
   private readonly statusMark: SVGSVGElement;
   private readonly name: HTMLElement;
   private readonly log: HTMLElement;
@@ -47,6 +46,7 @@ export class WidgetView {
   private readonly send: HTMLButtonElement;
   private readonly footer: HTMLElement;
   private readonly launcherLabel: HTMLElement;
+  private readonly launcherHint: HTMLElement;
   private readonly aiLabel: HTMLElement;
   private readonly close: HTMLButtonElement;
   private readonly poweredBy: HTMLElement;
@@ -68,26 +68,25 @@ export class WidgetView {
     applyLanguage(this.language);
     this.launcher = element(document, 'button', 'launcher');
     this.launcher.type = 'button';
+    // The mark, "Ask AI" and a line that says what it does.
     this.launcherLabel = element(document, 'span', 'launcher-label');
-    this.launcher.append(createMark(document, 'mark launcher-mark'), this.launcherLabel);
+    this.launcherHint = element(document, 'span', 'launcher-hint');
+    const words = element(document, 'span', 'launcher-text');
+    words.append(this.launcherLabel, this.launcherHint);
+    this.launcher.append(createMark(document, 'mark launcher-mark'), words);
 
     this.panel = element(document, 'section', 'panel');
     this.panel.setAttribute('role', 'dialog');
     const header = element(document, 'div', 'header');
-    this.avatar = element(document, 'img', 'avatar');
-    this.avatar.alt = '';
-    this.avatar.referrerPolicy = 'no-referrer';
-    this.avatar.hidden = true;
-    // The Askr mark stands in for an assistant without an avatar.
-    this.headerMark = createMark(document, 'mark header-mark');
     const who = element(document, 'div', 'who');
     this.name = element(document, 'div', 'name');
     this.aiLabel = element(document, 'div', 'ai');
     who.append(this.name, this.aiLabel);
-    this.close = element(document, 'button', 'close', '×');
+    this.close = element(document, 'button', 'close');
     this.close.type = 'button';
+    this.close.append(closeIcon(document));
     this.close.addEventListener('click', onClose);
-    header.append(this.avatar, this.headerMark, who, this.close);
+    header.append(who, this.close);
 
     this.log = element(document, 'div', 'log');
     this.log.setAttribute('aria-live', 'polite');
@@ -120,7 +119,8 @@ export class WidgetView {
     link.append(
       this.poweredBy,
       createMark(document, 'mark footer-mark'),
-      element(document, 'b', undefined, 'Askr'),
+      createWordmark(document, 'wordmark'),
+      element(document, 'span', 'visually-hidden', 'Askr'),
     );
     this.footer.append(link);
     this.panel.append(header, this.log, this.status, this.chips, composer, this.footer);
@@ -132,6 +132,7 @@ export class WidgetView {
     this.panel.lang = this.language;
     this.launcher.lang = this.language;
     this.launcherLabel.textContent = STRINGS.launcher;
+    this.launcherHint.textContent = STRINGS.launcherHint;
     this.launcher.setAttribute('aria-label', STRINGS.open);
     this.aiLabel.textContent = STRINGS.aiLabel;
     this.close.setAttribute('aria-label', STRINGS.close);
@@ -146,12 +147,6 @@ export class WidgetView {
     if (snapshot.config && snapshot.config !== this.config) {
       this.config = snapshot.config;
       this.name.textContent = assistantDisplayName(snapshot.config);
-      const avatar = httpsUrl(snapshot.config.avatar);
-      this.avatar.hidden = avatar === undefined;
-      this.headerMark.classList.toggle('mark-off', avatar !== undefined);
-      if (avatar !== undefined) {
-        this.avatar.src = avatar;
-      }
       // The store's language counts when the page says nothing the widget speaks.
       const language = resolveLanguage([...this.languageHints(), snapshot.config.language]);
       if (language !== this.language) {
@@ -258,6 +253,20 @@ export class WidgetView {
       this.chips.append(button);
     }
   }
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** A drawn cross: a text "×" sits off center by each font's own metrics. */
+function closeIcon(document: Document): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', 'M3.5 3.5l9 9M12.5 3.5l-9 9');
+  svg.append(path);
+  return svg;
 }
 
 /** Where "Powered by Askr" leads. */

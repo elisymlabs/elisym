@@ -1,9 +1,7 @@
 // @vitest-environment happy-dom
-import { buildConfigEvent, parseConfig } from '@elisym/askr';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WidgetView } from '../src/ui/element';
 import { createMark, markPaths } from '../src/ui/mark';
-import { makeStore, sign, testKey } from './fixtures';
 
 const RIM: ReadonlyArray<readonly [number, number]> = [
   [50, 7],
@@ -97,32 +95,6 @@ describe('the mark in the widget', () => {
     expect(launcher.querySelector('svg.launcher-mark')).not.toBeNull();
     expect(launcher.querySelector('.launcher-label')?.textContent).toBe('Ask AI');
     expect(launcher.getAttribute('aria-label')).toBe('Chat with the store assistant');
-  });
-
-  it('stands in the header until the assistant has an avatar', () => {
-    const widget = view();
-    const mark = widget.panel.querySelector('.header-mark');
-    expect(mark?.classList.contains('mark-off')).toBe(false);
-  });
-
-  it('steps aside once the assistant has an avatar', () => {
-    const widget = view();
-    const key = testKey();
-    const config = parseConfig(
-      sign(
-        buildConfigEvent(
-          { ...makeStore().configInput, avatar: 'https://cdn.example/ava.png' },
-          key.secretKey,
-        ),
-        key,
-      ),
-    );
-    if (!config) {
-      throw new Error('no config');
-    }
-    widget.update({ phase: 'ready', branding: true, turns: [], config });
-    expect(widget.panel.querySelector('.header-mark')?.classList.contains('mark-off')).toBe(true);
-    expect(widget.panel.querySelector<HTMLImageElement>('.avatar')?.hidden).toBe(false);
   });
 
   it('turns beside the status while the assistant is thinking', () => {

@@ -57,8 +57,8 @@ export function loadAdminFiles(dir: string): Map<string, AdminFile> {
 
 /**
  * The page's CSP: its own scripts and styles only, API calls to this origin,
- * reads from the relay. Images may come from any https host (store avatars
- * and product images the merchant pastes).
+ * reads from the relay. Images may come from any https host (the product
+ * images the merchant pastes).
  */
 export function adminCsp(relayUrl: string): string {
   return [
