@@ -271,7 +271,7 @@ body {
   @media (min-width: 768px) {
     .fields-rows > .field {
       display: grid;
-      grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 240px) minmax(0, 1fr);
       grid-template-areas:
         'label control'
         'hint control';

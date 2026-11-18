@@ -10,9 +10,14 @@ interface Props {
 /** A field's label, with an info button beside it when the field has help. */
 export function FieldLabel({ htmlFor, label, info }: Props) {
   return (
-    <span className="field-label flex items-center gap-6">
+    // Inline, not flex: a label that wraps keeps the button right after its last word.
+    <span className="field-label">
       <label htmlFor={htmlFor}>{label}</label>
-      {info === undefined ? null : <InfoTip help={info} about={label} />}
+      {info === undefined ? null : (
+        <span className="ml-6 inline-flex align-[-2px]">
+          <InfoTip help={info} about={label} />
+        </span>
+      )}
     </span>
   );
 }

@@ -1,7 +1,7 @@
 import type { Policy } from '@elisym/askr';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PolicyRow } from '../src/components/PolicyRow';
-import { type Mounted, click, mount } from './mount';
+import { type Mounted, mount } from './mount';
 
 const POLICY: Policy = {
   author: 'a'.repeat(64),
@@ -31,33 +31,22 @@ async function row(editable = true) {
       />
     </ul>,
   );
-  const toggle = mounted.container.querySelector<HTMLButtonElement>('button[aria-controls]');
-  const body = mounted.container.querySelector<HTMLElement>('#policy-body-returns');
-  if (toggle === null || body === null) {
-    throw new Error('no policy row');
-  }
-  return { toggle, body };
+  return mounted.container;
 }
 
 describe('a policy in the list', () => {
-  it('shows its text folded to two lines, and in full once opened', async () => {
-    const { toggle, body } = await row();
-    expect(body.textContent).toBe(POLICY.body);
-    expect(toggle.getAttribute('aria-controls')).toBe('policy-body-returns');
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(body.classList.contains('line-clamp-2')).toBe(true);
-    await click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(body.classList.contains('line-clamp-2')).toBe(false);
-    await click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(body.classList.contains('line-clamp-2')).toBe(true);
+  it('shows its whole text, line breaks kept, with nothing to unfold', async () => {
+    const container = await row();
+    const body = container.querySelector('p');
+    expect(body?.textContent).toBe(POLICY.body);
+    expect(body?.classList.contains('whitespace-pre-line')).toBe(true);
+    expect(body?.className).not.toContain('line-clamp');
+    expect(container.querySelector('[aria-expanded]')).toBeNull();
   });
 
-  it('opens one it cannot edit too, such as an imported one', async () => {
-    const { toggle, body } = await row(false);
-    await click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(body.textContent).toBe(POLICY.body);
+  it('shows the text of one it cannot edit too, such as an imported one', async () => {
+    const container = await row(false);
+    expect(container.querySelector('p')?.textContent).toBe(POLICY.body);
+    expect(container.querySelector('button')).toBeNull();
   });
 });

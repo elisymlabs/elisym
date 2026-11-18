@@ -52,7 +52,8 @@ export function StoreSettingsForm({
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
       {done === '' ? null : <Notice tone="success">{done}</Notice>}
       {children}
-      <div className="border-line bg-bg/90 sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center justify-between gap-12 border-t px-4 py-12 backdrop-blur-sm">
+      {/* A solid bar that stays in reach at the bottom of the screen while the form scrolls. */}
+      <div className="card sticky bottom-16 z-10 flex flex-wrap items-center justify-between gap-12 px-16 py-12 shadow-lg">
         <p className="text-13 text-text-2">
           Saving signs these settings with your secret key and replaces the previous ones.
         </p>
