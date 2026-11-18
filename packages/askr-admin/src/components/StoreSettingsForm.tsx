@@ -7,7 +7,6 @@ import { StoreFields } from './StoreFields';
 interface Props {
   initial: StoreForm;
   submitLabel: string;
-  ownerNpub: string;
   /** Signs and posts; a thrown error is shown under the form. */
   onSubmit: (form: StoreForm) => Promise<string>;
   /** False while something must be settled first (shown in `children`). */
@@ -19,7 +18,6 @@ interface Props {
 export function StoreSettingsForm({
   initial,
   submitLabel,
-  ownerNpub,
   onSubmit,
   canSubmit = true,
   children,
@@ -50,7 +48,7 @@ export function StoreSettingsForm({
         void submit();
       }}
     >
-      <StoreFields form={form} onChange={setForm} ownerNpub={ownerNpub} />
+      <StoreFields form={form} onChange={setForm} />
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
       {done === '' ? null : <Notice tone="success">{done}</Notice>}
       {children}

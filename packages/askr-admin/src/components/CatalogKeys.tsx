@@ -1,6 +1,5 @@
 import { type StoreConfig, buildCatalogAuth, buildCatalogRevocation } from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
-import { ASKR_KEY_COMMAND } from '../constants';
 import { type SessionDeps, postSigned } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { nextAuthDate, savedMessage } from '../lib/save';
@@ -26,7 +25,6 @@ export function CatalogKeys({ deps, view, config }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
-  const ownerNpub = npubOf(deps.signer.pubkey);
 
   const read = useCallback(async () => {
     try {
@@ -134,7 +132,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
           label="Authorize a catalog key"
           value={pasted}
           placeholder="npub1..."
-          hint={`The key your backend or SDK publishes with. For an elisym agent, print it with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
+          hint="The public key your backend, SDK or MCP server publishes your products with."
           onChange={setPasted}
         />
         <div className="flex justify-end">

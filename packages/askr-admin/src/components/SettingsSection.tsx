@@ -2,7 +2,6 @@ import { type StoreConfig, type StorePrivateConfig, decryptPrivateConfigWith } f
 import { useEffect, useRef, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { newestConfig, saveSettings, savedMessage } from '../lib/save';
-import { npubOf } from '../lib/signer';
 import { type AuthorityRead, readAuthority } from '../lib/store-data';
 import { EMPTY_FORM, formOfConfig, withConnector } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
@@ -176,7 +175,6 @@ export function SettingsSection({
         // Keyed on what the relay holds: this page's own save does not reset the form.
         key={`${config?.createdAt ?? 0}:${decryptAttempt}:${loaded.privatePart === undefined ? 'sealed' : 'open'}`}
         initial={initial}
-        ownerNpub={npubOf(deps.signer.pubkey)}
         submitLabel="Sign and save"
         canSubmit={authorities !== undefined && (!undecryptable || replacePrivate)}
         onSubmit={async (form) => {

@@ -77,7 +77,6 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
           </div>
           <StoreSettingsForm
             initial={EMPTY_FORM}
-            ownerNpub={ownerNpub}
             submitLabel="Sign and save"
             onSubmit={async (form) => {
               const outcome = await saveSettings({ deps, view, form });

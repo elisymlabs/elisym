@@ -1,4 +1,3 @@
-import { ASKR_KEY_COMMAND } from '../constants';
 import { PLATFORM_OPTIONS, SOURCE_OPTIONS, platformOf, sourceKindOf } from '../lib/labels';
 import { npubOf } from '../lib/signer';
 import type { StoreForm } from '../lib/store-form';
@@ -10,12 +9,10 @@ import { TextField } from './TextField';
 interface Props {
   form: StoreForm;
   onChange: (form: StoreForm) => void;
-  /** The owner's npub, for the catalog key command. */
-  ownerNpub: string;
 }
 
 /** Every field of the store's Askr config (2.3), public and private. */
-export function StoreFields({ form, onChange, ownerNpub }: Props) {
+export function StoreFields({ form, onChange }: Props) {
   const set = <Key extends keyof StoreForm>(key: Key, value: StoreForm[Key]) =>
     onChange({ ...form, [key]: value });
   return (
@@ -151,7 +148,7 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
             id="store-merchant-key"
             label="Your catalog key (npub1...)"
             value={form.merchantKey}
-            hint={`The key your backend or SDK publishes with. For an elisym agent, print it with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
+            hint="The public key your backend, SDK or MCP server publishes your products with."
             onChange={(value) => set('merchantKey', value)}
           />
         ) : null}
