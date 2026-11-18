@@ -69,6 +69,12 @@ export function Shell({
   // The Connector section is for a connector set up in Settings: without one it is left out.
   const tabs = view.connector === null ? TABS.filter((entry) => entry.id !== 'connector') : TABS;
   const tab = tabs.some((entry) => entry.id === chosen) ? chosen : 'overview';
+  // A tab that went away is forgotten, so it does not come back by itself with its section.
+  useEffect(() => {
+    if (tab !== chosen) {
+      setTab(tab);
+    }
+  }, [tab, chosen]);
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus>('idle');
   // Read at each render; forgetting it under Advanced renders again.
   const [, setForgottenTimes] = useState(0);

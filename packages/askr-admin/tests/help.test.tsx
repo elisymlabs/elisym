@@ -183,14 +183,32 @@ describe('the info button', () => {
     );
   });
 
-  it('closes when the window is resized, its shift being for the old width', async () => {
+  it('closes when the window width changes, its shift being for the old width', async () => {
     const { container, button } = await tip();
+    const width = window.innerWidth;
     await click(button);
+    // Only the height changed (a phone's toolbar on scroll): it stays open.
+    await act(async () => {
+      window.dispatchEvent(new Event('resize'));
+    });
     expect(container.querySelector('[role="note"]')).not.toBeNull();
+    vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(width - 300);
     await act(async () => {
       window.dispatchEvent(new Event('resize'));
     });
     expect(container.querySelector('[role="note"]')).toBeNull();
+  });
+
+  it('stops listening once it closes, and once it is gone while open', async () => {
+    const removed = vi.spyOn(window, 'removeEventListener');
+    const { button } = await tip();
+    await click(button);
+    await click(button);
+    expect(removed.mock.calls.filter((call) => call[0] === 'resize')).toHaveLength(1);
+    await click(button);
+    await mounted?.unmount();
+    mounted = undefined;
+    expect(removed.mock.calls.filter((call) => call[0] === 'resize')).toHaveLength(2);
   });
 
   it('sets the shift on the panel when it opens', async () => {

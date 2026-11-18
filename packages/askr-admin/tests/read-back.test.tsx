@@ -358,20 +358,19 @@ describe('the overview', () => {
       'Embed',
       'Advanced',
     ]);
-    store.mockImplementation(async () =>
-      storeView({
-        connector: {
-          owner: OWNER,
-          platform: 'shopify',
-          url: 'https://shop.example',
-          importPolicies: false,
-          enabled: false,
-          lastRunAt: null,
-          nextRunAt: null,
-          lastStatus: null,
-        },
-      }),
-    );
+    const withConnector = storeView({
+      connector: {
+        owner: OWNER,
+        platform: 'shopify',
+        url: 'https://shop.example',
+        importPolicies: false,
+        enabled: false,
+        lastRunAt: null,
+        nextRunAt: null,
+        lastStatus: null,
+      },
+    });
+    store.mockImplementation(async () => withConnector);
     await click(buttonNamed(container, 'Refresh'));
     await settle(() => sections(container).includes('Connector'));
     await click(buttonNamed(container, 'Connector'));
@@ -380,6 +379,11 @@ describe('the overview', () => {
     store.mockImplementation(async () => storeView());
     await click(buttonNamed(container, 'Refresh'));
     await settle(() => !sections(container).includes('Connector'));
+    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+    // Back once more, it does not take the page over by itself.
+    store.mockImplementation(async () => withConnector);
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => sections(container).includes('Connector'));
     expect(container.querySelector('h1')?.textContent).toBe('Overview');
   });
 

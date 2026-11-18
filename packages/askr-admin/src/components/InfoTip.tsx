@@ -30,6 +30,8 @@ export function InfoTip({ help, about }: Props) {
   const [open, setOpen] = useState(false);
   /** Opened near an edge, the panel moves along so that it stays on screen. */
   const [shift, setShift] = useState(0);
+  /** The window's width when it opened. */
+  const openedWidth = useRef(0);
   const box = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const panelId = useId();
@@ -52,8 +54,13 @@ export function InfoTip({ help, about }: Props) {
         }
       }
     };
-    // Its shift was measured for the width it opened at: a resize or a turned phone closes it.
-    const closeOnResize = () => setOpen(false);
+    // Its shift was measured for the width it opened at: a new width (a turned phone) closes
+    // it. A height-only resize, such as a phone's toolbar hiding on scroll, leaves it open.
+    const closeOnResize = () => {
+      if (window.innerWidth !== openedWidth.current) {
+        setOpen(false);
+      }
+    };
     document.addEventListener('pointerdown', closeOutside);
     document.addEventListener('keydown', closeOnEscape);
     window.addEventListener('resize', closeOnResize);
@@ -79,6 +86,7 @@ export function InfoTip({ help, about }: Props) {
             box.current?.closest('main')?.getBoundingClientRect().right ?? window.innerWidth,
           );
           const left = box.current?.getBoundingClientRect().left ?? 0;
+          openedWidth.current = window.innerWidth;
           setShift(panelShift(left, edge, window.innerWidth));
           setOpen((shown) => !shown);
         }}
