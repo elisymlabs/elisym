@@ -55,10 +55,10 @@ describe('<askr-chat>', () => {
     const key = testKey();
     const config = parseConfig(sign(buildConfigEvent(makeStore().configInput, key.secretKey), key));
     view.update({ phase: 'moved', branding: true, turns: [], ...(config ? { config } : {}) });
-    expect(view.panel.querySelector('a')).toBeNull();
+    expect(view.panel.querySelector('.status a')).toBeNull();
     expect(view.panel.textContent).toContain('unavailable');
     view.update({ phase: 'unavailable', branding: true, turns: [], ...(config ? { config } : {}) });
-    expect(view.panel.querySelector('a')?.getAttribute('href')).toBe(
+    expect(view.panel.querySelector('.status a')?.getAttribute('href')).toBe(
       'https://shop.example/contact',
     );
   });
@@ -108,7 +108,10 @@ describe('<askr-chat>', () => {
     await waitFor(() => client?.snapshot().phase === 'ready');
     expect(shadow.querySelector('.name')?.textContent).toBe('Ava');
     expect(shadow.querySelector('.ai')?.textContent).toBe('AI assistant');
-    expect(shadow.querySelector('.footer')?.textContent).toBe('by Askr');
+    expect(shadow.querySelector('.footer .powered')?.textContent).toBe('Powered byAskr');
+    expect(shadow.querySelector('.footer .powered')?.getAttribute('href')).toBe(
+      'https://askr.elisym.network',
+    );
     expect(shadow.querySelector<HTMLElement>('.footer')?.hidden).toBe(false);
     expect(shadow.querySelector<HTMLImageElement>('.avatar')?.src).toBe(
       'https://cdn.example/ava.png',

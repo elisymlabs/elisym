@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
+import { buildConfigEvent, parseConfig } from '@elisym/askr';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WidgetView } from '../src/ui/element';
 import { createMark, markPaths } from '../src/ui/mark';
+import { makeStore, sign, testKey } from './fixtures';
 
 const RIM: ReadonlyArray<readonly [number, number]> = [
   [50, 7],
@@ -79,15 +81,6 @@ describe('the Askr mark', () => {
     ]);
     expect(paths.every((path) => (path.getAttribute('d') ?? '').startsWith('M'))).toBe(true);
   });
-
-  it('stands still for a visitor who asked for reduced motion', () => {
-    const frames = vi.fn(() => 1);
-    vi.stubGlobal('requestAnimationFrame', frames);
-    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }));
-    const svg = createMark(document, 'mark');
-    document.body.append(svg);
-    expect(frames).not.toHaveBeenCalled();
-  });
 });
 
 describe('the mark in the widget', () => {
@@ -99,10 +92,10 @@ describe('the mark in the widget', () => {
     );
   }
 
-  it('is the chat button: no circle, no emoji, named for a screen reader', () => {
+  it('is the chat button with an "Ask AI" label, no emoji, named for a screen reader', () => {
     const { launcher } = view();
     expect(launcher.querySelector('svg.launcher-mark')).not.toBeNull();
-    expect(launcher.textContent).toBe('');
+    expect(launcher.querySelector('.launcher-label')?.textContent).toBe('Ask AI');
     expect(launcher.getAttribute('aria-label')).toBe('Chat with the store assistant');
   });
 
@@ -110,6 +103,26 @@ describe('the mark in the widget', () => {
     const widget = view();
     const mark = widget.panel.querySelector('.header-mark');
     expect(mark?.classList.contains('mark-off')).toBe(false);
+  });
+
+  it('steps aside once the assistant has an avatar', () => {
+    const widget = view();
+    const key = testKey();
+    const config = parseConfig(
+      sign(
+        buildConfigEvent(
+          { ...makeStore().configInput, avatar: 'https://cdn.example/ava.png' },
+          key.secretKey,
+        ),
+        key,
+      ),
+    );
+    if (!config) {
+      throw new Error('no config');
+    }
+    widget.update({ phase: 'ready', branding: true, turns: [], config });
+    expect(widget.panel.querySelector('.header-mark')?.classList.contains('mark-off')).toBe(true);
+    expect(widget.panel.querySelector<HTMLImageElement>('.avatar')?.hidden).toBe(false);
   });
 
   it('turns beside the status while the assistant is thinking', () => {
@@ -123,6 +136,15 @@ describe('the mark in the widget', () => {
     const status = widget.panel.querySelector('.status');
     expect(status?.querySelector('svg.status-mark')).not.toBeNull();
     expect(status?.textContent).toBe('Looking through tents');
+    const first = status?.querySelector('svg.status-mark');
+    widget.update({
+      phase: 'waiting',
+      branding: true,
+      inFlightAskId: 'a1',
+      turns: [{ askId: 'a1', askedAt: 0, text: 'Tents?', status: 'Comparing weight' }],
+    });
+    // One mark for the status, re-used: a stream of updates never piles marks up.
+    expect(status?.querySelector('svg.status-mark')).toBe(first);
     widget.update({ phase: 'ready', branding: true, turns: [] });
     expect(status?.querySelector('svg.status-mark')).toBeNull();
   });

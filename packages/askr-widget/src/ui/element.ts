@@ -6,8 +6,8 @@ import { ELEMENT_NAME, PANEL_OPEN_PREFIX } from '../constants';
 import { readItem, removeItem, storageArea, writeItem } from '../storage';
 import { renderAnswer } from './answer-view';
 import { element, httpsUrl } from './dom';
-import { createMark } from './mark';
-import { STRINGS } from './strings';
+import { animateMark, createMark } from './mark';
+import { STRINGS, applyLanguage, resolveLanguage } from './strings';
 import { widgetStyleSheet } from './styles';
 
 /** O from the snippet: an npub, or 64 lowercase hex characters. */
@@ -37,6 +37,7 @@ export class WidgetView {
   readonly panel: HTMLElement;
   private readonly avatar: HTMLImageElement;
   private readonly headerMark: SVGSVGElement;
+  private readonly statusMark: SVGSVGElement;
   private readonly name: HTMLElement;
   private readonly log: HTMLElement;
   private readonly greeting: HTMLElement;
@@ -45,18 +46,30 @@ export class WidgetView {
   private readonly input: HTMLInputElement;
   private readonly send: HTMLButtonElement;
   private readonly footer: HTMLElement;
+  private readonly launcherLabel: HTMLElement;
+  private readonly aiLabel: HTMLElement;
+  private readonly close: HTMLButtonElement;
+  private readonly poweredBy: HTMLElement;
+  private language: string;
   private readonly turnViews = new Map<string, TurnView>();
   private config: StoreConfig | undefined;
 
+  /**
+   * @param languageHints the page's say on the language, strongest first (the snippet's
+   *   `data-lang`, then the page's own `lang`); the store's language comes after them.
+   */
   constructor(
     private readonly document: Document,
     private readonly client: () => ChatClient | undefined,
     onClose: () => void,
+    private readonly languageHints: () => ReadonlyArray<string | null | undefined> = () => [],
   ) {
+    this.language = resolveLanguage(languageHints());
+    applyLanguage(this.language);
     this.launcher = element(document, 'button', 'launcher');
     this.launcher.type = 'button';
-    this.launcher.append(createMark(document, 'mark launcher-mark'));
-    this.launcher.setAttribute('aria-label', STRINGS.open);
+    this.launcherLabel = element(document, 'span', 'launcher-label');
+    this.launcher.append(createMark(document, 'mark launcher-mark'), this.launcherLabel);
 
     this.panel = element(document, 'section', 'panel');
     this.panel.setAttribute('role', 'dialog');
@@ -69,26 +82,26 @@ export class WidgetView {
     this.headerMark = createMark(document, 'mark header-mark');
     const who = element(document, 'div', 'who');
     this.name = element(document, 'div', 'name');
-    who.append(this.name, element(document, 'div', 'ai', STRINGS.aiLabel));
-    const close = element(document, 'button', 'close', '×');
-    close.type = 'button';
-    close.setAttribute('aria-label', STRINGS.close);
-    close.addEventListener('click', onClose);
-    header.append(this.avatar, this.headerMark, who, close);
+    this.aiLabel = element(document, 'div', 'ai');
+    who.append(this.name, this.aiLabel);
+    this.close = element(document, 'button', 'close', '×');
+    this.close.type = 'button';
+    this.close.addEventListener('click', onClose);
+    header.append(this.avatar, this.headerMark, who, this.close);
 
     this.log = element(document, 'div', 'log');
     this.log.setAttribute('aria-live', 'polite');
-    this.greeting = element(document, 'div', 'bubble theirs', STRINGS.greeting);
+    this.greeting = element(document, 'div', 'bubble theirs');
     this.log.append(this.greeting);
     this.status = element(document, 'div', 'status');
+    this.statusMark = createMark(document, 'mark status-mark');
     this.chips = element(document, 'div', 'chips');
 
     const composer = element(document, 'form', 'composer');
     this.input = element(document, 'input');
     this.input.type = 'text';
     this.input.maxLength = LIMITS.ASK_TEXT_CHARS;
-    this.input.placeholder = STRINGS.placeholder;
-    this.send = element(document, 'button', undefined, STRINGS.send);
+    this.send = element(document, 'button');
     this.send.type = 'submit';
     composer.append(this.input, this.send);
     composer.addEventListener('submit', (event) => {
@@ -97,8 +110,35 @@ export class WidgetView {
         this.input.value = '';
       }
     });
-    this.footer = element(document, 'div', 'footer', STRINGS.byAskr);
+    // "Powered by Askr", with the mark, linking to Askr; centered under the composer.
+    this.footer = element(document, 'div', 'footer');
+    const link = element(document, 'a', 'powered');
+    link.href = ASKR_SITE;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    this.poweredBy = element(document, 'span');
+    link.append(
+      this.poweredBy,
+      createMark(document, 'mark footer-mark'),
+      element(document, 'b', undefined, 'Askr'),
+    );
+    this.footer.append(link);
     this.panel.append(header, this.log, this.status, this.chips, composer, this.footer);
+    this.applyTexts();
+  }
+
+  /** Every fixed text in the current language: run at start and when the language changes. */
+  private applyTexts(): void {
+    this.panel.lang = this.language;
+    this.launcher.lang = this.language;
+    this.launcherLabel.textContent = STRINGS.launcher;
+    this.launcher.setAttribute('aria-label', STRINGS.open);
+    this.aiLabel.textContent = STRINGS.aiLabel;
+    this.close.setAttribute('aria-label', STRINGS.close);
+    this.greeting.textContent = this.config?.greeting ?? STRINGS.greeting;
+    this.input.placeholder = STRINGS.placeholder;
+    this.send.textContent = STRINGS.send;
+    this.poweredBy.textContent = STRINGS.poweredBy;
   }
 
   update(snapshot: ChatSnapshot): void {
@@ -112,7 +152,13 @@ export class WidgetView {
       if (avatar !== undefined) {
         this.avatar.src = avatar;
       }
-      this.greeting.textContent = snapshot.config.greeting ?? STRINGS.greeting;
+      // The store's language counts when the page says nothing the widget speaks.
+      const language = resolveLanguage([...this.languageHints(), snapshot.config.language]);
+      if (language !== this.language) {
+        this.language = language;
+        applyLanguage(language);
+      }
+      this.applyTexts();
     }
     const before = this.log.scrollHeight;
     for (const turn of snapshot.turns) {
@@ -163,9 +209,10 @@ export class WidgetView {
     } else if (snapshot.phase === 'waiting') {
       const turn = snapshot.turns.find((candidate) => candidate.askId === snapshot.inFlightAskId);
       this.status.append(
-        createMark(document, 'mark status-mark'),
+        this.statusMark,
         element(document, 'span', undefined, turn?.status ?? STRINGS.thinking),
       );
+      animateMark(this.statusMark);
     } else if (snapshot.phase === 'retry') {
       const retry = element(document, 'button', undefined, STRINGS.retry);
       retry.type = 'button';
@@ -213,6 +260,9 @@ export class WidgetView {
   }
 }
 
+/** Where "Powered by Askr" leads. */
+const ASKR_SITE = 'https://askr.elisym.network';
+
 /** Owner key moves (K21) the element follows per page at most: the gateway names the last one. */
 const MAX_MOVES = 1;
 
@@ -246,6 +296,7 @@ export function defineAskrElement(
         this.ownerDocument,
         () => this.client,
         () => this.setOpen(false),
+        () => [this.getAttribute('lang'), this.ownerDocument.documentElement.lang],
       );
       view.launcher.addEventListener('click', () => this.setOpen(true));
       shadow.replaceChildren(view.launcher, view.panel);

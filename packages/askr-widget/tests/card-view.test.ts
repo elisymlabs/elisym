@@ -89,6 +89,13 @@ const SINGLE: Partial<CatalogItem> = {
 };
 
 function pick(card: HTMLElement, value: string): void {
+  const choice = [...card.querySelectorAll<HTMLButtonElement>('button.choice')].find(
+    (button) => button.textContent === value,
+  );
+  if (choice) {
+    choice.click();
+    return;
+  }
   const select = card.querySelector('select');
   if (!select) {
     throw new Error('no selector');
@@ -430,6 +437,28 @@ describe('the cart button keeps its width', () => {
     }
   });
 
+  it('a second add while it says added restarts the moment, and tells a screen reader', () => {
+    vi.useFakeTimers();
+    try {
+      Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
+      const card = renderCard(context(), catalogItem(SINGLE));
+      const button = cartButtonOf(card);
+      const announcer = card.querySelector('.card-actions [role="status"]');
+      expect(announcer?.textContent).toBe('');
+      button.click();
+      expect(announcer?.textContent).toBe('Added to cart');
+      vi.advanceTimersByTime(1000);
+      button.click();
+      vi.advanceTimersByTime(ADDED_MS - 1);
+      expect(button.dataset.state).toBe('done');
+      vi.advanceTimersByTime(1);
+      expect(button.dataset.state).toBe('ready');
+      expect(announcer?.textContent).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a hook that throws leaves the button ready: nothing says it was added', () => {
     Reflect.set(window, 'Askr', {
       onAddToCart: () => {
@@ -459,10 +488,80 @@ describe('the cart button keeps its width', () => {
     card.remove();
   });
 
-  it('the option name stays readable to a screen reader, the placeholder shows it', () => {
+  it('short values are toggle buttons in a group named for the option', () => {
     const card = renderCard(context(connectorConfig('shopify')), catalogItem(SIZED));
+    const group = card.querySelector('[role="radiogroup"]');
+    expect(group?.getAttribute('aria-label')).toBe('Size');
+    const choices = [...card.querySelectorAll<HTMLButtonElement>('button.choice')];
+    expect(choices.map((choice) => choice.textContent)).toEqual(['S', 'M']);
+    expect(choices.map((choice) => choice.getAttribute('aria-checked'))).toEqual([
+      'false',
+      'false',
+    ]);
+    choices[1]?.click();
+    expect(choices.map((choice) => choice.getAttribute('aria-checked'))).toEqual(['false', 'true']);
+    expect(card.querySelector('select')).toBeNull();
+  });
+
+  it('many or long values go in a select named for the option, its placeholder showing it', () => {
+    const many = Array.from({ length: 7 }, (_unused, index) => `Shade ${index + 1}`);
+    const card = renderCard(
+      context(connectorConfig('shopify')),
+      catalogItem({
+        options: [{ name: 'Colour', values: many }],
+        variants: many.map((value, index) => ({
+          id: String(200 + index),
+          price: '49.9',
+          available: true,
+          values: [value],
+        })),
+      }),
+    );
     const label = card.querySelector('label.selector');
-    expect(label?.querySelector('.visually-hidden')?.textContent).toBe('Size');
-    expect(label?.querySelector('option')?.textContent).toBe('Choose Size');
+    expect(label?.querySelector('.visually-hidden')?.textContent).toBe('Colour');
+    expect(label?.querySelector('option')?.textContent).toBe('Choose Colour');
+    expect(card.querySelector('button.choice')).toBeNull();
+    const long = renderCard(
+      context(connectorConfig('shopify')),
+      catalogItem({
+        options: [{ name: 'Fit', values: ['Regular fit, long', 'Slim'] }],
+        variants: [
+          { id: '301', price: '49.9', available: true, values: ['Regular fit, long'] },
+          { id: '302', price: '49.9', available: true, values: ['Slim'] },
+        ],
+      }),
+    );
+    expect(long.querySelector('select')).not.toBeNull();
+  });
+
+  it('puts the photo on top, the badge over it, and the price beside the button', () => {
+    Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
+    const card = renderCard(
+      context(),
+      catalogItem({ ...SINGLE, visibility: 'pre-order', images: ['https://cdn.example/a.png'] }),
+    );
+    expect(card.firstElementChild?.className).toBe('card-media');
+    expect(card.querySelector('.card-media .label')?.textContent).toBe('Pre-order');
+    const foot = card.querySelector('.card-foot');
+    expect(foot?.querySelector('.price')).not.toBeNull();
+    expect(foot?.querySelector('button.cart')).not.toBeNull();
+    const plain = renderCard(
+      context(),
+      catalogItem({ ...SINGLE, visibility: 'pre-order', images: [] }),
+    );
+    expect(plain.querySelector('.card-media')).toBeNull();
+    expect(plain.querySelector('.card-body .label')?.textContent).toBe('Pre-order');
+  });
+});
+
+describe('the widget stylesheet', () => {
+  it('shows only the current cart label and hides empty card rows', async () => {
+    const { WIDGET_CSS } = await import('../src/ui/styles');
+    expect(WIDGET_CSS).toContain(
+      '.cart-label { grid-area: 1 / 1; text-align: center; visibility: hidden; }',
+    );
+    expect(WIDGET_CSS).toContain(".cart[data-state='done'] .cart-done { visibility: visible; }");
+    expect(WIDGET_CSS).toContain('.card-options:empty { display: none; }');
+    expect(WIDGET_CSS).toContain('min-width: 0; min-height: 36px; }');
   });
 });

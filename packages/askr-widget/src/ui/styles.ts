@@ -64,14 +64,23 @@ button:disabled { cursor: default; opacity: 0.4; }
 .mark-ink { fill: var(--cc-text); }
 .mark-paper { fill: var(--cc-bg); }
 .mark-off { display: none; }
+/* A pill: the mark and "Ask AI". A narrow screen, or launcher="icon", keeps the mark alone. */
 .launcher {
-  display: block; width: 72px; height: 72px; padding: 0; border: 0; border-radius: 12px;
-  background: transparent;
+  display: flex; align-items: center; gap: 10px; height: 56px; padding: 0 20px 0 8px;
+  border: 1px solid var(--cc-border); border-radius: 999px; background: var(--cc-bg);
+  color: var(--cc-text); box-shadow: var(--cc-shadow); font-weight: 600; font-size: 15px;
+  letter-spacing: -0.01em; white-space: nowrap;
 }
-/* A thin edge in the background color keeps the rim readable on a site of the opposite tone. */
-.launcher-mark {
-  display: block; width: 72px; height: 72px;
-  filter: drop-shadow(0 0 1.5px var(--cc-bg)) drop-shadow(0 8px 14px rgba(0, 0, 0, 0.28));
+.launcher:hover { border-color: var(--cc-muted); }
+/* The launcher sits on the host's page: its own background inside the ink ring keeps the focus
+   visible on a light site and on a dark one. */
+.launcher:focus-visible { outline: 2px solid var(--cc-text); outline-offset: 3px; }
+.launcher-mark { display: block; flex: none; width: 40px; height: 40px; }
+:host([launcher='icon']) .launcher { width: 56px; padding: 0; justify-content: center; }
+:host([launcher='icon']) .launcher-label { display: none; }
+@media (max-width: 480px) {
+  .launcher { width: 56px; padding: 0; justify-content: center; }
+  .launcher-label { display: none; }
 }
 .panel {
   display: none; flex-direction: column;
@@ -105,56 +114,83 @@ button:disabled { cursor: default; opacity: 0.4; }
 .theirs { align-self: flex-start; }
 .component { align-self: stretch; display: flex; flex-direction: column; gap: 10px; }
 .component-title { font-weight: 600; }
-.cards { display: flex; flex-direction: column; gap: 10px; }
+.cards {
+  display: flex; gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory;
+  margin: 0 -16px; padding: 2px 16px 6px; scroll-padding-inline: 16px; scrollbar-width: none;
+}
+.cards::-webkit-scrollbar { display: none; }
+/* Several products scroll sideways, the next one peeking in; a single one takes the width. */
 .card {
-  display: grid; grid-template-columns: 64px minmax(0, 1fr); column-gap: 12px; row-gap: 4px;
-  align-content: start; padding: 10px; border: 1px solid var(--cc-border); border-radius: 14px;
-  background: var(--cc-bg);
+  flex: 0 0 232px; scroll-snap-align: start; display: flex; flex-direction: column;
+  border: 1px solid var(--cc-border); border-radius: 18px; background: var(--cc-bg);
+  overflow: hidden;
 }
-.card > * { grid-column: 2; min-width: 0; }
-.card > img {
-  grid-column: 1; grid-row: 1 / span 6; width: 64px; height: 64px; object-fit: cover;
-  border-radius: 10px; background: var(--cc-surface);
+.cards > .card:only-child { flex-basis: 100%; }
+/* One photo height for every card, whatever its width, so a row of cards lines up. */
+.card-media { position: relative; flex: none; height: 150px; background: var(--cc-surface); }
+.card-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.card-media .label { position: absolute; top: 10px; left: 10px; }
+.card-body { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 12px 12px 12px; }
+.card-title {
+  font-weight: 600; line-height: 1.3; color: inherit; text-decoration: none; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
 }
-.card-title { font-weight: 600; color: inherit; text-decoration: none; }
 a.card-title:hover { text-decoration: underline; }
-.price { font-variant-numeric: tabular-nums; font-weight: 600; }
-.reason { font-size: 12.5px; color: var(--cc-muted); }
+.reason {
+  font-size: 12.5px; line-height: 1.4; color: var(--cc-muted);
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
 .label {
-  justify-self: start; font-size: 11px; padding: 1px 7px; border-radius: 6px;
+  align-self: flex-start; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
   background: var(--cc-surface); color: var(--cc-muted);
 }
+.card-media .label { background: #121316; color: #ffffff; }
 .label.sold-out, .label.cart-failed { color: var(--cc-danger); }
-.label.recommended { color: var(--cc-text); font-weight: 600; }
-.card > div:empty { display: none; }
-.card > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.selector { display: block; }
+.label.recommended { color: var(--cc-text); }
+.card-options { display: flex; flex-direction: column; gap: 6px; }
+.card-options:empty { display: none; }
+.choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.choice {
+  min-width: 34px; height: 30px; padding: 0 10px; border: 1px solid var(--cc-border);
+  border-radius: 999px; background: transparent; font-size: 12.5px; font-weight: 500;
+}
+.choice:hover { border-color: var(--cc-muted); }
+.choice[aria-checked='true'] { border-color: var(--cc-text); background: var(--cc-text); color: var(--cc-bg); }
+.selector { display: block; min-width: 0; }
 /* The browser's own arrow sits differently in every engine and under every host's CSS, so it
-   is turned off and a chevron of two gradients is drawn, with its own room on the right. */
+   is turned off and a thin chevron is drawn from two gradient strokes, with room on the right. */
 .selector select {
-  -webkit-appearance: none; appearance: none; height: 30px; padding: 0 28px 0 10px;
-  font-size: 12.5px; line-height: 1.2; border: 1px solid var(--cc-border); border-radius: 8px;
-  background-color: var(--cc-surface);
+  -webkit-appearance: none; appearance: none; width: 100%; height: 32px;
+  padding: 0 28px 0 12px; font-size: 12.5px; line-height: 1.2;
+  border: 1px solid var(--cc-border); border-radius: 999px; background-color: transparent;
   background-image:
-    linear-gradient(45deg, transparent 50%, var(--cc-muted) 50%),
-    linear-gradient(135deg, var(--cc-muted) 50%, transparent 50%);
-  background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
-  background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer;
+    linear-gradient(45deg, transparent calc(50% - 0.75px), var(--cc-muted) calc(50% - 0.75px), var(--cc-muted) calc(50% + 0.75px), transparent calc(50% + 0.75px)),
+    linear-gradient(-45deg, transparent calc(50% - 0.75px), var(--cc-muted) calc(50% - 0.75px), var(--cc-muted) calc(50% + 0.75px), transparent calc(50% + 0.75px));
+  background-position: calc(100% - 17px) 55%, calc(100% - 12px) 55%;
+  background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer; text-overflow: ellipsis;
 }
 .selector select:hover { border-color: var(--cc-muted); }
+/* The price on its own line and the button full width under it, always: a long price
+   ("from 149.00 USD / month"), a short one, or sold out lay the card out the same. */
+.card-foot { margin-top: auto; display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding-top: 2px; }
+.price { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+.card-actions { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; min-height: 36px; }
+/* Sold out stands where the button stood, the same height, so picking a sold-out size moves
+   nothing. */
+.card-actions .label.sold-out { align-self: stretch; height: 36px; display: flex; align-items: center; justify-content: center; font-size: 13px; border-radius: 999px; }
 .cart, .view {
-  height: 30px; padding: 0 14px; border: 0; border-radius: 999px; font-size: 12.5px;
+  height: 36px; padding: 0 14px; border: 0; border-radius: 999px; font-size: 12.5px;
   font-weight: 600; background: var(--cc-accent); color: var(--cc-accent-text);
-  text-decoration: none;
+  text-decoration: none; white-space: nowrap;
 }
 /* The three labels share one cell: the button keeps the widest one's width, so nothing moves. */
-.cart { display: inline-grid; align-items: center; }
+.cart { display: grid; align-items: center; width: 100%; }
 .cart-label { grid-area: 1 / 1; text-align: center; visibility: hidden; }
 .cart[data-state='ready'] .cart-ready,
 .cart[data-state='busy'] .cart-busy,
 .cart[data-state='done'] .cart-done { visibility: visible; }
 .cart-done::after { content: ' \\2713'; }
-.view { display: inline-flex; align-items: center; background: var(--cc-surface); color: var(--cc-text); }
+.view { display: flex; align-items: center; justify-content: center; background: var(--cc-surface); color: var(--cc-text); }
 table { border-collapse: collapse; width: 100%; font-size: 12px; }
 th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left; vertical-align: top; }
 .steps { margin: 0; padding-left: 20px; }
@@ -178,7 +214,14 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
   border: 0; border-radius: 12px; padding: 8px 14px; font-weight: 600;
   background: var(--cc-accent); color: var(--cc-accent-text);
 }
-.footer { padding: 0 16px 8px; font-size: 11px; color: var(--cc-muted); text-align: right; }
+.footer { display: flex; justify-content: center; padding: 0 16px 10px; }
+.powered {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--cc-muted);
+  text-decoration: none;
+}
+.powered b { color: var(--cc-text); font-weight: 600; }
+.powered:hover b { text-decoration: underline; }
+.footer-mark { display: block; width: 14px; height: 14px; }
 `;
 
 /** The shared stylesheet, built once per page and adopted by every widget instance. */

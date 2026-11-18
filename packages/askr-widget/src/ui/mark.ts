@@ -91,10 +91,12 @@ interface LiveMark {
   paths: SVGPathElement[];
 }
 
-const live = new Set<LiveMark>();
+const LIVE_MARKS = new Set<LiveMark>();
+const MARKS = new WeakMap<SVGSVGElement, LiveMark>();
 let frame: number | undefined;
 let lastDraw = 0;
 let time = START_TIME;
+let stillQuery: MediaQueryList | undefined;
 
 function draw(mark: LiveMark, moment: number): void {
   const shapes = markPaths(moment);
@@ -103,33 +105,42 @@ function draw(mark: LiveMark, moment: number): void {
   });
 }
 
+/** Read live, so a visitor who turns on reduced motion mid-visit stops the drift at once. */
 function prefersStill(scope: typeof globalThis): boolean {
-  return scope.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  if (stillQuery === undefined && typeof scope.matchMedia === 'function') {
+    stillQuery = scope.matchMedia('(prefers-reduced-motion: reduce)');
+  }
+  return stillQuery?.matches ?? false;
+}
+
+/** A mark the visitor cannot see (the launcher behind the open panel, the closed panel's) waits. */
+function shown(svg: SVGSVGElement): boolean {
+  return typeof svg.checkVisibility === 'function' ? svg.checkVisibility() : true;
 }
 
 function tick(now: number): void {
   frame = undefined;
   const elapsed = now - lastDraw;
-  if (elapsed >= FRAME_MS) {
-    // A long gap (a background tab) moves the drift on by one frame only: never a jump.
+  if (elapsed >= FRAME_MS && !prefersStill(globalThis)) {
+    // A long gap (a background tab) moves the drift on by a few frames only: never a jump.
     time += (Math.min(elapsed, 4 * FRAME_MS) / 1000) * DRIFT_SPEED;
     lastDraw = now;
-    for (const mark of live) {
-      if (mark.svg.isConnected) {
+    for (const mark of LIVE_MARKS) {
+      if (!mark.svg.isConnected) {
+        LIVE_MARKS.delete(mark);
+      } else if (shown(mark.svg)) {
         draw(mark, time);
-      } else {
-        live.delete(mark);
       }
     }
   }
-  if (live.size > 0) {
+  if (LIVE_MARKS.size > 0) {
     frame = globalThis.requestAnimationFrame(tick);
   }
 }
 
 /**
- * A new mark, drawn at once. It drifts with every other mark on the page, unless the visitor
- * asked for reduced motion or the browser has no animation frames; then it stands still.
+ * A new mark, drawn at once. It drifts with every other mark on the page while it is shown,
+ * unless the visitor asks for reduced motion or the browser has no animation frames.
  */
 export function createMark(document: Document, className: string): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg');
@@ -144,13 +155,24 @@ export function createMark(document: Document, className: string): SVGSVGElement
     return path;
   });
   const mark: LiveMark = { svg, paths };
+  MARKS.set(svg, mark);
   draw(mark, time);
-  const scope = document.defaultView ?? globalThis;
-  if (typeof scope.requestAnimationFrame === 'function' && !prefersStill(scope)) {
-    live.add(mark);
-    if (frame === undefined) {
-      frame = scope.requestAnimationFrame(tick);
-    }
-  }
+  animateMark(svg);
   return svg;
+}
+
+/**
+ * Let a mark drift again after it was taken out of the page and put back (a detached mark
+ * leaves the loop, so the loop stops once no mark is on the page).
+ */
+export function animateMark(svg: SVGSVGElement): void {
+  const mark = MARKS.get(svg);
+  if (mark === undefined || typeof globalThis.requestAnimationFrame !== 'function') {
+    return;
+  }
+  draw(mark, time);
+  LIVE_MARKS.add(mark);
+  if (frame === undefined) {
+    frame = globalThis.requestAnimationFrame(tick);
+  }
 }
