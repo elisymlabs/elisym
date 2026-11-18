@@ -494,3 +494,55 @@ body {
     0 2px 6px rgb(0 0 0 / 0.06);
   white-space: nowrap;
 }
+
+/* The admin, drawn as packages/askr-admin/src/app.css draws it (light): its own colors and font. */
+.adm {
+  --adm-sidebar: #f9f9f9;
+  --adm-surface-2: #f4f4f4;
+  --adm-hover: #ececec;
+  --adm-line: #ebebeb;
+  --adm-text: #0d0d0d;
+  --adm-text-2: #5d5d5d;
+  --adm-text-3: #8f8f8f;
+  --mark-ink: var(--adm-text);
+  --mark-paper: var(--adm-sidebar);
+  background: #ffffff;
+  color: var(--adm-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+@layer components {
+  .adm-card {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px;
+    border: 1px solid var(--adm-line);
+    border-radius: 12px;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  }
+
+  .adm-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 9px 1px 8px;
+    border-radius: 999px;
+    background: #eaf7ee;
+    color: #138a3e;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .adm-badge::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+    content: '';
+  }
+}

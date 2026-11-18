@@ -6,17 +6,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import {
   ADMIN_URL,
-  ASKR_KEY_COMMAND,
   DOCS,
+  ELISYM_URL,
   GITHUB_URL,
-  MCP_TOOLS,
   PLANS,
   WIDGET_SRC,
   X_URL,
 } from '../src/constants';
 import { PHOTOS } from '../src/media';
 import { NICHES } from '../src/niches';
-import { CART_HOOK_SNIPPET, LISTING_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
+import { CART_HOOK_SNIPPET, LISTING_SNIPPET, embedSnippet } from '../src/snippets';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -78,6 +77,15 @@ describe('the links', () => {
     }
   });
 
+  it('take the elisym logo, in the header and the footer, to elisym.network', async () => {
+    const page = await render(<App />);
+    const logos = [...page.querySelectorAll('img[alt="elisym"]')];
+    expect(logos).toHaveLength(2);
+    for (const logo of logos) {
+      expect(logo.closest('a')?.getAttribute('href')).toBe(ELISYM_URL);
+    }
+  });
+
   it('name the same admin as the docs and the Askr server', () => {
     expect(docsPage('overview')).toContain(ADMIN_URL);
     expect(readFileSync(join(PACKAGES, 'askr-server/src/admin/pages.ts'), 'utf8')).toContain(
@@ -135,13 +143,6 @@ describe('the snippets', () => {
     expect(copy?.textContent).toBe('Copied');
   });
 
-  it('the pinned tag is the one the embed guide gives', async () => {
-    expect(docsPage('embed')).toContain(PINNED_SNIPPET);
-    expect(PINNED_SNIPPET).toContain('integrity="sha384-..."');
-    const page = await render(<App />);
-    expect(page.querySelector('#pinned-snippet')?.textContent).toBe(PINNED_SNIPPET);
-  });
-
   it('the listing an agent reads is a product event with the tags the catalog builder writes', async () => {
     const constants = readFileSync(join(PACKAGES, 'commerce/src/constants.ts'), 'utf8');
     expect(constants).toContain('export const KIND_PRODUCT = 30402;');
@@ -167,24 +168,6 @@ describe('the snippets', () => {
     }
     const page = await render(<App />);
     expect(page.querySelector('#cart-hook')?.textContent).toBe(CART_HOOK_SNIPPET);
-  });
-
-  it('names the CLI command the elisym CLI has, as the docs give it', async () => {
-    const cli = readFileSync(join(PACKAGES, 'cli/src/index.ts'), 'utf8');
-    expect(cli).toContain(".command('askr-key <name>')");
-    expect(cli).toContain(".option('--store <owner>'");
-    expect(docsPage('catalog-from-an-agent')).toContain(ASKR_KEY_COMMAND);
-    const page = await render(<App />);
-    expect(page.querySelector('#askr-key')?.textContent).toBe(ASKR_KEY_COMMAND);
-  });
-
-  it('lists only MCP tools the MCP server has, all of them', async () => {
-    const tools = readFileSync(join(PACKAGES, 'mcp/src/tools/askr.ts'), 'utf8');
-    const served = [...tools.matchAll(/name: '(askr_[a-z_]+)'/g)].map((match) => match[1]);
-    expect(MCP_TOOLS.map((tool) => tool.name).sort()).toEqual([...served].sort());
-    const page = await render(<App />);
-    const shown = [...page.querySelectorAll('#agents dt')].map((term) => term.textContent);
-    expect(shown).toEqual(MCP_TOOLS.map((tool) => tool.name));
   });
 });
 

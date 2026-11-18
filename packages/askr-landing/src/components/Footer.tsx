@@ -1,5 +1,6 @@
 import { ADMIN_URL, DOCS, ELISYM_URL, GITHUB_URL, PRODUCT_NAME, X_URL } from '../constants';
 import { ElisymLogo } from './ElisymLogo';
+import { ExternalLink } from './ExternalLink';
 import { PageLink } from './PageLink';
 import { Wordmark } from './Wordmark';
 
@@ -60,10 +61,10 @@ export function Footer() {
         <Wordmark className="text-on-ink mt-80 w-full select-none" />
         <div className="border-ink-line text-13 text-on-ink-2 mt-24 flex flex-wrap items-center justify-between gap-12 border-t py-20">
           <span>{`© ${new Date().getFullYear()} Elisym Labs`}</span>
-          <span className="flex items-center gap-6">
+          <ExternalLink href={ELISYM_URL} className="hover:text-on-ink flex items-center gap-6">
             by
             <ElisymLogo onInk />
-          </span>
+          </ExternalLink>
         </div>
       </div>
     </footer>
