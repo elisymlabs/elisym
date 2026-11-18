@@ -157,7 +157,11 @@ export class WidgetView {
     }
     const before = this.log.scrollHeight;
     for (const turn of snapshot.turns) {
-      this.log.append(this.turnView(turn).root);
+      // Appended once: moving a node already in place would replay its entrance.
+      const { root } = this.turnView(turn);
+      if (root.parentNode !== this.log) {
+        this.log.append(root);
+      }
     }
     this.renderStatus(snapshot);
     this.renderChips(snapshot);
@@ -269,6 +273,9 @@ function closeIcon(document: Document): SVGSVGElement {
   return svg;
 }
 
+/** How long the panel takes to fade out on close (its CSS exit runs as long). */
+const CLOSE_MS = 180;
+
 /** Where "Powered by Askr" leads. */
 const ASKR_SITE = 'https://askr.elisym.network';
 
@@ -289,6 +296,7 @@ export function defineAskrElement(
   }
   class AskrChatElement extends scope.HTMLElement {
     private client: ChatClient | undefined;
+    private closing: ReturnType<typeof setTimeout> | undefined;
     /** The owner key the store moved to (K21), followed at most MAX_MOVES times per page. */
     private movedTo: string | undefined;
     private moves = 0;
@@ -329,7 +337,7 @@ export function defineAskrElement(
 
     private setOpen(open: boolean): void {
       const owner = parseStoreKey(this.getAttribute('store'));
-      this.toggleAttribute('open', open);
+      this.showPanel(open);
       const session = storageArea('sessionStorage');
       if (owner === undefined) {
         return;
@@ -342,6 +350,31 @@ export function defineAskrElement(
       if (open && !this.client && this.view) {
         this.startClient(this.movedTo ?? owner);
       }
+    }
+
+    /**
+     * Open at once (the panel's entrance is CSS); close after a short exit, so the panel fades
+     * out before the launcher returns. Reduced motion closes at once.
+     */
+    private showPanel(open: boolean): void {
+      if (this.closing !== undefined) {
+        clearTimeout(this.closing);
+        this.closing = undefined;
+      }
+      this.removeAttribute('closing');
+      const still =
+        this.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ??
+        true;
+      if (open || still || !this.hasAttribute('open')) {
+        this.toggleAttribute('open', open);
+        return;
+      }
+      this.setAttribute('closing', '');
+      this.closing = setTimeout(() => {
+        this.closing = undefined;
+        this.removeAttribute('closing');
+        this.removeAttribute('open');
+      }, CLOSE_MS);
     }
 
     private startClient(owner: string): void {

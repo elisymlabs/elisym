@@ -247,7 +247,8 @@ describe('card native add-to-cart', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://shop.example/cart/add.js');
     await answer(200);
-    expect(button.disabled).toBe(false);
+    // It says added and takes no click for a moment (see "takes no click while it says added").
+    expect(button.disabled).toBe(true);
     expect(button.getAttribute('aria-label')).toBe('Added to cart');
     expect(ctx.clicks).toEqual([item.address]);
     card.remove();
@@ -440,23 +441,29 @@ describe('the cart button keeps its width', () => {
     }
   });
 
-  it('a second add while it says added restarts the moment, and tells a screen reader', () => {
+  it('takes no click while it says added, and tells a screen reader', () => {
     vi.useFakeTimers();
     try {
-      Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
+      const onAddToCart = vi.fn();
+      Reflect.set(window, 'Askr', { onAddToCart });
       const card = renderCard(context(), catalogItem(SINGLE));
       const button = cartButtonOf(card);
       const announcer = card.querySelector('.card-actions [role="status"]');
       expect(announcer?.textContent).toBe('');
       button.click();
       expect(announcer?.textContent).toBe('Added to cart');
+      expect(button.disabled).toBe(true);
       vi.advanceTimersByTime(1000);
       button.click();
-      vi.advanceTimersByTime(ADDED_MS - 1);
+      expect(onAddToCart).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(ADDED_MS - 1001);
       expect(button.dataset.state).toBe('done');
       vi.advanceTimersByTime(1);
       expect(button.dataset.state).toBe('ready');
+      expect(button.disabled).toBe(false);
       expect(announcer?.textContent).toBe('');
+      button.click();
+      expect(onAddToCart).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }

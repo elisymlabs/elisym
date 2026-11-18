@@ -56,6 +56,8 @@ export const WIDGET_CSS = `
 button, input, select { font: inherit; color: inherit; margin: 0; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: 0.4; }
+.cart[data-state='done']:disabled { opacity: 1; }
+.cart[data-state='busy']:disabled { opacity: 0.75; }
 :focus-visible { outline: 2px solid var(--cc-text); outline-offset: 2px; }
 .visually-hidden {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -69,8 +71,9 @@ button:disabled { cursor: default; opacity: 0.4; }
   display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 18px 0 10px;
   border: 1px solid var(--cc-border); border-radius: 15px; background: var(--cc-bg);
   color: var(--cc-text); box-shadow: 0 14px 32px -12px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.06);
-  text-align: left; white-space: nowrap;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  text-align: left; white-space: nowrap; position: relative; overflow: hidden; isolation: isolate;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  animation: askr-pop 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
 .launcher:hover {
   transform: translateY(-1px);
@@ -244,6 +247,59 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
 /* The mark a little taller than the wordmark's A and set close to it: one lockup, all three
    centered on one line. */
 .footer-mark { display: block; width: 19px; height: 19px; margin-right: -2px; }
+/* ---------- Motion: short, eased, and none at all under reduced motion ---------- */
+@keyframes askr-pop { from { opacity: 0; transform: translateY(8px) scale(0.96); } }
+@keyframes askr-panel-in { from { opacity: 0; transform: translateY(14px) scale(0.97); } }
+@keyframes askr-panel-out { to { opacity: 0; transform: translateY(10px) scale(0.98); } }
+@keyframes askr-rise { from { opacity: 0; transform: translateY(8px); } }
+@keyframes askr-fade { from { opacity: 0; } }
+/* A highlight that sweeps across a button the pointer is over. */
+.launcher::after, .cart::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(105deg, transparent 30%, var(--cc-sheen) 50%, transparent 70%);
+  transform: translateX(-130%);
+}
+.launcher:hover::after, .cart:not(:disabled):hover::after {
+  transform: translateX(130%); transition: transform 0.85s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+:host { --cc-sheen: rgba(18, 19, 22, 0.08); }
+:host([theme='dark']) { --cc-sheen: rgba(255, 255, 255, 0.14); }
+@media (prefers-color-scheme: dark) { :host(:not([theme='light'])) { --cc-sheen: rgba(255, 255, 255, 0.14); } }
+.cart { position: relative; overflow: hidden; isolation: isolate; transition: filter 0.2s ease, transform 0.15s ease; }
+.cart:not(:disabled):hover { filter: brightness(1.08); }
+.cart:not(:disabled):active { transform: scale(0.98); }
+.cart-label { transition: visibility 0s; }
+.cart[data-state='done'] .cart-done { animation: askr-fade 0.25s ease both; }
+/* The panel grows out of the corner it opens from, and fades back into it. */
+.panel { transform-origin: bottom right; }
+:host([open]) .panel { animation: askr-panel-in 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both; }
+:host([closing]) .panel { animation: askr-panel-out 0.18s ease-in both; }
+/* Messages, answers and their cards rise in; the cards one after another. */
+.log { scroll-behavior: smooth; }
+.bubble, .component-title, .component > table, .component > .steps, .chip {
+  animation: askr-rise 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.cards > .card { animation: askr-rise 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.cards > .card:nth-child(2) { animation-delay: 0.06s; }
+.cards > .card:nth-child(3) { animation-delay: 0.12s; }
+.cards > .card:nth-child(n + 4) { animation-delay: 0.18s; }
+.chip:nth-child(2) { animation-delay: 0.05s; }
+.chip:nth-child(3) { animation-delay: 0.1s; }
+.chip:nth-child(4) { animation-delay: 0.15s; }
+.status > span { animation: askr-fade 0.3s ease both; }
+.card { transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease; }
+.card:hover { border-color: color-mix(in srgb, var(--cc-muted) 50%, var(--cc-border)); }
+.card-media img { transition: transform 0.5s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.card:hover .card-media img { transform: scale(1.04); }
+.choice, .chip, .close, .selector select, .composer input, .composer button {
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.15s ease;
+}
+.choice:active, .chip:active, .composer button:not(:disabled):active { transform: scale(0.96); }
+.composer input:focus { border-color: var(--cc-muted); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .log { scroll-behavior: auto; }
+}
 `;
 
 /** The shared stylesheet, built once per page and adopted by every widget instance. */

@@ -60,7 +60,7 @@ interface CartControl {
   /** A visually hidden live region beside the button: it announces a finished add. */
   announcer: HTMLSpanElement;
   setState: (state: CartState) => void;
-  /** Say "added" for ADDED_MS, then offer to add again; a later add restarts the moment. */
+  /** Say "added" for ADDED_MS, taking no click meanwhile, then offer to add again. */
   showAdded: () => void;
 }
 
@@ -96,10 +96,13 @@ function cartButtonElement(document: Document): CartControl {
       button.removeAttribute('aria-busy');
     }
   };
+  // While it says added the button takes no click: a second tap would add the product again.
   const showAdded = (): void => {
     setState('done');
+    button.disabled = true;
     addedTimer = setTimeout(() => {
       addedTimer = undefined;
+      button.disabled = false;
       setState('ready');
     }, ADDED_MS);
   };
