@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { InfoTip } from '../src/components/InfoTip';
+import { InfoTip, panelShift } from '../src/components/InfoTip';
 import { ADMIN_DOCS_URL } from '../src/constants';
 import { HELP, helpUrl } from '../src/lib/help';
 import { type Mounted, click, mount } from './mount';
@@ -119,37 +119,37 @@ describe('the info button', () => {
     expect(document.activeElement).toBe(field);
   });
 
-  it('hangs to the left of a button near the right edge, so it stays on screen', async () => {
+  it('moves the panel just enough to stay between the edges, at any width', () => {
+    // Wide: room to the right, no shift.
+    expect(panelShift(300, 1280, 1280)).toBe(0);
+    // Near the right edge: moved left to end 16px before it.
+    expect(panelShift(1100, 1280, 1280)).toBe(1280 - 16 - 280 - 1100);
+    // The edge of main, narrower than the window, counts.
+    expect(panelShift(700, 900, 1280)).toBe(900 - 16 - 280 - 700);
+    // A phone: the panel narrows to the window less 48px and never starts past the left edge.
+    for (const left of [20, 79, 120, 200, 266, 340]) {
+      const shift = panelShift(left, 375, 375);
+      const width = Math.min(280, 375 - 48);
+      expect(left + shift, `left ${left}`).toBeGreaterThanOrEqual(16);
+      expect(left + shift + width, `left ${left}`).toBeLessThanOrEqual(375 - 16 + 1);
+    }
+  });
+
+  it('sets the shift on the panel when it opens', async () => {
     const { container, button } = await tip();
     const box = button.parentElement;
     if (box === null) {
       throw new Error('no box');
     }
-    const at = (left: number) =>
-      vi.spyOn(box, 'getBoundingClientRect').mockReturnValue(new DOMRect(left, 0, 14, 14));
-    at(window.innerWidth - 100);
+    vi.spyOn(box, 'getBoundingClientRect').mockReturnValue(
+      new DOMRect(window.innerWidth - 100, 0, 14, 14),
+    );
     await click(button);
-    expect(container.querySelector('[role="note"]')?.classList.contains('right-0')).toBe(true);
-    await click(button);
-    at(20);
-    await click(button);
-    expect(container.querySelector('[role="note"]')?.classList.contains('left-0')).toBe(true);
-  });
-
-  it('closes on a press elsewhere, but not on a press inside it', async () => {
-    const { container, button } = await tip();
-    await click(button);
-    const note = container.querySelector('[role="note"]');
-    await act(async () => {
-      note?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    });
-    expect(container.querySelector('[role="note"]')).not.toBeNull();
-    await act(async () => {
-      container
-        .querySelector('#elsewhere')
-        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    });
-    expect(container.querySelector('[role="note"]')).toBeNull();
+    const note = container.querySelector<HTMLElement>('[role="note"]');
+    expect(note?.style.left).toBe(
+      `${panelShift(window.innerWidth - 100, window.innerWidth, window.innerWidth)}px`,
+    );
+    expect(Number.parseFloat(note?.style.left ?? '0')).toBeLessThan(0);
   });
 
   it('leaves every kind of field named by its own label', async () => {

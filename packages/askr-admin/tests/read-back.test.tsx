@@ -457,6 +457,69 @@ describe('the overview', () => {
     vi.useRealTimers();
   });
 
+  it('Refresh shows a cross when a store not active has its saved settings refused', async () => {
+    const storedEvents = vi.fn(async () => ({
+      events: [configSignedBy(OWNER_KEY, 'Tea', NOW)],
+      truncated: false,
+    }));
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(
+          fakeApi({ store: async () => storeView({ status: 'pending' }), storedEvents }),
+          fakeReader([]),
+        )}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    storedEvents.mockRejectedValue(new ApiError(500, 'internal'));
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    expect(container.textContent).toContain('Your saved settings could not be read');
+  });
+
+  it('Retry in Settings reads the settings again through the session', async () => {
+    let failing = false;
+    const relay = fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]);
+    const reader = {
+      query: async (filter: Parameters<typeof relay.query>[0]) => {
+        if (failing) {
+          throw new Error('The relay did not answer the whole read');
+        }
+        return relay.query(filter);
+      },
+    };
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi(), reader)}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    failing = true;
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => (container.textContent ?? '').includes('could not be read'));
+    failing = false;
+    await click(buttonNamed(container, 'Settings'));
+    expect(container.querySelector('#store-name')).toBeNull();
+    const retries = [...container.querySelectorAll('button')].filter(
+      (button) => button.textContent === 'Retry',
+    );
+    // The Settings section's own Retry, after the notice's.
+    const settingsRetry = retries.at(-1);
+    if (settingsRetry === undefined) {
+      throw new Error('no Retry');
+    }
+    await click(settingsRetry);
+    await settle(() => container.querySelector('#store-name') !== null);
+    expect(container.textContent).not.toContain('could not be read');
+  });
+
   it('says no clicks yet with none', async () => {
     mounted = await mount(
       <Overview view={storeView()} config={undefined} configFromServer={false} />,

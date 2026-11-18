@@ -99,7 +99,7 @@ The first message a visitor sees when the chat opens, up to 280 characters. It i
 
 ### Contact URL
 
-A page where visitors can reach a person, such as your contact form, as an `https://` address. The chat links to it when the assistant is unavailable: your budget is used up, the visitor has asked as many questions as your plan allows for the day, or the store is not active. Optional.
+A page where visitors can reach a person, such as your contact form, as an `https://` address. The chat links to it when the assistant is unavailable, for example when your budget is used up, the visitor has asked as many questions as your plan allows for the day, or the store is not active. Optional.
 
 **Example:** `https://northwind.example/contact`
 
@@ -121,7 +121,7 @@ Shown for a connector. **Shopify** and **WooCommerce** are read through the shop
 
 Shown for Shopify and WooCommerce: the shop's address, such as `https://shop.example`. It must be on one of your allowed origins, so the chat can add to the shop's cart there.
 
-**Example:** `https://northwind.example` for a shop at the root, or `https://northwind.example/shop` for one under a path.
+**Example:** `https://northwind.example` for a shop at the root, or, for a WooCommerce shop under a path, `https://northwind.example/shop`. A Shopify shop is always read at its domain.
 
 ### Feed address
 
@@ -215,7 +215,7 @@ The price's currency. It must be the store's currency for the product to be offe
 
 **One-time price**, or a subscription price **per hour, day, week, month or year**. The card shows the period with the price.
 
-**Example:** a coffee subscription at `18` **per month** shows as "18 USD / month".
+**Example:** a coffee subscription at `18` **per month** shows as "18.00 USD / month".
 
 ### Summary
 

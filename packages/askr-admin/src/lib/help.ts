@@ -72,7 +72,7 @@ export const HELP = {
     anchor: 'greeting',
   },
   contact: {
-    text: 'A page where visitors reach a person, such as your contact form, as an https address. The chat links to it when the assistant is unavailable: the budget is used up, the visitor reached the day\u2019s question limit, or the store is not active.',
+    text: 'A page where visitors reach a person, such as your contact form, as an https address. The chat links to it when the assistant is unavailable, for example when the budget is used up or the visitor reached the day\u2019s question limit.',
     anchor: 'contact-url',
   },
 

@@ -1,9 +1,20 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { type Help, helpUrl } from '../lib/help';
 
-/** The panel's width (`w-280`) and the room it keeps from an edge, in px. */
+/** The panel's width (`w-280`), the room it keeps from an edge, and its narrowing on a phone. */
 const PANEL_WIDTH = 280;
 const EDGE_GAP = 16;
+const NARROW_MARGIN = 48;
+
+/**
+ * How far the panel's left edge sits from the button's (px): none when it fits, else moved left
+ * just enough to end before the right edge, and never past the left one.
+ */
+export function panelShift(buttonLeft: number, rightEdge: number, windowWidth: number): number {
+  const width = Math.min(PANEL_WIDTH, windowWidth - NARROW_MARGIN);
+  const overflow = buttonLeft + width - (rightEdge - EDGE_GAP);
+  return Math.max(Math.min(0, -overflow), EDGE_GAP - buttonLeft);
+}
 
 interface Props {
   help: Help;
@@ -17,8 +28,8 @@ interface Props {
  */
 export function InfoTip({ help, about }: Props) {
   const [open, setOpen] = useState(false);
-  /** Opened near the right edge, the panel hangs to the left of the button instead. */
-  const [alignRight, setAlignRight] = useState(false);
+  /** Opened near an edge, the panel moves along so that it stays on screen. */
+  const [shift, setShift] = useState(0);
   const box = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const panelId = useId();
@@ -64,7 +75,7 @@ export function InfoTip({ help, about }: Props) {
             box.current?.closest('main')?.getBoundingClientRect().right ?? window.innerWidth,
           );
           const left = box.current?.getBoundingClientRect().left ?? 0;
-          setAlignRight(left + PANEL_WIDTH > edge - EDGE_GAP);
+          setShift(panelShift(left, edge, window.innerWidth));
           setOpen((shown) => !shown);
         }}
       >
@@ -87,7 +98,8 @@ export function InfoTip({ help, about }: Props) {
         <span
           id={panelId}
           role="note"
-          className={`${alignRight ? 'right-0' : 'left-0'} border-line-2 bg-surface-2 text-13 text-text-2 rounded-10 absolute top-full z-30 mt-6 flex w-280 max-w-[calc(100vw-48px)] flex-col gap-8 border p-12 text-left leading-relaxed font-normal shadow-lg`}
+          style={{ left: shift }}
+          className="border-line-2 bg-surface-2 text-13 text-text-2 rounded-10 absolute top-full z-30 mt-6 flex w-280 max-w-[calc(100vw-48px)] flex-col gap-8 border p-12 text-left leading-relaxed font-normal shadow-lg"
         >
           <span>{help.text}</span>
           <a
