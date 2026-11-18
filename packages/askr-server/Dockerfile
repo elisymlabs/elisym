@@ -7,6 +7,8 @@
 #     -e ASKR_GATEWAY_SECRET=... -e ANTHROPIC_API_KEY=... -e ASKR_MODEL=... \
 #     -e ASKR_PRICE_INPUT=... -e ASKR_PRICE_CACHED_INPUT=... -e ASKR_PRICE_CACHE_WRITE=... \
 #     -e ASKR_PRICE_OUTPUT=... -e ASKR_TRUST_PROXY=1 -p 8787:8787 askr-server
+# ASKR_PUBLIC_BASE (default https://app.askr.elisym.network): the public origin the admin's
+# NIP-98 `u` is checked against; set it when the server answers on another host.
 # Through OpenRouter instead: ASKR_OPENROUTER_MODEL and OPENROUTER_API_KEY (no ANTHROPIC_API_KEY
 # or ASKR_MODEL); ASKR_EFFORT must stay unset then (the server refuses to start otherwise).
 # ASKR_OPENROUTER_PROVIDERS is required with it: comma-separated OpenRouter host slugs, each a
