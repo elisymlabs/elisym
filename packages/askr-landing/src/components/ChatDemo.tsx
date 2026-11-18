@@ -73,7 +73,7 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
       <WidgetPanel
         name={niche.store}
         chips={shown === FINAL ? niche.chips : []}
-        className="h-[600px] w-full"
+        className="max-h-[600px] w-full"
       >
         <div aria-hidden="true" className="contents">
           <p className="wgt-theirs">{WIDGET_TEXT.greeting}</p>

@@ -50,7 +50,35 @@ export function Hero() {
         </div>
 
         <Reveal delay={2} className="relative lg:col-span-6">
-          <div className="rounded-32 sm:rounded-40 relative h-[min(560px,120vw)] overflow-hidden sm:h-[640px] lg:h-[min(820px,calc(100vh-150px))] lg:min-h-[660px]">
+          <div className="mb-16 flex flex-wrap items-center gap-12">
+            <span className="text-12 text-text-2 font-medium tracking-[0.14em] uppercase">
+              See it in a store
+            </span>
+            <div
+              role="tablist"
+              aria-label="Store niche"
+              className="border-line bg-surface flex flex-wrap rounded-full border p-4"
+            >
+              {NICHES.map((item, index) => (
+                <button
+                  key={item.id}
+                  id={`niche-tab-${item.id}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={index === current}
+                  aria-controls="niche-demo"
+                  onClick={() => {
+                    setChosen(true);
+                    setCurrent(index);
+                  }}
+                  className={`text-13 rounded-full px-12 py-7 font-medium transition sm:px-14 ${index === current ? 'bg-ink text-on-ink' : 'text-text-2 hover:text-text'}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-32 sm:rounded-40 relative h-[min(560px,120vw)] overflow-hidden sm:h-[640px] lg:h-[min(760px,calc(100vh-200px))] lg:min-h-[640px]">
             {NICHES.map((item, index) => (
               <img
                 key={item.id}
@@ -63,35 +91,6 @@ export function Hero() {
                 className={`absolute inset-0 size-full object-cover transition-opacity duration-1000 ${index === current ? 'settle opacity-100' : 'opacity-0'}`}
               />
             ))}
-            <div className="from-ink/60 absolute inset-0 bg-gradient-to-b via-transparent to-transparent to-45%" />
-            <div className="absolute top-20 left-20 flex flex-col gap-12 sm:top-28 sm:left-28">
-              <span className="text-12 text-on-ink/85 font-medium tracking-[0.14em] uppercase">
-                See it in a store
-              </span>
-              <div
-                role="tablist"
-                aria-label="Store niche"
-                className="bg-ink/40 flex flex-wrap rounded-full p-4 backdrop-blur-md"
-              >
-                {NICHES.map((item, index) => (
-                  <button
-                    key={item.id}
-                    id={`niche-tab-${item.id}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={index === current}
-                    aria-controls="niche-demo"
-                    onClick={() => {
-                      setChosen(true);
-                      setCurrent(index);
-                    }}
-                    className={`text-13 rounded-full px-12 py-7 font-medium transition sm:px-14 ${index === current ? 'bg-surface text-text' : 'text-on-ink hover:bg-on-ink/10'}`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
           </div>
           <div
             id="niche-demo"

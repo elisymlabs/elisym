@@ -334,6 +334,7 @@ body {
   flex-direction: column;
   /* The widget scrolls to the newest message: here the oldest leave over the top. */
   justify-content: flex-end;
+  min-height: 0;
   gap: 12px;
   padding: 16px;
   overflow: hidden;
