@@ -640,6 +640,23 @@ describe('product clicks in the usage (7.3)', () => {
       { address: mug, count: 1, carts: 0 },
     ]);
   });
+
+  it('puts the one added to cart more first when the totals tie', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const [opened, added] = ['aaa-opened', 'zzz-added'].map(
+      (d) => `30402:${store.catalogKey}:${d}`,
+    );
+    if (opened === undefined || added === undefined) {
+      throw new Error('no addresses');
+    }
+    await state.countClick(store.owner, opened, 'link');
+    await state.countClick(store.owner, opened, 'link');
+    await state.countClick(store.owner, added, 'link');
+    await state.countClick(store.owner, added, 'cart');
+    const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
+    expect(clicks.map((click) => click.address)).toEqual([added, opened]);
+  });
 });
 
 describe('conversation count (7.3)', () => {

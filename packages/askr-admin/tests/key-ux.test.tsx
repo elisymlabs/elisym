@@ -10,7 +10,16 @@ import { UnlockRemembered } from '../src/components/UnlockRemembered';
 import { ApiError } from '../src/lib/api';
 import { readRemembered, rememberKey, unlockKey } from '../src/lib/remembered';
 import { type Signer, secretKeySigner } from '../src/lib/signer';
-import { OWNER, OWNER_KEY, fakeApi, fakeReader, sessionDeps, storeView } from './fakes';
+import {
+  NOW,
+  OWNER,
+  OWNER_KEY,
+  fakeApi,
+  fakeReader,
+  sessionDeps,
+  signedConfig,
+  storeView,
+} from './fakes';
 import { type Mounted, buttonNamed, byId, click, mount, settle } from './mount';
 import { type MemoryStorage, freshDeviceKeys, installStorage, plainForms } from './stored';
 
@@ -193,6 +202,52 @@ describe('signing in with a pasted key and remembering it', () => {
     await settle(() => text(container).includes('can no longer open the key'));
     expect(text(container)).not.toMatch(/tag|invalid|operation/i);
     expect(onSigner).not.toHaveBeenCalled();
+    // The press is over: Continue works again, and a second press tries again.
+    const again = buttonNamed(container, 'Continue');
+    expect(again.disabled).toBe(false);
+    await click(again);
+    await settle(() => text(container).includes('can no longer open the key'));
+    expect(buttonNamed(container, 'Continue').disabled).toBe(false);
+  });
+
+  it('says to try again when storage does not answer, and signs in on the retry', async () => {
+    await remembered(OWNER_KEY);
+    const { container, onSigner } = await signInScreen();
+    const working = indexedDB;
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        throw new DOMException('Connection to Indexed Database server lost', 'UnknownError');
+      },
+    });
+    await click(buttonNamed(container, 'Continue'));
+    await settle(() => text(container).includes('did not answer'));
+    expect(text(container)).not.toContain('Forget it');
+    vi.stubGlobal('indexedDB', working);
+    await click(buttonNamed(container, 'Continue'));
+    await settle(() => onSigner.mock.calls.length > 0);
+    expect(onSigner.mock.calls[0]?.[0].pubkey).toBe(OWNER);
+  });
+
+  it('does not use a key forgotten in another tab since the page opened', async () => {
+    await remembered(OWNER_KEY);
+    const { container, onSigner } = await signInScreen();
+    // Another tab forgets it.
+    storage.removeItem('askr-admin.remembered-keys');
+    await click(buttonNamed(container, 'Continue'));
+    await settle(() => text(container).includes('forgotten in another tab'));
+    expect(onSigner).not.toHaveBeenCalled();
+  });
+
+  it('takes no Forget while it signs in', async () => {
+    await remembered(OWNER_KEY);
+    const { container, onSigner } = await signInScreen();
+    act(() => {
+      buttonNamed(container, 'Continue').click();
+    });
+    expect(buttonNamed(container, 'Signing in...').disabled).toBe(true);
+    expect(buttonNamed(container, 'Forget').disabled).toBe(true);
+    await settle(() => onSigner.mock.calls.length > 0);
+    expect(readRemembered().keys).toHaveLength(1);
   });
 });
 
@@ -337,6 +392,24 @@ describe('forgetting the key from inside the admin', () => {
     await click(buttonNamed(container, 'Forget'));
     expect(text(container)).toContain('did not let the admin forget it');
     expect(readRemembered().keys).toHaveLength(1);
+  });
+
+  it('says at Sign out that the key stays remembered, until it is forgotten', async () => {
+    await remembered(OWNER_KEY);
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi(), fakeReader([signedConfig(OWNER_KEY, 'Tea', NOW)]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => text(container).includes('Signing out keeps your key remembered'));
+    await click(buttonNamed(container, 'Advanced'));
+    await click(buttonNamed(container, 'Forget this device'));
+    await click(buttonNamed(container, 'Forget'));
+    expect(readRemembered().keys).toEqual([]);
+    expect(text(container)).not.toContain('Signing out keeps your key remembered');
   });
 
   it('is offered for a remembered key the store moved away from', async () => {

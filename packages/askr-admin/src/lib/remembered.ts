@@ -4,12 +4,12 @@ import { publicKeyOf } from './signer';
 /**
  * Secret keys remembered on this device, each sealed with AES-GCM under a
  * device key this browser made for the admin. The device key is a
- * non-extractable WebCrypto key kept in IndexedDB: no script, this page's
- * included, can read its bytes, so what a script reads out of localStorage
- * does not give the secret key away. It is not a lock against whoever has
- * this browser profile: they can sign in as the store, as the merchant
- * chose by remembering it with no password. Only the sealed form is
- * written; the plain key never touches storage.
+ * non-extractable WebCrypto key kept in IndexedDB: its bytes can never be
+ * read out, so a copy of localStorage alone does not give the secret key
+ * away. It is not a lock against whoever has this browser profile, nor
+ * against script running on the admin's origin: either can use the device
+ * key to open it, as the merchant chose by remembering it with no password.
+ * Only the sealed form is written; the plain key never touches storage.
  *
  * One remembered key per Store ID, newest first: a merchant with several
  * stores picks one on the sign-in page, and remembering a key again for the
@@ -54,7 +54,12 @@ export interface RememberedRead {
 
 export type UnlockOutcome =
   | { ok: true; secretKey: Uint8Array }
-  | { ok: false; reason: 'lost' | 'mismatch' };
+  /**
+   * lost: no device key, or the sealed key does not open (site data cleared in part);
+   * mismatch: it opens to another key than its Store ID's; unavailable: the browser's
+   * storage did not answer this time, so a retry may work.
+   */
+  | { ok: false; reason: 'lost' | 'mismatch' | 'unavailable' };
 
 function storage(): Storage | undefined {
   try {
@@ -143,13 +148,19 @@ async function deviceKey(create: boolean): Promise<CryptoKey | undefined> {
     const stored: unknown = await requestResult(
       db.transaction(DEVICE_STORE).objectStore(DEVICE_STORE).get(DEVICE_KEY_ID),
     );
-    if (stored !== undefined || !create) {
+    if (isDeviceKey(stored) || !create) {
       return isDeviceKey(stored) ? stored : undefined;
     }
     const made = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
       'encrypt',
       'decrypt',
     ]);
+    // A slot holding something else opens nothing sealed under it: it is cleared for a new key.
+    if (stored !== undefined) {
+      await requestResult(
+        db.transaction(DEVICE_STORE, 'readwrite').objectStore(DEVICE_STORE).delete(DEVICE_KEY_ID),
+      );
+    }
     const objects = db.transaction(DEVICE_STORE, 'readwrite').objectStore(DEVICE_STORE);
     try {
       await requestResult(objects.add(made, DEVICE_KEY_ID));
@@ -349,12 +360,17 @@ export async function unlockKey(key: RememberedKey): Promise<UnlockOutcome> {
   if (joined === undefined || joined.length !== SEALED_BYTES) {
     return { ok: false, reason: 'lost' };
   }
+  let device: CryptoKey | undefined;
+  try {
+    device = await deviceKey(false);
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
+  if (device === undefined) {
+    return { ok: false, reason: 'lost' };
+  }
   let secretKey: Uint8Array;
   try {
-    const device = await deviceKey(false);
-    if (device === undefined) {
-      return { ok: false, reason: 'lost' };
-    }
     secretKey = new Uint8Array(
       await crypto.subtle.decrypt(
         sealParams(joined.slice(0, IV_BYTES), key.store),

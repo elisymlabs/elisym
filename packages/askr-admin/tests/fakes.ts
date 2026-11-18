@@ -1,5 +1,5 @@
 import type { CatalogItemInput, StoreConfig } from '@elisym/askr';
-import { buildCatalogItemEvent } from '@elisym/askr';
+import { buildCatalogItemEvent, buildConfigEvent } from '@elisym/askr';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { matchFilter } from 'nostr-tools/filter';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
@@ -131,4 +131,27 @@ export function sessionDeps(
   signer: Signer = secretKeySigner(OWNER_KEY),
 ): SessionDeps {
   return { signer, api, reader, now: () => NOW, journal: new SignedJournal() };
+}
+
+/** Settings signed by `secret`, for a store with products in the admin. */
+export function signedConfig(secret: Uint8Array, name: string, createdAt: number): NostrEvent {
+  return finalizeEvent(
+    {
+      ...buildConfigEvent(
+        {
+          assistant: ASSISTANT,
+          origins: ['https://tea.example'],
+          name,
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'admin' },
+          catalogKey: SERVER_KEY,
+          private: { voice: 'calm', instructions: 'Recommend oolong.', notes: 'Berlin' },
+        },
+        secret,
+      ),
+      created_at: createdAt,
+    },
+    secret,
+  );
 }

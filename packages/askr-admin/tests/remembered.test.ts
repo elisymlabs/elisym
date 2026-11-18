@@ -38,6 +38,22 @@ function writeRaw(value: unknown) {
   storage.setItem(STORAGE_KEY, typeof value === 'string' ? value : JSON.stringify(value));
 }
 
+async function storedDeviceKey(): Promise<CryptoKey> {
+  const request = indexedDB.open('askr-admin');
+  const db = await new Promise<IDBDatabase>((resolve) => {
+    request.onsuccess = () => resolve(request.result);
+  });
+  const read = db.transaction('device').objectStore('device').get('remember-key');
+  const device = await new Promise<unknown>((resolve) => {
+    read.onsuccess = () => resolve(read.result);
+  });
+  db.close();
+  if (!(device instanceof CryptoKey)) {
+    throw new Error('no device key');
+  }
+  return device;
+}
+
 function bytesOf(sealed: string): Uint8Array {
   return Uint8Array.from(atob(sealed), (character) => character.charCodeAt(0));
 }
@@ -113,6 +129,57 @@ describe('remembering a key on this device', () => {
     freshDeviceKeys();
     await rememberedOf(generateSecretKey());
     expect(await unlockKey(key)).toEqual({ ok: false, reason: 'lost' });
+  });
+
+  it('refuses a key that opens to another key than its Store ID, and wipes what it opened', async () => {
+    const store = getPublicKey(generateSecretKey());
+    // Seal another key under the real device key, bound to this Store ID, as a forged entry would be.
+    await rememberedOf(generateSecretKey());
+    const device = await storedDeviceKey();
+    const other = generateSecretKey();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const cipher = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(store) },
+        device,
+        other,
+      ),
+    );
+    const joined = new Uint8Array(SEALED_BYTES);
+    joined.set(iv);
+    joined.set(cipher, 12);
+    expect(await unlockKey({ store, sealed: base64Of(joined) })).toEqual({
+      ok: false,
+      reason: 'mismatch',
+    });
+  });
+
+  it('says storage did not answer, not that the key is lost, when IndexedDB fails to open', async () => {
+    const key = await rememberedOf(generateSecretKey());
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        throw new DOMException('Connection to Indexed Database server lost', 'UnknownError');
+      },
+    });
+    expect(await unlockKey(key)).toEqual({ ok: false, reason: 'unavailable' });
+  });
+
+  it('replaces a device key slot holding something else, so remembering works again', async () => {
+    const request = indexedDB.open('askr-admin', 1);
+    request.onupgradeneeded = () => request.result.createObjectStore('device');
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      request.onsuccess = () => resolve(request.result);
+    });
+    const put = db
+      .transaction('device', 'readwrite')
+      .objectStore('device')
+      .put('junk', 'remember-key');
+    await new Promise((resolve) => {
+      put.onsuccess = resolve;
+    });
+    db.close();
+    const key = await rememberedOf(generateSecretKey());
+    expect((await unlockKey(key)).ok).toBe(true);
   });
 
   it('refuses a sealed key moved under another Store ID', async () => {

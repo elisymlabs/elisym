@@ -80,6 +80,23 @@ function saved(onSave: ReturnType<typeof vi.fn>): CatalogItemInput {
   return call[0];
 }
 
+describe('the product editor opening', () => {
+  it('scrolls itself into view and takes focus, without smooth scrolling for reduced motion', async () => {
+    const scrolled: ScrollIntoViewOptions[] = [];
+    vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation((options) => {
+      if (typeof options === 'object') {
+        scrolled.push(options);
+      }
+    });
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce') }));
+    const { container } = await editor();
+    expect(scrolled).toEqual([{ block: 'start', behavior: 'auto' }]);
+    expect(document.activeElement).toBe(container.querySelector('h2'));
+    expect(document.activeElement?.textContent).toBe('New product');
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('the product editor fields', () => {
   it('saves topics, SKU, billing period and attributes', async () => {
     const { container, onSave } = await editor();

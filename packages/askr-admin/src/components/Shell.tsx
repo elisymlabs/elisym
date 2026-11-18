@@ -1,6 +1,7 @@
 import type { StoreConfig } from '@elisym/askr';
 import { useEffect, useRef, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
+import { isRemembered } from '../lib/remembered';
 import { npubOf } from '../lib/signer';
 import { TABS, type TabId } from '../lib/tabs';
 import type { StoreView } from '../lib/types';
@@ -39,6 +40,9 @@ interface Props {
 
 const REFRESH_SHOWN_MS = 2_000;
 
+const STAYS_REMEMBERED =
+  'Signing out keeps your key remembered on this device. Forget it under Advanced.';
+
 const REFRESH_SAID: Readonly<Record<RefreshStatus, string>> = {
   idle: '',
   busy: 'Refreshing...',
@@ -65,6 +69,9 @@ export function Shell({
   const tabs = view.connector === null ? TABS.filter((entry) => entry.id !== 'connector') : TABS;
   const tab = tabs.some((entry) => entry.id === chosen) ? chosen : 'overview';
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus>('idle');
+  // Read at each render; forgetting it under Advanced renders again.
+  const [, setForgottenTimes] = useState(0);
+  const remembered = isRemembered(deps.signer.pubkey);
   /** Set at once on a press: a second press while it reads starts no second read. */
   const refreshing = useRef(false);
   // The check or cross stays a moment, then goes.
@@ -138,6 +145,7 @@ export function Shell({
         onRetry={reloadConfig}
         onChanged={refresh}
         onReplaceKey={onReplaceKey}
+        onForgotten={() => setForgottenTimes((times) => times + 1)}
       />
     );
   } else {
@@ -178,6 +186,7 @@ export function Shell({
           >
             Sign out
           </button>
+          {remembered ? <p className="text-12 text-text-3 px-10">{STAYS_REMEMBERED}</p> : null}
         </div>
       </aside>
       <main className="relative flex min-w-0 flex-1 flex-col gap-28 px-16 py-24 md:h-full md:overflow-y-auto md:overscroll-contain md:px-48 md:py-40">
@@ -203,6 +212,9 @@ export function Shell({
               Sign out
             </button>
           </div>
+          {remembered ? (
+            <p className="text-12 text-text-3 w-full md:hidden">{STAYS_REMEMBERED}</p>
+          ) : null}
         </header>
         <div className="flex max-w-760 flex-col gap-32">
           {configError === '' ? null : (

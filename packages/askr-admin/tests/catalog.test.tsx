@@ -474,11 +474,14 @@ describe('a review in flight', () => {
     await click(buttonNamed(container, 'Review changes'));
     // Every editing control is switched off while the review is out.
     expect(rowButton(container, 'Remove', 'Teapot').closest('fieldset')?.disabled).toBe(true);
+    // Add a product sits in the section header, outside that fieldset: it is off on its own.
+    expect(buttonNamed(container, 'Add a product').disabled).toBe(true);
     await click(rowButton(container, 'Remove', 'Teapot'));
     await act(async () => {
       pending.answer({ ...EMPTY_DIFF, unchanged: ['mug', 'teapot'] });
     });
     expect(container.textContent).toContain('Teapot');
+    expect(buttonNamed(container, 'Add a product').disabled).toBe(false);
     await click(buttonNamed(container, 'Publish'));
     expect(
       pending.catalog.mock.calls.map((call) => [

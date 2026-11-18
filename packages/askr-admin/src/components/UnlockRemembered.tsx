@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { type RememberedKey, forgetKey, unlockKey } from '../lib/remembered';
+import { type RememberedKey, forgetKey, readRemembered, unlockKey } from '../lib/remembered';
 import { npubOf } from '../lib/signer';
 import { Notice } from './Notice';
 
@@ -22,7 +22,11 @@ const UNLOCK_ERRORS = {
   lost: 'This browser can no longer open the key it remembered (part of its site data was cleared). Forget it and sign in with your secret key.',
   mismatch:
     'The key remembered here does not match its Store ID. Forget it and sign in with your secret key.',
+  unavailable: "This browser's storage did not answer. Try again in a moment.",
 } as const;
+
+const FORGOTTEN_MEANWHILE =
+  'This key is no longer remembered here (it was forgotten in another tab). Sign in with your secret key.';
 
 /** Sign in with a secret key this device remembers, in one press, or forget it. */
 export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
@@ -36,10 +40,17 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
     if (working.current) {
       return;
     }
+    // Forgotten in another tab since this page read the list: it is not used.
+    const current = readRemembered().keys.find((known) => known.store === key.store);
+    if (current === undefined) {
+      setError({ store: key.store, message: FORGOTTEN_MEANWHILE });
+      return;
+    }
     working.current = true;
     setBusy(key.store);
     setError(undefined);
-    const outcome = await unlockKey(key);
+    setConfirming('');
+    const outcome = await unlockKey(current);
     setBusy('');
     working.current = false;
     if (outcome.ok) {
@@ -79,6 +90,7 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
+                  disabled={busy !== ''}
                   aria-label={`Forget store ${shortStoreId(key.store)} on this device`}
                   onClick={() => setConfirming(key.store)}
                 >
@@ -106,6 +118,7 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
                   <button
                     type="button"
                     className="btn btn-primary"
+                    disabled={busy !== ''}
                     onClick={() => forget(key.store)}
                   >
                     Forget

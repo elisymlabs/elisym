@@ -74,9 +74,15 @@ function optionsOf(rows: readonly OptionRow[]) {
  */
 export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }: Props) {
   const root = useRef<HTMLDivElement>(null);
-  // The editor opens above the list: bring it into view from a row far down.
+  const heading = useRef<HTMLHeadingElement>(null);
+  // The editor opens above the list: bring it into view from a row far down, and move focus to
+  // it, so a keyboard user is not left on the row below.
   useEffect(() => {
-    root.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const still =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    root.current?.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
+    heading.current?.focus({ preventScroll: true });
   }, []);
   const [d, setD] = useState(initial?.d ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
@@ -315,7 +321,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
 
   return (
     <div ref={root} className="card flex scroll-mt-24 flex-col gap-16 p-24">
-      <h2 className="text-16 font-semibold">
+      <h2 ref={heading} tabIndex={-1} className="text-16 font-semibold outline-none">
         {initial === undefined ? 'New product' : `Edit ${initial.title}`}
       </h2>
       <TextField
