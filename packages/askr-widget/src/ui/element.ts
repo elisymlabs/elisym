@@ -6,6 +6,7 @@ import { ELEMENT_NAME, PANEL_OPEN_PREFIX } from '../constants';
 import { readItem, removeItem, storageArea, writeItem } from '../storage';
 import { renderAnswer } from './answer-view';
 import { element, httpsUrl } from './dom';
+import { createMark } from './mark';
 import { STRINGS } from './strings';
 import { widgetStyleSheet } from './styles';
 
@@ -35,6 +36,7 @@ export class WidgetView {
   readonly launcher: HTMLButtonElement;
   readonly panel: HTMLElement;
   private readonly avatar: HTMLImageElement;
+  private readonly headerMark: SVGSVGElement;
   private readonly name: HTMLElement;
   private readonly log: HTMLElement;
   private readonly greeting: HTMLElement;
@@ -51,8 +53,9 @@ export class WidgetView {
     private readonly client: () => ChatClient | undefined,
     onClose: () => void,
   ) {
-    this.launcher = element(document, 'button', 'launcher', '\u{1F4AC}');
+    this.launcher = element(document, 'button', 'launcher');
     this.launcher.type = 'button';
+    this.launcher.append(createMark(document, 'mark launcher-mark'));
     this.launcher.setAttribute('aria-label', STRINGS.open);
 
     this.panel = element(document, 'section', 'panel');
@@ -62,6 +65,8 @@ export class WidgetView {
     this.avatar.alt = '';
     this.avatar.referrerPolicy = 'no-referrer';
     this.avatar.hidden = true;
+    // The Askr mark stands in for an assistant without an avatar.
+    this.headerMark = createMark(document, 'mark header-mark');
     const who = element(document, 'div', 'who');
     this.name = element(document, 'div', 'name');
     who.append(this.name, element(document, 'div', 'ai', STRINGS.aiLabel));
@@ -69,7 +74,7 @@ export class WidgetView {
     close.type = 'button';
     close.setAttribute('aria-label', STRINGS.close);
     close.addEventListener('click', onClose);
-    header.append(this.avatar, who, close);
+    header.append(this.avatar, this.headerMark, who, close);
 
     this.log = element(document, 'div', 'log');
     this.log.setAttribute('aria-live', 'polite');
@@ -103,6 +108,7 @@ export class WidgetView {
       this.name.textContent = assistantDisplayName(snapshot.config);
       const avatar = httpsUrl(snapshot.config.avatar);
       this.avatar.hidden = avatar === undefined;
+      this.headerMark.classList.toggle('mark-off', avatar !== undefined);
       if (avatar !== undefined) {
         this.avatar.src = avatar;
       }
@@ -156,7 +162,10 @@ export class WidgetView {
       this.status.textContent = STRINGS.connecting;
     } else if (snapshot.phase === 'waiting') {
       const turn = snapshot.turns.find((candidate) => candidate.askId === snapshot.inFlightAskId);
-      this.status.textContent = turn?.status ?? STRINGS.thinking;
+      this.status.append(
+        createMark(document, 'mark status-mark'),
+        element(document, 'span', undefined, turn?.status ?? STRINGS.thinking),
+      );
     } else if (snapshot.phase === 'retry') {
       const retry = element(document, 'button', undefined, STRINGS.retry);
       retry.type = 'button';

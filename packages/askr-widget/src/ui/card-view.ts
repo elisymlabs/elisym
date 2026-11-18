@@ -17,6 +17,56 @@ import { element, httpsUrl } from './dom';
 import { formatPrice } from './price';
 import { STRINGS } from './strings';
 
+/** How long a button says it added before it offers to add again. */
+export const ADDED_MS = 1400;
+
+type CartState = 'ready' | 'busy' | 'done';
+
+const CART_LABELS: Record<CartState, string> = {
+  ready: STRINGS.addToCart,
+  busy: STRINGS.adding,
+  done: STRINGS.added,
+};
+
+/**
+ * The add-to-cart button. Its three labels share one grid cell and only the current one is
+ * visible, so the button keeps the width of the longest and the row never shifts. The
+ * accessible name follows the state.
+ */
+function cartButtonElement(document: Document): {
+  button: HTMLButtonElement;
+  setState: (state: CartState) => void;
+} {
+  const button = element(document, 'button', 'cart');
+  button.type = 'button';
+  for (const state of ['ready', 'busy', 'done'] as const) {
+    const label = element(document, 'span', `cart-label cart-${state}`, CART_LABELS[state]);
+    label.setAttribute('aria-hidden', 'true');
+    button.append(label);
+  }
+  const setState = (state: CartState): void => {
+    button.dataset.state = state;
+    button.setAttribute('aria-label', state === 'done' ? STRINGS.addedToCart : CART_LABELS[state]);
+    if (state === 'busy') {
+      button.setAttribute('aria-busy', 'true');
+    } else {
+      button.removeAttribute('aria-busy');
+    }
+  };
+  setState('ready');
+  return { button, setState };
+}
+
+/** Say "added" for a moment, then offer to add again, unless the card replaced the button. */
+function showAdded(button: HTMLButtonElement, setState: (state: CartState) => void): void {
+  setState('done');
+  globalThis.setTimeout(() => {
+    if (button.dataset.state === 'done') {
+      setState('ready');
+    }
+  }, ADDED_MS);
+}
+
 export interface CardContext {
   document: Document;
   config: StoreConfig;
@@ -90,6 +140,7 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
 
   const addNatively = async (
     add: HTMLButtonElement,
+    setState: (state: CartState) => void,
     platform: NativeCartPlatform,
     variant: CatalogVariant,
   ): Promise<void> => {
@@ -99,24 +150,22 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
     }
     context.reportClick(item.address);
     add.disabled = true;
-    add.textContent = STRINGS.adding;
-    add.setAttribute('aria-busy', 'true');
+    setState('busy');
     const added = await nativeAddToCart(platform, shopUrl, variant);
     // The card was re-rendered meanwhile (another pick): this button and its answer are stale.
     if (!actionBox.contains(add)) {
       return;
     }
-    add.removeAttribute('aria-busy');
     if (added) {
       add.disabled = false;
-      add.textContent = STRINGS.added;
+      showAdded(add, setState);
       return;
     }
     const failed = element(document, 'span', 'label cart-failed', STRINGS.addFailed);
     failed.setAttribute('role', 'status');
     if (pageUrl === undefined) {
       add.disabled = false;
-      add.textContent = STRINGS.addToCart;
+      setState('ready');
       actionBox.append(failed);
       return;
     }
@@ -137,8 +186,7 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
     if (button.kind === 'sold-out') {
       actionBox.append(element(document, 'span', 'label sold-out', STRINGS.soldOut));
     } else if (button.kind === 'hook') {
-      const add = element(document, 'button', 'cart', STRINGS.addToCart);
-      add.type = 'button';
+      const { button: add, setState } = cartButtonElement(document);
       add.disabled = !button.enabled;
       add.addEventListener('click', () => {
         const hook = hostAddToCartHook();
@@ -152,15 +200,15 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
         } catch {
           return;
         }
+        showAdded(add, setState);
       });
       actionBox.append(add);
     } else if (button.kind === 'native') {
       const { platform, variant } = button;
       if (variant) {
-        const add = element(document, 'button', 'cart', STRINGS.addToCart);
-        add.type = 'button';
+        const { button: add, setState } = cartButtonElement(document);
         add.addEventListener('click', () => {
-          void addNatively(add, platform, variant);
+          void addNatively(add, setState, platform, variant);
         });
         actionBox.append(add);
       } else if (pageUrl !== undefined) {
@@ -170,7 +218,9 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
   };
 
   for (const selector of pickState(item, pick).selectors) {
-    const label = element(document, 'label', 'selector', selector.name);
+    // The option's name is read out with the select; the placeholder shows it on screen.
+    const label = element(document, 'label', 'selector');
+    label.append(element(document, 'span', 'visually-hidden', selector.name));
     const select = element(document, 'select');
     const placeholder = element(
       document,
