@@ -524,6 +524,53 @@ describe('the overview', () => {
     expect(container.textContent).not.toContain('could not be read');
   });
 
+  it('Refresh shows a cross, not an endless spinner, when a read throws', async () => {
+    const { Shell } = await import('../src/components/Shell');
+    const reload = vi.fn(async (): Promise<boolean> => {
+      throw new Error('unexpected');
+    });
+    mounted = await mount(
+      <Shell
+        deps={sessionDeps(fakeApi(), fakeReader([]))}
+        view={storeView()}
+        config={undefined}
+        configFromServer={false}
+        storedTruncated={false}
+        configError=""
+        configUnreadableAt={undefined}
+        reloadWarning=""
+        reload={reload}
+        reloadConfig={async () => true}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    // The press is over: another one reads again.
+    await click(buttonNamed(container, 'Refresh'));
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists the ten busiest products, as the guide says', async () => {
+    const usage = {
+      ...storeView().usage,
+      clicks: Array.from({ length: 11 }, (_unused, index) => ({
+        address: `30402:${'a'.repeat(64)}:item-${index}`,
+        count: 11 - index,
+        carts: 0,
+      })),
+    };
+    mounted = await mount(
+      <Overview view={storeView({ usage })} config={undefined} configFromServer={false} />,
+    );
+    const rows = mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr');
+    expect(rows).toHaveLength(10);
+    expect(mounted.container.textContent).not.toContain('item-10');
+  });
+
   it('says no clicks yet with none', async () => {
     mounted = await mount(
       <Overview view={storeView()} config={undefined} configFromServer={false} />,

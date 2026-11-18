@@ -99,6 +99,9 @@ export function Shell({
       const read = await reload();
       const configRead = await reloadConfig();
       setRefreshStatus(read && configRead ? 'done' : 'failed');
+    } catch {
+      // Neither read throws today; if one ever does, the spinner must not stay.
+      setRefreshStatus('failed');
     } finally {
       refreshing.current = false;
     }

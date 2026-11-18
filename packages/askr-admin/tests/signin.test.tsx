@@ -204,3 +204,18 @@ describe('replacing a lost secret key (K21)', () => {
     expect(mounted.container.textContent).not.toMatch(/extension|nostr/i);
   });
 });
+
+describe('the secret key and password managers', () => {
+  it('keeps the secret key out of any form and asks the browser not to fill or save it', async () => {
+    mounted = await mount(<SignIn onSigner={() => undefined} recover={NO_RECOVERY} />);
+    const { container } = mounted;
+    const field = byId(container, 'owner-key');
+    expect(field.closest('form')).toBeNull();
+    expect(field.getAttribute('autocomplete')).toBe('off');
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    // A new key is shown to save, never in a form a browser might offer to store.
+    await click(buttonNamed(container, 'Create a secret key'));
+    expect(container.querySelector('form')).toBeNull();
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+  });
+});

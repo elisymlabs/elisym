@@ -72,7 +72,19 @@ export function InfoTip({ help, about }: Props) {
   }, [open]);
 
   return (
-    <span ref={box} className="relative inline-flex align-middle">
+    <span
+      ref={box}
+      className="relative inline-flex align-middle"
+      // Focus moving to something outside (Tab to another tip, say) closes it: one open at a time.
+      onBlur={(event) => {
+        if (
+          event.relatedTarget instanceof Node &&
+          box.current?.contains(event.relatedTarget) !== true
+        ) {
+          setOpen(false);
+        }
+      }}
+    >
       <button
         ref={button}
         type="button"

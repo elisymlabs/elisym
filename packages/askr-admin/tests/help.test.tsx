@@ -104,6 +104,48 @@ describe('the info button', () => {
     expect(container.querySelector('[role="note"]')).toBeNull();
   });
 
+  it('stays open on any key but Escape, so Tab reaches Read more', async () => {
+    const { container, button } = await tip();
+    await click(button);
+    const link = container.querySelector<HTMLAnchorElement>('[role="note"] a');
+    link?.focus();
+    for (const key of ['Tab', 'a', 'Enter']) {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key }));
+      });
+      expect(container.querySelector('[role="note"]'), key).not.toBeNull();
+      expect(document.activeElement, key).toBe(link);
+    }
+  });
+
+  it('closes when focus moves to something outside, so two never stay open', async () => {
+    mounted = await mount(
+      <div>
+        <InfoTip help={HELP.storeName} about="Store name" />
+        <InfoTip help={HELP.currency} about="Currency" />
+      </div>,
+    );
+    const { container } = mounted;
+    const [first, second] = [...container.querySelectorAll<HTMLButtonElement>('button')];
+    if (first === undefined || second === undefined) {
+      throw new Error('not rendered');
+    }
+    first.focus();
+    await click(first);
+    // Focus within the tip, onto its link, keeps it open.
+    await act(async () => {
+      container.querySelector<HTMLAnchorElement>('[role="note"] a')?.focus();
+    });
+    expect(container.querySelectorAll('[role="note"]')).toHaveLength(1);
+    await act(async () => {
+      second.focus();
+    });
+    expect(container.querySelectorAll('[role="note"]')).toHaveLength(0);
+    await click(second);
+    expect(container.querySelectorAll('[role="note"]')).toHaveLength(1);
+    expect(container.querySelector('[role="note"]')?.textContent).toContain(HELP.currency.text);
+  });
+
   it('closes on Escape, giving focus back to the button from inside the tip', async () => {
     const { container, button } = await tip();
     await click(button);
