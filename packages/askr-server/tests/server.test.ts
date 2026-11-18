@@ -452,6 +452,33 @@ describe('gateway (3)', () => {
     );
     expect((await post('/v1/click', { ticket: forged, address })).status).toBe(403);
   });
+
+  it('counts an add to cart press apart from a link open, and a click with no kind as a link', async () => {
+    const { store, state, post } = await setup();
+    const visitor = getPublicKey(generateSecretKey());
+    const session = (await (await post('/v1/session', { store: store.owner, visitor })).json()) as {
+      ticket: unknown;
+    };
+    const address = `30402:${store.catalogKey}:jacket-wool`;
+    const click = (kind?: unknown) =>
+      post('/v1/click', {
+        ticket: session.ticket,
+        address,
+        ...(kind === undefined ? {} : { kind }),
+      });
+    expect((await click('cart')).status).toBe(204);
+    expect(await state.clicksFor(store.owner, address, 'cart')).toBe(1);
+    expect(await state.clicksFor(store.owner, address, 'link')).toBe(0);
+    expect((await click()).status).toBe(204);
+    expect((await click('link')).status).toBe(204);
+    expect((await click('cart')).status).toBe(204);
+    expect(await state.clicksFor(store.owner, address, 'link')).toBe(2);
+    expect(await state.clicksFor(store.owner, address, 'cart')).toBe(2);
+    for (const kind of ['buy', '', 7, null]) {
+      expect((await click(kind)).status).toBe(400);
+    }
+    expect(await state.clicksFor(store.owner, address, 'cart')).toBe(2);
+  });
 });
 
 describe('intake drop order (5.8)', () => {

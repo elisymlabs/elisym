@@ -30,7 +30,7 @@ import {
   KIND_GIFT_WRAP,
   MAX_QUERY_ATTEMPTS,
 } from './constants';
-import type { Gateway } from './gateway';
+import type { ClickKind, Gateway } from './gateway';
 import {
   type HistoryRead,
   type RelayConnect,
@@ -333,9 +333,9 @@ export class ChatClient {
   }
 
   /** Report a handoff (a card opened, an add-to-cart): advisory, never awaited by the UI. */
-  reportClick(address: string): void {
+  reportClick(address: string, kind: ClickKind): void {
     if (this.ticket) {
-      void this.gateway.reportClick(this.ticket, address);
+      void this.gateway.reportClick(this.ticket, address, kind);
     }
   }
 

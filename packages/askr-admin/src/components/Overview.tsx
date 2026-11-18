@@ -134,23 +134,35 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
       </Section>
 
       <Section
-        title="Product link clicks"
-        description="Clicks on product links in the chat. Advisory: a click is counted as the visitor's browser reports it."
+        title="Product clicks"
+        description="Product pages opened and add to cart presses from the chat's cards. Advisory: a click is counted as the visitor's browser reports it."
+        flush
       >
         {usage.clicks.length === 0 ? (
-          <p className="text-14 text-text-2">No clicks yet.</p>
+          <p className="text-14 text-text-2 px-20 py-16">No clicks yet.</p>
         ) : (
-          <ul className="text-14 rows flex flex-col">
-            {usage.clicks.slice(0, TOP_CLICKS).map((click) => (
-              <li
-                key={click.address}
-                className="flex justify-between gap-12 py-8 first:pt-0 last:pb-0"
-              >
-                <span className="text-13 truncate font-mono">{dOfAddress(click.address)}</span>
-                <span className="font-medium tabular-nums">{click.count}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="data-table" aria-label="Product clicks">
+              <thead>
+                <tr>
+                  <th>Product ID</th>
+                  <th className="text-right">Page opened</th>
+                  <th className="text-right">Added to cart</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usage.clicks.slice(0, TOP_CLICKS).map((click) => (
+                  <tr key={click.address}>
+                    <td className="text-13 max-w-320 truncate font-mono">
+                      {dOfAddress(click.address)}
+                    </td>
+                    <td className="text-right font-medium tabular-nums">{click.count}</td>
+                    <td className="text-right font-medium tabular-nums">{click.carts}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Section>
 

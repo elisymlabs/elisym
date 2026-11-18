@@ -231,6 +231,13 @@ create table store_moves (
 create index store_moves_to on store_moves (to_owner);
 `,
   },
+  {
+    id: '0005_cart_clicks',
+    sql: `
+-- Presses of a card's add to cart button, beside the product link opens in count (advisory, 3).
+alter table clicks add column carts bigint not null default 0;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

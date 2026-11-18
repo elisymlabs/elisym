@@ -282,4 +282,35 @@ describe('the overview', () => {
     expect(container.textContent).toContain('Open conversations3');
     expect(container.textContent).toContain('got at least one answer');
   });
+
+  it('lists page opens and add to cart presses per product, by product ID', async () => {
+    const usage = {
+      ...storeView().usage,
+      clicks: [
+        { address: `30402:${'a'.repeat(64)}:tent`, count: 2, carts: 1 },
+        { address: `30402:${'a'.repeat(64)}:size:m`, count: 0, carts: 4 },
+      ],
+    };
+    mounted = await mount(
+      <Overview view={storeView({ usage })} config={undefined} configFromServer={false} />,
+    );
+    const rows = [
+      ...mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr'),
+    ];
+    expect(
+      rows.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent)),
+    ).toEqual([
+      ['tent', '2', '1'],
+      ['size:m', '0', '4'],
+    ]);
+    expect(mounted.container.textContent).toContain('Page openedAdded to cart');
+  });
+
+  it('says no clicks yet with none', async () => {
+    mounted = await mount(
+      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+    );
+    expect(mounted.container.textContent).toContain('No clicks yet.');
+    expect(mounted.container.querySelector('table[aria-label="Product clicks"]')).toBeNull();
+  });
 });

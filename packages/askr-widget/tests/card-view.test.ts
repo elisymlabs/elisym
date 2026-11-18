@@ -69,7 +69,7 @@ function context(
   return {
     document,
     config,
-    reportClick: (address) => clicks.push(address),
+    reportClick: (address, kind) => clicks.push(`${kind} ${address}`),
     pageOrigin,
     clicks,
   };
@@ -174,7 +174,7 @@ describe('card links', () => {
       .querySelector<HTMLAnchorElement>('a.card-title')
       ?.addEventListener('click', (event) => event.preventDefault());
     card.querySelector<HTMLAnchorElement>('a.card-title')?.click();
-    expect(ctx.clicks).toEqual([item.address]);
+    expect(ctx.clicks).toEqual([`link ${item.address}`]);
   });
 });
 
@@ -209,7 +209,9 @@ describe('card pick reason', () => {
 
 describe('card add-to-cart', () => {
   it('shows the hook button when the host sets its hook after the card rendered', () => {
-    const card = renderCard(context(), catalogItem({ sku: 'SC-1' }));
+    const ctx = context();
+    const item = catalogItem({ sku: 'SC-1' });
+    const card = renderCard(ctx, item);
     expect(card.querySelector('button.cart')).toBeNull();
     const onAddToCart = vi.fn();
     Reflect.set(window, 'Askr', { onAddToCart });
@@ -218,6 +220,8 @@ describe('card add-to-cart', () => {
     expect(button).not.toBeNull();
     button?.click();
     expect(onAddToCart).toHaveBeenCalledWith({ d: 'scarf', sku: 'SC-1' });
+    // The press counts as an add to cart, not a link open.
+    expect(ctx.clicks).toEqual([`cart ${item.address}`]);
   });
 
   it('drops the button again when the host removes its hook, on focus too', () => {
@@ -252,7 +256,7 @@ describe('card native add-to-cart', () => {
     expect(button.disabled).toBe(false);
     expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(button.getAttribute('aria-label')).toBe('Added to cart');
-    expect(ctx.clicks).toEqual([item.address]);
+    expect(ctx.clicks).toEqual([`cart ${item.address}`]);
     card.remove();
   });
 
@@ -298,7 +302,7 @@ describe('card native add-to-cart', () => {
     );
     // The answer came long after the click: a window opened now would be popup-blocked.
     expect(open).not.toHaveBeenCalled();
-    expect(ctx.clicks).toEqual([item.address]);
+    expect(ctx.clicks).toEqual([`cart ${item.address}`]);
     card.remove();
   });
 

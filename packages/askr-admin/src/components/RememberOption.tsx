@@ -48,8 +48,8 @@ export function RememberOption({ ref, label, id }: Props) {
       </label>
       {on ? (
         <p className="text-12 text-text-3 pl-21">
-          Kept in this browser, encrypted with a key only it holds, and never sent anywhere. Clear
-          this on a shared computer.
+          Kept encrypted in this browser and never sent anywhere. Anyone who can use this browser
+          can sign in as your store, so clear this on a shared computer.
         </p>
       ) : null}
     </div>

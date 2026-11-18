@@ -5,9 +5,11 @@ import { publicKeyOf } from './signer';
  * Secret keys remembered on this device, each sealed with AES-GCM under a
  * device key this browser made for the admin. The device key is a
  * non-extractable WebCrypto key kept in IndexedDB: no script, this page's
- * included, can read its bytes, so a copy of the browser's storage alone
- * does not give the secret key away. Only the sealed form is written; the
- * plain key never touches storage.
+ * included, can read its bytes, so what a script reads out of localStorage
+ * does not give the secret key away. It is not a lock against whoever has
+ * this browser profile: they can sign in as the store, as the merchant
+ * chose by remembering it with no password. Only the sealed form is
+ * written; the plain key never touches storage.
  *
  * One remembered key per Store ID, newest first: a merchant with several
  * stores picks one on the sign-in page, and remembering a key again for the

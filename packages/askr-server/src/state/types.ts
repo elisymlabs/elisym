@@ -1,6 +1,9 @@
 import type { LlmMessage } from '@elisym/askr-agent';
 import type { NostrEvent } from 'nostr-tools';
 
+/** What a handoff click was: a product link opened, or an add to cart pressed. */
+export type ClickKind = 'link' | 'cart';
+
 export type StoreStatus = 'pending' | 'active' | 'suspended';
 
 /** What an operator assigns a store (K18): limits only, no billing. */
@@ -182,8 +185,8 @@ export interface ServerState {
    * counts), so no ticket is issued (3).
    */
   budgetExhausted(owner: string, now: number, reserveUsd: string): Promise<boolean>;
-  /** Count a handoff click (advisory, 3). */
-  countClick(owner: string, address: string): Promise<void>;
+  /** Count a handoff (advisory, 3): a product link opened, or an add to cart pressed. */
+  countClick(owner: string, address: string, kind: ClickKind): Promise<void>;
   /** Record the origins a loaded config lists, each from when first seen (K21). */
   noteOrigins(owner: string, origins: readonly string[], now: number): Promise<void>;
   /** The owner a store embedded as `owner` moved to, if it did (K21). */

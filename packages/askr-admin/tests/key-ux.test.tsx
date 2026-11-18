@@ -102,7 +102,7 @@ describe('a new secret key', () => {
     const { container, onSigner } = await signInScreen();
     await click(buttonNamed(container, 'Create a secret key'));
     expect(inputById(container, 'new-key-remember').checked).toBe(true);
-    expect(text(container)).toContain('encrypted with a key only it holds');
+    expect(text(container)).toContain('Kept encrypted in this browser');
     const checkboxes = [...container.querySelectorAll('input[type="checkbox"]')];
     const saved = checkboxes.find((box) => box.id === '');
     if (!(saved instanceof HTMLInputElement)) {
@@ -125,7 +125,7 @@ describe('a new secret key', () => {
     const { container, onSigner } = await signInScreen();
     await click(buttonNamed(container, 'Create a secret key'));
     await rememberNot(container, 'new-key');
-    expect(text(container)).not.toContain('encrypted with a key only it holds');
+    expect(text(container)).not.toContain('Kept encrypted in this browser');
     const saved = [...container.querySelectorAll('input[type="checkbox"]')].find(
       (box) => box.id === '',
     );

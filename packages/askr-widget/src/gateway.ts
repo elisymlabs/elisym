@@ -22,11 +22,14 @@ export type SessionResult =
   | { kind: 'unavailable' }
   | { kind: 'error' };
 
+/** What a handoff click was: a product link opened, or an add to cart pressed. */
+export type ClickKind = 'link' | 'cart';
+
 /** The Askr gateway (3). Injectable, so tests can drive grants and refusals. */
 export interface Gateway {
   openSession: (store: string, visitor: string) => Promise<SessionResult>;
   /** Advisory handoff count; failures are ignored. */
-  reportClick: (ticket: NostrEvent, address: string) => Promise<void>;
+  reportClick: (ticket: NostrEvent, address: string, kind: ClickKind) => Promise<void>;
 }
 
 /** HTTP statuses the gateway answers a refused store with. */
@@ -95,12 +98,12 @@ export function httpGateway(
       const grant = response.ok ? readGrant(body) : undefined;
       return grant ? { kind: 'granted', grant } : { kind: 'error' };
     },
-    async reportClick(ticket, address) {
+    async reportClick(ticket, address, kind) {
       try {
         await fetchImpl(`${base}/v1/click`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ ticket, address }),
+          body: JSON.stringify({ ticket, address, kind }),
           credentials: 'omit',
           keepalive: true,
         });

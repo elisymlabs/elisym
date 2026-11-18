@@ -7,6 +7,7 @@ import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import { noteOrigins } from './origins';
 import type {
+  ClickKind,
   Admission,
   AskRecord,
   AskState,
@@ -745,10 +746,13 @@ export class PgState implements ServerState {
     return followMoves(this.db, owner);
   }
 
-  async countClick(owner: string, address: string): Promise<void> {
+  async countClick(owner: string, address: string, kind: ClickKind): Promise<void> {
     await this.db.query(
-      `insert into clicks (owner, address, count) values ($1, $2, 1)
-       on conflict (owner, address) do update set count = clicks.count + 1`,
+      kind === 'cart'
+        ? `insert into clicks (owner, address, count, carts) values ($1, $2, 0, 1)
+           on conflict (owner, address) do update set carts = clicks.carts + 1`
+        : `insert into clicks (owner, address, count) values ($1, $2, 1)
+           on conflict (owner, address) do update set count = clicks.count + 1`,
       [owner, address],
     );
   }
@@ -861,11 +865,11 @@ export class PgState implements ServerState {
     };
   }
 
-  async clicksFor(owner: string, address: string): Promise<number> {
-    const [row] = await this.db.query<{ count: number }>(
-      'select count from clicks where owner = $1 and address = $2',
+  async clicksFor(owner: string, address: string, kind: ClickKind = 'link'): Promise<number> {
+    const [row] = await this.db.query<{ count: number; carts: number }>(
+      'select count, carts from clicks where owner = $1 and address = $2',
       [owner, address],
     );
-    return row?.count ?? 0;
+    return (kind === 'cart' ? row?.carts : row?.count) ?? 0;
   }
 }

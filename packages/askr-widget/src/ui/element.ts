@@ -197,7 +197,7 @@ export class WidgetView {
           {
             document: this.document,
             config: this.config,
-            reportClick: (address) => client.reportClick(address),
+            reportClick: (address, kind) => client.reportClick(address, kind),
             pageOrigin: globalThis.location?.origin,
             resolveCards: (addresses) => client.resolveCards(addresses),
             language: this.language,
