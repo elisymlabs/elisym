@@ -46,6 +46,22 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const [listedIds, setListedIds] = useState<string[]>([]);
   const [readError, setReadError] = useState('');
   const [editing, setEditing] = useState<Editing>();
+  /** What opened the editor: focus goes back to it once the editor closes. */
+  const opener = useRef<HTMLElement | null>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const openEditor = (next: Editing) => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setEditing(next);
+  };
+  useEffect(() => {
+    if (editing !== undefined || opener.current === null) {
+      return;
+    }
+    // A new product's opener, Add a product, was hidden while the editor was open: it is back.
+    const target = opener.current.isConnected ? opener.current : addButton.current;
+    opener.current = null;
+    target?.focus();
+  }, [editing]);
   const [reviewed, setReviewed] = useState<Reviewed>();
   const [busy, setBusy] = useState(false);
   /** What the last publish sent: offered back if that sync fails and the list is read again. */
@@ -260,8 +276,9 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
             <button
               type="button"
               className="btn btn-primary"
+              ref={addButton}
               disabled={busy}
-              onClick={() => setEditing({ mode: 'new' })}
+              onClick={() => openEditor({ mode: 'new' })}
             >
               Add a product
             </button>
@@ -277,7 +294,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
               items={draft}
               onEdit={(d) => {
                 const item = draft.find((candidate) => candidate.d === d);
-                setEditing(item === undefined ? undefined : { mode: 'edit', item });
+                openEditor(item === undefined ? undefined : { mode: 'edit', item });
               }}
               onRemove={(d) => change(removeItem(draft, d))}
             />

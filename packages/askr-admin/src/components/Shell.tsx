@@ -33,7 +33,8 @@ interface Props {
   reloadWarning: string;
   /** True once the store was read again. */
   reload: () => Promise<boolean>;
-  reloadConfig: () => Promise<void>;
+  /** True once the settings were read again. */
+  reloadConfig: () => Promise<boolean>;
   onSignOut: () => void;
   onReplaceKey: () => void;
 }
@@ -90,11 +91,14 @@ export function Shell({
     setRefreshStatus('busy');
     try {
       const read = await reload();
-      await reloadConfig();
-      setRefreshStatus(read ? 'done' : 'failed');
+      const configRead = await reloadConfig();
+      setRefreshStatus(read && configRead ? 'done' : 'failed');
     } finally {
       refreshing.current = false;
     }
+  };
+  const retryConfig = async () => {
+    await reloadConfig();
   };
   const reloadView = async () => {
     await reload();
@@ -121,7 +125,7 @@ export function Shell({
         config={config}
         configError={configError}
         configUnreadableAt={configUnreadableAt}
-        onRetry={reloadConfig}
+        onRetry={retryConfig}
         onSaved={refresh}
       />
     );
@@ -142,7 +146,7 @@ export function Shell({
             ? 'Your newest settings could not be read. Save them again in Settings before rotating.'
             : configError
         }
-        onRetry={reloadConfig}
+        onRetry={retryConfig}
         onChanged={refresh}
         onReplaceKey={onReplaceKey}
         onForgotten={() => setForgottenTimes((times) => times + 1)}

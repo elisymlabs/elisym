@@ -249,6 +249,35 @@ describe('signing in with a pasted key and remembering it', () => {
     await settle(() => onSigner.mock.calls.length > 0);
     expect(readRemembered().keys).toHaveLength(1);
   });
+
+  it('closes an open Forget confirmation when another store starts signing in', async () => {
+    const other = generateSecretKey();
+    await remembered(OWNER_KEY);
+    await remembered(other);
+    const { container, onSigner } = await signInScreen();
+    // Ask to forget the first store (the newest, the other one) ...
+    await click(buttonNamed(container, 'Forget'));
+    expect(text(container)).toContain('Forget the key remembered for store');
+    // ... then sign in as the second one meanwhile.
+    const continues = [...container.querySelectorAll('button')].filter(
+      (button) => button.textContent === 'Continue',
+    );
+    const second = continues[1];
+    if (second === undefined) {
+      throw new Error('no second store');
+    }
+    act(() => {
+      second.click();
+    });
+    expect(text(container)).not.toContain('Forget the key remembered for store');
+    for (const button of container.querySelectorAll('button')) {
+      if (button.textContent === 'Forget') {
+        expect(button.disabled).toBe(true);
+      }
+    }
+    await settle(() => onSigner.mock.calls.length > 0);
+    expect(readRemembered().keys).toHaveLength(2);
+  });
 });
 
 describe('the sign-in page with keys remembered', () => {

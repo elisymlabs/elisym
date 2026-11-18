@@ -455,6 +455,31 @@ describe('a review in flight', () => {
     return { catalog, answer: (diff: typeof EMPTY_DIFF) => answer(diff) };
   }
 
+  it('gives focus back to what opened the editor once it closes', async () => {
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(fakeApi(), fakeReader([listing(MUG), listing(TEAPOT)]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    const edit = rowButton(container, 'Edit', 'Teapot');
+    edit.focus();
+    await click(edit);
+    expect(document.activeElement?.textContent).toBe('Edit Teapot');
+    await click(buttonNamed(container, 'Cancel'));
+    expect(document.activeElement).toBe(rowButton(container, 'Edit', 'Teapot'));
+    const add = buttonNamed(container, 'Add a product');
+    add.focus();
+    await click(add);
+    await click(buttonNamed(container, 'Cancel'));
+    // Add a product was hidden while the editor was open, and is focused again once it is back.
+    expect(document.activeElement).toBe(buttonNamed(container, 'Add a product'));
+  });
+
   it('edit during the review: the list cannot change, and Publish sends exactly the reviewed list', async () => {
     const pending = pendingCatalog();
     const api = fakeApi({ catalog: pending.catalog });

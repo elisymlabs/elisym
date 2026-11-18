@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act } from 'react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InfoTip } from '../src/components/InfoTip';
 import { ADMIN_DOCS_URL } from '../src/constants';
 import { HELP, helpUrl } from '../src/lib/help';
@@ -13,11 +13,12 @@ const EM_DASH = String.fromCharCode(0x2014);
 
 /** A heading's link anchor, as the docs site makes it. */
 function slugOf(heading: string): string {
+  // As github-slugger (the docs site's): keep letters, marks, digits, connectors, hyphens
+  // and spaces, then spaces become hyphens.
   return heading
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s-]/gu, '')
-    .trim()
-    .replace(/\s/g, '-');
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
+    .replace(/ /g, '-');
 }
 
 const ANCHORS = GUIDE.split('\n')
@@ -83,14 +84,56 @@ describe('the info button', () => {
     expect(container.querySelector('[role="note"]')).toBeNull();
   });
 
-  it('closes on Escape, giving focus back to the button', async () => {
+  it('closes on Escape, giving focus back to the button from inside the tip', async () => {
     const { container, button } = await tip();
     await click(button);
+    const link = container.querySelector<HTMLAnchorElement>('[role="note"] a');
+    link?.focus();
+    expect(document.activeElement).toBe(link);
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     });
     expect(container.querySelector('[role="note"]')).toBeNull();
     expect(document.activeElement).toBe(button);
+  });
+
+  it('closes on Escape without taking focus from a field the visitor moved to', async () => {
+    mounted = await mount(
+      <div>
+        <InfoTip help={HELP.storeName} about="Store name" />
+        <input id="elsewhere-field" />
+      </div>,
+    );
+    const { container } = mounted;
+    const button = container.querySelector<HTMLButtonElement>('button');
+    const field = container.querySelector<HTMLInputElement>('#elsewhere-field');
+    if (button === null || field === null) {
+      throw new Error('not rendered');
+    }
+    await click(button);
+    field.focus();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(container.querySelector('[role="note"]')).toBeNull();
+    expect(document.activeElement).toBe(field);
+  });
+
+  it('hangs to the left of a button near the right edge, so it stays on screen', async () => {
+    const { container, button } = await tip();
+    const box = button.parentElement;
+    if (box === null) {
+      throw new Error('no box');
+    }
+    const at = (left: number) =>
+      vi.spyOn(box, 'getBoundingClientRect').mockReturnValue(new DOMRect(left, 0, 14, 14));
+    at(window.innerWidth - 100);
+    await click(button);
+    expect(container.querySelector('[role="note"]')?.classList.contains('right-0')).toBe(true);
+    await click(button);
+    at(20);
+    await click(button);
+    expect(container.querySelector('[role="note"]')?.classList.contains('left-0')).toBe(true);
   });
 
   it('closes on a press elsewhere, but not on a press inside it', async () => {
@@ -107,6 +150,42 @@ describe('the info button', () => {
         ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     });
     expect(container.querySelector('[role="note"]')).toBeNull();
+  });
+
+  it('leaves every kind of field named by its own label', async () => {
+    const { TextAreaField } = await import('../src/components/TextAreaField');
+    const { SelectField } = await import('../src/components/SelectField');
+    mounted = await mount(
+      <div>
+        <TextAreaField
+          id="area"
+          label="Area"
+          value=""
+          info={HELP.notes}
+          onChange={() => undefined}
+        />
+        <SelectField
+          id="choice"
+          label="Choice"
+          value="a"
+          options={[{ value: 'a', label: 'A' }]}
+          info={HELP.platform}
+          onChange={() => undefined}
+        />
+      </div>,
+    );
+    for (const [id, name] of [
+      ['area', 'Area'],
+      ['choice', 'Choice'],
+    ]) {
+      const label = mounted.container.querySelector<HTMLLabelElement>(`label[for="${id}"]`);
+      expect(label?.textContent, id).toBe(name);
+      expect(mounted.container.querySelector(`#${id}`), id).not.toBeNull();
+      expect(
+        mounted.container.querySelector(`button[aria-label="About ${name}"]`),
+        id,
+      ).not.toBeNull();
+    }
   });
 
   it('sits outside the label, so the label names only its field', async () => {

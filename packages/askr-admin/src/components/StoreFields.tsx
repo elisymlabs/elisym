@@ -84,7 +84,7 @@ export function StoreFields({ form, onChange }: Props) {
           label="Contact URL (optional)"
           value={form.contact}
           placeholder="https://shop.example/contact"
-          hint="Shown when the assistant cannot answer."
+          hint="Shown when the assistant is unavailable."
           onChange={(value) => set('contact', value)}
         />
       </FieldGroup>
@@ -121,7 +121,7 @@ export function StoreFields({ form, onChange }: Props) {
                 label="Feed address"
                 value={form.feedUrl}
                 placeholder="https://shop.example/feed.xml"
-                hint="Your Google product feed. Every site its products link to must be one of your allowed sites."
+                hint="Your Google product feed. Every site its products link to must be an allowed or link origin."
                 onChange={(value) => set('feedUrl', value)}
               />
             ) : (

@@ -7,6 +7,7 @@ import {
 } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
+import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Overview } from '../src/components/Overview';
 import { Session } from '../src/components/Session';
@@ -31,6 +32,8 @@ let mounted: Mounted | undefined;
 afterEach(async () => {
   await mounted?.unmount();
   mounted = undefined;
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 const PRIVATE_PART = { voice: 'calm', instructions: 'Recommend oolong.', notes: 'Berlin' };
@@ -378,6 +381,80 @@ describe('the overview', () => {
     await click(buttonNamed(container, 'Refresh'));
     await settle(() => !sections(container).includes('Connector'));
     expect(container.querySelector('h1')?.textContent).toBe('Overview');
+  });
+
+  it('Refresh reads once on a double press, shows a check, then clears it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release: () => void = () => undefined;
+    const store = vi.fn(async () => storeView());
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi({ store }), fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    const before = store.mock.calls.length;
+    store.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(storeView());
+        }),
+    );
+    const refresh = buttonNamed(container, 'Refresh');
+    await click(refresh);
+    await click(refresh);
+    expect(said()).toBe('Refreshing...');
+    expect(refresh.getAttribute('aria-busy')).toBe('true');
+    expect(store.mock.calls.length).toBe(before + 1);
+    await act(async () => {
+      release();
+    });
+    await settle(() => said() === 'Up to date.');
+    expect(refresh.querySelector('svg.text-green')).not.toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(said()).toBe('');
+    expect(refresh.querySelector('svg')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('Refresh shows a cross when the store or its settings could not be read', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const store = vi.fn(async () => storeView());
+    const reader = fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]);
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi({ store }), reader)}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    store.mockImplementation(async () => {
+      throw new ApiError(500, 'internal');
+    });
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    expect(buttonNamed(container, 'Refresh').querySelector('svg.text-error')).not.toBeNull();
+    expect(container.textContent).toContain('could not be refreshed');
+    // The store reads again, but its settings do not: still a cross, never a check.
+    store.mockImplementation(async () => storeView());
+    vi.spyOn(reader, 'query').mockRejectedValue(new Error('relay down'));
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(said()).toBe('');
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    expect(container.textContent).not.toContain('could not be refreshed');
+    vi.useRealTimers();
   });
 
   it('says no clicks yet with none', async () => {

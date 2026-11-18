@@ -54,7 +54,7 @@ export const HELP = {
     anchor: 'currency',
   },
   allowedOrigins: {
-    text: `The sites the chat runs on, one per line, each as https://host with no path. The chat answers only on these, and product links and add to cart point to them. Up to ${LIMITS.MAX_ORIGINS}.`,
+    text: `The sites the chat runs on, one per line, each as https://host with no path. The chat answers only on these, and product links may point to them or to your link origins. Up to ${LIMITS.MAX_ORIGINS}.`,
     anchor: 'allowed-origins',
   },
   linkOrigins: {
@@ -72,7 +72,7 @@ export const HELP = {
     anchor: 'greeting',
   },
   contact: {
-    text: 'A page where visitors reach a person, such as your contact form. The chat links to it when the assistant cannot help. It must be an https address.',
+    text: 'A page where visitors reach a person, such as your contact form, as an https address. The chat links to it when the assistant is unavailable: the budget is used up, the visitor reached the day\u2019s question limit, or the store is not active.',
     anchor: 'contact-url',
   },
 
@@ -90,7 +90,7 @@ export const HELP = {
     anchor: 'shop-address',
   },
   feedUrl: {
-    text: 'The https address of your Google product feed (an XML file). Every site its products link to must be one of your allowed sites.',
+    text: 'The https address of your Google product feed (an XML file). Every site its products link to must be one of your allowed or link origins and show your Store ID.',
     anchor: 'feed-address',
   },
   currencyOverride: {
@@ -138,7 +138,7 @@ export const HELP = {
     anchor: 'product-title',
   },
   productPrice: {
-    text: 'The price as a number, like 19.90. The assistant only quotes prices from here, never its own. With variants, the lowest in-stock variant price is shown.',
+    text: 'The price as a number, like 19.90. The assistant only quotes prices from here, never its own. With variants, it is the lowest in-stock variant price, or the lowest of all when none is in stock.',
     anchor: 'product-price',
   },
   productCurrency: {

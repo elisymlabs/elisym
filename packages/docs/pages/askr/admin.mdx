@@ -20,7 +20,7 @@ Ticked by default. When it is ticked, signing in keeps your secret key in this b
 
 ### Usage
 
-What the assistant has spent against your plan, in US dollars, today and this month. Each answer reserves a small amount before it runs and settles the real cost after. When the daily or monthly budget is used up, the chat says the assistant is unavailable (with your contact link, if you set one) until the next day or month starts, in UTC.
+What the assistant has spent against your plan, in US dollars, today and this month. Each answer reserves a small amount before it runs and settles the real cost after. When the daily or monthly budget is used up, the chat says the assistant is unavailable (with your contact link, if you set one) until the next day or month starts, in UTC. A visitor who has asked as many questions as your plan allows for the day sees the same.
 
 - **Conversations so far**: visitors' chats that got at least one answer. A chat lasts up to 24 hours from the visitor's first message and is counted once, however many questions follow.
 - **Open conversations**: chats started in the last 24 hours.
@@ -99,7 +99,7 @@ The first message a visitor sees when the chat opens, up to 280 characters. It i
 
 ### Contact URL
 
-A page where visitors can reach a person, such as your contact form, as an `https://` address. The chat links to it when the assistant cannot help, and when the assistant is unavailable. Optional.
+A page where visitors can reach a person, such as your contact form, as an `https://` address. The chat links to it when the assistant is unavailable: your budget is used up, the visitor has asked as many questions as your plan allows for the day, or the store is not active. Optional.
 
 **Example:** `https://northwind.example/contact`
 
@@ -125,7 +125,7 @@ Shown for Shopify and WooCommerce: the shop's address, such as `https://shop.exa
 
 ### Feed address
 
-Shown for a Google product feed: the `https://` address of the feed file. Every site its products link to must be one of your allowed origins.
+Shown for a Google product feed: the `https://` address of the feed file. Every site its products link to must be one of your allowed origins or link origins, and each of those sites must show your Store ID (see [Prove the site is yours](#prove-the-site-is-yours)).
 
 **Example:** `https://northwind.example/feeds/google.xml`
 
@@ -201,7 +201,7 @@ The product's name, as its card in the chat shows it.
 
 ### Product price
 
-The price as a number, such as `19.90`. The assistant quotes prices only from here, never its own. With variants, this is worked out for you: the lowest price among the variants in stock.
+The price as a number, such as `19.90`. The assistant quotes prices only from here, never its own. With variants, this is worked out for you: the lowest price among the variants in stock, or among all of them when none is.
 
 **Example:** `249` or `39.90`.
 
@@ -227,7 +227,7 @@ One short line about the product. The assistant's search matches its words, as i
 
 Everything a shopper might ask: materials, sizes, care, what is in the box. The assistant reads it when a visitor asks about the product, and its search matches its words.
 
-**Example:** `Two doors and two vestibules, so neither of you climbs over the other. Aluminium poles, 3000 mm fly. Packed size 45 x 15 cm. Pitches in about five minutes, fly first in the rain.`
+**Example:** `Two doors and two vestibules, so neither of you climbs over the other. Aluminum poles, 3000 mm fly. Packed size 45 x 15 cm. Pitches in about five minutes, fly first in the rain.`
 
 ### Product page
 
@@ -339,7 +339,7 @@ Imports your products from Shopify, WooCommerce or a Google feed on your plan's 
 
 ### Prove the site is yours
 
-Before importing, the shop must name your Store ID: add the meta tag shown to your home page, or serve a file at `/.well-known/askr` with your Store ID on a line of its own. Keep it there: every sync checks it.
+Before importing, the shop must name your Store ID: add the meta tag shown to your home page, or serve a file at `/.well-known/askr` with your Store ID on a line of its own. For a Google product feed, every site its products link to must show it. Keep it there: every sync checks it.
 
 **Example:** in your home page's `<head>`:
 

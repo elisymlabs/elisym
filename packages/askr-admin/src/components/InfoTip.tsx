@@ -1,6 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { type Help, helpUrl } from '../lib/help';
 
+/** The panel's width (`w-280`) and the room it keeps from an edge, in px. */
+const PANEL_WIDTH = 280;
+const EDGE_GAP = 16;
+
 interface Props {
   help: Help;
   /** What it explains, for the button's accessible name: "About Store name". */
@@ -13,6 +17,8 @@ interface Props {
  */
 export function InfoTip({ help, about }: Props) {
   const [open, setOpen] = useState(false);
+  /** Opened near the right edge, the panel hangs to the left of the button instead. */
+  const [alignRight, setAlignRight] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const panelId = useId();
@@ -29,7 +35,10 @@ export function InfoTip({ help, about }: Props) {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setOpen(false);
-        button.current?.focus();
+        // Focus comes back only from inside the tip, never from a field the visitor moved to.
+        if (box.current?.contains(document.activeElement) === true) {
+          button.current?.focus();
+        }
       }
     };
     document.addEventListener('pointerdown', closeOutside);
@@ -49,7 +58,15 @@ export function InfoTip({ help, about }: Props) {
         aria-label={`About ${about}`}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        onClick={() => setOpen((shown) => !shown)}
+        onClick={() => {
+          const edge = Math.min(
+            window.innerWidth,
+            box.current?.closest('main')?.getBoundingClientRect().right ?? window.innerWidth,
+          );
+          const left = box.current?.getBoundingClientRect().left ?? 0;
+          setAlignRight(left + PANEL_WIDTH > edge - EDGE_GAP);
+          setOpen((shown) => !shown);
+        }}
       >
         <svg
           viewBox="0 0 16 16"
@@ -70,7 +87,7 @@ export function InfoTip({ help, about }: Props) {
         <span
           id={panelId}
           role="note"
-          className="border-line-2 bg-surface-2 text-13 text-text-2 rounded-10 absolute top-full left-0 z-30 mt-6 flex w-280 max-w-[calc(100vw-48px)] flex-col gap-8 border p-12 text-left leading-relaxed font-normal shadow-lg"
+          className={`${alignRight ? 'right-0' : 'left-0'} border-line-2 bg-surface-2 text-13 text-text-2 rounded-10 absolute top-full z-30 mt-6 flex w-280 max-w-[calc(100vw-48px)] flex-col gap-8 border p-12 text-left leading-relaxed font-normal shadow-lg`}
         >
           <span>{help.text}</span>
           <a

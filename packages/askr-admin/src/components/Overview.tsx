@@ -71,7 +71,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         {view.nextAssistant === null ? null : (
           <Notice tone="info">
             An assistant key rotation is under way. It completes once settings naming the new
-            assistant are published (Keys tab).
+            assistant are published (Advanced).
           </Notice>
         )}
       </Section>

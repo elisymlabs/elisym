@@ -79,7 +79,8 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
     }
   }, [deps]);
 
-  const reloadConfig = useCallback(async () => {
+  /** Read the settings again: true once they were read (readable or not). */
+  const reloadConfig = useCallback(async (): Promise<boolean> => {
     let own: NostrEvent[] = [];
     let truncated = false;
     if (status.current !== undefined && status.current !== 'active') {
@@ -90,7 +91,7 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       } catch (error) {
         setConfigError(`Your saved settings could not be read: ${errorMessage(error)}`);
         setConfigRead(true);
-        return;
+        return false;
       }
     }
     setStored(own);
@@ -110,10 +111,12 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       }
       setConfigFromServer(own.some((event) => event.id === shownId));
       setConfigError('');
+      return true;
     } catch {
       setConfigError(
         'Your published settings could not be read, so they are not shown. Retry in a moment.',
       );
+      return false;
     } finally {
       setConfigRead(true);
     }
