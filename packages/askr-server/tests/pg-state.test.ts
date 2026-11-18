@@ -617,6 +617,48 @@ describe('server core review: rotation, suspension and counters (5.8)', () => {
   });
 });
 
+describe('product clicks in the usage (7.3)', () => {
+  it('lists link opens and add to cart presses per product, the busiest first', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const [mug, scarf, tent] = ['mug', 'scarf', 'tent'].map(
+      (dTag) => `30402:${store.catalogKey}:${dTag}`,
+    );
+    if (mug === undefined || scarf === undefined || tent === undefined) {
+      throw new Error('no addresses');
+    }
+    await state.countClick(store.owner, mug, 'link');
+    await state.countClick(store.owner, scarf, 'cart');
+    await state.countClick(store.owner, scarf, 'cart');
+    await state.countClick(store.owner, tent, 'link');
+    await state.countClick(store.owner, tent, 'cart');
+    await state.countClick(store.owner, tent, 'link');
+    const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
+    expect(clicks).toEqual([
+      { address: tent, count: 2, carts: 1 },
+      { address: scarf, count: 0, carts: 2 },
+      { address: mug, count: 1, carts: 0 },
+    ]);
+  });
+
+  it('puts the one added to cart more first when the totals tie', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const [opened, added] = ['aaa-opened', 'zzz-added'].map(
+      (dTag) => `30402:${store.catalogKey}:${dTag}`,
+    );
+    if (opened === undefined || added === undefined) {
+      throw new Error('no addresses');
+    }
+    await state.countClick(store.owner, opened, 'link');
+    await state.countClick(store.owner, opened, 'link');
+    await state.countClick(store.owner, added, 'link');
+    await state.countClick(store.owner, added, 'cart');
+    const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
+    expect(clicks.map((click) => click.address)).toEqual([added, opened]);
+  });
+});
+
 describe('conversation count (7.3)', () => {
   const conversations = async (directory: StoreDirectory, store: SyntheticStore) =>
     (await directory.usage(store.owner, store.assistant, NOW)).conversations;

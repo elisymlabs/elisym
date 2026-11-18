@@ -30,9 +30,6 @@ export const WIDGET_SCRIPT_URL = `${PUBLIC_API_BASE}/widget.js`;
 /** The widget's custom element (`packages/askr-widget/src/constants.ts`). */
 export const WIDGET_ELEMENT = 'askr-chat';
 
-/** The CLI command that prints a merchant catalog key K for this store. */
-export const ASKR_KEY_COMMAND = 'npx @elisym/cli askr-key <agent> --store';
-
 /** How often the dashboard re-reads the store while a catalog sync runs. */
 export const SYNC_POLL_MS = 3_000;
 
@@ -42,3 +39,6 @@ export const DEFAULT_CURRENCY = 'USD';
 
 /** The public guide to embedding the chat: add to cart, CSP, pinning. */
 export const EMBED_DOCS_URL = 'https://docs.elisym.network/askr/embed';
+
+/** The guide to every field and section of this admin; info buttons link into it. */
+export const ADMIN_DOCS_URL = 'https://docs.elisym.network/askr/admin';

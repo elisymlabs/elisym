@@ -1,13 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { forgetDamaged, nextTask, readRemembered, rememberKey } from '../lib/remembered';
-import {
-  type Signer,
-  generateOwnerKey,
-  npubOf,
-  parseSecretKey,
-  publicKeyOf,
-  secretKeySigner,
-} from '../lib/signer';
+import { forgetDamaged, readRemembered, rememberKey } from '../lib/remembered';
+import { type Signer, generateOwnerKey, parseSecretKey, secretKeySigner } from '../lib/signer';
+import { AskrLogo } from './AskrLogo';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
 import { RecoverStore } from './RecoverStore';
@@ -25,10 +19,9 @@ interface Props {
 const NOT_REMEMBERED =
   'Your secret key could not be remembered on this device. To go on without it, clear the remember box and try again.';
 
-/** Lock and remember `secretKey` with `password`: undefined when done, else what to tell them. */
-async function rememberWith(secretKey: Uint8Array, password: string): Promise<string | undefined> {
-  await nextTask();
-  return rememberKey(secretKey, password) ? undefined : NOT_REMEMBERED;
+/** Remember `secretKey` on this device: undefined when done, else what to tell them. */
+async function rememberOnDevice(secretKey: Uint8Array): Promise<string | undefined> {
+  return (await rememberKey(secretKey)) ? undefined : NOT_REMEMBERED;
 }
 
 /**
@@ -46,8 +39,6 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
   const [generated, setGenerated] = useState<ReturnType<typeof generateOwnerKey>>();
   const [recovering, setRecovering] = useState(replaceKeyOf !== undefined);
   const [remembered, setRemembered] = useState(readRemembered);
-  /** The Store ID of what the key field holds, for a password manager: public, never the key. */
-  const [typedStore, setTypedStore] = useState('');
 
   // Leaving the page keeps it in the back/forward cache: a typed key must not come back.
   useEffect(() => {
@@ -74,7 +65,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
       if (choice.kind === 'on') {
         setBusy(true);
         setError('');
-        const problem = await rememberWith(secretKey, choice.password);
+        const problem = await rememberOnDevice(secretKey);
         if (problem !== undefined) {
           setError(
             remembered.damaged ? `${problem} Or clear what could not be read first.` : problem,
@@ -93,15 +84,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
     }
   };
 
-  /** What the merchant chose about remembering, or undefined after showing why it cannot be. */
-  const rememberChoice = (): RememberChoice | undefined => {
-    const choice = remember.current?.read() ?? { kind: 'off' };
-    if (choice.kind === 'invalid') {
-      setError(choice.message);
-      return undefined;
-    }
-    return choice;
-  };
+  const rememberChoice = (): RememberChoice => remember.current?.read() ?? { kind: 'off' };
 
   const pasteKey = () => {
     const field = input.current;
@@ -114,21 +97,16 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
       setError('That is not a secret key: it starts with nsec1.');
       return;
     }
-    // A password or storage problem keeps the pasted key, so a retry needs no second paste
+    // A storage problem keeps the pasted key, so a retry needs no second paste
     // (the field is still cleared when the page is hidden).
-    const choice = rememberChoice();
-    if (choice === undefined) {
-      return;
-    }
-    void signInAs(secretKey, choice, () => {
+    void signInAs(secretKey, rememberChoice(), () => {
       field.value = '';
     });
   };
 
   const continueWithNew = (secretKey: Uint8Array) => {
-    const choice = working.current ? undefined : rememberChoice();
-    if (choice !== undefined) {
-      void signInAs(secretKey, choice, () => undefined);
+    if (!working.current) {
+      void signInAs(secretKey, rememberChoice(), () => undefined);
     }
   };
 
@@ -158,12 +136,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
           setError('');
         }}
       >
-        <RememberOption
-          ref={remember}
-          id="new-key"
-          label="Remember this key on this device"
-          username={generated.npub}
-        />
+        <RememberOption ref={remember} id="new-key" label="Remember this key on this device" />
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
       </NewOwnerKey>
     );
@@ -171,12 +144,15 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
 
   const hasRemembered = remembered.keys.length > 0;
   return (
-    <main className="mx-auto flex min-h-screen max-w-520 flex-col justify-center gap-20 px-16 py-40">
-      <div className="flex flex-col gap-6">
-        <h1 className="text-24 font-semibold">Askr admin</h1>
-        <p className="text-15 text-text-2">
+    <main className="mx-auto flex min-h-screen max-w-440 flex-col justify-center gap-24 px-16 py-40">
+      <div className="flex flex-col items-center gap-8 text-center">
+        <h1 className="mb-4">
+          <AskrLogo height={34} />
+          <span className="sr-only">Askr admin</span>
+        </h1>
+        <p className="text-14 text-text-2">
           Sign in with your store&apos;s secret key. It is never sent anywhere: it stays in this
-          browser tab, and on this device only if you choose to remember it with a password.
+          browser tab, and on this device unless you clear the remember box.
         </p>
       </div>
       {hasRemembered ? (
@@ -240,12 +216,6 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            onChange={(event) => {
-              const typed = parseSecretKey(event.target.value);
-              const pubkey = typed === undefined ? undefined : publicKeyOf(typed);
-              typed?.fill(0);
-              setTypedStore(pubkey === undefined ? '' : npubOf(pubkey));
-            }}
             onKeyDown={(event) => {
               if (event.key === 'Enter') {
                 pasteKey();
@@ -253,12 +223,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
             }}
           />
         </label>
-        <RememberOption
-          ref={remember}
-          id="sign-in"
-          label="Remember my key on this device"
-          username={typedStore === '' ? 'Askr store' : typedStore}
-        />
+        <RememberOption ref={remember} id="sign-in" label="Remember my key on this device" />
         <button type="button" className="btn btn-primary" disabled={busy} onClick={pasteKey}>
           {busy ? 'Signing in...' : 'Sign in'}
         </button>

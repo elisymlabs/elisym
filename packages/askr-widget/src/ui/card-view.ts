@@ -4,6 +4,7 @@ import {
   type StoreConfig,
   productPageUrl,
 } from '@elisym/askr';
+import type { ClickKind } from '../gateway';
 import { type NativeCartPlatform, nativeAddToCart, nativeCartPlatform } from '../native-cart';
 import {
   type CartButton,
@@ -193,8 +194,8 @@ function selectBox(
 export interface CardContext {
   document: Document;
   config: StoreConfig;
-  /** Advisory handoff count (3). */
-  reportClick: (address: string) => void;
+  /** Advisory handoff count (3): a product link opened, or an add to cart pressed. */
+  reportClick: (address: string, kind: ClickKind) => void;
   pageOrigin: string | undefined;
   /** The widget's language, for the card's own texts (the reason is the model's). */
   language?: string;
@@ -216,7 +217,7 @@ function productLink(
   link.href = url;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
-  link.addEventListener('click', () => context.reportClick(item.address));
+  link.addEventListener('click', () => context.reportClick(item.address, 'link'));
   return link;
 }
 
@@ -294,7 +295,7 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
       return;
     }
     const { button: add, setState } = cart;
-    context.reportClick(item.address);
+    context.reportClick(item.address, 'cart');
     add.disabled = true;
     setState('busy');
     const added = await nativeAddToCart(platform, shopUrl, variant);
@@ -341,7 +342,7 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
         if (!hook || !current.complete || current.soldOut) {
           return;
         }
-        context.reportClick(item.address);
+        context.reportClick(item.address, 'cart');
         try {
           hook(addToCartDetail(item, current));
         } catch {

@@ -127,12 +127,17 @@ describe('httpGateway.reportClick', () => {
       buildTicket({ visitor: 'b'.repeat(64), store: 'a'.repeat(64), now: localSecs() }),
       testKey(),
     );
-    await httpGateway(BASE, fake.fetch).reportClick(ticket, '30402:x:y');
+    await httpGateway(BASE, fake.fetch).reportClick(ticket, '30402:x:y', 'cart');
     expect(fake.requests[0]?.url).toBe(`${BASE}/v1/click`);
+    expect(JSON.parse(String(fake.requests[0]?.init?.body))).toEqual({
+      ticket: JSON.parse(JSON.stringify(ticket)),
+      address: '30402:x:y',
+      kind: 'cart',
+    });
     const failing: typeof fetch = async () => {
       throw new TypeError('network');
     };
-    await expect(httpGateway(BASE, failing).reportClick(ticket, '30402:x:y')).resolves.toBe(
+    await expect(httpGateway(BASE, failing).reportClick(ticket, '30402:x:y', 'link')).resolves.toBe(
       undefined,
     );
   });

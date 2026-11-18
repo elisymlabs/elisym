@@ -13,7 +13,7 @@ interface Props {
 export function KeyRow({ npub, uses, busy, onRevoke }: Props) {
   const [confirming, setConfirming] = useState(false);
   return (
-    <li className="border-line rounded-10 flex flex-col gap-8 border p-12">
+    <li className="flex flex-col gap-10 px-14 py-12">
       <div className="flex flex-wrap items-center justify-between gap-8">
         <div className="flex min-w-0 flex-col gap-2">
           <span className="text-13 truncate font-mono">{npub}</span>
@@ -22,7 +22,7 @@ export function KeyRow({ npub, uses, busy, onRevoke }: Props) {
         {confirming ? null : (
           <button
             type="button"
-            className="btn btn-danger"
+            className="btn btn-ghost btn-danger btn-sm"
             disabled={busy}
             onClick={() => setConfirming(true)}
           >

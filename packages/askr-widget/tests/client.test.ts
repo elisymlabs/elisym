@@ -595,9 +595,10 @@ describe('reconnects', () => {
 describe('cards and clicks', () => {
   it('reports clicks with the current ticket', async () => {
     const setup = await started(harness());
-    setup.client.reportClick(`30402:${setup.store.catalogKey.pubkey}:sku-1`);
+    setup.client.reportClick(`30402:${setup.store.catalogKey.pubkey}:sku-1`, 'cart');
     await settle();
     expect(setup.gateway.clicks).toHaveLength(1);
+    expect(setup.gateway.clicks[0]?.kind).toBe('cart');
     expect(setup.gateway.clicks[0]?.ticket.tags).toContainEqual(['p', setup.client.visitor.pubkey]);
   });
 });

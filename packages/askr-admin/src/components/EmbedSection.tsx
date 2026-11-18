@@ -9,6 +9,7 @@ import {
   pinnedScriptSnippet,
   scriptSnippet,
 } from '../lib/embed';
+import { HELP } from '../lib/help';
 import { npubOf } from '../lib/signer';
 import type { PinnedWidget, StoreView } from '../lib/types';
 import { AddToCartHook } from './AddToCartHook';
@@ -142,8 +143,8 @@ export function EmbedSection({ api, view, config }: Props) {
           the cart&apos;s place.
         </Notice>
         {otherSites.length === 0 ? null : (
-          <details>
-            <summary className="text-14 cursor-pointer">
+          <details className="disclosure">
+            <summary>
               Your other sites ({otherSites.join(', ')}) get no button: a hook for them
             </summary>
             <div className="mt-8 flex flex-col gap-8">
@@ -167,9 +168,10 @@ export function EmbedSection({ api, view, config }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
       <Section
         title="Add the chat to your site"
+        info={HELP.embedCode}
         description="Paste this before the closing body tag on every page that should show the chat. It always loads the current version, so fixes reach your site within minutes."
       >
         {statusNotice}
@@ -179,27 +181,38 @@ export function EmbedSection({ api, view, config }: Props) {
           {config === undefined ? '' : `: ${config.origins.join(', ')}`}. Add data-theme="light" or
           data-theme="dark" to the script tag to fix its colors.
         </p>
-        <p className="text-13 font-medium">Where to paste it:</p>
-        <ul className="text-13 text-text-2 flex flex-col gap-4" aria-label="Where to paste it">
+      </Section>
+      <Section title="Where to paste it" flush>
+        <ul className="rows text-13 flex flex-col" aria-label="Where to paste it">
           {PLATFORM_HINTS.map((hint) => (
-            <li key={hint.platform}>
-              <span className="text-text font-medium">{hint.platform}:</span> {hint.where}
+            <li
+              key={hint.platform}
+              className="flex flex-col gap-2 px-20 py-12 sm:flex-row sm:gap-24"
+            >
+              <span className="text-text font-medium sm:w-180 sm:shrink-0">{hint.platform}:</span>{' '}
+              <span className="text-text-2">{hint.where}</span>
             </li>
           ))}
         </ul>
       </Section>
       <Section
         title="Add to cart"
+        info={HELP.addToCart}
         description="Each product card links to its page. Whether it also has an add to cart button depends on where your products come from."
       >
         {cart}
-        <a className="text-14 underline" href={EMBED_DOCS_URL} target="_blank" rel="noreferrer">
+        <a
+          className="text-13 text-text-2 hover:text-text self-start underline underline-offset-2"
+          href={EMBED_DOCS_URL}
+          target="_blank"
+          rel="noreferrer"
+        >
           More on add to cart in the guide
         </a>
       </Section>
-      <details>
-        <summary className="text-18 cursor-pointer font-semibold">Advanced</summary>
-        <div className="mt-16 flex flex-col gap-16">
+      <details className="disclosure">
+        <summary className="text-15 font-semibold">Advanced</summary>
+        <div className="mt-20 flex flex-col gap-32">
           <Section
             title="Place the chat element yourself"
             description="For a page that decides where the chat button goes."
@@ -215,18 +228,28 @@ export function EmbedSection({ api, view, config }: Props) {
           <Section
             title="Content Security Policy"
             description="If your site sends a Content-Security-Policy header, add these sources to it. An add to cart hook written inline needs a nonce or hash of its own, or a file of its own."
+            flush
           >
-            <table className="text-14 w-full">
-              <tbody>
-                {cspSources().map((source) => (
-                  <tr key={source.directive} className="border-line border-t align-top">
-                    <td className="py-6 pr-12 font-mono whitespace-nowrap">{source.directive}</td>
-                    <td className="py-6 pr-12 font-mono break-all">{source.sources.join(' ')}</td>
-                    <td className="text-text-2 py-6">{source.why}</td>
+            <div className="overflow-x-auto">
+              <table className="data-table text-13">
+                <thead>
+                  <tr>
+                    <th>Directive</th>
+                    <th>Sources</th>
+                    <th>Why</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {cspSources().map((source) => (
+                    <tr key={source.directive} className="align-top">
+                      <td className="font-mono whitespace-nowrap">{source.directive}</td>
+                      <td className="font-mono break-all">{source.sources.join(' ')}</td>
+                      <td className="text-text-2">{source.why}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </Section>
         </div>
       </details>

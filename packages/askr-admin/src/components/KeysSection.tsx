@@ -14,6 +14,8 @@ interface Props {
   onRetry: () => Promise<void>;
   onChanged: () => Promise<void>;
   onReplaceKey: () => void;
+  /** The key on this device was forgotten. */
+  onForgotten?: () => void;
 }
 
 /** The Advanced tab: the secret key, the assistant key, and keys that publish the catalog. */
@@ -25,11 +27,12 @@ export function KeysSection({
   onRetry,
   onChanged,
   onReplaceKey,
+  onForgotten,
 }: Props) {
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
       <ReplaceKey onReplaceKey={onReplaceKey}>
-        <ForgetOnDevice store={deps.signer.pubkey} />
+        <ForgetOnDevice store={deps.signer.pubkey} onForgotten={onForgotten} />
       </ReplaceKey>
       <CatalogKeys deps={deps} view={view} config={config} />
       <RotateAssistant

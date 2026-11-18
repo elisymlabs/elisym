@@ -1,18 +1,32 @@
+import type { Help } from '../lib/help';
+import { FieldLabel } from './FieldLabel';
+
 interface Props {
   id: string;
   label: string;
   value: string;
   onChange: (value: string) => void;
   hint?: string;
+  /** What the info button beside the label says. */
+  info?: Help;
   placeholder?: string;
   /** Shown but not editable (an ID that cannot change). */
   readOnly?: boolean;
 }
 
-export function TextField({ id, label, value, onChange, hint, placeholder, readOnly }: Props) {
+export function TextField({
+  id,
+  label,
+  value,
+  onChange,
+  hint,
+  placeholder,
+  readOnly,
+  info,
+}: Props) {
   return (
-    <label className="field" htmlFor={id}>
-      <span className="field-label">{label}</span>
+    <div className="field">
+      <FieldLabel htmlFor={id} label={label} info={info} />
       <input
         id={id}
         aria-describedby={hint === undefined ? undefined : `${id}-hint`}
@@ -30,6 +44,6 @@ export function TextField({ id, label, value, onChange, hint, placeholder, readO
           {hint}
         </span>
       )}
-    </label>
+    </div>
   );
 }

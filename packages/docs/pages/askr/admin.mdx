@@ -1,0 +1,384 @@
+# The Askr admin, field by field
+
+The admin at `https://api.askr.elisym.network/admin/` is where you set up and run your store's assistant. This page explains every section and field in it. In the admin, the **i** button beside a field or a section title shows a short version and links here.
+
+Everything you save in the admin is signed with your secret key in your browser. The key never leaves it: see [Overview](/askr/overview) for how keys and signing work.
+
+## Signing in
+
+### Remember my key on this device
+
+Ticked by default. When it is ticked, signing in keeps your secret key in this browser, encrypted with a key the browser makes for the admin and never lets out, so next time **Continue** signs you in with one press. There is no password: anyone who can use this browser profile can sign in as your store. Clear the box on a shared or public computer, and use **Forget** on the sign-in page, or **Forget this device** under Advanced, to remove a remembered key. If the browser's site data is cleared, the key is gone from the device and you sign in with your secret key again. Where the browser keeps nothing (some private windows), the option is not offered.
+
+## The Overview page
+
+### Status
+
+- **Pending**: your settings are saved, and the assistant starts answering once the Askr operator activates your store on a plan. You can finish the whole setup meanwhile.
+- **Active**: the assistant answers visitors on your allowed sites.
+- **Suspended**: the assistant does not answer, and the chat tells visitors it is unavailable. Contact the Askr operator.
+
+### Usage
+
+What the assistant has spent against your plan, in US dollars, today and this month. Each answer reserves a small amount before it runs and settles the real cost after. When the daily or monthly budget is used up, the chat says the assistant is unavailable (with your contact link, if you set one) until the next day or month starts, in UTC. A visitor who has asked as many questions as your plan allows for the day sees the same.
+
+- **Conversations so far**: visitors' chats that got at least one answer. A chat lasts up to 24 hours from the visitor's first message and is counted once, however many questions follow.
+- **Open conversations**: chats started in the last 24 hours.
+- **Reserved today**: money set aside for answers that are being written right now.
+
+The plan line below says how many products the assistant reads, how many questions one visitor may ask a day, and how often a connector syncs.
+
+### Product clicks
+
+For each product: **Page opened** counts how often a visitor opened its page from a card in the chat, and **Added to cart** how often they pressed the card's add to cart button. Both are reported by the visitor's browser, so take them as a guide rather than exact figures. A page still running an older chat version counts its add to cart presses as page opens. The busiest products come first, up to ten.
+
+### Waiting to publish
+
+Changes you signed that the server has not published to the relay yet. A store that is not active keeps them on the server until it is activated, then publishes them. If publishing is refused, the change is listed with how often it was refused; once it is no longer retried, sign it again (save it again where you made it).
+
+### Product sync
+
+The last time products were published from the admin or a connector, and what it did: how many products were new, updated, removed or unchanged. If it failed, the reason is shown.
+
+## The Settings page
+
+Every save signs the whole settings again with your secret key and replaces the previous version. **Sign and save** stays at the bottom of the screen while you scroll.
+
+### Store name
+
+Your store's name, as visitors know it. The assistant introduces your store by it, and the chat header shows it, followed by "assistant", unless you set an assistant name.
+
+**Example:** `Northwind Outdoor`
+
+### Catalog language
+
+The language your products and policies are written in, as a language tag such as `en`, `de` or `pt-BR`. The assistant writes its catalog searches in this language, whatever language the visitor uses, and answers each visitor in the visitor's own language.
+
+**Example:** `en` for English, `de` for German, `pt-BR` for Brazilian Portuguese.
+
+### Currency
+
+The three-letter code of the currency your prices are in, such as `USD` or `EUR`. A product priced in another currency is left out of the assistant's catalog and never offered, so publish all your prices in this currency.
+
+**Example:** `USD`, `EUR` or `GBP`.
+
+### Allowed origins
+
+The sites the chat runs on, one per line, each written as `https://` and the host, with no path: `https://shop.example`. The chat answers only on these sites, and a product card links to a page only on these sites or the link origins below. List every host the chat code is pasted on, `www.` and the bare domain separately if you use both. Up to 20.
+
+These sites also count when you replace a lost secret key: a site proves the store is yours once the store has listed it for 72 hours. See [Replacing a lost or leaked secret key](/askr/overview#replacing-a-lost-or-leaked-secret-key).
+
+**Example:**
+
+```text
+https://northwind.example
+https://www.northwind.example
+```
+
+### Link origins
+
+Other sites a product card may link to, one per line, in the same form. Use it when your product pages live on another host than the chat, for example a separate shop domain. The chat does not run on these sites. Optional.
+
+**Example:** your chat runs on `https://northwind.example`, but product pages are on another host:
+
+```text
+https://shop.northwind.example
+```
+
+### Assistant name
+
+The name in the chat header. Leave it empty to show your store name followed by "assistant". Optional.
+
+**Example:** `Trail guide`. Empty, the header says "Northwind Outdoor assistant".
+
+### Greeting
+
+The first message a visitor sees when the chat opens, up to 280 characters. It is shown exactly as you write it, whatever the visitor's language. Leave it empty for a short greeting the chat shows in the visitor's language. Optional.
+
+**Example:** `Hi! Looking for a tent, a sleeping bag or something for the trail?`
+
+### Contact URL
+
+A page where visitors can reach a person, such as your contact form, as an `https://` address. The chat links to it when the assistant is unavailable, for example when your budget is used up, the visitor has asked as many questions as your plan allows for the day, or the store is not active. Optional.
+
+**Example:** `https://northwind.example/contact`
+
+### Where your products come from
+
+Where the assistant reads your products and policies from. Exactly one source counts:
+
+- **Here in the admin (CSV import and product editor)**: you edit products on the Products page or import a CSV file, and write policies on the Policies page. The server's own catalog key signs them.
+- **My own catalog key (SDK, MCP or my backend)**: your own code publishes products and policies, signed with a key you hold. See [Your catalog key](#your-catalog-key).
+- **My online shop or product feed (connector)**: a connector imports products from Shopify, WooCommerce or a Google product feed on your plan's schedule. See [Platform](#platform).
+
+Changing the source does not delete what the old source published; the assistant just stops reading it.
+
+### Platform
+
+Shown for a connector. **Shopify** and **WooCommerce** are read through the shop's public product pages, with no access token. **Google product feed** reads a feed file in Google Merchant format. A Shopify or WooCommerce connector also gives product cards an add to cart button that fills the shop's own cart, on the shop's own site.
+
+### Shop address
+
+Shown for Shopify and WooCommerce: the shop's address, such as `https://shop.example`. It must be on one of your allowed origins, so the chat can add to the shop's cart there.
+
+**Example:** `https://northwind.example` for a shop at the root, or, for a WooCommerce shop under a path, `https://northwind.example/shop`. A Shopify shop is always read at its domain.
+
+### Feed address
+
+Shown for a Google product feed: the `https://` address of the feed file. Every site its products link to must be one of your allowed origins or link origins, and each of those sites must show your Store ID (see [Prove the site is yours](#prove-the-site-is-yours)).
+
+**Example:** `https://northwind.example/feeds/google.xml`
+
+### Currency override
+
+Used for Shopify only. The connector reads a Shopify shop's currency from the shop itself; if the shop does not say it, or says another one than it really sells in, enter the currency of its prices here. Leave it empty otherwise. WooCommerce and Google product feeds give the currency with each price, so this field does not change them. Optional.
+
+**Example:** your Shopify shop reports `USD` but its prices are in Canadian dollars: enter `CAD`.
+
+### Import policies
+
+Shown for Shopify. Imports your shop's refund, shipping, privacy and terms pages as policies. Each sync puts the shop's version back, so those policies are edited in Shopify, not on the Policies page.
+
+### Your catalog key
+
+Shown for **My own catalog key**: the public key (`npub1...`) your backend, the SDK or an MCP server signs your products and policies with. Saving authorizes it to publish for your store; you can revoke it under [Catalog keys](#catalog-keys). Its secret half stays with your code, never in the admin.
+
+**Example:** `npub1kq4w2d7m...` (the full public key, about 63 characters).
+
+### Private instructions
+
+Voice, instructions and notes are encrypted so that only your assistant can read them. Visitors never see them, and the assistant follows them without quoting them. They cannot override its own rules: it never makes up prices, stock or promises.
+
+### Voice
+
+How the assistant should sound: friendly, brief, formal, playful. Up to 4,000 characters.
+
+**Example:** `Friendly and concise. Plain words, no exclamation marks. Talk like an experienced hiker helping a friend.`
+
+### Instructions
+
+What the assistant should do or prefer: which products to suggest first, what to ask before recommending, what to avoid. Up to 8,000 characters.
+
+**Example:**
+
+```text
+Recommend what fits the visitor's trip, not the most expensive item.
+Ask how many nights and what weather before suggesting a sleeping bag.
+Suggest our own Ridge tents before other brands when they fit.
+```
+
+### Notes
+
+Background the assistant may use but never repeats word for word: stock arriving soon, how your sizes run, what to say about a delivery delay. Up to 4,000 characters.
+
+**Example:**
+
+```text
+The Ridge 2-person tent is back in stock on 1 March.
+Our boots run half a size small: suggest half a size up.
+Deliveries to the islands take 2-3 extra days.
+```
+
+## The Products page
+
+Shown when your products come from the admin.
+
+### Catalog
+
+The products the assistant recommends from. Your changes stay in this page until you review and publish them. Removing a product here deletes it for good when you publish; to take one off sale for a while, set its availability to hidden instead. The line under the table says how many products you have and how many your plan reads.
+
+### Product ID
+
+A short ID that never changes, such as your SKU: letters, digits and `. _ : -`. Publishing a product with the same ID updates it. It cannot be changed once the product exists: to rename an ID, add a new product and remove the old one.
+
+**Example:** `tent-2p`, `BOOT.42` or `sku_10023`.
+
+### Product title
+
+The product's name, as its card in the chat shows it.
+
+**Example:** `Ridge 2-person tent`
+
+### Product price
+
+The price as a number, such as `19.90`. The assistant quotes prices only from here, never its own. With variants, this is worked out for you: the lowest price among the variants in stock, or among all of them when none is.
+
+**Example:** `249` or `39.90`.
+
+### Product currency
+
+The price's currency. It must be the store's currency for the product to be offered.
+
+**Example:** `USD`, the same as the store's currency.
+
+### Billing
+
+**One-time price**, or a subscription price **per hour, day, week, month or year**. The card shows the period with the price.
+
+**Example:** a coffee subscription at `18` **per month** shows as "18.00 USD / month".
+
+### Summary
+
+One short line about the product. The assistant's search matches its words, as it does the title, description, topics and attributes. Optional.
+
+**Example:** `Freestanding 3-season tent for two, 2.1 kg.`
+
+### Description
+
+Everything a shopper might ask: materials, sizes, care, what is in the box. The assistant reads it when a visitor asks about the product, and its search matches its words.
+
+**Example:** `Two doors and two vestibules, so neither of you climbs over the other. Aluminum poles, 3000 mm fly. Packed size 45 x 15 cm. Pitches in about five minutes, fly first in the rain.`
+
+### Product page
+
+The product's page on your site. The card links to it. It must be on one of your allowed origins or link origins, or the card shows no link. Optional.
+
+**Example:** `https://northwind.example/products/ridge-2p`
+
+### Image URLs
+
+Image addresses (`https://`), one per line, up to 8. The first is shown on the card and in the admin's product list.
+
+**Example:**
+
+```text
+https://cdn.northwind.example/ridge-2p/front.jpg
+https://cdn.northwind.example/ridge-2p/inside.jpg
+```
+
+### Topics
+
+Words shoppers might search by, separated by commas, such as `tents, camping, family`. Up to 20. Optional.
+
+**Example:** `tents, camping, backpacking, two person`
+
+### SKU
+
+Your stock keeping unit. It is passed to your add to cart hook, so your cart can find the product, and is never shown to visitors. Optional.
+
+**Example:** `NW-TENT-2P-GRN`
+
+### Attributes
+
+Facts as a name and a value, such as `Material: wool` or `Weight: 1.2 kg`. The assistant filters and compares products by them. Up to 30. Optional.
+
+**Example:** `Weight: 2.1 kg`, `Season: 3-season`, `Capacity: 2 people`.
+
+### Options
+
+Choices a shopper makes, such as **Size** or **Color**, each with its values. Up to 5 options of 10 values each. A product with options gets variants. Optional.
+
+**Example:** `Size` with `S, M, L, XL`, and `Color` with `Red, Blue`.
+
+### Variants
+
+One row per combination of option values, such as Size M in Red, with its own ID, price and stock when they differ from the product's. The card lets the shopper pick, and add to cart sends the variant chosen. Up to 100.
+
+**Example:** with Size and Color above, a row for Size `M` and Color `Red` with ID `fleece-m-red`, price `79` and in stock; Size `XL` and Color `Blue` sold out.
+
+### Availability
+
+- **On sale**: offered, with add to cart where your site has it.
+- **Pre order**: offered as a pre-order.
+- **Sold out**: shown as sold out, with no add to cart.
+- **Hidden**: kept in your list here but not offered, so you can show it again later.
+
+**Example:** a tent you will restock next month: **Pre order**. A discontinued lamp you may bring back: **Hidden**.
+
+### Publish
+
+**Review changes** asks the server what publishing would do (which products are new, updated, removed or unchanged) without changing anything. **Publish** then sends only what changed. While products are being published, the editor waits.
+
+### Import from a CSV file
+
+Add products from a spreadsheet saved as CSV, or replace all of them. **File format** lists the columns: `d`, `title` and `price` are required; a column named `attr:Material` is an attribute and `option:Size` an option; each variant is one row with the same `d`. **Download an example file** gives a file to start from. Before anything changes, the admin says how many products it read and which rows have problems.
+
+**Example:**
+
+```text
+d,title,price,currency,attr:Material,option:Size,variant_id,variant_price,variant_available
+fleece,Grid fleece jacket,79,USD,Polyester,S,fleece-s,,yes
+fleece,,,,,M,fleece-m,,yes
+fleece,,,,,L,fleece-l,84,no
+boots,Ridgeline hiking boots,179,USD,Leather,,,,
+```
+
+The fleece has three sizes, L costs 84 and is out of stock; the boots have no variants.
+
+## The Policies page
+
+### Policies and FAQ
+
+Shipping, returns, sizing, payment and other answers the assistant may quote, up to 50 per store (counting those Shopify imports). Each shows its whole text. Policies imported from Shopify are read here but edited in Shopify.
+
+### Policy short name
+
+A short name that never changes, such as `returns` or `shipping`: lowercase letters, digits and hyphens.
+
+**Example:** `returns`, `shipping-intl` or `size-guide`.
+
+### Policy title
+
+The policy's heading, as the assistant names it.
+
+**Example:** `Returns`
+
+### Policy text
+
+The policy itself, in plain words. The assistant quotes from it, so write what you want visitors to read.
+
+**Example:** `Unused items can be returned within 30 days of delivery for a full refund. Start a return at northwind.example/returns; we email a prepaid label. Refunds reach your card within 5 business days of the return arriving.`
+
+## The Connector page
+
+Shown once a connector is set up in Settings.
+
+### Connector
+
+Imports your products from Shopify, WooCommerce or a Google feed on your plan's schedule. Askr reads only what the shop shows the public: no store token is needed. The page shows the shop, whether syncing is on, the last and next run and what the last run did. A shop behind a bot check that refuses automated readers cannot be read: let the `AskrConnector` user agent through, or use a feed or a CSV file.
+
+### Prove the site is yours
+
+Before importing, the shop must name your Store ID: add the meta tag shown to your home page, or serve a file at `/.well-known/askr` with your Store ID on a line of its own. For a Google product feed, every site its products link to must show it. Keep it there: every sync checks it.
+
+**Example:** in your home page's `<head>`:
+
+```html
+<meta name="askr-verification" content="npub1...your Store ID...">
+```
+
+or a file at `https://northwind.example/.well-known/askr` with your Store ID on its own line.
+
+### Sync
+
+**Preview first import** reads the shop and shows what the first import would publish, without publishing anything. **Turn on syncing** once the preview looks right; syncs then run on your plan's schedule. **Turn off syncing** stops them and keeps the products as last synced.
+
+## The Embed page
+
+### Add the chat to your site
+
+The chat code: paste it once before `</body>` on every page that should show the chat. It always loads the current version of the chat. Add `data-theme="light"` or `data-theme="dark"` to fix its colors, and `data-lang` to fix its language. See [Embed the widget](/askr/embed) for every option, pinning one version and a Content Security Policy.
+
+**Example:** dark colors and German texts, whatever the page says:
+
+```html
+<script src="https://api.askr.elisym.network/widget.js" data-store="npub1...your Store ID..." data-theme="dark" data-lang="de" async></script>
+```
+
+### Add to cart
+
+Whether product cards get an add to cart button. A Shopify or WooCommerce connector gives one on your shop's own site, with nothing to add. Otherwise your developer adds a small hook to your pages that puts the product in your cart. See [Embed the widget](/askr/embed).
+
+## The Advanced page
+
+### Secret key
+
+Your secret key is your store. If someone else may have it, replace it: you make a new key and prove the store is yours through your site, and the old key stops working for good. See [Replacing a lost or leaked secret key](/askr/overview#replacing-a-lost-or-leaked-secret-key).
+
+### Catalog keys
+
+The keys allowed to publish your products and policies. The server's own key is one of them, used by the admin and connectors. Authorize your own key to publish from your backend, the SDK or an MCP server, and revoke a key you no longer use. Revoking a key your settings read from hides what it published until you point the settings at another key.
+
+### Assistant key
+
+The key your assistant answers visitors with. Rotate it if you think it leaked: the server makes a new one, your settings are signed again for it, and the private instructions are encrypted to it. The current assistant keeps answering until the new settings are published.

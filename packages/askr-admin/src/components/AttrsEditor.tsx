@@ -1,4 +1,6 @@
 import { LIMITS } from '@elisym/askr';
+import { HELP } from '../lib/help';
+import { InfoTip } from './InfoTip';
 
 export interface AttrRow {
   name: string;
@@ -17,7 +19,10 @@ export function AttrsEditor({ rows, onChange }: Props) {
 
   return (
     <fieldset className="flex flex-col gap-8">
-      <legend className="field-label">Attributes (optional)</legend>
+      <legend className="field-label flex items-center gap-6">
+        Attributes (optional)
+        <InfoTip help={HELP.productAttributes} about="Attributes" />
+      </legend>
       <span className="field-hint">
         Facts a shopper may ask about, such as Material: wool or Weight: 1.2 kg.
       </span>

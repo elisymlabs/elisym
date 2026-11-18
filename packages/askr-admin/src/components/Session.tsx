@@ -52,12 +52,14 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   /** The store's state as last read, for the config read that follows. */
   const status = useRef<StoreStatus | undefined>(undefined);
 
-  const reload = useCallback(async () => {
+  /** Read the store again: true once it was read. */
+  const reload = useCallback(async (): Promise<boolean> => {
     try {
       const view = await deps.api.store();
       status.current = view.status;
       setLoad({ state: 'ready', view });
       setReloadWarning('');
+      return true;
     } catch (error) {
       const missing = error instanceof ApiError && error.code === 'no_store';
       const moved = error instanceof ApiError && error.code === 'moved';
@@ -73,10 +75,12 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
         return missing ? { state: 'missing' } : { state: 'failed', error: errorMessage(error) };
       });
       setReloadWarning(`The store could not be refreshed: ${errorMessage(error)}`);
+      return false;
     }
   }, [deps]);
 
-  const reloadConfig = useCallback(async () => {
+  /** Read the settings again: true once they were read (readable or not). */
+  const reloadConfig = useCallback(async (): Promise<boolean> => {
     let own: NostrEvent[] = [];
     let truncated = false;
     if (status.current !== undefined && status.current !== 'active') {
@@ -87,7 +91,7 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       } catch (error) {
         setConfigError(`Your saved settings could not be read: ${errorMessage(error)}`);
         setConfigRead(true);
-        return;
+        return false;
       }
     }
     setStored(own);
@@ -107,10 +111,12 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       }
       setConfigFromServer(own.some((event) => event.id === shownId));
       setConfigError('');
+      return true;
     } catch {
       setConfigError(
         'Your published settings could not be read, so they are not shown. Retry in a moment.',
       );
+      return false;
     } finally {
       setConfigRead(true);
     }

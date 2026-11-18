@@ -1,12 +1,15 @@
-// cspell:words ncryptsec
-import { decrypt, encrypt } from 'nostr-tools/nip49';
 import { getPublicKey } from 'nostr-tools/pure';
 import { publicKeyOf } from './signer';
 
 /**
- * Secret keys remembered on this device, each locked with a password the
- * merchant chose (NIP-49: scrypt, then XChaCha20-Poly1305). Only the locked
- * form is ever written; the plain key never touches storage.
+ * Secret keys remembered on this device, each sealed with AES-GCM under a
+ * device key this browser made for the admin. The device key is a
+ * non-extractable WebCrypto key kept in IndexedDB: its bytes can never be
+ * read out, so a copy of localStorage alone does not give the secret key
+ * away. It is not a lock against whoever has this browser profile, nor
+ * against script running on the admin's origin: either can use the device
+ * key to open it, as the merchant chose by remembering it with no password.
+ * Only the sealed form is written; the plain key never touches storage.
  *
  * One remembered key per Store ID, newest first: a merchant with several
  * stores picks one on the sign-in page, and remembering a key again for the
@@ -15,46 +18,28 @@ import { publicKeyOf } from './signer';
  * This is the only module that touches browser storage.
  */
 
-/**
- * scrypt cost: N = 2^16, 64 MiB, the value NIP-49 suggests. Measured with
- * nostr-tools' scrypt (pure JS, the same code the browser runs): about 125 ms
- * to lock or unlock on a laptop (2^15: 60 ms, 2^17: 255 ms), so a phone stays
- * near a second while each password guess stays costly.
- */
-export const REMEMBER_LOG_N = 16;
-/**
- * The costs read back: up to 2^18 (256 MiB), so a later release may raise
- * the cost without old keys turning unreadable, and a damaged value never
- * asks for a run the browser cannot afford.
- */
-const MAX_READ_LOG_N = 18;
-
-/**
- * Kept low on purpose: the merchant chooses the strength. The form says plainly that whoever
- * copies the browser's storage can guess offline, so a longer password holds better.
- */
-export const MIN_PASSWORD_LENGTH = 6;
-
 const STORAGE_KEY = 'askr-admin.remembered-keys';
 const PROBE_KEY = 'askr-admin.probe';
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
+const PASSWORD_FORMAT_VERSION = 1;
+
+const DEVICE_DB = 'askr-admin';
+const DEVICE_DB_VERSION = 1;
+const DEVICE_STORE = 'device';
+const DEVICE_KEY_ID = 'remember-key';
 
 const HEX_PUBKEY_RE = /^[0-9a-f]{64}$/;
-const NCRYPTSEC_PREFIX = 'ncryptsec';
-// cspell:disable-next-line
-const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
-const BECH32_GENERATORS = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
-const BECH32_CHECKSUM_WORDS = 6;
-/** version, log_n, salt (16), nonce (24), key security byte, ciphertext (32) and tag (16). */
-const NCRYPTSEC_BYTES = 1 + 1 + 16 + 24 + 1 + 48;
-const NCRYPTSEC_VERSION = 2;
 const SECRET_KEY_BYTES = 32;
+const IV_BYTES = 12;
+const TAG_BYTES = 16;
+/** The nonce, then the sealed secret key and its tag. */
+const SEALED_BYTES = IV_BYTES + SECRET_KEY_BYTES + TAG_BYTES;
 
 export interface RememberedKey {
   /** The Store ID, as a hex public key. */
   store: string;
-  /** The secret key locked with the merchant's password. */
-  locked: string;
+  /** The secret key sealed with this device's key, base64. */
+  sealed: string;
 }
 
 export interface RememberedRead {
@@ -69,7 +54,12 @@ export interface RememberedRead {
 
 export type UnlockOutcome =
   | { ok: true; secretKey: Uint8Array }
-  | { ok: false; reason: 'password' | 'mismatch' };
+  /**
+   * lost: no device key, or the sealed key does not open (site data cleared in part);
+   * mismatch: it opens to another key than its Store ID's; unavailable: the browser's
+   * storage did not answer this time, so a retry may work.
+   */
+  | { ok: false; reason: 'lost' | 'mismatch' | 'unavailable' };
 
 function storage(): Storage | undefined {
   try {
@@ -79,10 +69,21 @@ function storage(): Storage | undefined {
   }
 }
 
+function deviceKeysAvailable(): boolean {
+  try {
+    return (
+      typeof globalThis.indexedDB !== 'undefined' &&
+      typeof globalThis.crypto?.subtle !== 'undefined'
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Whether a value can be written here: private windows and blocked storage say no. */
 export function canRemember(): boolean {
   const store = storage();
-  if (store === undefined) {
+  if (store === undefined || !deviceKeysAvailable()) {
     return false;
   }
   try {
@@ -94,73 +95,90 @@ export function canRemember(): boolean {
   }
 }
 
-function bech32Checksum(values: readonly number[]): number {
-  let checksum = 1;
-  for (const value of values) {
-    const top = checksum >>> 25;
-    checksum = ((checksum & 0x1ffffff) << 5) ^ value;
-    BECH32_GENERATORS.forEach((generator, index) => {
-      if (((top >>> index) & 1) === 1) {
-        checksum ^= generator;
-      }
-    });
+function base64OfBytes(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
   }
-  return checksum;
+  return btoa(binary);
 }
 
-/** The bytes of a well-formed bech32 string with this prefix, or undefined. */
-function bech32Bytes(value: string, prefix: string): Uint8Array | undefined {
-  if (!value.startsWith(`${prefix}1`)) {
+function bytesOfBase64(value: string): Uint8Array | undefined {
+  try {
+    return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  } catch {
     return undefined;
   }
-  const words: number[] = [];
-  for (const character of value.slice(prefix.length + 1)) {
-    const word = BECH32_CHARSET.indexOf(character);
-    if (word === -1) {
-      return undefined;
+}
+
+function requestResult<Value>(request: IDBRequest<Value>): Promise<Value> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed'));
+  });
+}
+
+function openDeviceDb(): Promise<IDBDatabase> {
+  const request = indexedDB.open(DEVICE_DB, DEVICE_DB_VERSION);
+  request.onupgradeneeded = () => {
+    if (!request.result.objectStoreNames.contains(DEVICE_STORE)) {
+      request.result.createObjectStore(DEVICE_STORE);
     }
-    words.push(word);
-  }
-  if (words.length <= BECH32_CHECKSUM_WORDS) {
-    return undefined;
-  }
-  const prefixCodes = [...prefix].map((character) => character.charCodeAt(0));
-  const expanded = [
-    ...prefixCodes.map((code) => code >>> 5),
-    0,
-    ...prefixCodes.map((code) => code & 31),
-  ];
-  if (bech32Checksum([...expanded, ...words]) !== 1) {
-    return undefined;
-  }
-  const bytes: number[] = [];
-  let accumulator = 0;
-  let bits = 0;
-  for (const word of words.slice(0, -BECH32_CHECKSUM_WORDS)) {
-    accumulator = (accumulator << 5) | word;
-    bits += 5;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes.push((accumulator >>> bits) & 0xff);
-    }
-  }
-  if (bits >= 5 || (accumulator & ((1 << bits) - 1)) !== 0) {
-    return undefined;
-  }
-  return Uint8Array.from(bytes);
+  };
+  return requestResult(request);
+}
+
+function isDeviceKey(value: unknown): value is CryptoKey {
+  return (
+    value instanceof CryptoKey &&
+    value.algorithm.name === 'AES-GCM' &&
+    !value.extractable &&
+    value.usages.includes('encrypt') &&
+    value.usages.includes('decrypt')
+  );
 }
 
 /**
- * A locked key exactly as this module writes it: the cost is checked before
- * any unlock, so a damaged value can never ask for a huge scrypt run.
+ * This device's key, made on first use when `create`. Two tabs making one at
+ * once keep whichever was stored first: it is added, never put over another.
  */
-function wellFormedLocked(value: string): boolean {
-  const bytes = bech32Bytes(value, NCRYPTSEC_PREFIX);
-  if (bytes === undefined || bytes.length !== NCRYPTSEC_BYTES) {
-    return false;
+async function deviceKey(create: boolean): Promise<CryptoKey | undefined> {
+  const db = await openDeviceDb();
+  try {
+    const stored: unknown = await requestResult(
+      db.transaction(DEVICE_STORE).objectStore(DEVICE_STORE).get(DEVICE_KEY_ID),
+    );
+    if (isDeviceKey(stored) || !create) {
+      return isDeviceKey(stored) ? stored : undefined;
+    }
+    const made = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+      'encrypt',
+      'decrypt',
+    ]);
+    // A slot holding something else opens nothing sealed under it: it is cleared for a new key.
+    if (stored !== undefined) {
+      await requestResult(
+        db.transaction(DEVICE_STORE, 'readwrite').objectStore(DEVICE_STORE).delete(DEVICE_KEY_ID),
+      );
+    }
+    const objects = db.transaction(DEVICE_STORE, 'readwrite').objectStore(DEVICE_STORE);
+    try {
+      await requestResult(objects.add(made, DEVICE_KEY_ID));
+      return made;
+    } catch {
+      const winner: unknown = await requestResult(
+        db.transaction(DEVICE_STORE).objectStore(DEVICE_STORE).get(DEVICE_KEY_ID),
+      );
+      return isDeviceKey(winner) ? winner : undefined;
+    }
+  } finally {
+    db.close();
   }
-  const logN = bytes[1] ?? 0;
-  return bytes[0] === NCRYPTSEC_VERSION && logN >= REMEMBER_LOG_N && logN <= MAX_READ_LOG_N;
+}
+
+/** The Store ID is bound in as associated data: a sealed key moved to another entry fails. */
+function sealParams(iv: Uint8Array, store: string): AesGcmParams {
+  return { name: 'AES-GCM', iv, additionalData: new TextEncoder().encode(store) };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -171,14 +189,14 @@ function parseEntry(value: unknown): RememberedKey | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  const { store, locked } = value;
+  const { store, sealed } = value;
   if (typeof store !== 'string' || !HEX_PUBKEY_RE.test(store)) {
     return undefined;
   }
-  if (typeof locked !== 'string' || !wellFormedLocked(locked)) {
+  if (typeof sealed !== 'string' || bytesOfBase64(sealed)?.length !== SEALED_BYTES) {
     return undefined;
   }
-  return { store, locked };
+  return { store, sealed };
 }
 
 interface Inspected extends RememberedRead {
@@ -206,6 +224,10 @@ function inspect(): Inspected {
     parsed = JSON.parse(raw);
   } catch {
     return { ...nothing, available, damaged: true, unreadable: true };
+  }
+  // Keys locked with a password by an earlier build, never released: written over, not offered.
+  if (isRecord(parsed) && parsed.version === PASSWORD_FORMAT_VERSION) {
+    return { ...nothing, available };
   }
   if (isRecord(parsed) && typeof parsed.version === 'number' && parsed.version > FORMAT_VERSION) {
     return { ...nothing, available, newer: true };
@@ -257,31 +279,41 @@ function writeKeys(keys: readonly RememberedKey[], leftovers: readonly unknown[]
   }
 }
 
-/** Why this password cannot lock a key, or undefined when it can. */
-export function passwordProblem(password: string, repeated: string): string | undefined {
-  if ([...password].length < MIN_PASSWORD_LENGTH) {
-    return `Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.`;
-  }
-  if (password !== repeated) {
-    return 'The two passwords are not the same.';
-  }
-  return undefined;
-}
-
 /**
- * Remember `secretKey` on this device, locked with `password`, in place of any
- * for its store. Refused over a newer admin's value or a wholly unreadable one,
- * which only the merchant clears.
+ * Remember `secretKey` on this device, sealed with its device key, in place of
+ * any for its store. Refused over a newer admin's value or a wholly unreadable
+ * one, which only the merchant clears.
  */
-export function rememberKey(secretKey: Uint8Array, password: string): boolean {
+export async function rememberKey(secretKey: Uint8Array): Promise<boolean> {
+  const before = inspect();
+  if (before.unreadable || before.newer === true) {
+    return false;
+  }
+  const store = getPublicKey(secretKey);
+  let sealed: string;
+  try {
+    const key = await deviceKey(true);
+    if (key === undefined) {
+      return false;
+    }
+    const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
+    const cipher = new Uint8Array(
+      await crypto.subtle.encrypt(sealParams(iv, store), key, secretKey),
+    );
+    const joined = new Uint8Array(SEALED_BYTES);
+    joined.set(iv);
+    joined.set(cipher, IV_BYTES);
+    sealed = base64OfBytes(joined);
+  } catch {
+    return false;
+  }
+  // Read again: another tab may have written while the key was sealed.
   const read = inspect();
   if (read.newer === true || read.unreadable) {
     return false;
   }
-  const store = getPublicKey(secretKey);
-  const locked = encrypt(secretKey, password, REMEMBER_LOG_N);
   return writeKeys(
-    [{ store, locked }, ...read.keys.filter((key) => key.store !== store)],
+    [{ store, sealed }, ...read.keys.filter((known) => known.store !== store)],
     read.leftovers.filter((entry) => !namesStore(entry, store)),
   );
 }
@@ -319,24 +351,39 @@ export function isRemembered(store: string): boolean {
 }
 
 /**
- * The secret key behind `key`, or why not. A wrong password and a damaged
- * value both fail the authentication tag; nothing of the failure is passed on.
+ * The secret key behind `key`, or why not. A device key that is gone (site
+ * data cleared in part) and a damaged value both fail; nothing of the failure
+ * is passed on.
  */
-export function unlockKey(key: RememberedKey, password: string): UnlockOutcome {
+export async function unlockKey(key: RememberedKey): Promise<UnlockOutcome> {
+  const joined = bytesOfBase64(key.sealed);
+  if (joined === undefined || joined.length !== SEALED_BYTES) {
+    return { ok: false, reason: 'lost' };
+  }
+  let device: CryptoKey | undefined;
+  try {
+    device = await deviceKey(false);
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
+  if (device === undefined) {
+    return { ok: false, reason: 'lost' };
+  }
   let secretKey: Uint8Array;
   try {
-    secretKey = decrypt(key.locked, password);
+    secretKey = new Uint8Array(
+      await crypto.subtle.decrypt(
+        sealParams(joined.slice(0, IV_BYTES), key.store),
+        device,
+        joined.slice(IV_BYTES),
+      ),
+    );
   } catch {
-    return { ok: false, reason: 'password' };
+    return { ok: false, reason: 'lost' };
   }
   if (secretKey.length !== SECRET_KEY_BYTES || publicKeyOf(secretKey) !== key.store) {
     secretKey.fill(0);
     return { ok: false, reason: 'mismatch' };
   }
   return { ok: true, secretKey };
-}
-
-/** Let a slow step (scrypt) start after React painted its busy label. */
-export function nextTask(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
 }

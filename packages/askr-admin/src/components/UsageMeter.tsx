@@ -18,7 +18,19 @@ export function UsageMeter({ label, used, limit, text }: Props) {
           {text} ({percentOfBps(bps)}%)
         </span>
       </div>
-      <meter className="h-8 w-full" min={0} max={10_000} value={bps} aria-label={label} />
+      <div
+        className="bg-surface-2 h-6 w-full overflow-hidden rounded-full"
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={10_000}
+        aria-valuenow={bps}
+      >
+        <div
+          className={`h-full rounded-full ${bps >= 9_000 ? 'bg-error' : 'bg-text'}`}
+          style={{ width: `${Math.min(bps, 10_000) / 100}%` }}
+        />
+      </div>
     </div>
   );
 }

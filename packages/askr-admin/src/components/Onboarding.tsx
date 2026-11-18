@@ -67,13 +67,16 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
           </div>
         </Section>
       ) : (
-        <Section
-          title="2. Describe your store"
-          description="You sign these settings with your secret key. They tell the assistant what to sell and where it may run."
-        >
+        <div className="flex flex-col gap-20">
+          <div className="flex flex-col gap-2">
+            <h2 className="text-18 font-semibold">2. Describe your store</h2>
+            <p className="text-13 text-text-2">
+              You sign these settings with your secret key. They tell the assistant what to sell and
+              where it may run.
+            </p>
+          </div>
           <StoreSettingsForm
             initial={EMPTY_FORM}
-            ownerNpub={ownerNpub}
             submitLabel="Sign and save"
             onSubmit={async (form) => {
               const outcome = await saveSettings({ deps, view, form });
@@ -84,7 +87,7 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
               return 'Saved.';
             }}
           />
-        </Section>
+        </div>
       )}
     </main>
   );

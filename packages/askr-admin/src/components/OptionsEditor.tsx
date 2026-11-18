@@ -1,6 +1,8 @@
 import { LIMITS } from '@elisym/askr';
 import { useRef } from 'react';
+import { HELP } from '../lib/help';
 import { optionValuesOf } from '../lib/variants';
+import { InfoTip } from './InfoTip';
 
 export interface OptionRow {
   /** The row's identity while it is edited; empty for a row just added. */
@@ -33,7 +35,10 @@ export function OptionsEditor({ rows, onChange, onValuesDone }: Props) {
 
   return (
     <fieldset className="flex flex-col gap-8">
-      <legend className="field-label">Options (optional)</legend>
+      <legend className="field-label flex items-center gap-6">
+        Options (optional)
+        <InfoTip help={HELP.productOptions} about="Options" />
+      </legend>
       <span className="field-hint">
         Sizes, colors and the like. Separate values with commas. Editing options never adds or
         removes a variant: a value you replace by another is renamed in the variants too, and the

@@ -37,6 +37,8 @@ const ClickRequestSchema = z.object({
     sig: z.string(),
   }),
   address: z.string().max(512),
+  /** Absent from a widget older than add to cart counting: a link open. */
+  kind: z.enum(['link', 'cart']).optional(),
 });
 
 export interface GatewayDeps {
@@ -262,7 +264,7 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
       return json({ error: 'forbidden' }, 403, origin);
     }
     if (deps.isListed(owner, parsed.data.address)) {
-      await deps.state.countClick(owner, parsed.data.address);
+      await deps.state.countClick(owner, parsed.data.address, parsed.data.kind ?? 'link');
     }
     return new Response(null, {
       status: 204,

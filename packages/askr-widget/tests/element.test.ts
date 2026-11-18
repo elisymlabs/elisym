@@ -152,6 +152,12 @@ describe('<askr-chat>', () => {
     shadow.querySelector<HTMLButtonElement>('.cart')?.click();
     expect(onAddToCart).toHaveBeenCalledWith({ d: 'scarf', sku: 'SC-1' });
     await waitFor(() => gateway.clicks.length === 1);
+    // Through the element's own wiring, the press counts as an add to cart.
+    expect(gateway.clicks[0]?.kind).toBe('cart');
+    title?.addEventListener('click', (event) => event.preventDefault());
+    title?.click();
+    await waitFor(() => gateway.clicks.length === 2);
+    expect(gateway.clicks[1]?.kind).toBe('link');
     client.stop();
   });
 });

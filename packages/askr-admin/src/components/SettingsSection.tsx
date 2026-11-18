@@ -2,7 +2,6 @@ import { type StoreConfig, type StorePrivateConfig, decryptPrivateConfigWith } f
 import { useEffect, useRef, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { newestConfig, saveSettings, savedMessage } from '../lib/save';
-import { npubOf } from '../lib/signer';
 import { type AuthorityRead, readAuthority } from '../lib/store-data';
 import { EMPTY_FORM, formOfConfig, withConnector } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
@@ -126,10 +125,7 @@ export function SettingsSection({
     view.connector,
   );
   return (
-    <Section
-      title="Settings"
-      description="Every save is signed with your secret key and replaces the previous settings."
-    >
+    <div className="flex flex-col gap-16">
       {configUnreadableAt === undefined ? null : (
         <Notice tone="error">
           Your newest published settings could not be read.{' '}
@@ -179,7 +175,6 @@ export function SettingsSection({
         // Keyed on what the relay holds: this page's own save does not reset the form.
         key={`${config?.createdAt ?? 0}:${decryptAttempt}:${loaded.privatePart === undefined ? 'sealed' : 'open'}`}
         initial={initial}
-        ownerNpub={npubOf(deps.signer.pubkey)}
         submitLabel="Sign and save"
         canSubmit={authorities !== undefined && (!undecryptable || replacePrivate)}
         onSubmit={async (form) => {
@@ -218,6 +213,6 @@ export function SettingsSection({
           </label>
         ) : null}
       </StoreSettingsForm>
-    </Section>
+    </div>
   );
 }

@@ -1,6 +1,8 @@
 import { ANY_OPTION_VALUE } from '@elisym/askr';
 import { useState } from 'react';
+import { HELP } from '../lib/help';
 import { type OptionInput, type VariantInput, variantLabel } from '../lib/variants';
+import { InfoTip } from './InfoTip';
 
 interface Props {
   /** The options as typed; a variant picks one value of each, or Any. */
@@ -48,7 +50,10 @@ export function VariantsTable({ options, variants, onChange, onAdd, onAddMissing
 
   return (
     <fieldset className="flex flex-col gap-8">
-      <legend className="field-label">Variants</legend>
+      <legend className="field-label flex items-center gap-6">
+        Variants
+        <InfoTip help={HELP.productVariants} about="Variants" />
+      </legend>
       <span className="field-hint">
         Each variant is one choice a shopper can make, with its own price and stock. Any matches
         every value of that option.

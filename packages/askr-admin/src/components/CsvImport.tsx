@@ -71,39 +71,47 @@ export function CsvImport({ currency, current, onImport }: Props) {
         );
 
   return (
-    <div className="border-line rounded-12 flex flex-col gap-12 border p-16">
-      <h3 className="text-15 font-semibold">Import a CSV file</h3>
-      <div className="text-13 text-text-2 flex flex-col gap-4">
-        <p>
-          Columns: {CSV_COLUMNS.join(', ')}. The first row names them; d, title and price are
-          required. Put several images or topics in one cell separated by |. frequency is hour, day,
-          week, month or year for a subscription.
-        </p>
-        <p>
-          Attributes: a column named attr:Material (any name after attr:) gives every product that
-          fills it that attribute.
-        </p>
-        <p>
-          Sizes, colors and other variants: name a column per option, such as option:Size and
-          option:Color, plus {CSV_VARIANT_COLUMNS.join(', ')} if you need them. Each variant is one
-          row with the same d; the product&apos;s other columns go on its first row only, which may
-          itself be a variant or carry no option values. An empty variant_price is the
-          product&apos;s price, variant_available is yes or no (yes when empty), * in an option cell
-          means any value of that option, and the listing shows the lowest in-stock variant price.
-        </p>
-        <p>
-          <a className="underline" href={EXAMPLE_HREF} download="askr-products-example.csv">
-            Download an example file
-          </a>
-        </p>
+    <div className="flex flex-col gap-16">
+      <div className="flex flex-wrap items-center gap-12">
+        <input
+          type="file"
+          ref={fileInput}
+          accept=".csv,text/csv"
+          aria-label="CSV file"
+          className="text-13 text-text-2 file:border-line-2 file:bg-surface file:text-13 file:text-text hover:file:bg-surface-2 file:rounded-8 min-w-0 file:mr-12 file:cursor-pointer file:border file:px-12 file:py-6 file:font-medium"
+          onChange={(event) => void read(event.target.files?.[0])}
+        />
+        <a
+          className="text-13 text-text-2 hover:text-text underline underline-offset-2"
+          href={EXAMPLE_HREF}
+          download="askr-products-example.csv"
+        >
+          Download an example file
+        </a>
       </div>
-      <input
-        type="file"
-        ref={fileInput}
-        accept=".csv,text/csv"
-        aria-label="CSV file"
-        onChange={(event) => void read(event.target.files?.[0])}
-      />
+      <details className="disclosure text-13 text-text-2">
+        <summary className="text-text">File format</summary>
+        <div className="mt-8 flex flex-col gap-6 pl-16 leading-relaxed">
+          <p>
+            Columns: {CSV_COLUMNS.join(', ')}. The first row names them; d, title and price are
+            required. Put several images or topics in one cell separated by |. frequency is hour,
+            day, week, month or year for a subscription.
+          </p>
+          <p>
+            Attributes: a column named attr:Material (any name after attr:) gives every product that
+            fills it that attribute.
+          </p>
+          <p>
+            Sizes, colors and other variants: name a column per option, such as option:Size and
+            option:Color, plus {CSV_VARIANT_COLUMNS.join(', ')} if you need them. Each variant is
+            one row with the same d; the product&apos;s other columns go on its first row only,
+            which may itself be a variant or carry no option values. An empty variant_price is the
+            product&apos;s price, variant_available is yes or no (yes when empty), * in an option
+            cell means any value of that option, and the listing shows the lowest in-stock variant
+            price.
+          </p>
+        </div>
+      </details>
       {result === undefined ? null : (
         <div className="flex flex-col gap-8">
           {result.fileErrors.map((message) => (

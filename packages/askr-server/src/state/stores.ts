@@ -688,7 +688,7 @@ export class StoreDirectory {
     month: { spent: string };
     sessions: number;
     conversations: number;
-    clicks: { address: string; count: number }[];
+    clicks: { address: string; count: number; carts: number }[];
   }> {
     const days = await this.db.query<{ day: number; spent: string; reserved: string }>(
       'select day, spent, reserved from store_days where owner = $1 and day >= $2',
@@ -704,8 +704,9 @@ export class StoreDirectory {
       'select conversations from store_totals where owner = $1',
       [owner],
     );
-    const clicks = await this.db.query<{ address: string; count: number }>(
-      'select address, count from clicks where owner = $1 order by count desc, address limit 100',
+    const clicks = await this.db.query<{ address: string; count: number; carts: number }>(
+      `select address, count, carts from clicks where owner = $1
+       order by count + carts desc, carts desc, address limit 100`,
       [owner],
     );
     return {

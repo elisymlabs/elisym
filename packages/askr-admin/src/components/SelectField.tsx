@@ -1,3 +1,6 @@
+import type { Help } from '../lib/help';
+import { FieldLabel } from './FieldLabel';
+
 interface Props {
   id: string;
   label: string;
@@ -5,12 +8,14 @@ interface Props {
   options: readonly { value: string; label: string }[];
   onChange: (value: string) => void;
   hint?: string;
+  /** What the info button beside the label says. */
+  info?: Help;
 }
 
-export function SelectField({ id, label, value, options, onChange, hint }: Props) {
+export function SelectField({ id, label, value, options, onChange, hint, info }: Props) {
   return (
-    <label className="field" htmlFor={id}>
-      <span className="field-label">{label}</span>
+    <div className="field">
+      <FieldLabel htmlFor={id} label={label} info={info} />
       <select
         id={id}
         aria-describedby={hint === undefined ? undefined : `${id}-hint`}
@@ -29,6 +34,6 @@ export function SelectField({ id, label, value, options, onChange, hint }: Props
           {hint}
         </span>
       )}
-    </label>
+    </div>
   );
 }

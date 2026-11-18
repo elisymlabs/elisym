@@ -5,7 +5,8 @@ import {
   VISIBILITIES,
 } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { HELP } from '../lib/help';
 import {
   type VariantInput,
   listingPriceOf,
@@ -72,6 +73,17 @@ function optionsOf(rows: readonly OptionRow[]) {
  * id and anything else the form does not show are kept as they are.
  */
 export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }: Props) {
+  const root = useRef<HTMLDivElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // The editor opens above the list: bring it into view from a row far down, and move focus to
+  // it, so a keyboard user is not left on the row below.
+  useEffect(() => {
+    const still =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    root.current?.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
+    heading.current?.focus({ preventScroll: true });
+  }, []);
   const [d, setD] = useState(initial?.d ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
   const [price, setPrice] = useState(initial?.price.amount ?? '');
@@ -308,12 +320,13 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   };
 
   return (
-    <div className="border-line rounded-12 flex flex-col gap-12 border p-16">
-      <h3 className="text-15 font-semibold">
+    <div ref={root} className="card flex scroll-mt-24 flex-col gap-16 p-24">
+      <h2 ref={heading} tabIndex={-1} className="text-16 font-semibold outline-none">
         {initial === undefined ? 'New product' : `Edit ${initial.title}`}
-      </h3>
+      </h2>
       <TextField
         id="product-d"
+        info={HELP.productId}
         label="ID"
         value={d}
         readOnly={initial !== undefined}
@@ -328,11 +341,18 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
           }
         }}
       />
-      <TextField id="product-title" label="Title" value={title} onChange={setTitle} />
+      <TextField
+        id="product-title"
+        info={HELP.productTitle}
+        label="Title"
+        value={title}
+        onChange={setTitle}
+      />
       <div className="grid gap-12 sm:grid-cols-3">
         {variants.length > 0 ? (
           <TextField
             id="product-price"
+            info={HELP.productPrice}
             label="Price"
             value={listingPrice ?? ''}
             readOnly
@@ -342,6 +362,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         ) : (
           <TextField
             id="product-price"
+            info={HELP.productPrice}
             label="Price"
             value={price}
             placeholder="19.90"
@@ -350,12 +371,14 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
         )}
         <TextField
           id="product-currency"
+          info={HELP.productCurrency}
           label="Currency"
           value={priceCurrency}
           onChange={setPriceCurrency}
         />
         <SelectField
           id="product-frequency"
+          info={HELP.productBilling}
           label="Billing"
           value={frequency}
           options={FREQUENCY_OPTIONS}
@@ -365,12 +388,14 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       </div>
       <TextField
         id="product-summary"
+        info={HELP.productSummary}
         label="Summary (optional)"
         value={summary}
         onChange={setSummary}
       />
       <TextAreaField
         id="product-description"
+        info={HELP.productDescription}
         label="Description"
         value={description}
         rows={4}
@@ -378,6 +403,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       />
       <TextField
         id="product-url"
+        info={HELP.productPage}
         label="Product page (optional)"
         value={url}
         placeholder="https://..."
@@ -385,6 +411,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       />
       <TextAreaField
         id="product-images"
+        info={HELP.productImages}
         label="Image URLs (one per line)"
         value={images}
         onChange={setImages}
@@ -392,6 +419,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       <div className="grid gap-12 sm:grid-cols-2">
         <TextField
           id="product-topics"
+          info={HELP.productTopics}
           label="Topics (optional)"
           value={topicsText}
           placeholder="tents, camping"
@@ -401,7 +429,13 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
             setTopics(topicsOfText(text));
           }}
         />
-        <TextField id="product-sku" label="SKU (optional)" value={sku} onChange={setSku} />
+        <TextField
+          id="product-sku"
+          info={HELP.productSku}
+          label="SKU (optional)"
+          value={sku}
+          onChange={setSku}
+        />
       </div>
       <AttrsEditor rows={attrs} onChange={setAttrs} />
       <OptionsEditor rows={optionRows} onChange={changeOptions} onValuesDone={valuesDone} />
@@ -417,6 +451,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       {variantNotice === '' ? null : <Notice tone="error">{variantNotice}</Notice>}
       <SelectField
         id="product-visibility"
+        info={HELP.productAvailability}
         label="Availability"
         value={visibility}
         options={VISIBILITY_OPTIONS}
@@ -431,12 +466,12 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
           </ul>
         </Notice>
       )}
-      <div className="flex gap-8">
-        <button type="button" className="btn btn-primary" onClick={save}>
-          Keep this product
-        </button>
+      <div className="border-line -mx-24 -mb-24 flex justify-end gap-8 border-t px-24 py-14">
         <button type="button" className="btn" onClick={onCancel}>
           Cancel
+        </button>
+        <button type="button" className="btn btn-primary" onClick={save}>
+          Keep this product
         </button>
       </div>
     </div>

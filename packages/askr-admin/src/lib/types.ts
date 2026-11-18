@@ -26,8 +26,8 @@ export interface StoreUsage {
    * message) that got at least one answer, each counted once.
    */
   conversations: number;
-  /** Advisory product link clicks, by listing address. */
-  clicks: { address: string; count: number }[];
+  /** Advisory clicks by listing address: product link opens (`count`) and add to cart presses. */
+  clicks: { address: string; count: number; carts: number }[];
 }
 
 export type CatalogSyncStatus =

@@ -455,6 +455,62 @@ describe('a review in flight', () => {
     return { catalog, answer: (diff: typeof EMPTY_DIFF) => answer(diff) };
   }
 
+  it('locks the open editor and the CSV import while a review is out, so nothing is lost', async () => {
+    const pending = pendingCatalog();
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(
+          fakeApi({ catalog: pending.catalog }),
+          fakeReader([listing(MUG), listing(TEAPOT)]),
+        )}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    await click(rowButton(container, 'Remove', 'Teapot'));
+    await click(rowButton(container, 'Edit', 'Mug'));
+    await click(buttonNamed(container, 'Review changes'));
+    const keep = buttonNamed(container, 'Keep this product');
+    const file = container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(keep.closest('fieldset')?.disabled).toBe(true);
+    expect(file?.closest('fieldset')?.disabled).toBe(true);
+    await act(async () => {
+      pending.answer({ ...EMPTY_DIFF, hidden: ['teapot'], unchanged: ['mug'] });
+    });
+    expect(buttonNamed(container, 'Keep this product').closest('fieldset')?.disabled).toBe(false);
+    expect(container.querySelector('input[type="file"]')?.closest('fieldset')?.disabled).toBe(
+      false,
+    );
+  });
+
+  it('gives focus back to what opened the editor once it closes', async () => {
+    mounted = await mount(
+      <ProductsSection
+        deps={sessionDeps(fakeApi(), fakeReader([listing(MUG), listing(TEAPOT)]))}
+        view={storeView()}
+        config={adminConfig()}
+        reload={async () => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Teapot'));
+    const edit = rowButton(container, 'Edit', 'Teapot');
+    edit.focus();
+    await click(edit);
+    expect(document.activeElement?.textContent).toBe('Edit Teapot');
+    await click(buttonNamed(container, 'Cancel'));
+    expect(document.activeElement).toBe(rowButton(container, 'Edit', 'Teapot'));
+    const add = buttonNamed(container, 'Add a product');
+    add.focus();
+    await click(add);
+    await click(buttonNamed(container, 'Cancel'));
+    // Add a product was hidden while the editor was open, and is focused again once it is back.
+    expect(document.activeElement).toBe(buttonNamed(container, 'Add a product'));
+  });
+
   it('edit during the review: the list cannot change, and Publish sends exactly the reviewed list', async () => {
     const pending = pendingCatalog();
     const api = fakeApi({ catalog: pending.catalog });
@@ -474,11 +530,14 @@ describe('a review in flight', () => {
     await click(buttonNamed(container, 'Review changes'));
     // Every editing control is switched off while the review is out.
     expect(rowButton(container, 'Remove', 'Teapot').closest('fieldset')?.disabled).toBe(true);
+    // Add a product sits in the section header, outside that fieldset: it is off on its own.
+    expect(buttonNamed(container, 'Add a product').disabled).toBe(true);
     await click(rowButton(container, 'Remove', 'Teapot'));
     await act(async () => {
       pending.answer({ ...EMPTY_DIFF, unchanged: ['mug', 'teapot'] });
     });
     expect(container.textContent).toContain('Teapot');
+    expect(buttonNamed(container, 'Add a product').disabled).toBe(false);
     await click(buttonNamed(container, 'Publish'));
     expect(
       pending.catalog.mock.calls.map((call) => [

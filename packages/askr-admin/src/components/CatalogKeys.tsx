@@ -1,8 +1,8 @@
 import { type StoreConfig, buildCatalogAuth, buildCatalogRevocation } from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
-import { ASKR_KEY_COMMAND } from '../constants';
 import { type SessionDeps, postSigned } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { nextAuthDate, savedMessage } from '../lib/save';
 import { npubOf, parsePublicKey } from '../lib/signer';
 import { type AuthorityRead, readAuthority } from '../lib/store-data';
@@ -26,7 +26,6 @@ export function CatalogKeys({ deps, view, config }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
-  const ownerNpub = npubOf(deps.signer.pubkey);
 
   const read = useCallback(async () => {
     try {
@@ -100,7 +99,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
     list = <p className="text-14 text-text-2">No key is authorized yet.</p>;
   } else if (keys !== undefined) {
     list = (
-      <ul className="flex flex-col gap-8">
+      <ul className="border-line rounded-10 rows flex flex-col border">
         {keys.map((key) => (
           <KeyRow
             key={key}
@@ -117,6 +116,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
   return (
     <Section
       title="Catalog keys"
+      info={HELP.catalogKeys}
       description="A catalog key publishes your products and policies. Authorize your own key to publish from your backend, the SDK or an AI agent, and revoke a key you no longer use."
     >
       {readError === '' ? null : (
@@ -128,16 +128,17 @@ export function CatalogKeys({ deps, view, config }: Props) {
         </Notice>
       )}
       {list}
-      <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-12">
         <TextField
           id="authorize-key"
+          info={HELP.catalogKey}
           label="Authorize a catalog key"
           value={pasted}
           placeholder="npub1..."
-          hint={`The key your backend or SDK publishes with. For an elisym agent, print it with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
+          hint="The public key your backend, SDK or MCP server publishes your products with."
           onChange={setPasted}
         />
-        <div>
+        <div className="flex justify-end">
           <button
             type="button"
             className="btn btn-primary"

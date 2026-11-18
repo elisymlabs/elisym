@@ -2,12 +2,14 @@ import type { StoreConfig } from '@elisym/askr';
 import { type ReactNode, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { PLATFORM_LABELS } from '../lib/labels';
 import { newestConfig } from '../lib/save';
 import { npubOf } from '../lib/signer';
 import type { ConnectorRecord, ConnectorSyncResult, StoreView } from '../lib/types';
 import { ConnectorStatus } from './ConnectorStatus';
 import { CopyBlock } from './CopyBlock';
+import { NavIcon } from './NavIcon';
 import { Notice } from './Notice';
 import { PreviewResult } from './PreviewResult';
 import { Section } from './Section';
@@ -87,12 +89,18 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
 
   if (connector === null) {
     return (
-      <Section title="Connector">
-        <p className="text-14 text-text-2">
-          No shop is connected. To keep your products in sync with a Shopify or WooCommerce shop or
-          a Google product feed, choose it as your product source in Settings and save.
-        </p>
-      </Section>
+      <div className="card flex flex-col items-center gap-12 px-24 py-48 text-center">
+        <span className="bg-surface-2 text-text-2 flex size-40 items-center justify-center rounded-full">
+          <NavIcon tab="connector" />
+        </span>
+        <div className="flex max-w-420 flex-col gap-4">
+          <h2 className="text-15 font-semibold">No shop is connected</h2>
+          <p className="text-13 text-text-2">
+            To keep your products in sync with a Shopify or WooCommerce shop or a Google product
+            feed, choose it as your product source in Settings and save.
+          </p>
+        </div>
+      </div>
     );
   }
 
@@ -146,15 +154,16 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
       <Section
         title={`${PLATFORM_LABELS[connector.platform]} connector`}
+        info={HELP.connector}
         description="Askr reads only what your shop shows the public, with no access token, and keeps your products in sync. Change the shop or its options in Settings."
       >
         <ConnectorStatus connector={connector} tier={view.tier} />
         {statusNotice}
       </Section>
-      <Section title="Prove the site is yours">
+      <Section title="Prove the site is yours" info={HELP.siteProof}>
         <p className="text-13 text-text-2">
           Add this tag to your shop&apos;s home page, or serve a small text file at
           /.well-known/askr with your Store ID on a line of its own. Keep it there: every sync
@@ -170,6 +179,7 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
       </Section>
       <Section
         title="Sync"
+        info={HELP.sync}
         description="Preview what the first import would publish, then turn syncing on. Nothing is published by a preview."
       >
         {error === '' ? null : <Notice tone="error">{error}</Notice>}

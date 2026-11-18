@@ -15,7 +15,7 @@ import {
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { type Filter, matchFilter } from 'nostr-tools/filter';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import type { Gateway, SessionResult } from '../src/gateway';
+import type { ClickKind, Gateway, SessionResult } from '../src/gateway';
 import type { RelayConnection, RelaySubscriptionHandlers } from '../src/relay';
 import type { KeyValueStorage } from '../src/storage';
 
@@ -216,7 +216,7 @@ export const MAIN_RELAY = 'wss://relay.elisym.network';
 
 export class FakeGateway implements Gateway {
   readonly sessions: { store: string; visitor: string }[] = [];
-  readonly clicks: { ticket: NostrEvent; address: string }[] = [];
+  readonly clicks: { ticket: NostrEvent; address: string; kind: ClickKind }[] = [];
   mode: 'grant' | 'unavailable' | 'error' = 'grant';
   branding = true;
   /** Gateway clock minus local clock. */
@@ -259,8 +259,8 @@ export class FakeGateway implements Gateway {
     };
   }
 
-  async reportClick(ticket: NostrEvent, address: string): Promise<void> {
-    this.clicks.push({ ticket, address });
+  async reportClick(ticket: NostrEvent, address: string, kind: ClickKind): Promise<void> {
+    this.clicks.push({ ticket, address, kind });
   }
 }
 

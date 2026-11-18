@@ -4,6 +4,7 @@ import { DEFAULT_CURRENCY } from '../constants';
 import { type CatalogChange, changesOf, importItems, removeItem, upsertItem } from '../lib/catalog';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage, invalidItemIssues } from '../lib/errors';
+import { HELP } from '../lib/help';
 import { SOURCE_LABELS } from '../lib/labels';
 import { readCatalog } from '../lib/store-data';
 import type { StoreView } from '../lib/types';
@@ -45,6 +46,22 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const [listedIds, setListedIds] = useState<string[]>([]);
   const [readError, setReadError] = useState('');
   const [editing, setEditing] = useState<Editing>();
+  /** What opened the editor: focus goes back to it once the editor closes. */
+  const opener = useRef<HTMLElement | null>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const openEditor = (next: Editing) => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setEditing(next);
+  };
+  useEffect(() => {
+    if (editing !== undefined || opener.current === null) {
+      return;
+    }
+    // A new product's opener, Add a product, was hidden while the editor was open: it is back.
+    const target = opener.current.isConnected ? opener.current : addButton.current;
+    opener.current = null;
+    target?.focus();
+  }, [editing]);
   const [reviewed, setReviewed] = useState<Reviewed>();
   const [busy, setBusy] = useState(false);
   /** What the last publish sent: offered back if that sync fails and the list is read again. */
@@ -212,70 +229,89 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const currency = config?.currency ?? DEFAULT_CURRENCY;
   const maxProducts = view.tier?.maxProducts;
 
+  let listWait = 'Reading your products...';
+  if (running) {
+    listWait = 'The list shows again once publishing is done.';
+  } else if (readError !== '') {
+    listWait = 'Your products are not read yet.';
+  }
+
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
+      {running ? (
+        <Notice tone="info">
+          Products are being published. The editor opens again once that is done.
+        </Notice>
+      ) : null}
+      {readError === '' ? null : (
+        <Notice tone="error">
+          {readError}{' '}
+          <button type="button" className="underline" onClick={() => void read()}>
+            Retry
+          </button>
+        </Notice>
+      )}
+      {failedNotice}
+      {draft === undefined || editing === undefined ? null : (
+        <fieldset disabled={busy} className="contents">
+          <ProductEditor
+            key={editing.mode === 'edit' ? editing.item.d : 'new'}
+            initial={editing.mode === 'edit' ? editing.item : undefined}
+            currency={currency}
+            takenIds={draft.map((item) => item.d)}
+            onSave={(item) => {
+              change(upsertItem(draft, item));
+              setEditing(undefined);
+            }}
+            onCancel={() => setEditing(undefined)}
+          />
+        </fieldset>
+      )}
       <Section
-        title="Products"
-        description="Changes stay here until you review and publish them. Publishing makes your catalog this list: only what changed is sent, and a product you remove here is deleted for good when you publish. To take one off sale for a while, set its availability to hidden instead."
-      >
-        {running ? (
-          <Notice tone="info">
-            Products are being published. The editor opens again once that is done.
-          </Notice>
-        ) : null}
-        {readError === '' ? null : (
-          <Notice tone="error">
-            {readError}{' '}
-            <button type="button" className="underline" onClick={() => void read()}>
-              Retry
+        title="Catalog"
+        info={HELP.catalog}
+        description="Changes stay here until you review and publish them. A product you remove here is deleted for good when you publish; to take one off sale for a while, set its availability to hidden instead."
+        actions={
+          draft === undefined || editing !== undefined ? undefined : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              ref={addButton}
+              disabled={busy}
+              onClick={() => openEditor({ mode: 'new' })}
+            >
+              Add a product
             </button>
-          </Notice>
-        )}
-        {failedNotice}
-        {draft === undefined ? null : (
+          )
+        }
+        flush
+      >
+        {draft === undefined ? (
+          <p className="text-14 text-text-2 px-20 py-16">{listWait}</p>
+        ) : (
           <fieldset disabled={busy} className="contents">
-            <p className="text-13 text-text-2">
+            <ProductList
+              items={draft}
+              onEdit={(productId) => {
+                const item = draft.find((candidate) => candidate.d === productId);
+                openEditor(item === undefined ? undefined : { mode: 'edit', item });
+              }}
+              onRemove={(productId) => change(removeItem(draft, productId))}
+            />
+            <p className="border-line text-12 text-text-3 border-t px-20 py-10">
               {draft.length} product{draft.length === 1 ? '' : 's'}
               {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Products set
               to hidden stay listed so you can show them again; removing one deletes it.
             </p>
-            <ProductList
-              items={draft}
-              onEdit={(d) => {
-                const item = draft.find((candidate) => candidate.d === d);
-                setEditing(item === undefined ? undefined : { mode: 'edit', item });
-              }}
-              onRemove={(d) => change(removeItem(draft, d))}
-            />
-            {editing === undefined ? (
-              <div>
-                <button type="button" className="btn" onClick={() => setEditing({ mode: 'new' })}>
-                  Add a product
-                </button>
-              </div>
-            ) : (
-              <ProductEditor
-                key={editing.mode === 'edit' ? editing.item.d : 'new'}
-                initial={editing.mode === 'edit' ? editing.item : undefined}
-                currency={currency}
-                takenIds={draft.map((item) => item.d)}
-                onSave={(item) => {
-                  change(upsertItem(draft, item));
-                  setEditing(undefined);
-                }}
-                onCancel={() => setEditing(undefined)}
-              />
-            )}
-            <CsvImport
-              currency={currency}
-              current={draft}
-              onImport={(items, mode) => change(importItems(draft, items, mode))}
-            />
           </fieldset>
         )}
       </Section>
 
-      <Section title="Publish">
+      <Section
+        title="Publish"
+        info={HELP.publish}
+        description="Publishing makes your catalog this list: only what changed is sent. Review the changes first."
+      >
         <SyncStatus sync={view.catalogSync} />
         {reviewed === undefined ? null : <DiffSummary diff={reviewed.diff} />}
         {error === '' ? null : (
@@ -291,7 +327,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           </Notice>
         )}
         {notice === '' ? null : <Notice tone="success">{notice}</Notice>}
-        <div className="flex gap-8">
+        <div className="border-line -mx-20 -mb-20 flex justify-end gap-8 border-t px-20 py-12">
           <button
             type="button"
             className="btn"
@@ -310,6 +346,22 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           </button>
         </div>
       </Section>
+
+      {draft === undefined ? null : (
+        <Section
+          title="Import from a CSV file"
+          info={HELP.csvImport}
+          description="Add products from a spreadsheet, or replace all of them."
+        >
+          <fieldset disabled={busy} className="contents">
+            <CsvImport
+              currency={currency}
+              current={draft}
+              onImport={(items, mode) => change(importItems(draft, items, mode))}
+            />
+          </fieldset>
+        </Section>
+      )}
     </div>
   );
 }
