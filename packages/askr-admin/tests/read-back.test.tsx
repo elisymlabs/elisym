@@ -579,7 +579,7 @@ describe('the overview', () => {
     ['pending', 'Pending', 'badge-warn'],
     ['active', 'Active', 'badge-green'],
     ['suspended', 'Suspended', 'badge-error'],
-  ] as const)('shows a %s store as a %s badge', async (status, label, tone) => {
+  ] as const)('shows the %s store with the %s badge', async (status, label, tone) => {
     mounted = await mount(
       <Overview view={storeView({ status })} config={undefined} configFromServer={false} />,
     );
