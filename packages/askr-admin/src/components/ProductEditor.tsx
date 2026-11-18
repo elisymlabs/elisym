@@ -5,7 +5,7 @@ import {
   VISIBILITIES,
 } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   type VariantInput,
   listingPriceOf,
@@ -72,6 +72,11 @@ function optionsOf(rows: readonly OptionRow[]) {
  * id and anything else the form does not show are kept as they are.
  */
 export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }: Props) {
+  const root = useRef<HTMLDivElement>(null);
+  // The editor opens above the list: bring it into view from a row far down.
+  useEffect(() => {
+    root.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, []);
   const [d, setD] = useState(initial?.d ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
   const [price, setPrice] = useState(initial?.price.amount ?? '');
@@ -308,10 +313,10 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
   };
 
   return (
-    <div className="border-line rounded-12 flex flex-col gap-12 border p-16">
-      <h3 className="text-15 font-semibold">
+    <div ref={root} className="card flex scroll-mt-24 flex-col gap-16 p-24">
+      <h2 className="text-16 font-semibold">
         {initial === undefined ? 'New product' : `Edit ${initial.title}`}
-      </h3>
+      </h2>
       <TextField
         id="product-d"
         label="ID"
@@ -431,12 +436,12 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
           </ul>
         </Notice>
       )}
-      <div className="flex gap-8">
-        <button type="button" className="btn btn-primary" onClick={save}>
-          Keep this product
-        </button>
+      <div className="border-line -mx-24 -mb-24 flex justify-end gap-8 border-t px-24 py-14">
         <button type="button" className="btn" onClick={onCancel}>
           Cancel
+        </button>
+        <button type="button" className="btn btn-primary" onClick={save}>
+          Keep this product
         </button>
       </div>
     </div>

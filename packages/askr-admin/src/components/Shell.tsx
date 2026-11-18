@@ -2,8 +2,9 @@ import type { StoreConfig } from '@elisym/askr';
 import { useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { npubOf } from '../lib/signer';
-import type { TabId } from '../lib/tabs';
+import { TABS, type TabId } from '../lib/tabs';
 import type { StoreView } from '../lib/types';
+import { AskrMark } from './AskrMark';
 import { ConnectorSection } from './ConnectorSection';
 import { EmbedSection } from './EmbedSection';
 import { KeysSection } from './KeysSection';
@@ -100,52 +101,86 @@ export function Shell({
   } else {
     content = <EmbedSection api={deps.api} view={view} config={config} />;
   }
+  const current = TABS.find((entry) => entry.id === tab) ?? TABS[0];
   return (
-    <main className="mx-auto flex max-w-960 flex-col gap-16 px-16 py-24">
-      <header className="flex flex-wrap items-center justify-between gap-12">
-        <div className="flex min-w-0 flex-col">
-          <h1 className="text-20 font-semibold">{config?.name ?? 'Your store'}</h1>
-          <span className="text-12 text-text-3 truncate font-mono">{npubOf(view.owner)}</span>
+    <div className="flex min-h-screen flex-col md:flex-row">
+      <aside className="bg-sidebar border-line flex flex-col gap-16 border-b px-16 py-16 md:sticky md:top-0 md:h-screen md:w-248 md:flex-none md:border-r md:border-b-0 md:px-12 md:py-20">
+        <div className="flex items-center gap-10 px-4 md:px-6">
+          <AskrMark className="size-24 flex-none [--mark-paper:var(--sidebar)]" />
+          <div className="flex min-w-0 flex-col">
+            <span id="sidebar-store-name" className="text-14 truncate font-semibold">
+              {config?.name ?? 'Your store'}
+            </span>
+            <span className="text-12 text-text-3 truncate font-mono" title={npubOf(view.owner)}>
+              {npubOf(view.owner)}
+            </span>
+          </div>
         </div>
-        <div className="flex gap-8">
-          <button type="button" className="btn" onClick={() => void refresh()}>
+        <TabBar active={tab} onSelect={setTab} />
+        <div className="mt-auto hidden flex-col gap-2 md:flex">
+          <button
+            type="button"
+            className="text-13 text-text-2 hover:bg-hover hover:text-text rounded-8 px-10 py-7 text-left transition-colors"
+            onClick={() => void refresh()}
+          >
             Refresh
           </button>
-          <button type="button" className="btn" onClick={onSignOut}>
+          <button
+            type="button"
+            className="text-13 text-text-2 hover:bg-hover hover:text-text rounded-8 px-10 py-7 text-left transition-colors"
+            onClick={onSignOut}
+          >
             Sign out
           </button>
         </div>
-      </header>
-      <TabBar active={tab} onSelect={setTab} />
-      {configError === '' ? null : (
-        <Notice tone="warn">
-          {configError}{' '}
-          <button type="button" className="underline" onClick={() => void reloadConfig()}>
-            Retry
-          </button>
-        </Notice>
-      )}
-      {reloadWarning === '' ? null : (
-        <Notice tone="warn">
-          {reloadWarning} What is shown is the last state read.{' '}
-          <button type="button" className="underline" onClick={() => void reload()}>
-            Retry
-          </button>
-        </Notice>
-      )}
-      {storedTruncated ? (
-        <Notice tone="warn">
-          Some older changes you signed are not shown here: there were too many to read back at
-          once. Your current settings are shown; nothing is lost on the server.
-        </Notice>
-      ) : null}
-      {configUnreadableAt === undefined ? null : (
-        <Notice tone="error">
-          Your newest published settings could not be read, so the assistant may not answer. Open
-          Settings and save them again.
-        </Notice>
-      )}
-      {content}
-    </main>
+      </aside>
+      <main className="flex min-w-0 flex-1 flex-col gap-28 px-16 py-24 md:px-48 md:py-40">
+        <header className="flex flex-wrap items-start justify-between gap-12">
+          <div className="flex max-w-640 flex-col gap-4">
+            <h1 className="text-24 font-semibold tracking-tight">{current.label}</h1>
+            <p className="text-14 text-text-2">{current.description}</p>
+          </div>
+          <div className="flex gap-8 md:hidden">
+            <button type="button" className="btn" onClick={() => void refresh()}>
+              Refresh
+            </button>
+            <button type="button" className="btn" onClick={onSignOut}>
+              Sign out
+            </button>
+          </div>
+        </header>
+        <div className="flex max-w-760 flex-col gap-32">
+          {configError === '' ? null : (
+            <Notice tone="warn">
+              {configError}{' '}
+              <button type="button" className="underline" onClick={() => void reloadConfig()}>
+                Retry
+              </button>
+            </Notice>
+          )}
+          {reloadWarning === '' ? null : (
+            <Notice tone="warn">
+              {reloadWarning} What is shown is the last state read.{' '}
+              <button type="button" className="underline" onClick={() => void reload()}>
+                Retry
+              </button>
+            </Notice>
+          )}
+          {storedTruncated ? (
+            <Notice tone="warn">
+              Some older changes you signed are not shown here: there were too many to read back at
+              once. Your current settings are shown; nothing is lost on the server.
+            </Notice>
+          ) : null}
+          {configUnreadableAt === undefined ? null : (
+            <Notice tone="error">
+              Your newest published settings could not be read, so the assistant may not answer.
+              Open Settings and save them again.
+            </Notice>
+          )}
+          {content}
+        </div>
+      </main>
+    </div>
   );
 }

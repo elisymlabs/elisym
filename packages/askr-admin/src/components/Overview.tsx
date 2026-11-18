@@ -22,9 +22,9 @@ interface Props {
 
 const STATUS_TEXT: Readonly<Record<StoreStatus, string>> = {
   pending:
-    'Pending. Your settings are saved; the assistant starts answering once the Askr operator activates your store.',
-  active: 'Active. Your assistant is answering on your site.',
-  suspended: 'Suspended. Your assistant does not answer. Contact the Askr operator.',
+    'Your settings are saved; the assistant starts answering once the Askr operator activates your store.',
+  active: 'Your assistant is answering on your site.',
+  suspended: 'Your assistant does not answer. Contact the Askr operator.',
 };
 
 const KIND_NAMES: Readonly<Record<number, string>> = {
@@ -40,14 +40,24 @@ function dOfAddress(address: string): string {
   return parts.slice(2).join(':') || address;
 }
 
+const STATUS_BADGE: Readonly<Record<StoreStatus, { label: string; tone: string }>> = {
+  pending: { label: 'Pending', tone: 'badge-warn' },
+  active: { label: 'Active', tone: 'badge-green' },
+  suspended: { label: 'Suspended', tone: 'badge-error' },
+};
+
 export function Overview({ view, config, configFromServer, catalogReader }: Props) {
   const { tier, usage, events } = view;
+  const badge = STATUS_BADGE[view.status];
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
       <Section title="Status">
-        <Notice tone={view.status === 'active' ? 'success' : 'warn'}>
-          {STATUS_TEXT[view.status]}
-        </Notice>
+        <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:gap-12">
+          <span className={`badge self-start sm:self-auto ${badge.tone}`}>{badge.label}</span>
+          <p className="text-14 text-text-2" role="status">
+            {STATUS_TEXT[view.status]}
+          </p>
+        </div>
         {config === undefined ? (
           <p className="text-14 text-text-2">Your settings are not published yet.</p>
         ) : null}
@@ -73,8 +83,24 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
             : `Plan: ${tier.name}`
         }
       >
+        <dl className="grid grid-cols-1 gap-12 sm:grid-cols-3">
+          <div className="rounded-10 bg-surface-2 flex flex-col gap-4 px-14 py-12">
+            <dt className="text-12 text-text-2">Conversations so far</dt>
+            <dd id="usage-conversations" className="text-24 font-semibold tabular-nums">
+              {usage.conversations}
+            </dd>
+          </div>
+          <div className="rounded-10 bg-surface-2 flex flex-col gap-4 px-14 py-12">
+            <dt className="text-12 text-text-2">Open conversations</dt>
+            <dd className="text-24 font-semibold tabular-nums">{usage.sessions}</dd>
+          </div>
+          <div className="rounded-10 bg-surface-2 flex flex-col gap-4 px-14 py-12">
+            <dt className="text-12 text-text-2">Reserved today</dt>
+            <dd className="text-24 font-semibold tabular-nums">{usd(usage.today.reserved)}</dd>
+          </div>
+        </dl>
         {tier === null ? null : (
-          <div className="flex flex-col gap-12">
+          <div className="flex flex-col gap-16">
             <UsageMeter
               label="Today"
               used={usage.today.spent}
@@ -101,15 +127,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
             )}
           </div>
         )}
-        <dl className="text-14 grid grid-cols-[auto_1fr] gap-x-16 gap-y-4">
-          <dt className="text-text-2">Conversations so far</dt>
-          <dd id="usage-conversations">{usage.conversations}</dd>
-          <dt className="text-text-2">Open conversations</dt>
-          <dd>{usage.sessions}</dd>
-          <dt className="text-text-2">Reserved today</dt>
-          <dd>{usd(usage.today.reserved)}</dd>
-        </dl>
-        <p className="text-13 text-text-2">
+        <p className="text-12 text-text-3">
           A conversation is one visitor's chat, up to 24 hours from their first message, that got at
           least one answer. Open conversations are the chats started in the last 24 hours.
         </p>
@@ -122,11 +140,14 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         {usage.clicks.length === 0 ? (
           <p className="text-14 text-text-2">No clicks yet.</p>
         ) : (
-          <ul className="text-14 flex flex-col gap-4">
+          <ul className="text-14 rows flex flex-col">
             {usage.clicks.slice(0, TOP_CLICKS).map((click) => (
-              <li key={click.address} className="flex justify-between gap-12">
-                <span className="truncate font-mono">{dOfAddress(click.address)}</span>
-                <span>{click.count}</span>
+              <li
+                key={click.address}
+                className="flex justify-between gap-12 py-8 first:pt-0 last:pb-0"
+              >
+                <span className="text-13 truncate font-mono">{dOfAddress(click.address)}</span>
+                <span className="font-medium tabular-nums">{click.count}</span>
               </li>
             ))}
           </ul>

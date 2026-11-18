@@ -44,7 +44,7 @@ export function StoreSettingsForm({
 
   return (
     <form
-      className="flex flex-col gap-16"
+      className="flex flex-col gap-24"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -54,7 +54,10 @@ export function StoreSettingsForm({
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
       {done === '' ? null : <Notice tone="success">{done}</Notice>}
       {children}
-      <div>
+      <div className="border-line bg-bg/90 sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center justify-between gap-12 border-t px-4 py-12 backdrop-blur-sm">
+        <p className="text-13 text-text-2">
+          Saving signs these settings with your secret key and replaces the previous ones.
+        </p>
         <button type="submit" className="btn btn-primary" disabled={busy || !canSubmit}>
           {busy ? 'Signing...' : submitLabel}
         </button>

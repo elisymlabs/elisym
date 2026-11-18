@@ -23,7 +23,7 @@ export function PolicyRow({ policy, editable, imported, unread, busy, onEdit, on
         <span className="text-13 text-error">Delete it for visitors too?</span>
         <button
           type="button"
-          className="btn btn-danger text-13"
+          className="btn btn-danger btn-sm"
           disabled={busy}
           aria-label={`Delete ${policy.title} for good`}
           onClick={() => {
@@ -33,17 +33,17 @@ export function PolicyRow({ policy, editable, imported, unread, busy, onEdit, on
         >
           Delete for good
         </button>
-        <button type="button" className="btn text-13" onClick={() => setConfirming(false)}>
+        <button type="button" className="btn btn-sm" onClick={() => setConfirming(false)}>
           Keep it
         </button>
       </div>
     );
   } else if (editable) {
     actions = (
-      <div className="flex gap-4">
+      <div className="flex gap-2">
         <button
           type="button"
-          className="btn text-13"
+          className="btn btn-ghost btn-sm"
           disabled={busy}
           aria-label={`Edit ${policy.title}`}
           onClick={onEdit}
@@ -52,7 +52,7 @@ export function PolicyRow({ policy, editable, imported, unread, busy, onEdit, on
         </button>
         <button
           type="button"
-          className="btn btn-danger text-13"
+          className="btn btn-ghost btn-danger btn-sm"
           disabled={busy}
           aria-label={`Delete ${policy.title}`}
           onClick={() => setConfirming(true)}
@@ -63,7 +63,7 @@ export function PolicyRow({ policy, editable, imported, unread, busy, onEdit, on
     );
   }
   return (
-    <li className="border-line rounded-10 flex flex-wrap items-center justify-between gap-8 border p-12">
+    <li className="hover:bg-sidebar flex flex-wrap items-center justify-between gap-8 px-20 py-12 transition-colors">
       <div className="flex min-w-0 flex-col">
         <span className="text-14 font-medium">{policy.title}</span>
         <span className="text-12 text-text-3">

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../lib/errors';
-import { forgetKey, nextTask, rememberKey } from '../lib/remembered';
+import { forgetKey, rememberKey } from '../lib/remembered';
 import {
   type OwnerKey,
   type Signer,
@@ -104,10 +104,6 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
     const { from, key } = state;
     const move = async () => {
       const choice = remember.current?.read() ?? { kind: 'off' };
-      if (choice.kind === 'invalid') {
-        setError(choice.message);
-        return;
-      }
       setBusy(true);
       setError('');
       const signer = secretKeySigner(key.secretKey);
@@ -122,8 +118,7 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
       const forgot = forgetKey(from);
       let remembered = true;
       if (choice.kind === 'on') {
-        await nextTask();
-        remembered = rememberKey(key.secretKey, choice.password);
+        remembered = await rememberKey(key.secretKey);
       }
       setBusy(false);
       if (forgot && remembered) {
@@ -160,7 +155,6 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
             ref={remember}
             id="moved-key"
             label="Remember the new key on this device once the store moved"
-            username={key.npub}
           />
           {error === '' ? null : <Notice tone="error">{error}</Notice>}
           <div className="flex gap-8">

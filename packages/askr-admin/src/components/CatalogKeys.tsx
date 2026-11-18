@@ -100,7 +100,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
     list = <p className="text-14 text-text-2">No key is authorized yet.</p>;
   } else if (keys !== undefined) {
     list = (
-      <ul className="flex flex-col gap-8">
+      <ul className="border-line rounded-10 rows flex flex-col border">
         {keys.map((key) => (
           <KeyRow
             key={key}
@@ -128,7 +128,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
         </Notice>
       )}
       {list}
-      <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-12">
         <TextField
           id="authorize-key"
           label="Authorize a catalog key"
@@ -137,7 +137,7 @@ export function CatalogKeys({ deps, view, config }: Props) {
           hint={`The key your backend or SDK publishes with. For an elisym agent, print it with: ${ASKR_KEY_COMMAND} ${ownerNpub}`}
           onChange={setPasted}
         />
-        <div>
+        <div className="flex justify-end">
           <button
             type="button"
             className="btn btn-primary"

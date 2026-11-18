@@ -27,7 +27,7 @@ export function KeysSection({
   onReplaceKey,
 }: Props) {
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
       <ReplaceKey onReplaceKey={onReplaceKey}>
         <ForgetOnDevice store={deps.signer.pubkey} />
       </ReplaceKey>

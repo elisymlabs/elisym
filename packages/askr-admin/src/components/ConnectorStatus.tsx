@@ -16,29 +16,30 @@ export function ConnectorStatus({ connector, tier }: Props) {
   if (connector === null) {
     return <p className="text-14 text-text-2">No connector is set up.</p>;
   }
+  const rows: { label: string; value: string }[] = [
+    { label: 'Platform', value: PLATFORM_LABELS[connector.platform] },
+    { label: 'Address', value: connector.url },
+    { label: 'Syncing', value: connector.enabled ? 'On' : 'Off (preview it, then turn it on)' },
+  ];
+  if (tier !== undefined && tier !== null) {
+    rows.push({
+      label: 'Your plan',
+      value: `Syncs every ${tier.syncIntervalMinutes} minute${tier.syncIntervalMinutes === 1 ? '' : 's'}, up to ${tier.maxProducts} products`,
+    });
+  }
+  rows.push(
+    { label: 'Last run', value: timeOf(connector.lastRunAt) },
+    { label: 'Next run', value: timeOf(connector.nextRunAt) },
+    { label: 'Last result', value: connectorResultSentence(connector.lastStatus) },
+  );
   return (
-    <dl className="text-14 grid grid-cols-[auto_1fr] gap-x-16 gap-y-4">
-      <dt className="text-text-2">Platform</dt>
-      <dd>{PLATFORM_LABELS[connector.platform]}</dd>
-      <dt className="text-text-2">Address</dt>
-      <dd className="break-all">{connector.url}</dd>
-      <dt className="text-text-2">Syncing</dt>
-      <dd>{connector.enabled ? 'On' : 'Off (preview it, then turn it on)'}</dd>
-      {tier === undefined || tier === null ? null : (
-        <>
-          <dt className="text-text-2">Your plan</dt>
-          <dd>
-            Syncs every {tier.syncIntervalMinutes} minute{tier.syncIntervalMinutes === 1 ? '' : 's'}
-            , up to {tier.maxProducts} products
-          </dd>
-        </>
-      )}
-      <dt className="text-text-2">Last run</dt>
-      <dd>{timeOf(connector.lastRunAt)}</dd>
-      <dt className="text-text-2">Next run</dt>
-      <dd>{timeOf(connector.nextRunAt)}</dd>
-      <dt className="text-text-2">Last result</dt>
-      <dd>{connectorResultSentence(connector.lastStatus)}</dd>
+    <dl className="kv">
+      {rows.map((row) => (
+        <div key={row.label}>
+          <dt>{row.label}</dt>
+          <dd>{row.value}</dd>
+        </div>
+      ))}
     </dl>
   );
 }

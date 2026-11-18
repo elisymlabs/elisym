@@ -212,33 +212,65 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
   const currency = config?.currency ?? DEFAULT_CURRENCY;
   const maxProducts = view.tier?.maxProducts;
 
+  let listWait = 'Reading your products...';
+  if (running) {
+    listWait = 'The list shows again once publishing is done.';
+  } else if (readError !== '') {
+    listWait = 'Your products are not read yet.';
+  }
+
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
+      {running ? (
+        <Notice tone="info">
+          Products are being published. The editor opens again once that is done.
+        </Notice>
+      ) : null}
+      {readError === '' ? null : (
+        <Notice tone="error">
+          {readError}{' '}
+          <button type="button" className="underline" onClick={() => void read()}>
+            Retry
+          </button>
+        </Notice>
+      )}
+      {failedNotice}
+      {draft === undefined || editing === undefined ? null : (
+        <fieldset disabled={busy} className="contents">
+          <ProductEditor
+            key={editing.mode === 'edit' ? editing.item.d : 'new'}
+            initial={editing.mode === 'edit' ? editing.item : undefined}
+            currency={currency}
+            takenIds={draft.map((item) => item.d)}
+            onSave={(item) => {
+              change(upsertItem(draft, item));
+              setEditing(undefined);
+            }}
+            onCancel={() => setEditing(undefined)}
+          />
+        </fieldset>
+      )}
       <Section
-        title="Products"
-        description="Changes stay here until you review and publish them. Publishing makes your catalog this list: only what changed is sent, and a product you remove here is deleted for good when you publish. To take one off sale for a while, set its availability to hidden instead."
-      >
-        {running ? (
-          <Notice tone="info">
-            Products are being published. The editor opens again once that is done.
-          </Notice>
-        ) : null}
-        {readError === '' ? null : (
-          <Notice tone="error">
-            {readError}{' '}
-            <button type="button" className="underline" onClick={() => void read()}>
-              Retry
+        title="Catalog"
+        description="Changes stay here until you review and publish them. A product you remove here is deleted for good when you publish; to take one off sale for a while, set its availability to hidden instead."
+        actions={
+          draft === undefined || editing !== undefined ? undefined : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => setEditing({ mode: 'new' })}
+            >
+              Add a product
             </button>
-          </Notice>
-        )}
-        {failedNotice}
-        {draft === undefined ? null : (
+          )
+        }
+        flush
+      >
+        {draft === undefined ? (
+          <p className="text-14 text-text-2 px-20 py-16">{listWait}</p>
+        ) : (
           <fieldset disabled={busy} className="contents">
-            <p className="text-13 text-text-2">
-              {draft.length} product{draft.length === 1 ? '' : 's'}
-              {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Products set
-              to hidden stay listed so you can show them again; removing one deletes it.
-            </p>
             <ProductList
               items={draft}
               onEdit={(d) => {
@@ -247,35 +279,19 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
               }}
               onRemove={(d) => change(removeItem(draft, d))}
             />
-            {editing === undefined ? (
-              <div>
-                <button type="button" className="btn" onClick={() => setEditing({ mode: 'new' })}>
-                  Add a product
-                </button>
-              </div>
-            ) : (
-              <ProductEditor
-                key={editing.mode === 'edit' ? editing.item.d : 'new'}
-                initial={editing.mode === 'edit' ? editing.item : undefined}
-                currency={currency}
-                takenIds={draft.map((item) => item.d)}
-                onSave={(item) => {
-                  change(upsertItem(draft, item));
-                  setEditing(undefined);
-                }}
-                onCancel={() => setEditing(undefined)}
-              />
-            )}
-            <CsvImport
-              currency={currency}
-              current={draft}
-              onImport={(items, mode) => change(importItems(draft, items, mode))}
-            />
+            <p className="border-line text-12 text-text-3 border-t px-20 py-10">
+              {draft.length} product{draft.length === 1 ? '' : 's'}
+              {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Products set
+              to hidden stay listed so you can show them again; removing one deletes it.
+            </p>
           </fieldset>
         )}
       </Section>
 
-      <Section title="Publish">
+      <Section
+        title="Publish"
+        description="Publishing makes your catalog this list: only what changed is sent. Review the changes first."
+      >
         <SyncStatus sync={view.catalogSync} />
         {reviewed === undefined ? null : <DiffSummary diff={reviewed.diff} />}
         {error === '' ? null : (
@@ -291,7 +307,7 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           </Notice>
         )}
         {notice === '' ? null : <Notice tone="success">{notice}</Notice>}
-        <div className="flex gap-8">
+        <div className="border-line -mx-20 -mb-20 flex justify-end gap-8 border-t px-20 py-12">
           <button
             type="button"
             className="btn"
@@ -310,6 +326,21 @@ export function ProductsSection({ deps, view, config, reload }: Props) {
           </button>
         </div>
       </Section>
+
+      {draft === undefined ? null : (
+        <Section
+          title="Import from a CSV file"
+          description="Add products from a spreadsheet, or replace all of them."
+        >
+          <fieldset disabled={busy} className="contents">
+            <CsvImport
+              currency={currency}
+              current={draft}
+              onImport={(items, mode) => change(importItems(draft, items, mode))}
+            />
+          </fieldset>
+        </Section>
+      )}
     </div>
   );
 }

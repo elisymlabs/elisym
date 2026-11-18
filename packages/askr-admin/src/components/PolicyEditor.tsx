@@ -55,7 +55,10 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
   };
 
   return (
-    <div className="border-line rounded-12 flex flex-col gap-12 border p-16">
+    <div className="card flex flex-col gap-16 p-24">
+      <h2 className="text-16 font-semibold">
+        {initial === undefined ? 'New policy' : `Edit ${initial.title}`}
+      </h2>
       <TextField
         id="policy-slug"
         label="Short name"
@@ -75,7 +78,10 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
       <TextField id="policy-title" label="Title" value={title} onChange={setTitle} />
       <TextAreaField id="policy-body" label="Text" rows={8} value={body} onChange={setBody} />
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
-      <div className="flex gap-8">
+      <div className="border-line -mx-24 -mb-24 flex justify-end gap-8 border-t px-24 py-14">
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancel
+        </button>
         <button
           type="button"
           className="btn btn-primary"
@@ -83,9 +89,6 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
           onClick={() => void save()}
         >
           {busy ? 'Publishing...' : 'Publish'}
-        </button>
-        <button type="button" className="btn" onClick={onCancel}>
-          Cancel
         </button>
       </div>
     </div>

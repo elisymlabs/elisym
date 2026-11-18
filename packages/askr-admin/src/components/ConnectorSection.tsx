@@ -8,6 +8,7 @@ import { npubOf } from '../lib/signer';
 import type { ConnectorRecord, ConnectorSyncResult, StoreView } from '../lib/types';
 import { ConnectorStatus } from './ConnectorStatus';
 import { CopyBlock } from './CopyBlock';
+import { NavIcon } from './NavIcon';
 import { Notice } from './Notice';
 import { PreviewResult } from './PreviewResult';
 import { Section } from './Section';
@@ -87,12 +88,18 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
 
   if (connector === null) {
     return (
-      <Section title="Connector">
-        <p className="text-14 text-text-2">
-          No shop is connected. To keep your products in sync with a Shopify or WooCommerce shop or
-          a Google product feed, choose it as your product source in Settings and save.
-        </p>
-      </Section>
+      <div className="card flex flex-col items-center gap-12 px-24 py-48 text-center">
+        <span className="bg-surface-2 text-text-2 flex size-40 items-center justify-center rounded-full">
+          <NavIcon tab="connector" />
+        </span>
+        <div className="flex max-w-420 flex-col gap-4">
+          <h2 className="text-15 font-semibold">No shop is connected</h2>
+          <p className="text-13 text-text-2">
+            To keep your products in sync with a Shopify or WooCommerce shop or a Google product
+            feed, choose it as your product source in Settings and save.
+          </p>
+        </div>
+      </div>
     );
   }
 
@@ -146,7 +153,7 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-32">
       <Section
         title={`${PLATFORM_LABELS[connector.platform]} connector`}
         description="Askr reads only what your shop shows the public, with no access token, and keeps your products in sync. Change the shop or its options in Settings."

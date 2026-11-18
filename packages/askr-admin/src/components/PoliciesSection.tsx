@@ -124,21 +124,16 @@ export function PoliciesSection({ deps, view, config }: Props) {
         }}
       />
     );
-  } else if (editable && policies !== undefined && taken < LIMITS.MAX_POLICIES) {
-    editor = (
-      <div>
-        <button type="button" className="btn" onClick={() => setEditing({ mode: 'new' })}>
-          Add a policy
-        </button>
-      </div>
-    );
   }
+  const addButton =
+    editable && policies !== undefined && editing === undefined && taken < LIMITS.MAX_POLICIES ? (
+      <button type="button" className="btn btn-primary" onClick={() => setEditing({ mode: 'new' })}>
+        Add a policy
+      </button>
+    ) : undefined;
 
   return (
-    <Section
-      title="Policies and FAQ"
-      description="Shipping, returns, sizing and other answers the assistant may quote."
-    >
+    <div className="flex flex-col gap-32">
       {note === '' ? null : <Notice tone="info">{note}</Notice>}
       {editable && importedSlugs.length > 0 ? (
         <Notice tone="info">
@@ -156,25 +151,43 @@ export function PoliciesSection({ deps, view, config }: Props) {
           </button>
         </Notice>
       )}
-      {policies === undefined ? null : (
-        <ul className="flex flex-col gap-8">
-          {policies.length === 0 ? <li className="text-14 text-text-2">No policies yet.</li> : null}
-          {policies.map((policy) => (
-            <PolicyRow
-              key={policy.slug}
-              policy={policy}
-              editable={editable && !importedSlugs.includes(policy.slug)}
-              imported={importedSlugs.includes(policy.slug)}
-              unread={!inUse.has(policy.slug)}
-              busy={busy}
-              onEdit={() => setEditing({ mode: 'edit', policy })}
-              onDelete={() => remove(policy.slug)}
-            />
-          ))}
-        </ul>
-      )}
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
       {editor}
-    </Section>
+      <Section
+        title="Policies and FAQ"
+        description="Shipping, returns, sizing and other answers the assistant may quote."
+        actions={addButton}
+        flush
+      >
+        {policies === undefined ? (
+          <p className="text-14 text-text-2 px-20 py-16">
+            {readError === '' ? 'Reading your policies...' : 'Your policies are not read yet.'}
+          </p>
+        ) : (
+          <ul className="rows flex flex-col">
+            {policies.length === 0 ? (
+              <li className="flex flex-col items-center gap-4 px-20 py-40 text-center">
+                <span className="text-14 font-medium">No policies yet.</span>
+                <span className="text-13 text-text-2">
+                  Add your shipping, returns and other answers shoppers ask about.
+                </span>
+              </li>
+            ) : null}
+            {policies.map((policy) => (
+              <PolicyRow
+                key={policy.slug}
+                policy={policy}
+                editable={editable && !importedSlugs.includes(policy.slug)}
+                imported={importedSlugs.includes(policy.slug)}
+                unread={!inUse.has(policy.slug)}
+                busy={busy}
+                onEdit={() => setEditing({ mode: 'edit', policy })}
+                onDelete={() => remove(policy.slug)}
+              />
+            ))}
+          </ul>
+        )}
+      </Section>
+    </div>
   );
 }

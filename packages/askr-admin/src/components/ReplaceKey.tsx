@@ -33,7 +33,7 @@ export function ReplaceKey({ onReplaceKey, children }: Props) {
         </div>
       ) : (
         <div>
-          <button type="button" className="btn" onClick={() => setConfirming(true)}>
+          <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)}>
             Replace my secret key
           </button>
         </div>

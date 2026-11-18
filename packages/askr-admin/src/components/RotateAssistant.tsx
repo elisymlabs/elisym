@@ -81,14 +81,16 @@ export function RotateAssistant({ deps, view, config, configError, onRetry, onCh
       title="Assistant key"
       description="Rotate it if you think it leaked. Your settings are signed again for the new key, and its private instructions are encrypted to it."
     >
-      <dl className="text-14 grid grid-cols-[auto_1fr] gap-x-16 gap-y-4">
-        <dt className="text-text-2">Current</dt>
-        <dd className="truncate font-mono">{npubOf(view.assistant)}</dd>
+      <dl className="kv">
+        <div>
+          <dt>Current</dt>
+          <dd className="text-13 font-mono">{npubOf(view.assistant)}</dd>
+        </div>
         {view.nextAssistant === null ? null : (
-          <>
-            <dt className="text-text-2">Next</dt>
-            <dd className="truncate font-mono">{npubOf(view.nextAssistant)}</dd>
-          </>
+          <div>
+            <dt>Next</dt>
+            <dd className="text-13 font-mono">{npubOf(view.nextAssistant)}</dd>
+          </div>
         )}
       </dl>
       {view.nextAssistant === null ? null : (
@@ -99,7 +101,7 @@ export function RotateAssistant({ deps, view, config, configError, onRetry, onCh
       {configError === '' ? null : <ConfigUnreadable error={configError} onRetry={onRetry} />}
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
       {done === '' ? null : <Notice tone="success">{done}</Notice>}
-      <div>
+      <div className="flex justify-end">
         <button
           type="button"
           className="btn"

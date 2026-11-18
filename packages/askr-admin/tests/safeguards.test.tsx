@@ -134,7 +134,9 @@ describe('a newest config that does not parse', () => {
       />,
     );
     const { container } = mounted;
-    await settle(() => container.querySelector('h1')?.textContent === 'Stored Tea');
+    await settle(
+      () => container.querySelector('#sidebar-store-name')?.textContent === 'Stored Tea',
+    );
     expect(container.textContent).toContain('shown as you signed them');
   });
 

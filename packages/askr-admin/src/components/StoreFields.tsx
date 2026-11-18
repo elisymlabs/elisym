@@ -2,6 +2,7 @@ import { ASKR_KEY_COMMAND } from '../constants';
 import { PLATFORM_OPTIONS, SOURCE_OPTIONS, platformOf, sourceKindOf } from '../lib/labels';
 import { npubOf } from '../lib/signer';
 import type { StoreForm } from '../lib/store-form';
+import { FieldGroup } from './FieldGroup';
 import { SelectField } from './SelectField';
 import { TextAreaField } from './TextAreaField';
 import { TextField } from './TextField';
@@ -18,31 +19,28 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
   const set = <Key extends keyof StoreForm>(key: Key, value: StoreForm[Key]) =>
     onChange({ ...form, [key]: value });
   return (
-    <div className="flex flex-col gap-20">
-      <fieldset className="flex flex-col gap-12">
-        <legend className="text-15 mb-8 font-semibold">Store</legend>
+    <div className="flex flex-col gap-32">
+      <FieldGroup id="group-store" title="Store">
         <TextField
           id="store-name"
           label="Store name"
           value={form.name}
           onChange={(value) => set('name', value)}
         />
-        <div className="grid gap-12 sm:grid-cols-2">
-          <TextField
-            id="store-language"
-            label="Catalog language"
-            value={form.language}
-            hint="A language tag, like en, de or pt-BR"
-            onChange={(value) => set('language', value)}
-          />
-          <TextField
-            id="store-currency"
-            label="Currency"
-            value={form.currency}
-            hint="Three letters, like USD or EUR"
-            onChange={(value) => set('currency', value)}
-          />
-        </div>
+        <TextField
+          id="store-language"
+          label="Catalog language"
+          value={form.language}
+          hint="A language tag, like en, de or pt-BR"
+          onChange={(value) => set('language', value)}
+        />
+        <TextField
+          id="store-currency"
+          label="Currency"
+          value={form.currency}
+          hint="Three letters, like USD or EUR"
+          onChange={(value) => set('currency', value)}
+        />
         <TextAreaField
           id="store-origins"
           label="Allowed origins"
@@ -58,10 +56,9 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
           hint="Other sites product links may point to, one per line."
           onChange={(value) => set('linkOrigins', value)}
         />
-      </fieldset>
+      </FieldGroup>
 
-      <fieldset className="flex flex-col gap-12">
-        <legend className="text-15 mb-8 font-semibold">Assistant</legend>
+      <FieldGroup id="group-assistant" title="Assistant">
         <TextField
           id="store-display-name"
           label="Assistant name (optional)"
@@ -83,10 +80,9 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
           hint="Shown when the assistant cannot answer."
           onChange={(value) => set('contact', value)}
         />
-      </fieldset>
+      </FieldGroup>
 
-      <fieldset className="flex flex-col gap-12">
-        <legend className="text-15 mb-8 font-semibold">Products</legend>
+      <FieldGroup id="group-products" title="Products">
         <SelectField
           id="store-source"
           label="Where your products come from"
@@ -159,11 +155,13 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
             onChange={(value) => set('merchantKey', value)}
           />
         ) : null}
-      </fieldset>
+      </FieldGroup>
 
-      <fieldset className="flex flex-col gap-12">
-        <legend className="text-15 mb-8 font-semibold">Private instructions</legend>
-        <p className="text-13 text-text-3">Encrypted to your assistant. Visitors never see them.</p>
+      <FieldGroup
+        id="group-private"
+        title="Private instructions"
+        description="Encrypted to your assistant. Visitors never see them."
+      >
         <TextAreaField
           id="store-voice"
           label="Voice"
@@ -183,7 +181,7 @@ export function StoreFields({ form, onChange, ownerNpub }: Props) {
           value={form.notes}
           onChange={(value) => set('notes', value)}
         />
-      </fieldset>
+      </FieldGroup>
     </div>
   );
 }

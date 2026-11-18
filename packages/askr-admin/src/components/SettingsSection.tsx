@@ -126,10 +126,7 @@ export function SettingsSection({
     view.connector,
   );
   return (
-    <Section
-      title="Settings"
-      description="Every save is signed with your secret key and replaces the previous settings."
-    >
+    <div className="flex flex-col gap-16">
       {configUnreadableAt === undefined ? null : (
         <Notice tone="error">
           Your newest published settings could not be read.{' '}
@@ -218,6 +215,6 @@ export function SettingsSection({
           </label>
         ) : null}
       </StoreSettingsForm>
-    </Section>
+    </div>
   );
 }

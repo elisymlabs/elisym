@@ -140,7 +140,7 @@ describe('a pending store read back from the server (7.3)', () => {
     const api = pendingApi([configSignedBy(OWNER_KEY, 'Saved Tea', NOW - 10)]);
     const { container } = await mountSession(api);
     expect(container.textContent).not.toContain('Set up your assistant');
-    expect(container.querySelector('h1')?.textContent).toBe('Saved Tea');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Saved Tea');
     expect(container.textContent).toContain('published once your store is activated');
     expect(container.textContent).not.toContain('Your settings are not published yet');
     expect(container.textContent).not.toContain('not shown here');
@@ -174,21 +174,21 @@ describe('a pending store read back from the server (7.3)', () => {
       })),
     });
     const { container } = await mountSession(api);
-    expect(container.querySelector('h1')?.textContent).toBe('Saved Tea');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Saved Tea');
     expect(container.textContent).toContain('Some older changes you signed are not shown here');
   });
 
   it('says nothing waits on the server when only an authorization is stored', async () => {
     const api = pendingApi([serverAuthorization(NOW)]);
     const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 10)]);
-    expect(container.querySelector('h1')?.textContent).toBe('Relay');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Relay');
     expect(container.textContent).not.toContain('shown as you signed them');
   });
 
   it('never uses an event the owner did not sign', async () => {
     const api = pendingApi([configSignedBy(generateSecretKey(), 'Not Yours', NOW)], 1);
     const { container } = await mountSession(api);
-    expect(container.querySelector('h1')?.textContent).toBe('Your store');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Your store');
     expect(container.textContent).toContain('Your settings are not published yet');
     expect(container.textContent).not.toContain('Not Yours');
   });
@@ -202,7 +202,7 @@ describe('a pending store read back from the server (7.3)', () => {
       })),
     });
     const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Newer', NOW - 10)]);
-    expect(container.querySelector('h1')?.textContent).toBe('Newer');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Newer');
     // The settings shown are the relay's, so nothing says they wait on the server.
     expect(container.textContent).not.toContain('shown as you signed them');
   });
@@ -216,7 +216,7 @@ describe('a pending store read back from the server (7.3)', () => {
       })),
     });
     const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 50)]);
-    expect(container.querySelector('h1')?.textContent).toBe('Signed Since');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Signed Since');
     expect(container.textContent).toContain('published once your store is reactivated');
   });
 
@@ -228,7 +228,7 @@ describe('a pending store read back from the server (7.3)', () => {
       })),
     });
     const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 10)]);
-    expect(container.querySelector('h1')?.textContent).toBe('Relay');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Relay');
     expect(api.storedEvents).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain('shown as you signed them');
   });
@@ -243,10 +243,10 @@ describe('a pending store read back from the server (7.3)', () => {
       })),
     });
     const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 500)]);
-    expect(container.querySelector('h1')?.textContent).toBe('Stored');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Stored');
     view = storeView();
     await click(buttonNamed(container, 'Refresh'));
-    await settle(() => container.querySelector('h1')?.textContent === 'Relay');
+    await settle(() => container.querySelector('#sidebar-store-name')?.textContent === 'Relay');
     expect(api.storedEvents).toHaveBeenCalledTimes(1);
   });
 
@@ -266,7 +266,7 @@ describe('a pending store read back from the server (7.3)', () => {
     expect(container.textContent).not.toContain('Set up your assistant');
     fail = false;
     await click(buttonNamed(container, 'Retry'));
-    await settle(() => container.querySelector('h1')?.textContent === 'Saved Tea');
+    await settle(() => container.querySelector('#sidebar-store-name')?.textContent === 'Saved Tea');
     expect(container.textContent).not.toContain('could not be read');
   });
 });

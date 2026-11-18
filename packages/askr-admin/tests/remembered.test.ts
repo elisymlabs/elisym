@@ -1,100 +1,162 @@
 import { nip19 } from 'nostr-tools';
-import { encrypt } from 'nostr-tools/nip49';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { bytesToHex } from 'nostr-tools/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { keyFileName, keyFileText, saveTextFile } from '../src/lib/key-file';
 import {
-  MIN_PASSWORD_LENGTH,
-  REMEMBER_LOG_N,
   canRemember,
   forgetDamaged,
   forgetKey,
   isRemembered,
-  passwordProblem,
   readRemembered,
   rememberKey,
   unlockKey,
 } from '../src/lib/remembered';
-import { type MemoryStorage, blockStorage, installStorage, plainForms, withByte } from './stored';
+import {
+  type MemoryStorage,
+  blockStorage,
+  freshDeviceKeys,
+  installStorage,
+  plainForms,
+} from './stored';
 
-const PASSWORD = 'correct horse battery';
 const STORAGE_KEY = 'askr-admin.remembered-keys';
+const SEALED_BYTES = 12 + 32 + 16;
 
 let storage: MemoryStorage;
 beforeEach(() => {
   storage = installStorage();
+  freshDeviceKeys();
 });
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function writeRaw(value: unknown) {
   storage.setItem(STORAGE_KEY, typeof value === 'string' ? value : JSON.stringify(value));
 }
 
+function bytesOf(sealed: string): Uint8Array {
+  return Uint8Array.from(atob(sealed), (character) => character.charCodeAt(0));
+}
+
+function base64Of(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+async function rememberedOf(secretKey: Uint8Array) {
+  expect(await rememberKey(secretKey)).toBe(true);
+  const key = readRemembered().keys.find((known) => known.store === getPublicKey(secretKey));
+  if (key === undefined) {
+    throw new Error('nothing remembered');
+  }
+  return key;
+}
+
 describe('remembering a key on this device', () => {
-  it('writes only the password-locked key, with the chosen cost, and unlocks it with the password', () => {
+  it('writes only the sealed key, never the key itself, and opens it again with no password', async () => {
     const secretKey = generateSecretKey();
-    expect(rememberKey(secretKey, PASSWORD)).toBe(true);
+    const key = await rememberedOf(secretKey);
     const stored = storage.everything();
     const written = storage.writes.join('\n');
-    expect(stored).toContain('ncryptsec1');
-    for (const secret of [...plainForms(secretKey), PASSWORD]) {
+    for (const secret of plainForms(secretKey)) {
       expect(stored).not.toContain(secret);
       expect(written).not.toContain(secret);
     }
-    const read = readRemembered();
-    expect(read).toMatchObject({ available: true, damaged: false });
-    expect(read.keys).toHaveLength(1);
-    const [key] = read.keys;
-    if (key === undefined) {
-      throw new Error('nothing remembered');
-    }
+    expect(stored).not.toContain(base64Of(secretKey));
+    expect(readRemembered()).toMatchObject({ available: true, damaged: false });
     expect(key.store).toBe(getPublicKey(secretKey));
-    expect(key.locked.startsWith('ncryptsec1')).toBe(true);
-    expect(REMEMBER_LOG_N).toBe(16);
-    const unlocked = unlockKey(key, PASSWORD);
+    expect(bytesOf(key.sealed)).toHaveLength(SEALED_BYTES);
+    const unlocked = await unlockKey(key);
     expect(unlocked.ok && bytesToHex(unlocked.secretKey)).toBe(bytesToHex(secretKey));
     expect(isRemembered(getPublicKey(secretKey))).toBe(true);
   });
 
-  it('says a wrong password plainly and passes nothing of the failure on', () => {
-    const secretKey = generateSecretKey();
-    rememberKey(secretKey, PASSWORD);
-    const [key] = readRemembered().keys;
-    if (key === undefined) {
-      throw new Error('nothing remembered');
+  it('seals with a device key no script can read out', async () => {
+    const key = await rememberedOf(generateSecretKey());
+    const request = indexedDB.open('askr-admin');
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      request.onsuccess = () => resolve(request.result);
+    });
+    const read = db.transaction('device').objectStore('device').get('remember-key');
+    const device = await new Promise<unknown>((resolve) => {
+      read.onsuccess = () => resolve(read.result);
+    });
+    db.close();
+    expect(device).toBeInstanceOf(CryptoKey);
+    expect(device instanceof CryptoKey && device.extractable).toBe(false);
+    if (device instanceof CryptoKey) {
+      await expect(crypto.subtle.exportKey('raw', device)).rejects.toThrow();
     }
-    expect(unlockKey(key, 'correct horse batterY')).toEqual({ ok: false, reason: 'password' });
+    expect((await unlockKey(key)).ok).toBe(true);
   });
 
-  it('keeps one key per Store ID, newest first, and replaces one remembered again', () => {
+  it('uses a fresh nonce each time, and keeps using the same device key', async () => {
+    const secretKey = generateSecretKey();
+    const first = await rememberedOf(secretKey);
+    const second = await rememberedOf(secretKey);
+    expect(second.sealed).not.toBe(first.sealed);
+    expect((await unlockKey(first)).ok).toBe(true);
+    expect((await unlockKey(second)).ok).toBe(true);
+  });
+
+  it('cannot open a key once the device key is gone', async () => {
+    const key = await rememberedOf(generateSecretKey());
+    freshDeviceKeys();
+    expect(await unlockKey(key)).toEqual({ ok: false, reason: 'lost' });
+  });
+
+  it('cannot open a key sealed by another device', async () => {
+    const key = await rememberedOf(generateSecretKey());
+    freshDeviceKeys();
+    await rememberedOf(generateSecretKey());
+    expect(await unlockKey(key)).toEqual({ ok: false, reason: 'lost' });
+  });
+
+  it('refuses a sealed key moved under another Store ID', async () => {
+    const key = await rememberedOf(generateSecretKey());
+    const other = getPublicKey(generateSecretKey());
+    expect(await unlockKey({ store: other, sealed: key.sealed })).toEqual({
+      ok: false,
+      reason: 'lost',
+    });
+  });
+
+  it('refuses a changed byte anywhere in the sealed key', async () => {
+    const key = await rememberedOf(generateSecretKey());
+    for (const offset of [0, 11, 12, 43, 44, SEALED_BYTES - 1]) {
+      const bytes = bytesOf(key.sealed);
+      bytes[offset] = (bytes[offset] ?? 0) ^ 1;
+      expect(await unlockKey({ store: key.store, sealed: base64Of(bytes) })).toEqual({
+        ok: false,
+        reason: 'lost',
+      });
+    }
+  });
+
+  it('keeps one key per Store ID, newest first, and replaces one remembered again', async () => {
     const first = generateSecretKey();
     const second = generateSecretKey();
-    rememberKey(first, PASSWORD);
-    rememberKey(second, PASSWORD);
+    await rememberKey(first);
+    await rememberKey(second);
     expect(readRemembered().keys.map((key) => key.store)).toEqual([
       getPublicKey(second),
       getPublicKey(first),
     ]);
-    rememberKey(first, 'another long password');
-    const keys = readRemembered().keys;
-    expect(keys.map((key) => key.store)).toEqual([getPublicKey(first), getPublicKey(second)]);
-    const [firstKey] = keys;
-    if (firstKey === undefined) {
-      throw new Error('nothing remembered');
-    }
-    expect(unlockKey(firstKey, PASSWORD).ok).toBe(false);
-    expect(unlockKey(firstKey, 'another long password').ok).toBe(true);
+    await rememberKey(first);
+    expect(readRemembered().keys.map((key) => key.store)).toEqual([
+      getPublicKey(first),
+      getPublicKey(second),
+    ]);
   });
 
-  it('forgets one store and leaves the others, and removes the entry once none is left', () => {
+  it('forgets one store and leaves the others, and removes the entry once none is left', async () => {
     const first = generateSecretKey();
     const second = generateSecretKey();
-    rememberKey(first, PASSWORD);
-    rememberKey(second, PASSWORD);
+    await rememberKey(first);
+    await rememberKey(second);
     expect(forgetKey(getPublicKey(first))).toBe(true);
     expect(readRemembered().keys.map((key) => key.store)).toEqual([getPublicKey(second)]);
     expect(forgetKey(getPublicKey(first))).toBe(true);
@@ -102,20 +164,25 @@ describe('remembering a key on this device', () => {
     expect(storage.getItem(STORAGE_KEY)).toBeNull();
   });
 
-  it('refuses a key whose Store ID does not match what it unlocks to', () => {
-    const secretKey = generateSecretKey();
-    const other = getPublicKey(generateSecretKey());
-    const locked = encrypt(secretKey, PASSWORD, REMEMBER_LOG_N);
-    expect(unlockKey({ store: other, locked }, PASSWORD)).toEqual({
-      ok: false,
-      reason: 'mismatch',
-    });
+  it('keeps a key remembered in another tab while this one sealed its own', async () => {
+    const mine = generateSecretKey();
+    const theirs = generateSecretKey();
+    await Promise.all([rememberKey(mine), rememberKey(theirs)]);
+    const keys = readRemembered().keys;
+    expect(keys.map((key) => key.store).sort()).toEqual(
+      [getPublicKey(mine), getPublicKey(theirs)].sort(),
+    );
+    for (const key of keys) {
+      expect((await unlockKey(key)).ok).toBe(true);
+    }
   });
 });
 
 describe('what is stored, read back carefully', () => {
   const secretKey = generateSecretKey();
   const store = getPublicKey(secretKey);
+  const someone = getPublicKey(generateSecretKey());
+  const sealed = base64Of(new Uint8Array(SEALED_BYTES));
 
   it('flags what does not parse, and offers nothing of it', () => {
     for (const raw of [
@@ -123,82 +190,69 @@ describe('what is stored, read back carefully', () => {
       '[]',
       { version: 0, keys: [] },
       { version: '2', keys: [] },
-      { version: 1 },
-      { version: 1, keys: {} },
+      { version: 2 },
+      { version: 2, keys: {} },
     ]) {
       writeRaw(raw);
       expect(readRemembered()).toEqual({ available: true, keys: [], damaged: true });
     }
   });
 
-  const good = encrypt(secretKey, PASSWORD, REMEMBER_LOG_N);
-  const flipped = `${good.slice(0, 20)}${good[20] === 'q' ? 'p' : 'q'}${good.slice(21)}`;
-  const someone = getPublicKey(generateSecretKey());
+  it('offers nothing a password-locking build left, and writes over it', async () => {
+    writeRaw({ version: 1, keys: [{ store, locked: 'ncryptsec1qqqq' }] });
+    expect(readRemembered()).toEqual({ available: true, keys: [], damaged: false });
+    expect(await rememberKey(secretKey)).toBe(true);
+    expect(readRemembered().keys.map((key) => key.store)).toEqual([store]);
+  });
+
   it.each([
-    ['a changed character', { store: someone, locked: flipped }],
-    ['a cost below the one written', { store: someone, locked: withByte(good, 1, 15) }],
-    ['a cost too high to run', { store: someone, locked: withByte(good, 1, 19) }],
-    ['another format version', { store: someone, locked: withByte(good, 0, 3) }],
-    ['a Store ID that is not one', { store: 'NOTHEX', locked: good }],
-    ['a locked key that is not text', { store: someone, locked: 7 }],
-    ['a locked key with more after it', { store: someone, locked: `${good}q` }],
-    ['something else bech32-shaped', { store: someone, locked: 'npub1qqqq' }],
-    ['a second entry for the same store', { store, locked: good }],
+    ['a sealed key that is too short', { store: someone, sealed: base64Of(new Uint8Array(59)) }],
+    ['a sealed key that is too long', { store: someone, sealed: base64Of(new Uint8Array(61)) }],
+    ['a sealed key that is not base64', { store: someone, sealed: '%%%' }],
+    ['a sealed key that is not text', { store: someone, sealed: 7 }],
+    ['a Store ID that is not one', { store: 'NOTHEX', sealed }],
+    ['a second entry for the same store', { store, sealed }],
     ['not an entry at all', 'loose'],
   ])('drops and flags %s, keeping the readable key', (_name, entry) => {
-    writeRaw({ version: 1, keys: [{ store, locked: good }, entry] });
+    writeRaw({ version: 2, keys: [{ store, sealed }, entry] });
     expect(readRemembered()).toEqual({
       available: true,
-      keys: [{ store, locked: good }],
+      keys: [{ store, sealed }],
       damaged: true,
     });
     expect(forgetDamaged()).toBe(true);
     expect(readRemembered()).toEqual({
       available: true,
-      keys: [{ store, locked: good }],
+      keys: [{ store, sealed }],
       damaged: false,
     });
   });
 
-  it('reads a key locked at a higher cost, so raising it later locks nobody out', () => {
-    // The helper re-encodes faithfully: the same byte gives back the same value.
-    expect(withByte(good, 1, REMEMBER_LOG_N)).toBe(good);
-    const costlier = encrypt(secretKey, PASSWORD, REMEMBER_LOG_N + 1);
-    writeRaw({ version: 1, keys: [{ store, locked: costlier }] });
-    const [key] = readRemembered().keys;
-    if (key === undefined) {
-      throw new Error('not read');
-    }
-    expect(unlockKey(key, PASSWORD).ok).toBe(true);
-    writeRaw({ version: 1, keys: [{ store, locked: withByte(good, 1, 18) }] });
-    expect(readRemembered().keys).toHaveLength(1);
-  });
-
-  it('leaves what a newer admin remembered untouched', () => {
-    const newer = JSON.stringify({ version: 2, keys: [{ anything: true }] });
+  it('leaves what a newer admin remembered untouched', async () => {
+    const newer = JSON.stringify({ version: 3, keys: [{ anything: true }] });
     writeRaw(newer);
     expect(readRemembered()).toEqual({ available: true, keys: [], damaged: false, newer: true });
-    expect(rememberKey(secretKey, PASSWORD)).toBe(false);
+    expect(await rememberKey(secretKey)).toBe(false);
     expect(forgetKey(store)).toBe(false);
     expect(forgetDamaged()).toBe(false);
     expect(storage.getItem(STORAGE_KEY)).toBe(newer);
   });
 
-  it('writes nothing over a value it cannot read at all, until it is cleared', () => {
+  it('writes nothing over a value it cannot read at all, until it is cleared', async () => {
     writeRaw('not json');
     expect(forgetKey(store)).toBe(true);
-    expect(rememberKey(secretKey, PASSWORD)).toBe(false);
+    expect(await rememberKey(secretKey)).toBe(false);
     expect(storage.getItem(STORAGE_KEY)).toBe('not json');
     expect(forgetDamaged()).toBe(true);
     expect(storage.getItem(STORAGE_KEY)).toBeNull();
-    expect(rememberKey(secretKey, PASSWORD)).toBe(true);
+    expect(await rememberKey(secretKey)).toBe(true);
   });
 
-  it('keeps unreadable entries through remembering and forgetting other stores', () => {
+  it('keeps unreadable entries through remembering and forgetting other stores', async () => {
     const other = generateSecretKey();
-    const unreadable = { store: someone, locked: withByte(good, 1, 19) };
-    writeRaw({ version: 1, keys: [{ store, locked: good }, unreadable] });
-    expect(rememberKey(other, PASSWORD)).toBe(true);
+    const unreadable = { store: someone, sealed: '%%%' };
+    writeRaw({ version: 2, keys: [{ store, sealed }, unreadable] });
+    expect(await rememberKey(other)).toBe(true);
     expect(forgetKey(store)).toBe(true);
     const kept = storage.getItem(STORAGE_KEY) ?? '';
     expect(JSON.parse(kept).keys).toContainEqual(unreadable);
@@ -206,31 +260,38 @@ describe('what is stored, read back carefully', () => {
     expect(readRemembered().keys.map((key) => key.store)).toEqual([getPublicKey(other)]);
   });
 
-  it('drops unreadable entries naming the store it forgets or replaces', () => {
-    const naming = { store, locked: withByte(good, 1, 19) };
-    writeRaw({ version: 1, keys: [naming] });
+  it('drops unreadable entries naming the store it forgets or replaces', async () => {
+    const naming = { store, sealed: '%%%' };
+    writeRaw({ version: 2, keys: [naming] });
     expect(readRemembered()).toMatchObject({ keys: [], damaged: true });
     expect(forgetKey(store)).toBe(true);
     expect(storage.getItem(STORAGE_KEY)).toBeNull();
-    writeRaw({ version: 1, keys: [naming] });
-    expect(rememberKey(secretKey, PASSWORD)).toBe(true);
+    writeRaw({ version: 2, keys: [naming] });
+    expect(await rememberKey(secretKey)).toBe(true);
     expect(readRemembered()).toMatchObject({ damaged: false });
+  });
+
+  it('writes over nothing when another tab made the value unreadable meanwhile', async () => {
+    const remembering = rememberKey(secretKey);
+    writeRaw('not json');
+    expect(await remembering).toBe(false);
+    expect(storage.getItem(STORAGE_KEY)).toBe('not json');
   });
 });
 
 describe('a browser that keeps nothing', () => {
-  it('says so when storage throws on write, and remembers nothing', () => {
+  it('says so when storage throws on write, and remembers nothing', async () => {
     storage.failing.add('setItem');
     expect(canRemember()).toBe(false);
-    expect(rememberKey(generateSecretKey(), PASSWORD)).toBe(false);
+    expect(await rememberKey(generateSecretKey())).toBe(false);
     expect(readRemembered()).toEqual({ available: false, keys: [], damaged: false });
   });
 
-  it('says so when storage itself cannot be reached', () => {
+  it('says so when storage itself cannot be reached', async () => {
     blockStorage();
     expect(canRemember()).toBe(false);
     expect(readRemembered()).toEqual({ available: false, keys: [], damaged: false });
-    expect(rememberKey(generateSecretKey(), PASSWORD)).toBe(false);
+    expect(await rememberKey(generateSecretKey())).toBe(false);
     expect(forgetKey(getPublicKey(generateSecretKey()))).toBe(true);
     expect(isRemembered(getPublicKey(generateSecretKey()))).toBe(false);
   });
@@ -239,17 +300,22 @@ describe('a browser that keeps nothing', () => {
     storage.failing.add('getItem');
     expect(readRemembered()).toEqual({ available: false, keys: [], damaged: false });
   });
-});
 
-describe('the password', () => {
-  it(`needs ${MIN_PASSWORD_LENGTH} characters, typed the same twice`, () => {
-    expect(passwordProblem('short', 'short')).toContain('at least 6 characters');
-    expect(passwordProblem('12345', '12345')).toContain('at least 6');
-    expect(passwordProblem('123456', '123457')).toContain('not the same');
-    expect(passwordProblem('123456', '123456')).toBeUndefined();
-    // Counted by character, not UTF-16 unit: three emoji are three characters, not six.
-    expect(passwordProblem('🔑🔑🔑', '🔑🔑🔑')).toContain('at least 6');
-    expect(passwordProblem('🔑🔑🔑🔑🔑🔑', '🔑🔑🔑🔑🔑🔑')).toBeUndefined();
+  it('says so where there is no IndexedDB, and remembers nothing', async () => {
+    vi.stubGlobal('indexedDB', undefined);
+    expect(canRemember()).toBe(false);
+    expect(await rememberKey(generateSecretKey())).toBe(false);
+    expect(storage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it('remembers nothing when IndexedDB refuses to open', async () => {
+    vi.stubGlobal('indexedDB', {
+      open: () => {
+        throw new DOMException('denied', 'SecurityError');
+      },
+    });
+    expect(await rememberKey(generateSecretKey())).toBe(false);
+    expect(storage.getItem(STORAGE_KEY)).toBeNull();
   });
 });
 

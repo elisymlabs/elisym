@@ -17,19 +17,19 @@ export function CopyBlock({ text, label }: Props) {
     }
   };
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-8">
-        <span className="text-13 font-medium">{label}</span>
+    <div className="code-frame">
+      <header>
+        <span className="text-12 text-text-2 font-medium">{label}</span>
         <button
           type="button"
-          className="btn text-13"
+          className="btn btn-ghost btn-sm"
           aria-label={`${copied ? 'Copied' : 'Copy'}: ${label}`}
           onClick={() => void copy()}
         >
           {copied ? 'Copied' : 'Copy'}
         </button>
-      </div>
-      <pre className="code">{text}</pre>
+      </header>
+      <pre>{text}</pre>
     </div>
   );
 }

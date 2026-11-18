@@ -36,7 +36,7 @@ export function ForgetOnDevice({ store }: Props) {
   return (
     <div className="flex flex-col gap-8">
       <p className="text-14 text-text-2">
-        This device remembers this secret key, locked with your password.
+        This device remembers this secret key, so you sign in here without typing it.
       </p>
       {outcome === 'failed' ? (
         <Notice tone="error">This browser did not let the admin forget it. Try again.</Notice>

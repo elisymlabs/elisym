@@ -25,15 +25,19 @@ describe('the source', () => {
     );
   });
 
-  it('touches browser storage in one module only, which writes nothing but password-locked keys', () => {
+  it('touches browser storage in one module only, and never session storage or cookies', () => {
     expect(
       files
         .filter((file) => /localStorage|sessionStorage|indexedDB/.test(file.text))
         .map((file) => file.path),
     ).toEqual([join(SRC, 'lib/remembered.ts')]);
-    expect(
-      files.filter((file) => /sessionStorage|indexedDB|document\.cookie/.test(file.text)),
-    ).toEqual([]);
+    expect(files.filter((file) => /sessionStorage|document\.cookie/.test(file.text))).toEqual([]);
+  });
+
+  it('makes the device key non-extractable', () => {
+    const remembered = files.find((file) => file.path === join(SRC, 'lib/remembered.ts'));
+    expect(remembered?.text).toMatch(/generateKey\(\{ name: 'AES-GCM', length: 256 \}, false,/);
+    expect(remembered?.text).not.toMatch(/exportKey|wrapKey/);
   });
 });
 
