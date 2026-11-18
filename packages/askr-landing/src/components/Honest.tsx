@@ -24,12 +24,12 @@ const RULES = [
 
 export function Honest() {
   return (
-    <section id="honest" className="px-12 sm:px-24">
-      <div className="rounded-32 sm:rounded-40 bg-ink text-on-ink mx-auto grid max-w-1360 items-center gap-48 px-20 py-72 sm:px-56 sm:py-112 lg:grid-cols-[1.05fr_0.95fr]">
+    <section id="honest" className="px-8 sm:px-16">
+      <div className="rounded-32 sm:rounded-40 bg-ink text-on-ink mx-auto grid max-w-1440 items-center gap-56 px-20 py-80 sm:px-64 sm:py-128 lg:grid-cols-[1.1fr_0.9fr]">
         <Reveal className="flex flex-col gap-24">
           <Eyebrow tone="ink">Only your facts</Eyebrow>
-          <h2 className="text-48 sm:text-80 font-serif leading-[0.95]">
-            It does not <em className="text-on-ink-accent">make things up.</em>
+          <h2 className="font-serif text-[clamp(3rem,7vw,7.5rem)] leading-[0.9] tracking-[-0.03em]">
+            It does not <em className="text-on-ink-2">make things up.</em>
           </h2>
           <p className="text-18 text-on-ink-2 max-w-520 leading-relaxed">
             {`An assistant that invents a discount costs you more than no assistant at all. ${PRODUCT_NAME} answers only from what your store published.`}

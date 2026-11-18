@@ -3,28 +3,28 @@
 @import '@fontsource/instrument-serif/latin-400.css';
 @import '@fontsource/instrument-serif/latin-400-italic.css';
 
-/* One light scheme: warm paper, near-black ink, a deep teal used sparingly. */
+/* One light scheme in Askr's colors: ink on paper, as the widget and the admin draw them. */
 :root {
   color-scheme: light;
-  --bg: #f4f0e8;
-  --surface: #fbf9f4;
-  --surface-2: #ece6da;
-  --line: #e0d8c8;
-  --line-2: #cfc4b0;
-  --text: #17150f;
-  --text-2: #4f4a42;
-  --text-3: #635d54;
-  --accent: #0e6b62;
-  --accent-ink: #0b5c54;
-  --accent-soft: rgb(14 107 98 / 0.09);
-  --accent-text: #ffffff;
-  --ink: #15140f;
-  --ink-2: #211f19;
-  --ink-line: #34312a;
-  --on-ink: #f4f0e8;
-  --on-ink-2: #b9b2a5;
-  --on-ink-accent: #7fd6c8;
-  --warn: #9a3412;
+  --bg: #f4f4f2;
+  --surface: #fbfbfc;
+  --surface-2: #ebebe8;
+  --line: #e2e2df;
+  --line-2: #cfcfcb;
+  --text: #121316;
+  --text-2: #45474d;
+  --text-3: #606369;
+  --accent: #121316;
+  --accent-ink: #121316;
+  --accent-soft: rgb(18 19 22 / 0.06);
+  --accent-text: #fbfbfc;
+  --ink: #0d0e10;
+  --ink-2: #18191c;
+  --ink-line: #2c2e33;
+  --on-ink: #f2f2f4;
+  --on-ink-2: #a3a5ad;
+  --on-ink-accent: #ffffff;
+  --warn: #b42318;
 }
 
 @theme inline {
@@ -118,7 +118,7 @@ body {
   inset: 0;
   z-index: 50;
   pointer-events: none;
-  opacity: 0.06;
+  opacity: 0.035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -226,6 +226,40 @@ body {
   animation-delay: 0.3s;
 }
 
+/* A word of a statement that lights up as the statement scrolls through the screen. */
+.lit-word {
+  opacity: 0.14;
+  transition: opacity 0.35s ease;
+}
+
+.lit-word[data-lit='true'] {
+  opacity: 1;
+}
+
+.wgt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.wgt-table th,
+.wgt-table td {
+  padding: 4px 6px;
+  border: 1px solid var(--w-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.wgt-table-label {
+  margin-left: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--w-surface);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* The wrong price struck through as the check catches it. */
 .strike {
   background: linear-gradient(currentColor, currentColor) no-repeat 0 55% / 0 2px;
@@ -254,7 +288,230 @@ body {
     animation: none;
   }
 
-  .strike {
+  .strike,
+  .lit-word {
     transition: none;
   }
+}
+
+/* The Askr mark: the rim and the rings in ink, the bands between them in the paper behind. */
+.mark-ink {
+  fill: var(--mark-ink, var(--text));
+}
+
+.mark-paper {
+  fill: var(--mark-paper, var(--bg));
+}
+
+/*
+ * The widget, drawn as packages/askr-widget/src/ui/styles.ts draws it (light theme): its own
+ * colors, sizes and system font, whatever the page around it uses. Nothing in it is live.
+ */
+.wgt {
+  --w-bg: #fbfbfc;
+  --w-surface: #f1f2f4;
+  --w-text: #121316;
+  --w-muted: #6b6e76;
+  --w-border: #e6e7eb;
+  --mark-ink: var(--w-text);
+  --mark-paper: var(--w-bg);
+  font-family:
+    system-ui,
+    -apple-system,
+    Roboto,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--w-text);
+}
+
+.wgt-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--w-bg);
+  border: 1px solid var(--w-border);
+  border-radius: 18px;
+  box-shadow:
+    0 24px 60px -18px rgb(18 19 22 / 0.35),
+    0 2px 6px rgb(18 19 22 / 0.08);
+  overflow: hidden;
+}
+
+.wgt-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--w-border);
+}
+
+.wgt-muted {
+  color: var(--w-muted);
+}
+
+.wgt-log {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  /* The widget scrolls to the newest message: here the oldest leave over the top. */
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.wgt-log > *,
+.wgt-log > .contents > * {
+  flex-shrink: 0;
+}
+
+.wgt-mine {
+  align-self: flex-end;
+  max-width: 88%;
+  padding: 9px 13px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--w-text);
+  color: var(--w-bg);
+}
+
+.wgt-theirs {
+  align-self: flex-start;
+  max-width: 88%;
+}
+
+.wgt-cards {
+  display: flex;
+  gap: 10px;
+  margin: 0 -16px;
+  padding: 2px 16px 6px;
+  overflow: hidden;
+}
+
+.wgt-card {
+  display: flex;
+  flex: 0 0 232px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--w-border);
+  border-radius: 18px;
+  background: var(--w-bg);
+}
+
+.wgt-card-media {
+  position: relative;
+  height: 150px;
+  background: var(--w-surface);
+}
+
+.wgt-card-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wgt-label {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #121316;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.wgt-card-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.wgt-card-title {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.wgt-reason {
+  color: var(--w-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.wgt-price {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.wgt-cart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--w-text);
+  color: var(--w-bg);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.wgt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 8px;
+}
+
+.wgt-chip {
+  padding: 5px 11px;
+  border: 1px solid var(--w-border);
+  border-radius: 999px;
+  font-size: 12.5px;
+}
+
+.wgt-composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--w-border);
+}
+
+.wgt-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--w-border);
+  border-radius: 12px;
+  background: var(--w-surface);
+  color: var(--w-muted);
+}
+
+.wgt-send {
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--w-text);
+  color: var(--w-bg);
+  font-weight: 600;
+}
+
+.wgt-launcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 50px;
+  padding: 0 18px 0 10px;
+  border: 1px solid var(--w-border);
+  border-radius: 15px;
+  background: var(--w-bg);
+  box-shadow:
+    0 14px 32px -12px rgb(0 0 0 / 0.35),
+    0 2px 6px rgb(0 0 0 / 0.06);
+  white-space: nowrap;
 }

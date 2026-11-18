@@ -10,7 +10,6 @@ rust, one muted teal accent. No people, no text, no logos.
 | File                  | Prompt (abridged)                                                                                                                               |
 | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hero.webp` (Fashion) | Bright boutique interior, morning daylight from tall windows, oak shelves and table, folded knitwear in navy, oat and rust, ceramics, teal vase |
-| `closing.webp`        | Small boutique storefront at golden hour, cream stone facade, muted teal door, potted olive tree, knitwear visible inside                       |
 | `catalog.webp`        | Top-down flat lay of store products in an even grid on cream paper: sweater, sneakers, headphones, watch, notebook, beanie, sunglasses          |
 | `keys.webp`           | A single brass key on folded linen on a travertine counter, low warm side light                                                                 |
 | `sweater.webp`        | Folded navy merino crew sweater on a cream seamless background, soft studio daylight                                                            |

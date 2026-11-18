@@ -1,23 +1,26 @@
 import { BUTTON } from '../buttons';
 import { PRODUCT_NAME } from '../constants';
 import { AdminLink } from './AdminLink';
+import { AskrMark } from './AskrMark';
 import { Eyebrow } from './Eyebrow';
 import { Icon, type IconName } from './Icon';
 import { Reveal } from './Reveal';
 
-const MENU: { icon: IconName; label: string }[] = [
+/** The admin's sections, as its sidebar lists them (`packages/askr-admin/src/lib/tabs.ts`). */
+const ADMIN_SECTIONS: { icon: IconName; label: string }[] = [
   { icon: 'chart', label: 'Overview' },
-  { icon: 'chat', label: 'Assistant' },
+  { icon: 'sliders', label: 'Settings' },
   { icon: 'tag', label: 'Products' },
   { icon: 'shield', label: 'Policies' },
-  { icon: 'plug', label: 'Connectors' },
-  { icon: 'key', label: 'Keys' },
+  { icon: 'plug', label: 'Connector' },
+  { icon: 'code', label: 'Embed' },
+  { icon: 'key', label: 'Advanced' },
 ];
 
 /** Made-up figures for the drawing. */
 const TILES = [
-  { label: 'Conversations', value: '1,284' },
-  { label: 'Open now', value: '37' },
+  { label: 'Conversations so far', value: '1,284' },
+  { label: 'Products', value: '146' },
   { label: 'Product clicks', value: '612' },
 ];
 
@@ -55,7 +58,7 @@ export function AdminPreview() {
         <Reveal delay={1}>
           <figure
             aria-label={`A drawing of the ${PRODUCT_NAME} admin overview`}
-            className="rounded-24 border-line bg-surface overflow-hidden border shadow-[0_40px_100px_-30px_rgb(23_21_15_/_0.35)]"
+            className="rounded-24 border-line overflow-hidden border bg-white shadow-[0_40px_100px_-30px_rgb(23_21_15_/_0.35)]"
           >
             <div className="border-line bg-surface-2/60 flex items-center gap-6 border-b px-16 py-12">
               <span className="bg-line-2 size-10 rounded-full" />
@@ -65,12 +68,16 @@ export function AdminPreview() {
                 app.askr.elisym.network/admin
               </span>
             </div>
-            <div className="grid sm:grid-cols-[176px_1fr]">
-              <ul className="border-line hidden flex-col gap-4 border-r p-12 sm:flex">
-                {MENU.map((item, index) => (
+            <div className="grid sm:grid-cols-[200px_1fr]">
+              <ul className="border-line hidden flex-col gap-2 border-r bg-[#f9f9f9] p-12 sm:flex">
+                <li className="text-13 mb-8 flex items-center gap-8 px-6 py-4 font-semibold">
+                  <AskrMark className="size-20 flex-none [--mark-paper:#f9f9f9]" />
+                  Northwind Audio
+                </li>
+                {ADMIN_SECTIONS.map((item, index) => (
                   <li
                     key={item.label}
-                    className={`rounded-8 text-13 flex items-center gap-8 px-10 py-8 ${index === 0 ? 'bg-ink text-on-ink font-medium' : 'text-text-2'}`}
+                    className={`rounded-8 text-13 flex items-center gap-8 px-10 py-8 ${index === 0 ? 'text-text bg-[#ececec] font-medium' : 'text-text-2'}`}
                   >
                     <Icon name={item.icon} className="size-16" />
                     {item.label}
@@ -78,12 +85,14 @@ export function AdminPreview() {
                 ))}
               </ul>
               <div className="flex flex-col gap-14 p-16 sm:p-20">
-                <span className="text-24 font-serif">Northwind Audio</span>
+                <span className="text-20 font-semibold tracking-[-0.01em]">Overview</span>
                 <dl className="grid grid-cols-3 gap-10">
                   {TILES.map((tile) => (
                     <div key={tile.label} className="rounded-12 border-line bg-bg border p-12">
                       <dt className="text-12 text-text-3">{tile.label}</dt>
-                      <dd className="text-24 mt-4 font-serif tabular-nums">{tile.value}</dd>
+                      <dd className="text-24 mt-4 font-semibold tracking-[-0.02em] tabular-nums">
+                        {tile.value}
+                      </dd>
                     </div>
                   ))}
                 </dl>

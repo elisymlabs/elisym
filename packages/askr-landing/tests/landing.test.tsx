@@ -302,24 +302,16 @@ describe('the page structure', () => {
     }
   });
 
-  it('each niche answer names no price but those on its cards', () => {
+  it('each niche answer names no price but those on its cards or the budget asked', () => {
     for (const niche of NICHES) {
-      const prices = [...`${niche.question} ${niche.answer}`.matchAll(/\$\d+(?:\.\d{2})?/g)].map(
-        (match) => match[0],
-      );
-      const asked = [...niche.question.matchAll(/\$\d+/g)].map((match) => match[0]);
-      for (const price of prices) {
+      const asked = [...niche.question.matchAll(/\$(\d+)/g)].map((match) => match[1]);
+      const onCards = niche.cards.map((card) => card.product.price.split('.')[0]);
+      for (const match of niche.answer.matchAll(/\$(\d+)/g)) {
         expect(
-          asked.includes(price) || niche.cards.some((card) => card.price === price),
-          `${niche.id}: ${price}`,
+          asked.includes(match[1]) || onCards.includes(match[1]),
+          `${niche.id}: ${match[0]}`,
         ).toBe(true);
       }
-    }
-  });
-
-  it('draws product cards with the catalog prices, as decimal strings with cents', () => {
-    for (const product of Object.values(PRODUCTS)) {
-      expect(product.price).toMatch(/^\$\d+\.\d{2}$/);
     }
   });
 

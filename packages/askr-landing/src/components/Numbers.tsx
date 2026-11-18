@@ -22,31 +22,27 @@ const STATS = [
 
 export function Numbers() {
   return (
-    <section id="numbers" className="border-line-2 border-y">
-      <div className="mx-auto max-w-1200 px-16 py-96 sm:px-24 sm:py-128">
-        <Reveal className="flex flex-col gap-16">
-          <Eyebrow>Measured, not promised</Eyebrow>
-          <h2 className="text-40 sm:text-56 max-w-800 font-serif leading-[1.02]">
-            {`We grade ${PRODUCT_NAME} on a fixed set of test conversations with a sample store.`}
-          </h2>
-        </Reveal>
-        <Reveal delay={1}>
-          <dl className="mt-56 grid md:grid-cols-3">
-            {STATS.map((stat, index) => (
-              <div
-                key={stat.label}
-                className={`border-line-2 flex flex-col gap-10 border-t py-28 md:border-t-0 md:py-0 ${index > 0 ? 'md:border-l md:pl-32' : ''} ${index < STATS.length - 1 ? 'md:pr-32' : ''}`}
-              >
-                <dt className="text-16 order-2 font-medium">{stat.label}</dt>
-                <dd className="text-80 sm:text-96 text-accent-ink order-1 font-serif leading-none tabular-nums">
-                  {stat.value}
-                </dd>
-                <dd className="text-14 text-text-2 order-3 leading-relaxed">{stat.note}</dd>
-              </div>
-            ))}
-          </dl>
-        </Reveal>
-      </div>
+    <section id="numbers" className="mx-auto max-w-1440 px-16 py-120 sm:px-32 sm:py-200">
+      <Reveal className="flex flex-col gap-20">
+        <Eyebrow>Measured, not promised</Eyebrow>
+        <h2 className="max-w-900 font-serif text-[clamp(2.25rem,4.4vw,4.5rem)] leading-[1] tracking-[-0.02em]">
+          {`We grade ${PRODUCT_NAME} on a fixed set of test conversations with a sample store.`}
+        </h2>
+      </Reveal>
+      <dl className="mt-64 flex flex-col">
+        {STATS.map((stat) => (
+          <Reveal
+            key={stat.label}
+            className="border-text grid items-end gap-x-48 gap-y-8 border-t py-24 sm:py-32 lg:grid-cols-[1.4fr_1fr]"
+          >
+            <dd className="font-serif text-[clamp(5.5rem,15vw,15rem)] leading-[0.8] tracking-[-0.04em] tabular-nums lg:row-span-2">
+              {stat.value}
+            </dd>
+            <dt className="text-20 self-end font-medium">{stat.label}</dt>
+            <dd className="text-15 text-text-2 max-w-440 pb-8 leading-relaxed">{stat.note}</dd>
+          </Reveal>
+        ))}
+      </dl>
     </section>
   );
 }

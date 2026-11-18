@@ -13,7 +13,15 @@ export interface Niche {
   photo: Photo;
   question: string;
   answer: string;
-  cards: readonly [Product, Product];
+  /** The two picks, each with the line the assistant gives for it. */
+  cards: readonly [Pick, Pick];
+  /** The follow-up questions the widget offers under the answer. */
+  chips: readonly string[];
+}
+
+export interface Pick {
+  product: Product;
+  reason: string;
 }
 
 export const NICHES: readonly Niche[] = [
@@ -25,7 +33,11 @@ export const NICHES: readonly Niche[] = [
     question: 'Noise-cancelling headphones under $200 for long flights?',
     answer:
       "Two fit. Both last over 30 hours on a charge, and the store's warranty covers them for 2 years.",
-    cards: [PRODUCTS.headphonesSand, PRODUCTS.headphonesBlack],
+    cards: [
+      { product: PRODUCTS.headphonesSand, reason: 'Lighter, 32 h battery' },
+      { product: PRODUCTS.headphonesBlack, reason: 'Longest battery, 40 h' },
+    ],
+    chips: ['Compare them', 'Anything cheaper?'],
   },
   {
     id: 'fashion',
@@ -34,7 +46,11 @@ export const NICHES: readonly Niche[] = [
     photo: PHOTOS.heroFashion,
     question: 'A warm sweater under $80 that ships to Spain?',
     answer: "Two fit. Both ship to Spain in 3 to 5 days, as the store's shipping policy says.",
-    cards: [PRODUCTS.sweater, PRODUCTS.cardigan],
+    cards: [
+      { product: PRODUCTS.sweater, reason: 'Merino, navy, sizes S to XL' },
+      { product: PRODUCTS.cardigan, reason: 'Lambswool, oat, sizes XS to L' },
+    ],
+    chips: ['Which is warmer?', 'Size help'],
   },
   {
     id: 'home',
@@ -44,7 +60,11 @@ export const NICHES: readonly Niche[] = [
     question: 'A lamp and linen bedding for a calm guest room?',
     answer:
       'Here are two. The lamp comes with a warm 2700K bulb, and the linen set is in stock in queen.',
-    cards: [PRODUCTS.lamp, PRODUCTS.bedding],
+    cards: [
+      { product: PRODUCTS.lamp, reason: 'Sage ceramic, warm bulb included' },
+      { product: PRODUCTS.bedding, reason: 'Oat linen, queen in stock' },
+    ],
+    chips: ['Other colors?', 'Shipping time'],
   },
   {
     id: 'beauty',
@@ -53,6 +73,10 @@ export const NICHES: readonly Niche[] = [
     photo: PHOTOS.heroBeauty,
     question: 'Something for dry skin, fragrance-free, under $40?',
     answer: 'Two fit. Both are fragrance-free, and unopened items can be returned within 30 days.',
-    cards: [PRODUCTS.serum, PRODUCTS.cream],
+    cards: [
+      { product: PRODUCTS.serum, reason: 'Hydrating, 30 ml' },
+      { product: PRODUCTS.cream, reason: 'Barrier repair, 50 ml' },
+    ],
+    chips: ['Use them together?', 'Return policy'],
   },
 ];

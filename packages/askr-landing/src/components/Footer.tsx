@@ -1,6 +1,7 @@
 import { ADMIN_URL, DOCS, ELISYM_URL, GITHUB_URL, PRODUCT_NAME, X_URL } from '../constants';
 import { ElisymLogo } from './ElisymLogo';
 import { PageLink } from './PageLink';
+import { Wordmark } from './Wordmark';
 
 const COLUMNS = [
   {
@@ -33,40 +34,37 @@ const COLUMNS = [
 
 export function Footer() {
   return (
-    <footer className="mx-auto max-w-1360 overflow-hidden px-16 pt-96 sm:px-24">
-      <div className="grid gap-40 md:grid-cols-[1.5fr_1fr_1fr_1fr]">
-        <p className="text-24 max-w-360 font-serif leading-snug">
-          {`${PRODUCT_NAME} is a shopping assistant for your store's site, built by Elisym Labs on the open elisym protocol.`}
-        </p>
-        {COLUMNS.map((column) => (
-          <nav key={column.title} aria-label={column.title} className="flex flex-col gap-10">
-            <h2 className="text-12 text-text-3 font-semibold tracking-[0.14em] uppercase">
-              {column.title}
-            </h2>
-            {column.links.map((link) => (
-              <PageLink
-                key={link.href}
-                href={link.href}
-                className="text-15 text-text-2 hover:text-text self-start"
-              >
-                {link.label}
-              </PageLink>
-            ))}
-          </nav>
-        ))}
-      </div>
-      <p
-        aria-hidden="true"
-        className="mt-64 font-serif text-[clamp(8rem,38vw,34rem)] leading-[0.75] tracking-[-0.04em] select-none"
-      >
-        {PRODUCT_NAME}
-      </p>
-      <div className="border-line-2 text-13 text-text-3 flex flex-wrap items-center justify-between gap-12 border-t py-20">
-        <span>{`© ${new Date().getFullYear()} Elisym Labs`}</span>
-        <span className="flex items-center gap-6">
-          by
-          <ElisymLogo />
-        </span>
+    <footer className="bg-ink text-on-ink overflow-hidden">
+      <div className="mx-auto max-w-1440 px-16 pt-32 sm:px-32">
+        <div className="grid gap-40 md:grid-cols-[1.5fr_1fr_1fr_1fr]">
+          <p className="text-24 text-on-ink-2 max-w-360 font-serif leading-snug">
+            {`${PRODUCT_NAME} is a shopping assistant for your store's site, built by Elisym Labs on the open elisym protocol.`}
+          </p>
+          {COLUMNS.map((column) => (
+            <nav key={column.title} aria-label={column.title} className="flex flex-col gap-10">
+              <h2 className="text-12 text-on-ink-2 font-semibold tracking-[0.14em] uppercase">
+                {column.title}
+              </h2>
+              {column.links.map((link) => (
+                <PageLink
+                  key={link.href}
+                  href={link.href}
+                  className="text-15 text-on-ink hover:text-on-ink-2 self-start"
+                >
+                  {link.label}
+                </PageLink>
+              ))}
+            </nav>
+          ))}
+        </div>
+        <Wordmark className="text-on-ink mt-80 w-full select-none" />
+        <div className="border-ink-line text-13 text-on-ink-2 mt-24 flex flex-wrap items-center justify-between gap-12 border-t py-20">
+          <span>{`© ${new Date().getFullYear()} Elisym Labs`}</span>
+          <span className="flex items-center gap-6">
+            by
+            <ElisymLogo onInk />
+          </span>
+        </div>
       </div>
     </footer>
   );

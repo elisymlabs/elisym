@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { PRODUCT_NAME } from '../constants';
 import type { Niche } from '../niches';
 import { prefersReducedMotion, useInView } from '../useInView';
-import { AskrMark } from './AskrMark';
-import { Icon } from './Icon';
-import { ProductCard } from './ProductCard';
+import { WIDGET_TEXT } from '../widget-text';
+import { LiveMark } from './LiveMark';
+import { WidgetCard } from './WidgetCard';
+import { WidgetPanel } from './WidgetPanel';
 
 /** How long each step of the conversation holds before the next, by step. */
 function stepMs(step: number, answer: string): number {
-  return [500, 700, 1100, answer.length * 22 + 200, 350, 5200][step] ?? 1000;
+  return [700, 900, 1500, answer.length * 10 + 250, 350, 5600][step] ?? 1000;
 }
 
 const FINAL = 5;
@@ -17,10 +18,11 @@ interface Props {
   niche: Niche;
   /** Called once the conversation has played through; without it, it plays again. */
   onFinished?: () => void;
+  className?: string;
 }
 
 /** The widget answering a visitor, played once it is on screen: nothing in it is live. */
-export function ChatDemo({ niche, onFinished }: Props) {
+export function ChatDemo({ niche, onFinished, className = '' }: Props) {
   const [ref, inView] = useInView<HTMLElement>(0.3);
   const [step, setStep] = useState(0);
   const [typed, setTyped] = useState(0);
@@ -41,7 +43,7 @@ export function ChatDemo({ niche, onFinished }: Props) {
           return;
         }
         setTyped(0);
-        setStep((current) => (current + 1) % (FINAL + 1));
+        setStep((current) => (current === FINAL ? 1 : current + 1));
       },
       stepMs(step, niche.answer),
     );
@@ -55,8 +57,8 @@ export function ChatDemo({ niche, onFinished }: Props) {
       return undefined;
     }
     const timer = setInterval(
-      () => setTyped((count) => Math.min(niche.answer.length, count + 1)),
-      22,
+      () => setTyped((count) => Math.min(niche.answer.length, count + 2)),
+      20,
     );
     return () => clearInterval(timer);
   }, [answering, niche.answer.length]);
@@ -65,53 +67,38 @@ export function ChatDemo({ niche, onFinished }: Props) {
   return (
     <figure
       ref={ref}
-      aria-label={`The ${PRODUCT_NAME} chat on ${niche.store}'s site. A visitor asks: ${niche.question} The assistant answers: ${niche.answer} It shows ${niche.cards.map((card) => `${card.title} at ${card.price}`).join(' and ')}.`}
-      className="rounded-24 border-line bg-bg/95 w-full overflow-hidden border shadow-[0_30px_80px_-20px_rgb(23_21_15_/_0.35)] backdrop-blur"
+      aria-label={`The ${PRODUCT_NAME} chat on ${niche.store}'s site. A visitor asks: ${niche.question} The assistant answers: ${niche.answer} It shows ${niche.cards.map((card) => `${card.product.title} at ${card.product.price}`).join(' and ')}.`}
+      className={className}
     >
-      <div className="border-line flex items-center gap-10 border-b px-16 py-12">
-        <AskrMark className="size-28" />
-        <div className="flex min-w-0 flex-1 flex-col">
-          <span className="text-14 font-semibold">{niche.store}</span>
-          <span className="text-12 text-text-3 flex items-center gap-6">
-            <span className="bg-accent size-6 rounded-full" />
-            AI assistant, online
-          </span>
-        </div>
-        <Icon name="close" className="text-text-3 size-18" />
-      </div>
-      <div aria-hidden="true" className="flex min-h-340 flex-col gap-10 p-14">
-        {shown >= 1 && (
-          <p className="arrive bg-ink text-14 text-on-ink rounded-br-6 max-w-[85%] self-end rounded-[18px] px-14 py-10">
-            {niche.question}
-          </p>
-        )}
-        {shown === 2 && (
-          <p className="arrive bg-surface-2 rounded-bl-6 flex gap-4 self-start rounded-[18px] px-14 py-12">
-            <span className="typing-dot bg-text-3 size-6 rounded-full" />
-            <span className="typing-dot bg-text-3 size-6 rounded-full" />
-            <span className="typing-dot bg-text-3 size-6 rounded-full" />
-          </p>
-        )}
-        {shown >= 3 && (
-          <p className="bg-surface-2 text-14 rounded-bl-6 max-w-[92%] self-start rounded-[18px] px-14 py-10 leading-relaxed">
-            {answer}
-          </p>
-        )}
-        {niche.cards.map((product, index) =>
-          shown >= 4 + index ? (
-            <div key={product.title} className="arrive">
-              <ProductCard product={product} />
+      <WidgetPanel
+        name={niche.store}
+        chips={shown === FINAL ? niche.chips : []}
+        className="h-[600px] w-full"
+      >
+        <div aria-hidden="true" className="contents">
+          <p className="wgt-theirs">{WIDGET_TEXT.greeting}</p>
+          {shown >= 1 && <p className="wgt-mine arrive">{niche.question}</p>}
+          {shown === 2 && (
+            <p className="wgt-muted arrive flex items-center gap-8 text-[12.5px]">
+              <LiveMark className="-mt-2 size-24 flex-none" />
+              Thinking...
+            </p>
+          )}
+          {shown >= 3 && <p className="wgt-theirs">{answer}</p>}
+          {shown >= 4 && (
+            <div className="wgt-cards">
+              {niche.cards.map((card, index) => (
+                <WidgetCard
+                  key={card.product.title}
+                  product={card.product}
+                  reason={card.reason}
+                  className={`arrive ${index === 1 ? '[animation-delay:80ms]' : ''}`}
+                />
+              ))}
             </div>
-          ) : null,
-        )}
-      </div>
-      <figcaption className="border-line text-12 text-text-3 flex items-center justify-between gap-12 border-t px-16 py-10">
-        <span className="flex items-center gap-6">
-          <Icon name="shield" className="text-accent-ink size-14" />
-          Prices from the store's catalog
-        </span>
-        <span>by {PRODUCT_NAME}</span>
-      </figcaption>
+          )}
+        </div>
+      </WidgetPanel>
     </figure>
   );
 }
