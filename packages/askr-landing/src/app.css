@@ -250,16 +250,6 @@ body {
   vertical-align: top;
 }
 
-.wgt-table-label {
-  margin-left: 4px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--w-surface);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
 /* The wrong price struck through as the check catches it. */
 .strike {
   background: linear-gradient(currentColor, currentColor) no-repeat 0 55% / 0 2px;

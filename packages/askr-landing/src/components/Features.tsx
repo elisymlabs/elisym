@@ -61,11 +61,8 @@ const FEATURES: Feature[] = [
           <thead>
             <tr>
               <th />
-              {COMPARED.map((product, index) => (
-                <th key={product.title}>
-                  {product.title}
-                  {index === 1 && <span className="wgt-table-label">Recommended</span>}
-                </th>
+              {COMPARED.map((product) => (
+                <th key={product.title}>{product.title}</th>
               ))}
             </tr>
           </thead>

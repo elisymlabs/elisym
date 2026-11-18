@@ -14,7 +14,7 @@ import {
   WIDGET_SRC,
   X_URL,
 } from '../src/constants';
-import { PHOTOS, PRODUCTS } from '../src/media';
+import { PHOTOS } from '../src/media';
 import { NICHES } from '../src/niches';
 import { CART_HOOK_SNIPPET, LISTING_SNIPPET, PINNED_SNIPPET, embedSnippet } from '../src/snippets';
 
