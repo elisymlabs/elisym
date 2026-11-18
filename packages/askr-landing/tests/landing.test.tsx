@@ -256,7 +256,7 @@ describe('the page structure', () => {
   it('gives every section of the main content a heading', async () => {
     const page = await render(<App />);
     const sections = [...page.querySelectorAll('main > section')];
-    expect(sections.length).toBe(16);
+    expect(sections.length).toBe(15);
     for (const section of sections) {
       expect(section.querySelector('h1, h2'), section.id).not.toBeNull();
     }

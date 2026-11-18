@@ -18,6 +18,11 @@ const QUESTIONS = [
       'Product cards always carry the price from your catalog. Every price the model writes in the text is checked against your catalog and policies first, and a wrong one is corrected or cut before the visitor sees it.',
   },
   {
+    question: 'Can someone talk it into saying something else?',
+    answer:
+      'No. Instructions hidden in a product description or typed by a visitor are treated as data, not as instructions, so they cannot change how it answers.',
+  },
+  {
     question: 'Do you keep the conversations?',
     answer:
       "No. A visitor's chat lasts up to 24 hours and then expires. The admin counts conversations and product clicks, not what was said.",

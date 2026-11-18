@@ -250,16 +250,6 @@ body {
   vertical-align: top;
 }
 
-/* The wrong price struck through as the check catches it. */
-.strike {
-  background: linear-gradient(currentColor, currentColor) no-repeat 0 55% / 0 2px;
-  transition: background-size 0.5s ease-out;
-}
-
-.strike[data-struck='true'] {
-  background-size: 100% 2px;
-}
-
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -278,7 +268,6 @@ body {
     animation: none;
   }
 
-  .strike,
   .lit-word {
     transition: none;
   }

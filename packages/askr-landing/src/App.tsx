@@ -7,7 +7,6 @@ import { Footer } from './components/Footer';
 import { ForAgents } from './components/ForAgents';
 import { GetStarted } from './components/GetStarted';
 import { Hero } from './components/Hero';
-import { Honest } from './components/Honest';
 import { Languages } from './components/Languages';
 import { Manifesto } from './components/Manifesto';
 import { Numbers } from './components/Numbers';
@@ -26,7 +25,6 @@ export function App() {
         <WorksWith />
         <Manifesto />
         <Features />
-        <Honest />
         <Languages />
         <ForAgents />
         <Sources />
