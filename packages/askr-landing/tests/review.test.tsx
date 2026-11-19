@@ -223,17 +223,27 @@ describe('the hero', () => {
 });
 
 describe('the chat drawing', () => {
-  it('scrolls its conversation up and down, and its cards sideways a card at a time', () => {
+  it('scrolls only in the hero chat, so the page scrolls over the still drawings', async () => {
     const css = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
-    const rule = (selector: string) =>
-      new RegExp(`\\n${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(
-        css,
-      )?.[1] ?? '';
-    expect(rule('.wgt-log')).toContain('overflow-y: auto');
-    expect(rule('.wgt-log')).toContain('overscroll-behavior: contain');
-    expect(rule('.wgt-cards')).toContain('overflow-x: auto');
-    expect(rule('.wgt-cards')).toContain('scroll-snap-type: x mandatory');
-    expect(rule('.wgt-cards > .wgt-card')).toContain('scroll-snap-align: start');
+    const rule = (selector: string) => {
+      const start = css.indexOf(`\n${selector} {`);
+      return start < 0 ? '' : css.slice(start, css.indexOf('}', start));
+    };
+    expect(rule('.wgt-log')).toContain('overflow: hidden');
+    expect(rule('.wgt-cards')).toContain('overflow: hidden');
+    expect(rule('.wgt-live .wgt-log')).toContain('overflow-y: auto');
+    expect(rule('.wgt-live .wgt-log')).toContain('overscroll-behavior: contain');
+    expect(rule('.wgt-live .wgt-cards')).toContain('overflow-x: auto');
+    expect(rule('.wgt-live .wgt-cards')).toContain('scroll-snap-type: x mandatory');
+    expect(rule('.wgt-live .wgt-cards > .wgt-card')).toContain('scroll-snap-align: start');
+    stubMotion(true);
+    const page = await render(<App />);
+    expect(page.querySelector('#niche-demo .wgt-panel')?.classList.contains('wgt-live')).toBe(true);
+    const still = [...page.querySelectorAll('#features .wgt-panel')];
+    expect(still.length).toBeGreaterThan(0);
+    for (const panel of still) {
+      expect(panel.classList.contains('wgt-live')).toBe(false);
+    }
   });
 });
 

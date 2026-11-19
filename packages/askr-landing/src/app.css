@@ -292,7 +292,14 @@ body {
   min-height: 0;
   gap: 12px;
   padding: 16px;
-  /* Scrolls like the widget's: the page does not scroll along, the bar shows on hover. */
+  overflow: hidden;
+}
+
+/*
+ * The hero's chat scrolls like the widget's: the page does not scroll along, the bar shows on
+ * hover. The still drawings elsewhere do not scroll, so the page scrolls over them.
+ */
+.wgt-live .wgt-log {
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -300,7 +307,7 @@ body {
   scrollbar-gutter: stable;
 }
 
-.wgt-log:hover {
+.wgt-live .wgt-log:hover {
   scrollbar-color: color-mix(in srgb, var(--w-muted) 45%, transparent) transparent;
 }
 
@@ -328,7 +335,11 @@ body {
   gap: 10px;
   margin: 0 -16px;
   padding: 2px 16px 6px;
-  /* The widget's card row: it scrolls sideways a card at a time, with no visible bar. */
+  overflow: hidden;
+}
+
+/* In the hero's chat the card row scrolls sideways a card at a time, with no visible bar. */
+.wgt-live .wgt-cards {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scroll-snap-type: x mandatory;
@@ -336,11 +347,11 @@ body {
   scrollbar-width: none;
 }
 
-.wgt-cards::-webkit-scrollbar {
+.wgt-live .wgt-cards::-webkit-scrollbar {
   display: none;
 }
 
-.wgt-cards > .wgt-card {
+.wgt-live .wgt-cards > .wgt-card {
   scroll-snap-align: start;
 }
 
