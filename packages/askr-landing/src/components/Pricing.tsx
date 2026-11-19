@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { CONVERSATION_DEFINITION, PLANS } from '../constants';
+import { CONVERSATION_DEFINITION, PLANS, YEARLY_DISCOUNT_BPS } from '../constants';
 import { type Billing, BillingSwitch } from './BillingSwitch';
+import { EnterpriseRow } from './EnterpriseRow';
 import { Eyebrow } from './Eyebrow';
 import { PlanCard } from './PlanCard';
 import { Reveal } from './Reveal';
@@ -38,13 +39,13 @@ export function Pricing() {
         </ul>
         <ul className="mx-auto mt-12 grid max-w-1200">
           {contract.map((plan) => (
-            <PlanCard key={plan.name} plan={plan} billing={billing} wide />
+            <EnterpriseRow key={plan.name} plan={plan} />
           ))}
         </ul>
       </Reveal>
       <div className="text-13 text-text-3 mx-auto mt-32 flex max-w-760 flex-col gap-6 text-center leading-relaxed">
         <p>
-          {`Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more.`}
+          {`Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_BPS / 100}% off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more.`}
         </p>
         <p>
           Create your store in the admin, then message us on Telegram and we put it on your plan.

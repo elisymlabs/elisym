@@ -9,8 +9,6 @@ import { Icon } from './Icon';
 interface Props {
   plan: Plan;
   billing: Billing;
-  /** Laid out across the whole row on a wide screen. */
-  wide?: boolean;
   /** Drawn on ink whichever size is chosen: the card that holds the sizes. */
   ink?: boolean;
   /** Under the blurb: the size switch, for the card that holds several plans. */
@@ -21,7 +19,11 @@ interface Props {
 function shownPrice(plan: Plan, billing: Billing): { figure: string; unit: string; note: string } {
   const { price } = plan;
   if (price.kind === 'from') {
-    return { figure: price.monthly, unit: '/ month', note: 'On a contract' };
+    return {
+      figure: price.monthly,
+      unit: '/ month',
+      note: 'Monthly subscription, terms by agreement',
+    };
   }
   if (price.monthly === '$0') {
     return { figure: price.monthly, unit: '/ month', note: 'No payment needed' };
@@ -30,19 +32,19 @@ function shownPrice(plan: Plan, billing: Billing): { figure: string; unit: strin
     return {
       figure: price.yearlyPerMonth,
       unit: '/ month',
-      note: `${price.yearlyTotal} billed yearly`,
+      note: `Subscription, ${price.yearlyTotal} billed yearly`,
     };
   }
-  return { figure: price.monthly, unit: '/ month', note: 'Billed monthly' };
+  return { figure: price.monthly, unit: '/ month', note: 'Monthly subscription' };
 }
 
 /** One plan: its price under the chosen billing, what it includes, and how to start on it. */
-export function PlanCard({ plan, billing, wide = false, ink = plan.featured, sizes }: Props) {
-  const button = `${ink ? BUTTON.light : BUTTON.ghost} mt-auto w-full ${wide ? 'lg:mt-0 lg:w-auto lg:shrink-0' : ''}`;
+export function PlanCard({ plan, billing, ink = plan.featured, sizes }: Props) {
+  const button = `${ink ? BUTTON.light : BUTTON.ghost} mt-auto w-full`;
   const { figure, unit, note } = shownPrice(plan, billing);
   return (
     <li
-      className={`rounded-32 relative flex flex-col gap-24 border p-24 ${wide ? 'lg:flex-row lg:items-center lg:gap-48 lg:px-32' : ''} ${ink ? 'bg-ink text-on-ink border-ink shadow-[0_40px_80px_-30px_rgb(18_19_22/0.5)]' : 'bg-surface border-line'}`}
+      className={`rounded-32 relative flex flex-col gap-24 border p-24 ${ink ? 'bg-ink text-on-ink border-ink shadow-[0_40px_80px_-30px_rgb(18_19_22/0.5)]' : 'bg-surface border-line'}`}
     >
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between gap-8">
@@ -53,9 +55,7 @@ export function PlanCard({ plan, billing, wide = false, ink = plan.featured, siz
             </span>
           )}
         </div>
-        <p
-          className={`text-14 ${wide ? '' : 'xl:min-h-44'} ${ink ? 'text-on-ink-2' : 'text-text-2'}`}
-        >
+        <p className={`text-14 xl:min-h-44 ${ink ? 'text-on-ink-2' : 'text-text-2'}`}>
           {plan.blurb}
         </p>
         {sizes}
@@ -70,9 +70,7 @@ export function PlanCard({ plan, billing, wide = false, ink = plan.featured, siz
         </p>
         <p className={`text-13 ${ink ? 'text-on-ink-2' : 'text-text-3'}`}>{note}</p>
       </div>
-      <ul
-        className={`flex flex-col gap-10 ${wide ? 'lg:grid lg:flex-1 lg:grid-cols-2 lg:gap-x-32' : ''}`}
-      >
+      <ul className="flex flex-col gap-10">
         {plan.features.map((feature) => (
           <li key={feature} className="text-14 flex gap-8">
             <Icon
