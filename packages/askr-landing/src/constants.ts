@@ -50,6 +50,23 @@ export interface Plan {
 /** What paying yearly takes off the monthly price, in basis points (2000 = 20%). */
 export const YEARLY_DISCOUNT_BPS = 2000;
 
+/** The same discount as the page writes it; a test keeps it equal to `YEARLY_DISCOUNT_BPS`. */
+export const YEARLY_DISCOUNT_LABEL = '20%';
+
+/** A plan with a flat price, billed monthly or yearly. */
+export type FlatPlan = Plan & { price: Extract<PlanPrice, { kind: 'flat' }> };
+
+/** A plan priced by contract, from a floor. */
+export type ContractPlan = Plan & { price: Extract<PlanPrice, { kind: 'from' }> };
+
+export function isFlatPlan(plan: Plan): plan is FlatPlan {
+  return plan.price.kind === 'flat';
+}
+
+export function isContractPlan(plan: Plan): plan is ContractPlan {
+  return plan.price.kind === 'from';
+}
+
 /** How a conversation is counted, as the pricing's small print says it. */
 export const CONVERSATION_DEFINITION =
   "A conversation is one visitor's chat, up to 24 hours from their first message, that got at least one answer.";

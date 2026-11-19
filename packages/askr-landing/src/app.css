@@ -109,6 +109,12 @@ body {
     outline: 2px solid var(--accent-ink);
     outline-offset: 2px;
   }
+
+  /* On ink the ring is drawn in the light ink color, so it stays visible. */
+  .bg-ink :focus-visible,
+  .on-ink-focus :focus-visible {
+    outline-color: var(--on-ink);
+  }
 }
 
 /* Paper grain over the whole page: an SVG noise tile as a data: URL (img-src allows data:). */

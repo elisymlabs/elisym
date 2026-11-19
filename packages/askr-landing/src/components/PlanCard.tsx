@@ -1,30 +1,27 @@
 import type { ReactNode } from 'react';
 import { BUTTON } from '../buttons';
-import { CONTACT_URL, type Plan, START_LABEL } from '../constants';
+import { CONTACT_URL, type FlatPlan, START_LABEL } from '../constants';
 import { AdminLink } from './AdminLink';
 import type { Billing } from './BillingSwitch';
 import { ExternalLink } from './ExternalLink';
 import { Icon } from './Icon';
 
 interface Props {
-  plan: Plan;
+  plan: FlatPlan;
   billing: Billing;
   /** Drawn on ink whichever size is chosen: the card that holds the sizes. */
   ink?: boolean;
   /** Under the blurb: the size switch, for the card that holds several plans. */
   sizes?: ReactNode;
+  className?: string;
 }
 
 /** What the plan costs under the chosen billing: the big figure, its unit and the line under it. */
-function shownPrice(plan: Plan, billing: Billing): { figure: string; unit: string; note: string } {
+function shownPrice(
+  plan: FlatPlan,
+  billing: Billing,
+): { figure: string; unit: string; note: string } {
   const { price } = plan;
-  if (price.kind === 'from') {
-    return {
-      figure: price.monthly,
-      unit: '/ month',
-      note: 'Monthly subscription, terms by agreement',
-    };
-  }
   if (price.monthly === '$0') {
     return { figure: price.monthly, unit: '/ month', note: 'No payment needed' };
   }
@@ -39,12 +36,12 @@ function shownPrice(plan: Plan, billing: Billing): { figure: string; unit: strin
 }
 
 /** One plan: its price under the chosen billing, what it includes, and how to start on it. */
-export function PlanCard({ plan, billing, ink = plan.featured, sizes }: Props) {
+export function PlanCard({ plan, billing, ink = plan.featured, sizes, className = '' }: Props) {
   const button = `${ink ? BUTTON.light : BUTTON.ghost} mt-auto w-full`;
   const { figure, unit, note } = shownPrice(plan, billing);
   return (
     <li
-      className={`rounded-32 relative flex flex-col gap-24 border p-24 ${ink ? 'bg-ink text-on-ink border-ink shadow-[0_40px_80px_-30px_rgb(18_19_22/0.5)]' : 'bg-surface border-line'}`}
+      className={`rounded-32 relative flex flex-col gap-24 border p-24 ${className} ${ink ? 'bg-ink text-on-ink border-ink shadow-[0_40px_80px_-30px_rgb(18_19_22/0.5)]' : 'bg-surface border-line'}`}
     >
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between gap-8">
@@ -62,9 +59,6 @@ export function PlanCard({ plan, billing, ink = plan.featured, sizes }: Props) {
       </div>
       <div className="flex flex-col gap-6">
         <p className="flex items-baseline gap-6">
-          {plan.price.kind === 'from' && (
-            <span className={`text-14 ${ink ? 'text-on-ink-2' : 'text-text-3'}`}>from</span>
-          )}
           <span className="text-48 font-serif leading-none tabular-nums">{figure}</span>
           <span className={`text-14 ${ink ? 'text-on-ink-2' : 'text-text-3'}`}>{unit}</span>
         </p>

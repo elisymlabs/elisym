@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import type { Plan } from '../constants';
+import type { FlatPlan } from '../constants';
 import type { Billing } from './BillingSwitch';
 import { PlanCard } from './PlanCard';
 import { Segmented } from './Segmented';
 
 interface Props {
   /** The sizes, smallest first: one card, its plan chosen with a switch. */
-  plans: readonly Plan[];
+  plans: readonly FlatPlan[];
   billing: Billing;
 }
 
@@ -23,6 +23,7 @@ export function SizedPlanCard({ plans, billing }: Props) {
       plan={plan}
       billing={billing}
       ink
+      className="sm:col-span-2 lg:col-span-1"
       sizes={
         <div className="mt-10">
           <Segmented

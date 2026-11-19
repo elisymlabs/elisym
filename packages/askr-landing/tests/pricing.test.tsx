@@ -12,6 +12,7 @@ import {
   PLANS,
   PRODUCT_NAME,
   YEARLY_DISCOUNT_BPS,
+  YEARLY_DISCOUNT_LABEL,
 } from '../src/constants';
 
 declare global {
@@ -57,7 +58,104 @@ async function cardOf(page: HTMLElement, name: string): Promise<Element | undefi
   return cards(page).find((card) => card.querySelector('h3')?.textContent === name);
 }
 
+/** The plans as agreed, written out: any drift in the table fails here. */
+const AGREED = [
+  {
+    name: 'Free',
+    price: ['$0', '$0', '$0'],
+    features: [
+      'About 50 conversations a month',
+      'Up to 100 products',
+      'Syncs with your shop once a day',
+      'Shows "Powered by Askr"',
+      'Up to 20 sites',
+    ],
+    start: 'admin',
+  },
+  {
+    name: 'Starter',
+    price: ['$29', '$23', '$276'],
+    features: [
+      'About 500 conversations a month',
+      'Up to 1,000 products',
+      'Syncs every 6 hours',
+      'Shows "Powered by Askr"',
+      'Up to 20 sites',
+    ],
+    start: 'choose',
+  },
+  {
+    name: 'Growth',
+    price: ['$99', '$79', '$948'],
+    features: [
+      'About 2,000 conversations a month',
+      'Up to 5,000 products',
+      'Syncs every hour',
+      'Shows "Powered by Askr"',
+      'Up to 20 sites',
+    ],
+    start: 'choose',
+  },
+  {
+    name: 'Pro',
+    price: ['$199', '$159', '$1,908'],
+    features: [
+      'About 6,000 conversations a month',
+      'Up to 10,000 products',
+      'Syncs every 30 minutes',
+      '"Powered by Askr" can be removed',
+      'Up to 20 sites',
+    ],
+    start: 'choose',
+  },
+  {
+    name: 'Scale',
+    price: ['$499', '$399', '$4,788'],
+    features: [
+      'About 15,000 conversations a month',
+      'Up to 20,000 products',
+      'Syncs every 15 minutes',
+      '"Powered by Askr" can be removed',
+      'Up to 20 sites',
+    ],
+    start: 'choose',
+  },
+  {
+    name: 'Enterprise',
+    price: ['$1,500'],
+    features: [
+      'From 25,000 conversations a month',
+      'Catalog size and sync by agreement',
+      'An SLA',
+      '"Powered by Askr" can be removed',
+    ],
+    start: 'contact',
+  },
+];
+
 describe('the plans', () => {
+  it('are the agreed table, word for word', () => {
+    expect(
+      PLANS.map((plan) => ({
+        name: plan.name,
+        price:
+          plan.price.kind === 'flat'
+            ? [plan.price.monthly, plan.price.yearlyPerMonth, plan.price.yearlyTotal]
+            : [plan.price.monthly],
+        features: plan.features,
+        start: plan.start,
+      })),
+    ).toEqual(AGREED);
+    expect(CONTACT_URL).toBe('https://t.me/new_acc_nata');
+    expect(CONVERSATION_DEFINITION).toBe(
+      "A conversation is one visitor's chat, up to 24 hours from their first message, that got at least one answer.",
+    );
+  });
+
+  it('write the discount as its basis points say', () => {
+    expect(YEARLY_DISCOUNT_LABEL).toBe(`${new Decimal(YEARLY_DISCOUNT_BPS).div(100).toString()}%`);
+  });
+
   it('are the final six, in order, with Growth featured and Growth, Pro and Scale as sizes', () => {
     expect(PLANS.map((plan) => plan.name)).toEqual([
       'Free',
@@ -225,5 +323,89 @@ describe('the pricing section', () => {
         { admin: 'Start free', choose: `Choose ${plan.name}`, contact: 'Contact us' }[plan.start],
       );
     }
+  });
+
+  it('reads every price as a subscription, and says what yearly billing pays', async () => {
+    const page = await render();
+    const pricing = () => page.querySelector('#pricing')?.textContent ?? '';
+    expect(pricing()).toContain(`Save ${YEARLY_DISCOUNT_LABEL} yearly`);
+    expect(pricing()).toContain(
+      `Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off.`,
+    );
+    expect((await cardOf(page, 'Growth'))?.textContent).toContain(
+      'Subscription, $948 billed yearly',
+    );
+    expect((await cardOf(page, 'Free'))?.textContent).toContain('No payment needed');
+    const enterprise = (await cardOf(page, 'Enterprise'))?.textContent ?? '';
+    expect(enterprise).toContain('from$1,500/ month');
+    expect(enterprise).toContain('Monthly subscription, terms by agreement');
+    const billing = page.querySelectorAll<HTMLButtonElement>(
+      '#pricing [role="radiogroup"][aria-label="Billing period"] [role="radio"]',
+    );
+    await act(async () => billing[0]?.click());
+    expect((await cardOf(page, 'Pro'))?.textContent).toContain('Monthly subscription');
+    expect((await cardOf(page, 'Pro'))?.textContent).not.toContain('billed yearly');
+  });
+
+  it('opens every paid plan and Enterprise on Telegram in a new tab', async () => {
+    const page = await render();
+    for (const plan of PLANS.filter((entry) => entry.start !== 'admin')) {
+      const link = (await cardOf(page, plan.name))?.querySelector('a');
+      expect(link?.getAttribute('target'), plan.name).toBe('_blank');
+      expect(link?.getAttribute('rel'), plan.name).toBe('noopener noreferrer');
+    }
+  });
+
+  it('takes the up and down arrows too, and keeps them from scrolling the page', async () => {
+    const page = await render();
+    const group = page.querySelector('#pricing [role="radiogroup"][aria-label="Plan size"]');
+    const radios = [...(group?.querySelectorAll('[role="radio"]') ?? [])];
+    const press = async (key: string) => {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      await act(async () => {
+        group?.dispatchEvent(event);
+      });
+      return event;
+    };
+    const down = await press('ArrowDown');
+    expect(down.defaultPrevented).toBe(true);
+    expect(radios[1]?.getAttribute('aria-checked')).toBe('true');
+    await press('ArrowUp');
+    expect(radios[0]?.getAttribute('aria-checked')).toBe('true');
+    const other = await press('a');
+    expect(other.defaultPrevented).toBe(false);
+  });
+
+  it('draws the focus ring light on ink, where the dark one would not show', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
+    expect(css).toMatch(
+      /\.bg-ink :focus-visible,\s*\.on-ink-focus :focus-visible \{\s*outline-color: var\(--on-ink\);/,
+    );
+  });
+
+  it('keeps the chosen size when the billing changes, on the ink card, Growth marked most popular', async () => {
+    const page = await render();
+    expect((await cardOf(page, 'Growth'))?.textContent).toContain('Most popular');
+    const pro = await cardOf(page, 'Pro');
+    expect(pro?.className).toContain('bg-ink');
+    expect(pro?.textContent).not.toContain('Most popular');
+    for (const name of ['Free', 'Starter', 'Enterprise']) {
+      expect((await cardOf(page, name))?.textContent, name).not.toContain('Most popular');
+    }
+    const billing = page.querySelectorAll<HTMLButtonElement>(
+      '#pricing [role="radiogroup"][aria-label="Billing period"] [role="radio"]',
+    );
+    await act(async () => billing[0]?.click());
+    const sizes = [
+      ...page.querySelectorAll(
+        '#pricing [role="radiogroup"][aria-label="Plan size"] [role="radio"]',
+      ),
+    ];
+    expect(sizes.map((radio) => radio.getAttribute('aria-checked'))).toEqual([
+      'false',
+      'true',
+      'false',
+    ]);
+    expect(cards(page).some((card) => card.querySelector('h3')?.textContent === 'Pro')).toBe(true);
   });
 });

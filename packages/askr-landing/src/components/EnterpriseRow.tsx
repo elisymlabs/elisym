@@ -1,10 +1,10 @@
 import { BUTTON } from '../buttons';
-import { CONTACT_URL, type Plan } from '../constants';
+import { CONTACT_URL, type ContractPlan } from '../constants';
 import { ExternalLink } from './ExternalLink';
 import { Icon } from './Icon';
 
 interface Props {
-  plan: Plan;
+  plan: ContractPlan;
 }
 
 /** The plan priced by agreement, across the row under the cards: who it is for, from what, what it adds. */

@@ -66,7 +66,7 @@ export function Closing() {
         </div>
         <div
           ref={outroRef}
-          className="text-on-ink relative flex flex-col items-center gap-28 px-16 text-center"
+          className="text-on-ink on-ink-focus relative flex flex-col items-center gap-28 px-16 text-center"
         >
           <h2 className="max-w-1100 font-serif text-[clamp(3rem,8vw,8.5rem)] leading-[0.9] tracking-[-0.03em]">
             Give every visitor <em className="text-on-ink-2">a shop assistant.</em>

@@ -1,5 +1,11 @@
 import { useState } from 'react';
-import { CONVERSATION_DEFINITION, PLANS, YEARLY_DISCOUNT_BPS } from '../constants';
+import {
+  CONVERSATION_DEFINITION,
+  PLANS,
+  YEARLY_DISCOUNT_LABEL,
+  isContractPlan,
+  isFlatPlan,
+} from '../constants';
 import { type Billing, BillingSwitch } from './BillingSwitch';
 import { EnterpriseRow } from './EnterpriseRow';
 import { Eyebrow } from './Eyebrow';
@@ -10,9 +16,9 @@ import { SizedPlanCard } from './SizedPlanCard';
 export function Pricing() {
   // Yearly first: the lower price per month, with the yearly total under it.
   const [billing, setBilling] = useState<Billing>('yearly');
-  const selfServe = PLANS.filter((plan) => plan.price.kind === 'flat');
-  const sizes = PLANS.filter((plan) => plan.group === 'sizes');
-  const contract = PLANS.filter((plan) => plan.price.kind === 'from');
+  const selfServe = PLANS.filter(isFlatPlan);
+  const sizes = selfServe.filter((plan) => plan.group === 'sizes');
+  const contract = PLANS.filter(isContractPlan);
   return (
     <section id="pricing" className="mx-auto max-w-1440 px-12 py-96 sm:px-24 sm:py-160">
       <Reveal className="mx-auto flex max-w-800 flex-col items-center gap-20 text-center">
@@ -29,7 +35,7 @@ export function Pricing() {
         <BillingSwitch value={billing} onChange={setBilling} />
       </Reveal>
       <Reveal delay={1}>
-        <ul className="mx-auto mt-48 grid max-w-1200 items-stretch gap-12 md:grid-cols-3">
+        <ul className="mx-auto mt-48 grid max-w-1200 items-stretch gap-12 sm:grid-cols-2 lg:grid-cols-3">
           {selfServe
             .filter((plan) => plan.group === undefined)
             .map((plan) => (
@@ -45,7 +51,7 @@ export function Pricing() {
       </Reveal>
       <div className="text-13 text-text-3 mx-auto mt-32 flex max-w-760 flex-col gap-6 text-center leading-relaxed">
         <p>
-          {`Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_BPS / 100}% off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more.`}
+          {`Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more.`}
         </p>
         <p>
           Create your store in the admin, then message us on Telegram and we put it on your plan.

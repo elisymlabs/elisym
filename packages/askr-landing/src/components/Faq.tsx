@@ -76,9 +76,17 @@ export function Faq() {
                 <h3 className="text-20 sm:text-24 font-serif">{item.question}</h3>
                 <span
                   aria-hidden="true"
-                  className="border-line-2 text-18 grid size-32 shrink-0 place-items-center rounded-full border transition group-open:rotate-45"
+                  className="border-line-2 group-hover:border-text group-open:bg-ink group-open:border-ink group-open:text-on-ink grid size-36 shrink-0 place-items-center rounded-full border transition-colors duration-300"
                 >
-                  +
+                  <svg viewBox="0 0 16 16" className="size-14" fill="none" stroke="currentColor">
+                    <path d="M2.5 8h11" strokeWidth="1.6" strokeLinecap="round" />
+                    <path
+                      d="M8 2.5v11"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      className="origin-center transition-transform duration-300 group-open:scale-y-0"
+                    />
+                  </svg>
                 </span>
               </summary>
               <p className="text-16 text-text-2 mt-12 max-w-640 leading-relaxed">{item.answer}</p>

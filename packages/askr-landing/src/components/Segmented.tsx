@@ -62,7 +62,7 @@ export function Segmented<Value extends string>({
             aria-checked={chosen}
             tabIndex={chosen ? 0 : -1}
             onClick={() => onChange(option.value)}
-            className={`text-14 flex-1 rounded-full px-16 py-8 font-medium transition ${look}`}
+            className={`text-14 min-w-0 flex-1 rounded-full px-10 py-8 font-medium whitespace-nowrap transition sm:px-16 ${look}`}
           >
             {option.label}
           </button>
