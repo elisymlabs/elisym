@@ -14,7 +14,6 @@ import heroBeauty from './media/hero-beauty.webp';
 import heroElectronics from './media/hero-electronics.webp';
 import heroHome from './media/hero-home.webp';
 import heroFashion from './media/hero.webp';
-import keys from './media/keys.webp';
 import lamp from './media/lamp.webp';
 import serum from './media/serum.webp';
 import sweater from './media/sweater.webp';
@@ -41,7 +40,6 @@ export const PHOTOS = {
   },
   heroHome: { src: heroHome, ...WIDE, alt: 'A calm bedroom with a ceramic lamp and linen bedding' },
   heroBeauty: { src: heroBeauty, ...WIDE, alt: 'A skincare counter with glass bottles and jars' },
-  keys: { src: keys, width: 1100, height: 1467, alt: 'A brass key on folded linen' },
 } satisfies Record<string, Photo>;
 
 export interface Product {

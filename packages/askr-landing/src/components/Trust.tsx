@@ -1,8 +1,8 @@
 import { PRODUCT_NAME } from '../constants';
-import { PHOTOS } from '../media';
 import { Eyebrow } from './Eyebrow';
 import { Icon, type IconName } from './Icon';
 import { Reveal } from './Reveal';
+import { TrustMark } from './TrustMark';
 
 const POINTS: { icon: IconName; title: string; body: string }[] = [
   {
@@ -41,16 +41,8 @@ export function Trust() {
   return (
     <section id="trust" className="mx-auto max-w-1360 px-12 py-96 sm:px-24 sm:py-160">
       <div className="grid gap-48 lg:grid-cols-[0.8fr_1.2fr] lg:gap-80">
-        <Reveal className="rounded-32 sm:rounded-40 relative aspect-[4/5] overflow-hidden lg:sticky lg:top-112 lg:self-start">
-          <img
-            src={PHOTOS.keys.src}
-            alt={PHOTOS.keys.alt}
-            width={PHOTOS.keys.width}
-            height={PHOTOS.keys.height}
-            loading="lazy"
-            decoding="async"
-            className="absolute inset-0 size-full object-cover"
-          />
+        <Reveal className="lg:sticky lg:top-112 lg:self-start">
+          <TrustMark />
         </Reveal>
         <div className="flex flex-col gap-24 px-4">
           <Reveal className="flex flex-col gap-24">
