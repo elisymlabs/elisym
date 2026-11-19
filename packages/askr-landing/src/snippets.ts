@@ -4,14 +4,3 @@ import { WIDGET_SRC } from './constants';
 export function embedSnippet(store = 'npub1...'): string {
   return `<script src="${WIDGET_SRC}" data-store="${store}" async></script>`;
 }
-
-/** A page's own add-to-cart hook: the widget calls it before any native add-to-cart. */
-export const CART_HOOK_SNIPPET = [
-  '<script>',
-  '  window.Askr = window.Askr || {};',
-  '  window.Askr.onAddToCart = function (detail) {',
-  '    // put detail.d (or detail.sku, detail.variant) with detail.options',
-  '    // into your cart',
-  '  };',
-  '</script>',
-].join('\n');

@@ -1,20 +1,23 @@
+import { MARK_STILL_PATHS, MARK_TIGHT_BOX } from '../brand';
+
 interface Props {
   className?: string;
+  /** Drawn to the rim's edges, with no margin around it. */
+  tight?: boolean;
 }
 
-/** Askr's mark: a speech bubble on the accent tile, as the favicon draws it. */
-export function AskrMark({ className = 'size-28' }: Props) {
+/** The Askr mark, drawn still, in the text color on the page's paper. */
+export function AskrMark({ className, tight = false }: Props) {
   return (
-    <svg viewBox="0 0 32 32" aria-hidden="true" className={className}>
-      <rect width="32" height="32" rx="8" className="fill-accent" />
-      <path
-        d="M9 10.5A2.5 2.5 0 0 1 11.5 8h9A2.5 2.5 0 0 1 23 10.5v7a2.5 2.5 0 0 1-2.5 2.5H15l-4.5 3.5V20A1.5 1.5 0 0 1 9 18.5v-8Z"
-        fill="none"
-        strokeWidth="2.4"
-        strokeLinejoin="round"
-        className="stroke-accent-text"
-      />
-      <circle cx="16" cy="14" r="1.6" className="fill-accent-text" />
+    <svg
+      viewBox={tight ? MARK_TIGHT_BOX : '0 0 100 100'}
+      className={className}
+      aria-hidden="true"
+      focusable="false"
+    >
+      {MARK_STILL_PATHS.map((path, index) => (
+        <path key={path} d={path} className={index % 2 === 0 ? 'mark-ink' : 'mark-paper'} />
+      ))}
     </svg>
   );
 }

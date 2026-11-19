@@ -1,64 +1,77 @@
 import { PRODUCT_NAME } from '../constants';
+import { Eyebrow } from './Eyebrow';
 import { Icon, type IconName } from './Icon';
-import { SectionHeading } from './SectionHeading';
+import { Reveal } from './Reveal';
+import { StorePassport } from './StorePassport';
 
 const POINTS: { icon: IconName; title: string; body: string }[] = [
   {
-    icon: 'tag',
-    title: 'Prices from your signed catalog',
-    body: 'A product card always shows the price from the listing signed for your store, never one the model wrote. A price check gates every answer before a visitor sees it.',
+    icon: 'clock',
+    title: 'Conversations are not kept',
+    body: "A visitor's chat lives up to 24 hours, then it is gone. There is no transcript archive.",
   },
   {
-    icon: 'key',
-    title: 'Your keys',
-    body: "Your catalog, policies and the public part of your settings are signed Nostr events; the assistant's instructions are encrypted to it. Your owner key is the store's identity and decides which catalog keys may write your products. Revoke one at any time.",
+    icon: 'lock',
+    title: 'Encrypted end to end',
+    body: 'Messages travel encrypted between the visitor and the assistant. The gateway that admits a chat never sees what is in it.',
   },
   {
     icon: 'plug',
     title: 'No store tokens',
-    body: 'Connectors read only what your shop already shows the public. You never hand over an API token or database access.',
+    body: 'Connectors read only what your shop already shows the public. No API token, no database access.',
   },
   {
     icon: 'ban',
     title: 'No payments',
-    body: `${PRODUCT_NAME} takes no payments and sells nothing. Checkout stays where it is on your site, and a listing a catalog key signs can never carry payment terms.`,
+    body: `${PRODUCT_NAME} never touches money. Checkout stays where it is on your site.`,
   },
   {
-    icon: 'eye',
-    title: 'Origin and path only',
-    body: 'The widget tells the assistant which page the visitor is on as its origin and path, never the query string.',
+    icon: 'shield',
+    title: 'Clearly an AI',
+    body: 'Shoppers always see they are talking to an AI assistant. It never pretends to be a person.',
   },
   {
     icon: 'globe',
     title: 'Only on your sites',
-    body: "The server opens a chat session only for pages on the origins listed in your store's config.",
+    body: "A chat opens only on your store's origins, and the assistant sees the page's path, never its query string.",
   },
 ];
 
 export function Trust() {
   return (
-    <section id="trust" className="border-line bg-surface border-y">
-      <div className="mx-auto max-w-1160 px-16 py-80 sm:px-24 sm:py-112">
-        <SectionHeading eyebrow="Trust" title="An assistant you can put in front of buyers">
-          It quotes your catalog and policies, it runs on keys you control, and it never touches
-          money.
-        </SectionHeading>
-        <ul className="mt-48 grid gap-16 sm:grid-cols-2 lg:grid-cols-3">
-          {POINTS.map((point) => (
-            <li
-              key={point.title}
-              className="rounded-20 border-line bg-bg flex flex-col gap-16 border p-24"
-            >
-              <span className="rounded-12 bg-accent-soft text-accent-ink grid size-44 place-items-center">
-                <Icon name={point.icon} className="size-22" />
-              </span>
-              <div className="flex flex-col gap-6">
-                <h3 className="text-18 font-semibold">{point.title}</h3>
-                <p className="text-15 text-text-2 leading-relaxed">{point.body}</p>
-              </div>
-            </li>
-          ))}
-        </ul>
+    <section id="trust" className="mx-auto max-w-1360 px-12 py-96 sm:px-24 sm:py-160">
+      <div className="grid gap-48 lg:grid-cols-[0.8fr_1.2fr] lg:gap-80">
+        <Reveal className="lg:sticky lg:top-112 lg:self-start">
+          <StorePassport />
+        </Reveal>
+        <div className="flex flex-col gap-24 px-4">
+          <Reveal className="flex flex-col gap-24">
+            <Eyebrow>Privacy and control</Eyebrow>
+            <h2 className="text-48 sm:text-80 font-serif leading-[0.95]">
+              Your store <em>stays yours.</em>
+            </h2>
+            <p className="text-18 text-text-2 max-w-600 leading-relaxed">
+              {`Your store's settings, and which keys may publish your products, are signed with a secret key only you hold. Your products and policies are published as signed listings on an open network. ${PRODUCT_NAME} runs the assistant on them but does not own them, so you are never locked in.`}
+            </p>
+            <p className="border-line-2 text-15 text-text-2 flex max-w-600 gap-12 border-l-2 pl-16 leading-relaxed">
+              Your secret key is your store. Lost or leaked, you replace it through your own site,
+              and the store moves to the new key with its products and plan.
+            </p>
+          </Reveal>
+          <Reveal delay={1}>
+            <ul className="mt-24 grid gap-x-40 sm:grid-cols-2">
+              {POINTS.map((point) => (
+                <li key={point.title} className="border-line-2 flex flex-col gap-10 border-t py-24">
+                  <div className="text-accent-ink flex items-center gap-10">
+                    <Icon name={point.icon} className="size-20" />
+                    <h3 className="text-text text-16 font-medium">{point.title}</h3>
+                  </div>
+                  <p className="text-15 text-text-2 leading-relaxed">{point.body}</p>
+                </li>
+              ))}
+            </ul>
+          </Reveal>
+        </div>
       </div>
     </section>
   );

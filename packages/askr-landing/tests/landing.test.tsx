@@ -6,14 +6,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import {
   ADMIN_URL,
-  ASKR_KEY_COMMAND,
   DOCS,
+  ELISYM_URL,
   GITHUB_URL,
-  MCP_TOOLS,
+  PLANS,
+  START_LABEL,
   WIDGET_SRC,
   X_URL,
 } from '../src/constants';
-import { CART_HOOK_SNIPPET, embedSnippet } from '../src/snippets';
+import { PHOTOS } from '../src/media';
+import { NICHES } from '../src/niches';
+import { embedSnippet } from '../src/snippets';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -62,7 +65,7 @@ describe('the links', () => {
     expect(new URL(ADMIN_URL).origin).not.toBe(window.location.origin);
   });
 
-  it('send every link off the page over https with no referrer', async () => {
+  it('send every link off the page over https, in a new tab, with no referrer', async () => {
     const page = await render(<App />);
     const external = [...page.querySelectorAll('a')].filter((link) => {
       const href = link.getAttribute('href') ?? '';
@@ -72,6 +75,25 @@ describe('the links', () => {
     for (const link of external) {
       expect(link.getAttribute('href'), link.textContent ?? '').toMatch(/^https:\/\//);
       expect(link.rel).toBe('noopener noreferrer');
+      expect(link.getAttribute('target'), link.textContent ?? '').toBe('_blank');
+    }
+    const onPage = [...page.querySelectorAll('a')].filter((link) => {
+      const href = link.getAttribute('href') ?? '';
+      return href.startsWith('#') || href === '/';
+    });
+    expect(onPage.length).toBeGreaterThan(0);
+    for (const link of onPage) {
+      expect(link.getAttribute('target'), link.textContent ?? '').toBeNull();
+    }
+  });
+
+  it('take the elisym logo, in the header and the footer, to elisym.network in a new tab', async () => {
+    const page = await render(<App />);
+    const logos = [...page.querySelectorAll('img[alt="elisym"]')];
+    expect(logos).toHaveLength(2);
+    for (const logo of logos) {
+      expect(logo.closest('a')?.getAttribute('href')).toBe(ELISYM_URL);
+      expect(logo.closest('a')?.getAttribute('target')).toBe('_blank');
     }
   });
 
@@ -131,39 +153,19 @@ describe('the snippets', () => {
     expect(writeText).toHaveBeenCalledWith(embedSnippet());
     expect(copy?.textContent).toBe('Copied');
   });
-
-  it('the cart hook uses the name and fields the widget reads', async () => {
-    const embed = docsPage('embed');
-    expect(embed).toContain('window.Askr.onAddToCart = function (detail)');
-    expect(CART_HOOK_SNIPPET).toContain('window.Askr.onAddToCart = function (detail)');
-    for (const field of ['detail.d', 'detail.sku', 'detail.variant', 'detail.options']) {
-      expect(embed).toContain(field);
-      expect(CART_HOOK_SNIPPET).toContain(field);
-    }
-    const page = await render(<App />);
-    expect(page.querySelector('#cart-hook')?.textContent).toBe(CART_HOOK_SNIPPET);
-  });
-
-  it('names the CLI command the elisym CLI has, as the docs give it', async () => {
-    const cli = readFileSync(join(PACKAGES, 'cli/src/index.ts'), 'utf8');
-    expect(cli).toContain(".command('askr-key <name>')");
-    expect(cli).toContain(".option('--store <owner>'");
-    expect(docsPage('catalog-from-an-agent')).toContain(ASKR_KEY_COMMAND);
-    const page = await render(<App />);
-    expect(page.querySelector('#askr-key')?.textContent).toBe(ASKR_KEY_COMMAND);
-  });
-
-  it('lists only MCP tools the MCP server has, all of them', async () => {
-    const tools = readFileSync(join(PACKAGES, 'mcp/src/tools/askr.ts'), 'utf8');
-    const served = [...tools.matchAll(/name: '(askr_[a-z_]+)'/g)].map((match) => match[1]);
-    expect(MCP_TOOLS.map((tool) => tool.name).sort()).toEqual([...served].sort());
-    const page = await render(<App />);
-    const shown = [...page.querySelectorAll('#agents dt')].map((term) => term.textContent);
-    expect(shown).toEqual(MCP_TOOLS.map((tool) => tool.name));
-  });
 });
 
 describe('the copy', () => {
+  it('offers the three product sources the admin has, and no PayCore store', async () => {
+    const page = await render(<App />);
+    expect(page.querySelectorAll('#sources h3')).toHaveLength(3);
+    expect(page.textContent).not.toMatch(/pay ?core/i);
+    for (const file of filesIn(join(PACKAGE, 'src')).filter((path) => /\.tsx?$/.test(path))) {
+      expect(readFileSync(file, 'utf8'), file).not.toMatch(/pay ?core/i);
+    }
+    expect(docsPage('overview')).not.toMatch(/pay ?core/i);
+  });
+
   it('has no em dash, rendered or in the page source', async () => {
     const page = await render(<App />);
     expect(page.textContent).not.toContain(EM_DASH);
@@ -172,11 +174,12 @@ describe('the copy', () => {
     }
   });
 
-  it('writes "Elisym" capitalized only after "by" or at the start of a sentence', async () => {
+  it('names the company "Elisym Labs", and writes "Elisym" capitalized only there, after "by" or at the start of a sentence', async () => {
     const page = await render(<App />);
     const html = readFileSync(join(PACKAGE, 'index.html'), 'utf8');
     for (const text of [page.textContent ?? '', html]) {
-      for (const match of text.matchAll(/(.{0,3})Elisym/g)) {
+      expect(text).not.toMatch(/elisym labs/);
+      for (const match of text.matchAll(/(.{0,3})Elisym(?! Labs)/g)) {
         expect(match[1] ?? '', text.slice(match.index ?? 0, (match.index ?? 0) + 40)).toMatch(
           /(?:by |\. |^|>)$/,
         );
@@ -184,22 +187,35 @@ describe('the copy', () => {
     }
   });
 
-  it('offers the three product sources the admin has, and no Pay Core store', async () => {
+  it('promises a free start only while the first plan is free', async () => {
+    expect(START_LABEL).toBe('Start free');
+    expect(PLANS[0]?.price.monthly).toBe('$0');
+    expect(PLANS[0]?.start).toBe('admin');
     const page = await render(<App />);
-    const sources = page.querySelector('#sources');
-    expect(sources?.querySelectorAll('h3')).toHaveLength(3);
-    expect(page.textContent).not.toMatch(/pay ?core/i);
-    for (const file of filesIn(join(PACKAGE, 'src'))) {
-      expect(readFileSync(file, 'utf8'), file).not.toMatch(/pay ?core/i);
+    const starts = [...page.querySelectorAll('a')].filter(
+      (link) => link.textContent === START_LABEL,
+    );
+    expect(starts.length).toBeGreaterThanOrEqual(3);
+    for (const link of starts) {
+      expect(link.href).toBe(ADMIN_URL);
     }
-    expect(docsPage('overview')).not.toMatch(/pay ?core/i);
   });
+});
 
-  it('gives no plan prices: plans are set up on request', async () => {
+describe('the catalog drawing', () => {
+  it('shows the sources flowing into the product list, priced as the catalog writes them', async () => {
     const page = await render(<App />);
-    const plans = page.querySelector('#plans')?.textContent ?? '';
-    expect(plans).toContain('on request');
-    expect(plans).not.toMatch(/[$€£]|\d/);
+    const figure = page.querySelector('#sources figure');
+    expect(figure?.getAttribute('aria-label')).toContain('Askr');
+    const text = figure?.textContent ?? '';
+    for (const source of ['Backend', 'CI/CD', 'WooCommerce', 'Google feed', 'CSV']) {
+      expect(text).toContain(source);
+    }
+    const rows = [...(figure?.querySelectorAll('li:has(img)') ?? [])];
+    expect(rows).toHaveLength(4);
+    for (const row of rows) {
+      expect(row.textContent).toMatch(/\d+\.\d{2} USD/);
+    }
   });
 });
 
@@ -220,7 +236,7 @@ describe('the page structure', () => {
   it('gives every section of the main content a heading', async () => {
     const page = await render(<App />);
     const sections = [...page.querySelectorAll('main > section')];
-    expect(sections.length).toBe(7);
+    expect(sections.length).toBe(12);
     for (const section of sections) {
       expect(section.querySelector('h1, h2'), section.id).not.toBeNull();
     }
@@ -234,19 +250,54 @@ describe('the page structure', () => {
     }
   });
 
+  it('shows every photo with its alt text and size, and keeps each file small', async () => {
+    const page = await render(<App />);
+    const shown = Object.values(PHOTOS).filter(
+      (photo) => !NICHES.slice(1).some((niche) => niche.photo === photo),
+    );
+    for (const photo of shown) {
+      const image = page.querySelector(`img[alt="${photo.alt}"]`);
+      expect(image, photo.alt).not.toBeNull();
+      expect(image?.getAttribute('width')).toBe(String(photo.width));
+      expect(image?.getAttribute('height')).toBe(String(photo.height));
+    }
+    for (const file of filesIn(join(PACKAGE, 'src/media'))) {
+      expect(file).toMatch(/\.webp$/);
+      expect(readFileSync(file).byteLength, file).toBeLessThan(200_000);
+    }
+  });
+
+  it('switches the hero demo to the niche a tab names, with its photo and its store', async () => {
+    const page = await render(<App />);
+    const tabs = [...page.querySelectorAll('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(NICHES.map((niche) => niche.label));
+    expect(tabs[0]?.getAttribute('aria-selected')).toBe('true');
+    for (const [index, niche] of NICHES.entries()) {
+      await act(async () => (tabs[index] as HTMLButtonElement | undefined)?.click());
+      expect(tabs[index]?.getAttribute('aria-selected')).toBe('true');
+      const panel = page.querySelector('#niche-demo');
+      expect(panel?.getAttribute('aria-labelledby')).toBe(tabs[index]?.id);
+      expect(panel?.querySelector('figure')?.getAttribute('aria-label')).toContain(niche.store);
+      expect(page.querySelector(`img[alt="${niche.photo.alt}"]`)).not.toBeNull();
+    }
+  });
+
+  it('each niche answer names no price but those on its cards or the budget asked', () => {
+    for (const niche of NICHES) {
+      const asked = [...niche.question.matchAll(/\$(\d+)/g)].map((match) => match[1]);
+      const onCards = niche.cards.map((card) => card.product.price.split('.')[0]);
+      for (const match of niche.answer.matchAll(/\$(\d+)/g)) {
+        expect(
+          asked.includes(match[1]) || onCards.includes(match[1]),
+          `${niche.id}: ${match[0]}`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it('draws the focus ring in the readable accent ink', () => {
     expect(readFileSync(join(PACKAGE, 'src/app.css'), 'utf8')).toMatch(
       /:focus-visible \{\s*outline: 2px solid var\(--accent-ink\);/,
     );
-  });
-
-  it('wraps commands instead of cutting them off', async () => {
-    const page = await render(<App />);
-    for (const code of page.querySelectorAll('li code')) {
-      expect(code.className).toContain('break-all');
-    }
-    for (const pre of page.querySelectorAll('pre')) {
-      expect(pre.className).toContain('overflow-x-auto');
-    }
   });
 });

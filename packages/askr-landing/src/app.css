@@ -1,39 +1,28 @@
 @import 'tailwindcss';
+@import '@fontsource-variable/inter/index.css';
+@import '@fontsource/instrument-serif/latin-400.css';
+@import '@fontsource/instrument-serif/latin-400-italic.css';
 
+/* One light scheme in Askr's colors: ink on paper, as the widget and the admin draw them. */
 :root {
-  color-scheme: dark;
-  --bg: #0a0b0d;
-  --surface: #111316;
-  --surface-2: #181b20;
-  --line: #24272e;
-  --line-2: #32363f;
-  --text: #f4f5f7;
-  --text-2: #a3a7b3;
-  --text-3: #8c909c;
-  --accent: #2dd4bf;
-  --accent-ink: #5eead4;
-  --accent-soft: rgb(45 212 191 / 0.1);
-  --accent-text: #061412;
-  --glow: rgb(45 212 191 / 0.14);
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #fafafa;
-    --surface: #ffffff;
-    --surface-2: #f1f3f4;
-    --line: #e3e6e8;
-    --line-2: #d2d6da;
-    --text: #111418;
-    --text-2: #525862;
-    --text-3: #666c76;
-    --accent: #2dd4bf;
-    --accent-ink: #0f766e;
-    --accent-soft: rgb(20 184 166 / 0.12);
-    --accent-text: #061412;
-    --glow: rgb(45 212 191 / 0.2);
-  }
+  color-scheme: light;
+  --bg: #f4f4f2;
+  --surface: #fbfbfc;
+  --surface-2: #ebebe8;
+  --line: #e2e2df;
+  --line-2: #cfcfcb;
+  --text: #121316;
+  --text-2: #45474d;
+  --text-3: #606369;
+  --accent: #121316;
+  --accent-ink: #121316;
+  --accent-text: #fbfbfc;
+  --ink: #0d0e10;
+  --ink-2: #18191c;
+  --ink-line: #2c2e33;
+  --on-ink: #f2f2f4;
+  --on-ink-2: #a3a5ad;
+  --on-ink-accent: #ffffff;
 }
 
 @theme inline {
@@ -47,9 +36,16 @@
   --color-text-3: var(--text-3);
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);
-  --color-accent-soft: var(--accent-soft);
   --color-accent-text: var(--accent-text);
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-line: var(--ink-line);
+  --color-on-ink: var(--on-ink);
+  --color-on-ink-2: var(--on-ink-2);
+  --color-on-ink-accent: var(--on-ink-accent);
+  --font-sans:
+    'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-serif: 'Instrument Serif', 'Iowan Old Style', Georgia, serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
 }
 
@@ -58,10 +54,11 @@
   --spacing: calc(1rem / 16);
   --radius-6: 0.375rem;
   --radius-8: 0.5rem;
-  --radius-12: 0.75rem;
   --radius-16: 1rem;
   --radius-20: 1.25rem;
   --radius-24: 1.5rem;
+  --radius-32: 2rem;
+  --radius-40: 2.5rem;
   /* Font sizes by pixel: `text-14` is 14px. */
   --text-11: 0.6875rem;
   --text-12: 0.75rem;
@@ -72,14 +69,17 @@
   --text-18: 1.125rem;
   --text-20: 1.25rem;
   --text-24: 1.5rem;
+  --text-28: 1.75rem;
   --text-32: 2rem;
   --text-40: 2.5rem;
-  --text-56: 3.5rem;
+  --text-48: 3rem;
+  --text-64: 4rem;
+  --text-80: 5rem;
 }
 
 html {
   scroll-behavior: smooth;
-  scroll-padding-top: 80px;
+  scroll-padding-top: 96px;
 }
 
 body {
@@ -100,25 +100,526 @@ body {
     outline: 2px solid var(--accent-ink);
     outline-offset: 2px;
   }
+
+  /* On ink the ring is drawn in the light ink color, so it stays visible. */
+  .bg-ink :focus-visible,
+  .on-ink-focus :focus-visible {
+    outline-color: var(--on-ink);
+  }
 }
 
-/* The soft light behind the hero. */
-.hero-glow {
-  background:
-    radial-gradient(55% 50% at 80% 0%, var(--glow), transparent 70%),
-    radial-gradient(40% 40% at 0% 10%, var(--accent-soft), transparent 70%);
+/* Paper grain over the whole page: an SVG noise tile as a data: URL (img-src allows data:). */
+.grain::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* Faint dots behind the hero. */
-.hero-dots {
-  background-image: radial-gradient(var(--line-2) 1px, transparent 1px);
-  background-size: 24px 24px;
-  mask-image: radial-gradient(70% 60% at 50% 0%, black, transparent 75%);
-  opacity: 0.6;
+/* A block rises in the first time it scrolls into view (see useInView). */
+.reveal {
+  opacity: 0;
+  transform: translateY(28px);
+  transition:
+    opacity 0.9s cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.reveal[data-shown='true'] {
+  opacity: 1;
+  transform: none;
+}
+
+.reveal-delay-1 {
+  transition-delay: 0.12s;
+}
+
+.reveal-delay-2 {
+  transition-delay: 0.24s;
+}
+
+.reveal-delay-3 {
+  transition-delay: 0.36s;
+}
+
+/* The hero photo settles slowly as the page opens. */
+@keyframes settle {
+  from {
+    transform: scale(1.1);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.settle {
+  animation: settle 16s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+/* A row that scrolls sideways forever: the track holds its items twice. */
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee {
+  mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+}
+
+.marquee-track {
+  animation: marquee 50s linear infinite;
+}
+
+.marquee-reverse {
+  animation-direction: reverse;
+}
+
+.marquee:hover .marquee-track {
+  animation-play-state: paused;
+}
+
+/* A word of a statement that lights up as the statement scrolls through the screen. */
+.lit-word {
+  opacity: 0.14;
+  transition: opacity 0.35s ease;
+}
+
+.lit-word[data-lit='true'] {
+  opacity: 1;
+}
+
+.wgt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.wgt-table th,
+.wgt-table td {
+  padding: 4px 6px;
+  border: 1px solid var(--w-border);
+  text-align: left;
+  vertical-align: top;
 }
 
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
   }
+
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .settle,
+  .marquee-track {
+    animation: none;
+  }
+
+  .lit-word {
+    transition: none;
+  }
+}
+
+/* The Askr mark: the rim and the rings in ink, the bands between them in the paper behind. */
+.mark-ink {
+  fill: var(--mark-ink, var(--text));
+}
+
+.mark-paper {
+  fill: var(--mark-paper, var(--bg));
+}
+
+/*
+ * The widget, drawn as packages/askr-widget/src/ui/styles.ts draws it (light theme): its own
+ * colors, sizes and system font, whatever the page around it uses. Nothing in it is live.
+ */
+.wgt {
+  --w-bg: #fbfbfc;
+  --w-surface: #f1f2f4;
+  --w-text: #121316;
+  --w-muted: #6b6e76;
+  --w-border: #e6e7eb;
+  --mark-ink: var(--w-text);
+  --mark-paper: var(--w-bg);
+  font-family:
+    system-ui,
+    -apple-system,
+    Roboto,
+    sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--w-text);
+}
+
+.wgt-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--w-bg);
+  border: 1px solid var(--w-border);
+  border-radius: 18px;
+  box-shadow:
+    0 24px 60px -18px rgb(18 19 22 / 0.35),
+    0 2px 6px rgb(18 19 22 / 0.08);
+  overflow: hidden;
+}
+
+.wgt-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--w-border);
+}
+
+.wgt-muted {
+  color: var(--w-muted);
+}
+
+.wgt-log {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 12px;
+  padding: 16px;
+  overflow: hidden;
+}
+
+/*
+ * The hero's chat scrolls like the widget's, the bar showing on hover. It sits in the page's
+ * flow, so once it reaches its end the page takes the scroll on (no trap on a phone). The still
+ * drawings elsewhere do not scroll at all.
+ */
+.wgt-live .wgt-log {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: stable;
+}
+
+.wgt-live .wgt-log:hover {
+  scrollbar-color: color-mix(in srgb, var(--w-muted) 45%, transparent) transparent;
+}
+
+.wgt-log > *,
+.wgt-log > .contents > * {
+  flex-shrink: 0;
+}
+
+.wgt-mine {
+  align-self: flex-end;
+  max-width: 88%;
+  padding: 9px 13px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--w-text);
+  color: var(--w-bg);
+}
+
+.wgt-theirs {
+  align-self: flex-start;
+  max-width: 88%;
+}
+
+.wgt-cards {
+  display: flex;
+  gap: 10px;
+  margin: 0 -16px;
+  padding: 2px 16px 6px;
+  overflow: hidden;
+}
+
+/* In the hero's chat the card row scrolls sideways a card at a time, with no visible bar. */
+.wgt-live .wgt-cards {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 16px;
+  scrollbar-width: none;
+}
+
+.wgt-live .wgt-cards::-webkit-scrollbar {
+  display: none;
+}
+
+.wgt-live .wgt-cards > .wgt-card {
+  scroll-snap-align: start;
+}
+
+.wgt-card {
+  display: flex;
+  flex: 0 0 232px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--w-border);
+  border-radius: 18px;
+  background: var(--w-bg);
+}
+
+.wgt-card-media {
+  position: relative;
+  height: 150px;
+  background: var(--w-surface);
+}
+
+.wgt-card-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wgt-card-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.wgt-card-title {
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.wgt-reason {
+  color: var(--w-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.wgt-price {
+  margin-top: 2px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.wgt-cart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 36px;
+  border-radius: 999px;
+  background: var(--w-text);
+  color: var(--w-bg);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.wgt-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 8px;
+}
+
+.wgt-chip {
+  padding: 5px 11px;
+  border: 1px solid var(--w-border);
+  border-radius: 999px;
+  font-size: 12.5px;
+}
+
+.wgt-composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--w-border);
+}
+
+.wgt-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--w-border);
+  border-radius: 12px;
+  background: var(--w-surface);
+  color: var(--w-muted);
+}
+
+.wgt-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: var(--w-text);
+  color: var(--w-bg);
+  font-weight: 600;
+}
+
+/* The admin, drawn as packages/askr-admin/src/app.css draws it (light): its own colors and font. */
+.adm {
+  --adm-sidebar: #f9f9f9;
+  --adm-surface-2: #f4f4f4;
+  --adm-hover: #ececec;
+  --adm-line: #ebebeb;
+  --adm-text: #0d0d0d;
+  --adm-text-2: #5d5d5d;
+  --adm-text-3: #8f8f8f;
+  --mark-ink: var(--adm-text);
+  --mark-paper: var(--adm-sidebar);
+  background: #ffffff;
+  color: var(--adm-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+@layer components {
+  .adm-card {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px;
+    border: 1px solid var(--adm-line);
+    border-radius: 12px;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  }
+
+  .adm-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 9px 1px 8px;
+    border-radius: 999px;
+    background: #eaf7ee;
+    color: #138a3e;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .adm-badge::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+    content: '';
+  }
+}
+
+/*
+ * The widget's motion (packages/askr-widget/src/ui/styles.ts): its panel opens from its
+ * corner, a message, an answer and the chips rise in, the cards one after another, the status
+ * line fades in. The same curves and lengths; none under reduced motion.
+ */
+@keyframes askr-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+}
+
+@keyframes askr-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes askr-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.wgt-panel-in {
+  transform-origin: bottom right;
+  animation: askr-panel-in 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+
+.wgt-rise {
+  animation: askr-rise 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.wgt-cards > .wgt-card {
+  animation: askr-rise 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.wgt-cards > .wgt-card:nth-child(2) {
+  animation-delay: 0.06s;
+}
+
+.wgt-cards > .wgt-card:nth-child(3) {
+  animation-delay: 0.12s;
+}
+
+.wgt-chips > .wgt-chip {
+  animation: askr-rise 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.wgt-chips > .wgt-chip:nth-child(2) {
+  animation-delay: 0.05s;
+}
+
+.wgt-chips > .wgt-chip:nth-child(3) {
+  animation-delay: 0.1s;
+}
+
+.wgt-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  padding: 0 16px 8px;
+  color: var(--w-muted);
+  font-size: 12.5px;
+}
+
+.wgt-status > span {
+  animation: askr-fade 0.3s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wgt-panel-in,
+  .wgt-rise,
+  .wgt-cards > .wgt-card,
+  .wgt-chips > .wgt-chip,
+  .wgt-status > span {
+    animation: none;
+  }
+}
+
+/* The lines from the sources into Askr: a dash that keeps flowing down, still under reduced motion. */
+@keyframes flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+.flow-line {
+  stroke-dasharray: 4 4;
+  animation: flow 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-line {
+    animation: none;
+  }
+}
+
+/* The demo tip sits centred above the control it points at, with a short rise in. */
+.demo-tip {
+  transform: translate(-50%, calc(-100% - 8px));
+  animation: askr-fade 0.15s ease both;
+}
+
+/* A drawn control looks pressable but does nothing: no pointer hand. */
+[data-demo] {
+  cursor: default;
 }

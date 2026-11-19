@@ -319,3 +319,4 @@ wordmark
 Northwind
 northwind
 Ridgeline
+Higgsfield

@@ -3,7 +3,7 @@
 The landing page is a static page on `https://askr.elisym.network`. It runs no widget and no
 demo: the Askr server (`packages/askr-server`) serves `widget.js`, the chat sessions and the
 admin on `https://app.askr.elisym.network`, so the landing never shares an origin with the admin
-that holds the owner key.
+that holds the store's secret key.
 
 ## The Vercel project (once)
 
@@ -15,7 +15,7 @@ that holds the owner key.
 | Domain           | `askr.elisym.network` (production)                        |
 
 "Include files outside the Root Directory in the Build Step" stays on: install and build run
-from the repository root, and the build check reads `packages/merchant-admin/scripts`. No
+from the repository root (the workspace's lockfile and Turborepo live there). No
 environment variables.
 
 ## After each deploy
@@ -26,4 +26,4 @@ for path in / /index.html; do
 done
 ```
 
-Both lines must allow scripts, styles and connections from `'self'` only, and no frames.
+Both lines must allow scripts, styles, media and connections from `'self'` only, and no frames.
