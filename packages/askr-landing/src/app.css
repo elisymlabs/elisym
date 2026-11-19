@@ -633,3 +633,21 @@ body {
     animation: none;
   }
 }
+
+/* The lines from the sources into Askr: a dash that keeps flowing down, still under reduced motion. */
+@keyframes flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+.flow-line {
+  stroke-dasharray: 4 4;
+  animation: flow 0.9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-line {
+    animation: none;
+  }
+}

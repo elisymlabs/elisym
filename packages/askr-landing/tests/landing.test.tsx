@@ -229,6 +229,23 @@ describe('the copy', () => {
   });
 });
 
+describe('the catalog drawing', () => {
+  it('shows the sources flowing into the product list, priced as the catalog writes them', async () => {
+    const page = await render(<App />);
+    const figure = page.querySelector('#sources figure');
+    expect(figure?.getAttribute('aria-label')).toContain('Askr');
+    const text = figure?.textContent ?? '';
+    for (const source of ['Shopify', 'WooCommerce', 'Google feed', 'CSV']) {
+      expect(text).toContain(source);
+    }
+    const rows = [...(figure?.querySelectorAll('li:has(img)') ?? [])];
+    expect(rows).toHaveLength(4);
+    for (const row of rows) {
+      expect(row.textContent).toMatch(/\d+\.\d{2} USD/);
+    }
+  });
+});
+
 describe('the page structure', () => {
   it('has one h1 and never skips a heading level', async () => {
     const page = await render(<App />);

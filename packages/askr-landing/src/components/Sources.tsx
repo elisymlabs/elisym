@@ -1,5 +1,5 @@
 import { DOCS } from '../constants';
-import { PHOTOS } from '../media';
+import { CatalogFlow } from './CatalogFlow';
 import { Eyebrow } from './Eyebrow';
 import { Icon } from './Icon';
 import { PageLink } from './PageLink';
@@ -27,16 +27,8 @@ export function Sources() {
   return (
     <section id="sources" className="mx-auto max-w-1360 px-12 sm:px-24">
       <div className="grid items-stretch gap-24 lg:grid-cols-2">
-        <Reveal className="rounded-32 sm:rounded-40 relative min-h-360 overflow-hidden">
-          <img
-            src={PHOTOS.catalog.src}
-            alt={PHOTOS.catalog.alt}
-            width={PHOTOS.catalog.width}
-            height={PHOTOS.catalog.height}
-            loading="lazy"
-            decoding="async"
-            className="absolute inset-0 size-full object-cover object-[62%_50%]"
-          />
+        <Reveal>
+          <CatalogFlow />
         </Reveal>
         <Reveal delay={1} className="flex flex-col gap-24 px-4 py-24 sm:px-24 lg:py-48">
           <Eyebrow>Your catalog</Eyebrow>

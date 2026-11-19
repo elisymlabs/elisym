@@ -5,7 +5,6 @@
 import beanie from './media/beanie.webp';
 import bedding from './media/bedding.webp';
 import cardigan from './media/cardigan.webp';
-import catalog from './media/catalog.webp';
 import charger from './media/charger.webp';
 import cream from './media/cream.webp';
 import earbuds from './media/earbuds.webp';
@@ -42,12 +41,6 @@ export const PHOTOS = {
   },
   heroHome: { src: heroHome, ...WIDE, alt: 'A calm bedroom with a ceramic lamp and linen bedding' },
   heroBeauty: { src: heroBeauty, ...WIDE, alt: 'A skincare counter with glass bottles and jars' },
-  catalog: {
-    src: catalog,
-    width: 1400,
-    height: 1050,
-    alt: 'Hands typing on a laptop beside headphones on a light wooden desk',
-  },
   keys: { src: keys, width: 1100, height: 1467, alt: 'A brass key on folded linen' },
 } satisfies Record<string, Photo>;
 
