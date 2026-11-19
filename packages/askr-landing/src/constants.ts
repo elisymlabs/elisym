@@ -53,14 +53,17 @@ export const YEARLY_DISCOUNT_BPS = 2000;
 /** The same discount as the page writes it; a test keeps it equal to `YEARLY_DISCOUNT_BPS`. */
 export const YEARLY_DISCOUNT_LABEL = '20%';
 
-/** A plan with a flat price, billed monthly or yearly. */
-export type FlatPlan = Plan & { price: Extract<PlanPrice, { kind: 'flat' }> };
+/** A plan with a flat price, billed monthly or yearly, started in the admin or chosen with us. */
+export type FlatPlan = Plan & {
+  price: Extract<PlanPrice, { kind: 'flat' }>;
+  start: Exclude<Plan['start'], 'contact'>;
+};
 
 /** A plan priced by contract, from a floor. */
 export type ContractPlan = Plan & { price: Extract<PlanPrice, { kind: 'from' }> };
 
 export function isFlatPlan(plan: Plan): plan is FlatPlan {
-  return plan.price.kind === 'flat';
+  return plan.price.kind === 'flat' && plan.start !== 'contact';
 }
 
 export function isContractPlan(plan: Plan): plan is ContractPlan {

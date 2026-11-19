@@ -13,6 +13,8 @@ import {
   PRODUCT_NAME,
   YEARLY_DISCOUNT_BPS,
   YEARLY_DISCOUNT_LABEL,
+  isContractPlan,
+  isFlatPlan,
 } from '../src/constants';
 
 declare global {
@@ -407,5 +409,22 @@ describe('the pricing section', () => {
       'false',
     ]);
     expect(cards(page).some((card) => card.querySelector('h3')?.textContent === 'Pro')).toBe(true);
+  });
+
+  it('puts every plan on the page: flat ones in cards, the contract one in its row', () => {
+    const flat = PLANS.filter(isFlatPlan).map((plan) => plan.name);
+    const contract = PLANS.filter(isContractPlan).map((plan) => plan.name);
+    expect([...flat, ...contract].sort()).toEqual(PLANS.map((plan) => plan.name).sort());
+    expect(contract).toEqual(['Enterprise']);
+  });
+
+  it('marks the closing for the light focus ring, and hides the FAQ toggles from screen readers', async () => {
+    const page = await render();
+    expect(page.querySelector('#closing .on-ink-focus a')).not.toBeNull();
+    const toggles = [...page.querySelectorAll('#faq summary > span')];
+    expect(toggles.length).toBeGreaterThan(0);
+    for (const toggle of toggles) {
+      expect(toggle.getAttribute('aria-hidden')).toBe('true');
+    }
   });
 });

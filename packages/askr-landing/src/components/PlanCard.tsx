@@ -81,11 +81,6 @@ export function PlanCard({ plan, billing, ink = plan.featured, sizes, className 
           {`Choose ${plan.name}`}
         </ExternalLink>
       )}
-      {plan.start === 'contact' && (
-        <ExternalLink href={CONTACT_URL} newTab className={button}>
-          Contact us
-        </ExternalLink>
-      )}
     </li>
   );
 }
