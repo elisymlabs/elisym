@@ -209,7 +209,10 @@ describe('the copy', () => {
     expect(rows.find((row) => row.startsWith('Settings'))).toContain('signed by you');
     const trust = page.querySelector('#trust')?.textContent ?? '';
     expect(trust).toContain('you replace it through your own site');
-    expect(trust).not.toMatch(/products and policies are signed with a (secret )?key/i);
+    expect(trust).toContain(
+      'Your products and policies are published as signed listings on an open network.',
+    );
+    expect(trust).not.toMatch(/products and policies are signed with\b[^.]*\bkey/i);
     const footer = [...page.querySelectorAll('footer a')].find(
       (link) => link.getAttribute('href') === '#trust',
     );
