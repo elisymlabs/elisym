@@ -177,7 +177,7 @@ export class WidgetView {
     this.input.disabled = !ready;
     this.send.disabled = !ready;
     if (this.log.scrollHeight !== before) {
-      this.log.scrollTop = this.log.scrollHeight;
+      scrollToNewest(this.log, before > 0);
     }
   }
 
@@ -301,6 +301,20 @@ function closeIcon(document: Document): SVGSVGElement {
   path.setAttribute('d', 'M3.5 3.5l9 9M12.5 3.5l-9 9');
   svg.append(path);
   return svg;
+}
+
+/**
+ * Bring the newest message into view. A conversation that grows glides there; the first fill
+ * (a chat opened on its history) jumps, and so does every move for a visitor who asked for
+ * less motion or a browser that cannot glide.
+ */
+export function scrollToNewest(log: HTMLElement, grew: boolean): void {
+  const still = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+  if (grew && !still && typeof log.scrollTo === 'function') {
+    log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+    return;
+  }
+  log.scrollTop = log.scrollHeight;
 }
 
 /** How long the panel takes to fade out on close (its CSS exit runs as long). */
