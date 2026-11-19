@@ -353,10 +353,14 @@ describe('the demo tips on a touch screen', () => {
     // Two seconds, not less.
     await wait(1900);
     expect(page.querySelector('.demo-tip')).not.toBeNull();
-    // A second tap within them starts its own two seconds.
+    // A second touch within them, held past the first tap's two seconds, keeps its tip: the
+    // first tap's timer must not hide it under the finger.
     await act(async () => {
       send?.dispatchEvent(touch('pointerover', {}));
     });
+    await wait(300);
+    expect(page.querySelector('.demo-tip')).not.toBeNull();
+    // When that finger leaves, its own two seconds start.
     await act(async () => {
       area?.dispatchEvent(touch('pointerout', { relatedTarget: document.body }));
     });
