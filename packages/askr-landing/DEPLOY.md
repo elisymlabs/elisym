@@ -15,7 +15,7 @@ that holds the store's secret key.
 | Domain           | `askr.elisym.network` (production)                        |
 
 "Include files outside the Root Directory in the Build Step" stays on: install and build run
-from the repository root (the page's tests read the other Askr packages and the docs). No
+from the repository root (the workspace's lockfile and Turborepo live there). No
 environment variables.
 
 ## After each deploy
