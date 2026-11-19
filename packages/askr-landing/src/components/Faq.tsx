@@ -23,9 +23,9 @@ const QUESTIONS = [
       'Product cards always carry the price from your catalog. Every price the model writes in the text is checked against your catalog and policies first, and a wrong one is corrected or cut before the visitor sees it.',
   },
   {
-    question: 'Can someone talk it into saying something else?',
+    question: 'Can someone trick it with hidden instructions?',
     answer:
-      'No. Instructions hidden in a product description or typed by a visitor are treated as data, not as instructions, so they cannot change how it answers.',
+      'It is built not to follow them. Instructions hidden in a product description or typed by a visitor are read as data, not as instructions, and every price it writes is checked against your catalog either way.',
   },
   {
     question: 'Will it slow down my site?',
@@ -55,7 +55,7 @@ const QUESTIONS = [
   {
     question: 'What if I want to leave?',
     answer:
-      'Your catalog, policies and settings are signed by your keys and live on Nostr, an open network. They stay yours.',
+      'Your settings are signed by your own key, and your products and policies are signed listings on Nostr, an open network. They stay yours.',
   },
 ];
 
@@ -73,7 +73,7 @@ export function Faq() {
           {QUESTIONS.map((item) => (
             <details key={item.question} className="border-line-2 group border-t py-20">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-16 [&::-webkit-details-marker]:hidden">
-                <h3 className="text-20 sm:text-24 font-serif">{item.question}</h3>
+                <span className="text-20 sm:text-24 font-serif">{item.question}</span>
                 <span
                   aria-hidden="true"
                   className="border-line-2 group-hover:border-text group-open:bg-ink group-open:border-ink group-open:text-on-ink grid size-36 shrink-0 place-items-center rounded-full border transition-colors duration-300"

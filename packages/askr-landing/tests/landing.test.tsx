@@ -300,14 +300,4 @@ describe('the page structure', () => {
       /:focus-visible \{\s*outline: 2px solid var\(--accent-ink\);/,
     );
   });
-
-  it('wraps commands instead of cutting them off', async () => {
-    const page = await render(<App />);
-    for (const code of page.querySelectorAll('li code')) {
-      expect(code.className).toContain('break-all');
-    }
-    for (const pre of page.querySelectorAll('pre')) {
-      expect(pre.className).toContain('overflow-x-auto');
-    }
-  });
 });

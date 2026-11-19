@@ -20,7 +20,7 @@ const STEPS = [
   },
   {
     title: 'Get on a plan',
-    body: 'Start on the free plan and move up as you grow. Your store goes live once it is on a plan.',
+    body: 'Message us and we activate your store on its plan, Free included. Until then the admin already shows everything you set up.',
   },
   {
     title: 'Paste one line',

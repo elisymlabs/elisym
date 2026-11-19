@@ -1,8 +1,8 @@
 /**
  * The Askr mark's geometry, as the widget draws it (`packages/askr-widget/src/ui/mark.ts`):
  * nested rounded triangles, a shaft seen from above. The rings shrink toward the point under
- * the viewer; moving that point makes the far end slide and the bands lean. The page moves it
- * with the pointer, and drifts it the widget's way when the pointer is still.
+ * the viewer; moving that point makes the far end slide and the bands lean. The page drifts it
+ * the widget's way.
  */
 
 export type Point = readonly [number, number];

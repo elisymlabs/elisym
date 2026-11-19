@@ -6,17 +6,12 @@ const SOURCES = ['Backend', 'CI/CD', 'WooCommerce', 'Google feed', 'CSV'];
 
 /** Made-up rows for the drawing, written the way the admin's product list writes them. */
 const ROWS = [
-  { product: PRODUCTS.headphonesSand, d: 'aria-anc' },
-  { product: PRODUCTS.headphonesBlack, d: 'pulse-pro' },
-  { product: PRODUCTS.earbuds, d: 'stride-sport' },
-  { product: PRODUCTS.charger, d: 'usb-c-65w' },
+  { product: PRODUCTS.headphonesSand, slug: 'aria-anc' },
+  { product: PRODUCTS.headphonesBlack, slug: 'pulse-pro' },
+  { product: PRODUCTS.earbuds, slug: 'stride-sport' },
+  { product: PRODUCTS.charger, slug: 'usb-c-65w' },
 ];
 
-/**
- * The catalog arriving: the sources a store already has at the top, flowing into Askr, and the
- * products as the admin lists them below (its table, its badge, the price as amount and
- * currency). A drawing: nothing in it is live.
- */
 interface Lines {
   width: number;
   height: number;
@@ -31,6 +26,11 @@ function curve(x1: number, y1: number, x2: number, y2: number): string {
   return `M${x1} ${y1} C${x1} ${middle} ${x2} ${middle} ${x2} ${y2}`;
 }
 
+/**
+ * The catalog arriving: the sources a store already has at the top, flowing into Askr, and the
+ * products as the admin lists them below (its table, its badge, the price as amount and
+ * currency). A drawing: nothing in it is live.
+ */
 export function CatalogFlow() {
   const figureRef = useRef<HTMLElement>(null);
   const chipRefs = useRef<(HTMLLIElement | null)[]>([]);
@@ -71,6 +71,8 @@ export function CatalogFlow() {
       setLines({ width: box.width, height: box.height, paths });
     };
     measure();
+    // A web font that lands later changes the chips' widths: measure again then.
+    void document.fonts?.ready.then(measure);
     if (typeof ResizeObserver !== 'function') {
       return undefined;
     }
@@ -129,9 +131,9 @@ export function CatalogFlow() {
           <span className="adm-badge">Synced</span>
         </div>
         <ul>
-          {ROWS.map(({ product, d }) => (
+          {ROWS.map(({ product, slug }) => (
             <li
-              key={d}
+              key={slug}
               className="text-14 flex items-center gap-12 border-t border-[#ebebeb] px-20 py-10 first:border-t-0"
             >
               <img
@@ -145,7 +147,7 @@ export function CatalogFlow() {
               />
               <span className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate font-medium">{product.title}</span>
-                <span className="text-12 truncate font-mono text-[#8f8f8f]">{d}</span>
+                <span className="text-12 truncate font-mono text-[#8f8f8f]">{slug}</span>
               </span>
               <span className="whitespace-nowrap tabular-nums">
                 {product.price.replace(' USD', '')} <span className="text-[#5d5d5d]">USD</span>

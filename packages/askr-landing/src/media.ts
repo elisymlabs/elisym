@@ -2,7 +2,6 @@
  * The page's photos, generated with Higgsfield (prompts in `MEDIA.md`) and
  * served from this origin like every other asset.
  */
-import beanie from './media/beanie.webp';
 import bedding from './media/bedding.webp';
 import cardigan from './media/cardigan.webp';
 import charger from './media/charger.webp';
@@ -89,12 +88,6 @@ export const PRODUCTS = {
     title: 'Lambswool cardigan',
     note: 'Oat, sizes XS to L',
     price: '78.00 USD',
-  },
-  beanie: {
-    image: beanie,
-    title: 'Ribbed wool beanie',
-    note: 'Rust, one size',
-    price: '34.00 USD',
   },
   lamp: { image: lamp, title: 'Ceramic bedside lamp', note: 'Sage, warm bulb', price: '96.00 USD' },
   bedding: { image: bedding, title: 'Linen duvet set', note: 'Oat, queen', price: '148.00 USD' },

@@ -29,11 +29,13 @@ interface Props {
   niche: Niche;
   /** Called once the conversation has played through; without it, it plays again. */
   onFinished?: () => void;
+  /** Hold the finished conversation still: the visitor paused the demo. */
+  hold?: boolean;
   className?: string;
 }
 
 /** The widget answering a visitor, played once it is on screen: nothing in it is live. */
-export function ChatDemo({ niche, onFinished, className = '' }: Props) {
+export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Props) {
   const [ref, inView] = useInView<HTMLElement>(0.3);
   const logRef = useRef<HTMLDivElement>(null);
   const [step, setStep] = useState(0);
@@ -44,7 +46,7 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
   }, [onFinished]);
 
   useEffect(() => {
-    if (!inView || still) {
+    if (!inView || still || hold) {
       return undefined;
     }
     const timer = setTimeout(() => {
@@ -55,9 +57,9 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
       setStep((current) => (current === FINAL ? 0 : current + 1));
     }, STEPS[step]?.ms ?? 1000);
     return () => clearTimeout(timer);
-  }, [inView, still, step]);
+  }, [inView, still, hold, step]);
 
-  const shown = still ? FINAL : step;
+  const shown = still || hold ? FINAL : step;
   // When the conversation grows it moves to the newest message: the widget jumps there, the
   // drawing glides, unless the visitor asked for less motion.
   useLayoutEffect(() => {
@@ -65,12 +67,12 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
     if (log === null) {
       return;
     }
-    if (shown === 0 || still || typeof log.scrollTo !== 'function') {
+    if (shown === 0 || still || hold || typeof log.scrollTo !== 'function') {
       log.scrollTop = shown === 0 ? 0 : log.scrollHeight;
       return;
     }
     log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
-  }, [shown, still]);
+  }, [shown, still, hold]);
 
   return (
     <figure
@@ -92,7 +94,7 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
         chips={shown >= ANSWERED ? niche.chips : []}
         className="wgt-panel-in h-[min(600px,calc(100vh-32px))] w-full"
       >
-        <div aria-hidden="true" className="contents">
+        <div className="contents">
           <p className="wgt-theirs wgt-rise">{WIDGET_TEXT.greeting}</p>
           {shown >= ASKED && <p className="wgt-mine wgt-rise">{niche.question}</p>}
           {shown >= ANSWERED && <p className="wgt-theirs wgt-rise">{niche.answer}</p>}

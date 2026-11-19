@@ -51,11 +51,11 @@ export function Trust() {
               Your store <em>stays yours.</em>
             </h2>
             <p className="text-18 text-text-2 max-w-600 leading-relaxed">
-              {`Your products, policies and settings are signed with a key only you hold and published on an open network. ${PRODUCT_NAME} runs the assistant on them but does not own them, so you are never locked in.`}
+              {`Your store's settings, and which keys may publish your products, are signed with a secret key only you hold. Your products and policies are published as signed listings on an open network. ${PRODUCT_NAME} runs the assistant on them but does not own them, so you are never locked in.`}
             </p>
             <p className="border-line-2 text-15 text-text-2 flex max-w-600 gap-12 border-l-2 pl-16 leading-relaxed">
               Your secret key is your store. Lost or leaked, you replace it through your own site,
-              and the store moves to the new key with its products, plan and chats.
+              and the store moves to the new key with its products and plan.
             </p>
           </Reveal>
           <Reveal delay={1}>

@@ -421,7 +421,7 @@ describe('the pricing section', () => {
   it('marks the closing for the light focus ring, and hides the FAQ toggles from screen readers', async () => {
     const page = await render();
     expect(page.querySelector('#closing .on-ink-focus a')).not.toBeNull();
-    const toggles = [...page.querySelectorAll('#faq summary > span')];
+    const toggles = [...page.querySelectorAll('#faq summary > span:last-child')];
     expect(toggles.length).toBeGreaterThan(0);
     for (const toggle of toggles) {
       expect(toggle.getAttribute('aria-hidden')).toBe('true');

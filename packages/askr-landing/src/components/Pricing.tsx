@@ -54,7 +54,8 @@ export function Pricing() {
           {`Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more.`}
         </p>
         <p>
-          Create your store in the admin, then message us on Telegram and we put it on your plan.
+          Create your store in the admin, then message us on Telegram and we activate it on its
+          plan, Free included.
         </p>
       </div>
     </section>

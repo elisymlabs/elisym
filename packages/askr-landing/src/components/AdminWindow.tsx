@@ -11,8 +11,8 @@ const TILES = [
 ];
 
 const METERS = [
-  { label: 'Today', text: '$1.18 of $5.00 (23%)', width: 'w-[23%]' },
-  { label: 'This month', text: '$64.10 of $100.00 (64%)', width: 'w-[64%]' },
+  { label: 'Today', text: '$1.18 of $5.00 (23.6%)', width: 'w-[23%]' },
+  { label: 'This month', text: '$64.10 of $100.00 (64.1%)', width: 'w-[64%]' },
 ];
 
 /** The admin's Overview in a browser window, drawn as the admin draws it: nothing in it is live. */

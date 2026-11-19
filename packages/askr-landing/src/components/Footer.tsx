@@ -9,7 +9,7 @@ const COLUMNS = [
     title: 'Product',
     links: [
       { href: '#features', label: 'What it does' },
-      { href: '#trust', label: 'Trust' },
+      { href: '#trust', label: 'Privacy' },
       { href: '#pricing', label: 'Pricing' },
       { href: '#faq', label: 'FAQ' },
       { href: ADMIN_URL, label: 'Admin' },

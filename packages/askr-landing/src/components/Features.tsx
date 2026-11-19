@@ -52,7 +52,7 @@ const FEATURES: Feature[] = [
   },
   {
     title: 'Compares side by side',
-    body: 'Two headphones or five laptops, row by row, with the one it recommends and why. Prices come straight from your catalog.',
+    body: 'Two to four products, row by row, with the one it recommends and why. Prices come straight from your catalog.',
     scene: (
       <>
         <p className="wgt-mine">Compare them</p>
@@ -125,7 +125,7 @@ export function Features() {
         {FEATURES.map((feature, index) => (
           <li
             key={feature.title}
-            className={`rounded-32 sm:rounded-40 border-line bg-surface sticky grid ${STICKY_TOPS[index] ?? 'top-96'} min-h-[min(640px,82vh)] gap-32 overflow-hidden border p-24 shadow-[0_-24px_60px_-40px_rgb(18_19_22/0.35)] sm:p-48 lg:grid-cols-2 lg:p-64`}
+            className={`rounded-32 sm:rounded-40 border-line bg-surface sticky grid ${STICKY_TOPS[index] ?? 'top-96'} min-h-[min(640px,82vh)] grid-cols-[minmax(0,1fr)] gap-32 overflow-hidden border p-24 shadow-[0_-24px_60px_-40px_rgb(18_19_22/0.35)] sm:p-48 lg:grid-cols-2 lg:p-64`}
           >
             <div className="flex flex-col gap-20">
               <span className="text-text-3 font-mono text-[13px]">{`0${index + 1} / 0${FEATURES.length}`}</span>

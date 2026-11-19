@@ -1,22 +1,30 @@
 import { AdminIcon } from './AdminIcon';
 import { AskrMark } from './AskrMark';
 
-/** What the store's key signs, each with what it holds. Made up for the drawing. */
-const SIGNED = [
-  { title: 'Products', detail: '146 listings' },
-  { title: 'Policies', detail: 'Returns, shipping, warranty' },
-  { title: 'Settings', detail: 'Sites, language, voice' },
+/**
+ * What the store holds, as the docs put it (The keys): its settings are signed by its own key,
+ * and so is which keys may write its products; the products and policies are signed listings
+ * on an open network. Figures made up for the drawing.
+ */
+const RECORD = [
+  { title: 'Settings', detail: 'Sites, language, voice', mark: 'signed by you' },
+  { title: 'Catalog keys', detail: 'Who may publish your products', mark: 'set by you' },
+  {
+    title: 'Products and policies',
+    detail: '146 listings, 4 policies',
+    mark: 'on the open network',
+  },
 ];
 
 /**
- * The store as a document it holds itself: its name and Store ID, what its key has signed, and
+ * The store as a document it holds itself: its name and Store ID, what it holds and where, and
  * who holds the key. A drawing: nothing in it is live.
  */
 export function StorePassport() {
   return (
     <div className="rounded-32 sm:rounded-40 bg-surface-2 grid place-items-center px-16 py-48 sm:px-40 sm:py-72">
       <figure
-        aria-label="Northwind Audio's store record: its products, policies and settings are signed with a key only the store holds."
+        aria-label="Northwind Audio's store record: its settings and the keys that may publish its products are signed with a key only the store holds; its products and policies are on the open network."
         className="rounded-24 border-line relative w-full max-w-420 overflow-hidden border bg-white text-[#0d0d0d] shadow-[0_40px_80px_-30px_rgb(18_19_22/0.45)]"
       >
         <div aria-hidden="true">
@@ -40,7 +48,7 @@ export function StorePassport() {
               <span className="text-13 font-mono text-[#5d5d5d]">npub1n7wq...4kx0p</span>
             </div>
             <ul className="flex flex-col border-t border-dashed border-[#dedede]">
-              {SIGNED.map((item) => (
+              {RECORD.map((item) => (
                 <li
                   key={item.title}
                   className="flex items-center gap-12 border-b border-dashed border-[#dedede] py-12"
@@ -49,7 +57,7 @@ export function StorePassport() {
                     <span className="text-14 font-semibold">{item.title}</span>
                     <span className="text-12 truncate text-[#8f8f8f]">{item.detail}</span>
                   </span>
-                  <span className="adm-badge">signed</span>
+                  <span className="adm-badge whitespace-nowrap">{item.mark}</span>
                 </li>
               ))}
             </ul>

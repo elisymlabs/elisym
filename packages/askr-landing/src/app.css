@@ -16,7 +16,6 @@
   --text-3: #606369;
   --accent: #121316;
   --accent-ink: #121316;
-  --accent-soft: rgb(18 19 22 / 0.06);
   --accent-text: #fbfbfc;
   --ink: #0d0e10;
   --ink-2: #18191c;
@@ -24,7 +23,6 @@
   --on-ink: #f2f2f4;
   --on-ink-2: #a3a5ad;
   --on-ink-accent: #ffffff;
-  --warn: #b42318;
 }
 
 @theme inline {
@@ -38,7 +36,6 @@
   --color-text-3: var(--text-3);
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);
-  --color-accent-soft: var(--accent-soft);
   --color-accent-text: var(--accent-text);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
@@ -46,7 +43,6 @@
   --color-on-ink: var(--on-ink);
   --color-on-ink-2: var(--on-ink-2);
   --color-on-ink-accent: var(--on-ink-accent);
-  --color-warn: var(--warn);
   --font-sans:
     'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-serif: 'Instrument Serif', 'Iowan Old Style', Georgia, serif;
@@ -58,7 +54,6 @@
   --spacing: calc(1rem / 16);
   --radius-6: 0.375rem;
   --radius-8: 0.5rem;
-  --radius-12: 0.75rem;
   --radius-16: 1rem;
   --radius-20: 1.25rem;
   --radius-24: 1.5rem;
@@ -78,12 +73,8 @@
   --text-32: 2rem;
   --text-40: 2.5rem;
   --text-48: 3rem;
-  --text-56: 3.5rem;
   --text-64: 4rem;
   --text-80: 5rem;
-  --text-96: 6rem;
-  --text-128: 8rem;
-  --text-200: 12.5rem;
 }
 
 html {
@@ -190,46 +181,9 @@ body {
   animation-direction: reverse;
 }
 
-.marquee:hover .marquee-track {
+.marquee:hover .marquee-track,
+.marquee[data-paused='true'] .marquee-track {
   animation-play-state: paused;
-}
-
-/* A chat message or card arriving in the demos. */
-@keyframes arrive {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.arrive {
-  animation: arrive 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-}
-
-@keyframes blink {
-  0%,
-  100% {
-    opacity: 0.25;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.typing-dot {
-  animation: blink 1s ease-in-out infinite;
-}
-
-.typing-dot:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.typing-dot:nth-child(3) {
-  animation-delay: 0.3s;
 }
 
 /* A word of a statement that lights up as the statement scrolls through the screen. */
@@ -268,9 +222,7 @@ body {
   }
 
   .settle,
-  .marquee-track,
-  .arrive,
-  .typing-dot {
+  .marquee-track {
     animation: none;
   }
 
@@ -394,18 +346,6 @@ body {
   object-fit: cover;
 }
 
-.wgt-label {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: #121316;
-  color: #ffffff;
-  font-size: 11px;
-  font-weight: 600;
-}
-
 .wgt-card-body {
   display: flex;
   flex: 1;
@@ -483,21 +423,6 @@ body {
   background: var(--w-text);
   color: var(--w-bg);
   font-weight: 600;
-}
-
-.wgt-launcher {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  height: 50px;
-  padding: 0 18px 0 10px;
-  border: 1px solid var(--w-border);
-  border-radius: 15px;
-  background: var(--w-bg);
-  box-shadow:
-    0 14px 32px -12px rgb(0 0 0 / 0.35),
-    0 2px 6px rgb(0 0 0 / 0.06);
-  white-space: nowrap;
 }
 
 /* The admin, drawn as packages/askr-admin/src/app.css draws it (light): its own colors and font. */

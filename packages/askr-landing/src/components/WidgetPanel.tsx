@@ -16,10 +16,15 @@ interface Props {
   className?: string;
 }
 
+/*
+ * The panel is always a drawing: whoever shows it says what it shows (a figure's label), so the
+ * panel itself is hidden from assistive technology, chrome and all.
+ */
+
 /** The widget's open panel, drawn as the widget draws it; the conversation goes in `children`. */
 export function WidgetPanel({ name, children, status, chips = [], logRef, className = '' }: Props) {
   return (
-    <div className={`wgt wgt-panel ${className}`}>
+    <div aria-hidden="true" className={`wgt wgt-panel ${className}`}>
       <div className="wgt-header">
         <div className="min-w-0 flex-1">
           <div className="font-semibold tracking-[-0.01em]">{name}</div>

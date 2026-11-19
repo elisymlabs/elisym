@@ -26,7 +26,7 @@ const SOURCES: { title: string; body: string; tags: string[] }[] = [
 export function Sources() {
   return (
     <section id="sources" className="mx-auto max-w-1360 px-12 sm:px-24">
-      <div className="grid items-stretch gap-24 lg:grid-cols-2">
+      <div className="grid grid-cols-[minmax(0,1fr)] items-stretch gap-24 lg:grid-cols-2">
         <Reveal>
           <CatalogFlow />
         </Reveal>

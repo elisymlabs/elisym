@@ -36,10 +36,12 @@ export function Closing() {
       introRef.current.style.opacity = String(1 - clamp(progress / 0.2));
     }
     if (outroRef.current !== null) {
-      const shown = clamp((progress - 0.72) / 0.15);
+      // Always in the page for the keyboard and screen readers; it only fades in on screen, and
+      // shows at once when it gets focus.
+      const focused = outroRef.current.contains(document.activeElement);
+      const shown = focused ? 1 : clamp((progress - 0.72) / 0.15);
       outroRef.current.style.opacity = String(shown);
       outroRef.current.style.transform = `translateY(${(1 - shown) * 24}px)`;
-      outroRef.current.style.visibility = shown > 0 ? 'visible' : 'hidden';
     }
   }, []);
   useScrollProgress(sectionRef, onProgress);
@@ -66,6 +68,12 @@ export function Closing() {
         </div>
         <div
           ref={outroRef}
+          onFocus={() => {
+            if (outroRef.current !== null) {
+              outroRef.current.style.opacity = '1';
+              outroRef.current.style.transform = 'none';
+            }
+          }}
           className="text-on-ink on-ink-focus relative flex flex-col items-center gap-28 px-16 text-center"
         >
           <h2 className="max-w-1100 font-serif text-[clamp(3rem,8vw,8.5rem)] leading-[0.9] tracking-[-0.03em]">

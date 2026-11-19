@@ -4,7 +4,7 @@ import { AdminLink } from './AdminLink';
 import { ExternalLink } from './ExternalLink';
 import { Logo } from './Logo';
 
-export const NAV = [
+const NAV = [
   { href: '#features', label: 'How it works' },
   { href: '#trust', label: 'Privacy' },
   { href: '#pricing', label: 'Pricing' },
