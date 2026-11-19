@@ -40,6 +40,11 @@ export interface Plan {
   /** Free starts in the admin, Enterprise is a conversation, the rest are set up with us. */
   start: 'admin' | 'choose' | 'contact';
   featured: boolean;
+  /**
+   * Plans sharing a group are one card with a size switch, in table order; the featured one is
+   * shown first.
+   */
+  group?: 'sizes';
 }
 
 /** What paying yearly takes off the monthly price, in basis points (2000 = 20%). */
@@ -100,6 +105,7 @@ export const PLANS: readonly Plan[] = [
     ],
     start: 'choose',
     featured: true,
+    group: 'sizes',
   },
   {
     name: 'Pro',
@@ -114,6 +120,7 @@ export const PLANS: readonly Plan[] = [
     ],
     start: 'choose',
     featured: false,
+    group: 'sizes',
   },
   {
     name: 'Scale',
@@ -128,6 +135,7 @@ export const PLANS: readonly Plan[] = [
     ],
     start: 'choose',
     featured: false,
+    group: 'sizes',
   },
   {
     name: 'Enterprise',
@@ -152,4 +160,7 @@ export const START_LABEL = 'Start free';
 
 export const GITHUB_URL = 'https://github.com/elisymlabs/elisym';
 export const X_URL = 'https://x.com/elisymlabs';
+
+/** Where a store asks for a paid plan or Enterprise: our Telegram. */
+export const CONTACT_URL = 'https://t.me/new_acc_nata';
 export const ELISYM_URL = 'https://elisym.network';

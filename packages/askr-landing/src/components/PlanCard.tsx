@@ -1,5 +1,6 @@
+import type { ReactNode } from 'react';
 import { BUTTON } from '../buttons';
-import { type Plan, START_LABEL, X_URL } from '../constants';
+import { CONTACT_URL, type Plan, START_LABEL } from '../constants';
 import { AdminLink } from './AdminLink';
 import type { Billing } from './BillingSwitch';
 import { ExternalLink } from './ExternalLink';
@@ -10,6 +11,10 @@ interface Props {
   billing: Billing;
   /** Laid out across the whole row on a wide screen. */
   wide?: boolean;
+  /** Drawn on ink whichever size is chosen: the card that holds the sizes. */
+  ink?: boolean;
+  /** Under the blurb: the size switch, for the card that holds several plans. */
+  sizes?: ReactNode;
 }
 
 /** What the plan costs under the chosen billing: the big figure, its unit and the line under it. */
@@ -32,18 +37,17 @@ function shownPrice(plan: Plan, billing: Billing): { figure: string; unit: strin
 }
 
 /** One plan: its price under the chosen billing, what it includes, and how to start on it. */
-export function PlanCard({ plan, billing, wide = false }: Props) {
-  const ink = plan.featured;
+export function PlanCard({ plan, billing, wide = false, ink = plan.featured, sizes }: Props) {
   const button = `${ink ? BUTTON.light : BUTTON.ghost} mt-auto w-full ${wide ? 'lg:mt-0 lg:w-auto lg:shrink-0' : ''}`;
   const { figure, unit, note } = shownPrice(plan, billing);
   return (
     <li
-      className={`rounded-32 relative flex flex-col gap-24 border p-24 ${wide ? 'lg:flex-row lg:items-center lg:gap-48 lg:px-32' : ''} ${ink ? 'bg-ink text-on-ink border-ink shadow-[0_40px_80px_-30px_rgb(18_19_22/0.5)] xl:-my-16 xl:py-40' : 'bg-surface border-line'}`}
+      className={`rounded-32 relative flex flex-col gap-24 border p-24 ${wide ? 'lg:flex-row lg:items-center lg:gap-48 lg:px-32' : ''} ${ink ? 'bg-ink text-on-ink border-ink shadow-[0_40px_80px_-30px_rgb(18_19_22/0.5)]' : 'bg-surface border-line'}`}
     >
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between gap-8">
           <h3 className="text-28 font-serif">{plan.name}</h3>
-          {ink && (
+          {plan.featured && (
             <span className="bg-on-ink-accent text-11 text-ink rounded-full px-10 py-4 font-semibold">
               Most popular
             </span>
@@ -54,6 +58,7 @@ export function PlanCard({ plan, billing, wide = false }: Props) {
         >
           {plan.blurb}
         </p>
+        {sizes}
       </div>
       <div className="flex flex-col gap-6">
         <p className="flex items-baseline gap-6">
@@ -80,12 +85,12 @@ export function PlanCard({ plan, billing, wide = false }: Props) {
       </ul>
       {plan.start === 'admin' && <AdminLink label={START_LABEL} className={button} />}
       {plan.start === 'choose' && (
-        <ExternalLink href={X_URL} className={button}>
+        <ExternalLink href={CONTACT_URL} newTab className={button}>
           {`Choose ${plan.name}`}
         </ExternalLink>
       )}
       {plan.start === 'contact' && (
-        <ExternalLink href={X_URL} className={button}>
+        <ExternalLink href={CONTACT_URL} newTab className={button}>
           Contact us
         </ExternalLink>
       )}

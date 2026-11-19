@@ -4,11 +4,13 @@ import { type Billing, BillingSwitch } from './BillingSwitch';
 import { Eyebrow } from './Eyebrow';
 import { PlanCard } from './PlanCard';
 import { Reveal } from './Reveal';
+import { SizedPlanCard } from './SizedPlanCard';
 
 export function Pricing() {
   // Monthly first: the price a store pays without committing to a year.
   const [billing, setBilling] = useState<Billing>('monthly');
   const selfServe = PLANS.filter((plan) => plan.price.kind === 'flat');
+  const sizes = PLANS.filter((plan) => plan.group === 'sizes');
   const contract = PLANS.filter((plan) => plan.price.kind === 'from');
   return (
     <section id="pricing" className="mx-auto max-w-1440 px-12 py-96 sm:px-24 sm:py-160">
@@ -26,12 +28,15 @@ export function Pricing() {
         <BillingSwitch value={billing} onChange={setBilling} />
       </Reveal>
       <Reveal delay={1}>
-        <ul className="mt-48 grid items-stretch gap-12 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          {selfServe.map((plan) => (
-            <PlanCard key={plan.name} plan={plan} billing={billing} />
-          ))}
+        <ul className="mx-auto mt-48 grid max-w-1200 items-stretch gap-12 md:grid-cols-3">
+          {selfServe
+            .filter((plan) => plan.group === undefined)
+            .map((plan) => (
+              <PlanCard key={plan.name} plan={plan} billing={billing} />
+            ))}
+          {sizes.length > 0 && <SizedPlanCard plans={sizes} billing={billing} />}
         </ul>
-        <ul className="mt-12 grid">
+        <ul className="mx-auto mt-12 grid max-w-1200">
           {contract.map((plan) => (
             <PlanCard key={plan.name} plan={plan} billing={billing} wide />
           ))}
@@ -41,7 +46,9 @@ export function Pricing() {
         <p>
           {`Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more.`}
         </p>
-        <p>Create your store in the admin, then message us on X and we put it on your plan.</p>
+        <p>
+          Create your store in the admin, then message us on Telegram and we put it on your plan.
+        </p>
       </div>
     </section>
   );
