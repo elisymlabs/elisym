@@ -33,13 +33,11 @@ interface Props {
    * conversation is finished). Without it the finished conversation stays: it plays only once.
    */
   onFinished?: () => void;
-  /** Hold the finished conversation still: the visitor paused the demo. */
-  hold?: boolean;
   className?: string;
 }
 
 /** The widget answering a visitor, played once it is on screen: nothing in it is live. */
-export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Props) {
+export function ChatDemo({ niche, onFinished, className = '' }: Props) {
   const [ref, inView] = useInView<HTMLElement>(0.3);
   const logRef = useRef<HTMLDivElement>(null);
   const [step, setStep] = useState(0);
@@ -54,7 +52,7 @@ export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Pr
 
   useEffect(() => {
     // Played once: a finished conversation waits for someone to move on, and never replays.
-    if (!inView || still || hold || handOn === false) {
+    if (!inView || still || handOn === false) {
       return undefined;
     }
     const timer = setTimeout(() => {
@@ -65,15 +63,9 @@ export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Pr
       setStep((current) => current + 1);
     }, STEPS[step]?.ms ?? 1000);
     return () => clearTimeout(timer);
-  }, [inView, still, hold, step, handOn]);
+  }, [inView, still, step, handOn]);
 
-  // Paused, the conversation shows its end; it carries on from there when played again.
-  useEffect(() => {
-    if (hold) {
-      setStep(FINAL);
-    }
-  }, [hold]);
-  const shown = still || hold ? FINAL : step;
+  const shown = still ? FINAL : step;
   // When the conversation grows it moves to the newest message: the widget jumps there, the
   // drawing glides, unless the visitor asked for less motion.
   useLayoutEffect(() => {
@@ -81,12 +73,12 @@ export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Pr
     if (log === null) {
       return;
     }
-    if (shown === 0 || still || hold || typeof log.scrollTo !== 'function') {
+    if (shown === 0 || still || typeof log.scrollTo !== 'function') {
       log.scrollTop = shown === 0 ? 0 : log.scrollHeight;
       return;
     }
     log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
-  }, [shown, still, hold]);
+  }, [shown, still]);
 
   return (
     <figure

@@ -127,7 +127,7 @@ describe('the hero', () => {
     );
   });
 
-  it('turns to the next store after each conversation, until a store is chosen or it is paused', async () => {
+  it('turns to the next store after each conversation, until a store is chosen, with no Pause button', async () => {
     stubMotion(false);
     vi.useFakeTimers();
     const page = await render(<Hero />);
@@ -141,28 +141,20 @@ describe('the hero', () => {
         });
       }
     };
+    expect(
+      page.querySelectorAll('button[aria-label^="Pause"], button[aria-label^="Play"]'),
+    ).toHaveLength(0);
     await playThrough();
     expect(selected()).toBe(1);
-    const pause = page.querySelector<HTMLButtonElement>('button[aria-label$="the store demo"]');
-    expect(pause?.textContent).toBe('Pause');
-    expect(pause?.getAttribute('aria-label')).toBe('Pause the store demo');
-    expect(pause?.hasAttribute('aria-pressed')).toBe(false);
-    await act(async () => pause?.click());
-    expect(pause?.getAttribute('aria-label')).toBe('Play the store demo');
-    // Paused, the chat holds its finished conversation and nothing waits to move it on.
-    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
-    expect(vi.getTimerCount()).toBe(0);
-    await playThrough();
-    await playThrough();
-    expect(selected()).toBe(1);
-    await act(async () => pause?.click());
     await playThrough();
     expect(selected()).toBe(2);
     await act(async () => tabs(page)[0]?.click());
-    expect(page.querySelector('button[aria-label$="the store demo"]')).toBeNull();
     await playThrough();
     await playThrough();
     expect(selected()).toBe(0);
+    // A chosen store plays once and stays: nothing waits to move it on.
+    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('plays to the end and stays on the store while the pointer is over it, then moves on', async () => {
@@ -225,29 +217,6 @@ describe('the hero', () => {
       });
     }
     expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
-  });
-
-  it('carries on from the end when played again after a pause, never rewinding', async () => {
-    stubMotion(false);
-    vi.useFakeTimers();
-    const page = await render(<Hero />);
-    const second = async () => {
-      await act(async () => {
-        vi.advanceTimersByTime(1000);
-      });
-    };
-    await second();
-    const pause = page.querySelector<HTMLButtonElement>('button[aria-label$="the store demo"]');
-    await act(async () => pause?.click());
-    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
-    await act(async () => pause?.click());
-    for (let tick = 0; tick < 5; tick += 1) {
-      await second();
-      const selected = tabs(page).findIndex((tab) => tab.getAttribute('aria-selected') === 'true');
-      if (selected === 0) {
-        expect(page.querySelector('#niche-demo .wgt-cards'), `second ${tick}`).not.toBeNull();
-      }
-    }
   });
 
   it('gives only the shown photo its alt text, and hides the chat drawing behind its label', async () => {
@@ -508,7 +477,7 @@ describe('motion', () => {
     expect(hidden.getAttribute('style') ?? '').not.toContain('visibility');
   });
 
-  it('moves nothing on its own under reduced motion: no timers, no Pause buttons', async () => {
+  it('moves nothing on its own under reduced motion: no timers', async () => {
     stubMotion(true);
     vi.useFakeTimers();
     const page = await render(<App />);
