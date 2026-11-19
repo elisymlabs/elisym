@@ -10,6 +10,7 @@ export const WIDGET_TEXT = {
   greeting: 'Hi! Ask me anything about our products.',
   placeholder: 'Ask about products...',
   send: 'Send',
+  thinking: 'Thinking...',
   addToCart: 'Add to cart',
   added: 'Added',
   recommended: 'Recommended',

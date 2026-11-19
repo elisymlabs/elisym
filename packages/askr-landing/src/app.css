@@ -332,8 +332,6 @@ body {
   display: flex;
   flex: 1;
   flex-direction: column;
-  /* The widget scrolls to the newest message: here the oldest leave over the top. */
-  justify-content: flex-end;
   min-height: 0;
   gap: 12px;
   padding: 16px;
@@ -545,5 +543,87 @@ body {
     border-radius: 999px;
     background: currentColor;
     content: '';
+  }
+}
+
+/*
+ * The widget's motion (packages/askr-widget/src/ui/styles.ts): its panel opens from its
+ * corner, a message, an answer and the chips rise in, the cards one after another, the status
+ * line fades in. The same curves and lengths; none under reduced motion.
+ */
+@keyframes askr-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+}
+
+@keyframes askr-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes askr-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.wgt-panel-in {
+  transform-origin: bottom right;
+  animation: askr-panel-in 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+
+.wgt-rise {
+  animation: askr-rise 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.wgt-cards > .wgt-card {
+  animation: askr-rise 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.wgt-cards > .wgt-card:nth-child(2) {
+  animation-delay: 0.06s;
+}
+
+.wgt-cards > .wgt-card:nth-child(3) {
+  animation-delay: 0.12s;
+}
+
+.wgt-chips > .wgt-chip {
+  animation: askr-rise 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.wgt-chips > .wgt-chip:nth-child(2) {
+  animation-delay: 0.05s;
+}
+
+.wgt-chips > .wgt-chip:nth-child(3) {
+  animation-delay: 0.1s;
+}
+
+.wgt-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  padding: 0 16px 8px;
+  color: var(--w-muted);
+  font-size: 12.5px;
+}
+
+.wgt-status > span {
+  animation: askr-fade 0.3s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wgt-panel-in,
+  .wgt-rise,
+  .wgt-cards > .wgt-card,
+  .wgt-chips > .wgt-chip,
+  .wgt-status > span {
+    animation: none;
   }
 }

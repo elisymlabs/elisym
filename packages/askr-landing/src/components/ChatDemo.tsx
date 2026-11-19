@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PRODUCT_NAME } from '../constants';
 import type { Niche } from '../niches';
 import { prefersReducedMotion, useInView } from '../useInView';
@@ -7,12 +7,23 @@ import { LiveMark } from './LiveMark';
 import { WidgetCard } from './WidgetCard';
 import { WidgetPanel } from './WidgetPanel';
 
-/** How long each step of the conversation holds before the next, by step. */
-function stepMs(step: number, answer: string): number {
-  return [700, 900, 1500, answer.length * 10 + 250, 350, 5600][step] ?? 1000;
-}
+/**
+ * The conversation as the widget plays it, step by step: the greeting, the question rising in,
+ * "Thinking..." on the status line, the whole answer with its chips, then its cards a moment
+ * later (the widget resolves them from its catalog after the answer lands), then a pause.
+ */
+const STEPS = [
+  { name: 'greeting', ms: 900 },
+  { name: 'asked', ms: 450 },
+  { name: 'thinking', ms: 1900 },
+  { name: 'answered', ms: 160 },
+  { name: 'cards', ms: 6500 },
+] as const;
 
-const FINAL = 5;
+const ASKED = 1;
+const THINKING = 2;
+const ANSWERED = 3;
+const FINAL = STEPS.length - 1;
 
 interface Props {
   niche: Niche;
@@ -24,8 +35,8 @@ interface Props {
 /** The widget answering a visitor, played once it is on screen: nothing in it is live. */
 export function ChatDemo({ niche, onFinished, className = '' }: Props) {
   const [ref, inView] = useInView<HTMLElement>(0.3);
+  const logRef = useRef<HTMLDivElement>(null);
   const [step, setStep] = useState(0);
-  const [typed, setTyped] = useState(0);
   const [still] = useState(prefersReducedMotion);
   const finished = useRef(onFinished);
   useEffect(() => {
@@ -36,34 +47,25 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
     if (!inView || still) {
       return undefined;
     }
-    const timer = setTimeout(
-      () => {
-        if (step === FINAL && finished.current !== undefined) {
-          finished.current();
-          return;
-        }
-        setTyped(0);
-        setStep((current) => (current === FINAL ? 1 : current + 1));
-      },
-      stepMs(step, niche.answer),
-    );
+    const timer = setTimeout(() => {
+      if (step === FINAL && finished.current !== undefined) {
+        finished.current();
+        return;
+      }
+      setStep((current) => (current === FINAL ? 0 : current + 1));
+    }, STEPS[step]?.ms ?? 1000);
     return () => clearTimeout(timer);
-  }, [inView, still, step, niche.answer]);
+  }, [inView, still, step]);
 
   const shown = still ? FINAL : step;
-  const answering = shown === 3 && !still;
-  useEffect(() => {
-    if (!answering) {
-      return undefined;
+  // As the widget does: when the conversation grows, it jumps to the newest message.
+  useLayoutEffect(() => {
+    const log = logRef.current;
+    if (log !== null) {
+      log.scrollTop = shown === 0 ? 0 : log.scrollHeight;
     }
-    const timer = setInterval(
-      () => setTyped((count) => Math.min(niche.answer.length, count + 2)),
-      20,
-    );
-    return () => clearInterval(timer);
-  }, [answering, niche.answer.length]);
+  }, [shown]);
 
-  const answer = answering ? niche.answer.slice(0, typed) : niche.answer;
   return (
     <figure
       ref={ref}
@@ -72,28 +74,26 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
     >
       <WidgetPanel
         name={niche.store}
-        chips={shown === FINAL ? niche.chips : []}
-        className="max-h-[600px] w-full"
+        logRef={logRef}
+        status={
+          shown === THINKING ? (
+            <>
+              <LiveMark className="-mt-2 size-24 flex-none" />
+              <span>{WIDGET_TEXT.thinking}</span>
+            </>
+          ) : undefined
+        }
+        chips={shown >= ANSWERED ? niche.chips : []}
+        className="wgt-panel-in h-[min(600px,calc(100vh-32px))] w-full"
       >
         <div aria-hidden="true" className="contents">
-          <p className="wgt-theirs">{WIDGET_TEXT.greeting}</p>
-          {shown >= 1 && <p className="wgt-mine arrive">{niche.question}</p>}
-          {shown === 2 && (
-            <p className="wgt-muted arrive flex items-center gap-8 text-[12.5px]">
-              <LiveMark className="-mt-2 size-24 flex-none" />
-              Thinking...
-            </p>
-          )}
-          {shown >= 3 && <p className="wgt-theirs">{answer}</p>}
-          {shown >= 4 && (
+          <p className="wgt-theirs wgt-rise">{WIDGET_TEXT.greeting}</p>
+          {shown >= ASKED && <p className="wgt-mine wgt-rise">{niche.question}</p>}
+          {shown >= ANSWERED && <p className="wgt-theirs wgt-rise">{niche.answer}</p>}
+          {shown === FINAL && (
             <div className="wgt-cards">
-              {niche.cards.map((card, index) => (
-                <WidgetCard
-                  key={card.product.title}
-                  product={card.product}
-                  reason={card.reason}
-                  className={`arrive ${index === 1 ? '[animation-delay:80ms]' : ''}`}
-                />
+              {niche.cards.map((card) => (
+                <WidgetCard key={card.product.title} product={card.product} reason={card.reason} />
               ))}
             </div>
           )}

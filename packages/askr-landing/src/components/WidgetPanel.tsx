@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { WIDGET_TEXT } from '../widget-text';
 import { AskrMark } from './AskrMark';
 import { WidgetIcon } from './WidgetIcon';
@@ -8,12 +8,16 @@ interface Props {
   /** The assistant's name, as the store set it. */
   name: string;
   children: ReactNode;
+  /** The status line under the conversation, as the widget shows it while it waits. */
+  status?: ReactNode;
   chips?: readonly string[];
+  /** The conversation's scroll box, for keeping the newest message in view. */
+  logRef?: Ref<HTMLDivElement>;
   className?: string;
 }
 
 /** The widget's open panel, drawn as the widget draws it; the conversation goes in `children`. */
-export function WidgetPanel({ name, children, chips = [], className = '' }: Props) {
+export function WidgetPanel({ name, children, status, chips = [], logRef, className = '' }: Props) {
   return (
     <div className={`wgt wgt-panel ${className}`}>
       <div className="wgt-header">
@@ -23,16 +27,18 @@ export function WidgetPanel({ name, children, chips = [], className = '' }: Prop
         </div>
         <WidgetIcon name="close" className="wgt-muted size-16" />
       </div>
-      <div className="wgt-log">{children}</div>
-      {chips.length > 0 && (
-        <div className="wgt-chips">
-          {chips.map((chip) => (
-            <span key={chip} className="wgt-chip">
-              {chip}
-            </span>
-          ))}
-        </div>
-      )}
+      <div ref={logRef} className="wgt-log">
+        {children}
+      </div>
+      {/* The status line and the chips row are always there, as in the widget: nothing jumps. */}
+      <div className="wgt-status">{status}</div>
+      <div className="wgt-chips">
+        {chips.map((chip) => (
+          <span key={chip} className="wgt-chip">
+            {chip}
+          </span>
+        ))}
+      </div>
       <div className="wgt-composer">
         <span className="wgt-input">{WIDGET_TEXT.placeholder}</span>
         <span className="wgt-send">{WIDGET_TEXT.send}</span>
