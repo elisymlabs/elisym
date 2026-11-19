@@ -78,12 +78,13 @@ describe('the links', () => {
     }
   });
 
-  it('take the elisym logo, in the header and the footer, to elisym.network', async () => {
+  it('take the elisym logo, in the header and the footer, to elisym.network in a new tab', async () => {
     const page = await render(<App />);
     const logos = [...page.querySelectorAll('img[alt="elisym"]')];
     expect(logos).toHaveLength(2);
     for (const logo of logos) {
       expect(logo.closest('a')?.getAttribute('href')).toBe(ELISYM_URL);
+      expect(logo.closest('a')?.getAttribute('target')).toBe('_blank');
     }
   });
 

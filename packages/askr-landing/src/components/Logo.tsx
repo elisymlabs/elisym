@@ -11,6 +11,7 @@ export function Logo() {
       </a>
       <ExternalLink
         href={ELISYM_URL}
+        newTab
         className="text-12 text-text-3 hover:text-text hidden items-center gap-6 sm:flex"
       >
         by
