@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    # commerce-p*: the stacked commerce PRs target each other.
-    branches: [main, evm, 'commerce-p*']
+    # commerce-p*: the stacked commerce PRs target each other; comcore: the Askr stack.
+    branches: [main, evm, 'commerce-p*', comcore]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -18,7 +18,7 @@ jobs:
   qa:
     name: QA
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -34,3 +34,8 @@ jobs:
 
       - name: Run QA
         run: bun run qa
+        env:
+          # One test suite at a time: each runs a worker per core, and the askr-server
+          # suite alone takes about 0.9 GB per worker (an in-memory Postgres each);
+          # several suites at once ran the runner out of memory.
+          TURBO_TEST_CONCURRENCY: '1'

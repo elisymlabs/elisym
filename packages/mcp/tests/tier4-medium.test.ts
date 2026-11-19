@@ -50,6 +50,29 @@ describe('tool input schemas omit $schema and use jsonSchema7', () => {
   }
 });
 
+/** The draft-07 formats (and the 2019+ ones every validator knows). */
+const JSON_SCHEMA_FORMATS = [
+  'date-time',
+  'date',
+  'time',
+  'duration',
+  'email',
+  'idn-email',
+  'hostname',
+  'idn-hostname',
+  'ipv4',
+  'ipv6',
+  'uri',
+  'uri-reference',
+  'iri',
+  'iri-reference',
+  'uri-template',
+  'uuid',
+  'json-pointer',
+  'relative-json-pointer',
+  'regex',
+];
+
 describe('tool input schemas are what clients have always been sent', () => {
   // Pinned whole: objects closed (additionalProperties: false), defaulted fields not
   // required (the input side), everything inlined.
@@ -59,6 +82,14 @@ describe('tool input schemas are what clients have always been sent', () => {
       listToolsResult().tools.map((tool) => [tool.name, tool.inputSchema]),
     );
     expect(JSON.stringify(schemas)).not.toMatch(/"\$ref"|"definitions"|"\$defs"/);
+    // zod names its own string checks as formats (starts_with, ends_with...) when one
+    // comes last; a strict client refuses an unknown format, so only standard ones go out.
+    const formats = new Set(
+      [...JSON.stringify(schemas).matchAll(/"format":"([^"]+)"/g)].map((match) => match[1]),
+    );
+    for (const format of formats) {
+      expect(JSON_SCHEMA_FORMATS).toContain(format);
+    }
     expect(schemas).toMatchSnapshot();
   });
 });

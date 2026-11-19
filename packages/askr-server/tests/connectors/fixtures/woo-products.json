@@ -1,0 +1,390 @@
+[
+  {
+    "id": 191,
+    "name": "Timeless Classic Collection",
+    "slug": "timeless-classic-collection",
+    "parent": 0,
+    "type": "variable",
+    "variation": "",
+    "permalink": "https://websitedemos.net/clothing-store-02/product/timeless-classic-collection/",
+    "sku": "",
+    "short_description": "<p>Crafted from soft, breathable fabrics, the relaxed fit provides a carefree silhouette, while thoughtful details add a touch of urban chic. Whether you&#8217;re lounging at home or navigating a bustling day, our Timeless Classic Collection effortlessly combine ease with fashion, allowing you to move with relaxed confidence while making a statement of casual sophistication.</p>",
+    "description": "<p>Embrace comfort without sacrificing style in our Timeless Classic Collection, the epitome of laid-back luxury. Perfect for both active pursuits and leisurely moments, these joggers offer a harmonious blend of comfort and trendsetting design. Crafted from soft, breathable fabrics, the relaxed fit provides a carefree silhouette, while thoughtful details add a touch of urban chic. Whether you&#821",
+    "on_sale": false,
+    "prices": {
+      "price": "12490",
+      "regular_price": "12490",
+      "sale_price": "12490",
+      "price_range": {
+        "min_amount": "12490",
+        "max_amount": "15490"
+      },
+      "currency_code": "USD",
+      "currency_symbol": "$",
+      "currency_minor_unit": 2,
+      "currency_decimal_separator": ".",
+      "currency_thousand_separator": ",",
+      "currency_prefix": "$",
+      "currency_suffix": ""
+    },
+    "images": [
+      {
+        "id": 84,
+        "src": "https://websitedemos.net/clothing-store-02/wp-content/uploads/sites/1447/2024/03/img-08-a.jpg",
+        "name": "img-08-a",
+        "alt": ""
+      }
+    ],
+    "categories": [
+      {
+        "id": 35,
+        "name": "Work &amp; Office",
+        "slug": "work-and-office",
+        "link": "https://websitedemos.net/clothing-store-02/product-category/work-and-office/"
+      }
+    ],
+    "tags": [],
+    "brands": [],
+    "attributes": [
+      {
+        "id": 1,
+        "name": "Size",
+        "taxonomy": "pa_size",
+        "has_variations": true,
+        "terms": [
+          {
+            "id": 41,
+            "name": "L",
+            "slug": "l",
+            "default": false
+          },
+          {
+            "id": 40,
+            "name": "M",
+            "slug": "m",
+            "default": true
+          },
+          {
+            "id": 39,
+            "name": "S",
+            "slug": "s",
+            "default": false
+          },
+          {
+            "id": 43,
+            "name": "XL",
+            "slug": "xl",
+            "default": false
+          },
+          {
+            "id": 42,
+            "name": "XS",
+            "slug": "xs",
+            "default": false
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "name": "Color",
+        "taxonomy": "pa_color",
+        "has_variations": true,
+        "terms": [
+          {
+            "id": 47,
+            "name": "Black",
+            "slug": "black",
+            "default": false
+          },
+          {
+            "id": 49,
+            "name": "Green",
+            "slug": "green",
+            "default": false
+          },
+          {
+            "id": 50,
+            "name": "Red",
+            "slug": "red",
+            "default": false
+          },
+          {
+            "id": 48,
+            "name": "White",
+            "slug": "white",
+            "default": true
+          }
+        ]
+      }
+    ],
+    "variations": [
+      {
+        "id": 502,
+        "attributes": [
+          {
+            "name": "Size",
+            "value": null
+          },
+          {
+            "name": "Color",
+            "value": "black"
+          }
+        ]
+      },
+      {
+        "id": 503,
+        "attributes": [
+          {
+            "name": "Size",
+            "value": null
+          },
+          {
+            "name": "Color",
+            "value": "red"
+          }
+        ]
+      },
+      {
+        "id": 504,
+        "attributes": [
+          {
+            "name": "Size",
+            "value": null
+          },
+          {
+            "name": "Color",
+            "value": "green"
+          }
+        ]
+      },
+      {
+        "id": 192,
+        "attributes": [
+          {
+            "name": "Size",
+            "value": null
+          },
+          {
+            "name": "Color",
+            "value": "white"
+          }
+        ]
+      }
+    ],
+    "has_options": true,
+    "is_purchasable": true,
+    "is_in_stock": true,
+    "is_on_backorder": false
+  },
+  {
+    "id": 375,
+    "name": "DNK Black Shoes",
+    "slug": "dnk-black-shoes",
+    "parent": 0,
+    "type": "variable",
+    "variation": "",
+    "permalink": "https://websitedemos.net/brandstore-02/product/dnk-black-shoes/",
+    "sku": "",
+    "short_description": "<p>Nam nec tellus a odio tincidunt auctor a ornare odio. Sed non mauris vitae erat consequat auctor eu in elit. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Mauris in erat justo. Nullam ac urna eu felis dapibus condimentum sit amet a augue. Sed non neque elit sed.</p>",
+    "description": "<h3>Product description</h3>\n<p>Since it&#8217;s creation lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Except",
+    "on_sale": false,
+    "prices": {
+      "price": "17500",
+      "regular_price": "17500",
+      "sale_price": "17500",
+      "price_range": {
+        "min_amount": "17500",
+        "max_amount": "20000"
+      },
+      "currency_code": "USD",
+      "currency_symbol": "$",
+      "currency_minor_unit": 2,
+      "currency_decimal_separator": ".",
+      "currency_thousand_separator": ",",
+      "currency_prefix": "$",
+      "currency_suffix": ""
+    },
+    "images": [
+      {
+        "id": 2465,
+        "src": "https://websitedemos.net/brandstore-02/wp-content/uploads/sites/150/2021/03/sports-shoe5.jpg",
+        "name": "sports-shoe5",
+        "alt": ""
+      },
+      {
+        "id": 2466,
+        "src": "https://websitedemos.net/brandstore-02/wp-content/uploads/sites/150/2017/12/sports-shoe4.jpg",
+        "name": "sports-shoe4",
+        "alt": ""
+      },
+      {
+        "id": 2462,
+        "src": "https://websitedemos.net/brandstore-02/wp-content/uploads/sites/150/2021/03/sports-shoe2.jpg",
+        "name": "sports-shoe2",
+        "alt": ""
+      }
+    ],
+    "categories": [
+      {
+        "id": 22,
+        "name": "Women",
+        "slug": "women",
+        "link": "https://websitedemos.net/brandstore-02/product-category/women/"
+      }
+    ],
+    "tags": [],
+    "brands": [],
+    "attributes": [
+      {
+        "id": 1,
+        "name": "Color",
+        "taxonomy": "pa_color",
+        "has_variations": true,
+        "terms": [
+          {
+            "id": 44,
+            "name": "Aqua",
+            "slug": "aqua"
+          },
+          {
+            "id": 43,
+            "name": "Blue",
+            "slug": "blue"
+          },
+          {
+            "id": 34,
+            "name": "Green",
+            "slug": "green"
+          },
+          {
+            "id": 41,
+            "name": "Red",
+            "slug": "red"
+          }
+        ]
+      }
+    ],
+    "variations": [
+      {
+        "id": 4120,
+        "attributes": [
+          {
+            "name": "Color",
+            "value": "blue"
+          }
+        ]
+      },
+      {
+        "id": 4119,
+        "attributes": [
+          {
+            "name": "Color",
+            "value": "aqua"
+          }
+        ]
+      },
+      {
+        "id": 4122,
+        "attributes": [
+          {
+            "name": "Color",
+            "value": "red"
+          }
+        ]
+      },
+      {
+        "id": 4121,
+        "attributes": [
+          {
+            "name": "Color",
+            "value": "green"
+          }
+        ]
+      }
+    ],
+    "has_options": true,
+    "is_purchasable": true,
+    "is_in_stock": true,
+    "is_on_backorder": false
+  },
+  {
+    "id": 18734007022843,
+    "name": "Quote Offer",
+    "slug": "quote-request",
+    "parent": 0,
+    "type": "simple",
+    "variation": "",
+    "permalink": "https://woocommerce.com/products/quote-request/",
+    "sku": "",
+    "short_description": "<p>WooCommerce request a quote plugin: hide prices, collect quote requests, negotiate, and turn quotes into orders with a payment link.</p>",
+    "description": "<h2>The WooCommerce request a quote plugin that closes the sale</h2>\n<p>Some products don&#8217;t have one fixed price: bulk orders, custom work, wholesale deals and high-value items. <strong>Quote Offer</strong> adds a complete request for quote (RFQ) flow to WooCommerce. Hide prices where you choose, let shoppers add products to a quote, negotiate in one thread, and turn the agreed quote into a ",
+    "on_sale": false,
+    "prices": {
+      "price": "5900",
+      "regular_price": "5900",
+      "sale_price": "5900",
+      "price_range": null,
+      "currency_code": "USD",
+      "currency_symbol": "$",
+      "currency_minor_unit": 2,
+      "currency_decimal_separator": ".",
+      "currency_thousand_separator": ",",
+      "currency_prefix": "$",
+      "currency_suffix": ""
+    },
+    "images": [
+      {
+        "id": 18734007023256,
+        "src": "https://woocommerce.com/wp-content/uploads/2026/11/Request-a-Quote-icon.png",
+        "name": "Request-a-Quote icon",
+        "alt": ""
+      },
+      {
+        "id": 18734005062306,
+        "src": "https://woocommerce.com/wp-content/uploads/2025/03/product-image-2.png",
+        "name": "product-image-2",
+        "alt": ""
+      },
+      {
+        "id": 18734005062307,
+        "src": "https://woocommerce.com/wp-content/uploads/2025/03/product-image-3.png",
+        "name": "product-image-3",
+        "alt": ""
+      }
+    ],
+    "categories": [
+      {
+        "id": 1021,
+        "name": "WooCommerce extensions",
+        "slug": "woocommerce-extensions",
+        "link": "https://woocommerce.com/product-category/woocommerce-extensions/"
+      },
+      {
+        "id": 28698,
+        "name": "Conversion",
+        "slug": "conversion",
+        "link": "https://woocommerce.com/product-category/woocommerce-extensions/conversion/"
+      },
+      {
+        "id": 28672,
+        "name": "B2B",
+        "slug": "b2b",
+        "link": "https://woocommerce.com/product-category/woocommerce-extensions/merchandising/b2b/"
+      },
+      {
+        "id": 28674,
+        "name": "Cart and checkout features",
+        "slug": "cart-and-checkout-features",
+        "link": "https://woocommerce.com/product-category/woocommerce-extensions/store-content-and-customizations/cart-and-checkout-features/"
+      }
+    ],
+    "tags": [],
+    "brands": [],
+    "attributes": [],
+    "variations": [],
+    "has_options": false,
+    "is_purchasable": true,
+    "is_in_stock": true,
+    "is_on_backorder": false
+  }
+]

@@ -1,0 +1,367 @@
+import type { CatalogItemInput, StoreConfig, SyncDiff } from '@elisym/askr';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { DEFAULT_CURRENCY } from '../constants';
+import { type CatalogChange, changesOf, importItems, removeItem, upsertItem } from '../lib/catalog';
+import type { SessionDeps } from '../lib/deps';
+import { errorMessage, invalidItemIssues } from '../lib/errors';
+import { HELP } from '../lib/help';
+import { SOURCE_LABELS } from '../lib/labels';
+import { readCatalog } from '../lib/store-data';
+import type { StoreView } from '../lib/types';
+import { CsvImport } from './CsvImport';
+import { DiffSummary } from './DiffSummary';
+import { Notice } from './Notice';
+import { ProductEditor } from './ProductEditor';
+import { ProductList } from './ProductList';
+import { Section } from './Section';
+import { SyncStatus } from './SyncStatus';
+
+interface Props {
+  deps: SessionDeps;
+  view: StoreView;
+  config: StoreConfig | undefined;
+  reload: () => Promise<void>;
+}
+
+type Editing = { mode: 'new' } | { mode: 'edit'; item: CatalogItemInput } | undefined;
+
+/** A dry run's answer, with exactly the draft and change it was for: Publish sends that change. */
+interface Reviewed {
+  items: CatalogItemInput[];
+  change: CatalogChange;
+  diff: SyncDiff;
+}
+
+/**
+ * The catalog of the server K (source `admin`). The draft starts from every
+ * listing K shows on the relay; a publish sends only what the draft changed
+ * against that read (new and changed products, removed IDs), first as a dry
+ * run, then for real.
+ */
+export function ProductsSection({ deps, view, config, reload }: Props) {
+  const [draft, setDraft] = useState<CatalogItemInput[]>();
+  /** The catalog as last read from the relay: the draft is compared with it. */
+  const [baseline, setBaseline] = useState<CatalogItemInput[]>();
+  /** Every product ID K has on the relay at that read, readable or not. */
+  const [listedIds, setListedIds] = useState<string[]>([]);
+  const [readError, setReadError] = useState('');
+  const [editing, setEditing] = useState<Editing>();
+  /** What opened the editor: focus goes back to it once the editor closes. */
+  const opener = useRef<HTMLElement | null>(null);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const openEditor = (next: Editing) => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setEditing(next);
+  };
+  useEffect(() => {
+    if (editing !== undefined || opener.current === null) {
+      return;
+    }
+    // A new product's opener, Add a product, was hidden while the editor was open: it is back.
+    const target = opener.current.isConnected ? opener.current : addButton.current;
+    opener.current = null;
+    target?.focus();
+  }, [editing]);
+  const [reviewed, setReviewed] = useState<Reviewed>();
+  const [busy, setBusy] = useState(false);
+  /** What the last publish sent: offered back if that sync fails and the list is read again. */
+  const [lastSent, setLastSent] = useState<{ items: CatalogItemInput[]; readsBefore: number }>();
+  /** Whole reads of the catalog so far: tells whether the list was read again after a publish. */
+  const [reads, setReads] = useState(0);
+  // The draft as it is now, for a dry-run answer to check it is still about the current list.
+  const draftNow = useRef(draft);
+  draftNow.current = draft;
+  const [error, setError] = useState('');
+  const [issues, setIssues] = useState<string[]>([]);
+  const [notice, setNotice] = useState('');
+
+  const read = useCallback(
+    async (isCurrent: () => boolean = () => true) => {
+      try {
+        const { listings, ids } = await readCatalog(deps.reader, view.catalogKey, deps.now());
+        if (isCurrent()) {
+          const sorted = listings.sort((left, right) => left.d.localeCompare(right.d));
+          setBaseline(sorted);
+          setListedIds(ids);
+          setDraft(sorted);
+          setReads((count) => count + 1);
+          setReadError('');
+        }
+      } catch {
+        if (isCurrent()) {
+          setDraft(undefined);
+          setBaseline(undefined);
+          setReadError(
+            'Your current products could not be read. Nothing can be changed until they are, since a publish is worked out against them. Retry in a moment.',
+          );
+        }
+      }
+    },
+    [deps, view.catalogKey],
+  );
+
+  const isAdminSource = config?.source.kind === 'admin';
+  const running = view.catalogSync?.state === 'running';
+  // While a sync publishes, the relay holds a half-written catalog: a draft read from it would
+  // hide the rest on the next publish. Read only once no sync runs, and again after each one.
+  useEffect(() => {
+    if (!isAdminSource) {
+      return undefined;
+    }
+    setDraft(undefined);
+    setReviewed(undefined);
+    setEditing(undefined);
+    if (running) {
+      return undefined;
+    }
+    let current = true;
+    void read(() => current);
+    return () => {
+      current = false;
+    };
+  }, [isAdminSource, running, read]);
+
+  // A publish that went through needs no restore offer.
+  const syncState = view.catalogSync?.state;
+  useEffect(() => {
+    if (syncState === 'done') {
+      setLastSent(undefined);
+    }
+  }, [syncState]);
+
+  if (!isAdminSource) {
+    return (
+      <Section title="Products">
+        <Notice tone="info">
+          {config === undefined
+            ? 'The product editor works once your settings, with products managed here in the admin, are published.'
+            : `Your products come from: ${SOURCE_LABELS[config.source.kind]}. The editor here is for products managed in the admin; change the product source in Settings to use it.`}
+        </Notice>
+      </Section>
+    );
+  }
+
+  const change = (next: CatalogItemInput[]) => {
+    // No edit while a review or publish is in flight: its answer is about the list it was sent.
+    if (busy) {
+      return;
+    }
+    setDraft(next);
+    setReviewed(undefined);
+    setNotice('');
+  };
+
+  const review = async () => {
+    const sent = draft;
+    if (sent === undefined || baseline === undefined) {
+      return;
+    }
+    const sentChange = changesOf(baseline, sent, listedIds);
+    if (sentChange.items.length === 0 && sentChange.hide.length === 0) {
+      setReviewed(undefined);
+      setError('');
+      setNotice('Nothing to publish: your products are already as shown.');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setIssues([]);
+    setNotice('');
+    try {
+      const result = await deps.api.catalog(sentChange, true);
+      // An answer about a list that has changed since is dropped, never shown as this one's.
+      if (draftNow.current === sent) {
+        setReviewed({
+          items: sent,
+          change: sentChange,
+          // Products not sent at all are unchanged too.
+          diff: { ...result.diff, unchanged: [...result.diff.unchanged, ...sentChange.untouched] },
+        });
+      }
+    } catch (failure) {
+      setError(errorMessage(failure));
+      setIssues(invalidItemIssues(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const publish = async () => {
+    if (reviewed === undefined) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    setIssues([]);
+    try {
+      await deps.api.catalog(reviewed.change, false);
+      setLastSent({ items: reviewed.items, readsBefore: reads });
+      setReviewed(undefined);
+      setNotice('Publishing started. Progress shows below.');
+      await reload();
+    } catch (failure) {
+      setError(errorMessage(failure));
+      setIssues(invalidItemIssues(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  let failedNotice: ReactNode = null;
+  if (view.catalogSync?.state === 'failed' && lastSent !== undefined && draft !== undefined) {
+    failedNotice =
+      reads > lastSent.readsBefore ? (
+        <Notice tone="warn">
+          The last publish failed, so the list below was read again and may miss changes that did
+          not go out.{' '}
+          <button type="button" className="underline" onClick={() => change(lastSent.items)}>
+            Restore the list you tried to publish
+          </button>
+        </Notice>
+      ) : (
+        <Notice tone="warn">
+          The last publish failed. The list below is the one you tried to publish: review and
+          publish it again.
+        </Notice>
+      );
+  }
+
+  const currency = config?.currency ?? DEFAULT_CURRENCY;
+  const maxProducts = view.tier?.maxProducts;
+
+  let listWait = 'Reading your products...';
+  if (running) {
+    listWait = 'The list shows again once publishing is done.';
+  } else if (readError !== '') {
+    listWait = 'Your products are not read yet.';
+  }
+
+  return (
+    <div className="flex flex-col gap-32">
+      {running ? (
+        <Notice tone="info">
+          Products are being published. The editor opens again once that is done.
+        </Notice>
+      ) : null}
+      {readError === '' ? null : (
+        <Notice tone="error">
+          {readError}{' '}
+          <button type="button" className="underline" onClick={() => void read()}>
+            Retry
+          </button>
+        </Notice>
+      )}
+      {failedNotice}
+      {draft === undefined || editing === undefined ? null : (
+        <fieldset disabled={busy} className="contents">
+          <ProductEditor
+            key={editing.mode === 'edit' ? editing.item.d : 'new'}
+            initial={editing.mode === 'edit' ? editing.item : undefined}
+            currency={currency}
+            takenIds={draft.map((item) => item.d)}
+            onSave={(item) => {
+              change(upsertItem(draft, item));
+              setEditing(undefined);
+            }}
+            onCancel={() => setEditing(undefined)}
+          />
+        </fieldset>
+      )}
+      <Section
+        title="Catalog"
+        info={HELP.catalog}
+        description="Changes stay here until you review and publish them. A product you remove here is deleted for good when you publish; to take one off sale for a while, set its availability to hidden instead."
+        actions={
+          draft === undefined || editing !== undefined ? undefined : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              ref={addButton}
+              disabled={busy}
+              onClick={() => openEditor({ mode: 'new' })}
+            >
+              Add a product
+            </button>
+          )
+        }
+        flush
+      >
+        {draft === undefined ? (
+          <p className="text-14 text-text-2 px-20 py-16">{listWait}</p>
+        ) : (
+          <fieldset disabled={busy} className="contents">
+            <ProductList
+              items={draft}
+              onEdit={(productId) => {
+                const item = draft.find((candidate) => candidate.d === productId);
+                openEditor(item === undefined ? undefined : { mode: 'edit', item });
+              }}
+              onRemove={(productId) => change(removeItem(draft, productId))}
+            />
+            <p className="border-line text-12 text-text-3 border-t px-20 py-10">
+              {draft.length} product{draft.length === 1 ? '' : 's'}
+              {maxProducts === undefined ? '' : ` of ${maxProducts} your plan allows`}. Products set
+              to hidden stay listed so you can show them again; removing one deletes it.
+            </p>
+          </fieldset>
+        )}
+      </Section>
+
+      <Section
+        title="Publish"
+        info={HELP.publish}
+        description="Publishing makes your catalog this list: only what changed is sent. Review the changes first."
+      >
+        <SyncStatus sync={view.catalogSync} />
+        {reviewed === undefined ? null : <DiffSummary diff={reviewed.diff} />}
+        {error === '' ? null : (
+          <Notice tone="error">
+            {error}
+            {issues.length === 0 ? null : (
+              <ul className="mt-4">
+                {issues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+            )}
+          </Notice>
+        )}
+        {notice === '' ? null : <Notice tone="success">{notice}</Notice>}
+        <div className="border-line -mx-20 -mb-20 flex justify-end gap-8 border-t px-20 py-12">
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || running || draft === undefined}
+            onClick={() => void review()}
+          >
+            Review changes
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || running || reviewed === undefined}
+            onClick={() => void publish()}
+          >
+            Publish
+          </button>
+        </div>
+      </Section>
+
+      {draft === undefined ? null : (
+        <Section
+          title="Import from a CSV file"
+          info={HELP.csvImport}
+          description="Add products from a spreadsheet, or replace all of them."
+        >
+          <fieldset disabled={busy} className="contents">
+            <CsvImport
+              currency={currency}
+              current={draft}
+              onImport={(items, mode) => change(importItems(draft, items, mode))}
+            />
+          </fieldset>
+        </Section>
+      )}
+    </div>
+  );
+}

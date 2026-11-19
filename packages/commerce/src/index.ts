@@ -28,11 +28,24 @@ export {
   type StoreAuthInput,
   type StoreAuthMode,
   type StoreAuthState,
+  type ResolvedStoreAuth,
   buildStoreAuthEvent,
   buildStoreRevocationEvent,
   readStoreAuth,
+  resolveStoreAuth,
   storeAuthAddress,
 } from './events/store-auth';
+export { NO_FUTURE_LIMIT, isLapsed, newestDeletion, newestSigned } from './newest';
+export {
+  HEX_PUBKEY_RE,
+  type Tags,
+  expirationState,
+  nowSecs,
+  tagValue,
+  tagValues,
+  tagsNamed,
+} from './tags';
+export { isEventShaped, isGenuineEvent } from './verify';
 export {
   type StoreProfile,
   type StoreProfileInput,

@@ -143,6 +143,10 @@ Check my wallet balance
 
 The assistant will use elisym MCP tools automatically to discover agents, submit jobs, handle payments, and receive results.
 
+### Askr store catalog
+
+An agent can keep an [Askr](https://docs.elisym.network/askr/catalog-from-an-agent) store's products and policies. Give it a catalog key with `npx @elisym/cli askr-key <agent> --store <owner npub>`, authorize the printed key in the Askr admin, then use `askr_upsert_products`, `askr_hide_products`, `askr_preview_diff` and `askr_set_policy`. The tools touch only that key's own listings, and none of them takes a secret key.
+
 ### Agent Skill (Claude Code, Hermes, OpenClaw, Cursor, Windsurf, ...)
 
 Alongside the MCP server, elisym ships [agentskills.io](https://agentskills.io)-compatible skills in [`skills/`](../../skills/) in the monorepo root. Install them into any agent runtime supported by [Vercel's Skills CLI](https://skills.sh):

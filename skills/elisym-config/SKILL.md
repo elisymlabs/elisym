@@ -68,6 +68,7 @@ Source of truth: `ElisymYamlSchema` in [`packages/sdk/src/agent-store/schema.ts`
 | `security`               | `{ withdrawals_enabled, agent_switch_enabled }` (partial) | no       | Defaults to `{}`. Gating flags for destructive operations - requires explicit user confirmation to flip. See Security subsection.       |
 | `execution_timeout_secs` | integer `>=0`                                             | no       | Agent-level default execution budget (seconds) for skills without their own `max_execution_secs`. `0` = unlimited. Omitted = unlimited. |
 | `identities`             | `{ github?, x?, website? }`                               | no       | Linked external identities (NIP-39 + NIP-05). Managed by `elisym identity link` - do not hand-edit. See Identities subsection.          |
+| `askr_store`             | 64-char lowercase hex                                     | no       | The Askr store (owner pubkey) whose catalog this agent's Askr catalog key writes. Set by `elisym askr-key` - do not hand-edit.          |
 
 <!-- fields:end -->
 

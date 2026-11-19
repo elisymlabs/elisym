@@ -1,0 +1,111 @@
+import { type Policy, PolicyInputSchema } from '@elisym/askr';
+import { useState } from 'react';
+import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
+import { Notice } from './Notice';
+import { TextAreaField } from './TextAreaField';
+import { TextField } from './TextField';
+
+interface Props {
+  /** The policy being edited, or undefined for a new one. */
+  initial: Policy | undefined;
+  /** Slugs already published: a new policy needs its own, or it would replace one. */
+  takenSlugs: readonly string[];
+  /** Slugs the Shopify connector imports: one made here would be replaced by its next sync. */
+  importedSlugs: readonly string[];
+  onSave: (policy: { slug: string; title: string; body: string }) => Promise<void>;
+  onCancel: () => void;
+}
+
+export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCancel }: Props) {
+  const [slug, setSlug] = useState(initial?.slug ?? '');
+  const [title, setTitle] = useState(initial?.title ?? '');
+  const [body, setBody] = useState(initial?.body ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const save = async () => {
+    const checked = PolicyInputSchema.safeParse({ slug: slug.trim(), title: title.trim(), body });
+    if (!checked.success) {
+      setError(
+        checked.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
+      );
+      return;
+    }
+    if (initial === undefined && takenSlugs.includes(checked.data.slug)) {
+      setError(
+        `Short name: a policy named "${checked.data.slug}" already exists. Edit that one, or pick another name.`,
+      );
+      return;
+    }
+    if (initial === undefined && importedSlugs.includes(checked.data.slug)) {
+      setError(
+        `Short name: "${checked.data.slug}" is imported from your Shopify store, and each sync would replace this text. Pick another name, or turn off policy import in Settings.`,
+      );
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onSave({ slug: checked.data.slug, title: checked.data.title, body: checked.data.body });
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card flex flex-col gap-16 p-24">
+      <h2 className="text-16 font-semibold">
+        {initial === undefined ? 'New policy' : `Edit ${initial.title}`}
+      </h2>
+      <TextField
+        id="policy-slug"
+        info={HELP.policySlug}
+        label="Short name"
+        value={slug}
+        readOnly={initial !== undefined}
+        hint={
+          initial === undefined
+            ? 'Lowercase letters, digits and hyphens, like returns or shipping'
+            : 'The short name cannot change.'
+        }
+        onChange={(value) => {
+          if (initial === undefined) {
+            setSlug(value);
+          }
+        }}
+      />
+      <TextField
+        id="policy-title"
+        info={HELP.policyTitle}
+        label="Title"
+        value={title}
+        onChange={setTitle}
+      />
+      <TextAreaField
+        id="policy-body"
+        info={HELP.policyText}
+        label="Text"
+        rows={8}
+        value={body}
+        onChange={setBody}
+      />
+      {error === '' ? null : <Notice tone="error">{error}</Notice>}
+      <div className="border-line -mx-24 -mb-24 flex justify-end gap-8 border-t px-24 py-14">
+        <button type="button" className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy}
+          onClick={() => void save()}
+        >
+          {busy ? 'Publishing...' : 'Publish'}
+        </button>
+      </div>
+    </div>
+  );
+}

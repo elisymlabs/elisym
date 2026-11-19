@@ -92,6 +92,7 @@ Adds 1 USD to your account.
 
 - `priceUsd` is paid 1:1 in USDC. Quote it: a bare number is refused.
 - The body below the second `---` is the product's description.
+- Optional `url: https://your-shop.example/product-page` links the listing to the product's page on your site, so a shopping assistant can show the link (an [Askr](/askr/overview) store shows it when the page is on one of its origins or link origins).
 - `setup` refuses the product while it is still `init`'s example (its title and text unchanged).
 
 The store returns nothing to the buyer: once the node has checked the payment on chain, it completes the order and the checkout shows **Payment complete** with a receipt. What the buyer paid for happens on your side: your backend learns of each payment from the node's signed `order.paid` webhook ([below](#credit-an-account-on-your-backend)). A `PRODUCT.md` that still names a `delivery` (from a node older than 0.9.0) is refused: remove the key.

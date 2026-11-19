@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { evaluateOffer, unwrapOrderMessage } from '@elisym/commerce';
 import { describe, expect, it } from 'vitest';
 import { buildDeliveryReply } from '../src/reply';
@@ -100,6 +101,35 @@ describe('the store events', () => {
     );
     // A payout address change alone does not touch a listing.
     expect(listingHash(PRODUCT, [{ caip19: USDC_DEVNET_CAIP19, address: 'other' }])).toBe(base);
+  });
+
+  it('link a product with a url to its page, and keep a listing without one as it was', () => {
+    const store = key();
+    const owner = key();
+    const keys = { storeSecretKey: store.secretKey, ownerSecretKey: owner.secretKey };
+    const wide = buildStoreWideEvents(CONFIG, keys, T0, T0);
+    const url = 'https://shop.example/agents-101';
+    const linked = buildListingEvent({ ...PRODUCT, url }, CONFIG.payouts, store.secretKey, T0);
+    expect(linked.tags.filter((tag) => tag[0] === 'r')).toEqual([['r', url]]);
+    const unlinked = buildListingEvent(PRODUCT, CONFIG.payouts, store.secretKey, T0);
+    expect(unlinked.tags.some((tag) => tag[0] === 'r')).toBe(false);
+    expect(
+      evaluateOffer(
+        { storePubkey: store.pubkey, d: D },
+        { events: [wide.payoutList, ...wide.others, linked] },
+        { now: T0 + 4 * 24 * 60 * 60 },
+      ),
+    ).toMatchObject({ ok: true });
+    const base = listingHash(PRODUCT, CONFIG.payouts);
+    const withUrl = listingHash({ ...PRODUCT, url }, CONFIG.payouts);
+    expect(withUrl).not.toBe(base);
+    expect(listingHash({ ...PRODUCT, url: `${url}-2` }, CONFIG.payouts)).not.toBe(withUrl);
+    // The hash an earlier node recorded for a listing without a link: no republish on upgrade.
+    const earlier = [D, 'Agents 101', null, 'Twelve lessons.', '1', 'USD', 'on-sale'];
+    const earlierHash = createHash('sha256')
+      .update(JSON.stringify([...earlier, [USDC_DEVNET_CAIP19]]), 'utf8')
+      .digest('hex');
+    expect(base).toBe(earlierHash);
   });
 
   it('names the store and the owner in nostr.json under the nip05 name', () => {

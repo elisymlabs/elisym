@@ -1,0 +1,156 @@
+import { type StoreConfig, buildCatalogAuth, buildCatalogRevocation } from '@elisym/askr';
+import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import { type SessionDeps, postSigned } from '../lib/deps';
+import { errorMessage } from '../lib/errors';
+import { HELP } from '../lib/help';
+import { nextAuthDate, savedMessage } from '../lib/save';
+import { npubOf, parsePublicKey } from '../lib/signer';
+import { type AuthorityRead, readAuthority } from '../lib/store-data';
+import type { StoreView } from '../lib/types';
+import { KeyRow } from './KeyRow';
+import { Notice } from './Notice';
+import { Section } from './Section';
+import { TextField } from './TextField';
+
+interface Props {
+  deps: SessionDeps;
+  view: StoreView;
+  config: StoreConfig | undefined;
+}
+
+/** Authorize or revoke catalog keys K with O-signed 30497 events (1.1). */
+export function CatalogKeys({ deps, view, config }: Props) {
+  const [authority, setAuthority] = useState<AuthorityRead>();
+  const [readError, setReadError] = useState('');
+  const [pasted, setPasted] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [done, setDone] = useState('');
+
+  const read = useCallback(async () => {
+    try {
+      setAuthority(await readAuthority(deps.reader, deps.signer.pubkey, deps.now()));
+      setReadError('');
+    } catch {
+      setAuthority(undefined);
+      setReadError(
+        'The authorized keys could not be read, so none can be authorized or revoked until they are. Retry in a moment.',
+      );
+    }
+  }, [deps]);
+
+  useEffect(() => {
+    void read();
+  }, [read]);
+
+  const submit = async (sign: () => Promise<void>) => {
+    setBusy(true);
+    setError('');
+    setDone('');
+    try {
+      await sign();
+      setDone(savedMessage(view));
+      await read();
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const authorize = () =>
+    submit(async () => {
+      const key = parsePublicKey(pasted);
+      if (key === undefined) {
+        throw new Error('Paste the key: it starts with npub1.');
+      }
+      const mode = key === view.catalogKey ? 'hosted' : 'self-host';
+      const createdAt = nextAuthDate(key, deps.now(), authority?.newestAt, deps.journal);
+      const event = await deps.signer.signEvent(buildCatalogAuth({ key, mode, createdAt }));
+      await postSigned(deps, [event]);
+      setPasted('');
+    });
+
+  const revoke = (key: string) =>
+    submit(async () => {
+      // Dated after the key's newest authorization, which may be dated ahead of now.
+      const createdAt = nextAuthDate(key, deps.now(), authority?.newestAt, deps.journal);
+      const event = await deps.signer.signEvent(buildCatalogRevocation(key, createdAt));
+      await postSigned(deps, [event]);
+    });
+
+  const labelsOf = (key: string): string[] => {
+    const labels: string[] = [];
+    if (key === view.catalogKey) {
+      labels.push('the server key of this admin');
+    }
+    if (key === config?.catalogKey) {
+      labels.push('your product source');
+    }
+    if (key === config?.policyKey) {
+      labels.push('your policies');
+    }
+    return labels;
+  };
+
+  const keys = authority === undefined ? undefined : [...authority.keys];
+  let list: ReactNode = null;
+  if (keys !== undefined && keys.length === 0) {
+    list = <p className="text-14 text-text-2">No key is authorized yet.</p>;
+  } else if (keys !== undefined) {
+    list = (
+      <ul className="border-line rounded-10 rows flex flex-col border">
+        {keys.map((key) => (
+          <KeyRow
+            key={key}
+            npub={npubOf(key)}
+            uses={labelsOf(key)}
+            busy={busy}
+            onRevoke={() => revoke(key)}
+          />
+        ))}
+      </ul>
+    );
+  }
+
+  return (
+    <Section
+      title="Catalog keys"
+      info={HELP.catalogKeys}
+      description="A catalog key publishes your products and policies. Authorize your own key to publish from your backend, the SDK or an AI agent, and revoke a key you no longer use."
+    >
+      {readError === '' ? null : (
+        <Notice tone="warn">
+          {readError}{' '}
+          <button type="button" className="underline" onClick={() => void read()}>
+            Retry
+          </button>
+        </Notice>
+      )}
+      {list}
+      <div className="flex flex-col gap-12">
+        <TextField
+          id="authorize-key"
+          info={HELP.catalogKey}
+          label="Authorize a catalog key"
+          value={pasted}
+          placeholder="npub1..."
+          hint="The public key your backend, SDK or MCP server publishes your products with."
+          onChange={setPasted}
+        />
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={busy || authority === undefined || pasted.trim() === ''}
+            onClick={() => void authorize()}
+          >
+            Sign and authorize
+          </button>
+        </div>
+      </div>
+      {error === '' ? null : <Notice tone="error">{error}</Notice>}
+      {done === '' ? null : <Notice tone="success">{done}</Notice>}
+    </Section>
+  );
+}

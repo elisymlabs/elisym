@@ -1,0 +1,79 @@
+# Embed the widget
+
+One script tag with your store's owner npub puts the assistant on a page:
+
+```html
+<script src="https://app.askr.elisym.network/widget.js" data-store="npub1..." async></script>
+```
+
+The script adds an `<askr-chat>` element to the page: an **Ask AI** button with the Askr mark that opens the assistant (the mark alone on a narrow screen). It runs in a shadow root, so your page's styles do not leak into it.
+
+Optional settings on the same script tag:
+
+| Attribute | Values | Without it |
+| --- | --- | --- |
+| `data-theme` | `light`, `dark` | follows the visitor's system |
+| `data-lang` | `en`, `ru`, `es`, `de`, `fr`, `pt`, `it`, `zh`, `ja`, `ko` | the page's own `lang` (`<html lang="de">`), then your store's language, then English |
+
+The language sets the widget's own texts: the button, the placeholder, statuses and the cart buttons. Your store's language is read when the chat opens, so with neither `data-lang` nor a `lang` on the page the button shows English until then. `<askr-chat lang="ru">` works the same way when you place the element yourself. Your greeting and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
+
+To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` where it should go and load the script without `data-store`.
+
+The page must be on one of the origins in your store's config: the server issues a chat session only to those.
+
+## Pin one version
+
+`/widget.js` always serves the current release, so fixes reach your site within minutes. To load one exact version instead, use the pinned snippet the admin shows under **Embed**:
+
+```html
+<script
+  src="https://app.askr.elisym.network/widget/<id>.js"
+  integrity="sha384-..."
+  crossorigin="anonymous"
+  data-store="npub1..."
+  async
+></script>
+```
+
+The path names the bundle by its SHA-384, and the browser runs it only if it matches `integrity`. It never changes under you, and the server keeps serving it after later releases. The trade-off: fixes and new features do not reach a pinned page until you paste a newer snippet from the admin. The bundle is the whole widget: it loads no other script.
+
+The current pinned path and integrity are also at `https://app.askr.elisym.network/v1/widget`, as `{ "path": "/widget/<id>.js", "integrity": "sha384-..." }`.
+
+## Add to cart
+
+Each product card links to the product page. The add-to-cart button, in order of precedence:
+
+1. **Your hook**, when the page defines one. It receives the product and the visitor's pick:
+
+   ```html
+   <script>
+     window.Askr = window.Askr || {};
+     window.Askr.onAddToCart = function (detail) {
+       // detail.d: the product id as published
+       // detail.sku: the SKU, when the listing has one
+       // detail.variant: the variant id, when the pick determines one
+       // detail.options: { "Size": "M", ... }, whenever a selector is set
+     };
+   </script>
+   ```
+
+2. **Native add-to-cart** for a Shopify or WooCommerce connector, on the shop's own site only, once the visitor's pick determines one variant.
+3. Otherwise no button: the card opens the product page.
+
+A sold-out product, or a sold-out variant, shows a label instead of the button.
+
+## Content Security Policy
+
+If your site sends a CSP, allow:
+
+| Directive     | Source                                                         | Why                                                               |
+| ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `script-src`  | `https://app.askr.elisym.network`                              | `widget.js`, or the pinned `/widget/<id>.js`                      |
+| `connect-src` | `https://app.askr.elisym.network` `wss://relay.elisym.network` | the chat session and the chat itself                              |
+| `img-src`     | `https:`                                                       | product images, wherever you host them |
+
+The widget adds no inline scripts or styles, so a strict `script-src` and `style-src` hold.
+
+## What the widget can see
+
+It runs in your page, like any script you embed. It keeps the visitor's chat key in the page's local storage, and scripts on your page can read it. It sends the assistant the page's origin and path, never its query string.

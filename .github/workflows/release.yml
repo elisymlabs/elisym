@@ -62,6 +62,11 @@ jobs:
           # the outputs the docker and mcp-registry jobs wait for. merchant-node
           # builds on commerce and pay-core only.
           #
+          # askr and askr-agent go right after commerce: mcp depends on askr at
+          # runtime, and a failed first publish stops the run before anything
+          # with a Docker or registry output is tagged. Their first 0.1.0 is
+          # published by hand (a new name cannot go through Trusted Publishing).
+          #
           # react depends on nothing here and goes last. Its publish is the one
           # failure that does not stop the run: by then mcp, cli and
           # merchant-node may be tagged, and a stopped run would never start the
@@ -74,6 +79,8 @@ jobs:
           PACKAGES=(
             "pay-core:@elisym/pay-core"
             "commerce:@elisym/commerce"
+            "askr:@elisym/askr"
+            "askr-agent:@elisym/askr-agent"
             "merchant-node:@elisym/merchant-node"
             "sdk:@elisym/sdk"
             "mcp:@elisym/mcp"

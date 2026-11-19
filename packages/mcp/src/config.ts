@@ -49,6 +49,9 @@ function coerceNetwork(raw: string | undefined, name: string): SolanaNetwork {
 export interface AgentConfigData {
   nostrSecretKey: string;
   solanaSecretKey?: string;
+  /** Askr catalog key (hex) and its store, both set by `elisym askr-key`. */
+  askrCatalogSecretKey?: string;
+  askrStore?: string;
   relays?: string[];
   network: SolanaNetwork;
   payments?: { chain: string; network: string; address: string }[];
@@ -71,6 +74,8 @@ export async function loadAgentConfig(name: string, passphrase?: string): Promis
   return {
     nostrSecretKey: loaded.secrets.nostr_secret_key,
     solanaSecretKey: loaded.secrets.solana_secret_key,
+    askrCatalogSecretKey: loaded.secrets.askr_catalog_secret_key,
+    askrStore: loaded.yaml.askr_store,
     relays: loaded.yaml.relays.length > 0 ? loaded.yaml.relays : undefined,
     network,
     payments:

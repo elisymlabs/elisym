@@ -1,0 +1,598 @@
+import {
+  KIND_CATALOG_AUTH,
+  KIND_CONFIG,
+  buildCatalogAuth,
+  buildConfigEvent,
+  parseConfig,
+} from '@elisym/askr';
+import type { NostrEvent } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
+import { act } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Overview } from '../src/components/Overview';
+import { Session } from '../src/components/Session';
+import { ApiError } from '../src/lib/api';
+import type { AdminClient } from '../src/lib/deps';
+import { ownSignedEvents, withStoredEvents } from '../src/lib/stored-events';
+import type { ConnectorRecord } from '../src/lib/types';
+import {
+  ASSISTANT,
+  NOW,
+  OWNER,
+  OWNER_KEY,
+  SERVER_KEY,
+  fakeApi,
+  fakeReader,
+  sessionDeps,
+  storeView,
+} from './fakes';
+import { type Mounted, buttonNamed, byId, click, mount, settle } from './mount';
+
+let mounted: Mounted | undefined;
+afterEach(async () => {
+  await mounted?.unmount();
+  mounted = undefined;
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+const PRIVATE_PART = { voice: 'calm', instructions: 'Recommend oolong.', notes: 'Berlin' };
+
+function configSignedBy(secret: Uint8Array, name: string, createdAt: number): NostrEvent {
+  return finalizeEvent(
+    {
+      ...buildConfigEvent(
+        {
+          assistant: ASSISTANT,
+          origins: ['https://tea.example'],
+          name,
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'admin' },
+          catalogKey: SERVER_KEY,
+          private: PRIVATE_PART,
+        },
+        secret,
+      ),
+      created_at: createdAt,
+    },
+    secret,
+  );
+}
+
+function serverAuthorization(createdAt: number): NostrEvent {
+  return finalizeEvent(
+    { ...buildCatalogAuth({ key: SERVER_KEY, mode: 'hosted' }), created_at: createdAt },
+    OWNER_KEY,
+  );
+}
+
+const pendingView = (pending: number) =>
+  storeView({ status: 'pending', tier: null, events: { pending, failing: [] } });
+
+function pendingApi(stored: unknown[], pending = stored.length): AdminClient {
+  return fakeApi({
+    store: vi.fn(async () => pendingView(pending)),
+    storedEvents: vi.fn(async () => ({ events: stored, truncated: false })),
+  });
+}
+
+function fieldValue(container: HTMLElement, id: string): string {
+  const field = byId(container, id);
+  return field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement
+    ? field.value
+    : '';
+}
+
+async function mountSession(api: AdminClient, relay: NostrEvent[] = []) {
+  const deps = sessionDeps(api, fakeReader(relay));
+  mounted = await mount(
+    <Session deps={deps} onSignOut={() => undefined} onReplaceKey={() => undefined} />,
+  );
+  const { container } = mounted;
+  await settle(() => /Overview|Set up your assistant|could not/.test(container.textContent ?? ''));
+  return { container, deps };
+}
+
+describe('the owner signed events the server holds', () => {
+  it('keeps only well-formed events signed by the owner, each signature checked', () => {
+    const own = configSignedBy(OWNER_KEY, 'Tea', NOW);
+    const foreign = configSignedBy(generateSecretKey(), 'Other', NOW);
+    // As the server's JSON arrives: plain objects, no verification cached on them.
+    const wire = (event: NostrEvent): NostrEvent => JSON.parse(JSON.stringify(event));
+    const forged = { ...wire(own), content: `${own.content} ` };
+    const relabelled = { ...wire(foreign), pubkey: OWNER };
+    const malformed = [
+      null,
+      'event',
+      {},
+      { ...wire(own), tags: [[1]] },
+      { ...wire(own), tags: [1] },
+      { ...wire(own), tags: 'd' },
+      { ...wire(own), created_at: '1' },
+    ];
+    const kept = ownSignedEvents([wire(own), foreign, forged, relabelled, ...malformed], OWNER);
+    expect(kept.map(wire)).toEqual([wire(own)]);
+    // Rebuilt from the signed fields only: nothing else the server sent rides along.
+    expect(ownSignedEvents([{ ...wire(own), extra: 'x' }], OWNER).map(wire)).toEqual([wire(own)]);
+  });
+
+  it('are added to the relay read where they match the filter, once', async () => {
+    const config = configSignedBy(OWNER_KEY, 'Tea', NOW);
+    const auth = serverAuthorization(NOW);
+    const relay = fakeReader([auth]);
+    expect(withStoredEvents(relay, [])).toBe(relay);
+    const reader = withStoredEvents(relay, [config, auth]);
+    const configs = await reader.query({ kinds: [KIND_CONFIG], authors: [OWNER] });
+    expect(configs).toEqual([config]);
+    const auths = await reader.query({ kinds: [KIND_CATALOG_AUTH], authors: [OWNER] });
+    expect(auths).toEqual([auth]);
+    expect(await reader.query({ kinds: [KIND_CONFIG], authors: [SERVER_KEY] })).toEqual([]);
+  });
+
+  it('a relay that fails still fails the read', async () => {
+    const reader = withStoredEvents(
+      { query: async () => Promise.reject(new Error('relay down')) },
+      [configSignedBy(OWNER_KEY, 'Tea', NOW)],
+    );
+    await expect(reader.query({ kinds: [KIND_CONFIG] })).rejects.toThrow('relay down');
+  });
+});
+
+describe('a pending store read back from the server (7.3)', () => {
+  it('shows the settings O signed, decrypted, in the overview and the settings form', async () => {
+    const api = pendingApi([configSignedBy(OWNER_KEY, 'Saved Tea', NOW - 10)]);
+    const { container } = await mountSession(api);
+    expect(container.textContent).not.toContain('Set up your assistant');
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Saved Tea');
+    expect(container.textContent).toContain('published once your store is activated');
+    expect(container.textContent).not.toContain('Your settings are not published yet');
+    expect(container.textContent).not.toContain('not shown here');
+    await click(buttonNamed(container, 'Settings'));
+    await settle(() => container.querySelector('#store-name') !== null);
+    expect(fieldValue(container, 'store-name')).toBe('Saved Tea');
+    expect(fieldValue(container, 'store-instructions')).toBe('Recommend oolong.');
+  });
+
+  it('a later save is dated after the stored config and repeats no stored authorization', async () => {
+    const stored = configSignedBy(OWNER_KEY, 'Saved Tea', NOW + 50);
+    const api = pendingApi([stored, serverAuthorization(NOW - 10)]);
+    const { container } = await mountSession(api);
+    await click(buttonNamed(container, 'Settings'));
+    await settle(() => container.querySelector('#store-name') !== null);
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length === 1);
+    const events = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
+    expect(events.map((event) => event.kind)).toEqual([KIND_CONFIG]);
+    const saved = events[0] === undefined ? undefined : parseConfig(events[0]);
+    expect(saved?.createdAt).toBe(NOW + 51);
+    expect(saved?.name).toBe('Saved Tea');
+  });
+
+  it('says when the server left older changes out of its answer', async () => {
+    const api = fakeApi({
+      store: vi.fn(async () => pendingView(2)),
+      storedEvents: vi.fn(async () => ({
+        events: [configSignedBy(OWNER_KEY, 'Saved Tea', NOW)],
+        truncated: true,
+      })),
+    });
+    const { container } = await mountSession(api);
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Saved Tea');
+    expect(container.textContent).toContain('Some older changes you signed are not shown here');
+  });
+
+  it('says nothing waits on the server when only an authorization is stored', async () => {
+    const api = pendingApi([serverAuthorization(NOW)]);
+    const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 10)]);
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Relay');
+    expect(container.textContent).not.toContain('shown as you signed them');
+  });
+
+  it('never uses an event the owner did not sign', async () => {
+    const api = pendingApi([configSignedBy(generateSecretKey(), 'Not Yours', NOW)], 1);
+    const { container } = await mountSession(api);
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Your store');
+    expect(container.textContent).toContain('Your settings are not published yet');
+    expect(container.textContent).not.toContain('Not Yours');
+  });
+
+  it('a newer config on the relay wins over an older stored one (a suspended store)', async () => {
+    const api = fakeApi({
+      store: vi.fn(async () => storeView({ status: 'suspended' })),
+      storedEvents: vi.fn(async () => ({
+        events: [configSignedBy(OWNER_KEY, 'Older', NOW - 50)],
+        truncated: false,
+      })),
+    });
+    const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Newer', NOW - 10)]);
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Newer');
+    // The settings shown are the relay's, so nothing says they wait on the server.
+    expect(container.textContent).not.toContain('shown as you signed them');
+  });
+
+  it('a suspended store shows what O signed since, which waits for reactivation', async () => {
+    const api = fakeApi({
+      store: vi.fn(async () => storeView({ status: 'suspended' })),
+      storedEvents: vi.fn(async () => ({
+        events: [configSignedBy(OWNER_KEY, 'Signed Since', NOW - 10)],
+        truncated: false,
+      })),
+    });
+    const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 50)]);
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Signed Since');
+    expect(container.textContent).toContain('published once your store is reactivated');
+  });
+
+  it('an active store reads the relay only, and never asks the server', async () => {
+    const api = fakeApi({
+      storedEvents: vi.fn(async () => ({
+        events: [configSignedBy(OWNER_KEY, 'Stored', NOW)],
+        truncated: false,
+      })),
+    });
+    const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 10)]);
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Relay');
+    expect(api.storedEvents).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('shown as you signed them');
+  });
+
+  it('once activated, the relay is the source again', async () => {
+    let view = pendingView(1);
+    const api = fakeApi({
+      store: vi.fn(async () => view),
+      storedEvents: vi.fn(async () => ({
+        events: [configSignedBy(OWNER_KEY, 'Stored', NOW)],
+        truncated: false,
+      })),
+    });
+    const { container } = await mountSession(api, [configSignedBy(OWNER_KEY, 'Relay', NOW - 500)]);
+    expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Stored');
+    view = storeView();
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => container.querySelector('#sidebar-store-name')?.textContent === 'Relay');
+    expect(api.storedEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed read-back says so, offers a retry and never onboards', async () => {
+    let fail = true;
+    const api = fakeApi({
+      store: vi.fn(async () => pendingView(2)),
+      storedEvents: vi.fn(async () => {
+        if (fail) {
+          throw new ApiError(0, 'network');
+        }
+        return { events: [configSignedBy(OWNER_KEY, 'Saved Tea', NOW)], truncated: false };
+      }),
+    });
+    const { container } = await mountSession(api);
+    expect(container.textContent).toContain('Your saved settings could not be read');
+    expect(container.textContent).not.toContain('Set up your assistant');
+    fail = false;
+    await click(buttonNamed(container, 'Retry'));
+    await settle(() => container.querySelector('#sidebar-store-name')?.textContent === 'Saved Tea');
+    expect(container.textContent).not.toContain('could not be read');
+  });
+});
+
+describe('the overview', () => {
+  it('shows the conversations so far next to the open ones, and says what one is', async () => {
+    mounted = await mount(
+      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+    );
+    const { container } = mounted;
+    expect(byId(container, 'usage-conversations').textContent).toBe('12');
+    expect(container.textContent).toContain('Conversations so far12');
+    expect(container.textContent).toContain('Open conversations3');
+    expect(container.textContent).toContain('got at least one answer');
+  });
+
+  it('lists page opens and add to cart presses per product, by product ID', async () => {
+    const usage = {
+      ...storeView().usage,
+      clicks: [
+        { address: `30402:${'a'.repeat(64)}:tent`, count: 2, carts: 1 },
+        { address: `30402:${'a'.repeat(64)}:size:m`, count: 0, carts: 4 },
+      ],
+    };
+    mounted = await mount(
+      <Overview view={storeView({ usage })} config={undefined} configFromServer={false} />,
+    );
+    const rows = [
+      ...mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr'),
+    ];
+    expect(
+      rows.map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent)),
+    ).toEqual([
+      ['tent', '2', '1'],
+      ['size:m', '0', '4'],
+    ]);
+    expect(mounted.container.textContent).toContain('Page openedAdded to cart');
+  });
+
+  it('shows the connector only once one is set up', async () => {
+    mounted = await mount(
+      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+    );
+    expect(mounted.container.textContent).not.toContain('Connector');
+    expect(mounted.container.textContent).not.toContain('No connector is set up');
+    await mounted.unmount();
+    const connector: ConnectorRecord = {
+      owner: OWNER,
+      platform: 'shopify',
+      url: 'https://shop.example',
+      importPolicies: false,
+      enabled: true,
+      lastRunAt: null,
+      nextRunAt: null,
+      lastStatus: null,
+    };
+    mounted = await mount(
+      <Overview view={storeView({ connector })} config={undefined} configFromServer={false} />,
+    );
+    expect(mounted.container.textContent).toContain('Connector');
+    expect(mounted.container.textContent).toContain('https://shop.example');
+  });
+
+  it('leaves the Connector section out of the sidebar until a connector is set up', async () => {
+    const sections = (container: HTMLElement) =>
+      [...container.querySelectorAll('nav[aria-label="Sections"] button')].map(
+        (button) => button.textContent,
+      );
+    const store = vi.fn(async () => storeView());
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi({ store }), fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => sections(container).includes('Overview'));
+    expect(sections(container)).not.toContain('Connector');
+    expect(sections(container)).toEqual([
+      'Overview',
+      'Settings',
+      'Products',
+      'Policies',
+      'Embed',
+      'Advanced',
+    ]);
+    const withConnector = storeView({
+      connector: {
+        owner: OWNER,
+        platform: 'shopify',
+        url: 'https://shop.example',
+        importPolicies: false,
+        enabled: false,
+        lastRunAt: null,
+        nextRunAt: null,
+        lastStatus: null,
+      },
+    });
+    store.mockImplementation(async () => withConnector);
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => sections(container).includes('Connector'));
+    await click(buttonNamed(container, 'Connector'));
+    await settle(() => (container.textContent ?? '').includes('Turn on syncing'));
+    // Gone again (removed elsewhere), the page falls back to the overview.
+    store.mockImplementation(async () => storeView());
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => !sections(container).includes('Connector'));
+    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+    // Back once more, it does not take the page over by itself.
+    store.mockImplementation(async () => withConnector);
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => sections(container).includes('Connector'));
+    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+  });
+
+  it('Refresh reads once on a double press, shows a check, then clears it', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let release: () => void = () => undefined;
+    const store = vi.fn(async () => storeView());
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi({ store }), fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]))}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    const before = store.mock.calls.length;
+    store.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(storeView());
+        }),
+    );
+    const refresh = buttonNamed(container, 'Refresh');
+    await click(refresh);
+    await click(refresh);
+    expect(said()).toBe('Refreshing...');
+    expect(refresh.getAttribute('aria-busy')).toBe('true');
+    expect(refresh.querySelector('svg.animate-spin')).not.toBeNull();
+    expect(refresh.querySelector('svg.text-error')).toBeNull();
+    expect(store.mock.calls.length).toBe(before + 1);
+    await act(async () => {
+      release();
+    });
+    await settle(() => said() === 'Up to date.');
+    expect(refresh.querySelector('svg.text-green')).not.toBeNull();
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(said()).toBe('');
+    expect(refresh.querySelector('svg')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('Refresh shows a cross when the store or its settings could not be read', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const store = vi.fn(async () => storeView());
+    const reader = fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]);
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi({ store }), reader)}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    store.mockImplementation(async () => {
+      throw new ApiError(500, 'internal');
+    });
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    expect(buttonNamed(container, 'Refresh').querySelector('svg.text-error')).not.toBeNull();
+    expect(container.textContent).toContain('could not be refreshed');
+    // The store reads again, but its settings do not: still a cross, never a check.
+    store.mockImplementation(async () => storeView());
+    vi.spyOn(reader, 'query').mockRejectedValue(new Error('relay down'));
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(said()).toBe('');
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    expect(container.textContent).not.toContain('could not be refreshed');
+    vi.useRealTimers();
+  });
+
+  it('Refresh shows a cross when a store not active has its saved settings refused', async () => {
+    const storedEvents = vi.fn(async () => ({
+      events: [configSignedBy(OWNER_KEY, 'Tea', NOW)],
+      truncated: false,
+    }));
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(
+          fakeApi({ store: async () => storeView({ status: 'pending' }), storedEvents }),
+          fakeReader([]),
+        )}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    storedEvents.mockRejectedValue(new ApiError(500, 'internal'));
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    expect(container.textContent).toContain('Your saved settings could not be read');
+  });
+
+  it('Retry in Settings reads the settings again through the session', async () => {
+    let failing = false;
+    const relay = fakeReader([configSignedBy(OWNER_KEY, 'Tea', NOW)]);
+    const reader = {
+      query: async (filter: Parameters<typeof relay.query>[0]) => {
+        if (failing) {
+          throw new Error('The relay did not answer the whole read');
+        }
+        return relay.query(filter);
+      },
+    };
+    mounted = await mount(
+      <Session
+        deps={sessionDeps(fakeApi(), reader)}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Overview'));
+    failing = true;
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => (container.textContent ?? '').includes('could not be read'));
+    failing = false;
+    await click(buttonNamed(container, 'Settings'));
+    // The page's heading follows the section chosen.
+    expect(container.querySelector('h1')?.textContent).toBe('Settings');
+    expect(container.querySelector('#store-name')).toBeNull();
+    const retries = [...container.querySelectorAll('button')].filter(
+      (button) => button.textContent === 'Retry',
+    );
+    // The Settings section's own Retry, after the notice's.
+    const settingsRetry = retries.at(-1);
+    if (settingsRetry === undefined) {
+      throw new Error('no Retry');
+    }
+    await click(settingsRetry);
+    await settle(() => container.querySelector('#store-name') !== null);
+    expect(container.textContent).not.toContain('could not be read');
+  });
+
+  it('Refresh shows a cross, not an endless spinner, when a read throws', async () => {
+    const { Shell } = await import('../src/components/Shell');
+    const reload = vi.fn(async (): Promise<boolean> => {
+      throw new Error('unexpected');
+    });
+    mounted = await mount(
+      <Shell
+        deps={sessionDeps(fakeApi(), fakeReader([]))}
+        view={storeView()}
+        config={undefined}
+        configFromServer={false}
+        storedTruncated={false}
+        configError=""
+        configUnreadableAt={undefined}
+        reloadWarning=""
+        reload={reload}
+        reloadConfig={async () => true}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const said = () => container.querySelector('main > [role="status"]')?.textContent ?? '';
+    await click(buttonNamed(container, 'Refresh'));
+    await settle(() => said() === 'Could not refresh.');
+    // The press is over: another one reads again.
+    await click(buttonNamed(container, 'Refresh'));
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists the ten busiest products, as the guide says', async () => {
+    const usage = {
+      ...storeView().usage,
+      clicks: Array.from({ length: 11 }, (_unused, index) => ({
+        address: `30402:${'a'.repeat(64)}:item-${index}`,
+        count: 11 - index,
+        carts: 0,
+      })),
+    };
+    mounted = await mount(
+      <Overview view={storeView({ usage })} config={undefined} configFromServer={false} />,
+    );
+    const rows = mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr');
+    expect(rows).toHaveLength(10);
+    expect(mounted.container.textContent).not.toContain('item-10');
+  });
+
+  it.each([
+    ['pending', 'Pending', 'badge-warn'],
+    ['active', 'Active', 'badge-green'],
+    ['suspended', 'Suspended', 'badge-error'],
+  ] as const)('shows the %s store with the %s badge', async (status, label, tone) => {
+    mounted = await mount(
+      <Overview view={storeView({ status })} config={undefined} configFromServer={false} />,
+    );
+    const badge = mounted.container.querySelector('.badge');
+    expect(badge?.textContent).toBe(label);
+    expect(badge?.classList.contains(tone)).toBe(true);
+  });
+
+  it('says no clicks yet with none', async () => {
+    mounted = await mount(
+      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+    );
+    expect(mounted.container.textContent).toContain('No clicks yet.');
+    expect(mounted.container.querySelector('table[aria-label="Product clicks"]')).toBeNull();
+  });
+});

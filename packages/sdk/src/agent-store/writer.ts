@@ -481,6 +481,9 @@ export async function writeSecrets(
     solana_delegate_secret_key: validated.solana_delegate_secret_key
       ? maybeEncrypt(validated.solana_delegate_secret_key, passphrase)
       : undefined,
+    askr_catalog_secret_key: validated.askr_catalog_secret_key
+      ? maybeEncrypt(validated.askr_catalog_secret_key, passphrase)
+      : undefined,
     llm_api_keys: encryptedLlmKeys,
   };
   const body = JSON.stringify(finalSecrets, null, 2) + '\n';

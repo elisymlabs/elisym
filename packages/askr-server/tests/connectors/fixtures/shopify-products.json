@@ -1,0 +1,459 @@
+{
+  "products": [
+    {
+      "id": 6635123015735,
+      "title": "Valhalla Java Dark Chocolate Bark",
+      "handle": "valhalla-java-dark-chocolate-bark",
+      "body_html": "<h4><span>Heavenly Flavor, Hellish Strength.</span></h4>\n<p><span>Divine dark chocolate is infused with finely ground coffee, then finished with crushed Valhalla Java beans and flaked sea salt. Take a bite and be powered to plunder the seven seas.</span></p>\n<p><meta charset=\"utf-8\"><meta charset=\"utf-8\"><em>*Allergen warning: made on shared equipment with peanuts and treenuts. <meta charset=\"utf-",
+      "published_at": "2026-11-11T12:53:59-05:00",
+      "vendor": "Ethereal Confections",
+      "product_type": "Chocolate",
+      "tags": ["Gifting", "Merch", "Valhalla Java", "Valhalla Java Odinforce Blend"],
+      "variants": [
+        {
+          "id": 39660132106295,
+          "title": "1 Pack",
+          "option1": "1 Pack",
+          "option2": null,
+          "option3": null,
+          "sku": "LFVJBK04",
+          "requires_shipping": true,
+          "available": true,
+          "price": "15.00",
+          "compare_at_price": null,
+          "product_id": 6635123015735,
+          "position": 1
+        }
+      ],
+      "images": [
+        {
+          "id": 43289396609079,
+          "position": 1,
+          "product_id": 6635123015735,
+          "src": "https://cdn.shopify.com/s/files/1/0271/7209/files/DeathWishCoffee_November2026_Product_Bark_ValhallaJava_WithChocolate_Web.jpg?v=1794419487",
+          "width": 1500,
+          "height": 1500
+        },
+        {
+          "id": 43289396641847,
+          "position": 2,
+          "product_id": 6635123015735,
+          "src": "https://cdn.shopify.com/s/files/1/0271/7209/files/DeathWishCoffee_October26_Product_ValhallaJava_Bark_Lifestyle_Web.jpg?v=1794419487",
+          "width": 1500,
+          "height": 1500
+        },
+        {
+          "id": 34599883702327,
+          "position": 3,
+          "product_id": 6635123015735,
+          "src": "https://cdn.shopify.com/s/files/1/0271/7209/files/Chocolate_Bark_Valhalla_Java_A8_Outlined.jpg?v=1763734375",
+          "width": 1000,
+          "height": 1000
+        }
+      ],
+      "options": [
+        {
+          "name": "Size",
+          "position": 1,
+          "values": ["1 Pack"]
+        }
+      ]
+    },
+    {
+      "id": 7420854370359,
+      "title": "Power Surge Coffee",
+      "handle": "power-surge-coffee",
+      "body_html": "<h4>When life surges, so do you.</h4>\n<p>Life doesn’t build. It hits. The meeting that moves. The plan that breaks. The day that stacks before you finish your first cup. And then there’s the part nobody talks about: The second shift. The part of the day where work ends and everything else begins. Where responsibilities don’t slow down, they pile on.</p>\n<p>That’s not a routine. That’s a surge. Pow",
+      "published_at": "2026-03-19T09:03:53-04:00",
+      "vendor": "Death Wish Coffee",
+      "product_type": "Coffee",
+      "tags": ["Bagged", "Power Surge", "Subscription"],
+      "variants": [
+        {
+          "id": 42123932336183,
+          "title": "Ground / 1 lb",
+          "option1": "Ground",
+          "option2": "1 lb",
+          "option3": null,
+          "sku": "LGPWSR16",
+          "requires_shipping": true,
+          "available": true,
+          "price": "19.99",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 1
+        },
+        {
+          "id": 42123932368951,
+          "title": "Ground / 2 lbs",
+          "option1": "Ground",
+          "option2": "2 lbs",
+          "option3": null,
+          "sku": "LGPWSR32K",
+          "requires_shipping": true,
+          "available": true,
+          "price": "39.98",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 2
+        },
+        {
+          "id": 42123932401719,
+          "title": "Ground / 3 lbs",
+          "option1": "Ground",
+          "option2": "3 lbs",
+          "option3": null,
+          "sku": "LGPWSR48K",
+          "requires_shipping": true,
+          "available": true,
+          "price": "59.97",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 3
+        },
+        {
+          "id": 42123932434487,
+          "title": "Ground / 5 lbs",
+          "option1": "Ground",
+          "option2": "5 lbs",
+          "option3": null,
+          "sku": "LGPWSR80K",
+          "requires_shipping": true,
+          "available": true,
+          "price": "84.99",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 4
+        },
+        {
+          "id": 42123932467255,
+          "title": "Whole Bean / 1 lb",
+          "option1": "Whole Bean",
+          "option2": "1 lb",
+          "option3": null,
+          "sku": "LWPWSR16",
+          "requires_shipping": true,
+          "available": true,
+          "price": "19.99",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 5
+        },
+        {
+          "id": 42123932500023,
+          "title": "Whole Bean / 2 lbs",
+          "option1": "Whole Bean",
+          "option2": "2 lbs",
+          "option3": null,
+          "sku": "LWPWSR32K",
+          "requires_shipping": true,
+          "available": true,
+          "price": "39.98",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 6
+        },
+        {
+          "id": 42123932532791,
+          "title": "Whole Bean / 3 lbs",
+          "option1": "Whole Bean",
+          "option2": "3 lbs",
+          "option3": null,
+          "sku": "LWPWSR48K",
+          "requires_shipping": true,
+          "available": true,
+          "price": "59.97",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 7
+        },
+        {
+          "id": 42123932565559,
+          "title": "Whole Bean / 5 lbs",
+          "option1": "Whole Bean",
+          "option2": "5 lbs",
+          "option3": null,
+          "sku": "LWPWSR80K",
+          "requires_shipping": true,
+          "available": true,
+          "price": "84.99",
+          "compare_at_price": null,
+          "product_id": 7420854370359,
+          "position": 8
+        }
+      ],
+      "images": [
+        {
+          "id": 34910302339127,
+          "position": 1,
+          "product_id": 7420854370359,
+          "src": "https://cdn.shopify.com/s/files/1/0271/7209/files/Power_Surge_16oz_Ground_Angle_DTC_A1_FTO.jpg?v=1773241929",
+          "width": 1500,
+          "height": 1500
+        },
+        {
+          "id": 34905203802167,
+          "position": 2,
+          "product_id": 7420854370359,
+          "src": "https://cdn.shopify.com/s/files/1/0271/7209/files/Power_Surge_16oz_Ground_Back_DTC_A1.jpg?v=1775222639",
+          "width": 1500,
+          "height": 1500
+        },
+        {
+          "id": 34925376897079,
+          "position": 3,
+          "product_id": 7420854370359,
+          "src": "https://cdn.shopify.com/s/files/1/0271/7209/files/Power_Surge_Roast_Scale_B1.jpg?v=1775222639",
+          "width": 2000,
+          "height": 2000
+        }
+      ],
+      "options": [
+        {
+          "name": "Type",
+          "position": 1,
+          "values": ["Ground", "Whole Bean"]
+        },
+        {
+          "name": "Size",
+          "position": 2,
+          "values": ["1 lb", "2 lbs", "3 lbs", "5 lbs"]
+        }
+      ]
+    },
+    {
+      "id": 7292464824400,
+      "title": "Women's Wool Cruiser - Port (Port Sole)",
+      "handle": "womens-wool-cruiser-port-port-sole",
+      "body_html": "<p>Innovation meets individuality in the Wool Cruiser, an instant icon designed for every day. With an upper made of 100% post consumer recycled wool and polyester, each shoe is a unique expression of its material-a statement-maker as bold as whoever’s wearing it.</p>",
+      "published_at": "2026-11-04T15:48:27-08:00",
+      "vendor": "Allbirds",
+      "product_type": "",
+      "tags": [
+        "11/3/26 DROP",
+        "allbirds::cfId => color-f67ac276729fd74d9edd3ad836f79a7e",
+        "allbirds::hue => red",
+        "allbirds::master => womens-wool-cruiser",
+        "DNAM BRANDS",
+        "Onsite @ WC 5.26.26"
+      ],
+      "variants": [
+        {
+          "id": 41990816137296,
+          "title": "5",
+          "option1": "5",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W050",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 1
+        },
+        {
+          "id": 41990816170064,
+          "title": "5.5",
+          "option1": "5.5",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W055",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 2
+        },
+        {
+          "id": 41990816202832,
+          "title": "6",
+          "option1": "6",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W060",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 3
+        },
+        {
+          "id": 41990816235600,
+          "title": "6.5",
+          "option1": "6.5",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W065",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 4
+        },
+        {
+          "id": 41990816268368,
+          "title": "7",
+          "option1": "7",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W070",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 5
+        },
+        {
+          "id": 41990816301136,
+          "title": "7.5",
+          "option1": "7.5",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W075",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 6
+        },
+        {
+          "id": 41990816333904,
+          "title": "8",
+          "option1": "8",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W080",
+          "requires_shipping": true,
+          "available": true,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 7
+        },
+        {
+          "id": 41990816366672,
+          "title": "8.5",
+          "option1": "8.5",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W085",
+          "requires_shipping": true,
+          "available": true,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 8
+        },
+        {
+          "id": 41990816399440,
+          "title": "9",
+          "option1": "9",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W090",
+          "requires_shipping": true,
+          "available": true,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 9
+        },
+        {
+          "id": 41990816432208,
+          "title": "9.5",
+          "option1": "9.5",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W095",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 10
+        },
+        {
+          "id": 41990816464976,
+          "title": "10",
+          "option1": "10",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W100",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 11
+        },
+        {
+          "id": 41990816497744,
+          "title": "10.5",
+          "option1": "10.5",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W105",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 12
+        },
+        {
+          "id": 41990816530512,
+          "title": "11",
+          "option1": "11",
+          "option2": null,
+          "option3": null,
+          "sku": "A12858W110",
+          "requires_shipping": true,
+          "available": false,
+          "price": "120.00",
+          "compare_at_price": null,
+          "product_id": 7292464824400,
+          "position": 13
+        }
+      ],
+      "images": [
+        {
+          "id": 38092255035472,
+          "position": 1,
+          "product_id": 7292464824400,
+          "src": "https://cdn.shopify.com/s/files/1/1104/4168/files/A12858W090-PORT_SIDE_TRANSPARENT.png?v=1793836076",
+          "width": 2000,
+          "height": 2000
+        },
+        {
+          "id": 38092255002704,
+          "position": 2,
+          "product_id": 7292464824400,
+          "src": "https://cdn.shopify.com/s/files/1/1104/4168/files/A12858W090-PORT_HEEL_TRANSPARENT.png?v=1793836075",
+          "width": 2000,
+          "height": 2000
+        },
+        {
+          "id": 38092255068240,
+          "position": 3,
+          "product_id": 7292464824400,
+          "src": "https://cdn.shopify.com/s/files/1/1104/4168/files/A12858W090-PORT_TOP_TRANSPARENT.png?v=1793836076",
+          "width": 2000,
+          "height": 2000
+        }
+      ],
+      "options": [
+        {
+          "name": "Size",
+          "position": 1,
+          "values": ["5", "5.5", "6", "6.5", "7", "7.5", "8", "8.5", "9", "9.5", "10", "10.5", "11"]
+        }
+      ]
+    }
+  ]
+}

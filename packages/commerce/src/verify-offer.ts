@@ -6,7 +6,6 @@ import {
   KIND_PRODUCT,
   KIND_STORE_AUTH,
   KIND_STORE_PROFILE,
-  MAX_FUTURE_SKEW_SECS,
   PAYOUT_COOLDOWN_SECS,
 } from './constants';
 import {
@@ -23,10 +22,11 @@ import {
   parseProduct,
   productAddress,
 } from './events/product';
-import { readStoreAuth, storeAuthAddress } from './events/store-auth';
+import { resolveStoreAuth, storeAuthAddress } from './events/store-auth';
 import { type StoreProfile, parseStoreProfile } from './events/store-profile';
-import { expirationState, nowSecs, tagValue, tagValues } from './tags';
-import { isEventShaped, isGenuineEvent } from './verify';
+import { NO_FUTURE_LIMIT, isLapsed, newestDeletion, newestSigned } from './newest';
+import { nowSecs } from './tags';
+import { isEventShaped } from './verify';
 
 /**
  * A: the merchant's domain names both the store and the owner.
@@ -144,67 +144,6 @@ export interface EvaluateOfferOptions {
 
 function refuse(refusal: OfferRefusal, message: string): OfferVerification {
   return { ok: false, refusal, message };
-}
-
-/** The newest event of `kind` by `author` (and `d`, when given) that is genuinely signed. */
-function newestSigned(
-  events: readonly NostrEvent[],
-  kind: number,
-  author: string,
-  now: number,
-  d?: string,
-): NostrEvent | undefined {
-  let newest: NostrEvent | undefined;
-  for (const event of events) {
-    if (
-      !isEventShaped(event) ||
-      event.kind !== kind ||
-      event.pubkey !== author ||
-      event.created_at > now + MAX_FUTURE_SKEW_SECS ||
-      (d !== undefined && tagValue(event.tags, 'd') !== d)
-    ) {
-      continue;
-    }
-    // Ties on created_at go to the lowest id (NIP-01), so every reader picks the same one.
-    if (
-      newest &&
-      (event.created_at < newest.created_at ||
-        (event.created_at === newest.created_at && event.id >= newest.id))
-    ) {
-      continue;
-    }
-    if (isGenuineEvent(event)) {
-      newest = event;
-    }
-  }
-  return newest;
-}
-
-/**
- * For evidence that can only refuse (revocations, deletions): no future-date
- * window, so a signer's fast clock cannot delay it.
- */
-const NO_FUTURE_LIMIT = Number.POSITIVE_INFINITY;
-
-/** The newest genuine NIP-09 deletion by `author` that names the addressable `address`. */
-function newestDeletion(
-  events: readonly NostrEvent[],
-  address: string,
-  author: string,
-  now: number,
-): NostrEvent | undefined {
-  return newestSigned(
-    events.filter((event) => isEventShaped(event) && tagValues(event.tags, 'a').includes(address)),
-    KIND_DELETION,
-    author,
-    now,
-  );
-}
-
-/** NIP-40: past its `expiration`, or with one that cannot be read. */
-function isLapsed(event: NostrEvent, now: number): boolean {
-  const state = expirationState(event.tags, now);
-  return state === 'expired' || state === 'malformed';
 }
 
 function originMatchesDomain(pageOrigin: string, domain: string): boolean {
@@ -375,44 +314,22 @@ export function evaluateOffer(
 
   // The owner's newest word on this store wins. Level A does not NEED an AUTH -
   // the domain already links the two - but a revocation still stands.
-  const authEvent = newestSigned(bundle.events, KIND_STORE_AUTH, ownerPubkey, now, storePubkey);
-  const auth = authEvent ? readStoreAuth(authEvent, storePubkey, now) : undefined;
-  // NIP-09: a deletion that names the AUTH address removes every version up to its own date.
-  const deletion = newestDeletion(
-    bundle.events,
-    storeAuthAddress(ownerPubkey, storePubkey),
-    ownerPubkey,
-    NO_FUTURE_LIMIT,
-  );
-  // A revocation dated past the skew window (a fast clock) still revokes: the
-  // window stops an event from pinning itself as newest, and this can only refuse.
-  const revocation = newestSigned(
-    bundle.events.filter(
-      (event) =>
-        isEventShaped(event) && readStoreAuth(event, storePubkey, now).status === 'revoked',
-    ),
-    KIND_STORE_AUTH,
-    ownerPubkey,
-    NO_FUTURE_LIMIT,
-    storePubkey,
-  );
-  const revokedAfter = (event: NostrEvent | undefined): boolean =>
-    event !== undefined && (!authEvent || event.created_at >= authEvent.created_at);
-  if (auth?.status === 'revoked' || revokedAfter(deletion) || revokedAfter(revocation)) {
+  const auth = resolveStoreAuth(bundle.events, ownerPubkey, storePubkey, now);
+  if (auth.status === 'revoked') {
     return refuse('store_auth_revoked', 'The owner revoked this store key');
   }
-  if (auth?.status === 'expired') {
+  if (auth.status === 'expired') {
     return refuse('store_auth_expired', "The owner's authorization of this store key expired");
   }
   // The owner's newest word on this store cannot be read: fail closed at every
   // level, as it may be a revocation or an expiry written some other way.
-  if (auth?.status === 'malformed') {
+  if (auth.status === 'malformed') {
     return refuse(
       'store_auth_missing',
       "The owner's newest authorization of this store key is malformed",
     );
   }
-  if (!anchor.ownerFromDomain && auth?.status !== 'active') {
+  if (!anchor.ownerFromDomain && auth.status !== 'active') {
     return refuse('store_auth_missing', 'The owner has not authorized this store key');
   }
 
