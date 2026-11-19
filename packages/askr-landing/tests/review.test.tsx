@@ -345,9 +345,24 @@ describe('the demo tips on a touch screen', () => {
       area?.dispatchEvent(touch('pointerout', { relatedTarget: document.body }));
     });
     expect(page.querySelector('.demo-tip')?.textContent).toBe(DEMO_TIP);
+    const wait = async (ms: number) => {
+      await act(async () => {
+        vi.advanceTimersByTime(ms);
+      });
+    };
+    // Two seconds, not less.
+    await wait(1900);
+    expect(page.querySelector('.demo-tip')).not.toBeNull();
+    // A second tap within them starts its own two seconds.
     await act(async () => {
-      vi.advanceTimersByTime(2100);
+      send?.dispatchEvent(touch('pointerover', {}));
     });
+    await act(async () => {
+      area?.dispatchEvent(touch('pointerout', { relatedTarget: document.body }));
+    });
+    await wait(1900);
+    expect(page.querySelector('.demo-tip')).not.toBeNull();
+    await wait(200);
     expect(page.querySelector('.demo-tip')).toBeNull();
   });
 
