@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { PRODUCTS } from '../media';
+import { DemoTips } from './DemoTips';
 import { Eyebrow } from './Eyebrow';
 import { Reveal } from './Reveal';
 import { WidgetCard } from './WidgetCard';
@@ -141,9 +142,11 @@ export function Features() {
               </span>
             </div>
             <div className="bg-surface-2 rounded-24 flex items-center justify-center p-16 sm:p-40">
-              <div className="wgt wgt-panel w-full max-w-380">
-                <div className="wgt-log">{feature.scene}</div>
-              </div>
+              <DemoTips className="w-full max-w-380">
+                <div className="wgt wgt-panel w-full">
+                  <div className="wgt-log">{feature.scene}</div>
+                </div>
+              </DemoTips>
             </div>
           </li>
         ))}

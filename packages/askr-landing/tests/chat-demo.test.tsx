@@ -44,7 +44,7 @@ function stubMotion(reduce: boolean): void {
   );
 }
 
-async function render(): Promise<HTMLElement> {
+async function render(onFinished?: () => void): Promise<HTMLElement> {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div');
   document.body.append(container);
@@ -53,7 +53,7 @@ async function render(): Promise<HTMLElement> {
   if (niche === undefined) {
     throw new Error('no niche');
   }
-  await act(async () => root?.render(<ChatDemo niche={niche} />));
+  await act(async () => root?.render(<ChatDemo niche={niche} onFinished={onFinished} />));
   return container;
 }
 
@@ -141,14 +141,29 @@ describe('the hero chat', () => {
     expect(topWrites).toEqual([0]);
   });
 
-  it('jumps back to the top when the conversation starts over', async () => {
+  it('plays once and stays on the finished conversation, never starting over', async () => {
     stubMotion(false);
-    await render();
+    const page = await render();
     for (const ms of STEP_MS) {
       await advance(ms);
     }
-    expect(topWrites).toEqual([0, 0]);
+    await advance(60_000);
+    expect(topWrites).toEqual([0]);
     expect(scrollCalls).toHaveLength(STEP_MS.length - 1);
+    expect(page.querySelector('.wgt-cards')).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('hands on once it has played through, when asked to', async () => {
+    stubMotion(false);
+    const finished = vi.fn();
+    await render(finished);
+    for (const ms of STEP_MS.slice(0, -1)) {
+      await advance(ms);
+    }
+    expect(finished).not.toHaveBeenCalled();
+    await advance(STEP_MS.at(-1) ?? 0);
+    expect(finished).toHaveBeenCalledTimes(1);
   });
 
   it('never glides for a visitor who asked for less motion', async () => {

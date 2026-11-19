@@ -14,7 +14,8 @@ export function Hero() {
   // Turning on its own until the visitor picks a store or pauses it.
   const [chosen, setChosen] = useState(false);
   const [paused, setPaused] = useState(false);
-  // While the pointer is over the store, the chat keeps playing but the store does not change.
+  // Each store's conversation plays once. While the pointer is over the store it stays on that
+  // store; when the pointer leaves, the next store comes.
   const [reading, setReading] = useState(false);
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const niche = NICHES[current] ?? NICHES[0];

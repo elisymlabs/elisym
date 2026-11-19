@@ -440,6 +440,10 @@ body {
 }
 
 .wgt-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   padding: 8px 14px;
   border-radius: 12px;
   background: var(--w-text);
@@ -597,4 +601,15 @@ body {
   .flow-line {
     animation: none;
   }
+}
+
+/* The demo tip sits centred above the control it points at, with a short rise in. */
+.demo-tip {
+  transform: translate(-50%, calc(-100% - 8px));
+  animation: askr-fade 0.15s ease both;
+}
+
+/* A drawn control looks pressable but does nothing: no pointer hand. */
+[data-demo] {
+  cursor: default;
 }

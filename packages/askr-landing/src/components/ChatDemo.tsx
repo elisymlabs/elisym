@@ -3,6 +3,7 @@ import { PRODUCT_NAME } from '../constants';
 import type { Niche } from '../niches';
 import { prefersReducedMotion, useInView } from '../useInView';
 import { WIDGET_TEXT } from '../widget-text';
+import { DemoTips } from './DemoTips';
 import { LiveMark } from './LiveMark';
 import { WidgetCard } from './WidgetCard';
 import { WidgetPanel } from './WidgetPanel';
@@ -27,7 +28,10 @@ const FINAL = STEPS.length - 1;
 
 interface Props {
   niche: Niche;
-  /** Called once the conversation has played through; without it, it plays again. */
+  /**
+   * Called once the conversation has played through (and again whenever it is set while the
+   * conversation is finished). Without it the finished conversation stays: it plays only once.
+   */
   onFinished?: () => void;
   /** Hold the finished conversation still: the visitor paused the demo. */
   hold?: boolean;
@@ -41,23 +45,25 @@ export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Pr
   const [step, setStep] = useState(0);
   const [still] = useState(prefersReducedMotion);
   const finished = useRef(onFinished);
+  const canFinish = onFinished !== undefined;
   useEffect(() => {
     finished.current = onFinished;
   }, [onFinished]);
 
   useEffect(() => {
-    if (!inView || still || hold) {
+    // Played once: a finished conversation waits for someone to move on, and never replays.
+    if (!inView || still || hold || (step === FINAL && !canFinish)) {
       return undefined;
     }
     const timer = setTimeout(() => {
-      if (step === FINAL && finished.current !== undefined) {
-        finished.current();
+      if (step === FINAL) {
+        finished.current?.();
         return;
       }
-      setStep((current) => (current === FINAL ? 0 : current + 1));
+      setStep((current) => current + 1);
     }, STEPS[step]?.ms ?? 1000);
     return () => clearTimeout(timer);
-  }, [inView, still, hold, step]);
+  }, [inView, still, hold, step, canFinish]);
 
   const shown = still || hold ? FINAL : step;
   // When the conversation grows it moves to the newest message: the widget jumps there, the
@@ -80,33 +86,39 @@ export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Pr
       aria-label={`The ${PRODUCT_NAME} chat on ${niche.store}'s site. A visitor asks: ${niche.question} The assistant answers: ${niche.answer} It shows ${niche.cards.map((card) => `${card.product.title} at ${card.product.price}`).join(' and ')}.`}
       className={className}
     >
-      <WidgetPanel
-        name={niche.store}
-        logRef={logRef}
-        status={
-          shown === THINKING ? (
-            <>
-              <LiveMark className="-mt-2 size-24 flex-none" />
-              <span>{WIDGET_TEXT.thinking}</span>
-            </>
-          ) : undefined
-        }
-        chips={shown >= ANSWERED ? niche.chips : []}
-        className="wgt-panel-in h-[min(600px,calc(100vh-32px))] w-full"
-      >
-        <div className="contents">
-          <p className="wgt-theirs wgt-rise">{WIDGET_TEXT.greeting}</p>
-          {shown >= ASKED && <p className="wgt-mine wgt-rise">{niche.question}</p>}
-          {shown >= ANSWERED && <p className="wgt-theirs wgt-rise">{niche.answer}</p>}
-          {shown === FINAL && (
-            <div className="wgt-cards">
-              {niche.cards.map((card) => (
-                <WidgetCard key={card.product.title} product={card.product} reason={card.reason} />
-              ))}
-            </div>
-          )}
-        </div>
-      </WidgetPanel>
+      <DemoTips>
+        <WidgetPanel
+          name={niche.store}
+          logRef={logRef}
+          status={
+            shown === THINKING ? (
+              <>
+                <LiveMark className="-mt-2 size-24 flex-none" />
+                <span>{WIDGET_TEXT.thinking}</span>
+              </>
+            ) : undefined
+          }
+          chips={shown >= ANSWERED ? niche.chips : []}
+          className="wgt-panel-in h-[min(600px,calc(100vh-32px))] w-full"
+        >
+          <div className="contents">
+            <p className="wgt-theirs wgt-rise">{WIDGET_TEXT.greeting}</p>
+            {shown >= ASKED && <p className="wgt-mine wgt-rise">{niche.question}</p>}
+            {shown >= ANSWERED && <p className="wgt-theirs wgt-rise">{niche.answer}</p>}
+            {shown === FINAL && (
+              <div className="wgt-cards">
+                {niche.cards.map((card) => (
+                  <WidgetCard
+                    key={card.product.title}
+                    product={card.product}
+                    reason={card.reason}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </WidgetPanel>
+      </DemoTips>
     </figure>
   );
 }

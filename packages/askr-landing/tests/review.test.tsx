@@ -9,6 +9,7 @@ import { CatalogFlow } from '../src/components/CatalogFlow';
 import { ChatDemo } from '../src/components/ChatDemo';
 import { Closing } from '../src/components/Closing';
 import { CopyButton } from '../src/components/CopyButton';
+import { DEMO_TIP } from '../src/components/DemoTips';
 import { Hero } from '../src/components/Hero';
 import { LiveMark } from '../src/components/LiveMark';
 import { ScrollWords } from '../src/components/ScrollWords';
@@ -164,7 +165,7 @@ describe('the hero', () => {
     expect(selected()).toBe(0);
   });
 
-  it('keeps the store while the pointer is over it, the chat still playing, then moves on', async () => {
+  it('plays to the end and stays on the store while the pointer is over it, then moves on', async () => {
     stubMotion(false);
     vi.useFakeTimers();
     const page = await render(<Hero />);
@@ -176,28 +177,31 @@ describe('the hero', () => {
       });
     };
     const store = page.querySelector('#niche-demo')?.parentElement;
+    await second();
     await act(async () => {
       store?.dispatchEvent(
         new MouseEvent('pointerover', { bubbles: true, relatedTarget: document.body }),
       );
     });
-    let answered = 0;
+    // Still playing: the question, then the answer with its cards.
+    let answeredAt = -1;
     for (let tick = 0; tick < 30; tick += 1) {
       await second();
-      if (page.querySelector('#niche-demo .wgt-cards') !== null) {
-        answered += 1;
+      if (answeredAt < 0 && page.querySelector('#niche-demo .wgt-cards') !== null) {
+        answeredAt = tick;
       }
     }
-    // Thirty seconds: the conversation played round more than once, all in the first store.
+    expect(answeredAt).toBeGreaterThanOrEqual(0);
+    // Then it stays: the cards are still there, nothing replays, the store is the same.
+    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
     expect(selected()).toBe(0);
-    expect(answered).toBeGreaterThan(0);
-    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    expect(vi.getTimerCount()).toBe(0);
     await act(async () => {
       store?.dispatchEvent(
         new MouseEvent('pointerout', { bubbles: true, relatedTarget: document.body }),
       );
     });
-    for (let tick = 0; tick < 12; tick += 1) {
+    for (let tick = 0; tick < 8; tick += 1) {
       await second();
     }
     expect(selected()).toBe(1);
@@ -230,6 +234,34 @@ describe('the chat drawing', () => {
     expect(rule('.wgt-cards')).toContain('overflow-x: auto');
     expect(rule('.wgt-cards')).toContain('scroll-snap-type: x mandatory');
     expect(rule('.wgt-cards > .wgt-card')).toContain('scroll-snap-align: start');
+  });
+});
+
+describe('the demo tips', () => {
+  it('say it is a demo over every control of the chat drawing, and go when the pointer leaves', async () => {
+    stubMotion(true);
+    const page = await render(<Hero />);
+    const controls = [...page.querySelectorAll('#niche-demo [data-demo]')];
+    // Close, the chips, the input, Send, and Add to cart on each card.
+    expect(controls.length).toBeGreaterThanOrEqual(6);
+    for (const control of controls) {
+      await act(async () => {
+        control.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+      });
+      expect(page.querySelector('.demo-tip')?.textContent).toBe(DEMO_TIP);
+    }
+    const area = controls[0]?.closest('figure')?.firstElementChild;
+    await act(async () => {
+      area?.dispatchEvent(
+        new MouseEvent('pointerout', { bubbles: true, relatedTarget: document.body }),
+      );
+    });
+    expect(page.querySelector('.demo-tip')).toBeNull();
+    const reading = page.querySelector('#niche-demo .wgt-theirs');
+    await act(async () => {
+      reading?.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
+    });
+    expect(page.querySelector('.demo-tip')).toBeNull();
   });
 });
 

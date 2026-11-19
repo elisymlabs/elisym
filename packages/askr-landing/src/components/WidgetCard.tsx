@@ -21,7 +21,7 @@ export function WidgetCard({ product, reason, added, className = '' }: Props) {
         <span className="wgt-card-title">{product.title}</span>
         {reason !== undefined && <span className="wgt-reason">{reason}</span>}
         <span className="wgt-price">{product.price}</span>
-        <span className="wgt-cart">
+        <span data-demo className="wgt-cart">
           <WidgetIcon name="cart" className="size-17" />
           {added ? `${WIDGET_TEXT.added} ✓` : WIDGET_TEXT.addToCart}
         </span>
