@@ -16,83 +16,128 @@ export const DOCS = {
   catalogFromAnAgent: 'https://docs.elisym.network/askr/catalog-from-an-agent',
 };
 
+/** What a plan costs, as shown: every amount written out, no arithmetic on the page. */
+export type PlanPrice =
+  | {
+      kind: 'flat';
+      /** Billed monthly, per month. */
+      monthly: string;
+      /** Billed yearly: the price per month, and the total billed once a year. */
+      yearlyPerMonth: string;
+      yearlyTotal: string;
+    }
+  | {
+      /** Priced by contract, from this much a month; the billing switch does not apply. */
+      kind: 'from';
+      monthly: string;
+    };
+
 export interface Plan {
   name: string;
-  /** The monthly price as shown, or `undefined` for a plan priced per store. */
-  price: string | undefined;
+  price: PlanPrice;
   blurb: string;
   features: readonly string[];
-  /** Free starts in the admin; every other plan is set up with us. */
-  start: 'admin' | 'contact';
+  /** Free starts in the admin, Enterprise is a conversation, the rest are set up with us. */
+  start: 'admin' | 'choose' | 'contact';
   featured: boolean;
 }
 
+/** What paying yearly takes off the monthly price, in basis points (2000 = 20%). */
+export const YEARLY_DISCOUNT_BPS = 2000;
+
+/** How a conversation is counted, as the pricing's small print says it. */
+export const CONVERSATION_DEFINITION =
+  "A conversation is one visitor's chat, up to 24 hours from their first message, that got at least one answer.";
+
+const POWERED_BY = `Shows "Powered by ${PRODUCT_NAME}"`;
+const NO_BRANDING = `"Powered by ${PRODUCT_NAME}" can be removed`;
+const SITES = 'Up to 20 sites';
+
 /**
- * TEST VALUES: prices and limits are placeholders until the tiers are decided.
- * Replace them here; nothing else on the page restates them.
+ * The plans, in one table to edit: change them here, nothing else on the page restates them.
+ * Conversations are approximate: each plan has a monthly spend cap, and heavy use pauses the
+ * chat rather than cost more. Up to 20 sites is the protocol's `LIMITS.MAX_ORIGINS`.
  */
 export const PLANS: readonly Plan[] = [
   {
     name: 'Free',
-    price: '$0',
-    blurb: 'Try it on your own site.',
+    price: { kind: 'flat', monthly: '$0', yearlyPerMonth: '$0', yearlyTotal: '$0' },
+    blurb: 'Try it on your own store.',
     features: [
-      '100 conversations a month',
+      'About 50 conversations a month',
       'Up to 100 products',
-      'CSV import and the admin editor',
-      `The "Powered by ${PRODUCT_NAME}" line`,
+      'Syncs with your shop once a day',
+      POWERED_BY,
+      SITES,
     ],
     start: 'admin',
     featured: false,
   },
   {
     name: 'Starter',
-    price: '$29',
-    blurb: 'For a small store with steady traffic.',
+    price: { kind: 'flat', monthly: '$29', yearlyPerMonth: '$23', yearlyTotal: '$276' },
+    blurb: 'For a small store getting going.',
     features: [
-      '1,000 conversations a month',
+      'About 500 conversations a month',
       'Up to 1,000 products',
-      'Every product source',
-      'Connectors sync daily',
+      'Syncs every 6 hours',
+      POWERED_BY,
+      SITES,
     ],
-    start: 'contact',
+    start: 'choose',
     featured: false,
   },
   {
     name: 'Growth',
-    price: '$99',
+    price: { kind: 'flat', monthly: '$99', yearlyPerMonth: '$79', yearlyTotal: '$948' },
     blurb: 'For a store that sells every day.',
     features: [
-      '5,000 conversations a month',
-      'Up to 10,000 products',
-      'Connectors sync hourly',
-      `Remove the "Powered by ${PRODUCT_NAME}" line`,
+      'About 2,000 conversations a month',
+      'Up to 5,000 products',
+      'Syncs every hour',
+      POWERED_BY,
+      SITES,
     ],
-    start: 'contact',
+    start: 'choose',
     featured: true,
   },
   {
-    name: 'Scale',
-    price: '$499',
-    blurb: 'For a large catalog and heavy traffic.',
+    name: 'Pro',
+    price: { kind: 'flat', monthly: '$199', yearlyPerMonth: '$159', yearlyTotal: '$1,908' },
+    blurb: 'For a busy store with a big catalog.',
     features: [
-      '30,000 conversations a month',
-      'Up to 100,000 products',
-      'Connectors sync every 15 minutes',
-      'Priority support',
+      'About 6,000 conversations a month',
+      'Up to 10,000 products',
+      'Syncs every 30 minutes',
+      NO_BRANDING,
+      SITES,
     ],
-    start: 'contact',
+    start: 'choose',
+    featured: false,
+  },
+  {
+    name: 'Scale',
+    price: { kind: 'flat', monthly: '$499', yearlyPerMonth: '$399', yearlyTotal: '$4,788' },
+    blurb: 'For heavy traffic and large catalogs.',
+    features: [
+      'About 15,000 conversations a month',
+      'Up to 20,000 products',
+      'Syncs every 15 minutes',
+      NO_BRANDING,
+      SITES,
+    ],
+    start: 'choose',
     featured: false,
   },
   {
     name: 'Enterprise',
-    price: undefined,
-    blurb: 'For big stores and store groups.',
+    price: { kind: 'from', monthly: '$1,500' },
+    blurb: 'For large stores and store groups.',
     features: [
-      'Limits set for your traffic',
-      'Several stores under one plan',
-      'A direct line to the team',
-      'Help with your catalog setup',
+      'From 25,000 conversations a month',
+      'Catalog size and sync by agreement',
+      'An SLA',
+      NO_BRANDING,
     ],
     start: 'contact',
     featured: false,

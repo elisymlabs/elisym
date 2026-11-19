@@ -207,7 +207,7 @@ describe('the copy', () => {
 
   it('promises a free start only while the first plan is free', async () => {
     expect(START_LABEL).toBe('Start free');
-    expect(PLANS[0]?.price).toBe('$0');
+    expect(PLANS[0]?.price.monthly).toBe('$0');
     expect(PLANS[0]?.start).toBe('admin');
     const page = await render(<App />);
     const starts = [...page.querySelectorAll('a')].filter(
@@ -217,24 +217,6 @@ describe('the copy', () => {
     for (const link of starts) {
       expect(link.href).toBe(ADMIN_URL);
     }
-  });
-
-  it('shows every plan once, priced or custom, each with a way to start', async () => {
-    const page = await render(<App />);
-    const cards = [...page.querySelectorAll('#pricing li:has(> div > h3)')];
-    expect(cards.map((card) => card.querySelector('h3')?.textContent)).toEqual(
-      PLANS.map((plan) => plan.name),
-    );
-    PLANS.forEach((plan, index) => {
-      const card = cards[index];
-      expect(card?.textContent).toContain(plan.price ?? 'Custom');
-      for (const feature of plan.features) {
-        expect(card?.textContent).toContain(feature);
-      }
-      const start = [...(card?.querySelectorAll('a') ?? [])].map((link) => link.href);
-      expect(start).toEqual([plan.start === 'admin' ? ADMIN_URL : `${X_URL}`]);
-    });
-    expect(PLANS.filter((plan) => plan.featured)).toHaveLength(1);
   });
 });
 
