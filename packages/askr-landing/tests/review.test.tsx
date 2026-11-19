@@ -407,28 +407,15 @@ describe('motion', () => {
     ).toHaveLength(0);
   });
 
-  it('pauses each marquee with its own button, and reads each item once', async () => {
+  it('reads each marquee item once, and gives the marquees no Pause button', async () => {
     stubMotion(false);
     const page = await render(<App />);
-    for (const [id, what] of [
-      ['works-with', 'the store list'],
-      ['languages', 'the questions'],
-    ] as const) {
+    for (const id of ['works-with', 'languages']) {
       const section = page.querySelector(`#${id}`);
-      const button = section?.querySelector<HTMLButtonElement>(
-        `button[aria-label="Pause ${what}"]`,
-      );
-      const marquees = [...(section?.querySelectorAll('.marquee') ?? [])];
-      expect(marquees.length, id).toBeGreaterThan(0);
-      expect(marquees.every((marquee) => marquee.getAttribute('data-paused') === 'false')).toBe(
-        true,
-      );
-      await act(async () => button?.click());
-      expect(marquees.every((marquee) => marquee.getAttribute('data-paused') === 'true')).toBe(
-        true,
-      );
-      expect(button?.getAttribute('aria-label')).toBe(`Play ${what}`);
-      for (const track of section?.querySelectorAll('.marquee-track') ?? []) {
+      expect(section?.querySelectorAll('button'), id).toHaveLength(0);
+      const tracks = [...(section?.querySelectorAll('.marquee-track') ?? [])];
+      expect(tracks.length, id).toBeGreaterThan(0);
+      for (const track of tracks) {
         const items = [...track.children];
         const read = items.filter((item) => item.getAttribute('aria-hidden') !== 'true');
         expect(read.length * 2, id).toBe(items.length);

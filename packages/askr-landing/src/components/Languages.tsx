@@ -1,7 +1,5 @@
-import { useState } from 'react';
 import { PRODUCT_NAME } from '../constants';
 import { Eyebrow } from './Eyebrow';
-import { MotionToggle } from './MotionToggle';
 import { Reveal } from './Reveal';
 
 /** What visitors type, in their language and their way of writing an amount. */
@@ -32,14 +30,13 @@ interface Ask {
 interface RowProps {
   asks: Ask[];
   reverse: boolean;
-  paused: boolean;
 }
 
-function Row({ asks, reverse, paused }: RowProps) {
+function Row({ asks, reverse }: RowProps) {
   const bubble =
     'rounded-[22px] rounded-br-6 border border-line bg-surface px-20 py-12 text-16 sm:text-18 shrink-0';
   return (
-    <div className="marquee overflow-hidden" data-paused={paused}>
+    <div className="marquee overflow-hidden">
       <ul className={`marquee-track flex w-max gap-12 pr-12 ${reverse ? 'marquee-reverse' : ''}`}>
         {asks.map((ask) => (
           <li key={ask.lang} lang={ask.lang} className={bubble}>
@@ -57,7 +54,6 @@ function Row({ asks, reverse, paused }: RowProps) {
 }
 
 export function Languages() {
-  const [paused, setPaused] = useState(false);
   return (
     <section id="languages" className="py-96 sm:py-160">
       <Reveal className="mx-auto flex max-w-880 flex-col items-center gap-20 px-16 text-center">
@@ -71,15 +67,8 @@ export function Languages() {
       </Reveal>
       <div className="mt-56 flex flex-col gap-12">
         {ROWS.map((asks, index) => (
-          <Row key={asks[0]?.lang} asks={asks} reverse={index % 2 === 1} paused={paused} />
+          <Row key={asks[0]?.lang} asks={asks} reverse={index % 2 === 1} />
         ))}
-      </div>
-      <div className="mt-16 flex justify-center">
-        <MotionToggle
-          paused={paused}
-          onToggle={() => setPaused((value) => !value)}
-          what="the questions"
-        />
       </div>
     </section>
   );
