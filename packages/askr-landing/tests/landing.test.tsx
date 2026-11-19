@@ -235,7 +235,7 @@ describe('the catalog drawing', () => {
     const figure = page.querySelector('#sources figure');
     expect(figure?.getAttribute('aria-label')).toContain('Askr');
     const text = figure?.textContent ?? '';
-    for (const source of ['Shopify', 'WooCommerce', 'Google feed', 'CSV']) {
+    for (const source of ['Backend', 'CI/CD', 'WooCommerce', 'Google feed', 'CSV']) {
       expect(text).toContain(source);
     }
     const rows = [...(figure?.querySelectorAll('li:has(img)') ?? [])];

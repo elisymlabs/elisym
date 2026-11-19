@@ -1,7 +1,10 @@
 import { PRODUCTS } from '../media';
 import { AskrMark } from './AskrMark';
 
-const SOURCES = ['Shopify', 'WooCommerce', 'Google feed', 'CSV'];
+const SOURCES = ['Backend', 'CI/CD', 'WooCommerce', 'Google feed', 'CSV'];
+
+/** Where each source's line leaves the row, in the 480-wide fan under it (the chips' centers). */
+const SOURCE_X = [15, 115, 231, 372, 465];
 
 /** Made-up rows for the drawing, written the way the admin's product list writes them. */
 const ROWS = [
@@ -19,7 +22,7 @@ const ROWS = [
 export function CatalogFlow() {
   return (
     <figure
-      aria-label="Products from Shopify, WooCommerce, a Google product feed or a CSV file flow into Askr and show up in its product list."
+      aria-label="Products from your backend or CI/CD, WooCommerce, a Google product feed or a CSV file flow into Askr and show up in its product list."
       className="rounded-32 sm:rounded-40 bg-surface-2 relative flex h-full min-h-520 flex-col items-center justify-center gap-0 overflow-hidden px-16 py-40 sm:px-40"
     >
       <ul aria-hidden="true" className="flex flex-wrap justify-center gap-8">
@@ -35,19 +38,27 @@ export function CatalogFlow() {
       </ul>
       <svg
         aria-hidden="true"
-        viewBox="0 0 240 72"
-        className="h-72 w-240 text-[var(--line-2)]"
+        viewBox="0 0 480 72"
+        className="hidden h-72 w-480 text-[var(--line-2)] sm:block"
         fill="none"
         stroke="currentColor"
       >
-        {[30, 90, 150, 210].map((x) => (
+        {SOURCE_X.map((x) => (
           <path
             key={x}
-            d={`M${x} 0 C${x} 40 120 30 120 72`}
+            d={`M${x} 0 C${x} 40 240 30 240 72`}
             strokeWidth="1.5"
             className="flow-line"
           />
         ))}
+      </svg>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 2 40"
+        className="h-40 w-2 text-[var(--line-2)] sm:hidden"
+        stroke="currentColor"
+      >
+        <path d="M1 0 V40" strokeWidth="1.5" className="flow-line" />
       </svg>
       <div
         aria-hidden="true"
