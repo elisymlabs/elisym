@@ -2,7 +2,7 @@ import { PRODUCT_NAME } from '../constants';
 import { Eyebrow } from './Eyebrow';
 import { Icon, type IconName } from './Icon';
 import { Reveal } from './Reveal';
-import { TrustMark } from './TrustMark';
+import { StorePassport } from './StorePassport';
 
 const POINTS: { icon: IconName; title: string; body: string }[] = [
   {
@@ -42,7 +42,7 @@ export function Trust() {
     <section id="trust" className="mx-auto max-w-1360 px-12 py-96 sm:px-24 sm:py-160">
       <div className="grid gap-48 lg:grid-cols-[0.8fr_1.2fr] lg:gap-80">
         <Reveal className="lg:sticky lg:top-112 lg:self-start">
-          <TrustMark />
+          <StorePassport />
         </Reveal>
         <div className="flex flex-col gap-24 px-4">
           <Reveal className="flex flex-col gap-24">
