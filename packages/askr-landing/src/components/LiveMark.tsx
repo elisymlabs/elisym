@@ -12,8 +12,8 @@ import { prefersReducedMotion } from '../useInView';
 
 /** How fast the drift runs, in radians of the slower axis per second (the widget's pace). */
 const DRIFT_SPEED = 0.18;
-/** After this long with no pointer, the mark goes back to drifting on its own. */
-const POINTER_IDLE_MS = 2500;
+/** How far from the mark the pointer must be for the mark to look all the way to it. */
+const LOOK_REACH_PX = 600;
 /** How much of the way to its target the viewpoint moves each frame: a soft follow. */
 const EASE = 0.07;
 
@@ -21,18 +21,19 @@ interface Props {
   className?: string;
   /** Rings inside the rim: the widget's six by default, more for a deeper shaft. */
   rings?: number;
-  /** Look down the shaft from where the pointer is on the screen. */
-  followPointer?: boolean;
+  /** Keep looking at the pointer, wherever it is and whether it moves or not. */
+  watchPointer?: boolean;
   /** A label for a mark that says something; without one it is decoration. */
   label?: string;
 }
 
 /**
  * The Askr mark, alive: the viewer drifts over the opening as in the widget, and with
- * `followPointer` looks down the shaft from wherever the pointer is. It moves only while it
- * is on screen, and stays still for a visitor who asked for less motion.
+ * `watchPointer` the shaft's far end turns toward the pointer and keeps looking at it, until the
+ * pointer moves again (it drifts only until a pointer shows up). It moves only while it is on
+ * screen, and stays still for a visitor who asked for less motion.
  */
-export function LiveMark({ className, rings = MARK_RINGS, followPointer, label }: Props) {
+export function LiveMark({ className, rings = MARK_RINGS, watchPointer, label }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const initial = markPaths(driftViewpoint(DRIFT_START), rings);
 
@@ -44,8 +45,8 @@ export function LiveMark({ className, rings = MARK_RINGS, followPointer, label }
     const paths = [...svg.querySelectorAll('path')];
     let time = DRIFT_START;
     let focus: Point = driftViewpoint(time);
-    let pointer: Point | undefined;
-    let pointerAt = 0;
+    /** The pointer's last place on the screen, once there has been one. */
+    let pointer: { x: number; y: number } | undefined;
     let visible = false;
     let frame: number | undefined;
     let last = 0;
@@ -58,8 +59,7 @@ export function LiveMark({ className, rings = MARK_RINGS, followPointer, label }
       const elapsed = Math.min(now - last, 64);
       last = now;
       time += (elapsed / 1000) * DRIFT_SPEED;
-      const following = pointer !== undefined && now - pointerAt < POINTER_IDLE_MS;
-      const target = following && pointer !== undefined ? pointer : driftViewpoint(time);
+      const target = pointer === undefined ? driftViewpoint(time) : lookAt(pointer);
       focus = [focus[0] + (target[0] - focus[0]) * EASE, focus[1] + (target[1] - focus[1]) * EASE];
       const shapes = markPaths(focus, rings);
       paths.forEach((path, index) => path.setAttribute('d', shapes[index] ?? ''));
@@ -71,19 +71,26 @@ export function LiveMark({ className, rings = MARK_RINGS, followPointer, label }
         frame = requestAnimationFrame(tick);
       }
     };
+    // Measured from the mark where it is now, so it keeps looking at a still pointer as the
+    // page scrolls under it. The far end of the shaft moves toward the pointer, like an eye.
+    const lookAt = (place: { x: number; y: number }): Point => {
+      const box = svg.getBoundingClientRect();
+      const across = (place.x - (box.left + box.width / 2)) / LOOK_REACH_PX;
+      const down = (place.y - (box.top + box.height / 2)) / LOOK_REACH_PX;
+      return [
+        VIEW_CENTER[0] + Math.max(-1, Math.min(1, across)) * VIEW_RANGE[0],
+        VIEW_CENTER[1] + Math.max(-1, Math.min(1, down)) * VIEW_RANGE[1],
+      ];
+    };
     const onPointer = (event: PointerEvent) => {
-      const across = Math.max(-1, Math.min(1, (event.clientX / window.innerWidth) * 2 - 1));
-      const down = Math.max(-1, Math.min(1, (event.clientY / window.innerHeight) * 2 - 1));
-      // Looking from the left shows the right wall: the point under the viewer goes the other way.
-      pointer = [VIEW_CENTER[0] - across * VIEW_RANGE[0], VIEW_CENTER[1] - down * VIEW_RANGE[1]];
-      pointerAt = performance.now();
+      pointer = { x: event.clientX, y: event.clientY };
     };
     const observer = new IntersectionObserver((entries) => {
       visible = entries.some((entry) => entry.isIntersecting);
       start();
     });
     observer.observe(svg);
-    if (followPointer) {
+    if (watchPointer) {
       window.addEventListener('pointermove', onPointer, { passive: true });
     }
     return () => {
@@ -93,7 +100,7 @@ export function LiveMark({ className, rings = MARK_RINGS, followPointer, label }
         cancelAnimationFrame(frame);
       }
     };
-  }, [followPointer, rings]);
+  }, [watchPointer, rings]);
 
   return (
     <svg
