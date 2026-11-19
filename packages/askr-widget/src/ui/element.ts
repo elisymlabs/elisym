@@ -165,7 +165,8 @@ export class WidgetView {
     }
     const before = this.log.scrollHeight;
     // The first turns to land (a chat opened on its history) jump into place; later ones glide.
-    const hadTurns = [...this.turnViews.values()].some((view) => view.root.parentNode === this.log);
+    // Every turn view is appended to the log as it is made, so any view means turns are shown.
+    const hadTurns = this.turnViews.size > 0;
     for (const turn of snapshot.turns) {
       // Appended once: moving a node already in place would replay its entrance.
       const { root } = this.turnView(turn);

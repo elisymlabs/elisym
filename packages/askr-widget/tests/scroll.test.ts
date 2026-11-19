@@ -76,6 +76,24 @@ describe('scrolling to the newest message', () => {
     expect(jumps).toEqual([HEIGHT]);
   });
 
+  it("reads the widget's own window, not the page's", () => {
+    stubMotion(true);
+    const other = document.implementation.createHTMLDocument('elsewhere');
+    const box = other.createElement('div');
+    other.body.append(box);
+    const glides: ScrollToOptions[] = [];
+    box.scrollTo = ((options: ScrollToOptions) => {
+      glides.push(options);
+    }) as typeof box.scrollTo;
+    Object.defineProperty(other, 'defaultView', {
+      value: {
+        matchMedia: () => ({ matches: false }) as MediaQueryList,
+      },
+    });
+    scrollToNewest(box, true);
+    expect(glides).toHaveLength(1);
+  });
+
   it('jumps, and never throws, where the host page broke matchMedia', () => {
     for (const broken of [
       undefined,
@@ -184,5 +202,39 @@ describe('<askr-chat>', () => {
     shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
     expect(jump).toHaveBeenCalledTimes(2);
     client?.stop();
+  });
+
+  it('keeps the reading place when the panel is reopened while it is still fading out', async () => {
+    stubMotion(false);
+    vi.useFakeTimers();
+    const jump = vi.spyOn(WidgetView.prototype, 'jumpToNewest');
+    const store = makeStore();
+    const relay = new FakeRelay();
+    publishStore(relay, store);
+    const gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
+    let client: ChatClient | undefined;
+    defineAskrElement(window, (owner) => {
+      client = new ChatClient({
+        owner,
+        connect: relay.connect,
+        gateway,
+        localStorage: new MemoryStorage(),
+        sessionStorage: new MemoryStorage(),
+      });
+      return client;
+    });
+    const widget = document.createElement('askr-chat');
+    widget.setAttribute('store', store.owner.pubkey);
+    document.body.append(widget);
+    const shadow = widget.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
+    expect(jump).toHaveBeenCalledTimes(1);
+    shadow?.querySelector<HTMLButtonElement>('.close')?.click();
+    expect(widget.hasAttribute('closing')).toBe(true);
+    shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
+    expect(widget.hasAttribute('open')).toBe(true);
+    expect(jump).toHaveBeenCalledTimes(1);
+    client?.stop();
+    vi.useRealTimers();
   });
 });
