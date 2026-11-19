@@ -10,6 +10,9 @@ import { AdminLink } from './AdminLink';
  * (50, 63.6) of the 100 x 100 box: the `origin-[50%_63.6%]` below.
  */
 const PATHS = markPaths(VIEW_CENTER);
+/** Scroll progress at which the dive has covered the screen and the call is fully shown. */
+const DIVE_DONE = 0.9;
+
 /** How far the dive goes: the innermost ring ends up covering the screen. */
 const MAX_ZOOM = 40;
 
@@ -36,10 +39,9 @@ export function Closing() {
       introRef.current.style.opacity = String(1 - clamp(progress / 0.2));
     }
     if (outroRef.current !== null) {
-      // Always in the page for the keyboard and screen readers; it only fades in on screen, and
-      // shows at once when it gets focus.
-      const focused = outroRef.current.contains(document.activeElement);
-      const shown = focused ? 1 : clamp((progress - 0.72) / 0.15);
+      // Always in the page for the keyboard and screen readers; on screen it fades in as the
+      // dive ends (a focus jumps there first, see onFocus).
+      const shown = clamp((progress - 0.72) / 0.15);
       outroRef.current.style.opacity = String(shown);
       outroRef.current.style.transform = `translateY(${(1 - shown) * 24}px)`;
     }
@@ -69,10 +71,14 @@ export function Closing() {
         <div
           ref={outroRef}
           onFocus={() => {
-            if (outroRef.current !== null) {
-              outroRef.current.style.opacity = '1';
-              outroRef.current.style.transform = 'none';
+            // Light text drawn for ink: reached by keyboard before the dive covered the page,
+            // jump to the end of the dive, so it is read on ink with its ring visible.
+            const section = sectionRef.current;
+            if (section !== null) {
+              const travel = section.offsetHeight - window.innerHeight;
+              window.scrollTo({ top: section.offsetTop + travel * DIVE_DONE, behavior: 'instant' });
             }
+            onProgress(DIVE_DONE);
           }}
           className="text-on-ink on-ink-focus relative flex flex-col items-center gap-28 px-16 text-center"
         >

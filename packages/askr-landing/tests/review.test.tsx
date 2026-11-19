@@ -142,9 +142,15 @@ describe('the hero', () => {
     };
     await playThrough();
     expect(selected()).toBe(1);
-    const pause = page.querySelector<HTMLButtonElement>('button[aria-pressed]');
+    const pause = page.querySelector<HTMLButtonElement>('button[aria-label$="the store demo"]');
     expect(pause?.textContent).toBe('Pause');
+    expect(pause?.getAttribute('aria-label')).toBe('Pause the store demo');
+    expect(pause?.hasAttribute('aria-pressed')).toBe(false);
     await act(async () => pause?.click());
+    expect(pause?.getAttribute('aria-label')).toBe('Play the store demo');
+    // Paused, the chat holds its finished conversation and nothing waits to move it on.
+    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
     await playThrough();
     await playThrough();
     expect(selected()).toBe(1);
@@ -152,7 +158,7 @@ describe('the hero', () => {
     await playThrough();
     expect(selected()).toBe(2);
     await act(async () => tabs(page)[0]?.click());
-    expect(page.querySelector('button[aria-pressed]')).toBeNull();
+    expect(page.querySelector('button[aria-label$="the store demo"]')).toBeNull();
     await playThrough();
     await playThrough();
     expect(selected()).toBe(0);
@@ -192,6 +198,29 @@ describe('the copy', () => {
     expect(trust).toContain('with its products and plan.');
     expect(trust).not.toMatch(/plan and chats/);
     expect(trust).toContain('24 hours');
+  });
+
+  it('keeps the privacy facts and names in place', async () => {
+    const page = await render(<App />);
+    const rows = [...page.querySelectorAll('#trust figure li')].map((row) => row.textContent ?? '');
+    const products = rows.find((row) => row.startsWith('Products and policies'));
+    expect(products).toContain('on the open network');
+    expect(products).not.toContain('signed by you');
+    expect(rows.find((row) => row.startsWith('Settings'))).toContain('signed by you');
+    const trust = page.querySelector('#trust')?.textContent ?? '';
+    expect(trust).toContain('you replace it through your own site');
+    expect(trust).not.toMatch(/products and policies are signed with a (secret )?key/i);
+    const footer = [...page.querySelectorAll('footer a')].find(
+      (link) => link.getAttribute('href') === '#trust',
+    );
+    expect(footer?.textContent).toBe('Privacy');
+    expect(page.querySelectorAll('#faq summary h1, #faq summary h2, #faq summary h3')).toHaveLength(
+      0,
+    );
+    const injection = [...page.querySelectorAll('#faq details')].find((item) =>
+      item.textContent?.includes('hidden instructions'),
+    );
+    expect(injection?.querySelector('p')?.textContent).not.toMatch(/^No\b/);
   });
 
   it('says it never takes payments, and that every store is activated on its plan', async () => {
@@ -258,16 +287,64 @@ describe('motion', () => {
     expect(outro?.style.visibility).not.toBe('hidden');
     await unmount();
     stubMotion(false);
+    const jump = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined);
     const scrolled = await render(<Closing />);
     const hidden = scrolled.querySelector<HTMLElement>('#closing .on-ink-focus');
-    expect(hidden?.style.visibility).not.toBe('hidden');
-    const link = hidden?.querySelector('a');
+    const section = scrolled.querySelector<HTMLElement>('#closing');
+    if (hidden === null || section === null) {
+      throw new Error('no closing');
+    }
+    Object.defineProperty(section, 'offsetTop', { value: 5000 });
+    Object.defineProperty(section, 'offsetHeight', { value: 2900 });
+    vi.stubGlobal('innerHeight', 900);
+    expect(hidden.getAttribute('style') ?? '').not.toContain('visibility');
     await act(async () => {
-      link?.focus();
-      link?.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
-      hidden?.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+      hidden.querySelector('a')?.focus();
     });
-    expect(hidden?.style.opacity).toBe('1');
+    // Reached by keyboard, the page jumps to where the dive has covered it in ink.
+    expect(jump).toHaveBeenCalledWith({ top: 5000 + 2000 * 0.9, behavior: 'instant' });
+    expect(hidden.style.opacity).toBe('1');
+    expect(hidden.getAttribute('style') ?? '').not.toContain('visibility');
+  });
+
+  it('moves nothing on its own under reduced motion: no timers, no Pause buttons', async () => {
+    stubMotion(true);
+    vi.useFakeTimers();
+    const page = await render(<App />);
+    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(
+      page.querySelectorAll('button[aria-label^="Pause"], button[aria-label^="Play"]'),
+    ).toHaveLength(0);
+  });
+
+  it('pauses each marquee with its own button, and reads each item once', async () => {
+    stubMotion(false);
+    const page = await render(<App />);
+    for (const [id, what] of [
+      ['works-with', 'the store list'],
+      ['languages', 'the questions'],
+    ] as const) {
+      const section = page.querySelector(`#${id}`);
+      const button = section?.querySelector<HTMLButtonElement>(
+        `button[aria-label="Pause ${what}"]`,
+      );
+      const marquees = [...(section?.querySelectorAll('.marquee') ?? [])];
+      expect(marquees.length, id).toBeGreaterThan(0);
+      expect(marquees.every((marquee) => marquee.getAttribute('data-paused') === 'false')).toBe(
+        true,
+      );
+      await act(async () => button?.click());
+      expect(marquees.every((marquee) => marquee.getAttribute('data-paused') === 'true')).toBe(
+        true,
+      );
+      expect(button?.getAttribute('aria-label')).toBe(`Play ${what}`);
+      for (const track of section?.querySelectorAll('.marquee-track') ?? []) {
+        const items = [...track.children];
+        const read = items.filter((item) => item.getAttribute('aria-hidden') !== 'true');
+        expect(read.length * 2, id).toBe(items.length);
+      }
+    }
   });
 
   it('clears the hero chat timers when it leaves', async () => {
