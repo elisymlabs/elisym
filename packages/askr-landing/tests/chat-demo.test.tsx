@@ -101,6 +101,30 @@ afterEach(async () => {
 });
 
 describe('the hero chat', () => {
+  it('jumps to the newest message where the browser cannot glide', async () => {
+    stubMotion(false);
+    const prototypes = [HTMLElement.prototype, Element.prototype];
+    const saved = prototypes.map((prototype) =>
+      Object.getOwnPropertyDescriptor(prototype, 'scrollTo'),
+    );
+    try {
+      for (const prototype of prototypes) {
+        Reflect.deleteProperty(prototype, 'scrollTo');
+      }
+      await render();
+      await advance(STEP_MS[0] ?? 0);
+      expect(topWrites).toEqual([0, LOG_HEIGHT]);
+      expect(scrollCalls).toEqual([]);
+    } finally {
+      prototypes.forEach((prototype, index) => {
+        const descriptor = saved[index];
+        if (descriptor !== undefined) {
+          Object.defineProperty(prototype, 'scrollTo', descriptor);
+        }
+      });
+    }
+  });
+
   it('opens at the top, then glides to the newest message at every step', async () => {
     stubMotion(false);
     await render();
@@ -134,16 +158,6 @@ describe('the hero chat', () => {
     expect(topWrites).toEqual([LOG_HEIGHT]);
     expect(page.querySelector('.wgt-cards')).not.toBeNull();
     await advance(20_000);
-    expect(scrollCalls).toEqual([]);
-  });
-
-  it('jumps to the newest message where the browser cannot glide', async () => {
-    stubMotion(false);
-    Reflect.deleteProperty(HTMLElement.prototype, 'scrollTo');
-    Reflect.deleteProperty(Element.prototype, 'scrollTo');
-    await render();
-    await advance(STEP_MS[0] ?? 0);
-    expect(topWrites).toEqual([0, LOG_HEIGHT]);
     expect(scrollCalls).toEqual([]);
   });
 });
