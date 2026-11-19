@@ -7,8 +7,8 @@ import { Reveal } from './Reveal';
 import { SizedPlanCard } from './SizedPlanCard';
 
 export function Pricing() {
-  // Monthly first: the price a store pays without committing to a year.
-  const [billing, setBilling] = useState<Billing>('monthly');
+  // Yearly first: the lower price per month, with the yearly total under it.
+  const [billing, setBilling] = useState<Billing>('yearly');
   const selfServe = PLANS.filter((plan) => plan.price.kind === 'flat');
   const sizes = PLANS.filter((plan) => plan.group === 'sizes');
   const contract = PLANS.filter((plan) => plan.price.kind === 'from');

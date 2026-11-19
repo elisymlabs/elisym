@@ -121,7 +121,7 @@ describe('the plans', () => {
 });
 
 describe('the pricing section', () => {
-  it('shows Free, Starter, one card for the sizes and Enterprise, monthly first', async () => {
+  it('shows Free, Starter, one card for the sizes and Enterprise, yearly first', async () => {
     const page = await render();
     expect(cards(page).map((card) => card.querySelector('h3')?.textContent)).toEqual([
       'Free',
@@ -140,6 +140,13 @@ describe('the pricing section', () => {
       'false',
       'false',
     ]);
+    const billing = [
+      ...page.querySelectorAll<HTMLButtonElement>(
+        '#pricing [role="radiogroup"][aria-label="Billing period"] [role="radio"]',
+      ),
+    ];
+    expect(billing.map((radio) => radio.getAttribute('aria-checked'))).toEqual(['false', 'true']);
+    await act(async () => billing[0]?.click());
     for (const plan of PLANS) {
       const card = await cardOf(page, plan.name);
       expect(card?.textContent, plan.name).toContain(plan.price.monthly);
@@ -154,7 +161,7 @@ describe('the pricing section', () => {
     expect(pricing).toContain('spend cap');
   });
 
-  it('switches to yearly prices, leaving Free and Enterprise as they are', async () => {
+  it('switches between monthly and yearly prices, leaving Free and Enterprise as they are', async () => {
     const page = await render();
     const radios = [
       ...page.querySelectorAll<HTMLButtonElement>(
@@ -162,6 +169,7 @@ describe('the pricing section', () => {
       ),
     ];
     expect(radios.map((radio) => radio.textContent)).toEqual(['Monthly', 'Yearly']);
+    await act(async () => radios[0]?.click());
     expect(radios.map((radio) => radio.getAttribute('aria-checked'))).toEqual(['true', 'false']);
     await act(async () => radios[1]?.click());
     expect(radios.map((radio) => radio.getAttribute('aria-checked'))).toEqual(['false', 'true']);
