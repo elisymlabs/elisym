@@ -65,7 +65,7 @@ describe('the links', () => {
     expect(new URL(ADMIN_URL).origin).not.toBe(window.location.origin);
   });
 
-  it('send every link off the page over https with no referrer', async () => {
+  it('send every link off the page over https, in a new tab, with no referrer', async () => {
     const page = await render(<App />);
     const external = [...page.querySelectorAll('a')].filter((link) => {
       const href = link.getAttribute('href') ?? '';
@@ -75,6 +75,15 @@ describe('the links', () => {
     for (const link of external) {
       expect(link.getAttribute('href'), link.textContent ?? '').toMatch(/^https:\/\//);
       expect(link.rel).toBe('noopener noreferrer');
+      expect(link.getAttribute('target'), link.textContent ?? '').toBe('_blank');
+    }
+    const onPage = [...page.querySelectorAll('a')].filter((link) => {
+      const href = link.getAttribute('href') ?? '';
+      return href.startsWith('#') || href === '/';
+    });
+    expect(onPage.length).toBeGreaterThan(0);
+    for (const link of onPage) {
+      expect(link.getAttribute('target'), link.textContent ?? '').toBeNull();
     }
   });
 

@@ -46,7 +46,7 @@ export const PHOTOS = {
     src: catalog,
     width: 1400,
     height: 1050,
-    alt: 'A store owner smiling at her tablet at the counter of her electronics shop',
+    alt: 'Hands typing on a laptop beside headphones on a light wooden desk',
   },
   keys: { src: keys, width: 1100, height: 1467, alt: 'A brass key on folded linen' },
 } satisfies Record<string, Photo>;

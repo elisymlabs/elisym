@@ -35,7 +35,7 @@ export function EnterpriseRow({ plan }: Props) {
           </li>
         ))}
       </ul>
-      <ExternalLink href={CONTACT_URL} newTab className={`${BUTTON.solid} lg:self-center`}>
+      <ExternalLink href={CONTACT_URL} className={`${BUTTON.solid} lg:self-center`}>
         Contact us
         <Icon name="arrow" className="size-18" />
       </ExternalLink>

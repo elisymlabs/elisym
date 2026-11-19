@@ -77,7 +77,7 @@ export function PlanCard({ plan, billing, ink = plan.featured, sizes, className 
       </ul>
       {plan.start === 'admin' && <AdminLink label={START_LABEL} className={button} />}
       {plan.start === 'choose' && (
-        <ExternalLink href={CONTACT_URL} newTab className={button}>
+        <ExternalLink href={CONTACT_URL} className={button}>
           {`Choose ${plan.name}`}
         </ExternalLink>
       )}
