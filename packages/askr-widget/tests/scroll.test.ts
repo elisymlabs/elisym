@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatClient } from '../src/client';
-import { WidgetView, defineAskrElement, scrollToNewest } from '../src/ui/element';
+import {
+  type ClientFactory,
+  WidgetView,
+  defineAskrElement,
+  scrollToNewest,
+} from '../src/ui/element';
 import { FakeGateway, FakeRelay, MemoryStorage, makeStore, publishStore } from './fixtures';
 
 const HEIGHT = 480;
@@ -37,6 +42,7 @@ function stubMotion(reduce: boolean): void {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   Reflect.deleteProperty(window, 'Askr');
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -159,6 +165,16 @@ describe('the panel log', () => {
     expect(glide).not.toHaveBeenCalled();
   });
 
+  it('jumps for the first question of a fresh chat, then glides for the next', () => {
+    stubMotion(false);
+    const { view, glide, jumps } = panel();
+    view.update({ phase: 'ready', branding: true, turns: [turn('a')] });
+    expect(glide).not.toHaveBeenCalled();
+    expect(jumps).toEqual([232]);
+    view.update({ phase: 'ready', branding: true, turns: [turn('a'), turn('b')] });
+    expect(glide).toHaveBeenCalledWith({ top: 332, behavior: 'smooth' });
+  });
+
   it('shows the newest message at once when asked, as the panel opens', () => {
     stubMotion(false);
     const { view, glide, jumps } = panel();
@@ -170,29 +186,45 @@ describe('the panel log', () => {
   });
 });
 
+/**
+ * `<askr-chat>` is defined once per page, so every element test goes through one definition
+ * whose factory each test sets: a store, relay and gateway of its own, and its client kept.
+ */
+let makeClient: ClientFactory | undefined;
+
+function openWidget(): { widget: HTMLElement; client: () => ChatClient | undefined } {
+  const store = makeStore();
+  const relay = new FakeRelay();
+  publishStore(relay, store);
+  const gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
+  let client: ChatClient | undefined;
+  makeClient = (owner) => {
+    client = new ChatClient({
+      owner,
+      connect: relay.connect,
+      gateway,
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+    });
+    return client;
+  };
+  defineAskrElement(window, (owner) => {
+    if (makeClient === undefined) {
+      throw new Error('no client factory');
+    }
+    return makeClient(owner);
+  });
+  const widget = document.createElement('askr-chat');
+  widget.setAttribute('store', store.owner.pubkey);
+  document.body.append(widget);
+  return { widget, client: () => client };
+}
+
 describe('<askr-chat>', () => {
   it('puts the newest message in view at once each time the panel opens', async () => {
     stubMotion(false);
     const jump = vi.spyOn(WidgetView.prototype, 'jumpToNewest');
-    const store = makeStore();
-    const relay = new FakeRelay();
-    publishStore(relay, store);
-    const gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
-    let client: ChatClient | undefined;
-    defineAskrElement(window, (owner) => {
-      client = new ChatClient({
-        owner,
-        connect: relay.connect,
-        gateway,
-        localStorage: new MemoryStorage(),
-        sessionStorage: new MemoryStorage(),
-      });
-      return client;
-    });
-    const widget = document.createElement('askr-chat');
-    widget.setAttribute('store', store.owner.pubkey);
-    widget.setAttribute('theme', 'light');
-    document.body.append(widget);
+    const { widget, client } = openWidget();
     const shadow = widget.shadowRoot;
     shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
     expect(widget.hasAttribute('open')).toBe(true);
@@ -201,31 +233,14 @@ describe('<askr-chat>', () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
     expect(jump).toHaveBeenCalledTimes(2);
-    client?.stop();
+    client()?.stop();
   });
 
   it('keeps the reading place when the panel is reopened while it is still fading out', async () => {
     stubMotion(false);
     vi.useFakeTimers();
     const jump = vi.spyOn(WidgetView.prototype, 'jumpToNewest');
-    const store = makeStore();
-    const relay = new FakeRelay();
-    publishStore(relay, store);
-    const gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
-    let client: ChatClient | undefined;
-    defineAskrElement(window, (owner) => {
-      client = new ChatClient({
-        owner,
-        connect: relay.connect,
-        gateway,
-        localStorage: new MemoryStorage(),
-        sessionStorage: new MemoryStorage(),
-      });
-      return client;
-    });
-    const widget = document.createElement('askr-chat');
-    widget.setAttribute('store', store.owner.pubkey);
-    document.body.append(widget);
+    const { widget, client } = openWidget();
     const shadow = widget.shadowRoot;
     shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
     expect(jump).toHaveBeenCalledTimes(1);
@@ -234,7 +249,6 @@ describe('<askr-chat>', () => {
     shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
     expect(widget.hasAttribute('open')).toBe(true);
     expect(jump).toHaveBeenCalledTimes(1);
-    client?.stop();
-    vi.useRealTimers();
+    client()?.stop();
   });
 });
