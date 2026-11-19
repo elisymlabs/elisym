@@ -58,13 +58,19 @@ export function ChatDemo({ niche, onFinished, className = '' }: Props) {
   }, [inView, still, step]);
 
   const shown = still ? FINAL : step;
-  // As the widget does: when the conversation grows, it jumps to the newest message.
+  // When the conversation grows it moves to the newest message: the widget jumps there, the
+  // drawing glides, unless the visitor asked for less motion.
   useLayoutEffect(() => {
     const log = logRef.current;
-    if (log !== null) {
-      log.scrollTop = shown === 0 ? 0 : log.scrollHeight;
+    if (log === null) {
+      return;
     }
-  }, [shown]);
+    if (shown === 0 || still || typeof log.scrollTo !== 'function') {
+      log.scrollTop = shown === 0 ? 0 : log.scrollHeight;
+      return;
+    }
+    log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+  }, [shown, still]);
 
   return (
     <figure
