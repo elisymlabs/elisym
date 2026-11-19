@@ -14,6 +14,8 @@ export function Hero() {
   // Turning on its own until the visitor picks a store or pauses it.
   const [chosen, setChosen] = useState(false);
   const [paused, setPaused] = useState(false);
+  // While the pointer is over the store, the chat keeps playing but the store does not change.
+  const [reading, setReading] = useState(false);
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
   const niche = NICHES[current] ?? NICHES[0];
   if (niche === undefined) {
@@ -72,69 +74,71 @@ export function Hero() {
         </div>
 
         <Reveal delay={2} className="relative lg:col-span-6">
-          <div className="mb-16 flex flex-wrap items-center gap-12">
-            <span className="text-12 text-text-2 font-medium tracking-[0.14em] uppercase">
-              See it in a store
-            </span>
-            <div
-              role="tablist"
-              aria-label="Store niche"
-              onKeyDown={onTabKey}
-              className="border-line bg-surface flex flex-wrap rounded-full border p-4"
-            >
+          <div onPointerEnter={() => setReading(true)} onPointerLeave={() => setReading(false)}>
+            <div className="mb-16 flex flex-wrap items-center gap-12">
+              <span className="text-12 text-text-2 font-medium tracking-[0.14em] uppercase">
+                See it in a store
+              </span>
+              <div
+                role="tablist"
+                aria-label="Store niche"
+                onKeyDown={onTabKey}
+                className="border-line bg-surface flex flex-wrap rounded-full border p-4"
+              >
+                {NICHES.map((item, index) => (
+                  <button
+                    key={item.id}
+                    ref={(tab) => {
+                      tabs.current[index] = tab;
+                    }}
+                    id={`niche-tab-${item.id}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={index === current}
+                    aria-controls="niche-demo"
+                    tabIndex={index === current ? 0 : -1}
+                    onClick={() => choose(index)}
+                    className={`text-13 rounded-full px-12 py-7 font-medium transition sm:px-14 ${index === current ? 'bg-ink text-on-ink' : 'text-text-2 hover:text-text'}`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              {!chosen && (
+                <MotionToggle
+                  paused={paused}
+                  onToggle={() => setPaused((value) => !value)}
+                  what="the store demo"
+                />
+              )}
+            </div>
+            <div className="rounded-32 sm:rounded-40 relative h-[min(560px,120vw)] overflow-hidden sm:h-[640px] lg:h-[min(760px,calc(100vh-200px))] lg:min-h-[640px]">
               {NICHES.map((item, index) => (
-                <button
+                <img
                   key={item.id}
-                  ref={(tab) => {
-                    tabs.current[index] = tab;
-                  }}
-                  id={`niche-tab-${item.id}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={index === current}
-                  aria-controls="niche-demo"
-                  tabIndex={index === current ? 0 : -1}
-                  onClick={() => choose(index)}
-                  className={`text-13 rounded-full px-12 py-7 font-medium transition sm:px-14 ${index === current ? 'bg-ink text-on-ink' : 'text-text-2 hover:text-text'}`}
-                >
-                  {item.label}
-                </button>
+                  src={item.photo.src}
+                  alt={index === current ? item.photo.alt : ''}
+                  aria-hidden={index !== current}
+                  width={item.photo.width}
+                  height={item.photo.height}
+                  fetchPriority={index === 0 ? 'high' : 'low'}
+                  className={`absolute inset-0 size-full object-cover transition-opacity duration-1000 ${index === current ? 'settle opacity-100' : 'opacity-0'}`}
+                />
               ))}
             </div>
-            {!chosen && (
-              <MotionToggle
-                paused={paused}
-                onToggle={() => setPaused((value) => !value)}
-                what="the store demo"
+            <div
+              id="niche-demo"
+              role="tabpanel"
+              aria-labelledby={`niche-tab-${niche.id}`}
+              className="relative z-10 mx-auto -mt-200 w-full max-w-380 px-8 sm:-mt-280 lg:absolute lg:right-24 lg:bottom-24 lg:mt-0 lg:w-380 lg:px-0"
+            >
+              <ChatDemo
+                key={niche.id}
+                niche={niche}
+                hold={paused && !chosen}
+                onFinished={turning && !reading ? advance : undefined}
               />
-            )}
-          </div>
-          <div className="rounded-32 sm:rounded-40 relative h-[min(560px,120vw)] overflow-hidden sm:h-[640px] lg:h-[min(760px,calc(100vh-200px))] lg:min-h-[640px]">
-            {NICHES.map((item, index) => (
-              <img
-                key={item.id}
-                src={item.photo.src}
-                alt={index === current ? item.photo.alt : ''}
-                aria-hidden={index !== current}
-                width={item.photo.width}
-                height={item.photo.height}
-                fetchPriority={index === 0 ? 'high' : 'low'}
-                className={`absolute inset-0 size-full object-cover transition-opacity duration-1000 ${index === current ? 'settle opacity-100' : 'opacity-0'}`}
-              />
-            ))}
-          </div>
-          <div
-            id="niche-demo"
-            role="tabpanel"
-            aria-labelledby={`niche-tab-${niche.id}`}
-            className="relative z-10 mx-auto -mt-200 w-full max-w-380 px-8 sm:-mt-280 lg:absolute lg:right-24 lg:bottom-24 lg:mt-0 lg:w-380 lg:px-0"
-          >
-            <ChatDemo
-              key={niche.id}
-              niche={niche}
-              hold={paused && !chosen}
-              onFinished={turning ? advance : undefined}
-            />
+            </div>
           </div>
         </Reveal>
       </div>

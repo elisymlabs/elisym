@@ -164,6 +164,45 @@ describe('the hero', () => {
     expect(selected()).toBe(0);
   });
 
+  it('keeps the store while the pointer is over it, the chat still playing, then moves on', async () => {
+    stubMotion(false);
+    vi.useFakeTimers();
+    const page = await render(<Hero />);
+    const selected = () =>
+      tabs(page).findIndex((tab) => tab.getAttribute('aria-selected') === 'true');
+    const second = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+    };
+    const store = page.querySelector('#niche-demo')?.parentElement;
+    await act(async () => {
+      store?.dispatchEvent(
+        new MouseEvent('pointerover', { bubbles: true, relatedTarget: document.body }),
+      );
+    });
+    let answered = 0;
+    for (let tick = 0; tick < 30; tick += 1) {
+      await second();
+      if (page.querySelector('#niche-demo .wgt-cards') !== null) {
+        answered += 1;
+      }
+    }
+    // Thirty seconds: the conversation played round more than once, all in the first store.
+    expect(selected()).toBe(0);
+    expect(answered).toBeGreaterThan(0);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await act(async () => {
+      store?.dispatchEvent(
+        new MouseEvent('pointerout', { bubbles: true, relatedTarget: document.body }),
+      );
+    });
+    for (let tick = 0; tick < 12; tick += 1) {
+      await second();
+    }
+    expect(selected()).toBe(1);
+  });
+
   it('gives only the shown photo its alt text, and hides the chat drawing behind its label', async () => {
     stubMotion(true);
     const page = await render(<Hero />);
@@ -176,6 +215,21 @@ describe('the hero', () => {
       NICHES[0]?.store ?? '',
     );
     expect(page.querySelector('#niche-demo .wgt-panel')?.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('the chat drawing', () => {
+  it('scrolls its conversation up and down, and its cards sideways a card at a time', () => {
+    const css = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
+    const rule = (selector: string) =>
+      new RegExp(`\\n${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(
+        css,
+      )?.[1] ?? '';
+    expect(rule('.wgt-log')).toContain('overflow-y: auto');
+    expect(rule('.wgt-log')).toContain('overscroll-behavior: contain');
+    expect(rule('.wgt-cards')).toContain('overflow-x: auto');
+    expect(rule('.wgt-cards')).toContain('scroll-snap-type: x mandatory');
+    expect(rule('.wgt-cards > .wgt-card')).toContain('scroll-snap-align: start');
   });
 });
 

@@ -293,7 +293,16 @@ body {
   min-height: 0;
   gap: 12px;
   padding: 16px;
-  overflow: hidden;
+  /* Scrolls like the widget's: the page does not scroll along, the bar shows on hover. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: stable;
+}
+
+.wgt-log:hover {
+  scrollbar-color: color-mix(in srgb, var(--w-muted) 45%, transparent) transparent;
 }
 
 .wgt-log > *,
@@ -320,7 +329,20 @@ body {
   gap: 10px;
   margin: 0 -16px;
   padding: 2px 16px 6px;
-  overflow: hidden;
+  /* The widget's card row: it scrolls sideways a card at a time, with no visible bar. */
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 16px;
+  scrollbar-width: none;
+}
+
+.wgt-cards::-webkit-scrollbar {
+  display: none;
+}
+
+.wgt-cards > .wgt-card {
+  scroll-snap-align: start;
 }
 
 .wgt-card {
