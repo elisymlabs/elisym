@@ -3,8 +3,6 @@
  * of it on this page; a test keeps them equal.
  */
 export const WIDGET_TEXT = {
-  launcher: 'Ask AI',
-  launcherHint: 'About any product here',
   aiLabel: 'AI assistant',
   poweredBy: 'Powered by',
   greeting: 'Hi! Ask me anything about our products.',

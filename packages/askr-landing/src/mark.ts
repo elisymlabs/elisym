@@ -27,7 +27,7 @@ export const MARK_RINGS = 6;
 export const DRIFT_START = 2.2;
 
 /** The farthest the point under the viewer goes from the middle, on each axis. */
-export const VIEW_RANGE: Point = [12, 13];
+const VIEW_RANGE: Point = [12, 13];
 
 /** The middle of the viewpoint's range: looking straight down the shaft. */
 export const VIEW_CENTER: Point = [50, 64];

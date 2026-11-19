@@ -2,7 +2,7 @@
 export const PRODUCT_NAME = 'Askr';
 
 /** The Askr server: it serves the widget, the chat sessions and the admin. */
-export const API_ORIGIN = 'https://app.askr.elisym.network';
+const API_ORIGIN = 'https://app.askr.elisym.network';
 
 /** The merchant admin: its own origin, never this page's (it holds the store's secret key). */
 export const ADMIN_URL = `${API_ORIGIN}/admin/`;
@@ -17,7 +17,7 @@ export const DOCS = {
 };
 
 /** What a plan costs, as shown: every amount written out, no arithmetic on the page. */
-export type PlanPrice =
+type PlanPrice =
   | {
       kind: 'flat';
       /** Billed monthly, per month. */

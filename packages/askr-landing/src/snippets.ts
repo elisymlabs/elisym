@@ -4,32 +4,3 @@ import { WIDGET_SRC } from './constants';
 export function embedSnippet(store = 'npub1...'): string {
   return `<script src="${WIDGET_SRC}" data-store="${store}" async></script>`;
 }
-
-/** A page's own add-to-cart hook: the widget calls it before any native add-to-cart. */
-export const CART_HOOK_SNIPPET = [
-  '<script>',
-  '  window.Askr = window.Askr || {};',
-  '  window.Askr.onAddToCart = function (detail) {',
-  '    // put detail.d (or detail.sku, detail.variant) with detail.options',
-  '    // into your cart',
-  '  };',
-  '</script>',
-].join('\n');
-
-/** One product as an agent reads it off the relay: a signed NIP-99 listing, abridged. */
-export const LISTING_SNIPPET = [
-  '{',
-  '  "kind": 30402,',
-  '  "tags": [',
-  '    ["d", "pulse-pro"],',
-  '    ["title", "Pulse Pro headphones"],',
-  '    ["price", "199.00", "USD"],',
-  '    ["t", "headphones"],',
-  '    ["attr", "battery", "40 h"],',
-  '    ["r", "https://northwind.example/p/pulse-pro"],',
-  '    ["visibility", "on-sale"]',
-  '  ],',
-  '  "pubkey": "…",',
-  '  "sig": "…"',
-  '}',
-].join('\n');

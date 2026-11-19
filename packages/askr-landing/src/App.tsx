@@ -1,10 +1,8 @@
 import { AdminPreview } from './components/AdminPreview';
 import { Closing } from './components/Closing';
-import { Developers } from './components/Developers';
 import { Faq } from './components/Faq';
 import { Features } from './components/Features';
 import { Footer } from './components/Footer';
-import { ForAgents } from './components/ForAgents';
 import { GetStarted } from './components/GetStarted';
 import { Hero } from './components/Hero';
 import { Languages } from './components/Languages';
@@ -25,12 +23,10 @@ export function App() {
         <Manifesto />
         <Features />
         <Languages />
-        <ForAgents />
         <Sources />
         <Trust />
         <AdminPreview />
         <GetStarted />
-        <Developers />
         <Pricing />
         <Faq />
         <Closing />
