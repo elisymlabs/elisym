@@ -1,4 +1,4 @@
-import { type PointerEvent, type ReactNode, useRef, useState } from 'react';
+import { type PointerEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 
 /** What the tip says over a control that only looks like it works. */
 export const DEMO_TIP = 'Just a demo. Add Askr to your store to try it live.';
@@ -9,6 +9,9 @@ interface Tip {
   /** The drawing's width: the tip stays inside it, whatever control it points at. */
   width: number;
 }
+
+/** How long a tip stays after a tap, as a finger leaves at once. */
+const TOUCH_TIP_MS = 2000;
 
 /** Space kept between the tip and the drawing's edges. */
 const EDGE = 8;
@@ -26,8 +29,11 @@ interface Props {
 export function DemoTips({ children, className = '' }: Props) {
   const boxRef = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<Tip | undefined>(undefined);
+  const touchTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(touchTimer.current), []);
 
   const onPointerOver = (event: PointerEvent<HTMLDivElement>) => {
+    clearTimeout(touchTimer.current);
     const box = boxRef.current;
     const control = event.target instanceof Element ? event.target.closest('[data-demo]') : null;
     if (box === null || control === null) {
@@ -47,7 +53,14 @@ export function DemoTips({ children, className = '' }: Props) {
     <div
       ref={boxRef}
       onPointerOver={onPointerOver}
-      onPointerLeave={() => setTip(undefined)}
+      onPointerLeave={(event) => {
+        clearTimeout(touchTimer.current);
+        if (event.pointerType === 'touch') {
+          touchTimer.current = setTimeout(() => setTip(undefined), TOUCH_TIP_MS);
+          return;
+        }
+        setTip(undefined);
+      }}
       className={`relative ${className}`}
     >
       {children}

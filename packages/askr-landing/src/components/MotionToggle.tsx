@@ -4,7 +4,7 @@ import { prefersReducedMotion } from '../useInView';
 interface Props {
   paused: boolean;
   onToggle: () => void;
-  /** What moves, for the button's name: "the store list", "the questions". */
+  /** What moves, for the button's name: "the store demo". */
   what: string;
 }
 

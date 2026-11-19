@@ -207,6 +207,49 @@ describe('the hero', () => {
     expect(selected()).toBe(1);
   });
 
+  it('does not restart a step when the pointer crosses the store mid-conversation', async () => {
+    stubMotion(false);
+    vi.useFakeTimers();
+    const page = await render(<Hero />);
+    const store = page.querySelector('#niche-demo')?.parentElement;
+    const cross = async (type: 'pointerover' | 'pointerout') => {
+      await act(async () => {
+        store?.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: document.body }));
+      });
+    };
+    // The answer and its cards are due about 3.4 s in, whatever the pointer does on the way.
+    for (let tick = 0; tick < 8; tick += 1) {
+      await cross(tick % 2 === 0 ? 'pointerover' : 'pointerout');
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+    }
+    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
+  });
+
+  it('carries on from the end when played again after a pause, never rewinding', async () => {
+    stubMotion(false);
+    vi.useFakeTimers();
+    const page = await render(<Hero />);
+    const second = async () => {
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+    };
+    await second();
+    const pause = page.querySelector<HTMLButtonElement>('button[aria-label$="the store demo"]');
+    await act(async () => pause?.click());
+    expect(page.querySelector('#niche-demo .wgt-cards')).not.toBeNull();
+    await act(async () => pause?.click());
+    for (let tick = 0; tick < 5; tick += 1) {
+      await second();
+      const selected = tabs(page).findIndex((tab) => tab.getAttribute('aria-selected') === 'true');
+      if (selected === 0) {
+        expect(page.querySelector('#niche-demo .wgt-cards'), `second ${tick}`).not.toBeNull();
+      }
+    }
+  });
+
   it('gives only the shown photo its alt text, and hides the chat drawing behind its label', async () => {
     stubMotion(true);
     const page = await render(<Hero />);
@@ -232,7 +275,8 @@ describe('the chat drawing', () => {
     expect(rule('.wgt-log')).toContain('overflow: hidden');
     expect(rule('.wgt-cards')).toContain('overflow: hidden');
     expect(rule('.wgt-live .wgt-log')).toContain('overflow-y: auto');
-    expect(rule('.wgt-live .wgt-log')).toContain('overscroll-behavior: contain');
+    // In the page's flow, the chat hands the scroll on to the page at its end: never a trap.
+    expect(rule('.wgt-live .wgt-log')).not.toContain('overscroll-behavior');
     expect(rule('.wgt-live .wgt-cards')).toContain('overflow-x: auto');
     expect(rule('.wgt-live .wgt-cards')).toContain('scroll-snap-type: x mandatory');
     expect(rule('.wgt-live .wgt-cards > .wgt-card')).toContain('scroll-snap-align: start');
@@ -252,8 +296,15 @@ describe('the demo tips', () => {
     stubMotion(true);
     const page = await render(<Hero />);
     const controls = [...page.querySelectorAll('#niche-demo [data-demo]')];
-    // Close, the chips, the input, Send, and Add to cart on each card.
-    expect(controls.length).toBeGreaterThanOrEqual(6);
+    // Each kind of control, by name: close, the chips, the input, Send, Add to cart.
+    for (const selector of ['.wgt-header', '.wgt-chip', '.wgt-input', '.wgt-send', '.wgt-cart']) {
+      const marked = page.querySelector(`#niche-demo ${selector}`);
+      const control = marked?.matches('[data-demo]')
+        ? marked
+        : marked?.querySelector('[data-demo]');
+      expect(control, selector).not.toBeNull();
+      expect(controls).toContain(control);
+    }
     for (const control of controls) {
       await act(async () => {
         control.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
@@ -272,6 +323,38 @@ describe('the demo tips', () => {
       reading?.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }));
     });
     expect(page.querySelector('.demo-tip')).toBeNull();
+  });
+});
+
+describe('the demo tips on a touch screen', () => {
+  it('stay a moment after a tap, as the finger leaves at once', async () => {
+    stubMotion(true);
+    vi.useFakeTimers();
+    const page = await render(<Hero />);
+    const send = page.querySelector('#niche-demo .wgt-send');
+    const area = send?.closest('figure')?.firstElementChild;
+    const touch = (type: string, init: MouseEventInit) => {
+      const event = new MouseEvent(type, { bubbles: true, ...init });
+      Object.defineProperty(event, 'pointerType', { value: 'touch' });
+      return event;
+    };
+    await act(async () => {
+      send?.dispatchEvent(touch('pointerover', {}));
+    });
+    await act(async () => {
+      area?.dispatchEvent(touch('pointerout', { relatedTarget: document.body }));
+    });
+    expect(page.querySelector('.demo-tip')?.textContent).toBe(DEMO_TIP);
+    await act(async () => {
+      vi.advanceTimersByTime(2100);
+    });
+    expect(page.querySelector('.demo-tip')).toBeNull();
+  });
+
+  it('are placed through the CSSOM, never a style attribute the CSP would refuse', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/DemoTips.tsx'), 'utf8');
+    expect(source).not.toContain("setAttribute('style'");
+    expect(source).not.toMatch(/\bstyle=\{/);
   });
 });
 

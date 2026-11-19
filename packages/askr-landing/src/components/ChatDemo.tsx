@@ -45,14 +45,16 @@ export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Pr
   const [step, setStep] = useState(0);
   const [still] = useState(prefersReducedMotion);
   const finished = useRef(onFinished);
-  const canFinish = onFinished !== undefined;
+  // Only the finished conversation waits on whether it may hand on; earlier steps never do, so a
+  // pointer crossing the store's edge mid-conversation does not restart a step.
+  const handOn = step === FINAL ? onFinished !== undefined : undefined;
   useEffect(() => {
     finished.current = onFinished;
   }, [onFinished]);
 
   useEffect(() => {
     // Played once: a finished conversation waits for someone to move on, and never replays.
-    if (!inView || still || hold || (step === FINAL && !canFinish)) {
+    if (!inView || still || hold || handOn === false) {
       return undefined;
     }
     const timer = setTimeout(() => {
@@ -63,8 +65,14 @@ export function ChatDemo({ niche, onFinished, hold = false, className = '' }: Pr
       setStep((current) => current + 1);
     }, STEPS[step]?.ms ?? 1000);
     return () => clearTimeout(timer);
-  }, [inView, still, hold, step, canFinish]);
+  }, [inView, still, hold, step, handOn]);
 
+  // Paused, the conversation shows its end; it carries on from there when played again.
+  useEffect(() => {
+    if (hold) {
+      setStep(FINAL);
+    }
+  }, [hold]);
   const shown = still || hold ? FINAL : step;
   // When the conversation grows it moves to the newest message: the widget jumps there, the
   // drawing glides, unless the visitor asked for less motion.
