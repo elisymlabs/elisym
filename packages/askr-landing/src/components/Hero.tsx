@@ -5,15 +5,13 @@ import { NICHES } from '../niches';
 import { AdminLink } from './AdminLink';
 import { ChatDemo } from './ChatDemo';
 import { Icon } from './Icon';
-import { MotionToggle } from './MotionToggle';
 import { Reveal } from './Reveal';
 
 /** The first screen: the promise on the left, a store with the widget answering on the right. */
 export function Hero() {
   const [current, setCurrent] = useState(0);
-  // Turning on its own until the visitor picks a store or pauses it.
+  // Turning on its own until the visitor picks a store.
   const [chosen, setChosen] = useState(false);
-  const [paused, setPaused] = useState(false);
   // Each store's conversation plays once. While the pointer is over the store it stays on that
   // store; when the pointer leaves, the next store comes.
   const [reading, setReading] = useState(false);
@@ -39,7 +37,7 @@ export function Hero() {
     choose(next);
     tabs.current[next]?.focus();
   };
-  const turning = !chosen && !paused;
+  const turning = !chosen;
   return (
     <section id="top" className="relative pt-104 sm:pt-120">
       <div className="mx-auto grid max-w-1440 grid-cols-[minmax(0,1fr)] gap-48 px-16 sm:px-32 lg:min-h-[calc(100vh-120px)] lg:grid-cols-12 lg:items-center lg:gap-32">
@@ -105,13 +103,6 @@ export function Hero() {
                   </button>
                 ))}
               </div>
-              {!chosen && (
-                <MotionToggle
-                  paused={paused}
-                  onToggle={() => setPaused((value) => !value)}
-                  what="the store demo"
-                />
-              )}
             </div>
             <div className="rounded-32 sm:rounded-40 relative h-[min(560px,120vw)] overflow-hidden sm:h-[640px] lg:h-[min(760px,calc(100vh-200px))] lg:min-h-[640px]">
               {NICHES.map((item, index) => (
@@ -136,7 +127,6 @@ export function Hero() {
               <ChatDemo
                 key={niche.id}
                 niche={niche}
-                hold={paused && !chosen}
                 onFinished={turning && !reading ? advance : undefined}
               />
             </div>
