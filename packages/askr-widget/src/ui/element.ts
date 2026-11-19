@@ -164,6 +164,8 @@ export class WidgetView {
       this.applyTexts();
     }
     const before = this.log.scrollHeight;
+    // The first turns to land (a chat opened on its history) jump into place; later ones glide.
+    const hadTurns = [...this.turnViews.values()].some((view) => view.root.parentNode === this.log);
     for (const turn of snapshot.turns) {
       // Appended once: moving a node already in place would replay its entrance.
       const { root } = this.turnView(turn);
@@ -177,8 +179,13 @@ export class WidgetView {
     this.input.disabled = !ready;
     this.send.disabled = !ready;
     if (this.log.scrollHeight !== before) {
-      scrollToNewest(this.log, before > 0);
+      scrollToNewest(this.log, hadTurns);
     }
+  }
+
+  /** Put the newest message in view at once: the panel just opened, so nothing should glide. */
+  jumpToNewest(): void {
+    this.log.scrollTop = this.log.scrollHeight;
   }
 
   private turnView(turn: ChatTurn): TurnView {
@@ -304,13 +311,27 @@ function closeIcon(document: Document): SVGSVGElement {
 }
 
 /**
- * Bring the newest message into view. A conversation that grows glides there; the first fill
- * (a chat opened on its history) jumps, and so does every move for a visitor who asked for
- * less motion or a browser that cannot glide.
+ * Whether the visitor asked for less motion. A host page that breaks `matchMedia` (missing, or
+ * throwing) counts as asking: the chat then jumps, which is always safe.
+ */
+function prefersStill(log: HTMLElement): boolean {
+  try {
+    return (
+      log.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ??
+      true
+    );
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Bring the newest message into view. A conversation that grows glides there; the first turns
+ * (a chat opened on its history) jump, and so does every move for a visitor who asked for less
+ * motion or a browser that cannot glide.
  */
 export function scrollToNewest(log: HTMLElement, grew: boolean): void {
-  const still = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-  if (grew && !still && typeof log.scrollTo === 'function') {
+  if (grew && !prefersStill(log) && typeof log.scrollTo === 'function') {
     log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
     return;
   }
@@ -419,6 +440,10 @@ export function defineAskrElement(
       if (open || still || !this.hasAttribute('open')) {
         const wasOpen = this.hasAttribute('open');
         this.toggleAttribute('open', open);
+        if (open && !wasOpen) {
+          // A closed panel has no layout, so the log lost its place: show the newest at once.
+          this.view?.jumpToNewest();
+        }
         if (!open && wasOpen) {
           this.returnFocus();
         }

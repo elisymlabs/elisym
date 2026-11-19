@@ -1,11 +1,15 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WidgetView, scrollToNewest } from '../src/ui/element';
+import { ChatClient } from '../src/client';
+import { WidgetView, defineAskrElement, scrollToNewest } from '../src/ui/element';
+import { FakeGateway, FakeRelay, MemoryStorage, makeStore, publishStore } from './fixtures';
 
 const HEIGHT = 480;
+const REDUCE = '(prefers-reduced-motion: reduce)';
 
 function log(): { box: HTMLElement; glides: ScrollToOptions[]; jumps: number[] } {
   const box = document.createElement('div');
+  document.body.append(box);
   const glides: ScrollToOptions[] = [];
   const jumps: number[] = [];
   Object.defineProperty(box, 'scrollHeight', { get: () => HEIGHT });
@@ -19,12 +23,13 @@ function log(): { box: HTMLElement; glides: ScrollToOptions[]; jumps: number[] }
   return { box, glides, jumps };
 }
 
+/** Reduced motion on or off, matching only the exact query the widget asks. */
 function stubMotion(reduce: boolean): void {
   vi.stubGlobal(
     'matchMedia',
     (query: string) =>
       ({
-        matches: reduce && query.includes('reduce'),
+        matches: reduce && query === REDUCE,
         addEventListener: () => undefined,
         removeEventListener: () => undefined,
       }) as unknown as MediaQueryList,
@@ -32,6 +37,7 @@ function stubMotion(reduce: boolean): void {
 }
 
 afterEach(() => {
+  Reflect.deleteProperty(window, 'Askr');
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   document.body.replaceChildren();
@@ -46,7 +52,7 @@ describe('scrolling to the newest message', () => {
     expect(jumps).toEqual([]);
   });
 
-  it('jumps on the first fill, a chat opened on its history', () => {
+  it('jumps for the first turns, a chat opened on its history', () => {
     stubMotion(false);
     const { box, glides, jumps } = log();
     scrollToNewest(box, false);
@@ -70,31 +76,113 @@ describe('scrolling to the newest message', () => {
     expect(jumps).toEqual([HEIGHT]);
   });
 
-  it('glides the panel log as a new question lands under earlier ones', () => {
-    stubMotion(false);
+  it('jumps, and never throws, where the host page broke matchMedia', () => {
+    for (const broken of [
+      undefined,
+      () => null,
+      () => {
+        throw new Error('no media');
+      },
+    ]) {
+      vi.stubGlobal('matchMedia', broken);
+      const { box, glides, jumps } = log();
+      expect(() => scrollToNewest(box, true)).not.toThrow();
+      expect(glides).toEqual([]);
+      expect(jumps).toEqual([HEIGHT]);
+    }
+  });
+});
+
+describe('the panel log', () => {
+  function panel(): { view: WidgetView; glide: ReturnType<typeof vi.fn>; jumps: number[] } {
     const view = new WidgetView(
       document,
       () => undefined,
       () => undefined,
     );
+    document.body.append(view.panel);
     const panelLog = view.panel.querySelector<HTMLElement>('.log');
     if (panelLog === null) {
       throw new Error('no log');
     }
-    // Each message adds 100px, as a browser would lay it out (happy-dom measures 0).
+    // The greeting is already there; each message adds 100px, as a browser would lay it out.
     vi.spyOn(panelLog, 'scrollHeight', 'get').mockImplementation(
-      () => panelLog.childElementCount * 100,
+      () => 32 + panelLog.childElementCount * 100,
     );
+    const jumps: number[] = [];
+    vi.spyOn(panelLog, 'scrollTop', 'set').mockImplementation((value: number) => {
+      jumps.push(value);
+    });
     const glide = vi.fn();
     panelLog.scrollTo = glide as typeof panelLog.scrollTo;
-    const turn = (askId: string) => ({ askId, text: `question ${askId}`, askedAt: 1 });
-    view.update({ phase: 'ready', branding: true, turns: [turn('a')] });
-    expect(glide).toHaveBeenCalledWith({ top: 200, behavior: 'smooth' });
-    glide.mockClear();
-    view.update({ phase: 'ready', branding: true, turns: [turn('a'), turn('b')] });
-    expect(glide).toHaveBeenCalledWith({ top: 300, behavior: 'smooth' });
-    glide.mockClear();
-    view.update({ phase: 'ready', branding: true, turns: [turn('a'), turn('b')] });
+    return { view, glide, jumps };
+  }
+
+  const turn = (askId: string) => ({ askId, text: `question ${askId}`, askedAt: 1 });
+
+  it('jumps to the end of a restored history, then glides as new questions land', () => {
+    stubMotion(false);
+    const { view, glide, jumps } = panel();
+    view.update({ phase: 'ready', branding: true, turns: [turn('a'), turn('b'), turn('c')] });
     expect(glide).not.toHaveBeenCalled();
+    expect(jumps).toEqual([432]);
+    view.update({
+      phase: 'ready',
+      branding: true,
+      turns: [turn('a'), turn('b'), turn('c'), turn('d')],
+    });
+    expect(glide).toHaveBeenCalledWith({ top: 532, behavior: 'smooth' });
+    glide.mockClear();
+    view.update({
+      phase: 'ready',
+      branding: true,
+      turns: [turn('a'), turn('b'), turn('c'), turn('d')],
+    });
+    expect(glide).not.toHaveBeenCalled();
+  });
+
+  it('shows the newest message at once when asked, as the panel opens', () => {
+    stubMotion(false);
+    const { view, glide, jumps } = panel();
+    view.update({ phase: 'ready', branding: true, turns: [turn('a')] });
+    jumps.length = 0;
+    view.jumpToNewest();
+    expect(jumps).toEqual([232]);
+    expect(glide).not.toHaveBeenCalled();
+  });
+});
+
+describe('<askr-chat>', () => {
+  it('puts the newest message in view at once each time the panel opens', async () => {
+    stubMotion(false);
+    const jump = vi.spyOn(WidgetView.prototype, 'jumpToNewest');
+    const store = makeStore();
+    const relay = new FakeRelay();
+    publishStore(relay, store);
+    const gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
+    let client: ChatClient | undefined;
+    defineAskrElement(window, (owner) => {
+      client = new ChatClient({
+        owner,
+        connect: relay.connect,
+        gateway,
+        localStorage: new MemoryStorage(),
+        sessionStorage: new MemoryStorage(),
+      });
+      return client;
+    });
+    const widget = document.createElement('askr-chat');
+    widget.setAttribute('store', store.owner.pubkey);
+    widget.setAttribute('theme', 'light');
+    document.body.append(widget);
+    const shadow = widget.shadowRoot;
+    shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
+    expect(widget.hasAttribute('open')).toBe(true);
+    expect(jump).toHaveBeenCalledTimes(1);
+    shadow?.querySelector<HTMLButtonElement>('.close')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    shadow?.querySelector<HTMLButtonElement>('.launcher')?.click();
+    expect(jump).toHaveBeenCalledTimes(2);
+    client?.stop();
   });
 });
