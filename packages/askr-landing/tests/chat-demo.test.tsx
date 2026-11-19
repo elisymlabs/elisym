@@ -11,6 +11,9 @@ declare global {
 /** The demo's steps, as ChatDemo times them: greeting, asked, thinking, answered, cards. */
 const STEP_MS = [900, 450, 1900, 160, 6500];
 
+/** The log's content height, as a browser would measure it (happy-dom measures 0). */
+const LOG_HEIGHT = 480;
+
 /** An observer that reports every element it watches as on screen, at once. */
 class OnScreen {
   constructor(private readonly callback: IntersectionObserverCallback) {}
@@ -74,6 +77,11 @@ beforeEach(() => {
       scrollCalls.push(options);
     }
   });
+  vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(
+    function measure(this: Element) {
+      return this.classList.contains('wgt-log') ? LOG_HEIGHT : 0;
+    },
+  );
   vi.spyOn(Element.prototype, 'scrollTop', 'set').mockImplementation(function record(
     this: Element,
     value: number,
@@ -101,7 +109,10 @@ describe('the hero chat', () => {
     for (const [step, ms] of STEP_MS.slice(0, -1).entries()) {
       await advance(ms);
       expect(scrollCalls, `step ${step + 1}`).toHaveLength(step + 1);
-      expect(scrollCalls.at(-1)?.behavior, `step ${step + 1}`).toBe('smooth');
+      expect(scrollCalls.at(-1), `step ${step + 1}`).toEqual({
+        top: LOG_HEIGHT,
+        behavior: 'smooth',
+      });
     }
     expect(topWrites).toEqual([0]);
   });
@@ -120,9 +131,19 @@ describe('the hero chat', () => {
     stubMotion(true);
     const page = await render();
     expect(scrollCalls).toEqual([]);
-    expect(topWrites).toHaveLength(1);
+    expect(topWrites).toEqual([LOG_HEIGHT]);
     expect(page.querySelector('.wgt-cards')).not.toBeNull();
     await advance(20_000);
+    expect(scrollCalls).toEqual([]);
+  });
+
+  it('jumps to the newest message where the browser cannot glide', async () => {
+    stubMotion(false);
+    Reflect.deleteProperty(HTMLElement.prototype, 'scrollTo');
+    Reflect.deleteProperty(Element.prototype, 'scrollTo');
+    await render();
+    await advance(STEP_MS[0] ?? 0);
+    expect(topWrites).toEqual([0, LOG_HEIGHT]);
     expect(scrollCalls).toEqual([]);
   });
 });

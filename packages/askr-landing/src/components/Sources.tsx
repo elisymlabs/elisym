@@ -35,7 +35,7 @@ export function Sources() {
             height={PHOTOS.catalog.height}
             loading="lazy"
             decoding="async"
-            className="absolute inset-0 size-full object-cover"
+            className="absolute inset-0 size-full object-cover object-left"
           />
         </Reveal>
         <Reveal delay={1} className="flex flex-col gap-24 px-4 py-24 sm:px-24 lg:py-48">
