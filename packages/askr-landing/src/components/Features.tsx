@@ -5,7 +5,7 @@ import { Reveal } from './Reveal';
 import { WidgetCard } from './WidgetCard';
 
 /** Each card stops a little lower than the one before, so the stack shows its edges. */
-const STICKY_TOPS = ['top-96', 'top-116', 'top-136', 'top-156'];
+const STICKY_TOPS = ['top-96', 'top-116', 'top-136', 'top-156', 'top-176'];
 
 const COMPARED = [PRODUCTS.headphonesSand, PRODUCTS.headphonesBlack] as const;
 
@@ -23,8 +23,8 @@ interface Feature {
 
 const FEATURES: Feature[] = [
   {
-    title: 'Answers like your best salesperson',
-    body: 'Shipping, returns, warranty, sizes, materials: it quotes the policies and listings you published, in your voice.',
+    title: 'Answers before a question costs you a sale',
+    body: 'Shipping, returns, warranty, sizes, materials: it quotes the listings and policies you published, in your voice, at any hour.',
     scene: (
       <>
         <p className="wgt-mine">Does the warranty cover a cracked case?</p>
@@ -36,8 +36,8 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    title: 'Finds the right product',
-    body: 'A visitor says what they need and what they want to spend. It searches your catalog and shows what fits.',
+    title: 'Finds the right product, within budget',
+    body: 'A shopper says what they need and what they want to spend. Askr searches your catalog and shows only what fits.',
     scene: (
       <>
         <p className="wgt-mine">Earbuds for running, under $100</p>
@@ -86,14 +86,26 @@ const FEATURES: Feature[] = [
     ),
   },
   {
-    title: 'Sends buyers to your cart',
-    body: 'Every card opens the product page. With your cart hook, or on Shopify and WooCommerce, it adds the pick to your cart.',
+    title: 'Puts the pick in the cart',
+    body: 'Every card opens the product page. On Shopify and WooCommerce, Add to cart works out of the box; any other site connects its cart with one small hook.',
     scene: (
       <>
         <p className="wgt-mine">I also need a charger for them</p>
         <div className="wgt-cards">
           <WidgetCard product={PRODUCTS.charger} reason="65 W, with a 2 m cable" added />
         </div>
+      </>
+    ),
+  },
+  {
+    title: 'Never invents a price or a promise',
+    body: 'Cards show the price from your catalog, and every price in an answer is checked against it before the shopper sees it. What you have not published, it says it does not know.',
+    scene: (
+      <>
+        <p className="wgt-mine">Is there a discount on the Pulse Pro?</p>
+        <p className="wgt-theirs">
+          The store has not published a discount on it. It is 199.00 USD, with a 2-year warranty.
+        </p>
       </>
     ),
   },
@@ -106,7 +118,7 @@ export function Features() {
       <Reveal className="flex flex-col gap-20 px-8 sm:px-16">
         <Eyebrow>What it does</Eyebrow>
         <h2 className="max-w-1000 font-serif text-[clamp(2.75rem,6vw,6.5rem)] leading-[0.95] tracking-[-0.025em]">
-          The help a great shop assistant gives, <em className="text-text-3">on every page.</em>
+          Everything a great salesperson does, <em className="text-text-3">for every shopper.</em>
         </h2>
       </Reveal>
       <ol className="mt-56 flex flex-col gap-24 sm:mt-80">

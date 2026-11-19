@@ -23,7 +23,7 @@ export function ForAgents() {
           For shoppers, <em>and for their agents.</em>
         </h2>
         <p className="text-18 text-text-2 max-w-680 leading-relaxed">
-          {`People ask ${PRODUCT_NAME} in the widget on your site. AI agents shopping for someone read your products directly: your catalog is published as open, signed listings on Nostr.`}
+          {`Some shoppers already send an AI agent to shop for them. With ${PRODUCT_NAME}, your catalog is also published as open, signed listings, so those agents can find and read your products directly. No scraping, and no extra work for you.`}
         </p>
       </Reveal>
       <Reveal delay={1} className="mt-56 grid gap-16 lg:grid-cols-2">

@@ -69,8 +69,8 @@ export function Pricing() {
           Pay for conversations, <em>not seats.</em>
         </h2>
         <p className="text-18 text-text-2 max-w-600 leading-relaxed">
-          A conversation is one visitor's chat that got an answer, up to 24 hours long, however many
-          questions it holds.
+          Start free and grow from there. A conversation is one shopper's chat that got an answer,
+          up to 24 hours long, however many questions it holds.
         </p>
       </Reveal>
       <Reveal delay={1}>

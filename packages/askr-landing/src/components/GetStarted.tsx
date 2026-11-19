@@ -1,5 +1,5 @@
 import { BUTTON } from '../buttons';
-import { DOCS, PRODUCT_NAME } from '../constants';
+import { DOCS, PRODUCT_NAME, START_LABEL } from '../constants';
 import { embedSnippet } from '../snippets';
 import { AdminLink } from './AdminLink';
 import { CodeBlock } from './CodeBlock';
@@ -20,7 +20,7 @@ const STEPS = [
   },
   {
     title: 'Get on a plan',
-    body: 'Your store goes live once it is on a plan. Until then the admin already shows everything you set up.',
+    body: 'Start on the free plan and move up as you grow. Your store goes live once it is on a plan.',
   },
   {
     title: 'Paste one line',
@@ -99,7 +99,7 @@ export function GetStarted() {
           </p>
         </Reveal>
         <div className="mt-40 flex flex-wrap items-center gap-12">
-          <AdminLink label="Create your store" className={BUTTON.solid} />
+          <AdminLink label={START_LABEL} className={BUTTON.solid} />
           <ExternalLink href={DOCS.embed} className={BUTTON.ghost}>
             The embed guide
             <Icon name="arrow" className="size-18" />

@@ -99,6 +99,12 @@ export const PLANS: readonly Plan[] = [
   },
 ];
 
+/**
+ * The page's main call to action. It promises a free start, so it holds only while the first
+ * plan is free (a test checks it).
+ */
+export const START_LABEL = 'Start free';
+
 export const GITHUB_URL = 'https://github.com/elisymlabs/elisym';
 export const X_URL = 'https://x.com/elisymlabs';
 export const ELISYM_URL = 'https://elisym.network';

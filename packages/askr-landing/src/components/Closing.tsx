@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { BUTTON } from '../buttons';
-import { PRODUCT_NAME } from '../constants';
+import { PRODUCT_NAME, START_LABEL } from '../constants';
 import { VIEW_CENTER, markPaths } from '../mark';
 import { useScrollProgress } from '../useScrollProgress';
 import { AdminLink } from './AdminLink';
@@ -72,9 +72,9 @@ export function Closing() {
             Give every visitor <em className="text-on-ink-2">a shop assistant.</em>
           </h2>
           <p className="text-18 sm:text-20 text-on-ink-2 max-w-560 leading-relaxed">
-            {`Create your store, paste one line, and ${PRODUCT_NAME} starts answering from your catalog.`}
+            {`Start free, paste one line, and ${PRODUCT_NAME} starts answering your shoppers from your catalog.`}
           </p>
-          <AdminLink label="Create your store" className={BUTTON.light} />
+          <AdminLink label={START_LABEL} className={BUTTON.light} />
         </div>
       </div>
     </section>

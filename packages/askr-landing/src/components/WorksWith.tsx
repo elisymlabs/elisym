@@ -1,11 +1,4 @@
-const ITEMS = [
-  'Shopify',
-  'WooCommerce',
-  'Google product feed',
-  'CSV',
-  'Your own code',
-  'AI agents over MCP',
-];
+const ITEMS = ['Shopify', 'WooCommerce', 'Google product feed', 'CSV', 'Any website'];
 
 /** The sources a catalog comes from, on a slow loop. */
 export function WorksWith() {
@@ -23,7 +16,7 @@ export function WorksWith() {
         id="works-with-title"
         className="text-12 text-text-3 text-center font-semibold tracking-[0.14em] uppercase"
       >
-        Brings in the catalog you already have
+        Works with your store
       </h2>
       <div className="marquee mt-24 overflow-hidden">
         <ul className="marquee-track flex w-max">

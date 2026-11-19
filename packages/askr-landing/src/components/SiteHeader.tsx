@@ -1,14 +1,12 @@
 import { BUTTON } from '../buttons';
-import { DOCS } from '../constants';
+import { DOCS, START_LABEL } from '../constants';
 import { AdminLink } from './AdminLink';
 import { ExternalLink } from './ExternalLink';
 import { Logo } from './Logo';
 
 export const NAV = [
-  { href: '#features', label: 'Product' },
-  { href: '#ai-ready', label: 'For agents' },
-  { href: '#trust', label: 'Trust' },
-  { href: '#start', label: 'Get started' },
+  { href: '#features', label: 'How it works' },
+  { href: '#trust', label: 'Privacy' },
   { href: '#pricing', label: 'Pricing' },
   { href: '#faq', label: 'FAQ' },
 ];
@@ -34,7 +32,14 @@ export function SiteHeader() {
           >
             Docs
           </ExternalLink>
-          <AdminLink label="Sign in" className={`${BUTTON.solid} text-14! ml-6 px-18! py-10!`} />
+          <AdminLink
+            label="Sign in"
+            className="text-text-2 hover:text-text hidden rounded-full px-12 py-8 sm:inline"
+          />
+          <AdminLink
+            label={START_LABEL}
+            className={`${BUTTON.solid} text-14! ml-6 px-18! py-10!`}
+          />
         </nav>
       </div>
     </header>

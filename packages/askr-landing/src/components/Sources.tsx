@@ -44,8 +44,8 @@ export function Sources() {
             Bring the catalog <em>you already have.</em>
           </h2>
           <p className="text-18 text-text-2 leading-relaxed">
-            Pick one source for your products, then add the policies the assistant may quote:
-            returns, shipping, warranty and FAQ.
+            Connect Shopify, WooCommerce or a Google product feed and your products stay in sync,
+            with no store token to hand over. Or upload a CSV and edit by hand.
           </p>
           <ul className="mt-8 flex flex-col">
             {SOURCES.map((source) => (

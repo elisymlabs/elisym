@@ -59,10 +59,10 @@ export function Languages() {
       <Reveal className="mx-auto flex max-w-880 flex-col items-center gap-20 px-16 text-center">
         <Eyebrow>Every language</Eyebrow>
         <h2 className="text-48 sm:text-80 font-serif leading-[0.95]">
-          Your visitors ask <em>in their own words.</em>
+          Speaks your shoppers’ <em>language.</em>
         </h2>
         <p className="text-18 text-text-2 max-w-640 leading-relaxed">
-          {`${PRODUCT_NAME} answers in the visitor's language, whatever language your catalog is in. It reads prices the way people write them, including in Chinese, Japanese and Korean, so a budget is understood and a price is checked either way.`}
+          {`Shoppers ask in their own words and their own language, and ${PRODUCT_NAME} answers the same way, whatever language your catalog is in. It even reads budgets the way people write them, in Chinese, Japanese and Korean too.`}
         </p>
       </Reveal>
       <div className="mt-56 flex flex-col gap-12">

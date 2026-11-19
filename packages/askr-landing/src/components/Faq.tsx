@@ -4,6 +4,11 @@ import { Reveal } from './Reveal';
 
 const QUESTIONS = [
   {
+    question: 'Do I need a developer?',
+    answer:
+      'No. Paste one line into your site, the same way you add any other script. On Shopify and WooCommerce, your products sync and Add to cart works without any code.',
+  },
+  {
     question: `Does ${PRODUCT_NAME} take payments or place orders?`,
     answer: `No. ${PRODUCT_NAME} sells nothing and never touches money. It sends the visitor to your product page or your own cart, and checkout stays exactly where it is.`,
   },
@@ -21,6 +26,11 @@ const QUESTIONS = [
     question: 'Can someone talk it into saying something else?',
     answer:
       'No. Instructions hidden in a product description or typed by a visitor are treated as data, not as instructions, so they cannot change how it answers.',
+  },
+  {
+    question: 'Will it slow down my site?',
+    answer:
+      'The script loads asynchronously, after your page, and runs in its own shadow root, apart from your styles and scripts.',
   },
   {
     question: 'Do you keep the conversations?',

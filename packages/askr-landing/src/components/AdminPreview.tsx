@@ -25,7 +25,7 @@ export function AdminPreview() {
             Everything <em>in one place.</em>
           </h2>
           <p className="text-18 text-text-2 leading-relaxed">
-            {`Shape how ${PRODUCT_NAME} talks, what it knows and how it is doing.`}
+            {`Set how ${PRODUCT_NAME} talks, manage products and policies, and see conversations and product clicks against your plan.`}
           </p>
           <ul className="text-15 flex flex-col gap-10">
             {CONTROLS.map((item) => (

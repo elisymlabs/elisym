@@ -27,8 +27,8 @@ const POINTS: { icon: IconName; title: string; body: string }[] = [
   },
   {
     icon: 'shield',
-    title: 'A script that cannot be swapped',
-    body: 'Pin the widget with its integrity hash, and the browser runs it only if it is exactly the file you approved.',
+    title: 'Clearly an AI',
+    body: 'Shoppers always see they are talking to an AI assistant. It never pretends to be a person.',
   },
   {
     icon: 'globe',
@@ -54,12 +54,12 @@ export function Trust() {
         </Reveal>
         <div className="flex flex-col gap-24 px-4">
           <Reveal className="flex flex-col gap-24">
-            <Eyebrow>Your keys</Eyebrow>
+            <Eyebrow>Privacy and control</Eyebrow>
             <h2 className="text-48 sm:text-80 font-serif leading-[0.95]">
-              Your store, <em>signed by you.</em>
+              Your store <em>stays yours.</em>
             </h2>
             <p className="text-18 text-text-2 max-w-600 leading-relaxed">
-              {`Your catalog, policies and the assistant's settings live on Nostr, an open network, signed by keys only you hold. ${PRODUCT_NAME} runs the assistant on them, but does not own them: you are never locked in with us.`}
+              {`Your products, policies and settings are signed with a key only you hold and published on an open network. ${PRODUCT_NAME} runs the assistant on them but does not own them, so you are never locked in.`}
             </p>
             <p className="border-line-2 text-15 text-text-2 flex max-w-600 gap-12 border-l-2 pl-16 leading-relaxed">
               Your secret key is your store. Lost or leaked, you replace it through your own site,

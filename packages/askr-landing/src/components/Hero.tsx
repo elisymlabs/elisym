@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { BUTTON } from '../buttons';
-import { DOCS, PRODUCT_NAME } from '../constants';
+import { PRODUCT_NAME, START_LABEL } from '../constants';
 import { NICHES } from '../niches';
 import { AdminLink } from './AdminLink';
 import { ChatDemo } from './ChatDemo';
-import { ExternalLink } from './ExternalLink';
 import { Icon } from './Icon';
 import { Reveal } from './Reveal';
 
@@ -24,28 +23,30 @@ export function Hero() {
           <Reveal>
             <p className="text-13 text-text-2 flex items-center gap-10 font-medium tracking-[0.12em] uppercase">
               <span className="bg-text inline-block h-px w-32" />
-              {`${PRODUCT_NAME}, the shopping assistant for your store's site`}
+              AI shopping assistant for online stores
             </p>
           </Reveal>
           <Reveal delay={1}>
             <h1 className="font-serif text-[clamp(3.5rem,14vw,5.5rem)] leading-[0.88] tracking-[-0.035em] lg:text-[clamp(4rem,6.6vw,8.25rem)]">
-              Helps every visitor buy.{' '}
-              <span className="text-text-3">
-                <em>Never</em> makes up a price.
-              </span>
+              Your best salesperson, <em className="text-text-3">on every page.</em>
             </h1>
           </Reveal>
           <Reveal delay={2}>
             <p className="text-18 text-text-2 max-w-560 leading-relaxed">
-              {`${PRODUCT_NAME} answers your visitors from your own catalog and policies, finds the product for their need and budget, and sends them to your cart. AI agents read the same catalog straight from the open network. It sells nothing itself.`}
+              {`${PRODUCT_NAME} answers shoppers right away, in their language. It finds the right product for their need and budget and sends them to your cart. Every answer comes from your own catalog and policies, so every price and promise is yours.`}
             </p>
           </Reveal>
           <Reveal delay={3} className="flex flex-wrap gap-12">
-            <AdminLink label="Create your store" className={BUTTON.solid} />
-            <ExternalLink href={DOCS.overview} className={BUTTON.ghost}>
-              Read the docs
-              <Icon name="arrow" className="size-18" />
-            </ExternalLink>
+            <AdminLink label={START_LABEL} className={BUTTON.solid} />
+            <a href="#features" className={BUTTON.ghost}>
+              See how it works
+              <Icon name="arrow" className="size-18 rotate-90" />
+            </a>
+          </Reveal>
+          <Reveal delay={3}>
+            <p className="text-14 text-text-3">
+              One line of code. Works with Shopify, WooCommerce and any other site.
+            </p>
           </Reveal>
         </div>
 

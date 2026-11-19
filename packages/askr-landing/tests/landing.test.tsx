@@ -10,6 +10,7 @@ import {
   ELISYM_URL,
   GITHUB_URL,
   PLANS,
+  START_LABEL,
   WIDGET_SRC,
   X_URL,
 } from '../src/constants';
@@ -200,6 +201,20 @@ describe('the copy', () => {
           /(?:by |\. |^|>)$/,
         );
       }
+    }
+  });
+
+  it('promises a free start only while the first plan is free', async () => {
+    expect(START_LABEL).toBe('Start free');
+    expect(PLANS[0]?.price).toBe('$0');
+    expect(PLANS[0]?.start).toBe('admin');
+    const page = await render(<App />);
+    const starts = [...page.querySelectorAll('a')].filter(
+      (link) => link.textContent === START_LABEL,
+    );
+    expect(starts.length).toBeGreaterThanOrEqual(3);
+    for (const link of starts) {
+      expect(link.href).toBe(ADMIN_URL);
     }
   });
 
