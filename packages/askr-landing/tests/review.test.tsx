@@ -393,11 +393,15 @@ describe('the copy', () => {
     expect(injection?.querySelector('p')?.textContent).not.toMatch(/^No\b/);
   });
 
-  it('says it never takes payments, and that every store is activated on its plan', async () => {
+  it('says it never takes payments, that Free starts in the admin and a paid plan through us', async () => {
     const page = await render(<App />);
+    const choose =
+      'Choose Free in the admin and your store goes live at once. For a paid plan, message us with your Store ID.';
     expect(page.querySelector('#faq')?.textContent).toContain('never touches money');
-    expect(page.querySelector('#start')?.textContent).toContain('Free included');
-    expect(page.querySelector('#pricing')?.textContent).toContain('Free included');
+    expect(page.querySelector('#start')?.textContent).toContain(choose);
+    expect(page.querySelector('#pricing')?.textContent).toContain(choose);
+    expect(page.textContent).not.toContain('Free included');
+    expect(page.textContent).not.toContain('we activate');
   });
 
   it('draws the admin on its own address, with its usage written as the admin writes it', async () => {

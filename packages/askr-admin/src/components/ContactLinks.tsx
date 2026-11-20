@@ -7,7 +7,7 @@ interface Props {
 
 const LINK = 'text-13 text-text-2 hover:text-text underline underline-offset-2';
 
-/** Where to message us about activation or a larger plan, and the Store ID to name. */
+/** Where to message us about a paid or larger plan, and the Store ID to name. */
 export function ContactLinks({ storeId }: Props) {
   return (
     <p className="text-13 text-text-2 flex flex-wrap items-baseline gap-x-12 gap-y-4">

@@ -56,9 +56,10 @@ export function ownSignedEvents(events: readonly unknown[], owner: string): Nost
 
 /**
  * The relay's events with the owner's stored ones added (7.3): a store that is
- * not active has nothing on the relay yet, so its settings and authorizations
- * are read from what the server holds for it. Every reader keeps choosing the
- * newest per address, so whichever is newer wins.
+ * not active has nothing on the relay yet, nor has an active one whose events
+ * are not all published yet (right after an activation), so its settings and
+ * authorizations are read from what the server holds for it. Every reader
+ * keeps choosing the newest per address, so whichever is newer wins.
  */
 export function withStoredEvents(relay: RelayReader, stored: readonly NostrEvent[]): RelayReader {
   if (stored.length === 0) {

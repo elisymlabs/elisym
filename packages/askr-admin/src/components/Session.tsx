@@ -32,8 +32,8 @@ type Load =
 
 /**
  * A signed-in owner: their store from the API and its config from the relay,
- * or, while the store is not active, from what O signed and the server holds
- * for the relay (7.3).
+ * or, while the store is not active or its signed events are still being
+ * published, from what O signed and the server holds for the relay (7.3).
  */
 export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
@@ -43,7 +43,10 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   /** The date of a newest config that does not parse: a new one must be dated after it. */
   const [unreadableAt, setUnreadableAt] = useState<number>();
   const [reloadWarning, setReloadWarning] = useState('');
-  /** The owner's stored events in use: none once the store is active (the relay is the source). */
+  /**
+   * The owner's stored events in use: none once the store is active and nothing is waiting (the
+   * relay is the source).
+   */
   const [stored, setStored] = useState<NostrEvent[]>([]);
   /** The server left older stored events out of its answer for size. */
   const [storedTruncated, setStoredTruncated] = useState(false);
@@ -51,12 +54,15 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   const [configFromServer, setConfigFromServer] = useState(false);
   /** The store's state as last read, for the config read that follows. */
   const status = useRef<StoreStatus | undefined>(undefined);
+  /** Its signed events not published yet, as last read: an activation publishes them a moment later. */
+  const pending = useRef(0);
 
   /** Read the store again: true once it was read. */
   const reload = useCallback(async (): Promise<boolean> => {
     try {
       const view = await deps.api.store();
       status.current = view.status;
+      pending.current = view.events.pending;
       setLoad({ state: 'ready', view });
       setReloadWarning('');
       return true;
@@ -83,15 +89,21 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   const reloadConfig = useCallback(async (): Promise<boolean> => {
     let own: NostrEvent[] = [];
     let truncated = false;
-    if (status.current !== undefined && status.current !== 'active') {
+    const active = status.current === 'active';
+    // Right after an activation the relay may not have the settings yet: until the stored events
+    // are published, what O signed is read back for an active store too.
+    if (status.current !== undefined && (!active || pending.current > 0)) {
       try {
         const read = await deps.api.storedEvents();
         own = ownSignedEvents(read.events, deps.signer.pubkey);
         truncated = read.truncated;
       } catch (error) {
-        setConfigError(`Your saved settings could not be read: ${errorMessage(error)}`);
-        setConfigRead(true);
-        return false;
+        // An active store's settings are on the relay too (or soon): it falls back to the relay.
+        if (!active) {
+          setConfigError(`Your saved settings could not be read: ${errorMessage(error)}`);
+          setConfigRead(true);
+          return false;
+        }
       }
     }
     setStored(own);

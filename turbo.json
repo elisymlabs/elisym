@@ -27,6 +27,15 @@
       "outputs": ["dist/**", ".vercel/output/**"],
       "env": ["VERCEL"]
     },
+    "@elisym/askr-admin#test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../askr-server/src/**",
+        "../docs/pages/askr/admin.mdx",
+        "../askr-landing/src/constants.ts"
+      ]
+    },
     "@elisym/askr-landing#test": {
       "dependsOn": ["build"],
       "inputs": ["$TURBO_DEFAULT$", "../askr-server/src/**", "../docs/pages/**"]

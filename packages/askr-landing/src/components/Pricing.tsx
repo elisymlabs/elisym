@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  CHOOSE_PLAN_TEXT,
   CONVERSATION_DEFINITION,
   PLANS,
   YEARLY_DISCOUNT_LABEL,
@@ -53,10 +54,7 @@ export function Pricing() {
         <p>
           {`Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more.`}
         </p>
-        <p>
-          Create your store in the admin, then message us on Telegram and we activate it on its
-          plan, Free included.
-        </p>
+        <p>{CHOOSE_PLAN_TEXT}</p>
       </div>
     </section>
   );

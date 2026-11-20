@@ -9,8 +9,8 @@ import { createAdminApi } from './admin/api';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { runCli } from './cli';
 import {
-  autoTierFromEnv,
-  autoTierWarning,
+  freeTierFromEnv,
+  freeTierWarning,
   publicBaseOf,
   serveConfigFromEnv,
   workerSettings,
@@ -87,13 +87,14 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const directory = new StoreDirectory(db, vault);
   // Refuses to start on a bad model setting or a max_tokens the reservation cannot pay for.
   const config = serveConfigFromEnv(process.env);
-  // Refuses to start on a bad auto tier setting; unset, only the operator activates stores (6.1).
-  const autoTier = autoTierFromEnv(process.env);
-  if (autoTier !== undefined) {
+  // Refuses to start on a bad Free setting or an old ASKR_AUTO_TIER* name; unset, Free answers
+  // `free_unavailable` and only the operator activates stores (6.1).
+  const freeTier = freeTierFromEnv(process.env);
+  if (freeTier !== undefined) {
     log(
-      `a store's first settings activate it on ${autoTier.tier}: at most ${autoTier.perDay} a day, ${autoTier.maxActive} active`,
+      `Free is self-serve on the tier ${freeTier.tier} (the merchant chooses it): at most ${freeTier.perDay} a day, ${freeTier.maxActive} active`,
     );
-    const warning = await autoTierWarning(autoTier, directory);
+    const warning = await freeTierWarning(freeTier, directory);
     if (warning !== undefined) {
       log(warning);
     }
@@ -197,7 +198,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     syncClient,
     storeEventsChanged: onStoresChanged,
     connectors,
-    ...(autoTier === undefined ? {} : { autoTier }),
+    ...(freeTier === undefined ? {} : { freeTier }),
     reserveUsd: config.reserveUsd,
     log,
   });

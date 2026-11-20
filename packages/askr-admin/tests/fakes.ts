@@ -106,7 +106,10 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     store: vi.fn(async () => storeView()),
     storeEvents: vi.fn(async (events: NostrEvent[]) => ({
       stored: events.map((event) => event.id),
-      activation: null,
+    })),
+    choosePlan: vi.fn(async () => ({
+      ...storeView({ tier: { ...FREE_TIER } }),
+      activation: 'activated' as const,
     })),
     storedEvents: vi.fn(async () => ({ events: [], truncated: false })),
     pinnedWidget: vi.fn(async () => PINNED_WIDGET),
@@ -128,6 +131,23 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     recover: vi.fn(async () => storeView()),
     ...overrides,
   };
+}
+
+/** The Free tier as an operator would set it up. */
+export const FREE_TIER = {
+  name: 'free',
+  messagesPerSessionPerDay: 20,
+  dailyBudgetUsd: '1',
+  monthlyBudgetUsd: '10',
+  ticketsPerStorePerMinute: 30,
+  maxProducts: 100,
+  syncIntervalMinutes: 1440,
+  branding: true,
+};
+
+/** What Overview takes beside the view and the settings, for a test that only looks at it. */
+export function overviewProps(api: AdminClient = fakeApi()) {
+  return { deps: { api }, configError: '', onPlanChosen: vi.fn(async () => undefined) };
 }
 
 export function sessionDeps(

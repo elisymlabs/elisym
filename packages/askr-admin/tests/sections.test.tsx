@@ -172,7 +172,7 @@ describe('the session', () => {
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes('Overview'));
     expect(container.textContent).not.toContain('Set up your assistant');
-    expect(container.textContent).toContain('2 signed changes waiting for activation');
+    expect(container.textContent).toContain('2 signed changes waiting until your store is active.');
   });
 
   it('never onboards over a config it could not read: an error and a retry instead', async () => {

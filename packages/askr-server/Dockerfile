@@ -33,11 +33,13 @@
 # ASKR_TURN_RESERVE_USD (0.25 by default). The server refuses to start when 8 calls x
 # ASKR_MAX_TOKENS x ASKR_PRICE_OUTPUT exceed the reservation: an Opus-priced model
 # ($20 per million output) at the defaults does; lower ASKR_MAX_TOKENS or raise the reserve.
-# Free on the first settings (6.1): ASKR_AUTO_TIER names the tier (e.g. free; create it first with
-# `tier set`) a pending store is activated on when its owner saves settings with an origin.
-# ASKR_AUTO_TIER_PER_DAY (50 by default) caps activations per rolling 24 hours on all instances,
-# ASKR_AUTO_TIER_MAX_ACTIVE (500 by default) the auto-activated stores active on that tier.
-# Unset, only the operator activates stores.
+# Self-serve Free (6.1): ASKR_FREE_TIER names the tier (e.g. free; create it first with `tier set`)
+# a pending, never-tiered store is put on when its owner chooses Free (the admin's Start on Free,
+# or POST /v1/admin/store/plan). ASKR_FREE_PER_DAY (50 by default) caps those activations per
+# rolling 24 hours on all instances, ASKR_FREE_MAX_ACTIVE (500 by default) the self-serve stores
+# active on that tier. With ASKR_FREE_TIER unset, Free answers free_unavailable and only the
+# operator activates stores. To turn Free off, unset all three: a cap set without the tier stops
+# the server at startup, and so does any old ASKR_AUTO_TIER* name.
 # Operator commands run in the same image:
 #   docker run --rm -e DATABASE_URL=... -e ASKR_MASTER_KEY_FILE=... askr-server store list
 ARG BUN_IMAGE=oven/bun:1.3.11-slim

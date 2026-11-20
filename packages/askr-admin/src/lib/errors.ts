@@ -51,7 +51,12 @@ const CODES: Readonly<Record<string, string>> = {
   sync_running:
     'A product sync or connector preview is already running for this store. Wait for it to finish, then retry.',
   inactive:
-    'Your store is not active yet: products, policies and the connector work once it is. Save your settings again to retry the activation, or message us with your Store ID.',
+    'Your store is not active yet: products, policies and the connector work once it is. If it has no plan yet, choose one in Overview; otherwise message us with your Store ID.',
+  no_settings: 'Save your settings first, then choose a plan.',
+  free_unavailable: 'Free is not available right now. Message us with your Store ID.',
+  capacity_reached: 'Free is not available right now. Message us with your Store ID.',
+  not_pending: 'Your store is suspended. Message us with your Store ID.',
+  operator_managed: "We manage your store's plan. Message us with your Store ID.",
   no_connector:
     'No connector is set up for this store. Choose your shop as the product source in Settings and save first.',
   policy_imported:

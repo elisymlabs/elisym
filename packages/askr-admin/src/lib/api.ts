@@ -125,9 +125,17 @@ export class AdminApi {
     return this.call<StoreView>('GET', '/v1/admin/store');
   }
 
-  /** `activation`: what storing settings did to a pending store; null when nothing. */
-  storeEvents(events: NostrEvent[]): Promise<{ stored: string[]; activation: Activation | null }> {
+  /** Store O-signed events: storing settings never activates a store (6.2). */
+  storeEvents(events: NostrEvent[]): Promise<{ stored: string[] }> {
     return this.call('POST', '/v1/admin/store/events', { events });
+  }
+
+  /**
+   * The owner chooses a plan (6.1): only Free is self-serve. The view after it,
+   * active on Free (`activated`), or already active before (`already_active`).
+   */
+  choosePlan(plan: 'free'): Promise<StoreView & { activation: Activation }> {
+    return this.call('POST', '/v1/admin/store/plan', { plan });
   }
 
   /** What O signed and the server holds for the relay: a store that is not active shows it (7.3). */
