@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { Overview } from '../src/components/Overview';
-import { CONTACT_URL, FIND_STORE_ID_URL } from '../src/constants';
+import { CONTACT_URL } from '../src/constants';
 import {
   PENDING_CONTACT_TEXT,
   PENDING_OVERVIEW_TEXT,
@@ -48,9 +48,8 @@ describe('the plan wording (6.5)', () => {
     expect(
       mounted.container.querySelector('#plan-picker .contact-link')?.parentElement?.textContent,
     ).toContain(npubOf(OWNER));
-    expect(hrefs(mounted.container)).toEqual(
-      expect.arrayContaining([CONTACT_URL, FIND_STORE_ID_URL]),
-    );
+    expect(hrefs(mounted.container)).toContain(CONTACT_URL);
+    expect(mounted.container.textContent).not.toContain('Where else to find it');
     expect(mounted.container.querySelector('#upgrade')).toBeNull();
   });
 
@@ -135,9 +134,8 @@ describe('the plan wording (6.5)', () => {
     expect(HELP.waiting.text).not.toContain('activated');
   });
 
-  it('points to the contact and the docs section the CLI and the landing link to', () => {
+  it('points to the contact the CLI and the landing link to', () => {
     expect(CONTACT_URL).toBe('https://askr.elisym.network/contact');
-    expect(FIND_STORE_ID_URL).toBe('https://docs.elisym.network/askr/overview#find-your-store-id');
   });
 });
 

@@ -33,6 +33,8 @@ let mounted: Mounted | undefined;
 afterEach(async () => {
   await mounted?.unmount();
   mounted = undefined;
+  // App marks this tab on a sign-in (`tab-session`): no mark is left for the next test.
+  sessionStorage.clear();
 });
 
 /** The previous owner key, its assistant key, and a key it authorized for its own backend. */

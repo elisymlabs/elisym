@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { type RememberedKey, forgetKey, readRemembered, unlockKey } from '../lib/remembered';
 import { npubOf } from '../lib/signer';
+import { tabSignedInStore } from '../lib/tab-session';
 import { Notice } from './Notice';
 
 interface Props {
@@ -35,6 +36,8 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
   const working = useRef(false);
   const [error, setError] = useState<{ store: string; message: string }>();
   const [confirming, setConfirming] = useState('');
+  /** A reload of a tab that was signed in: that store signs in again once, with no press. */
+  const resumed = useRef(false);
 
   const unlock = async (key: RememberedKey) => {
     if (working.current) {
@@ -64,6 +67,19 @@ export function UnlockRemembered({ keys, onUnlocked, onForgotten }: Props) {
     }
     setError({ store: key.store, message: UNLOCK_ERRORS[outcome.reason] });
   };
+
+  useEffect(() => {
+    if (resumed.current) {
+      return;
+    }
+    resumed.current = true;
+    const store = tabSignedInStore();
+    const key = keys.find((known) => known.store === store);
+    if (key !== undefined) {
+      void unlock(key);
+    }
+    // Once, on the first render: a later change of the list is a forget, not a reload.
+  }, []);
 
   const forget = (store: string) => {
     setConfirming('');
