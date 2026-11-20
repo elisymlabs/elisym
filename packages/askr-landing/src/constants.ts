@@ -188,6 +188,6 @@ export const START_LABEL = 'Start free';
 export const GITHUB_URL = 'https://github.com/elisymlabs/elisym';
 export const X_URL = 'https://x.com/elisymlabs';
 
-/** Where a store asks for a paid plan or Enterprise: our Telegram. */
-export const CONTACT_URL = 'https://t.me/new_acc_nata';
+/** Where a store asks for a paid plan or Enterprise: our request form. */
+export const CONTACT_URL = 'https://forms.gle/woUDTt53ZndRtm5H8';
 export const ELISYM_URL = 'https://elisym.network';

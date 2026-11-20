@@ -4,7 +4,11 @@
   "buildCommand": "cd ../.. && bunx turbo run build --filter=@elisym/askr-landing...",
   "outputDirectory": "dist",
   "redirects": [
-    { "source": "/contact", "destination": "https://t.me/new_acc_nata", "permanent": false }
+    {
+      "source": "/contact",
+      "destination": "https://forms.gle/woUDTt53ZndRtm5H8",
+      "permanent": false
+    }
   ],
   "headers": [
     {
