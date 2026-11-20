@@ -2,7 +2,7 @@ interface Props {
   className?: string;
 }
 
-/** The Pay Core mark, inline (no image request): the same drawing as the favicon. */
+/** The PayCore mark, inline (no image request): the same drawing as the favicon. */
 export function LogoMark({ className }: Props) {
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true" className={className}>

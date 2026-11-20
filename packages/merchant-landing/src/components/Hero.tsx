@@ -16,7 +16,7 @@ export function Hero() {
             {`${PRODUCT_NAME}: stablecoin checkout, no sign-up`}
           </p>
           <h1 className="text-40 sm:text-60 mt-24 max-w-720 leading-[1.05] font-semibold tracking-tight">
-            Accept stablecoin payments with <span className="text-accent-ink">one tag</span>.
+            Accept stablecoin payments with <span className="text-accent-ink">one HTML tag</span>.
           </h1>
           <p className="text-18 text-text-2 mt-24 max-w-600 leading-relaxed">
             Add a Buy button to any page. Buyers pay in stablecoins straight to your wallet, your

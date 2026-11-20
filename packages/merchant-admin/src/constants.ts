@@ -16,7 +16,7 @@ export const HEADER_HOME_LINK =
   'text-text-2 hover:text-text rounded-8 inline-flex items-center gap-6 px-12 py-8';
 
 /** The product's name, everywhere the admin names it. */
-export const PRODUCT_NAME = 'Pay Core';
+export const PRODUCT_NAME = 'PayCore';
 
 /** Prints the store key (nsec) on the merchant's machine. */
 export const STORE_KEY_COMMAND = 'npx @elisym/merchant-node store-key';
@@ -24,7 +24,7 @@ export const STORE_KEY_COMMAND = 'npx @elisym/merchant-node store-key';
 /** Serves the same admin on the merchant's own machine. */
 export const LOCAL_ADMIN_COMMAND = 'npx @elisym/merchant-node admin';
 
-/** The Pay Core landing: its own origin, never this one. */
+/** The PayCore landing: its own origin, never this one. */
 export const LANDING_URL = 'https://paycore.elisym.network';
 
 export const QUICKSTART_URL = 'https://docs.elisym.network/commerce/quickstart';

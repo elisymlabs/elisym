@@ -133,7 +133,7 @@ export default defineConfig({
       ],
     },
     {
-      text: 'Sell with Pay Core',
+      text: 'Sell with PayCore',
       items: [
         { text: 'Quickstart', link: '/commerce/quickstart' },
         { text: 'The widget', link: '/commerce/widget' },

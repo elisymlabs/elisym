@@ -1,4 +1,4 @@
-# Deploying the Pay Core landing page
+# Deploying the PayCore landing page
 
 The landing page is a static page on `https://paycore.elisym.network`. It runs the checkout
 loader from `https://pay.elisym.network` for its live demo, so it never shares an origin with
