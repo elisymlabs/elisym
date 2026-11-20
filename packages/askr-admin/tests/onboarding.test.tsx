@@ -43,8 +43,9 @@ describe('onboarding', () => {
     );
     mounted = await mount(render());
     expect(mounted.container.textContent).toContain(
-      'Saving your settings asks for your store to start on Free',
+      'Save your settings, then choose a plan in Overview: Free starts at once',
     );
+    expect(mounted.container.textContent).not.toContain('asks for your store to start');
     expect(mounted.container.querySelector('.contact-link')?.getAttribute('href')).toBe(
       CONTACT_URL,
     );

@@ -190,12 +190,7 @@ export function SettingsSection({
             authorized: authorities.keys,
             relayNewestAt: authorities.newestAt,
           });
-          // The view is the one from before this save: a save that activated the store says so.
-          const message = savedMessage({
-            status: outcome.activation === 'activated' ? 'active' : view.status,
-            tier: view.tier,
-            activation: outcome.activation,
-          });
+          const message = savedMessage(view);
           setSaved(outcome.note === undefined ? message : `${message} ${outcome.note}`);
           await onSaved();
           if (outcome.connectorError !== undefined) {

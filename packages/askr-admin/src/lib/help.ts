@@ -20,8 +20,12 @@ export function helpUrl(help: Help): string {
 export const HELP = {
   // Overview
   status: {
-    text: 'Pending: the store is waiting for activation; save your settings again to retry, or message us with your Store ID. Active: it answers on your sites. Suspended: it does not answer; contact the operator.',
+    text: 'Pending: not live yet; choose a plan in Overview (Free starts at once, a paid plan through us), or message us if we manage your plan. Active: it answers on your sites. Suspended: it does not answer; contact the operator.',
     anchor: 'status',
+  },
+  planPicker: {
+    text: 'Start on Free puts your store live at once, within Free’s limits; save your settings first. For a paid plan, message us with your Store ID and we set it up.',
+    anchor: 'choose-a-plan',
   },
   usage: {
     text: 'What the assistant spent against your plan today and this month, in US dollars. When a budget runs out the chat says it is unavailable until the next day or month. Conversations are visitors’ chats that got at least one answer.',

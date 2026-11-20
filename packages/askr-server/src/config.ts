@@ -215,63 +215,78 @@ export function openRouterProvidersFrom(model: string, value: string | undefined
   return providers;
 }
 
-/** Auto-activations per rolling 24 hours, all instances, unless ASKR_AUTO_TIER_PER_DAY says otherwise. */
-export const DEFAULT_AUTO_TIER_PER_DAY = 50;
-/** Auto-activated stores active on the auto tier at most, unless ASKR_AUTO_TIER_MAX_ACTIVE says otherwise. */
-export const DEFAULT_AUTO_TIER_MAX_ACTIVE = 500;
+/** Self-serve Free activations per rolling 24 hours, all instances, unless ASKR_FREE_PER_DAY says otherwise. */
+export const DEFAULT_FREE_PER_DAY = 50;
+/** Self-serve stores active on the Free tier at most, unless ASKR_FREE_MAX_ACTIVE says otherwise. */
+export const DEFAULT_FREE_MAX_ACTIVE = 500;
 /** As the operator CLI names a tier (`src/cli.ts`). */
-const AUTO_TIER_NAME_RE = /^[a-z0-9-]{1,32}$/;
+const FREE_TIER_NAME_RE = /^[a-z0-9-]{1,32}$/;
+/** The names before the rename, refused at start so a stale setting never silently turns Free off. */
+const RENAMED_FREE_SETTINGS: ReadonlyArray<readonly [string, string]> = [
+  ['ASKR_AUTO_TIER', 'ASKR_FREE_TIER'],
+  ['ASKR_AUTO_TIER_PER_DAY', 'ASKR_FREE_PER_DAY'],
+  ['ASKR_AUTO_TIER_MAX_ACTIVE', 'ASKR_FREE_MAX_ACTIVE'],
+];
 
-/** The tier a store's first settings activate it on, and the caps on how many (6.1). */
-export interface AutoTier {
+/** The tier a merchant's explicit Free choice puts a store on, and the caps on how many (6.1). */
+export interface FreeTier {
   tier: string;
   perDay: number;
   maxActive: number;
 }
 
 /**
- * ASKR_AUTO_TIER (a tier name, e.g. free) with ASKR_AUTO_TIER_PER_DAY and
- * ASKR_AUTO_TIER_MAX_ACTIVE, checked at start. Unset: no store is activated
- * but by the operator, as before.
+ * ASKR_FREE_TIER (a tier name, e.g. free) with ASKR_FREE_PER_DAY and
+ * ASKR_FREE_MAX_ACTIVE, checked at start. Unset: Free answers
+ * `free_unavailable` and only the operator activates stores. A cap set
+ * without the tier, or any old ASKR_AUTO_TIER* name, stops the server.
  */
-export function autoTierFromEnv(rawEnv: Env): AutoTier | undefined {
+export function freeTierFromEnv(rawEnv: Env): FreeTier | undefined {
   const env = withoutEmpty(rawEnv);
-  const tier = env.ASKR_AUTO_TIER;
+  for (const [oldName, newName] of RENAMED_FREE_SETTINGS) {
+    if (env[oldName] !== undefined) {
+      throw new Error(
+        `${oldName} was renamed to ASKR_FREE_*: set ${newName} instead (and unset ${oldName}).`,
+      );
+    }
+  }
+  const tier = env.ASKR_FREE_TIER;
   if (tier === undefined) {
-    for (const name of ['ASKR_AUTO_TIER_PER_DAY', 'ASKR_AUTO_TIER_MAX_ACTIVE']) {
+    for (const name of ['ASKR_FREE_PER_DAY', 'ASKR_FREE_MAX_ACTIVE']) {
       if (env[name] !== undefined) {
-        throw new Error(`${name} is an ASKR_AUTO_TIER setting: unset it without ASKR_AUTO_TIER.`);
+        throw new Error(`${name} is an ASKR_FREE_TIER setting: unset it without ASKR_FREE_TIER.`);
       }
     }
     return undefined;
   }
-  if (!AUTO_TIER_NAME_RE.test(tier)) {
-    throw new Error(`ASKR_AUTO_TIER must be a tier name (1 to 32 of a-z, 0-9 and -), got ${tier}`);
+  if (!FREE_TIER_NAME_RE.test(tier)) {
+    throw new Error(`ASKR_FREE_TIER must be a tier name (1 to 32 of a-z, 0-9 and -), got ${tier}`);
   }
   return {
     tier,
     perDay: positiveInteger(
-      'ASKR_AUTO_TIER_PER_DAY',
-      env.ASKR_AUTO_TIER_PER_DAY ?? String(DEFAULT_AUTO_TIER_PER_DAY),
+      'ASKR_FREE_PER_DAY',
+      env.ASKR_FREE_PER_DAY ?? String(DEFAULT_FREE_PER_DAY),
     ),
     maxActive: positiveInteger(
-      'ASKR_AUTO_TIER_MAX_ACTIVE',
-      env.ASKR_AUTO_TIER_MAX_ACTIVE ?? String(DEFAULT_AUTO_TIER_MAX_ACTIVE),
+      'ASKR_FREE_MAX_ACTIVE',
+      env.ASKR_FREE_MAX_ACTIVE ?? String(DEFAULT_FREE_MAX_ACTIVE),
     ),
   };
 }
 
 /**
- * A warning when the auto tier does not exist (yet): stores are then told
- * `no_tier`. Not a refusal to start, since the operator may create it after.
+ * A warning when the Free tier does not exist (yet): a Free choice is then
+ * answered `free_unavailable`. Not a refusal to start, since the operator may
+ * create it after.
  */
-export async function autoTierWarning(
-  autoTier: AutoTier,
+export async function freeTierWarning(
+  freeTier: FreeTier,
   tiers: { tierExists: (name: string) => Promise<boolean> },
 ): Promise<string | undefined> {
-  return (await tiers.tierExists(autoTier.tier))
+  return (await tiers.tierExists(freeTier.tier))
     ? undefined
-    : `ASKR_AUTO_TIER names the tier ${autoTier.tier}, which does not exist: no store is activated until the operator creates it (askr-server tier set ${autoTier.tier} ...)`;
+    : `ASKR_FREE_TIER names the tier ${freeTier.tier}, which does not exist: Free is unavailable until the operator creates it (askr-server tier set ${freeTier.tier} ...)`;
 }
 
 const FALLBACK_FIELDS = 6;

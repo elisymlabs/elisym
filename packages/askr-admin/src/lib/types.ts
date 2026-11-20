@@ -20,11 +20,10 @@ export type StoreStatus = 'pending' | 'active' | 'suspended';
 export type BudgetPause = 'day' | 'month';
 
 /**
- * What saving settings did to a pending store (`POST /v1/admin/store/events`):
- * activated on the auto tier, or why not (`disabled`: no auto-activation for
- * this store, so only a message to us helps).
+ * What choosing Free did (`POST /v1/admin/store/plan`, 6.1): the store is
+ * active on Free now, or was active already.
  */
-export type Activation = 'activated' | 'capacity_reached' | 'no_tier' | 'disabled';
+export type Activation = 'activated' | 'already_active';
 
 export interface StoreUsage {
   today: { spent: string; reserved: string };

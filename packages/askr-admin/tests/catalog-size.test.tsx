@@ -15,6 +15,7 @@ import {
   adminConfig,
   fakeReader,
   listing,
+  overviewProps,
   storeView,
 } from './fakes';
 import { type Mounted, mount, settle } from './mount';
@@ -54,6 +55,7 @@ async function overview(
   const tier = view.tier === null ? null : { ...view.tier, maxProducts };
   mounted = await mount(
     <Overview
+      {...overviewProps()}
       view={{ ...view, tier }}
       config={config}
       configFromServer={false}

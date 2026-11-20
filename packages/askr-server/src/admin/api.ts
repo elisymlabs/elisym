@@ -24,7 +24,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { decode } from 'nostr-tools/nip19';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
-import { type AutoTier, publicBaseOf } from '../config';
+import { type FreeTier, publicBaseOf } from '../config';
 import { livePolicies } from '../connectors/policies';
 import { type ConnectorService, shopIdentity } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
@@ -32,12 +32,7 @@ import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
 import { budgetPause } from '../state/budget';
 import { randomId } from '../state/pg-state';
-import {
-  type Activation,
-  type CatalogSyncStatus,
-  proofOrigins,
-  type StoreDirectory,
-} from '../state/stores';
+import { type CatalogSyncStatus, proofOrigins, type StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
@@ -163,6 +158,11 @@ const EmailSchema = z
 const ContactRequestSchema = z.object({ email: EmailSchema.nullable() });
 /** `POST /v1/admin/store`: onboarding may give the contact email at once. */
 const CreateRequestSchema = z.object({ email: EmailSchema.optional() });
+/** Only Free is self-serve; a paid plan goes through us until a checkout answers here (6.1). */
+const PlanRequestSchema = z.object({ plan: z.literal('free') });
+
+/** What `POST /v1/admin/store/plan` did, beside the view it answers with (6.1). */
+export type Activation = 'activated' | 'already_active';
 
 const ConnectorRequestSchema = z.object({
   platform: z.enum(CONNECTOR_PLATFORMS),
@@ -182,8 +182,8 @@ export interface AdminDeps {
   /** Called after O-signed events were stored, so an active store's are published at once. */
   storeEventsChanged: () => void;
   connectors: ConnectorService;
-  /** ASKR_AUTO_TIER: a store's first settings activate it on this tier, within the caps (6.1). */
-  autoTier?: AutoTier;
+  /** ASKR_FREE_TIER: the tier a merchant's explicit Free choice puts a store on, within the caps (6.1). */
+  freeTier?: FreeTier;
   /** ASKR_TURN_RESERVE_USD: what one turn reserves, so the admin says when the budget stops the chat. */
   reserveUsd?: string;
   now?: () => number;
@@ -459,33 +459,6 @@ export function createAdminApi(
     };
   };
 
-  /**
-   * Activate a pending store that never had a tier on the auto tier (6.1): null
-   * when it is not pending, `disabled` when ASKR_AUTO_TIER is unset or the
-   * store had a tier (the operator set it back to pending: only they activate
-   * it again). The caller checked that the store holds settings with an origin.
-   */
-  const activate = async (owner: string): Promise<Activation | null> => {
-    const current = await deps.directory.statusOf(owner);
-    if (current?.status !== 'pending') {
-      return null;
-    }
-    if (deps.autoTier === undefined || current.tier !== null) {
-      return 'disabled';
-    }
-    const { tier, perDay, maxActive } = deps.autoTier;
-    const activation = await deps.directory.autoActivate(owner, tier, now(), {
-      perDay,
-      maxActive,
-    });
-    if (activation === 'capacity_reached') {
-      log(`store ${owner} not activated on ${tier}: a cap is reached`);
-    } else if (activation === 'no_tier') {
-      log(`store ${owner} not activated: the tier ${tier} does not exist`);
-    }
-    return activation;
-  };
-
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
     const parsed = EventsRequestSchema.safeParse(parseJson(body));
     if (!parsed.success) {
@@ -505,15 +478,81 @@ export function createAdminApi(
         ? json({ error: 'too_many_events' }, 409)
         : json({ error: 'bad_event', reason: added.reason, id: added.id }, 400);
     }
-    // Only settings a store can run on take a slot: a config that parses lists an origin.
-    const settings = events.some(
-      (event) => event.kind === KIND_CONFIG && parseConfig(event) !== undefined,
-    );
-    const activation = settings ? await activate(store.owner) : null;
-    // After the activation, so this instance publishes an activated store's events at once (the
-    // activation's notify also runs the same handler, on every instance).
+    // Storing settings never activates a store: its owner chooses a plan (POST /store/plan, 6.1).
     deps.storeEventsChanged();
-    return json({ stored: events.map((event) => event.id), activation }, 200);
+    return json({ stored: events.map((event) => event.id) }, 200);
+  };
+
+  /**
+   * The answer for a store a Free choice does not (or no longer) apply to, by
+   * its state now (6.1). A pending store without a tier qualifies under the
+   * lock, so it lands here only if the store changed in a way the server cannot
+   * tell: `read_failed`, retried.
+   */
+  const planRefused = async (store: StoreRecord): Promise<Response> => {
+    if (store.status === 'active') {
+      const activation: Activation = 'already_active';
+      return json({ ...(await view(store)), activation }, 200);
+    }
+    if (store.status === 'suspended') {
+      return json({ error: 'not_pending' }, 409);
+    }
+    if (store.tier !== undefined) {
+      return json({ error: 'operator_managed' }, 409);
+    }
+    log(`store ${store.owner} is pending without a tier, yet its Free activation was refused`);
+    return json({ error: 'read_failed' }, 503);
+  };
+
+  /**
+   * The merchant chooses a plan (6.1): only Free is self-serve, and only for a
+   * pending store that never had a tier and holds settings it can run on. Paid
+   * plans go through us until a checkout answers here.
+   */
+  const choosePlan = async (store: StoreRecord, body: string): Promise<Response> => {
+    const parsed = PlanRequestSchema.safeParse(parseJson(body));
+    if (!parsed.success) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    if (store.status !== 'pending' || store.tier !== undefined) {
+      return planRefused(store);
+    }
+    // Only settings a store can run on take a slot: a config that parses lists an origin.
+    if (!(await deps.directory.hasStoredConfig(store.owner))) {
+      return json({ error: 'no_settings' }, 409);
+    }
+    if (deps.freeTier === undefined) {
+      return json({ error: 'free_unavailable' }, 409);
+    }
+    const { tier, perDay, maxActive } = deps.freeTier;
+    const outcome = await deps.directory.activateFree(store.owner, tier, now(), {
+      perDay,
+      maxActive,
+    });
+    if (outcome === 'capacity_reached') {
+      log(`store ${store.owner} not activated on ${tier}: a cap is reached`);
+      return json({ error: 'capacity_reached' }, 409);
+    }
+    if (outcome === 'no_tier') {
+      log(`store ${store.owner} not activated: the Free tier ${tier} does not exist`);
+      return json({ error: 'free_unavailable' }, 409);
+    }
+    const current = await deps.directory.store(store.owner);
+    if (current === undefined) {
+      // Moved by a key replacement meanwhile: answered as every route answers a missing store.
+      return (await deps.directory.wasMoved(store.owner))
+        ? json({ error: 'moved' }, 409)
+        : json({ error: 'no_store' }, 404);
+    }
+    if (outcome === null) {
+      return planRefused(current);
+    }
+    log(`store ${store.owner} activated on ${tier}: its owner chose Free`);
+    // So this instance publishes the stored events at once (the activation's notify also runs
+    // the same handler, on every instance).
+    deps.storeEventsChanged();
+    const activation: Activation = 'activated';
+    return json({ ...(await view(current)), activation }, 200);
   };
 
   const catalog = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -710,17 +749,7 @@ export function createAdminApi(
       }
       const existing = await deps.directory.store(owner);
       if (existing !== undefined) {
-        // A pending store whose settings are stored already is activated here (6.1): a re-run of
-        // a setup that posts nothing new asks again.
-        const activation =
-          existing.status === 'pending' && (await deps.directory.hasStoredConfig(owner))
-            ? await activate(owner)
-            : null;
-        if (activation === 'activated') {
-          deps.storeEventsChanged();
-        }
-        const current = activation === 'activated' ? await deps.directory.store(owner) : existing;
-        return json({ ...(await view(current ?? existing)), activation }, 200);
+        return json(await view(existing), 200);
       }
       // A key a store moved away from never opens a store again: its embeds lead to the new one.
       if (await deps.directory.wasMoved(owner)) {
@@ -733,7 +762,7 @@ export function createAdminApi(
       if (created.data.email !== undefined) {
         await deps.directory.setContactEmail(owner, created.data.email);
       }
-      return json({ ...(await view(store)), activation: null }, 200);
+      return json(await view(store), 200);
     }
     const store = await deps.directory.store(owner);
     if (store === undefined) {
@@ -748,9 +777,13 @@ export function createAdminApi(
     if (route === 'POST /v1/admin/store/events') {
       return storeEvents(store, body);
     }
+    if (route === 'POST /v1/admin/store/plan') {
+      return choosePlan(store, body);
+    }
     if (route === 'GET /v1/admin/store/events') {
-      // The read-back (7.3): a store that is not active has nothing on the relay yet, so its admin
-      // shows the events O signed from here. Only the caller's own store; the admin checks each
+      // The read-back (7.3): a store that is not active has nothing on the relay yet, nor has an
+      // active one whose events are still being published, so its admin shows the events O signed
+      // from here. Only the caller's own store; the admin checks each
       // signature and author as it does the relay's.
       return json(await deps.directory.storedEvents(owner, MAX_READ_BACK_BYTES), 200);
     }

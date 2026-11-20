@@ -347,7 +347,7 @@ describe('admin API (7.3)', () => {
     });
     expect(stored).toEqual({
       status: 200,
-      body: { stored: [config?.id, auth?.id, deletion.id], activation: null },
+      body: { stored: [config?.id, auth?.id, deletion.id] },
     });
     expect(changed).toEqual(['changed']);
     expect((await directory.unpublishedEvents()).map((row) => row.event.id)).toEqual(

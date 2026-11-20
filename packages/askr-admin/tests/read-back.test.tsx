@@ -23,6 +23,7 @@ import {
   SERVER_KEY,
   fakeApi,
   fakeReader,
+  overviewProps,
   sessionDeps,
   storeView,
 } from './fakes';
@@ -224,7 +225,7 @@ describe('a pending store read back from the server (7.3)', () => {
     expect(container.textContent).toContain('published once your store is reactivated');
   });
 
-  it('an active store reads the relay only, and never asks the server', async () => {
+  it('an active store with nothing pending reads the relay only, and never asks the server', async () => {
     const api = fakeApi({
       storedEvents: vi.fn(async () => ({
         events: [configSignedBy(OWNER_KEY, 'Stored', NOW)],
@@ -278,7 +279,12 @@ describe('a pending store read back from the server (7.3)', () => {
 describe('the overview', () => {
   it('shows the conversations so far next to the open ones, and says what one is', async () => {
     mounted = await mount(
-      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+      <Overview
+        {...overviewProps()}
+        view={storeView()}
+        config={undefined}
+        configFromServer={false}
+      />,
     );
     const { container } = mounted;
     expect(byId(container, 'usage-conversations').textContent).toBe('12');
@@ -296,7 +302,12 @@ describe('the overview', () => {
       ],
     };
     mounted = await mount(
-      <Overview view={storeView({ usage })} config={undefined} configFromServer={false} />,
+      <Overview
+        {...overviewProps()}
+        view={storeView({ usage })}
+        config={undefined}
+        configFromServer={false}
+      />,
     );
     const rows = [
       ...mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr'),
@@ -312,7 +323,12 @@ describe('the overview', () => {
 
   it('shows the connector only once one is set up', async () => {
     mounted = await mount(
-      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+      <Overview
+        {...overviewProps()}
+        view={storeView()}
+        config={undefined}
+        configFromServer={false}
+      />,
     );
     expect(mounted.container.textContent).not.toContain('Connector');
     expect(mounted.container.textContent).not.toContain('No connector is set up');
@@ -328,7 +344,12 @@ describe('the overview', () => {
       lastStatus: null,
     };
     mounted = await mount(
-      <Overview view={storeView({ connector })} config={undefined} configFromServer={false} />,
+      <Overview
+        {...overviewProps()}
+        view={storeView({ connector })}
+        config={undefined}
+        configFromServer={false}
+      />,
     );
     expect(mounted.container.textContent).toContain('Connector');
     expect(mounted.container.textContent).toContain('https://shop.example');
@@ -568,7 +589,12 @@ describe('the overview', () => {
       })),
     };
     mounted = await mount(
-      <Overview view={storeView({ usage })} config={undefined} configFromServer={false} />,
+      <Overview
+        {...overviewProps()}
+        view={storeView({ usage })}
+        config={undefined}
+        configFromServer={false}
+      />,
     );
     const rows = mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr');
     expect(rows).toHaveLength(10);
@@ -581,7 +607,12 @@ describe('the overview', () => {
     ['suspended', 'Suspended', 'badge-error'],
   ] as const)('shows the %s store with the %s badge', async (status, label, tone) => {
     mounted = await mount(
-      <Overview view={storeView({ status })} config={undefined} configFromServer={false} />,
+      <Overview
+        {...overviewProps()}
+        view={storeView({ status })}
+        config={undefined}
+        configFromServer={false}
+      />,
     );
     const badge = mounted.container.querySelector('.badge');
     expect(badge?.textContent).toBe(label);
@@ -590,7 +621,12 @@ describe('the overview', () => {
 
   it('says no clicks yet with none', async () => {
     mounted = await mount(
-      <Overview view={storeView()} config={undefined} configFromServer={false} />,
+      <Overview
+        {...overviewProps()}
+        view={storeView()}
+        config={undefined}
+        configFromServer={false}
+      />,
     );
     expect(mounted.container.textContent).toContain('No clicks yet.');
     expect(mounted.container.querySelector('table[aria-label="Product clicks"]')).toBeNull();

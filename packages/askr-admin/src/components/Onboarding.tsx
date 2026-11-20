@@ -52,8 +52,8 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
       <Notice tone="info">
         <span className="flex flex-col gap-4">
           <span>
-            Saving your settings asks for your store to start on Free; there is nothing to pay here.
-            If it stays Pending, message us with your Store ID.
+            Save your settings, then choose a plan in Overview: Free starts at once, with nothing to
+            pay. For a paid plan, message us with your Store ID.
           </span>
           <ContactLinks storeId={ownerNpub} />
         </span>

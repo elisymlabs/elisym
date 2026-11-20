@@ -24,7 +24,7 @@ interface Props {
   view: StoreView;
   /** The published config, if the relay has one. */
   config: StoreConfig | undefined;
-  /** The config is read from what the server holds for the relay (a store that is not active). */
+  /** The config is read from what the server holds for the relay (not active, or not all published). */
   configFromServer: boolean;
   /** The server left older stored events out of its read-back for size. */
   storedTruncated: boolean;
@@ -122,9 +122,13 @@ export function Shell({
   if (tab === 'overview') {
     content = (
       <Overview
+        deps={deps}
         view={view}
         config={config}
         configFromServer={configFromServer}
+        configError={configError}
+        // Activation publishes the stored config, so the settings are read again too (6.5).
+        onPlanChosen={refresh}
         catalogReader={{ reader: deps.reader, now: deps.now }}
       />
     );

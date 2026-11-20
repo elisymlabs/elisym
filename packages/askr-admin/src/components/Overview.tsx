@@ -2,6 +2,7 @@ import type { StoreConfig } from '@elisym/askr';
 import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
 import { KIND_DELETION } from '@elisym/commerce';
 import { UPGRADE_TEXT, pendingTextOf } from '../lib/activation';
+import type { SessionDeps } from '../lib/deps';
 import { HELP } from '../lib/help';
 import type { RelayReader } from '../lib/relay';
 import { npubOf } from '../lib/signer';
@@ -12,15 +13,21 @@ import { CatalogSize } from './CatalogSize';
 import { ConnectorStatus } from './ConnectorStatus';
 import { ContactLinks } from './ContactLinks';
 import { Notice } from './Notice';
+import { PlanPicker } from './PlanPicker';
 import { Section } from './Section';
 import { SyncStatus } from './SyncStatus';
 import { UsageMeter } from './UsageMeter';
 
 interface Props {
+  deps: Pick<SessionDeps, 'api'>;
   view: StoreView;
   config: StoreConfig | undefined;
-  /** The settings shown are the ones O signed and the server holds until activation. */
+  /** The settings shown are the ones O signed and the server holds until they are published. */
   configFromServer: boolean;
+  /** Why the settings could not be read; empty when they were. */
+  configError: string;
+  /** After a plan was chosen: the store and its settings are read again. */
+  onPlanChosen: () => Promise<void>;
   /** Reads the catalog to say when it is larger than the plan indexes. */
   catalogReader?: { reader: RelayReader; now: () => number };
 }
@@ -49,26 +56,52 @@ const STATUS_BADGE: Readonly<Record<StoreStatus, { label: string; tone: string }
   suspended: { label: 'Suspended', tone: 'badge-error' },
 };
 
-export function Overview({ view, config, configFromServer, catalogReader }: Props) {
+export function Overview({
+  deps,
+  view,
+  config,
+  configFromServer,
+  configError,
+  onPlanChosen,
+  catalogReader,
+}: Props) {
   const { tier, usage, events } = view;
   const badge = STATUS_BADGE[view.status];
+  // A pending store with no plan chooses one here; one with a plan is managed by us.
+  const choosing = view.status === 'pending' && tier === null;
+  let publishedWhen = 'They are published once your store is activated.';
+  if (view.status === 'suspended') {
+    publishedWhen = 'They are published once your store is reactivated.';
+  } else if (view.status === 'active') {
+    publishedWhen = 'They are being published now.';
+  }
   return (
     <div className="flex flex-col gap-32">
       <Section title="Status" info={HELP.status}>
         <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:gap-12">
           <span className={`badge self-start sm:self-auto ${badge.tone}`}>{badge.label}</span>
           <p className="text-14 text-text-2" role="status">
-            {view.status === 'pending' ? pendingTextOf(view) : STATUS_TEXT[view.status]}
+            {view.status === 'pending' ? pendingTextOf(view, 'overview') : STATUS_TEXT[view.status]}
           </p>
         </div>
-        {view.status === 'pending' ? <ContactLinks storeId={npubOf(view.owner)} /> : null}
+        {choosing ? (
+          <PlanPicker
+            deps={deps}
+            owner={view.owner}
+            settingsSaved={config !== undefined}
+            configError={configError}
+            onPlanChosen={onPlanChosen}
+          />
+        ) : null}
+        {view.status === 'pending' && !choosing ? (
+          <ContactLinks storeId={npubOf(view.owner)} />
+        ) : null}
         {config === undefined ? (
           <p className="text-14 text-text-2">Your settings are not published yet.</p>
         ) : null}
         {config !== undefined && configFromServer ? (
           <p className="text-14 text-text-2">
-            Your settings are shown as you signed them. They are published once your store is{' '}
-            {view.status === 'suspended' ? 'reactivated' : 'activated'}.
+            Your settings are shown as you signed them. {publishedWhen}
           </p>
         ) : null}
         {view.nextAssistant === null ? null : (
@@ -82,11 +115,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
       <Section
         title="Usage"
         info={HELP.usage}
-        description={
-          tier === null
-            ? 'No plan yet: your store is waiting for activation.'
-            : `Plan: ${tier.name}`
-        }
+        description={tier === null ? 'No plan yet: choose one under Status.' : `Plan: ${tier.name}`}
       >
         <dl className="grid grid-cols-1 gap-12 sm:grid-cols-3">
           <div className="rounded-10 bg-surface-2 flex flex-col gap-4 px-14 py-12">
@@ -197,7 +226,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         ) : (
           <p className="text-14">
             {events.pending} signed change{events.pending === 1 ? '' : 's'} waiting
-            {view.status === 'active' ? '.' : ' for activation.'}
+            {view.status === 'active' ? '.' : ' until your store is active.'}
           </p>
         )}
         {events.failing.map((failing) => (

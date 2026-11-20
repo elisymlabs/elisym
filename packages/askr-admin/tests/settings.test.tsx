@@ -133,7 +133,12 @@ describe('the settings save', () => {
     [
       'pending',
       storeView({ status: 'pending', tier: null }),
-      'Saved. Your store is waiting for activation. Save your settings again to retry, or message us with your Store ID.',
+      'Saved. Choose a plan in Overview to go live.',
+    ],
+    [
+      'operator-managed pending',
+      storeView({ status: 'pending' }),
+      "Saved. We manage your store's plan. Message us with your Store ID to make it live.",
     ],
     ['suspended', storeView({ status: 'suspended' }), 'published once your store is reactivated'],
   ] as const)('says it saved, for a %s store', async (_status, view, copy) => {
@@ -146,39 +151,6 @@ describe('the settings save', () => {
     await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length === 1);
     expect(container.textContent).toContain(copy);
   });
-
-  it.each([
-    ['activated', 'Saved. The new settings are published in a moment.'],
-    ['capacity_reached', 'Saved. Your store is waiting for activation. Save your settings again'],
-    ['disabled', 'Saved. Your store is waiting for activation. Message us with your Store ID.'],
-    ['no_tier', 'Saved. Your store is waiting for activation. Message us with your Store ID.'],
-  ] as const)(
-    'a pending store whose save answers %s says so, from the answer and not the old view',
-    async (activation, copy) => {
-      const event = publishedConfig(NOW - 100);
-      const api = fakeApi({
-        storeEvents: vi.fn(async (events: NostrEvent[]) => ({
-          stored: events.map((stored) => stored.id),
-          activation,
-        })),
-      });
-      const deps = sessionDeps(api, fakeReader([event]));
-      const { container } = await mountSettings({
-        deps,
-        config: configOf(event),
-        view: storeView({ status: 'pending', tier: null }),
-      });
-      await click(buttonNamed(container, 'Sign and save'));
-      await settle(() => (container.textContent ?? '').includes(copy));
-      expect(container.textContent).toContain(copy);
-      expect((container.textContent ?? '').includes('published in a moment')).toBe(
-        activation === 'activated',
-      );
-      expect((container.textContent ?? '').includes('Save your settings again')).toBe(
-        activation === 'capacity_reached',
-      );
-    },
-  );
 
   it('dates a second save after the first, even before the relay shows the first', async () => {
     const event = publishedConfig(NOW - 100);
@@ -363,13 +335,8 @@ describe('the connector, set up with the settings', () => {
     expect(deps.api.putConnector).not.toHaveBeenCalled();
   });
 
-  it('keeps what the activation answered when the connector step fails or adds a note', async () => {
+  it('keeps the saved message when the connector step fails or adds a note', async () => {
     const event = publishedConfig(NOW - 100);
-    const answering = (activation: 'activated' | 'disabled') =>
-      vi.fn(async (events: NostrEvent[]) => ({
-        stored: events.map((stored) => stored.id),
-        activation,
-      }));
     const shopConfig = {
       ...configOf(event),
       source: {
@@ -378,55 +345,50 @@ describe('the connector, set up with the settings', () => {
         shopUrl: 'https://tea.example',
       },
     };
-    const pendingView = storeView({ status: 'pending', tier: null, connector: CONNECTOR });
+    const choosingView = storeView({ status: 'pending', tier: null, connector: CONNECTOR });
+    const managedView = storeView({ status: 'pending', connector: CONNECTOR });
 
     const failing = sessionDeps(
-      fakeApi({
-        storeEvents: answering('activated'),
-        putConnector: vi.fn(async () => Promise.reject(new Error('down'))),
-      }),
+      fakeApi({ putConnector: vi.fn(async () => Promise.reject(new Error('down'))) }),
       fakeReader([event]),
     );
-    const first = await mountSettings({ deps: failing, config: shopConfig, view: pendingView });
+    const first = await mountSettings({ deps: failing, config: shopConfig, view: choosingView });
     await click(buttonNamed(first.container, 'Sign and save'));
     await settle(() =>
       (first.container.textContent ?? '').includes(
         'Your settings are saved, but the connector could not be updated',
       ),
     );
-    expect(first.container.textContent).toContain('published in a moment');
+    expect(first.container.textContent).toContain('Saved. Choose a plan in Overview to go live.');
+    expect(first.container.textContent).not.toContain('published in a moment');
     expectConnectorErrorOnlyInAlert(first.container);
     await mounted?.unmount();
 
     const paused = sessionDeps(
       fakeApi({
-        storeEvents: answering('disabled'),
         putConnector: vi.fn(async () => ({ connector: { ...CONNECTOR, enabled: false } })),
       }),
       fakeReader([event]),
     );
-    const second = await mountSettings({ deps: paused, config: shopConfig, view: pendingView });
+    const second = await mountSettings({ deps: paused, config: shopConfig, view: managedView });
     await typeInto(byId(second.container, 'store-shop-url'), 'https://tea.example/shop');
     await click(buttonNamed(second.container, 'Sign and save'));
     await settle(() => (second.container.textContent ?? '').includes('Syncing is paused'));
     expect(second.container.textContent).toContain(
-      'Saved. Your store is waiting for activation. Message us with your Store ID. Syncing is paused',
+      "Saved. We manage your store's plan. Message us with your Store ID to make it live. Syncing is paused",
     );
     await mounted?.unmount();
 
-    const removed = sessionDeps(
-      fakeApi({ storeEvents: answering('disabled') }),
-      fakeReader([event]),
-    );
+    const removed = sessionDeps(fakeApi(), fakeReader([event]));
     const third = await mountSettings({
       deps: removed,
       config: configOf(event),
-      view: pendingView,
+      view: managedView,
     });
     await click(buttonNamed(third.container, 'Sign and save'));
     await settle(() => (third.container.textContent ?? '').includes('The connector is removed'));
     expect(third.container.textContent).toContain(
-      'Message us with your Store ID. The connector is removed',
+      'Message us with your Store ID to make it live. The connector is removed',
     );
     expect(third.container.textContent).not.toContain('Save your settings again');
   });

@@ -1,5 +1,5 @@
 import { BUTTON } from '../buttons';
-import { DOCS, PRODUCT_NAME, START_LABEL } from '../constants';
+import { CHOOSE_PLAN_TEXT, DOCS, PRODUCT_NAME, START_LABEL } from '../constants';
 import { embedSnippet } from '../snippets';
 import { AdminLink } from './AdminLink';
 import { CodeBlock } from './CodeBlock';
@@ -20,7 +20,7 @@ const STEPS = [
   },
   {
     title: 'Get on a plan',
-    body: 'Message us and we activate your store on its plan, Free included. Until then the admin already shows everything you set up.',
+    body: CHOOSE_PLAN_TEXT,
   },
   {
     title: 'Paste one line',
