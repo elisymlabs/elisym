@@ -85,7 +85,10 @@ const SITES = 'Up to 20 sites';
 /**
  * The plans, in one table to edit: change them here, nothing else on the page restates them.
  * Conversations are approximate: each plan has a monthly spend cap, and heavy use pauses the
- * chat rather than cost more. Up to 20 sites is the protocol's `LIMITS.MAX_ORIGINS`.
+ * chat rather than cost more. The numbers are what the cap pays for at the worst cost per
+ * conversation (no prompt cache, a big catalog), with the cap set from the yearly price a month,
+ * so no paid plan can cost more than it brings in (Enterprise's floor likewise covers its
+ * worst case; its caps are set per contract). Up to 20 sites is the protocol's `LIMITS.MAX_ORIGINS`.
  */
 export const PLANS: readonly Plan[] = [
   {
@@ -107,7 +110,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$29', yearlyPerMonth: '$23', yearlyTotal: '$276' },
     blurb: 'For a small store getting going.',
     features: [
-      'About 500 conversations a month',
+      'About 250 conversations a month',
       'Up to 1,000 products',
       'Syncs every 6 hours',
       POWERED_BY,
@@ -121,7 +124,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$99', yearlyPerMonth: '$79', yearlyTotal: '$948' },
     blurb: 'For a store that sells every day.',
     features: [
-      'About 2,000 conversations a month',
+      'About 1,000 conversations a month',
       'Up to 5,000 products',
       'Syncs every hour',
       POWERED_BY,
@@ -136,7 +139,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$199', yearlyPerMonth: '$159', yearlyTotal: '$1,908' },
     blurb: 'For a busy store with a big catalog.',
     features: [
-      'About 6,000 conversations a month',
+      'About 1,900 conversations a month',
       'Up to 10,000 products',
       'Syncs every 30 minutes',
       POWERED_BY,
@@ -151,7 +154,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$499', yearlyPerMonth: '$399', yearlyTotal: '$4,788' },
     blurb: 'For heavy traffic and large catalogs.',
     features: [
-      'About 15,000 conversations a month',
+      'About 5,000 conversations a month',
       'Up to 20,000 products',
       'Syncs every 15 minutes',
       POWERED_BY,
@@ -166,7 +169,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'from', monthly: '$1,500' },
     blurb: 'For large stores and store groups.',
     features: [
-      'From 25,000 conversations a month',
+      'From 15,000 conversations a month',
       'Catalog size and sync by agreement',
       'An SLA',
       NO_BRANDING,
