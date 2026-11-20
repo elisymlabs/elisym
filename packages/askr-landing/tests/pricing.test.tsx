@@ -148,7 +148,7 @@ describe('the plans', () => {
         start: plan.start,
       })),
     ).toEqual(AGREED);
-    expect(CONTACT_URL).toBe('https://t.me/new_acc_nata');
+    expect(CONTACT_URL).toBe('https://forms.gle/woUDTt53ZndRtm5H8');
     expect(CONVERSATION_DEFINITION).toBe(
       "A conversation is one visitor's chat, up to 24 hours from their first message, that got at least one answer.",
     );
@@ -349,7 +349,7 @@ describe('the pricing section', () => {
     expect((await cardOf(page, 'Pro'))?.textContent).not.toContain('billed yearly');
   });
 
-  it('opens every paid plan and Enterprise on Telegram in a new tab', async () => {
+  it('opens every paid plan and Enterprise on the request form in a new tab', async () => {
     const page = await render();
     for (const plan of PLANS.filter((entry) => entry.start !== 'admin')) {
       const link = (await cardOf(page, plan.name))?.querySelector('a');
