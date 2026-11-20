@@ -48,6 +48,3 @@ export const CONTACT_URL = 'https://askr.elisym.network/contact';
 
 /** Every plan with its limits, on the landing: the plan picker shows names and monthly prices only. */
 export const PRICING_URL = 'https://askr.elisym.network/#pricing';
-
-/** The guide's section on where the Store ID is. */
-export const FIND_STORE_ID_URL = 'https://docs.elisym.network/askr/overview#find-your-store-id';

@@ -1,4 +1,4 @@
-import { CONTACT_URL, FIND_STORE_ID_URL } from '../constants';
+import { CONTACT_URL } from '../constants';
 
 interface Props {
   /** The Store ID (npub) to quote, shown beside the link. */
@@ -17,9 +17,6 @@ export function ContactLinks({ storeId }: Props) {
       <span className="min-w-0">
         Store ID: <span className="font-mono break-all">{storeId}</span>
       </span>
-      <a className={LINK} href={FIND_STORE_ID_URL} target="_blank" rel="noreferrer">
-        Where else to find it
-      </a>
     </p>
   );
 }

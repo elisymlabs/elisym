@@ -36,6 +36,8 @@ beforeEach(() => {
 afterEach(async () => {
   await mounted?.unmount();
   mounted = undefined;
+  // The whole-app tests sign in, which marks this tab (`tab-session`): no mark is left for the next.
+  sessionStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();

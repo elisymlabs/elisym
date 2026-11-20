@@ -25,13 +25,18 @@ describe('the source', () => {
     );
   });
 
-  it('touches browser storage in one module only, and never session storage or cookies', () => {
+  it('touches browser storage in two modules only: keys in remembered, the tab in tab-session', () => {
     expect(
       files
         .filter((file) => /localStorage|sessionStorage|indexedDB/.test(file.text))
-        .map((file) => file.path),
-    ).toEqual([join(SRC, 'lib/remembered.ts')]);
-    expect(files.filter((file) => /sessionStorage|document\.cookie/.test(file.text))).toEqual([]);
+        .map((file) => file.path)
+        .sort(),
+    ).toEqual([join(SRC, 'lib/remembered.ts'), join(SRC, 'lib/tab-session.ts')]);
+    // Session storage only for the tab's Store ID (public), never a key; cookies never.
+    expect(
+      files.filter((file) => /sessionStorage/.test(file.text)).map((file) => file.path),
+    ).toEqual([join(SRC, 'lib/tab-session.ts')]);
+    expect(files.filter((file) => /document\.cookie/.test(file.text))).toEqual([]);
   });
 
   it('makes the device key non-extractable', () => {
