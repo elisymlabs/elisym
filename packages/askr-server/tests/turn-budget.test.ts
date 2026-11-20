@@ -99,6 +99,7 @@ describe('serveConfigFromEnv: the model and turn budget the server starts with',
       apiKey: 'or',
       model: 'qwen/qwen3-max',
       providers: ['together'],
+      fallbacks: [],
     });
   });
 
@@ -259,6 +260,7 @@ describe('OpenRouter hosts: only named US or EU hosts, never a China-hosted one'
       apiKey: 'or',
       model: 'deepseek/deepseek-v4.1-flash',
       providers: ['together', 'fireworks', 'baseten', 'deepinfra'],
+      fallbacks: [],
     });
     expect(config.maxTokens).toBe(4_096);
     const recorded = recordingFetch('openai');
@@ -394,5 +396,106 @@ describe('OpenRouter hosts: only named US or EU hosts, never a China-hosted one'
 
   it('the recommended DeepSeek settings fit the default reservation: 8 x 4096 x 1.2 per million', () => {
     expect(serveConfigFromEnv(DEEPSEEK_ENV).reserveUsd).toBe('0.25');
+  });
+});
+
+/** The fallbacks prod runs: Claude Haiku 5.5, then gpt-oss-120b, each on US or EU hosts. */
+const FALLBACKS =
+  'anthropic/claude-haiku-5.5|anthropic,amazon-bedrock|0.1|0.01|0.125|0.5; openai/gpt-oss-120b|together,groq|0.15|0.15|0.15|0.6';
+
+/** A fetch that fails for the named models and answers the others, recording which it was asked. */
+function failingFetch(down: readonly string[]) {
+  const asked: string[] = [];
+  const doFetch: typeof fetch = async (_input, init) => {
+    const body = JSON.parse(typeof init?.body === 'string' ? init.body : '{}') as {
+      model: string;
+    };
+    asked.push(body.model);
+    if (down.includes(body.model)) {
+      return new Response('{}', { status: 503 });
+    }
+    const reply = {
+      choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 1_000_000, completion_tokens: 0 },
+    };
+    return new Response(JSON.stringify(reply), { status: 200 });
+  };
+  return { doFetch, asked };
+}
+
+describe('the model cascade (ASKR_OPENROUTER_FALLBACKS)', () => {
+  it('reads each fallback with its hosts and price', () => {
+    const config = serveConfigFromEnv({ ...DEEPSEEK_ENV, ASKR_OPENROUTER_FALLBACKS: FALLBACKS });
+    expect(config.model.kind === 'openrouter' ? config.model.fallbacks : []).toEqual([
+      {
+        model: 'anthropic/claude-haiku-5.5',
+        providers: ['anthropic', 'amazon-bedrock'],
+        price: { input: '0.1', cachedInput: '0.01', cacheWrite: '0.125', output: '0.5' },
+      },
+      {
+        model: 'openai/gpt-oss-120b',
+        providers: ['together', 'groq'],
+        price: { input: '0.15', cachedInput: '0.15', cacheWrite: '0.15', output: '0.6' },
+      },
+    ]);
+  });
+
+  it('tries DeepSeek first on every call and falls through in order, logging each fall', async () => {
+    const config = serveConfigFromEnv({ ...DEEPSEEK_ENV, ASKR_OPENROUTER_FALLBACKS: FALLBACKS });
+    const logs: string[] = [];
+    const down = failingFetch(['deepseek/deepseek-v4.1-flash', 'anthropic/claude-haiku-5.5']);
+    const settings = workerSettings(config, down.doFetch, (message) => logs.push(message));
+    const response = await settings.providerFor().turn(REQUEST);
+    expect(response.model).toBe('openai/gpt-oss-120b');
+    expect(down.asked).toEqual([
+      'deepseek/deepseek-v4.1-flash',
+      'anthropic/claude-haiku-5.5',
+      'openai/gpt-oss-120b',
+    ]);
+    expect(logs).toEqual([
+      'model deepseek/deepseek-v4.1-flash failed (LlmError 503), trying anthropic/claude-haiku-5.5',
+      'model anthropic/claude-haiku-5.5 failed (LlmError 503), trying openai/gpt-oss-120b',
+    ]);
+    expect(settings.fallbackPrices['openai/gpt-oss-120b']?.input).toBe('0.15');
+  });
+
+  it("a fallback's answer is charged at its own price", async () => {
+    const { cappedProvider } = await import('../src/worker/worker');
+    const config = serveConfigFromEnv({ ...DEEPSEEK_ENV, ASKR_OPENROUTER_FALLBACKS: FALLBACKS });
+    const settings = workerSettings(config, failingFetch(['deepseek/deepseek-v4.1-flash']).doFetch);
+    const capped = cappedProvider(
+      settings.providerFor(),
+      (model) =>
+        (model === undefined ? undefined : settings.fallbackPrices[model]) ?? settings.price,
+      settings.reserveUsd,
+    );
+    await capped.turn(REQUEST);
+    // A million input tokens at Haiku's 0.1, not DeepSeek's 0.3.
+    expect(capped.spent().toString()).toBe('0.1');
+  });
+
+  it('refuses a malformed entry, a China-hosted host, a bad price, or fallbacks without OpenRouter', () => {
+    for (const value of [
+      'anthropic/claude-haiku-5.5|anthropic|0.1|0.01|0.125',
+      'deepseek/deepseek-v4.1-flash|deepseek|0.1|0.01|0.1|0.5',
+      'anthropic/claude-haiku-5.5|anthropic|0.1|0.01|0.125|free',
+      'not a model|anthropic|0.1|0.01|0.125|0.5',
+    ]) {
+      expect(() =>
+        serveConfigFromEnv({ ...DEEPSEEK_ENV, ASKR_OPENROUTER_FALLBACKS: value }),
+      ).toThrow();
+    }
+    expect(() =>
+      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_OPENROUTER_FALLBACKS: FALLBACKS }),
+    ).toThrow('ASKR_OPENROUTER_FALLBACKS is an OpenRouter setting');
+  });
+
+  it('every fallback must fit the turn reservation', () => {
+    expect(() =>
+      serveConfigFromEnv({
+        ...DEEPSEEK_ENV,
+        ASKR_OPENROUTER_FALLBACKS: 'anthropic/claude-opus-5.5|anthropic|5|0.5|6.25|25',
+      }),
+    ).toThrow('ASKR_TURN_RESERVE_USD');
   });
 });

@@ -267,6 +267,33 @@ describe('admin API (7.3)', () => {
     expect(relay.events.filter((event) => event.kind === 30402)).toHaveLength(1);
   });
 
+  it('onboarding may give a contact email; the owner changes or clears it later', async () => {
+    const { call } = await setup();
+    const newcomer = generateSecretKey();
+    const bad = await call('POST', '/v1/admin/store', { email: 'not an email' }, newcomer);
+    expect(bad.status).toBe(400);
+    const created = await call(
+      'POST',
+      '/v1/admin/store',
+      { email: ' Owner@Shop.Example ' },
+      newcomer,
+    );
+    expect(created.status).toBe(200);
+    expect(created.body.email).toBe('owner@shop.example');
+    const changed = await call(
+      'PUT',
+      '/v1/admin/store/contact',
+      { email: 'sales@shop.example' },
+      newcomer,
+    );
+    expect(changed.body.email).toBe('sales@shop.example');
+    expect((await call('PUT', '/v1/admin/store/contact', { email: 'x@' }, newcomer)).status).toBe(
+      400,
+    );
+    const cleared = await call('PUT', '/v1/admin/store/contact', { email: null }, newcomer);
+    expect(cleared.body.email).toBeNull();
+  });
+
   it('onboarding creates a pending store once, and each owner sees only its own', async () => {
     const { call, store } = await setup();
     const newcomer = generateSecretKey();
@@ -285,7 +312,9 @@ describe('admin API (7.3)', () => {
         sessions: 0,
         conversations: 0,
         clicks: [],
+        days: [],
       },
+      email: null,
     });
     const again = await call('POST', '/v1/admin/store', undefined, newcomer);
     expect(again.body.assistant).toBe(created.body.assistant);

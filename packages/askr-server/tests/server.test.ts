@@ -677,7 +677,7 @@ describe('security review fixes', () => {
     const { cappedProvider } = await import('../src/worker/worker');
     const provider = cappedProvider(
       scriptedProvider(['x']),
-      { input: '1', cachedInput: '0', cacheWrite: '0', output: '0' },
+      () => ({ input: '1', cachedInput: '0', cacheWrite: '0', output: '0' }),
       '0.0001',
     );
     const request = { system: [], messages: [], tools: [], maxTokens: 10 };

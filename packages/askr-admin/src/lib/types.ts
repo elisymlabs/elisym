@@ -28,6 +28,22 @@ export interface StoreUsage {
   conversations: number;
   /** Advisory clicks by listing address: product link opens (`count`) and add to cart presses. */
   clicks: { address: string; count: number; carts: number }[];
+  /** What the widget did each UTC day with any activity, the last 30 days, oldest first. */
+  days: ActivityDay[];
+}
+
+/** One UTC day of the widget's activity (`activity_days` on the server). */
+export interface ActivityDay {
+  /** Days since the Unix epoch, UTC. */
+  day: number;
+  /** Conversations that got their first answer that day. */
+  conversations: number;
+  /** Questions answered. */
+  answers: number;
+  /** Product pages opened from the chat's cards (advisory). */
+  links: number;
+  /** Add to cart presses on the chat's cards (advisory). */
+  carts: number;
 }
 
 export type CatalogSyncStatus =
@@ -85,6 +101,8 @@ export interface StoreView {
   events: StoreEventStatus;
   /** The owner key this store moved from (K21), hex; its settings are signed again by the new one. */
   movedFrom: string | null;
+  /** Where the Askr operator writes to the owner (plan, billing); private, never published. */
+  email: string | null;
 }
 
 /** `GET /v1/admin/store/moved-settings`: what the previous owner key signed (K21). */

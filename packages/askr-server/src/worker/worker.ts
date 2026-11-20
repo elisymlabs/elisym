@@ -63,21 +63,26 @@ export function failureKind(error: unknown): string {
   return reason instanceof Error ? reason.name : 'unknown';
 }
 
-/** Wrap a provider so a turn stops calling the model once its spend reaches `maxUsd`. */
+/**
+ * Wrap a provider so a turn stops calling the model once its spend reaches `maxUsd`. Each
+ * response is priced at the model that gave it (a cascade may answer with a fallback);
+ * `spent()` is what the turn's calls cost so far.
+ */
 export function cappedProvider(
   provider: LlmProvider,
-  price: ModelPrice,
+  priceOf: (model: string | undefined) => ModelPrice,
   maxUsd: string,
-): LlmProvider {
+): LlmProvider & { spent: () => Decimal } {
   let spent = new Decimal(0);
   return {
     model: provider.model,
+    spent: () => spent,
     async turn(request) {
       if (spent.greaterThanOrEqualTo(maxUsd)) {
         throw new Error('The turn reached its spend ceiling');
       }
       const response = await provider.turn(request);
-      spent = spent.plus(costOf(response.usage, price));
+      spent = spent.plus(costOf(response.usage, priceOf(response.model)));
       return response;
     },
   };
@@ -94,6 +99,8 @@ export interface WorkerDeps {
   providerFor: (store: StoreRecord) => LlmProvider;
   /** The model's price, for settling spend (5.8). */
   price: ModelPrice;
+  /** The cascade's fallback models' prices by model id; a response from one is priced at it. */
+  fallbackPrices?: Readonly<Record<string, ModelPrice>>;
   /**
    * Reserved before a turn and also that turn's spend ceiling: no model call
    * starts once the turn's cost reaches it (5.8). So a store's spend can pass
@@ -606,14 +613,16 @@ export class Worker {
     const timer = setTimeout(() => controller.abort(), TURN_DEADLINE_MS);
     // Set once the model calls are done, so a failure after them (wrapping, the answer's step) still settles it.
     let spent: string | undefined;
+    const provider = cappedProvider(
+      this.deps.providerFor(store),
+      (model) =>
+        (model === undefined ? undefined : this.deps.fallbackPrices?.[model]) ?? this.deps.price,
+      this.deps.reserveUsd,
+    );
     try {
       const output = await runTurn({
         catalog,
-        provider: cappedProvider(
-          this.deps.providerFor(store),
-          this.deps.price,
-          this.deps.reserveUsd,
-        ),
+        provider,
         history: session.history,
         askId: ask.ask_id,
         text: ask.text,
@@ -635,7 +644,7 @@ export class Worker {
           );
         },
       });
-      spent = costOf(output.usage, this.deps.price).toString();
+      spent = provider.spent().toString();
       if (session.sessionEnd <= this.now()) {
         // The session ended during the turn: nothing can be sent, but what it spent is charged.
         await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, spent);
@@ -673,9 +682,8 @@ export class Worker {
       }
     } catch (error) {
       this.log(`turn failed: ${failureKind(error)}`);
-      const charged =
-        spent ??
-        (error instanceof TurnError ? costOf(error.usage, this.deps.price).toString() : '0');
+      // Every call the turn made, whichever model of the cascade answered it.
+      const charged = spent ?? provider.spent().toString();
       if (await this.deps.state.failAsk(session, ask.ask_id, attemptId, epoch, charged)) {
         await this.refuse(store, session, ask.ask_id, 'error');
       }

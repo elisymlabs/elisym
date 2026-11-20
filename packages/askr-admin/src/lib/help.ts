@@ -31,6 +31,14 @@ export const HELP = {
     text: 'For each product: how often a visitor opened its page from a card in the chat, and how often they pressed its add to cart button. Counted as the visitor’s browser reports them, so take them as a guide.',
     anchor: 'product-clicks',
   },
+  activity: {
+    text: 'What the chat did each day over the last 30 days: conversations started, questions answered, product pages opened and add to cart presses from its cards. Days are UTC; clicks are counted as the visitor’s browser reports them.',
+    anchor: 'last-30-days',
+  },
+  contactEmail: {
+    text: 'Where the Askr operator writes to you: when your plan’s budget runs out, about plan changes, and about your account. It is kept on the Askr server only, never published with your settings.',
+    anchor: 'contact-email',
+  },
   waiting: {
     text: 'Changes you signed that the server has not published to the relay yet. A store that is not active keeps them here until it is activated.',
     anchor: 'waiting-to-publish',
@@ -54,7 +62,7 @@ export const HELP = {
     anchor: 'currency',
   },
   allowedOrigins: {
-    text: `The sites the chat runs on, one per line, each as https://host with no path. The chat answers only on these, and product links may point to them or to your link origins. Up to ${LIMITS.MAX_ORIGINS}.`,
+    text: `The sites the chat runs on, one per line, each a host like shop.example (https:// is added for you), with no path. The chat answers only on these, and product links may point to them or to your link origins. Up to ${LIMITS.MAX_ORIGINS}.`,
     anchor: 'allowed-origins',
   },
   linkOrigins: {

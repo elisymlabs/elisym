@@ -97,6 +97,8 @@ export interface TurnResponse {
    * rebuild it.
    */
   assistantContent?: ContentBlock[];
+  /** The model that gave this response, when a cascade may have answered with another one. */
+  model?: string;
 }
 
 /** Stop reasons of a whole answer or a tool round; any other ends the turn (fail closed). */

@@ -46,11 +46,13 @@ export function storeView(overrides: Partial<StoreView> = {}): StoreView {
       sessions: 3,
       conversations: 12,
       clicks: [],
+      days: [],
     },
     catalogSync: null,
     connector: null,
     events: { pending: 0, failing: [] },
     movedFrom: null,
+    email: null,
     ...overrides,
   };
 }
@@ -99,6 +101,7 @@ export function failingReader(): RelayReader {
 export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
   return {
     createStore: vi.fn(async () => storeView({ status: 'pending', tier: null })),
+    setContactEmail: vi.fn(async (email: string | null) => storeView({ email })),
     store: vi.fn(async () => storeView()),
     storeEvents: vi.fn(async (events: NostrEvent[]) => ({
       stored: events.map((event) => event.id),

@@ -8,6 +8,7 @@ import type { Signer } from './signer';
 export type AdminClient = Pick<
   AdminApi,
   | 'createStore'
+  | 'setContactEmail'
   | 'store'
   | 'storeEvents'
   | 'storedEvents'

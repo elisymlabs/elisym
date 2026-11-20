@@ -1,6 +1,6 @@
 {
   "name": "@elisym/askr-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Askr assistant runtime: catalog index, tools, gates and the turn loop over Anthropic or OpenAI-compatible models.",
   "keywords": [
     "commerce",

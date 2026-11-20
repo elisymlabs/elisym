@@ -108,8 +108,16 @@ export class AdminApi {
     }
   }
 
-  createStore(): Promise<StoreView> {
-    return this.call<StoreView>('POST', '/v1/admin/store');
+  /** Create the store (or open it), with the owner's contact email when given. */
+  createStore(email?: string): Promise<StoreView> {
+    return email === undefined
+      ? this.call<StoreView>('POST', '/v1/admin/store')
+      : this.call<StoreView>('POST', '/v1/admin/store', { email });
+  }
+
+  /** Set the owner's contact email, or clear it with null. */
+  setContactEmail(email: string | null): Promise<StoreView> {
+    return this.call<StoreView>('PUT', '/v1/admin/store/contact', { email });
   }
 
   store(): Promise<StoreView> {

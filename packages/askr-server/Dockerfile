@@ -20,6 +20,11 @@
 #   -e ASKR_OPENROUTER_PROVIDERS=together,fireworks,baseten,deepinfra \
 #   -e ASKR_PRICE_INPUT=0.3 -e ASKR_PRICE_CACHED_INPUT=0.006 -e ASKR_PRICE_CACHE_WRITE=0.3 \
 #   -e ASKR_PRICE_OUTPUT=1.2 -e ASKR_MAX_TOKENS=4096
+#   -e ASKR_OPENROUTER_FALLBACKS='anthropic/claude-haiku-5.5|anthropic,amazon-bedrock|0.1|0.01|0.125|0.5;openai/gpt-oss-120b|together,groq|0.15|0.15|0.15|0.6'
+# ASKR_OPENROUTER_FALLBACKS (optional): models to fall to, in order, when the main one errors
+# (not when it answers), `;`-separated, each model|hosts|input|cached input|cache write|output.
+# Every call tries the main model first; a fallback's answer is charged at its own price, and
+# each must fit the turn reservation. A fall is logged with its error kind, no content.
 # (USD per million tokens at those hosts; with no cache-write price given, set it to the
 # input price. 4096 max tokens: a plan answer hit 2048; 8 x 4096 x 1.2 per million is 0.039 USD,
 # within the 0.25 reservation.)

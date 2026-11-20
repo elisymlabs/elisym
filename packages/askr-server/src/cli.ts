@@ -8,7 +8,7 @@ import type { Tier } from './state/types';
 
 export const CLI_USAGE = `Usage:
   askr-server                                   run the server
-  askr-server store list
+  askr-server store list                        npub, status, tier, contact email, answers in 30 days
   askr-server store activate <O npub|hex> --tier <name>
   askr-server store suspend <O npub|hex> [--tier <name>]
   askr-server tier list
@@ -107,7 +107,15 @@ export async function runCli(args: readonly string[], directory: StoreDirectory)
   if (group === 'store' && command === 'list') {
     const stores = await directory.list();
     return stores
-      .map((store) => `${nip19.npubEncode(store.owner)} ${store.status} ${store.tier ?? '-'}`)
+      .map((store) =>
+        [
+          nip19.npubEncode(store.owner),
+          store.status,
+          store.tier ?? '-',
+          store.email ?? '-',
+          `${store.answers}/30d`,
+        ].join(' '),
+      )
       .join('\n');
   }
   if (group === 'store' && (command === 'activate' || command === 'suspend')) {
