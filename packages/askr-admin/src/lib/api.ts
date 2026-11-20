@@ -4,6 +4,7 @@ import { apiBase } from '../constants';
 import { nip98Header } from './nip98';
 import type { Signer } from './signer';
 import type {
+  Activation,
   ConnectorRecord,
   ConnectorSyncResult,
   PinnedWidget,
@@ -124,7 +125,8 @@ export class AdminApi {
     return this.call<StoreView>('GET', '/v1/admin/store');
   }
 
-  storeEvents(events: NostrEvent[]): Promise<{ stored: string[] }> {
+  /** `activation`: what storing settings did to a pending store; null when nothing. */
+  storeEvents(events: NostrEvent[]): Promise<{ stored: string[]; activation: Activation | null }> {
     return this.call('POST', '/v1/admin/store/events', { events });
   }
 

@@ -258,6 +258,16 @@ create table activity_days (
 );
 `,
   },
+  {
+    id: '0007_auto_activation',
+    sql: `
+-- When a store's first settings activated it on the auto tier (ASKR_AUTO_TIER, 6.1), unix seconds;
+-- null for a store the operator activated. The caps count by it: per rolling day, and active.
+alter table stores add column auto_activated_at bigint;
+create index stores_auto_activated_at on stores (auto_activated_at)
+  where auto_activated_at is not null;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

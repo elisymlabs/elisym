@@ -42,3 +42,9 @@ export const EMBED_DOCS_URL = 'https://docs.elisym.network/askr/embed';
 
 /** The guide to every field and section of this admin; info buttons link into it. */
 export const ADMIN_DOCS_URL = 'https://docs.elisym.network/askr/admin';
+
+/** Where a store asks for activation or a larger plan: a landing redirect, so the target can change. */
+export const CONTACT_URL = 'https://askr.elisym.network/contact';
+
+/** The guide's section on where the Store ID is. */
+export const FIND_STORE_ID_URL = 'https://docs.elisym.network/askr/overview#find-your-store-id';

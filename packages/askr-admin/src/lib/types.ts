@@ -16,6 +16,13 @@ export interface Tier {
 
 export type StoreStatus = 'pending' | 'active' | 'suspended';
 
+/**
+ * What saving settings did to a pending store (`POST /v1/admin/store/events`):
+ * activated on the auto tier, or why not (`disabled`: no auto-activation for
+ * this store, so only a message to us helps).
+ */
+export type Activation = 'activated' | 'capacity_reached' | 'no_tier' | 'disabled';
+
 export interface StoreUsage {
   today: { spent: string; reserved: string };
   month: { spent: string };
@@ -143,4 +150,11 @@ export type ConnectorSyncResult =
     }
   | { status: 'verification_failed'; failures: VerificationFailure[] }
   | { status: 'source_closed'; url: string; reason: string; httpStatus?: number }
-  | { status: 'error'; message: string };
+  | {
+      status: 'error';
+      message: string;
+      /** Set when the catalog is larger than the plan indexes: `count` products, `max` allowed. */
+      reason?: 'too_many_products';
+      count?: number;
+      max?: number;
+    };

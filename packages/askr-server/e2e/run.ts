@@ -2,7 +2,7 @@
  * End to end (2.4, 4.4, 5.8, 7.3, 9): the marketplace relay config and
  * Postgres in Docker, a synthetic store activated through the operator CLI,
  * the gateway and a worker with a scripted model, a headless widget client,
- * and the lease, reservation and dedup races on real Postgres (PGlite in
+ * and the lease, reservation, dedup and auto-activation races on real Postgres (PGlite in
  * `bun qa` is single-connection and proves nothing about them). Not part of
  * `bun qa` (CI has no Docker):
  *
@@ -189,6 +189,47 @@ async function races(db: Db, vault: KeyVault, directory: StoreDirectory): Promis
 
   await handoverRace(db, vault, state);
   await answerDropRace(db, vault, state);
+  await autoActivationRace(db, vault, directory);
+}
+
+/**
+ * Stores activating on the auto tier at once for its last place (6.1): the
+ * advisory lock lets exactly one pass the active cap, on any instance.
+ */
+async function autoActivationRace(
+  db: Db,
+  vault: KeyVault,
+  directory: StoreDirectory,
+): Promise<void> {
+  const tier: Tier = {
+    name: 'race-free',
+    messagesPerSessionPerDay: 20,
+    dailyBudgetUsd: '1',
+    monthlyBudgetUsd: '10',
+    ticketsPerStorePerMinute: 30,
+    maxProducts: 100,
+    syncIntervalMinutes: 1440,
+    branding: true,
+  };
+  await directory.setTier(tier);
+  const now = nowSecs();
+  const caps = { perDay: 100, maxActive: 2 };
+  const first = syntheticStore(now);
+  await insertPending(db, vault, first);
+  const firstActivation = await directory.autoActivate(first.owner, tier.name, now, caps);
+  const racers = Array.from({ length: 8 }, () => syntheticStore(now));
+  for (const racer of racers) {
+    await insertPending(db, vault, racer);
+  }
+  const activations = await Promise.all(
+    racers.map((racer) => directory.autoActivate(racer.owner, tier.name, now, caps)),
+  );
+  check(
+    'eight stores activating at once for the last auto tier place: exactly one wins',
+    firstActivation === 'activated' &&
+      activations.filter((activation) => activation === 'activated').length === 1 &&
+      activations.filter((activation) => activation === 'capacity_reached').length === 7,
+  );
 }
 
 const RACE_WRAP: NostrEvent = {

@@ -345,6 +345,33 @@ describe('admin connector setup (7.3, 7.4)', () => {
     expect(await directory.claimCatalogSync(store.owner, 'admin', NOW, 60)).toBe(true);
   });
 
+  it('a catalog over the plan says so in fields, in the preview and in a scheduled sync (6.1a)', async () => {
+    const { call, state, directory, db, store, relay } = await setup();
+    // The shop has 3 products; the plan indexes 2.
+    await db.query('update tiers set max_products = 2');
+    await call('PUT', '/v1/admin/connector', {
+      platform: 'shopify',
+      url: SHOP,
+      importPolicies: false,
+    });
+    const overPlan = {
+      status: 'error',
+      reason: 'too_many_products',
+      count: 3,
+      max: 2,
+      message: "3 products, over the tier's 2",
+    };
+    const preview = await call('POST', '/v1/admin/connector/preview');
+    expect(preview.body.result).toEqual(overPlan);
+    await state.acquireLeases(HOLDER, NOW, 60);
+    await call('POST', '/v1/admin/connector/enable');
+    await expect
+      .poll(async () => (await directory.connector(store.owner))?.lastStatus, { timeout: 5_000 })
+      .toEqual(overPlan);
+    expect((await call('GET', '/v1/admin/store')).body.connector.lastStatus).toEqual(overPlan);
+    expect(relay.published).toEqual([]);
+  });
+
   it('a scheduled sync waits while another catalog sync of the store holds the guard', async () => {
     const { call, state, directory, store, relay } = await setup();
     await call('PUT', '/v1/admin/connector', {

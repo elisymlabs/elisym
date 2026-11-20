@@ -105,6 +105,7 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     store: vi.fn(async () => storeView()),
     storeEvents: vi.fn(async (events: NostrEvent[]) => ({
       stored: events.map((event) => event.id),
+      activation: null,
     })),
     storedEvents: vi.fn(async () => ({ events: [], truncated: false })),
     pinnedWidget: vi.fn(async () => PINNED_WIDGET),

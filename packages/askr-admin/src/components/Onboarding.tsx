@@ -6,6 +6,7 @@ import { saveSettings } from '../lib/save';
 import { npubOf } from '../lib/signer';
 import { EMPTY_FORM } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
+import { ContactLinks } from './ContactLinks';
 import { Notice } from './Notice';
 import { Section } from './Section';
 import { StoreSettingsForm } from './StoreSettingsForm';
@@ -49,8 +50,13 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
         </button>
       </header>
       <Notice tone="info">
-        Your store starts as pending. It begins answering once the Askr operator activates it; there
-        is nothing to pay here. You can finish the setup now and it goes live on activation.
+        <span className="flex flex-col gap-4">
+          <span>
+            Saving your settings asks for your store to start on Free; there is nothing to pay here.
+            If it stays Pending, message us with your Store ID.
+          </span>
+          <ContactLinks storeId={ownerNpub} />
+        </span>
       </Notice>
       {view === undefined ? (
         <Section

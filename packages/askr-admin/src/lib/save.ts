@@ -5,6 +5,7 @@ import {
   type StoreConfig,
   parseConfig,
 } from '@elisym/askr';
+import { PENDING_CONTACT_TEXT, PENDING_TEXT } from './activation';
 import { type SessionDeps, postSigned } from './deps';
 import { errorMessage } from './errors';
 import type { SignedJournal } from './journal';
@@ -15,7 +16,7 @@ import {
   connectorOf,
   signStoreEvents,
 } from './store-form';
-import type { StoreView } from './types';
+import type { Activation, StoreView } from './types';
 
 /** The assistant a new config names: the next A while a rotation is under way (1.5). */
 export function keysOfView(
@@ -52,6 +53,8 @@ export function authorizedNow(relay: ReadonlySet<string>, journal: SignedJournal
 /** Sign the config (and the source key's authorization when needed) and store it on the server. */
 /** What a save did beyond the settings, for the merchant. */
 export interface SaveOutcome {
+  /** What storing the settings did to a pending store: `activated` makes it active now. */
+  activation: Activation | null;
   /** Syncing paused or the connector removed by this save. */
   note?: string;
   /** The settings are saved, but the connector step failed: a save again retries it. */
@@ -78,8 +81,15 @@ export async function saveSettings(input: SaveInput): Promise<SaveOutcome> {
       : { authorized: authorizedNow(input.authorized, journal) }),
     authCreatedAt: nextAuthDate(authKey, now, input.relayNewestAt, journal),
   });
-  await postSigned(input.deps, events);
-  // The connector follows the settings it is part of: set up with them, gone with them.
+  const { activation } = await postSigned(input.deps, events);
+  return { activation, ...(await connectorStep(input, connector)) };
+}
+
+/** The connector follows the settings it is part of: set up with them, gone with them. */
+async function connectorStep(
+  input: SaveInput,
+  connector: ReturnType<typeof connectorOf>,
+): Promise<Omit<SaveOutcome, 'activation'>> {
   const before = input.view.connector;
   try {
     if (connector !== undefined) {
@@ -135,9 +145,25 @@ export function nextAuthDate(
   return Math.max(now, relay + 1, local + 1);
 }
 
-/** What the merchant is told after a save, by store status. */
-export function savedMessage(view: Pick<StoreView, 'status'>): string {
-  return view.status === 'active'
-    ? 'Saved. The new settings are published in a moment.'
-    : 'Saved. Your settings are kept on the server and published once your store is activated.';
+/**
+ * What the merchant is told after a save, by store status: the status after
+ * the save, so a save that activated the store says so. A pending store the
+ * server cannot activate on its own (`disabled`, `no_tier`, or, when the
+ * save says nothing about activation, a store the operator set back to
+ * pending, which keeps its tier) is not told to save again.
+ */
+export function savedMessage(
+  view: Pick<StoreView, 'status' | 'tier'> & { activation?: Activation | null },
+): string {
+  if (view.status === 'active') {
+    return 'Saved. The new settings are published in a moment.';
+  }
+  if (view.status === 'suspended') {
+    return 'Saved. Your settings are kept on the server and published once your store is reactivated.';
+  }
+  const manual =
+    view.activation === 'disabled' ||
+    view.activation === 'no_tier' ||
+    (view.activation === undefined && view.tier !== null);
+  return `Saved. ${manual ? PENDING_CONTACT_TEXT : PENDING_TEXT}`;
 }

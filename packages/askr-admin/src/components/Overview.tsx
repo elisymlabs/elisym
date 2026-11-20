@@ -1,13 +1,16 @@
 import type { StoreConfig } from '@elisym/askr';
 import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
 import { KIND_DELETION } from '@elisym/commerce';
+import { UPGRADE_TEXT, pendingTextOf } from '../lib/activation';
 import { HELP } from '../lib/help';
 import type { RelayReader } from '../lib/relay';
+import { npubOf } from '../lib/signer';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { usd } from '../lib/usage';
 import { ActivityTable } from './ActivityTable';
 import { CatalogSize } from './CatalogSize';
 import { ConnectorStatus } from './ConnectorStatus';
+import { ContactLinks } from './ContactLinks';
 import { Notice } from './Notice';
 import { Section } from './Section';
 import { SyncStatus } from './SyncStatus';
@@ -22,9 +25,7 @@ interface Props {
   catalogReader?: { reader: RelayReader; now: () => number };
 }
 
-const STATUS_TEXT: Readonly<Record<StoreStatus, string>> = {
-  pending:
-    'Your settings are saved; the assistant starts answering once the Askr operator activates your store.',
+const STATUS_TEXT: Readonly<Record<Exclude<StoreStatus, 'pending'>, string>> = {
   active: 'Your assistant is answering on your site.',
   suspended: 'Your assistant does not answer. Contact the Askr operator.',
 };
@@ -57,9 +58,10 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:gap-12">
           <span className={`badge self-start sm:self-auto ${badge.tone}`}>{badge.label}</span>
           <p className="text-14 text-text-2" role="status">
-            {STATUS_TEXT[view.status]}
+            {view.status === 'pending' ? pendingTextOf(view) : STATUS_TEXT[view.status]}
           </p>
         </div>
+        {view.status === 'pending' ? <ContactLinks storeId={npubOf(view.owner)} /> : null}
         {config === undefined ? (
           <p className="text-14 text-text-2">Your settings are not published yet.</p>
         ) : null}
@@ -82,7 +84,7 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
         info={HELP.usage}
         description={
           tier === null
-            ? 'No plan is assigned until your store is activated.'
+            ? 'No plan yet: your store is waiting for activation.'
             : `Plan: ${tier.name}`
         }
       >
@@ -102,6 +104,12 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
             <dd className="text-24 font-semibold tabular-nums">{usd(usage.today.reserved)}</dd>
           </div>
         </dl>
+        {tier !== null && view.status === 'active' ? (
+          <div id="upgrade" className="flex flex-col gap-4">
+            <p className="text-14 text-text-2">{UPGRADE_TEXT}</p>
+            <ContactLinks storeId={npubOf(view.owner)} />
+          </div>
+        ) : null}
         {tier === null ? null : (
           <div className="flex flex-col gap-16">
             <UsageMeter

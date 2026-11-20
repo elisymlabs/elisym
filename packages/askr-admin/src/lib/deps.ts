@@ -3,6 +3,7 @@ import { AdminApi } from './api';
 import { SignedJournal } from './journal';
 import { type RelayReader, relayReader } from './relay';
 import type { Signer } from './signer';
+import type { Activation } from './types';
 
 /** The API calls the screens make: the real client, or a test double. */
 export type AdminClient = Pick<
@@ -47,8 +48,15 @@ export function createSessionDeps(signer: Signer): SessionDeps {
   };
 }
 
-/** Store O-signed events on the server and remember them for later signatures. */
-export async function postSigned(deps: SessionDeps, events: NostrEvent[]): Promise<void> {
-  await deps.api.storeEvents(events);
+/**
+ * Store O-signed events on the server and remember them for later signatures;
+ * the server's answer says whether they activated the store.
+ */
+export async function postSigned(
+  deps: SessionDeps,
+  events: NostrEvent[],
+): Promise<{ stored: string[]; activation: Activation | null }> {
+  const stored = await deps.api.storeEvents(events);
   deps.journal.note(events);
+  return stored;
 }

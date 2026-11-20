@@ -8,7 +8,13 @@ import { hexToBytes } from 'nostr-tools/utils';
 import { createAdminApi } from './admin/api';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { runCli } from './cli';
-import { publicBaseOf, serveConfigFromEnv, workerSettings } from './config';
+import {
+  autoTierFromEnv,
+  autoTierWarning,
+  publicBaseOf,
+  serveConfigFromEnv,
+  workerSettings,
+} from './config';
 import { ShopRateLimiter } from './connectors/http';
 import { ConnectorService } from './connectors/service';
 import type { Db } from './db/db';
@@ -81,6 +87,17 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const directory = new StoreDirectory(db, vault);
   // Refuses to start on a bad model setting or a max_tokens the reservation cannot pay for.
   const config = serveConfigFromEnv(process.env);
+  // Refuses to start on a bad auto tier setting; unset, only the operator activates stores (6.1).
+  const autoTier = autoTierFromEnv(process.env);
+  if (autoTier !== undefined) {
+    log(
+      `a store's first settings activate it on ${autoTier.tier}: at most ${autoTier.perDay} a day, ${autoTier.maxActive} active`,
+    );
+    const warning = await autoTierWarning(autoTier, directory);
+    if (warning !== undefined) {
+      log(warning);
+    }
+  }
   let leasedBy: Worker | undefined;
   const pool = createServerPool((pubkey) => leasedBy?.isLeased(pubkey) ?? false);
   const worker = new Worker({
@@ -180,6 +197,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     syncClient,
     storeEventsChanged: onStoresChanged,
     connectors,
+    ...(autoTier === undefined ? {} : { autoTier }),
     log,
   });
   const files = adminFiles(log);
