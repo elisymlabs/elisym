@@ -198,6 +198,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     storeEventsChanged: onStoresChanged,
     connectors,
     ...(autoTier === undefined ? {} : { autoTier }),
+    reserveUsd: config.reserveUsd,
     log,
   });
   const files = adminFiles(log);

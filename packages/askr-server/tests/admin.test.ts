@@ -315,6 +315,7 @@ describe('admin API (7.3)', () => {
         days: [],
       },
       email: null,
+      budgetPaused: null,
     });
     const again = await call('POST', '/v1/admin/store', undefined, newcomer);
     expect(again.body.assistant).toBe(created.body.assistant);
@@ -325,6 +326,8 @@ describe('admin API (7.3)', () => {
       assistant: store.assistant,
     });
     expect(own.body.tier).toMatchObject({ dailyBudgetUsd: '5.000000000' });
+    // Nothing spent yet: the budget pauses nothing.
+    expect(own.body.budgetPaused).toBeNull();
   });
 
   it('stores O-signed config, authorization and deletion events and notifies', async () => {

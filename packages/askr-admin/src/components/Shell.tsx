@@ -6,6 +6,7 @@ import { npubOf } from '../lib/signer';
 import { TABS, type TabId } from '../lib/tabs';
 import type { StoreView } from '../lib/types';
 import { AskrMark } from './AskrMark';
+import { BudgetBanner } from './BudgetBanner';
 import { ConnectorSection } from './ConnectorSection';
 import { ContactEmailSection } from './ContactEmailSection';
 import { EmbedSection } from './EmbedSection';
@@ -234,6 +235,7 @@ export function Shell({
           ) : null}
         </header>
         <div className="flex max-w-760 flex-col gap-32">
+          <BudgetBanner view={view} now={deps.now()} />
           {configError === '' ? null : (
             <Notice tone="warn">
               {configError}{' '}
