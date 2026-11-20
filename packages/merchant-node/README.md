@@ -1,6 +1,6 @@
 # @elisym/merchant-node
 
-The self-hosted store behind Pay Core, elisym's stablecoin checkout. It publishes your products
+The self-hosted store behind PayCore, elisym's stablecoin checkout. It publishes your products
 to Nostr, takes orders sent by the checkout widget, checks each payment on chain (USDC on
 Solana, a stablecoin on Tempo, or USDC on Ethereum, Arbitrum or Base), and completes the order.
 Your backend acts on each payment through the node's signed `order.paid` webhook.

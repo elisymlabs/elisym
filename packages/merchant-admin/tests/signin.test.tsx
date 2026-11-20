@@ -27,7 +27,7 @@ describe('the sign-in page', () => {
     expect(text).toContain('Buyers pay straight into your wallet.');
     expect(text).toContain('Nobody, neither elisym nor this page, can reach your wallet');
     expect(text).toContain(
-      'Pay Core never asks for a wallet’s secret key or seed phrase, so never paste one, here or anywhere else.',
+      'PayCore never asks for a wallet’s secret key or seed phrase, so never paste one, here or anywhere else.',
     );
     expect(text).toContain('Keep the store key like a password');
     expect(text).toContain(
@@ -89,7 +89,7 @@ describe('the page frame', () => {
     expect(bar).toEqual(expect.arrayContaining([...tokens, 'min-h-64']));
     // One line high, so the header row stays 64 and the logo sits where the landing's does.
     expect(classesOf(byId(mounted.container, 'store-pubkey').parentElement)).toContain('h-18');
-    expect(classesOf(mounted.container.querySelector('[title="Pay Core"]'))).toContain('gap-10');
+    expect(classesOf(mounted.container.querySelector('[title="PayCore"]'))).toContain('gap-10');
   });
 });
 
@@ -101,7 +101,7 @@ describe('the sign-in header', () => {
       ['Home', 'https://paycore.elisym.network'],
     ]);
     expect(links[0]?.getAttribute('target')).toBeNull();
-    expect(links[0]?.closest('nav')?.getAttribute('aria-label')).toBe('Pay Core');
+    expect(links[0]?.closest('nav')?.getAttribute('aria-label')).toBe('PayCore');
     expect(links[0]?.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     expect(mounted.container.querySelector('header')?.textContent).not.toContain('Sign in');
     expect(mounted.container.querySelector('header')?.textContent).toContain('Admin');

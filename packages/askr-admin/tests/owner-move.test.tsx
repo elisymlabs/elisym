@@ -197,14 +197,14 @@ describe('finishing a move to a new secret key (K21)', () => {
     const catalog = await mountMoved(movedDeps(oldConfig('catalog')));
     expect(nameField(catalog)).toBe('Moved Tea');
     expect(catalog.textContent).not.toContain('with our help');
-    expect(catalog.textContent).not.toContain('Pay Core');
+    expect(catalog.textContent).not.toContain('PayCore');
   });
 
   it('previous settings naming a paycore source are not found: the form starts empty, nothing breaks', async () => {
     const container = await mountMoved(movedDeps(paycoreConfig()));
     expect(container.textContent).toContain('Your previous settings could not be found');
     expect(nameField(container)).toBe('');
-    expect(container.textContent).not.toContain('Pay Core');
+    expect(container.textContent).not.toContain('PayCore');
   });
 
   it('shows a failed read and retries on request', async () => {

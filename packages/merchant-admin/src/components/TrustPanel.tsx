@@ -6,7 +6,7 @@ const POINTS: { icon: IconName; title: string; body: ReactNode }[] = [
   {
     icon: 'shield',
     title: 'Your wallet stays yours',
-    body: 'Buyers pay straight into your wallet. Nobody, neither elisym nor this page, can reach your wallet or the funds in it. The store key is not a wallet key: Pay Core never asks for a wallet’s secret key or seed phrase, so never paste one, here or anywhere else.',
+    body: 'Buyers pay straight into your wallet. Nobody, neither elisym nor this page, can reach your wallet or the funds in it. The store key is not a wallet key: PayCore never asks for a wallet’s secret key or seed phrase, so never paste one, here or anywhere else.',
   },
   {
     icon: 'key',

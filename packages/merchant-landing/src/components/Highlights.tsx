@@ -3,7 +3,7 @@ import { Icon, type IconName } from './Icon';
 const ITEMS: { icon: IconName; title: string; body: string }[] = [
   { icon: 'wallet', title: 'Your wallet', body: 'Paid to the address you list' },
   { icon: 'globe', title: 'Five networks', body: 'Solana, Tempo, Ethereum, Base and Arbitrum' },
-  { icon: 'code', title: 'One tag', body: 'Plain HTML or React' },
+  { icon: 'code', title: 'One HTML tag', body: 'Plain HTML or React' },
   { icon: 'bot', title: 'Agent-ready', body: 'Buyable over MCP' },
 ];
 

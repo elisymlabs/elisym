@@ -558,7 +558,7 @@ describe('keys and policy keys', () => {
     const { container } = mounted;
     await settle(() => (container.textContent ?? '').includes(npubOf(SERVER_KEY)));
     expect(container.textContent).not.toContain(npubOf(storeKey));
-    expect(container.textContent).not.toContain('Pay Core');
+    expect(container.textContent).not.toContain('PayCore');
     const rows = [...container.querySelectorAll('li')];
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain('catalog key');

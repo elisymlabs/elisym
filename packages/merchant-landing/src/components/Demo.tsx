@@ -28,8 +28,8 @@ export function Demo({ demo }: Props) {
       <div className="grid items-start gap-48 lg:grid-cols-[0.9fr_1.1fr]">
         <div className="flex flex-col gap-24">
           <SectionHeading eyebrow="Integration" title="This is the whole integration">
-            One tag per product renders a Buy button. The checkout opens in a modal: it reads your
-            live offer, places the order and asks the buyer&apos;s wallet to pay you.
+            One HTML tag per product renders a Buy button. The checkout opens in a modal: it reads
+            your live offer, places the order and asks the buyer&apos;s wallet to pay you.
           </SectionHeading>
           <ul className="flex flex-col gap-10">
             {POINTS.map((point) => (
