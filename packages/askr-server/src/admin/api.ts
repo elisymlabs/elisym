@@ -30,6 +30,7 @@ import { type ConnectorService, shopIdentity } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
+import { budgetPause } from '../state/budget';
 import { randomId } from '../state/pg-state';
 import {
   type Activation,
@@ -183,6 +184,8 @@ export interface AdminDeps {
   connectors: ConnectorService;
   /** ASKR_AUTO_TIER: a store's first settings activate it on this tier, within the caps (6.1). */
   autoTier?: AutoTier;
+  /** ASKR_TURN_RESERVE_USD: what one turn reserves, so the admin says when the budget stops the chat. */
+  reserveUsd?: string;
   now?: () => number;
   /** Publishing pace for catalog syncs; tests raise it. */
   syncPace?: number;
@@ -436,20 +439,25 @@ export function createAdminApi(
       : json({ ...(await view(store)), proven: proof.proven }, 200);
   };
 
-  const view = async (store: StoreRecord) => ({
-    owner: store.owner,
-    status: store.status,
-    tier: store.tier ?? null,
-    assistant: store.assistant,
-    nextAssistant: (await deps.directory.nextAssistant(store.owner)) ?? null,
-    catalogKey: store.catalogKey,
-    usage: await deps.directory.usage(store.owner, store.assistant, now()),
-    catalogSync: await deps.directory.catalogSync(store.owner, now()),
-    connector: (await deps.directory.connector(store.owner)) ?? null,
-    events: await deps.directory.eventStatus(store.owner),
-    movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
-    email: (await deps.directory.contactEmail(store.owner)) ?? null,
-  });
+  const view = async (store: StoreRecord) => {
+    const usage = await deps.directory.usage(store.owner, store.assistant, now());
+    return {
+      owner: store.owner,
+      status: store.status,
+      tier: store.tier ?? null,
+      assistant: store.assistant,
+      nextAssistant: (await deps.directory.nextAssistant(store.owner)) ?? null,
+      catalogKey: store.catalogKey,
+      usage,
+      // The chat is paused by a used-up budget: the admin says so on every tab.
+      budgetPaused: budgetPause(usage, store.tier, deps.reserveUsd ?? '0') ?? null,
+      catalogSync: await deps.directory.catalogSync(store.owner, now()),
+      connector: (await deps.directory.connector(store.owner)) ?? null,
+      events: await deps.directory.eventStatus(store.owner),
+      movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
+      email: (await deps.directory.contactEmail(store.owner)) ?? null,
+    };
+  };
 
   /**
    * Activate a pending store that never had a tier on the auto tier (6.1): null

@@ -53,6 +53,7 @@ export function storeView(overrides: Partial<StoreView> = {}): StoreView {
     events: { pending: 0, failing: [] },
     movedFrom: null,
     email: null,
+    budgetPaused: null,
     ...overrides,
   };
 }

@@ -16,6 +16,9 @@ export interface Tier {
 
 export type StoreStatus = 'pending' | 'active' | 'suspended';
 
+/** Which used-up budget keeps the chat from answering. */
+export type BudgetPause = 'day' | 'month';
+
 /**
  * What saving settings did to a pending store (`POST /v1/admin/store/events`):
  * activated on the auto tier, or why not (`disabled`: no auto-activation for
@@ -110,6 +113,11 @@ export interface StoreView {
   movedFrom: string | null;
   /** Where the Askr operator writes to the owner (plan, billing); private, never published. */
   email: string | null;
+  /**
+   * The chat does not answer: today's (`day`) or this month's (`month`) budget is used up, by the
+   * server's own test (not even one more turn fits). Null while it answers.
+   */
+  budgetPaused: BudgetPause | null;
 }
 
 /** `GET /v1/admin/store/moved-settings`: what the previous owner key signed (K21). */
