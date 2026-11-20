@@ -627,12 +627,12 @@ describe('product clicks in the usage (7.3)', () => {
     if (mug === undefined || scarf === undefined || tent === undefined) {
       throw new Error('no addresses');
     }
-    await state.countClick(store.owner, mug, 'link');
-    await state.countClick(store.owner, scarf, 'cart');
-    await state.countClick(store.owner, scarf, 'cart');
-    await state.countClick(store.owner, tent, 'link');
-    await state.countClick(store.owner, tent, 'cart');
-    await state.countClick(store.owner, tent, 'link');
+    await state.countClick(store.owner, mug, 'link', NOW);
+    await state.countClick(store.owner, scarf, 'cart', NOW);
+    await state.countClick(store.owner, scarf, 'cart', NOW);
+    await state.countClick(store.owner, tent, 'link', NOW);
+    await state.countClick(store.owner, tent, 'cart', NOW);
+    await state.countClick(store.owner, tent, 'link', NOW);
     const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
     expect(clicks).toEqual([
       { address: tent, count: 2, carts: 1 },
@@ -650,12 +650,55 @@ describe('product clicks in the usage (7.3)', () => {
     if (opened === undefined || added === undefined) {
       throw new Error('no addresses');
     }
-    await state.countClick(store.owner, opened, 'link');
-    await state.countClick(store.owner, opened, 'link');
-    await state.countClick(store.owner, added, 'link');
-    await state.countClick(store.owner, added, 'cart');
+    await state.countClick(store.owner, opened, 'link', NOW);
+    await state.countClick(store.owner, opened, 'link', NOW);
+    await state.countClick(store.owner, added, 'link', NOW);
+    await state.countClick(store.owner, added, 'cart', NOW);
     const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
     expect(clicks.map((click) => click.address)).toEqual([added, opened]);
+  });
+});
+
+describe('daily activity (7.3)', () => {
+  it('counts conversations, answers and clicks per UTC day, the last 30 days', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const first = await runningAttempt(state, session, ASK_ID, epoch, NOW * 1000 + 120_000);
+    expect(await state.answerAsk(session, ASK_ID, first, epoch, WRAP, '0.01', NOW)).toBe(true);
+    const second = await runningAttempt(state, session, OTHER_ASK, epoch, NOW * 1000 + 120_000);
+    expect(await state.answerAsk(session, OTHER_ASK, second, epoch, WRAP, '0.01', NOW)).toBe(true);
+    const address = `30402:${store.catalogKey}:mug`;
+    await state.countClick(store.owner, address, 'link', NOW);
+    await state.countClick(store.owner, address, 'cart', NOW + 86_400);
+    // Far in the past: outside the window the admin shows.
+    await state.countClick(store.owner, address, 'link', NOW - 40 * 86_400);
+    const { days } = await directory.usage(store.owner, store.assistant, NOW + 86_400);
+    const today = Math.floor(NOW / 86_400);
+    expect(days).toEqual([
+      { day: today, conversations: 1, answers: 2, links: 1, carts: 0 },
+      { day: today + 1, conversations: 0, answers: 0, links: 0, carts: 1 },
+    ]);
+    expect((await directory.list(NOW))[0]?.answers).toBe(2);
+  });
+
+  it('counts nothing for a store that is gone', async () => {
+    const { state, directory } = await stateWith([]);
+    await state.countClick('e'.repeat(64), `30402:${'f'.repeat(64)}:mug`, 'link', NOW);
+    expect(await directory.list(NOW)).toEqual([]);
+  });
+});
+
+describe('contact email', () => {
+  it('is kept per store, private, and cleared with undefined', async () => {
+    const store = syntheticStore();
+    const { directory } = await stateWith([storeRecord(store)]);
+    expect(await directory.contactEmail(store.owner)).toBeUndefined();
+    await directory.setContactEmail(store.owner, 'owner@shop.example');
+    expect(await directory.contactEmail(store.owner)).toBe('owner@shop.example');
+    await directory.setContactEmail(store.owner, undefined);
+    expect(await directory.contactEmail(store.owner)).toBeUndefined();
   });
 });
 

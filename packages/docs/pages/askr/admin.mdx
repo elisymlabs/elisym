@@ -32,6 +32,10 @@ The plan line below says how many products the assistant reads, how many questio
 
 For each product: **Page opened** counts how often a visitor opened its page from a card in the chat, and **Added to cart** how often they pressed the card's add to cart button. Both are reported by the visitor's browser, so take them as a guide rather than exact figures. A page still running an older chat version counts its add to cart presses as page opens. The busiest products come first, up to ten.
 
+### Last 30 days
+
+What the chat did each day over the last 30 days, newest first, with the totals under them: **Conversations** started that day (a visitor's chat counts on its first answer), **Questions answered**, and from the chat's product cards **Page opened** and **Added to cart**. Days are UTC. Only days with some activity are listed. The clicks are reported by the visitor's browser, so take them as a guide.
+
 ### Waiting to publish
 
 Changes you signed that the server has not published to the relay yet. A store that is not active keeps them on the server until it is active, then publishes them. If publishing is refused, the change is listed with how often it was refused; once it is no longer retried, sign it again (save it again where you made it).
@@ -43,6 +47,10 @@ The last time products were published from the admin or a connector, and what it
 ## The Settings page
 
 Every save signs the whole settings again with your secret key and replaces the previous version. **Sign and save** stays at the bottom of the screen while you scroll.
+
+### Contact email
+
+Where the Askr operator writes to you: when your plan's budget runs out, about plan changes, and about your account. You give it when you create your store, and can change or remove it at the top of the Settings page. It is kept on the Askr server only: it is not signed, and never published with your settings.
 
 ### Store name
 
@@ -64,7 +72,7 @@ The three-letter code of the currency your prices are in, such as `USD` or `EUR`
 
 ### Allowed origins
 
-The sites the chat runs on, one per line, each written as `https://` and the host, with no path: `https://shop.example`. The chat answers only on these sites, and a product card links to a page only on these sites or the link origins below. List every host the chat code is pasted on, `www.` and the bare domain separately if you use both. Up to 20.
+The sites the chat runs on, one per line, each a host with no path: `shop.example` or `https://shop.example` (a bare host is read as `https://`; `http://` is refused). The chat answers only on these sites, and a product card links to a page only on these sites or the link origins below. List every host the chat code is pasted on, `www.` and the bare domain separately if you use both. Up to 20.
 
 These sites also count when you replace a lost secret key: a site proves the store is yours once the store has listed it for 72 hours. See [Replacing a lost or leaked secret key](/askr/overview#replacing-a-lost-or-leaked-secret-key).
 

@@ -3,6 +3,7 @@ import type { Answer, Component } from '@elisym/askr/chat';
 import { componentAddresses } from '../cards';
 import { type CardContext, renderCard } from './card-view';
 import { element } from './dom';
+import { enableDragScroll } from './drag-scroll';
 import { renderText } from './render-text';
 import { STRINGS } from './strings';
 
@@ -11,14 +12,15 @@ export interface AnswerContext extends CardContext {
 }
 
 /**
- * A row of cards that scrolls sideways. It takes focus itself, so a keyboard can scroll it
- * even when no card in it has a control.
+ * A row of cards that scrolls sideways: a finger swipes it, a mouse drags it. It takes focus
+ * itself, so a keyboard can scroll it even when no card in it has a control.
  */
 function cardsRow(document: Document, title?: string): HTMLElement {
   const row = element(document, 'div', 'cards');
   row.tabIndex = 0;
   row.setAttribute('role', 'region');
   row.setAttribute('aria-label', title ?? STRINGS.products);
+  enableDragScroll(row);
   return row;
 }
 

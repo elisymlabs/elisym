@@ -186,7 +186,7 @@ export interface ServerState {
    */
   budgetExhausted(owner: string, now: number, reserveUsd: string): Promise<boolean>;
   /** Count a handoff (advisory, 3): a product link opened, or an add to cart pressed. */
-  countClick(owner: string, address: string, kind: ClickKind): Promise<void>;
+  countClick(owner: string, address: string, kind: ClickKind, now: number): Promise<void>;
   /** Record the origins a loaded config lists, each from when first seen (K21). */
   noteOrigins(owner: string, origins: readonly string[], now: number): Promise<void>;
   /** The owner a store embedded as `owner` moved to, if it did (K21). */

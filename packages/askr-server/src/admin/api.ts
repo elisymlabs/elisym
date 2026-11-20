@@ -149,6 +149,20 @@ async function listedOnRelay(client: SyncRelayClient, key: string): Promise<Set<
 
 const PolicyRequestSchema = z.object({ title: z.string(), body: z.string() });
 
+/** An address the operator can write to: one @, a dot in the domain, no spaces, at most 254 chars. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/u;
+const MAX_EMAIL_LENGTH = 254;
+const EmailSchema = z
+  .string()
+  .trim()
+  .max(MAX_EMAIL_LENGTH)
+  .regex(EMAIL_RE)
+  .transform((email) => email.toLowerCase());
+/** `PUT /v1/admin/store/contact`: null clears it. */
+const ContactRequestSchema = z.object({ email: EmailSchema.nullable() });
+/** `POST /v1/admin/store`: onboarding may give the contact email at once. */
+const CreateRequestSchema = z.object({ email: EmailSchema.optional() });
+
 const ConnectorRequestSchema = z.object({
   platform: z.enum(CONNECTOR_PLATFORMS),
   url: z.string().url().max(2048),
@@ -434,6 +448,7 @@ export function createAdminApi(
     connector: (await deps.directory.connector(store.owner)) ?? null,
     events: await deps.directory.eventStatus(store.owner),
     movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
+    email: (await deps.directory.contactEmail(store.owner)) ?? null,
   });
 
   /**
@@ -678,6 +693,13 @@ export function createAdminApi(
       // Onboarding (7.3): anyone may create a store, which starts pending (K19). Opening an
       // existing one is free; a new one counts per client address, so fresh keys cannot fill
       // the database with pending stores.
+      const created =
+        body.trim() === ''
+          ? { success: true as const, data: {} }
+          : CreateRequestSchema.safeParse(parseJson(body));
+      if (!created.success) {
+        return json({ error: 'bad_request' }, 400);
+      }
       const existing = await deps.directory.store(owner);
       if (existing !== undefined) {
         // A pending store whose settings are stored already is activated here (6.1): a re-run of
@@ -699,10 +721,11 @@ export function createAdminApi(
       if (!storesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
         return json({ error: 'rate_limited' }, 429);
       }
-      return json(
-        { ...(await view(await deps.directory.createStore(owner, now()))), activation: null },
-        200,
-      );
+      const store = await deps.directory.createStore(owner, now());
+      if (created.data.email !== undefined) {
+        await deps.directory.setContactEmail(owner, created.data.email);
+      }
+      return json({ ...(await view(store)), activation: null }, 200);
     }
     const store = await deps.directory.store(owner);
     if (store === undefined) {
@@ -753,6 +776,14 @@ export function createAdminApi(
         },
         200,
       );
+    }
+    if (route === 'PUT /v1/admin/store/contact') {
+      const parsed = ContactRequestSchema.safeParse(parseJson(body));
+      if (!parsed.success) {
+        return json({ error: 'bad_email' }, 400);
+      }
+      await deps.directory.setContactEmail(owner, parsed.data.email ?? undefined);
+      return json(await view(store), 200);
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);

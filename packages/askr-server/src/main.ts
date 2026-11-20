@@ -105,7 +105,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     state,
     pool,
     gatewayKeys: [getPublicKey(gatewaySecretKey)],
-    ...workerSettings(config),
+    ...workerSettings(config, undefined, log),
     log,
   });
   leasedBy = worker;

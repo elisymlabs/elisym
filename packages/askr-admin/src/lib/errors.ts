@@ -43,6 +43,7 @@ const CODES: Readonly<Record<string, string>> = {
   moved_meanwhile: 'Your store was moved by another request while your site was checked. Retry.',
   not_found: 'The server does not know this action.',
   bad_request: 'The server could not read the request. Check the fields and retry.',
+  bad_email: 'That email address was not accepted. Enter one like you@yourshop.com.',
   rate_limited: 'Too many tries from this address. Try again in an hour.',
   too_many_events:
     'Too many changes are waiting to be published. Wait until your store is active and the waiting changes are published, then retry.',

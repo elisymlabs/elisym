@@ -25,6 +25,19 @@ import type { StoreRecord, StoreStatus, Tier } from './types';
 /** Postgres' unique_violation. */
 const UNIQUE_VIOLATION = '23505';
 
+/** How many days of activity the admin shows, today included. */
+export const ACTIVITY_DAYS = 30;
+
+/** One UTC day of what the widget did (`activity_days`). */
+export interface ActivityDay {
+  /** Days since the Unix epoch, UTC. */
+  day: number;
+  conversations: number;
+  answers: number;
+  links: number;
+  carts: number;
+}
+
 /** Tables keyed by a store's owner without a foreign key: moved along with it (K21). */
 const OWNER_TABLES = ['sessions', 'store_days', 'reservations', 'clicks', 'store_totals'] as const;
 
@@ -343,9 +356,25 @@ export class StoreDirectory {
     return (await this.db.query('select 1 from tiers where name = $1', [name])).length > 0;
   }
 
-  async list(): Promise<{ owner: string; status: StoreStatus; tier: string | null }[]> {
-    return this.db.query<{ owner: string; status: StoreStatus; tier: string | null }>(
-      'select owner, status, tier from stores order by created_at',
+  /**
+   * Every store for the operator, with its contact email and how much its widget was used in the
+   * last `ACTIVITY_DAYS` days (questions answered), to tell who to write to.
+   */
+  async list(now: number = nowSecs()): Promise<
+    {
+      owner: string;
+      status: StoreStatus;
+      tier: string | null;
+      email: string | null;
+      answers: number;
+    }[]
+  > {
+    return this.db.query(
+      `select s.owner, s.status, s.tier, s.contact_email as email,
+         coalesce((select sum(a.answers) from activity_days a
+                   where a.owner = s.owner and a.day > $1), 0)::int4 as answers
+       from stores s order by s.created_at`,
+      [utcDay(now) - ACTIVITY_DAYS],
     );
   }
 
@@ -763,6 +792,7 @@ export class StoreDirectory {
     sessions: number;
     conversations: number;
     clicks: { address: string; count: number; carts: number }[];
+    days: ActivityDay[];
   }> {
     const days = await this.db.query<{ day: number; spent: string; reserved: string }>(
       'select day, spent, reserved from store_days where owner = $1 and day >= $2',
@@ -792,7 +822,35 @@ export class StoreDirectory {
       sessions: sessions?.count ?? 0,
       conversations: totals?.conversations ?? 0,
       clicks,
+      days: await this.db.query<{
+        day: number;
+        conversations: number;
+        answers: number;
+        links: number;
+        carts: number;
+      }>(
+        `select day, conversations, answers, links, carts from activity_days
+         where owner = $1 and day > $2 order by day`,
+        [owner, utcDay(now) - ACTIVITY_DAYS],
+      ),
     };
+  }
+
+  /** Where the operator reaches the store's owner; private, never published (7.3). */
+  async contactEmail(owner: string): Promise<string | undefined> {
+    const [row] = await this.db.query<{ contact_email: string | null }>(
+      'select contact_email from stores where owner = $1',
+      [owner],
+    );
+    return row?.contact_email ?? undefined;
+  }
+
+  /** Set or clear (`undefined`) the store's contact email. */
+  async setContactEmail(owner: string, email: string | undefined): Promise<void> {
+    await this.db.query('update stores set contact_email = $2 where owner = $1', [
+      owner,
+      email ?? null,
+    ]);
   }
 
   /**

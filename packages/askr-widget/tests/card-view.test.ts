@@ -224,6 +224,35 @@ describe('card add-to-cart', () => {
     expect(ctx.clicks).toEqual([`cart ${item.address}`]);
   });
 
+  it("the host's hook button waits for every option, naming the ones left", () => {
+    const onAddToCart = vi.fn();
+    Reflect.set(window, 'Askr', { onAddToCart });
+    const item = catalogItem({
+      options: [
+        { name: 'Size', values: ['S', 'M'] },
+        { name: 'Color', values: ['Red', 'Blue'] },
+      ],
+      variants: [
+        { id: '101', price: '49.9', available: true, values: ['S', 'Red'] },
+        { id: '102', price: '49.9', available: true, values: ['M', 'Blue'] },
+      ],
+    });
+    const card = renderCard(context(), item);
+    expect(card.querySelector('.cart-hint')?.textContent).toBe('Choose Size, Color');
+    cartButtonOf(card).click();
+    expect(onAddToCart).not.toHaveBeenCalled();
+    pick(card, 'M');
+    expect(card.querySelector('.cart-hint')?.textContent).toBe('Choose Color');
+    pick(card, 'Blue');
+    expect(card.querySelector('.cart-hint')).toBeNull();
+    cartButtonOf(card).click();
+    expect(onAddToCart).toHaveBeenCalledWith({
+      d: 'scarf',
+      variant: '102',
+      options: { Size: 'M', Color: 'Blue' },
+    });
+  });
+
   it('drops the button again when the host removes its hook, on focus too', () => {
     Reflect.set(window, 'Askr', { onAddToCart: () => undefined });
     const card = renderCard(context(), catalogItem());
@@ -343,12 +372,23 @@ describe('card native add-to-cart', () => {
     card.remove();
   });
 
-  it('opens the product page until the pick determines a variant', () => {
+  it('the button waits for the pick, its hint naming the option to choose', () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
     const card = renderCard(context(connectorConfig('shopify')), catalogItem(SIZED));
-    expect(card.querySelector('button.cart')).toBeNull();
-    expect(card.querySelector('a.view')).not.toBeNull();
-    pick(card, 'S');
     expect(card.querySelector('a.view')).toBeNull();
+    const waiting = cartButtonOf(card);
+    expect(waiting.classList.contains('needs-pick')).toBe(true);
+    expect(waiting.getAttribute('aria-disabled')).toBe('true');
+    const hint = card.querySelector('.cart-hint');
+    expect(hint?.textContent).toBe('Choose Size');
+    expect(waiting.getAttribute('aria-describedby')).toBe(hint?.id);
+    // A tap adds nothing and shows the hint (a touch screen has no hover).
+    waiting.click();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(card.querySelector('.card-actions')?.classList.contains('hint-shown')).toBe(true);
+    pick(card, 'S');
+    expect(card.querySelector('.cart-hint')).toBeNull();
+    expect(cartButtonOf(card).classList.contains('needs-pick')).toBe(false);
     expect(cartButtonOf(card).getAttribute('aria-label')).toBe('Add to cart');
   });
 

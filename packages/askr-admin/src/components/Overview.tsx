@@ -7,6 +7,7 @@ import type { RelayReader } from '../lib/relay';
 import { npubOf } from '../lib/signer';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { usd } from '../lib/usage';
+import { ActivityTable } from './ActivityTable';
 import { CatalogSize } from './CatalogSize';
 import { ConnectorStatus } from './ConnectorStatus';
 import { ContactLinks } from './ContactLinks';
@@ -141,6 +142,15 @@ export function Overview({ view, config, configFromServer, catalogReader }: Prop
           A conversation is one visitor's chat, up to 24 hours from their first message, that got at
           least one answer. Open conversations are the chats started in the last 24 hours.
         </p>
+      </Section>
+
+      <Section
+        title="Last 30 days"
+        info={HELP.activity}
+        description="What the chat did each day: conversations started, questions answered, and product pages opened and add to cart presses from its cards."
+        flush
+      >
+        <ActivityTable days={usage.days} />
       </Section>
 
       <Section

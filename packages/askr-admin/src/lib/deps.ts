@@ -9,6 +9,7 @@ import type { Activation } from './types';
 export type AdminClient = Pick<
   AdminApi,
   | 'createStore'
+  | 'setContactEmail'
   | 'store'
   | 'storeEvents'
   | 'storedEvents'

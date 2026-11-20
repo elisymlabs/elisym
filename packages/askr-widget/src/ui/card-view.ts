@@ -5,7 +5,12 @@ import {
   productPageUrl,
 } from '@elisym/askr';
 import type { ClickKind } from '../gateway';
-import { type NativeCartPlatform, nativeAddToCart, nativeCartPlatform } from '../native-cart';
+import {
+  type NativeCartPlatform,
+  nativeAddToCart,
+  nativeCartPlatform,
+  nativeCartVariantId,
+} from '../native-cart';
 import {
   type CartButton,
   type PickState,
@@ -191,6 +196,52 @@ function selectBox(
   return label;
 }
 
+/** How long a tap on a button that waits for a pick keeps its hint up (a touch screen has no hover). */
+export const HINT_MS = 2400;
+
+/** Ties each hint to its button (`aria-describedby`); ids stay unique on the page. */
+let hintCount = 0;
+
+/**
+ * Make the cart button wait for the visitor's pick: it looks disabled but stays focusable
+ * (aria-disabled), and a hint over it names the options still to choose. The hint shows on
+ * hover and focus, and for a moment after a tap.
+ */
+function waitForPick(
+  document: Document,
+  actionBox: HTMLElement,
+  button: HTMLButtonElement,
+  missing: readonly string[],
+): HTMLElement {
+  const hint = element(document, 'span', 'cart-hint', `${STRINGS.choose} ${missing.join(', ')}`);
+  hint.setAttribute('role', 'tooltip');
+  hintCount += 1;
+  hint.id = `askr-cart-hint-${hintCount}`;
+  button.classList.add('needs-pick');
+  button.setAttribute('aria-disabled', 'true');
+  button.setAttribute('aria-describedby', hint.id);
+  actionBox.classList.add('waits-for-pick');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  button.addEventListener('click', (event) => {
+    if (!button.classList.contains('needs-pick')) {
+      return;
+    }
+    event.stopImmediatePropagation();
+    actionBox.classList.add('hint-shown');
+    clearTimeout(timer);
+    timer = setTimeout(() => actionBox.classList.remove('hint-shown'), HINT_MS);
+  });
+  return hint;
+}
+
+/** The names of the card's options the pick has not set yet. */
+function unpicked(state: PickState): string[] {
+  const picked = state.options ?? {};
+  return state.selectors
+    .filter((selector) => picked[selector.name] === undefined)
+    .map((selector) => selector.name);
+}
+
 export interface CardContext {
   document: Document;
   config: StoreConfig;
@@ -217,6 +268,7 @@ function productLink(
   link.href = url;
   link.target = '_blank';
   link.rel = 'noopener noreferrer';
+  link.draggable = false;
   link.addEventListener('click', () => context.reportClick(item.address, 'link'));
   return link;
 }
@@ -244,6 +296,8 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
     img.alt = '';
     img.loading = 'lazy';
     img.referrerPolicy = 'no-referrer';
+    // The row drags sideways under a mouse: the photo must not start a drag of its own.
+    img.draggable = false;
     media.append(img);
     if (badge) {
       media.append(badge);
@@ -284,6 +338,9 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
       native: nativeCartPlatform(context.config, context.pageOrigin),
     });
   let renderedKind: CartButton['kind'] | undefined;
+  const nativeAddable = item.variants.some(
+    (variant) => variant.available && nativeCartVariantId(variant) !== undefined,
+  );
 
   const addNatively = async (
     cart: CartControl,
@@ -330,12 +387,15 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
     const button = currentButton(state);
     renderedKind = button.kind;
     actionBox.replaceChildren();
+    actionBox.classList.remove('waits-for-pick', 'hint-shown');
     if (button.kind === 'sold-out') {
       actionBox.append(element(document, 'span', 'label sold-out', STRINGS.soldOut));
     } else if (button.kind === 'hook') {
       const cart = cartButtonElement(document);
       const add = cart.button;
-      add.disabled = !button.enabled;
+      const hint = button.enabled
+        ? undefined
+        : waitForPick(document, actionBox, add, unpicked(state));
       add.addEventListener('click', () => {
         const hook = hostAddToCartHook();
         const current = pickState(item, pick);
@@ -351,6 +411,9 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
         cart.showAdded();
       });
       actionBox.append(add, cart.announcer);
+      if (hint) {
+        actionBox.append(hint);
+      }
     } else if (button.kind === 'native') {
       const { platform, variant } = button;
       if (variant) {
@@ -359,6 +422,11 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
           void addNatively(cart, platform, variant);
         });
         actionBox.append(cart.button, cart.announcer);
+      } else if (!state.complete && nativeAddable) {
+        // A pick would determine a variant the shop's cart takes: the button waits for it.
+        const cart = cartButtonElement(document);
+        const hint = waitForPick(document, actionBox, cart.button, unpicked(state));
+        actionBox.append(cart.button, cart.announcer, hint);
       } else if (pageUrl !== undefined) {
         actionBox.append(productLink(context, item, pageUrl, 'view', STRINGS.viewProduct));
       }

@@ -159,7 +159,11 @@ describe('operator CLI (7.3)', () => {
       syncIntervalMinutes: 30,
       branding: false,
     });
-    expect(await runCli(['store', 'list'], directory)).toBe(`${npub} active starter`);
+    expect(await runCli(['store', 'list'], directory)).toBe(`${npub} active starter - 0/30d`);
+    await directory.setContactEmail(store.owner, 'owner@shop.example');
+    expect(await runCli(['store', 'list'], directory)).toBe(
+      `${npub} active starter owner@shop.example 0/30d`,
+    );
     expect(await runCli(['store', 'suspend', store.owner], directory)).toBe(`${npub} is suspended`);
     expect((await state.store(store.owner))?.tier?.name).toBe('starter');
     await new Promise((resolve) => setTimeout(resolve, 20));

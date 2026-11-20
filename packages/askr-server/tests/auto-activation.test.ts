@@ -489,19 +489,19 @@ describe('the auto tier at start (6.1)', () => {
   });
 });
 
-describe('migration 0006_auto_activation', () => {
-  it('applies on a database at 0005, leaving existing stores without an auto activation', async () => {
+describe('migration 0007_auto_activation', () => {
+  it('applies on a database at 0006, leaving existing stores without an auto activation', async () => {
     const client = await PGlite.create();
     const db = pgliteDb(client);
-    const upTo0005 = MIGRATIONS.slice(
+    const upTo0006 = MIGRATIONS.slice(
       0,
-      MIGRATIONS.findIndex((entry) => entry.id === '0006_auto_activation'),
+      MIGRATIONS.findIndex((entry) => entry.id === '0007_auto_activation'),
     );
-    expect(upTo0005.map((entry) => entry.id).at(-1)).toBe('0005_cart_clicks');
+    expect(upTo0006.map((entry) => entry.id).at(-1)).toBe('0006_contact_activity');
     await db.script(
       'create table migrations (id text primary key, applied_at timestamptz not null default now())',
     );
-    for (const migration of upTo0005) {
+    for (const migration of upTo0006) {
       await db.script(migration.sql);
       await db.query('insert into migrations (id) values ($1)', [migration.id]);
     }
@@ -516,7 +516,7 @@ describe('migration 0006_auto_activation', () => {
     );
     expect(rows).toEqual([{ auto_activated_at: null }]);
     const applied = await db.query<{ id: string }>('select id from migrations order by id');
-    expect(applied.map((row) => row.id).at(-1)).toBe('0006_auto_activation');
+    expect(applied.map((row) => row.id).at(-1)).toBe('0007_auto_activation');
     await client.close();
   });
 });

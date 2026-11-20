@@ -17,7 +17,9 @@ import {
   FormError,
   type StoreForm,
   formOfConfig,
+  parseOrigins,
   signStoreEvents,
+  withHttps,
 } from '../src/lib/store-form';
 
 const ownerKey = generateSecretKey();
@@ -173,6 +175,21 @@ describe('the onboarding events', () => {
       'connector',
       'google',
     ]);
+  });
+
+  it('reads a bare host as https, and keeps refusing http and non-addresses', () => {
+    expect(
+      parseOrigins(
+        'elisym.network\nwww.shop.example/catalog, https://b.example',
+        'Allowed origins',
+      ),
+    ).toEqual(['https://elisym.network', 'https://www.shop.example', 'https://b.example']);
+    expect(withHttps('shop.example:8443')).toBe('https://shop.example:8443');
+    expect(withHttps('http://shop.example')).toBe('http://shop.example');
+    expect(() => parseOrigins('http://shop.example', 'Allowed origins')).toThrow(
+      'must start with https://',
+    );
+    expect(() => parseOrigins('localhost', 'Allowed origins')).toThrow('is not a web address');
   });
 
   it('refuses a form without origins or with a bad key in plain words', async () => {

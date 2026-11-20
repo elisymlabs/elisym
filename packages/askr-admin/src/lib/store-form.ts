@@ -111,7 +111,24 @@ function optional(value: string): string | undefined {
   return trimmed === '' ? undefined : trimmed;
 }
 
-/** Origins from free text: one per line or comma separated, each reduced to its origin. */
+/** A scheme already given: `https://`, `http://`, or any other `name://`. */
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//iu;
+/** A host as people type it: at least one dot, as in `shop.example` or `www.shop.example/path`. */
+const BARE_HOST_RE = /^[^\s/:]+\.[^\s/:]+(?::\d+)?(?:\/.*)?$/u;
+
+/**
+ * An address as typed, with `https://` put in front when it has no scheme and looks like a
+ * host (`elisym.network`). Anything else is left as it is, for the caller to accept or refuse
+ * (`http://` stays refused).
+ */
+export function withHttps(value: string): string {
+  return !SCHEME_RE.test(value) && BARE_HOST_RE.test(value) ? `https://${value}` : value;
+}
+
+/**
+ * Origins from free text: one per line or comma separated, each reduced to its origin. A bare
+ * host (`shop.example`) is read as `https://shop.example`.
+ */
 export function parseOrigins(text: string, label: string): string[] {
   const origins: string[] = [];
   for (const entry of text.split(/[\s,]+/u)) {
@@ -120,10 +137,10 @@ export function parseOrigins(text: string, label: string): string[] {
     }
     let url: URL;
     try {
-      url = new URL(entry);
+      url = new URL(withHttps(entry));
     } catch {
       throw new FormError(
-        `${label}: "${entry}" is not a web address. Use the form https://shop.example`,
+        `${label}: "${entry}" is not a web address. Use the form shop.example or https://shop.example`,
       );
     }
     if (url.protocol !== 'https:') {
@@ -195,7 +212,7 @@ export function configInputOf(
   if (form.source === 'connector') {
     source.platform = form.platform;
     if (form.platform !== 'google') {
-      const shopUrl = normalizeShopUrl(form.shopUrl.trim());
+      const shopUrl = normalizeShopUrl(withHttps(form.shopUrl.trim()));
       if (shopUrl === undefined) {
         throw new FormError(
           'Shop address: enter the https address of the shop, like https://shop.example',
@@ -353,7 +370,7 @@ export function connectorOf(form: StoreForm): ConnectorFields | undefined {
       throw new FormError('Feed address: paste the https address of your product feed.');
     }
   } else {
-    url = normalizeShopUrl(form.shopUrl.trim());
+    url = normalizeShopUrl(withHttps(form.shopUrl.trim()));
     if (url === undefined) {
       throw new FormError("Shop address: paste your shop's https address.");
     }
