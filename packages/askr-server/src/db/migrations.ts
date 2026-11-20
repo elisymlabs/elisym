@@ -238,6 +238,26 @@ create index store_moves_to on store_moves (to_owner);
 alter table clicks add column carts bigint not null default 0;
 `,
   },
+  {
+    id: '0006_contact_activity',
+    sql: `
+-- Where the operator reaches the store's owner (a plan running out, an offer): private, never
+-- in the published config.
+alter table stores add column contact_email text;
+
+-- What the widget did each UTC day: conversations started (first answer), questions answered,
+-- product pages opened and add to cart presses from its cards (advisory, as the browser reports).
+create table activity_days (
+  owner text not null references stores (owner) on delete cascade on update cascade,
+  day integer not null,
+  conversations integer not null default 0,
+  answers integer not null default 0,
+  links integer not null default 0,
+  carts integer not null default 0,
+  primary key (owner, day)
+);
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

@@ -21,6 +21,27 @@ import type {
 
 const SECS_PER_DAY = 24 * 60 * 60;
 
+/** A column of `activity_days`: what the widget did on a day. */
+export type ActivityKind = 'conversations' | 'answers' | 'links' | 'carts';
+
+/**
+ * Add one to a store's count for today (UTC). A store already gone (deleted, or moved under this
+ * key) counts nothing: the row would reference no store.
+ */
+export async function countActivity(
+  db: Queryable,
+  owner: string,
+  now: number,
+  kind: ActivityKind,
+): Promise<void> {
+  await db.query(
+    `insert into activity_days (owner, day, ${kind})
+     select $1, $2, 1 where exists (select 1 from stores where owner = $1)
+     on conflict (owner, day) do update set ${kind} = activity_days.${kind} + 1`,
+    [owner, utcDay(now)],
+  );
+}
+
 export function utcDay(now: number): number {
   return Math.floor(now / SECS_PER_DAY);
 }
@@ -662,7 +683,8 @@ export class PgState implements ServerState {
         sessionData(session),
       ]);
       await this.settle(tx, attemptId, spentUsd);
-      await this.countConversation(tx, session);
+      await this.countConversation(tx, session, now);
+      await countActivity(tx, session.owner, now, 'answers');
       return true;
     });
   }
@@ -674,7 +696,11 @@ export class PgState implements ServerState {
    * once per session, so neither a retried turn nor a moved lease counts twice.
    * `store_totals` is the last row the transaction takes (the lock order above).
    */
-  private async countConversation(tx: Queryable, session: SessionState): Promise<void> {
+  private async countConversation(
+    tx: Queryable,
+    session: SessionState,
+    now: number,
+  ): Promise<void> {
     const first = await tx.query(
       'update sessions set counted = true where id = $1 and not counted returning 1',
       [session.id],
@@ -687,6 +713,7 @@ export class PgState implements ServerState {
        on conflict (owner) do update set conversations = store_totals.conversations + 1`,
       [session.owner],
     );
+    await countActivity(tx, session.owner, now, 'conversations');
   }
 
   async failAsk(
@@ -746,7 +773,7 @@ export class PgState implements ServerState {
     return followMoves(this.db, owner);
   }
 
-  async countClick(owner: string, address: string, kind: ClickKind): Promise<void> {
+  async countClick(owner: string, address: string, kind: ClickKind, now: number): Promise<void> {
     await this.db.query(
       kind === 'cart'
         ? `insert into clicks (owner, address, count, carts) values ($1, $2, 0, 1)
@@ -755,6 +782,7 @@ export class PgState implements ServerState {
            on conflict (owner, address) do update set count = clicks.count + 1`,
       [owner, address],
     );
+    await countActivity(this.db, owner, now, kind === 'cart' ? 'carts' : 'links');
   }
 
   /**

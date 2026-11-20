@@ -7,6 +7,7 @@ import { TABS, type TabId } from '../lib/tabs';
 import type { StoreView } from '../lib/types';
 import { AskrMark } from './AskrMark';
 import { ConnectorSection } from './ConnectorSection';
+import { ContactEmailSection } from './ContactEmailSection';
 import { EmbedSection } from './EmbedSection';
 import { KeysSection } from './KeysSection';
 import { Notice } from './Notice';
@@ -128,15 +129,18 @@ export function Shell({
     );
   } else if (tab === 'settings') {
     content = (
-      <SettingsSection
-        deps={deps}
-        view={view}
-        config={config}
-        configError={configError}
-        configUnreadableAt={configUnreadableAt}
-        onRetry={retryConfig}
-        onSaved={refresh}
-      />
+      <div className="flex flex-col gap-32">
+        <ContactEmailSection deps={deps} view={view} onSaved={reloadView} />
+        <SettingsSection
+          deps={deps}
+          view={view}
+          config={config}
+          configError={configError}
+          configUnreadableAt={configUnreadableAt}
+          onRetry={retryConfig}
+          onSaved={refresh}
+        />
+      </div>
     );
   } else if (tab === 'products') {
     content = <ProductsSection deps={deps} view={view} config={config} reload={reloadView} />;

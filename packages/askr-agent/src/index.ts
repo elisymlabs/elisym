@@ -13,6 +13,7 @@ export {
   type Effort,
   createAnthropicProvider,
 } from './llm/anthropic';
+export { type FallbackListener, createCascadeProvider } from './llm/cascade';
 export {
   type OpenAiCompatibleConfig,
   createOpenAiCompatibleProvider,

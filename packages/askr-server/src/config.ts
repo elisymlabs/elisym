@@ -2,10 +2,12 @@ import {
   DEFAULT_MAX_TOKENS,
   EFFORTS,
   type Effort,
+  LlmError,
   type LlmProvider,
   MAX_MODEL_CALLS_PER_TURN,
   type ModelPrice,
   createAnthropicProvider,
+  createCascadeProvider,
   createOpenAiCompatibleProvider,
 } from '@elisym/askr-agent';
 import Decimal from 'decimal.js-light';
@@ -92,9 +94,23 @@ function required(env: Env, name: string): string {
   return value;
 }
 
+/** A model the cascade falls to when the ones before it fail: its hosts and its own price. */
+export interface OpenRouterFallback {
+  model: string;
+  providers: string[];
+  price: ModelPrice;
+}
+
 export type ModelConfig =
   | { kind: 'anthropic'; apiKey: string; model: string; effort?: Effort }
-  | { kind: 'openrouter'; apiKey: string; model: string; providers: string[] };
+  | {
+      kind: 'openrouter';
+      apiKey: string;
+      model: string;
+      providers: string[];
+      /** Tried in order when the model fails; empty for no cascade. */
+      fallbacks: OpenRouterFallback[];
+    };
 
 // cspell:disable
 /**
@@ -199,6 +215,55 @@ export function openRouterProvidersFrom(model: string, value: string | undefined
   return providers;
 }
 
+const FALLBACK_FIELDS = 6;
+const OPENROUTER_MODEL_RE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/iu;
+
+/**
+ * ASKR_OPENROUTER_FALLBACKS: the models to fall to, in order, when the main one fails (an
+ * error, not an answer it gave), separated by `;`. Each is
+ * `model|hosts|input|cached input|cache write|output`: its OpenRouter id, the hosts it may run
+ * on (as ASKR_OPENROUTER_PROVIDERS, US or EU only) and its USD prices per million tokens.
+ * Every call tries the main model first.
+ */
+export function openRouterFallbacksFrom(value: string | undefined): OpenRouterFallback[] {
+  if (value === undefined) {
+    return [];
+  }
+  return value
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      const fields = entry.split('|').map((field) => field.trim());
+      const [model, hosts, input, cachedInput, cacheWrite, output] = fields;
+      if (
+        fields.length !== FALLBACK_FIELDS ||
+        model === undefined ||
+        hosts === undefined ||
+        input === undefined ||
+        cachedInput === undefined ||
+        cacheWrite === undefined ||
+        output === undefined ||
+        !OPENROUTER_MODEL_RE.test(model)
+      ) {
+        throw new Error(
+          `ASKR_OPENROUTER_FALLBACKS entry must be model|hosts|input|cached input|cache write|output, got ${entry}`,
+        );
+      }
+      const name = `ASKR_OPENROUTER_FALLBACKS ${model}`;
+      return {
+        model,
+        providers: openRouterProvidersFrom(model, hosts),
+        price: {
+          input: positiveUsd(`${name} input price`, input),
+          cachedInput: positiveUsd(`${name} cached input price`, cachedInput),
+          cacheWrite: positiveUsd(`${name} cache write price`, cacheWrite),
+          output: positiveUsd(`${name} output price`, output),
+        },
+      };
+    });
+}
+
 export interface ServeConfig {
   model: ModelConfig;
   price: ModelPrice;
@@ -232,12 +297,15 @@ export function serveConfigFromEnv(rawEnv: Env): ServeConfig {
       apiKey: required(env, 'OPENROUTER_API_KEY'),
       model: openRouterModel,
       providers,
+      fallbacks: openRouterFallbacksFrom(env.ASKR_OPENROUTER_FALLBACKS),
     };
   } else {
-    if (env.ASKR_OPENROUTER_PROVIDERS !== undefined) {
-      throw new Error(
-        'ASKR_OPENROUTER_PROVIDERS is an OpenRouter setting: unset it without ASKR_OPENROUTER_MODEL.',
-      );
+    for (const name of ['ASKR_OPENROUTER_PROVIDERS', 'ASKR_OPENROUTER_FALLBACKS']) {
+      if (env[name] !== undefined) {
+        throw new Error(
+          `${name} is an OpenRouter setting: unset it without ASKR_OPENROUTER_MODEL.`,
+        );
+      }
     }
     const effort = effortFrom(env.ASKR_EFFORT);
     model = {
@@ -261,31 +329,73 @@ export function serveConfigFromEnv(rawEnv: Env): ServeConfig {
     'ASKR_MAX_TOKENS',
     env.ASKR_MAX_TOKENS ?? String(DEFAULT_MAX_TOKENS),
   );
-  checkTurnBudget({
-    maxTokens,
-    calls: MAX_MODEL_CALLS_PER_TURN,
-    outputPricePerMillion: price.output,
-    reserveUsd,
-  });
+  // Any call of a turn may fall to any model of the cascade: each must fit the reservation.
+  const fallbackPrices =
+    model.kind === 'openrouter' ? model.fallbacks.map((entry) => entry.price) : [];
+  for (const each of [price, ...fallbackPrices]) {
+    checkTurnBudget({
+      maxTokens,
+      calls: MAX_MODEL_CALLS_PER_TURN,
+      outputPricePerMillion: each.output,
+      reserveUsd,
+    });
+  }
   return { model, price, reserveUsd, maxTokens };
 }
 
-/** The provider for the configured model; `fetch` is for tests. */
-export function providerFor(config: ModelConfig, fetch?: typeof globalThis.fetch): LlmProvider {
+/** A failed call's kind with no content (4.4): "LlmError 503", or the error's name. */
+function errorKind(error: unknown): string {
+  if (error instanceof LlmError) {
+    return `LlmError ${error.status ?? 'no status'}`;
+  }
+  return error instanceof Error ? error.name : 'unknown';
+}
+
+function openRouterProvider(
+  apiKey: string,
+  model: string,
+  providers: string[],
+  fetch: typeof globalThis.fetch | undefined,
+): LlmProvider {
+  return createOpenAiCompatibleProvider({
+    apiKey,
+    model,
+    baseUrl: 'https://openrouter.ai/api/v1',
+    // Anthropic models through OpenRouter need the cache marks passed through (5.7).
+    passCacheMarks: model.startsWith('anthropic/'),
+    // No training and zero data retention where offered (4.4); only the named hosts, with no
+    // fallback to others (spec 8).
+    extraBody: {
+      provider: { data_collection: 'deny', only: providers, allow_fallbacks: false },
+    },
+    ...(fetch ? { fetch } : {}),
+  });
+}
+
+/**
+ * The provider for the configured model; with fallbacks, a cascade that tries the main model
+ * first on every call. `log` hears each fallback; `fetch` is for tests.
+ */
+export function providerFor(
+  config: ModelConfig,
+  fetch?: typeof globalThis.fetch,
+  log?: (message: string) => void,
+): LlmProvider {
   if (config.kind === 'openrouter') {
-    return createOpenAiCompatibleProvider({
-      apiKey: config.apiKey,
-      model: config.model,
-      baseUrl: 'https://openrouter.ai/api/v1',
-      // Anthropic models through OpenRouter need the cache marks passed through (5.7).
-      passCacheMarks: config.model.startsWith('anthropic/'),
-      // No training and zero data retention where offered (4.4); only the named hosts, with no
-      // fallback to others (spec 8).
-      extraBody: {
-        provider: { data_collection: 'deny', only: config.providers, allow_fallbacks: false },
-      },
-      ...(fetch ? { fetch } : {}),
-    });
+    const main = openRouterProvider(config.apiKey, config.model, config.providers, fetch);
+    if (config.fallbacks.length === 0) {
+      return main;
+    }
+    return createCascadeProvider(
+      [
+        main,
+        ...config.fallbacks.map((entry) =>
+          openRouterProvider(config.apiKey, entry.model, entry.providers, fetch),
+        ),
+      ],
+      (failed, next, error) =>
+        log?.(`model ${failed} failed (${errorKind(error)}), trying ${next}`),
+    );
   }
   return createAnthropicProvider({
     apiKey: config.apiKey,
@@ -299,16 +409,20 @@ export function providerFor(config: ModelConfig, fetch?: typeof globalThis.fetch
 export function workerSettings(
   config: ServeConfig,
   fetch?: typeof globalThis.fetch,
+  log?: (message: string) => void,
 ): {
   providerFor: () => LlmProvider;
   price: ModelPrice;
+  fallbackPrices: Record<string, ModelPrice>;
   reserveUsd: string;
   maxTokens: number;
 } {
-  const provider = providerFor(config.model, fetch);
+  const provider = providerFor(config.model, fetch, log);
+  const fallbacks = config.model.kind === 'openrouter' ? config.model.fallbacks : [];
   return {
     providerFor: () => provider,
     price: config.price,
+    fallbackPrices: Object.fromEntries(fallbacks.map((entry) => [entry.model, entry.price])),
     reserveUsd: config.reserveUsd,
     maxTokens: config.maxTokens,
   };

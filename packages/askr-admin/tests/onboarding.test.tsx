@@ -41,8 +41,14 @@ describe('onboarding', () => {
     );
     mounted = await mount(render());
     expect(mounted.container.textContent).toContain('Your store starts as pending');
+    // The contact email comes first: no store without somewhere to write to.
+    expect(buttonNamed(mounted.container, 'Create my store').disabled).toBe(true);
+    await typeInto(byId(mounted.container, 'onboarding-email'), 'not an email');
+    expect(buttonNamed(mounted.container, 'Create my store').disabled).toBe(true);
+    await typeInto(byId(mounted.container, 'onboarding-email'), ' owner@tea.example ');
     await click(buttonNamed(mounted.container, 'Create my store'));
     expect(api.createStore).toHaveBeenCalledTimes(1);
+    expect(api.createStore).toHaveBeenCalledWith('owner@tea.example');
     await mounted.rerender(render());
 
     const { container } = mounted;

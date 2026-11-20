@@ -138,6 +138,16 @@ button:disabled { cursor: default; opacity: 0.4; }
   margin: 0 -16px; padding: 2px 16px 6px; scroll-padding-inline: 16px; scrollbar-width: none;
 }
 .cards::-webkit-scrollbar { display: none; }
+/* A mouse drags a row of several cards sideways (drag-scroll.ts): a hand over it, a closed hand
+   while dragging, with snapping off so the row follows the pointer and no text selected. */
+@media (hover: hover) and (pointer: fine) {
+  .cards:has(> .card + .card) { cursor: grab; }
+}
+.cards.dragging { cursor: grabbing; scroll-snap-type: none; user-select: none; -webkit-user-select: none; }
+.cards.dragging * { cursor: grabbing; }
+/* No ghost image follows the pointer: a photo or the title link never starts the browser's own drag. */
+.card img, .card a { -webkit-user-drag: none; user-drag: none; }
+.card-media { user-select: none; -webkit-user-select: none; }
 /* The row bleeds into the log's padding: its focus ring goes inside, never clipped. */
 .cards:focus-visible { outline-offset: -2px; border-radius: 12px; }
 /* Several products scroll sideways, the next one peeking in; a single one takes the width. */
@@ -198,6 +208,8 @@ a.card-title:hover { text-decoration: underline; }
 .card-foot { margin-top: auto; display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding-top: 2px; }
 .price { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
 .card-actions { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; min-height: 36px; }
+/* No button for this product (no cart hook, no connected shop): no empty row under the price. */
+.card-actions:empty { display: none; }
 /* Sold out stands where the button stood, the same height, so picking a sold-out size moves
    nothing. */
 .card-actions .label.sold-out { align-self: stretch; height: 36px; display: flex; align-items: center; justify-content: center; font-size: 13px; border-radius: 999px; }
@@ -219,6 +231,25 @@ a.card-title:hover { text-decoration: underline; }
 .cart[data-state='done'] .cart-done { visibility: visible; }
 .cart-done::after { content: ' \\2713'; }
 .view { display: flex; align-items: center; justify-content: center; background: var(--cc-surface); color: var(--cc-text); }
+/* A button that waits for the visitor's pick: dimmed, still focusable, and a hint over it names
+   the options to choose, on hover, on focus and for a moment after a tap. */
+.card-actions { position: relative; }
+.cart.needs-pick { opacity: 0.4; cursor: not-allowed; }
+.cart-hint {
+  position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 1;
+  width: max-content; max-width: 100%; padding: 6px 10px; border-radius: 8px;
+  background: var(--cc-text); color: var(--cc-bg); font-size: 12px; font-weight: 500;
+  line-height: 1.3; text-align: center; overflow-wrap: anywhere;
+  opacity: 0; pointer-events: none; transform: translate(-50%, 4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.cart-hint::after {
+  content: ''; position: absolute; top: 100%; left: 50%; margin-left: -5px;
+  border: 5px solid transparent; border-top-color: var(--cc-text);
+}
+.waits-for-pick:hover .cart-hint,
+.waits-for-pick:focus-within .cart-hint,
+.waits-for-pick.hint-shown .cart-hint { opacity: 1; transform: translate(-50%, 0); }
 table { border-collapse: collapse; width: 100%; font-size: 12px; }
 th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left; vertical-align: top; }
 .steps { margin: 0; padding-left: 20px; }

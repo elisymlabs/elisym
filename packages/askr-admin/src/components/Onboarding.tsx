@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { contactEmailOf } from '../lib/contact';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { saveSettings } from '../lib/save';
@@ -8,6 +9,7 @@ import type { StoreView } from '../lib/types';
 import { Notice } from './Notice';
 import { Section } from './Section';
 import { StoreSettingsForm } from './StoreSettingsForm';
+import { TextField } from './TextField';
 
 interface Props {
   deps: SessionDeps;
@@ -22,13 +24,15 @@ interface Props {
 export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [typedEmail, setTypedEmail] = useState('');
+  const email = contactEmailOf(typedEmail);
   const ownerNpub = npubOf(deps.signer.pubkey);
 
   const create = async () => {
     setBusy(true);
     setError('');
     try {
-      onCreated(await deps.api.createStore());
+      onCreated(await deps.api.createStore(email));
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -54,12 +58,20 @@ export function Onboarding({ deps, view, onCreated, onDone, onSignOut }: Props) 
           description="This sets up your assistant on the Askr server for this Store ID."
         >
           <p className="text-13 text-text-3 font-mono break-all">{ownerNpub}</p>
+          <TextField
+            id="onboarding-email"
+            label="Your email"
+            value={typedEmail}
+            placeholder="you@yourshop.com"
+            hint="Where the Askr operator writes to you about your plan and account: when its budget runs out, or when your store is activated. Kept on the Askr server only, never published."
+            onChange={setTypedEmail}
+          />
           {error === '' ? null : <Notice tone="error">{error}</Notice>}
           <div>
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy}
+              disabled={busy || email === undefined}
               onClick={() => void create()}
             >
               {busy ? 'Creating...' : 'Create my store'}
