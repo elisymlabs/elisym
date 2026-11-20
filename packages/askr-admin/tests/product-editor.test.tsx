@@ -110,7 +110,7 @@ describe('the product editor fields', () => {
     await typeInto(labelled(container, 'Attribute 1 name'), 'Roast');
     await typeInto(labelled(container, 'Attribute 1 value'), 'Medium');
     await click(buttonNamed(container, 'Add an attribute'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       d: 'box',
       price: { amount: '15', currency: 'USD', frequency: 'month' },
@@ -132,11 +132,11 @@ describe('the product editor fields', () => {
       variants: [{ id: '1', price: '10', available: true, values: ['Red'] }],
     });
     await click(labelled(container, 'Variant 1 in stock'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     expect(container.textContent).toContain('a listing with no available variant is sold-out');
     await choose(byId(container, 'product-visibility'), 'sold-out');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({ visibility: 'sold-out', price: { amount: '10' } });
   });
 
@@ -153,7 +153,7 @@ describe('the product editor fields', () => {
       variants: [{ id: 'v1', price: '5', available: true, values: ['S', '*'] }],
     });
     await typeInto(byId(container, 'product-title'), 'Imported tee');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       title: 'Imported tee',
       sourceId: '1',
@@ -174,7 +174,7 @@ describe('the product editor fields', () => {
       ],
     });
     await typeInto(byId(container, 'product-title'), 'Big flag');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       topics: ['salt, pepper', 'flags'],
       options: [{ name: 'Color', values: ['Red, White', 'Blue'] }],
@@ -194,7 +194,7 @@ describe('the product editor fields', () => {
       ],
     });
     await typeInto(labelled(container, 'Price of variant 1'), '30');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({ price: { amount: '24' } });
   });
 
@@ -214,7 +214,7 @@ describe('the product editor fields', () => {
       variants,
     });
     await typeInto(labelled(container, 'Option 2 name'), 'Colour');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       options: [
         { name: 'Size', values: ['S', 'M'] },
@@ -241,7 +241,7 @@ describe('the product editor fields', () => {
     await typeInto(labelled(container, 'Option 1 name'), 'Sizes');
     await typeInto(labelled(container, 'Option 1 values'), 'S, M, ');
     await typeInto(labelled(container, 'Option 1 values'), 'S, M, L');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       options: [{ name: 'Sizes', values: ['S', 'M', 'L'] }],
       variants,
@@ -259,7 +259,7 @@ describe('the product editor fields', () => {
     });
     await typeInto(labelled(container, 'Option 1 name'), 'Colour');
     expect(container.querySelectorAll('tbody tr')).toHaveLength(0);
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       options: [{ name: 'Colour', values: ['Red', 'Blue'] }],
       variants: [],
@@ -287,7 +287,7 @@ describe('the product editor fields', () => {
     await typeInto(labelled(container, 'Price of variant 3'), '25');
     const price = byId(container, 'product-price');
     expect(price instanceof HTMLInputElement && price.readOnly && price.value).toBe('20');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       price: { amount: '20' },
       options: [
@@ -326,7 +326,7 @@ describe('the product editor fields', () => {
     await typeInto(labelled(container, 'Option 2 name'), '');
     await typeInto(labelled(container, 'Option 2 name'), 'Colour');
     await typeAll(labelled(container, 'Option 1 values'), ['', 'S, M']);
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       options: [
         { name: 'Size', values: ['S', 'M'] },
@@ -349,7 +349,7 @@ describe('the product editor fields', () => {
       ],
     });
     await typeAll(labelled(container, 'Option 2 values'), ['Red, Bla', 'Red, Blac', 'Red, Black']);
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants).toEqual([
       { id: 'a', price: '20', available: true, values: ['S', 'Red'] },
       { id: 'b', price: '30', available: false, values: ['M', 'Black'] },
@@ -360,13 +360,13 @@ describe('the product editor fields', () => {
     const { container, onSave } = await editor(SPARSE);
     await typeInto(labelled(container, 'Option 2 values'), 'Red');
     expect(container.querySelectorAll('tbody tr')).toHaveLength(2);
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       'Variant 2 (M / Blue) uses Blue, which Color no longer has: pick another value or remove the variant.',
     );
     await click(control(container, 'Remove variant 2'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants).toEqual([SPARSE.variants?.[0]]);
   });
 
@@ -380,13 +380,13 @@ describe('the product editor fields', () => {
       ],
     });
     await click(control(container, 'Remove option 2'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       'Variant 1 (S) and Variant 2 (S) are the same choice for a shopper',
     );
     await click(control(container, 'Remove variant 1'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       options: [{ name: 'Size', values: ['S', 'M'] }],
       variants: [
@@ -410,12 +410,12 @@ describe('the product editor fields', () => {
     await click(buttonNamed(container, 'Add an option'));
     await typeInto(labelled(container, 'Option 2 name'), 'Fit');
     await typeInto(labelled(container, 'Option 2 values'), 'Slim, Wide');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Variant 1 (S / ?): pick its Fit.');
     await choose(control(container, 'Fit of variant 1'), 'Slim');
     await choose(control(container, 'Fit of variant 2'), '*');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants).toEqual([
       { id: 'tee-s', price: '20', available: true, values: ['S', 'Slim'] },
       { id: 'tee-m', price: '24', available: false, values: ['M', '*'] },
@@ -437,7 +437,7 @@ describe('the product editor fields', () => {
     await click(buttonNamed(container, 'Add a variant'));
     await choose(control(container, 'Size of variant 2'), 'L');
     await click(buttonNamed(container, 'Add every missing combination'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants?.map((variant) => [variant.id, variant.values[0]])).toEqual([
       ['1', 'S'],
       ['3', 'L'],
@@ -475,7 +475,7 @@ describe('the product editor fields', () => {
     expect(labelled(container, 'Price of variant 1').value).toBe('');
     await typeInto(byId(container, 'variants-same-price'), ' 15 ');
     await click(buttonNamed(container, 'Set for all'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       price: { amount: '15' },
       variants: [{ price: '15' }, { price: '15' }],
@@ -491,7 +491,7 @@ describe('the product editor fields', () => {
     await click(buttonNamed(container, 'Add an option'));
     await typeInto(labelled(container, 'Option 1 name'), 'Size');
     await click(buttonNamed(container, 'Add an option'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     const items = [...container.querySelectorAll('li')].map((item) => item.textContent);
     expect(items).toEqual([
@@ -508,7 +508,7 @@ describe('the product editor fields', () => {
       options: [{ name: 'Size', values: ['S'] }],
       variants: [{ id: '1', price: '20', available: true, values: ['S'] }],
     });
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).price.amount).toBe('20.0');
     await typeInto(labelled(container, 'Price of variant 1'), '27');
     await click(control(container, 'Remove variant 1'));
@@ -536,7 +536,7 @@ describe('the product editor fields', () => {
     ]) {
       const { container, onSave } = await editor(TWO_SIZES);
       await typeAll(labelled(container, 'Option 1 values'), keystrokes);
-      await click(buttonNamed(container, 'Keep this product'));
+      await click(buttonNamed(container, 'Save'));
       expect(saved(onSave).variants).toEqual(TWO_SIZES.variants);
       await mounted?.unmount();
       mounted = undefined;
@@ -546,7 +546,7 @@ describe('the product editor fields', () => {
   it('a value cleared and typed again in one visit to the field is a rename', async () => {
     const { container, onSave } = await editor(TWO_SIZES);
     await typeAll(labelled(container, 'Option 1 values'), ['S, ', 'S, X', 'S, XL']);
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants).toEqual([
       { id: 's', price: '20', available: true, values: ['S'] },
       { id: 'l', price: '30', available: true, values: ['XL'] },
@@ -564,7 +564,7 @@ describe('the product editor fields', () => {
     };
     const { container, onSave } = await editor(jacket);
     await typeInto(byId(container, 'product-title'), 'Warm jacket');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({ ...jacket, title: 'Warm jacket' });
   });
 
@@ -581,12 +581,12 @@ describe('the product editor fields', () => {
       ],
     };
     const { container, onSave } = await editor(woo);
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants).toEqual(woo.variants);
     await click(buttonNamed(container, 'Add a variant'));
     await choose(control(container, 'Size of variant 3'), 'M');
     onSave.mockClear();
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       'Variant 1 (Any) and Variant 3 (M) are the same choice for a shopper',
@@ -602,7 +602,7 @@ describe('the product editor fields', () => {
       ],
     });
     await click(control(container, 'Remove option 1'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave)).toMatchObject({
       options: [{ name: 'Color', values: ['Red', 'Blue'] }],
       variants: [
@@ -626,7 +626,7 @@ describe('the product editor fields', () => {
     expect(labelled(container, 'Price of variant 2').value).toBe('18');
     await click(control(container, 'Remove variant 2'));
     await click(buttonNamed(container, 'Add every missing combination'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants).toEqual([
       { id: '1', price: '18', available: true, values: ['S'] },
       { id: '3', price: '18', available: true, values: ['M'] },
@@ -640,7 +640,7 @@ describe('the product editor fields', () => {
     const pick = control(container, 'Size of variant 2');
     expect(pick.textContent).toContain('L (not a value any more)');
     await typeInto(labelled(container, 'Price of variant 1'), '1.');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     const items = [...container.querySelectorAll('li')].map((item) => item.textContent);
     expect(items).toEqual([
@@ -668,7 +668,7 @@ describe('the product editor fields', () => {
     };
     const first = await editor(woo);
     await typeAll(labelled(first.container, 'Option 1 values'), ['Small, M']);
-    await click(buttonNamed(first.container, 'Keep this product'));
+    await click(buttonNamed(first.container, 'Save'));
     expect(saved(first.onSave).variants?.map((variant) => variant.values)).toEqual([
       ['*'],
       ['Small'],
@@ -687,7 +687,7 @@ describe('the product editor fields', () => {
       ],
     });
     await typeAll(labelled(second.container, 'Option 2 values'), ['Crimson']);
-    await click(buttonNamed(second.container, 'Keep this product'));
+    await click(buttonNamed(second.container, 'Save'));
     expect(saved(second.onSave).variants?.map((variant) => variant.values)).toEqual([
       ['*', 'Crimson'],
       ['M', 'Crimson'],
@@ -706,7 +706,7 @@ describe('the product editor fields', () => {
       variants: [{ id: '1', price: '50', available: true, values: ['M', 'M'] }],
     });
     await typeAll(labelled(container, 'Option 1 values'), ['Medium, L']);
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(saved(onSave).variants?.[0]?.values).toEqual(['Medium', 'M']);
   });
 
@@ -719,7 +719,7 @@ describe('the product editor fields', () => {
       variants: [{ id: 'only', price: '120', available: true, values: [] }],
     });
     await typeInto(labelled(simple.container, 'Price of variant 1'), '9,5');
-    await click(buttonNamed(simple.container, 'Keep this product'));
+    await click(buttonNamed(simple.container, 'Save'));
     expect([...simple.container.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
       'Variant 1 (): the price is not a number like 19.90.',
     ]);
@@ -738,7 +738,7 @@ describe('the product editor fields', () => {
         values: [value],
       })),
     });
-    await click(buttonNamed(many.container, 'Keep this product'));
+    await click(buttonNamed(many.container, 'Save'));
     expect(many.onSave).not.toHaveBeenCalled();
     expect([...many.container.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
       'A product holds at most 100 variants.',
@@ -765,7 +765,7 @@ describe('the product editor fields', () => {
     await click(buttonNamed(container, 'Add an attribute'));
     await typeInto(labelled(container, 'Attribute 3 name'), 'sku');
     await typeInto(labelled(container, 'Attribute 3 value'), 'X-1');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     expect([...container.querySelectorAll('li')].map((item) => item.textContent)).toEqual([
       'Option 2: option 1 is already called Size.',
@@ -787,13 +787,13 @@ describe('the product editor fields', () => {
       ],
     };
     const untouched = await editor(cut);
-    await click(buttonNamed(untouched.container, 'Keep this product'));
+    await click(buttonNamed(untouched.container, 'Save'));
     expect(saved(untouched.onSave).priceFrom).toBe(true);
     await mounted?.unmount();
     mounted = undefined;
     const edited = await editor(cut);
     await typeInto(labelled(edited.container, 'Price of variant 2'), '90');
-    await click(buttonNamed(edited.container, 'Keep this product'));
+    await click(buttonNamed(edited.container, 'Save'));
     expect(saved(edited.onSave).priceFrom).toBeUndefined();
   });
 
@@ -816,7 +816,7 @@ describe('the product editor fields', () => {
       await choose(control(container, `Size of variant ${variant}`), 'L');
       await choose(control(container, `Color of variant ${variant}`), 'Blue');
     }
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(onSave).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       'Variant 1 (L / Blue) and Variant 2 (L / Blue) are the same choice for a shopper',

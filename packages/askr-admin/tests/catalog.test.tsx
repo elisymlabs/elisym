@@ -174,7 +174,7 @@ describe('a publish with products the editor could not read', () => {
     expect(container.textContent).not.toContain('broken');
     await click(rowButton(container, 'Edit', 'Mug'));
     await typeInto(byId(container, 'product-title'), 'Big mug');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     await click(buttonNamed(container, 'Review changes'));
     expect(vi.mocked(api.catalog).mock.calls[0]?.[0]).toMatchObject({ hide: ['broken'] });
   });
@@ -245,7 +245,7 @@ describe('the product editor', () => {
     }
     await click(mugRow);
     await typeInto(byId(container, 'product-title'), 'Big mug');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
 
     await click(buttonNamed(container, 'Review changes'));
     // The products not sent show as unchanged in the review.
@@ -308,7 +308,7 @@ describe('the product editor', () => {
     await settle(() => (container.textContent ?? '').includes('Teapot'));
     // Opening a product and keeping it as it is changes nothing either.
     await click(rowButton(container, 'Edit', 'Teapot'));
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     await click(buttonNamed(container, 'Review changes'));
     expect(container.textContent).toContain(
       'Nothing to publish: your products are already as shown.',
@@ -412,7 +412,7 @@ describe('the product editor', () => {
     await typeInto(byId(container, 'product-d'), 'mug');
     await typeInto(byId(container, 'product-title'), 'Other mug');
     await typeInto(byId(container, 'product-price'), '3');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     expect(container.textContent).toContain('another product already uses "mug"');
     await click(buttonNamed(container, 'Cancel'));
     await click(buttonNamed(container, 'Review changes'));
@@ -435,7 +435,7 @@ describe('the product editor', () => {
     await click(rowButton(container, 'Edit', 'Mug'));
     await typeInto(byId(container, 'product-d'), 'renamed');
     await typeInto(byId(container, 'product-title'), 'Mug 2');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     await click(buttonNamed(container, 'Review changes'));
     expect(vi.mocked(api.catalog).mock.calls[0]?.[0].items.map((item) => item.d)).toEqual(['mug']);
   });
@@ -473,14 +473,14 @@ describe('a review in flight', () => {
     await click(rowButton(container, 'Remove', 'Teapot'));
     await click(rowButton(container, 'Edit', 'Mug'));
     await click(buttonNamed(container, 'Review changes'));
-    const keep = buttonNamed(container, 'Keep this product');
+    const keep = buttonNamed(container, 'Save');
     const file = container.querySelector<HTMLInputElement>('input[type="file"]');
     expect(keep.closest('fieldset')?.disabled).toBe(true);
     expect(file?.closest('fieldset')?.disabled).toBe(true);
     await act(async () => {
       pending.answer({ ...EMPTY_DIFF, hidden: ['teapot'], unchanged: ['mug'] });
     });
-    expect(buttonNamed(container, 'Keep this product').closest('fieldset')?.disabled).toBe(false);
+    expect(buttonNamed(container, 'Save').closest('fieldset')?.disabled).toBe(false);
     expect(container.querySelector('input[type="file"]')?.closest('fieldset')?.disabled).toBe(
       false,
     );
@@ -526,7 +526,7 @@ describe('a review in flight', () => {
     await settle(() => (container.textContent ?? '').includes('Teapot'));
     await click(rowButton(container, 'Edit', 'Mug'));
     await typeInto(byId(container, 'product-title'), 'Big mug');
-    await click(buttonNamed(container, 'Keep this product'));
+    await click(buttonNamed(container, 'Save'));
     await click(buttonNamed(container, 'Review changes'));
     // Every editing control is switched off while the review is out.
     expect(rowButton(container, 'Remove', 'Teapot').closest('fieldset')?.disabled).toBe(true);

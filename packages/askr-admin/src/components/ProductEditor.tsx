@@ -471,7 +471,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
           Cancel
         </button>
         <button type="button" className="btn btn-primary" onClick={save}>
-          Keep this product
+          Save
         </button>
       </div>
     </div>
