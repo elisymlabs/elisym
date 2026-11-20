@@ -45,15 +45,23 @@ afterEach(() => {
 });
 
 describe('dragging a card row with the mouse', () => {
-  it('scrolls the row with the pointer and swallows the click the drag ends in', () => {
+  it('scrolls the row with the pointer, stays where released, and swallows the click', () => {
     const { box, link, clicked } = row();
+    const scrollTo = vi.fn();
+    box.scrollTo = scrollTo as typeof box.scrollTo;
     box.scrollLeft = 100;
     link.dispatchEvent(pointer('pointerdown', 300));
-    link.dispatchEvent(pointer('pointermove', 260));
+    // Crossing the threshold starts the drag without a jump.
+    link.dispatchEvent(pointer('pointermove', 290));
     expect(box.classList.contains('dragging')).toBe(true);
-    expect(box.scrollLeft).toBe(140);
-    link.dispatchEvent(pointer('pointerup', 260));
+    expect(box.scrollLeft).toBe(100);
+    link.dispatchEvent(pointer('pointermove', 247));
+    expect(box.scrollLeft).toBe(143);
+    link.dispatchEvent(pointer('pointerup', 247));
     expect(box.classList.contains('dragging')).toBe(false);
+    // No snap to a card on release: the row stays where the pointer left it.
+    expect(box.scrollLeft).toBe(143);
+    expect(scrollTo).not.toHaveBeenCalled();
     link.click();
     expect(clicked()).toBe(0);
   });
