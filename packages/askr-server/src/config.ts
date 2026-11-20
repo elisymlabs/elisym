@@ -199,6 +199,65 @@ export function openRouterProvidersFrom(model: string, value: string | undefined
   return providers;
 }
 
+/** Auto-activations per rolling 24 hours, all instances, unless ASKR_AUTO_TIER_PER_DAY says otherwise. */
+export const DEFAULT_AUTO_TIER_PER_DAY = 50;
+/** Auto-activated stores active on the auto tier at most, unless ASKR_AUTO_TIER_MAX_ACTIVE says otherwise. */
+export const DEFAULT_AUTO_TIER_MAX_ACTIVE = 500;
+/** As the operator CLI names a tier (`src/cli.ts`). */
+const AUTO_TIER_NAME_RE = /^[a-z0-9-]{1,32}$/;
+
+/** The tier a store's first settings activate it on, and the caps on how many (6.1). */
+export interface AutoTier {
+  tier: string;
+  perDay: number;
+  maxActive: number;
+}
+
+/**
+ * ASKR_AUTO_TIER (a tier name, e.g. free) with ASKR_AUTO_TIER_PER_DAY and
+ * ASKR_AUTO_TIER_MAX_ACTIVE, checked at start. Unset: no store is activated
+ * but by the operator, as before.
+ */
+export function autoTierFromEnv(rawEnv: Env): AutoTier | undefined {
+  const env = withoutEmpty(rawEnv);
+  const tier = env.ASKR_AUTO_TIER;
+  if (tier === undefined) {
+    for (const name of ['ASKR_AUTO_TIER_PER_DAY', 'ASKR_AUTO_TIER_MAX_ACTIVE']) {
+      if (env[name] !== undefined) {
+        throw new Error(`${name} is an ASKR_AUTO_TIER setting: unset it without ASKR_AUTO_TIER.`);
+      }
+    }
+    return undefined;
+  }
+  if (!AUTO_TIER_NAME_RE.test(tier)) {
+    throw new Error(`ASKR_AUTO_TIER must be a tier name (1 to 32 of a-z, 0-9 and -), got ${tier}`);
+  }
+  return {
+    tier,
+    perDay: positiveInteger(
+      'ASKR_AUTO_TIER_PER_DAY',
+      env.ASKR_AUTO_TIER_PER_DAY ?? String(DEFAULT_AUTO_TIER_PER_DAY),
+    ),
+    maxActive: positiveInteger(
+      'ASKR_AUTO_TIER_MAX_ACTIVE',
+      env.ASKR_AUTO_TIER_MAX_ACTIVE ?? String(DEFAULT_AUTO_TIER_MAX_ACTIVE),
+    ),
+  };
+}
+
+/**
+ * A warning when the auto tier does not exist (yet): stores are then told
+ * `no_tier`. Not a refusal to start, since the operator may create it after.
+ */
+export async function autoTierWarning(
+  autoTier: AutoTier,
+  tiers: { tierExists: (name: string) => Promise<boolean> },
+): Promise<string | undefined> {
+  return (await tiers.tierExists(autoTier.tier))
+    ? undefined
+    : `ASKR_AUTO_TIER names the tier ${autoTier.tier}, which does not exist: no store is activated until the operator creates it (askr-server tier set ${autoTier.tier} ...)`;
+}
+
 export interface ServeConfig {
   model: ModelConfig;
   price: ModelPrice;

@@ -12,6 +12,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CatalogKeys } from '../src/components/CatalogKeys';
 import { RotateAssistant } from '../src/components/RotateAssistant';
+import { PENDING_CONTACT_TEXT } from '../src/lib/activation';
 import {
   ASSISTANT,
   NOW,
@@ -78,13 +79,9 @@ function configOf(event: NostrEvent) {
   return config;
 }
 
-async function mountKeys(events: NostrEvent[], api = fakeApi()) {
+async function mountKeys(events: NostrEvent[], api = fakeApi(), view = storeView()) {
   mounted = await mount(
-    <CatalogKeys
-      deps={sessionDeps(api, fakeReader(events))}
-      view={storeView()}
-      config={undefined}
-    />,
+    <CatalogKeys deps={sessionDeps(api, fakeReader(events))} view={view} config={undefined} />,
   );
   const { container } = mounted;
   await settle(() => (container.textContent ?? '').includes(nip19.npubEncode(SERVER_KEY)));
@@ -105,6 +102,22 @@ describe('catalog keys', () => {
     expect(authorization?.pubkey).toBe(OWNER);
     expect(tagOf(authorization, 'd')).toBe(merchantKey);
     expect(tagOf(authorization, 'mode')).toBe('self-host');
+  });
+
+  it('tells a store the operator set back to pending to message us, not to save again', async () => {
+    const { container } = await mountKeys(
+      [signedAuth(SERVER_KEY, NOW - 10)],
+      fakeApi(),
+      storeView({ status: 'pending' }),
+    );
+    await typeInto(
+      byId(container, 'authorize-key'),
+      nip19.npubEncode(getPublicKey(generateSecretKey())),
+    );
+    await click(buttonNamed(container, 'Sign and authorize'));
+    await settle(() => (container.textContent ?? '').includes('Saved.'));
+    expect(container.textContent).toContain(`Saved. ${PENDING_CONTACT_TEXT}`);
+    expect(container.textContent).not.toContain('Save your settings again');
   });
 
   it('authorizes the server K pasted back as hosted', async () => {

@@ -81,6 +81,21 @@ interface CatalogSyncRow extends Record<string, unknown> {
   error: string | null;
 }
 
+/**
+ * The advisory lock auto-activations take (6.1), so two instances cannot both
+ * pass a cap. Its own: not the migrations' `LOCK_ID` (`db/migrations.ts`).
+ */
+export const AUTO_TIER_LOCK_ID = 7_301_996;
+const DAY_SECS = 24 * 60 * 60;
+
+/**
+ * What a store's settings did to it (6.1): `activated` on the auto tier,
+ * refused at a cap (`capacity_reached`), the auto tier missing (`no_tier`),
+ * or no auto-activation for it (`disabled`: off, or a store the operator set
+ * back to pending).
+ */
+export type Activation = 'activated' | 'capacity_reached' | 'no_tier' | 'disabled';
+
 /** What a catalog sync whose instance stopped holding it (a crash) shows. */
 export const SYNC_INTERRUPTED = 'The sync was interrupted';
 
@@ -360,6 +375,65 @@ export class StoreDirectory {
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, owner]);
       return true;
     });
+  }
+
+  /**
+   * Activate a pending store that never had a tier on `tier` (6.1), unless a
+   * cap is reached: `perDay` activations per rolling 24 hours, `maxActive`
+   * auto-activated stores active on `tier`. Null when the store does not
+   * qualify (any more). Notifies the running servers in the same transaction.
+   */
+  async autoActivate(
+    owner: string,
+    tier: string,
+    now: number,
+    caps: { perDay: number; maxActive: number },
+  ): Promise<Exclude<Activation, 'disabled'> | null> {
+    return this.db.transaction(async (tx) => {
+      await tx.query('select pg_advisory_xact_lock($1)', [AUTO_TIER_LOCK_ID]);
+      // Every read below runs after the lock, under Postgres' default READ COMMITTED: each
+      // statement sees what earlier holders of the lock committed. Under REPEATABLE READ the
+      // snapshot would predate the lock, and two activations could both pass a cap.
+      const qualifies = await tx.query(
+        `select 1 from stores where owner = $1 and status = 'pending' and tier is null for update`,
+        [owner],
+      );
+      if (qualifies.length === 0) {
+        return null;
+      }
+      // `for share` waits for a `tier delete` under way, so a deleted tier reads as none.
+      const tiers = await tx.query('select 1 from tiers where name = $1 for share', [tier]);
+      if (tiers.length === 0) {
+        return 'no_tier';
+      }
+      const [counts] = await tx.query<{ today: number; active: number }>(
+        `select
+           (count(*) filter (where auto_activated_at > $1))::int8 as today,
+           (count(*) filter (where status = 'active' and tier = $2
+                             and auto_activated_at is not null))::int8 as active
+         from stores`,
+        [now - DAY_SECS, tier],
+      );
+      if ((counts?.today ?? 0) >= caps.perDay || (counts?.active ?? 0) >= caps.maxActive) {
+        return 'capacity_reached';
+      }
+      await tx.query(
+        `update stores set status = 'active', tier = $2, auto_activated_at = $3
+         where owner = $1 and status = 'pending' and tier is null`,
+        [owner, tier, now],
+      );
+      await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, owner]);
+      return 'activated';
+    });
+  }
+
+  /** Whether the server holds a config `owner` signed that parses (it lists at least one origin). */
+  async hasStoredConfig(owner: string): Promise<boolean> {
+    const rows = await this.db.query<{ event: NostrEvent }>(
+      `select event from store_events where owner = $1 and (event->>'kind')::int = $2`,
+      [owner, KIND_CONFIG],
+    );
+    return rows.some((row) => parseConfig(row.event) !== undefined);
   }
 
   /**

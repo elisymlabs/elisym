@@ -313,7 +313,10 @@ describe('admin API (7.3)', () => {
     const stored = await call('POST', '/v1/admin/store/events', {
       events: [config, auth, deletion],
     });
-    expect(stored).toEqual({ status: 200, body: { stored: [config?.id, auth?.id, deletion.id] } });
+    expect(stored).toEqual({
+      status: 200,
+      body: { stored: [config?.id, auth?.id, deletion.id], activation: null },
+    });
     expect(changed).toEqual(['changed']);
     expect((await directory.unpublishedEvents()).map((row) => row.event.id)).toEqual(
       expect.arrayContaining([config?.id, auth?.id, deletion.id]),

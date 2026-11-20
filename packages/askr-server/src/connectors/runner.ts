@@ -47,7 +47,14 @@ export type ConnectorSyncResult =
       reason: string;
       httpStatus?: number;
     }
-  | { status: 'error'; message: string };
+  | {
+      status: 'error';
+      message: string;
+      /** Set when the catalog is larger than the tier indexes: `count` products, `max` allowed. */
+      reason?: 'too_many_products';
+      count?: number;
+      max?: number;
+    };
 
 export interface ConnectorSyncOptions {
   platform: ConnectorPlatform;
@@ -252,6 +259,9 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
     if (options.maxItems !== undefined && items.length > options.maxItems) {
       return {
         status: 'error',
+        reason: 'too_many_products',
+        count: items.length,
+        max: options.maxItems,
         message: `${items.length} products, over the tier's ${options.maxItems}`,
       };
     }

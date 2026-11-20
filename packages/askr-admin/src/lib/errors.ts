@@ -50,7 +50,7 @@ const CODES: Readonly<Record<string, string>> = {
   sync_running:
     'A product sync or connector preview is already running for this store. Wait for it to finish, then retry.',
   inactive:
-    'Your store is not active yet. Products, policies and the connector work once the operator has activated it.',
+    'Your store is not active yet: products, policies and the connector work once it is. Save your settings again to retry the activation, or message us with your Store ID.',
   no_connector:
     'No connector is set up for this store. Choose your shop as the product source in Settings and save first.',
   policy_imported:

@@ -192,7 +192,13 @@ describe('syncConnector: Shopify', () => {
   it('syncs nothing when the catalog is over the tier', async () => {
     const keys = storeKeys();
     const result = await syncConnector(options(keys, shopifyWeb(keys), { maxItems: 2 }));
-    expect(result).toEqual({ status: 'error', message: "3 products, over the tier's 2" });
+    expect(result).toEqual({
+      status: 'error',
+      reason: 'too_many_products',
+      count: 3,
+      max: 2,
+      message: "3 products, over the tier's 2",
+    });
     expect(keys.relay.published).toHaveLength(0);
     const exact = await syncConnector(options(keys, shopifyWeb(keys), { maxItems: 3 }));
     expect(exact.status).toBe('ok');

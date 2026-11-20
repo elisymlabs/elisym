@@ -24,14 +24,19 @@ import type { NostrEvent } from 'nostr-tools';
 import { decode } from 'nostr-tools/nip19';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
-import { publicBaseOf } from '../config';
+import { type AutoTier, publicBaseOf } from '../config';
 import { livePolicies } from '../connectors/policies';
 import { type ConnectorService, shopIdentity } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
 import { randomId } from '../state/pg-state';
-import { type CatalogSyncStatus, proofOrigins, type StoreDirectory } from '../state/stores';
+import {
+  type Activation,
+  type CatalogSyncStatus,
+  proofOrigins,
+  type StoreDirectory,
+} from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
@@ -162,6 +167,8 @@ export interface AdminDeps {
   /** Called after O-signed events were stored, so an active store's are published at once. */
   storeEventsChanged: () => void;
   connectors: ConnectorService;
+  /** ASKR_AUTO_TIER: a store's first settings activate it on this tier, within the caps (6.1). */
+  autoTier?: AutoTier;
   now?: () => number;
   /** Publishing pace for catalog syncs; tests raise it. */
   syncPace?: number;
@@ -429,6 +436,33 @@ export function createAdminApi(
     movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
   });
 
+  /**
+   * Activate a pending store that never had a tier on the auto tier (6.1): null
+   * when it is not pending, `disabled` when ASKR_AUTO_TIER is unset or the
+   * store had a tier (the operator set it back to pending: only they activate
+   * it again). The caller checked that the store holds settings with an origin.
+   */
+  const activate = async (owner: string): Promise<Activation | null> => {
+    const current = await deps.directory.statusOf(owner);
+    if (current?.status !== 'pending') {
+      return null;
+    }
+    if (deps.autoTier === undefined || current.tier !== null) {
+      return 'disabled';
+    }
+    const { tier, perDay, maxActive } = deps.autoTier;
+    const activation = await deps.directory.autoActivate(owner, tier, now(), {
+      perDay,
+      maxActive,
+    });
+    if (activation === 'capacity_reached') {
+      log(`store ${owner} not activated on ${tier}: a cap is reached`);
+    } else if (activation === 'no_tier') {
+      log(`store ${owner} not activated: the tier ${tier} does not exist`);
+    }
+    return activation;
+  };
+
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
     const parsed = EventsRequestSchema.safeParse(parseJson(body));
     if (!parsed.success) {
@@ -448,8 +482,15 @@ export function createAdminApi(
         ? json({ error: 'too_many_events' }, 409)
         : json({ error: 'bad_event', reason: added.reason, id: added.id }, 400);
     }
+    // Only settings a store can run on take a slot: a config that parses lists an origin.
+    const settings = events.some(
+      (event) => event.kind === KIND_CONFIG && parseConfig(event) !== undefined,
+    );
+    const activation = settings ? await activate(store.owner) : null;
+    // After the activation, so this instance publishes an activated store's events at once (the
+    // activation's notify also runs the same handler, on every instance).
     deps.storeEventsChanged();
-    return json({ stored: events.map((event) => event.id) }, 200);
+    return json({ stored: events.map((event) => event.id), activation }, 200);
   };
 
   const catalog = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -639,7 +680,17 @@ export function createAdminApi(
       // the database with pending stores.
       const existing = await deps.directory.store(owner);
       if (existing !== undefined) {
-        return json(await view(existing), 200);
+        // A pending store whose settings are stored already is activated here (6.1): a re-run of
+        // a setup that posts nothing new asks again.
+        const activation =
+          existing.status === 'pending' && (await deps.directory.hasStoredConfig(owner))
+            ? await activate(owner)
+            : null;
+        if (activation === 'activated') {
+          deps.storeEventsChanged();
+        }
+        const current = activation === 'activated' ? await deps.directory.store(owner) : existing;
+        return json({ ...(await view(current ?? existing)), activation }, 200);
       }
       // A key a store moved away from never opens a store again: its embeds lead to the new one.
       if (await deps.directory.wasMoved(owner)) {
@@ -648,7 +699,10 @@ export function createAdminApi(
       if (!storesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
         return json({ error: 'rate_limited' }, 429);
       }
-      return json(await view(await deps.directory.createStore(owner, now())), 200);
+      return json(
+        { ...(await view(await deps.directory.createStore(owner, now()))), activation: null },
+        200,
+      );
     }
     const store = await deps.directory.store(owner);
     if (store === undefined) {

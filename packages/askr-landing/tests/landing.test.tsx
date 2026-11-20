@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import {
   ADMIN_URL,
+  CONTACT_URL,
   DOCS,
   ELISYM_URL,
   GITHUB_URL,
@@ -57,6 +58,13 @@ function filesIn(dir: string): string[] {
 }
 
 describe('the links', () => {
+  it('redirect /contact to the contact, temporarily, so a changed contact is never cached', () => {
+    const config: unknown = JSON.parse(readFileSync(join(PACKAGE, 'vercel.json'), 'utf8'));
+    const redirects: unknown =
+      typeof config === 'object' && config !== null ? Reflect.get(config, 'redirects') : undefined;
+    expect(redirects).toEqual([{ source: '/contact', destination: CONTACT_URL, permanent: false }]);
+  });
+
   it('open the admin on the Askr server, with no handle and no referrer', async () => {
     expect(ADMIN_URL).toBe('https://app.askr.elisym.network/admin/');
     const page = await render(<App />);

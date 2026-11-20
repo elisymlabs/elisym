@@ -20,7 +20,7 @@ export function helpUrl(help: Help): string {
 export const HELP = {
   // Overview
   status: {
-    text: 'Pending: your settings are saved and the assistant starts answering once the Askr operator activates the store on a plan. Active: it answers on your sites. Suspended: it does not answer; contact the operator.',
+    text: 'Pending: the store is waiting for activation; save your settings again to retry, or message us with your Store ID. Active: it answers on your sites. Suspended: it does not answer; contact the operator.',
     anchor: 'status',
   },
   usage: {
@@ -32,7 +32,7 @@ export const HELP = {
     anchor: 'product-clicks',
   },
   waiting: {
-    text: 'Changes you signed that the server has not published to the relay yet. A store that is not active keeps them here until it is activated.',
+    text: 'Changes you signed that the server has not published to the relay yet. A store that is not active keeps them here until it is.',
     anchor: 'waiting-to-publish',
   },
   productSync: {

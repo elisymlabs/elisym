@@ -1,6 +1,7 @@
 import type { StoreConfig } from '@elisym/askr';
 import { type ReactNode, useEffect, useState } from 'react';
 import { EMBED_DOCS_URL } from '../constants';
+import { pendingTextOf } from '../lib/activation';
 import type { AdminClient } from '../lib/deps';
 import {
   PLATFORM_HINTS,
@@ -13,13 +14,14 @@ import { HELP } from '../lib/help';
 import { npubOf } from '../lib/signer';
 import type { PinnedWidget, StoreView } from '../lib/types';
 import { AddToCartHook } from './AddToCartHook';
+import { ContactLinks } from './ContactLinks';
 import { CopyBlock } from './CopyBlock';
 import { Notice } from './Notice';
 import { Section } from './Section';
 
 interface Props {
   api: Pick<AdminClient, 'pinnedWidget'>;
-  view: Pick<StoreView, 'owner' | 'status'>;
+  view: Pick<StoreView, 'owner' | 'status' | 'tier'>;
   config: StoreConfig | undefined;
 }
 
@@ -101,9 +103,14 @@ export function EmbedSection({ api, view, config }: Props) {
   if (view.status === 'pending') {
     statusNotice = (
       <Notice tone="info">
-        Your store is not active yet. Until it is, the chat says &quot;The assistant is not set up
-        for this store&quot;. You can add the code now; once your store is activated, reload your
-        site&apos;s page and the chat answers.
+        <span className="flex flex-col gap-4">
+          <span>
+            Your store is not active yet. Until it is, the chat says &quot;The assistant is not set
+            up for this store&quot;. You can add the code now; once your store is active, reload
+            your site&apos;s page and the chat answers. {pendingTextOf(view)}
+          </span>
+          <ContactLinks storeId={npub} />
+        </span>
       </Notice>
     );
   } else if (view.status === 'suspended') {

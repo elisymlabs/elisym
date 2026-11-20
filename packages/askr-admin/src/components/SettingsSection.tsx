@@ -137,7 +137,7 @@ export function SettingsSection({
       )}
       {source === undefined && configUnreadableAt === undefined ? (
         <Notice tone="info">
-          Your signed settings are kept on the server and published once your store is activated, so
+          Your signed settings are kept on the server and published once your store is active, so
           they cannot be read back here yet. Saving now replaces them.
         </Notice>
       ) : null}
@@ -190,11 +190,13 @@ export function SettingsSection({
             authorized: authorities.keys,
             relayNewestAt: authorities.newestAt,
           });
-          setSaved(
-            outcome.note === undefined
-              ? savedMessage(view)
-              : `${savedMessage(view)} ${outcome.note}`,
-          );
+          // The view is the one from before this save: a save that activated the store says so.
+          const message = savedMessage({
+            status: outcome.activation === 'activated' ? 'active' : view.status,
+            tier: view.tier,
+            activation: outcome.activation,
+          });
+          setSaved(outcome.note === undefined ? message : `${message} ${outcome.note}`);
           await onSaved();
           if (outcome.connectorError !== undefined) {
             throw new Error(outcome.connectorError);

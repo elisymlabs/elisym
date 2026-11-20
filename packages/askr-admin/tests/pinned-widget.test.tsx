@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { widgetBundle } from '../../askr-server/src/gateway/widget';
 import { EmbedSection } from '../src/components/EmbedSection';
+import { CONTACT_URL } from '../src/constants';
+import { PENDING_CONTACT_TEXT, PENDING_TEXT } from '../src/lib/activation';
 import { AdminApi } from '../src/lib/api';
 import { ADD_TO_CART_SNIPPET, pinnedScriptSnippet, scriptSnippet } from '../src/lib/embed';
 import { npubOf, secretKeySigner } from '../src/lib/signer';
@@ -138,9 +140,18 @@ describe('the embed section for a merchant', () => {
   }
 
   it('says what a pending store shows and to reload once activated, and what a suspended one shows', async () => {
-    const pending = await mountWith(storeView({ status: 'pending' }));
+    const pending = await mountWith(storeView({ status: 'pending', tier: null }));
     expect(pending.textContent).toContain('The assistant is not set up for this store');
     expect(pending.textContent).toContain('reload');
+    expect(pending.textContent).toContain(PENDING_TEXT);
+    expect(pending.querySelector('.contact-link')?.parentElement?.textContent).toContain(
+      npubOf(OWNER),
+    );
+    expect(pending.querySelector('.contact-link')?.getAttribute('href')).toBe(CONTACT_URL);
+    await mounted?.unmount();
+    const demoted = await mountWith(storeView({ status: 'pending' }));
+    expect(demoted.textContent).toContain(PENDING_CONTACT_TEXT);
+    expect(demoted.textContent).not.toContain('Save your settings again');
     await mounted?.unmount();
     const suspended = await mountWith(storeView({ status: 'suspended' }));
     expect(suspended.textContent).toContain('suspended');
@@ -150,6 +161,8 @@ describe('the embed section for a merchant', () => {
     await mounted?.unmount();
     const active = await mountWith();
     expect(active.textContent).not.toContain('not set up for this store');
+    expect(active.textContent).not.toContain(PENDING_TEXT);
+    expect(active.querySelector('.contact-link')).toBeNull();
     expect(active.textContent).not.toContain('suspended');
   });
 
