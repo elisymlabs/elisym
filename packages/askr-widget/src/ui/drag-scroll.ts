@@ -4,38 +4,11 @@ export const DRAG_THRESHOLD_PX = 6;
 /** Controls a mouse press does not drag from: a select opens on the press itself. */
 const NO_DRAG_SELECTOR = 'select, input, textarea';
 
-/** Whether the visitor asked for less motion; a host page that breaks `matchMedia` counts as asking. */
-function prefersStill(row: HTMLElement): boolean {
-  try {
-    return (
-      row.ownerDocument.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)').matches ??
-      true
-    );
-  } catch {
-    return true;
-  }
-}
-
-/** The scroll position that puts the card nearest the row's start edge at that edge. */
-function nearestCardScroll(row: HTMLElement): number | undefined {
-  const rowLeft = row.getBoundingClientRect().left;
-  const style = row.ownerDocument.defaultView?.getComputedStyle(row);
-  const inset = Number.parseFloat(style?.scrollPaddingInlineStart ?? '') || 0;
-  let best: number | undefined;
-  for (const card of row.children) {
-    const target = row.scrollLeft + card.getBoundingClientRect().left - rowLeft - inset;
-    if (best === undefined || Math.abs(target - row.scrollLeft) < Math.abs(best - row.scrollLeft)) {
-      best = target;
-    }
-  }
-  return best;
-}
-
 /**
  * Let a mouse scroll a sideways row by pressing and dragging, as a finger already can. Touch and
  * pen keep the browser's own scrolling. A press that moved past the threshold is a drag: the
- * click it would end in (on a link, a choice or the cart button) is swallowed, and the row snaps
- * back to a card once it is released.
+ * click it would end in (on a link, a choice or the cart button) is swallowed. The row moves with
+ * the pointer like a scrollbar thumb and stays where it is released: no snapping to a card.
  */
 export function enableDragScroll(row: HTMLElement): void {
   let pointerId: number | undefined;
@@ -55,12 +28,7 @@ export function enableDragScroll(row: HTMLElement): void {
     if (dragging) {
       dragging = false;
       swallowClick = true;
-      // Snapping off while dragging, so the row followed the pointer; back on, it settles on a card.
       row.classList.remove('dragging');
-      const target = nearestCardScroll(row);
-      if (target !== undefined) {
-        row.scrollTo({ left: target, behavior: prefersStill(row) ? 'auto' : 'smooth' });
-      }
       // The click a drag ends in comes right after pointerup; a later one is the visitor's own.
       setTimeout(() => {
         swallowClick = false;
@@ -97,9 +65,12 @@ export function enableDragScroll(row: HTMLElement): void {
       dragging = true;
       row.classList.add('dragging');
       row.setPointerCapture(event.pointerId);
+      // The drag starts here, so the threshold's few pixels never make the row jump.
+      startX = event.clientX;
+      startScroll = row.scrollLeft;
     }
     event.preventDefault();
-    row.scrollLeft = startScroll - moved;
+    row.scrollLeft = startScroll - (event.clientX - startX);
   });
   row.addEventListener('pointerup', finish);
   row.addEventListener('pointercancel', finish);

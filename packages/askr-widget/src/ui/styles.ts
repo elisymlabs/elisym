@@ -134,16 +134,17 @@ button:disabled { cursor: default; opacity: 0.4; }
 .component { align-self: stretch; display: flex; flex-direction: column; gap: 10px; }
 .component-title { font-weight: 600; }
 .cards {
-  display: flex; gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory;
+  display: flex; gap: 10px; overflow-x: auto;
   margin: 0 -16px; padding: 2px 16px 6px; scroll-padding-inline: 16px; scrollbar-width: none;
 }
 .cards::-webkit-scrollbar { display: none; }
-/* A mouse drags a row of several cards sideways (drag-scroll.ts): a hand over it, a closed hand
-   while dragging, with snapping off so the row follows the pointer and no text selected. */
+/* No snapping: a swipe, a wheel or a drag scrolls the row freely and it stays where it stops.
+   A mouse drags a row of several cards sideways (drag-scroll.ts): a hand over it, a closed hand
+   while dragging, and no text selected. */
 @media (hover: hover) and (pointer: fine) {
   .cards:has(> .card + .card) { cursor: grab; }
 }
-.cards.dragging { cursor: grabbing; scroll-snap-type: none; user-select: none; -webkit-user-select: none; }
+.cards.dragging { cursor: grabbing; user-select: none; -webkit-user-select: none; }
 .cards.dragging * { cursor: grabbing; }
 /* No ghost image follows the pointer: a photo or the title link never starts the browser's own drag. */
 .card img, .card a { -webkit-user-drag: none; user-drag: none; }
@@ -152,7 +153,7 @@ button:disabled { cursor: default; opacity: 0.4; }
 .cards:focus-visible { outline-offset: -2px; border-radius: 12px; }
 /* Several products scroll sideways, the next one peeking in; a single one takes the width. */
 .card {
-  flex: 0 0 232px; scroll-snap-align: start; display: flex; flex-direction: column;
+  flex: 0 0 232px; display: flex; flex-direction: column;
   border: 1px solid var(--cc-border); border-radius: 18px; background: var(--cc-bg);
   overflow: hidden;
 }
