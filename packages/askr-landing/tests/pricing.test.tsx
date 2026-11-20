@@ -105,7 +105,7 @@ const AGREED = [
       'About 6,000 conversations a month',
       'Up to 10,000 products',
       'Syncs every 30 minutes',
-      '"Powered by Askr" can be removed',
+      'Shows "Powered by Askr"',
       'Up to 20 sites',
     ],
     start: 'choose',
@@ -117,7 +117,7 @@ const AGREED = [
       'About 15,000 conversations a month',
       'Up to 20,000 products',
       'Syncs every 15 minutes',
-      '"Powered by Askr" can be removed',
+      'Shows "Powered by Askr"',
       'Up to 20 sites',
     ],
     start: 'choose',
@@ -193,11 +193,11 @@ describe('the plans', () => {
     }
   });
 
-  it('let only Pro, Scale and Enterprise remove "Powered by Askr"', () => {
+  it('let only Enterprise remove "Powered by Askr"', () => {
     const removable = PLANS.filter((plan) =>
       plan.features.includes(`"Powered by ${PRODUCT_NAME}" can be removed`),
     ).map((plan) => plan.name);
-    expect(removable).toEqual(['Pro', 'Scale', 'Enterprise']);
+    expect(removable).toEqual(['Enterprise']);
     for (const plan of PLANS.filter((entry) => !removable.includes(entry.name))) {
       expect(plan.features, plan.name).toContain(`Shows "Powered by ${PRODUCT_NAME}"`);
     }
