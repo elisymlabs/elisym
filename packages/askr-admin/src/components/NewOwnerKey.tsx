@@ -12,14 +12,25 @@ interface Props {
   busy?: boolean;
   /** More choices before Continue, such as remembering the key on this device. */
   children?: ReactNode;
+  /** Above the key: the plan chosen on the landing, if any. */
+  lead?: ReactNode;
 }
 
 /** A new owner key, shown once, with a clear warning to save it. */
-export function NewOwnerKey({ nsec, npub, onContinue, onCancel, busy = false, children }: Props) {
+export function NewOwnerKey({
+  nsec,
+  npub,
+  onContinue,
+  onCancel,
+  busy = false,
+  children,
+  lead,
+}: Props) {
   const [saved, setSaved] = useState(false);
   return (
     <main className="mx-auto flex min-h-screen max-w-560 flex-col justify-center gap-16 px-16 py-40">
       <h1 className="text-24 font-semibold">Your new secret key</h1>
+      {lead}
       <Notice tone="warn">
         Save this secret key now, in a password manager or on paper. It is shown only once. Anyone
         who has it controls your store, and nobody can recover it for you if you lose it.

@@ -2,10 +2,7 @@ import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BillingReturnNotice } from '../src/components/BillingReturnNotice';
 import { BillingStatus } from '../src/components/BillingStatus';
-import { Overview } from '../src/components/Overview';
-import { PaidPlans } from '../src/components/PaidPlans';
 import { Session } from '../src/components/Session';
-import { MANAGE_TEXT, UPGRADE_TEXT } from '../src/lib/activation';
 import { AdminApi, ApiError } from '../src/lib/api';
 import {
   ACTIVATION_POLL_LIMIT,
@@ -18,16 +15,14 @@ import { createSessionDeps } from '../src/lib/deps';
 import { errorMessage } from '../src/lib/errors';
 import { HELP } from '../src/lib/help';
 import { secretKeySigner } from '../src/lib/signer';
-import type { BillingView, StoreView } from '../src/lib/types';
+import type { BillingView } from '../src/lib/types';
 import {
   BILLING_OFF,
   BILLING_ON,
   FREE_TIER,
   OWNER_KEY,
-  adminConfig,
   fakeApi,
   fakeReader,
-  overviewProps,
   sessionDeps,
   signedConfig,
   storeView,
@@ -59,91 +54,13 @@ const LIVE: BillingView = {
   operatorManaged: false,
 };
 
-async function mountOverview(view: StoreView, api = fakeApi()) {
-  const props = overviewProps(api);
-  mounted = await mount(
-    <Overview {...props} view={view} config={adminConfig()} configFromServer={false} />,
-  );
-  return { container: mounted.container, api, openUrl: props.deps.openUrl };
-}
-
-function upgradeText(container: HTMLElement): string {
-  return byId(container, 'upgrade').textContent ?? '';
-}
-
-describe('how an active store moves to another plan', () => {
-  it('a live paid plan (past due and trialing too) is changed under Manage billing, nothing to buy', async () => {
-    for (const status of ['active', 'past_due', 'trialing']) {
-      const { container } = await mountOverview(storeView({ billing: { ...LIVE, status } }));
-      expect(upgradeText(container), status).toContain(MANAGE_TEXT);
-      expect(container.querySelector('#paid-plans'), status).toBeNull();
-      await mounted?.unmount();
-      mounted = undefined;
-    }
-  });
-
-  it('goes through us while billing is off, after a plan ended, or for a plan we manage', async () => {
-    for (const billing of [
-      { ...LIVE, enabled: false },
-      { ...LIVE, status: 'canceled' },
-      { ...LIVE, operatorManaged: true },
-    ]) {
-      const { container } = await mountOverview(storeView({ billing }));
-      expect(upgradeText(container)).toContain(UPGRADE_TEXT);
-      expect(upgradeText(container)).not.toContain(MANAGE_TEXT);
-      await mounted?.unmount();
-      mounted = undefined;
-    }
-  });
-});
-
-describe('the plan picker with billing on', () => {
-  it('shows the paid plans only as Upgrade cards, never the static ones beside them', async () => {
-    const { container } = await mountOverview(
-      storeView({ status: 'pending', tier: null, billing: BILLING_ON }),
-    );
-    const names = [...byId(container, 'plan-picker').querySelectorAll('p')].map(
-      (node) => node.textContent,
-    );
-    expect(names.filter((name) => name === 'Starter')).toHaveLength(1);
-    expect(names).not.toContain('Growth / Pro / Scale');
-  });
-
-  it('says the prices include tax', async () => {
-    mounted = await mount(<PaidPlans deps={{ api: fakeApi(), openUrl: vi.fn() }} />);
-    expect(mounted.container.textContent).toContain('Prices in USD, tax included.');
-    expect(mounted.container.textContent).not.toContain('added');
-  });
-
-  it('marks the chosen billing period as pressed', async () => {
-    mounted = await mount(<PaidPlans deps={{ api: fakeApi(), openUrl: vi.fn() }} />);
-    const { container } = mounted;
-    expect(byId(container, 'interval-month').getAttribute('aria-pressed')).toBe('true');
-    expect(byId(container, 'interval-year').getAttribute('aria-pressed')).toBe('false');
-    await click(byId(container, 'interval-year'));
-    expect(byId(container, 'interval-month').getAttribute('aria-pressed')).toBe('false');
-    expect(byId(container, 'interval-year').getAttribute('aria-pressed')).toBe('true');
-  });
-
-  it('works again when the page comes back from the browser cache', async () => {
-    const openUrl = vi.fn();
-    mounted = await mount(<PaidPlans deps={{ api: fakeApi(), openUrl }} />);
-    const { container } = mounted;
-    await click(byId(container, 'upgrade-pro'));
-    await settle(() => openUrl.mock.calls.length > 0);
-    expect(byId(container, 'upgrade-pro')).toHaveProperty('disabled', true);
-    await act(async () => {
-      globalThis.dispatchEvent(new Event('pageshow'));
-    });
-    expect(byId(container, 'upgrade-pro')).toHaveProperty('disabled', false);
-  });
-});
-
 describe('Manage billing', () => {
   it('shows only while billing is on and the store has a customer, even with nothing to say', async () => {
     const cases: Array<[BillingView, boolean]> = [
       [{ ...LIVE, enabled: false }, false],
       [{ ...LIVE, manageable: false }, false],
+      // Managed by us or suspended: plan changes go through us, not the portal.
+      [{ ...LIVE, operatorManaged: true }, false],
       [{ ...BILLING_ON, manageable: true }, true],
     ];
     for (const [billing, shown] of cases) {
@@ -296,7 +213,7 @@ describe('the session deps', () => {
 });
 
 describe('the API calls', () => {
-  it('posts the plan and interval to checkout, nothing to the portal', async () => {
+  it('posts the plan and interval to checkout, nothing to the plain portal, the action to a portal flow', async () => {
     const calls: { url: string; method: string; body: unknown }[] = [];
     const api = new AdminApi({
       signer: secretKeySigner(OWNER_KEY),
@@ -312,6 +229,8 @@ describe('the API calls', () => {
     });
     expect(await api.checkout('pro', 'year')).toEqual({ url: 'https://stripe.test' });
     await api.billingPortal();
+    await api.billingPortal({ action: 'switch', plan: 'starter', interval: 'month' });
+    await api.billingPortal({ action: 'cancel' });
     expect(calls).toEqual([
       {
         url: 'https://app.askr.test/v1/admin/billing/checkout',
@@ -319,6 +238,16 @@ describe('the API calls', () => {
         body: { plan: 'pro', interval: 'year' },
       },
       { url: 'https://app.askr.test/v1/admin/billing/portal', method: 'POST', body: undefined },
+      {
+        url: 'https://app.askr.test/v1/admin/billing/portal',
+        method: 'POST',
+        body: { action: 'switch', plan: 'starter', interval: 'month' },
+      },
+      {
+        url: 'https://app.askr.test/v1/admin/billing/portal',
+        method: 'POST',
+        body: { action: 'cancel' },
+      },
     ]);
   });
 
@@ -332,6 +261,19 @@ describe('the API calls', () => {
     );
     expect(said('no_customer')).toBe('There is no billing to manage yet.');
     expect(said('suspended')).toBe('Your store is suspended. Message us with your Store ID.');
+  });
+
+  it.each([
+    ['no_subscription', 'no paid plan to change'],
+    ['past_due', 'payment for your plan failed'],
+    ['cancel_pending', 'Undo the cancel under Manage billing'],
+    ['change_scheduled', 'already scheduled'],
+    ['same_plan', 'already on this plan and billing period'],
+    ['subscription_unexpected', 'cannot be changed from here'],
+  ])('says what the portal refusal %s means', (code, words) => {
+    const message = errorMessage(new ApiError(409, code));
+    expect(message).toContain(words);
+    expect(message).not.toBe(errorMessage(new ApiError(409, 'unexpected')));
   });
 });
 

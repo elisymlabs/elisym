@@ -124,7 +124,26 @@ export interface BillingView {
   checkoutAvailable: boolean;
   /** We set this store's plan (or suspended it): its plan changes go through us. */
   operatorManaged: boolean;
+  /**
+   * A change Stripe makes at a later date (a downgrade or a shorter period, from the portal): the
+   * plan it moves to (null when it is not one of ours) and when, unix seconds. Absent from a
+   * server older than this admin: read as none.
+   */
+  scheduledChange?: ScheduledChange | null;
 }
+
+/** A plan change Stripe has scheduled for the subscription (`BillingView.scheduledChange`). */
+export interface ScheduledChange {
+  plan: PaidPlan | null;
+  /** Null with `plan` when the change is not to a price of ours. */
+  interval: BillingInterval | null;
+  at: number;
+}
+
+/** What the billing portal opens on (`POST /v1/admin/billing/portal`): a plan switch, or a cancel. */
+export type PortalAction =
+  | { action: 'switch'; plan: PaidPlan; interval: BillingInterval }
+  | { action: 'cancel' };
 
 /** `GET /v1/admin/store` (the server's `view()`). */
 export interface StoreView {

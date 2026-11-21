@@ -1,13 +1,15 @@
 import type { StoreConfig } from '@elisym/askr';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import type { BillingReturn } from '../lib/billing';
 import type { CatalogQueue } from '../lib/catalog-writer';
 import type { SessionDeps } from '../lib/deps';
+import type { PlanIntent } from '../lib/plan-intent';
 import { isRemembered } from '../lib/remembered';
 import { npubOf } from '../lib/signer';
 import { TABS, type TabId } from '../lib/tabs';
 import type { StoreView } from '../lib/types';
 import { AskrMark } from './AskrMark';
-import { BillingReturnNotice } from './BillingReturnNotice';
+import { BillingSection } from './BillingSection';
 import { BudgetBanner } from './BudgetBanner';
 import { ConnectorSection } from './ConnectorSection';
 import { ContactEmailSection } from './ContactEmailSection';
@@ -43,6 +45,14 @@ interface Props {
   onReplaceKey: () => void;
   /** The session's catalog writes: without it products cannot be published from here. */
   catalogQueue?: CatalogQueue;
+  /** Back from Stripe: what the return says, above every section. */
+  billingNotice?: ReactNode;
+  /** What the Stripe return said: back from a portal change (`updated`), Billing opens. */
+  billingReturn?: BillingReturn;
+  /** The paid plan chosen on the landing: Billing opens on it (D4). */
+  intent?: PlanIntent;
+  /** Its checkout or the portal opened. */
+  onIntentDone?: () => void;
 }
 
 const REFRESH_SHOWN_MS = 2_000;
@@ -71,10 +81,16 @@ export function Shell({
   onSignOut,
   onReplaceKey,
   catalogQueue,
+  billingNotice,
+  billingReturn,
+  intent,
+  onIntentDone = () => undefined,
 }: Props) {
-  const [chosen, setTab] = useState<TabId>('overview');
-  // Read once the owner is signed in (never by a key recovery on the sign-in page).
-  const [billingReturn] = useState(() => deps.takeBillingReturn());
+  // A plan chosen on the landing opens Billing on it, one click from its checkout; a portal
+  // change comes back to Billing, where it shows.
+  const [chosen, setTab] = useState<TabId>(
+    intent !== undefined || billingReturn === 'updated' ? 'billing' : 'overview',
+  );
   // The Connector section is for a connector set up in Settings: without one it is left out.
   const tabs = view.connector === null ? TABS.filter((entry) => entry.id !== 'connector') : TABS;
   const tab = tabs.some((entry) => entry.id === chosen) ? chosen : 'overview';
@@ -125,20 +141,30 @@ export function Shell({
     await reload();
     await reloadConfig();
   }, [reload, reloadConfig]);
-  // Products, policies and the connector wait for a plan, which is chosen in Overview.
-  const choosePlan = () => setTab('overview');
+  // Products, policies and the connector wait for a plan, which is chosen in Billing.
+  const choosePlan = () => setTab('billing');
   let content;
   if (tab === 'overview') {
     content = (
       <Overview
-        deps={deps}
         view={view}
         config={config}
         configFromServer={configFromServer}
+        onOpenBilling={choosePlan}
+        catalogReader={{ reader: deps.reader, now: deps.now }}
+      />
+    );
+  } else if (tab === 'billing') {
+    content = (
+      <BillingSection
+        deps={deps}
+        view={view}
+        settingsSaved={config !== undefined}
         configError={configError}
         // Activation publishes the stored config, so the settings are read again too (6.5).
         onPlanChosen={refresh}
-        catalogReader={{ reader: deps.reader, now: deps.now }}
+        {...(intent === undefined ? {} : { intent })}
+        onIntentDone={onIntentDone}
       />
     );
   } else if (tab === 'settings') {
@@ -264,9 +290,7 @@ export function Shell({
           ) : null}
         </header>
         <div className="flex max-w-760 flex-col gap-32">
-          {billingReturn === undefined ? null : (
-            <BillingReturnNotice flag={billingReturn} view={view} refresh={refresh} />
-          )}
+          {billingNotice}
           <BudgetBanner view={view} now={deps.now()} />
           {configError === '' ? null : (
             <Notice tone="warn">

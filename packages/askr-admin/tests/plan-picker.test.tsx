@@ -1,9 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { buildCatalogAuth, buildConfigEvent } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as LANDING from '../../askr-landing/src/constants';
+import { BillingSection } from '../src/components/BillingSection';
 import { EmbedSection } from '../src/components/EmbedSection';
 import { Overview } from '../src/components/Overview';
 import { Session } from '../src/components/Session';
@@ -14,7 +16,7 @@ import { ApiError } from '../src/lib/api';
 import type { AdminClient } from '../src/lib/deps';
 import { errorMessage } from '../src/lib/errors';
 import { HELP } from '../src/lib/help';
-import { PLANS } from '../src/lib/plans';
+import { PLANS, YEARLY_DISCOUNT_LABEL } from '../src/lib/plans';
 import { savedMessage } from '../src/lib/save';
 import type { StoreView } from '../src/lib/types';
 import {
@@ -25,6 +27,7 @@ import {
   PINNED_WIDGET,
   SERVER_KEY,
   adminConfig,
+  billingProps,
   fakeApi,
   fakeReader,
   overviewProps,
@@ -78,7 +81,7 @@ function fieldValue(container: HTMLElement, id: string): string {
   return field instanceof HTMLInputElement ? field.value : '';
 }
 
-async function mountOverview(
+async function mountBilling(
   options: {
     api?: AdminClient;
     view?: StoreView;
@@ -87,14 +90,13 @@ async function mountOverview(
     onPlanChosen?: () => Promise<void>;
   } = {},
 ) {
-  const props = overviewProps(options.api);
+  const props = billingProps(options.api);
   const onPlanChosen = options.onPlanChosen ?? props.onPlanChosen;
   mounted = await mount(
-    <Overview
-      deps={props.deps}
+    <BillingSection
+      {...props}
       view={options.view ?? choosingView()}
-      config={options.configured === false ? undefined : adminConfig()}
-      configFromServer
+      settingsSaved={options.configured !== false}
       configError={options.configError ?? ''}
       onPlanChosen={onPlanChosen}
     />,
@@ -115,6 +117,11 @@ async function mountSession(api: AdminClient, relay: NostrEvent[] = []) {
   return container;
 }
 
+async function openBilling(container: HTMLElement) {
+  await openTab(container, 'Billing');
+  await settle(() => container.querySelector('#plans') !== null);
+}
+
 async function openTab(container: HTMLElement, label: string) {
   const tab = [...container.querySelectorAll('nav[aria-label="Sections"] button')].find(
     (button) => button.textContent === label,
@@ -125,43 +132,45 @@ async function openTab(container: HTMLElement, label: string) {
   await click(tab);
 }
 
-describe('the plan picker (6.5)', () => {
-  it('shows the landing plans with monthly prices, the sizes as one card, Enterprise from its floor', async () => {
-    const { container } = await mountOverview();
-    const picker = byId(container, 'plan-picker');
-    const text = picker.textContent ?? '';
-    expect(text).toContain('Free$0 a month');
-    expect(text).toContain('Starter$29 a month');
-    expect(text).toContain('Growth / Pro / Scale');
-    expect(text).toContain('Growth: $99 a month');
-    expect(text).toContain('Pro: $199 a month');
-    expect(text).toContain('Scale: $499 a month');
-    expect(text).toContain('Enterprisefrom $1,500 a month');
-    expect(text).toContain('For a paid plan, message us with your Store ID');
-    expect(picker.querySelectorAll('.contact-link')).toHaveLength(1);
-    expect(picker.querySelector('.contact-link')?.getAttribute('href')).toBe(CONTACT_URL);
-    expect([...picker.querySelectorAll('a')].map((link) => link.getAttribute('href'))).toContain(
-      PRICING_URL,
-    );
-    expect(text).not.toContain('yearly');
+describe('the plans in Billing, billing off (6.5)', () => {
+  it('shows every plan as its own card, Enterprise from its floor, paid ones through us', async () => {
+    const { container } = await mountBilling();
+    const plans = byId(container, 'plans');
+    const text = plans.textContent ?? '';
+    const cards = [...plans.querySelectorAll('li[id^="plan-"]')].map((card) => card.id);
+    expect(cards).toEqual([
+      'plan-free',
+      'plan-starter',
+      'plan-growth',
+      'plan-pro',
+      'plan-scale',
+      'plan-enterprise',
+    ]);
+    expect(byId(container, 'plan-enterprise').textContent).toContain('from $1,500/ month');
+    expect(text).toContain('Paid plans are set up with us: message us with your Store ID.');
+    // Billing off: no paid card can be bought here.
+    expect(plans.querySelector('[id^="upgrade-"]')).toBeNull();
+    expect(plans.querySelectorAll('.contact-link')).toHaveLength(1);
+    expect(plans.querySelector('.contact-link')?.getAttribute('href')).toBe(CONTACT_URL);
+    expect(PRICING_URL).toBe('https://askr.elisym.network/#pricing');
   });
 
   it('keeps Start on Free disabled with "Save your settings first" while no settings exist', async () => {
     const api = fakeApi();
-    const { container } = await mountOverview({ api, configured: false });
+    const { container } = await mountBilling({ api, configured: false });
     const start = buttonNamed(container, 'Start on Free');
     expect(start.disabled).toBe(true);
-    expect(byId(container, 'plan-picker').textContent).toContain('Save your settings first.');
+    expect(byId(container, 'plans').textContent).toContain('Save your settings first.');
     await click(start);
     expect(api.choosePlan).not.toHaveBeenCalled();
   });
 
   it('keeps Start on Free enabled when the settings could not be read, showing that error instead', async () => {
     const configError = 'Your saved settings could not be read: the server could not be reached.';
-    const { container } = await mountOverview({ configured: false, configError });
+    const { container } = await mountBilling({ configured: false, configError });
     const start = buttonNamed(container, 'Start on Free');
     expect(start.disabled).toBe(false);
-    const picker = byId(container, 'plan-picker').textContent ?? '';
+    const picker = byId(container, 'plans').textContent ?? '';
     expect(picker).toContain(configError);
     expect(picker).not.toContain('Save your settings first');
   });
@@ -169,7 +178,7 @@ describe('the plan picker (6.5)', () => {
   it('chooses Free, then reads the store and its settings again', async () => {
     const api = fakeApi();
     const onPlanChosen = vi.fn(async () => undefined);
-    const { container } = await mountOverview({ api, onPlanChosen });
+    const { container } = await mountBilling({ api, onPlanChosen });
     await click(buttonNamed(container, 'Start on Free'));
     await settle(() => onPlanChosen.mock.calls.length === 1);
     expect(api.choosePlan).toHaveBeenCalledWith('free');
@@ -187,7 +196,7 @@ describe('the plan picker (6.5)', () => {
       choosePlan: vi.fn(async () => Promise.reject(new ApiError(409, code))),
     });
     const onPlanChosen = vi.fn(async () => undefined);
-    const { container } = await mountOverview({ api, onPlanChosen });
+    const { container } = await mountBilling({ api, onPlanChosen });
     await click(buttonNamed(container, 'Start on Free'));
     await settle(() => container.querySelector('[role="alert"]') !== null);
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(text);
@@ -203,7 +212,7 @@ describe('the plan picker (6.5)', () => {
   });
 
   it.each([
-    ['not_pending', storeView({ status: 'suspended' }), 'Contact the Askr operator'],
+    ['not_pending', storeView({ status: 'suspended' }), 'Your store is suspended.'],
     ['operator_managed', storeView({ status: 'pending' }), PENDING_CONTACT_TEXT],
   ] as const)(
     'on %s (the store changed meanwhile) reads it again and shows its new status',
@@ -221,9 +230,10 @@ describe('the plan picker (6.5)', () => {
         }),
       });
       const container = await mountSession(api);
+      await openBilling(container);
       await click(buttonNamed(container, 'Start on Free'));
       await settle(() => (container.textContent ?? '').includes(status));
-      expect(container.querySelector('#plan-picker')).toBeNull();
+      expect(container.querySelector('#start-free')).toBeNull();
       expect(container.querySelector('[role="alert"]')).toBeNull();
     },
   );
@@ -244,14 +254,17 @@ describe('Start on Free in a session (6.5)', () => {
     // The relay has nothing yet: activation publishes a moment later.
     const container = await mountSession(api);
     expect(container.textContent).toContain(PENDING_OVERVIEW_TEXT);
+    await openBilling(container);
     const storeReads = vi.mocked(api.store).mock.calls.length;
     const storedReads = vi.mocked(api.storedEvents).mock.calls.length;
     await click(buttonNamed(container, 'Start on Free'));
-    await settle(() => (container.textContent ?? '').includes('Plan: free'));
+    await settle(() => byId(container, 'current-plan-name').textContent === 'Free');
     // Shell's refresh: the view and the settings, both read again.
     expect(vi.mocked(api.store).mock.calls.length).toBe(storeReads + 1);
     expect(vi.mocked(api.storedEvents).mock.calls.length).toBe(storedReads + 1);
-    expect(container.querySelector('#plan-picker')).toBeNull();
+    expect(container.querySelector('#start-free')).toBeNull();
+    await openTab(container, 'Overview');
+    await settle(() => (container.textContent ?? '').includes('Plan: free'));
     expect(container.querySelector('#sidebar-store-name')?.textContent).toBe('Signed Tea');
     expect(container.textContent).toContain('Your settings are shown as you signed them.');
     expect(container.textContent).toContain('They are being published now.');
@@ -288,43 +301,39 @@ describe('Start on Free in a session (6.5)', () => {
   });
 });
 
-/** The landing's plans, read from its source (tests run from the package's own folder): the admin cannot import it. */
+/** The landing's plans, as the admin's table writes them: the landing's module has no imports. */
 function landingPlans() {
-  const source = readFileSync(join(process.cwd(), '../askr-landing/src/constants.ts'), 'utf8');
-  const start = source.indexOf('export const PLANS');
-  const end = source.indexOf('];', start);
-  const table = source.slice(start, end);
-  return table
-    .split(/\n {2}\{\n/u)
-    .slice(1)
-    .map((block) => {
-      const name = /\n {4}name: '([^']+)'/u.exec(`\n${block}`)?.[1];
-      const price = /price: \{ kind: '(flat|from)', monthly: '([^']+)'/u.exec(block);
-      const yearly = /yearlyPerMonth: '([^']+)', yearlyTotal: '([^']+)'/u.exec(block);
-      const starts = /\n {4}start: '([a-z]+)'/u.exec(`\n${block}`)?.[1];
-      const group = /\n {4}group: '([a-z]+)'/u.exec(`\n${block}`)?.[1];
-      return {
-        name,
-        monthly: price?.[2],
-        ...(yearly === null ? {} : { yearlyPerMonth: yearly[1], yearlyTotal: yearly[2] }),
-        start: starts,
-        ...(group === undefined ? {} : { group }),
-        ...(price?.[1] === 'from' ? { from: true } : {}),
-      };
-    });
+  return LANDING.PLANS.map((plan) => ({
+    name: plan.name,
+    monthly: plan.price.monthly,
+    ...(plan.price.kind === 'flat'
+      ? { yearlyPerMonth: plan.price.yearlyPerMonth, yearlyTotal: plan.price.yearlyTotal }
+      : {}),
+    blurb: plan.blurb,
+    features: plan.features,
+    start: plan.start,
+    featured: plan.featured,
+    ...(plan.group === undefined ? {} : { group: plan.group }),
+    ...(plan.price.kind === 'from' ? { from: true } : {}),
+  }));
 }
 
-describe('the plan constant (6.5)', () => {
-  it("equals the landing's plans: names, order, monthly prices, the sizes group and Enterprise's floor", () => {
+describe('the plan constant (6.5, D9)', () => {
+  it("equals the landing's plans: names, order, prices, blurbs, features, the featured one, the sizes group and Enterprise's floor", () => {
     const landing = landingPlans();
     expect(landing).toHaveLength(6);
     expect(PLANS).toEqual(landing);
     expect(PLANS.find((plan) => plan.name === 'Enterprise')?.from).toBe(true);
+    expect(PLANS.filter((plan) => plan.featured).map((plan) => plan.name)).toEqual(['Growth']);
     expect(PLANS.filter((plan) => plan.group === 'sizes').map((plan) => plan.name)).toEqual([
       'Growth',
       'Pro',
       'Scale',
     ]);
+  });
+
+  it('writes the yearly discount as the landing does', () => {
+    expect(YEARLY_DISCOUNT_LABEL).toBe(LANDING.YEARLY_DISCOUNT_LABEL);
   });
 });
 
@@ -365,7 +374,8 @@ describe('no admin text says to save again for an activation (6.5)', () => {
       const deps = sessionDeps(api, fakeReader([]));
       mounted = await mount(
         <div>
-          <Overview {...overviewProps(api)} view={view} config={adminConfig()} configFromServer />
+          <Overview {...overviewProps()} view={view} config={adminConfig()} configFromServer />
+          <BillingSection {...billingProps(api)} view={view} />
           <EmbedSection api={api} view={view} config={adminConfig()} />
           <SettingsSection
             deps={deps}
@@ -381,7 +391,7 @@ describe('no admin text says to save again for an activation (6.5)', () => {
       await settle(() => container.querySelector('#store-name') !== null);
       const text = container.textContent ?? '';
       expect(promisesRetry(text), text).toBe(false);
-      // The Embed tab says where to choose the plan; Overview says the picker is below.
+      // The Embed tab says where to choose the plan; Overview has the button beside its text.
       if (view.tier === null) {
         expect(text).toContain(PENDING_TEXT);
         expect(text).toContain(PENDING_OVERVIEW_TEXT);
@@ -391,5 +401,28 @@ describe('no admin text says to save again for an activation (6.5)', () => {
       await mounted.unmount();
       mounted = undefined;
     }
+  });
+});
+
+/** Every source file of the admin, for a sweep of its wording. */
+function sourceTexts(dir = join(process.cwd(), 'src')): { path: string; text: string }[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    return entry.isDirectory() ? sourceTexts(path) : [{ path, text: readFileSync(path, 'utf8') }];
+  });
+}
+
+describe('where the admin says plans are (D6)', () => {
+  it('never in Overview or under Status: plans are in Billing', () => {
+    const wrong = sourceTexts().flatMap((file) =>
+      file.text
+        .split('\n')
+        .filter((line) => /in Overview|under Status|below to go live/u.test(line))
+        .filter((line) => /plan/iu.test(line))
+        .map((line) => `${file.path}: ${line.trim()}`),
+    );
+    expect(wrong).toEqual([]);
+    // The sweep reads the sources it means to.
+    expect(sourceTexts().some((file) => file.text.includes('choose one in Billing'))).toBe(true);
   });
 });

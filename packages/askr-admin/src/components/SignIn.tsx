@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { INTENT_SIGN_IN_TEXT, type PlanIntent } from '../lib/plan-intent';
 import { forgetDamaged, readRemembered, rememberKey } from '../lib/remembered';
 import { type Signer, generateOwnerKey, parseSecretKey, secretKeySigner } from '../lib/signer';
 import { AskrLogo } from './AskrLogo';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
+import { PlanIntentLine } from './PlanIntentLine';
 import { RecoverStore } from './RecoverStore';
 import { type RememberChoice, type RememberHandle, RememberOption } from './RememberOption';
 import { UnlockRemembered } from './UnlockRemembered';
@@ -14,6 +16,9 @@ interface Props {
   recover: (signer: Signer, from: string, dryRun: boolean) => Promise<void>;
   /** Open on replacing the key of this store (Store ID), as the admin's own button does. */
   replaceKeyOf?: string;
+  /** The paid plan chosen on the landing (D3): said before the key, to be paid for after it. */
+  intent?: PlanIntent;
+  onDismissIntent?: () => void;
 }
 
 const NOT_REMEMBERED =
@@ -28,7 +33,13 @@ async function rememberOnDevice(secretKey: Uint8Array): Promise<string | undefin
  * Sign in with the store's secret key, unlock one this device remembers, make
  * a new one, or replace a lost one.
  */
-export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
+export function SignIn({
+  onSigner,
+  recover,
+  replaceKeyOf,
+  intent,
+  onDismissIntent = () => undefined,
+}: Props) {
   const input = useRef<HTMLInputElement>(null);
   const remember = useRef<RememberHandle>(null);
   const [error, setError] = useState('');
@@ -110,6 +121,11 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
     }
   };
 
+  const intentLine =
+    intent === undefined ? null : (
+      <PlanIntentLine intent={intent} next={INTENT_SIGN_IN_TEXT} onDismiss={onDismissIntent} />
+    );
+
   if (recovering) {
     return (
       <RecoverStore
@@ -135,6 +151,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
           setGenerated(undefined);
           setError('');
         }}
+        lead={intentLine}
       >
         <RememberOption ref={remember} id="new-key" label="Remember this key on this device" />
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
@@ -155,6 +172,7 @@ export function SignIn({ onSigner, recover, replaceKeyOf }: Props) {
           browser tab, and on this device unless you clear the remember box.
         </p>
       </div>
+      {intentLine}
       {hasRemembered ? (
         <UnlockRemembered
           keys={remembered.keys}

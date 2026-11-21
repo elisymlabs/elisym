@@ -23,7 +23,7 @@ interface Props {
   deps: SessionDeps;
   view: StoreView;
   config: StoreConfig | undefined;
-  /** Opens Overview, where a store with no plan chooses one. */
+  /** Opens Billing, where a store with no plan chooses one. */
   onChoosePlan?: () => void;
   /** Between two saves refused while the store is set up; tests pass a short one. */
   pollMs?: number;

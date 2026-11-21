@@ -55,7 +55,7 @@ export function connectorResultSentence(result: unknown): string {
   if (status === 'error') {
     const failed = `The sync failed: ${String(field(result, 'message') ?? 'unknown error')}.`;
     return field(result, 'reason') === 'too_many_products'
-      ? `${failed} Move to a larger plan: message us with your Store ID.`
+      ? `${failed} Move to a larger plan: open Billing.`
       : failed;
   }
   return 'No sync has run yet.';

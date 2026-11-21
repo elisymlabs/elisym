@@ -36,7 +36,7 @@ interface Props {
   config: StoreConfig | undefined;
   /** The session's catalog writes; without it nothing can be published from here. */
   queue?: CatalogQueue;
-  /** Opens Overview, where a store with no plan chooses one. */
+  /** Opens Billing, where a store with no plan chooses one. */
   onChoosePlan?: () => void;
 }
 

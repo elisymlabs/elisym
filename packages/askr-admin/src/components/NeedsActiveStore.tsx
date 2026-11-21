@@ -5,7 +5,7 @@ import { Notice } from './Notice';
 
 interface Props {
   view: StoreView;
-  /** Opens Overview, where the plan is chosen; without it the line has no button. */
+  /** Opens Billing, where the plan is chosen; without it the line has no button. */
   onChoosePlan?: () => void;
   /** What waits for a plan, as in "Choose a plan to add products". */
   noun: string;

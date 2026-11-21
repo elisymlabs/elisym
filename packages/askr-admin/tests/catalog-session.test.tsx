@@ -274,11 +274,11 @@ describe('the session catalog queue, round 1', () => {
     expect(byId(container, 'product-title')).toHaveProperty('value', 'Big mug');
   });
 
-  it('Choose a plan on the products page opens Overview', async () => {
+  it('Choose a plan on the products page opens Billing', async () => {
     const api = fakeApi({ store: vi.fn(async () => storeView({ status: 'pending', tier: null })) });
     const container = await mountSession(api);
     await click(buttonNamed(container, 'Choose a plan'));
-    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+    expect(container.querySelector('h1')?.textContent).toBe('Billing');
   });
 
   it('sign-out disposes the queue: a write waiting on a running sync is never sent again', async () => {
@@ -391,16 +391,16 @@ describe('the session catalog queue, round 13', () => {
     expect(api.catalog).toHaveBeenCalledTimes(1);
   });
 
-  it('Choose a plan on the policies page opens Overview', async () => {
+  it('Choose a plan on the policies page opens Billing', async () => {
     const api = fakeApi({ store: vi.fn(async () => storeView({ status: 'pending', tier: null })) });
     const container = await mountSession(api);
     await openTab(container, 'Policies');
     await settle(() => text(container).includes('Choose a plan to add policies.'));
     await click(buttonNamed(container, 'Choose a plan'));
-    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+    expect(container.querySelector('h1')?.textContent).toBe('Billing');
   });
 
-  it('Choose a plan on the connector page opens Overview', async () => {
+  it('Choose a plan on the connector page opens Billing', async () => {
     const shopConfig = finalizeEvent(
       {
         ...buildConfigEvent(
@@ -450,7 +450,7 @@ describe('the session catalog queue, round 13', () => {
     await openTab(container, 'Connector');
     await settle(() => text(container).includes('Choose a plan to connect your shop.'));
     await click(buttonNamed(container, 'Choose a plan'));
-    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+    expect(container.querySelector('h1')?.textContent).toBe('Billing');
   });
 });
 

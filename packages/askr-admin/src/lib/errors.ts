@@ -51,7 +51,7 @@ const CODES: Readonly<Record<string, string>> = {
   sync_running:
     'A product sync or connector preview is already running for this store. Wait for it to finish, then retry.',
   inactive:
-    'Your store is not active yet: products, policies and the connector work once it is. If it has no plan yet, choose one in Overview; otherwise message us with your Store ID.',
+    'Your store is not active yet: products, policies and the connector work once it is. If it has no plan yet, choose one in Billing; otherwise message us with your Store ID.',
   no_settings: 'Save your settings first, then choose a plan.',
   free_unavailable: 'Free is not available right now. Message us with your Store ID.',
   capacity_reached: 'Free is not available right now. Message us with your Store ID.',
@@ -63,6 +63,17 @@ const CODES: Readonly<Record<string, string>> = {
   suspended: 'Your store is suspended. Message us with your Store ID.',
   billing_failed: 'Stripe did not answer. Retry in a moment.',
   no_customer: 'There is no billing to manage yet.',
+  no_subscription:
+    'Your store has no paid plan to change right now. Press Refresh at the top to see its plan.',
+  past_due:
+    'A payment for your plan failed, so it cannot be changed until it is paid. Update your payment method under Manage billing.',
+  cancel_pending:
+    'Your plan is canceled at the end of its period, so it cannot be changed. Undo the cancel under Manage billing first.',
+  change_scheduled:
+    'A change to your plan is already scheduled, so it cannot be changed again. Undo that change under Manage billing if it offers that, otherwise message us with your Store ID.',
+  same_plan: 'Your store is already on this plan and billing period.',
+  subscription_unexpected:
+    'Your subscription cannot be changed from here. Message us with your Store ID.',
   no_connector:
     'No connector is set up for this store. Choose your shop as the product source in Settings and save first.',
   policy_imported:

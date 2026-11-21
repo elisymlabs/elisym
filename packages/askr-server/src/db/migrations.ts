@@ -353,6 +353,18 @@ create table stripe_events (
 );
 `,
   },
+  {
+    id: '0011_billing_schedule',
+    sql: `
+-- The change a subscription's schedule makes later (a downgrade or a shorter interval put off to
+-- the period end), as last read from Stripe: the plan and interval of its next phase (null when that
+-- phase is not on one price of ours) and when it starts. All null with nothing scheduled.
+alter table billing_subscriptions add column scheduled_plan text;
+alter table billing_subscriptions add column scheduled_interval text
+  check (scheduled_interval in ('month', 'year'));
+alter table billing_subscriptions add column scheduled_at bigint;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

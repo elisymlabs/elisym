@@ -81,6 +81,7 @@ describe('reading Stripe objects', () => {
   });
   it('reads a subscription: one item, the earliest period end, the store metadata', () => {
     const item = (end: number) => ({
+      id: 'si_1',
       current_period_end: end,
       price: price('askr_starter_monthly', 'month', { askr_tier: 'starter' }),
     });
@@ -89,6 +90,7 @@ describe('reading Stripe objects', () => {
       customer: { id: 'cus_1' },
       status: 'past_due',
       metadata: { askr_store: 'ab'.repeat(32) },
+      cancel_at: null,
       cancel_at_period_end: true,
       created: NOW - 100,
       items: { data: [item(PERIOD_END)] },
@@ -100,15 +102,18 @@ describe('reading Stripe objects', () => {
       store: 'ab'.repeat(32),
       plan: 'starter',
       interval: 'month',
+      itemId: 'si_1',
       currentPeriodEnd: PERIOD_END,
       cancelAtPeriodEnd: true,
       created: NOW - 100,
+      scheduledChange: null,
     });
     const two = snapshotOf({
       ...subscription,
       items: { data: [item(PERIOD_END), item(PERIOD_END - 10)] },
     });
     expect(two.plan).toBeUndefined();
+    expect(two.itemId).toBeUndefined();
     expect(two.currentPeriodEnd).toBe(PERIOD_END - 10);
   });
 });
@@ -243,6 +248,7 @@ describe('POST /v1/admin/billing/checkout', () => {
       manageable: false,
       checkoutAvailable: false,
       operatorManaged: false,
+      scheduledChange: null,
     });
     expect(await checkout(owner, 'pro')).toEqual({
       status: 503,
@@ -283,7 +289,7 @@ describe('POST /v1/admin/billing/portal', () => {
 });
 
 describe('POST /v1/stripe/webhook', () => {
-  it('lists the six events Stripe must send', () => {
+  it('lists the ten events Stripe must send', () => {
     expect(WEBHOOK_EVENTS).toEqual([
       'checkout.session.completed',
       'customer.subscription.created',
@@ -291,6 +297,10 @@ describe('POST /v1/stripe/webhook', () => {
       'customer.subscription.deleted',
       'invoice.paid',
       'invoice.payment_failed',
+      'subscription_schedule.created',
+      'subscription_schedule.updated',
+      'subscription_schedule.released',
+      'subscription_schedule.canceled',
     ]);
   });
 
@@ -368,6 +378,7 @@ describe('POST /v1/stripe/webhook', () => {
       manageable: true,
       checkoutAvailable: false,
       operatorManaged: false,
+      scheduledChange: null,
     });
   });
 

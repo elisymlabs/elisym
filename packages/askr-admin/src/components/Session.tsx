@@ -3,13 +3,16 @@ import type { NostrEvent } from 'nostr-tools';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SYNC_POLL_MS } from '../constants';
 import { ApiError } from '../lib/api';
+import { ACTIVE_ONBOARDING_TEXT } from '../lib/billing';
 import { CatalogQueue } from '../lib/catalog-writer';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import type { PlanIntent } from '../lib/plan-intent';
 import { npubOf } from '../lib/signer';
 import { readCatalog, readConfig } from '../lib/store-data';
 import { ownSignedEvents, withStoredEvents } from '../lib/stored-events';
 import type { StoreStatus, StoreView } from '../lib/types';
+import { BillingReturnNotice } from './BillingReturnNotice';
 import { FinishMove } from './FinishMove';
 import { MovedAway } from './MovedAway';
 import { Notice } from './Notice';
@@ -21,6 +24,9 @@ interface Props {
   onSignOut: () => void;
   /** Sign out and replace the secret key of this store (Store ID), K21. */
   onReplaceKey: (storeId: string) => void;
+  /** The paid plan chosen on the landing, until its checkout or portal opens or it is dismissed. */
+  intent?: PlanIntent;
+  onIntentDone?: () => void;
 }
 
 type Load =
@@ -36,8 +42,18 @@ type Load =
  * or, while the store is not active or its signed events are still being
  * published, from what O signed and the server holds for the relay (7.3).
  */
-export function Session({ deps, onSignOut, onReplaceKey }: Props) {
+export function Session({
+  deps,
+  onSignOut,
+  onReplaceKey,
+  intent,
+  onIntentDone = () => undefined,
+}: Props) {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
+  // Read once the owner is signed in (never by a key recovery on the sign-in page), so the
+  // return is said wherever the session lands: Onboarding too, for a store paid before its
+  // settings (D5).
+  const [billingReturn] = useState(() => deps.takeBillingReturn());
   const [config, setConfig] = useState<StoreConfig>();
   const [configError, setConfigError] = useState('');
   const [configRead, setConfigRead] = useState(false);
@@ -223,6 +239,16 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
   if (needsSetup && view !== undefined && view.movedFrom !== null) {
     return <FinishMove deps={deps} view={view} onDone={reloadAll} onSignOut={onSignOut} />;
   }
+  const billingNotice =
+    billingReturn === undefined || view === undefined ? null : (
+      <BillingReturnNotice
+        flag={billingReturn}
+        view={view}
+        refresh={reloadAll}
+        {...(needsSetup ? { activeText: ACTIVE_ONBOARDING_TEXT } : {})}
+      />
+    );
+  const intentProps = intent === undefined ? { onIntentDone } : { intent, onIntentDone };
   if (needsSetup) {
     return (
       <Onboarding
@@ -231,6 +257,8 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
         onCreated={(created) => setLoad({ state: 'ready', view: created })}
         onDone={reloadAll}
         onSignOut={onSignOut}
+        billingNotice={billingNotice}
+        {...intentProps}
       />
     );
   }
@@ -249,6 +277,9 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       {...(catalogQueue === undefined ? {} : { catalogQueue })}
       onSignOut={onSignOut}
       onReplaceKey={() => onReplaceKey(npubOf(view.owner))}
+      billingNotice={billingNotice}
+      {...(billingReturn === undefined ? {} : { billingReturn })}
+      {...intentProps}
     />
   );
 }

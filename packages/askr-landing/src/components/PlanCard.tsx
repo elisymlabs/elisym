@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { BUTTON } from '../buttons';
-import { CONTACT_URL, type FlatPlan, PRICE_TAX_NOTE, START_LABEL } from '../constants';
+import { type FlatPlan, PRICE_TAX_NOTE, START_LABEL } from '../constants';
+import { choosePlanUrl } from '../plan-link';
 import { AdminLink } from './AdminLink';
 import type { Billing } from './BillingSwitch';
 import { ExternalLink } from './ExternalLink';
@@ -77,7 +78,7 @@ export function PlanCard({ plan, billing, ink = plan.featured, sizes, className 
       </ul>
       {plan.start === 'admin' && <AdminLink label={START_LABEL} className={button} />}
       {plan.start === 'choose' && (
-        <ExternalLink href={CONTACT_URL} className={button}>
+        <ExternalLink href={choosePlanUrl(plan, billing)} className={button}>
           {`Choose ${plan.name}`}
         </ExternalLink>
       )}

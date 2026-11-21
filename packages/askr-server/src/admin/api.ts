@@ -786,7 +786,7 @@ export function createAdminApi(
       }
       return route === 'POST /v1/admin/billing/checkout'
         ? deps.billing.checkout(owner, body)
-        : deps.billing.portal(owner);
+        : deps.billing.portal(owner, body);
     }
     if (route === 'GET /v1/admin/store/events') {
       // The read-back (7.3): a store that is not active has nothing on the relay yet, nor has an

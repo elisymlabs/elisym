@@ -6,6 +6,11 @@ export const TABS = [
       'How your assistant is doing: its status, this plan’s usage and what visitors click.',
   },
   {
+    id: 'billing',
+    label: 'Billing',
+    description: 'Your plan and every other one: upgrade, switch, cancel, or manage your billing.',
+  },
+  {
     id: 'settings',
     label: 'Settings',
     description: 'Your store, where the assistant may answer, and how it speaks.',

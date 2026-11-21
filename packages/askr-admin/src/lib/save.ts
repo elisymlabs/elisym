@@ -157,6 +157,6 @@ export function savedMessage(view: Pick<StoreView, 'status' | 'tier'>): string {
     return 'Saved. Your settings are kept on the server and published once your store is reactivated.';
   }
   return view.tier === null
-    ? 'Saved. Choose a plan in Overview to go live.'
+    ? 'Saved. Choose a plan in Billing to go live.'
     : `Saved. ${PENDING_CONTACT_TEXT}`;
 }

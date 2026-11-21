@@ -14,29 +14,21 @@ Ticked by default. When it is ticked, signing in keeps your secret key in this b
 
 ### Status
 
-- **Pending**: not live yet: choose a plan in Overview (Free starts at once; a paid plan once you paid at its checkout), or [message us](https://askr.elisym.network/contact) with your Store ID ([where to find it](/askr/overview#find-your-store-id)) if we manage your plan. You can finish the whole setup meanwhile, the widget included: while the store is pending it shows nothing on your site; once the store is active, a visitor sees it on their next page load, at most 5 minutes later.
+- **Pending**: not live yet: choose a plan under [Billing](#the-billing-page) (Free starts at once; a paid plan once you paid at its checkout), or [message us](https://askr.elisym.network/contact) with your Store ID ([where to find it](/askr/overview#find-your-store-id)) if we manage your plan. You can finish the whole setup meanwhile, the widget included: while the store is pending it shows nothing on your site; once the store is active, a visitor sees it on their next page load, at most 5 minutes later.
 - **Active**: the assistant answers visitors on your allowed sites.
 - **Suspended**: the assistant does not answer, and the chat tells visitors it is unavailable. Contact the Askr operator.
-
-### Choose a plan
-
-A pending store with no plan shows the plan picker under its status. **Start on Free** puts the store live at once, within Free's limits; it stays disabled until you have saved your settings. Products, policies and the connector wait for a plan: their pages say so, with a **Choose a plan** button that opens Overview. Starter, Growth, Pro and Scale each have **Upgrade**: choose **Monthly** or **Yearly**, then **Upgrade** opens a Stripe Checkout page (prices in USD, tax included). Once you paid, Stripe brings you back to the admin, which says "Payment received, activating..." and goes live on its own a few seconds later, when Stripe has told the server. Leaving the checkout charges nothing. For Enterprise, [message us](https://askr.elisym.network/contact) with your Store ID, which the picker shows next to the link. When paying in the admin is not available, the paid cards show their monthly prices and the way to message us instead. Every plan and its limits are on the [Askr page](https://askr.elisym.network/#pricing). Once a plan starts, the admin keeps showing your settings as you signed them until they are published, a moment later.
-
-### Your paid plan
-
-A store on a paid plan shows it under its status: when it renews, when it ends (after a cancel), or that a payment failed and is being retried (your store stays live meanwhile). **Manage billing** opens the Stripe billing portal: change the plan or the billing period, update the payment method, see invoices, or cancel. A cancel takes effect at the end of the period you paid for; the store then moves to Free if Free has room, otherwise it waits as pending for a new plan, its data kept. See [Paid plans and billing](/askr/overview#paid-plans-and-billing).
 
 ### Usage
 
 What the assistant has spent against your plan this month, in US dollars. Your plan's only spend limit is its monthly budget: each answer reserves a small amount of it before it runs and settles the real cost after. When the month's budget is used up, the chat says the assistant is unavailable (with your contact link, if you set one) until you move to a larger plan or the next month starts, in UTC. A visitor who has asked as many questions as allowed for the day sees the same; that limit is per visitor (per chat, and per network address across chats), never your whole store. Visitors who share one network, such as an office behind one router, share the per-address part.
 
-The admin says so at the top of every page: a red notice while a used-up budget keeps the chat from answering, with when it starts again, and a yellow one once 80% of the month's budget is spent. Both say how to move to a larger plan.
+The admin says so at the top of every page: a red notice while a used-up budget keeps the chat from answering, with when it starts again, and a yellow one once 80% of the month's budget is spent. Both point to [Billing](#the-billing-page) for a larger plan.
 
 - **Conversations so far**: visitors' chats that got at least one answer. A chat lasts up to 24 hours from the visitor's first message and is counted once, however many questions follow.
 - **Open conversations**: chats started in the last 24 hours.
 - **Reserved today**: money set aside for answers that are being written right now.
 
-The plan line below says how many products the assistant reads, how many questions one visitor may ask a day, and how often a connector syncs. A store on Free moves to a paid plan with **Upgrade** right there; a store on a paid plan changes it with **Manage billing**. For Enterprise, or a plan we manage for you, [message us](https://askr.elisym.network/contact) with your Store ID, which the admin shows next to the link.
+The plan line below says how many products the assistant reads, how many questions one visitor may ask a day, and how often a connector syncs. To change the plan, open [Billing](#the-billing-page).
 
 ### Product clicks
 
@@ -53,6 +45,26 @@ Changes you signed that the server has not published to the relay yet. A store t
 ### Product sync
 
 The last time products were published from the admin, when it ended, and what it did: how many products were new, updated, removed or unchanged. If it failed, the reason is shown. A connector's syncs are not listed here: the Connector page shows its last run and result.
+
+## The Billing page
+
+Everything about your plan and paying for it. Prices are in USD and include tax; paying happens on Stripe's pages (Checkout, and the billing portal), never in the admin.
+
+### Your paid plan
+
+Your plan, billed monthly or yearly, and its state: when it renews, when it ends (after a cancel), when a change you made starts, or that a payment failed and is being retried (your store stays live meanwhile). The plan's limits are listed below it. **Manage billing** opens the Stripe billing portal: update the payment method or billing details, see invoices, undo a cancel, or cancel. While we manage your plan, or your store is suspended, it is not shown: message us with your Store ID. See [Paid plans and billing](/askr/overview#paid-plans-and-billing).
+
+### Choose a plan
+
+Every plan as a card, with **Monthly** and **Yearly** at the top (yearly is 20% off and is chosen first). Your current plan is marked.
+
+- **No plan yet** (a pending store): **Start on Free** puts the store live at once, within Free's limits; it stays disabled until you have saved your settings. A paid plan's **Upgrade** opens a Stripe Checkout page. Once you paid, Stripe brings you back to the admin, which says "Payment received, activating..." and goes live on its own a few seconds later, when Stripe has told the server. Leaving the checkout charges nothing. Products, policies and the connector wait for a plan: their pages say so, with a **Choose a plan** button that opens Billing.
+- **On Free**: **Upgrade** on a paid plan, as above.
+- **On a paid plan**: **Upgrade** to a larger plan on the same or a longer billing period (or **Switch to yearly**) opens Stripe to confirm the change, which applies at once and charges the prorated difference. **Upgrade at renewal** (a larger plan billed monthly while you pay yearly), **Downgrade** and **Switch to monthly** open the billing portal, where the change starts at the end of the period you paid for. **Cancel plan** on the Free card cancels at the end of the period; the store then moves to Free if Free has room, otherwise it waits as pending for a new plan, its data kept. Stripe brings you back to Billing, where the change shows within a minute.
+- **While a change, a cancel or a failed payment is pending**, the cards offer nothing; the line under your plan says what is pending. Undo a cancel or fix a failed payment under **Manage billing**. Undo a scheduled change there if the portal offers that; otherwise message us with your Store ID.
+- **Enterprise**, or a plan we manage for you: [message us](https://askr.elisym.network/contact) with your Store ID, which the admin shows next to the link. When paying in the admin is not available, the cards show the prices and the way to message us instead.
+
+Coming from a **Choose** button on the [Askr page](https://askr.elisym.network/#pricing), the admin remembers that plan while you create or enter your key: a new store is created and you go straight to its checkout ("Create my store and pay"); an existing store opens Billing with that plan marked, one press from its checkout.
 
 ## The Settings page
 

@@ -95,7 +95,11 @@ export function createAdminPages(
       return new Response(null, { status: 405, headers: { allow: 'GET, HEAD' } });
     }
     if (url.pathname === '/admin') {
-      return new Response(null, { status: 308, headers: { location: ADMIN_PAGES_PREFIX } });
+      // The query is kept: the landing's plan choice (`?plan=&interval=`) must reach the admin.
+      return new Response(null, {
+        status: 308,
+        headers: { location: `${ADMIN_PAGES_PREFIX}${url.search}` },
+      });
     }
     const lastSegment = url.pathname.slice(url.pathname.lastIndexOf('/') + 1);
     const path =
