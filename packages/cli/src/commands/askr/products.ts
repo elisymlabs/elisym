@@ -106,7 +106,26 @@ async function readProductsFile(session: Session, path: string): Promise<FilePro
   if (issues.length > 0) {
     throw invalidFile('fix these products and run again', { issues: issues.slice(0, MAX_ISSUES) });
   }
+  const repeated = repeatedIds(items);
+  if (repeated.length > 0) {
+    throw invalidFile('each product needs its own d: these ids are used more than once', {
+      repeated: repeated.slice(0, MAX_ISSUES),
+    });
+  }
   return { format: 'json', items };
+}
+
+/** The product ids a file gives more than once, in file order (the server refuses them too). */
+function repeatedIds(items: readonly CatalogItemInput[]): string[] {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const item of items) {
+    if (seen.has(item.d)) {
+      repeated.add(item.d);
+    }
+    seen.add(item.d);
+  }
+  return [...repeated];
 }
 
 function itemsOfCsv(session: Session, text: string, currency: string): CatalogItemInput[] {
@@ -168,7 +187,9 @@ export async function runProducts(
   const file = await readProductsFile(session, options.file);
   const key = await useOwnerKey(session);
   const view = await readView(session);
-  if (view.status !== 'active') {
+  // A pending store's file is checked here, without the server: nothing is published until it is active.
+  const localDryRun = options.dryRun === true && view.status === 'pending';
+  if (view.status !== 'active' && !localDryRun) {
     throw inactiveExit(view);
   }
   const { config } = await readSigned(session, key.owner, key.secretKey);
@@ -198,6 +219,10 @@ export async function runProducts(
   const linkWarnings = urlWarnings(items, config);
   if (linkWarnings.length > 0) {
     extra.urlWarnings = linkWarnings.slice(0, SAMPLE_SIZE);
+  }
+  if (localDryRun) {
+    const local = await localDiff(session, view.catalogKey, items, mode);
+    return { exitCode: EXIT.OK, output: { ...summary, ...local, ...extra } };
   }
   for (;;) {
     const diff = await flow.dryRun();
@@ -241,6 +266,33 @@ export async function runProducts(
       },
     };
   }
+}
+
+/**
+ * A dry run of a pending store, made here: the file was read and checked as the server checks
+ * it, and it is compared with what is listed by product id only (the server, which compares the
+ * contents and the plan's product limit, does it once the store is active).
+ */
+async function localDiff(
+  session: Session,
+  catalogKey: string,
+  items: readonly CatalogItemInput[],
+  mode: 'replace' | 'upsert',
+): Promise<Record<string, unknown>> {
+  const { listed } = await readListings(session, catalogKey);
+  const inFile = new Set(items.map((item) => item.d));
+  const listedIds = new Set(listed);
+  const created = items.filter((item) => !listedIds.has(item.d)).map((item) => item.d);
+  const hidden = mode === 'replace' ? listed.filter((d) => !inFile.has(d)) : [];
+  return {
+    checked: 'local',
+    published: false,
+    created: created.length,
+    alreadyListed: items.length - created.length,
+    hidden: hidden.length,
+    sample: { created: created.slice(0, SAMPLE_SIZE), hidden: hidden.slice(0, SAMPLE_SIZE) },
+    note: "the store is pending: the file is valid and nothing was published; once the plan is active, run this line again without --dry-run (the server then also checks the plan's product limit)",
+  };
 }
 
 function countsOf(diff: SyncDiff): Record<string, unknown> {

@@ -1,10 +1,12 @@
+import { createHmac } from 'node:crypto';
 import { type StoreConfig, buildTicket, checkTicket, parseAddress } from '@elisym/askr';
 import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import * as z from 'zod';
+import { CLIENT_HEX_LENGTH, CLIENT_TAG } from '../constants';
 import type { ServerState } from '../state/types';
-import { WindowLimiter, ipKey } from './limits';
+import { WindowLimiter, ipKey, personKey } from './limits';
 import { type EarlierWidget, type WidgetBundle, pinnedIdOf } from './widget';
 
 /** Tickets per IP (or IPv6 /64) per minute. */
@@ -13,6 +15,20 @@ const CLICKS_PER_IP_PER_MINUTE = 60;
 /** Database lookups of earlier pinned bundles per IP per minute (a bundle in memory is never limited). */
 const EARLIER_WIDGETS_PER_IP_PER_MINUTE = 60;
 const MINUTE_MS = 60_000;
+const SECS_PER_DAY = 86_400;
+
+/**
+ * The client a ticket names: a keyed hash of the visitor's person key (IPv4, or IPv6 /56) and the
+ * UTC day the ticket is issued, so the worker can count one person's asks across sessions and
+ * stores (under that same issue day) without the address ever leaving the gateway or being
+ * linkable from one day to the next.
+ */
+export function clientOf(gatewaySecretKey: Uint8Array, ip: string, nowSecs: number): string {
+  return createHmac('sha256', gatewaySecretKey)
+    .update(`askr-client:${Math.floor(nowSecs / SECS_PER_DAY)}:${ip}`)
+    .digest('hex')
+    .slice(0, CLIENT_HEX_LENGTH);
+}
 const MAX_BODY_BYTES = 16 * 1024;
 /** Short, so a widget release reaches every store's site within minutes. */
 const WIDGET_MAX_AGE_SECS = 300;
@@ -47,8 +63,6 @@ export interface GatewayDeps {
   gatewaySecretKey: Uint8Array;
   /** The store's current config (30496), as the worker's catalog cache reads it. */
   configFor: (owner: string) => StoreConfig | undefined;
-  /** One turn's reservation: no ticket is issued once it no longer fits the budget (5.8). */
-  reserveUsd: string;
   /** An active store read in full that has nothing to serve (no config, or one naming another assistant). */
   isUnservable: (owner: string) => boolean;
   /**
@@ -217,17 +231,20 @@ export function createGateway(deps: GatewayDeps): (input: GatewayRequest) => Pro
     if (!ticketsPerStore.hit(owner, nowSecs * 1000, record.tier.ticketsPerStorePerMinute)) {
       return json({ error: 'rate_limited' }, 429, origin);
     }
-    if (await deps.state.budgetExhausted(owner, nowSecs, deps.reserveUsd)) {
+    if (await deps.state.budgetExhausted(owner, nowSecs)) {
       return json(
         { unavailable: true, reason: 'budget', contact: config.contact ?? null },
         503,
         origin,
       );
     }
-    const ticket = finalizeEvent(
-      buildTicket({ visitor, store: owner, now: nowSecs }),
-      deps.gatewaySecretKey,
-    );
+    const template = buildTicket({ visitor, store: owner, now: nowSecs });
+    // The worker counts asks per client per day across sessions and stores (anti-abuse per person).
+    template.tags.push([
+      CLIENT_TAG,
+      clientOf(deps.gatewaySecretKey, personKey(clientAddress), nowSecs),
+    ]);
+    const ticket = finalizeEvent(template, deps.gatewaySecretKey);
     return json(
       { ticket, assistant: config.assistant, branding: record.tier.branding },
       200,

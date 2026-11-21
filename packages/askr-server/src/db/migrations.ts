@@ -268,6 +268,27 @@ create index stores_auto_activated_at on stores (auto_activated_at)
   where auto_activated_at is not null;
 `,
   },
+  {
+    id: '0008_monthly_budget_ip_days',
+    sql: `
+-- A plan's only spend limit is its monthly budget: the daily one is no longer read. The column
+-- stays so the previous release still runs against this schema (a rollback): the server writes
+-- it as the monthly budget, which that release reads as no extra daily limit. Not null is dropped
+-- so a later migration can drop the column without a release that still writes it.
+alter table tiers alter column daily_budget_usd drop not null;
+
+-- Asks per client per UTC day across every session and store (anti-abuse per person, not per
+-- store): the client is a keyed hash of the visitor's IPv4 address (or IPv6 /56) the gateway put
+-- in the ticket, never the address, counted under the day the ticket was issued. Days before
+-- yesterday are deleted by the sweep.
+create table ip_days (
+  client text not null,
+  day integer not null,
+  used integer not null,
+  primary key (client, day)
+);
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

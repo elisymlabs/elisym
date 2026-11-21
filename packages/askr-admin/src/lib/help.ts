@@ -28,7 +28,7 @@ export const HELP = {
     anchor: 'choose-a-plan',
   },
   usage: {
-    text: 'What the assistant spent against your plan today and this month, in US dollars. When a budget runs out the chat says it is unavailable until the next day or month. Conversations are visitors’ chats that got at least one answer.',
+    text: 'What the assistant spent against your plan this month, in US dollars. When the month’s budget runs out the chat says it is unavailable until the next month, or until you upgrade your plan. Conversations are visitors’ chats that got at least one answer.',
     anchor: 'usage',
   },
   productClicks: {

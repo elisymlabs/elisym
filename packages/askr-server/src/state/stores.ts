@@ -228,17 +228,19 @@ export class StoreDirectory {
 
   async setTier(tier: Tier): Promise<void> {
     await this.db.query(
-      `insert into tiers (name, messages_per_session_per_day, daily_budget_usd, monthly_budget_usd,
-         tickets_per_store_per_minute, max_products, sync_interval_minutes, branding)
-       values ($1, $2, $3, $4, $5, $6, $7, $8)
+      // daily_budget_usd is no longer read; it is written as the monthly budget until a later
+      // migration drops it, so a rolled-back release reads no extra daily limit.
+      `insert into tiers (name, messages_per_session_per_day, monthly_budget_usd,
+         tickets_per_store_per_minute, max_products, sync_interval_minutes, branding,
+         daily_budget_usd)
+       values ($1, $2, $3, $4, $5, $6, $7, $3)
        on conflict (name) do update set
-         messages_per_session_per_day = $2, daily_budget_usd = $3, monthly_budget_usd = $4,
-         tickets_per_store_per_minute = $5, max_products = $6, sync_interval_minutes = $7,
-         branding = $8`,
+         messages_per_session_per_day = $2, monthly_budget_usd = $3, daily_budget_usd = $3,
+         tickets_per_store_per_minute = $4, max_products = $5, sync_interval_minutes = $6,
+         branding = $7`,
       [
         tier.name,
         tier.messagesPerSessionPerDay,
-        tier.dailyBudgetUsd,
         tier.monthlyBudgetUsd,
         tier.ticketsPerStorePerMinute,
         tier.maxProducts,
@@ -301,7 +303,6 @@ export class StoreDirectory {
     const rows = await this.db.query<{
       name: string;
       messages_per_session_per_day: number;
-      daily_budget_usd: string;
       monthly_budget_usd: string;
       tickets_per_store_per_minute: number;
       max_products: number;
@@ -316,7 +317,6 @@ export class StoreDirectory {
       tier: {
         name: row.name,
         messagesPerSessionPerDay: row.messages_per_session_per_day,
-        dailyBudgetUsd: row.daily_budget_usd,
         monthlyBudgetUsd: row.monthly_budget_usd,
         ticketsPerStorePerMinute: row.tickets_per_store_per_minute,
         maxProducts: row.max_products,

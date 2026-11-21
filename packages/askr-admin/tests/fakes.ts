@@ -30,7 +30,6 @@ export function storeView(overrides: Partial<StoreView> = {}): StoreView {
     tier: {
       name: 'base',
       messagesPerSessionPerDay: 30,
-      dailyBudgetUsd: '2',
       monthlyBudgetUsd: '40',
       ticketsPerStorePerMinute: 60,
       maxProducts: 500,
@@ -137,7 +136,6 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
 export const FREE_TIER = {
   name: 'free',
   messagesPerSessionPerDay: 20,
-  dailyBudgetUsd: '1',
   monthlyBudgetUsd: '10',
   ticketsPerStorePerMinute: 30,
   maxProducts: 100,

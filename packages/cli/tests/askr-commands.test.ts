@@ -128,6 +128,96 @@ describe('writes on a store that is not active', () => {
     }
   });
 
+  it('products --dry-run on a pending store checks the file here and publishes nothing', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    const file = await writeJson([
+      product('a'),
+      product('b', { url: 'https://elsewhere.example/b' }),
+    ]);
+    const outcome = await setup.run({ command: 'products', options: { file, dryRun: true } }, [
+      'products',
+    ]);
+    expect(outcome).toMatchObject({
+      exitCode: 0,
+      output: {
+        ok: true,
+        dryRun: true,
+        checked: 'local',
+        published: false,
+        inFile: 2,
+        created: 2,
+        alreadyListed: 0,
+        hidden: 0,
+        sample: { created: ['a', 'b'], hidden: [] },
+        urlWarnings: [{ d: 'b', url: 'https://elsewhere.example/b' }],
+      },
+    });
+    expect(setup.fake.routeCalls('POST /v1/admin/catalog')).toHaveLength(0);
+
+    const rows = await writeCsv('d,title,price\na,,10\n');
+    const badRows = await setup.run(
+      { command: 'products', options: { file: rows, dryRun: true } },
+      ['products'],
+    );
+    expect(badRows).toMatchObject({ exitCode: 1, output: { error: { code: 'invalid_rows' } } });
+  });
+
+  it('a pending dry run hides listed products missing from the file only with --replace', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    setup.fake.seedProducts([product('old'), product('a')]);
+    const file = await writeJson([product('a'), product('new')]);
+    const upsert = await setup.run({ command: 'products', options: { file, dryRun: true } }, [
+      'products',
+    ]);
+    expect(upsert.output).toMatchObject({
+      checked: 'local',
+      mode: 'upsert',
+      created: 1,
+      alreadyListed: 1,
+      hidden: 0,
+      sample: { created: ['new'], hidden: [] },
+    });
+    const replace = await setup.run(
+      { command: 'products', options: { file, dryRun: true, replace: true } },
+      ['products'],
+    );
+    expect(replace.output).toMatchObject({
+      checked: 'local',
+      mode: 'replace',
+      hidden: 1,
+      sample: { hidden: ['old'] },
+    });
+  });
+
+  it('a JSON file that repeats a product id is invalid_file, naming the ids, before any call', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    const callsBefore = setup.fake.calls.length;
+    const file = await writeJson([product('a'), product('b'), product('a'), product('b')]);
+    const outcome = await setup.run({ command: 'products', options: { file, dryRun: true } }, [
+      'products',
+    ]);
+    expect(outcome).toMatchObject({
+      exitCode: 1,
+      output: { error: { code: 'invalid_file' }, repeated: ['a', 'b'] },
+    });
+    expect(setup.fake.calls).toHaveLength(callsBefore);
+  });
+
+  it('products --dry-run on a suspended store is still refused', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    setup.fake.status = 'suspended';
+    setup.fake.tier = FREE_TIER;
+    const file = await writeJson([product('a')]);
+    const outcome = await setup.run({ command: 'products', options: { file, dryRun: true } }, [
+      'products',
+    ]);
+    expect(outcome).toMatchObject({ exitCode: 5, output: { error: { code: 'inactive' } } });
+  });
+
   it('on a suspended or operator-managed store: exit 5 with the contact hint, never askr plan free', async () => {
     for (const [status, tier] of [
       ['suspended', FREE_TIER],
@@ -637,7 +727,10 @@ describe('askr status', () => {
     await setup.run(initInvocation(), INIT_ARGS);
     const pending = await setup.run({ command: 'status', options: { probe: true } }, ['status']);
     expect(pending.output).toMatchObject({ awaitingPlan: true, status: 'pending' });
-    expect(pending.output.probe).toBeUndefined();
+    expect(pending.output.probe).toEqual({
+      result: 'skipped',
+      reason: 'the store is pending: the chat is not served until its plan is active',
+    });
     setup.fake.tier = FREE_TIER;
     const managed = await setup.run({ command: 'status', options: {} }, ['status']);
     expect(managed.output).toMatchObject({ awaitingPlan: false });
@@ -646,6 +739,19 @@ describe('askr status', () => {
     const active = await setup.run({ command: 'status', options: {} }, ['status']);
     expect(active.output).toMatchObject({ awaitingPlan: false });
     expect(active.output.hint).toBeUndefined();
+  });
+
+  it('plain status (no --probe) prints no probe and opens no chat session, pending or active', async () => {
+    const pending = await harness();
+    await pending.run(initInvocation(), INIT_ARGS);
+    const unprobed = await pending.run({ command: 'status', options: {} }, ['status']);
+    expect(unprobed.output).toMatchObject({ status: 'pending' });
+    expect(unprobed.output).not.toHaveProperty('probe');
+    const active = await activeStore();
+    const outcome = await active.run({ command: 'status', options: {} }, ['status']);
+    expect(outcome).toMatchObject({ exitCode: 0, output: { status: 'active' } });
+    expect(outcome.output).not.toHaveProperty('probe');
+    expect(active.fake.routeCalls('POST /v1/session')).toEqual([]);
   });
 
   it('counts listed and visible products, and reads the connector run', async () => {
@@ -688,8 +794,21 @@ describe('askr status', () => {
     ]);
     expect(spent).toMatchObject({
       exitCode: 5,
-      output: { error: { code: 'budget' }, upgrade: {} },
+      output: {
+        ok: false,
+        error: { code: 'budget' },
+        upgrade: {},
+        // A failed probe still prints the whole status.
+        status: 'active',
+        products: { listed: 0, visible: 0 },
+        usage: { monthSpentUsd: '1.5' },
+        probe: { origin: ORIGIN, result: 'budget' },
+      },
     });
+    const budgetHint = String((spent.output.error as { hint?: string }).hint);
+    expect(budgetHint).toContain("plan's monthly limit");
+    expect(budgetHint).toContain('upgrade');
+    expect(budgetHint).not.toContain('used up');
 
     const limited = await activeStore();
     limited.fake.on('POST /v1/session', () => json({ error: 'rate_limited' }, 429));
@@ -711,6 +830,19 @@ describe('askr status', () => {
     ]);
     expect(Date.now() - started).toBeLessThanOrEqual(85_000);
     expect(late).toMatchObject({ exitCode: 4, output: { error: { code: 'not_ready' } } });
+
+    const movedAway = await activeStore();
+    movedAway.fake.on('POST /v1/session', () =>
+      json({ unavailable: true, reason: 'moved', moved: 'f'.repeat(64) }, 410),
+    );
+    const moved = await movedAway.run({ command: 'status', options: { probe: true } }, [
+      'status',
+      '--probe',
+    ]);
+    expect(moved).toMatchObject({
+      exitCode: 3,
+      output: { error: { code: 'moved_store' }, status: 'active', probe: { result: 'moved' } },
+    });
 
     const suspended = await activeStore();
     suspended.fake.status = 'suspended';

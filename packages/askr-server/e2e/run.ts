@@ -48,8 +48,6 @@ const DATABASE_URL = 'postgres://askr:askr@localhost:55432/askr';
 const TIER_ARGS = [
   '--messages',
   '50',
-  '--daily',
-  '5',
   '--monthly',
   '100',
   '--tickets',
@@ -134,8 +132,7 @@ async function races(db: Db, vault: KeyVault, directory: StoreDirectory): Promis
   const tight: Tier = {
     name: 'tight',
     messagesPerSessionPerDay: 50,
-    dailyBudgetUsd: '1',
-    monthlyBudgetUsd: '100',
+    monthlyBudgetUsd: '1',
     ticketsPerStorePerMinute: 100,
     maxProducts: 10,
     syncIntervalMinutes: 60,
@@ -165,8 +162,8 @@ async function races(db: Db, vault: KeyVault, directory: StoreDirectory): Promis
   );
   const totals = await state.dayTotals(store.owner, now);
   check(
-    'thirty admissions at once reserve within the budget (14 of 30 at 0.07 of 1)',
-    admitted.filter((result) => result.admitted).length === 14 && totals.reserved === '0.98',
+    'thirty admissions at once reserve within the budget (14 of 30 at 0.07 of 1, a 15th clipped to 0.02)',
+    admitted.filter((result) => result.admitted).length === 15 && totals.reserved === '1',
   );
 
   const recorded = await Promise.all(
@@ -200,7 +197,6 @@ async function freePlanRace(db: Db, vault: KeyVault, directory: StoreDirectory):
   const tier: Tier = {
     name: 'race-free',
     messagesPerSessionPerDay: 20,
-    dailyBudgetUsd: '1',
     monthlyBudgetUsd: '10',
     ticketsPerStorePerMinute: 30,
     maxProducts: 100,
@@ -556,7 +552,6 @@ async function main(): Promise<void> {
       configFor: (owner) => configs.get(owner)?.config,
       isListed: (owner, address) => isListed(configs.get(owner), address),
       isUnservable: () => false,
-      reserveUsd: '0.25',
     }),
     { port: GATEWAY_PORT, trustProxy: false },
   );

@@ -35,7 +35,6 @@ export interface SyntheticStore {
 export const TIER: Tier = {
   name: 'test',
   messagesPerSessionPerDay: 50,
-  dailyBudgetUsd: '5',
   monthlyBudgetUsd: '100',
   ticketsPerStorePerMinute: 100,
   maxProducts: 1000,
@@ -186,6 +185,23 @@ export async function leaseEpoch(
   return lease.epoch;
 }
 
+/** A gateway ticket for the visitor at `now`, with the tags the gateway adds (the client). */
+export function issueTicket(input: {
+  store: SyntheticStore;
+  visitorSecret: Uint8Array;
+  gatewaySecret: Uint8Array;
+  now: number;
+  ticketTags?: string[][];
+}): NostrEvent {
+  const template = buildTicket({
+    visitor: getPublicKey(input.visitorSecret),
+    store: input.store.owner,
+    now: input.now,
+  });
+  template.tags.push(...(input.ticketTags ?? []));
+  return finalizeEvent(template, input.gatewaySecret);
+}
+
 /** A visitor's ask, wrapped to A, with a ticket signed by `gatewaySecret`. */
 export function askWrap(input: {
   store: SyntheticStore;
@@ -195,16 +211,13 @@ export function askWrap(input: {
   text: string;
   now?: number;
   ticketNow?: number;
+  /** Tags the gateway adds to the ticket (the client). */
+  ticketTags?: string[][];
+  /** A ticket already issued, sent again as is (the widget keeps one for its TTL). */
+  ticket?: NostrEvent;
 }): NostrEvent {
   const now = input.now ?? NOW;
-  const ticket = finalizeEvent(
-    buildTicket({
-      visitor: getPublicKey(input.visitorSecret),
-      store: input.store.owner,
-      now: input.ticketNow ?? now,
-    }),
-    input.gatewaySecret,
-  );
+  const ticket = input.ticket ?? issueTicket({ ...input, now: input.ticketNow ?? now });
   const message: ChatMessage = { type: 'ask', ask_id: input.askId, text: input.text, ticket };
   return wrapChatMessage({
     message,

@@ -12,6 +12,7 @@ import type {
 } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey } from 'nostr-tools/pure';
+import { CONTACT_URL, UPGRADE } from './constants';
 import { AskrExit, EXIT, type CommandOutcome } from './errors';
 import { invalidFlag, readFlagFile } from './files';
 import { type OwnerKey, readImportedKey, readOwnerKey, sameKey, saveOwnerKey } from './owner-key';
@@ -55,8 +56,7 @@ const CURRENCY_RE = /^[A-Z]{3}$/;
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//iu;
 const BARE_HOST_RE = /^[^\s/:]+\.[^\s/:]+(?::\d+)?(?:\/.*)?$/u;
 const MAX_URL_CHARS = 2_048;
-const NEXT_PLAN =
-  'choose a plan: Free via askr plan free, only if the human chose Free; a paid plan: message us with your Store ID';
+const NEXT_PLAN = `choose a plan: Free via askr plan free, only if the human chose Free; a paid plan: message us at ${CONTACT_URL} with your Store ID and the name of the plan the human chose`;
 const STOPPED_HINT = 'report this to us with your Store ID';
 
 /** The flags as checked before anything else happens. */
@@ -648,6 +648,7 @@ export async function runInit(session: Session, options: InitOptions): Promise<C
   };
   if (awaitingPlan) {
     output.next = NEXT_PLAN;
+    output.upgrade = UPGRADE;
   } else if (view.status !== 'active') {
     output.hint = CONTACT_HINT;
   }

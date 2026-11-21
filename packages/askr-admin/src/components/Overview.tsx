@@ -142,12 +142,6 @@ export function Overview({
         {tier === null ? null : (
           <div className="flex flex-col gap-16">
             <UsageMeter
-              label="Today"
-              used={usage.today.spent}
-              limit={tier.dailyBudgetUsd}
-              text={`${usd(usage.today.spent)} of ${usd(tier.dailyBudgetUsd)}`}
-            />
-            <UsageMeter
               label="This month"
               used={usage.month.spent}
               limit={tier.monthlyBudgetUsd}

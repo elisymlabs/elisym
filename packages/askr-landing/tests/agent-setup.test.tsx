@@ -105,9 +105,35 @@ describe('the prompt', () => {
       'If a command is killed or ends with no JSON output, run it again once.',
       '`url` must be on one of my site addresses',
       '2. Only if I chose Free: `askr plan free`.',
+      'Do step 3 anyway: the widget can be deployed now, it stays hidden until the store is active.',
+      'insert its `snippet` field as it is (no `integrity` attribute',
+      'write a JSON file `products.json` in that drafts folder',
+      '`~/askr-setup/<short-name>/` with a profile',
+      'A policy I answer "none" for (for example no warranty) is skipped too',
+      'or one in this codebase whose columns match',
+      'with your Store ID and the plan you chose',
+      'Plan: Free, or a paid plan, and which one?',
     ]) {
       expect(AGENT_PROMPT).toContain(rule);
     }
+  });
+
+  it('lists the CSV columns the CLI parser reads, all of them', () => {
+    const csv = read('askr/src/csv.ts');
+    const listOf = (name: string) => {
+      const body = new RegExp(`export const ${name} = \\[([^\\]]*)\\]`).exec(csv)?.[1] ?? '';
+      return [...body.matchAll(/'([a-z_]+)'/g)].map((match) => match[1] ?? '');
+    };
+    const columns = [...listOf('CSV_COLUMNS'), ...listOf('CSV_VARIANT_COLUMNS')];
+    expect(columns.length).toBeGreaterThan(10);
+    const listed = /whose columns match \(([^)]*)\)/.exec(AGENT_PROMPT)?.[1] ?? '';
+    const named = listed
+      .split(/[;,]/)
+      .map((part) => part.trim().replace(/^optional /, ''))
+      .filter((part) => /^[a-z_]+$/.test(part));
+    expect(new Set(named)).toEqual(new Set(columns));
+    expect(listed).toContain('attr:<Name>');
+    expect(listed).toContain('option:<Name>');
   });
 
   it('names the exit codes the CLI gives, in the prompt and in the docs table', () => {

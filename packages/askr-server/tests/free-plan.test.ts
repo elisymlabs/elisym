@@ -16,11 +16,13 @@ import {
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { STORES_CHANNEL } from '../src/db/db';
+import { KeyVault } from '../src/db/keys';
 import { MIGRATIONS, migrate } from '../src/db/migrations';
 import { StoreEventPublisher } from '../src/publisher';
 import type { RelayLike, ServerPool } from '../src/relay/pool';
+import { StoreDirectory } from '../src/state/stores';
 import type { Tier } from '../src/state/types';
-import { HOLDER, NOW, ORIGIN, stateWith } from './fixtures';
+import { HOLDER, MASTER_KEY, NOW, ORIGIN, stateWith } from './fixtures';
 import { pgliteDb } from './pglite-db';
 
 const BASE = 'https://api.askr.test';
@@ -29,7 +31,6 @@ const DAY_SECS = 24 * 60 * 60;
 const FREE: Tier = {
   name: 'free',
   messagesPerSessionPerDay: 20,
-  dailyBudgetUsd: '1',
   monthlyBudgetUsd: '10',
   ticketsPerStorePerMinute: 30,
   maxProducts: 100,
@@ -777,7 +778,59 @@ describe('migration 0007_auto_activation', () => {
     );
     expect(rows).toEqual([{ auto_activated_at: null }]);
     const applied = await db.query<{ id: string }>('select id from migrations order by id');
-    expect(applied.map((row) => row.id).at(-1)).toBe('0007_auto_activation');
+    expect(applied.map((row) => row.id)).toContain('0007_auto_activation');
+    await client.close();
+  });
+});
+
+describe('migration 0008_monthly_budget_ip_days', () => {
+  it('keeps the daily budget for a rollback, written as the monthly one, and the tiers in use', async () => {
+    const client = await PGlite.create();
+    const db = pgliteDb(client);
+    const upTo0007 = MIGRATIONS.slice(
+      0,
+      MIGRATIONS.findIndex((entry) => entry.id === '0008_monthly_budget_ip_days'),
+    );
+    expect(upTo0007.map((entry) => entry.id).at(-1)).toBe('0007_auto_activation');
+    await db.script(
+      'create table migrations (id text primary key, applied_at timestamptz not null default now())',
+    );
+    for (const migration of upTo0007) {
+      await db.script(migration.sql);
+      await db.query('insert into migrations (id) values ($1)', [migration.id]);
+    }
+    await db.query(
+      `insert into tiers (name, messages_per_session_per_day, daily_budget_usd, monthly_budget_usd,
+         tickets_per_store_per_minute, max_products, sync_interval_minutes, branding)
+       values ('free', 20, 0.1, 1, 30, 100, 1440, true)`,
+    );
+    await db.query(
+      `insert into stores (owner, status, tier, assistant, assistant_key, catalog_key, catalog_key_secret, created_at)
+       values ($1, 'active', 'free', $2, $3, $4, $5, $6)`,
+      ['a'.repeat(64), 'b'.repeat(64), new Uint8Array(1), 'c'.repeat(64), new Uint8Array(1), NOW],
+    );
+    await migrate(db);
+    const columns = await db.query<{ column_name: string; is_nullable: string }>(
+      `select column_name, is_nullable from information_schema.columns
+       where table_name = 'tiers' and column_name = 'daily_budget_usd'`,
+    );
+    // Kept, nullable: the previous release still reads and writes it after a rollback.
+    expect(columns).toEqual([{ column_name: 'daily_budget_usd', is_nullable: 'YES' }]);
+    const tiers = await db.query<{ name: string; monthly_budget_usd: string }>(
+      'select name, monthly_budget_usd from tiers',
+    );
+    expect(tiers).toEqual([{ name: 'free', monthly_budget_usd: '1.000000000' }]);
+    // A tier saved now writes the daily budget as the monthly one, created or updated, so a
+    // rolled-back release reads no extra daily limit.
+    const directory = new StoreDirectory(db, new KeyVault(MASTER_KEY));
+    const daily = (name: string) =>
+      db.query('select daily_budget_usd from tiers where name = $1', [name]);
+    await directory.setTier({ ...FREE, name: 'paid', monthlyBudgetUsd: '20' });
+    expect(await daily('paid')).toEqual([{ daily_budget_usd: '20.000000000' }]);
+    await directory.setTier({ ...FREE, name: 'free', monthlyBudgetUsd: '3' });
+    expect(await daily('free')).toEqual([{ daily_budget_usd: '3.000000000' }]);
+    expect(await db.query('select tier from stores')).toEqual([{ tier: 'free' }]);
+    expect(await db.query('select * from ip_days')).toEqual([]);
     await client.close();
   });
 });

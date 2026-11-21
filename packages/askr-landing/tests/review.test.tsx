@@ -408,8 +408,35 @@ describe('the copy', () => {
     const page = await render(<AdminWindow />);
     const address = new URL(ADMIN_URL);
     expect(page.textContent).toContain(`${address.host}${address.pathname.replace(/\/$/, '')}`);
-    expect(page.textContent).toContain('(23.6%)');
+    // No daily budget: a plan's only spend limit is the month's.
+    expect(page.textContent).not.toContain('$5.00');
     expect(page.textContent).toContain('(64.1%)');
+  });
+
+  it('stacks the usage tiles one per row unless its card fits three, and grows to fit them', async () => {
+    const page = await render(<AdminWindow />);
+    // A container query on the card, so a narrow phone and the narrow column beside the text
+    // (1024 px) both get rows; three columns only where each label fits its tile.
+    const card = page.querySelector('dl')?.parentElement;
+    expect(card?.classList.contains('@container')).toBe(true);
+    const tiles = page.querySelector('dl');
+    expect(tiles?.classList.contains('grid-cols-1')).toBe(true);
+    expect(tiles?.classList.contains('@min-[23rem]:grid-cols-3')).toBe(true);
+    for (const label of page.querySelectorAll('dt')) {
+      expect(label.classList.contains('min-w-0')).toBe(true);
+    }
+    // At least the old height, taller where the rows need it, so the month's meter is never cut.
+    const body = page.querySelector('.adm');
+    expect(body?.classList.contains('min-h-[560px]')).toBe(true);
+    expect(body?.classList.contains('h-[560px]')).toBe(false);
+    // The content clears the white fade at the bottom (h-64), so a grown window never fades the meter.
+    const fade = body?.querySelector('.bg-gradient-to-t');
+    expect(fade?.classList.contains('h-64')).toBe(true);
+    const content = fade?.parentElement;
+    expect(content?.classList.contains('pb-64')).toBe(true);
+    expect([...(content?.classList ?? [])].filter((name) => /(^|:)(py|pb)-/.test(name))).toEqual([
+      'pb-64',
+    ]);
   });
 });
 

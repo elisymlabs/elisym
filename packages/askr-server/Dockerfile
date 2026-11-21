@@ -33,6 +33,12 @@
 # ASKR_TURN_RESERVE_USD (0.25 by default). The server refuses to start when 8 calls x
 # ASKR_MAX_TOKENS x ASKR_PRICE_OUTPUT exceed the reservation: an Opus-priced model
 # ($20 per million output) at the defaults does; lower ASKR_MAX_TOKENS or raise the reserve.
+# A turn reserves only what is left of the plan's monthly budget (its only spend limit) when that
+# is less; a tier whose monthly budget is below the reservation is warned about at startup.
+# Anti-abuse is per visitor: the tier's --messages per chat per day, and ASKR_MESSAGES_PER_IP_PER_DAY
+# (100 by default) asks per IPv4 address or IPv6 /56 per UTC day across every chat and store
+# (counted under the day the session ticket was issued). Trade-off: visitors behind one NAT or
+# sharing one /56 (an office, a carrier-grade NAT) share that limit; raise it if they hit it.
 # Self-serve Free (6.1): ASKR_FREE_TIER names the tier (e.g. free; create it first with `tier set`)
 # a pending, never-tiered store is put on when its owner chooses Free (the admin's Start on Free,
 # or POST /v1/admin/store/plan). ASKR_FREE_PER_DAY (50 by default) caps those activations per
