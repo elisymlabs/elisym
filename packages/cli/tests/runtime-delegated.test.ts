@@ -7,6 +7,7 @@ import {
   USDC_SOLANA_DEVNET,
   buildDelegationAuthProof,
   generateSolanaWallet,
+  getDelegation,
   mintDelegationNonce,
 } from '@elisym/sdk';
 import type { DelegationStatus } from '@elisym/sdk';
@@ -51,10 +52,10 @@ vi.mock('@elisym/sdk', async (importOriginal) => {
         lastValidBlockHeight: 424_242n,
       });
     },
-    sendConfirmToTerminal: (...args: unknown[]) => {
-      sendConfirmSpy(...args);
-      return Promise.resolve(mockPullOutcome);
-    },
+    // A test can hold one pull open by having the spy return a promise
+    // (`mockImplementationOnce`); an unset spy returns undefined -> the knob.
+    sendConfirmToTerminal: (...args: unknown[]) =>
+      Promise.resolve(sendConfirmSpy(...args)).then((held) => held ?? mockPullOutcome),
     confirmPullToTerminal: (...args: unknown[]) => {
       confirmPullSpy(...args);
       return Promise.resolve(mockReconcileOutcome);
@@ -82,6 +83,22 @@ const PRICE_SUBUNITS = 50_000; // 0.05 USDC
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Upper bound for waiting out a job, generous enough for a loaded CI runner. */
 const SETTLE_BUDGET_MS = 10_000;
+/**
+ * Upper bound for one `waitUntil` step, so a step that never comes true ends in
+ * the test's own asserts, not in a timeout that leaves the held promises open.
+ */
+const WAIT_STEP_BUDGET_MS = 2_000;
+
+/** The oversubscribe test runs up to three `waitUntil` steps in a row: room for all of them. */
+const OVERSUBSCRIBE_TEST_TIMEOUT_MS = 3 * WAIT_STEP_BUDGET_MS + 4_000;
+
+/** Poll until `condition` holds or the step budget runs out (the caller's asserts report it). */
+async function waitUntil(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + WAIT_STEP_BUDGET_MS;
+  while (!condition() && Date.now() < deadline) {
+    await tick(5);
+  }
+}
 
 function makeDelegatedSkill(overrides: Partial<Skill> = {}): Skill {
   return {
@@ -230,6 +247,10 @@ function feedbackErrors(transport: NostrTransport, jobId: string): string[] {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  // `clearAllMocks` keeps queued `mockImplementationOnce` entries: a test that
+  // fails before consuming its own would hand them to the next test.
+  vi.mocked(getDelegation).mockReset();
+  sendConfirmSpy.mockReset();
   mockDelegationStatus = null;
   mockPullOutcome = 'landed';
   mockReconcileOutcome = 'landed';
@@ -583,32 +604,68 @@ describe('delegated job payment - pre-check rejections', () => {
     expect(ledger.getStatus('exact-cap-1')).toBe('delivered');
   });
 
-  it('concurrent same-owner jobs cannot oversubscribe the cap (reservation)', async () => {
-    mockDelegationStatus = activeDelegation({ remainingCap: BigInt(PRICE_SUBUNITS) });
-    const slowSkill = makeDelegatedSkill({
-      execute: vi.fn(
-        () => new Promise((resolve) => setTimeout(() => resolve({ data: 'slow result' }), 120)),
-      ),
-    } as Partial<Skill>);
-    const { transport, triggerJob } = makeFakeTransport();
-    const runtime = makeRuntime(slowSkill, transport);
-    const jobA = await makeDelegatedJob('reserve-a');
-    const jobB = await makeDelegatedJob('reserve-b');
+  it(
+    'concurrent same-owner jobs cannot oversubscribe the cap (reservation)',
+    async () => {
+      mockDelegationStatus = activeDelegation({ remainingCap: BigInt(PRICE_SUBUNITS) });
+      // The mocked chain never debits the cap, so a job checked AFTER the winner
+      // has released its reservation would pass on what is, in effect, a stale
+      // read. The winner is therefore held inside its PULL - the last step its
+      // reservation must cover - until every loser has been decided: the outcome
+      // no longer depends on how fast any pre-check runs.
+      let releasePull: () => void = () => {};
+      const pullHeld = new Promise<'landed'>((resolve) => {
+        releasePull = () => resolve('landed');
+      });
+      sendConfirmSpy.mockImplementationOnce(() => pullHeld);
+      const execute = vi.fn().mockResolvedValue({ data: 'delegated result' });
+      const skill = makeDelegatedSkill({ execute } as Partial<Skill>);
+      const { transport, triggerJob } = makeFakeTransport();
+      const runtime = makeRuntime(skill, transport);
+      const jobA = await makeDelegatedJob('reserve-a');
+      const jobB = await makeDelegatedJob('reserve-b');
+      const jobC = await makeDelegatedJob('reserve-c');
+      const racingIds = ['reserve-a', 'reserve-b'];
+      const jobIds = [...racingIds, 'reserve-c'];
+      // A and B's chain reads resolve in the SAME turn, so their two cap checks
+      // run back to back: any await between one job's check and its reserve lets
+      // the other check against an empty reservation.
+      let answerChainReads: () => void = () => {};
+      const chainRead = new Promise<DelegationStatus | null>((resolve) => {
+        answerChainReads = () => resolve(mockDelegationStatus);
+      });
+      vi.mocked(getDelegation)
+        .mockImplementationOnce(() => chainRead)
+        .mockImplementationOnce(() => chainRead);
 
-    await runJobs(
-      runtime,
-      async () => {
+      await runJobs(runtime, async () => {
         triggerJob(jobA);
-        await tick(50); // A holds its reservation while executing
         triggerJob(jobB);
-      },
-      350,
-    );
+        await waitUntil(() => vi.mocked(getDelegation).mock.calls.length === racingIds.length);
+        answerChainReads();
+        // The winner is inside its pull. C arrives now, after the winner has
+        // executed: a reservation released before (or during) execute or the
+        // pull lets C through.
+        await waitUntil(() => sendConfirmSpy.mock.calls.length > 0);
+        triggerJob(jobC);
+        await waitUntil(
+          () => ledger.getStatus('reserve-c') === 'failed' || execute.mock.calls.length > 1,
+        );
+        releasePull();
+      });
 
-    const statuses = [ledger.getStatus('reserve-a'), ledger.getStatus('reserve-b')].sort();
-    expect(statuses).toEqual(['delivered', 'failed']);
-    expect(sendConfirmSpy).toHaveBeenCalledTimes(1);
-  });
+      const statuses = jobIds.map((jobId) => ledger.getStatus(jobId)).sort();
+      expect(statuses).toEqual(['delivered', 'failed', 'failed']);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(sendConfirmSpy).toHaveBeenCalledTimes(1);
+      for (const jobId of jobIds.filter(
+        (candidateId) => ledger.getStatus(candidateId) === 'failed',
+      )) {
+        expect(feedbackErrors(transport, jobId).join(' ')).toMatch(/allowance/i);
+      }
+    },
+    OVERSUBSCRIBE_TEST_TIMEOUT_MS,
+  );
 
   it('releases the reservation when the skill throws after reserve', async () => {
     mockDelegationStatus = activeDelegation({ remainingCap: BigInt(PRICE_SUBUNITS) });
