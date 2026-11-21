@@ -92,7 +92,7 @@ function noConnectorExit(): AskrExit {
 
 function actionRefusal(session: Session, view: StoreView, result: ApiResult<unknown>): AskrExit {
   if (!result.ok && result.code === 'inactive') {
-    return inactiveExit(view);
+    return inactiveExit(view, session.adminUrl);
   }
   if (!result.ok && result.code === 'no_connector') {
     return noConnectorExit();
@@ -104,7 +104,7 @@ export async function runConnector(session: Session): Promise<CommandOutcome> {
   const key = await useOwnerKey(session);
   const view = await readView(session);
   if (view.status !== 'active' || view.tier === null) {
-    throw inactiveExit(view);
+    throw inactiveExit(view, session.adminUrl);
   }
   const connector = view.connector;
   if (connector === null) {

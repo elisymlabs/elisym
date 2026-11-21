@@ -189,7 +189,7 @@ export async function runProducts(
   // A pending store's file is checked here, without the server: nothing is published until it is active.
   const localDryRun = options.dryRun === true && view.status === 'pending';
   if (view.status !== 'active' && !localDryRun) {
-    throw inactiveExit(view);
+    throw inactiveExit(view, session.adminUrl);
   }
   const { config } = await readSigned(session, key.owner, key.secretKey);
   if (config === undefined) {
@@ -387,7 +387,7 @@ class CatalogFlow {
           },
         });
       case 'inactive':
-        return inactiveExit(this.view);
+        return inactiveExit(this.view, this.session.adminUrl);
       case 'bad_request':
         return new AskrExit(EXIT.BAD_INPUT, 'bad_request', {
           ...(typeof result.detail.message === 'string' ? { message: result.detail.message } : {}),

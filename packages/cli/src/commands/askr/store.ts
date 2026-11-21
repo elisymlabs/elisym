@@ -3,7 +3,7 @@
  * store view, the mapping of the server's refusals to the exit table (5.0),
  * the view-dependent `inactive` hint and the publication wait.
  */
-import { ADMIN_URL, CONTACT_URL, STORE_POLL_MS, UPGRADE } from './constants';
+import { CONTACT_URL, STORE_POLL_MS, UPGRADE } from './constants';
 import { AskrExit, EXIT, type ExitCode } from './errors';
 import { type OwnerKey, readOwnerKey } from './owner-key';
 import type { ApiResult, Session } from './session';
@@ -12,8 +12,10 @@ import type { BillingView, StoreView } from './types';
 export const CHOOSE_PLAN_HINT =
   'choose a plan: askr plan free (only if the human chose Free), or message us with your Store ID for a paid plan';
 /** The same, when the server takes payments: a paid plan is a checkout link for the human. */
-export const CHOOSE_PLAN_BILLING_HINT =
-  'choose a plan: askr plan free (only if the human chose Free), or askr plan <starter|growth|pro|scale> [--yearly] for the paid plan the human chose, then give them its checkoutUrl to pay';
+/** How an agent buys a paid plan when the server takes payments: a checkout link for the human. */
+export const PAID_CHECKOUT =
+  'askr plan <starter|growth|pro|scale> [--yearly] for the paid plan the human chose, then give them its checkoutUrl to pay';
+export const CHOOSE_PLAN_BILLING_HINT = `choose a plan: askr plan free (only if the human chose Free), or ${PAID_CHECKOUT}`;
 export const CONTACT_HINT = `message us with your Store ID: ${CONTACT_URL}`;
 export const INIT_FIRST_HINT = 'run askr init first';
 const CLOCK_HINT = "check this computer's clock: it is off by more than a minute";
@@ -63,17 +65,13 @@ export function planHintOf(view: Pick<StoreView, 'status' | 'tier' | 'billing'>)
  */
 export function upgradeOf(
   billing: BillingView | undefined,
-  adminUrl: string = ADMIN_URL,
+  adminUrl: string,
 ): Record<string, string> {
   if (billing?.enabled !== true || billing.operatorManaged === true) {
     return UPGRADE;
   }
   if (billing.checkoutAvailable) {
-    return {
-      ...UPGRADE,
-      howTo:
-        'Run askr plan <starter|growth|pro|scale> [--yearly] for the paid plan the human chose, then give them its checkoutUrl to pay',
-    };
+    return { ...UPGRADE, howTo: `Run ${PAID_CHECKOUT}` };
   }
   if (billing.manageable) {
     return {
@@ -88,6 +86,7 @@ export function upgradeOf(
 /** A write on a store that is not active: exit 5 with the view-dependent hint. */
 export function inactiveExit(
   view: Pick<StoreView, 'status' | 'tier' | 'billing'>,
+  adminUrl: string,
   exitCode: ExitCode = EXIT.LIMIT,
 ): AskrExit {
   return new AskrExit(exitCode, 'inactive', {
@@ -95,7 +94,7 @@ export function inactiveExit(
     fields: {
       status: view.status,
       awaitingPlan: awaitingPlanOf(view),
-      upgrade: upgradeOf(view.billing),
+      upgrade: upgradeOf(view.billing, adminUrl),
     },
   });
 }

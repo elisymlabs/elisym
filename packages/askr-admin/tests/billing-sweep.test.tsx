@@ -109,6 +109,12 @@ describe('the plan picker with billing on', () => {
     expect(names).not.toContain('Growth / Pro / Scale');
   });
 
+  it('says the prices include tax', async () => {
+    mounted = await mount(<PaidPlans deps={{ api: fakeApi(), openUrl: vi.fn() }} />);
+    expect(mounted.container.textContent).toContain('Prices in USD, tax included.');
+    expect(mounted.container.textContent).not.toContain('added');
+  });
+
   it('marks the chosen billing period as pressed', async () => {
     mounted = await mount(<PaidPlans deps={{ api: fakeApi(), openUrl: vi.fn() }} />);
     const { container } = mounted;

@@ -25,6 +25,7 @@ import {
   movedExit,
   readView,
   refusalExit,
+  PAID_CHECKOUT,
   tierOf,
   stoppedKinds,
   upgradeOf,
@@ -59,8 +60,7 @@ const BARE_HOST_RE = /^[^\s/:]+\.[^\s/:]+(?::\d+)?(?:\/.*)?$/u;
 const MAX_URL_CHARS = 2_048;
 const NEXT_PLAN = `choose a plan: Free via askr plan free, only if the human chose Free; a paid plan: message us at ${CONTACT_URL} with your Store ID and the name of the plan the human chose`;
 /** The same, when the server takes payments: a paid plan is a checkout link for the human. */
-const NEXT_PLAN_BILLING =
-  'choose a plan: Free via askr plan free, only if the human chose Free; a paid plan: askr plan <starter|growth|pro|scale> [--yearly] for the plan the human chose, then give them its checkoutUrl to pay';
+const NEXT_PLAN_BILLING = `choose a plan: Free via askr plan free, only if the human chose Free; a paid plan: ${PAID_CHECKOUT}`;
 const STOPPED_HINT = 'report this to us with your Store ID';
 
 /** The flags as checked before anything else happens. */

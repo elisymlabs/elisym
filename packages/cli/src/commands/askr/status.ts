@@ -41,7 +41,7 @@ interface SkippedProbe {
 
 /** The hint of a `budget` refusal: a store's only spend limit is its plan's monthly budget. */
 export const BUDGET_HINT =
-  "the store reached its plan's monthly limit, so the chat does not answer until the plan is upgraded or the next month starts: to upgrade, message us with your Store ID (upgrade.contact)";
+  "the store reached its plan's monthly limit, so the chat does not answer until the plan is upgraded or the next month starts: to upgrade, follow upgrade.howTo";
 
 function money(value: string): string {
   try {

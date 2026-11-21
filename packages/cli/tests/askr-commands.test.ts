@@ -802,6 +802,19 @@ describe('the upgrade block follows what the server says of billing', () => {
     return String(Reflect.get(Object(output.upgrade), 'howTo'));
   }
 
+  function adminOf(output: Record<string, unknown>): unknown {
+    return Reflect.get(Object(output.upgrade), 'admin');
+  }
+
+  /** The admin URL of the harness's own server, never the production one. */
+  async function adminUrlOf(setup: Harness): Promise<string> {
+    const url = String(
+      (await setup.run({ command: 'status', options: {} }, ['status'])).output.adminUrl,
+    );
+    expect(url).not.toBe('https://app.askr.elisym.network/admin/');
+    return url;
+  }
+
   it('init on a store awaiting its plan: message us without billing, askr plan with it', async () => {
     const off = await harness();
     const before = await off.run(initInvocation(), INIT_ARGS);
@@ -828,13 +841,19 @@ describe('the upgrade block follows what the server says of billing', () => {
     expect(howToOf(await status())).toBe(MESSAGE_US);
     setup.fake.billing = NO_PLAN;
     expect(howToOf(await status())).toContain(CHECKOUT);
+    // An ended plan leaves a Stripe customer: the portal cannot start a new plan, checkout can.
+    setup.fake.billing = { ...NO_PLAN, manageable: true };
+    const ended = await status();
+    expect(howToOf(ended)).toContain(CHECKOUT);
+    expect(adminOf(ended)).toBeUndefined();
 
     setup.fake.status = 'active';
     setup.fake.tier = { ...FREE_TIER, name: 'growth' };
     setup.fake.billing = PAYING;
     const paying = await status();
     expect(howToOf(paying)).toContain('Manage billing');
-    expect(String(Reflect.get(Object(paying.upgrade), 'admin'))).toBe(paying.adminUrl);
+    expect(adminOf(paying)).toBe(paying.adminUrl);
+    expect(paying.adminUrl).not.toBe('https://app.askr.elisym.network/admin/');
     setup.fake.billing = { ...PAYING, operatorManaged: true };
     expect(howToOf(await status())).toBe(MESSAGE_US);
     setup.fake.billing = { ...PAYING, manageable: false };
@@ -851,6 +870,18 @@ describe('the upgrade block follows what the server says of billing', () => {
     expect(howToOf(outcome.output)).toContain(CHECKOUT);
   });
 
+  it('a write on a pending store that still pays names the admin of its own server', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    setup.fake.billing = PAYING;
+    const admin = await adminUrlOf(setup);
+    const file = await writeJson([product('a')]);
+    const outcome = await setup.run({ command: 'products', options: { file } }, ['products']);
+    expect(outcome.output).toMatchObject({ error: { code: 'inactive' } });
+    expect(howToOf(outcome.output)).toContain('Manage billing');
+    expect(adminOf(outcome.output)).toBe(admin);
+  });
+
   it('too_many_products from products and from the connector follows billing too', async () => {
     const products = await activeStore();
     products.fake.billing = PAYING;
@@ -859,6 +890,7 @@ describe('the upgrade block follows what the server says of billing', () => {
     const tooMany = await products.run({ command: 'products', options: { file } }, ['products']);
     expect(tooMany.output).toMatchObject({ error: { code: 'too_many_products' } });
     expect(howToOf(tooMany.output)).toContain('Manage billing');
+    expect(adminOf(tooMany.output)).toBe(await adminUrlOf(products));
 
     const connector = await activeStore({
       source: 'connector',
@@ -876,6 +908,39 @@ describe('the upgrade block follows what the server says of billing', () => {
     const big = await connector.run({ command: 'connector' }, ['connector']);
     expect(big.output).toMatchObject({ error: { code: 'too_many_products' } });
     expect(howToOf(big.output)).toContain(CHECKOUT);
+
+    const previewed = await activeStore({
+      source: 'connector',
+      platform: 'shopify',
+      shopUrl: ORIGIN,
+    });
+    previewed.fake.billing = NO_PLAN;
+    previewed.fake.previewResult = {
+      status: 'error',
+      message: 'big',
+      reason: 'too_many_products',
+      count: 300,
+      max: 100,
+    };
+    const preview = await previewed.run({ command: 'connector' }, ['connector']);
+    expect(preview.output).toMatchObject({ error: { code: 'too_many_products' } });
+    expect(howToOf(preview.output)).toContain(CHECKOUT);
+    expect(previewed.fake.routeCalls('POST /v1/admin/connector/enable')).toHaveLength(0);
+  });
+
+  it('a spent monthly budget points at the upgrade block, which follows billing', async () => {
+    const setup = await activeStore();
+    setup.fake.billing = NO_PLAN;
+    setup.fake.on('POST /v1/session', () => json({ unavailable: true, reason: 'budget' }, 503));
+    const spent = await setup.run({ command: 'status', options: { probe: true } }, [
+      'status',
+      '--probe',
+    ]);
+    expect(spent.output).toMatchObject({ error: { code: 'budget' } });
+    const hint = String(Reflect.get(Object(spent.output.error), 'hint'));
+    expect(hint).toContain('upgrade.howTo');
+    expect(hint).not.toContain('message us');
+    expect(howToOf(spent.output)).toContain(CHECKOUT);
   });
 });
 
