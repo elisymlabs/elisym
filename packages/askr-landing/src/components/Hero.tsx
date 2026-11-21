@@ -1,6 +1,6 @@
 import { type KeyboardEvent, useRef, useState } from 'react';
 import { BUTTON } from '../buttons';
-import { PRODUCT_NAME, START_LABEL } from '../constants';
+import { PRODUCT_PITCH, START_LABEL, WORKS_WITH_TEXT } from '../constants';
 import { NICHES } from '../niches';
 import { AdminLink } from './AdminLink';
 import { ChatDemo } from './ChatDemo';
@@ -54,9 +54,7 @@ export function Hero() {
             </h1>
           </Reveal>
           <Reveal delay={2}>
-            <p className="text-18 text-text-2 max-w-560 leading-relaxed">
-              {`${PRODUCT_NAME} answers shoppers right away, in their language. It finds the right product for their need and budget and sends them to your cart. Every answer comes from your own catalog and policies, so every price and promise is yours.`}
-            </p>
+            <p className="text-18 text-text-2 max-w-560 leading-relaxed">{PRODUCT_PITCH}</p>
           </Reveal>
           <Reveal delay={3} className="flex flex-wrap gap-12">
             <AdminLink label={START_LABEL} className={BUTTON.solid} />
@@ -66,9 +64,7 @@ export function Hero() {
             </a>
           </Reveal>
           <Reveal delay={3}>
-            <p className="text-14 text-text-3">
-              One line of code. Works with Shopify, WooCommerce and any other site.
-            </p>
+            <p className="text-14 text-text-3">{WORKS_WITH_TEXT}</p>
           </Reveal>
         </div>
 

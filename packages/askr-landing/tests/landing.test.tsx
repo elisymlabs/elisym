@@ -11,8 +11,10 @@ import {
   ELISYM_URL,
   GITHUB_URL,
   PLANS,
+  PRODUCT_PITCH,
   START_LABEL,
   WIDGET_SRC,
+  WORKS_WITH_TEXT,
   X_URL,
 } from '../src/constants';
 import { PHOTOS } from '../src/media';
@@ -142,6 +144,18 @@ describe('the links', () => {
     for (const href of [ADMIN_URL, DOCS.overview, GITHUB_URL, X_URL]) {
       expect(hrefs).toContain(href);
     }
+  });
+});
+
+describe('the hero', () => {
+  it('says the pitch and the works-with line the llms.txt repeats', async () => {
+    const page = await render(<App />);
+    const hero = page.querySelector('#top');
+    const paragraphs = [...(hero?.querySelectorAll('p') ?? [])].map(
+      (paragraph) => paragraph.textContent,
+    );
+    expect(paragraphs).toContain(PRODUCT_PITCH);
+    expect(paragraphs).toContain(WORKS_WITH_TEXT);
   });
 });
 

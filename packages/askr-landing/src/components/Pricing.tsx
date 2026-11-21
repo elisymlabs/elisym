@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import {
   CHOOSE_PLAN_TEXT,
-  CONVERSATION_DEFINITION,
   PLANS,
-  YEARLY_DISCOUNT_LABEL,
+  PRICING_SMALL_PRINT,
   isContractPlan,
   isFlatPlan,
 } from '../constants';
@@ -56,9 +55,7 @@ export function Pricing() {
           </ul>
         </Reveal>
         <div className="text-13 text-text-3 mx-auto mt-32 flex max-w-760 flex-col gap-6 text-center leading-relaxed">
-          <p>
-            {`Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more. Prices are before tax. VAT or sales tax depends on where you are and is added at checkout, which shows the total before you pay.`}
-          </p>
+          <p>{PRICING_SMALL_PRINT}</p>
           <p>{CHOOSE_PLAN_TEXT}</p>
         </div>
       </div>

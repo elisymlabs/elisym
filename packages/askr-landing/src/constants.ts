@@ -2,7 +2,7 @@
 export const PRODUCT_NAME = 'Askr';
 
 /** The Askr server: it serves the widget, the chat sessions and the admin. */
-const API_ORIGIN = 'https://app.askr.elisym.network';
+export const API_ORIGIN = 'https://app.askr.elisym.network';
 
 /** The merchant admin: its own origin, never this page's (it holds the store's secret key). */
 export const ADMIN_URL = `${API_ORIGIN}/admin/`;
@@ -10,12 +10,27 @@ export const ADMIN_URL = `${API_ORIGIN}/admin/`;
 /** The script a store's pages load. */
 export const WIDGET_SRC = `${API_ORIGIN}/widget.js`;
 
+/** The product's pitch under the hero heading, and the summary of this site's `llms.txt`. */
+export const PRODUCT_PITCH = `${PRODUCT_NAME} answers shoppers right away, in their language. It finds the right product for their need and budget and sends them to your cart. Every answer comes from your own catalog and policies, so every price and promise is yours.`;
+
+/** The line under the hero's buttons. */
+export const WORKS_WITH_TEXT =
+  'One line of code. Works with Shopify, WooCommerce and any other site.';
+
 export const DOCS = {
   overview: 'https://docs.elisym.network/askr/overview',
   embed: 'https://docs.elisym.network/askr/embed',
   catalogFromAnAgent: 'https://docs.elisym.network/askr/catalog-from-an-agent',
   agentSetup: 'https://docs.elisym.network/askr/agent-setup',
+  aiAgents: 'https://docs.elisym.network/askr/ai-agents',
+  admin: 'https://docs.elisym.network/askr/admin',
 };
+
+/** The landing's "let your AI agent do it" section, as its anchor and this site's `llms.txt` link it. */
+export const AGENT_SETUP_ID = 'agent-setup';
+
+/** The docs site's own `llms.txt` (Vocs writes it), for an agent that wants every page. */
+export const DOCS_LLMS_TXT_URL = 'https://docs.elisym.network/llms.txt';
 
 /** What a plan costs, as shown: every amount written out, no arithmetic on the page. */
 type PlanPrice =
@@ -78,6 +93,12 @@ export const CHOOSE_PLAN_TEXT =
 /** How a conversation is counted, as the pricing's small print says it. */
 export const CONVERSATION_DEFINITION =
   "A conversation is one visitor's chat, up to 24 hours from their first message, that got at least one answer.";
+
+/** Under Enterprise's price: how it is billed and agreed. */
+export const CONTRACT_PRICE_NOTE = 'Monthly subscription, terms by agreement';
+
+/** The small print under the prices: billing, how conversations count, the spend cap and tax. */
+export const PRICING_SMALL_PRINT = `Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more. Prices are before tax. VAT or sales tax depends on where you are and is added at checkout, which shows the total before you pay.`;
 
 const POWERED_BY = `Shows "Powered by ${PRODUCT_NAME}"`;
 const NO_BRANDING = `"Powered by ${PRODUCT_NAME}" can be removed`;
