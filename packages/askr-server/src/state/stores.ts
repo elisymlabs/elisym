@@ -80,11 +80,22 @@ export interface StoreEventStatus {
   failing: { id: string; kind: number; failures: number; attempts: number; stopped: boolean }[];
 }
 
-/** The last catalog sync of a store the admin started, on whichever instance (7.3). */
-export type CatalogSyncStatus =
+/** How a catalog sync the admin started stands or ended, as recorded on release (7.3). */
+export type CatalogSyncEnd =
   | { state: 'running'; diff: SyncDiff }
   | { state: 'done'; diff: SyncDiff }
   | { state: 'failed'; diff: SyncDiff; error: string };
+
+/**
+ * The last catalog sync of a store the admin started, on whichever instance (7.3): `syncId` is
+ * the id its 202 answered with; `startedAt` and `finishedAt` are unix seconds, null when not
+ * recorded (rows older than 0008, a sync still running or one that was interrupted).
+ */
+export type CatalogSyncStatus = CatalogSyncEnd & {
+  syncId: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+};
 
 interface CatalogSyncRow extends Record<string, unknown> {
   holder: string | null;
@@ -92,6 +103,9 @@ interface CatalogSyncRow extends Record<string, unknown> {
   state: 'running' | 'done' | 'failed' | null;
   diff: SyncDiff | null;
   error: string | null;
+  sync_id: string | null;
+  started_at: number | null;
+  finished_at: number | null;
 }
 
 /**
@@ -1038,25 +1052,34 @@ export class StoreDirectory {
     return rows.length > 0;
   }
 
-  /** Record that `holder`'s catalog sync started publishing, with its preview's diff. */
+  /**
+   * Record that `holder`'s catalog sync started publishing, with its preview's diff, under
+   * `syncId` (not the holder, which is nulled on release).
+   */
   async startCatalogSync(
     owner: string,
     holder: string,
+    syncId: string,
     diff: SyncDiff,
     now: number,
   ): Promise<void> {
     await this.db.query(
-      `update catalog_syncs set state = 'running', diff = ($3::text)::jsonb, error = null, started_at = $4
+      `update catalog_syncs set state = 'running', diff = ($3::text)::jsonb, error = null,
+         sync_id = $4, started_at = $5, finished_at = null
        where owner = $1 and holder = $2`,
-      [owner, holder, JSON.stringify(diff), now],
+      [owner, holder, JSON.stringify(diff), syncId, now],
     );
   }
 
-  /** Give the guard up, recording how the catalog sync ended when it ran one. */
+  /**
+   * Give the guard up at `now`, recording how the catalog sync ended when it ran one; a release
+   * without `ended` (a dry run, a preview) leaves the row's status, id and times alone.
+   */
   async releaseCatalogSync(
     owner: string,
     holder: string,
-    ended?: CatalogSyncStatus,
+    now: number,
+    ended?: CatalogSyncEnd,
   ): Promise<void> {
     if (ended === undefined) {
       await this.db.query(
@@ -1067,7 +1090,7 @@ export class StoreDirectory {
     }
     await this.db.query(
       `update catalog_syncs set holder = null, expires_at = 0,
-         state = $3, diff = ($4::text)::jsonb, error = $5
+         state = $3, diff = ($4::text)::jsonb, error = $5, finished_at = $6
        where owner = $1 and holder = $2`,
       [
         owner,
@@ -1075,6 +1098,7 @@ export class StoreDirectory {
         ended.state,
         JSON.stringify(ended.diff),
         ended.state === 'failed' ? ended.error : null,
+        now,
       ],
     );
   }
@@ -1082,21 +1106,27 @@ export class StoreDirectory {
   /** The store's last catalog sync; one still marked running that nobody holds was interrupted. */
   async catalogSync(owner: string, now: number): Promise<CatalogSyncStatus | null> {
     const [row] = await this.db.query<CatalogSyncRow>(
-      'select holder, expires_at, state, diff, error from catalog_syncs where owner = $1',
+      `select holder, expires_at, state, diff, error, sync_id, started_at, finished_at
+       from catalog_syncs where owner = $1`,
       [owner],
     );
     if (row === undefined || row.state === null || row.diff === null) {
       return null;
     }
+    const times = {
+      syncId: row.sync_id,
+      startedAt: row.started_at,
+      finishedAt: row.finished_at,
+    };
     if (row.state === 'running') {
       const held = row.holder !== null && row.expires_at > now;
       return held
-        ? { state: 'running', diff: row.diff }
-        : { state: 'failed', diff: row.diff, error: SYNC_INTERRUPTED };
+        ? { state: 'running', diff: row.diff, ...times }
+        : { state: 'failed', diff: row.diff, error: SYNC_INTERRUPTED, ...times };
     }
     return row.state === 'done'
-      ? { state: 'done', diff: row.diff }
-      : { state: 'failed', diff: row.diff, error: row.error ?? 'unknown error' };
+      ? { state: 'done', diff: row.diff, ...times }
+      : { state: 'failed', diff: row.diff, error: row.error ?? 'unknown error', ...times };
   }
 
   /** Save a connector's settings (7.4); a changed source is disabled until previewed again. */

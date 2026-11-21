@@ -3,10 +3,11 @@ import type { NostrEvent } from 'nostr-tools';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SYNC_POLL_MS } from '../constants';
 import { ApiError } from '../lib/api';
+import { CatalogQueue } from '../lib/catalog-writer';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { npubOf } from '../lib/signer';
-import { readConfig } from '../lib/store-data';
+import { readCatalog, readConfig } from '../lib/store-data';
 import { ownSignedEvents, withStoredEvents } from '../lib/stored-events';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { FinishMove } from './FinishMove';
@@ -144,6 +145,30 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
     void reloadAll();
   }, [reloadAll]);
 
+  /** The view as last rendered, for the catalog queue's fresh reads. */
+  const viewNow = useRef<StoreView | undefined>(undefined);
+  if (load.state === 'ready') {
+    viewNow.current = load.view;
+  }
+  // The session's catalog writes, created and disposed in the same effect (so StrictMode's dev
+  // remount leaves a live one), keyed on the session only: polls and reloads keep its entries.
+  const [catalogQueue, setCatalogQueue] = useState<CatalogQueue>();
+  useEffect(() => {
+    const queue = new CatalogQueue({
+      api: deps.api,
+      reload,
+      readProducts: () => {
+        const key = viewNow.current?.catalogKey;
+        if (key === undefined) {
+          return Promise.reject(new Error('The store is not read yet. Retry in a moment.'));
+        }
+        return readCatalog(deps.reader, key, deps.now());
+      },
+    });
+    setCatalogQueue(queue);
+    return () => queue.dispose();
+  }, [deps, reload]);
+
   // The sections read authorizations through the same reader as the config.
   const shellDeps = useMemo(
     () => (stored.length === 0 ? deps : { ...deps, reader: withStoredEvents(deps.reader, stored) }),
@@ -221,6 +246,7 @@ export function Session({ deps, onSignOut, onReplaceKey }: Props) {
       reloadWarning={reloadWarning}
       reload={reload}
       reloadConfig={reloadConfig}
+      {...(catalogQueue === undefined ? {} : { catalogQueue })}
       onSignOut={onSignOut}
       onReplaceKey={() => onReplaceKey(npubOf(view.owner))}
     />

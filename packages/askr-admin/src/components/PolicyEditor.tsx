@@ -15,9 +15,21 @@ interface Props {
   importedSlugs: readonly string[];
   onSave: (policy: { slug: string; title: string; body: string }) => Promise<void>;
   onCancel: () => void;
+  /** A save is in flight: its answer must not be lost by closing the editor. */
+  cancelDisabled?: boolean;
+  /** Why the save waits, while it does. */
+  status?: string;
 }
 
-export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCancel }: Props) {
+export function PolicyEditor({
+  initial,
+  takenSlugs,
+  importedSlugs,
+  onSave,
+  onCancel,
+  cancelDisabled = false,
+  status,
+}: Props) {
   const [slug, setSlug] = useState(initial?.slug ?? '');
   const [title, setTitle] = useState(initial?.title ?? '');
   const [body, setBody] = useState(initial?.body ?? '');
@@ -93,8 +105,13 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
         onChange={setBody}
       />
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
+      {status === undefined ? null : (
+        <p className="text-14 text-text-2" role="status">
+          {status}
+        </p>
+      )}
       <div className="border-line -mx-24 -mb-24 flex justify-end gap-8 border-t px-24 py-14">
-        <button type="button" className="btn" onClick={onCancel}>
+        <button type="button" className="btn" disabled={cancelDisabled} onClick={onCancel}>
           Cancel
         </button>
         <button
@@ -103,7 +120,7 @@ export function PolicyEditor({ initial, takenSlugs, importedSlugs, onSave, onCan
           disabled={busy}
           onClick={() => void save()}
         >
-          {busy ? 'Publishing...' : 'Publish'}
+          {busy ? 'Saving...' : 'Save'}
         </button>
       </div>
     </div>

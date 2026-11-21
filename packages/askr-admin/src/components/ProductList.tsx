@@ -1,10 +1,22 @@
 import type { CatalogItemInput, Visibility } from '@elisym/askr';
+import { ProductRowActions, type RowStatus } from './ProductRowActions';
 import { ProductThumb } from './ProductThumb';
 
 interface Props {
   items: readonly CatalogItemInput[];
   onEdit: (d: string) => void;
+  /** A Remove the merchant confirmed. */
   onRemove: (d: string) => void;
+  /** Writes about rows, by product ID; rows not in it are idle. */
+  rows?: ReadonlyMap<string, RowStatus>;
+  /** Product IDs whose Edit and Remove are off (a write about them is queued). */
+  lockedIds?: ReadonlySet<string>;
+  /** Every row's Edit and Remove are off. */
+  locked?: boolean;
+  /** Every row's Edit is off (the open editor's save is on its way). */
+  editLocked?: boolean;
+  /** No actions at all (the store cannot publish yet). */
+  readOnly?: boolean;
 }
 
 const BADGES: Readonly<Record<Visibility, string>> = {
@@ -14,7 +26,16 @@ const BADGES: Readonly<Record<Visibility, string>> = {
   hidden: '',
 };
 
-export function ProductList({ items, onEdit, onRemove }: Props) {
+export function ProductList({
+  items,
+  onEdit,
+  onRemove,
+  rows,
+  lockedIds,
+  locked = false,
+  editLocked = false,
+  readOnly = false,
+}: Props) {
   if (items.length === 0) {
     return (
       <div className="flex flex-col items-center gap-4 px-20 py-40 text-center">
@@ -59,22 +80,16 @@ export function ProductList({ items, onEdit, onRemove }: Props) {
                   </span>
                 </td>
                 <td className="text-right whitespace-nowrap">
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    aria-label={`Edit ${item.title}`}
-                    onClick={() => onEdit(item.d)}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-danger btn-sm"
-                    aria-label={`Remove ${item.title}`}
-                    onClick={() => onRemove(item.d)}
-                  >
-                    Remove
-                  </button>
+                  {readOnly ? null : (
+                    <ProductRowActions
+                      item={item}
+                      status={rows?.get(item.d)}
+                      locked={locked || (lockedIds?.has(item.d) ?? false)}
+                      editLocked={editLocked}
+                      onEdit={onEdit}
+                      onRemove={onRemove}
+                    />
+                  )}
                 </td>
               </tr>
             );

@@ -178,11 +178,14 @@ export class AdminApi {
     return { src: `${this.base}${parsed.path}`, integrity: parsed.integrity };
   }
 
-  /** Publish only what changed: new and changed products, and the IDs of removed ones. */
+  /**
+   * Publish only what changed: new and changed products, and the IDs of removed ones. A real
+   * write answers 202 with the `syncId` its sync shows under in `GET /store` (`catalogSync`).
+   */
   catalog(
     change: { items: readonly CatalogItemInput[]; hide: readonly string[] },
     dryRun: boolean,
-  ): Promise<{ diff: SyncDiff; started?: boolean }> {
+  ): Promise<{ diff: SyncDiff; started?: boolean; syncId?: string }> {
     return this.call('POST', '/v1/admin/catalog', {
       mode: 'upsert',
       items: change.items,

@@ -94,7 +94,7 @@ async function connectorStep(
       const { connector: after } = await input.deps.api.putConnector(connector);
       return before?.enabled === true && after?.enabled === false
         ? {
-            note: 'Syncing is paused, since the shop changed: preview it and turn it on again in the Connector tab.',
+            note: 'Syncing is paused, since the shop changed: turn it on again in the Connector tab.',
           }
         : {};
     }

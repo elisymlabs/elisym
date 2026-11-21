@@ -6,8 +6,8 @@ interface Props {
 
 const STATES: Readonly<Record<CatalogSyncStatus['state'], string>> = {
   running: 'Publishing products...',
-  done: 'Last product sync finished.',
-  failed: 'Last product sync failed.',
+  done: 'Last published',
+  failed: 'Last publish failed',
 };
 
 const DOTS: Readonly<Record<CatalogSyncStatus['state'], string>> = {
@@ -16,12 +16,20 @@ const DOTS: Readonly<Record<CatalogSyncStatus['state'], string>> = {
   failed: 'bg-error',
 };
 
-/** The last catalog sync the admin started, with its counts. */
+/** When a finished sync ended (or started, for one recorded before end times were kept). */
+function timeOf(sync: CatalogSyncStatus): string {
+  const seconds = sync.finishedAt ?? sync.startedAt;
+  return seconds === null ? '' : ` ${new Date(seconds * 1000).toLocaleString()}`;
+}
+
+/** The last catalog sync the admin started: its time and counts, planned while it runs. */
 export function SyncStatus({ sync }: Props) {
   if (sync === null) {
     return <p className="text-14 text-text-2">No product sync has run yet.</p>;
   }
   const { diff } = sync;
+  const headline =
+    sync.state === 'running' ? STATES.running : `${STATES[sync.state]}${timeOf(sync)}.`;
   const counts = [
     { label: 'new', value: diff.created.length },
     { label: 'updated', value: diff.updated.length },
@@ -34,7 +42,7 @@ export function SyncStatus({ sync }: Props) {
         className={`flex items-center gap-8 font-medium ${sync.state === 'failed' ? 'text-error' : ''}`}
       >
         <span aria-hidden="true" className={`size-7 shrink-0 rounded-full ${DOTS[sync.state]}`} />
-        {STATES[sync.state]}
+        {headline}
       </p>
       <p className="text-text-2 flex flex-wrap gap-x-20 gap-y-4">
         {counts.map((count, index) => (

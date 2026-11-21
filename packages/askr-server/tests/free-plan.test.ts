@@ -834,3 +834,44 @@ describe('migration 0008_monthly_budget_ip_days', () => {
     await client.close();
   });
 });
+
+describe('migration 0009_catalog_sync_times', () => {
+  it('applies on a database at 0008, an existing sync keeping its status with no id or end time', async () => {
+    const client = await PGlite.create();
+    const db = pgliteDb(client);
+    const upTo0008 = MIGRATIONS.slice(
+      0,
+      MIGRATIONS.findIndex((entry) => entry.id === '0009_catalog_sync_times'),
+    );
+    expect(upTo0008.map((entry) => entry.id).at(-1)).toBe('0008_monthly_budget_ip_days');
+    await db.script(
+      'create table migrations (id text primary key, applied_at timestamptz not null default now())',
+    );
+    for (const migration of upTo0008) {
+      await db.script(migration.sql);
+      await db.query('insert into migrations (id) values ($1)', [migration.id]);
+    }
+    const owner = 'a'.repeat(64);
+    await db.query(
+      `insert into stores (owner, status, assistant, assistant_key, catalog_key, catalog_key_secret, created_at)
+       values ($1, 'pending', $2, $3, $4, $5, $6)`,
+      [owner, 'b'.repeat(64), new Uint8Array(1), 'c'.repeat(64), new Uint8Array(1), NOW],
+    );
+    await db.query(
+      `insert into catalog_syncs (owner, state, diff, started_at)
+       values ($1, 'done', '{"created":[],"updated":[],"hidden":[],"unchanged":[]}'::jsonb, $2)`,
+      [owner, NOW],
+    );
+    await migrate(db);
+    const rows = await db.query<{
+      state: string;
+      started_at: number | null;
+      finished_at: number | null;
+      sync_id: string | null;
+    }>('select state, started_at, finished_at, sync_id from catalog_syncs');
+    expect(rows).toEqual([{ state: 'done', started_at: NOW, finished_at: null, sync_id: null }]);
+    const applied = await db.query<{ id: string }>('select id from migrations order by id');
+    expect(applied.map((row) => row.id).at(-1)).toBe(MIGRATIONS.at(-1)?.id);
+    await client.close();
+  });
+});

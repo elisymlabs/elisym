@@ -53,10 +53,21 @@ export interface ActivityDay {
   carts: number;
 }
 
-export type CatalogSyncStatus =
+/** How the server records a catalog sync's end (`CatalogSyncEnd` in the server's `state/stores.ts`). */
+export type CatalogSyncEnd =
   | { state: 'running'; diff: SyncDiff }
   | { state: 'done'; diff: SyncDiff }
   | { state: 'failed'; diff: SyncDiff; error: string };
+
+/**
+ * The last catalog sync the admin API started: `syncId` is the id its 202 answered with, the
+ * times are unix seconds, null when not recorded (an older sync, one running or interrupted).
+ */
+export type CatalogSyncStatus = CatalogSyncEnd & {
+  syncId: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+};
 
 export interface ConnectorRecord {
   owner: string;

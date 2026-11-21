@@ -48,7 +48,7 @@ export const HELP = {
     anchor: 'waiting-to-publish',
   },
   productSync: {
-    text: 'The last time products were published from the admin or a connector: how many were new, changed, removed or unchanged.',
+    text: 'The last time products were published from the admin: when, and how many were new, changed, removed or unchanged. A connector shows its own syncs on the Connector page.',
     anchor: 'product-sync',
   },
 
@@ -138,11 +138,11 @@ export const HELP = {
 
   // Products
   catalog: {
-    text: 'The products the assistant recommends from. Changes stay here until you review and publish them; a removed product is deleted for good when you publish.',
+    text: 'The products the assistant recommends from. Saving a product publishes it at once; removing one deletes it for good.',
     anchor: 'catalog',
   },
   productId: {
-    text: 'A short ID that never changes, such as your SKU: letters, digits and . _ : -. Publishing the same ID again updates that product.',
+    text: 'A short ID that never changes, such as your SKU: letters, digits and . _ : -. Saving the same ID again updates that product.',
     anchor: 'product-id',
   },
   productTitle: {
@@ -201,12 +201,12 @@ export const HELP = {
     text: 'On sale and pre order: offered. Sold out: shown as sold out. Hidden: kept in your list but not offered, so you can show it again later.',
     anchor: 'availability',
   },
-  publish: {
-    text: 'Review changes asks the server what publishing would do, without changing anything. Publish then sends only what changed.',
-    anchor: 'publish',
+  lastPublish: {
+    text: 'When your products were last published and what changed.',
+    anchor: 'last-publish',
   },
   csvImport: {
-    text: 'Add products from a spreadsheet saved as CSV, or replace all of them. File format lists the columns; the example file is a good start.',
+    text: 'Add products from a spreadsheet saved as CSV, or replace all of them. Importing publishes at once. File format lists the columns; the example file is a good start.',
     anchor: 'import-from-a-csv-file',
   },
 
@@ -238,7 +238,7 @@ export const HELP = {
     anchor: 'prove-the-site-is-yours',
   },
   sync: {
-    text: 'Preview reads the shop and shows what the first import would publish, without publishing. Turn on syncing once the preview looks right.',
+    text: 'Turn on syncing checks your shop first and turns on only if it can be read and fits your plan.',
     anchor: 'sync',
   },
 
