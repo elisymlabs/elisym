@@ -30,7 +30,7 @@ import { type ConnectorService, shopIdentity } from '../connectors/service';
 import { SYNC_HOLD_SECS, SYNC_RENEW_MS } from '../constants';
 import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
-import { budgetPause } from '../state/budget';
+import { budgetReached } from '../state/budget';
 import { randomId } from '../state/pg-state';
 import { type CatalogSyncStatus, proofOrigins, type StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
@@ -184,8 +184,6 @@ export interface AdminDeps {
   connectors: ConnectorService;
   /** ASKR_FREE_TIER: the tier a merchant's explicit Free choice puts a store on, within the caps (6.1). */
   freeTier?: FreeTier;
-  /** ASKR_TURN_RESERVE_USD: what one turn reserves, so the admin says when the budget stops the chat. */
-  reserveUsd?: string;
   now?: () => number;
   /** Publishing pace for catalog syncs; tests raise it. */
   syncPace?: number;
@@ -449,8 +447,8 @@ export function createAdminApi(
       nextAssistant: (await deps.directory.nextAssistant(store.owner)) ?? null,
       catalogKey: store.catalogKey,
       usage,
-      // The chat is paused by a used-up budget: the admin says so on every tab.
-      budgetPaused: budgetPause(usage, store.tier, deps.reserveUsd ?? '0') ?? null,
+      // The chat is paused once the plan's monthly budget is reached: the admin says so on every tab.
+      budgetPaused: budgetReached(usage, store.tier) ? 'month' : null,
       catalogSync: await deps.directory.catalogSync(store.owner, now()),
       connector: (await deps.directory.connector(store.owner)) ?? null,
       events: await deps.directory.eventStatus(store.owner),

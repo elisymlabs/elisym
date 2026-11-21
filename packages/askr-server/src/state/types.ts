@@ -11,9 +11,7 @@ export interface Tier {
   name: string;
   /** Asks per session per UTC day. */
   messagesPerSessionPerDay: number;
-  /** Spend per store per UTC day, in USD as a decimal string. */
-  dailyBudgetUsd: string;
-  /** Spend per store per UTC calendar month, in USD as a decimal string. */
+  /** Spend per store per UTC calendar month, in USD as a decimal string: the plan's only spend limit. */
   monthlyBudgetUsd: string;
   /** Session tickets per store per minute (3). */
   ticketsPerStorePerMinute: number;
@@ -75,12 +73,32 @@ export interface AskRecord {
 }
 
 /**
+ * A per-person limit across every session and store (anti-abuse): `key` is the client the
+ * gateway put in the ticket (a keyed hash of the visitor's IP), `perDay` its asks per UTC day.
+ * Over it, an ask is refused with `quota`, as the per-session limit.
+ */
+export interface ClientQuota {
+  key: string;
+  /**
+   * The UTC day the asks count under: the day the ticket was issued (its signed `created_at`),
+   * the day the key was made for, so a ticket issued before midnight cannot start a second count.
+   */
+  day: number;
+  perDay: number;
+}
+
+/**
  * `superseded`: the caller's lease epoch is no longer current, its session was
  * replaced, or another attempt owns the record; the caller drops the ask
  * silently (the current holder answers it, 5.8).
  */
 export type Admission =
-  | { admitted: true; record: AskRecord }
+  | {
+      admitted: true;
+      record: AskRecord;
+      /** What the attempt reserved: the turn reservation, or less when the month has less left. */
+      reservedUsd: string;
+    }
   | { admitted: false; reason: 'quota' | 'budget' | 'superseded' };
 
 /**
@@ -116,8 +134,9 @@ export interface ServerState {
   recordRumor(rumorId: string, now: number): Promise<boolean>;
   askRecord(session: SessionState, askId: string): Promise<AskRecord | undefined>;
   /**
-   * Admit a new ask in one step (5.8): the quota and budget check, the
-   * reservation and the `queued` record; a refusal writes nothing. Only under
+   * Admit a new ask in one step (5.8): the quota checks (per session, and per
+   * client when `client` is given) and the budget check, the reservation
+   * (clipped to what is left of the month) and the `queued` record; a refusal writes nothing. Only under
    * the store's current lease epoch and only when the ask has no record yet
    * (`superseded` otherwise), so a stale holder never overwrites a live one.
    */
@@ -127,6 +146,7 @@ export interface ServerState {
     reserveUsd: string,
     epoch: number,
     now: number,
+    client?: ClientQuota,
   ): Promise<Admission>;
   /**
    * Re-run an ask whose record is `failed`, or `queued`/`running` under a dead
@@ -146,6 +166,7 @@ export interface ServerState {
     reserveUsd: string,
     epoch: number,
     now: number,
+    client?: ClientQuota,
   ): Promise<Admission>;
   /** Conditional transition `queued` (attempt, epoch) to `running`; false when superseded. */
   startAsk(
@@ -181,10 +202,10 @@ export interface ServerState {
     spentUsd: string,
   ): Promise<boolean>;
   /**
-   * Whether a store's daily or monthly budget is spent (reserved spend
+   * Whether nothing is left of a store's monthly budget (reserved spend
    * counts), so no ticket is issued (3).
    */
-  budgetExhausted(owner: string, now: number, reserveUsd: string): Promise<boolean>;
+  budgetExhausted(owner: string, now: number): Promise<boolean>;
   /** Count a handoff (advisory, 3): a product link opened, or an add to cart pressed. */
   countClick(owner: string, address: string, kind: ClickKind, now: number): Promise<void>;
   /** Record the origins a loaded config lists, each from when first seen (K21). */

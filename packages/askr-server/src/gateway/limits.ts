@@ -1,14 +1,7 @@
 import { isIPv6 } from 'node:net';
 
-/**
- * The key a per-IP limit counts under (2.4): the IPv4 address, or the IPv6
- * /64 prefix, since one IPv6 host can rotate through a whole /64.
- */
-export function ipKey(address: string): string {
-  const bare = address.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/u, '');
-  if (!isIPv6(bare)) {
-    return bare;
-  }
+/** An IPv6 address as its eight groups, lower case and without leading zeros. */
+function ipv6Groups(bare: string): string[] {
   const [head = '', tail = ''] = bare.split('::');
   const headGroups = head === '' ? [] : head.split(':');
   const tailGroups = tail === '' ? [] : tail.split(':');
@@ -19,10 +12,39 @@ export function ipKey(address: string): string {
         ...tailGroups,
       ]
     : headGroups;
-  return `${groups
-    .slice(0, 4)
-    .map((group) => group.toLowerCase().replace(/^0+(?=.)/u, ''))
-    .join(':')}::/64`;
+  return groups.map((group) => group.toLowerCase().replace(/^0+(?=.)/u, ''));
+}
+
+/** The address without an IPv4-mapped IPv6 prefix. */
+function bareAddress(address: string): string {
+  return address.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/u, '');
+}
+
+/**
+ * The key a per-IP limit counts under (2.4): the IPv4 address, or the IPv6
+ * /64 prefix, since one IPv6 host can rotate through a whole /64.
+ */
+export function ipKey(address: string): string {
+  const bare = bareAddress(address);
+  if (!isIPv6(bare)) {
+    return bare;
+  }
+  return `${ipv6Groups(bare).slice(0, 4).join(':')}::/64`;
+}
+
+/**
+ * The key one person's daily asks count under across sessions and stores: the IPv4 address, or
+ * the IPv6 /56 prefix, since a home connection is commonly given a /56 and can rotate through its
+ * 256 /64s. The trade-off: visitors behind one NAT (IPv4) or sharing one /56 share the limit.
+ */
+export function personKey(address: string): string {
+  const bare = bareAddress(address);
+  if (!isIPv6(bare)) {
+    return bare;
+  }
+  const [first = '0', second = '0', third = '0', fourth = '0'] = ipv6Groups(bare);
+  const masked = `${fourth.padStart(4, '0').slice(0, 2)}00`.replace(/^0+(?=.)/u, '');
+  return `${first}:${second}:${third}:${masked}::/56`;
 }
 
 /**

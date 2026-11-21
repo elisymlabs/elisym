@@ -21,6 +21,10 @@ To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` wh
 
 The page must be on one of the origins in your store's config: the server issues a chat session only to those.
 
+While your store is pending (its plan is not active yet), the widget shows nothing: no button and no panel, and the browser console says so once. You can deploy the tag before your plan starts: once the store is active, a visitor sees the chat on their next page load, at most 5 minutes after the store is active.
+
+Do not add an `integrity` attribute to `/widget.js`: it changes with each release, so a fixed hash would stop it from loading. For a fixed hash, use the pinned snippet below.
+
 ## Pin one version
 
 `/widget.js` always serves the current release, so fixes reach your site within minutes. To load one exact version instead, use the pinned snippet the admin shows under **Embed**:

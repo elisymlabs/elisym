@@ -14,7 +14,7 @@ Ticked by default. When it is ticked, signing in keeps your secret key in this b
 
 ### Status
 
-- **Pending**: not live yet: choose a plan in Overview (Free starts at once; a paid plan through us), or [message us](https://askr.elisym.network/contact) with your Store ID ([where to find it](/askr/overview#find-your-store-id)) if we manage your plan. You can finish the whole setup meanwhile.
+- **Pending**: not live yet: choose a plan in Overview (Free starts at once; a paid plan through us), or [message us](https://askr.elisym.network/contact) with your Store ID ([where to find it](/askr/overview#find-your-store-id)) if we manage your plan. You can finish the whole setup meanwhile, the widget included: while the store is pending it shows nothing on your site; once the store is active, a visitor sees it on their next page load, at most 5 minutes later.
 - **Active**: the assistant answers visitors on your allowed sites.
 - **Suspended**: the assistant does not answer, and the chat tells visitors it is unavailable. Contact the Askr operator.
 
@@ -24,7 +24,7 @@ A pending store with no plan shows the plan picker under its status. **Start on 
 
 ### Usage
 
-What the assistant has spent against your plan, in US dollars, today and this month. Each answer reserves a small amount before it runs and settles the real cost after. When the daily or monthly budget is used up, the chat says the assistant is unavailable (with your contact link, if you set one) until the next day or month starts, in UTC. A visitor who has asked as many questions as your plan allows for the day sees the same.
+What the assistant has spent against your plan this month, in US dollars. Your plan's only spend limit is its monthly budget: each answer reserves a small amount of it before it runs and settles the real cost after. When the month's budget is used up, the chat says the assistant is unavailable (with your contact link, if you set one) until you move to a larger plan or the next month starts, in UTC. A visitor who has asked as many questions as allowed for the day sees the same; that limit is per visitor (per chat, and per network address across chats), never your whole store. Visitors who share one network, such as an office behind one router, share the per-address part.
 
 The admin says so at the top of every page: a red notice while a used-up budget keeps the chat from answering, with when it starts again, and a yellow one once 80% of the month's budget is spent. Both say how to move to a larger plan.
 
@@ -113,7 +113,7 @@ The first message a visitor sees when the chat opens, up to 280 characters. It i
 
 ### Contact URL
 
-A page where visitors can reach a person, such as your contact form, as an `https://` address. The chat links to it when the assistant is unavailable, for example when your budget is used up, the visitor has asked as many questions as your plan allows for the day, or the store is not active. Optional.
+A page where visitors can reach a person, such as your contact form, as an `https://` address. The chat links to it when the assistant is unavailable, for example when your plan's monthly budget is used up, the visitor has asked as many questions as your plan allows for the day, or the store is not active. Optional.
 
 **Example:** `https://northwind.example/contact`
 

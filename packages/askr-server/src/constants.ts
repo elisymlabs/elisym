@@ -55,3 +55,8 @@ export const SYNC_RENEW_MS = 30_000;
  * `last_seen` shows they are still listed, which a site proof needs.
  */
 export const ORIGINS_NOTE_EVERY_SECS = 6 * 60 * 60;
+
+/** The ticket tag naming the visitor's client for the worker's per-IP daily ask limit. */
+export const CLIENT_TAG = 'client';
+/** Hex characters of the client tag: 128 bits of the gateway's keyed hash. */
+export const CLIENT_HEX_LENGTH = 32;

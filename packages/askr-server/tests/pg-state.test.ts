@@ -217,11 +217,11 @@ describe('ask transitions under lease epochs (5.8)', () => {
 });
 
 describe('budgets (5.8)', () => {
-  it('the monthly budget refuses what the daily one would allow, counting earlier days of the month', async () => {
+  it('the monthly budget, counting earlier days of the month, is the only spend limit', async () => {
     const store = syntheticStore();
     const today = Math.max(utcDay(NOW), monthStartDay(NOW) + 1) * SECS_PER_DAY + 3_600;
     const { state, db } = await stateWith(
-      [{ ...storeRecord(store), tier: { ...TIER, dailyBudgetUsd: '1', monthlyBudgetUsd: '1.5' } }],
+      [{ ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '1.5' } }],
       today,
     );
     await db.query('insert into store_days (owner, day, spent, reserved) values ($1, $2, $3, 0)', [
@@ -237,9 +237,9 @@ describe('budgets (5.8)', () => {
     ]);
     const epoch = await leaseEpoch(state, store.assistant, today);
     const session = await state.session(store.owner, store.assistant, VISITOR, today);
-    expect(await state.budgetExhausted(store.owner, today, '0.5')).toBe(false);
+    expect(await state.budgetExhausted(store.owner, today)).toBe(false);
     expect((await state.admitAsk(session, ASK_ID, '0.5', epoch, today)).admitted).toBe(true);
-    expect(await state.budgetExhausted(store.owner, today, '0.01')).toBe(true);
+    expect(await state.budgetExhausted(store.owner, today)).toBe(true);
     expect(await state.admitAsk(session, OTHER_ASK, '0.01', epoch, today)).toEqual({
       admitted: false,
       reason: 'budget',
@@ -249,25 +249,155 @@ describe('budgets (5.8)', () => {
   it('a store without a tier is exhausted, and a missing store too', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([storeRecord(store)]);
-    expect(await state.budgetExhausted('9'.repeat(64), NOW, '0.01')).toBe(true);
+    expect(await state.budgetExhausted('9'.repeat(64), NOW)).toBe(true);
   });
 
-  it('two admissions at once never reserve past the budget', async () => {
+  it('admissions at once never reserve past the budget; the last one reserves what is left', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([
-      { ...storeRecord(store), tier: { ...TIER, dailyBudgetUsd: '0.1' } },
+      { ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '0.1' } },
     ]);
     const epoch = await leaseEpoch(state, store.assistant);
     const sessions = await Promise.all(
-      ['1', '2', '3'].map((digit) =>
+      ['1', '2', '3', '4'].map((digit) =>
         state.session(store.owner, store.assistant, digit.repeat(64), NOW),
       ),
     );
     const results = await Promise.all(
       sessions.map((session) => state.admitAsk(session, ASK_ID, '0.04', epoch, NOW)),
     );
-    expect(results.filter((result) => result.admitted)).toHaveLength(2);
-    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.08' });
+    const reserved = results.flatMap((result) => (result.admitted ? [result.reservedUsd] : []));
+    expect([...reserved].sort()).toEqual(['0.02', '0.04', '0.04']);
+    expect(results.filter((result) => !result.admitted)).toEqual([
+      { admitted: false, reason: 'budget' },
+    ]);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.1' });
+  });
+
+  it('a budget below one turn reservation still answers: the turn reserves what is left', async () => {
+    const store = syntheticStore();
+    const { state } = await stateWith([
+      { ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '0.05' } },
+    ]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect(await state.budgetExhausted(store.owner, NOW)).toBe(false);
+    const first = await state.admitAsk(session, ASK_ID, '0.25', epoch, NOW);
+    if (!first.admitted) {
+      throw new Error('not admitted');
+    }
+    expect(first.reservedUsd).toBe('0.05');
+    // While it holds the whole budget, nothing is left for another turn.
+    expect(await state.budgetExhausted(store.owner, NOW)).toBe(true);
+    const { attemptId } = first.record;
+    await state.startAsk(session, ASK_ID, attemptId, epoch, NOW * 1000 + 60_000);
+    expect(await state.answerAsk(session, ASK_ID, attemptId, epoch, WRAP, '0.002', NOW)).toBe(true);
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.002', reserved: '0' });
+    const second = await state.admitAsk(session, OTHER_ASK, '0.25', epoch, NOW);
+    expect(second.admitted && second.reservedUsd).toBe('0.048');
+  });
+
+  it('a turn that passed the budget leaves nothing: the next is refused with budget', async () => {
+    const store = syntheticStore();
+    const { state, db } = await stateWith([
+      { ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '0.05' } },
+    ]);
+    await db.query('insert into store_days (owner, day, spent, reserved) values ($1, $2, $3, 0)', [
+      store.owner,
+      utcDay(NOW),
+      '0.051',
+    ]);
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    expect(await state.budgetExhausted(store.owner, NOW)).toBe(true);
+    expect(await state.admitAsk(session, ASK_ID, '0.25', epoch, NOW)).toEqual({
+      admitted: false,
+      reason: 'budget',
+    });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.051', reserved: '0' });
+  });
+});
+
+describe('per-client daily limit (anti-abuse per person)', () => {
+  it('counts asks per client across sessions and stores, refusing past it with quota', async () => {
+    const first = syntheticStore();
+    const second = syntheticStore();
+    const { state } = await stateWith([storeRecord(first), storeRecord(second)]);
+    const client = { key: '1'.repeat(32), day: utcDay(NOW), perDay: 2 };
+    const firstEpoch = await leaseEpoch(state, first.assistant);
+    const secondEpoch = await leaseEpoch(state, second.assistant);
+    const one = await state.session(first.owner, first.assistant, '1'.repeat(64), NOW);
+    const two = await state.session(second.owner, second.assistant, '2'.repeat(64), NOW);
+    const three = await state.session(first.owner, first.assistant, '3'.repeat(64), NOW);
+    expect((await state.admitAsk(one, ASK_ID, '0.01', firstEpoch, NOW, client)).admitted).toBe(
+      true,
+    );
+    expect((await state.admitAsk(two, ASK_ID, '0.01', secondEpoch, NOW, client)).admitted).toBe(
+      true,
+    );
+    // A new session (a new visitor key) does not reset it, and a refusal reserves nothing.
+    const before = await state.dayTotals(first.owner, NOW);
+    expect(await state.admitAsk(three, ASK_ID, '0.01', firstEpoch, NOW, client)).toEqual({
+      admitted: false,
+      reason: 'quota',
+    });
+    expect(await state.dayTotals(first.owner, NOW)).toEqual(before);
+    // Another client, and an ask with no client, are not counted under it.
+    const other = { key: '2'.repeat(32), day: utcDay(NOW), perDay: 2 };
+    expect((await state.admitAsk(three, ASK_ID, '0.01', firstEpoch, NOW, other)).admitted).toBe(
+      true,
+    );
+    expect((await state.admitAsk(three, OTHER_ASK, '0.01', firstEpoch, NOW)).admitted).toBe(true);
+  });
+
+  it('a retry counts like a new ask; the sweep keeps today and yesterday, then drops the day', async () => {
+    const store = syntheticStore();
+    const { state, db } = await stateWith([storeRecord(store)]);
+    const client = { key: '3'.repeat(32), day: utcDay(NOW), perDay: 1 };
+    const epoch = await leaseEpoch(state, store.assistant);
+    const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
+    const admitted = await state.admitAsk(session, ASK_ID, '0.01', epoch, NOW, client);
+    if (!admitted.admitted) {
+      throw new Error('not admitted');
+    }
+    const { attemptId } = admitted.record;
+    await state.startAsk(session, ASK_ID, attemptId, epoch, NOW * 1000 + 60_000);
+    await state.failAsk(session, ASK_ID, attemptId, epoch, '0');
+    const retry = () => state.retryAsk(session, ASK_ID, attemptId, '0.01', epoch, NOW, client);
+    expect(await retry()).toEqual({ admitted: false, reason: 'quota' });
+    // A sweep today keeps today's count: the limit still refuses.
+    await state.sweep(NOW);
+    expect(await retry()).toEqual({ admitted: false, reason: 'quota' });
+    const used = () => db.query<{ day: number; used: number }>('select day, used from ip_days');
+    // Tomorrow a ticket issued today still counts under today: its row is kept.
+    await state.sweep((utcDay(NOW) + 1) * SECS_PER_DAY + 60);
+    expect(await used()).toEqual([{ day: utcDay(NOW), used: 1 }]);
+    await state.sweep((utcDay(NOW) + 2) * SECS_PER_DAY + 60);
+    expect(await used()).toEqual([]);
+  });
+
+  it('a ticket issued before midnight counts under its issue day, so the day after starts no second count', async () => {
+    const store = syntheticStore();
+    const midnight = (utcDay(NOW) + 1) * SECS_PER_DAY;
+    const before = midnight - 10 * 60;
+    const after = midnight + 10 * 60;
+    const { state, db } = await stateWith([storeRecord(store)], before);
+    // The ticket's client is for the day it was issued (23:50), which the asks count under.
+    const ticketClient = { key: '4'.repeat(32), day: utcDay(before), perDay: 2 };
+    const askAt = async (now: number, visitor: string, askId: string) => {
+      const epoch = await leaseEpoch(state, store.assistant, now);
+      const session = await state.session(store.owner, store.assistant, visitor, now);
+      return state.admitAsk(session, askId, '0.01', epoch, now, ticketClient);
+    };
+    expect((await askAt(before, '1'.repeat(64), ASK_ID)).admitted).toBe(true);
+    expect((await askAt(after, '2'.repeat(64), ASK_ID)).admitted).toBe(true);
+    expect(await askAt(after + 60, '3'.repeat(64), ASK_ID)).toEqual({
+      admitted: false,
+      reason: 'quota',
+    });
+    expect(await db.query('select day, used from ip_days')).toEqual([
+      { day: utcDay(before), used: 2 },
+    ]);
   });
 });
 
@@ -555,7 +685,7 @@ describe('server core review: rotation, suspension and counters (5.8)', () => {
     const store = syntheticStore();
     const today = (monthStartDay(NOW) + 1) * SECS_PER_DAY + 3_600;
     const { state, db } = await stateWith(
-      [{ ...storeRecord(store), tier: { ...TIER, dailyBudgetUsd: '1', monthlyBudgetUsd: '1.5' } }],
+      [{ ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '1.5' } }],
       today,
     );
     await db.query('insert into store_days (owner, day, spent, reserved) values ($1, $2, $3, 0)', [
@@ -565,11 +695,13 @@ describe('server core review: rotation, suspension and counters (5.8)', () => {
     ]);
     const epoch = await leaseEpoch(state, store.assistant, today);
     const session = await state.session(store.owner, store.assistant, VISITOR, today);
-    expect(await state.admitAsk(session, ASK_ID, '0.6', epoch, today)).toEqual({
+    // 0.5 is left of the month: a 0.6 reservation is clipped to it, then nothing is left.
+    const admitted = await state.admitAsk(session, ASK_ID, '0.6', epoch, today);
+    expect(admitted.admitted && admitted.reservedUsd).toBe('0.5');
+    expect(await state.admitAsk(session, OTHER_ASK, '0.01', epoch, today)).toEqual({
       admitted: false,
       reason: 'budget',
     });
-    expect((await state.admitAsk(session, ASK_ID, '0.5', epoch, today)).admitted).toBe(true);
   });
 
   it('admitting on a replaced session is refused without reserving', async () => {

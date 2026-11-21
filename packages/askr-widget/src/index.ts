@@ -57,7 +57,14 @@ export {
 } from './native-cart';
 export { type VisitorKey, loadVisitorKey } from './visitor-key';
 export { wrapOutgoing } from './wrap-outgoing';
-export { createBrowserClient } from './browser-client';
-export { type ClientFactory, defineAskrElement, parseStoreKey } from './ui/element';
+export { checkBrowserStore, createBrowserClient } from './browser-client';
+export { type StoreCheckDeps, type StoreVisibility, checkStore } from './store-check';
+export {
+  type ClientFactory,
+  type StoreChecker,
+  HIDDEN_NOTICE,
+  defineAskrElement,
+  parseStoreKey,
+} from './ui/element';
 export { parseBlocks, parseInline, renderText } from './ui/render-text';
 export { formatAmount, formatPrice } from './ui/price';

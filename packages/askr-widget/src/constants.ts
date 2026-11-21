@@ -29,6 +29,10 @@ export const STORAGE_PREFIX = 'askr:';
 export const VISITOR_KEY_PREFIX = `${STORAGE_PREFIX}v:`;
 export const CARD_CACHE_PREFIX = `${STORAGE_PREFIX}card:`;
 export const PANEL_OPEN_PREFIX = `${STORAGE_PREFIX}open:`;
+/** Whether the widget shows for a store (pending stores show nothing), kept per tab session. */
+export const STORE_CHECK_PREFIX = `${STORAGE_PREFIX}check:`;
+/** A kept decision is read again after this long, so a store that went live shows within minutes. */
+export const STORE_CHECK_TTL_MS = 5 * 60_000;
 
 export const KIND_PRODUCT = 30402;
 export const KIND_GIFT_WRAP = 1059;

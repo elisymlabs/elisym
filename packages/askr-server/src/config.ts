@@ -16,6 +16,12 @@ import Decimal from 'decimal.js-light';
 const USD_RE = /^\d{1,9}(\.\d{1,9})?$/;
 /** One turn's reservation and spend ceiling unless the environment says otherwise (5.8). */
 export const DEFAULT_TURN_RESERVE_USD = '0.25';
+/**
+ * Asks per visitor IPv4 address (or IPv6 /56) per UTC day across every session and store unless
+ * ASKR_MESSAGES_PER_IP_PER_DAY says otherwise: a visitor can open new sessions, so the
+ * per-session limit alone does not bound one person.
+ */
+export const DEFAULT_MESSAGES_PER_IP_PER_DAY = 100;
 
 /** A USD amount from the environment: a plain decimal above zero, checked at start, not on the first ask. */
 export function positiveUsd(name: string, value: string): string {
@@ -338,11 +344,21 @@ export function openRouterFallbacksFrom(value: string | undefined): OpenRouterFa
     });
 }
 
+/** ASKR_TURN_RESERVE_USD, or the default; checked (the operator CLI reads it too, to warn). */
+export function turnReserveFromEnv(rawEnv: Env): string {
+  const env = withoutEmpty(rawEnv);
+  return positiveUsd(
+    'ASKR_TURN_RESERVE_USD',
+    env.ASKR_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
+  );
+}
+
 export interface ServeConfig {
   model: ModelConfig;
   price: ModelPrice;
   reserveUsd: string;
   maxTokens: number;
+  messagesPerIpPerDay: number;
 }
 
 /**
@@ -395,10 +411,7 @@ export function serveConfigFromEnv(rawEnv: Env): ServeConfig {
     cacheWrite: positiveUsd('ASKR_PRICE_CACHE_WRITE', required(env, 'ASKR_PRICE_CACHE_WRITE')),
     output: positiveUsd('ASKR_PRICE_OUTPUT', required(env, 'ASKR_PRICE_OUTPUT')),
   };
-  const reserveUsd = positiveUsd(
-    'ASKR_TURN_RESERVE_USD',
-    env.ASKR_TURN_RESERVE_USD ?? DEFAULT_TURN_RESERVE_USD,
-  );
+  const reserveUsd = turnReserveFromEnv(env);
   const maxTokens = positiveInteger(
     'ASKR_MAX_TOKENS',
     env.ASKR_MAX_TOKENS ?? String(DEFAULT_MAX_TOKENS),
@@ -414,7 +427,11 @@ export function serveConfigFromEnv(rawEnv: Env): ServeConfig {
       reserveUsd,
     });
   }
-  return { model, price, reserveUsd, maxTokens };
+  const messagesPerIpPerDay = positiveInteger(
+    'ASKR_MESSAGES_PER_IP_PER_DAY',
+    env.ASKR_MESSAGES_PER_IP_PER_DAY ?? String(DEFAULT_MESSAGES_PER_IP_PER_DAY),
+  );
+  return { model, price, reserveUsd, maxTokens, messagesPerIpPerDay };
 }
 
 /** A failed call's kind with no content (4.4): "LlmError 503", or the error's name. */
@@ -490,6 +507,7 @@ export function workerSettings(
   fallbackPrices: Record<string, ModelPrice>;
   reserveUsd: string;
   maxTokens: number;
+  messagesPerIpPerDay: number;
 } {
   const provider = providerFor(config.model, fetch, log);
   const fallbacks = config.model.kind === 'openrouter' ? config.model.fallbacks : [];
@@ -499,5 +517,6 @@ export function workerSettings(
     fallbackPrices: Object.fromEntries(fallbacks.map((entry) => [entry.model, entry.price])),
     reserveUsd: config.reserveUsd,
     maxTokens: config.maxTokens,
+    messagesPerIpPerDay: config.messagesPerIpPerDay,
   };
 }

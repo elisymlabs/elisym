@@ -1,6 +1,7 @@
 import { MAX_MODEL_CALLS_PER_TURN, MAX_TOOL_ROUNDS } from '@elisym/askr-agent';
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_MESSAGES_PER_IP_PER_DAY,
   checkTurnBudget,
   effortFrom,
   OPENROUTER_HOSTS,
@@ -68,7 +69,23 @@ describe('serveConfigFromEnv: the model and turn budget the server starts with',
       price: { input: '2', cachedInput: '0.2', cacheWrite: '2.5', output: '10' },
       reserveUsd: '0.25',
       maxTokens: 2_048,
+      messagesPerIpPerDay: 100,
     });
+  });
+
+  it('ASKR_MESSAGES_PER_IP_PER_DAY sets the per-IP daily ask limit, a whole number above zero', () => {
+    expect(
+      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_MESSAGES_PER_IP_PER_DAY: '40' })
+        .messagesPerIpPerDay,
+    ).toBe(40);
+    expect(
+      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_MESSAGES_PER_IP_PER_DAY: '' })
+        .messagesPerIpPerDay,
+    ).toBe(DEFAULT_MESSAGES_PER_IP_PER_DAY);
+    expect(() =>
+      serveConfigFromEnv({ ...ANTHROPIC_ENV, ASKR_MESSAGES_PER_IP_PER_DAY: '0' }),
+    ).toThrow('ASKR_MESSAGES_PER_IP_PER_DAY must be a whole number above zero');
+    expect(workerSettings(serveConfigFromEnv(ANTHROPIC_ENV)).messagesPerIpPerDay).toBe(100);
   });
 
   it('ASKR_EFFORT=none sends no effort, for models without the parameter', () => {

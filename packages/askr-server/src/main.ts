@@ -13,6 +13,7 @@ import {
   freeTierWarning,
   publicBaseOf,
   serveConfigFromEnv,
+  turnReserveFromEnv,
   workerSettings,
 } from './config';
 import { ShopRateLimiter } from './connectors/http';
@@ -28,6 +29,7 @@ import { WidgetVersions, widgetBundle } from './gateway/widget';
 import { StoreEventPublisher } from './publisher';
 import { createServerPool } from './relay/pool';
 import { poolSyncClient } from './relay/sync-client';
+import { reserveWarning } from './state/budget';
 import { PgState } from './state/pg-state';
 import { StoreDirectory } from './state/stores';
 import { isListed } from './worker/catalog';
@@ -90,6 +92,13 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   // Refuses to start on a bad Free setting or an old ASKR_AUTO_TIER* name; unset, Free answers
   // `free_unavailable` and only the operator activates stores (6.1).
   const freeTier = freeTierFromEnv(process.env);
+  // A tier whose monthly budget is below one turn's reservation still answers, one turn at a time.
+  for (const { tier } of await directory.listTiers()) {
+    const warning = reserveWarning(tier, config.reserveUsd);
+    if (warning !== undefined) {
+      log(`warning: ${warning}`);
+    }
+  }
   if (freeTier !== undefined) {
     log(
       `Free is self-serve on the tier ${freeTier.tier} (the merchant chooses it): at most ${freeTier.perDay} a day, ${freeTier.maxActive} active`,
@@ -189,7 +198,6 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     configFor: (owner): StoreConfig | undefined => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),
-    reserveUsd: config.reserveUsd,
   });
   const admin = createAdminApi({
     directory,
@@ -199,7 +207,6 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     storeEventsChanged: onStoresChanged,
     connectors,
     ...(freeTier === undefined ? {} : { freeTier }),
-    reserveUsd: config.reserveUsd,
     log,
   });
   const files = adminFiles(log);
@@ -219,7 +226,9 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.length > 0) {
     try {
-      console.log(await runCli(args, new StoreDirectory(db, vault)));
+      console.log(
+        await runCli(args, new StoreDirectory(db, vault), turnReserveFromEnv(process.env)),
+      );
     } finally {
       await db.close();
     }

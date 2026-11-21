@@ -48,8 +48,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FREE_TIER_ARGS = [
   '--messages',
   '50',
-  '--daily',
-  '5',
   '--monthly',
   '100',
   '--tickets',
@@ -223,7 +221,6 @@ async function main(): Promise<void> {
     configFor: (owner) => catalogs.get(owner)?.config,
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),
-    reserveUsd: '0.25',
   });
   const admin = createAdminApi({
     directory,
@@ -232,7 +229,6 @@ async function main(): Promise<void> {
     storeEventsChanged: onStoresChanged,
     connectors,
     freeTier: { tier: 'free', perDay: 5, maxActive: 5 },
-    reserveUsd: '0.25',
     syncPace: 50,
     log: console.error,
   });

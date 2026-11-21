@@ -61,8 +61,11 @@ export function inactiveExit(
   });
 }
 
-export function movedExit(): AskrExit {
-  return new AskrExit(EXIT.REFUSED, 'moved_store', { hint: MOVED_HINT });
+export function movedExit(fields?: Record<string, unknown>): AskrExit {
+  return new AskrExit(EXIT.REFUSED, 'moved_store', {
+    hint: MOVED_HINT,
+    ...(fields === undefined ? {} : { fields }),
+  });
 }
 
 function serverMessage(result: ApiResult<unknown>): string | undefined {

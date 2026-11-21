@@ -10,10 +10,8 @@ const TILES = [
   { label: 'Reserved today', value: '$0.42' },
 ];
 
-const METERS = [
-  { label: 'Today', text: '$1.18 of $5.00 (23.6%)', width: 'w-[23%]' },
-  { label: 'This month', text: '$64.10 of $100.00 (64.1%)', width: 'w-[64%]' },
-];
+/** A plan's only spend limit is its monthly budget, so the month is the one meter. */
+const METERS = [{ label: 'This month', text: '$64.10 of $100.00 (64.1%)', width: 'w-[64%]' }];
 
 /** The admin's Overview in a browser window, drawn as the admin draws it: nothing in it is live. */
 export function AdminWindow() {
@@ -30,7 +28,7 @@ export function AdminWindow() {
           app.askr.elisym.network/admin
         </span>
       </div>
-      <div aria-hidden="true" className="adm flex h-[560px]">
+      <div aria-hidden="true" className="adm flex min-h-[560px]">
         <div className="hidden w-216 flex-none flex-col gap-16 border-r border-[var(--adm-line)] bg-[var(--adm-sidebar)] px-12 py-20 sm:flex">
           <div className="flex items-center gap-10 px-6">
             <AskrMark className="size-24 flex-none" />
@@ -55,7 +53,7 @@ export function AdminWindow() {
             <span className="px-10 py-7">Sign out</span>
           </div>
         </div>
-        <div className="relative flex min-w-0 flex-1 flex-col gap-28 overflow-hidden px-20 py-24 sm:px-32 sm:py-32">
+        <div className="relative flex min-w-0 flex-1 flex-col gap-28 overflow-hidden px-20 pt-24 pb-64 sm:px-32 sm:pt-32">
           <div className="flex flex-col gap-4">
             <span className="text-24 font-semibold tracking-tight">Overview</span>
             <span className="text-14 text-[var(--adm-text-2)]">{OVERVIEW_DESCRIPTION}</span>
@@ -74,21 +72,26 @@ export function AdminWindow() {
               <span className="text-15 font-semibold">Usage</span>
               <span className="text-13 text-[var(--adm-text-2)]">Plan: Growth</span>
             </div>
-            <div className="adm-card">
-              <dl className="grid grid-cols-3 gap-12">
+            {/* Three tiles in a row only where each fits its label; narrower, one row per tile. */}
+            <div className="adm-card @container">
+              <dl className="grid grid-cols-1 gap-8 @min-[23rem]:grid-cols-3 @min-[23rem]:gap-12">
                 {TILES.map((tile) => (
                   <div
                     key={tile.label}
-                    className="rounded-10 flex flex-col gap-4 bg-[var(--adm-surface-2)] px-14 py-12"
+                    className="rounded-10 flex min-w-0 items-baseline justify-between gap-12 bg-[var(--adm-surface-2)] px-14 py-10 @min-[23rem]:flex-col @min-[23rem]:items-stretch @min-[23rem]:justify-start @min-[23rem]:gap-4 @min-[23rem]:py-12"
                   >
-                    <dt className="text-12 text-[var(--adm-text-2)]">{tile.label}</dt>
-                    <dd className="text-24 font-semibold tabular-nums">{tile.value}</dd>
+                    <dt className="text-12 min-w-0 break-words text-[var(--adm-text-2)]">
+                      {tile.label}
+                    </dt>
+                    <dd className="text-20 @min-[23rem]:text-24 font-semibold tabular-nums">
+                      {tile.value}
+                    </dd>
                   </div>
                 ))}
               </dl>
               {METERS.map((meter) => (
                 <div key={meter.label} className="flex flex-col gap-4">
-                  <div className="text-13 flex justify-between gap-8">
+                  <div className="text-13 flex flex-wrap justify-between gap-x-8 gap-y-2">
                     <span className="font-medium">{meter.label}</span>
                     <span className="text-[var(--adm-text-2)]">{meter.text}</span>
                   </div>

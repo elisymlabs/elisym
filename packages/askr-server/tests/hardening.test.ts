@@ -1,10 +1,10 @@
-import { buildTicket, unwrapChatMessage } from '@elisym/askr';
+import { KIND_SESSION_TICKET, buildTicket, unwrapChatMessage } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { positiveUsd } from '../src/config';
-import { REQ_BYTES_CAP } from '../src/constants';
-import { createGateway } from '../src/gateway/gateway';
+import { CLIENT_TAG, REQ_BYTES_CAP } from '../src/constants';
+import { clientOf, createGateway } from '../src/gateway/gateway';
 import { serveGateway } from '../src/gateway/http';
 import { WindowLimiter } from '../src/gateway/limits';
 import { chunkByBytes } from '../src/relay/chunks';
@@ -55,7 +55,6 @@ async function gateway(
     configFor: (owner) => (loaded && owner === store.owner && active ? catalog?.config : undefined),
     isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
     isUnservable: (owner) => unservable && owner === store.owner,
-    reserveUsd: '0.25',
     now: () => NOW,
   });
   const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -74,7 +73,7 @@ describe('gateway refusals (3)', () => {
   it('refuses a ticket once the budget is spent, with the store contact', async () => {
     const { store, state, post } = await gateway((synthetic) => ({
       ...storeRecord(synthetic),
-      tier: { ...TIER, dailyBudgetUsd: '0.05' },
+      tier: { ...TIER, monthlyBudgetUsd: '0.05' },
     }));
     const epoch = await leaseEpoch(state, store.assistant);
     const session = await state.session(store.owner, store.assistant, 'b'.repeat(64), NOW);
@@ -173,14 +172,38 @@ describe('gateway review round 3 (3)', () => {
 });
 
 describe('review round 4', () => {
-  it('issues no ticket when not even one turn reservation fits the budget', async () => {
+  it('issues a ticket while a budget below one turn reservation has something left', async () => {
     const { store, post } = await gateway((synthetic) => ({
       ...storeRecord(synthetic),
-      tier: { ...TIER, dailyBudgetUsd: '0.2' },
+      tier: { ...TIER, monthlyBudgetUsd: '0.2' },
     }));
     const response = await post('/v1/session', { store: store.owner, visitor: 'a'.repeat(64) });
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ unavailable: true, reason: 'budget' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ticket: { kind: KIND_SESSION_TICKET } });
+  });
+
+  it("a ticket names the visitor's client: one per IP (or IPv6 /56) per day, never the address", async () => {
+    const { store, gatewaySecret, post } = await gateway((synthetic) => storeRecord(synthetic));
+    const clientIn = async (visitor: string, address: string) => {
+      const response = await post('/v1/session', { store: store.owner, visitor }, ORIGIN, address);
+      const body = (await response.json()) as { ticket: NostrEvent };
+      return body.ticket.tags.filter((tag) => tag[0] === CLIENT_TAG).map((tag) => tag[1]);
+    };
+    const first = await clientIn('a'.repeat(64), '203.0.113.7');
+    expect(first).toEqual([clientOf(gatewaySecret, '203.0.113.7', NOW)]);
+    expect(first[0]).toMatch(/^[0-9a-f]{32}$/u);
+    // Another visitor key on the same IP is the same client; another IP is not.
+    expect(await clientIn('c'.repeat(64), '203.0.113.7')).toEqual(first);
+    expect(await clientIn('a'.repeat(64), '203.0.113.8')).not.toEqual(first);
+    // IPv6 counts by /56: another /64 of the same home connection is the same client.
+    expect(await clientIn('a'.repeat(64), '2001:db8:1:2::5')).toEqual(
+      await clientIn('c'.repeat(64), '2001:db8:1:3:ffff::9'),
+    );
+    expect(await clientIn('a'.repeat(64), '2001:db8:1:2::5')).not.toEqual(
+      await clientIn('c'.repeat(64), '2001:db8:1:102::5'),
+    );
+    // The next UTC day it is another value, so days are not linkable.
+    expect(clientOf(gatewaySecret, '203.0.113.7', NOW + 86_400)).not.toEqual(first[0]);
   });
 
   it('a running attempt whose session was swept settles to what it spent when it ends', async () => {

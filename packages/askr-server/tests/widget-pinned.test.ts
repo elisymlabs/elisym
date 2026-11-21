@@ -46,7 +46,6 @@ async function gatewayWith(widget: WidgetSource | undefined) {
     configFor: () => undefined,
     isListed: () => false,
     isUnservable: () => false,
-    reserveUsd: '0.25',
     ...(widget === undefined ? {} : { widget }),
   });
   return (path: string, method = 'GET') =>
@@ -269,7 +268,6 @@ describe('widget paths for HEAD and under load (6)', () => {
       configFor: () => undefined,
       isListed: () => false,
       isUnservable: () => false,
-      reserveUsd: '0.25',
       now: () => NOW,
       widget: { current, earlier: (id, mayQuery) => versions.script(id, mayQuery) },
     });

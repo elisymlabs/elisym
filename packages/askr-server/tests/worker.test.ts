@@ -22,11 +22,11 @@ import { KIND_DELETION, buildStoreAuthEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ORIGINS_NOTE_EVERY_SECS, SUBSCRIPTION_BUDGET } from '../src/constants';
+import { CLIENT_TAG, ORIGINS_NOTE_EVERY_SECS, SUBSCRIPTION_BUDGET } from '../src/constants';
 import type { Db } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
 import { passesWrapPreCheck } from '../src/relay/pool';
-import { PgState } from '../src/state/pg-state';
+import { PgState, utcDay } from '../src/state/pg-state';
 import { StoreDirectory } from '../src/state/stores';
 import type { LeasedStore, StoreStatus } from '../src/state/types';
 import { Worker, failureKind } from '../src/worker/worker';
@@ -39,14 +39,17 @@ import {
   type StoreSpec,
   type SyntheticStore,
   askWrap,
+  issueTicket,
   scriptedProvider,
   seedHistory,
+  TIER,
   stateWith,
   storeRecord,
   syntheticStore,
 } from './fixtures';
 
 const RELAY = 'wss://relay.test';
+const SECS_PER_DAY = 86_400;
 const PRICE = { input: '1', cachedInput: '0.1', cacheWrite: '1.25', output: '5' };
 const SMALL_USAGE: Usage = {
   inputTokens: 100,
@@ -152,6 +155,7 @@ async function harness(input: {
   provider?: LlmProvider;
   records?: StoreSpec[];
   reserveUsd?: string;
+  messagesPerIpPerDay?: number;
   maxTokens?: number;
   historyTimeoutMs?: number;
   stableConnectionMs?: number;
@@ -185,6 +189,9 @@ async function harness(input: {
     price: PRICE,
     holder: HOLDER,
     reserveUsd: input.reserveUsd ?? '0.25',
+    ...(input.messagesPerIpPerDay === undefined
+      ? {}
+      : { messagesPerIpPerDay: input.messagesPerIpPerDay }),
     ...(input.maxTokens === undefined ? {} : { maxTokens: input.maxTokens }),
     now: () => clock.now,
     log: (message) => logs.push(message),
@@ -385,6 +392,253 @@ describe('worker turns (5.8)', () => {
       spent: costOf(heavy, PRICE).toString(),
       reserved: '0',
     });
+  });
+
+  it('a reservation clipped to what is left of the month still lets a normal turn finish', async () => {
+    const store = syntheticStore();
+    // 3000 input tokens at 1 USD per million: 0.003 USD a call, past the 0.0001 left of the month.
+    const toolUsage: Usage = { ...SMALL_USAGE, inputTokens: 3_000 };
+    const provider: LlmProvider & { calls: number } = {
+      model: 'tool-then-answer',
+      calls: 0,
+      async turn(): Promise<TurnResponse> {
+        provider.calls += 1;
+        if (provider.calls === 1) {
+          return {
+            text: '',
+            toolCalls: [
+              { type: 'tool_use', id: 'tool-1', name: 'search_products', input: { query: 'warm' } },
+            ],
+            stopReason: 'tool_use',
+            usage: toolUsage,
+          };
+        }
+        return { text: 'Here.', toolCalls: [], stopReason: 'end_turn', usage: SMALL_USAGE };
+      },
+    };
+    const setup = await harness({
+      stores: [store],
+      provider,
+      records: [{ ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '0.05' } }],
+    });
+    await setup.db.query(
+      'insert into store_days (owner, day, spent, reserved) values ($1, $2, $3, 0)',
+      [store.owner, utcDay(NOW), '0.0499'],
+    );
+    const visitorSecret = generateSecretKey();
+    ask(setup, store, visitorSecret, 'a7'.repeat(16));
+    await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+    await setup.worker.idle();
+    // The ceiling is the floor (0.01), not the 0.0001 reserved, so the second call ran and answered.
+    expect(provider.calls).toBe(2);
+    const messages = received(setup, store, visitorSecret).map((opened) => opened.message);
+    expect(messages).toContainEqual(expect.objectContaining({ type: 'answer' }));
+    const spent = costOf(toolUsage, PRICE).plus(costOf(SMALL_USAGE, PRICE)).plus('0.0499');
+    expect(await day(setup, store)).toEqual({ spent: spent.toString(), reserved: '0' });
+    // The month is passed now: the next ask is refused with budget.
+    ask(setup, store, visitorSecret, 'a8'.repeat(16));
+    await waitUntil(() =>
+      received(setup, store, visitorSecret).some(
+        (opened) =>
+          opened.message.type === 'unavailable' && opened.message.ask_id === 'a8'.repeat(16),
+      ),
+    );
+    expect(received(setup, store, visitorSecret).map((opened) => opened.message)).toContainEqual({
+      type: 'unavailable',
+      ask_id: 'a8'.repeat(16),
+      reason: 'budget',
+    });
+  });
+
+  it('a clipped turn stops once its cost reaches the floor ceiling, not a full reservation', async () => {
+    const store = syntheticStore();
+    // Every call asks for a tool at 0.003 USD: the turn would go on to its last allowed call.
+    const toolUsage: Usage = { ...SMALL_USAGE, inputTokens: 3_000 };
+    const provider: LlmProvider & { calls: number } = {
+      model: 'tools-forever',
+      calls: 0,
+      async turn(): Promise<TurnResponse> {
+        provider.calls += 1;
+        return {
+          text: '',
+          toolCalls: [
+            {
+              type: 'tool_use',
+              id: `tool-${provider.calls}`,
+              name: 'search_products',
+              input: { query: 'warm' },
+            },
+          ],
+          stopReason: 'tool_use',
+          usage: toolUsage,
+        };
+      },
+    };
+    const setup = await harness({
+      stores: [store],
+      provider,
+      records: [{ ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '0.05' } }],
+    });
+    await setup.db.query(
+      'insert into store_days (owner, day, spent, reserved) values ($1, $2, $3, 0)',
+      [store.owner, utcDay(NOW), '0.0499'],
+    );
+    const visitorSecret = generateSecretKey();
+    ask(setup, store, visitorSecret, 'a9'.repeat(16));
+    await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+    await setup.worker.idle();
+    // 0, 0.003, 0.006 and 0.009 are below the 0.01 ceiling; at 0.012 no fifth call starts.
+    expect(provider.calls).toBe(4);
+    expect(received(setup, store, visitorSecret).map((opened) => opened.message)).toContainEqual({
+      type: 'unavailable',
+      ask_id: 'a9'.repeat(16),
+      reason: 'error',
+    });
+  });
+
+  it('a ticket issued before midnight counts under its issue day after midnight too', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store], messagesPerIpPerDay: 1 });
+    const midnight = (utcDay(setup.clock.now) + 1) * SECS_PER_DAY;
+    setup.clock.now = midnight - 120;
+    const visitorSecret = generateSecretKey();
+    const ticket = issueTicket({
+      store,
+      visitorSecret,
+      gatewaySecret: setup.gatewaySecret,
+      now: setup.clock.now,
+      ticketTags: [[CLIENT_TAG, '7'.repeat(32)]],
+    });
+    const send = (askId: string) =>
+      setup.pool.relay(RELAY).accept(
+        askWrap({
+          store,
+          visitorSecret,
+          gatewaySecret: setup.gatewaySecret,
+          askId,
+          text: 'something warm?',
+          now: setup.clock.now,
+          ticket,
+        }),
+      );
+    send('d1'.repeat(16));
+    await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+    await setup.worker.idle();
+    // Past midnight, the same ticket: still counted under the day it was issued.
+    setup.clock.now = midnight + 60;
+    send('d2'.repeat(16));
+    await waitUntil(() => received(setup, store, visitorSecret).length > 1);
+    await setup.worker.idle();
+    expect(received(setup, store, visitorSecret).map((opened) => opened.message)).toContainEqual({
+      type: 'unavailable',
+      ask_id: 'd2'.repeat(16),
+      reason: 'quota',
+    });
+    expect(await setup.db.query('select day, used from ip_days')).toEqual([
+      { day: utcDay(midnight - 120), used: 1 },
+    ]);
+  });
+
+  it('a malformed client tag is ignored: nothing is counted under it', async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store], messagesPerIpPerDay: 1 });
+    for (const [index, tag] of ['A'.repeat(32), '8'.repeat(31), `${'8'.repeat(32)}0`].entries()) {
+      const visitorSecret = generateSecretKey();
+      setup.pool.relay(RELAY).accept(
+        askWrap({
+          store,
+          visitorSecret,
+          gatewaySecret: setup.gatewaySecret,
+          askId: `e${index}`.repeat(16),
+          text: 'something warm?',
+          now: setup.clock.now,
+          ticketTags: [[CLIENT_TAG, tag]],
+        }),
+      );
+      await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+      await setup.worker.idle();
+      expect(received(setup, store, visitorSecret).map((opened) => opened.message.type)).toEqual([
+        'answer',
+      ]);
+    }
+    expect(await setup.db.query('select * from ip_days')).toEqual([]);
+  });
+
+  it("a retried ask counts against the ticket's client like a new one", async () => {
+    const store = syntheticStore();
+    let calls = 0;
+    const provider: LlmProvider = {
+      model: 'fails-once',
+      async turn(): Promise<TurnResponse> {
+        calls += 1;
+        if (calls === 1) {
+          throw new Error('provider down');
+        }
+        return { text: 'Here.', toolCalls: [], stopReason: 'end_turn', usage: SMALL_USAGE };
+      },
+    };
+    const setup = await harness({ stores: [store], provider, messagesPerIpPerDay: 10 });
+    const visitorSecret = generateSecretKey();
+    const send = () =>
+      setup.pool.relay(RELAY).accept(
+        askWrap({
+          store,
+          visitorSecret,
+          gatewaySecret: setup.gatewaySecret,
+          askId: 'c1'.repeat(16),
+          text: 'something warm?',
+          now: setup.clock.now,
+          ticketTags: [[CLIENT_TAG, '6'.repeat(32)]],
+        }),
+      );
+    send();
+    await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+    await setup.worker.idle();
+    // The widget asks again with the same ask id: a retry of the failed record.
+    setup.clock.now += 1;
+    send();
+    await waitUntil(() =>
+      received(setup, store, visitorSecret).some((opened) => opened.message.type === 'answer'),
+    );
+    await setup.worker.idle();
+    expect(await setup.db.query('select used from ip_days')).toEqual([{ used: 2 }]);
+  });
+
+  it("counts asks per the ticket's client across sessions, refusing past the daily cap with quota", async () => {
+    const store = syntheticStore();
+    const setup = await harness({ stores: [store], messagesPerIpPerDay: 2 });
+    const client = [[CLIENT_TAG, '5'.repeat(32)]];
+    const visitors = [generateSecretKey(), generateSecretKey(), generateSecretKey()];
+    for (const [index, visitorSecret] of visitors.entries()) {
+      setup.pool.relay(RELAY).accept(
+        askWrap({
+          store,
+          visitorSecret,
+          gatewaySecret: setup.gatewaySecret,
+          askId: `b${index}`.repeat(16),
+          text: 'something warm?',
+          now: setup.clock.now,
+          ticketTags: client,
+        }),
+      );
+      await waitUntil(() => received(setup, store, visitorSecret).length > 0);
+      await setup.worker.idle();
+    }
+    const kinds = visitors.map((visitorSecret) =>
+      received(setup, store, visitorSecret).map((opened) => opened.message.type),
+    );
+    expect(kinds).toEqual([['answer'], ['answer'], ['unavailable']]);
+    const [, , third] = visitors;
+    expect(
+      received(setup, store, third ?? new Uint8Array()).map((opened) => opened.message),
+    ).toEqual([{ type: 'unavailable', ask_id: 'b2'.repeat(16), reason: 'quota' }]);
+    // A ticket without a client (issued before the gateway added it) is not counted under one.
+    const untagged = generateSecretKey();
+    ask(setup, store, untagged, 'b3'.repeat(16));
+    await waitUntil(() => received(setup, store, untagged).length > 0);
+    expect(received(setup, store, untagged).map((opened) => opened.message.type)).toEqual([
+      'answer',
+    ]);
   });
 
   it('an answer that comes past the deadline is not sent; its spend is kept and the visitor gets error', async () => {

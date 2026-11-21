@@ -18,6 +18,8 @@ import {
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import {
+  CLIENT_HEX_LENGTH,
+  CLIENT_TAG,
   CONNECTION_TIMEOUT_MS,
   LEASE_RENEW_MS,
   LEASE_TTL_SECS,
@@ -36,12 +38,20 @@ import { chunkByBytes } from '../relay/chunks';
 import { readHistory } from '../relay/history';
 import type { RelayLike, ServerPool } from '../relay/pool';
 import { publishToRelay } from '../relay/publish';
-import { randomId } from '../state/pg-state';
-import type { LeasedStore, ServerState, SessionState, StoreRecord } from '../state/types';
+import { turnCeiling } from '../state/budget';
+import { randomId, utcDay } from '../state/pg-state';
+import type {
+  ClientQuota,
+  LeasedStore,
+  ServerState,
+  SessionState,
+  StoreRecord,
+} from '../state/types';
 import { CatalogLoader } from './catalog-loader';
 import { intakeWrap } from './intake';
 
 const KIND_GIFT_WRAP = 1059;
+const CLIENT_RE = new RegExp(`^[0-9a-f]{${CLIENT_HEX_LENGTH}}$`, 'u');
 /**
  * Messages of history a session keeps (a visitor turn and the answer note per
  * ask), so a turn's input cost stays bounded; phase 3 compacts instead (5.8).
@@ -103,10 +113,18 @@ export interface WorkerDeps {
   fallbackPrices?: Readonly<Record<string, ModelPrice>>;
   /**
    * Reserved before a turn and also that turn's spend ceiling: no model call
-   * starts once the turn's cost reaches it (5.8). So a store's spend can pass
-   * its daily budget by at most the last model call of each turn in flight.
+   * starts once the turn's cost reaches it (5.8). When the month has less left
+   * the reservation is clipped to it, with a ceiling of at least
+   * `MIN_TURN_CEILING_USD`. So a store's spend can pass its monthly budget by
+   * at most the last model call of each turn in flight (and a clipped turn's
+   * floor).
    */
   reserveUsd: string;
+  /**
+   * Asks per client (the gateway's keyed hash of the visitor's IP, in the
+   * ticket) per UTC day across sessions and stores; absent means no such limit.
+   */
+  messagesPerIpPerDay?: number;
   /** max_tokens per model call, thinking included; runTurn's default when absent. */
   maxTokens?: number;
   /** A history read with no real EOSE in this long fails (2.4); tests shorten it. */
@@ -550,11 +568,31 @@ export class Worker {
     );
   }
 
+  /**
+   * The per-client limit for an ask: its ticket's client (signed by the gateway, so not the
+   * visitor's to choose). None for a ticket issued before the gateway added it, or when no
+   * limit is configured.
+   */
+  private clientQuota(ticket: NostrEvent): ClientQuota | undefined {
+    const perDay = this.deps.messagesPerIpPerDay;
+    const key = ticket.tags.find((tag) => tag[0] === CLIENT_TAG)?.[1];
+    if (perDay === undefined || key === undefined || !CLIENT_RE.test(key)) {
+      return undefined;
+    }
+    return { key, day: utcDay(ticket.created_at), perDay };
+  }
+
   private async handleAsk(
     store: StoreRecord,
     epoch: number,
     queued: SessionState,
-    ask: { ask_id: string; text: string; page?: { url: string }; locale?: string },
+    ask: {
+      ask_id: string;
+      text: string;
+      ticket: NostrEvent;
+      page?: { url: string };
+      locale?: string;
+    },
   ): Promise<void> {
     const now = this.now();
     // An ask queued behind a turn may run after its session ended or was replaced: it is not
@@ -578,6 +616,7 @@ export class Worker {
     if (live) {
       return;
     }
+    const client = this.clientQuota(ask.ticket);
     const admitted = existing
       ? await this.deps.state.retryAsk(
           session,
@@ -586,8 +625,16 @@ export class Worker {
           this.deps.reserveUsd,
           epoch,
           now,
+          client,
         )
-      : await this.deps.state.admitAsk(session, ask.ask_id, this.deps.reserveUsd, epoch, now);
+      : await this.deps.state.admitAsk(
+          session,
+          ask.ask_id,
+          this.deps.reserveUsd,
+          epoch,
+          now,
+          client,
+        );
     if (!admitted.admitted) {
       if (admitted.reason === 'superseded') {
         // Our lease moved on or another attempt owns the ask: its holder answers, we stay silent.
@@ -617,7 +664,7 @@ export class Worker {
       this.deps.providerFor(store),
       (model) =>
         (model === undefined ? undefined : this.deps.fallbackPrices?.[model]) ?? this.deps.price,
-      this.deps.reserveUsd,
+      turnCeiling(admitted.reservedUsd, this.deps.reserveUsd),
     );
     try {
       const output = await runTurn({

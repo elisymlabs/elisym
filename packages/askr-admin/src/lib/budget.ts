@@ -4,9 +4,6 @@ import { percentOfBps, shareBps } from './usage';
 /** From this share of the month's budget (basis points) the admin warns it will run out. */
 export const MONTH_WARN_BPS = 8_000;
 
-const SECS_PER_DAY = 86_400;
-const SECS_PER_HOUR = 3_600;
-
 export type BudgetNotice =
   | { tone: 'error'; text: string }
   | { tone: 'warn'; text: string }
@@ -19,19 +16,9 @@ export function nextMonthStart(now: number): string {
   return next.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
 }
 
-/** How long until the next UTC midnight, as "about 5 hours" or "less than an hour". */
-export function untilMidnight(now: number): string {
-  const left = SECS_PER_DAY - (now % SECS_PER_DAY);
-  const hours = Math.floor(left / SECS_PER_HOUR);
-  if (hours < 1) {
-    return 'less than an hour';
-  }
-  return hours === 1 ? 'about 1 hour' : `about ${hours} hours`;
-}
-
 /**
- * What to tell the owner about the budget on every tab: the chat is paused (today's or the
- * month's budget is used up, as the server judges it), or the month's budget is nearly used up.
+ * What to tell the owner about the budget on every tab: the chat is paused (the plan's monthly
+ * budget, its only one, is used up, as the server judges it), or it is nearly used up.
  * Nothing for a store that is not active or has no plan.
  */
 export function budgetNotice(view: StoreView, now: number): BudgetNotice {
@@ -41,13 +28,7 @@ export function budgetNotice(view: StoreView, now: number): BudgetNotice {
   if (view.budgetPaused === 'month') {
     return {
       tone: 'error',
-      text: `This month's budget is used up: the chat does not answer visitors until ${nextMonthStart(now)} (UTC).`,
-    };
-  }
-  if (view.budgetPaused === 'day') {
-    return {
-      tone: 'error',
-      text: `Today's budget is used up: the chat does not answer visitors until 00:00 UTC, in ${untilMidnight(now)}.`,
+      text: `This month's plan budget is used up: the chat does not answer visitors until ${nextMonthStart(now)} (UTC), or until you upgrade your plan.`,
     };
   }
   const bps = shareBps(view.usage.month.spent, view.tier.monthlyBudgetUsd);

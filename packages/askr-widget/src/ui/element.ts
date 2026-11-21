@@ -4,6 +4,7 @@ import { decode } from 'nostr-tools/nip19';
 import { type ChatClient, type ChatSnapshot, type ChatTurn } from '../client';
 import { ELEMENT_NAME, PANEL_OPEN_PREFIX } from '../constants';
 import { readItem, removeItem, storageArea, writeItem } from '../storage';
+import type { StoreVisibility } from '../store-check';
 import { renderAnswer } from './answer-view';
 import { element, httpsUrl } from './dom';
 import { animateMark, createMark } from './mark';
@@ -26,6 +27,13 @@ export function parseStoreKey(value: string | null): string | undefined {
 }
 
 export type ClientFactory = (owner: string) => ChatClient;
+
+/** Whether the widget shows for a store at all, asked before its launcher appears (B). */
+export type StoreChecker = (owner: string) => Promise<StoreVisibility>;
+
+/** Logged once per element when it shows nothing for its store. */
+export const HIDDEN_NOTICE =
+  'Askr: this store is not active yet (its plan is pending), so the chat is not shown. A visitor sees it on their next page load, at most 5 minutes after the store is active.';
 
 interface TurnView {
   root: HTMLElement;
@@ -352,10 +360,13 @@ const MAX_MOVES = 1;
  * Define `<askr-chat store="npub...">` (6): a web component in shadow DOM.
  * The client starts on the first open (no gateway session for a visitor who
  * never opens the chat), and again on reload while the panel was left open.
+ * With `checkStore`, nothing shows until it answers, and nothing at all for a store it hides;
+ * a store the client finds not set up hides the same way.
  */
 export function defineAskrElement(
   scope: Window & typeof globalThis,
   createClient: ClientFactory,
+  checkStore?: StoreChecker,
 ): void {
   if (scope.customElements.get(ELEMENT_NAME)) {
     return;
@@ -368,6 +379,9 @@ export function defineAskrElement(
     private moves = 0;
     private view: WidgetView | undefined;
     private unsubscribe: (() => void) | undefined;
+    private hiddenNoticed = false;
+    /** What had focus on the page when the panel opened: focus goes back there if the panel goes. */
+    private focusBeforeOpen: Element | null = null;
 
     connectedCallback(): void {
       if (this.view) {
@@ -382,14 +396,54 @@ export function defineAskrElement(
         () => [this.getAttribute('lang'), this.ownerDocument.documentElement.lang],
       );
       view.launcher.addEventListener('click', () => this.setOpen(true));
-      shadow.replaceChildren(view.launcher, view.panel);
       this.view = view;
       const owner = parseStoreKey(this.getAttribute('store'));
+      if (owner === undefined || checkStore === undefined) {
+        this.reveal(view, owner);
+        return;
+      }
+      shadow.replaceChildren();
+      checkStore(owner)
+        .catch((): StoreVisibility => 'show')
+        .then((visibility) => {
+          if (this.view !== view) {
+            return;
+          }
+          if (visibility === 'hide') {
+            this.hideAll();
+            return;
+          }
+          this.reveal(view, owner);
+        })
+        .catch(() => undefined);
+    }
+
+    /** Show the launcher, and the panel too when it was left open in this tab. */
+    private reveal(view: WidgetView, owner: string | undefined): void {
+      this.shadowRoot?.replaceChildren(view.launcher, view.panel);
       if (
         owner &&
         readItem(storageArea('sessionStorage'), `${PANEL_OPEN_PREFIX}${owner}`) === '1'
       ) {
         this.setOpen(true);
+      }
+    }
+
+    /** Nothing on the page for a store that is not served: no launcher, no panel (B). */
+    private hideAll(): void {
+      const hadFocus = (this.shadowRoot?.activeElement ?? null) !== null;
+      this.shadowRoot?.replaceChildren();
+      if (hadFocus) {
+        this.restoreFocus();
+      }
+      this.removeAttribute('open');
+      const owner = parseStoreKey(this.getAttribute('store'));
+      if (owner !== undefined) {
+        removeItem(storageArea('sessionStorage'), `${PANEL_OPEN_PREFIX}${owner}`);
+      }
+      if (!this.hiddenNoticed) {
+        this.hiddenNoticed = true;
+        console.info(HIDDEN_NOTICE);
       }
     }
 
@@ -417,6 +471,10 @@ export function defineAskrElement(
         writeItem(session, `${PANEL_OPEN_PREFIX}${owner}`, '1');
       } else {
         removeItem(session, `${PANEL_OPEN_PREFIX}${owner}`);
+      }
+      if (open) {
+        const active = this.ownerDocument.activeElement;
+        this.focusBeforeOpen = active === this ? null : active;
       }
       if (open && !this.client && this.view) {
         this.startClient(this.movedTo ?? owner);
@@ -462,6 +520,20 @@ export function defineAskrElement(
       }, CLOSE_MS);
     }
 
+    /**
+     * Focus left in a panel that is gone (the store is not served): back to what had it before the
+     * panel opened, or off this element, so it is never stranded on nothing.
+     */
+    private restoreFocus(): void {
+      const before = this.focusBeforeOpen;
+      this.focusBeforeOpen = null;
+      if (before instanceof scope.HTMLElement && before.isConnected) {
+        before.focus();
+        return;
+      }
+      this.blur();
+    }
+
     /** Focus left in the closed panel goes back to the launcher, never to the top of the page. */
     private returnFocus(): void {
       const view = this.view;
@@ -492,6 +564,13 @@ export function defineAskrElement(
           client.stop();
           this.client = undefined;
           this.startClient(next);
+          return;
+        }
+        if (snapshot.phase === 'failed') {
+          // The store has no settings and the gateway does not serve it: not set up, shown nowhere.
+          this.unsubscribe?.();
+          client.stop();
+          this.hideAll();
           return;
         }
         view.update(snapshot);

@@ -8,7 +8,7 @@ import {
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { createGateway } from '../src/gateway/gateway';
-import { WindowLimiter, ipKey } from '../src/gateway/limits';
+import { WindowLimiter, ipKey, personKey } from '../src/gateway/limits';
 import { widgetBundle } from '../src/gateway/widget';
 import { Backoff } from '../src/relay/backoff';
 import { passesWrapPreCheck } from '../src/relay/pool';
@@ -116,6 +116,16 @@ describe('limits', () => {
     expect(ipKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
     expect(ipKey('2001:db8:1:2:3:4:5:6')).toBe(ipKey('2001:db8:1:2:aaaa::1'));
     expect(ipKey('2001:db8:1:2::1')).not.toBe(ipKey('2001:db8:1:3::1'));
+  });
+
+  it('keys a person by IPv4 address, and by IPv6 /56: one home connection is one person', () => {
+    expect(personKey('203.0.113.7')).toBe('203.0.113.7');
+    expect(personKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(personKey('2001:db8:1:2:3:4:5:6')).toBe('2001:db8:1:0::/56');
+    // The 256 /64s of one /56 share the key; the next /56 does not.
+    expect(personKey('2001:db8:1:ff::1')).toBe(personKey('2001:db8:1:2::1'));
+    expect(personKey('2001:db8:1:1ff::1')).not.toBe(personKey('2001:db8:1:ff::1'));
+    expect(personKey('2001:db8:1:ab12::1')).toBe('2001:db8:1:ab00::/56');
   });
 
   it('counts a fixed window', () => {
@@ -336,7 +346,6 @@ describe('gateway (3)', () => {
       configFor: (owner) => (owner === store.owner ? catalog?.config : undefined),
       isListed: (owner, address) => owner === store.owner && isListed(catalog, address),
       isUnservable: () => false,
-      reserveUsd: '0.25',
       now: () => NOW,
     });
     const post = (path: string, body: unknown, origin = ORIGIN, address = '203.0.113.7') =>
@@ -378,7 +387,6 @@ describe('gateway (3)', () => {
       configFor: () => undefined,
       isListed: () => false,
       isUnservable: () => false,
-      reserveUsd: '0.25',
     };
     const get = () => ({
       request: new Request('http://localhost/widget.js'),
@@ -577,10 +585,10 @@ describe('ask records and budget (5.8)', () => {
     });
   });
 
-  it('reserves, settles to actual spend and refuses past the budget', async () => {
+  it('reserves, clips to what is left, settles to actual spend and refuses past the budget', async () => {
     const store = syntheticStore();
     const { state } = await stateWith([
-      { ...storeRecord(store), tier: { ...TIER, dailyBudgetUsd: '0.1' } },
+      { ...storeRecord(store), tier: { ...TIER, monthlyBudgetUsd: '0.1' } },
     ]);
     const epoch = await leaseEpoch(state, store.assistant);
     const session = await state.session(store.owner, store.assistant, VISITOR, NOW);
@@ -589,7 +597,9 @@ describe('ask records and budget (5.8)', () => {
       throw new Error('not admitted');
     }
     expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0', reserved: '0.06' });
-    expect(await state.admitAsk(session, 'c'.repeat(32), '0.06', epoch, NOW)).toEqual({
+    const clipped = await state.admitAsk(session, 'c'.repeat(32), '0.06', epoch, NOW);
+    expect(clipped.admitted && clipped.reservedUsd).toBe('0.04');
+    expect(await state.admitAsk(session, 'd'.repeat(32), '0.06', epoch, NOW)).toEqual({
       admitted: false,
       reason: 'budget',
     });
@@ -605,7 +615,7 @@ describe('ask records and budget (5.8)', () => {
       sig: '0',
     };
     expect(await state.answerAsk(session, ASK_ID, attemptId, epoch, wrap, '0.01', NOW)).toBe(true);
-    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0' });
+    expect(await state.dayTotals(store.owner, NOW)).toEqual({ spent: '0.01', reserved: '0.04' });
     // A superseded attempt cannot answer twice.
     expect(await state.answerAsk(session, ASK_ID, attemptId, epoch, wrap, '0.01', NOW)).toBe(false);
   });

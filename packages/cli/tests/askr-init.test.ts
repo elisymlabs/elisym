@@ -55,6 +55,12 @@ describe('askr init', () => {
       ownerKeyFile: keyFileOf(home, 'default'),
     });
     expect(String(outcome.output.next)).toContain('only if the human chose Free');
+    // A paid plan: the contact link and the plan name go with the Store ID.
+    expect(String(outcome.output.next)).toContain('https://askr.elisym.network/contact');
+    expect(String(outcome.output.next)).toContain('the name of the plan');
+    expect(outcome.output.upgrade).toMatchObject({
+      contact: 'https://askr.elisym.network/contact',
+    });
     const events = postedEvents(fake.calls);
     expect(events.map((event) => event.kind)).toEqual([askr.KIND_CONFIG, askr.KIND_CATALOG_AUTH]);
     const [configEvent] = events;

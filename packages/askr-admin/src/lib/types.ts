@@ -4,9 +4,7 @@ import type { ConnectorPlatform, SyncDiff } from '@elisym/askr';
 export interface Tier {
   name: string;
   messagesPerSessionPerDay: number;
-  /** USD, decimal string. */
-  dailyBudgetUsd: string;
-  /** USD, decimal string. */
+  /** USD, decimal string: the plan's only spend limit. */
   monthlyBudgetUsd: string;
   ticketsPerStorePerMinute: number;
   maxProducts: number;
@@ -16,8 +14,8 @@ export interface Tier {
 
 export type StoreStatus = 'pending' | 'active' | 'suspended';
 
-/** Which used-up budget keeps the chat from answering. */
-export type BudgetPause = 'day' | 'month';
+/** The used-up budget that keeps the chat from answering: the plan's monthly one, the only one. */
+export type BudgetPause = 'month';
 
 /**
  * What choosing Free did (`POST /v1/admin/store/plan`, 6.1): the store is
@@ -113,8 +111,8 @@ export interface StoreView {
   /** Where the Askr operator writes to the owner (plan, billing); private, never published. */
   email: string | null;
   /**
-   * The chat does not answer: today's (`day`) or this month's (`month`) budget is used up, by the
-   * server's own test (not even one more turn fits). Null while it answers.
+   * The chat does not answer: this month's plan budget is used up (`month`), by the server's own
+   * test (nothing of it is left). Null while it answers.
    */
   budgetPaused: BudgetPause | null;
 }

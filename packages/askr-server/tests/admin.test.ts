@@ -15,6 +15,7 @@ import { KIND_HTTP_AUTH, checkNip98, sha256Hex } from '../src/admin/nip98';
 import { ShopRateLimiter } from '../src/connectors/http';
 import { ConnectorService } from '../src/connectors/service';
 import { bodyLimitOf, serveGateway } from '../src/gateway/http';
+import { utcDay } from '../src/state/pg-state';
 import {
   MAX_PUBLISH_ATTEMPTS,
   MAX_STORED_EVENTS,
@@ -325,9 +326,23 @@ describe('admin API (7.3)', () => {
       status: 'active',
       assistant: store.assistant,
     });
-    expect(own.body.tier).toMatchObject({ dailyBudgetUsd: '5.000000000' });
+    expect(own.body.tier).toMatchObject({ monthlyBudgetUsd: '100.000000000' });
+    expect(own.body.tier).not.toHaveProperty('dailyBudgetUsd');
     // Nothing spent yet: the budget pauses nothing.
     expect(own.body.budgetPaused).toBeNull();
+  });
+
+  it("says the chat is paused once the plan's monthly budget is used up, reservations counted", async () => {
+    const { call, store, db } = await setup();
+    await db.query('insert into store_days (owner, day, spent, reserved) values ($1, $2, $3, $4)', [
+      store.owner,
+      utcDay(NOW),
+      '99.75',
+      '0.24',
+    ]);
+    expect((await call('GET', '/v1/admin/store')).body.budgetPaused).toBeNull();
+    await db.query('update store_days set reserved = $2 where owner = $1', [store.owner, '0.25']);
+    expect((await call('GET', '/v1/admin/store')).body.budgetPaused).toBe('month');
   });
 
   it('stores O-signed config, authorization and deletion events and notifies', async () => {

@@ -490,7 +490,6 @@ describe('the gateway after a move (K21)', () => {
       configFor: () => undefined,
       isListed: () => false,
       isUnservable: () => false,
-      reserveUsd: '0.25',
       now: () => NOW,
     });
     const session = (owner: string) =>

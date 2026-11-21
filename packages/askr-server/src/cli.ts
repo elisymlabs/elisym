@@ -2,7 +2,8 @@ import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import { nip19 } from 'nostr-tools';
 import * as z from 'zod';
-import { positiveUsd } from './config';
+import { DEFAULT_TURN_RESERVE_USD, positiveUsd } from './config';
+import { reserveWarning } from './state/budget';
 import type { StoreDirectory } from './state/stores';
 import type { Tier } from './state/types';
 
@@ -12,7 +13,7 @@ export const CLI_USAGE = `Usage:
   askr-server store activate <O npub|hex> --tier <name>
   askr-server store suspend <O npub|hex> [--tier <name>]
   askr-server tier list
-  askr-server tier set <name> --messages <n> --daily <usd> --monthly <usd>
+  askr-server tier set <name> --messages <n> --monthly <usd>
       --tickets <n> --products <n> --sync-minutes <n> --branding <true|false>
   askr-server tier delete <name>`;
 
@@ -20,7 +21,6 @@ const POSITIVE_INT_RE = /^[1-9]\d{0,8}$/;
 const TIER_NAME_RE = /^[a-z0-9-]{1,32}$/;
 const TIER_FLAGS = [
   'messages',
-  'daily',
   'monthly',
   'tickets',
   'products',
@@ -75,20 +75,20 @@ function tierFrom(name: string, args: readonly string[]): Tier {
   if (!TIER_NAME_RE.test(name)) {
     throw new Error('A tier name is 1 to 32 of a-z, 0-9 and -');
   }
+  if (args.includes('--daily')) {
+    throw new Error(
+      "--daily is gone: a plan's only spend limit is its monthly budget (--monthly); visitors are limited by --messages per session and per IP per day",
+    );
+  }
   const given = flags(args, TIER_FLAGS);
   const branding = BrandingSchema.safeParse(given.get('branding'));
   if (!branding.success) {
     throw new Error('--branding must be true or false');
   }
-  const dailyBudgetUsd = positiveUsd('--daily', given.get('daily') ?? '');
   const monthlyBudgetUsd = positiveUsd('--monthly', given.get('monthly') ?? '');
-  if (new Decimal(dailyBudgetUsd).greaterThan(monthlyBudgetUsd)) {
-    throw new Error('--daily must not exceed --monthly');
-  }
   return {
     name,
     messagesPerSessionPerDay: positiveInt('messages', given.get('messages')),
-    dailyBudgetUsd,
     monthlyBudgetUsd,
     ticketsPerStorePerMinute: positiveInt('tickets', given.get('tickets')),
     maxProducts: positiveInt('products', given.get('products')),
@@ -102,7 +102,11 @@ function tierFrom(name: string, args: readonly string[]): Tier {
  * notifies the running server, which then serves the store and publishes its
  * stored events. Returns the text to print; throws on bad input.
  */
-export async function runCli(args: readonly string[], directory: StoreDirectory): Promise<string> {
+export async function runCli(
+  args: readonly string[],
+  directory: StoreDirectory,
+  reserveUsd: string = DEFAULT_TURN_RESERVE_USD,
+): Promise<string> {
   const [group, command, subject, ...rest] = args;
   if (group === 'store' && command === 'list') {
     const stores = await directory.list();
@@ -154,7 +158,7 @@ export async function runCli(args: readonly string[], directory: StoreDirectory)
     return tiers
       .map(
         ({ tier, stores }) =>
-          `${tier.name}: ${stores} store${stores === 1 ? '' : 's'}, --messages ${tier.messagesPerSessionPerDay} --daily ${new Decimal(tier.dailyBudgetUsd).toFixed()} --monthly ${new Decimal(tier.monthlyBudgetUsd).toFixed()} --tickets ${tier.ticketsPerStorePerMinute} --products ${tier.maxProducts} --sync-minutes ${tier.syncIntervalMinutes} --branding ${tier.branding}`,
+          `${tier.name}: ${stores} store${stores === 1 ? '' : 's'}, --messages ${tier.messagesPerSessionPerDay} --monthly ${new Decimal(tier.monthlyBudgetUsd).toFixed()} --tickets ${tier.ticketsPerStorePerMinute} --products ${tier.maxProducts} --sync-minutes ${tier.syncIntervalMinutes} --branding ${tier.branding}`,
       )
       .join('\n');
   }
@@ -174,7 +178,10 @@ export async function runCli(args: readonly string[], directory: StoreDirectory)
   if (group === 'tier' && command === 'set' && subject !== undefined) {
     const tier = tierFrom(subject, rest);
     await directory.setTier(tier);
-    return `tier ${tier.name} saved`;
+    const warning = reserveWarning(tier, reserveUsd);
+    return warning === undefined
+      ? `tier ${tier.name} saved`
+      : `tier ${tier.name} saved\nwarning: ${warning}`;
   }
   throw new Error(CLI_USAGE);
 }

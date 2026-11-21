@@ -19,8 +19,6 @@ import { MASTER_KEY, NOW, ORIGIN, stateWith, storeRecord, syntheticStore } from 
 const TIER_ARGS = [
   '--messages',
   '30',
-  '--daily',
-  '2.5',
   '--monthly',
   '50',
   '--tickets',
@@ -81,17 +79,17 @@ describe('operator CLI (7.3)', () => {
     await runCli(['tier', 'set', 'starter', ...TIER_ARGS], directory);
     const listed = (await runCli(['tier', 'list'], directory)).split('\n');
     expect(listed).toContain(
-      'starter: 0 stores, --messages 30 --daily 2.5 --monthly 50 --tickets 60 --products 500 --sync-minutes 30 --branding false',
+      'starter: 0 stores, --messages 30 --monthly 50 --tickets 60 --products 500 --sync-minutes 30 --branding false',
     );
     const fixtureTier = (await directory.statusOf(store.owner))?.tier ?? '';
     expect(listed.some((line) => line.startsWith(`${fixtureTier}: 1 store,`))).toBe(true);
     // A budget below 1e-6 is still printed so it can be pasted back into tier set.
     await runCli(
-      ['tier', 'set', 'tiny', ...TIER_ARGS.map((arg) => (arg === '2.5' ? '0.000000001' : arg))],
+      ['tier', 'set', 'tiny', ...TIER_ARGS.map((arg) => (arg === '50' ? '0.000000001' : arg))],
       directory,
     );
     expect((await runCli(['tier', 'list'], directory)).split('\n')).toContain(
-      'tiny: 0 stores, --messages 30 --daily 0.000000001 --monthly 50 --tickets 60 --products 500 --sync-minutes 30 --branding false',
+      'tiny: 0 stores, --messages 30 --monthly 0.000000001 --tickets 60 --products 500 --sync-minutes 30 --branding false',
     );
     await expect(runCli(['tier', 'list', 'extra'], directory)).rejects.toThrow(CLI_USAGE);
     const empty = await stateWith([]);
@@ -152,7 +150,6 @@ describe('operator CLI (7.3)', () => {
     expect(record?.tier).toEqual({
       name: 'starter',
       messagesPerSessionPerDay: 30,
-      dailyBudgetUsd: '2.500000000',
       monthlyBudgetUsd: '50.000000000',
       ticketsPerStorePerMinute: 60,
       maxProducts: 500,
@@ -204,11 +201,25 @@ describe('operator CLI (7.3)', () => {
       return runCli(['tier', 'set', 'bad', ...args], directory);
     };
     await expect(withFlag('--messages', '0')).rejects.toThrow('--messages');
-    await expect(withFlag('--daily', '-1')).rejects.toThrow('--daily');
     await expect(withFlag('--monthly', '0')).rejects.toThrow('--monthly');
     await expect(withFlag('--branding', 'yes')).rejects.toThrow('--branding');
     await expect(runCli(['tier', 'set', 'bad', '--messages'], directory)).rejects.toThrow(
       'Bad arguments',
+    );
+  });
+
+  it('saves a tier whose monthly budget is below a turn reservation, with a warning naming it', async () => {
+    const { directory } = await stateWith([]);
+    const small = TIER_ARGS.map((arg) => (arg === '50' ? '0.05' : arg));
+    const output = await runCli(['tier', 'set', 'free', ...small], directory, '0.25');
+    expect(output.split('\n')).toEqual([
+      'tier free saved',
+      "warning: tier free: its monthly budget 0.05 USD is below one turn's reservation (ASKR_TURN_RESERVE_USD 0.25): its turns reserve only what is left, so one turn in flight can hold the whole budget and the store answers about one visitor at a time. Raise the tier's monthly budget, or lower ASKR_TURN_RESERVE_USD (and ASKR_MAX_TOKENS so a turn still fits it).",
+    ]);
+    expect(await directory.tierExists('free')).toBe(true);
+    // At or above the reservation there is nothing to warn about.
+    expect(await runCli(['tier', 'set', 'free', ...small], directory, '0.05')).toBe(
+      'tier free saved',
     );
   });
 });
@@ -316,7 +327,7 @@ describe('publishing stored events on activation (7.3)', () => {
 });
 
 describe('server core review: operator CLI and amounts', () => {
-  it('refuses a bad tier name, unknown and repeated flags, and a daily budget above the monthly one', async () => {
+  it('refuses a bad tier name, unknown and repeated flags, and the removed --daily', async () => {
     const { directory } = await stateWith([]);
     const set = (name: string, args: readonly string[]) =>
       runCli(['tier', 'set', name, ...args], directory);
@@ -325,12 +336,14 @@ describe('server core review: operator CLI and amounts', () => {
     await expect(set('ok-1', [...TIER_ARGS, '--colour', 'red'])).rejects.toThrow(
       'Unknown flag --colour',
     );
-    await expect(set('ok-1', [...TIER_ARGS, '--daily', '1'])).rejects.toThrow(
-      '--daily is given twice',
+    await expect(set('ok-1', [...TIER_ARGS, '--monthly', '1'])).rejects.toThrow(
+      '--monthly is given twice',
     );
-    const daily = [...TIER_ARGS];
-    daily[daily.indexOf('--daily') + 1] = '60';
-    await expect(set('ok-1', daily)).rejects.toThrow('--daily must not exceed --monthly');
+    // A plan's only spend limit is its monthly budget: --daily is refused, naming why.
+    await expect(set('ok-1', [...TIER_ARGS, '--daily', '1'])).rejects.toThrow(
+      "--daily is gone: a plan's only spend limit is its monthly budget (--monthly)",
+    );
+    expect(await directory.tierExists('ok-1')).toBe(false);
     expect(await set('ok-1', TIER_ARGS)).toBe('tier ok-1 saved');
     const store = getPublicKey(generateSecretKey());
     await directory.createStore(store, NOW);

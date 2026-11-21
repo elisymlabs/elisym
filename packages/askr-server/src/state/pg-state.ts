@@ -5,9 +5,11 @@ import type { NostrEvent } from 'nostr-tools';
 import { ORPHAN_RESERVATION_SECS, RUMOR_DEDUP_SECS } from '../constants';
 import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
+import { turnReservation } from './budget';
 import { noteOrigins } from './origins';
 import type {
   ClickKind,
+  ClientQuota,
   Admission,
   AskRecord,
   AskState,
@@ -68,7 +70,6 @@ interface StoreRow extends Record<string, unknown> {
   catalog_key_secret: Uint8Array;
   tier: string | null;
   messages_per_session_per_day: number | null;
-  daily_budget_usd: string | null;
   monthly_budget_usd: string | null;
   tickets_per_store_per_minute: number | null;
   max_products: number | null;
@@ -78,7 +79,7 @@ interface StoreRow extends Record<string, unknown> {
 
 const STORE_COLUMNS = `
   s.owner, s.status, s.assistant, s.assistant_key, s.catalog_key, s.catalog_key_secret, s.tier,
-  t.messages_per_session_per_day, t.daily_budget_usd, t.monthly_budget_usd,
+  t.messages_per_session_per_day, t.monthly_budget_usd,
   t.tickets_per_store_per_minute, t.max_products, t.sync_interval_minutes, t.branding`;
 const STORE_FROM = 'from stores s left join tiers t on t.name = s.tier';
 export const STORE_SELECT = `select ${STORE_COLUMNS} ${STORE_FROM}`;
@@ -110,7 +111,6 @@ function tierOf(row: StoreRow): Tier | undefined {
   if (
     row.tier === null ||
     row.messages_per_session_per_day === null ||
-    row.daily_budget_usd === null ||
     row.monthly_budget_usd === null ||
     row.tickets_per_store_per_minute === null ||
     row.max_products === null ||
@@ -122,7 +122,6 @@ function tierOf(row: StoreRow): Tier | undefined {
   return {
     name: row.tier,
     messagesPerSessionPerDay: row.messages_per_session_per_day,
-    dailyBudgetUsd: row.daily_budget_usd,
     monthlyBudgetUsd: row.monthly_budget_usd,
     ticketsPerStorePerMinute: row.tickets_per_store_per_minute,
     maxProducts: row.max_products,
@@ -423,23 +422,20 @@ export class PgState implements ServerState {
   }
 
   /**
-   * Today's reservations of the store if one more `amount` fits its daily and
-   * monthly budget, with today's row locked; undefined when it does not fit.
+   * What is left of the plan's monthly budget (reservations counted), with today's row locked:
+   * the month's only spend limit (anti-abuse limits are per visitor and per IP).
    */
-  private async fits(
+  private async room(
     tx: Queryable,
     owner: string,
     tier: Tier,
-    amount: string,
     now: number,
-  ): Promise<{ reserved: Decimal } | undefined> {
+  ): Promise<{ reserved: Decimal; left: Decimal }> {
     const today = await this.lockDay(tx, owner, utcDay(now));
-    const todayTotal = today.spent.plus(today.reserved).plus(amount);
-    if (todayTotal.greaterThan(tier.dailyBudgetUsd)) {
-      return undefined;
-    }
-    const month = (await this.monthBeforeToday(tx, owner, now)).plus(todayTotal);
-    return month.greaterThan(tier.monthlyBudgetUsd) ? undefined : today;
+    const month = (await this.monthBeforeToday(tx, owner, now))
+      .plus(today.spent)
+      .plus(today.reserved);
+    return { reserved: today.reserved, left: new Decimal(tier.monthlyBudgetUsd).minus(month) };
   }
 
   /** Settle an attempt's reservation to actual spend (`reserved`: in full); a no-op once resolved. */
@@ -473,7 +469,8 @@ export class PgState implements ServerState {
     session: SessionState,
     reserveUsd: string,
     now: number,
-  ): Promise<{ attemptId: string } | { reason: 'quota' | 'budget' }> {
+    client: ClientQuota | undefined,
+  ): Promise<{ attemptId: string; reservedUsd: string } | { reason: 'quota' | 'budget' }> {
     const [row] = await tx.query<StoreRow>(`${STORE_SELECT} where s.owner = $1 for update of s`, [
       session.owner,
     ]);
@@ -489,26 +486,44 @@ export class PgState implements ServerState {
     if ((quota?.used ?? 0) >= tier.messagesPerSessionPerDay) {
       return { reason: 'quota' };
     }
-    const today = await this.fits(tx, row.owner, tier, reserveUsd, now);
-    if (today === undefined) {
+    if (client !== undefined) {
+      const [clientQuota] = await tx.query<{ used: number }>(
+        'select used from ip_days where client = $1 and day = $2 for update',
+        [client.key, client.day],
+      );
+      if ((clientQuota?.used ?? 0) >= client.perDay) {
+        return { reason: 'quota' };
+      }
+    }
+    const room = await this.room(tx, row.owner, tier, now);
+    const amount = turnReservation(reserveUsd, room.left);
+    if (amount === undefined) {
       return { reason: 'budget' };
     }
+    const reservedUsd = amount.toFixed();
     await tx.query('update store_days set reserved = $3 where owner = $1 and day = $2', [
       row.owner,
       day,
-      today.reserved.plus(reserveUsd).toString(),
+      room.reserved.plus(amount).toFixed(),
     ]);
     const attemptId = randomId();
     await tx.query(
       'insert into reservations (attempt_id, owner, day, amount, created_at) values ($1, $2, $3, $4, $5)',
-      [attemptId, row.owner, day, reserveUsd, now],
+      [attemptId, row.owner, day, reservedUsd, now],
     );
     await tx.query(
       `insert into session_days (assistant, visitor, day, used) values ($1, $2, $3, 1)
        on conflict (assistant, visitor, day) do update set used = session_days.used + 1`,
       [session.assistant, session.visitor, day],
     );
-    return { attemptId };
+    if (client !== undefined) {
+      await tx.query(
+        `insert into ip_days (client, day, used) values ($1, $2, 1)
+         on conflict (client, day) do update set used = ip_days.used + 1`,
+        [client.key, client.day],
+      );
+    }
+    return { attemptId, reservedUsd };
   }
 
   /** Lock the session row; false once it was replaced or swept. */
@@ -535,6 +550,7 @@ export class PgState implements ServerState {
     reserveUsd: string,
     epoch: number,
     now: number,
+    client?: ClientQuota,
   ): Promise<Admission> {
     return this.db.transaction(async (tx) => {
       if (
@@ -551,11 +567,11 @@ export class PgState implements ServerState {
       if (existing.length > 0) {
         return SUPERSEDED;
       }
-      const reserved = await this.reserveAttempt(tx, session, reserveUsd, now);
+      const reserved = await this.reserveAttempt(tx, session, reserveUsd, now, client);
       if ('reason' in reserved) {
         return { admitted: false, reason: reserved.reason };
       }
-      const { attemptId } = reserved;
+      const { attemptId, reservedUsd } = reserved;
       const inserted = await tx.query(
         `insert into asks (session_id, ask_id, state, attempt_id, lease_epoch, deadline)
          values ($1, $2, 'queued', $3, $4, 0)
@@ -570,6 +586,7 @@ export class PgState implements ServerState {
       return {
         admitted: true,
         record: { state: 'queued', attemptId, leaseEpoch: epoch, deadline: 0 },
+        reservedUsd,
       };
     });
   }
@@ -581,6 +598,7 @@ export class PgState implements ServerState {
     reserveUsd: string,
     epoch: number,
     now: number,
+    client?: ClientQuota,
   ): Promise<Admission> {
     return this.db.transaction(async (tx) => {
       if (
@@ -604,7 +622,7 @@ export class PgState implements ServerState {
       if (live) {
         return SUPERSEDED;
       }
-      const reserved = await this.reserveAttempt(tx, session, reserveUsd, now);
+      const reserved = await this.reserveAttempt(tx, session, reserveUsd, now, client);
       if ('reason' in reserved) {
         return { admitted: false, reason: reserved.reason };
       }
@@ -614,7 +632,7 @@ export class PgState implements ServerState {
         // Real usage is unknown: the superseded attempt is charged in full.
         await this.settle(tx, previous.attempt_id, 'reserved');
       }
-      const { attemptId } = reserved;
+      const { attemptId, reservedUsd } = reserved;
       await tx.query(
         `update asks set state = 'queued', attempt_id = $3, lease_epoch = $4, deadline = 0, answer_wrap = null
          where session_id = $1 and ask_id = $2`,
@@ -623,6 +641,7 @@ export class PgState implements ServerState {
       return {
         admitted: true,
         record: { state: 'queued', attemptId, leaseEpoch: epoch, deadline: 0 },
+        reservedUsd,
       };
     });
   }
@@ -751,15 +770,15 @@ export class PgState implements ServerState {
     });
   }
 
-  async budgetExhausted(owner: string, now: number, reserveUsd: string): Promise<boolean> {
+  async budgetExhausted(owner: string, now: number): Promise<boolean> {
     return this.db.transaction(async (tx) => {
       const [row] = await tx.query<StoreRow>(`${STORE_SELECT} where s.owner = $1`, [owner]);
       const tier = row ? tierOf(row) : undefined;
       if (tier === undefined) {
         return true;
       }
-      // The same test a reservation makes: no ticket when not even one turn's reservation fits.
-      return (await this.fits(tx, owner, tier, reserveUsd, now)) === undefined;
+      // The same test a reservation makes: no ticket once nothing of the budget is left.
+      return (await this.room(tx, owner, tier, now)).left.lessThanOrEqualTo(0);
     });
   }
 
@@ -879,6 +898,8 @@ export class PgState implements ServerState {
     await this.db.query('delete from rumors where expires_at <= $1', [now]);
     await this.db.query('delete from admin_auth_ids where expires_at <= $1', [now]);
     await this.db.query('delete from session_days where day < $1', [utcDay(now)]);
+    // A ticket counts under its issue day and lives into the next one: yesterday's row is kept.
+    await this.db.query('delete from ip_days where day < $1', [utcDay(now) - 1]);
   }
 
   /** Test and admin view: a store's spend and reservations on the day of `now`. */

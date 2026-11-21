@@ -33,6 +33,16 @@ interface Probe {
   result: ProbeResult;
 }
 
+/** A probe not made, and why: printed so an agent never reads a missing `probe` as a pass. */
+interface SkippedProbe {
+  result: 'skipped';
+  reason: string;
+}
+
+/** The hint of a `budget` refusal: a store's only spend limit is its plan's monthly budget. */
+export const BUDGET_HINT =
+  "the store reached its plan's monthly limit, so the chat does not answer until the plan is upgraded or the next month starts: to upgrade, message us with your Store ID (upgrade.contact)";
+
 function money(value: string): string {
   try {
     return new Decimal(value).toString();
@@ -107,13 +117,14 @@ async function probe(session: Session, view: StoreView, origin: string): Promise
   }
 }
 
+/** A failed probe's exit carries the whole status as its fields, so nothing else is lost. */
 function probeExit(
   session: Session,
   view: StoreView,
   probed: Probe,
-  storeId: string,
+  status: Record<string, unknown>,
 ): AskrExit | undefined {
-  const fields = { storeId, probe: probed };
+  const fields = { ...status, probe: probed };
   switch (probed.result) {
     case 'ok':
       return undefined;
@@ -136,14 +147,24 @@ function probeExit(
       return new AskrExit(EXIT.REFUSED, 'inactive', { hint: planHintOf(view), fields });
     case 'budget':
       return new AskrExit(EXIT.LIMIT, 'budget', {
-        hint: "the store's chat budget is used up",
-        fields: { ...fields, upgrade: UPGRADE },
+        hint: BUDGET_HINT,
+        fields,
       });
     case 'moved':
-      return movedExit();
+      return movedExit(fields);
     default:
       return new AskrExit(EXIT.REFUSED, 'probe_failed', { fields });
   }
+}
+
+/** Why the probe is not made: a pending store is served nowhere yet, a store with no origin has no page. */
+function skippedProbe(view: StoreView): SkippedProbe {
+  return view.status === 'pending'
+    ? {
+        result: 'skipped',
+        reason: 'the store is pending: the chat is not served until its plan is active',
+      }
+    : { result: 'skipped', reason: 'the store lists no origin' };
 }
 
 export async function runStatus(session: Session, options: StatusOptions): Promise<CommandOutcome> {
@@ -207,13 +228,18 @@ export async function runStatus(session: Session, options: StatusOptions): Promi
   if (view.status !== 'active') {
     output.hint = planHintOf(view);
   }
+  if (options.probe !== true) {
+    return { exitCode: EXIT.OK, output };
+  }
   const origin = config?.origins[0];
-  if (options.probe !== true || view.status === 'pending' || origin === undefined) {
+  if (view.status === 'pending' || origin === undefined) {
+    output.probe = skippedProbe(view);
     return { exitCode: EXIT.OK, output };
   }
   const probed = await probe(session, view, origin);
   output.probe = probed;
-  const failed = probeExit(session, view, probed, key.storeId);
+  const status = Object.fromEntries(Object.entries(output).filter(([name]) => name !== 'ok'));
+  const failed = probeExit(session, view, probed, status);
   if (failed !== undefined) {
     throw failed;
   }
