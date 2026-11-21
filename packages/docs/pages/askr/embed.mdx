@@ -78,6 +78,10 @@ If your site sends a CSP, allow:
 
 The widget adds no inline scripts or styles, so a strict `script-src` and `style-src` hold.
 
+## AI agents
+
+AI agents read your store's products and policies from its `llms.txt` and `catalog.json` on the Askr server, without the chat and without using its budget. Put the short `llms.txt` from the Embed tab (or `askr embed`) at your site's root so agents find them: see [AI agents and your store](/askr/ai-agents).
+
 ## What the widget can see
 
 It runs in your page, like any script you embed. It keeps the visitor's chat key in the page's local storage, and scripts on your page can read it. It sends the assistant the page's origin and path, never its query string.

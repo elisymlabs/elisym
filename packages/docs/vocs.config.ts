@@ -147,6 +147,7 @@ export default defineConfig({
         { text: 'Set up with an AI agent', link: '/askr/agent-setup' },
         { text: 'The admin, field by field', link: '/askr/admin' },
         { text: 'Embed the widget', link: '/askr/embed' },
+        { text: 'AI agents and your store', link: '/askr/ai-agents' },
         { text: 'Catalog from an agent', link: '/askr/catalog-from-an-agent' },
       ],
     },

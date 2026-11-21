@@ -383,6 +383,10 @@ The chat code: paste it once before `</body>` on every page that should show the
 
 Whether product cards get an add to cart button. A Shopify or WooCommerce connector gives one on your shop's own site, with nothing to add. Otherwise your developer adds a small hook to your pages that puts the product in your cart. See [Embed the widget](/askr/embed).
 
+### llms.txt for AI agents
+
+A short file for your site's root, `/llms.txt`: it tells an AI agent visiting your site that your store's shopping assistant is Askr, and links to your store's full `llms.txt` and `catalog.json` on the Askr server, with every visible product and your policies. Agents read them without opening the chat, so they cost none of your plan's budget. If your site already has an `llms.txt`, add the **Shopping assistant** part to the end of it instead of replacing it. See [AI agents and your store](/askr/ai-agents).
+
 ## The Advanced page
 
 ### Secret key
