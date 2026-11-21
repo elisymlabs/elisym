@@ -393,10 +393,10 @@ describe('the copy', () => {
     expect(injection?.querySelector('p')?.textContent).not.toMatch(/^No\b/);
   });
 
-  it('says it never takes payments, that Free and paid plans start in the admin, Enterprise through us', async () => {
+  it('says it never takes payments, that a plan is chosen here, keyed in the admin and paid on Stripe, Enterprise through us', async () => {
     const page = await render(<App />);
     const choose =
-      'Choose Free in the admin and your store goes live at once. A paid plan goes live as soon as you pay for it in the admin. For Enterprise, message us with your Store ID.';
+      'Choose a plan here, create your key in the admin, then pay on Stripe. Free needs no payment: your store goes live at once. For Enterprise, message us with your Store ID.';
     expect(page.querySelector('#faq')?.textContent).toContain('never touches money');
     expect(page.querySelector('#start')?.textContent).toContain(choose);
     expect(page.querySelector('#pricing')?.textContent).toContain(choose);

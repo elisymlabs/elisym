@@ -15,6 +15,7 @@ import type {
   PinnedWidget,
   MovedSettings,
   PaidPlan,
+  PortalAction,
   StoreView,
   StoredEventsRead,
 } from './types';
@@ -157,9 +158,14 @@ export class AdminApi {
     return this.call('POST', '/v1/admin/billing/checkout', { plan, interval });
   }
 
-  /** The Stripe billing portal for this store: change plan, payment method, cancel. */
-  billingPortal(): Promise<{ url: string }> {
-    return this.call('POST', '/v1/admin/billing/portal');
+  /**
+   * The Stripe billing portal for this store: with no action its home (payment method, invoices),
+   * with one the page that confirms a plan switch or a cancel. Every flow comes back to the admin.
+   */
+  billingPortal(action?: PortalAction): Promise<{ url: string }> {
+    return action === undefined
+      ? this.call('POST', '/v1/admin/billing/portal')
+      : this.call('POST', '/v1/admin/billing/portal', action);
   }
 
   /** What O signed and the server holds for the relay: a store that is not active shows it (7.3). */

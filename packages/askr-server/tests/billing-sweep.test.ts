@@ -50,6 +50,7 @@ describe('Stripe objects, strictly', () => {
 
   it('reads no interval from several items and no period end from none', () => {
     const item = {
+      id: 'si_1',
       current_period_end: PERIOD_END,
       price: price('askr_pro_yearly', 'year', { askr_tier: 'pro' }),
     };
@@ -143,7 +144,10 @@ describe('the real Stripe client, over a stub fetch', () => {
       metadata: { askr_store: 'ab'.repeat(32) },
       cancel_at_period_end: false,
       created: NOW,
-      items: { object: 'list', data: [{ current_period_end: PERIOD_END, price: proPrice }] },
+      items: {
+        object: 'list',
+        data: [{ id: 'si_1', current_period_end: PERIOD_END, price: proPrice }],
+      },
     };
     const { gateway, requests } = stubStripe((url) =>
       url.pathname.endsWith('/sub_1')
@@ -162,6 +166,8 @@ describe('the real Stripe client, over a stub fetch', () => {
     );
     expect(await gateway.subscription('sub_1')).toMatchObject({ plan: 'pro', created: NOW });
     expect(requests[0]?.url.searchParams.get('expand[0]')).toBe('items.data.price.product');
+    expect(requests[0]?.url.searchParams.get('expand[1]')).toBe('schedule.phases.items.price');
+    expect(requests[0]?.url.searchParams.getAll('expand[2]')).toEqual([]);
     expect(await gateway.subscription('sub_gone')).toBeUndefined();
   });
 
@@ -864,9 +870,11 @@ describe('createRoutes', () => {
       store: owner.pubkey,
       plan: 'starter' as const,
       interval: 'month' as const,
+      itemId: 'si_1',
       currentPeriodEnd: PERIOD_END,
       cancelAtPeriodEnd: false,
       created: NOW,
+      scheduledChange: null,
     };
     stripe.subscriptions.set(snapshot.id, snapshot);
     const event = async (id: string, type: string) => {

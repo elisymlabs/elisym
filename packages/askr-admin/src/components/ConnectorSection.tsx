@@ -24,7 +24,7 @@ interface Props {
   view: StoreView;
   config: StoreConfig | undefined;
   reload: () => Promise<void>;
-  /** Opens Overview, where a store with no plan chooses one. */
+  /** Opens Billing, where a store with no plan chooses one. */
   onChoosePlan?: () => void;
   /** Between two previews refused by a running sync; tests pass a short one. */
   pollMs?: number;

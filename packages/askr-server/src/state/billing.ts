@@ -1,5 +1,11 @@
 import { HEX_PUBKEY_RE } from '@elisym/commerce';
-import type { BillingInterval, PaidPlan, SubscriptionSnapshot } from '../billing/stripe';
+import {
+  type BillingInterval,
+  type PaidPlan,
+  type ScheduledChange,
+  type SubscriptionSnapshot,
+  isPaidPlan,
+} from '../billing/stripe';
 import type { FreeTier } from '../config';
 import { type Db, type Queryable, STORES_CHANNEL } from '../db/db';
 import { followMoves } from './pg-state';
@@ -40,6 +46,8 @@ export interface SubscriptionRecord {
   /** Unix seconds. */
   currentPeriodEnd: number | null;
   cancelAtPeriodEnd: boolean;
+  /** What its schedule changes later, as last read; null with nothing scheduled. */
+  scheduledChange: ScheduledChange | null;
   /** Unix seconds: when Stripe created it. */
   stripeCreated: number;
   updatedAt: number;
@@ -54,8 +62,23 @@ interface SubscriptionRow extends Record<string, unknown> {
   interval: BillingInterval | null;
   current_period_end: number | null;
   cancel_at_period_end: boolean;
+  scheduled_plan: string | null;
+  scheduled_interval: BillingInterval | null;
+  scheduled_at: number | null;
   stripe_created: number;
   updated_at: number;
+}
+
+function scheduledChangeOf(row: SubscriptionRow): ScheduledChange | null {
+  if (row.scheduled_at === null) {
+    return null;
+  }
+  const plan = row.scheduled_plan ?? undefined;
+  return {
+    plan: isPaidPlan(plan) ? plan : null,
+    interval: row.scheduled_interval,
+    at: row.scheduled_at,
+  };
 }
 
 function recordOf(row: SubscriptionRow): SubscriptionRecord {
@@ -68,6 +91,7 @@ function recordOf(row: SubscriptionRow): SubscriptionRecord {
     interval: row.interval,
     currentPeriodEnd: row.current_period_end,
     cancelAtPeriodEnd: row.cancel_at_period_end,
+    scheduledChange: scheduledChangeOf(row),
     stripeCreated: row.stripe_created,
     updatedAt: row.updated_at,
   };
@@ -96,7 +120,8 @@ export type PlanOutcome =
   | 'no_store';
 
 const SUBSCRIPTION_SELECT = `select subscription_id, owner, customer_id, status, plan, interval,
-  current_period_end, cancel_at_period_end, stripe_created, updated_at from billing_subscriptions`;
+  current_period_end, cancel_at_period_end, scheduled_plan, scheduled_interval, scheduled_at,
+  stripe_created, updated_at from billing_subscriptions`;
 
 /** Where a store named by `owner` (hex) is now: itself, where it moved to, or undefined. */
 export async function storeNow(
@@ -157,7 +182,8 @@ export async function noteCustomer(
 
 /**
  * Store a subscription as Stripe has it now; a known one keeps the store it was recorded for, and
- * its plan and interval when Stripe's price no longer names one of ours.
+ * its plan and interval when Stripe's price no longer names one of ours. Its scheduled change is
+ * always Stripe's now, so a schedule released or done clears it.
  */
 export async function saveSubscription(
   tx: Queryable,
@@ -168,14 +194,16 @@ export async function saveSubscription(
 ): Promise<void> {
   await tx.query(
     `insert into billing_subscriptions (subscription_id, owner, customer_id, status, plan, interval,
-       current_period_end, cancel_at_period_end, stripe_created, updated_at, snapshot_fetched_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $10, $9, $11)
+       current_period_end, cancel_at_period_end, stripe_created, updated_at, snapshot_fetched_at,
+       scheduled_plan, scheduled_interval, scheduled_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $10, $9, $11, $12, $13, $14)
      on conflict (subscription_id) do update set
        customer_id = $3, status = $4,
        plan = coalesce($5, billing_subscriptions.plan),
        interval = coalesce($6, billing_subscriptions.interval),
        current_period_end = $7, cancel_at_period_end = $8, stripe_created = $10, updated_at = $9,
-       snapshot_fetched_at = $11
+       snapshot_fetched_at = $11,
+       scheduled_plan = $12, scheduled_interval = $13, scheduled_at = $14
      where billing_subscriptions.snapshot_fetched_at <= $11`,
     [
       snapshot.id,
@@ -189,6 +217,9 @@ export async function saveSubscription(
       now,
       snapshot.created,
       fetchedAt,
+      snapshot.scheduledChange?.plan ?? null,
+      snapshot.scheduledChange?.interval ?? null,
+      snapshot.scheduledChange?.at ?? null,
     ],
   );
 }
@@ -202,6 +233,7 @@ export async function markSubscriptionGone(
 ): Promise<void> {
   await tx.query(
     `update billing_subscriptions set status = 'canceled', cancel_at_period_end = false,
+       scheduled_plan = null, scheduled_interval = null, scheduled_at = null,
        updated_at = $2, snapshot_fetched_at = $3
      where subscription_id = $1 and snapshot_fetched_at <= $3`,
     [subscriptionId, now, fetchedAt],

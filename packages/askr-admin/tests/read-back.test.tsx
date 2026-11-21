@@ -373,6 +373,7 @@ describe('the overview', () => {
     expect(sections(container)).not.toContain('Connector');
     expect(sections(container)).toEqual([
       'Overview',
+      'Billing',
       'Settings',
       'Products',
       'Policies',

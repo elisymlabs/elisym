@@ -323,9 +323,11 @@ export async function setup(
       store: owner,
       plan: 'starter',
       interval: 'month',
+      itemId: `si_${owner.slice(0, 8)}`,
       currentPeriodEnd: PERIOD_END,
       cancelAtPeriodEnd: false,
       created: NOW,
+      scheduledChange: null,
       ...overrides,
     };
     stripe.subscriptions.set(snapshot.id, snapshot);

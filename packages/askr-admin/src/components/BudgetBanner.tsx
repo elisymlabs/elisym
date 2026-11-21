@@ -1,8 +1,6 @@
 import { UPGRADE_TEXT } from '../lib/activation';
 import { budgetNotice } from '../lib/budget';
-import { npubOf } from '../lib/signer';
 import type { StoreView } from '../lib/types';
-import { ContactLinks } from './ContactLinks';
 import { Notice } from './Notice';
 
 interface Props {
@@ -23,7 +21,6 @@ export function BudgetBanner({ view, now }: Props) {
         <span>
           {notice.text} {UPGRADE_TEXT}
         </span>
-        <ContactLinks storeId={npubOf(view.owner)} />
       </div>
     </Notice>
   );

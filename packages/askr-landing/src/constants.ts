@@ -53,7 +53,7 @@ export interface Plan {
   price: PlanPrice;
   blurb: string;
   features: readonly string[];
-  /** Free starts in the admin, Enterprise is a conversation, the rest are set up with us. */
+  /** Free starts in the admin, the paid plans are chosen here and paid for from the admin, Enterprise is a conversation. */
   start: 'admin' | 'choose' | 'contact';
   featured: boolean;
   /**
@@ -69,7 +69,7 @@ export const YEARLY_DISCOUNT_BPS = 2000;
 /** The same discount as the page writes it; a test keeps it equal to `YEARLY_DISCOUNT_BPS`. */
 export const YEARLY_DISCOUNT_LABEL = '20%';
 
-/** A plan with a flat price, billed monthly or yearly, started in the admin or chosen with us. */
+/** A plan with a flat price, billed monthly or yearly: Free started in the admin, the rest chosen here. */
 export type FlatPlan = Plan & {
   price: Extract<PlanPrice, { kind: 'flat' }>;
   start: Exclude<Plan['start'], 'contact'>;
@@ -88,7 +88,7 @@ export function isContractPlan(plan: Plan): plan is ContractPlan {
 
 /** How a store gets on a plan, said in Get started and under the prices: Free and paid self-serve, Enterprise through us. */
 export const CHOOSE_PLAN_TEXT =
-  'Choose Free in the admin and your store goes live at once. A paid plan goes live as soon as you pay for it in the admin. For Enterprise, message us with your Store ID.';
+  'Choose a plan here, create your key in the admin, then pay on Stripe. Free needs no payment: your store goes live at once. For Enterprise, message us with your Store ID.';
 
 /** How a conversation is counted, as the pricing's small print says it. */
 export const CONVERSATION_DEFINITION =
@@ -210,7 +210,7 @@ export const START_LABEL = 'Start free';
 export const GITHUB_URL = 'https://github.com/elisymlabs/elisym';
 export const X_URL = 'https://x.com/elisymlabs';
 
-/** Where a store asks for a paid plan or Enterprise: our request form. */
+/** Where a store asks for Enterprise or writes to us: our request form. */
 export const CONTACT_URL = 'https://forms.gle/woUDTt53ZndRtm5H8';
 
 /** This page's own address. */

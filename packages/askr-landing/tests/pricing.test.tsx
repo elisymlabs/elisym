@@ -61,6 +61,28 @@ async function cardOf(page: HTMLElement, name: string): Promise<Element | undefi
   return cards(page).find((card) => card.querySelector('h3')?.textContent === name);
 }
 
+/** Where each plan's button goes under each billing, written out: a wrong plan or period fails here. */
+const CHOSEN_HREF: Record<string, Record<'Monthly' | 'Yearly', string>> = {
+  Free: { Monthly: ADMIN_URL, Yearly: ADMIN_URL },
+  Starter: {
+    Monthly: 'https://app.askr.elisym.network/admin/?plan=starter&interval=month',
+    Yearly: 'https://app.askr.elisym.network/admin/?plan=starter&interval=year',
+  },
+  Growth: {
+    Monthly: 'https://app.askr.elisym.network/admin/?plan=growth&interval=month',
+    Yearly: 'https://app.askr.elisym.network/admin/?plan=growth&interval=year',
+  },
+  Pro: {
+    Monthly: 'https://app.askr.elisym.network/admin/?plan=pro&interval=month',
+    Yearly: 'https://app.askr.elisym.network/admin/?plan=pro&interval=year',
+  },
+  Scale: {
+    Monthly: 'https://app.askr.elisym.network/admin/?plan=scale&interval=month',
+    Yearly: 'https://app.askr.elisym.network/admin/?plan=scale&interval=year',
+  },
+  Enterprise: { Monthly: CONTACT_URL, Yearly: CONTACT_URL },
+};
+
 /** The plans as agreed, written out: any drift in the table fails here. */
 const AGREED = [
   {
@@ -328,17 +350,33 @@ describe('the pricing section', () => {
     }
   });
 
-  it('starts Free in the admin and every other plan with us', async () => {
+  it('starts Free in the admin, a paid plan in the admin with its plan and billing, Enterprise with us', async () => {
     const page = await render();
-    for (const plan of PLANS) {
-      const links = [...((await cardOf(page, plan.name))?.querySelectorAll('a') ?? [])];
+    const billing = [
+      ...page.querySelectorAll<HTMLButtonElement>(
+        '#pricing [role="radiogroup"][aria-label="Billing period"] [role="radio"]',
+      ),
+    ];
+    expect(billing.map((radio) => radio.textContent)).toEqual(['Monthly', 'Yearly']);
+    for (const period of ['Monthly', 'Yearly'] as const) {
+      await act(async () => billing.find((radio) => radio.textContent === period)?.click());
       expect(
-        links.map((link) => link.href),
-        plan.name,
-      ).toEqual([plan.start === 'admin' ? ADMIN_URL : CONTACT_URL]);
-      expect(links[0]?.textContent, plan.name).toBe(
-        { admin: 'Start free', choose: `Choose ${plan.name}`, contact: 'Contact us' }[plan.start],
-      );
+        billing.find((radio) => radio.getAttribute('aria-checked') === 'true')?.textContent,
+      ).toBe(period);
+      // Growth, Pro and Scale share one card: cardOf picks each on its size switch first.
+      for (const plan of PLANS) {
+        const label = `${plan.name}, ${period}`;
+        const links = [...((await cardOf(page, plan.name))?.querySelectorAll('a') ?? [])];
+        expect(
+          links.map((link) => link.href),
+          label,
+        ).toEqual([CHOSEN_HREF[plan.name]?.[period]]);
+        expect(links[0]?.textContent, label).toBe(
+          { admin: 'Start free', choose: `Choose ${plan.name}`, contact: 'Contact us' }[plan.start],
+        );
+        expect(links[0]?.getAttribute('target'), label).toBe('_blank');
+        expect(links[0]?.getAttribute('rel'), label).toBe('noopener noreferrer');
+      }
     }
   });
 
@@ -384,15 +422,6 @@ describe('the pricing section', () => {
     expect(page.querySelector('#pricing')?.textContent).toContain(
       'Prices include VAT or sales tax where it applies: checkout charges the price shown.',
     );
-  });
-
-  it('opens every paid plan and Enterprise on the request form in a new tab', async () => {
-    const page = await render();
-    for (const plan of PLANS.filter((entry) => entry.start !== 'admin')) {
-      const link = (await cardOf(page, plan.name))?.querySelector('a');
-      expect(link?.getAttribute('target'), plan.name).toBe('_blank');
-      expect(link?.getAttribute('rel'), plan.name).toBe('noopener noreferrer');
-    }
   });
 
   it('takes the up and down arrows too, and keeps them from scrolling the page', async () => {

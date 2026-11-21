@@ -3,7 +3,6 @@ import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Onboarding } from '../src/components/Onboarding';
-import { CONTACT_URL } from '../src/constants';
 import { npubOf } from '../src/lib/signer';
 import type { StoreView } from '../src/lib/types';
 import {
@@ -43,16 +42,14 @@ describe('onboarding', () => {
     );
     mounted = await mount(render());
     expect(mounted.container.textContent).toContain(
-      'Save your settings, then choose a plan in Overview: Free starts at once',
+      'Save your settings, then choose a plan in Billing: Free starts at once, with nothing to pay; a paid plan starts as soon as you pay for it.',
     );
     expect(mounted.container.textContent).not.toContain('asks for your store to start');
-    expect(mounted.container.querySelector('.contact-link')?.getAttribute('href')).toBe(
-      CONTACT_URL,
-    );
+    // No message-us line: a paid plan is paid for in Billing.
+    expect(mounted.container.textContent).not.toMatch(/message us|Overview/u);
+    expect(mounted.container.querySelector('.contact-link')).toBeNull();
     expect(mounted.container.textContent).not.toContain('save again');
-    expect(mounted.container.querySelector('.contact-link')?.parentElement?.textContent).toContain(
-      npubOf(OWNER),
-    );
+    expect(mounted.container.textContent).toContain(npubOf(OWNER));
     // The contact email comes first: no store without somewhere to write to.
     expect(buttonNamed(mounted.container, 'Create my store').disabled).toBe(true);
     await typeInto(byId(mounted.container, 'onboarding-email'), 'not an email');

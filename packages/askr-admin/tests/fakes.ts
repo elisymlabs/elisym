@@ -208,11 +208,18 @@ export const FREE_TIER = {
 };
 
 /** What Overview takes beside the view and the settings, for a test that only looks at it. */
-export function overviewProps(api: AdminClient = fakeApi()) {
+export function overviewProps() {
+  return { onOpenBilling: vi.fn(() => undefined) };
+}
+
+/** What the Billing tab takes beside the view, for a test that only looks at it. */
+export function billingProps(api: AdminClient = fakeApi()) {
   return {
     deps: { api, openUrl: vi.fn((_url: string) => undefined) },
+    settingsSaved: true,
     configError: '',
     onPlanChosen: vi.fn(async () => undefined),
+    onIntentDone: vi.fn(() => undefined),
   };
 }
 

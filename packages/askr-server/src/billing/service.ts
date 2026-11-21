@@ -22,6 +22,7 @@ import {
   PAID_PLANS,
   type PaidPlan,
   STORE_METADATA,
+  type ScheduledChange,
   type StripeGateway,
   type SubscriptionSnapshot,
   isResourceMissing,
@@ -41,6 +42,12 @@ export const WEBHOOK_EVENTS: readonly string[] = [
   'customer.subscription.deleted',
   'invoice.paid',
   'invoice.payment_failed',
+  // A schedule the portal attaches (a downgrade put off to the period end) may change only the
+  // schedule, not the subscription: these keep `scheduledChange` current.
+  'subscription_schedule.created',
+  'subscription_schedule.updated',
+  'subscription_schedule.released',
+  'subscription_schedule.canceled',
 ];
 
 /** Checkout sessions one store may open per hour: each is a Stripe call. */
@@ -54,6 +61,24 @@ const CheckoutRequestSchema = z.object({
   plan: z.enum(PAID_PLANS),
   interval: z.enum(['month', 'year']),
 });
+
+/** `{}` (or no body): the portal's home. */
+const PlainPortalSchema = z.strictObject({});
+/** A switch or a cancel: straight into that portal flow. */
+const PortalActionSchema = z.discriminatedUnion('action', [
+  z.strictObject({
+    action: z.literal('switch'),
+    plan: z.enum(PAID_PLANS),
+    interval: z.enum(['month', 'year']),
+  }),
+  z.strictObject({ action: z.literal('cancel') }),
+]);
+type PortalAction = z.infer<typeof PortalActionSchema>;
+
+/** Where a plan sits among the paid plans: a higher one is an upgrade. */
+function rankOf(plan: PaidPlan): number {
+  return PAID_PLANS.indexOf(plan);
+}
 
 /** What the admin view shows of a store's billing (`GET /v1/admin/store`). */
 export interface BillingView {
@@ -72,6 +97,8 @@ export interface BillingView {
   checkoutAvailable: boolean;
   /** We set this store's plan by hand (or suspended it): its plan changes go through us. */
   operatorManaged: boolean;
+  /** What the subscription's schedule changes at its period end; null with nothing scheduled. */
+  scheduledChange: ScheduledChange | null;
 }
 
 export const BILLING_OFF: BillingView = {
@@ -84,6 +111,7 @@ export const BILLING_OFF: BillingView = {
   manageable: false,
   checkoutAvailable: false,
   operatorManaged: false,
+  scheduledChange: null,
 };
 
 export interface BillingDeps {
@@ -157,6 +185,18 @@ function subjectOf(event: Stripe.Event): EventSubject {
         customer: idOf(subscription.customer),
       };
     }
+    case 'subscription_schedule.created':
+    case 'subscription_schedule.updated':
+    case 'subscription_schedule.released':
+    case 'subscription_schedule.canceled': {
+      const schedule = event.data.object;
+      return {
+        // A released schedule no longer names its subscription, only the one it let go of.
+        subscriptionId: idOf(schedule.subscription) ?? schedule.released_subscription ?? undefined,
+        owner: undefined,
+        customer: idOf(schedule.customer),
+      };
+    }
     case 'invoice.paid':
     case 'invoice.payment_failed': {
       const invoice = event.data.object;
@@ -169,6 +209,36 @@ function subjectOf(event: Stripe.Event): EventSubject {
     default:
       return { subscriptionId: undefined, owner: undefined, customer: undefined };
   }
+}
+
+/** What a pending payment, cancel or schedule refuses, and a switch to the plan it is on. */
+function pendingRefusal(
+  subscription: {
+    status: string;
+    cancelAtPeriodEnd: boolean;
+    scheduledChange: ScheduledChange | null;
+    plan: PaidPlan | null | undefined;
+    interval: BillingInterval | null | undefined;
+  },
+  target: { plan: PaidPlan; interval: BillingInterval } | undefined,
+): string | undefined {
+  if (subscription.status === 'past_due') {
+    return 'past_due';
+  }
+  if (subscription.cancelAtPeriodEnd) {
+    return 'cancel_pending';
+  }
+  if (subscription.scheduledChange !== null) {
+    return 'change_scheduled';
+  }
+  if (
+    target !== undefined &&
+    subscription.plan === target.plan &&
+    subscription.interval === target.interval
+  ) {
+    return 'same_plan';
+  }
+  return undefined;
 }
 
 interface Applied {
@@ -220,6 +290,7 @@ export class BillingService {
       manageable: (await this.directory.customerOf(owner)) !== undefined,
       checkoutAvailable: ours && live === undefined,
       operatorManaged: managed,
+      scheduledChange: shown?.scheduledChange ?? null,
     };
   }
 
@@ -313,8 +384,42 @@ export class BillingService {
     return this.deps.stripe.createCheckoutSession(params);
   }
 
-  /** `POST /v1/admin/billing/portal`: `{url}` of the customer portal for the store's customer. */
-  async portal(owner: string): Promise<Response> {
+  /**
+   * `POST /v1/admin/billing/portal`: `{url}` of the customer portal for the store's customer. No
+   * body or `{}` opens its home; `{"action":"switch","plan","interval"}` or `{"action":"cancel"}`
+   * opens that flow for the store's live subscription, once every check Stripe would make passes.
+   */
+  async portal(owner: string, body = ''): Promise<Response> {
+    const value = body.trim() === '' ? {} : parseJson(body);
+    if (PlainPortalSchema.safeParse(value).success) {
+      const customer = await this.directory.customerOf(owner);
+      if (customer === undefined) {
+        return json({ error: 'no_customer' }, 404);
+      }
+      if (!this.portalsPerOwner.hit(owner, this.now() * 1000)) {
+        return json({ error: 'rate_limited' }, 429);
+      }
+      return this.openPortal(owner, { customer, return_url: this.adminUrl });
+    }
+    const action = PortalActionSchema.safeParse(value);
+    if (!action.success) {
+      return json({ error: 'bad_request' }, 400);
+    }
+    return this.portalFlow(owner, action.data);
+  }
+
+  /** A switch or cancel: the checks in order (the cheap ones before any Stripe call), then the flow. */
+  private async portalFlow(owner: string, request: PortalAction): Promise<Response> {
+    const state = await this.directory.planState(owner);
+    if (state === undefined) {
+      return json({ error: 'no_store' }, 404);
+    }
+    if (state.status === 'suspended') {
+      return json({ error: 'suspended' }, 409);
+    }
+    if (operatorManaged(state)) {
+      return json({ error: 'operator_managed' }, 409);
+    }
     const customer = await this.directory.customerOf(owner);
     if (customer === undefined) {
       return json({ error: 'no_customer' }, 404);
@@ -322,17 +427,103 @@ export class BillingService {
     if (!this.portalsPerOwner.hit(owner, this.now() * 1000)) {
       return json({ error: 'rate_limited' }, 429);
     }
+    const subscriptions = await this.directory.subscriptions(owner);
+    const live = subscriptions.find((entry) => LIVE_STATUSES.includes(entry.status));
+    if (live === undefined) {
+      return json({ error: 'no_subscription' }, 409);
+    }
+    const target = request.action === 'switch' ? request : undefined;
+    const pending = pendingRefusal(live, target);
+    if (pending !== undefined) {
+      return json({ error: pending }, 409);
+    }
+    let price: Awaited<ReturnType<StripeGateway['price']>>;
+    if (target !== undefined) {
+      if (!(await this.deps.tierExists(target.plan))) {
+        this.log(`plan switch for ${owner} refused: the tier ${target.plan} does not exist`);
+        return json({ error: 'plan_unavailable' }, 503);
+      }
+      const lookupKey = lookupKeyOf(target.plan, target.interval);
+      try {
+        price = await this.deps.stripe.price(lookupKey);
+      } catch (error) {
+        this.log(
+          `plan switch for ${owner}: reading the price ${lookupKey} failed: ${errorText(error)}`,
+        );
+        return json({ error: 'billing_failed' }, 502);
+      }
+      if (price === undefined || price.plan !== target.plan || price.interval !== target.interval) {
+        this.log(`plan switch for ${owner} refused: no active Askr price ${lookupKey}`);
+        return json({ error: 'plan_unavailable' }, 503);
+      }
+    }
+    let snapshot: SubscriptionSnapshot | undefined;
     try {
-      const session = await this.deps.stripe.createPortalSession({
-        customer,
-        return_url: this.adminUrl,
-      });
+      snapshot = await this.deps.stripe.subscription(live.subscriptionId);
+    } catch (error) {
+      this.log(`portal for ${owner}: reading ${live.subscriptionId} failed: ${errorText(error)}`);
+      return json({ error: 'billing_failed' }, 502);
+    }
+    // The database can lag a webhook: what Stripe holds now is checked again.
+    if (snapshot === undefined || !LIVE_STATUSES.includes(snapshot.status)) {
+      return json({ error: 'no_subscription' }, 409);
+    }
+    const stripeRefusal = pendingRefusal(snapshot, target);
+    if (stripeRefusal !== undefined) {
+      return json({ error: stripeRefusal }, 409);
+    }
+    const { plan, interval, itemId } = snapshot;
+    if (plan === undefined || interval === undefined || itemId === undefined) {
+      this.log(`portal for ${owner} refused: ${snapshot.id} is not on one Askr price`);
+      return json({ error: 'subscription_unexpected' }, 409);
+    }
+    const afterCompletion: Stripe.BillingPortal.SessionCreateParams.FlowData.AfterCompletion = {
+      type: 'redirect',
+      redirect: { return_url: `${this.adminUrl}?${BILLING_RETURN_PARAM}=updated` },
+    };
+    let flow: Stripe.BillingPortal.SessionCreateParams.FlowData;
+    if (target === undefined || price === undefined) {
+      flow = {
+        type: 'subscription_cancel',
+        subscription_cancel: { subscription: snapshot.id },
+        after_completion: afterCompletion,
+      };
+    } else if (
+      rankOf(target.plan) >= rankOf(plan) &&
+      !(interval === 'year' && target.interval === 'month')
+    ) {
+      // Up, or the same plan billed longer: confirmed straight away, charged as the portal prorates.
+      flow = {
+        type: 'subscription_update_confirm',
+        subscription_update_confirm: {
+          subscription: snapshot.id,
+          items: [{ id: itemId, price: price.id, quantity: 1 }],
+        },
+        after_completion: afterCompletion,
+      };
+    } else {
+      // Down, or a shorter interval: the portal's own picker, which puts it off to the period end.
+      flow = {
+        type: 'subscription_update',
+        subscription_update: { subscription: snapshot.id },
+        after_completion: afterCompletion,
+      };
+    }
+    return this.openPortal(owner, { customer, return_url: this.adminUrl, flow_data: flow });
+  }
+
+  private async openPortal(
+    owner: string,
+    params: Stripe.BillingPortal.SessionCreateParams & { customer: string },
+  ): Promise<Response> {
+    try {
+      const session = await this.deps.stripe.createPortalSession(params);
       return json({ url: session.url }, 200);
     } catch (error) {
       // A customer Stripe deleted (the owner asked Link to delete their data): forgotten, so the
       // store can check out again instead of failing here forever.
       if (isResourceMissing(error, 'customer')) {
-        await this.directory.forgetCustomer(owner, customer);
+        await this.directory.forgetCustomer(owner, params.customer);
         return json({ error: 'no_customer' }, 404);
       }
       this.log(`billing portal for ${owner} failed: ${errorText(error)}`);

@@ -316,6 +316,22 @@ body {
     color: var(--error);
   }
 
+  /* A plan on the Billing tab, as the landing's cards; the one chosen on the landing stands out. */
+  .plan-card {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    border-radius: var(--radius-16);
+    padding: 20px;
+    box-shadow: var(--shadow);
+  }
+  .plan-card-chosen {
+    border-color: var(--ink);
+    box-shadow: 0 0 0 3px var(--ring);
+  }
+
   /* A short status label with a coloured dot. */
   .badge {
     display: inline-flex;

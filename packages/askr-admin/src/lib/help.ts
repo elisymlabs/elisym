@@ -20,12 +20,8 @@ export function helpUrl(help: Help): string {
 export const HELP = {
   // Overview
   status: {
-    text: 'Pending: not live yet; choose a plan in Overview (Free starts at once, a paid plan once it is paid for or set up with us), or message us if we manage your plan. Active: it answers on your sites. Suspended: it does not answer; contact the operator.',
+    text: 'Pending: not live yet; choose a plan in Billing (Free starts at once, a paid plan once it is paid for or set up with us), or message us if we manage your plan. Active: it answers on your sites. Suspended: it does not answer; contact the operator.',
     anchor: 'status',
-  },
-  planPicker: {
-    text: 'Start on Free puts your store live at once, within Free’s limits; save your settings first. A paid plan goes live once it is paid for, or once we set it up when you message us: the cards say which. For Enterprise, message us with your Store ID.',
-    anchor: 'choose-a-plan',
   },
   usage: {
     text: 'What the assistant spent against your plan this month, in US dollars. When the month’s budget runs out the chat says it is unavailable until the next month, or until you upgrade your plan. Conversations are visitors’ chats that got at least one answer.',
@@ -50,6 +46,16 @@ export const HELP = {
   productSync: {
     text: 'The last time products were published from the admin: when, and how many were new, changed, removed or unchanged. A connector shows its own syncs on the Connector page.',
     anchor: 'product-sync',
+  },
+
+  // Billing
+  currentPlan: {
+    text: 'Your plan, how it is billed and when it renews or ends. Manage billing opens the Stripe billing portal: your payment method, your invoices, and undoing a cancel or a scheduled change.',
+    anchor: 'your-paid-plan',
+  },
+  planPicker: {
+    text: 'Start on Free puts your store live at once, within Free’s limits; save your settings first. A paid plan goes live once it is paid for, or once we set it up when you message us: the cards say which. Moving down or canceling takes effect when the period you paid for ends. For Enterprise, message us with your Store ID.',
+    anchor: 'choose-a-plan',
   },
 
   // Settings: store

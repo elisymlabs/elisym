@@ -133,7 +133,7 @@ describe('the settings save', () => {
     [
       'pending',
       storeView({ status: 'pending', tier: null }),
-      'Saved. Choose a plan in Overview to go live.',
+      'Saved. Choose a plan in Billing to go live.',
     ],
     [
       'operator-managed pending',
@@ -359,7 +359,7 @@ describe('the connector, set up with the settings', () => {
         'Your settings are saved, but the connector could not be updated',
       ),
     );
-    expect(first.container.textContent).toContain('Saved. Choose a plan in Overview to go live.');
+    expect(first.container.textContent).toContain('Saved. Choose a plan in Billing to go live.');
     expect(first.container.textContent).not.toContain('published in a moment');
     expectConnectorErrorOnlyInAlert(first.container);
     await mounted?.unmount();

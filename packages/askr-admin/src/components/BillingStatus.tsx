@@ -1,30 +1,26 @@
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import { billingLine } from '../lib/billing';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import type { BillingView } from '../lib/types';
+import { useBusyUntilLeave } from '../lib/use-busy-until-leave';
 import { Notice } from './Notice';
 
 interface Props {
   deps: Pick<SessionDeps, 'api' | 'openUrl'>;
   billing: BillingView;
+  /** The portal opened: the page is leaving. */
+  onOpened?: () => void;
 }
 
 /**
  * The store's paid plan as Stripe last told the server (renews on, ends on, a payment failed),
  * and Manage billing: the Stripe portal to change plan, payment method or cancel.
  */
-export function BillingStatus({ deps, billing }: Props) {
-  const [busy, setBusy] = useState(false);
+export function BillingStatus({ deps, billing, onOpened }: Props) {
+  const [busy, setBusy] = useBusyUntilLeave<true>();
   const [error, setError] = useState('');
   const line = billingLine(billing);
-  // Back from the portal with the browser's back button, the page may come from its cache with
-  // the button still busy: it works again.
-  useEffect(() => {
-    const ready = () => setBusy(false);
-    globalThis.addEventListener('pageshow', ready);
-    return () => globalThis.removeEventListener('pageshow', ready);
-  }, []);
 
   const manage = async () => {
     setBusy(true);
@@ -32,9 +28,10 @@ export function BillingStatus({ deps, billing }: Props) {
     try {
       const { url } = await deps.api.billingPortal();
       deps.openUrl(url);
+      onOpened?.();
     } catch (failure) {
       setError(errorMessage(failure));
-      setBusy(false);
+      setBusy(undefined);
     }
   };
 
@@ -58,8 +55,8 @@ export function BillingStatus({ deps, billing }: Props) {
           type="button"
           id="manage-billing"
           className="btn self-start"
-          disabled={busy}
-          aria-busy={busy}
+          disabled={busy === true}
+          aria-busy={busy === true}
           onClick={() => void manage()}
         >
           Manage billing

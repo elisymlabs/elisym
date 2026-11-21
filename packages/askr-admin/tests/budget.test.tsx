@@ -53,8 +53,9 @@ describe('budget banner', () => {
     mounted = await mount(<BudgetBanner view={storeView({ budgetPaused: 'month' })} now={NOW} />);
     const alert = mounted.container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain("This month's plan budget is used up");
-    expect(alert?.textContent).toContain('larger plan');
-    expect(alert?.querySelector('.contact-link')).not.toBeNull();
+    expect(alert?.textContent).toContain('To move to a larger plan, open Billing.');
+    // Billing shows this store's own way up (checkout, Manage billing, or us), so the banner has no contact links.
+    expect(alert?.querySelector('.contact-link')).toBeNull();
   });
 
   it('renders nothing when there is nothing to say', async () => {
