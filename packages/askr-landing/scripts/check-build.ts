@@ -1,10 +1,19 @@
 /**
- * Fails the build when the landing is not safe to deploy: its page loads only
- * its own files with no inline script, and `vercel.json` sets the landing CSP
- * on every path, admitting no other origin (the page runs no widget and no demo).
+ * Fails the build when the site is not safe to deploy: each page loads only its own files with
+ * no inline script or style, each legal page holds its text (prerendered), and `vercel.json`
+ * serves the pages at their clean paths and sets the landing CSP on every path, admitting no
+ * other origin (the site runs no widget and no demo).
  */
-import { readFileSync } from 'node:fs';
-import { cspOfEveryPath, cspProblems, headerProblems, htmlProblems } from './build-checks';
+import { readFileSync, readdirSync } from 'node:fs';
+import {
+  cleanUrlProblems,
+  cspOfEveryPath,
+  cspProblems,
+  headerProblems,
+  htmlProblems,
+  pageSetProblems,
+  stylesheetProblems,
+} from './build-checks';
 
 const LANDING_CSP: Record<string, string[]> = {
   'default-src': ["'none'"],
@@ -27,8 +36,26 @@ const LANDING_HEADERS: Record<string, string> = {
 };
 
 const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+/** Every HTML file at the package root is a page (`vite.config.ts` builds each). */
+const sourcePages = readdirSync(new URL('..', import.meta.url)).filter((file) =>
+  file.endsWith('.html'),
+);
+const dist = new URL('../dist/', import.meta.url);
+const builtPages = readdirSync(dist).filter((file) => file.endsWith('.html'));
+/** Every page but the landing is a legal page, prerendered. */
+const LANDING_PAGE = 'index.html';
+
 const problems = [
-  ...htmlProblems(readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8')),
+  ...pageSetProblems(builtPages, sourcePages),
+  ...builtPages.flatMap((file) => {
+    const html = readFileSync(new URL(file, dist), 'utf8');
+    // A prerendered page holds its own heading before its script runs.
+    const prerendered = file === LANDING_PAGE || html.includes('<h1') ? [] : ['is not prerendered'];
+    return [...htmlProblems(html), ...stylesheetProblems(html), ...prerendered].map(
+      (problem) => `${file}: ${problem}`,
+    );
+  }),
+  ...cleanUrlProblems(vercel),
   ...cspProblems(cspOfEveryPath(vercel), LANDING_CSP),
   ...headerProblems(vercel, LANDING_HEADERS),
 ];

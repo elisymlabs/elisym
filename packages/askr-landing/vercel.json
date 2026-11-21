@@ -3,10 +3,16 @@
   "installCommand": "cd ../.. && bun install --frozen-lockfile",
   "buildCommand": "cd ../.. && bunx turbo run build --filter=@elisym/askr-landing...",
   "outputDirectory": "dist",
+  "cleanUrls": true,
   "redirects": [
     {
       "source": "/contact",
       "destination": "https://forms.gle/woUDTt53ZndRtm5H8",
+      "permanent": false
+    },
+    {
+      "source": "/terms",
+      "destination": "/terms-of-service",
       "permanent": false
     }
   ],

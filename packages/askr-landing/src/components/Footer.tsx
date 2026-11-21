@@ -1,4 +1,5 @@
 import { ADMIN_URL, DOCS, ELISYM_URL, GITHUB_URL, PRODUCT_NAME, X_URL } from '../constants';
+import { PRIVACY_PATH, TERMS_PATH } from '../legal';
 import { ElisymLogo } from './ElisymLogo';
 import { ExternalLink } from './ExternalLink';
 import { PageLink } from './PageLink';
@@ -33,7 +34,22 @@ const COLUMNS = [
   },
 ];
 
-export function Footer() {
+const LEGAL_LINKS = [
+  { href: PRIVACY_PATH, label: 'Privacy policy' },
+  { href: TERMS_PATH, label: 'Terms of service' },
+];
+
+interface Props {
+  /** Where the section links point: '' on the landing itself, '/' on the other pages. */
+  home?: string;
+}
+
+/** A link to a section of the landing, from the page it is on. */
+function sectionHref(href: string, home: string): string {
+  return href.startsWith('#') ? `${home}${href}` : href;
+}
+
+export function Footer({ home = '' }: Props) {
   return (
     <footer className="bg-ink text-on-ink overflow-hidden">
       <div className="mx-auto max-w-1440 px-16 pt-32 sm:px-32">
@@ -49,7 +65,7 @@ export function Footer() {
               {column.links.map((link) => (
                 <PageLink
                   key={link.href}
-                  href={link.href}
+                  href={sectionHref(link.href, home)}
                   className="text-15 text-on-ink hover:text-on-ink-2 self-start"
                 >
                   {link.label}
@@ -61,6 +77,13 @@ export function Footer() {
         <Wordmark className="text-on-ink mt-80 w-full select-none" />
         <div className="border-ink-line text-13 text-on-ink-2 mt-24 flex flex-wrap items-center justify-between gap-12 border-t py-20">
           <span>{`© ${new Date().getFullYear()} Elisym Labs`}</span>
+          <nav aria-label="Legal" className="flex flex-wrap gap-x-20 gap-y-8">
+            {LEGAL_LINKS.map((link) => (
+              <PageLink key={link.href} href={link.href} className="hover:text-on-ink">
+                {link.label}
+              </PageLink>
+            ))}
+          </nav>
           <ExternalLink href={ELISYM_URL} className="hover:text-on-ink flex items-center gap-6">
             by
             <ElisymLogo onInk />

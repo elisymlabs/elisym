@@ -196,6 +196,9 @@ export const CONTACT_URL = 'https://forms.gle/woUDTt53ZndRtm5H8';
 export const SITE_URL = 'https://askr.elisym.network';
 /** Our contact through this page's `/contact` redirect (`vercel.json`): what the CLI prints, so its target can change. */
 export const CONTACT_REDIRECT_URL = `${SITE_URL}/contact`;
+/** After a paid plan's price on its card: the figure is before tax, which checkout adds. */
+export const PRICE_TAX_NOTE = '+ tax';
+
 /** The plans on this page. */
 export const PRICING_URL = `${SITE_URL}/#pricing`;
 export const ELISYM_URL = 'https://elisym.network';

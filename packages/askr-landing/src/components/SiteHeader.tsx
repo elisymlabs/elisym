@@ -11,7 +11,12 @@ const NAV = [
   { href: '#faq', label: 'FAQ' },
 ];
 
-export function SiteHeader() {
+interface Props {
+  /** Where the section links point: '' on the landing itself, '/' on the other pages. */
+  home?: string;
+}
+
+export function SiteHeader({ home = '' }: Props) {
   return (
     <header className="fixed inset-x-0 top-0 z-40 px-12 pt-12">
       <div className="border-line/80 bg-surface/75 mx-auto flex h-60 max-w-1200 items-center justify-between gap-16 rounded-full border pr-8 pl-20 shadow-[0_8px_30px_-12px_rgb(23_21_15_/_0.18)] backdrop-blur-xl">
@@ -20,7 +25,7 @@ export function SiteHeader() {
           {NAV.map((item) => (
             <a
               key={item.href}
-              href={item.href}
+              href={`${home}${item.href}`}
               className="text-text-2 hover:text-text hidden rounded-full px-12 py-8 lg:inline"
             >
               {item.label}

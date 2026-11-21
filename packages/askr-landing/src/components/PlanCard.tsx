@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { BUTTON } from '../buttons';
-import { CONTACT_URL, type FlatPlan, START_LABEL } from '../constants';
+import { CONTACT_URL, type FlatPlan, PRICE_TAX_NOTE, START_LABEL } from '../constants';
 import { AdminLink } from './AdminLink';
 import type { Billing } from './BillingSwitch';
 import { ExternalLink } from './ExternalLink';
@@ -28,11 +28,11 @@ function shownPrice(
   if (billing === 'yearly') {
     return {
       figure: price.yearlyPerMonth,
-      unit: '/ month',
+      unit: `/ month ${PRICE_TAX_NOTE}`,
       note: `Subscription, ${price.yearlyTotal} billed yearly`,
     };
   }
-  return { figure: price.monthly, unit: '/ month', note: 'Monthly subscription' };
+  return { figure: price.monthly, unit: `/ month ${PRICE_TAX_NOTE}`, note: 'Monthly subscription' };
 }
 
 /** One plan: its price under the chosen billing, what it includes, and how to start on it. */

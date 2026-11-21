@@ -21,9 +21,18 @@ environment variables.
 ## After each deploy
 
 ```bash
-for path in / /index.html; do
+for path in / /privacy /terms-of-service; do
   curl -sI "https://askr.elisym.network$path" | grep -i '^content-security-policy'
 done
+curl -sI https://askr.elisym.network/terms | grep -i '^location'   # /terms-of-service
 ```
 
-Both lines must allow scripts, styles, media and connections from `'self'` only, and no frames.
+All three lines must allow scripts, styles, media and connections from `'self'` only, and no frames.
+
+## The legal pages
+
+`/privacy` and `/terms-of-service` are their own HTML pages (`privacy.html`, `terms-of-service.html`,
+served without `.html` by `cleanUrls`); the build writes their text into the HTML
+(`scripts/prerender.tsx`), so they read in full without their script. The operator's tax number
+and postal address are `LEGAL_NIF` and `LEGAL_ADDRESS` in `src/legal.ts`: empty strings are not
+shown. When either page changes, change `LEGAL_LAST_UPDATED` there too.
