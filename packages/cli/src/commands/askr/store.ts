@@ -14,7 +14,7 @@ export const CHOOSE_PLAN_HINT =
 /** How an agent buys a paid plan when the server takes payments: a checkout link for the human. */
 export const PAID_CHECKOUT =
   'askr plan <starter|growth|pro|scale> [--yearly] for the paid plan the human chose, then give them its checkoutUrl to pay';
-/** The same, when the server takes payments: a paid plan is a checkout link for the human. */
+/** CHOOSE_PLAN_HINT when the server takes payments: a paid plan is a checkout link for the human. */
 export const CHOOSE_PLAN_BILLING_HINT = `choose a plan: askr plan free (only if the human chose Free), or ${PAID_CHECKOUT}`;
 export const CONTACT_HINT = `message us with your Store ID: ${CONTACT_URL}`;
 export const INIT_FIRST_HINT = 'run askr init first';
