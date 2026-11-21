@@ -882,6 +882,58 @@ describe('the upgrade block follows what the server says of billing', () => {
     expect(adminOf(outcome.output)).toBe(admin);
   });
 
+  it('policy and connector on a pending store that still pays name the admin of its own server', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    setup.fake.billing = PAYING;
+    const admin = await adminUrlOf(setup);
+    const policy = join(await tempDir(), 'returns.md');
+    await writeFile(policy, '30 days.');
+    for (const invocation of [
+      { command: 'policy' as const, options: { slug: 'returns', title: 'Returns', file: policy } },
+      { command: 'connector' as const },
+    ]) {
+      const outcome = await setup.run(invocation, [invocation.command]);
+      expect(outcome.output, invocation.command).toMatchObject({ error: { code: 'inactive' } });
+      expect(adminOf(outcome.output), invocation.command).toBe(admin);
+    }
+  });
+
+  it('a write the server refuses as inactive names the admin of its own server', async () => {
+    const products = await activeStore();
+    products.fake.billing = PAYING;
+    products.fake.on('POST /v1/admin/catalog', () => json({ error: 'inactive' }, 409));
+    const file = await writeJson([product('a')]);
+    const refusedProducts = await products.run({ command: 'products', options: { file } }, [
+      'products',
+    ]);
+    expect(refusedProducts.output).toMatchObject({ error: { code: 'inactive' } });
+    expect(adminOf(refusedProducts.output)).toBe(await adminUrlOf(products));
+
+    const policies = await activeStore();
+    policies.fake.billing = PAYING;
+    policies.fake.on('PUT /v1/admin/policies/returns', () => json({ error: 'inactive' }, 409));
+    const policy = join(await tempDir(), 'returns.md');
+    await writeFile(policy, '30 days.');
+    const refusedPolicy = await policies.run(
+      { command: 'policy', options: { slug: 'returns', title: 'Returns', file: policy } },
+      ['policy'],
+    );
+    expect(refusedPolicy.output).toMatchObject({ error: { code: 'inactive' } });
+    expect(adminOf(refusedPolicy.output)).toBe(await adminUrlOf(policies));
+
+    const connector = await activeStore({
+      source: 'connector',
+      platform: 'shopify',
+      shopUrl: ORIGIN,
+    });
+    connector.fake.billing = PAYING;
+    connector.fake.on('POST /v1/admin/connector/preview', () => json({ error: 'inactive' }, 409));
+    const refusedConnector = await connector.run({ command: 'connector' }, ['connector']);
+    expect(refusedConnector.output).toMatchObject({ error: { code: 'inactive' } });
+    expect(adminOf(refusedConnector.output)).toBe(await adminUrlOf(connector));
+  });
+
   it('too_many_products from products and from the connector follows billing too', async () => {
     const products = await activeStore();
     products.fake.billing = PAYING;
