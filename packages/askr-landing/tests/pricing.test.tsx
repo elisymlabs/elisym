@@ -10,6 +10,7 @@ import {
   CONTACT_URL,
   CONVERSATION_DEFINITION,
   PLANS,
+  PRICE_TAX_NOTE,
   PRODUCT_NAME,
   YEARLY_DISCOUNT_BPS,
   YEARLY_DISCOUNT_LABEL,
@@ -347,6 +348,28 @@ describe('the pricing section', () => {
     await act(async () => billing[0]?.click());
     expect((await cardOf(page, 'Pro'))?.textContent).toContain('Monthly subscription');
     expect((await cardOf(page, 'Pro'))?.textContent).not.toContain('billed yearly');
+  });
+
+  it('marks every paid price as before tax, in both billings, and Free as no payment', async () => {
+    const page = await render();
+    const billing = page.querySelectorAll<HTMLButtonElement>(
+      '#pricing [role="radiogroup"][aria-label="Billing period"] [role="radio"]',
+    );
+    for (const choice of [...billing]) {
+      await act(async () => choice.click());
+      for (const plan of PLANS) {
+        const text = (await cardOf(page, plan.name))?.textContent ?? '';
+        if (plan.price.monthly === '$0') {
+          expect(text, plan.name).not.toContain(PRICE_TAX_NOTE);
+        } else {
+          expect(text, plan.name).toContain(`/ month ${PRICE_TAX_NOTE}`);
+        }
+      }
+    }
+    expect(PRICE_TAX_NOTE).toBe('+ tax');
+    expect(page.querySelector('#pricing')?.textContent).toContain(
+      'Prices are before tax. VAT or sales tax depends on where you are and is added at checkout, which shows the total before you pay.',
+    );
   });
 
   it('opens every paid plan and Enterprise on the request form in a new tab', async () => {

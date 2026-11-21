@@ -7,9 +7,14 @@ interface Props {
   children: ReactNode;
 }
 
-/** A link to a section of this page, or to another page with no referrer. */
+/** Whether `href` stays on this site: a section (`#...`) or a path (`/...`, not `//host`). */
+function isOnSite(href: string): boolean {
+  return href.startsWith('#') || (href.startsWith('/') && !href.startsWith('//'));
+}
+
+/** A link on this site (in the same tab), or to another site in a new tab with no referrer. */
 export function PageLink({ href, className, children }: Props) {
-  if (href.startsWith('#')) {
+  if (isOnSite(href)) {
     return (
       <a href={href} className={className}>
         {children}

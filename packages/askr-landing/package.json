@@ -7,7 +7,7 @@
   "author": "Elisym Labs",
   "type": "module",
   "scripts": {
-    "build": "vite build && bun scripts/check-build.ts",
+    "build": "vite build && bun scripts/prerender.tsx && bun scripts/check-build.ts",
     "dev": "vite",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",

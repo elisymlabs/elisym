@@ -57,12 +57,20 @@ function filesIn(dir: string): string[] {
   );
 }
 
+/** A link to a section of this page or a path on this site (not `//host`). */
+function isOnSite(href: string): boolean {
+  return href.startsWith('#') || (href.startsWith('/') && !href.startsWith('//'));
+}
+
 describe('the links', () => {
   it('redirect /contact to the contact, temporarily, so a changed contact is never cached', () => {
     const config: unknown = JSON.parse(readFileSync(join(PACKAGE, 'vercel.json'), 'utf8'));
     const redirects: unknown =
       typeof config === 'object' && config !== null ? Reflect.get(config, 'redirects') : undefined;
-    expect(redirects).toEqual([{ source: '/contact', destination: CONTACT_URL, permanent: false }]);
+    expect(redirects).toEqual([
+      { source: '/contact', destination: CONTACT_URL, permanent: false },
+      { source: '/terms', destination: '/terms-of-service', permanent: false },
+    ]);
   });
 
   it('open the admin on the Askr server, with no handle and no referrer', async () => {
@@ -73,11 +81,11 @@ describe('the links', () => {
     expect(new URL(ADMIN_URL).origin).not.toBe(window.location.origin);
   });
 
-  it('send every link off the page over https, in a new tab, with no referrer', async () => {
+  it('send every link off the site over https, in a new tab, with no referrer', async () => {
     const page = await render(<App />);
     const external = [...page.querySelectorAll('a')].filter((link) => {
       const href = link.getAttribute('href') ?? '';
-      return !href.startsWith('#') && href !== '/';
+      return !isOnSite(href);
     });
     expect(external.length).toBeGreaterThan(0);
     for (const link of external) {
@@ -87,7 +95,7 @@ describe('the links', () => {
     }
     const onPage = [...page.querySelectorAll('a')].filter((link) => {
       const href = link.getAttribute('href') ?? '';
-      return href.startsWith('#') || href === '/';
+      return isOnSite(href);
     });
     expect(onPage.length).toBeGreaterThan(0);
     for (const link of onPage) {
