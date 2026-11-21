@@ -13,7 +13,8 @@ import {
 const KIND_PRODUCT = 30402;
 /** The `d` pattern `parseProduct` accepts; anything else is dropped by every reader. */
 export const D_TAG_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-const PRICE_AMOUNT_RE = /^(0|[1-9]\d{0,11})(\.\d{1,18})?$/;
+/** A price amount as the catalog schema takes it: a plain decimal, no sign or exponent. */
+export const PRICE_AMOUNT_RE = /^(0|[1-9]\d{0,11})(\.\d{1,18})?$/;
 const CURRENCY_RE = /^[A-Z]{3}$/;
 const FREQUENCIES = ['hour', 'day', 'week', 'month', 'year'] as const;
 

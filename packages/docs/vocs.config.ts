@@ -144,6 +144,7 @@ export default defineConfig({
       text: 'Shopping assistant (Askr)',
       items: [
         { text: 'Overview', link: '/askr/overview' },
+        { text: 'Set up with an AI agent', link: '/askr/agent-setup' },
         { text: 'The admin, field by field', link: '/askr/admin' },
         { text: 'Embed the widget', link: '/askr/embed' },
         { text: 'Catalog from an agent', link: '/askr/catalog-from-an-agent' },

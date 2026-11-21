@@ -2,7 +2,7 @@ import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import * as nip19 from 'nostr-tools/nip19';
 import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
+import { hexToBytes } from 'nostr-tools/utils';
 
 const HEX_KEY_RE = /^[0-9a-f]{64}$/;
 
@@ -101,8 +101,4 @@ export function generateOwnerKey(): OwnerKey {
 
 export function npubOf(pubkey: string): string {
   return nip19.npubEncode(pubkey);
-}
-
-export function randomHex(bytes: number): string {
-  return bytesToHex(crypto.getRandomValues(new Uint8Array(bytes)));
 }

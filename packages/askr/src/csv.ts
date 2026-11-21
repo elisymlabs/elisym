@@ -1,4 +1,5 @@
-import { ANY_OPTION_VALUE, type CatalogItemInput, CatalogItemInputSchema } from '@elisym/askr';
+import { ANY_OPTION_VALUE } from './constants';
+import { type CatalogItemInput, CatalogItemInputSchema } from './events/catalog-item';
 import { type VariantInput, listingPriceOf } from './variants';
 
 /** Product columns the import reads; `d`, `title` and `price` are required. */

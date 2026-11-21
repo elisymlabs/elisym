@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  CSV_EXAMPLE,
-  MAX_CSV_BYTES,
-  csvSizeProblem,
-  parseCsv,
-  productsFromCsv,
-} from '../src/lib/csv';
+import { CSV_EXAMPLE, MAX_CSV_BYTES, csvSizeProblem, parseCsv, productsFromCsv } from '../src/csv';
 
 describe('parseCsv', () => {
   it('reads quoted fields with commas, quotes and line breaks, CRLF and a BOM', () => {
@@ -35,6 +29,21 @@ describe('parseCsv', () => {
 });
 
 describe('productsFromCsv', () => {
+  it('prices a row without a currency in the store currency it is given, and keeps a stated one', () => {
+    const result = productsFromCsv('d,title,price,currency\na,A,5,\nb,B,6,USD', 'EUR');
+    expect(result.errors).toEqual([]);
+    expect(result.items.map((item) => item.price)).toEqual([
+      { amount: '5', currency: 'EUR' },
+      { amount: '6', currency: 'USD' },
+    ]);
+  });
+
+  it('caps a file at 8 MB, as the CLI and admin hints say', () => {
+    expect(MAX_CSV_BYTES).toBe(8 * 1024 * 1024);
+    expect(csvSizeProblem(MAX_CSV_BYTES)).toBeUndefined();
+    expect(csvSizeProblem(MAX_CSV_BYTES + 1)).toContain('8 MB');
+  });
+
   it('turns valid rows into catalog items, with the store currency by default', () => {
     const text = [
       'd,Title,price,currency,summary,description,url,image,visibility,topics,sku',

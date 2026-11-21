@@ -38,7 +38,18 @@
     },
     "@elisym/askr-landing#test": {
       "dependsOn": ["build"],
-      "inputs": ["$TURBO_DEFAULT$", "../askr-server/src/**", "../docs/pages/**"]
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../askr-server/src/**",
+        "../docs/pages/**",
+        "../cli/src/commands/askr/constants.ts",
+        "../cli/src/commands/askr/register.ts",
+        "../cli/src/commands/askr/errors.ts"
+      ]
+    },
+    "@elisym/cli#test": {
+      "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "../askr-admin/src/**", "../docs/pages/askr/embed.mdx"]
     },
     "@elisym/merchant-node#test": {
       "dependsOn": ["build"],
