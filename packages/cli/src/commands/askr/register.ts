@@ -4,6 +4,7 @@
  * hands its invocation to the runner, which loads the rest on demand.
  */
 import type { Command } from 'commander';
+import type { EmbedOptions } from './embed';
 import type { InitOptions } from './init';
 import type { PolicyOptions } from './policy';
 import type { ProductsOptions } from './products';
@@ -127,9 +128,23 @@ export function registerAskr(
 
   askr
     .command('embed')
-    .description('Print the widget snippet, the verification meta tag and the CSP sources')
+    .description(
+      "Print the widget snippet, the verification meta tag, the CSP sources and the site's llms.txt",
+    )
+    .option(
+      '--llms-txt <path>',
+      "write the site's llms.txt there (appends the Askr part to an existing one)",
+    )
     .option(PROFILE_FLAG, PROFILE_HELP)
-    .action((options: ProfileOption) => run({ command: 'embed' }, context(options)));
+    .action((options: EmbedOptions & ProfileOption) =>
+      run(
+        {
+          command: 'embed',
+          options: options.llmsTxt === undefined ? {} : { llmsTxt: options.llmsTxt },
+        },
+        context(options),
+      ),
+    );
 
   askr
     .command('export-key')

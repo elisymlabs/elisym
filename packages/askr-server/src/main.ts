@@ -25,6 +25,7 @@ import { migrate } from './db/migrations';
 import { createPgDb } from './db/pg';
 import { type GatewayRequest, createGateway } from './gateway/gateway';
 import { serveGateway } from './gateway/http';
+import { createStoreDocs, statusFromDirectory } from './gateway/store-docs-http';
 import { WidgetVersions, widgetBundle } from './gateway/widget';
 import { StoreEventPublisher } from './publisher';
 import { createServerPool } from './relay/pool';
@@ -199,10 +200,18 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),
   });
+  // A trailing slash is stripped once at startup, so NIP-98 `u` compares exactly.
+  const publicBase = publicBaseOf(process.env.ASKR_PUBLIC_BASE ?? ASKR_API_BASE);
+  // The public store files for AI agents: from the worker's cached catalogs, never the model.
+  const storeDocs = createStoreDocs({
+    statusOf: statusFromDirectory(directory),
+    catalogFor: (owner) => catalogs.get(owner),
+    isUnservable: (owner) => worker.isUnservable(owner),
+    publicBase,
+  });
   const admin = createAdminApi({
     directory,
-    // A trailing slash is stripped once at startup, so NIP-98 `u` compares exactly.
-    publicBase: publicBaseOf(process.env.ASKR_PUBLIC_BASE ?? ASKR_API_BASE),
+    publicBase,
     syncClient,
     storeEventsChanged: onStoresChanged,
     connectors,
@@ -212,7 +221,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const files = adminFiles(log);
   const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
   const handler = async (input: GatewayRequest): Promise<Response> =>
-    adminPages?.(input) ?? (await admin(input)) ?? gateway(input);
+    adminPages?.(input) ?? (await admin(input)) ?? (await storeDocs(input)) ?? gateway(input);
   server = serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),
     trustProxy: process.env.ASKR_TRUST_PROXY === '1',

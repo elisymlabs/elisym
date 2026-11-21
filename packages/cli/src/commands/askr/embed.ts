@@ -5,6 +5,7 @@
  */
 import { WIDGET_ELEMENT, WIDGET_SCRIPT_URL } from './constants';
 import { AskrExit, EXIT, type CommandOutcome } from './errors';
+import { siteLlmsTxt, storeLlmsTxtUrl, writeSiteLlmsTxt } from './llms-txt';
 import { readSigned } from './read';
 import type { Askr, Session } from './session';
 import { readView, useOwnerKey } from './store';
@@ -66,13 +67,25 @@ const PLATFORM_HINTS: ReadonlyArray<{ platform: string; where: string }> = [
   },
 ];
 
-export async function runEmbed(session: Session): Promise<CommandOutcome> {
+export interface EmbedOptions {
+  /** Write the site's llms.txt there (or append the Askr part to the one there). */
+  llmsTxt?: string;
+}
+
+export async function runEmbed(
+  session: Session,
+  options: EmbedOptions = {},
+): Promise<CommandOutcome> {
   const key = await useOwnerKey(session);
   await readView(session);
   const { config } = await readSigned(session, key.owner, key.secretKey);
   if (config === undefined) {
     throw new AskrExit(EXIT.BAD_INPUT, 'no_settings', { hint: 'run askr init first' });
   }
+  const written =
+    options.llmsTxt === undefined
+      ? undefined
+      : await writeSiteLlmsTxt(options.llmsTxt, key.storeId, config.name);
   return {
     exitCode: EXIT.OK,
     output: {
@@ -84,6 +97,9 @@ export async function runEmbed(session: Session): Promise<CommandOutcome> {
       csp: cspSources(session.askr),
       platformHints: PLATFORM_HINTS,
       ...(config.source.kind === 'admin' ? { addToCart: ADD_TO_CART } : {}),
+      llmsTxt: siteLlmsTxt(key.storeId, config.name),
+      llmsTxtUrl: storeLlmsTxtUrl(key.storeId),
+      ...(written === undefined ? {} : { llmsTxtFile: { path: options.llmsTxt, result: written } }),
     },
   };
 }

@@ -16,6 +16,7 @@ import type { PinnedWidget, StoreView } from '../lib/types';
 import { AddToCartHook } from './AddToCartHook';
 import { ContactLinks } from './ContactLinks';
 import { CopyBlock } from './CopyBlock';
+import { LlmsTxtSection } from './LlmsTxtSection';
 import { Notice } from './Notice';
 import { Section } from './Section';
 
@@ -217,6 +218,7 @@ export function EmbedSection({ api, view, config }: Props) {
           More on add to cart in the guide
         </a>
       </Section>
+      <LlmsTxtSection npub={npub} storeName={config?.name ?? ''} status={view.status} />
       <details className="disclosure">
         <summary className="text-15 font-semibold">Advanced</summary>
         <div className="mt-20 flex flex-col gap-32">

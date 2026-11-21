@@ -1,0 +1,55 @@
+# AI agents and your store
+
+AI agents that shop or research for people (browsing assistants, coding agents, chat apps with web access) read websites too. Askr gives every active store two read-only files on the Askr server, so an agent learns your store's products and policies without opening the chat, and a short `/llms.txt` for your own site that points agents to them.
+
+Agents read these files without the chat, so they cost none of your plan's chat budget, and no model runs to answer them.
+
+## What agents get
+
+**Your store's `llms.txt`**, at `https://app.askr.elisym.network/s/<your Store ID>/llms.txt`: a Markdown file in the [llms.txt](https://llmstxt.org) form, with
+
+- your store's name, sites, language and currency, and that its shopping assistant is Askr;
+- a note that the file is read-only: purchases happen on your own product pages;
+- every published policy in full (returns, shipping, warranty, FAQ...);
+- every visible product with its title, price and currency, a short summary and the link to its page on your site;
+- a link to `catalog.json`.
+
+**Your store's `catalog.json`**, at `https://app.askr.elisym.network/s/<your Store ID>/catalog.json`: the same in JSON, for programs: `store` (name, sites, language, currency), `policies` (slug, title, text) and `products` (ID, title, summary, price, availability, page URL, images, topics, attributes, options, variants), with `totalProducts` and `truncated`.
+
+Only public fields are in them: what your products and policies already publish. Hidden products are left out, and so are your assistant's private voice, instructions and notes. In `llms.txt` your text is escaped, so it cannot add headings, sections, Markdown link syntax (a web address stays plain text) or HTML, and the file labels it as store-written data.
+
+Both files answer only while your store is **active**; a pending or suspended store answers 404. They follow your catalog within a few minutes of a change (browsers and proxies may keep a copy for 5 minutes).
+
+### Size limits
+
+`llms.txt` stays within 512 KiB: policies take at most 256 KiB of it, and at most 1 000 products are listed. Past either limit, the file says how many are left out and that `catalog.json` has them. `catalog.json` lists at most 5 000 products within 4 MiB, and says `"truncated": true` when it leaves some out. Titles are cut at 200 characters and summaries at 280.
+
+## Add /llms.txt to your site
+
+Agents look for `llms.txt` at a site's root, so put a short one there that points to your store's files. The admin's **Embed** tab shows it with your Store ID filled in (**llms.txt for AI agents**, with a Copy button), and `askr embed` prints it as `llmsTxt` ([Set up with an AI agent](/askr/agent-setup)). It looks like this:
+
+```markdown
+# Your store
+
+> Your store has a shopping assistant, Askr: the chat on every page of this site answers questions about products, prices and policies.
+
+## Shopping assistant
+
+- [Products and policies for AI agents](https://app.askr.elisym.network/s/npub1.../llms.txt): every product with its price and page, and the store's policies, read-only
+- [Catalog as JSON](https://app.askr.elisym.network/s/npub1.../catalog.json): the same, machine-readable
+- [Askr](https://askr.elisym.network): the shopping assistant this store uses. Purchases happen on this site's product pages.
+```
+
+Save it as `llms.txt` where your site serves files from its root (often a `public/` or `static/` folder), so it opens at `https://yoursite.com/llms.txt`. If your site already has an `llms.txt`, do not replace it: add the **Shopping assistant** part, from its heading on, to the end. `askr embed --llms-txt <path>/llms.txt` does either for you: it writes the file, or appends that part to an existing one (once).
+
+On a site builder without access to the site root, skip this step: the store's own files still work for any agent that is given their address, and the chat works as before.
+
+## Check it
+
+```bash
+curl -s https://app.askr.elisym.network/s/npub1.../llms.txt
+curl -s https://app.askr.elisym.network/s/npub1.../catalog.json
+curl -s https://yoursite.com/llms.txt
+```
+
+The first two show your store (replace `npub1...` with your Store ID, [find it](/askr/overview#find-your-store-id)); a 404 means the store is not active yet. The last one shows the file on your site once it is deployed.

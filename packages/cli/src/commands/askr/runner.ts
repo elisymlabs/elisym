@@ -6,6 +6,7 @@
  */
 import type * as AskrModule from '@elisym/askr';
 import { CommanderError } from 'commander';
+import type { EmbedOptions } from './embed';
 import { AskrExit, type CommandOutcome, EXIT, type ExitCode, outcomeOfExit } from './errors';
 import type { InitOptions } from './init';
 import { profileOf } from './owner-key';
@@ -23,7 +24,7 @@ export type AskrInvocation =
   | { command: 'policy'; options: PolicyOptions }
   | { command: 'connector' }
   | { command: 'status'; options: StatusOptions }
-  | { command: 'embed' }
+  | { command: 'embed'; options?: EmbedOptions }
   | { command: 'export-key'; out: string };
 
 export interface InvocationContext {
@@ -104,7 +105,7 @@ async function dispatch(session: Session, invocation: AskrInvocation): Promise<C
     }
     case 'embed': {
       const { runEmbed } = await import('./embed');
-      return runEmbed(session);
+      return runEmbed(session, invocation.options);
     }
     case 'export-key': {
       const { runExportKey } = await import('./export-key');

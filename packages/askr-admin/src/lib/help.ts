@@ -251,6 +251,10 @@ export const HELP = {
     text: 'Whether product cards get an add to cart button: from a Shopify or WooCommerce connector on your shop’s own site, or from a hook your developer adds.',
     anchor: 'add-to-cart',
   },
+  llmsTxt: {
+    text: 'Put this file at your site’s root as /llms.txt, so AI agents learn your store uses Askr and read your products and policies without using your chat’s budget. Already have one? Add the Shopping assistant part to it.',
+    anchor: 'llmstxt-for-ai-agents',
+  },
 
   // Advanced
   secretKey: {

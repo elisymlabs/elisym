@@ -26,6 +26,11 @@ export const UPGRADE = {
 export const WIDGET_SCRIPT_URL = 'https://app.askr.elisym.network/widget.js';
 export const WIDGET_ELEMENT = 'askr-chat';
 
+/** Where the server serves each store's files for AI agents: `<base>/<npub>/llms.txt` and `/catalog.json`. */
+export const STORE_FILES_BASE = 'https://app.askr.elisym.network/s';
+/** The page a merchant site's `llms.txt` names as its shopping assistant. */
+export const ASKR_SITE_URL = 'https://askr.elisym.network';
+
 /** Test overrides of the API base and the relay: honoured only for a local host unless unsafe (5.0). */
 export const API_OVERRIDE_ENV = 'ELISYM_ASKR_API';
 export const RELAY_OVERRIDE_ENV = 'ELISYM_ASKR_RELAY';
