@@ -1,6 +1,6 @@
 import { AGENT_PROMPT } from '../agent-prompt';
 import { BUTTON } from '../buttons';
-import { DOCS } from '../constants';
+import { AGENT_SETUP_ID, DOCS } from '../constants';
 import { CodeBlock } from './CodeBlock';
 import { ExternalLink } from './ExternalLink';
 import { Eyebrow } from './Eyebrow';
@@ -14,7 +14,7 @@ const PROMPT_EXCERPT = `${AGENT_PROMPT.split('\n').slice(0, PROMPT_LINES_SHOWN).
 /** The same setup done by the merchant's AI coding agent, from one prompt. */
 export function AgentSetup() {
   return (
-    <section id="agent-setup" className="border-line-2 border-b">
+    <section id={AGENT_SETUP_ID} className="border-line-2 border-b">
       <div className="mx-auto max-w-1440 px-16 py-120 sm:px-32 sm:py-160">
         <Reveal className="flex flex-col items-start gap-16">
           <Eyebrow>With an AI agent</Eyebrow>

@@ -119,6 +119,14 @@ export function pageSetProblems(
   ];
 }
 
+/** Problems with the built `llms.txt`: it must be there, exactly as the page's constants render it. */
+export function llmsTxtProblems(built: string | undefined, expected: string): string[] {
+  if (built === undefined) {
+    return ['dist/llms.txt was not built'];
+  }
+  return built === expected ? [] : ['dist/llms.txt differs from renderLlmsTxt()'];
+}
+
 /** Problems with a built page's styles: it must link its stylesheet, or it renders unstyled. */
 export function stylesheetProblems(html: string): string[] {
   return /<link\b[^>]*\brel=["']?stylesheet\b/i.test(html) ? [] : ['no stylesheet'];

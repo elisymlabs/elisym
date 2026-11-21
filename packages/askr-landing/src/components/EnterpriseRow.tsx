@@ -1,5 +1,5 @@
 import { BUTTON } from '../buttons';
-import { CONTACT_URL, type ContractPlan, PRICE_TAX_NOTE } from '../constants';
+import { CONTACT_URL, CONTRACT_PRICE_NOTE, type ContractPlan, PRICE_TAX_NOTE } from '../constants';
 import { ExternalLink } from './ExternalLink';
 import { Icon } from './Icon';
 
@@ -24,7 +24,7 @@ export function EnterpriseRow({ plan }: Props) {
             </span>
             <span className="text-14 text-text-3">{`/ month ${PRICE_TAX_NOTE}`}</span>
           </p>
-          <p className="text-13 text-text-3">Monthly subscription, terms by agreement</p>
+          <p className="text-13 text-text-3">{CONTRACT_PRICE_NOTE}</p>
         </div>
       </div>
       <ul className="border-line grid gap-x-32 gap-y-12 sm:grid-cols-2 lg:border-l lg:pl-40">

@@ -23,8 +23,9 @@ import { STORES_CHANNEL } from './db/db';
 import { KeyVault } from './db/keys';
 import { migrate } from './db/migrations';
 import { createPgDb } from './db/pg';
-import { type GatewayRequest, createGateway } from './gateway/gateway';
+import { createGateway } from './gateway/gateway';
 import { serveGateway } from './gateway/http';
+import { composeHandler } from './gateway/routes';
 import { createStoreDocs, statusFromDirectory } from './gateway/store-docs-http';
 import { WidgetVersions, widgetBundle } from './gateway/widget';
 import { StoreEventPublisher } from './publisher';
@@ -220,8 +221,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   });
   const files = adminFiles(log);
   const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
-  const handler = async (input: GatewayRequest): Promise<Response> =>
-    adminPages?.(input) ?? (await admin(input)) ?? (await storeDocs(input)) ?? gateway(input);
+  const handler = composeHandler({ publicBase, adminPages, admin, storeDocs, gateway });
   server = serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),
     trustProxy: process.env.ASKR_TRUST_PROXY === '1',
