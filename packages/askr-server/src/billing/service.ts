@@ -345,27 +345,8 @@ export class BillingService {
    * or bad signature, 500 when applying failed (Stripe retries), 200 otherwise.
    */
   async webhook(payload: string, signature: string | null): Promise<Response> {
-    // A queue past its bound answers busy at once: Stripe retries the event later, and a flood of
-    // requests never piles up in memory.
-    if (this.webhooksQueued >= MAX_QUEUED_WEBHOOKS) {
-      return json({ error: 'busy' }, 503);
-    }
-    this.webhooksQueued += 1;
-    // One event at a time per instance, in the order they came: a burst holds at most one
-    // database connection, and on one instance a later read of a subscription is applied later.
-    const turn = this.webhookQueue
-      .then(() => this.handleWebhook(payload, signature))
-      .finally(() => {
-        this.webhooksQueued -= 1;
-      });
-    this.webhookQueue = turn.then(
-      () => undefined,
-      () => undefined,
-    );
-    return turn;
-  }
-
-  private async handleWebhook(payload: string, signature: string | null): Promise<Response> {
+    // The signature is checked first: an unsigned or forged request never takes a queue slot, so
+    // junk cannot fill the queue and keep Stripe's real events out.
     if (signature === null || signature === '') {
       return json({ error: 'unsigned' }, 400);
     }
@@ -378,6 +359,33 @@ export class BillingService {
     if (!WEBHOOK_EVENTS.includes(event.type)) {
       return json({ received: true, ignored: true }, 200);
     }
+    // A queue past its bound answers busy at once: Stripe retries the event later, and a flood of
+    // events never piles up in memory.
+    if (this.webhooksQueued >= MAX_QUEUED_WEBHOOKS) {
+      return json({ error: 'busy' }, 503);
+    }
+    this.webhooksQueued += 1;
+    // One event at a time per instance, in the order they came: a burst holds at most one
+    // database connection, and on one instance a later read of a subscription is applied later.
+    const turn = this.webhookQueue
+      .then(() => this.applyEvent(event))
+      .finally(() => {
+        this.webhooksQueued -= 1;
+      });
+    this.webhookQueue = turn.then(
+      () => undefined,
+      () => undefined,
+    );
+    return turn;
+  }
+
+  /** Webhooks being applied or waiting their turn on this instance (verified events only). */
+  get queuedWebhooks(): number {
+    return this.webhooksQueued;
+  }
+
+  /** Apply one verified event, in its turn. */
+  private async applyEvent(event: Stripe.Event): Promise<Response> {
     const subject = subjectOf(event);
     if (await this.directory.eventSeen(event.id)) {
       return json({ received: true, duplicate: true }, 200);

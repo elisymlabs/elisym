@@ -1149,6 +1149,46 @@ describe('the webhook queue bound', () => {
     expect(later.status).toBe(200);
   });
 
+  it('never gives an unsigned or forged request a slot, even with the queue full', async () => {
+    const { open, subscribe, deliver, stripe, billing } = await setup();
+    const owner = newOwner();
+    await open(owner);
+    const snapshot = subscribe(owner.pubkey);
+    stripe.control.delayMs = 40;
+    const slow = Array.from({ length: MAX_QUEUED_WEBHOOKS }, (_unused, index) =>
+      deliver({
+        id: `evt_slow_${index}`,
+        type: 'customer.subscription.updated',
+        object: { id: snapshot.id, metadata: { askr_store: owner.pubkey } },
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(billing?.queuedWebhooks).toBe(MAX_QUEUED_WEBHOOKS);
+    const junk = await Promise.all(
+      Array.from({ length: 60 }, (_unused, index) =>
+        deliver(
+          {
+            id: `evt_junk_${index}`,
+            type: 'customer.subscription.deleted',
+            object: { id: snapshot.id, metadata: { askr_store: owner.pubkey } },
+          },
+          index % 2 === 0 ? null : 't=1,v1=00',
+        ),
+      ),
+    );
+    expect(junk.every((answer) => answer.status === 400)).toBe(true);
+    expect(junk.some((answer) => answer.status === 503)).toBe(false);
+    expect(billing?.queuedWebhooks).toBe(MAX_QUEUED_WEBHOOKS);
+    expect((await Promise.all(slow)).every((answer) => answer.status === 200)).toBe(true);
+    expect(billing?.queuedWebhooks).toBe(0);
+    const after = await deliver({
+      id: 'evt_after_slow',
+      type: 'customer.subscription.updated',
+      object: { id: snapshot.id, metadata: { askr_store: owner.pubkey } },
+    });
+    expect(after.status).toBe(200);
+  });
+
   it('frees a slot when applying an event fails', async () => {
     const { open, subscribe, deliver, failing } = await setup();
     const owner = newOwner();
