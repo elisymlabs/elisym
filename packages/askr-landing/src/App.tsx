@@ -13,8 +13,10 @@ import { SiteHeader } from './components/SiteHeader';
 import { Sources } from './components/Sources';
 import { Trust } from './components/Trust';
 import { WorksWith } from './components/WorksWith';
+import { useHashScroll } from './useHashScroll';
 
 export function App() {
+  useHashScroll();
   return (
     <div className="grain min-h-screen overflow-x-clip">
       <SiteHeader />
