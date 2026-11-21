@@ -3,15 +3,17 @@ import { useEffect } from 'react';
 /** What stops the late scroll: the visitor has started scrolling on their own. */
 const VISITOR_SCROLL_EVENTS = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
 
-/** Navigations where the browser puts back the scroll position the visitor left the page at. */
-const RESTORED_NAVIGATIONS: ReadonlySet<string> = new Set(['reload', 'back_forward']);
+/** Navigation types where the browser puts back the scroll position the visitor left the page at. */
+const RESTORING_NAVIGATION_TYPES: ReadonlySet<string> = new Set(['reload', 'back_forward']);
 
 function isRestoredNavigation(): boolean {
   if (typeof performance === 'undefined' || typeof performance.getEntriesByType !== 'function') {
     return false;
   }
   const [entry] = performance.getEntriesByType('navigation');
-  return entry !== undefined && 'type' in entry && RESTORED_NAVIGATIONS.has(String(entry.type));
+  return (
+    entry !== undefined && 'type' in entry && RESTORING_NAVIGATION_TYPES.has(String(entry.type))
+  );
 }
 
 function hashTarget(): Element | null {
