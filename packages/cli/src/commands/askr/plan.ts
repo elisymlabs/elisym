@@ -1,6 +1,9 @@
 /**
- * `askr plan free` (5.9): the owner's explicit choice of Free, the only
- * self-serve plan. The prompt runs it only when the human chose Free.
+ * `askr plan free` (5.9): the owner's explicit choice of Free, the store live
+ * at once. `askr plan <starter|growth|pro|scale> [--yearly]`: a Stripe
+ * Checkout link for the human to pay at (never opened here); the store goes
+ * live once the payment went through. The prompt runs either only on the
+ * human's explicit choice.
  */
 import { UPGRADE } from './constants';
 import { AskrExit, EXIT, type CommandOutcome } from './errors';
@@ -18,13 +21,81 @@ import {
 import type { StoreView } from './types';
 
 const FREE = 'free';
+const PAID_PLANS: readonly string[] = ['starter', 'growth', 'pro', 'scale'];
 
-export async function runPlan(session: Session, plan: string): Promise<CommandOutcome> {
+export interface PlanOptions {
+  /** A paid plan billed yearly instead of monthly. */
+  yearly?: boolean;
+}
+
+const PAID_HINT = 'paid plans: message us with your Store ID';
+
+/** A paid plan: the checkout link the human opens to pay; the store activates after payment. */
+async function runCheckout(
+  session: Session,
+  plan: string,
+  options: PlanOptions,
+): Promise<CommandOutcome> {
+  const key = await useOwnerKey(session);
+  const interval = options.yearly === true ? 'year' : 'month';
+  const result = await session.call<{ url: string }>('POST', '/v1/admin/billing/checkout', {
+    plan,
+    interval,
+  });
+  if (!result.ok) {
+    switch (result.code) {
+      case 'billing_unavailable':
+      case 'plan_unavailable':
+        throw new AskrExit(EXIT.LIMIT, result.code, {
+          hint: `this plan cannot be bought here right now: ${PAID_HINT}`,
+          fields: { upgrade: UPGRADE },
+        });
+      case 'subscription_exists':
+        throw new AskrExit(EXIT.REFUSED, 'subscription_exists', {
+          hint: `the store already has a paid plan: change it under Manage billing in the admin (${session.adminUrl})`,
+        });
+      case 'suspended':
+        throw new AskrExit(EXIT.REFUSED, 'suspended', {
+          hint: `the store is suspended: ${CONTACT_HINT}`,
+        });
+      case 'operator_managed':
+        throw new AskrExit(EXIT.REFUSED, 'operator_managed', {
+          hint: `we manage this store's plan: ${CONTACT_HINT}`,
+        });
+      default:
+        // no_store (run askr init first) and moved are mapped as every command maps them.
+        throw refusalExit(session, result);
+    }
+  }
+  return {
+    exitCode: EXIT.OK,
+    output: {
+      ok: true,
+      storeId: key.storeId,
+      plan,
+      interval,
+      checkoutUrl: result.body.url,
+      hint: 'give the human this checkoutUrl to open and pay (never open it yourself); the store goes live once the payment went through: check with askr status',
+    },
+  };
+}
+
+export async function runPlan(
+  session: Session,
+  plan: string,
+  options: PlanOptions = {},
+): Promise<CommandOutcome> {
+  if (PAID_PLANS.includes(plan)) {
+    return runCheckout(session, plan, options);
+  }
   if (plan !== FREE) {
-    throw new AskrExit(EXIT.BAD_INPUT, 'paid_plan', {
-      hint: 'paid plans: message us with your Store ID',
+    throw new AskrExit(EXIT.BAD_INPUT, 'unknown_plan', {
+      hint: 'plans: free, starter, growth, pro, scale (Enterprise: message us with your Store ID)',
       fields: { upgrade: UPGRADE },
     });
+  }
+  if (options.yearly === true) {
+    throw new AskrExit(EXIT.BAD_INPUT, 'bad_flag', { hint: '--yearly is for a paid plan' });
   }
   const key = await useOwnerKey(session);
   const result = await session.call<StoreView & { activation: string }>(

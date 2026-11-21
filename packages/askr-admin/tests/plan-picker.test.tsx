@@ -300,11 +300,13 @@ function landingPlans() {
     .map((block) => {
       const name = /\n {4}name: '([^']+)'/u.exec(`\n${block}`)?.[1];
       const price = /price: \{ kind: '(flat|from)', monthly: '([^']+)'/u.exec(block);
+      const yearly = /yearlyPerMonth: '([^']+)', yearlyTotal: '([^']+)'/u.exec(block);
       const starts = /\n {4}start: '([a-z]+)'/u.exec(`\n${block}`)?.[1];
       const group = /\n {4}group: '([a-z]+)'/u.exec(`\n${block}`)?.[1];
       return {
         name,
         monthly: price?.[2],
+        ...(yearly === null ? {} : { yearlyPerMonth: yearly[1], yearlyTotal: yearly[2] }),
         start: starts,
         ...(group === undefined ? {} : { group }),
         ...(price?.[1] === 'from' ? { from: true } : {}),

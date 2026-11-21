@@ -1,0 +1,88 @@
+import type { BillingView, PaidPlan } from './types';
+
+/** Where the admin comes back from Stripe Checkout: paid, or left without paying. */
+export type BillingReturn = 'success' | 'canceled';
+
+/** The query flag the server's Checkout success and cancel URLs carry (`?billing=`). */
+export const BILLING_PARAM = 'billing';
+
+/** How often the store is read again after a payment, and for how long at most. */
+export const ACTIVATION_POLL_MS = 3_000;
+export const ACTIVATION_POLL_LIMIT = 40;
+
+/** Subscription states that keep a paid plan: `past_due` while Stripe retries a payment. */
+const LIVE_STATUSES: readonly string[] = ['active', 'trialing', 'past_due'];
+
+const PAID_PLANS: readonly PaidPlan[] = ['starter', 'growth', 'pro', 'scale'];
+
+/**
+ * The `?billing=` flag the page was opened with, removed from the address at once so a reload
+ * does not say it again. Anything else in the address stays.
+ */
+export function takeBillingReturn(
+  location: Pick<Location, 'href'> | undefined,
+  history: Pick<History, 'replaceState' | 'state'> | undefined,
+): BillingReturn | undefined {
+  if (location === undefined) {
+    return undefined;
+  }
+  const url = new URL(location.href);
+  const value = url.searchParams.get(BILLING_PARAM);
+  if (value === null) {
+    return undefined;
+  }
+  url.searchParams.delete(BILLING_PARAM);
+  history?.replaceState(history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  return value === 'success' || value === 'canceled' ? value : undefined;
+}
+
+/** A plan's API name from the name the cards show ("Growth" is `growth`). */
+export function paidPlanOf(name: string): PaidPlan | undefined {
+  const slug = name.toLowerCase();
+  return PAID_PLANS.find((plan) => plan === slug);
+}
+
+export function isLive(billing: BillingView): boolean {
+  return billing.status !== null && LIVE_STATUSES.includes(billing.status);
+}
+
+function planName(plan: PaidPlan | null): string {
+  return plan === null ? 'paid' : `${plan.slice(0, 1).toUpperCase()}${plan.slice(1)}`;
+}
+
+/** A Unix time as a date, in UTC (Stripe's periods are). */
+export function dateOf(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+/** What Overview says of the store's paid plan; empty when it never had one. */
+export function billingLine(billing: BillingView): string {
+  if (billing.status === null) {
+    return '';
+  }
+  const plan = planName(billing.plan);
+  const end = billing.currentPeriodEnd === null ? undefined : dateOf(billing.currentPeriodEnd);
+  if (billing.status === 'past_due') {
+    return `A payment for your ${plan} plan failed and is being retried. Your plan stays active meanwhile: update your payment method under Manage billing.`;
+  }
+  if (isLive(billing) && billing.cancelAtPeriodEnd) {
+    return end === undefined
+      ? `Your ${plan} plan is canceled and ends with its current period.`
+      : `Your ${plan} plan is canceled and ends on ${end}. Your store then moves to Free if it has room, or waits for a new plan; nothing is deleted.`;
+  }
+  if (isLive(billing)) {
+    const cycle = billing.interval === 'year' ? 'yearly' : 'monthly';
+    return end === undefined
+      ? `Your ${plan} plan is billed ${cycle}.`
+      : `Your ${plan} plan is billed ${cycle} and renews on ${end}.`;
+  }
+  if (billing.status === 'incomplete') {
+    return `The first payment for your ${plan} plan is not complete yet.`;
+  }
+  return `Your ${plan} plan ended.`;
+}

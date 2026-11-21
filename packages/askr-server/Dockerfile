@@ -46,6 +46,15 @@
 # active on that tier. With ASKR_FREE_TIER unset, Free answers free_unavailable and only the
 # operator activates stores. To turn Free off, unset all three: a cap set without the tier stops
 # the server at startup, and so does any old ASKR_AUTO_TIER* name.
+# Paid plans (6.1): ASKR_STRIPE_SECRET_KEY_FILE (a Stripe restricted key: Checkout Sessions,
+# Customers and Customer portal write; Subscriptions, Products, Prices and Invoices read) and
+# ASKR_STRIPE_WEBHOOK_SECRET_FILE (the webhook endpoint's signing secret), both Docker secret
+# files like the master key. Stripe sends checkout.session.completed,
+# customer.subscription.created/updated/deleted, invoice.paid and invoice.payment_failed to
+# <ASKR_PUBLIC_BASE>/v1/stripe/webhook (API version 2026-10-28.endive). Neither set: billing is
+# off, its routes answer billing_unavailable and paid plans go through us; only one set, or an
+# empty file, stops the server. Each paid plan needs a tier of the same name (starter, growth,
+# pro, scale): a checkout for a missing one is refused, a payment for one is retried by Stripe.
 # Operator commands run in the same image:
 #   docker run --rm -e DATABASE_URL=... -e ASKR_MASTER_KEY_FILE=... askr-server store list
 ARG BUN_IMAGE=oven/bun:1.3.11-slim

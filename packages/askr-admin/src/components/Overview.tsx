@@ -1,7 +1,9 @@
 import type { StoreConfig } from '@elisym/askr';
 import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
 import { KIND_DELETION } from '@elisym/commerce';
-import { UPGRADE_TEXT, pendingTextOf } from '../lib/activation';
+import type { ReactNode } from 'react';
+import { MANAGE_TEXT, UPGRADE_SELF_TEXT, UPGRADE_TEXT, pendingTextOf } from '../lib/activation';
+import { isLive } from '../lib/billing';
 import type { SessionDeps } from '../lib/deps';
 import { HELP } from '../lib/help';
 import type { RelayReader } from '../lib/relay';
@@ -9,17 +11,19 @@ import { npubOf } from '../lib/signer';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { usd } from '../lib/usage';
 import { ActivityTable } from './ActivityTable';
+import { BillingStatus } from './BillingStatus';
 import { CatalogSize } from './CatalogSize';
 import { ConnectorStatus } from './ConnectorStatus';
 import { ContactLinks } from './ContactLinks';
 import { Notice } from './Notice';
+import { PaidPlans } from './PaidPlans';
 import { PlanPicker } from './PlanPicker';
 import { Section } from './Section';
 import { SyncStatus } from './SyncStatus';
 import { UsageMeter } from './UsageMeter';
 
 interface Props {
-  deps: Pick<SessionDeps, 'api'>;
+  deps: Pick<SessionDeps, 'api' | 'openUrl'>;
   view: StoreView;
   config: StoreConfig | undefined;
   /** The settings shown are the ones O signed and the server holds until they are published. */
@@ -75,6 +79,23 @@ export function Overview({
   } else if (view.status === 'active') {
     publishedWhen = 'They are being published now.';
   }
+  // An active store moves up: through a checkout (from Free), the portal (a paid plan), or us.
+  let upgrade: ReactNode = (
+    <>
+      <p className="text-14 text-text-2">{UPGRADE_TEXT}</p>
+      <ContactLinks storeId={npubOf(view.owner)} />
+    </>
+  );
+  if (view.billing.checkoutAvailable) {
+    upgrade = (
+      <>
+        <p className="text-14 text-text-2">{UPGRADE_SELF_TEXT}</p>
+        <PaidPlans deps={deps} />
+      </>
+    );
+  } else if (view.billing.enabled && isLive(view.billing) && !view.billing.operatorManaged) {
+    upgrade = <p className="text-14 text-text-2">{MANAGE_TEXT}</p>;
+  }
   return (
     <div className="flex flex-col gap-32">
       <Section title="Status" info={HELP.status}>
@@ -87,6 +108,7 @@ export function Overview({
         {choosing ? (
           <PlanPicker
             deps={deps}
+            billing={view.billing}
             owner={view.owner}
             settingsSaved={config !== undefined}
             configError={configError}
@@ -96,6 +118,7 @@ export function Overview({
         {view.status === 'pending' && !choosing ? (
           <ContactLinks storeId={npubOf(view.owner)} />
         ) : null}
+        <BillingStatus deps={deps} billing={view.billing} />
         {config === undefined ? (
           <p className="text-14 text-text-2">Your settings are not published yet.</p>
         ) : null}
@@ -135,8 +158,7 @@ export function Overview({
         </dl>
         {tier !== null && view.status === 'active' ? (
           <div id="upgrade" className="flex flex-col gap-4">
-            <p className="text-14 text-text-2">{UPGRADE_TEXT}</p>
-            <ContactLinks storeId={npubOf(view.owner)} />
+            {upgrade}
           </div>
         ) : null}
         {tier === null ? null : (

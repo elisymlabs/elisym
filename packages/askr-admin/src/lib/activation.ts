@@ -30,5 +30,13 @@ export function pendingTextOf(view: Pick<StoreView, 'tier'>, place?: 'overview')
   return place === 'overview' ? PENDING_OVERVIEW_TEXT : PENDING_TEXT;
 }
 
-/** Under the plan of an active store. */
+/** Under the plan of an active store we bill by hand, or while the server takes no payments. */
 export const UPGRADE_TEXT = 'To move to a larger plan, message us with your Store ID.';
+
+/** Under the plan of an active store on Free, when the server takes payments. */
+export const UPGRADE_SELF_TEXT =
+  'Move to a paid plan: it starts as soon as the payment goes through.';
+
+/** Under the plan of a store with a paid subscription. */
+export const MANAGE_TEXT =
+  'To change or cancel your plan, use Manage billing under Status. For Enterprise, message us with your Store ID.';

@@ -145,10 +145,15 @@ export async function runCli(
       );
     }
     const status = command === 'activate' ? 'active' : 'suspended';
+    // A tier given here is the operator's from now on, even on a store a subscription paid for.
+    const billed = tier !== undefined && (await directory.planSourceOf(owner)) === 'billing';
     if (!(await directory.setStatus(owner, status, tier))) {
       throw new Error('The store changed meanwhile; try again');
     }
-    return `${nip19.npubEncode(owner)} is ${status}`;
+    const done = `${nip19.npubEncode(owner)} is ${status}`;
+    return billed
+      ? `${done}\nwarning: this store's plan was paid through Stripe; with --tier the operator manages it now, and billing no longer changes it (if its subscription is still live, Stripe keeps charging it until you cancel it there)`
+      : done;
   }
   if (group === 'tier' && command === 'list' && subject === undefined) {
     const tiers = await directory.listTiers();

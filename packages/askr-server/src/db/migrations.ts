@@ -298,6 +298,61 @@ create table ip_days (
 alter table catalog_syncs add column finished_at bigint, add column sync_id text;
 `,
   },
+  {
+    id: '0010_billing',
+    sql: `
+-- Who set a store's tier: the operator CLI (operator), the owner's Free choice (free) or a paid
+-- subscription (billing). Billing never changes an operator's store. Null (a store with no plan, or
+-- one an earlier release wrote) with a tier reads as the operator's.
+alter table stores add column plan_source text
+  check (plan_source in ('operator', 'free', 'billing'));
+update stores set plan_source = 'free' where auto_activated_at is not null and tier is not null;
+update stores set plan_source = 'operator' where plan_source is null and tier is not null;
+
+-- A store's Stripe customer, reused by its next checkout and opened by the billing portal.
+create table billing_customers (
+  owner text primary key references stores (owner) on delete cascade on update cascade,
+  customer_id text not null unique,
+  created_at bigint not null
+);
+
+-- Each Stripe subscription of a store as last read from Stripe (never from the client): its status,
+-- the plan its price names, and when the period ends.
+create table billing_subscriptions (
+  subscription_id text primary key,
+  owner text not null references stores (owner) on delete cascade on update cascade,
+  customer_id text not null,
+  status text not null,
+  plan text,
+  interval text check (interval in ('month', 'year')),
+  current_period_end bigint,
+  cancel_at_period_end boolean not null default false,
+  -- When Stripe created it (unix seconds): of two live subscriptions (two checkouts paid at once)
+  -- the earliest is the store's plan, whatever order their events come in.
+  stripe_created bigint not null,
+  updated_at bigint not null,
+  -- When the snapshot stored was read from Stripe (unix ms): one read earlier never replaces it, so
+  -- two instances applying events about the same subscription keep the newest read.
+  snapshot_fetched_at bigint not null
+);
+create index billing_subscriptions_owner on billing_subscriptions (owner);
+
+-- The last Checkout Session a store opened: the next one expires it, so two tabs (or two
+-- \`askr plan\` runs) cannot both be paid.
+create table billing_checkouts (
+  owner text primary key references stores (owner) on delete cascade on update cascade,
+  session_id text not null,
+  created_at bigint not null
+);
+
+-- Stripe events already applied: a redelivery is answered without applying it again.
+create table stripe_events (
+  id text primary key,
+  type text not null,
+  received_at bigint not null
+);
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

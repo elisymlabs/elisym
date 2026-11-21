@@ -10,6 +10,7 @@ import type { EmbedOptions } from './embed';
 import { AskrExit, type CommandOutcome, EXIT, type ExitCode, outcomeOfExit } from './errors';
 import type { InitOptions } from './init';
 import { profileOf } from './owner-key';
+import type { PlanOptions } from './plan';
 import type { PolicyOptions } from './policy';
 import type { ProductsOptions } from './products';
 import { type AskrDeps, Session, defaultDeps } from './session';
@@ -19,7 +20,7 @@ export const loadAskr = (): Promise<typeof AskrModule> => import('@elisym/askr')
 
 export type AskrInvocation =
   | { command: 'init'; options: InitOptions }
-  | { command: 'plan'; plan: string }
+  | { command: 'plan'; plan: string; options?: PlanOptions }
   | { command: 'products'; options: ProductsOptions }
   | { command: 'policy'; options: PolicyOptions }
   | { command: 'connector' }
@@ -85,7 +86,7 @@ async function dispatch(session: Session, invocation: AskrInvocation): Promise<C
     }
     case 'plan': {
       const { runPlan } = await import('./plan');
-      return runPlan(session, invocation.plan);
+      return runPlan(session, invocation.plan, invocation.options);
     }
     case 'products': {
       const { runProducts } = await import('./products');

@@ -7,6 +7,9 @@ const MAX_ADMIN_BODY_BYTES = 2 * 1024 * 1024;
 /** `POST /v1/admin/catalog` carries a whole catalog (replace) or its changes (upsert) (7.3). */
 const MAX_CATALOG_BODY_BYTES = 8 * 1024 * 1024;
 const ADMIN_PATH_PREFIX = '/v1/admin/';
+/** Stripe's events: a subscription with its items and an invoice stay far below this. */
+const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
+const WEBHOOK_PATH = '/v1/stripe/webhook';
 const CATALOG_PATH = '/v1/admin/catalog';
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'DELETE']);
 /** The shape of a NIP-98 header; checked before an admin body is read, the signature after. */
@@ -22,6 +25,9 @@ export function bodyLimitOf(
   path: string,
   authorization: string | undefined,
 ): number | 'unauthorized' {
+  if (method === 'POST' && path === WEBHOOK_PATH) {
+    return MAX_WEBHOOK_BODY_BYTES;
+  }
   if (!path.startsWith(ADMIN_PATH_PREFIX)) {
     return MAX_BODY_BYTES;
   }

@@ -8,7 +8,7 @@ import type { AdminClient, SessionDeps } from '../src/lib/deps';
 import { SignedJournal } from '../src/lib/journal';
 import type { RelayReader } from '../src/lib/relay';
 import { type Signer, secretKeySigner } from '../src/lib/signer';
-import type { CatalogSyncStatus, StoreView } from '../src/lib/types';
+import type { BillingView, CatalogSyncStatus, StoreView } from '../src/lib/types';
 
 export const OWNER_KEY = generateSecretKey();
 export const OWNER = getPublicKey(OWNER_KEY);
@@ -51,6 +51,21 @@ export function failedSyncOf(error: string, syncId = 'sync-other'): CatalogSyncS
     finishedAt: NOW - 10,
   };
 }
+/** A server that takes no payments: paid plans go through us. */
+export const BILLING_OFF: BillingView = {
+  enabled: false,
+  plan: null,
+  interval: null,
+  status: null,
+  currentPeriodEnd: null,
+  cancelAtPeriodEnd: false,
+  manageable: false,
+  checkoutAvailable: false,
+  operatorManaged: false,
+};
+
+/** A server that takes payments, for a store with no subscription yet. */
+export const BILLING_ON: BillingView = { ...BILLING_OFF, enabled: true, checkoutAvailable: true };
 
 export function storeView(overrides: Partial<StoreView> = {}): StoreView {
   return {
@@ -82,6 +97,7 @@ export function storeView(overrides: Partial<StoreView> = {}): StoreView {
     movedFrom: null,
     email: null,
     budgetPaused: null,
+    billing: BILLING_OFF,
     ...overrides,
   };
 }
@@ -174,6 +190,8 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
       private: null,
     })),
     recover: vi.fn(async () => storeView()),
+    checkout: vi.fn(async () => ({ url: 'https://checkout.stripe.test/c/1' })),
+    billingPortal: vi.fn(async () => ({ url: 'https://billing.stripe.test/p/1' })),
     ...overrides,
   };
 }
@@ -191,7 +209,11 @@ export const FREE_TIER = {
 
 /** What Overview takes beside the view and the settings, for a test that only looks at it. */
 export function overviewProps(api: AdminClient = fakeApi()) {
-  return { deps: { api }, configError: '', onPlanChosen: vi.fn(async () => undefined) };
+  return {
+    deps: { api, openUrl: vi.fn((_url: string) => undefined) },
+    configError: '',
+    onPlanChosen: vi.fn(async () => undefined),
+  };
 }
 
 export function sessionDeps(
@@ -199,7 +221,15 @@ export function sessionDeps(
   reader: RelayReader,
   signer: Signer = secretKeySigner(OWNER_KEY),
 ): SessionDeps {
-  return { signer, api, reader, now: () => NOW, journal: new SignedJournal() };
+  return {
+    signer,
+    api,
+    reader,
+    now: () => NOW,
+    journal: new SignedJournal(),
+    openUrl: vi.fn((_url: string) => undefined),
+    takeBillingReturn: () => undefined,
+  };
 }
 
 /** Settings signed by `secret`, for a store with products in the admin. */

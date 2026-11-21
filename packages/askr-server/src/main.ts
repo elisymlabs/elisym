@@ -5,10 +5,11 @@ import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
-import { createAdminApi } from './admin/api';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
+import { createStripeGateway } from './billing/stripe';
 import { runCli } from './cli';
 import {
+  billingFromEnv,
   freeTierFromEnv,
   freeTierWarning,
   publicBaseOf,
@@ -25,7 +26,7 @@ import { migrate } from './db/migrations';
 import { createPgDb } from './db/pg';
 import { createGateway } from './gateway/gateway';
 import { serveGateway } from './gateway/http';
-import { composeHandler } from './gateway/routes';
+import { createRoutes } from './gateway/routes';
 import { createStoreDocs, statusFromDirectory } from './gateway/store-docs-http';
 import { WidgetVersions, widgetBundle } from './gateway/widget';
 import { StoreEventPublisher } from './publisher';
@@ -94,6 +95,8 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   // Refuses to start on a bad Free setting or an old ASKR_AUTO_TIER* name; unset, Free answers
   // `free_unavailable` and only the operator activates stores (6.1).
   const freeTier = freeTierFromEnv(process.env);
+  // Refuses to start on one Stripe secret without the other; neither turns billing off.
+  const billingSecrets = billingFromEnv(process.env, (path) => readFileSync(path, 'utf8'));
   // A tier whose monthly budget is below one turn's reservation still answers, one turn at a time.
   for (const { tier } of await directory.listTiers()) {
     const warning = reserveWarning(tier, config.reserveUsd);
@@ -210,18 +213,28 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     isUnservable: (owner) => worker.isUnservable(owner),
     publicBase,
   });
-  const admin = createAdminApi({
+  const files = adminFiles(log);
+  const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
+  const { handler, billing } = createRoutes({
+    db,
     directory,
     publicBase,
     syncClient,
     storeEventsChanged: onStoresChanged,
     connectors,
     ...(freeTier === undefined ? {} : { freeTier }),
+    billingSecrets,
+    stripeFor: (secretKey) => createStripeGateway(secretKey),
+    ...(adminPages === undefined ? {} : { adminPages }),
+    storeDocs,
+    gateway,
     log,
   });
-  const files = adminFiles(log);
-  const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
-  const handler = composeHandler({ publicBase, adminPages, admin, storeDocs, gateway });
+  log(
+    billing === undefined
+      ? 'billing is off (no ASKR_STRIPE_SECRET_KEY_FILE): paid plans go through us'
+      : 'billing is on: paid plans through Stripe Checkout',
+  );
   server = serveGateway(handler, {
     port: Number(process.env.PORT ?? '8787'),
     trustProxy: process.env.ASKR_TRUST_PROXY === '1',

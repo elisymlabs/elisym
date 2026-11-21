@@ -1,5 +1,6 @@
 import type { NostrEvent } from 'nostr-tools';
 import { AdminApi } from './api';
+import { type BillingReturn, takeBillingReturn } from './billing';
 import { SignedJournal } from './journal';
 import { type RelayReader, relayReader } from './relay';
 import type { Signer } from './signer';
@@ -12,6 +13,8 @@ export type AdminClient = Pick<
   | 'store'
   | 'storeEvents'
   | 'choosePlan'
+  | 'checkout'
+  | 'billingPortal'
   | 'storedEvents'
   | 'pinnedWidget'
   | 'catalog'
@@ -36,15 +39,28 @@ export interface SessionDeps {
   now: () => number;
   /** What this session signed and the server stored. */
   journal: SignedJournal;
+  /** Leave for a page outside the admin (Stripe Checkout, the billing portal). */
+  openUrl: (url: string) => void;
+  /**
+   * Whether the admin was opened on the way back from Stripe Checkout (`?billing=`): read from
+   * the address the first time the signed-in admin asks, the same answer after.
+   */
+  takeBillingReturn: () => BillingReturn | undefined;
 }
 
 export function createSessionDeps(signer: Signer): SessionDeps {
+  let billingReturn: { value: BillingReturn | undefined } | undefined;
   return {
     signer,
     api: new AdminApi({ signer }),
     reader: relayReader(),
     now: () => Math.floor(Date.now() / 1000),
     journal: new SignedJournal(),
+    openUrl: (url) => globalThis.location.assign(url),
+    takeBillingReturn: () => {
+      billingReturn ??= { value: takeBillingReturn(globalThis.location, globalThis.history) };
+      return billingReturn.value;
+    },
   };
 }
 

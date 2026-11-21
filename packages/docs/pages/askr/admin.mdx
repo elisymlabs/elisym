@@ -14,13 +14,17 @@ Ticked by default. When it is ticked, signing in keeps your secret key in this b
 
 ### Status
 
-- **Pending**: not live yet: choose a plan in Overview (Free starts at once; a paid plan through us), or [message us](https://askr.elisym.network/contact) with your Store ID ([where to find it](/askr/overview#find-your-store-id)) if we manage your plan. You can finish the whole setup meanwhile, the widget included: while the store is pending it shows nothing on your site; once the store is active, a visitor sees it on their next page load, at most 5 minutes later.
+- **Pending**: not live yet: choose a plan in Overview (Free starts at once; a paid plan once you paid at its checkout), or [message us](https://askr.elisym.network/contact) with your Store ID ([where to find it](/askr/overview#find-your-store-id)) if we manage your plan. You can finish the whole setup meanwhile, the widget included: while the store is pending it shows nothing on your site; once the store is active, a visitor sees it on their next page load, at most 5 minutes later.
 - **Active**: the assistant answers visitors on your allowed sites.
 - **Suspended**: the assistant does not answer, and the chat tells visitors it is unavailable. Contact the Askr operator.
 
 ### Choose a plan
 
-A pending store with no plan shows the plan picker under its status. **Start on Free** puts the store live at once, within Free's limits; it stays disabled until you have saved your settings. Products, policies and the connector wait for a plan: their pages say so, with a **Choose a plan** button that opens Overview. The paid cards (Starter, Growth / Pro / Scale, Enterprise) show their monthly prices: for one of them, [message us](https://askr.elisym.network/contact) with your Store ID, which the picker shows next to the link, and we set it up. Every plan and its limits are on the [Askr page](https://askr.elisym.network/#pricing). Once Free starts, the admin keeps showing your settings as you signed them until they are published, a moment later.
+A pending store with no plan shows the plan picker under its status. **Start on Free** puts the store live at once, within Free's limits; it stays disabled until you have saved your settings. Products, policies and the connector wait for a plan: their pages say so, with a **Choose a plan** button that opens Overview. Starter, Growth, Pro and Scale each have **Upgrade**: choose **Monthly** or **Yearly**, then **Upgrade** opens a Stripe Checkout page (prices in USD, tax added there). Once you paid, Stripe brings you back to the admin, which says "Payment received, activating..." and goes live on its own a few seconds later, when Stripe has told the server. Leaving the checkout charges nothing. For Enterprise, [message us](https://askr.elisym.network/contact) with your Store ID, which the picker shows next to the link. When paying in the admin is not available, the paid cards show their monthly prices and the way to message us instead. Every plan and its limits are on the [Askr page](https://askr.elisym.network/#pricing). Once a plan starts, the admin keeps showing your settings as you signed them until they are published, a moment later.
+
+### Your paid plan
+
+A store on a paid plan shows it under its status: when it renews, when it ends (after a cancel), or that a payment failed and is being retried (your store stays live meanwhile). **Manage billing** opens the Stripe billing portal: change the plan or the billing period, update the payment method, see invoices, or cancel. A cancel takes effect at the end of the period you paid for; the store then moves to Free if Free has room, otherwise it waits as pending for a new plan, its data kept. See [Paid plans and billing](/askr/overview#paid-plans-and-billing).
 
 ### Usage
 
@@ -32,7 +36,7 @@ The admin says so at the top of every page: a red notice while a used-up budget 
 - **Open conversations**: chats started in the last 24 hours.
 - **Reserved today**: money set aside for answers that are being written right now.
 
-The plan line below says how many products the assistant reads, how many questions one visitor may ask a day, and how often a connector syncs. To move an active store to a larger plan, [message us](https://askr.elisym.network/contact) with your Store ID, which the admin shows next to the link.
+The plan line below says how many products the assistant reads, how many questions one visitor may ask a day, and how often a connector syncs. A store on Free moves to a paid plan with **Upgrade** right there; a store on a paid plan changes it with **Manage billing**. For Enterprise, or a plan we manage for you, [message us](https://askr.elisym.network/contact) with your Store ID, which the admin shows next to the link.
 
 ### Product clicks
 

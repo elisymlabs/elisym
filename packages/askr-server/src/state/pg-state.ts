@@ -92,7 +92,7 @@ export const STORE_SELECT = `select ${STORE_COLUMNS} ${STORE_FROM}`;
 export const MAX_MOVE_HOPS = 1_000;
 
 /** Where the store that had owner key `owner` is now, if it moved: the end of its chain of moves. */
-export async function followMoves(db: Db, owner: string): Promise<string | undefined> {
+export async function followMoves(db: Queryable, owner: string): Promise<string | undefined> {
   const [row] = await db.query<{ to_owner: string | null }>(
     `with recursive chain (owner, hops) as (
        select $1::text, 0
