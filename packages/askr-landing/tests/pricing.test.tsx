@@ -222,6 +222,20 @@ describe('the plans', () => {
 });
 
 describe('the pricing section', () => {
+  it('starts the #pricing anchor at the billing switch, under the heading', async () => {
+    const page = await render();
+    const anchor = page.querySelector('#pricing');
+    expect(
+      anchor?.firstElementChild?.querySelector('[aria-label="Billing period"]'),
+    ).not.toBeNull();
+    expect(anchor?.querySelector('h2')).toBeNull();
+    const section = page.querySelector('section[aria-labelledby="pricing-title"]');
+    expect(section?.querySelector('#pricing-title')?.textContent).toContain(
+      'Pay for conversations',
+    );
+    expect(section?.contains(anchor ?? null)).toBe(true);
+  });
+
   it('shows Free, Starter, one card for the sizes and Enterprise, yearly first', async () => {
     const page = await render();
     expect(cards(page).map((card) => card.querySelector('h3')?.textContent)).toEqual([
