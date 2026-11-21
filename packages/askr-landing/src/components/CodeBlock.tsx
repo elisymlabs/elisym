@@ -4,15 +4,20 @@ interface Props {
   id: string;
   label: string;
   code: string;
+  /** What the copy button copies and says, when not the code shown (a long text shown in part). */
+  copy?: { text: string; label: string };
 }
 
 /** A labeled block of code the merchant copies as it is. */
-export function CodeBlock({ id, label, code }: Props) {
+export function CodeBlock({ id, label, code, copy }: Props) {
   return (
     <figure className="rounded-20 border-ink-line bg-ink min-w-0 overflow-hidden border">
       <figcaption className="border-ink-line flex items-center justify-between gap-12 border-b py-8 pr-8 pl-16">
         <span className="text-13 text-on-ink-2 font-medium">{label}</span>
-        <CopyButton text={code} />
+        <CopyButton
+          text={copy?.text ?? code}
+          {...(copy === undefined ? {} : { label: copy.label })}
+        />
       </figcaption>
       <pre id={id} className="text-13 text-on-ink overflow-x-auto p-16 font-mono leading-relaxed">
         <code>{code}</code>

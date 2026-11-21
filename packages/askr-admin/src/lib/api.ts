@@ -1,7 +1,11 @@
-import type { CatalogItemInput, ConnectorPlatform, SyncDiff } from '@elisym/askr';
+import {
+  type CatalogItemInput,
+  type ConnectorPlatform,
+  type SyncDiff,
+  nip98Header,
+} from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { apiBase } from '../constants';
-import { nip98Header } from './nip98';
 import type { Signer } from './signer';
 import type {
   Activation,
@@ -79,7 +83,12 @@ export class AdminApi {
     const url = `${this.base}${path}`;
     const body = payload === undefined ? '' : JSON.stringify(payload);
     const headers: Record<string, string> = {
-      authorization: await nip98Header({ signer: this.signer, url, method, body }),
+      authorization: await nip98Header({
+        signEvent: (template) => this.signer.signEvent(template),
+        url,
+        method,
+        body,
+      }),
     };
     if (body !== '') {
       headers['content-type'] = 'application/json';

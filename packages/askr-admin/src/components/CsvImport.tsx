@@ -1,13 +1,13 @@
-import type { CatalogItemInput } from '@elisym/askr';
-import { useRef, useState } from 'react';
 import {
   CSV_COLUMNS,
   CSV_EXAMPLE,
   CSV_VARIANT_COLUMNS,
+  type CatalogItemInput,
   type CsvImport as CsvResult,
   csvSizeProblem,
   productsFromCsv,
-} from '../lib/csv';
+} from '@elisym/askr';
+import { useRef, useState } from 'react';
 import { Notice } from './Notice';
 
 interface Props {

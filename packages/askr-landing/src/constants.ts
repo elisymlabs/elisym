@@ -14,6 +14,7 @@ export const DOCS = {
   overview: 'https://docs.elisym.network/askr/overview',
   embed: 'https://docs.elisym.network/askr/embed',
   catalogFromAnAgent: 'https://docs.elisym.network/askr/catalog-from-an-agent',
+  agentSetup: 'https://docs.elisym.network/askr/agent-setup',
 };
 
 /** What a plan costs, as shown: every amount written out, no arithmetic on the page. */
@@ -190,4 +191,11 @@ export const X_URL = 'https://x.com/elisymlabs';
 
 /** Where a store asks for a paid plan or Enterprise: our request form. */
 export const CONTACT_URL = 'https://forms.gle/woUDTt53ZndRtm5H8';
+
+/** This page's own address. */
+export const SITE_URL = 'https://askr.elisym.network';
+/** Our contact through this page's `/contact` redirect (`vercel.json`): what the CLI prints, so its target can change. */
+export const CONTACT_REDIRECT_URL = `${SITE_URL}/contact`;
+/** The plans on this page. */
+export const PRICING_URL = `${SITE_URL}/#pricing`;
 export const ELISYM_URL = 'https://elisym.network';

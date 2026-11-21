@@ -56,7 +56,7 @@
     },
     "packages/askr": {
       "name": "@elisym/askr",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "dependencies": {
         "@elisym/commerce": "~0.14.0",
         "zod": "~4.6.7",
@@ -78,7 +78,7 @@
       "name": "@elisym/askr-admin",
       "version": "0.1.0",
       "dependencies": {
-        "@elisym/askr": "~0.2.0",
+        "@elisym/askr": "~0.3.0",
         "@elisym/commerce": "~0.14.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -101,9 +101,9 @@
     },
     "packages/askr-agent": {
       "name": "@elisym/askr-agent",
-      "version": "0.2.0",
+      "version": "0.3.1",
       "dependencies": {
-        "@elisym/askr": "~0.2.0",
+        "@elisym/askr": "~0.3.0",
         "decimal.js-light": "~2.5.1",
         "zod": "~4.6.7",
       },
@@ -145,8 +145,8 @@
       "name": "@elisym/askr-server",
       "version": "0.1.0",
       "dependencies": {
-        "@elisym/askr": "~0.2.0",
-        "@elisym/askr-agent": "~0.2.0",
+        "@elisym/askr": "~0.3.0",
+        "@elisym/askr-agent": "~0.3.0",
         "@elisym/commerce": "~0.14.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -170,7 +170,7 @@
       "name": "@elisym/askr-widget",
       "version": "0.1.0",
       "dependencies": {
-        "@elisym/askr": "~0.2.0",
+        "@elisym/askr": "~0.3.0",
         "@elisym/commerce": "~0.14.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -209,11 +209,12 @@
     },
     "packages/cli": {
       "name": "@elisym/cli",
-      "version": "0.34.0",
+      "version": "0.35.0",
       "bin": {
         "elisym": "./dist/index.js",
       },
       "dependencies": {
+        "@elisym/askr": "~0.3.0",
         "@elisym/sdk": "~0.45.0",
         "@solana-program/memo": "~0.11.0",
         "@solana-program/system": "~0.12.0",
@@ -305,12 +306,12 @@
     },
     "packages/mcp": {
       "name": "@elisym/mcp",
-      "version": "0.35.0",
+      "version": "0.35.1",
       "bin": {
         "elisym-mcp": "./dist/index.js",
       },
       "dependencies": {
-        "@elisym/askr": "~0.2.0",
+        "@elisym/askr": "~0.3.0",
         "@elisym/commerce": "~0.14.0",
         "@elisym/pay-core": "~0.5.0",
         "@elisym/sdk": "~0.45.0",

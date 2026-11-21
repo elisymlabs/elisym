@@ -12,11 +12,14 @@ import { listAgents, loadAgent } from '@elisym/sdk/agent-store';
  *   elisym identity link <github|x|website> [agent]             Link an external identity
  *   elisym identity status [agent]                              Verify linked identities
  *   elisym identity unlink <github|x|website> [agent]           Unlink an external identity
+ *   elisym askr <command> [--profile <name>]                    Set up an Askr store (JSON output)
  */
 process.removeAllListeners('warning');
 import { Command } from 'commander';
 import { nip19 } from 'nostr-tools';
 import { type AskrKeyOptions, cmdAskrKey } from './commands/askr-key';
+import { registerAskr } from './commands/askr/register';
+import { emitParseError, runAskrCommand } from './commands/askr/runner';
 import { cmdDelegateKey, type DelegateKeyOptions } from './commands/delegate-key.js';
 import { cmdIdentityLink, cmdIdentityStatus, cmdIdentityUnlink } from './commands/identity.js';
 import { cmdInit, type InitOptions } from './commands/init.js';
@@ -160,6 +163,17 @@ program
     }),
   );
 
+// Askr store setup (one JSON object per command, for AI coding agents)
+const isAskrLine = process.argv[2] === 'askr';
+registerAskr(
+  program,
+  async (invocation, context) => {
+    await runAskrCommand(invocation, context);
+  },
+  process.argv.slice(3),
+  isAskrLine,
+);
+
 // Identity
 const identity = program
   .command('identity')
@@ -227,4 +241,16 @@ x402
     }),
   );
 
-program.parse();
+async function main(): Promise<void> {
+  if (!isAskrLine) {
+    program.parse();
+    return;
+  }
+  try {
+    await program.parseAsync();
+  } catch (error) {
+    emitParseError(error);
+  }
+}
+
+void main();

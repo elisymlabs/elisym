@@ -1,5 +1,6 @@
 import {
   type CatalogItemInput,
+  MAX_CSV_BYTES,
   type SyncDiff,
   buildCatalogItemEvent,
   parseCatalogItem,
@@ -11,7 +12,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CsvImport } from '../src/components/CsvImport';
 import { ProductsSection } from '../src/components/ProductsSection';
 import { changesOf, importItems, removeItem, upsertItem } from '../src/lib/catalog';
-import { MAX_CSV_BYTES } from '../src/lib/csv';
 import { inputOfListing } from '../src/lib/store-data';
 import {
   NOW,

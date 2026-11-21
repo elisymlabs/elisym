@@ -1,4 +1,5 @@
 import { AdminPreview } from './components/AdminPreview';
+import { AgentSetup } from './components/AgentSetup';
 import { Closing } from './components/Closing';
 import { Faq } from './components/Faq';
 import { Features } from './components/Features';
@@ -27,6 +28,7 @@ export function App() {
         <Trust />
         <AdminPreview />
         <GetStarted />
+        <AgentSetup />
         <Pricing />
         <Faq />
         <Closing />

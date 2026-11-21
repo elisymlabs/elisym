@@ -29,12 +29,16 @@ COPY --parents packages/*/package.json ./
 # Production dependencies of the packages that run, and nothing else: the
 # workspace also holds the web app and the docs site, whose dependencies have
 # no business in this image (about 1 GB and 2,700 packages unfiltered).
+# The `askr` commands load @elisym/askr (and its @elisym/commerce) on demand.
 RUN bun install --frozen-lockfile --production \
-  --filter @elisym/cli --filter @elisym/sdk --filter @elisym/pay-core
+  --filter @elisym/cli --filter @elisym/sdk --filter @elisym/pay-core --filter @elisym/commerce \
+  --filter @elisym/askr
 
 # The built output of every package that runs at runtime
 COPY --from=build /app/packages/pay-core/dist packages/pay-core/dist
 COPY --from=build /app/packages/sdk/dist packages/sdk/dist
+COPY --from=build /app/packages/commerce/dist packages/commerce/dist
+COPY --from=build /app/packages/askr/dist packages/askr/dist
 COPY --from=build /app/packages/cli/dist packages/cli/dist
 
 # Run unprivileged, as the image's `bun` user (uid 1000). HOME stays /root so

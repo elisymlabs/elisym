@@ -1,30 +1,13 @@
-import { ANY_OPTION_VALUE, type CatalogItemInput, LIMITS } from '@elisym/askr';
-import Decimal from 'decimal.js-light';
+import {
+  ANY_OPTION_VALUE,
+  type CatalogItemInput,
+  LIMITS,
+  PRICE_AMOUNT_RE,
+  type VariantInput,
+} from '@elisym/askr';
 
-export type VariantInput = NonNullable<CatalogItemInput['variants']>[number];
+export { listingPriceOf, type VariantInput } from '@elisym/askr';
 export type OptionInput = NonNullable<CatalogItemInput['options']>[number];
-
-const PRICE_RE = /^(0|[1-9]\d{0,11})(\.\d{1,18})?$/;
-
-/**
- * The listing price a product with variants must carry (2.1): the lowest
- * available variant's, or the lowest overall when none is available.
- * Undefined with no variants or a price that is not a plain number.
- */
-export function listingPriceOf(variants: readonly VariantInput[]): string | undefined {
-  if (variants.length === 0 || !variants.every((variant) => PRICE_RE.test(variant.price))) {
-    return undefined;
-  }
-  const available = variants.filter((variant) => variant.available);
-  const pool = available.length > 0 ? available : variants;
-  let lowest = pool[0];
-  for (const variant of pool) {
-    if (lowest === undefined || new Decimal(variant.price).lessThan(lowest.price)) {
-      lowest = variant;
-    }
-  }
-  return lowest?.price;
-}
 
 /**
  * `S, M, L` as option values: trimmed, empty ones dropped, each once. `*`
@@ -154,7 +137,7 @@ export function variantProblems(
     `Variant ${index + 1} (${variantLabel(variant.values)})`;
   const problems: string[] = [];
   variants.forEach((variant, index) => {
-    if (!PRICE_RE.test(variant.price)) {
+    if (!PRICE_AMOUNT_RE.test(variant.price)) {
       problems.push(`${name(variant, index)}: the price is not a number like 19.90.`);
     }
   });

@@ -9,6 +9,7 @@ export {
   CatalogItemFieldsSchema,
   CatalogItemInputSchema,
   D_TAG_RE,
+  PRICE_AMOUNT_RE,
   buildCatalogItemEvent,
   catalogAddress,
   determinedVariant,
@@ -97,3 +98,20 @@ export {
   connectSyncClient,
   relaySyncClient,
 } from './relay-client';
+export { type VariantInput, listingPriceOf } from './variants';
+export {
+  type CsvImport,
+  type CsvParse,
+  type CsvRow,
+  type CsvRowError,
+  CSV_ATTR_PREFIX,
+  CSV_COLUMNS,
+  CSV_EXAMPLE,
+  CSV_OPTION_PREFIX,
+  CSV_VARIANT_COLUMNS,
+  MAX_CSV_BYTES,
+  csvSizeProblem,
+  parseCsv,
+  productsFromCsv,
+} from './csv';
+export { type Nip98Input, KIND_HTTP_AUTH, nip98Header, sha256Hex } from './admin-auth';
