@@ -4,10 +4,10 @@ import { type RunSummary, summaryOfRun } from './connector-run';
  * preview, then wait for the first scheduled run newer than the one before.
  * Pausing or removing a connector is done in the admin.
  */
-import { PREVIEW_TIMEOUT_MS, SYNC_POLL_MS, UPGRADE } from './constants';
+import { PREVIEW_TIMEOUT_MS, SYNC_POLL_MS } from './constants';
 import { AskrExit, EXIT, type CommandOutcome } from './errors';
 import type { ApiResult, Session } from './session';
-import { inactiveExit, readView, refusalExit, useOwnerKey } from './store';
+import { inactiveExit, readView, refusalExit, upgradeOf, useOwnerKey } from './store';
 import type { ConnectorView, StoreView } from './types';
 
 const META_HINT =
@@ -18,7 +18,11 @@ const SLOW_SHOP_HINT =
   "the shop is slow to read; run the resume command in 90 seconds. A shop that is always this slow: use the admin's Connector tab, whose preview waits the full 2 minutes";
 
 /** A preview's or a run's result as an exit, or undefined for `ok`. */
-function resultExit(summary: RunSummary, detail: Record<string, unknown>): AskrExit | undefined {
+function resultExit(
+  summary: RunSummary,
+  detail: Record<string, unknown>,
+  upgrade: Record<string, string>,
+): AskrExit | undefined {
   if (summary.status === 'ok') {
     return undefined;
   }
@@ -31,7 +35,7 @@ function resultExit(summary: RunSummary, detail: Record<string, unknown>): AskrE
   if (summary.reason === 'too_many_products') {
     return new AskrExit(EXIT.LIMIT, 'too_many_products', {
       hint: "the shop has more products than the store's plan allows",
-      fields: { count: summary.count, max: summary.max, upgrade: UPGRADE },
+      fields: { count: summary.count, max: summary.max, upgrade },
     });
   }
   if (summary.status === 'source_closed') {
@@ -131,7 +135,8 @@ export async function runConnector(session: Session): Promise<CommandOutcome> {
   if (previewed === null) {
     throw new AskrExit(EXIT.REFUSED, 'unexpected');
   }
-  const previewExit = resultExit(previewed, failuresOf(preview.body.result));
+  const upgrade = upgradeOf(view.billing, session.adminUrl);
+  const previewExit = resultExit(previewed, failuresOf(preview.body.result), upgrade);
   if (previewExit !== undefined) {
     throw previewExit;
   }
@@ -172,7 +177,8 @@ export async function runConnector(session: Session): Promise<CommandOutcome> {
         fields: { retryAfterSeconds: 60 },
       });
     }
-    const runExit = run === null ? undefined : resultExit(run, failuresOf(current.lastStatus));
+    const runExit =
+      run === null ? undefined : resultExit(run, failuresOf(current.lastStatus), upgrade);
     if (runExit !== undefined) {
       throw runExit;
     }

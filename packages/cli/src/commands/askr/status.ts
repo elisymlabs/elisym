@@ -6,12 +6,12 @@
 import Decimal from 'decimal.js-light';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { summaryOfRun } from './connector-run';
-import { PROBE_RETRY_MS, UPGRADE } from './constants';
+import { PROBE_RETRY_MS } from './constants';
 import { AskrExit, EXIT, type CommandOutcome } from './errors';
 import { readOwnerKey } from './owner-key';
 import { readListings, readPolicySlugs, readSigned } from './read';
 import type { Session } from './session';
-import { awaitingPlanOf, movedExit, planHintOf, refusalExit, tierOf } from './store';
+import { awaitingPlanOf, movedExit, planHintOf, refusalExit, tierOf, upgradeOf } from './store';
 import type { StoreView } from './types';
 
 export interface StatusOptions {
@@ -241,7 +241,7 @@ export async function runStatus(session: Session, options: StatusOptions): Promi
     billing: billingOf(view),
     ownerKeyFile: key.path,
     adminUrl: session.adminUrl,
-    upgrade: UPGRADE,
+    upgrade: upgradeOf(view.billing, session.adminUrl),
   };
   if (view.status !== 'active') {
     output.hint = planHintOf(view);

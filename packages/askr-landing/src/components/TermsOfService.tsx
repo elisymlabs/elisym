@@ -75,8 +75,8 @@ export function TermsOfService() {
             link.com.
           </li>
           <li>
-            Prices on our site are before tax. Stripe adds the applicable tax at checkout and shows
-            the total before you pay.
+            Prices on our site include the applicable tax: Stripe charges the price shown and states
+            the tax it includes on the receipt.
           </li>
           <li>Refunds and payment disputes may be handled by Stripe under its own terms.</li>
           <li>

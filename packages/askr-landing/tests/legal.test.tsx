@@ -115,7 +115,7 @@ describe('the legal pages are served', () => {
   it('linked from the landing footer, in the same tab', async () => {
     const page = await render(<App />);
     expect(textOf(page)).toContain(
-      'Prices are before tax. VAT or sales tax depends on where you are and is added at checkout, which shows the total before you pay.',
+      'Prices include VAT or sales tax where it applies: checkout charges the price shown.',
     );
     const footer = page.querySelector('footer');
     for (const path of [PRIVACY_PATH, TERMS_PATH]) {
@@ -331,7 +331,7 @@ describe('the legal pages say what the code and the setup do', () => {
     expect(terms).not.toMatch(/is deactivated/);
     for (const sentence of [
       'Paid plans are sold through Stripe as the merchant of record: checkout and your card statement show the sale as made through Link',
-      'Prices on our site are before tax. Stripe adds the applicable tax at checkout and shows the total before you pay.',
+      'Prices on our site include the applicable tax: Stripe charges the price shown and states the tax it includes on the receipt.',
       'Refunds and payment disputes may be handled by Stripe under its own terms.',
       'If you are a consumer in the European Union or the United Kingdom, you can cancel a purchase within 14 days of getting access to it, as Link\'s terms describe: ask Link support for a refund and give "cooling-off period" as the reason.',
       'A subscription renews automatically at the end of each period until you cancel it.',

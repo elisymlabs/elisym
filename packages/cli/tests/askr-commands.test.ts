@@ -775,6 +775,110 @@ describe('askr connector', () => {
   });
 });
 
+describe('the upgrade block follows what the server says of billing', () => {
+  const MESSAGE_US = 'Message us with your Store ID';
+  const CHECKOUT = 'askr plan <starter|growth|pro|scale> [--yearly]';
+  const NO_PLAN = {
+    enabled: true,
+    plan: null,
+    interval: null,
+    status: null,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+    manageable: false,
+    checkoutAvailable: true,
+  };
+  const PAYING = {
+    ...NO_PLAN,
+    plan: 'growth',
+    interval: 'month',
+    status: 'active',
+    currentPeriodEnd: 1_900_000_000,
+    manageable: true,
+    checkoutAvailable: false,
+  };
+
+  function howToOf(output: Record<string, unknown>): string {
+    return String(Reflect.get(Object(output.upgrade), 'howTo'));
+  }
+
+  it('init on a store awaiting its plan: message us without billing, askr plan with it', async () => {
+    const off = await harness();
+    const before = await off.run(initInvocation(), INIT_ARGS);
+    expect(String(before.output.next)).toContain('message us');
+    expect(howToOf(before.output)).toBe(MESSAGE_US);
+
+    const on = await harness();
+    on.fake.billing = NO_PLAN;
+    const after = await on.run(initInvocation(), INIT_ARGS);
+    expect(String(after.output.next)).toContain(CHECKOUT);
+    expect(String(after.output.next)).not.toContain('message us');
+    expect(howToOf(after.output)).toContain(CHECKOUT);
+    expect(after.output.upgrade).toMatchObject({ contact: 'https://askr.elisym.network/contact' });
+  });
+
+  it('status: checkout when the store can buy, Manage billing when it pays, else message us', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    const status = async (): Promise<Record<string, unknown>> =>
+      (await setup.run({ command: 'status', options: {} }, ['status'])).output;
+
+    expect(howToOf(await status())).toBe(MESSAGE_US);
+    setup.fake.billing = { ...NO_PLAN, enabled: false, checkoutAvailable: false };
+    expect(howToOf(await status())).toBe(MESSAGE_US);
+    setup.fake.billing = NO_PLAN;
+    expect(howToOf(await status())).toContain(CHECKOUT);
+
+    setup.fake.status = 'active';
+    setup.fake.tier = { ...FREE_TIER, name: 'growth' };
+    setup.fake.billing = PAYING;
+    const paying = await status();
+    expect(howToOf(paying)).toContain('Manage billing');
+    expect(String(Reflect.get(Object(paying.upgrade), 'admin'))).toBe(paying.adminUrl);
+    setup.fake.billing = { ...PAYING, operatorManaged: true };
+    expect(howToOf(await status())).toBe(MESSAGE_US);
+    setup.fake.billing = { ...PAYING, manageable: false };
+    expect(howToOf(await status())).toBe(MESSAGE_US);
+  });
+
+  it('a write on a pending store with billing carries the checkout upgrade', async () => {
+    const setup = await harness();
+    setup.fake.billing = NO_PLAN;
+    await setup.run(initInvocation(), INIT_ARGS);
+    const file = await writeJson([product('a')]);
+    const outcome = await setup.run({ command: 'products', options: { file } }, ['products']);
+    expect(outcome.output).toMatchObject({ error: { code: 'inactive' } });
+    expect(howToOf(outcome.output)).toContain(CHECKOUT);
+  });
+
+  it('too_many_products from products and from the connector follows billing too', async () => {
+    const products = await activeStore();
+    products.fake.billing = PAYING;
+    products.fake.tier = { ...FREE_TIER, maxProducts: 1 };
+    const file = await writeJson([product('a'), product('b')]);
+    const tooMany = await products.run({ command: 'products', options: { file } }, ['products']);
+    expect(tooMany.output).toMatchObject({ error: { code: 'too_many_products' } });
+    expect(howToOf(tooMany.output)).toContain('Manage billing');
+
+    const connector = await activeStore({
+      source: 'connector',
+      platform: 'shopify',
+      shopUrl: ORIGIN,
+    });
+    connector.fake.billing = NO_PLAN;
+    connector.fake.runResult = {
+      status: 'error',
+      message: 'big',
+      reason: 'too_many_products',
+      count: 300,
+      max: 100,
+    };
+    const big = await connector.run({ command: 'connector' }, ['connector']);
+    expect(big.output).toMatchObject({ error: { code: 'too_many_products' } });
+    expect(howToOf(big.output)).toContain(CHECKOUT);
+  });
+});
+
 describe('askr status', () => {
   it('no key: store null; a key without a store: store null with the init hint', async () => {
     const setup = await harness();

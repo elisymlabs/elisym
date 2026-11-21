@@ -80,7 +80,7 @@ describe('llms.txt', () => {
     expect(text.endsWith('\n')).toBe(true);
   });
 
-  it('states every plan with the exact prices and limits the page shows, before tax', () => {
+  it('states every plan with the exact prices and limits the page shows, tax included', () => {
     for (const plan of PLANS) {
       const line = planLine(plan.name);
       expect(line, plan.name).toBeDefined();

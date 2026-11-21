@@ -364,7 +364,7 @@ describe('the pricing section', () => {
     expect((await cardOf(page, 'Pro'))?.textContent).not.toContain('billed yearly');
   });
 
-  it('marks every paid price as before tax, in both billings, and Free as no payment', async () => {
+  it('marks every paid price as tax included, in both billings, and Free as no payment', async () => {
     const page = await render();
     const billing = page.querySelectorAll<HTMLButtonElement>(
       '#pricing [role="radiogroup"][aria-label="Billing period"] [role="radio"]',
@@ -380,9 +380,9 @@ describe('the pricing section', () => {
         }
       }
     }
-    expect(PRICE_TAX_NOTE).toBe('+ tax');
+    expect(PRICE_TAX_NOTE).toBe('incl. tax');
     expect(page.querySelector('#pricing')?.textContent).toContain(
-      'Prices are before tax. VAT or sales tax depends on where you are and is added at checkout, which shows the total before you pay.',
+      'Prices include VAT or sales tax where it applies: checkout charges the price shown.',
     );
   });
 
