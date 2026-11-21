@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { link, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as askr from '@elisym/askr';
@@ -264,8 +265,9 @@ describe('init edges', () => {
     const saved = await saveOwnerKey(home, 'default', generateSecretKey(), 1);
     const whole = await readFile(saved.path, 'utf-8');
     await writeFile(saved.path, whole.slice(0, 20));
+    // Synchronous, so the file is whole the moment fake time reaches 500 ms, however slow the disk.
     setTimeout(() => {
-      void writeFile(saved.path, whole);
+      writeFileSync(saved.path, whole);
     }, 500);
     expect((await drive(readOwnerKey(home, 'default')))?.owner).toBe(saved.owner);
     await writeFile(saved.path, whole.slice(0, 20));
