@@ -22,7 +22,7 @@ const INTERVALS: readonly { value: BillingInterval; label: string }[] = [
 
 /**
  * The paid plans with an Upgrade button each (6.1): Stripe Checkout for the chosen plan, billed
- * monthly or yearly, tax added on top. The store moves to the plan once the payment went through.
+ * monthly or yearly, tax included in the price. The store moves to the plan once the payment went through.
  */
 export function PaidPlans({ deps }: Props) {
   const [interval, setBillingInterval] = useState<BillingInterval>('month');
@@ -64,7 +64,7 @@ export function PaidPlans({ deps }: Props) {
             {option.label}
           </button>
         ))}
-        <span className="text-12 text-text-3">Prices in USD, tax added at checkout.</span>
+        <span className="text-12 text-text-3">Prices in USD, tax included.</span>
       </div>
       <div className="grid grid-cols-1 gap-12 sm:grid-cols-2">
         {PAID.map((plan) => (

@@ -46,6 +46,8 @@ export interface BillingView {
   cancelAtPeriodEnd: boolean;
   manageable: boolean;
   checkoutAvailable: boolean;
+  /** We set this store's plan (or it is suspended): paid plans are not bought here. */
+  operatorManaged?: boolean;
 }
 
 /** `GET /v1/admin/store`. */

@@ -6,12 +6,12 @@
 import Decimal from 'decimal.js-light';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { summaryOfRun } from './connector-run';
-import { PROBE_RETRY_MS, UPGRADE } from './constants';
+import { PROBE_RETRY_MS } from './constants';
 import { AskrExit, EXIT, type CommandOutcome } from './errors';
 import { readOwnerKey } from './owner-key';
 import { readListings, readPolicySlugs, readSigned } from './read';
 import type { Session } from './session';
-import { awaitingPlanOf, movedExit, planHintOf, refusalExit, tierOf } from './store';
+import { awaitingPlanOf, movedExit, planHintOf, refusalExit, tierOf, upgradeOf } from './store';
 import type { StoreView } from './types';
 
 export interface StatusOptions {
@@ -41,7 +41,7 @@ interface SkippedProbe {
 
 /** The hint of a `budget` refusal: a store's only spend limit is its plan's monthly budget. */
 export const BUDGET_HINT =
-  "the store reached its plan's monthly limit, so the chat does not answer until the plan is upgraded or the next month starts: to upgrade, message us with your Store ID (upgrade.contact)";
+  "the store reached its plan's monthly limit, so the chat does not answer until the plan is upgraded or the next month starts: to upgrade, follow upgrade.howTo";
 
 function money(value: string): string {
   try {
@@ -241,7 +241,7 @@ export async function runStatus(session: Session, options: StatusOptions): Promi
     billing: billingOf(view),
     ownerKeyFile: key.path,
     adminUrl: session.adminUrl,
-    upgrade: UPGRADE,
+    upgrade: upgradeOf(view.billing, session.adminUrl),
   };
   if (view.status !== 'active') {
     output.hint = planHintOf(view);

@@ -14,13 +14,12 @@ import {
   NOT_AUTHORIZED_RETRY_MS,
   SAMPLE_SIZE,
   SYNC_POLL_MS,
-  UPGRADE,
 } from './constants';
 import { AskrExit, EXIT, type CommandOutcome } from './errors';
 import { fileSize, readFlagFile } from './files';
 import { readListings, readSigned } from './read';
 import type { ApiRefusal, ApiResult, Session } from './session';
-import { inactiveExit, readView, refusalExit, useOwnerKey } from './store';
+import { inactiveExit, readView, refusalExit, upgradeOf, useOwnerKey } from './store';
 import type { StoreView } from './types';
 
 export interface ProductsOptions {
@@ -190,7 +189,7 @@ export async function runProducts(
   // A pending store's file is checked here, without the server: nothing is published until it is active.
   const localDryRun = options.dryRun === true && view.status === 'pending';
   if (view.status !== 'active' && !localDryRun) {
-    throw inactiveExit(view);
+    throw inactiveExit(view, session.adminUrl);
   }
   const { config } = await readSigned(session, key.owner, key.secretKey);
   if (config === undefined) {
@@ -374,7 +373,10 @@ class CatalogFlow {
       case 'too_many_products':
         return new AskrExit(EXIT.LIMIT, 'too_many_products', {
           hint: "more products than the store's plan allows",
-          fields: { max: result.detail.max, upgrade: UPGRADE },
+          fields: {
+            max: result.detail.max,
+            upgrade: upgradeOf(this.view.billing, this.session.adminUrl),
+          },
         });
       case 'invalid_items':
         return new AskrExit(EXIT.BAD_INPUT, 'invalid_items', {
@@ -385,7 +387,7 @@ class CatalogFlow {
           },
         });
       case 'inactive':
-        return inactiveExit(this.view);
+        return inactiveExit(this.view, this.session.adminUrl);
       case 'bad_request':
         return new AskrExit(EXIT.BAD_INPUT, 'bad_request', {
           ...(typeof result.detail.message === 'string' ? { message: result.detail.message } : {}),

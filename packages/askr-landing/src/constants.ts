@@ -98,7 +98,7 @@ export const CONVERSATION_DEFINITION =
 export const CONTRACT_PRICE_NOTE = 'Monthly subscription, terms by agreement';
 
 /** The small print under the prices: billing, how conversations count, the spend cap and tax. */
-export const PRICING_SMALL_PRINT = `Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more. Prices are before tax. VAT or sales tax depends on where you are and is added at checkout, which shows the total before you pay.`;
+export const PRICING_SMALL_PRINT = `Plans are subscriptions priced per month; yearly billing pays twelve months up front at ${YEARLY_DISCOUNT_LABEL} off. Conversation counts are approximate. ${CONVERSATION_DEFINITION} Each plan has a monthly spend cap, so heavy use pauses the chat before it can cost you more. Prices include VAT or sales tax where it applies: checkout charges the price shown.`;
 
 const POWERED_BY = `Shows "Powered by ${PRODUCT_NAME}"`;
 const NO_BRANDING = `"Powered by ${PRODUCT_NAME}" can be removed`;
@@ -217,8 +217,8 @@ export const CONTACT_URL = 'https://forms.gle/woUDTt53ZndRtm5H8';
 export const SITE_URL = 'https://askr.elisym.network';
 /** Our contact through this page's `/contact` redirect (`vercel.json`): what the CLI prints, so its target can change. */
 export const CONTACT_REDIRECT_URL = `${SITE_URL}/contact`;
-/** After a paid plan's price on its card: the figure is before tax, which checkout adds. */
-export const PRICE_TAX_NOTE = '+ tax';
+/** After a paid plan's price on its card: the figure already includes the tax, so checkout charges it as shown. */
+export const PRICE_TAX_NOTE = 'incl. tax';
 
 /** The plans on this page. */
 export const PRICING_URL = `${SITE_URL}/#pricing`;

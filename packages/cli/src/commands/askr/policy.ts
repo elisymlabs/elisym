@@ -31,7 +31,7 @@ export async function runPolicy(session: Session, options: PolicyOptions): Promi
   const key = await useOwnerKey(session);
   const view = await readView(session);
   if (view.status !== 'active') {
-    throw inactiveExit(view);
+    throw inactiveExit(view, session.adminUrl);
   }
   const { config } = await readSigned(session, key.owner, key.secretKey);
   if (config === undefined) {
@@ -81,7 +81,7 @@ export async function runPolicy(session: Session, options: PolicyOptions): Promi
           hint: 'a store has at most 50 policies: remove one in the admin',
         });
       case 'inactive':
-        throw inactiveExit(view);
+        throw inactiveExit(view, session.adminUrl);
       case 'bad_request':
         throw new AskrExit(EXIT.BAD_INPUT, 'bad_request');
       default:
