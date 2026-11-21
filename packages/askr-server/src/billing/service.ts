@@ -386,12 +386,21 @@ export class BillingService {
 
   /**
    * `POST /v1/admin/billing/portal`: `{url}` of the customer portal for the store's customer. No
-   * body or `{}` opens its home; `{"action":"switch","plan","interval"}` or `{"action":"cancel"}`
-   * opens that flow for the store's live subscription, once every check Stripe would make passes.
+   * body or `{}` opens its home, except for a store suspended or managed by us;
+   * `{"action":"switch","plan","interval"}` or `{"action":"cancel"}` opens that flow for the
+   * store's live subscription, once every check Stripe would make passes.
    */
   async portal(owner: string, body = ''): Promise<Response> {
     const value = body.trim() === '' ? {} : parseJson(body);
     if (PlainPortalSchema.safeParse(value).success) {
+      // A store we manage or suspended changes its plan through us, not in the portal.
+      const state = await this.directory.planState(owner);
+      if (state?.status === 'suspended') {
+        return json({ error: 'suspended' }, 409);
+      }
+      if (state !== undefined && operatorManaged(state)) {
+        return json({ error: 'operator_managed' }, 409);
+      }
       const customer = await this.directory.customerOf(owner);
       if (customer === undefined) {
         return json({ error: 'no_customer' }, 404);

@@ -59,6 +59,8 @@ describe('Manage billing', () => {
     const cases: Array<[BillingView, boolean]> = [
       [{ ...LIVE, enabled: false }, false],
       [{ ...LIVE, manageable: false }, false],
+      // Managed by us or suspended: plan changes go through us, not the portal.
+      [{ ...LIVE, operatorManaged: true }, false],
       [{ ...BILLING_ON, manageable: true }, true],
     ];
     for (const [billing, shown] of cases) {

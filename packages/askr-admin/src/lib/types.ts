@@ -135,7 +135,8 @@ export interface BillingView {
 /** A plan change Stripe has scheduled for the subscription (`BillingView.scheduledChange`). */
 export interface ScheduledChange {
   plan: PaidPlan | null;
-  interval: BillingInterval;
+  /** Null with `plan` when the change is not to a price of ours. */
+  interval: BillingInterval | null;
   at: number;
 }
 

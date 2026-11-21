@@ -90,6 +90,7 @@ describe('reading Stripe objects', () => {
       customer: { id: 'cus_1' },
       status: 'past_due',
       metadata: { askr_store: 'ab'.repeat(32) },
+      cancel_at: null,
       cancel_at_period_end: true,
       created: NOW - 100,
       items: { data: [item(PERIOD_END)] },

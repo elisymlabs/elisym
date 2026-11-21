@@ -75,6 +75,25 @@ describe('the portal: no body or {}', () => {
     expect((await harness.call(owner, 'POST', PORTAL, {})).status).toBe(200);
   });
 
+  it('answers suspended and operator_managed for a paying store, before any Stripe call', async () => {
+    const harness = await setup();
+    const suspended = await paying(harness);
+    await harness.directory.setStatus(suspended.owner.pubkey, 'suspended');
+    const managed = await paying(harness);
+    await harness.directory.setStatus(managed.owner.pubkey, 'active', 'enterprise');
+    for (const body of [undefined, {}]) {
+      expect(await harness.call(suspended.owner, 'POST', PORTAL, body)).toEqual({
+        status: 409,
+        body: { error: 'suspended' },
+      });
+      expect(await harness.call(managed.owner, 'POST', PORTAL, body)).toEqual({
+        status: 409,
+        body: { error: 'operator_managed' },
+      });
+    }
+    expect(harness.stripe.portals).toEqual([]);
+  });
+
   it('answers bad_request for any other body, opening nothing', async () => {
     const harness = await setup();
     const { owner } = await paying(harness);
@@ -128,6 +147,12 @@ describe('the portal: switch and cancel flows, exact payloads', () => {
       name: 'a lower tier: the update picker',
       from: { plan: 'pro', interval: 'month' },
       to: { plan: 'starter', interval: 'month' },
+      type: 'subscription_update',
+    },
+    {
+      name: 'a lower tier but month to year: the update picker',
+      from: { plan: 'pro', interval: 'month' },
+      to: { plan: 'growth', interval: 'year' },
       type: 'subscription_update',
     },
     {
@@ -414,6 +439,65 @@ describe('the portal: every refusal of a switch or a cancel', () => {
   });
 });
 
+describe('a cancel at a date (flexible billing mode)', () => {
+  /** 2026-12-01T00:00:00Z: before the period ends. */
+  const CANCEL_AT = 1_796_083_200;
+  const subscription = {
+    id: 'sub_1',
+    customer: 'cus_1',
+    status: 'active',
+    metadata: {},
+    // Flexible mode: the portal's cancel at the period end sets `cancel_at` and may leave this false.
+    cancel_at: CANCEL_AT,
+    cancel_at_period_end: false,
+    created: NOW,
+    items: {
+      data: [{ id: 'si_1', current_period_end: PERIOD_END, price: price('askr_pro_monthly') }],
+    },
+  };
+  const SWITCH = { action: 'switch', plan: 'growth', interval: 'month' };
+  const CANCEL = { action: 'cancel' };
+
+  it('is a pending cancel that ends the plan at cancel_at', () => {
+    expect(snapshotOf(subscription, NOW)).toMatchObject({
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: CANCEL_AT,
+    });
+    expect(snapshotOf({ ...subscription, cancel_at: null }, NOW)).toMatchObject({
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: PERIOD_END,
+    });
+  });
+
+  it('refuses a switch and a cancel as cancel_pending, from the database and from Stripe, and shows its date', async () => {
+    const harness = await setup();
+    const { cancelAtPeriodEnd, currentPeriodEnd } = snapshotOf(subscription, NOW);
+    const stored = await paying(harness, { cancelAtPeriodEnd, currentPeriodEnd });
+    expect((await harness.call(stored.owner, 'GET', '/v1/admin/store')).body.billing).toMatchObject(
+      { cancelAtPeriodEnd: true, currentPeriodEnd: CANCEL_AT },
+    );
+    const lagging = await paying(harness);
+    const live = harness.stripe.subscriptions.get(lagging.subscription);
+    if (live === undefined) {
+      throw new Error('no subscription');
+    }
+    harness.stripe.subscriptions.set(lagging.subscription, {
+      ...live,
+      cancelAtPeriodEnd,
+      currentPeriodEnd,
+    });
+    for (const owner of [stored.owner, lagging.owner]) {
+      for (const body of [SWITCH, CANCEL]) {
+        expect(await harness.call(owner, 'POST', PORTAL, body)).toEqual({
+          status: 409,
+          body: { error: 'cancel_pending' },
+        });
+      }
+    }
+    expect(harness.stripe.portals).toEqual([]);
+  });
+});
+
 describe('the scheduled change, from Stripe', () => {
   it("maps the first phase still to come on a price of ours, at that phase's start", () => {
     const schedule: ScheduleLike = {
@@ -464,6 +548,7 @@ describe('the scheduled change, from Stripe', () => {
       customer: 'cus_1',
       status: 'active',
       metadata: {},
+      cancel_at: null,
       cancel_at_period_end: false,
       created: NOW,
       items: {

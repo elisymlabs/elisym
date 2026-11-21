@@ -1,5 +1,6 @@
 import type { StoreConfig } from '@elisym/askr';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import type { BillingReturn } from '../lib/billing';
 import type { CatalogQueue } from '../lib/catalog-writer';
 import type { SessionDeps } from '../lib/deps';
 import type { PlanIntent } from '../lib/plan-intent';
@@ -46,6 +47,8 @@ interface Props {
   catalogQueue?: CatalogQueue;
   /** Back from Stripe: what the return says, above every section. */
   billingNotice?: ReactNode;
+  /** What the Stripe return said: back from a portal change (`updated`), Billing opens. */
+  billingReturn?: BillingReturn;
   /** The paid plan chosen on the landing: Billing opens on it (D4). */
   intent?: PlanIntent;
   /** Its checkout or the portal opened. */
@@ -79,11 +82,15 @@ export function Shell({
   onReplaceKey,
   catalogQueue,
   billingNotice,
+  billingReturn,
   intent,
   onIntentDone = () => undefined,
 }: Props) {
-  // A plan chosen on the landing opens Billing on it, one click from its checkout.
-  const [chosen, setTab] = useState<TabId>(intent === undefined ? 'overview' : 'billing');
+  // A plan chosen on the landing opens Billing on it, one click from its checkout; a portal
+  // change comes back to Billing, where it shows.
+  const [chosen, setTab] = useState<TabId>(
+    intent !== undefined || billingReturn === 'updated' ? 'billing' : 'overview',
+  );
   // The Connector section is for a connector set up in Settings: without one it is left out.
   const tabs = view.connector === null ? TABS.filter((entry) => entry.id !== 'connector') : TABS;
   const tab = tabs.some((entry) => entry.id === chosen) ? chosen : 'overview';

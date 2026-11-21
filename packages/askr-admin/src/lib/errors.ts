@@ -70,7 +70,7 @@ const CODES: Readonly<Record<string, string>> = {
   cancel_pending:
     'Your plan is canceled at the end of its period, so it cannot be changed. Undo the cancel under Manage billing first.',
   change_scheduled:
-    'A change to your plan is already scheduled, so it cannot be changed again. Keep or undo that change under Manage billing.',
+    'A change to your plan is already scheduled, so it cannot be changed again. Undo that change under Manage billing if it offers that, otherwise message us with your Store ID.',
   same_plan: 'Your store is already on this plan and billing period.',
   subscription_unexpected:
     'Your subscription cannot be changed from here. Message us with your Store ID.',

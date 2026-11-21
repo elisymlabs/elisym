@@ -278,6 +278,7 @@ export function Session({
       onSignOut={onSignOut}
       onReplaceKey={() => onReplaceKey(npubOf(view.owner))}
       billingNotice={billingNotice}
+      {...(billingReturn === undefined ? {} : { billingReturn })}
       {...intentProps}
     />
   );

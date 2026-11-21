@@ -15,6 +15,7 @@ import { CurrentPlan } from './CurrentPlan';
 import { Notice } from './Notice';
 import { PlanCard } from './PlanCard';
 import { PlanCardAction } from './PlanCardAction';
+import { PlanIntentLine } from './PlanIntentLine';
 import { Section } from './Section';
 import { StartFree } from './StartFree';
 
@@ -29,11 +30,12 @@ interface Props {
   onPlanChosen: () => Promise<void>;
   /** The plan chosen on the landing: its card stands out and its button takes the focus. */
   intent?: PlanIntent;
-  /** A checkout or the portal opened: the chosen plan is acted on. */
+  /** A checkout or the portal opened, or the chosen plan was dismissed: it is dropped. */
   onIntentDone: () => void;
 }
 
 const ENTERPRISE_TEXT = 'For Enterprise, message us with your Store ID.';
+const INTENT_MARKED_TEXT = 'Its card is marked below.';
 
 /**
  * Everything about paying (D6): the plan the store is on, every plan with what it offers in the
@@ -103,6 +105,9 @@ export function BillingSection({
       </Section>
       <Section title="Plans" info={HELP.planPicker}>
         <div id="plans" className="flex flex-col gap-16">
+          {intent === undefined ? null : (
+            <PlanIntentLine intent={intent} next={INTENT_MARKED_TEXT} onDismiss={onIntentDone} />
+          )}
           <div className="flex flex-wrap items-center justify-between gap-12">
             <BillingSwitch value={interval} onChange={setBillingInterval} />
             <span className="text-12 text-text-3">Prices in USD, tax included.</span>
@@ -114,7 +119,12 @@ export function BillingSection({
           ) : null}
           {mode.kind === 'locked' ? (
             <div id="billing-locked">
-              <Notice tone="warn">{mode.line}</Notice>
+              <Notice tone="warn">
+                <div className="flex flex-col gap-4">
+                  <p>{mode.line}</p>
+                  {mode.contact ? <ContactLinks storeId={npubOf(view.owner)} /> : null}
+                </div>
+              </Notice>
             </div>
           ) : null}
           <ul className="grid grid-cols-1 gap-12 sm:grid-cols-2 lg:grid-cols-3">

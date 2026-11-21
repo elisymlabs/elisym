@@ -57,8 +57,9 @@ export interface SubscriptionSnapshot {
   interval: BillingInterval | undefined;
   /** The id of its one line item; undefined with none or several. */
   itemId: string | undefined;
-  /** Unix seconds: the earliest period end of its items. */
+  /** Unix seconds: when a pending cancel ends it, else the earliest period end of its items. */
   currentPeriodEnd: number | undefined;
+  /** A cancel is pending: at the period end, or at any later date (`cancel_at`). */
   cancelAtPeriodEnd: boolean;
   /** Unix seconds: when Stripe created it. */
   created: number;
@@ -103,6 +104,11 @@ export interface SubscriptionLike {
   status: string;
   metadata: Record<string, string>;
   cancel_at_period_end: boolean;
+  /**
+   * Unix seconds: when a pending cancel ends it. Flexible billing mode (our subscriptions) sets
+   * this for a cancel at the period end and may leave `cancel_at_period_end` false.
+   */
+  cancel_at: number | null;
   created: number;
   items: { data: { id: string; current_period_end: number; price: PriceLike }[] };
   /** Expanded by every read billing makes; an id or absent reads as no schedule. */
@@ -184,6 +190,8 @@ export function snapshotOf(
   const [first] = items;
   const price = first === undefined ? undefined : planOfPrice(first.price);
   const ends = items.map((item) => item.current_period_end);
+  // A body without the field (never Stripe's) reads as no cancel.
+  const cancelAt = typeof subscription.cancel_at === 'number' ? subscription.cancel_at : undefined;
   return {
     id: subscription.id,
     customer: idOf(subscription.customer) ?? '',
@@ -193,8 +201,8 @@ export function snapshotOf(
     plan: items.length === 1 ? price?.plan : undefined,
     interval: items.length === 1 ? price?.interval : undefined,
     itemId: items.length === 1 ? first?.id : undefined,
-    currentPeriodEnd: ends.length === 0 ? undefined : Math.min(...ends),
-    cancelAtPeriodEnd: subscription.cancel_at_period_end,
+    currentPeriodEnd: cancelAt ?? (ends.length === 0 ? undefined : Math.min(...ends)),
+    cancelAtPeriodEnd: subscription.cancel_at_period_end || cancelAt !== undefined,
     created: subscription.created,
     scheduledChange: scheduledChangeOf(subscription.schedule, now),
   };

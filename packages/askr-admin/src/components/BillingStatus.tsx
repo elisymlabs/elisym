@@ -50,7 +50,8 @@ export function BillingStatus({ deps, billing, onOpened }: Props) {
   return (
     <div id="billing-status" className="flex flex-col gap-8">
       {said}
-      {billing.enabled && billing.manageable ? (
+      {/* A plan we manage, or a suspended store (`operatorManaged` covers both), changes through us. */}
+      {billing.enabled && billing.manageable && !billing.operatorManaged ? (
         <button
           type="button"
           id="manage-billing"

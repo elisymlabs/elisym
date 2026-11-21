@@ -17,14 +17,15 @@ import type { BillingInterval, PaidPlan, StoreView } from './types';
  * - `choosing`: pending with no plan: Free at once, a paid plan at checkout when it takes payments.
  * - `free`: active, a paid plan can be bought (on Free, or a plan that ended).
  * - `paying`: a live paid plan with nothing pending: switch, move up or down, or cancel.
- * - `locked`: a live paid plan with a failed payment, a cancel or a change pending: the portal only.
+ * - `locked`: a live paid plan with a failed payment, a cancel or a change pending: the portal only
+ *   (`contact`: and us, for a scheduled change the portal may not undo).
  * - `through-us`: we manage the plan, the store is suspended, or the server takes no payments.
  */
 export type BillingMode =
   | { kind: 'choosing'; checkout: boolean }
   | { kind: 'free' }
   | { kind: 'paying'; plan: PaidPlan; interval: BillingInterval }
-  | { kind: 'locked'; line: string }
+  | { kind: 'locked'; line: string; contact: boolean }
   | { kind: 'through-us'; text: string };
 
 /** What a plan card offers. */
@@ -37,7 +38,12 @@ export type CardAction =
   | { kind: 'contact' }
   | { kind: 'none' };
 
-export type SwitchLabel = 'Switch to yearly' | 'Switch to monthly' | 'Upgrade' | 'Downgrade';
+export type SwitchLabel =
+  | 'Switch to yearly'
+  | 'Switch to monthly'
+  | 'Upgrade'
+  | 'Upgrade at renewal'
+  | 'Downgrade';
 
 export const SUSPENDED_TEXT = 'Your store is suspended. Message us with your Store ID.';
 export const OPERATOR_TEXT =
@@ -58,17 +64,27 @@ export function currentPlanOf(
   return view.tier?.name.toLowerCase() === 'free' ? 'free' : undefined;
 }
 
-/** Why a live paid plan cannot change here, in the server's order (D7), or undefined. */
-function lockedLine(view: Pick<StoreView, 'billing'>): string | undefined {
+/**
+ * Why a live paid plan cannot change here, in the server's order (D7), or undefined; `contact`
+ * for a scheduled change, which the portal may not let the owner undo.
+ */
+function lockedLine(
+  view: Pick<StoreView, 'billing'>,
+): { line: string; contact: boolean } | undefined {
   const { billing } = view;
   const end = billing.currentPeriodEnd === null ? undefined : dateOf(billing.currentPeriodEnd);
   if (billing.status === 'past_due') {
-    return 'A payment failed. Your plan cannot be changed here until it is paid: update your payment method under Manage billing.';
+    return {
+      line: 'A payment failed. Your plan cannot be changed here until it is paid: update your payment method under Manage billing.',
+      contact: false,
+    };
   }
   if (billing.cancelAtPeriodEnd) {
-    return end === undefined
-      ? 'Your plan ends with its current period. Until then it cannot be changed here: undo the cancel under Manage billing.'
-      : `Your plan ends on ${end}. Until then it cannot be changed here: undo the cancel under Manage billing.`;
+    const line =
+      end === undefined
+        ? 'Your plan ends with its current period. Until then it cannot be changed here: undo the cancel under Manage billing.'
+        : `Your plan ends on ${end}. Until then it cannot be changed here: undo the cancel under Manage billing.`;
+    return { line, contact: false };
   }
   const change = scheduledChangeOf(billing);
   if (change !== undefined) {
@@ -76,7 +92,10 @@ function lockedLine(view: Pick<StoreView, 'billing'>): string | undefined {
       change.plan === null
         ? 'Your plan changes'
         : `Your plan changes to ${planName(change.plan)}, billed ${cycleOf(change.interval)},`;
-    return `${next} on ${dateOf(change.at)}. Until then it cannot be changed here: keep or undo the change under Manage billing.`;
+    return {
+      line: `${next} on ${dateOf(change.at)}. Until then it cannot be changed here: undo the change under Manage billing if it offers that, otherwise message us with your Store ID.`,
+      contact: true,
+    };
   }
   return undefined;
 }
@@ -97,9 +116,9 @@ export function billingModeOf(view: Pick<StoreView, 'status' | 'tier' | 'billing
   }
   const current = currentPlanOf(view);
   if (billing.enabled && current !== undefined && current !== 'free') {
-    const line = lockedLine(view);
-    if (line !== undefined) {
-      return { kind: 'locked', line };
+    const locked = lockedLine(view);
+    if (locked !== undefined) {
+      return { kind: 'locked', ...locked };
     }
     return { kind: 'paying', plan: current.plan, interval: current.interval ?? 'month' };
   }
@@ -159,7 +178,12 @@ export function cardActionOf(
       label: interval === 'year' ? 'Switch to yearly' : 'Switch to monthly',
     };
   }
-  return { kind: 'switch', label: rankOf(slug) > rankOf(mode.plan) ? 'Upgrade' : 'Downgrade' };
+  if (rankOf(slug) < rankOf(mode.plan)) {
+    return { kind: 'switch', label: 'Downgrade' };
+  }
+  // Up to a shorter period: the server sends it to the portal's picker, which applies it at renewal.
+  const shorter = mode.interval === 'year' && interval === 'month';
+  return { kind: 'switch', label: shorter ? 'Upgrade at renewal' : 'Upgrade' };
 }
 
 /** The plan in one line, as Status says it; Billing has the rest. */

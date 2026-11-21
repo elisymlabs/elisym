@@ -59,6 +59,7 @@ describe('Stripe objects, strictly', () => {
       customer: 'cus_1',
       status: 'active',
       metadata: {},
+      cancel_at: null,
       cancel_at_period_end: false,
       created: NOW,
     };

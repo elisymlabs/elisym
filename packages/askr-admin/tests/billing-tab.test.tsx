@@ -6,6 +6,7 @@ import { CONTACT_URL } from '../src/constants';
 import { PENDING_CONTACT_TEXT } from '../src/lib/activation';
 import { ApiError } from '../src/lib/api';
 import type { AdminClient } from '../src/lib/deps';
+import { HELP } from '../src/lib/help';
 import { OPERATOR_TEXT, SUSPENDED_TEXT } from '../src/lib/plan-actions';
 import { PAID_THROUGH_US_TEXT, type PlanIntent } from '../src/lib/plan-intent';
 import { PLANS } from '../src/lib/plans';
@@ -22,6 +23,8 @@ afterEach(async () => {
 
 /** 2026-12-25T00:00:00Z */
 const PERIOD_END = 1_798_156_800;
+/** 2026-12-01T00:00:00Z: a cancel at a date before the period ends. */
+const CANCEL_AT = 1_796_083_200;
 
 const CARDS = ['free', 'starter', 'growth', 'pro', 'scale', 'enterprise'] as const;
 
@@ -153,12 +156,13 @@ describe('the Billing tab, by store state (D6.3)', () => {
       enterprise: 'Contact us',
     });
     await choosePeriod(container, 'month');
+    // Up to a shorter period: the portal applies it at renewal.
     expect(actions(container)).toEqual({
       free: 'Cancel plan',
       starter: 'Downgrade',
       growth: 'Switch to monthly',
-      pro: 'Upgrade',
-      scale: 'Upgrade',
+      pro: 'Upgrade at renewal',
+      scale: 'Upgrade at renewal',
       enterprise: 'Contact us',
     });
     expect(byId(container, 'current-plan-name').textContent).toBe('Growth, billed yearly');
@@ -169,8 +173,12 @@ describe('the Billing tab, by store state (D6.3)', () => {
       storeView({ billing: { ...GROWTH_YEARLY, interval: 'month', status: 'trialing' } }),
     );
     expect(actions(container).growth).toBe('Switch to yearly');
+    // Up to the same or a longer period applies at once.
+    expect(actions(container).pro).toBe('Upgrade');
+    expect(actions(container).starter).toBe('Downgrade');
     await choosePeriod(container, 'month');
     expect(actions(container).growth).toBe('Current plan');
+    expect(actions(container).pro).toBe('Upgrade');
   });
 
   it('sends each portal action with its plan and the period shown, or the cancel', async () => {
@@ -213,35 +221,47 @@ describe('the Billing tab, by store state (D6.3)', () => {
     expect(api.checkout).not.toHaveBeenCalled();
   });
 
-  it.each([
+  it.each<[string, Partial<BillingView>, string, boolean]>([
     [
       'a scheduled change',
-      { scheduledChange: { plan: 'starter', interval: 'month', at: PERIOD_END } } as const,
-      'Your plan changes to Starter, billed monthly, on December 25, 2026. Until then it cannot be changed here: keep or undo the change under Manage billing.',
+      { scheduledChange: { plan: 'starter', interval: 'month', at: PERIOD_END } },
+      'Your plan changes to Starter, billed monthly, on December 25, 2026. Until then it cannot be changed here: undo the change under Manage billing if it offers that, otherwise message us with your Store ID.',
+      true,
     ],
     [
       'a scheduled change to a plan not ours',
-      { scheduledChange: { plan: null, interval: 'month', at: PERIOD_END } } as const,
-      'Your plan changes on December 25, 2026.',
+      { scheduledChange: { plan: null, interval: null, at: PERIOD_END } },
+      'Your plan changes on December 25, 2026. Until then it cannot be changed here: undo the change under Manage billing if it offers that, otherwise message us with your Store ID.',
+      true,
     ],
     [
       'a pending cancel',
       { cancelAtPeriodEnd: true },
       'Your plan ends on December 25, 2026. Until then it cannot be changed here: undo the cancel under Manage billing.',
+      false,
+    ],
+    [
+      // As the server sends a cancel at a date (flexible billing): the plan ends at `cancel_at`.
+      'a cancel at a date before the period end',
+      { cancelAtPeriodEnd: true, currentPeriodEnd: CANCEL_AT },
+      'Your plan ends on December 1, 2026. Until then it cannot be changed here: undo the cancel under Manage billing.',
+      false,
     ],
     [
       'a failed payment',
       { status: 'past_due' },
       'A payment failed. Your plan cannot be changed here until it is paid: update your payment method under Manage billing.',
+      false,
     ],
     [
       'a failed payment and a pending cancel',
       { status: 'past_due', cancelAtPeriodEnd: true },
       'A payment failed.',
+      false,
     ],
   ])(
     'paying with %s: no card actions, one line and Manage billing',
-    async (_name, change, line) => {
+    async (_name, change, line, contact) => {
       const { container, api } = await mountBilling(
         storeView({ billing: { ...GROWTH_YEARLY, ...change } }),
       );
@@ -254,7 +274,10 @@ describe('the Billing tab, by store state (D6.3)', () => {
         scale: '',
         enterprise: 'Contact us',
       });
-      expect(byId(container, 'billing-locked').textContent).toContain(line);
+      const locked = byId(container, 'billing-locked');
+      expect(locked.textContent).toContain(line);
+      // A scheduled change the portal may not undo: the way to us, with the Store ID.
+      expect(locked.querySelectorAll('.contact-link')).toHaveLength(contact ? 1 : 0);
       await click(byId(container, 'manage-billing'));
       await settle(() => vi.mocked(api.billingPortal).mock.calls.length === 1);
       // Manage billing opens the portal's home, where the owner undoes or fixes it.
@@ -268,7 +291,12 @@ describe('the Billing tab, by store state (D6.3)', () => {
       storeView({ billing: { ...GROWTH_YEARLY, operatorManaged: true } }),
       OPERATOR_TEXT,
     ],
-    ['suspended', storeView({ status: 'suspended', billing: GROWTH_YEARLY }), SUSPENDED_TEXT],
+    [
+      // As the server sends it: `operatorManaged` covers a suspended store.
+      'suspended',
+      storeView({ status: 'suspended', billing: { ...GROWTH_YEARLY, operatorManaged: true } }),
+      SUSPENDED_TEXT,
+    ],
     [
       'set back to pending by us',
       storeView({ status: 'pending', billing: BILLING_ON }),
@@ -287,6 +315,8 @@ describe('the Billing tab, by store state (D6.3)', () => {
   ])('%s: no buttons, message-us text and the contact line', async (_name, view, text) => {
     const { container } = await mountBilling(view);
     expect(cardButtons(container)).toEqual([]);
+    // Not even Manage billing: the server refuses the portal for a store managed by us.
+    expect(container.querySelector('#manage-billing')).toBeNull();
     expect(container.querySelector('#billing-locked')).toBeNull();
     const plans = byId(container, 'plans');
     expect(plans.textContent).toContain(text);
@@ -343,7 +373,9 @@ describe('the Billing tab buttons that leave the page', () => {
     const { container, deps, onIntentDone } = await mountBilling(PAYING, { api });
     await click(byId(container, 'change-pro'));
     await settle(() => container.querySelector('[role="alert"]') !== null);
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('already scheduled');
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      'A change to your plan is already scheduled, so it cannot be changed again. Undo that change under Manage billing if it offers that, otherwise message us with your Store ID.',
+    );
     expect(deps.openUrl).not.toHaveBeenCalled();
     expect(onIntentDone).not.toHaveBeenCalled();
     expect(byId(container, 'change-pro')).toHaveProperty('disabled', false);
@@ -371,6 +403,12 @@ describe('the plan cards (D6.2)', () => {
     expect(growth.textContent).not.toContain('billed yearly');
   });
 
+  it('say in the help that a scheduled change may need us, as the portal may not undo it', () => {
+    expect(HELP.currentPlan.text).toContain(
+      'undoing a cancel. A scheduled change is undone there if the portal offers that; otherwise message us with your Store ID.',
+    );
+  });
+
   it('show the current tier limits and Manage billing above them', async () => {
     const { container } = await mountBilling(PAYING);
     const current = byId(container, 'current-plan');
@@ -384,6 +422,7 @@ describe('the plan cards (D6.2)', () => {
     const cases: Array<[Partial<BillingView>, string]> = [
       [{ status: 'past_due' }, 'Payment failed'],
       [{ cancelAtPeriodEnd: true }, 'Canceled'],
+      [{ cancelAtPeriodEnd: true, currentPeriodEnd: CANCEL_AT }, 'Canceled'],
       [{ scheduledChange: { plan: 'pro', interval: 'year', at: PERIOD_END } }, 'Change scheduled'],
       [{ status: 'trialing' }, 'Trial'],
     ];
@@ -399,10 +438,13 @@ describe('the plan cards (D6.2)', () => {
 });
 
 describe('the billing period switch (W3)', () => {
-  async function press(target: HTMLElement, key: string) {
+  /** The keydown dispatched, to read whether the group took it over. */
+  async function press(target: HTMLElement, key: string): Promise<KeyboardEvent> {
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
     await act(async () => {
-      target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      target.dispatchEvent(event);
     });
+    return event;
   }
 
   it('is one radio group with one tab stop on the chosen period, and says what yearly saves', async () => {
@@ -428,7 +470,8 @@ describe('the billing period switch (W3)', () => {
       throw new Error('no radios');
     }
     yearly.focus();
-    await press(yearly, 'ArrowRight');
+    // The arrow keys are the group's: the page does not scroll with them.
+    expect((await press(yearly, 'ArrowRight')).defaultPrevented).toBe(true);
     expect(monthly.getAttribute('aria-checked')).toBe('true');
     expect(document.activeElement).toBe(monthly);
     expect(monthly.tabIndex).toBe(0);
@@ -437,12 +480,12 @@ describe('the billing period switch (W3)', () => {
     await press(monthly, 'ArrowLeft');
     expect(yearly.getAttribute('aria-checked')).toBe('true');
     expect(document.activeElement).toBe(yearly);
-    await press(yearly, 'ArrowDown');
+    expect((await press(yearly, 'ArrowDown')).defaultPrevented).toBe(true);
     expect(monthly.getAttribute('aria-checked')).toBe('true');
-    await press(monthly, 'ArrowUp');
+    expect((await press(monthly, 'ArrowUp')).defaultPrevented).toBe(true);
     expect(yearly.getAttribute('aria-checked')).toBe('true');
-    // Any other key leaves the choice alone.
-    await press(yearly, 'Enter');
+    // Any other key leaves the choice, and the key's own work, alone.
+    expect((await press(yearly, 'Enter')).defaultPrevented).toBe(false);
     await press(yearly, 'a');
     expect(yearly.getAttribute('aria-checked')).toBe('true');
   });
@@ -489,6 +532,31 @@ describe('the Billing tab with a plan chosen on the landing (D4)', () => {
     expect(byId(container, 'change-pro').textContent).toBe('Upgrade');
     expect(container.textContent).not.toContain('You are already on');
     expect(api.billingPortal).not.toHaveBeenCalled();
+  });
+
+  it('says the chosen plan above the cards, and Dismiss drops it', async () => {
+    const { container, onIntentDone, api } = await mountBilling(ON_FREE, {
+      intent: { plan: 'growth', interval: 'year' },
+    });
+    const line = byId(container, 'plan-intent');
+    expect(byId(container, 'plans').firstElementChild).toBe(line);
+    expect(line.textContent).toContain(
+      'You chose Growth: $79 a month, billed yearly ($948). Its card is marked below.',
+    );
+    const dismiss = [...line.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Dismiss',
+    );
+    if (dismiss === undefined) {
+      throw new Error('no Dismiss');
+    }
+    await click(dismiss);
+    expect(onIntentDone).toHaveBeenCalledTimes(1);
+    expect(api.checkout).not.toHaveBeenCalled();
+  });
+
+  it('says no chosen plan without one', async () => {
+    const { container } = await mountBilling(ON_FREE);
+    expect(container.querySelector('#plan-intent')).toBeNull();
   });
 
   it('paying for the same plan and period: says so, offers nothing, calls nothing', async () => {

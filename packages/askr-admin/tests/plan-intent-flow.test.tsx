@@ -11,6 +11,7 @@ import { Session } from '../src/components/Session';
 import { SignIn } from '../src/components/SignIn';
 import { PRICING_URL } from '../src/constants';
 import { ApiError } from '../src/lib/api';
+import { type BillingReturn, UPDATED_TEXT } from '../src/lib/billing';
 import type { AdminClient } from '../src/lib/deps';
 import { errorMessage } from '../src/lib/errors';
 import { PAID_THROUGH_US_TEXT, type PlanIntent } from '../src/lib/plan-intent';
@@ -338,6 +339,36 @@ describe('an existing store with no settings and a chosen plan (D4, step 2)', ()
     expect(button).toHaveProperty('disabled', false);
   });
 
+  it('a refused Continue to checkout is said, the button works again, and a second click asks again', async () => {
+    const checkout = vi
+      .fn<AdminClient['checkout']>()
+      .mockRejectedValueOnce(new ApiError(502, 'billing_failed'))
+      .mockResolvedValue({ url: 'https://checkout.stripe.test/c/2' });
+    const deps = sessionDeps(fakeApi({ checkout }), fakeReader([]));
+    mounted = await mount(
+      <Onboarding
+        deps={deps}
+        view={PENDING}
+        onCreated={() => undefined}
+        onDone={async () => undefined}
+        onSignOut={() => undefined}
+        intent={GROWTH_YEARLY}
+        onIntentDone={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    const button = byId(container, 'intent-checkout');
+    await click(button);
+    await settle(() => text(container).includes('Stripe did not answer. Retry in a moment.'));
+    expect(button).toHaveProperty('disabled', false);
+    expect(button.getAttribute('aria-busy')).toBe('false');
+    expect(deps.openUrl).not.toHaveBeenCalled();
+    await click(button);
+    await settle(() => vi.mocked(deps.openUrl).mock.calls.length > 0);
+    expect(checkout).toHaveBeenCalledTimes(2);
+    expect(deps.openUrl).toHaveBeenCalledWith('https://checkout.stripe.test/c/2');
+  });
+
   it('offers nothing to buy when the store cannot check out', async () => {
     const api = fakeApi({
       store: vi.fn(async () => storeView({ status: 'pending', tier: null, billing: BILLING_OFF })),
@@ -377,6 +408,25 @@ describe('a returning owner with a chosen plan (D4, Shell)', () => {
     expect(api.checkout).toHaveBeenCalledWith('growth', 'year');
     // Acted on: the card no longer stands out.
     await settle(() => container.querySelector('[data-chosen]') === null);
+  });
+
+  it('Dismiss in Billing drops the plan: the card no longer stands out, and Billing opened again takes no focus', async () => {
+    const api = fakeApi({
+      store: vi.fn(async () => storeView({ tier: { ...FREE_TIER }, billing: BILLING_ON })),
+    });
+    const { container } = await signedIn(api, relay());
+    await settle(() => container.querySelector('#plans') !== null);
+    expect(document.activeElement).toBe(byId(container, 'upgrade-growth'));
+    await click(buttonNamed(byId(container, 'plan-intent'), 'Dismiss'));
+    expect(container.querySelector('#plan-intent')).toBeNull();
+    expect(container.querySelector('[data-chosen]')).toBeNull();
+    expect(byId(container, 'upgrade-growth').textContent).toBe('Upgrade');
+    await click(buttonNamed(container, 'Overview'));
+    expect(container.querySelector('h1')?.textContent).toBe('Overview');
+    await click(buttonNamed(container, 'Billing'));
+    await settle(() => container.querySelector('#plans') !== null);
+    expect(document.activeElement).not.toBe(byId(container, 'upgrade-growth'));
+    expect(api.checkout).not.toHaveBeenCalled();
   });
 
   it('paying for the same plan: Billing says so, and calls nothing', async () => {
@@ -509,5 +559,35 @@ describe('the session without App', () => {
       text(mounted?.container ?? document.body).includes('2. Describe your store'),
     );
     expect(mounted.container.querySelector('#intent-checkout')).toBeNull();
+  });
+});
+
+describe('back from Stripe (D8)', () => {
+  const relay = () => [signedConfig(OWNER_KEY, 'Tea Shop', NOW - 10)];
+
+  async function returning(flag: BillingReturn) {
+    const api = fakeApi({ store: vi.fn(async () => storeView({ billing: BILLING_ON })) });
+    mounted = await mount(
+      <Session
+        deps={{ ...sessionDeps(api, fakeReader(relay())), takeBillingReturn: () => flag }}
+        onSignOut={() => undefined}
+        onReplaceKey={() => undefined}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => container.querySelector('h1') !== null);
+    return container;
+  }
+
+  it('from a portal change (updated): opens on Billing, where the change shows', async () => {
+    const container = await returning('updated');
+    expect(container.querySelector('h1')?.textContent).toBe('Billing');
+    expect(container.querySelector('#plans')).not.toBeNull();
+    expect(text(container)).toContain(UPDATED_TEXT);
+  });
+
+  it('from a checkout (canceled): opens on Overview', async () => {
+    const container = await returning('canceled');
+    expect(container.querySelector('h1')?.textContent).toBe('Overview');
   });
 });

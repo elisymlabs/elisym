@@ -50,7 +50,7 @@ export const HELP = {
 
   // Billing
   currentPlan: {
-    text: 'Your plan, how it is billed and when it renews or ends. Manage billing opens the Stripe billing portal: your payment method, your invoices, and undoing a cancel or a scheduled change.',
+    text: 'Your plan, how it is billed and when it renews or ends. Manage billing opens the Stripe billing portal: your payment method, your invoices, and undoing a cancel. A scheduled change is undone there if the portal offers that; otherwise message us with your Store ID.',
     anchor: 'your-paid-plan',
   },
   planPicker: {
