@@ -6,6 +6,7 @@
 import type { Command } from 'commander';
 import type { EmbedOptions } from './embed';
 import type { InitOptions } from './init';
+import type { PlanOptions } from './plan';
 import type { PolicyOptions } from './policy';
 import type { ProductsOptions } from './products';
 import type { AskrInvocation, InvocationContext } from './runner';
@@ -78,11 +79,15 @@ export function registerAskr(
   askr
     .command('plan <plan>')
     .description(
-      "Choose a plan: only free is self-serve; run it only on the human's explicit choice",
+      "Choose a plan: free starts at once; starter, growth, pro or scale prints a checkout link for the human to pay at. Run it only on the human's explicit choice",
     )
+    .option('--yearly', 'a paid plan billed yearly instead of monthly')
     .option(PROFILE_FLAG, PROFILE_HELP)
-    .action((plan: string, options: ProfileOption) =>
-      run({ command: 'plan', plan }, context(options)),
+    .action((plan: string, options: PlanOptions & ProfileOption) =>
+      run(
+        { command: 'plan', plan, options: options.yearly === true ? { yearly: true } : {} },
+        context(options),
+      ),
     );
 
   askr

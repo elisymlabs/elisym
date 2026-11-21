@@ -322,10 +322,12 @@ describe('the legal pages say what the code and the setup do', () => {
     );
   });
 
-  it('paid plans are set up on request until checkout opens, and a failed payment may suspend, not must', async () => {
-    const terms = textOf(await render(<TermsOfService />));
-    expect(terms).toContain('Until self-serve checkout opens, we set paid plans up on request');
-    expect(terms).toContain('we may suspend the store');
+  it('paid plans are bought self-serve through Stripe Checkout, and an unpaid or canceled plan falls back to Free or pending', async () => {
+    const termsPage = await render(<TermsOfService />);
+    const terms = textOf(termsPage);
+    expect(terms).not.toContain('Until self-serve checkout opens');
+    // A store is suspended only for breaking the rules (section 6), never for an unpaid plan.
+    expect(sectionText(termsPage, 'billing')).not.toContain('suspend');
     expect(terms).not.toMatch(/is deactivated/);
     for (const sentence of [
       'Paid plans are sold through Stripe as the merchant of record: checkout and your card statement show the sale as made through Link',
@@ -333,12 +335,15 @@ describe('the legal pages say what the code and the setup do', () => {
       'Refunds and payment disputes may be handled by Stripe under its own terms.',
       'If you are a consumer in the European Union or the United Kingdom, you can cancel a purchase within 14 days of getting access to it, as Link\'s terms describe: ask Link support for a refund and give "cooling-off period" as the reason.',
       'A subscription renews automatically at the end of each period until you cancel it.',
-      'You can cancel at any time at link.com or by writing to us.',
+      'You can change or cancel your plan at any time with "Manage billing" in the admin (it opens Stripe\'s customer portal), at link.com, or by writing to us.',
+      'After a cancel the plan stays active until the end of the period you paid for and is not renewed; the store then moves to the Free plan if Free has room, otherwise it is paused (pending) until you choose a plan.',
+      'If a payment fails, Stripe tries it again for up to about a week, and your store keeps working on its plan meanwhile.',
+      'If the payment still fails, the subscription ends and the store moves to the Free plan if Free has room, otherwise it is paused (pending) and the chat stops answering until you choose a plan.',
+      "Your store's data is kept.",
       'Periods already paid are not refunded, unless the law requires it or Stripe refunds them under its terms.',
       'Prices are set in US dollars; checkout may show and charge them in your local currency; a renewal charged in your local currency may differ with exchange rates.',
       'Stripe takes the payment, issues the receipt and supports payments and subscriptions at link.com.',
-      "If a payment still fails after Stripe's retries (about a week), we may suspend the store",
-      'Until self-serve checkout opens, we set paid plans up on request, through a Stripe payment link.',
+      'You buy one yourself in the admin, or at the checkout link the Askr CLI gives you, through Stripe Checkout; the plan starts once the payment goes through.',
       'nothing in them limits the rights consumers have under mandatory law',
       'you may go to the courts of that country where the law gives you that right',
       'Askr is for anyone who runs an online store, whether a business or an individual.',
@@ -351,8 +356,15 @@ describe('the legal pages say what the code and the setup do', () => {
     container?.remove();
     const privacyPage = await render(<PrivacyPolicy />);
     const privacy = textOf(privacyPage);
+    expect(privacy).not.toContain('Until self-serve checkout opens');
     expect(privacy).toContain(
-      'Until self-serve checkout opens, we set paid plans up on request, through a Stripe payment link.',
+      'You buy a paid plan yourself in the admin, or at the checkout link the Askr CLI gives you, through Stripe Checkout.',
+    );
+    expect(privacy).toContain(
+      "Our server keeps only your Stripe customer ID; for each subscription, its ID, status, plan, billing period, whether it is set to cancel, when Stripe created it, when its current period ends and when we last updated it; and the ID of the last checkout your store opened, all linked to your store's public key (its Store ID).",
+    );
+    expect(privacy).toContain(
+      'It also keeps the IDs and types of the Stripe events it received, and log lines that name your store and the event. Your card details never reach it.',
     );
     expect(sectionText(privacyPage, 'merchants')).toContain('Sold through Link');
     expect(privacy).toContain(

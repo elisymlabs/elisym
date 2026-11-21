@@ -9,10 +9,12 @@ import { apiBase } from '../constants';
 import type { Signer } from './signer';
 import type {
   Activation,
+  BillingInterval,
   ConnectorRecord,
   ConnectorSyncResult,
   PinnedWidget,
   MovedSettings,
+  PaidPlan,
   StoreView,
   StoredEventsRead,
 } from './types';
@@ -145,6 +147,19 @@ export class AdminApi {
    */
   choosePlan(plan: 'free'): Promise<StoreView & { activation: Activation }> {
     return this.call('POST', '/v1/admin/store/plan', { plan });
+  }
+
+  /**
+   * A Stripe Checkout for a paid plan (6.1): the page to pay at. The store moves to the plan once
+   * Stripe tells the server the payment went through, never from here.
+   */
+  checkout(plan: PaidPlan, interval: BillingInterval): Promise<{ url: string }> {
+    return this.call('POST', '/v1/admin/billing/checkout', { plan, interval });
+  }
+
+  /** The Stripe billing portal for this store: change plan, payment method, cancel. */
+  billingPortal(): Promise<{ url: string }> {
+    return this.call('POST', '/v1/admin/billing/portal');
   }
 
   /** What O signed and the server holds for the relay: a store that is not active shows it (7.3). */

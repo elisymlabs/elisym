@@ -103,6 +103,29 @@ export interface PinnedWidget {
   integrity: string;
 }
 
+/** A self-serve paid plan: a server tier and a Stripe product of the same name. */
+export type PaidPlan = 'starter' | 'growth' | 'pro' | 'scale';
+export type BillingInterval = 'month' | 'year';
+
+/** The store's billing (`packages/askr-server/src/billing/service.ts`, `BillingView`). */
+export interface BillingView {
+  /** The server takes payments; false: paid plans go through us. */
+  enabled: boolean;
+  plan: PaidPlan | null;
+  interval: BillingInterval | null;
+  /** Stripe's subscription status: `active`, `past_due` (a payment failed, retried), `canceled`... */
+  status: string | null;
+  /** Unix seconds: when the plan renews, or ends with `cancelAtPeriodEnd`. */
+  currentPeriodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
+  /** The billing portal can open. */
+  manageable: boolean;
+  /** A paid plan can be bought here now. */
+  checkoutAvailable: boolean;
+  /** We set this store's plan (or suspended it): its plan changes go through us. */
+  operatorManaged: boolean;
+}
+
 /** `GET /v1/admin/store` (the server's `view()`). */
 export interface StoreView {
   owner: string;
@@ -126,6 +149,7 @@ export interface StoreView {
    * test (nothing of it is left). Null while it answers.
    */
   budgetPaused: BudgetPause | null;
+  billing: BillingView;
 }
 
 /** `GET /v1/admin/store/moved-settings`: what the previous owner key signed (K21). */

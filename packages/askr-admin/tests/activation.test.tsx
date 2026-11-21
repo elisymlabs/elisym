@@ -127,7 +127,7 @@ describe('the plan wording (6.5)', () => {
     );
     expect(inactive).not.toContain('operator');
     expect(HELP.status.text).toContain(
-      'Pending: not live yet; choose a plan in Overview (Free starts at once, a paid plan through us), or message us if we manage your plan.',
+      'Pending: not live yet; choose a plan in Overview (Free starts at once, a paid plan once it is paid for or set up with us), or message us if we manage your plan.',
     );
     expect(HELP.status.text.length).toBeLessThan(400);
     expect(HELP.planPicker.anchor).toBe('choose-a-plan');

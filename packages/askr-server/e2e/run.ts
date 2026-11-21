@@ -21,6 +21,9 @@ import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import { SimplePool } from 'nostr-tools/pool';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
+import Stripe from 'stripe';
+import { BillingService } from '../src/billing/service';
+import type { SubscriptionSnapshot } from '../src/billing/stripe';
 import { runCli } from '../src/cli';
 import { type Db, STORES_CHANNEL } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
@@ -30,8 +33,9 @@ import { createGateway } from '../src/gateway/gateway';
 import { serveGateway } from '../src/gateway/http';
 import { StoreEventPublisher } from '../src/publisher';
 import { createServerPool } from '../src/relay/pool';
+import { BillingDirectory } from '../src/state/billing';
 import { PgState } from '../src/state/pg-state';
-import { StoreDirectory } from '../src/state/stores';
+import { FREE_PLAN_LOCK_ID, StoreDirectory } from '../src/state/stores';
 import type { Tier } from '../src/state/types';
 import { isListed } from '../src/worker/catalog';
 import { Worker } from '../src/worker/worker';
@@ -187,6 +191,367 @@ async function races(db: Db, vault: KeyVault, directory: StoreDirectory): Promis
   await handoverRace(db, vault, state);
   await answerDropRace(db, vault, state);
   await freePlanRace(db, vault, directory);
+  await billingRace(db, vault, directory);
+}
+
+/**
+ * Stripe events on real Postgres (6.1): one event delivered six times at once is applied once,
+ * and eight paid plans ending at once share Free's last two places, with Free choices racing
+ * them (every event takes the Free lock before any store row, so nothing deadlocks).
+ */
+async function billingRace(db: Db, vault: KeyVault, directory: StoreDirectory): Promise<void> {
+  // `starter`: the tier a subscription on an askr_starter price names.
+  for (const name of ['starter', 'race-free-2']) {
+    await directory.setTier({
+      name,
+      messagesPerSessionPerDay: 20,
+      monthlyBudgetUsd: '10',
+      ticketsPerStorePerMinute: 30,
+      maxProducts: 100,
+      syncIntervalMinutes: 60,
+      branding: true,
+    });
+  }
+  const subscriptions = new Map<string, SubscriptionSnapshot>();
+  const secret = 'whsec_e2e';
+  // Several server instances: each applies its own events one at a time, the database settles
+  // what they do at once.
+  const instance = (readMs = 50) =>
+    new BillingService({
+      db,
+      stripe: {
+        price: async () => undefined,
+        createCheckoutSession: async () => ({ id: 'cs_none', url: null }),
+        expireCheckoutSession: async () => undefined,
+        createPortalSession: async () => ({ url: '' }),
+        async subscription(id) {
+          await sleep(readMs);
+          return subscriptions.get(id);
+        },
+      },
+      webhookSecret: secret,
+      publicBase: 'https://askr.test',
+      tierExists: (name) => directory.tierExists(name),
+      freeTier: { tier: 'race-free-2', perDay: 100, maxActive: 2 },
+      storesChanged: () => undefined,
+    });
+  const instances = Array.from({ length: 8 }, () => instance());
+  let next = 0;
+  const deliver = async (
+    id: string,
+    type: string,
+    subscription: string,
+    object: Record<string, unknown> = { id: subscription, object: 'subscription', metadata: {} },
+  ) => {
+    const payload = JSON.stringify({ id, object: 'event', type, data: { object } });
+    const header = await Stripe.webhooks.generateTestHeaderStringAsync({ payload, secret });
+    next += 1;
+    const billing = instances[next % instances.length] ?? instance();
+    const response = await billing.webhook(payload, header);
+    return { status: response.status, ...(await response.json()) };
+  };
+  const now = nowSecs();
+  const stores = Array.from({ length: 8 }, () => syntheticStore(now));
+  for (const [index, store] of stores.entries()) {
+    await insertPending(db, vault, store);
+    subscriptions.set(`sub_race_${index}`, {
+      id: `sub_race_${index}`,
+      customer: `cus_race_${index}`,
+      status: 'active',
+      store: store.owner,
+      plan: 'starter',
+      interval: 'month',
+      currentPeriodEnd: now + 3_600,
+      cancelAtPeriodEnd: false,
+      created: now,
+    });
+  }
+  const answers = await Promise.all(
+    Array.from({ length: 6 }, () =>
+      deliver('evt_race_same', 'customer.subscription.created', 'sub_race_0'),
+    ),
+  );
+  check(
+    'one Stripe event delivered six times at once is applied once',
+    // Each instance reads Stripe before its transaction; only one applies, under the Free lock.
+    answers.every((answer) => answer.status === 200) &&
+      answers.filter((answer) => answer.duplicate === true).length === 5,
+  );
+  for (const index of stores.keys()) {
+    await deliver(`evt_race_paid_${index}`, 'customer.subscription.created', `sub_race_${index}`);
+  }
+  const paid = await Promise.all(stores.map((store) => directory.statusOf(store.owner)));
+  check(
+    'eight paid checkouts activate eight stores',
+    paid.every((status) => status?.status === 'active' && status.tier === 'starter'),
+  );
+  for (const index of stores.keys()) {
+    const snapshot = subscriptions.get(`sub_race_${index}`);
+    if (snapshot !== undefined) {
+      subscriptions.set(snapshot.id, { ...snapshot, status: 'canceled' });
+    }
+  }
+  const choosers = Array.from({ length: 4 }, () => syntheticStore(now));
+  for (const chooser of choosers) {
+    await insertPending(db, vault, chooser);
+  }
+  await Promise.all([
+    ...stores.map((_store, index) =>
+      deliver(`evt_race_end_${index}`, 'customer.subscription.deleted', `sub_race_${index}`),
+    ),
+    ...choosers.map((chooser) =>
+      directory.activateFree(chooser.owner, 'race-free-2', now, { perDay: 100, maxActive: 2 }),
+    ),
+  ]);
+  const after = await Promise.all(
+    [...stores, ...choosers].map((store) => directory.statusOf(store.owner)),
+  );
+  check(
+    'eight paid plans ending while four owners choose Free: two Free places in all, the rest pending',
+    after.filter((status) => status?.tier === 'race-free-2' && status.status === 'active')
+      .length === 2 &&
+      after.filter((status) => status?.status === 'pending' && status.tier === null).length === 10,
+  );
+  await firstCheckoutRaces(db, vault, directory, subscriptions, deliver);
+
+  // Stripe is read with no transaction open and no lock held: a Free choice made while a slow
+  // read is in flight goes through at once.
+  const slowStore = syntheticStore(now);
+  const freeStore = syntheticStore(now);
+  await insertPending(db, vault, slowStore);
+  await insertPending(db, vault, freeStore);
+  subscriptions.set('sub_slow', {
+    id: 'sub_slow',
+    customer: 'cus_slow',
+    status: 'active',
+    store: slowStore.owner,
+    plan: 'starter',
+    interval: 'month',
+    currentPeriodEnd: now + 3_600,
+    cancelAtPeriodEnd: false,
+    created: now,
+  });
+  const slow = instance(1_500);
+  const payload = JSON.stringify({
+    id: 'evt_slow',
+    type: 'customer.subscription.created',
+    data: { object: { id: 'sub_slow', object: 'subscription', metadata: {} } },
+  });
+  const header = await Stripe.webhooks.generateTestHeaderStringAsync({ payload, secret });
+  let slowDone = false;
+  const slowEvent = slow.webhook(payload, header).then((response) => {
+    slowDone = true;
+    return response.status;
+  });
+  await sleep(200);
+  const started = Date.now();
+  const freeChoice = await directory.activateFree(freeStore.owner, 'race-free-2', now, {
+    perDay: 1_000,
+    maxActive: 1_000,
+  });
+  const freeMs = Date.now() - started;
+  const stillWaiting = !slowDone;
+  const slowStatus = await slowEvent;
+  check(
+    'a Free choice while a webhook waits 1.5 s on Stripe goes through at once',
+    freeChoice === 'activated' && freeMs < 500 && stillWaiting && slowStatus === 200,
+  );
+
+  // The operator's plan set, not yet committed, while the store's first event is applied: the
+  // event reads the store's plan under the row's lock, so it waits and then leaves it alone.
+  const operated = syntheticStore(now);
+  await insertPending(db, vault, operated);
+  subscriptions.set('sub_operated', {
+    id: 'sub_operated',
+    customer: 'cus_operated',
+    status: 'active',
+    store: operated.owner,
+    plan: 'starter',
+    interval: 'month',
+    currentPeriodEnd: now + 3_600,
+    cancelAtPeriodEnd: false,
+    created: now,
+  });
+  const operatorSet = { done: (): void => undefined };
+  const updated = new Promise<void>((resolve) => {
+    operatorSet.done = resolve;
+  });
+  const operator = db.transaction(async (tx) => {
+    await tx.query(
+      `update stores set status = 'active', tier = 'race-operator', plan_source = 'operator'
+       where owner = $1`,
+      [operated.owner],
+    );
+    operatorSet.done();
+    await sleep(800);
+  });
+  await updated;
+  const operatedEvent = deliver('evt_operated', 'customer.subscription.created', 'sub_operated');
+  const [operatorDone, operatedDone] = await Promise.allSettled([operator, operatedEvent]);
+  const operatedStatus = await directory.statusOf(operated.owner);
+  check(
+    "an operator's uncommitted plan set while the store's first event is applied: the operator's plan stands",
+    operatorDone.status === 'fulfilled' &&
+      operatedDone.status === 'fulfilled' &&
+      operatedDone.value.status === 200 &&
+      operatedStatus?.tier === 'race-operator',
+  );
+
+  // Two checkouts of one store remembered at once, 10 times: the store row's lock orders them,
+  // so exactly one is told the other replaced it (and expires it).
+  const billingDirectory = new BillingDirectory(db);
+  let ordered = 0;
+  for (let round = 0; round < 10; round += 1) {
+    const store = syntheticStore(now);
+    await insertPending(db, vault, store);
+    const replaced = await Promise.all([
+      billingDirectory.swapCheckout(store.owner, `cs_a_${round}`, now),
+      billingDirectory.swapCheckout(store.owner, `cs_b_${round}`, now),
+    ]);
+    const told = replaced.filter((previous) => previous !== undefined);
+    if (told.length === 1) {
+      ordered += 1;
+    }
+  }
+  check(
+    'two checkouts of one store remembered at once, 10 times: one replaces the other',
+    ordered === 10,
+  );
+}
+
+/**
+ * A store's first paid checkout landing while its owner chooses Free, and while the operator
+ * sets its plan, 20 times each: the event takes the Free lock before it touches the store's row
+ * (its customer and subscription rows lock it for their foreign keys), so nothing deadlocks; and
+ * it reads the store's plan under the row's lock, so an operator's plan set meanwhile stands.
+ */
+async function firstCheckoutRaces(
+  db: Db,
+  vault: KeyVault,
+  directory: StoreDirectory,
+  subscriptions: Map<string, SubscriptionSnapshot>,
+  deliver: (
+    id: string,
+    type: string,
+    subscription: string,
+    object?: Record<string, unknown>,
+  ) => Promise<{ status: number }>,
+): Promise<void> {
+  await directory.setTier({
+    name: 'race-operator',
+    messagesPerSessionPerDay: 20,
+    monthlyBudgetUsd: '10',
+    ticketsPerStorePerMinute: 30,
+    maxProducts: 100,
+    syncIntervalMinutes: 60,
+    branding: true,
+  });
+  // Room on Free for every racer.
+  const caps = { perDay: 1_000, maxActive: 1_000 };
+  const now = nowSecs();
+  let failures = 0;
+  let consistent = 0;
+  let operatorStands = 0;
+  for (let round = 0; round < 20; round += 1) {
+    for (const contender of ['free', 'operator'] as const) {
+      const store = syntheticStore(now);
+      await insertPending(db, vault, store);
+      const id = `sub_first_${contender}_${round}`;
+      subscriptions.set(id, {
+        id,
+        customer: `cus_first_${contender}_${round}`,
+        status: 'active',
+        store: store.owner,
+        plan: 'starter',
+        interval: 'month',
+        currentPeriodEnd: now + 3_600,
+        cancelAtPeriodEnd: false,
+        created: now,
+      });
+      const event = deliver(`evt_first_${contender}_${round}`, 'checkout.session.completed', id, {
+        object: 'checkout.session',
+        mode: 'subscription',
+        client_reference_id: store.owner,
+        customer: `cus_first_${contender}_${round}`,
+        subscription: id,
+      });
+      const other =
+        contender === 'free'
+          ? directory.activateFree(store.owner, 'race-free-2', now, caps)
+          : sleep(50 + (round % 5) * 3).then(() =>
+              directory.setStatus(store.owner, 'active', 'race-operator'),
+            );
+      const settled = await Promise.allSettled([event, other]);
+      const answer = settled[0];
+      if (
+        settled.some((outcome) => outcome.status === 'rejected') ||
+        answer.status !== 'fulfilled' ||
+        answer.value.status !== 200
+      ) {
+        failures += 1;
+      }
+      const status = await directory.statusOf(store.owner);
+      if (contender === 'free' && status?.status === 'active' && status.tier === 'starter') {
+        consistent += 1;
+      }
+      if (contender === 'operator' && status?.tier === 'race-operator') {
+        operatorStands += 1;
+      }
+    }
+  }
+  check(
+    "a store's first checkout racing its owner's Free choice, 20 times: no deadlock, always on the paid plan",
+    failures === 0 && consistent === 20,
+  );
+  check(
+    "a store's first checkout racing the operator setting its plan, 20 times: the operator's plan stands",
+    operatorStands === 20,
+  );
+
+  // The same race made certain: another transaction holds the Free lock while the store's first
+  // event is applied, then locks the store's row, as `activateFree` does. The event waits for the
+  // Free lock before it touches the row, so neither waits on the other.
+  const held = syntheticStore(now);
+  await insertPending(db, vault, held);
+  subscriptions.set('sub_first_held', {
+    id: 'sub_first_held',
+    customer: 'cus_first_held',
+    status: 'active',
+    store: held.owner,
+    plan: 'starter',
+    interval: 'month',
+    currentPeriodEnd: now + 3_600,
+    cancelAtPeriodEnd: false,
+    created: now,
+  });
+  const lock = { taken: (): void => undefined };
+  const taken = new Promise<void>((resolve) => {
+    lock.taken = resolve;
+  });
+  const holder = db.transaction(async (tx) => {
+    await tx.query('select pg_advisory_xact_lock($1)', [FREE_PLAN_LOCK_ID]);
+    lock.taken();
+    await sleep(400);
+    await tx.query('select 1 from stores where owner = $1 for update', [held.owner]);
+  });
+  await taken;
+  const heldEvent = deliver('evt_first_held', 'checkout.session.completed', 'sub_first_held', {
+    object: 'checkout.session',
+    mode: 'subscription',
+    client_reference_id: held.owner,
+    customer: 'cus_first_held',
+    subscription: 'sub_first_held',
+  });
+  const [holderDone, eventDone] = await Promise.allSettled([holder, heldEvent]);
+  const heldStatus = await directory.statusOf(held.owner);
+  check(
+    "a store's first event while a Free choice holds the Free lock and then the store's row: no deadlock",
+    holderDone.status === 'fulfilled' &&
+      eventDone.status === 'fulfilled' &&
+      eventDone.value.status === 200 &&
+      heldStatus?.status === 'active' &&
+      heldStatus.tier === 'starter',
+  );
 }
 
 /**

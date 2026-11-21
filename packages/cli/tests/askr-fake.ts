@@ -97,6 +97,8 @@ export class FakeAskr {
     skipped: [],
   };
   freeAvailable = true;
+  /** The billing the view carries; undefined: a server from before billing (no field). */
+  billing: Record<string, unknown> | undefined = undefined;
   probeAnswers: Response[] = [];
   readonly calls: Call[] = [];
   private readonly overrides: Array<{ route: string; handler: Handler }> = [];
@@ -131,6 +133,7 @@ export class FakeAskr {
           .map((entry) => ({ id: entry.event.id, kind: entry.event.kind, stopped: true })),
       },
       movedFrom: this.movedFrom,
+      ...(this.billing === undefined ? {} : { billing: this.billing }),
     };
   }
 
@@ -343,6 +346,13 @@ export class FakeAskr {
       }
       this.publish();
       return json({ stored: body.events.map((event) => event.id) });
+    }
+    if (route === 'POST /v1/admin/billing/checkout') {
+      if (this.billing?.enabled !== true) {
+        return json({ error: 'billing_unavailable' }, 503);
+      }
+      const body: { plan: string; interval: string } = JSON.parse(JSON.stringify(call.body));
+      return json({ url: `https://checkout.stripe.test/c/${body.plan}-${body.interval}` });
     }
     if (route === 'POST /v1/admin/store/plan') {
       if (this.status === 'active') {

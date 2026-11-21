@@ -295,6 +295,45 @@ export async function freeTierWarning(
     : `ASKR_FREE_TIER names the tier ${freeTier.tier}, which does not exist: Free is unavailable until the operator creates it (askr-server tier set ${freeTier.tier} ...)`;
 }
 
+/** The Stripe secrets paid plans need (6.1): both, or billing is off. */
+export interface BillingSecrets {
+  secretKey: string;
+  webhookSecret: string;
+}
+
+const BILLING_FILES = ['ASKR_STRIPE_SECRET_KEY_FILE', 'ASKR_STRIPE_WEBHOOK_SECRET_FILE'] as const;
+
+/**
+ * ASKR_STRIPE_SECRET_KEY_FILE and ASKR_STRIPE_WEBHOOK_SECRET_FILE: files holding the Stripe
+ * restricted key and the webhook signing secret (Docker secrets, like the master key). Both unset:
+ * billing is off (its routes answer `billing_unavailable`, paid plans go through us). One without
+ * the other, or an empty file, stops the server. `read` is for tests. The values are never logged.
+ */
+export function billingFromEnv(
+  rawEnv: Env,
+  read: (path: string) => string,
+): BillingSecrets | undefined {
+  const env = withoutEmpty(rawEnv);
+  const [keyFile, webhookFile] = BILLING_FILES.map((name) => env[name]);
+  if (keyFile === undefined && webhookFile === undefined) {
+    return undefined;
+  }
+  if (keyFile === undefined || webhookFile === undefined) {
+    throw new Error(
+      `Billing needs both ${BILLING_FILES.join(' and ')}: set both, or neither to turn billing off.`,
+    );
+  }
+  const secretKey = read(keyFile).trim();
+  const webhookSecret = read(webhookFile).trim();
+  if (secretKey === '') {
+    throw new Error('ASKR_STRIPE_SECRET_KEY_FILE names an empty file');
+  }
+  if (webhookSecret === '') {
+    throw new Error('ASKR_STRIPE_WEBHOOK_SECRET_FILE names an empty file');
+  }
+  return { secretKey, webhookSecret };
+}
+
 const FALLBACK_FIELDS = 6;
 const OPENROUTER_MODEL_RE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/iu;
 

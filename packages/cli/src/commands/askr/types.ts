@@ -34,6 +34,20 @@ export interface EventStatusView {
   failing: { id: string; kind: number; stopped: boolean }[];
 }
 
+/** A store's paid plan as the server last heard from Stripe (absent from servers before billing). */
+export interface BillingView {
+  /** The server takes payments: `askr plan <paid plan>` gives a checkout link. */
+  enabled: boolean;
+  plan: string | null;
+  interval: 'month' | 'year' | null;
+  status: string | null;
+  /** Unix seconds. */
+  currentPeriodEnd: number | null;
+  cancelAtPeriodEnd: boolean;
+  manageable: boolean;
+  checkoutAvailable: boolean;
+}
+
 /** `GET /v1/admin/store`. */
 export interface StoreView {
   owner: string;
@@ -52,6 +66,7 @@ export interface StoreView {
   connector: ConnectorView | null;
   events: EventStatusView;
   movedFrom: string | null;
+  billing?: BillingView;
 }
 
 /** `GET /v1/admin/store/events`: what O signed and the server holds for the relay. */

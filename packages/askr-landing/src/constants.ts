@@ -86,9 +86,9 @@ export function isContractPlan(plan: Plan): plan is ContractPlan {
   return plan.price.kind === 'from';
 }
 
-/** How a store gets on a plan, said in Get started and under the prices: Free self-serve, paid through us. */
+/** How a store gets on a plan, said in Get started and under the prices: Free and paid self-serve, Enterprise through us. */
 export const CHOOSE_PLAN_TEXT =
-  'Choose Free in the admin and your store goes live at once. For a paid plan, message us with your Store ID.';
+  'Choose Free in the admin and your store goes live at once. A paid plan goes live as soon as you pay for it in the admin. For Enterprise, message us with your Store ID.';
 
 /** How a conversation is counted, as the pricing's small print says it. */
 export const CONVERSATION_DEFINITION =

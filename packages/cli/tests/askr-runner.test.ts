@@ -79,6 +79,31 @@ async function parse(argv: string[]): Promise<{ io: ReturnType<typeof recordingI
   return { io, ran };
 }
 
+describe('askr plan parsing', () => {
+  it('passes --yearly to a paid plan, and nothing without it', async () => {
+    const seen: unknown[] = [];
+    for (const argv of [
+      ['askr', 'plan', 'pro', '--yearly'],
+      ['askr', 'plan', 'growth'],
+    ]) {
+      const program = new Command().name('elisym');
+      registerAskr(
+        program,
+        async (invocation) => {
+          seen.push(invocation);
+        },
+        argv.slice(1),
+        true,
+      );
+      await program.parseAsync(['node', 'elisym', ...argv]);
+    }
+    expect(seen).toEqual([
+      { command: 'plan', plan: 'pro', options: { yearly: true } },
+      { command: 'plan', plan: 'growth', options: {} },
+    ]);
+  });
+});
+
 describe('the askr output contract', () => {
   it('an unknown flag and a missing value are one JSON object, exit 1, nothing on stderr', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

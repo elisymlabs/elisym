@@ -51,15 +51,89 @@ describe('askr plan', () => {
     expect(again.output).toMatchObject({ activation: 'already_active', published: true });
   });
 
-  it('anything but free is exit 1 with the paid hint, and no request is sent', async () => {
+  it('an unknown plan, or --yearly with free, is exit 1 and no request is sent', async () => {
     const setup = await harness();
-    const outcome = await setup.run({ command: 'plan', plan: 'pro' }, ['plan', 'pro']);
+    const outcome = await setup.run({ command: 'plan', plan: 'enterprise' }, [
+      'plan',
+      'enterprise',
+    ]);
     expect(outcome.exitCode).toBe(1);
     expect(outcome.output).toMatchObject({
-      error: { code: 'paid_plan', hint: 'paid plans: message us with your Store ID' },
+      error: { code: 'unknown_plan' },
       upgrade: { contact: 'https://askr.elisym.network/contact' },
     });
+    const yearly = await setup.run({ command: 'plan', plan: 'free', options: { yearly: true } }, [
+      'plan',
+      'free',
+      '--yearly',
+    ]);
+    expect(yearly).toMatchObject({ exitCode: 1, output: { error: { code: 'bad_flag' } } });
     expect(setup.fake.calls).toHaveLength(0);
+  });
+
+  it('a paid plan prints the checkout link for the human, monthly or yearly, and opens nothing', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    setup.fake.billing = { enabled: true, checkoutAvailable: true };
+    const monthly = await setup.run({ command: 'plan', plan: 'growth' }, ['plan', 'growth']);
+    expect(monthly).toMatchObject({
+      exitCode: 0,
+      output: {
+        ok: true,
+        plan: 'growth',
+        interval: 'month',
+        checkoutUrl: 'https://checkout.stripe.test/c/growth-month',
+      },
+    });
+    expect(String(monthly.output.hint)).toContain('never open it yourself');
+    const yearly = await setup.run({ command: 'plan', plan: 'scale', options: { yearly: true } }, [
+      'plan',
+      'scale',
+      '--yearly',
+    ]);
+    expect(yearly.output).toMatchObject({
+      interval: 'year',
+      checkoutUrl: 'https://checkout.stripe.test/c/scale-year',
+    });
+    expect(
+      setup.fake.routeCalls('POST /v1/admin/billing/checkout').map((call) => call.body),
+    ).toEqual([
+      { plan: 'growth', interval: 'month' },
+      { plan: 'scale', interval: 'year' },
+    ]);
+    expect(setup.fake.routeCalls('POST /v1/admin/store/plan')).toHaveLength(0);
+  });
+
+  it('maps every checkout refusal', async () => {
+    const cases: Array<[Response, number, string]> = [
+      [json({ error: 'billing_unavailable' }, 503), 5, 'billing_unavailable'],
+      [json({ error: 'plan_unavailable' }, 503), 5, 'plan_unavailable'],
+      [json({ error: 'subscription_exists' }, 409), 3, 'subscription_exists'],
+      [json({ error: 'operator_managed' }, 409), 3, 'operator_managed'],
+      [json({ error: 'suspended' }, 409), 3, 'suspended'],
+      [json({ error: 'moved' }, 409), 3, 'moved_store'],
+      [json({ error: 'billing_failed' }, 502), 4, 'billing_failed'],
+    ];
+    for (const [answer, exitCode, code] of cases) {
+      const setup = await harness();
+      await setup.run(initInvocation(), INIT_ARGS);
+      setup.fake.on('POST /v1/admin/billing/checkout', () => answer.clone());
+      const outcome = await setup.run({ command: 'plan', plan: 'pro' }, ['plan', 'pro']);
+      expect(outcome.exitCode, code).toBe(exitCode);
+      expect(outcome.output).toMatchObject({ error: { code } });
+      if (code === 'subscription_exists') {
+        const hint = String(Reflect.get(Object(outcome.output.error), 'hint'));
+        expect(hint).toContain('Manage billing');
+        expect(hint).toMatch(/in the admin \(https?:\/\/[^)]+\/admin\/\)$/u);
+      }
+    }
+    const off = await harness();
+    await off.run(initInvocation(), INIT_ARGS);
+    const outcome = await off.run({ command: 'plan', plan: 'starter' }, ['plan', 'starter']);
+    expect(outcome.output).toMatchObject({
+      error: { code: 'billing_unavailable', hint: expect.stringContaining('message us') },
+      upgrade: { contact: 'https://askr.elisym.network/contact' },
+    });
   });
 
   it('maps every server answer of 5.9', async () => {
@@ -712,6 +786,50 @@ describe('askr status', () => {
     const keyOnly = await setup.run({ command: 'status', options: {} }, ['status']);
     expect(keyOnly).toMatchObject({ exitCode: 0, output: { store: null } });
     expect(String(keyOnly.output.hint)).toContain('askr init creates it');
+  });
+
+  it('prints the billing the server reports, null from a server without it, and the paid hint', async () => {
+    const setup = await harness();
+    await setup.run(initInvocation(), INIT_ARGS);
+    const before = await setup.run({ command: 'status', options: {} }, ['status']);
+    expect(before.output.billing).toBeNull();
+    expect(String(before.output.hint)).toContain('message us with your Store ID for a paid plan');
+    setup.fake.billing = {
+      enabled: true,
+      plan: null,
+      interval: null,
+      status: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      manageable: false,
+      checkoutAvailable: true,
+    };
+    const pending = await setup.run({ command: 'status', options: {} }, ['status']);
+    expect(String(pending.output.hint)).toContain(
+      'askr plan <starter|growth|pro|scale> [--yearly]',
+    );
+    setup.fake.billing = {
+      enabled: true,
+      plan: 'pro',
+      interval: 'year',
+      status: 'past_due',
+      currentPeriodEnd: 1_900_000_000,
+      cancelAtPeriodEnd: false,
+      manageable: true,
+      checkoutAvailable: false,
+    };
+    setup.fake.status = 'active';
+    setup.fake.tier = { ...FREE_TIER, name: 'pro' };
+    const paid = await setup.run({ command: 'status', options: {} }, ['status']);
+    expect(paid.output.billing).toEqual({
+      enabled: true,
+      plan: 'pro',
+      interval: 'year',
+      status: 'past_due',
+      currentPeriodEnd: 1_900_000_000,
+      cancelAtPeriodEnd: false,
+      checkoutAvailable: false,
+    });
   });
 
   it('moved is exit 3 moved_store', async () => {

@@ -7,7 +7,10 @@ export interface PlanChoice {
   name: string;
   /** The monthly price as the landing writes it, e.g. `$29`. */
   monthly: string;
-  /** `admin`: self-serve here (Free); `choose`: a paid plan through us; `contact`: by agreement. */
+  /** Billed yearly: the price a month and the total once a year (flat plans only). */
+  yearlyPerMonth?: string;
+  yearlyTotal?: string;
+  /** `admin`: self-serve here (Free); `choose`: a paid plan (checkout, or through us); `contact`: by agreement. */
   start: 'admin' | 'choose' | 'contact';
   /** The landing shows the `sizes` plans as one card with a size switch. */
   group?: 'sizes';
@@ -16,10 +19,31 @@ export interface PlanChoice {
 }
 
 export const PLANS: readonly PlanChoice[] = [
-  { name: 'Free', monthly: '$0', start: 'admin' },
-  { name: 'Starter', monthly: '$29', start: 'choose' },
-  { name: 'Growth', monthly: '$99', start: 'choose', group: 'sizes' },
-  { name: 'Pro', monthly: '$199', start: 'choose', group: 'sizes' },
-  { name: 'Scale', monthly: '$499', start: 'choose', group: 'sizes' },
+  { name: 'Free', monthly: '$0', yearlyPerMonth: '$0', yearlyTotal: '$0', start: 'admin' },
+  { name: 'Starter', monthly: '$29', yearlyPerMonth: '$23', yearlyTotal: '$276', start: 'choose' },
+  {
+    name: 'Growth',
+    monthly: '$99',
+    yearlyPerMonth: '$79',
+    yearlyTotal: '$948',
+    start: 'choose',
+    group: 'sizes',
+  },
+  {
+    name: 'Pro',
+    monthly: '$199',
+    yearlyPerMonth: '$159',
+    yearlyTotal: '$1,908',
+    start: 'choose',
+    group: 'sizes',
+  },
+  {
+    name: 'Scale',
+    monthly: '$499',
+    yearlyPerMonth: '$399',
+    yearlyTotal: '$4,788',
+    start: 'choose',
+    group: 'sizes',
+  },
   { name: 'Enterprise', monthly: '$1,500', start: 'contact', from: true },
 ];

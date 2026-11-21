@@ -24,6 +24,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { decode } from 'nostr-tools/nip19';
 import { verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
+import { BILLING_OFF, type BillingService } from '../billing/service';
 import { type FreeTier, publicBaseOf } from '../config';
 import { livePolicies } from '../connectors/policies';
 import { type ConnectorService, shopIdentity } from '../connectors/service';
@@ -158,7 +159,7 @@ const EmailSchema = z
 const ContactRequestSchema = z.object({ email: EmailSchema.nullable() });
 /** `POST /v1/admin/store`: onboarding may give the contact email at once. */
 const CreateRequestSchema = z.object({ email: EmailSchema.optional() });
-/** Only Free is self-serve; a paid plan goes through us until a checkout answers here (6.1). */
+/** Free is chosen here; a paid plan starts a checkout (`POST /v1/admin/billing/checkout`, 6.1). */
 const PlanRequestSchema = z.object({ plan: z.literal('free') });
 
 /** What `POST /v1/admin/store/plan` did, beside the view it answers with (6.1). */
@@ -184,6 +185,8 @@ export interface AdminDeps {
   connectors: ConnectorService;
   /** ASKR_FREE_TIER: the tier a merchant's explicit Free choice puts a store on, within the caps (6.1). */
   freeTier?: FreeTier;
+  /** Paid plans through Stripe; unset (no Stripe secrets): its routes answer `billing_unavailable`. */
+  billing?: BillingService;
   now?: () => number;
   /** Publishing pace for catalog syncs; tests raise it. */
   syncPace?: number;
@@ -451,6 +454,7 @@ export function createAdminApi(
       events: await deps.directory.eventStatus(store.owner),
       movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
       email: (await deps.directory.contactEmail(store.owner)) ?? null,
+      billing: deps.billing === undefined ? BILLING_OFF : await deps.billing.view(store.owner),
     };
   };
 
@@ -775,6 +779,14 @@ export function createAdminApi(
     }
     if (route === 'POST /v1/admin/store/plan') {
       return choosePlan(store, body);
+    }
+    if (route === 'POST /v1/admin/billing/checkout' || route === 'POST /v1/admin/billing/portal') {
+      if (deps.billing === undefined) {
+        return json({ error: 'billing_unavailable' }, 503);
+      }
+      return route === 'POST /v1/admin/billing/checkout'
+        ? deps.billing.checkout(owner, body)
+        : deps.billing.portal(owner);
     }
     if (route === 'GET /v1/admin/store/events') {
       // The read-back (7.3): a store that is not active has nothing on the relay yet, nor has an

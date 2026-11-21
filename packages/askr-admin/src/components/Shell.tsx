@@ -1,5 +1,5 @@
 import type { StoreConfig } from '@elisym/askr';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CatalogQueue } from '../lib/catalog-writer';
 import type { SessionDeps } from '../lib/deps';
 import { isRemembered } from '../lib/remembered';
@@ -7,6 +7,7 @@ import { npubOf } from '../lib/signer';
 import { TABS, type TabId } from '../lib/tabs';
 import type { StoreView } from '../lib/types';
 import { AskrMark } from './AskrMark';
+import { BillingReturnNotice } from './BillingReturnNotice';
 import { BudgetBanner } from './BudgetBanner';
 import { ConnectorSection } from './ConnectorSection';
 import { ContactEmailSection } from './ContactEmailSection';
@@ -72,6 +73,8 @@ export function Shell({
   catalogQueue,
 }: Props) {
   const [chosen, setTab] = useState<TabId>('overview');
+  // Read once the owner is signed in (never by a key recovery on the sign-in page).
+  const [billingReturn] = useState(() => deps.takeBillingReturn());
   // The Connector section is for a connector set up in Settings: without one it is left out.
   const tabs = view.connector === null ? TABS.filter((entry) => entry.id !== 'connector') : TABS;
   const tab = tabs.some((entry) => entry.id === chosen) ? chosen : 'overview';
@@ -118,10 +121,10 @@ export function Shell({
   const reloadView = async () => {
     await reload();
   };
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     await reload();
     await reloadConfig();
-  };
+  }, [reload, reloadConfig]);
   // Products, policies and the connector wait for a plan, which is chosen in Overview.
   const choosePlan = () => setTab('overview');
   let content;
@@ -261,6 +264,9 @@ export function Shell({
           ) : null}
         </header>
         <div className="flex max-w-760 flex-col gap-32">
+          {billingReturn === undefined ? null : (
+            <BillingReturnNotice flag={billingReturn} view={view} refresh={refresh} />
+          )}
           <BudgetBanner view={view} now={deps.now()} />
           {configError === '' ? null : (
             <Notice tone="warn">

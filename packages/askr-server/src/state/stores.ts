@@ -9,7 +9,7 @@ import { KIND_DELETION, nowSecs } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { type Db, STORES_CHANNEL } from '../db/db';
+import { type Db, type Queryable, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import { type HeldOrigin, ORIGIN_PROOF_AGE_SECS, noteOrigins, noteOriginsLocked } from './origins';
 import {
@@ -231,6 +231,27 @@ function connectorOf(row: ConnectorRow): ConnectorRecord {
 }
 
 /**
+ * Whether a self-serve Free activation at `now` would pass a cap (6.1): `perDay` per rolling 24
+ * hours, `maxActive` self-serve stores active on `tier`. Run under `FREE_PLAN_LOCK_ID`.
+ */
+export async function freeCapacityReached(
+  tx: Queryable,
+  tier: string,
+  now: number,
+  caps: { perDay: number; maxActive: number },
+): Promise<boolean> {
+  const [counts] = await tx.query<{ today: number; active: number }>(
+    `select
+       (count(*) filter (where auto_activated_at > $1))::int8 as today,
+       (count(*) filter (where status = 'active' and tier = $2
+                         and auto_activated_at is not null))::int8 as active
+     from stores`,
+    [now - DAY_SECS, tier],
+  );
+  return (counts?.today ?? 0) >= caps.perDay || (counts?.active ?? 0) >= caps.maxActive;
+}
+
+/**
  * Stores, tiers and the O-signed events awaiting publication (7.3, K18, K19):
  * what the operator CLI and the admin API write.
  */
@@ -310,6 +331,15 @@ export class StoreDirectory {
       [owner],
     );
     return row;
+  }
+
+  /** Who set the store's tier (`operator`, `free`, `billing`), or null with no plan. */
+  async planSourceOf(owner: string): Promise<string | null | undefined> {
+    const [row] = await this.db.query<{ plan_source: string | null }>(
+      'select plan_source from stores where owner = $1',
+      [owner],
+    );
+    return row?.plan_source;
   }
 
   /** Every tier with how many stores are on it, by name. */
@@ -406,7 +436,9 @@ export class StoreDirectory {
         }
       }
       const rows = await tx.query(
-        `update stores set status = $2, tier = coalesce($3, tier)
+        // A tier the operator sets is the operator's: billing no longer changes the store.
+        `update stores set status = $2, tier = coalesce($3, tier),
+           plan_source = case when $3::text is null then plan_source else 'operator' end
          where owner = $1 and ($2 = 'pending' or coalesce($3, tier) is not null)
          returning 1`,
         [owner, status, tierName ?? null],
@@ -451,19 +483,11 @@ export class StoreDirectory {
       if (tiers.length === 0) {
         return 'no_tier';
       }
-      const [counts] = await tx.query<{ today: number; active: number }>(
-        `select
-           (count(*) filter (where auto_activated_at > $1))::int8 as today,
-           (count(*) filter (where status = 'active' and tier = $2
-                             and auto_activated_at is not null))::int8 as active
-         from stores`,
-        [now - DAY_SECS, tier],
-      );
-      if ((counts?.today ?? 0) >= caps.perDay || (counts?.active ?? 0) >= caps.maxActive) {
+      if (await freeCapacityReached(tx, tier, now, caps)) {
         return 'capacity_reached';
       }
       await tx.query(
-        `update stores set status = 'active', tier = $2, auto_activated_at = $3
+        `update stores set status = 'active', tier = $2, auto_activated_at = $3, plan_source = 'free'
          where owner = $1 and status = 'pending' and tier is null`,
         [owner, tier, now],
       );

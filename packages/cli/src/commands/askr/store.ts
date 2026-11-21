@@ -11,6 +11,9 @@ import type { StoreView } from './types';
 
 export const CHOOSE_PLAN_HINT =
   'choose a plan: askr plan free (only if the human chose Free), or message us with your Store ID for a paid plan';
+/** The same, when the server takes payments: a paid plan is a checkout link for the human. */
+export const CHOOSE_PLAN_BILLING_HINT =
+  'choose a plan: askr plan free (only if the human chose Free), or askr plan <starter|growth|pro|scale> [--yearly] for the paid plan the human chose, then give them its checkoutUrl to pay';
 export const CONTACT_HINT = `message us with your Store ID: ${CONTACT_URL}`;
 export const INIT_FIRST_HINT = 'run askr init first';
 const CLOCK_HINT = "check this computer's clock: it is off by more than a minute";
@@ -46,13 +49,16 @@ export function awaitingPlanOf(view: Pick<StoreView, 'status' | 'tier'>): boolea
 }
 
 /** What the agent is told about a store that is not active, by its view (5.0). */
-export function planHintOf(view: Pick<StoreView, 'status' | 'tier'>): string {
-  return awaitingPlanOf(view) ? CHOOSE_PLAN_HINT : CONTACT_HINT;
+export function planHintOf(view: Pick<StoreView, 'status' | 'tier' | 'billing'>): string {
+  if (!awaitingPlanOf(view)) {
+    return CONTACT_HINT;
+  }
+  return view.billing?.checkoutAvailable === true ? CHOOSE_PLAN_BILLING_HINT : CHOOSE_PLAN_HINT;
 }
 
 /** A write on a store that is not active: exit 5 with the view-dependent hint. */
 export function inactiveExit(
-  view: Pick<StoreView, 'status' | 'tier'>,
+  view: Pick<StoreView, 'status' | 'tier' | 'billing'>,
   exitCode: ExitCode = EXIT.LIMIT,
 ): AskrExit {
   return new AskrExit(exitCode, 'inactive', {

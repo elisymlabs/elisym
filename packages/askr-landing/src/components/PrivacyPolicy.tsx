@@ -98,7 +98,7 @@ export function PrivacyPolicy() {
         </p>
         <p>
           <strong className="text-text font-medium">Paid plans.</strong>
-          {` Paid plans are sold through Stripe as the merchant of record (shown as "Sold through Link"). Until self-serve checkout opens, we set paid plans up on request, through a Stripe payment link. You give your payment details to Stripe, not to us: ${PRODUCT_NAME} never sees or stores your full card number. Stripe shares with us, in our Stripe account, your name, email address, billing address, the plan, its billing period, payment status and invoices, and the card brand and last digits.`}
+          {` Paid plans are sold through Stripe as the merchant of record (shown as "Sold through Link"). You buy a paid plan yourself in the admin, or at the checkout link the ${PRODUCT_NAME} CLI gives you, through Stripe Checkout. You give your payment details to Stripe, not to us: ${PRODUCT_NAME} never sees or stores your full card number. Stripe shares with us, in our Stripe account, your name, email address, billing address, the plan, its billing period, payment status and invoices, and the card brand and last digits. Our server keeps only your Stripe customer ID; for each subscription, its ID, status, plan, billing period, whether it is set to cancel, when Stripe created it, when its current period ends and when we last updated it; and the ID of the last checkout your store opened, all linked to your store's public key (its Store ID). It also keeps the IDs and types of the Stripe events it received, and log lines that name your store and the event. Your card details never reach it.`}
         </p>
         <p>
           <strong className="text-text font-medium">Why.</strong> We use this data to provide the

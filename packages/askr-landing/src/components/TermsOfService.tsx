@@ -62,10 +62,11 @@ export function TermsOfService() {
       <LegalSection id="billing" title="5. Paid plans and billing">
         <ul>
           <li>
-            Paid plans are subscriptions billed in advance, monthly or yearly. Until self-serve
-            checkout opens, we set paid plans up on request, through a Stripe payment link. Prices
-            are set in US dollars; checkout may show and charge them in your local currency; a
-            renewal charged in your local currency may differ with exchange rates.
+            Paid plans are subscriptions billed in advance, monthly or yearly. You buy one yourself
+            in the admin, or at the checkout link the {PRODUCT_NAME} CLI gives you, through Stripe
+            Checkout; the plan starts once the payment goes through. Prices are set in US dollars;
+            checkout may show and charge them in your local currency; a renewal charged in your
+            local currency may differ with exchange rates.
           </li>
           <li>
             Paid plans are sold through Stripe as the merchant of record: checkout and your card
@@ -87,14 +88,19 @@ export function TermsOfService() {
             A subscription renews automatically at the end of each period until you cancel it.
           </li>
           <li>
-            You can cancel at any time at link.com or by writing to us. The plan stays active until
-            the end of the period you paid for and is not renewed. Periods already paid are not
-            refunded, unless the law requires it or Stripe refunds them under its terms.
+            You can change or cancel your plan at any time with &quot;Manage billing&quot; in the
+            admin (it opens Stripe&apos;s customer portal), at link.com, or by writing to us. After
+            a cancel the plan stays active until the end of the period you paid for and is not
+            renewed; the store then moves to the Free plan if Free has room, otherwise it is paused
+            (pending) until you choose a plan. Your store&apos;s data is kept either way. Periods
+            already paid are not refunded, unless the law requires it or Stripe refunds them under
+            its terms.
           </li>
           <li>
-            If a payment fails, Stripe tries it again. If a payment still fails after Stripe&apos;s
-            retries (about a week), we may suspend the store, and the chat then stops answering
-            until the plan is paid or you move to another plan.
+            If a payment fails, Stripe tries it again for up to about a week, and your store keeps
+            working on its plan meanwhile. If the payment still fails, the subscription ends and the
+            store moves to the Free plan if Free has room, otherwise it is paused (pending) and the
+            chat stops answering until you choose a plan. Your store&apos;s data is kept.
           </li>
           <li>
             Enterprise plans are agreed in writing, and that agreement prevails over these terms

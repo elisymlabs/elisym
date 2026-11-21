@@ -51,6 +51,23 @@ function money(value: string): string {
   }
 }
 
+/** The paid plan as the server last heard from Stripe; null from a server without billing. */
+function billingOf(view: StoreView): Record<string, unknown> | null {
+  const billing = view.billing;
+  if (billing === undefined) {
+    return null;
+  }
+  return {
+    enabled: billing.enabled,
+    plan: billing.plan,
+    interval: billing.interval,
+    status: billing.status,
+    currentPeriodEnd: billing.currentPeriodEnd,
+    cancelAtPeriodEnd: billing.cancelAtPeriodEnd,
+    checkoutAvailable: billing.checkoutAvailable,
+  };
+}
+
 function connectorOf(view: StoreView): Record<string, unknown> | null {
   const connector = view.connector;
   if (connector === null) {
@@ -221,6 +238,7 @@ export async function runStatus(session: Session, options: StatusOptions): Promi
       todaySpentUsd: money(view.usage.today.spent),
       monthSpentUsd: money(view.usage.month.spent),
     },
+    billing: billingOf(view),
     ownerKeyFile: key.path,
     adminUrl: session.adminUrl,
     upgrade: UPGRADE,

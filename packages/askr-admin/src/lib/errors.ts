@@ -57,6 +57,12 @@ const CODES: Readonly<Record<string, string>> = {
   capacity_reached: 'Free is not available right now. Message us with your Store ID.',
   not_pending: 'Your store is suspended. Message us with your Store ID.',
   operator_managed: "We manage your store's plan. Message us with your Store ID.",
+  billing_unavailable: 'Paying here is not available right now. Message us with your Store ID.',
+  plan_unavailable: 'Paying here is not available right now. Message us with your Store ID.',
+  subscription_exists: 'Your store already has a paid plan: change it under Manage billing.',
+  suspended: 'Your store is suspended. Message us with your Store ID.',
+  billing_failed: 'Stripe did not answer. Retry in a moment.',
+  no_customer: 'There is no billing to manage yet.',
   no_connector:
     'No connector is set up for this store. Choose your shop as the product source in Settings and save first.',
   policy_imported:

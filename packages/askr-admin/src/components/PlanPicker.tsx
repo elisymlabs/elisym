@@ -6,12 +6,16 @@ import { errorMessage } from '../lib/errors';
 import { HELP } from '../lib/help';
 import { PLANS } from '../lib/plans';
 import { npubOf } from '../lib/signer';
+import type { BillingView } from '../lib/types';
 import { ContactLinks } from './ContactLinks';
 import { InfoTip } from './InfoTip';
 import { Notice } from './Notice';
+import { PaidPlans } from './PaidPlans';
 
 interface Props {
-  deps: Pick<SessionDeps, 'api'>;
+  deps: Pick<SessionDeps, 'api' | 'openUrl'>;
+  /** With `checkoutAvailable`, the paid plans are bought here; otherwise through us. */
+  billing: BillingView;
   /** The Store ID's hex form: the paid cards quote it. */
   owner: string;
   /** Settings are stored: false only when none exist (not when they could not be read). */
@@ -36,9 +40,18 @@ const BY_AGREEMENT = PLANS.filter((plan) => plan.start === 'contact');
 
 /**
  * A pending store with no plan yet chooses one (6.5): Free at once, a paid
- * plan by a message to us with the Store ID (until a checkout replaces it).
+ * plan through Stripe Checkout when the server takes payments, otherwise by a
+ * message to us with the Store ID. Enterprise is always by agreement.
  */
-export function PlanPicker({ deps, owner, settingsSaved, configError, onPlanChosen }: Props) {
+export function PlanPicker({
+  deps,
+  billing,
+  owner,
+  settingsSaved,
+  configError,
+  onPlanChosen,
+}: Props) {
+  const checkout = billing.checkoutAvailable;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -94,13 +107,13 @@ export function PlanPicker({ deps, owner, settingsSaved, configError, onPlanChos
             {freeHint === '' ? null : <p className="text-13 text-text-2">{freeHint}</p>}
           </div>
         )}
-        {SOLO_PAID.map((plan) => (
+        {(checkout ? [] : SOLO_PAID).map((plan) => (
           <div key={plan.name} className={CARD}>
             <p className="text-14 font-semibold">{plan.name}</p>
             <p className="text-13 text-text-2">{plan.monthly} a month</p>
           </div>
         ))}
-        {SIZES.length === 0 ? null : (
+        {checkout || SIZES.length === 0 ? null : (
           <div className={CARD}>
             <p className="text-14 font-semibold">{SIZES.map((plan) => plan.name).join(' / ')}</p>
             <ul className="text-13 text-text-2 flex flex-col gap-2">
@@ -123,9 +136,12 @@ export function PlanPicker({ deps, owner, settingsSaved, configError, onPlanChos
         ))}
       </div>
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
+      {checkout ? <PaidPlans deps={deps} /> : null}
       <div className="flex flex-col gap-4">
         <p className="text-13 text-text-2">
-          For a paid plan, message us with your Store ID and we set it up.
+          {checkout
+            ? 'For Enterprise, message us with your Store ID.'
+            : 'For a paid plan, message us with your Store ID and we set it up.'}
         </p>
         <ContactLinks storeId={npubOf(owner)} />
       </div>
