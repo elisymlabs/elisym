@@ -390,6 +390,25 @@ describe('admin connector setup (7.3, 7.4)', () => {
 });
 
 describe('server core review 2: connector preview on any instance (7.3, 7.4)', () => {
+  it('a preview leaves the last catalog sync, its id and times alone', async () => {
+    const { call, directory, store } = await setup({ cached: false });
+    const diff = { created: ['mug'], updated: [], hidden: [], unchanged: [] };
+    expect(await directory.claimCatalogSync(store.owner, 'admin', NOW, 60)).toBe(true);
+    await directory.startCatalogSync(store.owner, 'admin', 'sync-1', diff, NOW - 5);
+    await directory.releaseCatalogSync(store.owner, 'admin', NOW - 2, { state: 'done', diff });
+    const before = await directory.catalogSync(store.owner, NOW);
+    expect(before).toEqual({
+      state: 'done',
+      diff,
+      syncId: 'sync-1',
+      startedAt: NOW - 5,
+      finishedAt: NOW - 2,
+    });
+    await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
+    expect((await call('POST', '/v1/admin/connector/preview')).body.result.status).toBe('ok');
+    expect(await directory.catalogSync(store.owner, NOW)).toEqual(before);
+  });
+
   it('an instance whose cache lacks the config reads it from the relay', async () => {
     const { call } = await setup({ cached: false });
     await call('PUT', '/v1/admin/connector', { platform: 'shopify', url: SHOP });
@@ -416,7 +435,7 @@ describe('server core review 2: connector preview on any instance (7.3, 7.4)', (
     expect((await call('POST', '/v1/admin/connector/preview')).body).toEqual({
       error: 'sync_running',
     });
-    await directory.releaseCatalogSync(store.owner, 'elsewhere');
+    await directory.releaseCatalogSync(store.owner, 'elsewhere', NOW);
     expect((await call('POST', '/v1/admin/connector/preview')).status).toBe(200);
   });
 

@@ -154,6 +154,9 @@ describe('the sync and connector rows', () => {
             hidden: ['d', 'e', 'f'],
             unchanged: ['g', 'h', 'i', 'j'],
           },
+          syncId: 'sync-1',
+          startedAt: 1_800_000_000,
+          finishedAt: 1_800_000_060,
         }}
       />,
     );
@@ -161,6 +164,59 @@ describe('the sync and connector rows', () => {
     expect(container.textContent).toContain('2 updated');
     expect(container.textContent).toContain('3 removed');
     expect(container.textContent).toContain('4 unchanged');
+    expect(container.textContent).toContain(
+      `Last published ${new Date(1_800_000_060 * 1000).toLocaleString()}.`,
+    );
+  });
+
+  it('dates the last publish by its end, else its start, else not at all', async () => {
+    const diff = { created: [], updated: [], hidden: [], unchanged: [] };
+    const startedOnly = await render(
+      <SyncStatus
+        sync={{ state: 'done', diff, syncId: null, startedAt: 1_800_000_000, finishedAt: null }}
+      />,
+    );
+    expect(startedOnly.textContent).toContain(
+      `Last published ${new Date(1_800_000_000 * 1000).toLocaleString()}.`,
+    );
+    await mounted?.unmount();
+    const undated = await render(
+      <SyncStatus
+        sync={{ state: 'done', diff, syncId: null, startedAt: null, finishedAt: null }}
+      />,
+    );
+    expect(undated.textContent).toContain('Last published.');
+    await mounted?.unmount();
+    const failed = await render(
+      <SyncStatus
+        sync={{
+          state: 'failed',
+          diff,
+          error: 'relay down',
+          syncId: 'sync-2',
+          startedAt: 1_800_000_000,
+          finishedAt: 1_800_000_030,
+        }}
+      />,
+    );
+    expect(failed.textContent).toContain(
+      `Last publish failed ${new Date(1_800_000_030 * 1000).toLocaleString()}.`,
+    );
+    expect(failed.textContent).toContain('relay down');
+    await mounted?.unmount();
+    const running = await render(
+      <SyncStatus
+        sync={{
+          state: 'running',
+          diff,
+          syncId: 'sync-3',
+          startedAt: 1_800_000_000,
+          finishedAt: null,
+        }}
+      />,
+    );
+    expect(running.textContent).toContain('Publishing products...');
+    expect(running.textContent).not.toContain(new Date(1_800_000_000 * 1000).toLocaleString());
   });
 
   it('says whether the connector syncs', async () => {
@@ -182,6 +238,6 @@ describe('the sync and connector rows', () => {
     expect(syncing(on)).toBe('On');
     await mounted?.unmount();
     const off = await render(<ConnectorStatus connector={connector(false)} />);
-    expect(syncing(off)).toBe('Off (preview it, then turn it on)');
+    expect(syncing(off)).toBe('Off');
   });
 });

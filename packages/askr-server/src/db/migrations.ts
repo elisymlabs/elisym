@@ -289,6 +289,15 @@ create table ip_days (
 );
 `,
   },
+  {
+    id: '0009_catalog_sync_times',
+    sql: `
+-- When the last catalog sync ended (unix seconds; null while running, when interrupted, or for a
+-- sync recorded before this migration) and the id its 202 answered with, so the admin can tell
+-- its own sync from a later one (7.3).
+alter table catalog_syncs add column finished_at bigint, add column sync_id text;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

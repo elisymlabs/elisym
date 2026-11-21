@@ -1,5 +1,9 @@
 import type { StoreConfig } from '@elisym/askr';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { SYNC_POLL_MS } from '../constants';
+import { ApiError } from '../lib/api';
+import { Pause, WAIT_MAX_POLLS } from '../lib/catalog-writer';
+import { connectorResultSentence } from '../lib/connector';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
 import { HELP } from '../lib/help';
@@ -10,6 +14,7 @@ import type { ConnectorRecord, ConnectorSyncResult, StoreView } from '../lib/typ
 import { ConnectorStatus } from './ConnectorStatus';
 import { CopyBlock } from './CopyBlock';
 import { NavIcon } from './NavIcon';
+import { NeedsActiveStore } from './NeedsActiveStore';
 import { Notice } from './Notice';
 import { PreviewResult } from './PreviewResult';
 import { Section } from './Section';
@@ -19,6 +24,10 @@ interface Props {
   view: StoreView;
   config: StoreConfig | undefined;
   reload: () => Promise<void>;
+  /** Opens Overview, where a store with no plan chooses one. */
+  onChoosePlan?: () => void;
+  /** Between two previews refused by a running sync; tests pass a short one. */
+  pollMs?: number;
 }
 
 /** `{origin}{path}` without a trailing slash: how the server compares a shop's address. */
@@ -63,16 +72,28 @@ function disagreement(
 
 /**
  * A Shopify, WooCommerce or Google feed connector at work (7.4): its status,
- * the site proof, the first import's preview, syncing on and off. It is set
- * up in Settings, with the product source it is part of.
+ * the site proof, syncing on and off. It is set up in Settings, with the
+ * product source it is part of. Turning syncing on checks the shop first.
  */
-export function ConnectorSection({ deps, view, config, reload }: Props) {
+export function ConnectorSection({
+  deps,
+  view,
+  config,
+  reload,
+  onChoosePlan,
+  pollMs = SYNC_POLL_MS,
+}: Props) {
   const connector = view.connector;
-  /** The last preview, of the connector as it was then. */
-  const [preview, setPreview] = useState<{ result: ConnectorSyncResult; url: string }>();
+  /** Why the last check did not turn syncing on. */
+  const [refused, setRefused] = useState<{ result: ConnectorSyncResult; url: string }>();
   const [busy, setBusy] = useState(false);
+  /** Turn on syncing is checking the shop: Cancel stops it before anything is turned on. */
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
+  /** The check in progress, stopped by Cancel and by leaving the page. */
+  const check = useRef<Pause | undefined>(undefined);
+  useEffect(() => () => check.current?.stop(), []);
 
   const run = async (work: () => Promise<string>) => {
     setBusy(true);
@@ -104,25 +125,60 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
     );
   }
 
-  const runPreview = () =>
-    run(async () => {
-      setPreview(undefined);
-      const { result } = await deps.api.previewConnector();
-      setPreview({ result, url: connector.url });
-      return '';
-    });
+  /** A preview first; a running sync (one per store) is waited out up to 30 s. */
+  const previewed = async (pause: Pause): Promise<ConnectorSyncResult | undefined> => {
+    for (let polls = 0; ; polls += 1) {
+      try {
+        return (await deps.api.previewConnector()).result;
+      } catch (failure) {
+        if (!(failure instanceof ApiError && failure.code === 'sync_running')) {
+          throw failure;
+        }
+        if (polls >= WAIT_MAX_POLLS) {
+          throw failure;
+        }
+      }
+      await pause.sleep(pollMs);
+      if (pause.stopped) {
+        return undefined;
+      }
+    }
+  };
 
   const turnOn = () =>
     run(async () => {
-      await deps.api.enableConnector();
-      await reload();
-      return 'Syncing is on. The first sync starts now.';
+      const pause = new Pause();
+      check.current = pause;
+      setRefused(undefined);
+      setChecking(true);
+      try {
+        const url = connector.url;
+        const result = await previewed(pause);
+        // Cancelled, or the page was left, before the shop's answer: nothing is turned on.
+        if (result === undefined || pause.stopped) {
+          return '';
+        }
+        if (result.status !== 'ok') {
+          setRefused({ result, url });
+          return '';
+        }
+        // Turning on has begun: Cancel can no longer stop it, so it goes.
+        setChecking(false);
+        await deps.api.enableConnector();
+        await reload();
+        return `Syncing is on. ${connectorResultSentence(result)} The first sync starts now.`;
+      } finally {
+        if (check.current === pause) {
+          check.current = undefined;
+        }
+        setChecking(false);
+      }
     });
 
   const turnOff = () =>
     run(async () => {
       await deps.api.disableConnector();
-      setPreview(undefined);
+      setRefused(undefined);
       await reload();
       return 'Syncing is off. Your products stay as last synced.';
     });
@@ -133,8 +189,6 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
   const problem =
     signed === undefined ? undefined : disagreement(signed, connector, view.catalogKey);
   const active = view.status === 'active';
-  // A preview is of the connector as it was: one of another address is no ground to turn it on.
-  const previewOk = preview?.result.status === 'ok' && preview.url === connector.url;
 
   let statusNotice: ReactNode = null;
   if (problem !== undefined) {
@@ -146,10 +200,11 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
     );
   } else if (!active) {
     statusNotice = (
-      <Notice tone="info">
-        Previews and syncs run once your store is{' '}
-        {view.status === 'pending' ? 'activated' : 'active again'}.
-      </Notice>
+      <NeedsActiveStore
+        view={view}
+        noun="connect your shop"
+        {...(onChoosePlan === undefined ? {} : { onChoosePlan })}
+      />
     );
   }
 
@@ -180,43 +235,39 @@ export function ConnectorSection({ deps, view, config, reload }: Props) {
       <Section
         title="Sync"
         info={HELP.sync}
-        description="Preview what the first import would publish, then turn syncing on. Nothing is published by a preview."
+        description="Turn on syncing checks your shop first and turns on only if it can be read and fits your plan."
       >
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
         {done === '' ? null : <Notice tone="success">{done}</Notice>}
+        {refused === undefined ? null : (
+          <div className="flex flex-col gap-8">
+            <p className="text-14">Syncing stays off. What {refused.url} answered:</p>
+            <PreviewResult result={refused.result} />
+          </div>
+        )}
         <div className="flex flex-wrap gap-8">
-          <button
-            type="button"
-            className="btn"
-            disabled={busy || !active || problem !== undefined}
-            onClick={() => void runPreview()}
-          >
-            Preview first import
-          </button>
           {connector.enabled ? (
             <button type="button" className="btn" disabled={busy} onClick={() => void turnOff()}>
               Turn off syncing
             </button>
-          ) : (
+          ) : null}
+          {!connector.enabled && active ? (
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy || !active || problem !== undefined || !previewOk}
+              disabled={busy || problem !== undefined}
               onClick={() => void turnOn()}
             >
-              Turn on syncing
+              {checking ? 'Checking your shop...' : 'Turn on syncing'}
             </button>
-          )}
+          ) : null}
+          {checking ? (
+            <button type="button" className="btn" onClick={() => check.current?.stop()}>
+              Cancel
+            </button>
+          ) : null}
         </div>
       </Section>
-      {preview === undefined ? null : (
-        <Section
-          title="First import preview"
-          description={`Of ${preview.url}. Nothing is published yet.`}
-        >
-          <PreviewResult result={preview.result} />
-        </Section>
-      )}
     </div>
   );
 }

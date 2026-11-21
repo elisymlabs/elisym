@@ -1079,7 +1079,7 @@ describe('server core review 2: one catalog sync per store across instances (7.3
     await authorized(context);
     // Publishing waits until the test lets it go, so the sync stays running.
     let letGo: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
+    let gate = new Promise<void>((resolve) => {
       letGo = resolve;
     });
     const publish = relay.publish.bind(relay);
@@ -1087,7 +1087,10 @@ describe('server core review 2: one catalog sync per store across instances (7.3
       await gate;
       return publish(relays, event);
     };
-    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
+    const first = await call('POST', '/v1/admin/catalog', { items: [ITEM] });
+    expect(first.status).toBe(202);
+    const syncId: unknown = first.body.syncId;
+    expect(typeof syncId).toBe('string');
     expect(await callOther('POST', '/v1/admin/catalog', { items: [ITEM] })).toEqual({
       status: 409,
       body: { error: 'sync_running' },
@@ -1098,12 +1101,58 @@ describe('server core review 2: one catalog sync per store across instances (7.3
     expect((await callOther('GET', '/v1/admin/store')).body.catalogSync).toEqual({
       state: 'running',
       diff: { created: ['mug'], updated: [], hidden: [], unchanged: [] },
+      syncId,
+      startedAt: NOW,
+      finishedAt: null,
     });
     letGo();
     await expect
       .poll(async () => (await callOther('GET', '/v1/admin/store')).body.catalogSync?.state)
       .toBe('done');
-    expect((await callOther('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
+    expect((await callOther('GET', '/v1/admin/store')).body.catalogSync).toMatchObject({
+      state: 'done',
+      syncId,
+      startedAt: NOW,
+      finishedAt: NOW,
+    });
+    // The next sync is held too: while it runs, it shows no end time, not the last one's.
+    gate = new Promise<void>((resolve) => {
+      letGo = resolve;
+    });
+    const second = await callOther('POST', '/v1/admin/catalog', {
+      items: [{ ...ITEM, title: 'Big mug' }],
+    });
+    expect(second.status).toBe(202);
+    expect(typeof second.body.syncId).toBe('string');
+    expect(second.body.syncId).not.toBe(syncId);
+    expect((await callOther('GET', '/v1/admin/store')).body.catalogSync).toMatchObject({
+      state: 'running',
+      syncId: second.body.syncId,
+      finishedAt: null,
+    });
+    letGo();
+    await expect
+      .poll(async () => (await callOther('GET', '/v1/admin/store')).body.catalogSync?.state)
+      .toBe('done');
+  });
+
+  it('a dry run leaves the last sync, its id and times alone', async () => {
+    const clock = { now: NOW };
+    const context = await setup('active', clock);
+    const { call } = context;
+    await authorized(context);
+    const written = await call('POST', '/v1/admin/catalog', { items: [ITEM] });
+    expect(written.status).toBe(202);
+    await expect
+      .poll(async () => (await call('GET', '/v1/admin/store')).body.catalogSync?.state)
+      .toBe('done');
+    const before: unknown = (await call('GET', '/v1/admin/store')).body.catalogSync;
+    expect(before).toMatchObject({ syncId: written.body.syncId, startedAt: NOW, finishedAt: NOW });
+    clock.now = NOW + 50;
+    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM], dryRun: true })).status).toBe(
+      200,
+    );
+    expect((await call('GET', '/v1/admin/store')).body.catalogSync).toEqual(before);
   });
 
   it('a sync whose instance died shows as interrupted once its hold lapses, and frees the store', async () => {
@@ -1113,11 +1162,14 @@ describe('server core review 2: one catalog sync per store across instances (7.3
     await authorized(context);
     const diff = { created: ['mug'], updated: [], hidden: [], unchanged: [] };
     expect(await directory.claimCatalogSync(store.owner, 'dead', NOW, 120)).toBe(true);
-    await directory.startCatalogSync(store.owner, 'dead', diff, NOW);
+    await directory.startCatalogSync(store.owner, 'dead', 'sync-dead', diff, NOW);
     clock.now = NOW + 119;
     expect((await call('GET', '/v1/admin/store')).body.catalogSync).toEqual({
       state: 'running',
       diff,
+      syncId: 'sync-dead',
+      startedAt: NOW,
+      finishedAt: null,
     });
     expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(409);
     clock.now = NOW + 120;
@@ -1125,6 +1177,9 @@ describe('server core review 2: one catalog sync per store across instances (7.3
       state: 'failed',
       diff,
       error: 'The sync was interrupted',
+      syncId: 'sync-dead',
+      startedAt: NOW,
+      finishedAt: null,
     });
     expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
     // The dead holder can no longer renew or release what is now another's.
@@ -1150,10 +1205,17 @@ describe('server core review 2: one catalog sync per store across instances (7.3
       200,
     );
     failAfter = 2 * reads;
-    expect((await call('POST', '/v1/admin/catalog', { items: [ITEM] })).status).toBe(202);
+    const started = await call('POST', '/v1/admin/catalog', { items: [ITEM] });
+    expect(started.status).toBe(202);
     await expect
       .poll(async () => (await callOther('GET', '/v1/admin/store')).body.catalogSync)
-      .toMatchObject({ state: 'failed', error: expect.stringContaining('relay said no') });
+      .toMatchObject({
+        state: 'failed',
+        error: expect.stringContaining('relay said no'),
+        syncId: started.body.syncId,
+        startedAt: NOW,
+        finishedAt: NOW,
+      });
   });
 });
 

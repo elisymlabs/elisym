@@ -17,14 +17,13 @@ import { CsvImport } from '../src/components/CsvImport';
 import { DiffSummary } from '../src/components/DiffSummary';
 import { PoliciesSection } from '../src/components/PoliciesSection';
 import { ProductList } from '../src/components/ProductList';
-import { ProductsSection } from '../src/components/ProductsSection';
 import { Session } from '../src/components/Session';
 import { SettingsSection } from '../src/components/SettingsSection';
+import type { Outcome } from '../src/lib/catalog-writer';
 import type { RelayReader } from '../src/lib/relay';
 import { npubOf, secretKeySigner } from '../src/lib/signer';
 import { readConfig } from '../src/lib/store-data';
 import { formOfConfig, signStoreEvents } from '../src/lib/store-form';
-import type { StoreView } from '../src/lib/types';
 import {
   ASSISTANT,
   NOW,
@@ -35,7 +34,6 @@ import {
   adminConfig,
   fakeApi,
   fakeReader,
-  listing,
   sessionDeps,
   storeView,
 } from './fakes';
@@ -403,72 +401,6 @@ describe('copy: removing deletes, hidden is a visibility', () => {
   });
 });
 
-describe('the failed publish notice', () => {
-  const MUG: CatalogItemInput = { d: 'mug', title: 'Mug', price: { amount: '1', currency: 'USD' } };
-  const POT: CatalogItemInput = { d: 'pot', title: 'Pot', price: { amount: '2', currency: 'USD' } };
-
-  async function publishOnce(nextState: 'failed' | 'done' | 'none') {
-    const deps = sessionDeps(fakeApi(), fakeReader([listing(MUG), listing(POT)]));
-    const section = (view: StoreView) => (
-      <ProductsSection
-        deps={deps}
-        view={view}
-        config={adminConfig()}
-        reload={async () => undefined}
-      />
-    );
-    mounted = await mount(section(storeView()));
-    const { container } = mounted;
-    await settle(() => (container.textContent ?? '').includes('Pot'));
-    const remove = [...container.querySelectorAll('button')].find(
-      (button) => button.getAttribute('aria-label') === 'Remove Pot',
-    );
-    if (remove === undefined) {
-      throw new Error('no remove button');
-    }
-    await click(remove);
-    await click(buttonNamed(container, 'Review changes'));
-    await click(buttonNamed(container, 'Publish'));
-    if (nextState === 'none') {
-      return { container, section };
-    }
-    const ended =
-      nextState === 'failed'
-        ? storeView({ catalogSync: { state: 'failed', diff: EMPTY_DIFF, error: 'relay down' } })
-        : storeView({ catalogSync: { state: 'done', diff: EMPTY_DIFF } });
-    await mounted.rerender(section(ended));
-    return { container, section };
-  }
-
-  it('does not claim a re-read that did not happen', async () => {
-    const { container } = await publishOnce('failed');
-    await settle(() => (container.textContent ?? '').includes('The last publish failed'));
-    expect(container.textContent).toContain('is the one you tried to publish');
-    expect(container.textContent).not.toContain('read again');
-    expect(container.textContent).not.toContain('Pot');
-  });
-
-  it('says nothing while the publish has not ended', async () => {
-    const { container } = await publishOnce('none');
-    expect(container.textContent).toContain('Publishing started');
-    expect(container.textContent).not.toContain('The last publish failed');
-  });
-
-  it('says nothing after a publish that went through', async () => {
-    const { container, section } = await publishOnce('done');
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(container.textContent).not.toContain('The last publish failed');
-    // A later sync that fails (another publish, elsewhere) offers no stale list from this one.
-    await mounted?.rerender(
-      section(storeView({ catalogSync: { state: 'failed', diff: EMPTY_DIFF, error: 'later' } })),
-    );
-    expect(container.textContent).not.toContain('The last publish failed');
-    expect(container.textContent).not.toContain('Restore the list');
-  });
-});
-
 describe('the CSV import', () => {
   function choose(container: HTMLElement, files: { text: () => Promise<string>; size: number }) {
     const input = container.querySelector('input[type="file"]');
@@ -481,7 +413,13 @@ describe('the CSV import', () => {
   }
 
   it('ignores a slow read of an earlier file that ends after a newer one', async () => {
-    mounted = await mount(<CsvImport currency="USD" current={[]} onImport={() => undefined} />);
+    mounted = await mount(
+      <CsvImport
+        currency="USD"
+        current={[]}
+        onImport={() => Promise.resolve({ kind: 'ok', diff: EMPTY_DIFF })}
+      />,
+    );
     const { container } = mounted;
     let finishSlow: (text: string) => void = () => undefined;
     await act(async () => {
@@ -504,7 +442,7 @@ describe('the CSV import', () => {
     expect(container.textContent).not.toContain('2 products read');
   });
 
-  it('warns that a merge replaces a richer product whole, and resets the file field after use', async () => {
+  it('warns that an import replaces a richer product whole, and resets the file field once published', async () => {
     const current: CatalogItemInput[] = [
       {
         d: 'pot',
@@ -514,7 +452,13 @@ describe('the CSV import', () => {
         variants: [{ id: 'pot-s', price: '30', available: true, values: ['S'] }],
       },
     ];
-    const onImport = vi.fn();
+    let publish: (outcome: Outcome) => void = () => undefined;
+    const onImport = vi.fn(
+      () =>
+        new Promise<Outcome>((resolve) => {
+          publish = resolve;
+        }),
+    );
     mounted = await mount(<CsvImport currency="USD" current={current} onImport={onImport} />);
     const { container } = mounted;
     let input: HTMLInputElement | undefined;
@@ -528,8 +472,14 @@ describe('the CSV import', () => {
     if (input !== undefined) {
       Object.defineProperty(input, 'value', { set: cleared, configurable: true });
     }
-    await click(buttonNamed(container, 'Use these 1 products'));
+    await click(buttonNamed(container, 'Import 1 product'));
     expect(onImport).toHaveBeenCalledTimes(1);
+    // Kept while it publishes: a failure would leave the file to retry.
+    expect(cleared).not.toHaveBeenCalled();
+    expect(buttonNamed(container, 'Importing...').disabled).toBe(true);
+    await act(async () => {
+      publish({ kind: 'ok', diff: EMPTY_DIFF });
+    });
     expect(cleared).toHaveBeenCalledWith('');
   });
 });

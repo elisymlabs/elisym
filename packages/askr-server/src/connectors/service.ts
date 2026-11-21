@@ -235,7 +235,7 @@ export class ConnectorService {
       });
     } finally {
       clearInterval(renewal);
-      await this.deps.directory.releaseCatalogSync(store.owner, holder);
+      await this.deps.directory.releaseCatalogSync(store.owner, holder, nowSecs());
     }
   }
 

@@ -14,6 +14,7 @@ import { ConnectorSection } from '../src/components/ConnectorSection';
 import { PoliciesSection } from '../src/components/PoliciesSection';
 import { Session } from '../src/components/Session';
 import { SettingsSection } from '../src/components/SettingsSection';
+import { ApiError } from '../src/lib/api';
 import type { AdminClient } from '../src/lib/deps';
 import type { ConnectorRecord, ConnectorSyncResult } from '../src/lib/types';
 import {
@@ -24,6 +25,7 @@ import {
   SERVER_KEY,
   SERVER_KEY_SECRET,
   adminConfig,
+  catalogSyncOf,
   failingReader,
   fakeApi,
   fakeReader,
@@ -33,6 +35,10 @@ import {
 import { type Mounted, buttonNamed, byId, click, mount, settle, typeInto } from './mount';
 
 let mounted: Mounted | undefined;
+
+function buttonTexts(container: HTMLElement): (string | null)[] {
+  return [...container.querySelectorAll('button')].map((button) => button.textContent);
+}
 afterEach(async () => {
   await mounted?.unmount();
   mounted = undefined;
@@ -40,7 +46,6 @@ afterEach(async () => {
 });
 
 const PRIVATE_PART = { voice: 'calm', instructions: 'Recommend oolong.', notes: 'Berlin' };
-const EMPTY_DIFF = { created: [], updated: [], hidden: [], unchanged: [] };
 
 function publishedConfig(createdAt: number): NostrEvent {
   return finalizeEvent(
@@ -225,7 +230,7 @@ describe('the session', () => {
 
   const runningApi = () =>
     fakeApi({
-      store: vi.fn(async () => storeView({ catalogSync: { state: 'running', diff: EMPTY_DIFF } })),
+      store: vi.fn(async () => storeView({ catalogSync: catalogSyncOf('running') })),
     });
 
   it('re-reads a running sync every few seconds with a key in memory', async () => {
@@ -276,48 +281,170 @@ describe('the connector', () => {
     return { api, container: mounted.container, render };
   }
 
-  it('turns syncing on only after an ok preview of the connector as saved', async () => {
-    const { api, container } = await mountConnector();
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
-    await click(buttonNamed(container, 'Turn on syncing'));
-    expect(api.enableConnector).toHaveBeenCalledTimes(1);
-  });
-
   const SHOP_CONFIG = adminConfig({
     source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
   });
 
-  it('does not turn syncing on after a preview that failed verification', async () => {
-    const api = fakeApi({
-      previewConnector: vi.fn(async () => ({
-        result: {
-          status: 'verification_failed' as const,
-          failures: [{ origin: 'https://tea.example', reason: 'not_found' as const }],
-        },
-      })),
-    });
+  /** A connector section whose preview answers as `previewConnector` does. */
+  async function mountWith(previewConnector: AdminClient['previewConnector'], pollMs?: number) {
+    const api = fakeApi({ previewConnector: vi.fn(previewConnector) });
+    const reload = vi.fn(async () => undefined);
     mounted = await mount(
       <ConnectorSection
         deps={sessionDeps(api, fakeReader([]))}
         view={storeView({ connector: CONNECTOR })}
         config={SHOP_CONFIG}
-        reload={async () => undefined}
+        reload={reload}
+        {...(pollMs === undefined ? {} : { pollMs })}
       />,
     );
-    const { container } = mounted;
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() => (container.textContent ?? '').includes('could not be verified'));
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+    return { api, reload, container: mounted.container };
+  }
+
+  it('one press checks the shop, then turns syncing on when it can be read', async () => {
+    const { api, container } = await mountConnector();
+    expect(buttonTexts(container)).not.toContain('Preview first import');
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => (container.textContent ?? '').includes('Syncing is on.'));
+    expect(api.previewConnector).toHaveBeenCalledTimes(1);
+    expect(api.enableConnector).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain(
+      'Syncing is on. Products read: 1 new, 0 updated, 0 removed, 0 unchanged. The first sync starts now.',
+    );
   });
 
-  it('turns syncing on only for a preview of the connector as it is now', async () => {
-    const { container, render } = await mountConnector();
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
-    await mounted?.rerender(render({ ...CONNECTOR, url: 'https://other.example' }));
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+  it('does not turn syncing on when the site cannot be verified, and says why', async () => {
+    const { api, container } = await mountWith(async () => ({
+      result: {
+        status: 'verification_failed' as const,
+        failures: [{ origin: 'https://tea.example', reason: 'not_found' as const }],
+      },
+    }));
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => (container.textContent ?? '').includes('could not be verified'));
+    expect(api.enableConnector).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Syncing stays off');
+  });
+
+  it('a check that passes after a refusal no longer shows the refusal', async () => {
+    let calls = 0;
+    const { container } = await mountWith(async () => {
+      calls += 1;
+      return calls === 1
+        ? {
+            result: {
+              status: 'verification_failed' as const,
+              failures: [{ origin: 'https://tea.example', reason: 'not_found' as const }],
+            },
+          }
+        : { result: OK_PREVIEW };
+    });
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => (container.textContent ?? '').includes('Syncing stays off'));
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => (container.textContent ?? '').includes('Syncing is on.'));
+    expect(container.textContent).not.toContain('Syncing stays off');
+  });
+
+  it('does not turn syncing on for a shop larger than the plan, and names the way up', async () => {
+    const { api, container } = await mountWith(async () => ({
+      result: {
+        status: 'error' as const,
+        message: 'The shop has 900 products, more than the 500 the plan allows',
+        reason: 'too_many_products' as const,
+        count: 900,
+        max: 500,
+      },
+    }));
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => (container.textContent ?? '').includes('Move to a larger plan'));
+    expect(api.enableConnector).not.toHaveBeenCalled();
+  });
+
+  it('turns nothing on when the page is left before the shop answers', async () => {
+    let answer: (result: ConnectorSyncResult) => void = () => undefined;
+    const { api, container } = await mountWith(
+      () =>
+        new Promise((resolve) => {
+          answer = (result) => resolve({ result });
+        }),
+    );
+    await click(buttonNamed(container, 'Turn on syncing'));
+    expect(buttonNamed(container, 'Checking your shop...').disabled).toBe(true);
+    await mounted?.unmount();
+    mounted = undefined;
+    await act(async () => {
+      answer(OK_PREVIEW);
+    });
+    expect(api.enableConnector).not.toHaveBeenCalled();
+  });
+
+  it('turns nothing on when Cancel is pressed before the shop answers', async () => {
+    let answer: (result: ConnectorSyncResult) => void = () => undefined;
+    const { api, container } = await mountWith(
+      () =>
+        new Promise((resolve) => {
+          answer = (result) => resolve({ result });
+        }),
+    );
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await click(buttonNamed(container, 'Cancel'));
+    await act(async () => {
+      answer(OK_PREVIEW);
+    });
+    await settle(() => buttonTexts(container).includes('Turn on syncing'));
+    expect(api.enableConnector).not.toHaveBeenCalled();
+  });
+
+  it('waits out a running sync, up to its bound, then says so', async () => {
+    const { api, container } = await mountWith(async () => {
+      throw new ApiError(409, 'sync_running');
+    }, 1);
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => (container.textContent ?? '').includes('already running'));
+    // The first try and 10 more, 30 s apart in use.
+    expect(api.previewConnector).toHaveBeenCalledTimes(11);
+    expect(api.enableConnector).not.toHaveBeenCalled();
+  });
+
+  it('a running sync, then an ok preview: syncing turns on', async () => {
+    let calls = 0;
+    const { api, container } = await mountWith(async () => {
+      calls += 1;
+      if (calls < 3) {
+        throw new ApiError(409, 'sync_running');
+      }
+      return { result: OK_PREVIEW };
+    }, 1);
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => (container.textContent ?? '').includes('Syncing is on.'));
+    expect(api.enableConnector).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cancel or leaving the page while it waits for a running sync sends nothing more', async () => {
+    const refuse = async (): Promise<{ result: ConnectorSyncResult }> => {
+      throw new ApiError(409, 'sync_running');
+    };
+    const first = await mountWith(refuse, 60_000);
+    await click(buttonNamed(first.container, 'Turn on syncing'));
+    await settle(() => vi.mocked(first.api.previewConnector).mock.calls.length === 1);
+    await click(buttonNamed(first.container, 'Cancel'));
+    await settle(() => buttonTexts(first.container).includes('Turn on syncing'));
+    expect(first.api.previewConnector).toHaveBeenCalledTimes(1);
+    await mounted?.unmount();
+    vi.useFakeTimers();
+    const second = await mountWith(refuse, 60_000);
+    await click(buttonNamed(second.container, 'Turn on syncing'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    await mounted?.unmount();
+    mounted = undefined;
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(second.api.previewConnector).toHaveBeenCalledTimes(1);
   });
 
   it('has no form of its own: the shop is set up in Settings', async () => {
@@ -359,7 +486,7 @@ describe('the connector', () => {
       'another key for your products',
     ],
   ])(
-    'says what the settings and the connector disagree on, and previews nothing: %#',
+    'says what the settings and the connector disagree on, and checks nothing: %#',
     async (config, text) => {
       const api = fakeApi();
       mounted = await mount(
@@ -371,7 +498,7 @@ describe('the connector', () => {
         />,
       );
       expect(mounted.container.textContent).toContain(text);
-      expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(true);
+      expect(buttonNamed(mounted.container, 'Turn on syncing').disabled).toBe(true);
     },
   );
 
@@ -398,17 +525,7 @@ describe('the connector', () => {
       />,
     );
     expect(mounted.container.textContent).not.toContain('disagree');
-    expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(false);
-  });
-
-  it('never turns on after a preview of an earlier address, even while the settings agree', async () => {
-    const { container, render } = await mountConnector();
-    await click(buttonNamed(container, 'Preview first import'));
-    await settle(() => !buttonNamed(container, 'Turn on syncing').disabled);
-    // Same shop for the settings (a final slash), another string for the connector.
-    await mounted?.rerender(render({ ...CONNECTOR, url: 'https://tea.example/' }));
-    expect(container.textContent).not.toContain('disagree');
-    expect(buttonNamed(container, 'Turn on syncing').disabled).toBe(true);
+    expect(buttonNamed(mounted.container, 'Turn on syncing').disabled).toBe(false);
   });
 
   it('a feed needs no shop address in the settings', async () => {
@@ -422,11 +539,11 @@ describe('the connector', () => {
         reload={async () => undefined}
       />,
     );
-    expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(false);
+    expect(buttonNamed(mounted.container, 'Turn on syncing').disabled).toBe(false);
     expect(mounted.container.textContent).toContain('every site its products link to');
   });
 
-  it('turns syncing off, and says when a store not active cannot sync', async () => {
+  it('turns syncing off, and a store with no plan is sent to choose one', async () => {
     const api = fakeApi();
     mounted = await mount(
       <ConnectorSection
@@ -440,16 +557,33 @@ describe('the connector', () => {
     expect(api.disableConnector).toHaveBeenCalledTimes(1);
     await settle(() => (mounted?.container.textContent ?? '').includes('Syncing is off'));
     await mounted.unmount();
+    const onChoosePlan = vi.fn();
     mounted = await mount(
       <ConnectorSection
         deps={sessionDeps(api, fakeReader([]))}
         view={storeView({ status: 'pending', tier: null, connector: CONNECTOR })}
         config={SHOP_CONFIG}
         reload={async () => undefined}
+        onChoosePlan={onChoosePlan}
       />,
     );
-    expect(mounted.container.textContent).toContain('once your store is activated');
-    expect(buttonNamed(mounted.container, 'Preview first import').disabled).toBe(true);
+    expect(mounted.container.textContent).toContain('Choose a plan to connect your shop.');
+    expect(buttonTexts(mounted.container)).not.toContain('Turn on syncing');
+    await click(buttonNamed(mounted.container, 'Choose a plan'));
+    expect(onChoosePlan).toHaveBeenCalledTimes(1);
+    await mounted.unmount();
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(api, fakeReader([]))}
+        view={storeView({ status: 'suspended', connector: CONNECTOR })}
+        config={SHOP_CONFIG}
+        reload={async () => undefined}
+        onChoosePlan={onChoosePlan}
+      />,
+    );
+    expect(mounted.container.textContent).toContain('Your store is not active yet');
+    expect(mounted.container.textContent).not.toContain('Choose a plan to');
+    expect(buttonTexts(mounted.container)).not.toContain('Turn on syncing');
   });
 
   it('shows what the plan allows', async () => {
@@ -507,7 +641,7 @@ describe('policies', () => {
     await typeInto(byId(container, 'policy-slug'), 'returns');
     await typeInto(byId(container, 'policy-title'), 'New returns');
     await typeInto(byId(container, 'policy-body'), '14 days');
-    await click(buttonNamed(container, 'Publish'));
+    await click(buttonNamed(container, 'Save'));
     expect(container.textContent).toContain('a policy named "returns" already exists');
     expect(api.putPolicy).not.toHaveBeenCalled();
   });
@@ -585,7 +719,7 @@ describe('policies', () => {
     await typeInto(byId(container, 'policy-slug'), 'shipping');
     await typeInto(byId(container, 'policy-title'), 'Shipping');
     await typeInto(byId(container, 'policy-body'), 'Two days');
-    await click(buttonNamed(container, 'Publish'));
+    await click(buttonNamed(container, 'Save'));
     expect(container.textContent).toContain('"shipping" is imported from your Shopify store');
     expect(api.putPolicy).not.toHaveBeenCalled();
   });
@@ -744,5 +878,448 @@ describe('policies', () => {
     expect(mounted.container.textContent).toContain('Policy 49');
     expect(mounted.container.textContent).not.toContain('Delete one to add another');
     expect(mounted.container.textContent).not.toContain('Change those in Shopify');
+  });
+});
+
+describe('policies right after a plan is chosen', () => {
+  const RETURNS = finalizeEvent(
+    {
+      ...buildPolicyEvent({ slug: 'returns', title: 'Returns', body: '30 days.' }),
+      created_at: NOW - 40,
+    },
+    SERVER_KEY_SECRET,
+  );
+
+  async function addShipping(container: HTMLElement) {
+    await click(buttonNamed(container, 'Add a policy'));
+    await typeInto(byId(container, 'policy-slug'), 'shipping');
+    await typeInto(byId(container, 'policy-title'), 'Shipping');
+    await typeInto(byId(container, 'policy-body'), 'Two days');
+    await click(buttonNamed(container, 'Save'));
+  }
+
+  it('Cancel while the store is set up ends the wait and sends no further save', async () => {
+    const api = fakeApi({
+      putPolicy: vi.fn(async () => {
+        throw new ApiError(409, 'publish_refused', { message: 'the relay refused' });
+      }),
+      store: vi.fn(async () => storeView({ events: { pending: 1, failing: [] } })),
+    });
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(api, fakeReader([RETURNS]))}
+        view={storeView()}
+        config={adminConfig()}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Returns'));
+    await addShipping(container);
+    await settle(() => vi.mocked(api.store).mock.calls.length === 1);
+    expect(buttonNamed(container, 'Saving...').disabled).toBe(true);
+    await click(buttonNamed(container, 'Cancel'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(api.putPolicy).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('#policy-slug')).toBeNull();
+  });
+
+  it('a store with no plan is sent to choose one; its policies still show, with no actions', async () => {
+    const onChoosePlan = vi.fn();
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(fakeApi(), fakeReader([RETURNS]))}
+        view={storeView({ status: 'pending', tier: null })}
+        config={adminConfig()}
+        onChoosePlan={onChoosePlan}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Returns'));
+    expect(container.textContent).toContain('Choose a plan to add policies.');
+    expect(container.textContent).not.toContain('Add a policy');
+    expect(container.textContent).not.toContain('Delete');
+    expect(container.textContent).not.toContain('your own catalog key');
+    await click(buttonNamed(container, 'Choose a plan'));
+    expect(onChoosePlan).toHaveBeenCalledTimes(1);
+  });
+
+  it('a suspended store, or one pending on a plan we manage, keeps the inactive wording', async () => {
+    for (const view of [storeView({ status: 'suspended' }), storeView({ status: 'pending' })]) {
+      mounted = await mount(
+        <PoliciesSection
+          deps={sessionDeps(fakeApi(), fakeReader([RETURNS]))}
+          view={view}
+          config={adminConfig()}
+          onChoosePlan={() => undefined}
+        />,
+      );
+      await settle(() => (mounted?.container.textContent ?? '').includes('Returns'));
+      expect(mounted.container.textContent).toContain('Your store is not active yet');
+      expect(mounted.container.textContent).not.toContain('Choose a plan to');
+      expect(mounted.container.textContent).not.toContain('Add a policy');
+      await mounted.unmount();
+      mounted = undefined;
+    }
+  });
+});
+
+describe('review round 1: policies and the connector', () => {
+  const RETURNS = finalizeEvent(
+    {
+      ...buildPolicyEvent({ slug: 'returns', title: 'Returns', body: '30 days.' }),
+      created_at: NOW - 40,
+    },
+    SERVER_KEY_SECRET,
+  );
+
+  async function startShipping(api: AdminClient) {
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(api, fakeReader([RETURNS]))}
+        view={storeView()}
+        config={adminConfig()}
+        pollMs={5}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Returns'));
+    await click(buttonNamed(container, 'Add a policy'));
+    await typeInto(byId(container, 'policy-slug'), 'shipping');
+    await typeInto(byId(container, 'policy-title'), 'Shipping');
+    await typeInto(byId(container, 'policy-body'), 'Two days');
+    await click(buttonNamed(container, 'Save'));
+    return container;
+  }
+
+  const refusingApi = () =>
+    fakeApi({
+      putPolicy: vi.fn(async () => {
+        throw new ApiError(409, 'publish_refused', { message: 'the relay refused' });
+      }),
+      store: vi.fn(async () => storeView({ events: { pending: 1, failing: [] } })),
+    });
+
+  it('says why a save waits, and Cancel ends it with no further save', async () => {
+    const api = refusingApi();
+    const container = await startShipping(api);
+    await settle(() =>
+      (container.textContent ?? '').includes('Your store is being set up, your change goes out'),
+    );
+    await click(buttonNamed(container, 'Cancel'));
+    const puts = vi.mocked(api.putPolicy).mock.calls.length;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(api.putPolicy).toHaveBeenCalledTimes(puts);
+  });
+
+  it('leaving the page ends the wait with no further save', async () => {
+    const api = refusingApi();
+    await startShipping(api);
+    await settle(() => vi.mocked(api.store).mock.calls.length >= 1);
+    await mounted?.unmount();
+    mounted = undefined;
+    const puts = vi.mocked(api.putPolicy).mock.calls.length;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(api.putPolicy).toHaveBeenCalledTimes(puts);
+  });
+
+  it('Cancel is off while a save is in flight, so its answer is not lost', async () => {
+    let answer: () => void = () => undefined;
+    const api = fakeApi({
+      putPolicy: vi.fn(
+        () =>
+          new Promise<{ id: string }>((resolve) => {
+            answer = () => resolve({ id: 'p' });
+          }),
+      ),
+    });
+    const container = await startShipping(api);
+    expect(buttonNamed(container, 'Cancel').disabled).toBe(true);
+    await act(async () => {
+      answer();
+    });
+    await settle(() => container.querySelector('#policy-slug') === null);
+  });
+
+  it('turning on reads the store again, and Cancel goes once turning on has begun', async () => {
+    let enabled: () => void = () => undefined;
+    const api = fakeApi({
+      previewConnector: vi.fn(async () => ({
+        result: {
+          status: 'ok' as const,
+          diff: { created: [], updated: [], hidden: [], unchanged: [] },
+          truncated: [],
+          skipped: [],
+        },
+      })),
+      enableConnector: vi.fn(
+        () =>
+          new Promise<{ connector: null }>((resolve) => {
+            enabled = () => resolve({ connector: null });
+          }),
+      ),
+    });
+    const reload = vi.fn(async () => undefined);
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(api, fakeReader([]))}
+        view={storeView({
+          connector: {
+            owner: OWNER,
+            platform: 'shopify',
+            url: 'https://tea.example',
+            importPolicies: false,
+            enabled: false,
+            lastStatus: null,
+            lastRunAt: null,
+            nextRunAt: null,
+          },
+        })}
+        config={adminConfig({
+          source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+        })}
+        reload={reload}
+      />,
+    );
+    const { container } = mounted;
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() => vi.mocked(api.enableConnector).mock.calls.length === 1);
+    expect(buttonTexts(container)).not.toContain('Cancel');
+    await act(async () => {
+      enabled();
+    });
+    await settle(() => (container.textContent ?? '').includes('Syncing is on.'));
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('review round 3: a policy save taken back', () => {
+  it('reads nothing more and leaves the editor opened next alone', async () => {
+    const reader = fakeReader([
+      finalizeEvent(
+        {
+          ...buildPolicyEvent({ slug: 'returns', title: 'Returns', body: '30 days.' }),
+          created_at: NOW - 40,
+        },
+        SERVER_KEY_SECRET,
+      ),
+    ]);
+    const query = vi.spyOn(reader, 'query');
+    const api = fakeApi({
+      putPolicy: vi.fn(async () => {
+        throw new ApiError(409, 'publish_refused', { message: 'the relay refused' });
+      }),
+      store: vi.fn(async () => storeView({ events: { pending: 1, failing: [] } })),
+    });
+    mounted = await mount(
+      <PoliciesSection
+        deps={sessionDeps(api, reader)}
+        view={storeView()}
+        config={adminConfig()}
+        pollMs={60_000}
+      />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Returns'));
+    await click(buttonNamed(container, 'Add a policy'));
+    await typeInto(byId(container, 'policy-slug'), 'shipping');
+    await typeInto(byId(container, 'policy-title'), 'Shipping');
+    await typeInto(byId(container, 'policy-body'), 'Two days');
+    await click(buttonNamed(container, 'Save'));
+    await settle(() => (container.textContent ?? '').includes('Your store is being set up'));
+    const reads = query.mock.calls.length;
+    await click(buttonNamed(container, 'Cancel'));
+    await click(buttonNamed(container, 'Add a policy'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(query).toHaveBeenCalledTimes(reads);
+    expect(container.querySelector('#policy-slug')).not.toBeNull();
+  });
+});
+
+describe('review round 12', () => {
+  it('turning on stops at a refusal other than a running sync', async () => {
+    const api = fakeApi({
+      previewConnector: vi.fn(async () => {
+        throw new ApiError(401, 'unauthorized');
+      }),
+    });
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(api, fakeReader([]))}
+        view={storeView({
+          connector: {
+            owner: OWNER,
+            platform: 'shopify',
+            url: 'https://tea.example',
+            importPolicies: false,
+            enabled: false,
+            lastStatus: null,
+            lastRunAt: null,
+            nextRunAt: null,
+          },
+        })}
+        config={adminConfig({
+          source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+        })}
+        reload={async () => undefined}
+        pollMs={1}
+      />,
+    );
+    const { container } = mounted;
+    await click(buttonNamed(container, 'Turn on syncing'));
+    await settle(() =>
+      (container.textContent ?? '').includes('The server did not accept your signature.'),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(api.previewConnector).toHaveBeenCalledTimes(1);
+    expect(api.enableConnector).not.toHaveBeenCalled();
+  });
+
+  it('a policy save that failed leaves Cancel working, for this editor and the next', async () => {
+    const reader = fakeReader([
+      finalizeEvent(
+        {
+          ...buildPolicyEvent({ slug: 'returns', title: 'Returns', body: '30 days.' }),
+          created_at: NOW - 40,
+        },
+        SERVER_KEY_SECRET,
+      ),
+    ]);
+    const api = fakeApi({
+      putPolicy: vi.fn(async () => {
+        throw new ApiError(400, 'bad_request');
+      }),
+    });
+    mounted = await mount(
+      <PoliciesSection deps={sessionDeps(api, reader)} view={storeView()} config={adminConfig()} />,
+    );
+    const { container } = mounted;
+    await settle(() => (container.textContent ?? '').includes('Returns'));
+    await click(buttonNamed(container, 'Add a policy'));
+    await typeInto(byId(container, 'policy-slug'), 'shipping');
+    await typeInto(byId(container, 'policy-title'), 'Shipping');
+    await typeInto(byId(container, 'policy-body'), 'Two days');
+    await click(buttonNamed(container, 'Save'));
+    await settle(() =>
+      (container.textContent ?? '').includes('The server could not read the request'),
+    );
+    expect(buttonNamed(container, 'Cancel').disabled).toBe(false);
+    await click(buttonNamed(container, 'Cancel'));
+    expect(container.querySelector('#policy-slug')).toBeNull();
+    await click(buttonNamed(container, 'Add a policy'));
+    expect(buttonNamed(container, 'Cancel').disabled).toBe(false);
+  });
+});
+
+describe('policies, the sweep', () => {
+  const RETURNS = finalizeEvent(
+    {
+      ...buildPolicyEvent({ slug: 'returns', title: 'Returns', body: '30 days.' }),
+      created_at: NOW - 40,
+    },
+    SERVER_KEY_SECRET,
+  );
+  const refusingApi = () =>
+    fakeApi({
+      putPolicy: vi.fn(async () => {
+        throw new ApiError(409, 'publish_refused', { message: 'the relay refused' });
+      }),
+      store: vi.fn(async () => storeView({ events: { pending: 1, failing: [] } })),
+    });
+  const section = (api: AdminClient, config: ReturnType<typeof adminConfig>, pollMs: number) => (
+    <PoliciesSection
+      deps={sessionDeps(api, fakeReader([RETURNS]))}
+      view={storeView()}
+      config={config}
+      pollMs={pollMs}
+    />
+  );
+  async function startShipping(container: HTMLElement) {
+    await settle(() => (container.textContent ?? '').includes('Returns'));
+    await click(buttonNamed(container, 'Add a policy'));
+    await typeInto(byId(container, 'policy-slug'), 'shipping');
+    await typeInto(byId(container, 'policy-title'), 'Shipping');
+    await typeInto(byId(container, 'policy-body'), 'Two days');
+    await click(buttonNamed(container, 'Save'));
+  }
+
+  it('a save waiting while the store is set up ends when its editor leaves the page', async () => {
+    const api = refusingApi();
+    mounted = await mount(section(api, adminConfig(), 5));
+    const { container } = mounted;
+    await startShipping(container);
+    await settle(() => vi.mocked(api.store).mock.calls.length >= 1);
+    // The settings now read policies from another key: the editor goes, the section stays.
+    await mounted.rerender(
+      section(api, adminConfig({ policyKey: getPublicKey(generateSecretKey()) }), 5),
+    );
+    expect(container.querySelector('#policy-slug')).toBeNull();
+    const puts = vi.mocked(api.putPolicy).mock.calls.length;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(api.putPolicy).toHaveBeenCalledTimes(puts);
+  });
+
+  it.each(['cancel', 'unmount'])(
+    'a save waiting while the store is set up stops at once on %s, no timer left',
+    async (how) => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const api = refusingApi();
+      mounted = await mount(section(api, adminConfig(), 600_000));
+      const { container } = mounted;
+      await startShipping(container);
+      await settle(() => (container.textContent ?? '').includes('Your store is being set up'));
+      const before = vi.getTimerCount();
+      if (how === 'cancel') {
+        await click(buttonNamed(container, 'Cancel'));
+      } else {
+        await mounted.unmount();
+        mounted = undefined;
+      }
+      expect(vi.getTimerCount()).toBe(before - 1);
+      expect(api.putPolicy).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+describe('confirmation round: the connector', () => {
+  it('Turn off syncing reads the store again', async () => {
+    const api = fakeApi();
+    const reload = vi.fn(async () => undefined);
+    mounted = await mount(
+      <ConnectorSection
+        deps={sessionDeps(api, fakeReader([]))}
+        view={storeView({
+          connector: {
+            owner: OWNER,
+            platform: 'shopify',
+            url: 'https://tea.example',
+            importPolicies: false,
+            enabled: true,
+            lastStatus: null,
+            lastRunAt: null,
+            nextRunAt: null,
+          },
+        })}
+        config={adminConfig({
+          source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+        })}
+        reload={reload}
+      />,
+    );
+    const { container } = mounted;
+    await click(buttonNamed(container, 'Turn off syncing'));
+    await settle(() => (container.textContent ?? '').includes('Syncing is off'));
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 });

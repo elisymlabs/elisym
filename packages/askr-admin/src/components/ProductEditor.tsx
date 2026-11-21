@@ -6,6 +6,7 @@ import {
 } from '@elisym/askr';
 import Decimal from 'decimal.js-light';
 import { useEffect, useRef, useState } from 'react';
+import { errorMessage } from '../lib/errors';
 import { HELP } from '../lib/help';
 import {
   type VariantInput,
@@ -25,11 +26,20 @@ import { VariantsTable } from './VariantsTable';
 interface Props {
   /** The product being edited, or undefined for a new one. */
   initial: CatalogItemInput | undefined;
+  /** A new product's fields as last sent, when its editor opens again after a tab switch. */
+  draft?: CatalogItemInput;
   currency: string;
   /** `d`s already in the catalog: a new product needs its own. */
   takenIds: readonly string[];
-  onSave: (item: CatalogItemInput) => void;
+  /** Publishes the product; the editor stays locked until what it returns settles. */
+  onSave: (item: CatalogItemInput) => void | Promise<void>;
   onCancel: () => void;
+  /** The save on its way: fields stay locked, Cancel only while nothing is in flight. */
+  status?: { text: string; cancellable: boolean };
+  /** Why the last save did not go through: every field is kept, Save retries. */
+  failure?: { message: string; issues: readonly string[] };
+  /** A plain line under the fields, such as a save taken back before it was sent. */
+  note?: string;
 }
 
 const VISIBILITY_OPTIONS = VISIBILITIES.map((visibility) => ({
@@ -72,7 +82,18 @@ function optionsOf(rows: readonly OptionRow[]) {
  * One product's fields, attributes, options and variants. Its connector source
  * id and anything else the form does not show are kept as they are.
  */
-export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }: Props) {
+export function ProductEditor({
+  initial,
+  draft,
+  currency,
+  takenIds,
+  onSave,
+  onCancel,
+  status,
+  failure,
+  note,
+}: Props) {
+  const filled = initial ?? draft;
   const root = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   // The editor opens above the list: bring it into view from a row far down, and move focus to
@@ -84,34 +105,36 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
     root.current?.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
     heading.current?.focus({ preventScroll: true });
   }, []);
-  const [d, setD] = useState(initial?.d ?? '');
-  const [title, setTitle] = useState(initial?.title ?? '');
-  const [price, setPrice] = useState(initial?.price.amount ?? '');
-  const [priceCurrency, setPriceCurrency] = useState(initial?.price.currency ?? currency);
-  const [frequency, setFrequency] = useState<string>(initial?.price.frequency ?? '');
-  const [summary, setSummary] = useState(initial?.summary ?? '');
-  const [description, setDescription] = useState(initial?.description ?? '');
-  const [url, setUrl] = useState(initial?.url ?? '');
-  const [images, setImages] = useState((initial?.images ?? []).join('\n'));
-  const [topicsText, setTopicsText] = useState((initial?.topics ?? []).join(', '));
+  const [d, setD] = useState(filled?.d ?? '');
+  const [title, setTitle] = useState(filled?.title ?? '');
+  const [price, setPrice] = useState(filled?.price.amount ?? '');
+  const [priceCurrency, setPriceCurrency] = useState(filled?.price.currency ?? currency);
+  const [frequency, setFrequency] = useState<string>(filled?.price.frequency ?? '');
+  const [summary, setSummary] = useState(filled?.summary ?? '');
+  const [description, setDescription] = useState(filled?.description ?? '');
+  const [url, setUrl] = useState(filled?.url ?? '');
+  const [images, setImages] = useState((filled?.images ?? []).join('\n'));
+  const [topicsText, setTopicsText] = useState((filled?.topics ?? []).join(', '));
   // Read from the text only once it is edited, so a topic with a comma stays whole.
-  const [topics, setTopics] = useState<string[]>(initial?.topics ?? []);
-  const [sku, setSku] = useState(initial?.sku ?? '');
-  const [visibility, setVisibility] = useState<string>(initial?.visibility ?? 'on-sale');
+  const [topics, setTopics] = useState<string[]>(filled?.topics ?? []);
+  const [sku, setSku] = useState(filled?.sku ?? '');
+  const [visibility, setVisibility] = useState<string>(filled?.visibility ?? 'on-sale');
   const [attrs, setAttrs] = useState<AttrRow[]>(
-    (initial?.attrs ?? []).map((attr) => ({ name: attr.name, value: attr.value })),
+    (filled?.attrs ?? []).map((attr) => ({ name: attr.name, value: attr.value })),
   );
-  const [optionRows, setOptionRows] = useState<OptionRow[]>(optionRowsOf(initial));
-  const [rowsMade, setRowsMade] = useState(initial?.options?.length ?? 0);
+  const [optionRows, setOptionRows] = useState<OptionRow[]>(optionRowsOf(filled));
+  const [rowsMade, setRowsMade] = useState(filled?.options?.length ?? 0);
   // Every variant's values follow the option rows, in row order.
-  const [variants, setVariants] = useState<VariantInput[]>(initial?.variants ?? []);
+  const [variants, setVariants] = useState<VariantInput[]>(filled?.variants ?? []);
   // Ids the product's variants have had in this edit: a new variant never gets one, so an id
   // never moves to another choice while the product is edited.
   const [usedIds, setUsedIds] = useState<ReadonlySet<string>>(
-    () => new Set((initial?.variants ?? []).map((variant) => variant.id)),
+    () => new Set((filled?.variants ?? []).map((variant) => variant.id)),
   );
   const [variantNotice, setVariantNotice] = useState('');
   const [errors, setErrors] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const locked = saving || status !== undefined;
 
   const listingPrice = listingPriceOf(variants);
   // The last listing price the variants made, for when a price being typed is not a number.
@@ -235,7 +258,7 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
     return listingPrice ?? '';
   };
 
-  const save = () => {
+  const save = async () => {
     const id = d.trim();
     if (initial === undefined && takenIds.includes(id)) {
       setErrors([`ID: another product already uses "${id}".`]);
@@ -316,162 +339,189 @@ export function ProductEditor({ initial, currency, takenIds, onSave, onCancel }:
       return;
     }
     setErrors([]);
-    onSave(checked.data);
+    setSaving(true);
+    try {
+      await onSave(checked.data);
+    } catch (thrown) {
+      setErrors([errorMessage(thrown)]);
+    } finally {
+      setSaving(false);
+    }
   };
+
+  const shownErrors =
+    failure === undefined ? errors : [...errors, failure.message, ...failure.issues];
 
   return (
     <div ref={root} className="card flex scroll-mt-24 flex-col gap-16 p-24">
       <h2 ref={heading} tabIndex={-1} className="text-16 font-semibold outline-none">
         {initial === undefined ? 'New product' : `Edit ${initial.title}`}
       </h2>
-      <TextField
-        id="product-d"
-        info={HELP.productId}
-        label="ID"
-        value={d}
-        readOnly={initial !== undefined}
-        hint={
-          initial === undefined
-            ? 'Your SKU or another short ID: letters, digits, . _ : -'
-            : 'The ID cannot change.'
-        }
-        onChange={(value) => {
-          if (initial === undefined) {
-            setD(value);
+      <fieldset disabled={locked} className="contents">
+        <TextField
+          id="product-d"
+          info={HELP.productId}
+          label="ID"
+          value={d}
+          readOnly={initial !== undefined}
+          hint={
+            initial === undefined
+              ? 'Your SKU or another short ID: letters, digits, . _ : -'
+              : 'The ID cannot change.'
           }
-        }}
-      />
-      <TextField
-        id="product-title"
-        info={HELP.productTitle}
-        label="Title"
-        value={title}
-        onChange={setTitle}
-      />
-      <div className="grid gap-12 sm:grid-cols-3">
-        {variants.length > 0 ? (
-          <TextField
-            id="product-price"
-            info={HELP.productPrice}
-            label="Price"
-            value={listingPrice ?? ''}
-            readOnly
-            hint="The lowest in-stock variant price, from the variants below."
-            onChange={() => undefined}
-          />
-        ) : (
-          <TextField
-            id="product-price"
-            info={HELP.productPrice}
-            label="Price"
-            value={price}
-            placeholder="19.90"
-            onChange={setPrice}
-          />
-        )}
-        <TextField
-          id="product-currency"
-          info={HELP.productCurrency}
-          label="Currency"
-          value={priceCurrency}
-          onChange={setPriceCurrency}
-        />
-        <SelectField
-          id="product-frequency"
-          info={HELP.productBilling}
-          label="Billing"
-          value={frequency}
-          options={FREQUENCY_OPTIONS}
-          hint="Per month and the like for a subscription."
-          onChange={setFrequency}
-        />
-      </div>
-      <TextField
-        id="product-summary"
-        info={HELP.productSummary}
-        label="Summary (optional)"
-        value={summary}
-        onChange={setSummary}
-      />
-      <TextAreaField
-        id="product-description"
-        info={HELP.productDescription}
-        label="Description"
-        value={description}
-        rows={4}
-        onChange={setDescription}
-      />
-      <TextField
-        id="product-url"
-        info={HELP.productPage}
-        label="Product page (optional)"
-        value={url}
-        placeholder="https://..."
-        onChange={setUrl}
-      />
-      <TextAreaField
-        id="product-images"
-        info={HELP.productImages}
-        label="Image URLs (one per line)"
-        value={images}
-        onChange={setImages}
-      />
-      <div className="grid gap-12 sm:grid-cols-2">
-        <TextField
-          id="product-topics"
-          info={HELP.productTopics}
-          label="Topics (optional)"
-          value={topicsText}
-          placeholder="tents, camping"
-          hint="Words shoppers search by, separated by commas."
-          onChange={(text) => {
-            setTopicsText(text);
-            setTopics(topicsOfText(text));
+          onChange={(value) => {
+            if (initial === undefined) {
+              setD(value);
+            }
           }}
         />
         <TextField
-          id="product-sku"
-          info={HELP.productSku}
-          label="SKU (optional)"
-          value={sku}
-          onChange={setSku}
+          id="product-title"
+          info={HELP.productTitle}
+          label="Title"
+          value={title}
+          onChange={setTitle}
         />
-      </div>
-      <AttrsEditor rows={attrs} onChange={setAttrs} />
-      <OptionsEditor rows={optionRows} onChange={changeOptions} onValuesDone={valuesDone} />
-      {optionRows.length === 0 && variants.length === 0 ? null : (
-        <VariantsTable
-          options={optionsOf(optionRows)}
-          variants={variants}
-          onChange={changeVariants}
-          onAdd={addVariant}
-          onAddMissing={addMissing}
+        <div className="grid gap-12 sm:grid-cols-3">
+          {variants.length > 0 ? (
+            <TextField
+              id="product-price"
+              info={HELP.productPrice}
+              label="Price"
+              value={listingPrice ?? ''}
+              readOnly
+              hint="The lowest in-stock variant price, from the variants below."
+              onChange={() => undefined}
+            />
+          ) : (
+            <TextField
+              id="product-price"
+              info={HELP.productPrice}
+              label="Price"
+              value={price}
+              placeholder="19.90"
+              onChange={setPrice}
+            />
+          )}
+          <TextField
+            id="product-currency"
+            info={HELP.productCurrency}
+            label="Currency"
+            value={priceCurrency}
+            onChange={setPriceCurrency}
+          />
+          <SelectField
+            id="product-frequency"
+            info={HELP.productBilling}
+            label="Billing"
+            value={frequency}
+            options={FREQUENCY_OPTIONS}
+            hint="Per month and the like for a subscription."
+            onChange={setFrequency}
+          />
+        </div>
+        <TextField
+          id="product-summary"
+          info={HELP.productSummary}
+          label="Summary (optional)"
+          value={summary}
+          onChange={setSummary}
         />
-      )}
-      {variantNotice === '' ? null : <Notice tone="error">{variantNotice}</Notice>}
-      <SelectField
-        id="product-visibility"
-        info={HELP.productAvailability}
-        label="Availability"
-        value={visibility}
-        options={VISIBILITY_OPTIONS}
-        onChange={setVisibility}
-      />
-      {errors.length === 0 ? null : (
+        <TextAreaField
+          id="product-description"
+          info={HELP.productDescription}
+          label="Description"
+          value={description}
+          rows={4}
+          onChange={setDescription}
+        />
+        <TextField
+          id="product-url"
+          info={HELP.productPage}
+          label="Product page (optional)"
+          value={url}
+          placeholder="https://..."
+          onChange={setUrl}
+        />
+        <TextAreaField
+          id="product-images"
+          info={HELP.productImages}
+          label="Image URLs (one per line)"
+          value={images}
+          onChange={setImages}
+        />
+        <div className="grid gap-12 sm:grid-cols-2">
+          <TextField
+            id="product-topics"
+            info={HELP.productTopics}
+            label="Topics (optional)"
+            value={topicsText}
+            placeholder="tents, camping"
+            hint="Words shoppers search by, separated by commas."
+            onChange={(text) => {
+              setTopicsText(text);
+              setTopics(topicsOfText(text));
+            }}
+          />
+          <TextField
+            id="product-sku"
+            info={HELP.productSku}
+            label="SKU (optional)"
+            value={sku}
+            onChange={setSku}
+          />
+        </div>
+        <AttrsEditor rows={attrs} onChange={setAttrs} />
+        <OptionsEditor rows={optionRows} onChange={changeOptions} onValuesDone={valuesDone} />
+        {optionRows.length === 0 && variants.length === 0 ? null : (
+          <VariantsTable
+            options={optionsOf(optionRows)}
+            variants={variants}
+            onChange={changeVariants}
+            onAdd={addVariant}
+            onAddMissing={addMissing}
+          />
+        )}
+        {variantNotice === '' ? null : <Notice tone="error">{variantNotice}</Notice>}
+        <SelectField
+          id="product-visibility"
+          info={HELP.productAvailability}
+          label="Availability"
+          value={visibility}
+          options={VISIBILITY_OPTIONS}
+          onChange={setVisibility}
+        />
+      </fieldset>
+      {shownErrors.length === 0 ? null : (
         <Notice tone="error">
           <ul>
-            {errors.map((message, index) => (
+            {shownErrors.map((message, index) => (
               <li key={`${index}-${message}`}>{message}</li>
             ))}
           </ul>
         </Notice>
       )}
+      {status === undefined && note === undefined ? null : (
+        <p className="text-14 text-text-2" role="status">
+          {status?.text ?? note}
+        </p>
+      )}
       <div className="border-line -mx-24 -mb-24 flex justify-end gap-8 border-t px-24 py-14">
-        <button type="button" className="btn" onClick={onCancel}>
+        <button
+          type="button"
+          className="btn"
+          disabled={status !== undefined && !status.cancellable}
+          onClick={onCancel}
+        >
           Cancel
         </button>
-        <button type="button" className="btn btn-primary" onClick={save}>
-          Save
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={locked}
+          onClick={() => void save()}
+        >
+          {locked ? 'Saving...' : 'Save'}
         </button>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import type { StoreConfig } from '@elisym/askr';
 import { useEffect, useRef, useState } from 'react';
+import type { CatalogQueue } from '../lib/catalog-writer';
 import type { SessionDeps } from '../lib/deps';
 import { isRemembered } from '../lib/remembered';
 import { npubOf } from '../lib/signer';
@@ -39,6 +40,8 @@ interface Props {
   reloadConfig: () => Promise<boolean>;
   onSignOut: () => void;
   onReplaceKey: () => void;
+  /** The session's catalog writes: without it products cannot be published from here. */
+  catalogQueue?: CatalogQueue;
 }
 
 const REFRESH_SHOWN_MS = 2_000;
@@ -66,6 +69,7 @@ export function Shell({
   reloadConfig,
   onSignOut,
   onReplaceKey,
+  catalogQueue,
 }: Props) {
   const [chosen, setTab] = useState<TabId>('overview');
   // The Connector section is for a connector set up in Settings: without one it is left out.
@@ -118,6 +122,8 @@ export function Shell({
     await reload();
     await reloadConfig();
   };
+  // Products, policies and the connector wait for a plan, which is chosen in Overview.
+  const choosePlan = () => setTab('overview');
   let content;
   if (tab === 'overview') {
     content = (
@@ -148,11 +154,27 @@ export function Shell({
       </div>
     );
   } else if (tab === 'products') {
-    content = <ProductsSection deps={deps} view={view} config={config} reload={reloadView} />;
+    content = (
+      <ProductsSection
+        deps={deps}
+        view={view}
+        config={config}
+        onChoosePlan={choosePlan}
+        {...(catalogQueue === undefined ? {} : { queue: catalogQueue })}
+      />
+    );
   } else if (tab === 'policies') {
-    content = <PoliciesSection deps={deps} view={view} config={config} />;
+    content = <PoliciesSection deps={deps} view={view} config={config} onChoosePlan={choosePlan} />;
   } else if (tab === 'connector') {
-    content = <ConnectorSection deps={deps} view={view} config={config} reload={reloadView} />;
+    content = (
+      <ConnectorSection
+        deps={deps}
+        view={view}
+        config={config}
+        reload={reloadView}
+        onChoosePlan={choosePlan}
+      />
+    );
   } else if (tab === 'keys') {
     content = (
       <KeysSection

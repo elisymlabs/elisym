@@ -32,7 +32,7 @@ import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
 import { budgetReached } from '../state/budget';
 import { randomId } from '../state/pg-state';
-import { type CatalogSyncStatus, proofOrigins, type StoreDirectory } from '../state/stores';
+import { type CatalogSyncEnd, proofOrigins, type StoreDirectory } from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
@@ -269,10 +269,7 @@ export function createAdminApi(
    */
   const withSyncGuard = async (
     owner: string,
-    work: (
-      holder: string,
-      release: (ended?: CatalogSyncStatus) => Promise<void>,
-    ) => Promise<Response>,
+    work: (holder: string, release: (ended?: CatalogSyncEnd) => Promise<void>) => Promise<Response>,
   ): Promise<Response | undefined> => {
     const holder = randomId();
     if (!(await deps.directory.claimCatalogSync(owner, holder, now(), SYNC_HOLD_SECS))) {
@@ -289,13 +286,13 @@ export function createAdminApi(
       );
     }, SYNC_RENEW_MS);
     let released = false;
-    const release = async (ended?: CatalogSyncStatus) => {
+    const release = async (ended?: CatalogSyncEnd) => {
       if (released) {
         return;
       }
       released = true;
       clearInterval(renewal);
-      await deps.directory.releaseCatalogSync(owner, holder, ended);
+      await deps.directory.releaseCatalogSync(owner, holder, now(), ended);
     };
     try {
       return await work(holder, release);
@@ -620,7 +617,7 @@ export function createAdminApi(
     change: { mode?: 'upsert'; hide?: string[] },
     dryRun: boolean,
     holder: string,
-    release: (ended?: CatalogSyncStatus) => Promise<void>,
+    release: (ended?: CatalogSyncEnd) => Promise<void>,
   ): Promise<Response> => {
     const refused = await overTier(store, items, change);
     if (refused !== undefined) {
@@ -648,14 +645,15 @@ export function createAdminApi(
     }
     // Publishing is paced (2.4), so a large catalog outlasts a request: it runs on, still holding
     // the guard, its status in GET /store on any instance.
-    await deps.directory.startCatalogSync(store.owner, holder, diff, now());
+    const syncId = randomId();
+    await deps.directory.startCatalogSync(store.owner, holder, syncId, diff, now());
     void syncCatalog(options)
       .then(
         (done) => release({ state: 'done', diff: done }),
         (error: unknown) => release({ state: 'failed', diff, error: errorText(error) }),
       )
       .catch((error: unknown) => log(`catalog sync status not saved: ${errorText(error)}`));
-    return json({ diff, started: true }, 202);
+    return json({ diff, started: true, syncId }, 202);
   };
 
   const policy = async (

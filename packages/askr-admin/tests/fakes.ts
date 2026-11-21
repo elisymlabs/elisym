@@ -8,7 +8,7 @@ import type { AdminClient, SessionDeps } from '../src/lib/deps';
 import { SignedJournal } from '../src/lib/journal';
 import type { RelayReader } from '../src/lib/relay';
 import { type Signer, secretKeySigner } from '../src/lib/signer';
-import type { StoreView } from '../src/lib/types';
+import type { CatalogSyncStatus, StoreView } from '../src/lib/types';
 
 export const OWNER_KEY = generateSecretKey();
 export const OWNER = getPublicKey(OWNER_KEY);
@@ -22,6 +22,35 @@ export const PINNED_WIDGET = {
 };
 
 const EMPTY_DIFF = { created: [], updated: [], hidden: [], unchanged: [] };
+
+/** A catalog sync as `GET /store` shows it, with an id and times unless given. */
+export function catalogSyncOf(
+  state: 'running' | 'done',
+  overrides: Partial<Pick<CatalogSyncStatus, 'syncId' | 'startedAt' | 'finishedAt'>> & {
+    diff?: CatalogSyncStatus['diff'];
+  } = {},
+): CatalogSyncStatus {
+  return {
+    state,
+    diff: EMPTY_DIFF,
+    syncId: 'sync-other',
+    startedAt: NOW - 20,
+    finishedAt: state === 'running' ? null : NOW - 10,
+    ...overrides,
+  };
+}
+
+/** A failed catalog sync as `GET /store` shows it. */
+export function failedSyncOf(error: string, syncId = 'sync-other'): CatalogSyncStatus {
+  return {
+    state: 'failed',
+    diff: EMPTY_DIFF,
+    error,
+    syncId,
+    startedAt: NOW - 20,
+    finishedAt: NOW - 10,
+  };
+}
 
 export function storeView(overrides: Partial<StoreView> = {}): StoreView {
   return {
@@ -98,11 +127,18 @@ export function failingReader(): RelayReader {
   };
 }
 
+/**
+ * A fake API whose real catalog writes answer 202 with a fresh `syncId`, and
+ * whose `store()` then shows that sync done, as the server does once a paced
+ * sync ends. Either can be overridden.
+ */
 export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
+  let lastSync: CatalogSyncStatus | null = null;
+  let writes = 0;
   return {
     createStore: vi.fn(async () => storeView({ status: 'pending', tier: null })),
     setContactEmail: vi.fn(async (email: string | null) => storeView({ email })),
-    store: vi.fn(async () => storeView()),
+    store: vi.fn(async () => storeView({ catalogSync: lastSync })),
     storeEvents: vi.fn(async (events: NostrEvent[]) => ({
       stored: events.map((event) => event.id),
     })),
@@ -112,7 +148,17 @@ export function fakeApi(overrides: Partial<AdminClient> = {}): AdminClient {
     })),
     storedEvents: vi.fn(async () => ({ events: [], truncated: false })),
     pinnedWidget: vi.fn(async () => PINNED_WIDGET),
-    catalog: vi.fn(async () => ({ diff: EMPTY_DIFF })),
+    catalog: vi.fn(
+      async (_change: { items: readonly CatalogItemInput[]; hide: readonly string[] }, dryRun) => {
+        if (dryRun) {
+          return { diff: EMPTY_DIFF };
+        }
+        writes += 1;
+        const syncId = `sync-${writes}`;
+        lastSync = catalogSyncOf('done', { syncId, startedAt: NOW, finishedAt: NOW });
+        return { diff: EMPTY_DIFF, started: true, syncId };
+      },
+    ),
     putPolicy: vi.fn(async () => ({ id: 'p' })),
     deletePolicy: vi.fn(async () => ({ id: 'p' })),
     putConnector: vi.fn(async () => ({ connector: null })),

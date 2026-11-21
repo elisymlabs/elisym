@@ -20,7 +20,7 @@ Ticked by default. When it is ticked, signing in keeps your secret key in this b
 
 ### Choose a plan
 
-A pending store with no plan shows the plan picker under its status. **Start on Free** puts the store live at once, within Free's limits; it stays disabled until you have saved your settings. The paid cards (Starter, Growth / Pro / Scale, Enterprise) show their monthly prices: for one of them, [message us](https://askr.elisym.network/contact) with your Store ID, which the picker shows next to the link, and we set it up. Every plan and its limits are on the [Askr page](https://askr.elisym.network/#pricing). Once Free starts, the admin keeps showing your settings as you signed them until they are published, a moment later.
+A pending store with no plan shows the plan picker under its status. **Start on Free** puts the store live at once, within Free's limits; it stays disabled until you have saved your settings. Products, policies and the connector wait for a plan: their pages say so, with a **Choose a plan** button that opens Overview. The paid cards (Starter, Growth / Pro / Scale, Enterprise) show their monthly prices: for one of them, [message us](https://askr.elisym.network/contact) with your Store ID, which the picker shows next to the link, and we set it up. Every plan and its limits are on the [Askr page](https://askr.elisym.network/#pricing). Once Free starts, the admin keeps showing your settings as you signed them until they are published, a moment later.
 
 ### Usage
 
@@ -48,7 +48,7 @@ Changes you signed that the server has not published to the relay yet. A store t
 
 ### Product sync
 
-The last time products were published from the admin or a connector, and what it did: how many products were new, updated, removed or unchanged. If it failed, the reason is shown.
+The last time products were published from the admin, when it ended, and what it did: how many products were new, updated, removed or unchanged. If it failed, the reason is shown. A connector's syncs are not listed here: the Connector page shows its last run and result.
 
 ## The Settings page
 
@@ -199,11 +199,11 @@ Shown when your products come from the admin.
 
 ### Catalog
 
-The products the assistant recommends from. Your changes stay in this page until you review and publish them. Removing a product here deletes it for good when you publish; to take one off sale for a while, set its availability to hidden instead. The line under the table says how many products you have and how many your plan reads.
+The products the assistant recommends from. A change goes live when you press **Save**. **Remove** asks once, then deletes the product for good; to take one off sale for a while, set its availability to hidden instead. The line under the table says how many products you have and how many your plan reads. Listed products the admin cannot read right now (one dated ahead may become readable later) still count toward your plan; the page says how many, and **Remove them** deletes them after one confirmation.
 
 ### Product ID
 
-A short ID that never changes, such as your SKU: letters, digits and `. _ : -`. Publishing a product with the same ID updates it. It cannot be changed once the product exists: to rename an ID, add a new product and remove the old one.
+A short ID that never changes, such as your SKU: letters, digits and `. _ : -`. Saving a product with the same ID updates it. It cannot be changed once the product exists: to rename an ID, add a new product and remove the old one.
 
 **Example:** `tent-2p`, `BOOT.42` or `sku_10023`.
 
@@ -299,13 +299,13 @@ One row per combination of option values, such as Size M in Red, with its own ID
 
 **Example:** a tent you will restock next month: **Pre order**. A discontinued lamp you may bring back: **Hidden**.
 
-### Publish
+### Last publish
 
-**Review changes** asks the server what publishing would do (which products are new, updated, removed or unchanged) without changing anything. **Publish** then sends only what changed. While products are being published, the editor waits.
+Every save, removal and import is published at once, one at a time: a change waits while another is being published, and for a moment right after you choose a plan, while your store is being set up. The line above the table shows when your products were last published and how many were new, updated, removed or unchanged. If a publish fails, your edit stays in the editor to retry; if its result could not be read, press **Refresh** to see where it stands.
 
 ### Import from a CSV file
 
-Add products from a spreadsheet saved as CSV, or replace all of them. **File format** lists the columns: `d`, `title` and `price` are required; a column named `attr:Material` is an attribute and `option:Size` an option; each variant is one row with the same `d`. **Download an example file** gives a file to start from. Before anything changes, the admin says how many products it read and which rows have problems.
+Add products from a spreadsheet saved as CSV, or replace all of them. **File format** lists the columns: `d`, `title` and `price` are required; a column named `attr:Material` is an attribute and `option:Size` an option; each variant is one row with the same `d`. **Download an example file** gives a file to start from. Once the file is read, the admin says how many products it read and which rows have problems; rows with problems are left out. **Import** adds the file's products to yours and publishes them at once. **Replace all** asks once, naming how many of your products are not in the file and will be removed, then publishes.
 
 **Example:**
 
@@ -365,7 +365,7 @@ or a file at `https://northwind.example/.well-known/askr` with your Store ID on 
 
 ### Sync
 
-**Preview first import** reads the shop and shows what the first import would publish, without publishing anything. **Turn on syncing** once the preview looks right; syncs then run on your plan's schedule. **Turn off syncing** stops them and keeps the products as last synced.
+**Turn on syncing** checks your shop first and turns on only if it can be read and fits your plan; when it cannot, it shows why (the site is not verified, the shop is closed to readers, or it has more products than your plan holds) and syncing stays off. Syncs then run on your plan's schedule. **Turn off syncing** stops them and keeps the products as last synced.
 
 ## The Embed page
 

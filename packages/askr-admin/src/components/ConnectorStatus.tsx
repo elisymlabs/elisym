@@ -19,7 +19,7 @@ export function ConnectorStatus({ connector, tier }: Props) {
   const rows: { label: string; value: string }[] = [
     { label: 'Platform', value: PLATFORM_LABELS[connector.platform] },
     { label: 'Address', value: connector.url },
-    { label: 'Syncing', value: connector.enabled ? 'On' : 'Off (preview it, then turn it on)' },
+    { label: 'Syncing', value: connector.enabled ? 'On' : 'Off' },
   ];
   if (tier !== undefined && tier !== null) {
     rows.push({
