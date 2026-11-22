@@ -58,31 +58,33 @@ const FEATURES: Feature[] = [
       <>
         <p className="wgt-mine">Compare them</p>
         <p className="wgt-theirs">For long flights, the Pulse Pro: 8 more hours on a charge.</p>
-        <table className="wgt-table">
-          <thead>
-            <tr>
-              <th />
-              {COMPARED.map((product) => (
-                <th key={product.title}>{product.title}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <th>Price</th>
-              {COMPARED.map((product) => (
-                <td key={product.title}>{product.price}</td>
-              ))}
-            </tr>
-            {COMPARE_ROWS.map(([label, first, second]) => (
-              <tr key={label}>
-                <th>{label}</th>
-                <td>{first}</td>
-                <td>{second}</td>
+        <div className="wgt-table-scroll">
+          <table className="wgt-table">
+            <thead>
+              <tr>
+                <th />
+                {COMPARED.map((product) => (
+                  <th key={product.title}>{product.title}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              <tr>
+                <th>Price</th>
+                {COMPARED.map((product) => (
+                  <td key={product.title}>{product.price}</td>
+                ))}
+              </tr>
+              {COMPARE_ROWS.map(([label, first, second]) => (
+                <tr key={label}>
+                  <th>{label}</th>
+                  <td>{first}</td>
+                  <td>{second}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </>
     ),
   },

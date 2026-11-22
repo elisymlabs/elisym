@@ -24,6 +24,21 @@ function cardsRow(document: Document, title?: string): HTMLElement {
   return row;
 }
 
+/**
+ * A comparison table in a box that scrolls sideways inside the answer: its columns keep a readable
+ * width instead of squeezing into the panel. A finger swipes it and a mouse drags it, as a row of
+ * cards; it takes focus, so a keyboard can scroll it too.
+ */
+function tableScroll(document: Document, table: HTMLTableElement, title?: string): HTMLElement {
+  const box = element(document, 'div', 'table-scroll');
+  box.tabIndex = 0;
+  box.setAttribute('role', 'region');
+  box.setAttribute('aria-label', title ?? STRINGS.comparison);
+  box.append(table);
+  enableDragScroll(box);
+  return box;
+}
+
 function cardRow(
   context: CardContext,
   items: readonly (CatalogItem | undefined)[],
@@ -103,7 +118,7 @@ function renderComponent(
       }
       table.append(tableRow);
     }
-    box.append(table);
+    box.append(tableScroll(document, table, component.title));
     return box;
   }
   if (component.type === 'plan') {

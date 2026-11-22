@@ -235,6 +235,42 @@ describe('the hero', () => {
 });
 
 describe('the chat drawing', () => {
+  it('draws the comparison as the widget does: a rounded clipped box, a pinned first column', async () => {
+    const css = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
+    const rule = (selector: string) => {
+      const start = css.indexOf(`\n${selector} {`);
+      return start < 0 ? '' : css.slice(start, css.indexOf('}', start));
+    };
+    // A still drawing: the box clips its rounded corners and never scrolls, as the cards row does.
+    const box = rule('.wgt-table-scroll');
+    expect(box).toContain('overflow: hidden');
+    expect(box).not.toContain('overflow-x: auto');
+    expect(box).toContain('border-radius: 12px');
+    expect(box).toContain('background: var(--w-bg)');
+    const table = rule('.wgt-table');
+    expect(table).toContain('border-collapse: separate');
+    expect(table).toContain('border-spacing: 0');
+    const cells = rule('.wgt-table th,\n.wgt-table td');
+    expect(cells).toContain('min-width: 96px');
+    expect(cells).toContain('text-align: start');
+    expect(cells).toContain('border-inline-end: 1px solid var(--w-border)');
+    expect(rule('.wgt-table tr > :last-child')).toContain('border-inline-end: 0');
+    expect(rule('.wgt-table tbody tr:last-child > *')).toContain('border-bottom: 0');
+    expect(rule('.wgt-table thead th')).toContain('background: linear-gradient(');
+    const pinned = rule('.wgt-table tr > th:first-child');
+    expect(pinned).toContain('position: sticky');
+    expect(pinned).toContain('inset-inline-start: 0');
+    expect(pinned).toContain('z-index: 1');
+    expect(pinned).toContain('background: linear-gradient(');
+    stubMotion(true);
+    const page = await render(<App />);
+    const tables = [...page.querySelectorAll('#features .wgt-table')];
+    expect(tables.length).toBe(1);
+    for (const table of tables) {
+      expect(table.parentElement?.classList.contains('wgt-table-scroll')).toBe(true);
+    }
+  });
+
   it('scrolls only in the hero chat, so the page scrolls over the still drawings', async () => {
     const css = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
     const rule = (selector: string) => {

@@ -195,18 +195,55 @@ body {
   opacity: 1;
 }
 
+/* The comparison, as the widget's .table-scroll draws it. A still drawing: the rounded box clips, never scrolls. */
+.wgt-table-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--w-border);
+  border-radius: 12px;
+  background: var(--w-bg);
+}
+
 .wgt-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 12px;
 }
 
 .wgt-table th,
 .wgt-table td {
-  padding: 4px 6px;
-  border: 1px solid var(--w-border);
-  text-align: left;
+  min-width: 96px;
+  padding: 7px 10px;
+  border-inline-end: 1px solid var(--w-border);
+  border-bottom: 1px solid var(--w-border);
+  text-align: start;
   vertical-align: top;
+  overflow-wrap: break-word;
+}
+
+.wgt-table tr > :last-child {
+  border-inline-end: 0;
+}
+
+.wgt-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.wgt-table thead th {
+  background: linear-gradient(var(--w-surface), var(--w-surface)), var(--w-bg);
+  font-weight: 600;
+}
+
+.wgt-table tr > th:first-child {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  min-width: 84px;
+  background: linear-gradient(var(--w-surface), var(--w-surface)), var(--w-bg);
+  color: var(--w-muted);
+  font-weight: 500;
 }
 
 @media (prefers-reduced-motion: reduce) {

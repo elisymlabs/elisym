@@ -64,6 +64,8 @@ export function enableDragScroll(row: HTMLElement): void {
       }
       dragging = true;
       row.classList.add('dragging');
+      // A press on text may have started a selection before the threshold: the drag drops it.
+      row.ownerDocument.getSelection()?.removeAllRanges();
       row.setPointerCapture(event.pointerId);
       // The drag starts here, so the threshold's few pixels never make the row jump.
       startX = event.clientX;
