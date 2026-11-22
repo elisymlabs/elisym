@@ -124,6 +124,7 @@ describe('signing parity with the admin', () => {
       currency: 'EUR',
       displayName: 'Ava',
       greeting: 'Hi there',
+      launcherText: 'Ask Ava',
       contact: 'https://shop.example/contact',
       source: 'connector' as const,
       platform: 'shopify' as const,
@@ -152,6 +153,7 @@ describe('signing parity with the admin', () => {
           policyKey: serverKey,
           displayName: 'Ava',
           greeting: 'Hi there',
+          launcherText: 'Ask Ava',
           contact: 'https://shop.example/contact',
           private: { voice: 'Warm.', instructions: 'Never promise delivery dates.', notes: '' },
         },
@@ -161,6 +163,7 @@ describe('signing parity with the admin', () => {
       authorize: { key: serverKey, createdAt: now },
     });
     expect(cli).toHaveLength(admin.length);
+    expect(cli[0]?.tags).toContainEqual(['launcher-text', 'Ask Ava']);
     const open = (content: string, pubkey: string) =>
       JSON.parse(
         nip44.v2.decrypt(content, nip44.v2.utils.getConversationKey(assistantSecret, pubkey)),

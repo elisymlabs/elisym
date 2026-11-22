@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 // The entry script, with the browser wiring replaced: it must hand the element the store check.
 const wiring = vi.hoisted(() => ({
-  checkBrowserStore: vi.fn(async (_owner: string) => 'hide' as const),
+  checkBrowserStore: vi.fn(async (_owner: string) => ({ visibility: 'hide' as const })),
   createBrowserClient: vi.fn(),
 }));
 vi.mock('../src/browser-client', () => wiring);

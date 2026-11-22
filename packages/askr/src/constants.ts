@@ -88,9 +88,17 @@ export const LIMITS = {
   CONFIG_NOTES_CHARS: 4_000,
   MAX_ORIGINS: 20,
   GREETING_CHARS: 280,
+  /** The store's chat button text, in UTF-16 code units like every other limit. */
+  LAUNCHER_TEXT_CHARS: 24,
   PLAN_STEP_LABEL_CHARS: 120,
   MAX_COMPONENTS: 4,
 } as const;
+
+/**
+ * An unpaired UTF-16 surrogate. With the `u` flag a valid pair is one astral code
+ * point and does not match, so a text is well formed when this does not match it.
+ */
+export const LONE_SURROGATE_RE = /[\uD800-\uDFFF]/u;
 
 /** Visibilities an Askr reader knows; anything else is absent. */
 export const VISIBILITIES = ['on-sale', 'pre-order', 'sold-out', 'hidden'] as const;

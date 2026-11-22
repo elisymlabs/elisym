@@ -44,6 +44,7 @@ export interface InitOptions {
   feedUrl?: string;
   displayName?: string;
   greeting?: string;
+  launcherText?: string;
   contact?: string;
   voiceFile?: string;
   instructionsFile?: string;
@@ -75,6 +76,7 @@ interface Flags {
   feedUrl?: string;
   displayName?: string;
   greeting?: string;
+  launcherText?: string;
   contact?: string;
   voice?: string;
   instructions?: string;
@@ -183,6 +185,13 @@ async function checkFlags(session: Session, options: InitOptions): Promise<Flags
       throw invalidFlag('--greeting', `at most ${LIMITS.GREETING_CHARS} characters`);
     }
     flags.greeting = greeting;
+  }
+  const launcherText = optionalText(options.launcherText);
+  if (launcherText !== undefined) {
+    if (launcherText.length > LIMITS.LAUNCHER_TEXT_CHARS) {
+      throw invalidFlag('--launcher-text', `at most ${LIMITS.LAUNCHER_TEXT_CHARS} characters`);
+    }
+    flags.launcherText = launcherText;
   }
   const contact = optionalText(options.contact);
   if (contact !== undefined) {
@@ -314,6 +323,7 @@ function comparable(values: SettingsValues, assistant: string): string {
     name: values.name,
     displayName: values.displayName,
     greeting: values.greeting,
+    launcherText: values.launcherText,
     language: values.language,
     currency: values.currency,
     source: {
@@ -344,6 +354,7 @@ function valuesOfConfig(config: StoreConfig, privatePart: StorePrivateConfig): S
     policyKey: config.policyKey,
     ...(config.displayName === undefined ? {} : { displayName: config.displayName }),
     ...(config.greeting === undefined ? {} : { greeting: config.greeting }),
+    ...(config.launcherText === undefined ? {} : { launcherText: config.launcherText }),
     ...(config.contact === undefined ? {} : { contact: config.contact }),
     private: privatePart,
   };
@@ -438,12 +449,16 @@ function merge(
   };
   const displayName = optionalField(flags.displayName, config?.displayName);
   const greeting = optionalField(flags.greeting, config?.greeting);
+  const launcherText = optionalField(flags.launcherText, config?.launcherText);
   const contact = optionalField(flags.contact, config?.contact);
   if (displayName !== undefined) {
     values.displayName = displayName;
   }
   if (greeting !== undefined) {
     values.greeting = greeting;
+  }
+  if (launcherText !== undefined) {
+    values.launcherText = launcherText;
   }
   if (contact !== undefined) {
     values.contact = contact;

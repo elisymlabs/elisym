@@ -78,7 +78,10 @@ describe('the widget language', () => {
     expect(launcherText(widget)).toBe('Спросить ИИ');
     // Its own texts carry its language; the answers keep the page's.
     expect(widget.panel.querySelector<HTMLElement>('.header')?.lang).toBe('ru');
-    expect(widget.launcher.lang).toBe('ru');
+    // The launcher's own words carry it, the button does not: a store's text keeps the page's.
+    expect(widget.launcher.querySelector<HTMLElement>('.launcher-hint')?.lang).toBe('ru');
+    expect(widget.launcher.querySelector<HTMLElement>('.launcher-label')?.lang).toBe('ru');
+    expect(widget.launcher.hasAttribute('lang')).toBe(false);
     expect(widget.panel.lang).toBe('');
     expect(widget.launcher.querySelector('.launcher-hint')?.textContent).toBe(
       'О любом товаре здесь',
@@ -108,6 +111,75 @@ describe('the widget language', () => {
     const config = { ...storeIn('en'), greeting: 'Welcome to Northwind' };
     widget.update({ phase: 'ready', branding: true, turns: [], config });
     expect(widget.panel.querySelector('.bubble.theirs')?.textContent).toBe('Welcome to Northwind');
+  });
+});
+
+describe("the store's launcher text", () => {
+  function label(widget: WidgetView): HTMLElement {
+    const found = widget.launcher.querySelector<HTMLElement>('.launcher-label');
+    if (!found) {
+      throw new Error('no label');
+    }
+    return found;
+  }
+
+  function hint(widget: WidgetView): HTMLElement {
+    const found = widget.launcher.querySelector<HTMLElement>('.launcher-hint');
+    if (!found) {
+      throw new Error('no hint');
+    }
+    return found;
+  }
+
+  it.each([
+    ['en', 'Ask AI', 'About any product here'],
+    ['ru', 'Спросить ИИ', 'О любом товаре здесь'],
+  ])('without one, %s shows the default label and the hint', (language, text, hintText) => {
+    const widget = view([language]);
+    expect(label(widget).textContent).toBe(text);
+    expect(hint(widget).textContent).toBe(hintText);
+    expect(hint(widget).hidden).toBe(false);
+  });
+
+  it('shows the text as written, hides the hint and leaves the widget language off it', () => {
+    const widget = view(['ru']);
+    widget.setLauncherText('Ask our stylist');
+    expect(label(widget).textContent).toBe('Ask our stylist');
+    expect(label(widget).getAttribute('dir')).toBe('auto');
+    expect(label(widget).hasAttribute('lang')).toBe(false);
+    expect(widget.launcher.hasAttribute('lang')).toBe(false);
+    expect(hint(widget).hidden).toBe(true);
+    expect(hint(widget).lang).toBe('ru');
+  });
+
+  it('keeps the text when a config changes the language', () => {
+    const widget = view([null, 'pl']);
+    widget.setLauncherText('Ask our stylist');
+    const config = { ...storeIn('fr'), launcherText: 'Ask our stylist' };
+    widget.update({ phase: 'ready', branding: true, turns: [], config });
+    expect(hint(widget).textContent).toBe('Sur tous nos produits');
+    expect(label(widget).textContent).toBe('Ask our stylist');
+    expect(hint(widget).hidden).toBe(true);
+  });
+
+  it("takes a config's text over the check's, and restores the default without one", () => {
+    const widget = view(['en']);
+    widget.setLauncherText('From the check');
+    const withText = { ...storeIn('en'), launcherText: 'From the config' };
+    widget.update({ phase: 'ready', branding: true, turns: [], config: withText });
+    expect(label(widget).textContent).toBe('From the config');
+    widget.update({ phase: 'ready', branding: true, turns: [], config: storeIn('en') });
+    expect(label(widget).textContent).toBe('Ask AI');
+    expect(label(widget).hasAttribute('dir')).toBe(false);
+    expect(label(widget).lang).toBe('en');
+    expect(hint(widget).hidden).toBe(false);
+  });
+
+  it('renders markup as literal text', () => {
+    const widget = view(['en']);
+    widget.setLauncherText('<img src=x onerror=alert(1)>');
+    expect(label(widget).textContent).toBe('<img src=x onerror=alert(1)>');
+    expect(widget.launcher.querySelector('img')).toBeNull();
   });
 });
 

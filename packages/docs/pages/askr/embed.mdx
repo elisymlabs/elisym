@@ -6,7 +6,7 @@ One script tag with your store's owner npub puts the assistant on a page:
 <script src="https://app.askr.elisym.network/widget.js" data-store="npub1..." async></script>
 ```
 
-The script adds an `<askr-chat>` element to the page: an **Ask AI** button with the Askr mark that opens the assistant (the mark alone on a narrow screen). It runs in a shadow root, so your page's styles do not leak into it.
+The script adds an `<askr-chat>` element to the page: an **Ask AI** button (or the [text set in your store's settings](/askr/admin#chat-button-text)) with the Askr mark that opens the assistant (the mark alone on a narrow screen). It runs in a shadow root, so your page's styles do not leak into it.
 
 Optional settings on the same script tag:
 
@@ -15,7 +15,7 @@ Optional settings on the same script tag:
 | `data-theme` | `light`, `dark` | follows the visitor's system |
 | `data-lang` | `en`, `ru`, `es`, `de`, `fr`, `pt`, `it`, `zh`, `ja`, `ko` | the page's own `lang` (`<html lang="de">`), then your store's language, then English |
 
-The language sets the widget's own texts: the button, the placeholder, statuses and the cart buttons. Your store's language is read when the chat opens, so with neither `data-lang` nor a `lang` on the page the button shows English until then. `<askr-chat lang="ru">` works the same way when you place the element yourself. Your greeting and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
+The language sets the widget's own texts: the button, the placeholder, statuses and the cart buttons. Your store's language is read when the chat opens, so with neither `data-lang` nor a `lang` on the page the button shows English until then. `<askr-chat lang="ru">` works the same way when you place the element yourself. Your greeting, your chat button text and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
 
 To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` where it should go and load the script without `data-store`.
 
@@ -39,7 +39,7 @@ Do not add an `integrity` attribute to `/widget.js`: it changes with each releas
 ></script>
 ```
 
-The path names the bundle by its SHA-384, and the browser runs it only if it matches `integrity`. It never changes under you, and the server keeps serving it after later releases. The trade-off: fixes and new features do not reach a pinned page until you paste a newer snippet from the admin. The bundle is the whole widget: it loads no other script.
+The path names the bundle by its SHA-384, and the browser runs it only if it matches `integrity`. It never changes under you, and the server keeps serving it after later releases. The trade-off: fixes and new features do not reach a pinned page until you paste a newer snippet from the admin. For example, a version pinned before the chat button text existed always shows "Ask AI": copy the current pinned snippet from the admin's **Embed** page to show your text. The bundle is the whole widget: it loads no other script.
 
 The current pinned path and integrity are also at `https://app.askr.elisym.network/v1/widget`, as `{ "path": "/widget/<id>.js", "integrity": "sha384-..." }`.
 

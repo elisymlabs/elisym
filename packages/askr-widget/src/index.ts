@@ -58,7 +58,12 @@ export {
 export { type VisitorKey, loadVisitorKey } from './visitor-key';
 export { wrapOutgoing } from './wrap-outgoing';
 export { checkBrowserStore, createBrowserClient } from './browser-client';
-export { type StoreCheckDeps, type StoreVisibility, checkStore } from './store-check';
+export {
+  type StoreCheck,
+  type StoreCheckDeps,
+  type StoreVisibility,
+  checkStore,
+} from './store-check';
 export {
   type ClientFactory,
   type StoreChecker,

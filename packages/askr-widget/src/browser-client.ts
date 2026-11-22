@@ -2,7 +2,7 @@ import { ChatClient } from './client';
 import { httpGateway } from './gateway';
 import { connectNostrRelay } from './relay';
 import { storageArea } from './storage';
-import { type StoreVisibility, checkStore } from './store-check';
+import { type StoreCheck, checkStore } from './store-check';
 
 /** A chat client wired to the real relay, gateway and browser storage. */
 export function createBrowserClient(owner: string): ChatClient {
@@ -18,7 +18,7 @@ export function createBrowserClient(owner: string): ChatClient {
 }
 
 /** Whether the widget shows for a store, checked against the real relay and gateway (B). */
-export function checkBrowserStore(owner: string): Promise<StoreVisibility> {
+export function checkBrowserStore(owner: string): Promise<StoreCheck> {
   return checkStore(owner, {
     connect: connectNostrRelay,
     gateway: httpGateway(),

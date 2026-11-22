@@ -63,6 +63,7 @@ export function registerAskr(
     .option('--feed-url <url>', 'google: the https address of the product feed')
     .option('--display-name <text>', "the assistant's name in the chat")
     .option('--greeting <text>', 'the first message the chat shows')
+    .option('--launcher-text <text>', 'the text on the button that opens the chat')
     .option('--contact <https-url>', 'a contact link the assistant may give')
     .option('--voice-file <path>', "a text file with the assistant's voice")
     .option(

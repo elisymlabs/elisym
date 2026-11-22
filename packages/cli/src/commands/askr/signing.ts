@@ -21,6 +21,7 @@ export interface SettingsValues {
   policyKey: string;
   displayName?: string;
   greeting?: string;
+  launcherText?: string;
   contact?: string;
   private: StorePrivateConfig;
 }
@@ -42,6 +43,7 @@ export function configInputOf(
     ...(values.policyKey === values.catalogKey ? {} : { policyKey: values.policyKey }),
     ...(values.displayName === undefined ? {} : { displayName: values.displayName }),
     ...(values.greeting === undefined ? {} : { greeting: values.greeting }),
+    ...(values.launcherText === undefined ? {} : { launcherText: values.launcherText }),
     ...(values.contact === undefined ? {} : { contact: values.contact }),
     private: values.private,
     createdAt,

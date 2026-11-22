@@ -152,6 +152,20 @@ describe('the settings save', () => {
     expect(container.textContent).toContain(copy);
   });
 
+  it('the chat button text sits in the Assistant group and reaches the saved config', async () => {
+    const event = publishedConfig(NOW - 100);
+    const deps = sessionDeps(fakeApi(), fakeReader([event]));
+    const { container } = await mountSettings({ deps, config: configOf(event) });
+    const field = byId(container, 'store-launcher-text');
+    expect(field.closest('fieldset')?.getAttribute('aria-labelledby')).toBe(
+      'group-assistant-title',
+    );
+    await typeInto(field, 'Ask our tea expert');
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length === 1);
+    expect(tagOf(storedEvents(deps, 0)[0], 'launcher-text')).toBe('Ask our tea expert');
+  });
+
   it('dates a second save after the first, even before the relay shows the first', async () => {
     const event = publishedConfig(NOW - 100);
     const deps = sessionDeps(fakeApi(), fakeReader([event]));
