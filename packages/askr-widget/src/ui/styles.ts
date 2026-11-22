@@ -146,6 +146,12 @@ button:disabled { cursor: default; opacity: 0.4; }
 }
 .cards.dragging { cursor: grabbing; user-select: none; -webkit-user-select: none; }
 .cards.dragging * { cursor: grabbing; }
+/* A comparison of three or more products is wider than the panel: it drags like a row of cards. */
+@media (hover: hover) and (pointer: fine) {
+  .table-scroll:has(tr > :nth-child(4)) { cursor: grab; }
+}
+.table-scroll.dragging { cursor: grabbing; user-select: none; -webkit-user-select: none; }
+.table-scroll.dragging * { cursor: grabbing; }
 /* No ghost image follows the pointer: a photo or the title link never starts the browser's own drag. */
 .card img, .card a { -webkit-user-drag: none; user-drag: none; }
 .card-media { user-select: none; -webkit-user-select: none; }

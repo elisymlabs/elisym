@@ -155,6 +155,45 @@ describe('comparison tables', () => {
     );
   });
 
+  it('drags sideways under a mouse, as a row of cards does', async () => {
+    const answer = await renderComparison(4, 'Running shoes');
+    const scroll = answer.querySelector<HTMLElement>('.table-scroll');
+    if (!scroll) {
+      throw new Error('no scroll box');
+    }
+    scroll.setPointerCapture = () => undefined;
+    scroll.releasePointerCapture = () => undefined;
+    scroll.hasPointerCapture = () => false;
+    const press = (type: string, clientX: number): void => {
+      scroll.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 1,
+          pointerType: 'mouse',
+          button: 0,
+          buttons: type === 'pointerup' ? 0 : 1,
+          clientX,
+        }),
+      );
+    };
+    scroll.scrollLeft = 0;
+    press('pointerdown', 200);
+    press('pointermove', 150);
+    expect(scroll.classList.contains('dragging')).toBe(true);
+    press('pointermove', 90);
+    expect(scroll.scrollLeft).toBe(60);
+    press('pointerup', 90);
+    expect(scroll.classList.contains('dragging')).toBe(false);
+  });
+
+  it('shows a grab hand on a comparison wider than the panel, a closed hand while dragging', () => {
+    expect(WIDGET_CSS).toContain('.table-scroll:has(tr > :nth-child(4)) { cursor: grab; }');
+    expect(WIDGET_CSS).toContain(
+      '.table-scroll.dragging { cursor: grabbing; user-select: none; -webkit-user-select: none; }',
+    );
+  });
+
   it('styles the box to scroll sideways with rounded, clipped corners and readable columns', () => {
     const rule = /\.table-scroll \{([^}]*)\}/u.exec(WIDGET_CSS)?.[1] ?? '';
     expect(rule).toContain('overflow-x: auto;');

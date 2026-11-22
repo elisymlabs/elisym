@@ -26,7 +26,8 @@ function cardsRow(document: Document, title?: string): HTMLElement {
 
 /**
  * A comparison table in a box that scrolls sideways inside the answer: its columns keep a readable
- * width instead of squeezing into the panel. It takes focus, so a keyboard can scroll it too.
+ * width instead of squeezing into the panel. A finger swipes it and a mouse drags it, as a row of
+ * cards; it takes focus, so a keyboard can scroll it too.
  */
 function tableScroll(document: Document, table: HTMLTableElement, title?: string): HTMLElement {
   const box = element(document, 'div', 'table-scroll');
@@ -34,6 +35,7 @@ function tableScroll(document: Document, table: HTMLTableElement, title?: string
   box.setAttribute('role', 'region');
   box.setAttribute('aria-label', title ?? STRINGS.comparison);
   box.append(table);
+  enableDragScroll(box);
   return box;
 }
 
