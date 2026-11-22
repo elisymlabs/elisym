@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatClient } from '../src/client';
-import type { StoreVisibility } from '../src/store-check';
+import type { StoreCheck } from '../src/store-check';
 import { HIDDEN_NOTICE, defineAskrElement } from '../src/ui/element';
 import { FakeGateway, FakeRelay, MemoryStorage, makeStore, publishStore } from './fixtures';
 
@@ -20,9 +20,13 @@ async function waitFor(check: () => boolean): Promise<void> {
 const current: {
   relay: FakeRelay;
   gateway: FakeGateway | undefined;
-  visibility: Promise<StoreVisibility>;
+  visibility: Promise<StoreCheck>;
   client?: ChatClient;
-} = { relay: new FakeRelay(), gateway: undefined, visibility: Promise.resolve('show') };
+} = {
+  relay: new FakeRelay(),
+  gateway: undefined,
+  visibility: Promise.resolve({ visibility: 'show' }),
+};
 const checked: string[] = [];
 
 defineAskrElement(
@@ -68,20 +72,50 @@ const launcherOf = (widget: HTMLElement) =>
 describe('<askr-chat> for a store that is not active (B)', () => {
   it('shows nothing until the check answers, then the launcher for a live store', async () => {
     const store = makeStore();
-    let answer: (visibility: StoreVisibility) => void = () => undefined;
+    let answer: (check: StoreCheck) => void = () => undefined;
     current.visibility = new Promise((resolve) => {
       answer = resolve;
     });
     const widget = mount(store.owner.pubkey);
     expect(checked).toEqual([store.owner.pubkey]);
     expect(launcherOf(widget)).toBeNull();
-    answer('show');
+    answer({ visibility: 'show' });
     await waitFor(() => launcherOf(widget) !== null);
+  });
+
+  it("puts the store's launcher text on before the launcher appears, with no chat client", async () => {
+    let answer: (check: StoreCheck) => void = () => undefined;
+    current.visibility = new Promise((resolve) => {
+      answer = resolve;
+    });
+    current.client = undefined;
+    const widget = mount(makeStore().owner.pubkey);
+    const shadow = widget.shadowRoot;
+    if (!shadow) {
+      throw new Error('no shadow root');
+    }
+    const labelsAtReveal: Array<string | null | undefined> = [];
+    const replace = shadow.replaceChildren.bind(shadow);
+    vi.spyOn(shadow, 'replaceChildren').mockImplementation((...nodes) => {
+      for (const node of nodes) {
+        if (node instanceof HTMLElement && node.classList.contains('launcher')) {
+          labelsAtReveal.push(node.querySelector('.launcher-label')?.textContent);
+        }
+      }
+      replace(...nodes);
+    });
+    answer({ visibility: 'show', launcherText: 'Ask our stylist' });
+    await waitFor(() => launcherOf(widget) !== null);
+    expect(labelsAtReveal).toEqual(['Ask our stylist']);
+    expect(launcherOf(widget)?.querySelector('.launcher-label')?.textContent).toBe(
+      'Ask our stylist',
+    );
+    expect(current.client).toBeUndefined();
   });
 
   it('a pending store shows no launcher and no panel, and says so once in the console', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
-    current.visibility = Promise.resolve('hide');
+    current.visibility = Promise.resolve({ visibility: 'hide' });
     const widget = mount(makeStore().owner.pubkey);
     await waitFor(() => info.mock.calls.length > 0);
     expect(widget.shadowRoot?.childNodes).toHaveLength(0);
@@ -101,7 +135,7 @@ describe('<askr-chat> for a store that is not active (B)', () => {
     const gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
     gateway.mode = 'unavailable';
     current.gateway = gateway;
-    current.visibility = Promise.resolve('show');
+    current.visibility = Promise.resolve({ visibility: 'show' });
     const widget = mount(store.owner.pubkey);
     await waitFor(() => launcherOf(widget) !== null);
     launcherOf(widget)?.click();
@@ -112,20 +146,20 @@ describe('<askr-chat> for a store that is not active (B)', () => {
   });
 
   it('an element taken off the page before the check answers renders nothing', async () => {
-    let answer: (visibility: StoreVisibility) => void = () => undefined;
+    let answer: (check: StoreCheck) => void = () => undefined;
     current.visibility = new Promise((resolve) => {
       answer = resolve;
     });
     const widget = mount(makeStore().owner.pubkey);
     widget.remove();
-    answer('show');
+    answer({ visibility: 'show' });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(widget.shadowRoot?.childNodes).toHaveLength(0);
   });
 
   it('says so in the console once, however often the element is hidden', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
-    current.visibility = Promise.resolve('hide');
+    current.visibility = Promise.resolve({ visibility: 'hide' });
     const widget = mount(makeStore().owner.pubkey);
     await waitFor(() => info.mock.calls.length > 0);
     widget.remove();
@@ -140,7 +174,7 @@ describe('<askr-chat> for a store that is not active (B)', () => {
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const owner = makeStore().owner.pubkey;
     sessionStorage.setItem(`askr:open:${owner}`, '1');
-    current.visibility = Promise.resolve('hide');
+    current.visibility = Promise.resolve({ visibility: 'hide' });
     mount(owner);
     await waitFor(() => sessionStorage.getItem(`askr:open:${owner}`) === null);
   });
@@ -161,7 +195,7 @@ describe('<askr-chat> for a store that is not active (B)', () => {
       return open(owner, visitor);
     };
     current.gateway = gateway;
-    current.visibility = Promise.resolve('show');
+    current.visibility = Promise.resolve({ visibility: 'show' });
     const search = document.createElement('input');
     document.body.append(search);
     search.focus();
@@ -180,7 +214,7 @@ describe('<askr-chat> for a store that is not active (B)', () => {
     current.relay = new FakeRelay();
     publishStore(current.relay, store);
     current.gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
-    current.visibility = Promise.resolve('show');
+    current.visibility = Promise.resolve({ visibility: 'show' });
     const widget = mount(store.owner.pubkey);
     await waitFor(() => launcherOf(widget) !== null);
     launcherOf(widget)?.click();

@@ -122,6 +122,54 @@ describe('askr init', () => {
     expect(added.map((event) => event.kind)).toEqual([askr.KIND_CONFIG]);
   });
 
+  it('--launcher-text signs the chat button text, keeps it when left out and clears it with ""', async () => {
+    const { fake, run } = await harness();
+    function latestConfig(): NostrEvent | undefined {
+      return postedEvents(fake.calls)
+        .filter((event) => event.kind === askr.KIND_CONFIG)
+        .at(-1);
+    }
+    function latestText(): string | undefined {
+      const latest = latestConfig();
+      return latest === undefined ? undefined : askr.parseConfig(latest)?.launcherText;
+    }
+    const created = await run(initInvocation({ launcherText: ' Ask us ' }), INIT_ARGS);
+    expect(created.exitCode).toBe(0);
+    expect(latestText()).toBe('Ask us');
+    const changed = await run({ command: 'init', options: { launcherText: 'Ask our guide' } }, [
+      'init',
+    ]);
+    expect(changed.output).toMatchObject({ config: 'signed' });
+    expect(latestText()).toBe('Ask our guide');
+    const kept = await run({ command: 'init', options: { greeting: 'Hi' } }, ['init']);
+    expect(kept.output).toMatchObject({ config: 'signed' });
+    expect(latestText()).toBe('Ask our guide');
+    const cleared = await run({ command: 'init', options: { launcherText: '' } }, ['init']);
+    expect(cleared.output).toMatchObject({ config: 'signed' });
+    expect(latestConfig()?.tags.some((tag) => tag[0] === 'launcher-text')).toBe(false);
+  });
+
+  it('a --launcher-text of exactly the limit is signed', async () => {
+    const { fake, run } = await harness();
+    const atLimit = 'a'.repeat(askr.LIMITS.LAUNCHER_TEXT_CHARS);
+    const outcome = await run(initInvocation({ launcherText: atLimit }), INIT_ARGS);
+    expect(outcome.exitCode).toBe(0);
+    const config = postedEvents(fake.calls)
+      .filter((event) => event.kind === askr.KIND_CONFIG)
+      .at(-1);
+    expect(config?.tags.filter((tag) => tag[0] === 'launcher-text')).toEqual([
+      ['launcher-text', atLimit],
+    ]);
+  });
+
+  it('a --launcher-text over the limit is invalid_flag, nothing posted', async () => {
+    const { fake, run } = await harness();
+    const outcome = await run(initInvocation({ launcherText: 'a'.repeat(25) }), INIT_ARGS);
+    expect(outcome).toMatchObject({ exitCode: 1, output: { error: { code: 'invalid_flag' } } });
+    expect(JSON.stringify(outcome.output)).toContain('--launcher-text');
+    expect(postedEvents(fake.calls)).toHaveLength(0);
+  });
+
   it('signs only the 30497 when the authorization is missing and the config is unchanged', async () => {
     const { fake, run } = await harness();
     await run(initInvocation(), INIT_ARGS);

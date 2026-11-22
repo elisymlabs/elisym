@@ -37,6 +37,7 @@ export {
   buildConfigEventWith,
   decryptPrivateConfig,
   decryptPrivateConfigWith,
+  isLauncherText,
   normalizeShopUrl,
   parseConfig,
 } from './events/config';

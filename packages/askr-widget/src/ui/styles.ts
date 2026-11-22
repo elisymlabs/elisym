@@ -72,6 +72,7 @@ button:disabled { cursor: default; opacity: 0.4; }
   border: 1px solid var(--cc-border); border-radius: 15px; background: var(--cc-bg);
   color: var(--cc-text); box-shadow: 0 14px 32px -12px rgba(0, 0, 0, 0.35), 0 2px 6px rgba(0, 0, 0, 0.06);
   text-align: left; white-space: nowrap; position: relative; overflow: hidden; isolation: isolate;
+  max-width: calc(100vw - 32px);
   transition: border-color 0.25s ease;
   animation: askr-pop 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
@@ -81,8 +82,14 @@ button:disabled { cursor: default; opacity: 0.4; }
 .launcher:hover { border-color: color-mix(in srgb, var(--cc-muted) 55%, var(--cc-border)); }
 .launcher:focus-visible { outline: 2px solid var(--cc-text); outline-offset: 3px; }
 .launcher-mark { display: block; flex: none; width: 30px; height: 30px; margin-top: -2px; }
-.launcher-text { display: flex; flex-direction: column; gap: 1px; }
-.launcher-label { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; }
+/* A store's own text with unusually wide glyphs ends in an ellipsis inside the screen. */
+.launcher-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.launcher-label {
+  font-size: 14px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis;
+  /* Room for tall stacked marks (Thai, Vietnamese) the clip would cut, at the same size. */
+  padding-block: 2px; margin-block: -2px;
+}
 .launcher-hint { font-size: 11.5px; color: var(--cc-muted); line-height: 1.2; }
 /* On a narrow screen the words leave the screen but not the button's name. */
 @media (max-width: 480px) {

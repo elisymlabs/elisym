@@ -25,6 +25,7 @@ export interface StoreForm {
   linkOrigins: string;
   displayName: string;
   greeting: string;
+  launcherText: string;
   contact: string;
   source: ProductSourceKind;
   platform: ConnectorPlatform;
@@ -71,6 +72,7 @@ export const EMPTY_FORM: StoreForm = {
   linkOrigins: '',
   displayName: '',
   greeting: '',
+  launcherText: '',
   contact: '',
   source: 'admin',
   platform: 'shopify',
@@ -98,6 +100,7 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   name: 'Store name',
   displayName: 'Assistant name',
   greeting: 'Greeting',
+  launcherText: 'Chat button text',
   language: 'Language',
   currency: 'Currency',
   source: 'Product source',
@@ -228,6 +231,7 @@ export function configInputOf(
   }
   const displayName = optional(form.displayName);
   const greeting = optional(form.greeting);
+  const launcherText = optional(form.launcherText);
   const contact = optional(form.contact);
   const input: StoreConfigInput = {
     assistant: keys.assistant,
@@ -241,6 +245,7 @@ export function configInputOf(
     ...(policyKey === catalogKey ? {} : { policyKey }),
     ...(displayName === undefined ? {} : { displayName }),
     ...(greeting === undefined ? {} : { greeting }),
+    ...(launcherText === undefined ? {} : { launcherText }),
     ...(contact === undefined ? {} : { contact }),
     private: { voice: form.voice, instructions: form.instructions, notes: form.notes },
     createdAt,
@@ -309,6 +314,7 @@ export function formOfConfig(
     linkOrigins: config.linkOrigins.join('\n'),
     displayName: config.displayName ?? '',
     greeting: config.greeting ?? '',
+    launcherText: config.launcherText ?? '',
     contact: config.contact ?? '',
     source: config.source.kind,
     platform,

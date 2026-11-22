@@ -44,7 +44,7 @@ afterEach(async () => {
 
 const PRIVATE_PART = { voice: 'calm', instructions: 'Recommend oolong.', notes: 'Berlin' };
 
-function publishedConfig(createdAt: number): NostrEvent {
+function publishedConfig(createdAt: number, launcherText?: string): NostrEvent {
   return finalizeEvent(
     {
       ...buildConfigEvent(
@@ -57,6 +57,7 @@ function publishedConfig(createdAt: number): NostrEvent {
           source: { kind: 'admin' },
           catalogKey: SERVER_KEY,
           private: PRIVATE_PART,
+          ...(launcherText === undefined ? {} : { launcherText }),
         },
         OWNER_KEY,
       ),
@@ -150,6 +151,28 @@ describe('the settings save', () => {
     // The section reads the config this save signed; the message stays.
     await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length === 1);
     expect(container.textContent).toContain(copy);
+  });
+
+  it('the chat button text sits in the Assistant group and reaches the saved config', async () => {
+    const event = publishedConfig(NOW - 100);
+    const deps = sessionDeps(fakeApi(), fakeReader([event]));
+    const { container } = await mountSettings({ deps, config: configOf(event) });
+    const field = byId(container, 'store-launcher-text');
+    expect(field.closest('fieldset')?.getAttribute('aria-labelledby')).toBe(
+      'group-assistant-title',
+    );
+    await typeInto(field, 'Ask our tea expert');
+    await click(buttonNamed(container, 'Sign and save'));
+    await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length === 1);
+    expect(tagOf(storedEvents(deps, 0)[0], 'launcher-text')).toBe('Ask our tea expert');
+  });
+
+  it("the chat button text field opens on the saved config's text", async () => {
+    const event = publishedConfig(NOW - 100, 'Ask our tea expert');
+    const deps = sessionDeps(fakeApi(), fakeReader([event]));
+    const { container } = await mountSettings({ deps, config: configOf(event) });
+    const field = byId(container, 'store-launcher-text');
+    expect(field instanceof HTMLInputElement ? field.value : undefined).toBe('Ask our tea expert');
   });
 
   it('dates a second save after the first, even before the relay shows the first', async () => {

@@ -16,6 +16,7 @@ import {
   EMPTY_FORM,
   FormError,
   type StoreForm,
+  configInputOf,
   formOfConfig,
   parseOrigins,
   signStoreEvents,
@@ -307,5 +308,39 @@ describe('the onboarding events', () => {
   it('dates the authorization it signs with the date it is given', async () => {
     const [, auth] = await sign(BASE_FORM, { authCreatedAt: NOW + 77 });
     expect(auth?.created_at).toBe(NOW + 77);
+  });
+});
+
+describe('the chat button text', () => {
+  const KEYS = { assistant, serverKey };
+
+  it('trims it, drops a blank one and names the field when it is too long', () => {
+    expect(
+      configInputOf({ ...BASE_FORM, launcherText: '  Ask us  ' }, KEYS, NOW).launcherText,
+    ).toBe('Ask us');
+    expect(configInputOf({ ...BASE_FORM, launcherText: '   ' }, KEYS, NOW)).not.toHaveProperty(
+      'launcherText',
+    );
+    expect(() => configInputOf({ ...BASE_FORM, launcherText: 'a'.repeat(25) }, KEYS, NOW)).toThrow(
+      FormError,
+    );
+    expect(() => configInputOf({ ...BASE_FORM, launcherText: 'a'.repeat(25) }, KEYS, NOW)).toThrow(
+      /^Chat button text:/u,
+    );
+  });
+
+  it('reads it back from the config and keeps it on the next save', async () => {
+    const [config] = await sign({ ...BASE_FORM, launcherText: 'Ask our tea expert' });
+    const parsed = config === undefined ? undefined : parseConfig(config);
+    if (parsed === undefined) {
+      throw new Error('config does not parse');
+    }
+    const form = formOfConfig(parsed, { voice: '', instructions: '', notes: '' });
+    expect(form.launcherText).toBe('Ask our tea expert');
+    const [saved] = await sign(form);
+    expect(saved === undefined ? undefined : tag(saved, 'launcher-text')).toEqual([
+      'launcher-text',
+      'Ask our tea expert',
+    ]);
   });
 });

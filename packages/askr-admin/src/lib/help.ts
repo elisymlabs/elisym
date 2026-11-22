@@ -89,6 +89,10 @@ export const HELP = {
     text: `The first message a visitor sees when the chat opens, up to ${LIMITS.GREETING_CHARS} characters. It is shown as you write it, in any language. Leave it empty for a short greeting in the visitor’s language.`,
     anchor: 'greeting',
   },
+  launcherText: {
+    text: `The text on the button that opens the chat, in place of "Ask AI", up to ${LIMITS.LAUNCHER_TEXT_CHARS} characters. It is shown as you write it for every visitor, and the button's second line is hidden while it is set. Leave it empty for "Ask AI" in the visitor’s language.`,
+    anchor: 'chat-button-text',
+  },
   contact: {
     text: 'A page where visitors reach a person, such as your contact form, as an https address. The chat links to it when the assistant is unavailable, for example when the budget is used up or the visitor reached the day\u2019s question limit.',
     anchor: 'contact-url',

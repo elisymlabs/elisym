@@ -1,3 +1,4 @@
+import { LIMITS } from '@elisym/askr';
 import { HELP } from '../lib/help';
 import { PLATFORM_OPTIONS, SOURCE_OPTIONS, platformOf, sourceKindOf } from '../lib/labels';
 import { npubOf } from '../lib/signer';
@@ -77,6 +78,14 @@ export function StoreFields({ form, onChange }: Props) {
           label="Greeting (optional)"
           value={form.greeting}
           onChange={(value) => set('greeting', value)}
+        />
+        <TextField
+          id="store-launcher-text"
+          info={HELP.launcherText}
+          label="Chat button text (optional)"
+          value={form.launcherText}
+          hint={`Up to ${LIMITS.LAUNCHER_TEXT_CHARS} characters. Empty shows "Ask AI" in the visitor's language.`}
+          onChange={(value) => set('launcherText', value)}
         />
         <TextField
           id="store-contact"

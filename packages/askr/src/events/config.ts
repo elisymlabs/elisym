@@ -8,6 +8,7 @@ import {
   type ConnectorPlatform,
   KIND_CONFIG,
   LIMITS,
+  LONE_SURROGATE_RE,
   PRODUCT_SOURCES,
   type ProductSourceKind,
 } from '../constants';
@@ -37,6 +38,8 @@ export interface StoreConfig {
   name: string;
   displayName?: string;
   greeting?: string;
+  /** Replaces the launcher button's default text, shown as written. */
+  launcherText?: string;
   /** BCP 47 language of the catalog. */
   language: string;
   /** ISO 4217: the store's one currency. */
@@ -105,6 +108,13 @@ export const StoreConfigInputSchema = z.object({
   name: z.string().min(1).max(LIMITS.TITLE_CHARS),
   displayName: z.string().min(1).max(LIMITS.TITLE_CHARS).optional(),
   greeting: z.string().min(1).max(LIMITS.GREETING_CHARS).optional(),
+  launcherText: z
+    .string()
+    .min(1)
+    .max(LIMITS.LAUNCHER_TEXT_CHARS)
+    .refine((value) => value.trim() !== '', 'not blank')
+    .refine((value) => !LONE_SURROGATE_RE.test(value), 'well-formed text')
+    .optional(),
   language: z.string().regex(LANGUAGE_RE).max(LIMITS.LOCALE_CHARS),
   currency: z.string().regex(CURRENCY_RE),
   source: z.object({
@@ -211,6 +221,9 @@ function configTemplate(input: StoreConfigInput): {
   if (config.greeting !== undefined) {
     tags.push(['greeting', config.greeting]);
   }
+  if (config.launcherText !== undefined) {
+    tags.push(['launcher-text', config.launcherText]);
+  }
   if (config.contact !== undefined) {
     tags.push(['contact', config.contact]);
   }
@@ -243,6 +256,18 @@ function isConnectorPlatform(value: string | undefined): value is ConnectorPlatf
 function single(tags: NostrEvent['tags'], name: string): string | undefined {
   const matches = tagsNamed(tags, name);
   return matches.length === 1 ? matches[0]?.[1] : undefined;
+}
+
+/**
+ * A store's chat button text a reader accepts: non-blank, within the limit and
+ * well formed (a lone surrogate would make `encodeURIComponent` throw).
+ */
+export function isLauncherText(value: string): boolean {
+  return (
+    value.trim() !== '' &&
+    value.length <= LIMITS.LAUNCHER_TEXT_CHARS &&
+    !LONE_SURROGATE_RE.test(value)
+  );
 }
 
 function originsFrom(values: string[]): string[] | undefined {
@@ -341,6 +366,10 @@ export function parseConfig(
   const greeting = single(tags, 'greeting');
   if (greeting && greeting.length <= LIMITS.GREETING_CHARS) {
     config.greeting = greeting;
+  }
+  const launcherText = single(tags, 'launcher-text');
+  if (launcherText !== undefined && isLauncherText(launcherText)) {
+    config.launcherText = launcherText;
   }
   const contact = single(tags, 'contact');
   if (contact?.startsWith('https://') && contact.length <= LIMITS.TAG_VALUE_CHARS) {

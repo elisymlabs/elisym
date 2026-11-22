@@ -6,7 +6,7 @@ const calls = vi.hoisted(() => ({ deps: [] as unknown[] }));
 vi.mock('../src/store-check', () => ({
   checkStore: vi.fn(async (_owner: string, deps: unknown) => {
     calls.deps.push(deps);
-    return 'show';
+    return { visibility: 'show' };
   }),
 }));
 
@@ -14,7 +14,7 @@ describe('checkBrowserStore', () => {
   it('checks against the real relay and gateway and keeps its decision in sessionStorage', async () => {
     const { checkBrowserStore } = await import('../src/browser-client');
     const { connectNostrRelay } = await import('../src/relay');
-    expect(await checkBrowserStore('a'.repeat(64))).toBe('show');
+    expect(await checkBrowserStore('a'.repeat(64))).toEqual({ visibility: 'show' });
     const [deps] = calls.deps as StoreCheckDeps[];
     expect(deps?.connect).toBe(connectNostrRelay);
     expect(typeof deps?.gateway.openSession).toBe('function');

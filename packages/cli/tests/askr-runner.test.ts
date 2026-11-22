@@ -104,6 +104,24 @@ describe('askr plan parsing', () => {
   });
 });
 
+describe('askr init parsing', () => {
+  it('passes --launcher-text as the launcherText option', async () => {
+    const seen: unknown[] = [];
+    const argv = ['askr', 'init', '--launcher-text', 'Ask us'];
+    const program = new Command().name('elisym');
+    registerAskr(
+      program,
+      async (invocation) => {
+        seen.push(invocation);
+      },
+      argv.slice(1),
+      true,
+    );
+    await program.parseAsync(['node', 'elisym', ...argv]);
+    expect(seen).toMatchObject([{ command: 'init', options: { launcherText: 'Ask us' } }]);
+  });
+});
+
 describe('the askr output contract', () => {
   it('an unknown flag and a missing value are one JSON object, exit 1, nothing on stderr', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

@@ -4,7 +4,7 @@ import { decode } from 'nostr-tools/nip19';
 import { type ChatClient, type ChatSnapshot, type ChatTurn } from '../client';
 import { ELEMENT_NAME, PANEL_OPEN_PREFIX } from '../constants';
 import { readItem, removeItem, storageArea, writeItem } from '../storage';
-import type { StoreVisibility } from '../store-check';
+import type { StoreCheck } from '../store-check';
 import { renderAnswer } from './answer-view';
 import { element, httpsUrl } from './dom';
 import { animateMark, createMark } from './mark';
@@ -29,7 +29,7 @@ export function parseStoreKey(value: string | null): string | undefined {
 export type ClientFactory = (owner: string) => ChatClient;
 
 /** Whether the widget shows for a store at all, asked before its launcher appears (B). */
-export type StoreChecker = (owner: string) => Promise<StoreVisibility>;
+export type StoreChecker = (owner: string) => Promise<StoreCheck>;
 
 /** Logged once per element when it shows nothing for its store. */
 export const HIDDEN_NOTICE =
@@ -63,6 +63,8 @@ export class WidgetView {
   private language: string;
   private readonly turnViews = new Map<string, TurnView>();
   private config: StoreConfig | undefined;
+  /** The store's own launcher text: from the store check first, then from each config. */
+  private launcherText: string | undefined;
 
   /**
    * @param languageHints the page's say on the language, strongest first (the snippet's
@@ -141,13 +143,12 @@ export class WidgetView {
 
   /** Every fixed text in the current language: run at start and when the language changes. */
   private applyTexts(): void {
-    // Only the widget's own texts carry its language: the store's greeting and the answers
-    // keep the page's, which is what they are written in more often.
-    for (const own of [this.launcher, this.header, this.status, this.composer, this.footer]) {
+    // Only the widget's own texts carry its language: the store's greeting, its launcher text
+    // and the answers keep the page's, which is what they are written in more often.
+    for (const own of [this.launcherHint, this.header, this.status, this.composer, this.footer]) {
       own.lang = this.language;
     }
-    this.launcherLabel.textContent = STRINGS.launcher;
-    this.launcherHint.textContent = STRINGS.launcherHint;
+    this.applyLauncherTexts();
     this.aiLabel.textContent = STRINGS.aiLabel;
     this.close.setAttribute('aria-label', STRINGS.close);
     this.greeting.textContent = this.config?.greeting ?? STRINGS.greeting;
@@ -156,12 +157,40 @@ export class WidgetView {
     this.poweredBy.textContent = STRINGS.poweredBy;
   }
 
+  /**
+   * The launcher's words: the store's own text as written, laid out by its own direction and
+   * without the hint line; without one, "Ask AI" and the hint in the widget's language.
+   */
+  private applyLauncherTexts(): void {
+    this.launcherHint.textContent = STRINGS.launcherHint;
+    if (this.launcherText === undefined) {
+      this.launcherLabel.textContent = STRINGS.launcher;
+      this.launcherLabel.lang = this.language;
+      this.launcherLabel.removeAttribute('dir');
+      this.launcherHint.hidden = false;
+      return;
+    }
+    this.launcherLabel.textContent = this.launcherText;
+    this.launcherLabel.removeAttribute('lang');
+    this.launcherLabel.dir = 'auto';
+    this.launcherHint.hidden = true;
+  }
+
+  /** The store's launcher text known before the chat opens (from the store check), if any. */
+  setLauncherText(text: string | undefined): void {
+    applyLanguage(this.language);
+    this.launcherText = text;
+    this.applyLauncherTexts();
+  }
+
   update(snapshot: ChatSnapshot): void {
     // The texts object is one per page: take this widget's language back before drawing.
     applyLanguage(this.language);
     this.footer.hidden = !snapshot.branding;
     if (snapshot.config && snapshot.config !== this.config) {
       this.config = snapshot.config;
+      // A config is fresher than the store check: its text, or none, wins.
+      this.launcherText = snapshot.config.launcherText;
       this.name.textContent = assistantDisplayName(snapshot.config);
       // The store's language counts when the page says nothing the widget speaks.
       const language = resolveLanguage([...this.languageHints(), snapshot.config.language]);
@@ -404,15 +433,17 @@ export function defineAskrElement(
       }
       shadow.replaceChildren();
       checkStore(owner)
-        .catch((): StoreVisibility => 'show')
-        .then((visibility) => {
+        .catch((): StoreCheck => ({ visibility: 'show' }))
+        .then((check) => {
           if (this.view !== view) {
             return;
           }
-          if (visibility === 'hide') {
+          if (check.visibility === 'hide') {
             this.hideAll();
             return;
           }
+          // Before the launcher appears, so it never shows "Ask AI" first.
+          view.setLauncherText(check.launcherText);
           this.reveal(view, owner);
         })
         .catch(() => undefined);
