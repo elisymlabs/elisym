@@ -149,6 +149,19 @@ describe('askr init', () => {
     expect(latestConfig()?.tags.some((tag) => tag[0] === 'launcher-text')).toBe(false);
   });
 
+  it('a --launcher-text of exactly the limit is signed', async () => {
+    const { fake, run } = await harness();
+    const atLimit = 'a'.repeat(askr.LIMITS.LAUNCHER_TEXT_CHARS);
+    const outcome = await run(initInvocation({ launcherText: atLimit }), INIT_ARGS);
+    expect(outcome.exitCode).toBe(0);
+    const config = postedEvents(fake.calls)
+      .filter((event) => event.kind === askr.KIND_CONFIG)
+      .at(-1);
+    expect(config?.tags.filter((tag) => tag[0] === 'launcher-text')).toEqual([
+      ['launcher-text', atLimit],
+    ]);
+  });
+
   it('a --launcher-text over the limit is invalid_flag, nothing posted', async () => {
     const { fake, run } = await harness();
     const outcome = await run(initInvocation({ launcherText: 'a'.repeat(25) }), INIT_ARGS);

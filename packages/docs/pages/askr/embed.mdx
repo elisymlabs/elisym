@@ -39,7 +39,7 @@ Do not add an `integrity` attribute to `/widget.js`: it changes with each releas
 ></script>
 ```
 
-The path names the bundle by its SHA-384, and the browser runs it only if it matches `integrity`. It never changes under you, and the server keeps serving it after later releases. The trade-off: fixes and new features do not reach a pinned page until you paste a newer snippet from the admin. For example, a version pinned before the chat button text existed always shows "Ask AI": copy the current pinned snippet from the admin's **Embed** page to show your text. The bundle is the whole widget: it loads no other script.
+The path names the bundle by its SHA-384, and the browser runs it only if it matches `integrity`. It never changes under you, and the server keeps serving it after later releases. The trade-off: fixes and new features do not reach a pinned page until you paste a newer snippet from the admin. For example, a version pinned before the chat button text existed always shows "Ask AI": copy the current pinned snippet from the admin's **Embed** tab to show your text. The bundle is the whole widget: it loads no other script.
 
 The current pinned path and integrity are also at `https://app.askr.elisym.network/v1/widget`, as `{ "path": "/widget/<id>.js", "integrity": "sha384-..." }`.
 

@@ -12,6 +12,8 @@ describe('the launcher stylesheet', () => {
     expect(ruleBody('.launcher')).toContain('max-width: calc(100vw - 32px);');
     expect(ruleBody('.launcher-label')).toContain('text-overflow: ellipsis;');
     expect(ruleBody('.launcher-label')).toContain('overflow: hidden;');
+    // The clip keeps room for tall stacked marks without growing the label.
+    expect(ruleBody('.launcher-label')).toContain('padding-block: 2px; margin-block: -2px;');
     expect(ruleBody('.launcher-text')).toContain('min-width: 0;');
   });
 });

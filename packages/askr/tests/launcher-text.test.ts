@@ -56,6 +56,8 @@ describe('store config launcher text', () => {
   it('parses a valid tag and ignores a bad one while keeping the rest of the config', () => {
     const valid = parseConfig(signedWithTags([['launcher-text', 'Ask us']]));
     expect(valid?.launcherText).toBe('Ask us');
+    const atLimit = 'a'.repeat(LIMITS.LAUNCHER_TEXT_CHARS);
+    expect(parseConfig(signedWithTags([['launcher-text', atLimit]]))?.launcherText).toBe(atLimit);
     const ignored: NostrEvent['tags'][] = [
       [['launcher-text', 'a'.repeat(25)]],
       [['launcher-text', '   ']],

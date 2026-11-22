@@ -87,6 +87,8 @@ button:disabled { cursor: default; opacity: 0.4; }
 .launcher-label {
   font-size: 14px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2;
   overflow: hidden; text-overflow: ellipsis;
+  /* Room for tall stacked marks (Thai, Vietnamese) the clip would cut, at the same size. */
+  padding-block: 2px; margin-block: -2px;
 }
 .launcher-hint { font-size: 11.5px; color: var(--cc-muted); line-height: 1.2; }
 /* On a narrow screen the words leave the screen but not the button's name. */

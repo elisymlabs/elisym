@@ -175,6 +175,16 @@ describe("the store's launcher text", () => {
     expect(hint(widget).hidden).toBe(false);
   });
 
+  it('restores its own language default though a later widget speaks another', () => {
+    const english = view(['en']);
+    english.setLauncherText('Ask our stylist');
+    view(['ru']);
+    english.setLauncherText(undefined);
+    expect(label(english).textContent).toBe('Ask AI');
+    expect(hint(english).textContent).toBe('About any product here');
+    expect(hint(english).hidden).toBe(false);
+  });
+
   it('renders markup as literal text', () => {
     const widget = view(['en']);
     widget.setLauncherText('<img src=x onerror=alert(1)>');
