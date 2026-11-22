@@ -11,4 +11,5 @@ export const WIDGET_TEXT = {
   thinking: 'Thinking...',
   addToCart: 'Add to cart',
   added: 'Added',
+  recommended: 'Recommended',
 };

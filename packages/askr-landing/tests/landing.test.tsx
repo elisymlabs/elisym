@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { act } from 'react';
 import { type Root, createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { LIMITS } from '../../askr/src/constants';
 import { App } from '../src/App';
 import {
   ADMIN_URL,
@@ -18,7 +19,7 @@ import {
   X_URL,
 } from '../src/constants';
 import { PHOTOS } from '../src/media';
-import { NICHES } from '../src/niches';
+import { FEATURES_COMPARISON, NICHES } from '../src/niches';
 import { embedSnippet } from '../src/snippets';
 
 declare global {
@@ -312,15 +313,73 @@ describe('the page structure', () => {
     }
   });
 
-  it('each niche answer names no price but those on its cards or the budget asked', () => {
+  it('each niche answer names no price but those shown so far or the budget asked', () => {
+    const dollars = (text: string) => [...text.matchAll(/\$(\d+)/g)].map((match) => match[1]);
+    const amounts = (text: string) =>
+      [...text.matchAll(/(\d+)\.\d\d USD/g)].map((match) => match[1]);
     for (const niche of NICHES) {
-      const asked = [...niche.question.matchAll(/\$(\d+)/g)].map((match) => match[1]);
-      const onCards = niche.cards.map((card) => card.product.price.split('.')[0]);
-      for (const match of niche.answer.matchAll(/\$(\d+)/g)) {
+      const asked: (string | undefined)[] = [];
+      const shown: (string | undefined)[] = [];
+      for (const turn of niche.turns) {
+        asked.push(...dollars(turn.question));
+        const products = [
+          ...(turn.cards ?? []).map((card) => card.product),
+          ...(turn.comparison?.products ?? []),
+        ];
+        shown.push(...products.map((product) => product.price.split('.')[0]));
+        for (const price of [...dollars(turn.answer), ...amounts(turn.answer)]) {
+          expect(asked.includes(price) || shown.includes(price), `${niche.id}: ${price}`).toBe(
+            true,
+          );
+        }
+      }
+    }
+  });
+
+  it('each niche taps only a chip the answer before it offered', () => {
+    for (const niche of NICHES) {
+      for (const [index, turn] of niche.turns.entries()) {
+        const offered = niche.turns[index - 1]?.chips;
+        if (offered !== undefined) {
+          expect(offered, `${niche.id}: ${turn.question}`).toContain(turn.question);
+        }
+      }
+    }
+  });
+
+  it('compares only as the assistant can: what present_comparison keeps', () => {
+    const comparisons = [
+      { where: 'features', comparison: FEATURES_COMPARISON },
+      ...NICHES.flatMap((niche) =>
+        niche.turns.map((turn) => ({
+          where: `${niche.id}: ${turn.question}`,
+          comparison: turn.comparison,
+        })),
+      ),
+    ];
+    for (const { where, comparison } of comparisons) {
+      if (comparison === undefined) {
+        continue;
+      }
+      const { products, rows, recommended } = comparison;
+      expect(products.length, where).toBeGreaterThanOrEqual(LIMITS.MIN_COMPARISON);
+      expect(products.length, where).toBeLessThanOrEqual(LIMITS.MAX_COMPARISON);
+      expect(new Set(products).size, where).toBe(products.length);
+      // The store adds the price row: the assistant's rows leave room for it and never name it.
+      expect(rows.length, where).toBeGreaterThan(0);
+      expect(rows.length, where).toBeLessThanOrEqual(LIMITS.MAX_COMPARISON_ROWS - 1);
+      for (const row of rows) {
+        const named = `${where}: ${row.dimension}`;
+        expect(row.dimension, named).not.toMatch(/price|cost/i);
+        expect(row.cells, named).toHaveLength(products.length);
+        // The agent drops a row with nothing but dashes or bare numbers.
         expect(
-          asked.includes(match[1]) || onCards.includes(match[1]),
-          `${niche.id}: ${match[0]}`,
-        ).toBe(true);
+          row.cells.every((cell) => /^[\d\s.,'’-]+$/.test(cell)),
+          named,
+        ).toBe(false);
+      }
+      if (recommended !== undefined) {
+        expect(products, where).toContain(recommended);
       }
     }
   });
