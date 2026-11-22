@@ -2,10 +2,19 @@ import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import { nip19 } from 'nostr-tools';
 import * as z from 'zod';
-import { DEFAULT_TURN_RESERVE_USD, positiveUsd } from './config';
+import { DEFAULT_TURN_RESERVE_USD, type FreeTier, positiveUsd } from './config';
+import type { Db } from './db/db';
 import { reserveWarning } from './state/budget';
 import type { StoreDirectory } from './state/stores';
 import type { Tier } from './state/types';
+import {
+  DEFAULT_STATS_DAYS,
+  MAX_STATS_DAYS,
+  type PriceSource,
+  computeStats,
+  formatStats,
+  statsJson,
+} from './stats';
 
 export const CLI_USAGE = `Usage:
   askr-server                                   run the server
@@ -15,9 +24,12 @@ export const CLI_USAGE = `Usage:
   askr-server tier list
   askr-server tier set <name> --messages <n> --monthly <usd>
       --tickets <n> --products <n> --sync-minutes <n> --branding <true|false>
-  askr-server tier delete <name>`;
+  askr-server tier delete <name>
+  askr-server stats [--days <n>] [--json]       stores, plans, usage, cost and health (read-only)`;
 
 const POSITIVE_INT_RE = /^[1-9]\d{0,8}$/;
+const STATS_DAYS_RE = /^[1-9]\d{0,2}$/;
+const JSON_FLAG = '--json';
 const TIER_NAME_RE = /^[a-z0-9-]{1,32}$/;
 const TIER_FLAGS = [
   'messages',
@@ -98,16 +110,83 @@ function tierFrom(name: string, args: readonly string[]): Tier {
 }
 
 /**
- * The operator CLI (7.3, K18, K19): it only writes state and tier and
- * notifies the running server, which then serves the store and publishes its
- * stored events. Returns the text to print; throws on bad input.
+ * Whether the process runs the migrations before the command: the server and every command but
+ * `stats`, which only reads. A newer image's `stats` must not migrate the live database, nor wait
+ * on a deploy's migration lock; on a schema behind it, its read fails instead.
  */
-export async function runCli(
-  args: readonly string[],
-  directory: StoreDirectory,
-  reserveUsd: string = DEFAULT_TURN_RESERVE_USD,
-): Promise<string> {
+export function migratesFirst(args: readonly string[]): boolean {
+  return args[0] !== 'stats';
+}
+
+/** What the CLI works with; `db`, `freeTier`, `loadPrices` and `now` are read by `stats` only. */
+export interface CliDeps {
+  directory: StoreDirectory;
+  db?: Db;
+  freeTier?: FreeTier;
+  /** The plan prices from Stripe; called before the report's transaction opens. */
+  loadPrices?: () => Promise<PriceSource>;
+  /** Unix seconds. */
+  now?: () => number;
+  reserveUsd?: string;
+}
+
+function statsOptions(args: readonly string[]): { days: number; json: boolean } {
+  const jsonFlags = args.filter((arg) => arg === JSON_FLAG).length;
+  if (jsonFlags > 1) {
+    throw new Error(`${JSON_FLAG} is given twice`);
+  }
+  const days = flags(
+    args.filter((arg) => arg !== JSON_FLAG),
+    ['days'],
+  ).get('days');
+  if (days !== undefined && (!STATS_DAYS_RE.test(days) || Number(days) > MAX_STATS_DAYS)) {
+    throw new Error(`--days must be a whole number from 1 to ${MAX_STATS_DAYS}`);
+  }
+  return { days: days === undefined ? DEFAULT_STATS_DAYS : Number(days), json: jsonFlags === 1 };
+}
+
+/** The prices, or why there are none: a failed read never stops the report. */
+async function pricesFrom(load: CliDeps['loadPrices']): Promise<PriceSource> {
+  if (load === undefined) {
+    return { kind: 'off' };
+  }
+  try {
+    return await load();
+  } catch (error) {
+    return { kind: 'failed', message: error instanceof Error ? error.message : 'unknown error' };
+  }
+}
+
+function currentUnixSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+async function stats(args: readonly string[], deps: CliDeps): Promise<string> {
+  const options = statsOptions(args);
+  if (deps.db === undefined) {
+    throw new Error('stats needs the database');
+  }
+  // Read before the snapshot opens, so a slow Stripe call never holds a transaction.
+  const prices = await pricesFrom(deps.loadPrices);
+  const report = await computeStats(deps.db, (deps.now ?? currentUnixSeconds)(), {
+    days: options.days,
+    freeTier: deps.freeTier,
+    prices,
+  });
+  return options.json ? JSON.stringify(statsJson(report), null, 2) : formatStats(report);
+}
+
+/**
+ * The operator CLI (7.3, K18, K19): it writes state and tier and notifies the
+ * running server, which then serves the store and publishes its stored events;
+ * `stats` only reads. Returns the text to print; throws on bad input.
+ */
+export async function runCli(args: readonly string[], deps: CliDeps): Promise<string> {
+  const { directory, reserveUsd = DEFAULT_TURN_RESERVE_USD } = deps;
   const [group, command, subject, ...rest] = args;
+  if (group === 'stats') {
+    return stats(args.slice(1), deps);
+  }
   if (group === 'store' && command === 'list') {
     const stores = await directory.list();
     return stores

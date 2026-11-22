@@ -9,7 +9,8 @@ export const STRIPE_API_VERSION = '2026-10-28.endive';
 /** The self-serve paid plans: each a server tier of the same name and a Stripe product. */
 export const PAID_PLANS = ['starter', 'growth', 'pro', 'scale'] as const;
 export type PaidPlan = (typeof PAID_PLANS)[number];
-export type BillingInterval = 'month' | 'year';
+export const BILLING_INTERVALS = ['month', 'year'] as const;
+export type BillingInterval = (typeof BILLING_INTERVALS)[number];
 
 /** `askr_<tier>_monthly|yearly`, the lookup keys of the eight prices. */
 const LOOKUP_KEY_RE = /^askr_(starter|growth|pro|scale)_(monthly|yearly)$/u;
@@ -26,11 +27,27 @@ export function lookupKeyOf(plan: PaidPlan, interval: BillingInterval): string {
   return `askr_${plan}_${interval === 'month' ? 'monthly' : 'yearly'}`;
 }
 
+/** Every lookup key we sell under, one per plan and interval. */
+const PLAN_LOOKUP_KEYS = PAID_PLANS.flatMap((plan) =>
+  BILLING_INTERVALS.map((interval) => lookupKeyOf(plan, interval)),
+);
+
 /** A price we sell: its id, the plan its product names and how often it bills. */
 export interface PriceInfo {
   id: string;
   plan: PaidPlan;
   interval: BillingInterval;
+}
+
+/** What a plan's price charges, as the operator's `stats` reads it (amounts in minor units). */
+export interface PlanPrice {
+  plan: PaidPlan;
+  interval: BillingInterval;
+  /** Minor units of `currency`; null for a price without a fixed amount. */
+  unitAmount: number | null;
+  /** Lowercase ISO code, as Stripe gives it. */
+  currency: string;
+  taxBehavior: 'inclusive' | 'exclusive' | 'unspecified' | null;
 }
 
 /**
@@ -84,6 +101,11 @@ export interface StripeGateway {
   createPortalSession(params: Stripe.BillingPortal.SessionCreateParams): Promise<{ url: string }>;
   /** The subscription now; undefined when Stripe no longer has it (deleted with the customer's data). */
   subscription(id: string): Promise<SubscriptionSnapshot | undefined>;
+  /**
+   * The price of every plan and interval that has one, archived ones included (a subscription
+   * on an archived price still pays it): one read-only call, for the operator's `stats`.
+   */
+  planPrices(): Promise<PlanPrice[]>;
 }
 
 /** The part of a Stripe price billing reads (its product expanded). */
@@ -160,6 +182,10 @@ export function planOfPrice(price: PriceLike): PriceInfo | undefined {
     return undefined;
   }
   return { id: price.id, plan, interval };
+}
+
+function taxBehaviorOf(value: string | null): PlanPrice['taxBehavior'] {
+  return value === 'inclusive' || value === 'exclusive' || value === 'unspecified' ? value : null;
 }
 
 function currentUnixSeconds(): number {
@@ -262,6 +288,27 @@ export function createStripeGateway(
     async createPortalSession(params) {
       const session = await stripe.billingPortal.sessions.create(params);
       return { url: session.url };
+    },
+    async planPrices() {
+      const prices = await stripe.prices.list({
+        lookup_keys: PLAN_LOOKUP_KEYS,
+        expand: ['data.product'],
+        limit: PLAN_LOOKUP_KEYS.length,
+      });
+      return prices.data.flatMap((price) => {
+        const info = planOfPrice(price);
+        return info === undefined
+          ? []
+          : [
+              {
+                plan: info.plan,
+                interval: info.interval,
+                unitAmount: price.unit_amount,
+                currency: price.currency,
+                taxBehavior: taxBehaviorOf(price.tax_behavior),
+              },
+            ];
+      });
     },
     async subscription(id) {
       try {

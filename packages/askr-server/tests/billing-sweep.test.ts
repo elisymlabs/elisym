@@ -1231,14 +1231,16 @@ describe('the operator activating a billed store', () => {
     const snapshot = subscribe(owner.pubkey);
     await completed(owner.pubkey, snapshot);
     // Suspended while its subscription ended: billing leaves a suspended store alone.
-    expect(await runCli(['store', 'suspend', owner.pubkey], directory)).not.toContain('warning');
+    expect(await runCli(['store', 'suspend', owner.pubkey], { directory })).not.toContain(
+      'warning',
+    );
     subscribe(owner.pubkey, { status: 'canceled' });
     await subscriptionEvent('customer.subscription.deleted', snapshot);
     expect(await statusOf(owner)).toEqual({ status: 'suspended', tier: 'starter' });
-    await expect(runCli(['store', 'activate', owner.pubkey], directory)).rejects.toThrow(
+    await expect(runCli(['store', 'activate', owner.pubkey], { directory })).rejects.toThrow(
       'activate needs --tier',
     );
-    const said = await runCli(['store', 'activate', owner.pubkey, '--tier', 'free'], directory);
+    const said = await runCli(['store', 'activate', owner.pubkey, '--tier', 'free'], { directory });
     expect(said).toBe(
       `${nip19.npubEncode(owner.pubkey)} is active\nwarning: this store's plan was paid through Stripe; with --tier the operator manages it now, and billing no longer changes it (if its subscription is still live, Stripe keeps charging it until you cancel it there)`,
     );
@@ -1246,7 +1248,7 @@ describe('the operator activating a billed store', () => {
     const plain = newOwner();
     await open(plain);
     expect(
-      await runCli(['store', 'activate', plain.pubkey, '--tier', 'pro'], directory),
+      await runCli(['store', 'activate', plain.pubkey, '--tier', 'pro'], { directory }),
     ).not.toContain('warning');
   });
 });

@@ -224,6 +224,7 @@ async function billingRace(db: Db, vault: KeyVault, directory: StoreDirectory): 
         createCheckoutSession: async () => ({ id: 'cs_none', url: null }),
         expireCheckoutSession: async () => undefined,
         createPortalSession: async () => ({ url: '' }),
+        planPrices: async () => [],
         async subscription(id) {
           await sleep(readMs);
           return subscriptions.get(id);
@@ -896,8 +897,8 @@ async function main(): Promise<void> {
     void worker?.refreshLeases().then(() => publisher.run());
   };
   const unlisten = await db.listen(STORES_CHANNEL, onStoresChanged);
-  await runCli(['tier', 'set', 'starter', ...TIER_ARGS], directory);
-  await runCli(['store', 'activate', store.owner, '--tier', 'starter'], directory);
+  await runCli(['tier', 'set', 'starter', ...TIER_ARGS], { directory });
+  await runCli(['store', 'activate', store.owner, '--tier', 'starter'], { directory });
   const published = await waitFor(async () => {
     const pending = await directory.unpublishedEvents();
     return pending.length === 0 ? true : undefined;

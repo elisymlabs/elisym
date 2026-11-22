@@ -7,7 +7,7 @@ import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { createStripeGateway } from './billing/stripe';
-import { runCli } from './cli';
+import { type CliDeps, migratesFirst, runCli } from './cli';
 import {
   billingFromEnv,
   freeTierFromEnv,
@@ -35,6 +35,7 @@ import { poolSyncClient } from './relay/sync-client';
 import { reserveWarning } from './state/budget';
 import { PgState } from './state/pg-state';
 import { StoreDirectory } from './state/stores';
+import type { PriceSource } from './stats';
 import { isListed } from './worker/catalog';
 import { readStoreConfig } from './worker/config-read';
 import { Worker } from './worker/worker';
@@ -241,16 +242,47 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   });
 }
 
+/**
+ * The plan prices for `stats`: off without the Stripe secrets, else one read-only Stripe call.
+ * A secrets setting the server would refuse throws here, and `stats` reports it as a failed read.
+ */
+async function loadPlanPrices(): Promise<PriceSource> {
+  const billingSecrets = billingFromEnv(process.env, (path) => readFileSync(path, 'utf8'));
+  if (billingSecrets === undefined) {
+    return { kind: 'off' };
+  }
+  return {
+    kind: 'loaded',
+    prices: await createStripeGateway(billingSecrets.secretKey).planPrices(),
+  };
+}
+
+function cliDeps(db: Db, vault: KeyVault, args: readonly string[]): CliDeps {
+  const directory = new StoreDirectory(db, vault);
+  const reserveUsd = turnReserveFromEnv(process.env);
+  if (args[0] !== 'stats') {
+    return { directory, reserveUsd };
+  }
+  const freeTier = freeTierFromEnv(process.env);
+  return {
+    directory,
+    reserveUsd,
+    db,
+    ...(freeTier === undefined ? {} : { freeTier }),
+    loadPrices: loadPlanPrices,
+  };
+}
+
 async function main(): Promise<void> {
   const db = createPgDb(required('DATABASE_URL'));
   const vault = new KeyVault(masterKey());
-  await migrate(db);
   const args = process.argv.slice(2);
+  if (migratesFirst(args)) {
+    await migrate(db);
+  }
   if (args.length > 0) {
     try {
-      console.log(
-        await runCli(args, new StoreDirectory(db, vault), turnReserveFromEnv(process.env)),
-      );
+      console.log(await runCli(args, cliDeps(db, vault, args)));
     } finally {
       await db.close();
     }
