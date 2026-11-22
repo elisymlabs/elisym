@@ -8,7 +8,7 @@ import { Session } from '../src/components/Session';
 import { SignIn } from '../src/components/SignIn';
 import { UnlockRemembered } from '../src/components/UnlockRemembered';
 import { ApiError } from '../src/lib/api';
-import { readRemembered, rememberKey, unlockKey } from '../src/lib/remembered';
+import { REMEMBER_NOTE, readRemembered, rememberKey, unlockKey } from '../src/lib/remembered';
 import { type Signer, secretKeySigner } from '../src/lib/signer';
 import {
   NOW,
@@ -99,8 +99,14 @@ describe('a new secret key', () => {
     const { container } = await signInScreen();
     await click(buttonNamed(container, 'Create a secret key'));
     const nsec = /nsec1[02-9ac-hj-np-z]+/.exec(text(container))?.[0] ?? '';
-    const npub = /npub1[02-9ac-hj-np-z]+/.exec(text(container))?.[0] ?? '';
-    await click(buttonNamed(container, 'Download as a file'));
+    const decoded = nip19.decode(nsec);
+    if (decoded.type !== 'nsec') {
+      throw new Error('no key shown');
+    }
+    const npub = nip19.npubEncode(getPublicKey(decoded.data));
+    // The Store ID is not on the key screen (it is in the file, and in the admin).
+    expect(text(container)).not.toContain('npub1');
+    await click(buttonNamed(container, 'Download key file'));
     expect(names).toEqual([`askr-secret-key-${npub.slice(5, 13)}.txt`]);
     const content = (await created[0]?.text()) ?? '';
     expect(content).toContain(`Secret key: ${nsec}`);
@@ -112,8 +118,13 @@ describe('a new secret key', () => {
   it('is remembered on this device by default, sealed, never in plain form', async () => {
     const { container, onSigner } = await signInScreen();
     await click(buttonNamed(container, 'Create a secret key'));
-    expect(inputById(container, 'new-key-remember').checked).toBe(true);
-    expect(text(container)).toContain('Kept encrypted in this browser');
+    const box = inputById(container, 'new-key-remember');
+    expect(box.checked).toBe(true);
+    expect(box.closest('label')?.textContent).toBe('Keep me signed in on this device');
+    // The long note is in its info button here; the screen keeps a short one.
+    expect(container.querySelector('[aria-label="About Remembering the key"]')).not.toBeNull();
+    expect(text(container)).toContain('Clear it on a shared computer.');
+    expect(text(container)).not.toContain('Kept encrypted in this browser');
     const checkboxes = [...container.querySelectorAll('input[type="checkbox"]')];
     const saved = checkboxes.find((box) => box.id === '');
     if (!(saved instanceof HTMLInputElement)) {
@@ -136,7 +147,7 @@ describe('a new secret key', () => {
     const { container, onSigner } = await signInScreen();
     await click(buttonNamed(container, 'Create a secret key'));
     await rememberNot(container, 'new-key');
-    expect(text(container)).not.toContain('Kept encrypted in this browser');
+    expect(text(container)).not.toContain('Clear it on a shared computer.');
     const saved = [...container.querySelectorAll('input[type="checkbox"]')].find(
       (box) => box.id === '',
     );
@@ -155,6 +166,7 @@ describe('signing in with a pasted key and remembering it', () => {
     const first = await signInScreen();
     inputById(first.container, 'owner-key').value = nip19.nsecEncode(OWNER_KEY);
     expect(inputById(first.container, 'sign-in-remember').checked).toBe(true);
+    expect(text(first.container)).toContain(REMEMBER_NOTE);
     expect(first.container.querySelector('input[type="password"]')).toBeNull();
     await click(buttonNamed(first.container, 'Sign in'));
     await settle(() => first.onSigner.mock.calls.length > 0);
@@ -484,7 +496,7 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     if (decoded?.type !== 'nsec') {
       throw new Error('no new key shown');
     }
-    expect(buttonNamed(container, 'Download as a file')).toBeDefined();
+    expect(buttonNamed(container, 'Download key file')).toBeDefined();
     // The new key is not offered to remember before the store moved to it.
     expect(container.querySelector('#new-key-remember')).toBeNull();
     const saved = container.querySelector('input[type="checkbox"]');
@@ -500,6 +512,7 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     await remembered(OLD_KEY);
     const { container, onSigner, newKey } = await toProof(async () => undefined);
     expect(inputById(container, 'moved-key-remember').checked).toBe(true);
+    expect(text(container)).toContain(REMEMBER_NOTE);
     await click(buttonNamed(container, 'Check my site and move the store'));
     await settle(() => onSigner.mock.calls.length > 0);
     const keys = readRemembered().keys;

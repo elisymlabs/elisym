@@ -17,6 +17,7 @@ import { FinishMove } from './FinishMove';
 import { MovedAway } from './MovedAway';
 import { Notice } from './Notice';
 import { Onboarding } from './Onboarding';
+import type { PlanStep } from './PlanSteps';
 import { Shell } from './Shell';
 
 interface Props {
@@ -250,6 +251,13 @@ export function Session({
     );
   const intentProps = intent === undefined ? { onIntentDone } : { intent, onIntentDone };
   if (needsSetup) {
+    // Just paid: the settings are left. A plan chosen and not paid yet: paying is next.
+    let step: PlanStep | undefined;
+    if (billingReturn === 'success') {
+      step = 3;
+    } else if (intent !== undefined) {
+      step = 2;
+    }
     return (
       <Onboarding
         deps={deps}
@@ -258,6 +266,7 @@ export function Session({
         onDone={reloadAll}
         onSignOut={onSignOut}
         billingNotice={billingNotice}
+        {...(step === undefined ? {} : { step })}
         {...intentProps}
       />
     );
