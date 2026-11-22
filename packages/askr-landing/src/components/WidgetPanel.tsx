@@ -11,6 +11,8 @@ interface Props {
   /** The status line under the conversation, as the widget shows it while it waits. */
   status?: ReactNode;
   chips?: readonly string[];
+  /** The chip being tapped, drawn pressed. */
+  pressedChip?: string;
   /** The conversation's scroll box, for keeping the newest message in view. */
   logRef?: Ref<HTMLDivElement>;
   className?: string;
@@ -22,7 +24,15 @@ interface Props {
  */
 
 /** The widget's open panel, drawn as the widget draws it; the conversation goes in `children`. */
-export function WidgetPanel({ name, children, status, chips = [], logRef, className = '' }: Props) {
+export function WidgetPanel({
+  name,
+  children,
+  status,
+  chips = [],
+  pressedChip,
+  logRef,
+  className = '',
+}: Props) {
   return (
     <div aria-hidden="true" className={`wgt wgt-panel wgt-live ${className}`}>
       <div className="wgt-header">
@@ -41,7 +51,11 @@ export function WidgetPanel({ name, children, status, chips = [], logRef, classN
       <div className="wgt-status">{status}</div>
       <div className="wgt-chips">
         {chips.map((chip) => (
-          <span key={chip} data-demo className="wgt-chip">
+          <span
+            key={chip}
+            data-demo
+            className={`wgt-chip ${chip === pressedChip ? 'wgt-chip-pressed' : ''}`}
+          >
             {chip}
           </span>
         ))}

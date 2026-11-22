@@ -246,6 +246,26 @@ body {
   font-weight: 500;
 }
 
+/* The badge on the column the assistant recommends, as the widget draws it. */
+.wgt-label {
+  display: block;
+  width: max-content;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--w-bg);
+  color: var(--w-text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* In the hero's chat a comparison wider than the panel scrolls sideways, with the widget's thin bar. */
+.wgt-live .wgt-table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -467,6 +487,17 @@ body {
   border: 1px solid var(--w-border);
   border-radius: 999px;
   font-size: 12.5px;
+}
+
+/* A chip the drawing's visitor taps: pressed for a moment before its question goes out. */
+.wgt-chip-pressed {
+  border-color: var(--w-text);
+  background: var(--w-surface);
+  transform: scale(0.96);
+  transition:
+    transform 0.15s ease,
+    background-color 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .wgt-composer {

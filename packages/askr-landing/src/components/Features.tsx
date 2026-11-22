@@ -1,20 +1,14 @@
 import type { ReactNode } from 'react';
 import { PRODUCTS } from '../media';
+import { FEATURES_COMPARISON } from '../niches';
 import { DemoTips } from './DemoTips';
 import { Eyebrow } from './Eyebrow';
 import { Reveal } from './Reveal';
 import { WidgetCard } from './WidgetCard';
+import { WidgetComparison } from './WidgetComparison';
 
 /** Each card stops a little lower than the one before, so the stack shows its edges. */
 const STICKY_TOPS = ['top-96', 'top-116', 'top-136', 'top-156', 'top-176'];
-
-const COMPARED = [PRODUCTS.headphonesSand, PRODUCTS.headphonesBlack] as const;
-
-const COMPARE_ROWS = [
-  ['Battery', '32 h', '40 h'],
-  ['Weight', '250 g', '290 g'],
-  ['Warranty', '2 years', '2 years'],
-];
 
 interface Feature {
   title: string;
@@ -58,33 +52,7 @@ const FEATURES: Feature[] = [
       <>
         <p className="wgt-mine">Compare them</p>
         <p className="wgt-theirs">For long flights, the Pulse Pro: 8 more hours on a charge.</p>
-        <div className="wgt-table-scroll">
-          <table className="wgt-table">
-            <thead>
-              <tr>
-                <th />
-                {COMPARED.map((product) => (
-                  <th key={product.title}>{product.title}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <th>Price</th>
-                {COMPARED.map((product) => (
-                  <td key={product.title}>{product.price}</td>
-                ))}
-              </tr>
-              {COMPARE_ROWS.map(([label, first, second]) => (
-                <tr key={label}>
-                  <th>{label}</th>
-                  <td>{first}</td>
-                  <td>{second}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <WidgetComparison comparison={FEATURES_COMPARISON} />
       </>
     ),
   },

@@ -15,6 +15,7 @@ import { LiveMark } from '../src/components/LiveMark';
 import { ScrollWords } from '../src/components/ScrollWords';
 import { ADMIN_URL } from '../src/constants';
 import { NICHES } from '../src/niches';
+import { WIDGET_TEXT } from '../src/widget-text';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -135,7 +136,7 @@ describe('the hero', () => {
       tabs(page).findIndex((tab) => tab.getAttribute('aria-selected') === 'true');
     // One conversation, step by step, so each step's timer is set before the next tick.
     const playThrough = async () => {
-      for (let second = 0; second < 12; second += 1) {
+      for (let second = 0; second < 40; second += 1) {
         await act(async () => {
           vi.advanceTimersByTime(1000);
         });
@@ -262,6 +263,16 @@ describe('the chat drawing', () => {
     expect(pinned).toContain('inset-inline-start: 0');
     expect(pinned).toContain('z-index: 1');
     expect(pinned).toContain('background: linear-gradient(');
+    // The recommended badge as the widget draws it: on the page's ground, in the text colour.
+    const badge = rule('.wgt-label');
+    expect(badge).toContain('background: var(--w-bg)');
+    expect(badge).toContain('color: var(--w-text)');
+    expect(badge).toContain('border-radius: 999px');
+    // A tapped chip looks pressed for a moment: darker edge, shaded, a touch smaller.
+    const tapped = rule('.wgt-chip-pressed');
+    expect(tapped).toContain('border-color: var(--w-text)');
+    expect(tapped).toContain('background: var(--w-surface)');
+    expect(tapped).toContain('transform: scale(0.96)');
     stubMotion(true);
     const page = await render(<App />);
     const tables = [...page.querySelectorAll('#features .wgt-table')];
@@ -269,6 +280,18 @@ describe('the chat drawing', () => {
     for (const table of tables) {
       expect(table.parentElement?.classList.contains('wgt-table-scroll')).toBe(true);
     }
+    const row = (selector: string) =>
+      [...(tables[0]?.querySelectorAll(selector) ?? [])].map((cell) => cell.textContent);
+    expect(row('thead th')).toEqual([
+      '',
+      'Aria ANC headphones',
+      `Pulse Pro headphones${WIDGET_TEXT.recommended}`,
+    ]);
+    expect(row('tbody tr:nth-child(1) > *')).toEqual(['Price', '179.00 USD', '199.00 USD']);
+    expect(row('tbody tr:nth-child(2) > *')).toEqual(['Battery', '32 h', '40 h']);
+    expect(row('tbody tr:nth-child(3) > *')).toEqual(['Weight', '250 g', '290 g']);
+    expect(row('tbody tr:nth-child(4) > *')).toEqual(['Warranty', '2 years', '2 years']);
+    expect(row('tbody tr')).toHaveLength(4);
   });
 
   it('scrolls only in the hero chat, so the page scrolls over the still drawings', async () => {
@@ -285,6 +308,9 @@ describe('the chat drawing', () => {
     expect(rule('.wgt-live .wgt-cards')).toContain('overflow-x: auto');
     expect(rule('.wgt-live .wgt-cards')).toContain('scroll-snap-type: x mandatory');
     expect(rule('.wgt-live .wgt-cards > .wgt-card')).toContain('scroll-snap-align: start');
+    // A comparison wider than the hero's panel scrolls sideways there, as the widget's does.
+    expect(rule('.wgt-live .wgt-table-scroll')).toContain('overflow-x: auto');
+    expect(rule('.wgt-live .wgt-table-scroll')).toContain('scrollbar-width: thin');
     stubMotion(true);
     const page = await render(<App />);
     expect(page.querySelector('#niche-demo .wgt-panel')?.classList.contains('wgt-live')).toBe(true);
