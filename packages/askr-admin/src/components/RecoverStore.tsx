@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../lib/errors';
-import { REMEMBER_NOTE, forgetKey, rememberKey } from '../lib/remembered';
+import { forgetKey, rememberKey } from '../lib/remembered';
 import {
   type OwnerKey,
   type Signer,
@@ -164,9 +164,7 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
             ref={remember}
             id="moved-key"
             label="Remember the new key on this device once the store moved"
-          >
-            {REMEMBER_NOTE}
-          </RememberOption>
+          />
           {error === '' ? null : <Notice tone="error">{error}</Notice>}
           <div className="flex gap-8">
             <button

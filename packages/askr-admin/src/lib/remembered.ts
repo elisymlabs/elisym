@@ -387,7 +387,3 @@ export async function unlockKey(key: RememberedKey): Promise<UnlockOutcome> {
   }
   return { ok: true, secretKey };
 }
-
-/** Said under a ticked remember box on the sign-in and key replacement screens. */
-export const REMEMBER_NOTE =
-  'Kept encrypted in this browser and never sent anywhere. Anyone who can use this browser can sign in as your store, so clear this on a shared computer.';

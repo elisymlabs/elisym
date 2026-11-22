@@ -1,4 +1,4 @@
-import { type ReactNode, type Ref, useImperativeHandle, useState } from 'react';
+import { type Ref, useImperativeHandle, useState } from 'react';
 import { HELP } from '../lib/help';
 import { canRemember } from '../lib/remembered';
 import { InfoTip } from './InfoTip';
@@ -16,12 +16,10 @@ interface Props {
   label: string;
   /** Prefix for the field ids, unique on the page. */
   id: string;
-  /** A note under the checkbox while it is ticked, e.g. `REMEMBER_NOTE`. */
-  children?: ReactNode;
 }
 
 /** Remember a secret key on this device, on unless the merchant clears it. */
-export function RememberOption({ ref, label, id, children }: Props) {
+export function RememberOption({ ref, label, id }: Props) {
   const [available] = useState(canRemember);
   const [on, setOn] = useState(true);
 
@@ -53,9 +51,6 @@ export function RememberOption({ ref, label, id, children }: Props) {
         </label>
         <InfoTip help={HELP.rememberKey} about="Remembering the key" />
       </div>
-      {on && children !== undefined ? (
-        <p className="text-12 text-text-3 pl-21">{children}</p>
-      ) : null}
     </div>
   );
 }

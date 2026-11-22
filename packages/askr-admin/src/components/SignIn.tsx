@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PlanIntent } from '../lib/plan-intent';
-import {
-  REMEMBER_NOTE,
-  type RememberedRead,
-  forgetDamaged,
-  readRemembered,
-  rememberKey,
-} from '../lib/remembered';
+import { type RememberedRead, forgetDamaged, readRemembered, rememberKey } from '../lib/remembered';
 import {
   type OwnerKey,
   type Signer,
@@ -202,9 +196,7 @@ export function SignIn({
           )
         }
       >
-        <RememberOption ref={remember} id="new-key" label="Keep me signed in on this device">
-          Clear it on a shared computer.
-        </RememberOption>
+        <RememberOption ref={remember} id="new-key" label="Keep me signed in on this device" />
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
       </NewOwnerKey>
     );
@@ -292,9 +284,7 @@ export function SignIn({
             }}
           />
         </label>
-        <RememberOption ref={remember} id="sign-in" label="Remember my key on this device">
-          {REMEMBER_NOTE}
-        </RememberOption>
+        <RememberOption ref={remember} id="sign-in" label="Remember my key on this device" />
         <button type="button" className="btn btn-primary" disabled={busy} onClick={pasteKey}>
           {busy ? 'Signing in...' : 'Sign in'}
         </button>

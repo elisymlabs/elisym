@@ -8,7 +8,7 @@ import { Session } from '../src/components/Session';
 import { SignIn } from '../src/components/SignIn';
 import { UnlockRemembered } from '../src/components/UnlockRemembered';
 import { ApiError } from '../src/lib/api';
-import { REMEMBER_NOTE, readRemembered, rememberKey, unlockKey } from '../src/lib/remembered';
+import { readRemembered, rememberKey, unlockKey } from '../src/lib/remembered';
 import { type Signer, secretKeySigner } from '../src/lib/signer';
 import {
   NOW,
@@ -121,10 +121,9 @@ describe('a new secret key', () => {
     const box = inputById(container, 'new-key-remember');
     expect(box.checked).toBe(true);
     expect(box.closest('label')?.textContent).toBe('Keep me signed in on this device');
-    // The long note is in its info button here; the screen keeps a short one.
+    // What remembering means is said only in its info button, never repeated under the box.
     expect(container.querySelector('[aria-label="About Remembering the key"]')).not.toBeNull();
-    expect(text(container)).toContain('Clear it on a shared computer.');
-    expect(text(container)).not.toContain('Kept encrypted in this browser');
+    expect(text(container)).not.toContain('shared computer');
     const checkboxes = [...container.querySelectorAll('input[type="checkbox"]')];
     const saved = checkboxes.find((box) => box.id === '');
     if (!(saved instanceof HTMLInputElement)) {
@@ -166,7 +165,10 @@ describe('signing in with a pasted key and remembering it', () => {
     const first = await signInScreen();
     inputById(first.container, 'owner-key').value = nip19.nsecEncode(OWNER_KEY);
     expect(inputById(first.container, 'sign-in-remember').checked).toBe(true);
-    expect(text(first.container)).toContain(REMEMBER_NOTE);
+    expect(
+      first.container.querySelector('[aria-label="About Remembering the key"]'),
+    ).not.toBeNull();
+    expect(text(first.container)).not.toContain('shared computer');
     expect(first.container.querySelector('input[type="password"]')).toBeNull();
     await click(buttonNamed(first.container, 'Sign in'));
     await settle(() => first.onSigner.mock.calls.length > 0);
@@ -512,7 +514,8 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     await remembered(OLD_KEY);
     const { container, onSigner, newKey } = await toProof(async () => undefined);
     expect(inputById(container, 'moved-key-remember').checked).toBe(true);
-    expect(text(container)).toContain(REMEMBER_NOTE);
+    expect(container.querySelector('[aria-label="About Remembering the key"]')).not.toBeNull();
+    expect(text(container)).not.toContain('shared computer');
     await click(buttonNamed(container, 'Check my site and move the store'));
     await settle(() => onSigner.mock.calls.length > 0);
     const keys = readRemembered().keys;
