@@ -309,7 +309,7 @@ describe('admin API (7.3)', () => {
       catalogSync: null,
       usage: {
         today: { spent: '0', reserved: '0' },
-        month: { spent: '0' },
+        month: { spent: '0', reserved: '0' },
         sessions: 0,
         conversations: 0,
         clicks: [],

@@ -9,9 +9,9 @@ import {
 } from '../src/state/budget';
 import { TIER } from './fixtures';
 
-/** TIER: $100 a month, its only budget. */
-function usage(todayReserved: string, monthSpent: string) {
-  return { today: { reserved: todayReserved }, month: { spent: monthSpent } };
+/** TIER: $100 a month, its only budget. Reservations are those of the whole budget window. */
+function usage(windowReserved: string, monthSpent: string) {
+  return { month: { spent: monthSpent, reserved: windowReserved } };
 }
 
 describe('when the plan budget pauses the chat', () => {

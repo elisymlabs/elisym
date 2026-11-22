@@ -1,4 +1,5 @@
 import { PGlite } from '@electric-sql/pglite';
+import Decimal from 'decimal.js-light';
 import { describe, expect, it } from 'vitest';
 import { type SubscriptionLike, snapshotOf } from '../src/billing/stripe';
 import { MIGRATIONS, migrate } from '../src/db/migrations';
@@ -347,6 +348,31 @@ describe('the hole is closed: one budget per paid month', () => {
     await spend(harness, owner.pubkey, dayOf(2026, 11, 16), '10');
     expect((await storeView(harness, owner)).budgetPaused).toBe('month');
     expect(await harness.state.budgetExhausted(owner.pubkey, now)).toBe(true);
+  });
+
+  it('an open reservation left on an earlier day of the window pauses the admin as it pauses turns', async () => {
+    const harness = await setup();
+    const anchor = at(2026, 10, 15, 9);
+    const { owner } = await payingStore(harness, anchor);
+    const now = at(2026, 11, 20, 12);
+    harness.clock.now = now;
+    const [budget] = await harness.db.query<{ monthly_budget_usd: string }>(
+      `select t.monthly_budget_usd from stores s join tiers t on t.name = s.tier where s.owner = $1`,
+      [owner.pubkey],
+    );
+    if (!budget) {
+      throw new Error('no tier');
+    }
+    // A turn reserved the whole budget on Nov 16 and never settled (a crash): nothing was spent.
+    await harness.db.query(
+      `insert into store_days (owner, day, spent, reserved) values ($1, $2, 0, $3)
+       on conflict (owner, day) do update set reserved = $3`,
+      [owner.pubkey, dayOf(2026, 11, 16), budget.monthly_budget_usd],
+    );
+    expect(await harness.state.budgetExhausted(owner.pubkey, now)).toBe(true);
+    const view = await storeView(harness, owner);
+    expect(view.usage.month.reserved).toBe(new Decimal(budget.monthly_budget_usd).toString());
+    expect(view.budgetPaused).toBe('month');
   });
 
   it('a Free store keeps the calendar month and its reset on the 1st', async () => {

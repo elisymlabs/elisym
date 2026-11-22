@@ -823,7 +823,7 @@ export class StoreDirectory {
     now: number,
   ): Promise<{
     today: { spent: string; reserved: string };
-    month: { spent: string };
+    month: { spent: string; reserved: string };
     /** `resetsAt`: Unix seconds, when the budget window ends and the budget is whole again. */
     budget: { resetsAt: number };
     sessions: number;
@@ -838,6 +838,7 @@ export class StoreDirectory {
     );
     const todayRow = days.find((row) => row.day === utcDay(now));
     const monthSpent = days.reduce((total, row) => total.plus(row.spent), new Decimal(0));
+    const monthReserved = days.reduce((total, row) => total.plus(row.reserved), new Decimal(0));
     const [sessions] = await this.db.query<{ count: number }>(
       'select count(*)::int8 as count from sessions where assistant = $1 and session_end > $2',
       [assistant, now],
@@ -856,7 +857,7 @@ export class StoreDirectory {
         spent: new Decimal(todayRow?.spent ?? '0').toString(),
         reserved: new Decimal(todayRow?.reserved ?? '0').toString(),
       },
-      month: { spent: monthSpent.toString() },
+      month: { spent: monthSpent.toString(), reserved: monthReserved.toString() },
       budget: { resetsAt: window.resetsAt },
       sessions: sessions?.count ?? 0,
       conversations: totals?.conversations ?? 0,

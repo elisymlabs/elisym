@@ -41,15 +41,15 @@ export function turnCeiling(reservedUsd: string, reserveUsd: string): string {
  * (it answers nothing anyway).
  */
 export function budgetReached(
-  usage: { today: { reserved: string }; month: { spent: string } },
+  usage: { month: { spent: string; reserved: string } },
   tier: Tier | undefined,
 ): boolean {
   if (tier === undefined) {
     return false;
   }
-  // `month.spent` already counts today's spend; today's open reservations count as well.
+  // As `PgState.room`: the window's spend and every open reservation in it, not only today's.
   return new Decimal(usage.month.spent)
-    .plus(usage.today.reserved)
+    .plus(usage.month.reserved)
     .greaterThanOrEqualTo(tier.monthlyBudgetUsd);
 }
 
