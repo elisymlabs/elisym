@@ -101,7 +101,7 @@ const AGREED = [
     name: 'Starter',
     price: ['$29', '$23', '$276'],
     features: [
-      'About 250 conversations a month',
+      'About 180 conversations a month',
       'Up to 1,000 products',
       'Syncs every 6 hours',
       'Shows "Powered by Askr"',
@@ -113,7 +113,7 @@ const AGREED = [
     name: 'Growth',
     price: ['$99', '$79', '$948'],
     features: [
-      'About 1,000 conversations a month',
+      'About 740 conversations a month',
       'Up to 5,000 products',
       'Syncs every hour',
       'Shows "Powered by Askr"',
@@ -125,7 +125,7 @@ const AGREED = [
     name: 'Pro',
     price: ['$199', '$159', '$1,908'],
     features: [
-      'About 1,900 conversations a month',
+      'About 1,400 conversations a month',
       'Up to 10,000 products',
       'Syncs every 30 minutes',
       'Shows "Powered by Askr"',
@@ -137,7 +137,7 @@ const AGREED = [
     name: 'Scale',
     price: ['$499', '$399', '$4,788'],
     features: [
-      'About 5,000 conversations a month',
+      'About 3,700 conversations a month',
       'Up to 20,000 products',
       'Syncs every 15 minutes',
       'Shows "Powered by Askr"',

@@ -132,7 +132,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$29', yearlyPerMonth: '$23', yearlyTotal: '$276' },
     blurb: 'For a small store getting going.',
     features: [
-      'About 250 conversations a month',
+      'About 180 conversations a month',
       'Up to 1,000 products',
       'Syncs every 6 hours',
       POWERED_BY,
@@ -146,7 +146,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$99', yearlyPerMonth: '$79', yearlyTotal: '$948' },
     blurb: 'For a store that sells every day.',
     features: [
-      'About 1,000 conversations a month',
+      'About 740 conversations a month',
       'Up to 5,000 products',
       'Syncs every hour',
       POWERED_BY,
@@ -161,7 +161,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$199', yearlyPerMonth: '$159', yearlyTotal: '$1,908' },
     blurb: 'For a busy store with a big catalog.',
     features: [
-      'About 1,900 conversations a month',
+      'About 1,400 conversations a month',
       'Up to 10,000 products',
       'Syncs every 30 minutes',
       POWERED_BY,
@@ -176,7 +176,7 @@ export const PLANS: readonly Plan[] = [
     price: { kind: 'flat', monthly: '$499', yearlyPerMonth: '$399', yearlyTotal: '$4,788' },
     blurb: 'For heavy traffic and large catalogs.',
     features: [
-      'About 5,000 conversations a month',
+      'About 3,700 conversations a month',
       'Up to 20,000 products',
       'Syncs every 15 minutes',
       POWERED_BY,
