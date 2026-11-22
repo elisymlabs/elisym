@@ -416,6 +416,7 @@ describe('stats: subscriptions and revenue', () => {
         expect(report.revenue.mrrUsd).toBe('29');
         expect(text).toContain('est. MRR >= $29.00');
         expect(text).toContain('1 plan n/a');
+        expect(text).toContain('excl. past due / cancelling >= $29.00');
       }
     }
     // An unsold plan without a price is not an error; an archived price still prices its plan
@@ -1225,6 +1226,22 @@ describe('stats: review round', () => {
     expect(text).toContain('n/a (Stripe price read failed: down ?[2J? now)');
     expect(text).not.toContain('\u001b');
     expect(text).not.toContain('‮');
+  });
+
+  it('replaces the ends of the C0 and C1 ranges, and the Arabic letter mark and line and paragraph separators', () => {
+    expect(printable('\u0000\u001f\u007f\u009f')).toBe('????');
+    expect(printable(' \u0020\u007e\u00a0')).toBe(' \u0020\u007e\u00a0');
+    expect(printable('a\u061cb\u2028c\u2029d')).toBe('a?b?c?d');
+    expect(printable('\u061b\u061d\u2027\u202a')).toBe('\u061b\u061d\u2027?');
+  });
+
+  it('keeps cancelling MRR exact when only a subscription that is not cancelling lacks a price', async () => {
+    const db = await freshDb();
+    await addSubscription(db, await addStore(db), { cancelAtPeriodEnd: true });
+    await addSubscription(db, await addStore(db, { tier: 'growth' }), { plan: 'growth' });
+    const report = await stats(db, { prices: loaded(price('starter', 'month', 2900)) });
+    expect(report.revenue.cancelling).toMatchObject({ count: 1, mrrUsd: '29', partial: false });
+    expect(lineOf(formatStats(report), 'cancelling')).toContain('1 ($29.00 at risk');
   });
 
   it('replaces zero-width and bidi controls, and never cuts a surrogate pair', () => {
