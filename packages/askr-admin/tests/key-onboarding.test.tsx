@@ -20,7 +20,7 @@ const STARTER_MONTHLY: PlanIntent = { plan: 'starter', interval: 'month' };
 const HAVE_A_STORE = 'Already have a store? Sign in';
 const SAVED_LABEL = 'I saved my key (in a password manager, or the downloaded file)';
 const NEW_KEY_LEAD =
-  'Askr has no accounts or passwords. This key is how you sign in: keep it like a password. Anyone who has it controls your store, and nobody can recover it for you. It is shown only once.';
+  'Askr has no accounts or passwords. This key is how you sign in: keep it like a password. Anyone who has it controls your Askr assistant, and nobody can recover it for you. It is shown only once.';
 const NSEC = /nsec1[02-9ac-hj-np-z]+/u;
 
 let mounted: Mounted | undefined;

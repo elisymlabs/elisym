@@ -129,6 +129,7 @@ describe('a new secret key', () => {
     expect(content).toContain(`Store ID: ${npub}`);
     expect(content).toContain('Whoever has this file controls your store');
     expect(text(container)).toContain(`Saved as askr-secret-key-${npub.slice(5, 13)}.txt`);
+    expect(text(container)).toContain('whoever has it controls your Askr assistant.');
   });
 
   it('is remembered on this device by default, sealed, never in plain form', async () => {
@@ -519,7 +520,7 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     expect(buttonNamed(container, 'Download key file')).toBeDefined();
     expect(container.querySelector('h1')?.textContent).toBe('Your new secret key');
     expect(container.querySelector('.bg-warn-bg')?.textContent).toBe(
-      'Save this secret key now, in a password manager or on paper. It is shown only once. Anyone who has it controls your store, and nobody can recover it for you if you lose it.',
+      'Save this secret key now, in a password manager or on paper. It is shown only once. Anyone who has it controls your Askr assistant, and nobody can recover it for you if you lose it.',
     );
     expect(buttonNamed(container, 'Back')).toBeDefined();
     // The new key is not offered to remember before the store moved to it.

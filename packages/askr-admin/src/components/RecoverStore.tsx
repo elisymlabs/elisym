@@ -83,7 +83,8 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
         lead={
           <Notice tone="warn">
             Save this secret key now, in a password manager or on paper. It is shown only once.
-            Anyone who has it controls your store, and nobody can recover it for you if you lose it.
+            Anyone who has it controls your Askr assistant, and nobody can recover it for you if you
+            lose it.
           </Notice>
         }
         continueLabel="Continue"
