@@ -195,13 +195,11 @@ body {
   opacity: 1;
 }
 
-/* The comparison, as the widget's .table-scroll draws it: a rounded box that scrolls sideways. */
+/* The comparison, as the widget's .table-scroll draws it. A still drawing: the rounded box clips, never scrolls. */
 .wgt-table-scroll {
   min-width: 0;
   max-width: 100%;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
+  overflow: hidden;
   border: 1px solid var(--w-border);
   border-radius: 12px;
   background: var(--w-bg);
