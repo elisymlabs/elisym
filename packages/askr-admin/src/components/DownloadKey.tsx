@@ -23,7 +23,7 @@ export function DownloadKey({ nsec, npub }: Props) {
       </div>
       {savedAs === '' ? null : (
         <p className="text-13 text-text-2">
-          Saved as {savedAs}. Keep the file private: whoever has it controls your store.
+          Saved as {savedAs}. Keep the file private: whoever has it controls your Askr assistant.
         </p>
       )}
     </div>
