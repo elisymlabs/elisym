@@ -9,7 +9,7 @@ import {
 import type { Answer, Component } from '@elisym/askr/chat';
 import { afterEach, describe, expect, it } from 'vitest';
 import { type AnswerContext, renderAnswer } from '../src/ui/answer-view';
-import { STRINGS } from '../src/ui/strings';
+import { LANGUAGES, STRINGS } from '../src/ui/strings';
 import { WIDGET_CSS } from '../src/ui/styles';
 import { localSecs, makeStore, sign, testKey } from './fixtures';
 
@@ -188,7 +188,10 @@ describe('comparison tables', () => {
   });
 
   it('shows a grab hand on a comparison wider than the panel, a closed hand while dragging', () => {
-    expect(WIDGET_CSS).toContain('.table-scroll:has(tr > :nth-child(4)) { cursor: grab; }');
+    expect(WIDGET_CSS).toMatch(
+      /@media \(hover: hover\) and \(pointer: fine\) \{\s*\.table-scroll:has\(tr > :nth-child\(4\)\) \{ cursor: grab; \}/u,
+    );
+    expect(WIDGET_CSS).toContain('.table-scroll.dragging * { cursor: grabbing; }');
     expect(WIDGET_CSS).toContain(
       '.table-scroll.dragging { cursor: grabbing; user-select: none; -webkit-user-select: none; }',
     );
@@ -206,9 +209,27 @@ describe('comparison tables', () => {
     expect(cells).toContain('min-width: 96px;');
     expect(cells).toContain('overflow-wrap: break-word;');
     expect(WIDGET_CSS).toMatch(/\.table-scroll tr > th:first-child \{\s*position: sticky;/u);
-    expect(WIDGET_CSS).toContain(
-      '.table-scroll tr:first-child > th { background: var(--cc-surface);',
-    );
     expect(WIDGET_CSS).toContain('.component > .table-scroll,');
+    expect(cells).toContain('text-align: start;');
+    expect(cells).toContain('border-inline-end: 1px solid var(--cc-border);');
+    expect(WIDGET_CSS).toContain('.table-scroll tr > :last-child { border-inline-end: 0; }');
+    expect(WIDGET_CSS).toContain('.table-scroll tr:last-child > * { border-bottom: 0; }');
+    const sticky = /\.table-scroll tr > th:first-child \{([^}]*)\}/u.exec(WIDGET_CSS)?.[1] ?? '';
+    expect(sticky).toContain('inset-inline-start: 0;');
+    expect(sticky).toContain('z-index: 1;');
+    // An opaque base under the surface: a see-through merchant surface never lets cells show through.
+    const OPAQUE_SURFACE =
+      'background: linear-gradient(var(--cc-surface), var(--cc-surface)), var(--cc-bg);';
+    expect(sticky).toContain(OPAQUE_SURFACE);
+    expect(WIDGET_CSS).toContain(`.table-scroll tr:first-child > th { ${OPAQUE_SURFACE}`);
+    expect(rule).toContain('background: var(--cc-bg);');
+  });
+
+  it('names the comparison in every widget language, not left in English', () => {
+    for (const [language, strings] of Object.entries(LANGUAGES)) {
+      if (language !== 'en') {
+        expect(strings.comparison, language).not.toBe(LANGUAGES.en?.comparison);
+      }
+    }
   });
 });

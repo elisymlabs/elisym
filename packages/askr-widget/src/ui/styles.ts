@@ -261,7 +261,7 @@ a.card-title:hover { text-decoration: underline; }
    Separate borders (end and bottom only) let the box's rounded border clip the cells. */
 .table-scroll {
   min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+  scrollbar-width: thin;
   border: 1px solid var(--cc-border); border-radius: min(12px, var(--cc-radius)); background: var(--cc-bg);
 }
 .table-scroll table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 12px; }
@@ -272,10 +272,10 @@ a.card-title:hover { text-decoration: underline; }
 }
 .table-scroll tr > :last-child { border-inline-end: 0; }
 .table-scroll tr:last-child > * { border-bottom: 0; }
-.table-scroll tr:first-child > th { background: var(--cc-surface); font-weight: 600; }
+.table-scroll tr:first-child > th { background: linear-gradient(var(--cc-surface), var(--cc-surface)), var(--cc-bg); font-weight: 600; }
 .table-scroll tr > th:first-child {
   position: sticky; inset-inline-start: 0; z-index: 1; min-width: 84px;
-  background: var(--cc-surface); color: var(--cc-muted); font-weight: 500;
+  background: linear-gradient(var(--cc-surface), var(--cc-surface)), var(--cc-bg); color: var(--cc-muted); font-weight: 500;
 }
 .table-scroll th .label { display: inline-block; margin-top: 4px; white-space: nowrap; background: var(--cc-bg); }
 .steps { margin: 0; padding-left: 20px; }
