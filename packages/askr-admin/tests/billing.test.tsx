@@ -213,6 +213,8 @@ describe('the return notice in the session (D5)', () => {
     expect(container.querySelector('#plan-steps [aria-current="step"]')?.textContent).toMatch(
       /3Set up your store$/u,
     );
+    // Paid already: nothing says to choose a plan next to the step.
+    expect(container.textContent).not.toContain('choose a plan in Billing');
     expect(container.textContent).not.toContain(ACTIVE_TEXT);
   });
 

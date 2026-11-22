@@ -63,6 +63,22 @@ async function rememberNot(container: HTMLElement, id: string) {
   expect(box.checked).toBe(false);
 }
 
+/**
+ * The remember box with prefix `id` is its checkbox and its info button only: what remembering
+ * means is said in the info button, never in a note next to the box.
+ */
+function expectRememberWithoutNote(container: HTMLElement, id: string, label: string) {
+  const row = inputById(container, `${id}-remember`).closest('label')?.parentElement;
+  const option = row?.parentElement;
+  if (row === null || row === undefined || option === null || option === undefined) {
+    throw new Error(`no remember option ${id}`);
+  }
+  expect(option.children).toHaveLength(1);
+  expect(row.querySelector('[aria-label="About Remembering the key"]')).not.toBeNull();
+  expect(option.textContent).toBe(label);
+  expect(text(container)).not.toContain('shared computer');
+}
+
 /** Remember `secretKey` here, as an earlier visit would have. */
 async function remembered(secretKey: Uint8Array) {
   expect(await rememberKey(secretKey)).toBe(true);
@@ -121,6 +137,7 @@ describe('a new secret key', () => {
     const box = inputById(container, 'new-key-remember');
     expect(box.checked).toBe(true);
     expect(box.closest('label')?.textContent).toBe('Keep me signed in on this device');
+    expectRememberWithoutNote(container, 'new-key', 'Keep me signed in on this device');
     // What remembering means is said only in its info button, never repeated under the box.
     expect(container.querySelector('[aria-label="About Remembering the key"]')).not.toBeNull();
     expect(text(container)).not.toContain('shared computer');
@@ -169,6 +186,7 @@ describe('signing in with a pasted key and remembering it', () => {
       first.container.querySelector('[aria-label="About Remembering the key"]'),
     ).not.toBeNull();
     expect(text(first.container)).not.toContain('shared computer');
+    expectRememberWithoutNote(first.container, 'sign-in', 'Remember my key on this device');
     expect(first.container.querySelector('input[type="password"]')).toBeNull();
     await click(buttonNamed(first.container, 'Sign in'));
     await settle(() => first.onSigner.mock.calls.length > 0);
@@ -499,6 +517,11 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
       throw new Error('no new key shown');
     }
     expect(buttonNamed(container, 'Download key file')).toBeDefined();
+    expect(container.querySelector('h1')?.textContent).toBe('Your new secret key');
+    expect(container.querySelector('.bg-warn-bg')?.textContent).toBe(
+      'Save this secret key now, in a password manager or on paper. It is shown only once. Anyone who has it controls your store, and nobody can recover it for you if you lose it.',
+    );
+    expect(buttonNamed(container, 'Back')).toBeDefined();
     // The new key is not offered to remember before the store moved to it.
     expect(container.querySelector('#new-key-remember')).toBeNull();
     const saved = container.querySelector('input[type="checkbox"]');
@@ -514,6 +537,11 @@ describe('replacing the key on a device that remembers the old one (K21)', () =>
     await remembered(OLD_KEY);
     const { container, onSigner, newKey } = await toProof(async () => undefined);
     expect(inputById(container, 'moved-key-remember').checked).toBe(true);
+    expectRememberWithoutNote(
+      container,
+      'moved-key',
+      'Remember the new key on this device once the store moved',
+    );
     expect(container.querySelector('[aria-label="About Remembering the key"]')).not.toBeNull();
     expect(text(container)).not.toContain('shared computer');
     await click(buttonNamed(container, 'Check my site and move the store'));

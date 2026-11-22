@@ -410,6 +410,11 @@ describe('an existing store with no settings and a chosen plan (D4, step 2)', ()
     const { container } = await signedIn(api);
     await settle(() => text(container).includes('Describe your store'));
     expect(container.querySelector('#intent-checkout')).toBeNull();
+    // Nothing to pay here: no step 2, and the way to a plan is said instead.
+    expect(container.querySelector('#plan-steps')).toBeNull();
+    expect(text(container)).toContain(
+      'Save your settings, then choose a plan in Billing: Free starts at once, with nothing to pay; a paid plan starts as soon as you pay for it.',
+    );
   });
 
   it('Dismiss drops it', async () => {

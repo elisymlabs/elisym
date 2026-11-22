@@ -86,11 +86,23 @@ describe('a visitor who chose a plan, with nothing remembered here (R1)', () => 
     expect(byId(container, 'plan-intent').querySelector('p')?.textContent).toBe(
       'Starter · $29/month',
     );
+    expect(byId(container, 'plan-intent').getAttribute('role')).toBe('status');
     const steps = byId(container, 'plan-steps');
     expect(steps.tagName).toBe('OL');
-    expect(
-      [...steps.querySelectorAll('li')].map((item) => item.getAttribute('aria-current')),
-    ).toEqual(['step', null, null]);
+    expect(steps.getAttribute('aria-label')).toBe('Steps');
+    const items = [...steps.querySelectorAll('li')];
+    expect(items.map((item) => item.getAttribute('aria-current'))).toEqual(['step', null, null]);
+    // The current step, and only it, stands out.
+    expect(items.map((item) => item.classList.contains('font-medium'))).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(items.map((item) => item.querySelector('.bg-ink') !== null)).toEqual([
+      true,
+      false,
+      false,
+    ]);
     expect(steps.textContent).toBe('1Save your key→2Pay→3Set up your store');
     expect(buttonNamed(container, 'Continue to payment').disabled).toBe(true);
     expect(buttonNamed(container, HAVE_A_STORE)).toBeDefined();
@@ -135,6 +147,18 @@ describe('a visitor who chose a plan, with nothing remembered here (R1)', () => 
     expect(readRemembered().keys).toEqual([]);
   });
 
+  it('waits while the key is being remembered: says so, and takes no Back meanwhile', async () => {
+    // Sealing the key never finishes, so remembering it hangs.
+    vi.spyOn(crypto.subtle, 'encrypt').mockReturnValue(new Promise<ArrayBuffer>(() => undefined));
+    const { container, onSigner } = await signInWith(STARTER_MONTHLY);
+    await click(savedBox(container));
+    await click(buttonNamed(container, 'Continue to payment'));
+    await settle(() => text(container).includes('Saving on this device...'));
+    expect(buttonNamed(container, 'Saving on this device...').disabled).toBe(true);
+    expect(buttonNamed(container, HAVE_A_STORE).disabled).toBe(true);
+    expect(onSigner).not.toHaveBeenCalled();
+  });
+
   it('"Already have a store? Sign in" shows the sign-in with the plan line, and drops the key', async () => {
     const { container } = await signInWith(STARTER_MONTHLY);
     const first = nip19.nsecEncode(shownKey(container));
@@ -166,7 +190,9 @@ describe('a visitor who chose a plan, with nothing remembered here (R1)', () => 
     expect(container.querySelector('#plan-steps')).toBeNull();
     expect(buttonNamed(container, 'Continue')).toBeDefined();
     expect(buttonNamed(container, 'Back')).toBeDefined();
-    expect(container.querySelector('button')?.textContent).not.toBe('Continue to payment');
+    expect(
+      [...container.querySelectorAll('button')].map((button) => button.textContent),
+    ).not.toContain('Continue to payment');
     expect(text(container)).not.toContain(HAVE_A_STORE);
   });
 });

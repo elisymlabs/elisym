@@ -108,6 +108,10 @@ export function Onboarding({
     }
   };
 
+  // A plan that can be paid for here: before the store exists, its checkout is tried on creation.
+  const payable = intent !== undefined && (view === undefined || view.billing.checkoutAvailable);
+  // Step 2 is paying: without anything to pay here, there are no steps to show.
+  const shownStep = step === 2 && !payable ? undefined : step;
   let createLabel = intent === undefined ? 'Create my store' : 'Create my store and pay';
   if (busy) {
     createLabel = 'Creating...';
@@ -120,14 +124,14 @@ export function Onboarding({
           Sign out
         </button>
       </header>
-      {step === undefined ? null : <PlanSteps current={step} />}
+      {shownStep === undefined ? null : <PlanSteps current={shownStep} />}
       {billingNotice}
-      {intent === undefined ? (
+      {payable || shownStep !== undefined ? null : (
         <Notice tone="info">
           Save your settings, then choose a plan in Billing: Free starts at once, with nothing to
           pay; a paid plan starts as soon as you pay for it.
         </Notice>
-      ) : null}
+      )}
       {view === undefined && intent !== undefined ? (
         <PlanIntentLine intent={intent} next={INTENT_CREATE_TEXT} onDismiss={onIntentDone} />
       ) : null}
