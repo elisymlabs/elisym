@@ -9,7 +9,7 @@ interface Props {
   now: number;
 }
 
-/** Above every tab: the chat is paused by a used-up budget, or the month's is nearly used up. */
+/** Above every tab: the chat is paused by a used-up budget, or the period's is nearly used up. */
 export function BudgetBanner({ view, now }: Props) {
   const notice = budgetNotice(view, now);
   if (notice === undefined) {

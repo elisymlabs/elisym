@@ -365,6 +365,15 @@ alter table billing_subscriptions add column scheduled_interval text
 alter table billing_subscriptions add column scheduled_at bigint;
 `,
   },
+  {
+    id: '0012_billing_cycle_anchor',
+    sql: `
+-- The subscription's billing cycle anchor (unix seconds), as last read from Stripe: a paid plan's
+-- monthly budget is counted from it, one calendar month at a time. Null on rows read before this
+-- column existed: such a store counts the calendar month until its next event.
+alter table billing_subscriptions add column billing_cycle_anchor bigint;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

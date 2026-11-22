@@ -63,6 +63,11 @@ export interface SubscriptionSnapshot {
   cancelAtPeriodEnd: boolean;
   /** Unix seconds: when Stripe created it. */
   created: number;
+  /**
+   * Unix seconds: its billing cycle anchor, every billing date counted from it in calendar months
+   * (the plan's monthly budget restarts on them); undefined in a body without it (never Stripe's).
+   */
+  billingCycleAnchor: number | undefined;
   /** What its schedule changes later; null with no schedule or no phase still to come. */
   scheduledChange: ScheduledChange | null;
 }
@@ -110,6 +115,8 @@ export interface SubscriptionLike {
    */
   cancel_at: number | null;
   created: number;
+  /** Unix seconds: the fixed point its billing dates are counted from. */
+  billing_cycle_anchor: number;
   items: { data: { id: string; current_period_end: number; price: PriceLike }[] };
   /** Expanded by every read billing makes; an id or absent reads as no schedule. */
   schedule?: string | ScheduleLike | null;
@@ -204,6 +211,10 @@ export function snapshotOf(
     currentPeriodEnd: cancelAt ?? (ends.length === 0 ? undefined : Math.min(...ends)),
     cancelAtPeriodEnd: subscription.cancel_at_period_end || cancelAt !== undefined,
     created: subscription.created,
+    billingCycleAnchor:
+      typeof subscription.billing_cycle_anchor === 'number'
+        ? subscription.billing_cycle_anchor
+        : undefined,
     scheduledChange: scheduledChangeOf(subscription.schedule, now),
   };
 }

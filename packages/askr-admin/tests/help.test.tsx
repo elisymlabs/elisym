@@ -50,6 +50,13 @@ describe('the help', () => {
     }
     expect(GUIDE).not.toContain(EM_DASH);
   });
+
+  it('says when the budget restarts: Free on the 1st, a paid plan on its billing date', () => {
+    expect(HELP.usage.text).toContain('Free restarts on the 1st (UTC)');
+    expect(HELP.usage.text).toContain('a paid plan on its billing date each month');
+    expect(HELP.usage.text).toContain('may stay paused until the next UTC day');
+    expect(HELP.usage.text).not.toContain('next month');
+  });
 });
 
 describe('the info button', () => {

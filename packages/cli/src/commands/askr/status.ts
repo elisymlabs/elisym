@@ -39,9 +39,12 @@ interface SkippedProbe {
   reason: string;
 }
 
-/** The hint of a `budget` refusal: a store's only spend limit is its plan's monthly budget. */
+/**
+ * The hint of a `budget` refusal: a store's only spend limit is its plan's monthly budget, which
+ * restarts on the 1st (UTC) on Free and on the billing date each month on a paid plan.
+ */
 export const BUDGET_HINT =
-  "the store reached its plan's monthly limit, so the chat does not answer until the plan is upgraded or the next month starts: to upgrade, follow upgrade.howTo";
+  "the store reached its plan's monthly limit, so the chat does not answer until the plan is upgraded or its budget restarts: to upgrade, follow upgrade.howTo";
 
 function money(value: string): string {
   try {

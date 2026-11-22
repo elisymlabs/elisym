@@ -93,6 +93,7 @@ describe('reading Stripe objects', () => {
       cancel_at: null,
       cancel_at_period_end: true,
       created: NOW - 100,
+      billing_cycle_anchor: NOW - 50,
       items: { data: [item(PERIOD_END)] },
     };
     expect(snapshotOf(subscription)).toEqual({
@@ -106,6 +107,7 @@ describe('reading Stripe objects', () => {
       currentPeriodEnd: PERIOD_END,
       cancelAtPeriodEnd: true,
       created: NOW - 100,
+      billingCycleAnchor: NOW - 50,
       scheduledChange: null,
     });
     const two = snapshotOf({

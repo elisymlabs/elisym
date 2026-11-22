@@ -9,17 +9,11 @@ import {
 import type { FreeTier } from '../config';
 import { type Db, type Queryable, STORES_CHANNEL } from '../db/db';
 import { followMoves } from './pg-state';
+import { LIVE_STATUSES, PLAN_SUBSCRIPTIONS_WHERE, SUBSCRIPTION_ORDER } from './plan-subscription';
 import { FREE_PLAN_LOCK_ID, freeCapacityReached } from './stores';
 import type { StoreStatus } from './types';
 
-/** Subscription states that keep a paid plan: `past_due` is the grace while Stripe retries. */
-export const LIVE_STATUSES: readonly string[] = ['active', 'trialing', 'past_due'];
-
-/**
- * The one order of a store's subscriptions, the earliest Stripe created first: of two live ones
- * (two checkouts paid at once) the first is the store's plan, stable whatever the event order.
- */
-const SUBSCRIPTION_ORDER = 'order by stripe_created asc, subscription_id asc';
+export { LIVE_STATUSES } from './plan-subscription';
 
 /** Who set a store's tier (`stores.plan_source`). */
 export type PlanSource = 'operator' | 'free' | 'billing';
@@ -182,8 +176,9 @@ export async function noteCustomer(
 
 /**
  * Store a subscription as Stripe has it now; a known one keeps the store it was recorded for, and
- * its plan and interval when Stripe's price no longer names one of ours. Its scheduled change is
- * always Stripe's now, so a schedule released or done clears it.
+ * its plan and interval when Stripe's price no longer names one of ours. Its scheduled change and
+ * billing cycle anchor are always Stripe's now, so a schedule released or done clears it, and an
+ * anchor Stripe reset (a switch to yearly) replaces the old one.
  */
 export async function saveSubscription(
   tx: Queryable,
@@ -195,15 +190,16 @@ export async function saveSubscription(
   await tx.query(
     `insert into billing_subscriptions (subscription_id, owner, customer_id, status, plan, interval,
        current_period_end, cancel_at_period_end, stripe_created, updated_at, snapshot_fetched_at,
-       scheduled_plan, scheduled_interval, scheduled_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $10, $9, $11, $12, $13, $14)
+       scheduled_plan, scheduled_interval, scheduled_at, billing_cycle_anchor)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $10, $9, $11, $12, $13, $14, $15)
      on conflict (subscription_id) do update set
        customer_id = $3, status = $4,
        plan = coalesce($5, billing_subscriptions.plan),
        interval = coalesce($6, billing_subscriptions.interval),
        current_period_end = $7, cancel_at_period_end = $8, stripe_created = $10, updated_at = $9,
        snapshot_fetched_at = $11,
-       scheduled_plan = $12, scheduled_interval = $13, scheduled_at = $14
+       scheduled_plan = $12, scheduled_interval = $13, scheduled_at = $14,
+       billing_cycle_anchor = $15
      where billing_subscriptions.snapshot_fetched_at <= $11`,
     [
       snapshot.id,
@@ -220,6 +216,7 @@ export async function saveSubscription(
       snapshot.scheduledChange?.plan ?? null,
       snapshot.scheduledChange?.interval ?? null,
       snapshot.scheduledChange?.at ?? null,
+      snapshot.billingCycleAnchor ?? null,
     ],
   );
 }
@@ -272,7 +269,7 @@ export async function reconcilePlan(
 ): Promise<Reconciled> {
   const lives = await tx.query<{ subscription_id: string; plan: string }>(
     `select subscription_id, plan from billing_subscriptions
-     where owner = $1 and status = any($2::text[]) and plan is not null ${SUBSCRIPTION_ORDER}`,
+     where ${PLAN_SUBSCRIPTIONS_WHERE} ${SUBSCRIPTION_ORDER}`,
     [owner, LIVE_STATUSES],
   );
   const ids = lives.map((row) => row.subscription_id);

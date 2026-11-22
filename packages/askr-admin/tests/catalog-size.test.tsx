@@ -65,6 +65,15 @@ async function overview(
   return mounted.container;
 }
 
+describe('the budget meter', () => {
+  it('names this budget period, not the calendar month', async () => {
+    const container = await overview([], 3);
+    const meter = container.querySelector('[aria-label="This budget period"]');
+    expect(meter).not.toBeNull();
+    expect(container.textContent).not.toContain('This month');
+  });
+});
+
 describe('the catalog size against the plan', () => {
   it('says how many products the assistant leaves out when the catalog is over the plan', async () => {
     const container = await overview([CATALOG_AUTH, ...products(5)], 3);

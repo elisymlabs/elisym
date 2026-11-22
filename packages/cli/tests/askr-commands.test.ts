@@ -1148,6 +1148,9 @@ describe('askr status', () => {
     expect(budgetHint).toContain("plan's monthly limit");
     expect(budgetHint).toContain('upgrade');
     expect(budgetHint).not.toContain('used up');
+    // A paid plan's budget restarts on its billing date, not when the next month starts.
+    expect(budgetHint).toContain('until the plan is upgraded or its budget restarts');
+    expect(budgetHint).not.toContain('next month');
 
     const limited = await activeStore();
     limited.fake.on('POST /v1/session', () => json({ error: 'rate_limited' }, 429));

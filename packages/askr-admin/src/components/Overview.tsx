@@ -128,7 +128,7 @@ export function Overview({ view, config, configFromServer, onOpenBilling, catalo
         {tier === null ? null : (
           <div className="flex flex-col gap-16">
             <UsageMeter
-              label="This month"
+              label="This budget period"
               used={usage.month.spent}
               limit={tier.monthlyBudgetUsd}
               text={`${usd(usage.month.spent)} of ${usd(tier.monthlyBudgetUsd)}`}

@@ -25,7 +25,13 @@ export type Activation = 'activated' | 'already_active';
 
 export interface StoreUsage {
   today: { spent: string; reserved: string };
+  /** Spent in this budget period: the calendar month, or a paid plan's month from its billing date. */
   month: { spent: string };
+  /**
+   * `resetsAt`: Unix seconds, when this budget period ends and the budget is whole again. Absent
+   * from an older server, whose period is the calendar month.
+   */
+  budget?: { resetsAt: number };
   /** Conversations still open. */
   sessions: number;
   /**
@@ -164,7 +170,7 @@ export interface StoreView {
   /** Where the Askr operator writes to the owner (plan, billing); private, never published. */
   email: string | null;
   /**
-   * The chat does not answer: this month's plan budget is used up (`month`), by the server's own
+   * The chat does not answer: this period's plan budget is used up (`month`), by the server's own
    * test (nothing of it is left). Null while it answers.
    */
   budgetPaused: BudgetPause | null;

@@ -11,15 +11,9 @@ import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { type Db, type Queryable, STORES_CHANNEL } from '../db/db';
 import type { KeyVault } from '../db/keys';
+import { budgetWindow } from './budget-window';
 import { type HeldOrigin, ORIGIN_PROOF_AGE_SECS, noteOrigins, noteOriginsLocked } from './origins';
-import {
-  MAX_MOVE_HOPS,
-  STORE_SELECT,
-  followMoves,
-  monthStartDay,
-  storeOf,
-  utcDay,
-} from './pg-state';
+import { MAX_MOVE_HOPS, STORE_SELECT, followMoves, storeOf, utcDay } from './pg-state';
 import type { StoreRecord, StoreStatus, Tier } from './types';
 
 /** Postgres' unique_violation. */
@@ -818,7 +812,8 @@ export class StoreDirectory {
   }
 
   /**
-   * What the admin shows (7.3): spend today and this month, live sessions,
+   * What the admin shows (7.3): spend today and in the budget window (`month`, the name kept;
+   * `budgetWindow`, the one a turn's reservation counts) with when that window ends, live sessions,
    * conversations so far (sessions with at least one answered turn, counted
    * once each: `PgState.countConversation`), advisory clicks.
    */
@@ -829,14 +824,17 @@ export class StoreDirectory {
   ): Promise<{
     today: { spent: string; reserved: string };
     month: { spent: string };
+    /** `resetsAt`: Unix seconds, when the budget window ends and the budget is whole again. */
+    budget: { resetsAt: number };
     sessions: number;
     conversations: number;
     clicks: { address: string; count: number; carts: number }[];
     days: ActivityDay[];
   }> {
+    const window = await budgetWindow(this.db, owner, now);
     const days = await this.db.query<{ day: number; spent: string; reserved: string }>(
       'select day, spent, reserved from store_days where owner = $1 and day >= $2',
-      [owner, monthStartDay(now)],
+      [owner, window.startDay],
     );
     const todayRow = days.find((row) => row.day === utcDay(now));
     const monthSpent = days.reduce((total, row) => total.plus(row.spent), new Decimal(0));
@@ -859,6 +857,7 @@ export class StoreDirectory {
         reserved: new Decimal(todayRow?.reserved ?? '0').toString(),
       },
       month: { spent: monthSpent.toString() },
+      budget: { resetsAt: window.resetsAt },
       sessions: sessions?.count ?? 0,
       conversations: totals?.conversations ?? 0,
       clicks,

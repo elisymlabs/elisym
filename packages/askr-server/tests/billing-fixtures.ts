@@ -327,6 +327,7 @@ export async function setup(
       currentPeriodEnd: PERIOD_END,
       cancelAtPeriodEnd: false,
       created: NOW,
+      billingCycleAnchor: NOW,
       scheduledChange: null,
       ...overrides,
     };
