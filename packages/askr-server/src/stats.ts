@@ -24,13 +24,34 @@ export const MAX_STATS_DAYS = 365;
 const STATS_SCHEMA_VERSION = 1;
 /** Free text from the database (a shop's error, a platform name) printed to a terminal is cut to this. */
 const MAX_PRINTED_TEXT = 200;
-/** C0 and C1 control characters, ESC among them: a shop's text must not drive the operator's terminal. */
-const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f-\u009f]/gu;
+/**
+ * C0 and C1 control characters (ESC among them), and the zero-width and bidirectional controls
+ * that make text read other than it is, as inclusive code point ranges: a shop's text must not
+ * drive the operator's terminal.
+ */
+const CONTROL_CODE_POINTS: readonly (readonly [number, number])[] = [
+  [0x00, 0x1f],
+  [0x7f, 0x9f],
+  [0x200b, 0x200f],
+  [0x202a, 0x202e],
+  [0x2066, 0x2069],
+  [0xfeff, 0xfeff],
+];
 
-/** A value from the database as the text report prints it: control characters replaced, length capped. */
+function isControl(character: string): boolean {
+  const codePoint = character.codePointAt(0) ?? 0;
+  return CONTROL_CODE_POINTS.some(([first, last]) => codePoint >= first && codePoint <= last);
+}
+
+/**
+ * A value from the database as the text report prints it: control characters replaced, length
+ * capped in code points (never half a surrogate pair).
+ */
 export function printable(text: string): string {
-  const clean = text.replace(CONTROL_CHARS_RE, '?');
-  return clean.length > MAX_PRINTED_TEXT ? `${clean.slice(0, MAX_PRINTED_TEXT)}...` : clean;
+  const codePoints = Array.from(text, (character) => (isControl(character) ? '?' : character));
+  return codePoints.length > MAX_PRINTED_TEXT
+    ? `${codePoints.slice(0, MAX_PRINTED_TEXT).join('')}...`
+    : codePoints.join('');
 }
 const RECENT_DAYS = 7;
 const FULL_BPS = 10_000;
@@ -110,7 +131,8 @@ export interface OperatorStats {
     taxBehavior: 'inclusive' | 'exclusive' | 'unspecified' | 'mixed' | null;
     newPaid: number;
     churned: number;
-    cancelling: { count: number; mrrUsd: string; firstEndsAt: number | null };
+    /** `partial`: a cancelling subscription has no usable price, so `mrrUsd` is a lower bound. */
+    cancelling: { count: number; mrrUsd: string; partial: boolean; firstEndsAt: number | null };
     pastDue: string[];
     scheduled: {
       owner: string;
@@ -401,6 +423,7 @@ async function revenueSection(
   let mrr = new Decimal(0);
   let mrrCore = new Decimal(0);
   let cancellingMrr = new Decimal(0);
+  let cancellingPartial = false;
   const paying: OperatorStats['revenue']['paying'] = [];
   const unavailable: OperatorStats['revenue']['mrrUnavailable'] = [];
   const usedPrices: PlanPrice[] = [];
@@ -419,6 +442,7 @@ async function revenueSection(
         mrrUsd: null,
       });
       mrrByPlan.set(group.plan, null);
+      cancellingPartial ||= group.rows.some((row) => row.cancel_at_period_end);
       continue;
     }
     usedPrices.push(price);
@@ -473,8 +497,10 @@ async function revenueSection(
     `select tier, count(*)::int8 as count from stores
      where status = 'active' and coalesce(plan_source, 'operator') = 'operator'
        and tier is not null and tier is distinct from $1::text
+       and not exists (select 1 from billing_subscriptions
+                       where ${planSubscriptionsWhereFor('stores.owner', '$2')})
      group by tier order by tier`,
-    [options.freeTier?.tier ?? null],
+    [options.freeTier?.tier ?? null, LIVE_STATUSES],
   );
   const windowStart = now - options.days * SECS_PER_DAY;
   return {
@@ -491,6 +517,7 @@ async function revenueSection(
       cancelling: {
         count: cancelling.length,
         mrrUsd: cancellingMrr.toString(),
+        partial: cancellingPartial,
         firstEndsAt: cancellingEnds.length === 0 ? null : Math.min(...cancellingEnds),
       },
       pastDue: plans.filter((row) => row.status === 'past_due').map((row) => row.owner),
@@ -627,6 +654,7 @@ async function costSection(
   tx: Queryable,
   now: number,
   mrrByPlan: Map<string, Decimal | null>,
+  freeTier: FreeTier | undefined,
 ): Promise<OperatorStats['cost']> {
   const today = utcDay(now);
   const month = monthStartDay(now);
@@ -677,9 +705,13 @@ async function costSection(
     byPlan: tiers.map((tier) => {
       const spend = rows.get(tier) ?? { month: new Decimal(0), lastMonth: new Decimal(0) };
       const planMrr = tier === null ? undefined : mrrByPlan.get(tier);
-      // A sold plan without a usable price has no margin; a tier nothing pays through Stripe for
-      // earns nothing we can see, so its margin is its cost.
-      const margin = planMrr === null ? null : (planMrr ?? new Decimal(0)).minus(spend.lastMonth);
+      // Free and stores with no plan now earn nothing, so their margin is their cost. A sold plan
+      // without a usable price has no margin, nor has a tier nobody pays through Stripe (operator
+      // plans are billed outside it: their cost alone is no loss).
+      const earnsNothing = tier === null || tier === freeTier?.tier;
+      const revenue = earnsNothing ? new Decimal(0) : planMrr;
+      const margin =
+        revenue === undefined || revenue === null ? null : revenue.minus(spend.lastMonth);
       return {
         tier,
         monthToDateUsd: spend.month.toString(),
@@ -854,7 +886,7 @@ export async function computeStats(
     const stores = await storeSection(tx, now, options);
     const { revenue, mrrByPlan } = await revenueSection(tx, now, options);
     const usage = await usageSection(tx, now, options);
-    const cost = await costSection(tx, now, mrrByPlan);
+    const cost = await costSection(tx, now, mrrByPlan, options.freeTier);
     const health = await healthSection(tx, now, options);
     return {
       schemaVersion: STATS_SCHEMA_VERSION,
@@ -970,9 +1002,21 @@ const PRICE_SOURCE_TEXT: Record<OperatorStats['revenue']['priceSource'], string>
   failed: ' (Stripe price read failed)',
 };
 
+/** A Stripe-priced sum for display: n/a without Stripe prices, a lower bound when partial. */
+function pricedUsd(
+  value: string,
+  partial: boolean,
+  priceSource: OperatorStats['revenue']['priceSource'],
+): string {
+  if (priceSource !== 'stripe') {
+    return 'n/a';
+  }
+  return partial ? `>= ${usd(value)}` : usd(value);
+}
+
 function mrrText(revenue: OperatorStats['revenue']): string {
   const unavailable = revenue.mrrUnavailable.length;
-  const bound = revenue.mrrPartial ? `>= ${usd(revenue.mrrUsd)}` : usd(revenue.mrrUsd);
+  const bound = pricedUsd(revenue.mrrUsd, revenue.mrrPartial, revenue.priceSource);
   const partial = revenue.mrrPartial
     ? `, ${unavailable} plan${unavailable === 1 ? '' : 's'} n/a`
     : '';
@@ -983,7 +1027,7 @@ function mrrText(revenue: OperatorStats['revenue']): string {
 function revenueText(stats: OperatorStats): string[] {
   const { revenue } = stats;
   const payingCount = revenue.paying.reduce((total, row) => total + row.count, 0);
-  const core = revenue.mrrPartial ? `>= ${usd(revenue.mrrCoreUsd)}` : usd(revenue.mrrCoreUsd);
+  const core = pricedUsd(revenue.mrrCoreUsd, revenue.mrrPartial, revenue.priceSource);
   const lines = [
     `REVENUE       ${count(payingCount)} paying (Stripe)  ${mrrText(revenue)}`,
     `${label('core')}excl. past due / cancelling ${core}`,
@@ -992,7 +1036,8 @@ function revenueText(stats: OperatorStats): string[] {
     const reason = revenue.mrrUnavailable.find(
       (entry) => entry.plan === row.plan && entry.interval === row.interval,
     )?.reason;
-    const money = row.mrrUsd === null ? `n/a (${reason ?? 'no price'})` : usd(row.mrrUsd);
+    const money =
+      row.mrrUsd === null ? `n/a (${printable(reason ?? 'no price')})` : usd(row.mrrUsd);
     lines.push(
       `${label(row.plan)}${(row.interval ?? '?').padEnd(6)}${count(row.count).padStart(5)}   ${money}`,
     );
@@ -1005,7 +1050,7 @@ function revenueText(stats: OperatorStats): string[] {
       ? ''
       : `, first ends ${date(revenue.cancelling.firstEndsAt)}`;
   lines.push(
-    `${label('cancelling')}${count(revenue.cancelling.count)} (${usd(revenue.cancelling.mrrUsd)} at risk${firstEnds})`,
+    `${label('cancelling')}${count(revenue.cancelling.count)} (${pricedUsd(revenue.cancelling.mrrUsd, revenue.cancelling.partial, revenue.priceSource)} at risk${firstEnds})`,
   );
   lines.push(`${label('past due')}${count(revenue.pastDue.length)}`);
   for (const owner of revenue.pastDue) {

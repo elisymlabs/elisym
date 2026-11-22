@@ -109,6 +109,15 @@ function tierFrom(name: string, args: readonly string[]): Tier {
   };
 }
 
+/**
+ * Whether the process runs the migrations before the command: the server and every command but
+ * `stats`, which only reads. A newer image's `stats` must not migrate the live database, nor wait
+ * on a deploy's migration lock; on a schema behind it, its read fails instead.
+ */
+export function migratesFirst(args: readonly string[]): boolean {
+  return args[0] !== 'stats';
+}
+
 /** What the CLI works with; `db`, `freeTier`, `loadPrices` and `now` are read by `stats` only. */
 export interface CliDeps {
   directory: StoreDirectory;

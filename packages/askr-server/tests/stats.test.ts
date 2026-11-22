@@ -2,7 +2,7 @@ import { nip19 } from 'nostr-tools';
 import Stripe from 'stripe';
 import { describe, expect, it } from 'vitest';
 import { type PlanPrice, createStripeGateway } from '../src/billing/stripe';
-import { CLI_USAGE, runCli } from '../src/cli';
+import { CLI_USAGE, migratesFirst, runCli } from '../src/cli';
 import type { FreeTier } from '../src/config';
 import type { Db, Queryable } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
@@ -217,9 +217,11 @@ describe('stats: stores and growth', () => {
     await addStore(db, { status: 'pending' });
     await addStore(db, { status: 'active', tier: 'pro', planSource: null });
     await addStore(db, { status: 'suspended', tier: 'pro', planSource: 'billing' });
+    // Pending with a tier left on it: not on a plan in the plans line.
+    await addStore(db, { status: 'pending', tier: 'pro', planSource: null });
     const report = await stats(db);
-    expect(report.stores.total).toBe(4);
-    expect(report.stores.byStatus).toEqual({ pending: 2, active: 1, suspended: 1 });
+    expect(report.stores.total).toBe(5);
+    expect(report.stores.byStatus).toEqual({ pending: 3, active: 1, suspended: 1 });
     expect(report.stores.byPlan).toEqual([
       { tier: 'pro', source: 'billing', status: 'suspended', count: 1 },
       { tier: 'pro', source: 'operator', status: 'active', count: 1 },
@@ -495,6 +497,7 @@ describe('stats: subscriptions and revenue', () => {
     expect(report.revenue.cancelling).toEqual({
       count: 1,
       mrrUsd: '29',
+      partial: false,
       firstEndsAt: NOW + 5 * DAY,
     });
     expect(report.revenue.mrrUsd).toBe('87');
@@ -1127,5 +1130,193 @@ describe('free text from the database in the text report', () => {
     const text = formatStats(await stats(db));
     expect(text).toContain('shopify error: bad ?[2J gateway');
     expect(text).not.toContain('\u001b');
+  });
+});
+
+describe('stats: review round', () => {
+  it('prints cancelling MRR as n/a without Stripe prices and as a lower bound when partial', async () => {
+    const db = await freshDb();
+    await addSubscription(db, await addStore(db), { cancelAtPeriodEnd: true });
+    const off = await stats(db);
+    expect(off.revenue.cancelling).toMatchObject({ count: 1, mrrUsd: '0', partial: true });
+    expect(lineOf(formatStats(off), 'cancelling')).toContain('1 (n/a at risk');
+    expect(lineOf(formatStats(off), 'core')).toBe('core        excl. past due / cancelling n/a');
+    await addSubscription(db, await addStore(db, { tier: 'growth' }), {
+      plan: 'growth',
+      cancelAtPeriodEnd: true,
+    });
+    const partial = await stats(db, { prices: loaded(price('starter', 'month', 2900)) });
+    expect(partial.revenue.cancelling).toMatchObject({ count: 2, mrrUsd: '29', partial: true });
+    expect(lineOf(formatStats(partial), 'cancelling')).toContain('2 (>= $29.00 at risk');
+  });
+
+  it('takes the earliest end of several cancelling subscriptions', async () => {
+    const db = await freshDb();
+    await addSubscription(db, await addStore(db), {
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: NOW + 9 * DAY,
+    });
+    await addSubscription(db, await addStore(db), {
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: NOW + 4 * DAY,
+    });
+    expect((await stats(db)).revenue.cancelling.firstEndsAt).toBe(NOW + 4 * DAY);
+  });
+
+  it('gives no margin to a tier billed outside Stripe, and keeps Free s cost as its margin', async () => {
+    const db = await freshDb();
+    const enterprise = await addStore(db, { tier: 'enterprise', planSource: 'operator' });
+    await addSpend(db, enterprise, MONTH - 1, '40');
+    const free = await addStore(db, { tier: 'free', planSource: 'free' });
+    await addSpend(db, free, MONTH - 1, '3');
+    const report = await stats(db, { prices: loaded() });
+    expect(report.cost.byPlan).toEqual([
+      {
+        tier: 'enterprise',
+        monthToDateUsd: '0',
+        lastMonthUsd: '40',
+        mrrUsd: null,
+        grossMarginUsd: null,
+      },
+      { tier: 'free', monthToDateUsd: '0', lastMonthUsd: '3', mrrUsd: null, grossMarginUsd: '-3' },
+    ]);
+    expect(lineOf(formatStats(report), 'enterprise')).toMatch(/\$40\.00\s+-\s+n\/a$/u);
+  });
+
+  it('leaves an operator-managed store with a live subscription out of the operator line', async () => {
+    const db = await freshDb();
+    const charged = await addStore(db, { tier: 'starter', planSource: 'operator' });
+    await addSubscription(db, charged);
+    await addStore(db, { tier: 'enterprise', planSource: 'operator' });
+    const report = await stats(db);
+    expect(report.revenue.operatorManaged).toEqual([{ tier: 'enterprise', count: 1 }]);
+    expect(report.revenue.integrity).toEqual([{ owner: charged, problem: 'operator_managed' }]);
+  });
+
+  it('flags a live subscription on a store with no plan source or a Free source', async () => {
+    const db = await freshDb();
+    const noSource = await addStore(db, { planSource: null });
+    await addSubscription(db, noSource);
+    const freeSource = await addStore(db, { planSource: 'free' });
+    await addSubscription(db, freeSource);
+    const report = await stats(db);
+    expect(report.revenue.integrity).toEqual(
+      [
+        { owner: noSource, problem: 'operator_managed' },
+        { owner: freeSource, problem: 'tier_mismatch' },
+      ].sort((left, right) => left.owner.localeCompare(right.owner)),
+    );
+  });
+
+  it('runs the migrations before every command but stats', () => {
+    expect(migratesFirst(['stats', '--json'])).toBe(false);
+    expect(migratesFirst(['stats'])).toBe(false);
+    expect(migratesFirst([])).toBe(true);
+    expect(migratesFirst(['store', 'list'])).toBe(true);
+    expect(migratesFirst(['tier', 'set', 'stats'])).toBe(true);
+  });
+
+  it('prints a Stripe failure message through printable', async () => {
+    const db = await freshDb();
+    await addSubscription(db, await addStore(db));
+    const text = formatStats(
+      await stats(db, { prices: { kind: 'failed', message: 'down \u001b[2J‮ now' } }),
+    );
+    expect(text).toContain('n/a (Stripe price read failed: down ?[2J? now)');
+    expect(text).not.toContain('\u001b');
+    expect(text).not.toContain('‮');
+  });
+
+  it('replaces zero-width and bidi controls, and never cuts a surrogate pair', () => {
+    expect(printable('a​b‏c‪d‮e⁦f⁩g﻿h')).toBe('a?b?c?d?e?f?g?h');
+    expect(printable('a b')).toBe('a b');
+    const emoji = '\u{1F600}';
+    expect(printable(`${'x'.repeat(199)}${emoji}${emoji}`)).toBe(`${'x'.repeat(199)}${emoji}...`);
+    expect(printable(emoji.repeat(200))).toBe(emoji.repeat(200));
+  });
+
+  it('prints a catalog sync error containing ESC through printable', async () => {
+    const db = await freshDb();
+    const owner = await addStore(db);
+    await db.query(
+      `insert into catalog_syncs (owner, state, error, started_at) values ($1, 'failed', $2, $3)`,
+      [owner, 'feed \u001b]0;owned\u0007 down', NOW - 60],
+    );
+    const text = formatStats(await stats(db));
+    expect(text).toContain(`${nip19.npubEncode(owner)} failed: feed ?]0;owned? down`);
+    expect(text).not.toContain('\u001b');
+  });
+
+  it('reads a price with no tax behavior as unspecified, and a live subscription with no interval as unpriced', async () => {
+    const db = await freshDb();
+    await addSubscription(db, await addStore(db));
+    await addSubscription(db, await addStore(db, { tier: 'pro' }), { plan: 'pro', interval: null });
+    const report = await stats(db, {
+      prices: loaded(price('starter', 'month', 2900, { taxBehavior: null })),
+    });
+    expect(report.revenue.taxBehavior).toBe('unspecified');
+    expect(report.revenue.mrrUnavailable).toEqual([
+      { plan: 'pro', interval: null, reason: 'no billing interval stored' },
+    ]);
+  });
+
+  it('lists only past due subscriptions as past due, trialing not', async () => {
+    const db = await freshDb();
+    await addSubscription(db, await addStore(db), { status: 'trialing' });
+    const late = await addStore(db);
+    await addSubscription(db, late, { status: 'past_due' });
+    expect((await stats(db)).revenue.pastDue).toEqual([late]);
+  });
+
+  it('keeps a pending store with settings at exactly three days off the stale list', async () => {
+    const db = await freshDb();
+    const store = await addStore(db, { status: 'pending', createdAt: NOW - 3 * DAY });
+    await addOrigin(db, store);
+    expect((await stats(db)).stores.waiting).toEqual({ count: 1, stale: [] });
+  });
+
+  it('bounds the 7 d and window activity by day', async () => {
+    const db = await freshDb();
+    const store = await addStore(db);
+    await addActivity(db, store, TODAY - 7, { answers: 5, links: 2 });
+    await addActivity(db, store, TODAY - 20, { links: 3 });
+    const report = await stats(db);
+    expect(report.usage.activity.days7).toEqual({
+      conversations: 0,
+      answers: 0,
+      links: 0,
+      carts: 0,
+    });
+    expect(report.usage.activity.window.links).toBe(5);
+    expect(report.usage.activeStores).toEqual({ days7: 0, window: 1 });
+  });
+
+  it('counts only active stores as silent', async () => {
+    const db = await freshDb();
+    await addStore(db, { status: 'suspended' });
+    await addStore(db, { status: 'pending' });
+    await addStore(db);
+    expect((await stats(db)).usage.silent).toEqual({ neverAnswered: 1, quiet: 0 });
+  });
+
+  it('ranks top stores by answers, not conversations', async () => {
+    const db = await freshDb();
+    const talkative = await addStore(db);
+    await addActivity(db, talkative, TODAY, { conversations: 50, answers: 2 });
+    const answering = await addStore(db);
+    await addActivity(db, answering, TODAY, { conversations: 1, answers: 9 });
+    expect((await stats(db)).usage.top.map((store) => store.owner)).toEqual([answering, talkative]);
+  });
+
+  it('keeps yesterday out of today s spend, and counts the month s first day in MTD conversations', async () => {
+    const db = await freshDb();
+    const store = await addStore(db);
+    await addSpend(db, store, TODAY - 1, '2');
+    await addSpend(db, store, TODAY, '1');
+    await addActivity(db, store, MONTH, { conversations: 4 });
+    await addActivity(db, store, MONTH - 1, { conversations: 100 });
+    const report = await stats(db);
+    expect(report.cost.todayUsd).toBe('1');
+    expect(report.cost.perConversationUsd).toBe('0.75');
   });
 });

@@ -7,7 +7,7 @@ import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
 import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
 import { createStripeGateway } from './billing/stripe';
-import { type CliDeps, runCli } from './cli';
+import { type CliDeps, migratesFirst, runCli } from './cli';
 import {
   billingFromEnv,
   freeTierFromEnv,
@@ -276,8 +276,10 @@ function cliDeps(db: Db, vault: KeyVault, args: readonly string[]): CliDeps {
 async function main(): Promise<void> {
   const db = createPgDb(required('DATABASE_URL'));
   const vault = new KeyVault(masterKey());
-  await migrate(db);
   const args = process.argv.slice(2);
+  if (migratesFirst(args)) {
+    await migrate(db);
+  }
   if (args.length > 0) {
     try {
       console.log(await runCli(args, cliDeps(db, vault, args)));
