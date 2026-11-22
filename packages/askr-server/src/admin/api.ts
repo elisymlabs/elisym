@@ -447,7 +447,8 @@ export function createAdminApi(
       nextAssistant: (await deps.directory.nextAssistant(store.owner)) ?? null,
       catalogKey: store.catalogKey,
       usage,
-      // The chat is paused once the plan's monthly budget is reached: the admin says so on every tab.
+      // The chat is paused once the plan's monthly budget is reached in its window (the calendar
+      // month, or a paid plan's billing period): the admin says so on every tab.
       budgetPaused: budgetReached(usage, store.tier) ? 'month' : null,
       catalogSync: await deps.directory.catalogSync(store.owner, now()),
       connector: (await deps.directory.connector(store.owner)) ?? null,

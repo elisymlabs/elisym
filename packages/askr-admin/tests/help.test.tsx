@@ -50,6 +50,13 @@ describe('the help', () => {
     }
     expect(GUIDE).not.toContain(EM_DASH);
   });
+
+  it('says when the budget restarts: Free and managed plans on the 1st, a Stripe plan on its billing date', () => {
+    expect(HELP.usage.text).toContain('Free and plans we manage restart on the 1st (UTC)');
+    expect(HELP.usage.text).toContain('a plan paid through Stripe on its billing date each month');
+    expect(HELP.usage.text).toContain('may stay paused until the next UTC day');
+    expect(HELP.usage.text).not.toContain('next month');
+  });
 });
 
 describe('the info button', () => {

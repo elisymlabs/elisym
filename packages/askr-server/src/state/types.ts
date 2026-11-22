@@ -11,7 +11,7 @@ export interface Tier {
   name: string;
   /** Asks per session per UTC day. */
   messagesPerSessionPerDay: number;
-  /** Spend per store per UTC calendar month, in USD as a decimal string: the plan's only spend limit. */
+  /** Spend per store per budget period (the UTC calendar month, or a Stripe plan's month from its billing date), in USD as a decimal string: the plan's only spend limit. */
   monthlyBudgetUsd: string;
   /** Session tickets per store per minute (3). */
   ticketsPerStorePerMinute: number;

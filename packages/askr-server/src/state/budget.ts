@@ -3,7 +3,7 @@ import type { Tier } from './types';
 
 /**
  * The least spend ceiling a turn gets when its reservation was clipped to what is left of the
- * month's budget: a normal turn costs about 0.002 USD over a few model calls, so a ceiling of a
+ * budget window's budget: a normal turn costs about 0.002 USD over a few model calls, so a ceiling of a
  * cent lets it finish instead of stopping after its first call. A clipped turn can pass the budget
  * by at most this plus its last model call, and only the last turns before the budget runs out
  * are clipped.
@@ -11,7 +11,7 @@ import type { Tier } from './types';
 export const MIN_TURN_CEILING_USD = '0.01';
 
 /**
- * What one more turn reserves (5.8): `reserveUsd`, or only what is left of the month's budget
+ * What one more turn reserves (5.8): `reserveUsd`, or only what is left of the budget window's budget
  * when that is less, so a plan's budget can be spent in full. Undefined when nothing is left: the
  * turn is refused with `budget`.
  */
@@ -41,15 +41,15 @@ export function turnCeiling(reservedUsd: string, reserveUsd: string): string {
  * (it answers nothing anyway).
  */
 export function budgetReached(
-  usage: { today: { reserved: string }; month: { spent: string } },
+  usage: { month: { spent: string; reserved: string } },
   tier: Tier | undefined,
 ): boolean {
   if (tier === undefined) {
     return false;
   }
-  // `month.spent` already counts today's spend; today's open reservations count as well.
+  // As `PgState.room`: the window's spend and every open reservation in it, not only today's.
   return new Decimal(usage.month.spent)
-    .plus(usage.today.reserved)
+    .plus(usage.month.reserved)
     .greaterThanOrEqualTo(tier.monthlyBudgetUsd);
 }
 

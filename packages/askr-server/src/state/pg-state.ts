@@ -6,6 +6,7 @@ import { ORPHAN_RESERVATION_SECS, RUMOR_DEDUP_SECS } from '../constants';
 import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import { turnReservation } from './budget';
+import { budgetWindow, utcDay } from './budget-window';
 import { noteOrigins } from './origins';
 import type {
   ClickKind,
@@ -21,7 +22,7 @@ import type {
   Tier,
 } from './types';
 
-const SECS_PER_DAY = 24 * 60 * 60;
+export { monthStartDay, utcDay } from './budget-window';
 
 /** A column of `activity_days`: what the widget did on a day. */
 export type ActivityKind = 'conversations' | 'answers' | 'links' | 'carts';
@@ -42,16 +43,6 @@ export async function countActivity(
      on conflict (owner, day) do update set ${kind} = activity_days.${kind} + 1`,
     [owner, utcDay(now)],
   );
-}
-
-export function utcDay(now: number): number {
-  return Math.floor(now / SECS_PER_DAY);
-}
-
-/** The UTC day number the calendar month of `now` starts on. */
-export function monthStartDay(now: number): number {
-  const date = new Date(now * 1000);
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1) / (SECS_PER_DAY * 1000);
 }
 
 export function randomId(): string {
@@ -412,18 +403,19 @@ export class PgState implements ServerState {
     return { spent: new Decimal(row.spent), reserved: new Decimal(row.reserved) };
   }
 
-  /** What a store has spent and holds this month before today. */
-  private async monthBeforeToday(tx: Queryable, owner: string, now: number): Promise<Decimal> {
+  /** What a store has spent and holds in its budget window (`budgetWindow`) before today. */
+  private async windowBeforeToday(tx: Queryable, owner: string, now: number): Promise<Decimal> {
+    const window = await budgetWindow(tx, owner, now);
     const rows = await tx.query<{ spent: string; reserved: string }>(
       'select spent, reserved from store_days where owner = $1 and day >= $2 and day < $3',
-      [owner, monthStartDay(now), utcDay(now)],
+      [owner, window.startDay, utcDay(now)],
     );
     return rows.reduce((total, row) => total.plus(row.spent).plus(row.reserved), new Decimal(0));
   }
 
   /**
-   * What is left of the plan's monthly budget (reservations counted), with today's row locked:
-   * the month's only spend limit (anti-abuse limits are per visitor and per IP).
+   * What is left of the plan's monthly budget in its window (reservations counted), with today's
+   * row locked: the store's only spend limit (anti-abuse limits are per visitor and per IP).
    */
   private async room(
     tx: Queryable,
@@ -432,7 +424,7 @@ export class PgState implements ServerState {
     now: number,
   ): Promise<{ reserved: Decimal; left: Decimal }> {
     const today = await this.lockDay(tx, owner, utcDay(now));
-    const month = (await this.monthBeforeToday(tx, owner, now))
+    const month = (await this.windowBeforeToday(tx, owner, now))
       .plus(today.spent)
       .plus(today.reserved);
     return { reserved: today.reserved, left: new Decimal(tier.monthlyBudgetUsd).minus(month) };

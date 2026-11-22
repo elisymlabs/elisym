@@ -24,7 +24,7 @@ export const HELP = {
     anchor: 'status',
   },
   usage: {
-    text: 'What the assistant spent against your plan this month, in US dollars. When the month’s budget runs out the chat says it is unavailable until the next month, or until you upgrade your plan. Conversations are visitors’ chats that got at least one answer.',
+    text: 'Spent against your plan this budget period, in US dollars. Free and plans we manage restart on the 1st (UTC), a plan paid through Stripe on its billing date each month; a chat paused earlier that day may stay paused until the next UTC day. Until then, or until you upgrade, the chat says it is unavailable. Conversations are visitors’ chats that got at least one answer.',
     anchor: 'usage',
   },
   productClicks: {
