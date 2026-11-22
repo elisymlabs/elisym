@@ -251,8 +251,27 @@ a.card-title:hover { text-decoration: underline; }
 .waits-for-pick:hover .cart-hint,
 .waits-for-pick:focus-within .cart-hint,
 .waits-for-pick.hint-shown .cart-hint { opacity: 1; transform: translate(-50%, 0); }
-table { border-collapse: collapse; width: 100%; font-size: 12px; }
-th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left; vertical-align: top; }
+/* A comparison scrolls sideways, never squeezes: readable columns, row names stay in view.
+   Separate borders (end and bottom only) let the box's rounded border clip the cells. */
+.table-scroll {
+  min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+  border: 1px solid var(--cc-border); border-radius: min(12px, var(--cc-radius)); background: var(--cc-bg);
+}
+.table-scroll table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 12px; }
+.table-scroll th, .table-scroll td {
+  min-width: 96px; padding: 7px 10px; text-align: start; vertical-align: top;
+  white-space: normal; word-break: normal; overflow-wrap: break-word; hyphens: manual;
+  border-inline-end: 1px solid var(--cc-border); border-bottom: 1px solid var(--cc-border);
+}
+.table-scroll tr > :last-child { border-inline-end: 0; }
+.table-scroll tr:last-child > * { border-bottom: 0; }
+.table-scroll tr:first-child > th { background: var(--cc-surface); font-weight: 600; }
+.table-scroll tr > th:first-child {
+  position: sticky; inset-inline-start: 0; z-index: 1; min-width: 84px;
+  background: var(--cc-surface); color: var(--cc-muted); font-weight: 500;
+}
+.table-scroll th .label { display: inline-block; margin-top: 4px; white-space: nowrap; background: var(--cc-bg); }
 .steps { margin: 0; padding-left: 20px; }
 .detail { color: var(--cc-muted); font-size: 12px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 8px; }
@@ -311,7 +330,7 @@ th, td { border: 1px solid var(--cc-border); padding: 4px 6px; text-align: left;
 :host([open]) .panel { animation: askr-panel-in 0.32s cubic-bezier(0.2, 0.9, 0.25, 1) both; }
 :host([closing]) .panel { animation: askr-panel-out 0.18s ease-in both; }
 /* Messages, answers and their cards rise in; the cards one after another. */
-.bubble, .component-title, .component > table, .component > .steps, .chip {
+.bubble, .component-title, .component > .table-scroll, .component > .steps, .chip {
   animation: askr-rise 0.36s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 .cards > .card { animation: askr-rise 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) both; }

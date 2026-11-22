@@ -29,6 +29,7 @@ const EN = {
   recommended: 'Recommended',
   choose: 'Choose',
   products: 'Products',
+  comparison: 'Comparison',
 };
 
 export type Strings = typeof EN;
@@ -66,6 +67,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: 'Рекомендуем',
     choose: 'Выберите',
     products: 'Товары',
+    comparison: 'Сравнение',
   },
   es: {
     launcher: 'Pregunta a la IA',
@@ -96,6 +98,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: 'Recomendado',
     choose: 'Elige',
     products: 'Productos',
+    comparison: 'Comparación',
   },
   de: {
     launcher: 'KI fragen',
@@ -126,6 +129,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: 'Empfohlen',
     choose: 'Wählen Sie',
     products: 'Produkte',
+    comparison: 'Vergleich',
   },
   fr: {
     launcher: "Demander à l'IA",
@@ -156,6 +160,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: 'Recommandé',
     choose: 'Choisir',
     products: 'Produits',
+    comparison: 'Comparaison',
   },
   pt: {
     launcher: 'Pergunte à IA',
@@ -186,6 +191,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: 'Recomendado',
     choose: 'Escolha',
     products: 'Produtos',
+    comparison: 'Comparação',
   },
   it: {
     launcher: "Chiedi all'IA",
@@ -216,6 +222,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: 'Consigliato',
     choose: 'Scegli',
     products: 'Prodotti',
+    comparison: 'Confronto',
   },
   zh: {
     launcher: '问 AI',
@@ -246,6 +253,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: '推荐',
     choose: '选择',
     products: '商品',
+    comparison: '对比',
   },
   ja: {
     launcher: 'AIに質問',
@@ -276,6 +284,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: 'おすすめ',
     choose: '選択:',
     products: '商品',
+    comparison: '比較',
   },
   ko: {
     launcher: 'AI에게 묻기',
@@ -306,6 +315,7 @@ export const LANGUAGES: Readonly<Record<string, Strings>> = {
     recommended: '추천',
     choose: '선택:',
     products: '상품',
+    comparison: '비교',
   },
 };
 
