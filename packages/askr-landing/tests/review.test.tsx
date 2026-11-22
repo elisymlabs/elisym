@@ -235,6 +235,30 @@ describe('the hero', () => {
 });
 
 describe('the chat drawing', () => {
+  it('draws the comparison as the widget does: a rounded scroll box, a pinned first column', async () => {
+    const css = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
+    const rule = (selector: string) => {
+      const start = css.indexOf(`\n${selector} {`);
+      return start < 0 ? '' : css.slice(start, css.indexOf('}', start));
+    };
+    expect(rule('.wgt-table-scroll')).toContain('overflow-x: auto');
+    expect(rule('.wgt-table-scroll')).toContain('border-radius: 12px');
+    expect(rule('.wgt-table')).toContain('border-collapse: separate');
+    expect(rule('.wgt-table th,\n.wgt-table td')).toContain('min-width: 96px');
+    expect(rule('.wgt-table thead th')).toContain('background: linear-gradient(');
+    const pinned = rule('.wgt-table tr > th:first-child');
+    expect(pinned).toContain('position: sticky');
+    expect(pinned).toContain('inset-inline-start: 0');
+    expect(pinned).toContain('background: linear-gradient(');
+    stubMotion(true);
+    const page = await render(<App />);
+    const tables = [...page.querySelectorAll('#features .wgt-table')];
+    expect(tables.length).toBe(1);
+    for (const table of tables) {
+      expect(table.parentElement?.classList.contains('wgt-table-scroll')).toBe(true);
+    }
+  });
+
   it('scrolls only in the hero chat, so the page scrolls over the still drawings', async () => {
     const css = readFileSync(join(process.cwd(), 'src/app.css'), 'utf8');
     const rule = (selector: string) => {
