@@ -178,9 +178,17 @@ describe('comparison tables', () => {
       );
     };
     scroll.scrollLeft = 0;
+    const cell = scroll.querySelector('td');
+    if (!cell) {
+      throw new Error('no cell');
+    }
+    document.getSelection()?.selectAllChildren(cell);
+    expect(document.getSelection()?.toString()).not.toBe('');
     press('pointerdown', 200);
     press('pointermove', 150);
     expect(scroll.classList.contains('dragging')).toBe(true);
+    // The text the press started to select is dropped: a drag scrolls, it never highlights.
+    expect(document.getSelection()?.toString()).toBe('');
     press('pointermove', 90);
     expect(scroll.scrollLeft).toBe(60);
     press('pointerup', 90);
@@ -201,6 +209,7 @@ describe('comparison tables', () => {
     const rule = /\.table-scroll \{([^}]*)\}/u.exec(WIDGET_CSS)?.[1] ?? '';
     expect(rule).toContain('overflow-x: auto;');
     expect(rule).toContain('max-width: 100%;');
+    expect(rule).toContain('overscroll-behavior-x: contain;');
     expect(rule).toContain('border-radius: min(12px, var(--cc-radius));');
     expect(WIDGET_CSS).toContain(
       '.table-scroll table { border-collapse: separate; border-spacing: 0;',
@@ -225,11 +234,21 @@ describe('comparison tables', () => {
     expect(rule).toContain('background: var(--cc-bg);');
   });
 
-  it('names the comparison in every widget language, not left in English', () => {
-    for (const [language, strings] of Object.entries(LANGUAGES)) {
-      if (language !== 'en') {
-        expect(strings.comparison, language).not.toBe(LANGUAGES.en?.comparison);
-      }
-    }
+  it('names the comparison in every widget language', () => {
+    const comparisons = Object.fromEntries(
+      Object.entries(LANGUAGES).map(([language, strings]) => [language, strings.comparison]),
+    );
+    expect(comparisons).toEqual({
+      en: 'Comparison',
+      ru: 'Сравнение',
+      es: 'Comparación',
+      de: 'Vergleich',
+      fr: 'Comparaison',
+      pt: 'Comparação',
+      it: 'Confronto',
+      zh: '对比',
+      ja: '比較',
+      ko: '비교',
+    });
   });
 });
