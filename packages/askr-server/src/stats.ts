@@ -22,6 +22,16 @@ export const DEFAULT_STATS_DAYS = 30;
 export const MAX_STATS_DAYS = 365;
 
 const STATS_SCHEMA_VERSION = 1;
+/** Free text from the database (a shop's error, a platform name) printed to a terminal is cut to this. */
+const MAX_PRINTED_TEXT = 200;
+/** C0 and C1 control characters, ESC among them: a shop's text must not drive the operator's terminal. */
+const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f-\u009f]/gu;
+
+/** A value from the database as the text report prints it: control characters replaced, length capped. */
+export function printable(text: string): string {
+  const clean = text.replace(CONTROL_CHARS_RE, '?');
+  return clean.length > MAX_PRINTED_TEXT ? `${clean.slice(0, MAX_PRINTED_TEXT)}...` : clean;
+}
 const RECENT_DAYS = 7;
 const FULL_BPS = 10_000;
 const MS_PER_SEC = 1000;
@@ -1035,7 +1045,8 @@ function usageText(stats: OperatorStats): string[] {
     connectors.set(row.platform, entry);
   }
   const connectorText = [...connectors.entries()].map(
-    ([platform, entry]) => `${platform} ${count(entry.total)} (${count(entry.enabled)} on)`,
+    ([platform, entry]) =>
+      `${printable(platform)} ${count(entry.total)} (${count(entry.enabled)} on)`,
   );
   return [
     `USAGE         7 d / ${stats.windowDays} d`,
@@ -1103,7 +1114,7 @@ function healthText(stats: OperatorStats): string[] {
         ? ''
         : ` (${dateTime(Math.floor(connector.lastRunAtMs / MS_PER_SEC))})`;
     lines.push(
-      `${label('')}${npub(connector.owner)} ${connector.platform} ${connector.status}${connector.message === null ? '' : `: ${connector.message}`}${ran}`,
+      `${label('')}${npub(connector.owner)} ${printable(connector.platform)} ${printable(connector.status)}${connector.message === null ? '' : `: ${printable(connector.message)}`}${ran}`,
     );
   }
   const failed = health.catalogSyncs.filter((sync) => sync.state === 'failed').length;
@@ -1112,7 +1123,7 @@ function healthText(stats: OperatorStats): string[] {
   );
   for (const sync of health.catalogSyncs) {
     lines.push(
-      `${label('')}${npub(sync.owner)} ${sync.state}${sync.error === null ? '' : `: ${sync.error}`}${sync.at === null ? '' : ` (${dateTime(sync.at)})`}`,
+      `${label('')}${npub(sync.owner)} ${sync.state}${sync.error === null ? '' : `: ${printable(sync.error)}`}${sync.at === null ? '' : ` (${dateTime(sync.at)})`}`,
     );
   }
   const gaveUp = health.storeEvents.reduce((total, row) => total + row.gaveUp, 0);

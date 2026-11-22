@@ -9,12 +9,13 @@ import { KeyVault } from '../src/db/keys';
 import { utcDay } from '../src/state/budget-window';
 import { StoreDirectory } from '../src/state/stores';
 import {
+  computeStats,
+  formatStats,
+  printable,
+  statsJson,
   type OperatorStats,
   type PriceSource,
   type StatsOptions,
-  computeStats,
-  formatStats,
-  statsJson,
 } from '../src/stats';
 import { MASTER_KEY } from './fixtures';
 import { freshDb } from './pglite-db';
@@ -1097,5 +1098,34 @@ describe('stats: the CLI (24)', () => {
     });
     expect(seenAtLoad).toBe(0);
     expect(statements.length).toBeGreaterThan(0);
+  });
+});
+
+describe('free text from the database in the text report', () => {
+  it('never lets a shop drive the terminal: control characters replaced, length capped', () => {
+    expect(printable('401 \u001b[2J\u001b]0;owned\u0007 Unauthorized\r\n\u009b31m')).toBe(
+      '401 ?[2J?]0;owned? Unauthorized???31m',
+    );
+    expect(printable('plain text, unchanged')).toBe('plain text, unchanged');
+    const long = 'x'.repeat(500);
+    expect(printable(long)).toBe(`${'x'.repeat(200)}...`);
+  });
+
+  it('prints a failing connector message from a shop through it', async () => {
+    const db = await freshDb();
+    const owner = await addStore(db);
+    await db.query(
+      `insert into connectors (owner, platform, url, import_policies, enabled, last_status,
+         last_run_at, next_run_at)
+       values ($1, 'shopify', 'https://merchant.example', false, true, $2, $3, $3)`,
+      [
+        owner,
+        JSON.stringify({ status: 'error', message: 'bad \u001b[2J gateway' }),
+        Date.UTC(2026, 10, 20, 9),
+      ],
+    );
+    const text = formatStats(await stats(db));
+    expect(text).toContain('shopify error: bad ?[2J gateway');
+    expect(text).not.toContain('\u001b');
   });
 });
