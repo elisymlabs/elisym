@@ -131,6 +131,9 @@ export function fakeStripe() {
         control.reading -= 1;
       }
     },
+    async planPrices() {
+      return [];
+    },
   };
   return { gateway, subscriptions, checkouts, portals, missingCustomers, expired, prices, control };
 }

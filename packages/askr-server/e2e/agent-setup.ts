@@ -174,7 +174,7 @@ async function main(): Promise<void> {
   const vault = new KeyVault(MASTER_KEY);
   const directory = new StoreDirectory(db, vault);
   const state = new PgState(db, vault);
-  await runCli(['tier', 'set', 'free', ...FREE_TIER_ARGS], directory);
+  await runCli(['tier', 'set', 'free', ...FREE_TIER_ARGS], { directory });
 
   const gatewaySecretKey = generateSecretKey();
   const provider = cardProvider();
