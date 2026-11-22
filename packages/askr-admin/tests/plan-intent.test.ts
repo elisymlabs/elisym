@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { takeBillingReturn } from '../src/lib/billing';
-import { intentSummary, takePlanIntent } from '../src/lib/plan-intent';
+import { intentShortSummary, intentSummary, takePlanIntent } from '../src/lib/plan-intent';
 
 const ADMIN = 'https://app.askr.test/admin/';
 
@@ -87,6 +87,15 @@ describe('the chosen plan in words (D3)', () => {
     );
     expect(intentSummary({ plan: 'starter', interval: 'month' })).toBe(
       'You chose Starter: $29 a month, billed monthly.',
+    );
+  });
+});
+
+describe('the chosen plan in a few words, before sign-in (R4)', () => {
+  it('says the monthly price, or the yearly one with its total', () => {
+    expect(intentShortSummary({ plan: 'starter', interval: 'month' })).toBe('Starter · $29/month');
+    expect(intentShortSummary({ plan: 'growth', interval: 'year' })).toBe(
+      'Growth · $79/month, billed yearly ($948/year)',
     );
   });
 });

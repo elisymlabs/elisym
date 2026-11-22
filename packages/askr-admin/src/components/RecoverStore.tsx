@@ -79,6 +79,15 @@ export function RecoverStore({ storeId, recover, onDone, onCancel }: Props) {
       <NewOwnerKey
         nsec={state.key.nsec}
         npub={state.key.npub}
+        heading="Your new secret key"
+        lead={
+          <Notice tone="warn">
+            Save this secret key now, in a password manager or on paper. It is shown only once.
+            Anyone who has it controls your store, and nobody can recover it for you if you lose it.
+          </Notice>
+        }
+        continueLabel="Continue"
+        cancelLabel="Back"
         onContinue={() => setState({ step: 'proof', from: state.from, key: state.key })}
         onCancel={() => setState({ step: 'store' })}
       />

@@ -18,7 +18,7 @@ export function DownloadKey({ nsec, npub }: Props) {
     <div className="flex flex-col gap-4">
       <div>
         <button type="button" className="btn" onClick={download}>
-          Download as a file
+          Download key file
         </button>
       </div>
       {savedAs === '' ? null : (

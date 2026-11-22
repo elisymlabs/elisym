@@ -208,7 +208,13 @@ describe('the return notice in the session (D5)', () => {
     });
     await settle(() => (container.textContent ?? '').includes(ACTIVE_ONBOARDING_TEXT));
     expect(ACTIVE_ONBOARDING_TEXT).toBe('Your plan is active: describe your store to finish.');
-    expect(container.textContent).toContain('2. Describe your store');
+    expect(container.textContent).toContain('Describe your store');
+    // Just paid: the last step, setting up the store, is the current one.
+    expect(container.querySelector('#plan-steps [aria-current="step"]')?.textContent).toMatch(
+      /3Set up your store$/u,
+    );
+    // Paid already: nothing says to choose a plan next to the step.
+    expect(container.textContent).not.toContain('choose a plan in Billing');
     expect(container.textContent).not.toContain(ACTIVE_TEXT);
   });
 

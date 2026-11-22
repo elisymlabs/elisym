@@ -51,12 +51,6 @@ export function RememberOption({ ref, label, id }: Props) {
         </label>
         <InfoTip help={HELP.rememberKey} about="Remembering the key" />
       </div>
-      {on ? (
-        <p className="text-12 text-text-3 pl-21">
-          Kept encrypted in this browser and never sent anywhere. Anyone who can use this browser
-          can sign in as your store, so clear this on a shared computer.
-        </p>
-      ) : null}
     </div>
   );
 }

@@ -14,9 +14,6 @@ export const INTERVAL_PARAM = 'interval';
 
 const INTERVALS: readonly BillingInterval[] = ['month', 'year'];
 
-/** Said after the chosen plan before a key exists. */
-export const INTENT_SIGN_IN_TEXT = 'Create a key or sign in to continue.';
-
 /** Said when the plan was chosen but this server takes no payments: we set paid plans up. */
 export const PAID_THROUGH_US_TEXT = 'Paid plans are set up with us: message us with your Store ID.';
 
@@ -67,4 +64,20 @@ export function intentSummary(intent: PlanIntent): string {
     return `You chose ${name}: ${card.yearlyPerMonth ?? card.monthly} a month, billed yearly (${card.yearlyTotal ?? ''}).`;
   }
   return `You chose ${name}: ${card.monthly} a month, billed monthly.`;
+}
+
+/**
+ * The chosen plan in a few words, for the compact line before sign-in: "Starter · $29/month" or
+ * "Growth · $79/month, billed yearly ($948/year)".
+ */
+export function intentShortSummary(intent: PlanIntent): string {
+  const name = planName(intent.plan);
+  const card = PLANS.find((plan) => plan.name === name);
+  if (card === undefined) {
+    return `${name}, billed ${cycleOf(intent.interval)}`;
+  }
+  if (intent.interval === 'year') {
+    return `${name} · ${card.yearlyPerMonth ?? card.monthly}/month, billed yearly (${card.yearlyTotal ?? ''}/year)`;
+  }
+  return `${name} · ${card.monthly}/month`;
 }

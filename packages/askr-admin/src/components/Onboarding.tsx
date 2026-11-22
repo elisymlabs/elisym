@@ -12,6 +12,7 @@ import { useBusyUntilLeave } from '../lib/use-busy-until-leave';
 import { ContactLinks } from './ContactLinks';
 import { Notice } from './Notice';
 import { PlanIntentLine } from './PlanIntentLine';
+import { type PlanStep, PlanSteps } from './PlanSteps';
 import { Section } from './Section';
 import { StoreSettingsForm } from './StoreSettingsForm';
 import { TextField } from './TextField';
@@ -29,6 +30,8 @@ interface Props {
   onIntentDone?: () => void;
   /** Back from Stripe: what the return says, above the steps. */
   billingNotice?: ReactNode;
+  /** Where a visitor who chose a plan on the landing is: 2 before paying, 3 just paid. */
+  step?: PlanStep;
 }
 
 const INTENT_CREATE_TEXT = 'Create your store to go on to checkout.';
@@ -48,6 +51,7 @@ export function Onboarding({
   intent,
   onIntentDone = () => undefined,
   billingNotice,
+  step,
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -104,6 +108,10 @@ export function Onboarding({
     }
   };
 
+  // A plan that can be paid for here: before the store exists, its checkout is tried on creation.
+  const payable = intent !== undefined && (view === undefined || view.billing.checkoutAvailable);
+  // Step 2 is paying: without anything to pay here, there are no steps to show.
+  const shownStep = step === 2 && !payable ? undefined : step;
   let createLabel = intent === undefined ? 'Create my store' : 'Create my store and pay';
   if (busy) {
     createLabel = 'Creating...';
@@ -116,11 +124,14 @@ export function Onboarding({
           Sign out
         </button>
       </header>
+      {shownStep === undefined ? null : <PlanSteps current={shownStep} />}
       {billingNotice}
-      <Notice tone="info">
-        Save your settings, then choose a plan in Billing: Free starts at once, with nothing to pay;
-        a paid plan starts as soon as you pay for it.
-      </Notice>
+      {payable || shownStep !== undefined ? null : (
+        <Notice tone="info">
+          Save your settings, then choose a plan in Billing: Free starts at once, with nothing to
+          pay; a paid plan starts as soon as you pay for it.
+        </Notice>
+      )}
       {view === undefined && intent !== undefined ? (
         <PlanIntentLine intent={intent} next={INTENT_CREATE_TEXT} onDismiss={onIntentDone} />
       ) : null}
@@ -148,7 +159,7 @@ export function Onboarding({
       )}
       {view === undefined ? (
         <Section
-          title="1. Create your store"
+          title="Create your store"
           description="This sets up your assistant on the Askr server for this Store ID."
         >
           <p className="text-13 text-text-3 font-mono break-all">{ownerNpub}</p>
@@ -175,7 +186,7 @@ export function Onboarding({
       ) : (
         <div className="flex flex-col gap-20">
           <div className="flex flex-col gap-2">
-            <h2 className="text-18 font-semibold">2. Describe your store</h2>
+            <h2 className="text-18 font-semibold">Describe your store</h2>
             <p className="text-13 text-text-2">
               You sign these settings with your secret key. They tell the assistant what to sell and
               where it may run.

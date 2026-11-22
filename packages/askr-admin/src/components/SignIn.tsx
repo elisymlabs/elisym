@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { INTENT_SIGN_IN_TEXT, type PlanIntent } from '../lib/plan-intent';
-import { forgetDamaged, readRemembered, rememberKey } from '../lib/remembered';
-import { type Signer, generateOwnerKey, parseSecretKey, secretKeySigner } from '../lib/signer';
+import type { PlanIntent } from '../lib/plan-intent';
+import { type RememberedRead, forgetDamaged, readRemembered, rememberKey } from '../lib/remembered';
+import {
+  type OwnerKey,
+  type Signer,
+  generateOwnerKey,
+  parseSecretKey,
+  secretKeySigner,
+} from '../lib/signer';
+import { tabSignedInStore } from '../lib/tab-session';
 import { AskrLogo } from './AskrLogo';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
-import { PlanIntentLine } from './PlanIntentLine';
+import { PlanChoiceLine } from './PlanChoiceLine';
+import { PlanSteps } from './PlanSteps';
 import { RecoverStore } from './RecoverStore';
 import { type RememberChoice, type RememberHandle, RememberOption } from './RememberOption';
 import { UnlockRemembered } from './UnlockRemembered';
@@ -23,6 +31,29 @@ interface Props {
 
 const NOT_REMEMBERED =
   'Your secret key could not be remembered on this device. To go on without it, clear the remember box and try again.';
+
+const NEW_KEY_LEAD =
+  'Askr has no accounts or passwords. This key is how you sign in: keep it like a password. Anyone who has it controls your store, and nobody can recover it for you. It is shown only once.';
+
+/**
+ * Whether a visitor opens straight on a new key: a plan was chosen on the landing, and nothing
+ * says they already have a store here (no key remembered or unreadable on this device, none a
+ * newer admin remembered, no tab signed in before a reload), and no key is being replaced.
+ */
+function opensOnNewKey(
+  intent: PlanIntent | undefined,
+  replaceKeyOf: string | undefined,
+  remembered: RememberedRead,
+): boolean {
+  return (
+    intent !== undefined &&
+    replaceKeyOf === undefined &&
+    remembered.keys.length === 0 &&
+    !remembered.damaged &&
+    remembered.newer !== true &&
+    tabSignedInStore() === undefined
+  );
+}
 
 /** Remember `secretKey` on this device: undefined when done, else what to tell them. */
 async function rememberOnDevice(secretKey: Uint8Array): Promise<string | undefined> {
@@ -47,9 +78,12 @@ export function SignIn({
   /** Set at once on a press, before React re-renders: a double press remembers and signs in once. */
   const working = useRef(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
-  const [generated, setGenerated] = useState<ReturnType<typeof generateOwnerKey>>();
   const [recovering, setRecovering] = useState(replaceKeyOf !== undefined);
   const [remembered, setRemembered] = useState(readRemembered);
+  // Made once, in the initializer, so a re-render (or StrictMode's second one) shows the same key.
+  const [generated, setGenerated] = useState<OwnerKey | undefined>(() =>
+    opensOnNewKey(intent, replaceKeyOf, remembered) ? generateOwnerKey() : undefined,
+  );
 
   // Leaving the page keeps it in the back/forward cache: a typed key must not come back.
   useEffect(() => {
@@ -122,9 +156,7 @@ export function SignIn({
   };
 
   const intentLine =
-    intent === undefined ? null : (
-      <PlanIntentLine intent={intent} next={INTENT_SIGN_IN_TEXT} onDismiss={onDismissIntent} />
-    );
+    intent === undefined ? null : <PlanChoiceLine intent={intent} onDismiss={onDismissIntent} />;
 
   if (recovering) {
     return (
@@ -145,15 +177,26 @@ export function SignIn({
       <NewOwnerKey
         nsec={generated.nsec}
         npub={generated.npub}
+        heading="Save your key"
+        lead={<p className="text-15 text-text-2">{NEW_KEY_LEAD}</p>}
+        continueLabel={intent === undefined ? 'Continue' : 'Continue to payment'}
+        cancelLabel={intent === undefined ? 'Back' : 'Already have a store? Sign in'}
         busy={busy}
         onContinue={() => continueWithNew(generated.secretKey)}
         onCancel={() => {
           setGenerated(undefined);
           setError('');
         }}
-        lead={intentLine}
+        header={
+          intent === undefined ? null : (
+            <div className="flex flex-col gap-16">
+              {intentLine}
+              <PlanSteps current={1} />
+            </div>
+          )
+        }
       >
-        <RememberOption ref={remember} id="new-key" label="Remember this key on this device" />
+        <RememberOption ref={remember} id="new-key" label="Keep me signed in on this device" />
         {error === '' ? null : <Notice tone="error">{error}</Notice>}
       </NewOwnerKey>
     );

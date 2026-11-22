@@ -41,6 +41,9 @@ describe('onboarding', () => {
       />
     );
     mounted = await mount(render());
+    expect([...mounted.container.querySelectorAll('h2')].map((title) => title.textContent)).toEqual(
+      ['Create your store'],
+    );
     expect(mounted.container.textContent).toContain(
       'Save your settings, then choose a plan in Billing: Free starts at once, with nothing to pay; a paid plan starts as soon as you pay for it.',
     );
@@ -61,6 +64,7 @@ describe('onboarding', () => {
     await mounted.rerender(render());
 
     const { container } = mounted;
+    expect(container.querySelector('h2')?.textContent).toBe('Describe your store');
     await typeInto(byId(container, 'store-name'), 'Tea Shop');
     await typeInto(byId(container, 'store-origins'), 'https://tea.example');
     await typeInto(byId(container, 'store-instructions'), 'Be brief.');

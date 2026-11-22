@@ -4,7 +4,10 @@ import { type PlanIntent, intentSummary } from '../lib/plan-intent';
 
 interface Props {
   intent: PlanIntent;
-  /** What comes next, after the chosen plan: "Create a key or sign in to continue." */
+  /**
+   * What comes next, after the chosen plan, once signed in: in Onboarding, create the store to go
+   * on to checkout, then pay now or describe the store first; in Billing, that its card is marked.
+   */
   next: string;
   onDismiss: () => void;
   /** A button that acts on the plan, before the links. */

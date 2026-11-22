@@ -1,6 +1,6 @@
 import { buildConfigEvent } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
-import { nsecEncode } from 'nostr-tools/nip19';
+import { decode, nsecEncode } from 'nostr-tools/nip19';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,7 @@ import { type BillingReturn, UPDATED_TEXT } from '../src/lib/billing';
 import type { AdminClient } from '../src/lib/deps';
 import { errorMessage } from '../src/lib/errors';
 import { PAID_THROUGH_US_TEXT, type PlanIntent } from '../src/lib/plan-intent';
-import type { Signer } from '../src/lib/signer';
+import { type Signer, npubOf } from '../src/lib/signer';
 import type { StoreView } from '../src/lib/types';
 import {
   ASSISTANT,
@@ -44,7 +44,9 @@ afterEach(async () => {
 
 const GROWTH_YEARLY: PlanIntent = { plan: 'growth', interval: 'year' };
 const LINE = 'You chose Growth: $79 a month, billed yearly ($948).';
-const SIGN_IN_LINE = `${LINE} Create a key or sign in to continue.`;
+/** The compact line before sign-in (R4). */
+const COMPACT_LINE = 'Growth · $79/month, billed yearly ($948/year)';
+const HAVE_A_STORE = 'Already have a store? Sign in';
 
 const PENDING = storeView({ status: 'pending', tier: null, billing: BILLING_ON });
 
@@ -52,7 +54,20 @@ function text(container: HTMLElement): string {
   return container.textContent ?? '';
 }
 
-/** The whole admin opened from the landing's "Choose Growth" (yearly), signed in with the owner key. */
+/** The current step of the indicator, or undefined when none is shown. */
+function currentStep(container: HTMLElement): string | undefined {
+  const steps = container.querySelector('#plan-steps');
+  if (steps === null) {
+    return undefined;
+  }
+  // The step's number and label, without the arrow before it.
+  return (steps.querySelector('[aria-current="step"]')?.textContent ?? '').replace(/^→/u, '');
+}
+
+/**
+ * The whole admin opened from the landing's "Choose Growth" (yearly): it opens on a new key, and
+ * the owner, who already has their key, signs in with it instead.
+ */
 async function signedIn(api: AdminClient, relay: NostrEvent[] = [], intent = GROWTH_YEARLY) {
   const created: { deps: ReturnType<typeof sessionDeps> }[] = [];
   const createDeps = vi.fn((signer: Signer) => {
@@ -62,7 +77,10 @@ async function signedIn(api: AdminClient, relay: NostrEvent[] = [], intent = GRO
   });
   mounted = await mount(<App createDeps={createDeps} initialIntent={intent} />);
   const { container } = mounted;
-  expect(byId(container, 'plan-intent').textContent).toContain(SIGN_IN_LINE);
+  expect(container.querySelector('h1')?.textContent).toBe('Save your key');
+  expect(byId(container, 'plan-intent').textContent).toContain(COMPACT_LINE);
+  await click(buttonNamed(container, HAVE_A_STORE));
+  expect(byId(container, 'plan-intent').textContent).toContain(COMPACT_LINE);
   const field = byId(container, 'owner-key');
   if (!(field instanceof HTMLInputElement)) {
     throw new Error('no key field');
@@ -87,13 +105,13 @@ function newVisitorApi(overrides: Partial<AdminClient> = {}): AdminClient {
 }
 
 async function createStore(container: HTMLElement) {
-  await settle(() => text(container).includes('1. Create your store'));
+  await settle(() => container.querySelector('#onboarding-email') !== null);
   await typeInto(byId(container, 'onboarding-email'), 'owner@tea.example');
   await click(buttonNamed(container, 'Create my store and pay'));
 }
 
 describe('the plan chosen on the landing, before the key (D3)', () => {
-  it('says the plan on the sign-in page, with the plans and a way to drop it', async () => {
+  it('says the plan in one compact line on the key screen, with the plans and a way to drop it', async () => {
     const onDismiss = vi.fn();
     mounted = await mount(
       <SignIn
@@ -103,39 +121,48 @@ describe('the plan chosen on the landing, before the key (D3)', () => {
         onDismissIntent={onDismiss}
       />,
     );
+    expect(mounted.container.querySelector('h1')?.textContent).toBe('Save your key');
     const line = byId(mounted.container, 'plan-intent');
-    expect(line.textContent).toContain(SIGN_IN_LINE);
+    expect(line.querySelector('p')?.textContent).toBe(COMPACT_LINE);
     expect(line.textContent).not.toMatch(/Stripe/u);
     const another = [...line.querySelectorAll('a')].find(
-      (link) => link.textContent === 'Choose another plan',
+      (link) => link.textContent === 'Change plan',
     );
     expect(another?.getAttribute('href')).toBe(PRICING_URL);
     await click(buttonNamed(line, 'Dismiss'));
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('says it on the new key page too', async () => {
+  it('says it on the sign-in screen too', async () => {
     mounted = await mount(
       <SignIn onSigner={() => undefined} recover={async () => undefined} intent={GROWTH_YEARLY} />,
     );
-    await click(buttonNamed(mounted.container, 'Create a secret key'));
-    expect(text(mounted.container)).toContain('Your new secret key');
-    expect(byId(mounted.container, 'plan-intent').textContent).toContain(SIGN_IN_LINE);
+    await click(buttonNamed(mounted.container, HAVE_A_STORE));
+    expect(mounted.container.querySelector('#owner-key')).not.toBeNull();
+    expect(byId(mounted.container, 'plan-intent').textContent).toContain(COMPACT_LINE);
   });
 
   it('says nothing without a plan', async () => {
     mounted = await mount(<SignIn onSigner={() => undefined} recover={async () => undefined} />);
+    expect(mounted.container.querySelector('#plan-intent')).toBeNull();
+    await click(buttonNamed(mounted.container, 'Create a secret key'));
+    expect(mounted.container.querySelector('h1')?.textContent).toBe('Save your key');
     expect(mounted.container.querySelector('#plan-intent')).toBeNull();
     await mounted.unmount();
     mounted = await mount(
       <NewOwnerKey
         nsec="nsec1x"
         npub="npub1x"
+        heading="Save your key"
+        lead="Keep it."
+        continueLabel="Continue"
+        cancelLabel="Back"
         onContinue={() => undefined}
         onCancel={() => undefined}
       />,
     );
     expect(mounted.container.querySelector('#plan-intent')).toBeNull();
+    expect(mounted.container.querySelector('#plan-steps')).toBeNull();
   });
 
   it('a monthly choice says the monthly price', async () => {
@@ -146,8 +173,8 @@ describe('the plan chosen on the landing, before the key (D3)', () => {
         intent={{ plan: 'pro', interval: 'month' }}
       />,
     );
-    expect(byId(mounted.container, 'plan-intent').textContent).toContain(
-      'You chose Pro: $199 a month, billed monthly. Create a key or sign in to continue.',
+    expect(byId(mounted.container, 'plan-intent').querySelector('p')?.textContent).toBe(
+      'Pro · $199/month',
     );
   });
 });
@@ -172,6 +199,9 @@ describe('a new visitor with a chosen plan (D4, step 1)', () => {
     expect(byId(container, 'plan-intent').textContent).toContain(
       `${LINE} Create your store to go on to checkout.`,
     );
+    // Not paid yet: paying is the step, and Billing is not where it happens.
+    expect(currentStep(container)).toBe('2Pay');
+    expect(text(container)).not.toContain('choose a plan in Billing');
     await createStore(container);
     await settle(() => order.length === 3);
     expect(order).toEqual(['createStore', 'checkout', 'openUrl']);
@@ -194,8 +224,8 @@ describe('a new visitor with a chosen plan (D4, step 1)', () => {
     const { container, openUrl } = await signedIn(api);
     await createStore(container);
     await settle(() => vi.mocked(api.checkout).mock.calls.length === 1);
-    expect(text(container)).toContain('1. Create your store');
-    expect(text(container)).not.toContain('2. Describe your store');
+    expect(container.querySelector('#onboarding-email')).not.toBeNull();
+    expect(text(container)).not.toContain('Describe your store');
     expect(buttonNamed(container, 'Creating...').disabled).toBe(true);
     await act(async () => {
       answer({ url: 'https://checkout.stripe.test/c/1' });
@@ -223,8 +253,10 @@ describe('a new visitor with a chosen plan (D4, step 1)', () => {
     const api = newVisitorApi({ checkout });
     const { container, openUrl } = await signedIn(api);
     await createStore(container);
-    await settle(() => text(container).includes('2. Describe your store'));
+    await settle(() => text(container).includes('Describe your store'));
     expect(text(container)).toContain('Stripe did not answer. Retry in a moment.');
+    // The plan is still to pay for: still step 2, in the settings section too.
+    expect(currentStep(container)).toBe('2Pay');
     const again = byId(container, 'intent-checkout');
     expect(again.textContent).toBe('Continue to checkout');
     expect(openUrl).not.toHaveBeenCalled();
@@ -245,9 +277,11 @@ describe('a new visitor with a chosen plan (D4, step 1)', () => {
     expect(PAID_THROUGH_US_TEXT).toBe(
       'Paid plans are set up with us: message us with your Store ID.',
     );
-    expect(text(container)).toContain('2. Describe your store');
+    expect(text(container)).toContain('Describe your store');
     expect(container.querySelector('#plan-intent')).toBeNull();
     expect(container.querySelector('#intent-checkout')).toBeNull();
+    // Nothing to pay here: the steps go with the plan.
+    expect(currentStep(container)).toBeUndefined();
     expect(container.querySelector('.contact-link')).not.toBeNull();
     expect(openUrl).not.toHaveBeenCalled();
   });
@@ -301,7 +335,7 @@ describe('an existing store with no settings and a chosen plan (D4, step 2)', ()
   it('offers Continue to checkout, busy until the page leaves', async () => {
     const api = fakeApi({ store: vi.fn(async () => PENDING) });
     const { container, openUrl } = await signedIn(api);
-    await settle(() => text(container).includes('2. Describe your store'));
+    await settle(() => text(container).includes('Describe your store'));
     expect(byId(container, 'plan-intent').textContent).toContain(
       `${LINE} Pay for it now, or describe your store first.`,
     );
@@ -374,17 +408,25 @@ describe('an existing store with no settings and a chosen plan (D4, step 2)', ()
       store: vi.fn(async () => storeView({ status: 'pending', tier: null, billing: BILLING_OFF })),
     });
     const { container } = await signedIn(api);
-    await settle(() => text(container).includes('2. Describe your store'));
+    await settle(() => text(container).includes('Describe your store'));
     expect(container.querySelector('#intent-checkout')).toBeNull();
+    // Nothing to pay here: no step 2, and the way to a plan is said instead.
+    expect(container.querySelector('#plan-steps')).toBeNull();
+    expect(text(container)).toContain(
+      'Save your settings, then choose a plan in Billing: Free starts at once, with nothing to pay; a paid plan starts as soon as you pay for it.',
+    );
   });
 
   it('Dismiss drops it', async () => {
     const api = fakeApi({ store: vi.fn(async () => PENDING) });
     const { container } = await signedIn(api);
-    await settle(() => text(container).includes('2. Describe your store'));
+    await settle(() => text(container).includes('Describe your store'));
+    expect(currentStep(container)).toBe('2Pay');
     await click(buttonNamed(byId(container, 'plan-intent'), 'Dismiss'));
     expect(container.querySelector('#plan-intent')).toBeNull();
     expect(container.querySelector('#intent-checkout')).toBeNull();
+    expect(currentStep(container)).toBeUndefined();
+    expect(text(container)).toContain('choose a plan in Billing');
   });
 });
 
@@ -462,6 +504,8 @@ describe('a returning owner with a chosen plan (D4, Shell)', () => {
     const { container } = mounted;
     await click(buttonNamed(byId(container, 'plan-intent'), 'Dismiss'));
     expect(container.querySelector('#plan-intent')).toBeNull();
+    // Without the plan, the key screen goes Back to the sign-in.
+    await click(buttonNamed(container, 'Back'));
     const field = byId(container, 'owner-key');
     if (field instanceof HTMLInputElement) {
       field.value = nsecEncode(OWNER_KEY);
@@ -555,10 +599,53 @@ describe('the session without App', () => {
         onReplaceKey={() => undefined}
       />,
     );
-    await settle(() =>
-      text(mounted?.container ?? document.body).includes('2. Describe your store'),
-    );
+    await settle(() => text(mounted?.container ?? document.body).includes('Describe your store'));
     expect(mounted.container.querySelector('#intent-checkout')).toBeNull();
+    expect(currentStep(mounted.container)).toBeUndefined();
+    expect(text(mounted.container)).toContain('choose a plan in Billing');
+  });
+});
+
+describe('a new visitor from the landing, from the key to checkout (K3)', () => {
+  it('saves the key, goes on to payment (step 2), creates the store and opens its checkout', async () => {
+    const api = newVisitorApi({
+      checkout: vi.fn(async () => ({ url: 'https://checkout.stripe.test/c/1' })),
+    });
+    const created: ReturnType<typeof sessionDeps>[] = [];
+    mounted = await mount(
+      <App
+        createDeps={(signer) => {
+          const deps = sessionDeps(api, fakeReader([]), signer);
+          created.push(deps);
+          return deps;
+        }}
+        initialIntent={GROWTH_YEARLY}
+      />,
+    );
+    const { container } = mounted;
+    expect(currentStep(container)).toBe('1Save your key');
+    const nsec = /nsec1[02-9ac-hj-np-z]+/u.exec(text(container))?.[0] ?? '';
+    const saved = [...container.querySelectorAll('input[type="checkbox"]')].find(
+      (box) => box.id === '',
+    );
+    if (!(saved instanceof HTMLInputElement)) {
+      throw new Error('no saved checkbox');
+    }
+    await click(saved);
+    await click(buttonNamed(container, 'Continue to payment'));
+    await settle(() => container.querySelector('#onboarding-email') !== null);
+    expect(currentStep(container)).toBe('2Pay');
+    // Signed in as the key shown, whose Store ID Onboarding shows.
+    const shown = decode(nsec);
+    if (shown.type !== 'nsec') {
+      throw new Error('no key shown');
+    }
+    expect(created[0]?.signer.pubkey).toBe(getPublicKey(shown.data));
+    expect(text(container)).toContain(npubOf(getPublicKey(shown.data)));
+    await typeInto(byId(container, 'onboarding-email'), 'owner@tea.example');
+    await click(buttonNamed(container, 'Create my store and pay'));
+    await settle(() => vi.mocked(created[0]?.openUrl ?? vi.fn()).mock.calls.length > 0);
+    expect(api.checkout).toHaveBeenCalledWith('growth', 'year');
   });
 });
 
