@@ -25,7 +25,7 @@ export type Activation = 'activated' | 'already_active';
 
 export interface StoreUsage {
   today: { spent: string; reserved: string };
-  /** Spent in this budget period: the calendar month, or a paid plan's month from its billing date. */
+  /** Spent in this budget period: the calendar month, or a Stripe plan's month from its billing date. */
   month: { spent: string };
   /**
    * `resetsAt`: Unix seconds, when this budget period ends and the budget is whole again. Absent

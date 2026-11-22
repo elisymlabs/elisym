@@ -67,6 +67,7 @@ export function anchoredWindow(anchor: number, now: number): BudgetWindow {
   while (addMonths(anchor, months) > now) {
     months -= 1;
   }
+  // Defensive: the calendar-month estimate is never short, so this loop does not run today.
   while (addMonths(anchor, months + 1) <= now) {
     months += 1;
   }

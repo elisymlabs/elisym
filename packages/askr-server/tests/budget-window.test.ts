@@ -2,6 +2,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it } from 'vitest';
 import { type SubscriptionLike, snapshotOf } from '../src/billing/stripe';
 import { MIGRATIONS, migrate } from '../src/db/migrations';
+import { saveSubscription } from '../src/state/billing';
 import {
   addMonths,
   anchoredWindow,
@@ -414,6 +415,12 @@ describe('the billing cycle anchor is read and kept', () => {
         'select billing_cycle_anchor from billing_subscriptions order by subscription_id',
       ),
     ).toEqual([{ billing_cycle_anchor: null }, { billing_cycle_anchor: SUBSCRIBED }]);
+    expect(
+      await db.query(
+        `select data_type, is_nullable from information_schema.columns
+         where table_name = 'billing_subscriptions' and column_name = 'billing_cycle_anchor'`,
+      ),
+    ).toEqual([{ data_type: 'bigint', is_nullable: 'YES' }]);
     await client.close();
   });
 
@@ -426,5 +433,29 @@ describe('the billing cycle anchor is read and kept', () => {
         [snapshot.id],
       ),
     ).toEqual([{ billing_cycle_anchor: SUBSCRIBED }]);
+  });
+
+  it('a newer snapshot without an anchor clears the stored one, never keeps it', async () => {
+    const harness = await setup();
+    const { owner, snapshot } = await payingStore(harness, SUBSCRIBED);
+    const [stored] = await harness.db.query<{ snapshot_fetched_at: string }>(
+      'select snapshot_fetched_at from billing_subscriptions where subscription_id = $1',
+      [snapshot.id],
+    );
+    expect(stored).toBeDefined();
+    const newer = Number(stored?.snapshot_fetched_at) + 1;
+    await saveSubscription(
+      harness.db,
+      owner.pubkey,
+      { ...snapshot, billingCycleAnchor: undefined },
+      SUBSCRIBED + 3600,
+      newer,
+    );
+    expect(
+      await harness.db.query(
+        'select billing_cycle_anchor from billing_subscriptions where subscription_id = $1',
+        [snapshot.id],
+      ),
+    ).toEqual([{ billing_cycle_anchor: null }]);
   });
 });

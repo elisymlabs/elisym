@@ -49,12 +49,34 @@ describe('budget notice', () => {
     expect(budgetNotice(storeView(month('34')), NOW)?.text).toContain('until December 1 (UTC).');
   });
 
-  it("names the reset day in UTC, from the server's reset time", () => {
-    // 00:30 UTC on Dec 1 is still November 30 in the Americas: the day shown is UTC's.
+  it("names the reset day in UTC, from the server's reset time, whatever the machine's time zone", () => {
+    // 00:30 UTC on Dec 1 is still November 30 in the Americas, and 23:30 UTC on Nov 30 is already
+    // December 1 in Asia: the day shown is UTC's in both, so a format in local time fails in one.
     const early = Date.UTC(2026, 11, 1, 0, 30) / 1000;
-    const view = storeView({ usage: { ...storeView().usage, budget: { resetsAt: early } } });
+    const late = Date.UTC(2026, 10, 30, 23, 30) / 1000;
+    const withReset = (resetsAt: number) =>
+      storeView({ usage: { ...storeView().usage, budget: { resetsAt } } });
+    const machineZone = process.env.TZ;
+    try {
+      for (const zone of ['America/New_York', 'Asia/Tokyo', 'UTC']) {
+        process.env.TZ = zone;
+        expect(budgetResetDay(withReset(early), NOW), zone).toBe('December 1');
+        expect(budgetResetDay(withReset(late), NOW), zone).toBe('November 30');
+        expect(budgetResetDay(storeView(paidPeriod('1')), NOW), zone).toBe('November 30');
+      }
+    } finally {
+      if (machineZone === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = machineZone;
+      }
+    }
+  });
+
+  it('a reset at midnight UTC names that day, not the day before', () => {
+    const midnight = Date.UTC(2026, 11, 1) / 1000;
+    const view = storeView({ usage: { ...storeView().usage, budget: { resetsAt: midnight } } });
     expect(budgetResetDay(view, NOW)).toBe('December 1');
-    expect(budgetResetDay(storeView(paidPeriod('1')), NOW)).toBe('November 30');
   });
 
   it('says nothing for a store that is not active or has no plan', () => {
