@@ -15,6 +15,7 @@ import { StoreSupervisor } from '../src/node/supervisor';
 import { OwnerEventPublisher } from '../src/publisher';
 import { StorePools } from '../src/relay/pools';
 import {
+  AUTH_ID_SWEEP_MS,
   FENCE_MARGIN_SECS,
   LEASE_RETRY_MS,
   type ServerDeps,
@@ -226,6 +227,18 @@ async function activeStoreWithRequest(setup: World) {
   return { owner: owner.pubkey, requestId };
 }
 
+/** Admin authorization ids recorded with these expiries. */
+async function authIds(db: Db, expiries: Record<string, number>): Promise<void> {
+  for (const [id, expiresAt] of Object.entries(expiries)) {
+    await db.query('insert into admin_auth_ids (id, expires_at) values ($1, $2)', [id, expiresAt]);
+  }
+}
+
+async function authIdsLeft(db: Db): Promise<string[]> {
+  const rows = await db.query<{ id: string }>('select id from admin_auth_ids order by id');
+  return rows.map((row) => row.id);
+}
+
 async function requestState(db: Db, id: string): Promise<string | undefined> {
   const [row] = await db.query<{ state: string }>(
     'select state from admin_requests where id = $1',
@@ -235,15 +248,16 @@ async function requestState(db: Db, id: string): Promise<string | undefined> {
 }
 
 describe('startServer', () => {
-  it('boots in order: migrate, vault, fee config, EIP-3009, supervisor, leases, publisher, pump, HTTP', async () => {
+  it('boots in order: migrate, auth id sweep, vault, fee config, EIP-3009, supervisor, leases, publisher, pump, HTTP', async () => {
     const setup = await world();
     await activeStoreWithRequest(setup);
     await boot(setup);
     const steps = setup.trace.filter(
       (step) => !step.startsWith('genesis') && step !== 'fee-config',
     );
-    expect(steps.slice(0, 10)).toEqual([
+    expect(steps.slice(0, 11)).toEqual([
       'migrate',
+      'auth-ids',
       'vault',
       'treasuries',
       'eip3009',
@@ -347,6 +361,85 @@ describe('startServer', () => {
     setup.signals.emit('SIGINT');
     expect(setup.trace.filter((step) => step.startsWith('stop:'))).toEqual(STOP_ORDER);
     expect(setup.closes.count).toBe(1);
+  });
+
+  it('sweeps the expired admin authorization ids at the boot and on its timer, keeping the live ones', async () => {
+    const clock = { value: NOW };
+    const sweepMs = 50;
+    const setup = await world({ now: () => clock.value, authIdSweepMs: sweepMs });
+    await authIds(setup.db, { 'expired-before-boot': NOW, 'live-at-boot': NOW + 1 });
+    const handle = await boot(setup);
+    // Swept at the boot, before any tick.
+    expect(await authIdsLeft(setup.db)).toEqual(['live-at-boot']);
+    await authIds(setup.db, { 'expires-later': NOW + 100, 'expires-soon': NOW + 10 });
+    clock.value = NOW + 10;
+    await waitFor(
+      async () => (await authIdsLeft(setup.db)).length === 1,
+      'the timer sweeping the expired ids',
+    );
+    expect(await authIdsLeft(setup.db)).toEqual(['expires-later']);
+    await handle.stop();
+    // No sweep after the stop, however many ticks it would have had.
+    clock.value = NOW + 1_000;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, sweepMs * 6);
+    });
+    expect(await authIdsLeft(setup.db)).toEqual(['expires-later']);
+  });
+
+  it('a failed auth id sweep is logged and the next one tries again; sweeps never overlap and a stop awaits the one running', async () => {
+    const logs: string[] = [];
+    const sweepMs = 20;
+    const setup = await world({ log: (message) => logs.push(message), authIdSweepMs: sweepMs });
+    const sweeps = { started: 0, fail: true };
+    let release: () => void = () => undefined;
+    let gate: Promise<void> | undefined;
+    const { db } = setup;
+    setup.deps.db = {
+      ...db,
+      query: async (sql, params) => {
+        if (sql.startsWith('delete from admin_auth_ids')) {
+          sweeps.started += 1;
+          if (sweeps.fail) {
+            throw new Error('database down');
+          }
+          if (gate !== undefined) {
+            await gate;
+          }
+        }
+        return db.query(sql, params);
+      },
+    };
+    const handle = await boot(setup);
+    expect(sweeps.started).toBeGreaterThanOrEqual(1);
+    expect(logs).toContain('auth id sweep failed: database down');
+    await authIds(db, { expired: NOW });
+    sweeps.fail = false;
+    await waitFor(async () => (await authIdsLeft(db)).length === 0, 'a sweep after the failure');
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const before = sweeps.started;
+    await waitFor(() => sweeps.started > before, 'a sweep held at the gate');
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, sweepMs * 6);
+    });
+    // The held sweep is the only one: no tick starts another meanwhile.
+    expect(sweeps.started).toBe(before + 1);
+    let stopped = false;
+    const stopping = handle.stop().then(() => {
+      stopped = true;
+    });
+    await settle();
+    expect(setup.trace).not.toContain('stop:pump');
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(setup.closes.count).toBe(1);
+  });
+
+  it('sweeps the auth ids every 10 minutes by default', () => {
+    expect(AUTH_ID_SWEEP_MS).toBe(600_000);
   });
 
   it('stops its nodes at the fence deadline once no lease renewal succeeded, and serves again on the next one', async () => {

@@ -391,7 +391,22 @@ export async function importStore(options: ImportOptions, deps: ImportDeps): Pro
       `a running merchant node holds ${home.dir} (its run.lock is fresh): stop it, then wait 90 s after it stopped`,
     );
   }
-  const { storeSecretKey, storePubkey, owner } = storeKeys(home, deps);
+  const opened = storeKeys(home, deps);
+  try {
+    return await importOpened(options, deps, home, opened);
+  } finally {
+    // Every refusal or failure past this point, not only a seal, leaves no store key behind.
+    opened.storeSecretKey.fill(0);
+  }
+}
+
+/** `importStore` past the store key's opening; the caller zeroes the key however this ends. */
+async function importOpened(
+  options: ImportOptions,
+  deps: ImportDeps,
+  home: MerchantHome,
+  { storeSecretKey, storePubkey, owner }: ReturnType<typeof storeKeys>,
+): Promise<ImportResult> {
   const [existing] = await deps.db.query<{ owner: string }>(
     'select owner from stores where owner = $1 or store_pubkey = $2',
     [owner, storePubkey],
@@ -461,7 +476,6 @@ export async function importStore(options: ImportOptions, deps: ImportDeps): Pro
   }
   const now = deps.now();
   const sealedStore = deps.vault.seal(storeSecretKey, owner, 'store');
-  storeSecretKey.fill(0);
   const sealedWebhook =
     webhookSecret === undefined
       ? null

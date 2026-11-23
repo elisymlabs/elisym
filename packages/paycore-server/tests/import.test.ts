@@ -5,6 +5,7 @@ import { KIND_PAYTO, KIND_STORE_AUTH } from '@elisym/commerce';
 import { verifyWebhook } from '@elisym/commerce/webhook';
 import { newest } from '@merchant-node/checks';
 import { OFFER_RELAYS } from '@merchant-node/constants';
+import { openSecret } from '@merchant-node/keys';
 import {
   type LedgerState,
   PRE_FEE_LEDGER_VERSION,
@@ -19,7 +20,7 @@ import { orderPaidBody, sendWebhook } from '@merchant-node/webhook';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { bytesToHex } from 'nostr-tools/utils';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type CliDeps, runCli } from '../src/cli';
 import type { PaycoreConfig } from '../src/config';
 import type { Db } from '../src/db/db';
@@ -50,6 +51,12 @@ import {
 import { RelayWorld } from './helpers/node-world';
 import { freshDb } from './pglite-db';
 import { solanaWallet } from './stores-fixtures';
+
+// The real `openSecret`, spied on: the tests see the store key buffer import opened.
+vi.mock('@merchant-node/keys', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@merchant-node/keys')>();
+  return { ...actual, openSecret: vi.fn(actual.openSecret) };
+});
 
 const TIER = 'basic';
 const PASSPHRASE = 'correct horse battery staple';
@@ -545,6 +552,47 @@ describe('import (step 17)', () => {
       `the relays' newest payout list is dated ${recordedAt + 60}, the ledger recorded one dated ${recordedAt}: run \`elisym-merchant setup\` on the self-host node first`,
     );
     expect(await storeCount(db)).toBe(0);
+  });
+
+  it('zeroes the opened store key on a refusal after it was opened, and on an import', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    const options = { home: home.dir, tier: TIER, nodeStopped: true };
+    const opened = vi.mocked(openSecret);
+    const lastOpened = (): Uint8Array => {
+      const result = opened.mock.results.at(-1);
+      if (result?.type !== 'return') {
+        throw new Error('no store key was opened');
+      }
+      return result.value;
+    };
+    const zeroed = (bytes: Uint8Array): boolean => bytes.every((byte) => byte === 0);
+    opened.mockClear();
+    expect(
+      await refusal(
+        importStore(options, importDeps(db, home, { readRelays: async () => undefined })),
+      ),
+    ).toContain('the relays serve no payout list by this owner');
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(lastOpened()).toHaveLength(32);
+    expect(zeroed(lastOpened())).toBe(true);
+    // A refusal right after the opening (R1), before any other read.
+    await db.query(
+      `insert into stores (owner, store_pubkey, status, tier, plan_source, created_at)
+       values ($1, $2, 'pending', $3, 'operator', $4)`,
+      [home.owner.pubkey, 'f'.repeat(64), TIER, NOW],
+    );
+    expect(await refusal(importStore(options, importDeps(db, home)))).toBe(
+      'this owner already has a store on this server (one store per owner key)',
+    );
+    expect(opened).toHaveBeenCalledTimes(2);
+    expect(zeroed(lastOpened())).toBe(true);
+    await db.query('delete from stores');
+    await importStore(options, importDeps(db, home));
+    expect(opened).toHaveBeenCalledTimes(3);
+    expect(zeroed(lastOpened())).toBe(true);
+    expect(zeroed(home.store.secretKey)).toBe(false);
   });
 
   it('is refused when the same-dated payout list pays other payouts, or the 30490 is revoked', async () => {

@@ -3,7 +3,8 @@
  * before the next:
  *
  * 1. SIGTERM / SIGINT hooked (a signal during the boot unwinds what started).
- * 2. Migrations.
+ * 2. Migrations, then the expired admin authorization ids swept, and again
+ *    every `AUTH_ID_SWEEP_MS` (a failed sweep is logged, the next one tries again).
  * 3. `KeyVault` on the master key.
  * 4. The first fee config read of every network in use: a config RPC of
  *    another cluster stops the boot before any store starts.
@@ -31,7 +32,7 @@
  *
  * Shutdown (`stop`, idempotent): HTTP stops accepting, the lease loop stops
  * (a round in progress is awaited, so no lease is taken after they are let
- * go), then `pump.stop()` -> `holder.idle()` -> `publisher.stop()` ->
+ * go; the auth id sweeps stop, one in progress awaited), then `pump.stop()` -> `holder.idle()` -> `publisher.stop()` ->
  * `supervisor.shutdown()` (every node stopped, the leases released) -> the
  * webhook slots and relay pools closed -> the database closed. The pump and
  * the holder go before the supervisor: a drain or a tick still running after
@@ -56,6 +57,7 @@ import { emptyLedger } from '@merchant-node/ledger';
 import { listeningPool } from '@merchant-node/relay-pool';
 import type { SimplePool } from 'nostr-tools/pool';
 import { createAdminApi } from './admin/api';
+import { sweepAuthIds } from './admin/auth-ids';
 import { ChainClients } from './chain/clients';
 import { Eip3009Boot } from './chain/eip3009-boot';
 import { NetworkTreasuries } from './chain/treasuries';
@@ -89,6 +91,8 @@ export const HEALTH_PATH = '/healthz';
 export const FENCE_MARGIN_SECS = 5;
 /** How soon a lease round that failed is tried again (not only at the next tick). */
 export const LEASE_RETRY_MS = 5_000;
+/** How often the expired admin authorization ids are deleted (every NIP-98 admin request records one). */
+export const AUTH_ID_SWEEP_MS = 10 * 60_000;
 
 /**
  * Seconds after the start of the last lease round that succeeded at which the
@@ -140,6 +144,8 @@ export interface ServerDeps {
   leaseRenewMs?: number;
   requestPollMs?: number;
   publisherIntervalMs?: number;
+  /** Default: `AUTH_ID_SWEEP_MS`. */
+  authIdSweepMs?: number;
   /** Default: `config.port`; 0 picks a free port (tests). */
   port?: number;
   /** Named boot and shutdown steps, in the order they run (tests). */
@@ -304,6 +310,9 @@ class PaycoreServer implements ServerHandle {
   private fenceTimer: ReturnType<typeof setTimeout> | undefined;
   /** The retry of a failed lease round, pending. */
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private authIdTimer: ReturnType<typeof setInterval> | undefined;
+  /** The auth id sweep in progress (sweeps never overlap). */
+  private authIdSweep: Promise<void> | undefined;
   private readonly leaseRenewMs: number;
   private readonly fenceAfter: number;
   private leaseRound: Promise<void> | undefined;
@@ -373,6 +382,12 @@ class PaycoreServer implements ServerHandle {
     this.db = db;
     trace('migrate');
     await migrate(db);
+    this.checkpoint();
+    trace('auth-ids');
+    await this.sweepAuthIds();
+    this.authIdTimer = setInterval(() => {
+      void this.sweepAuthIds();
+    }, deps.authIdSweepMs ?? AUTH_ID_SWEEP_MS);
     this.checkpoint();
 
     trace('vault');
@@ -522,6 +537,21 @@ class PaycoreServer implements ServerHandle {
     log(`paycore server listening on ${this.port ?? config.port} as holder ${this.holder}`);
   }
 
+  /** Delete the expired admin authorization ids; a failure is logged (the next sweep tries again). */
+  private sweepAuthIds(): Promise<void> {
+    if (this.authIdSweep !== undefined) {
+      return this.authIdSweep;
+    }
+    this.authIdSweep = sweepAuthIds(this.requireDb(), this.now())
+      .catch((error: unknown) => {
+        this.log(`auth id sweep failed: ${errorText(error)}`);
+      })
+      .finally(() => {
+        this.authIdSweep = undefined;
+      });
+    return this.authIdSweep;
+  }
+
   /** Take or renew the leases and reconcile; rounds never overlap (one asked meanwhile runs after). */
   private runLeaseRound(): Promise<void> {
     if (this.leaseRound !== undefined) {
@@ -655,9 +685,13 @@ class PaycoreServer implements ServerHandle {
     this.fenceTimer = undefined;
     clearTimeout(this.retryTimer);
     this.retryTimer = undefined;
+    clearInterval(this.authIdTimer);
+    this.authIdTimer = undefined;
     await this.unlistenStores?.().catch(() => undefined);
     // A round in progress would take leases again after the supervisor let them go.
     await this.leaseRound;
+    // Done before the database closes under it.
+    await this.authIdSweep;
     trace('stop:pump');
     await this.pump?.stop();
     trace('stop:holder');
