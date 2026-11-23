@@ -7,6 +7,7 @@ import {
   PgLedgerStore,
   RequestNotPending,
   insertLedger,
+  parseLedger,
   serializeLedger,
 } from '../src/state/ledger-store';
 import { freshDb } from './pglite-db';
@@ -222,6 +223,30 @@ describe('PgLedgerStore', () => {
     expect(JSON.parse(await storedState(db)).resumeAt).toBeUndefined();
   });
 
+  it('refuses the old handle of the same holder once it re-acquired the lease after expiry (new epoch)', async () => {
+    const { db, store } = await setup();
+    const oldEpoch = await lease(db, 'h1', NOW);
+    const old = await store.open(OWNER, oldEpoch, 'h1');
+    const newEpoch = await lease(db, 'h1', NOW + LEASE_TTL_SECS);
+    expect(newEpoch).toBe(oldEpoch + 1);
+    const state = old.state;
+    state.resumeAt = NOW;
+    await expect(old.save(state)).rejects.toBeInstanceOf(LedgerConflict);
+    expect(JSON.parse(await storedState(db)).resumeAt).toBeUndefined();
+    const fresh = await store.open(OWNER, newEpoch, 'h1');
+    await fresh.save(fresh.state);
+    expect(fresh.rowVersion).toBe(2);
+  });
+
+  it('a save holds the saved state, not the one read', async () => {
+    const { db, store } = await setup();
+    const epoch = await lease(db, 'h1', NOW);
+    const handle = await store.open(OWNER, epoch, 'h1');
+    const next = { ...emptyLedger(), resumeAt: NOW + 7 };
+    await handle.save(next);
+    expect(handle.state).toBe(next);
+  });
+
   it('refuses a save on a row another handle saved since (row_version is the fence)', async () => {
     const { db, store } = await setup();
     const epoch = await lease(db, 'h1', NOW);
@@ -281,6 +306,46 @@ describe('PgLedgerStore', () => {
     // The handle is still at the row's version: a save without the request goes through.
     await handle.save(state);
     expect(handle.rowVersion).toBe(3);
+  });
+
+  it('a request of another store is not marked and rolls the save back', async () => {
+    const { db, store } = await setup();
+    const otherOwner = 'e'.repeat(64);
+    await db.query(
+      `insert into stores (owner, store_pubkey, status, tier, created_at)
+       values ($1, $2, 'active', 'basic', $3)`,
+      [otherOwner, 'f'.repeat(64), NOW],
+    );
+    await db.query(
+      `insert into admin_requests (id, owner, kind, payload, created_at)
+       values ('other-req', $1, 'hand_answer', '{}', $2)`,
+      [otherOwner, NOW],
+    );
+    const epoch = await lease(db, 'h1', NOW);
+    const handle = await store.open(OWNER, epoch, 'h1');
+    const state = handle.state;
+    state.resumeAt = NOW;
+    await expect(handle.save(state, { appliedRequest: 'other-req' })).rejects.toBeInstanceOf(
+      RequestNotPending,
+    );
+    expect(await requestRow(db, 'other-req')).toEqual({ state: 'pending', applied_at: null });
+    expect(handle.rowVersion).toBe(1);
+    const [row] = await db.query<{ row_version: number }>(
+      'select row_version from ledgers where owner = $1',
+      [OWNER],
+    );
+    expect(row?.row_version).toBe(1);
+    expect(JSON.parse(await storedState(db)).resumeAt).toBeUndefined();
+  });
+
+  it('refuses a ledger that is not a JSON object', async () => {
+    for (const text of ['[]', '[{"version":5}]', 'null', '1', '"ledger"', 'true']) {
+      expect(() => parseLedger(text, OWNER)).toThrow('not a JSON object');
+    }
+    expect(parseLedger('{"version":5}', OWNER)).toEqual({ version: 5 });
+    const { db, store } = await setup();
+    await db.query("update ledgers set state = '[]' where owner = $1", [OWNER]);
+    await expect(store.open(OWNER, 1, 'h1')).rejects.toThrow('not a JSON object');
   });
 
   it('a v5 ledger round-trips deep-equal', async () => {

@@ -12,12 +12,15 @@ function authHeader(input: {
   method: string;
   url: string;
   body?: string;
+  /** A `payload` tag as given, in place of the body's hash. */
+  payload?: string;
   createdAt?: number;
 }): string {
+  const payload = input.payload ?? (input.body ? sha256Hex(input.body) : undefined);
   const tags = [
     ['u', input.url],
     ['method', input.method],
-    ...(input.body ? [['payload', sha256Hex(input.body)]] : []),
+    ...(payload === undefined ? [] : [['payload', payload]]),
     // Two calls in one second would otherwise sign the same id, which the replay check refuses.
     ['nonce', Buffer.from(generateSecretKey()).toString('hex')],
   ];
@@ -91,6 +94,41 @@ describe('NIP-98 check', () => {
       reason: 'payload',
     });
   });
+
+  it('accepts both edges of the window, either side of the clock', () => {
+    for (const createdAt of [NOW - AUTH_WINDOW_SECS, NOW + AUTH_WINDOW_SECS]) {
+      expect(check(authHeader({ secret, method: 'POST', url, createdAt }))).toMatchObject({
+        ok: true,
+      });
+    }
+    for (const createdAt of [NOW - AUTH_WINDOW_SECS - 1, NOW + AUTH_WINDOW_SECS + 1]) {
+      expect(check(authHeader({ secret, method: 'POST', url, createdAt }))).toEqual({
+        ok: false,
+        reason: 'stale',
+      });
+    }
+  });
+
+  it('compares the method case-insensitively on both sides, and refuses an empty one', () => {
+    expect(check(authHeader({ secret, method: 'post', url }))).toMatchObject({ ok: true });
+    expect(check(authHeader({ secret, method: 'POST', url }), { method: 'post' })).toMatchObject({
+      ok: true,
+    });
+    expect(check(authHeader({ secret, method: '', url }))).toEqual({
+      ok: false,
+      reason: 'method',
+    });
+  });
+
+  it('checks a payload tag even when there is no body', () => {
+    expect(check(authHeader({ secret, method: 'POST', url, payload: sha256Hex('x') }))).toEqual({
+      ok: false,
+      reason: 'payload',
+    });
+    expect(
+      check(authHeader({ secret, method: 'POST', url, payload: sha256Hex('') })),
+    ).toMatchObject({ ok: true });
+  });
 });
 
 describe('authorization replay', () => {
@@ -100,6 +138,8 @@ describe('authorization replay', () => {
     expect(expiry).toBe(NOW + 2 * AUTH_WINDOW_SECS + 1);
     // A clock behind the event's: kept from the later of the two.
     expect(authIdExpiry(NOW + 5, NOW)).toBe(NOW + 5 + 2 * AUTH_WINDOW_SECS + 1);
+    // A clock ahead of the event's: kept from the clock.
+    expect(authIdExpiry(NOW - 5, NOW)).toBe(NOW + 2 * AUTH_WINDOW_SECS + 1);
     expect(await recordAuthId(db, 'id-1', expiry)).toBe(true);
     expect(await recordAuthId(db, 'id-1', expiry)).toBe(false);
     // Still refused right up to the end of its validity (created_at + window), across a sweep.

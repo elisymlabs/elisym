@@ -6,13 +6,18 @@ const MASTER = '11'.repeat(32);
 const OWNER = 'a'.repeat(64);
 const OTHER_OWNER = 'b'.repeat(64);
 
-/** A ciphertext as askr-server's vault seals it: same layout, AD `askr:<purpose>:<owner>`. */
-function askrSealed(secret: Uint8Array, owner: string, purpose: string): Uint8Array {
+/** A ciphertext in the vault's layout under AD `<prefix>:<purpose>:<owner>`, of any length. */
+function sealedAs(prefix: string, secret: Uint8Array, owner: string, purpose: string): Uint8Array {
   const nonce = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', Buffer.from(MASTER, 'hex'), nonce);
-  cipher.setAAD(Buffer.from(`askr:${purpose}:${owner}`, 'utf8'));
+  cipher.setAAD(Buffer.from(`${prefix}:${purpose}:${owner}`, 'utf8'));
   const body = Buffer.concat([cipher.update(secret), cipher.final()]);
   return Buffer.concat([Buffer.from([1]), nonce, body, cipher.getAuthTag()]);
+}
+
+/** A ciphertext as askr-server's vault seals it: same layout, AD `askr:<purpose>:<owner>`. */
+function askrSealed(secret: Uint8Array, owner: string, purpose: string): Uint8Array {
+  return sealedAs('askr', secret, owner, purpose);
 }
 
 describe('KeyVault', () => {
@@ -48,6 +53,25 @@ describe('KeyVault', () => {
     tampered[20] = (tampered[20] ?? 0) ^ 1;
     expect(() => vault.open(tampered, OWNER, 'store')).toThrow();
     expect(() => vault.open(sealed.subarray(0, 28), OWNER, 'store')).toThrow('Not a sealed secret');
+  });
+
+  it('refuses a sealed value under another version byte', () => {
+    const sealed = new Uint8Array(vault.seal(randomBytes(32), OWNER, 'store'));
+    for (const version of [0, 2, 255]) {
+      const changed = new Uint8Array(sealed);
+      changed[0] = version;
+      expect(() => vault.open(changed, OWNER, 'store')).toThrow('Not a sealed secret');
+    }
+  });
+
+  it('opens a well-formed ciphertext of 1 to 256 bytes only', () => {
+    const at = (length: number) => sealedAs('paycore', randomBytes(length), OWNER, 'store');
+    expect(vault.open(at(MAX_SECRET_BYTES), OWNER, 'store')).toHaveLength(MAX_SECRET_BYTES);
+    expect(vault.open(at(1), OWNER, 'store')).toHaveLength(1);
+    expect(() => vault.open(at(MAX_SECRET_BYTES + 1), OWNER, 'store')).toThrow(
+      'Not a sealed secret',
+    );
+    expect(() => vault.open(at(0), OWNER, 'store')).toThrow('Not a sealed secret');
   });
 
   it('an askr ciphertext under the same master key does not open', () => {

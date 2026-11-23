@@ -2,7 +2,7 @@ import type { Db } from './db';
 
 /**
  * The schema, as plain SQL applied in order at startup and recorded in
- * `migrations`. Kept in a module rather than `.sql` files so the bundle carries
+ * `paycore_migrations`. Kept in a module rather than `.sql` files so the bundle carries
  * them. A migration is never edited once released; a change is a new entry.
  */
 export const MIGRATIONS: readonly { id: string; sql: string }[] = [
@@ -119,7 +119,6 @@ create unique index alerts_open on alerts (coalesce(owner, ''), kind) where clea
   },
 ];
 
-/** askr-server takes 7_301_995: two servers on one database never wait on each other's migrations. */
 const LOCK_ID = 7_302_101;
 
 /** Apply every migration not applied yet, under an advisory lock so two starting servers do not race. */
@@ -127,17 +126,17 @@ export async function migrate(db: Db): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.query('select pg_advisory_xact_lock($1)', [LOCK_ID]);
     await tx.query(
-      'create table if not exists migrations (id text primary key, applied_at timestamptz not null default now())',
+      'create table if not exists paycore_migrations (id text primary key, applied_at timestamptz not null default now())',
     );
     const applied = new Set(
-      (await tx.query<{ id: string }>('select id from migrations')).map((row) => row.id),
+      (await tx.query<{ id: string }>('select id from paycore_migrations')).map((row) => row.id),
     );
     for (const migration of MIGRATIONS) {
       if (applied.has(migration.id)) {
         continue;
       }
       await tx.script(migration.sql);
-      await tx.query('insert into migrations (id) values ($1)', [migration.id]);
+      await tx.query('insert into paycore_migrations (id) values ($1)', [migration.id]);
     }
   });
 }

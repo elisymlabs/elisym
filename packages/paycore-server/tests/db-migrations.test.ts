@@ -1,11 +1,23 @@
+import { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it } from 'vitest';
 import type { Db } from '../src/db/db';
 import { MIGRATIONS, migrate } from '../src/db/migrations';
-import { freshDb } from './pglite-db';
+import { freshDb, pgliteDb } from './pglite-db';
 
 const OWNER = 'a'.repeat(64);
 const STORE = 'b'.repeat(64);
 const NOW = 1_790_000_000;
+/** Every table holding a store's rows, each `on delete cascade` from `stores`. */
+const CHILD_TABLES = [
+  'store_keys',
+  'store_config',
+  'products',
+  'owner_event_drafts',
+  'owner_events',
+  'ledgers',
+  'leases',
+  'admin_requests',
+];
 
 async function seedStore(db: Db, status = 'active'): Promise<void> {
   await db.query("insert into tiers (name, max_products) values ('basic', 10)");
@@ -23,12 +35,30 @@ async function rejects(db: Db, sql: string, params: unknown[] = []): Promise<voi
 describe('migrations', () => {
   it('a second migrate is a no-op', async () => {
     const db = await freshDb();
-    const before = await db.query<{ id: string }>('select id from migrations order by id');
+    const before = await db.query<{ id: string }>('select id from paycore_migrations order by id');
     expect(before.map((row) => row.id)).toEqual(MIGRATIONS.map((migration) => migration.id));
     await migrate(db);
     await migrate(db);
-    const after = await db.query<{ id: string }>('select id from migrations order by id');
+    const after = await db.query<{ id: string }>('select id from paycore_migrations order by id');
     expect(after).toEqual(before);
+  });
+
+  it("another server's `migrations` table with the same ids does not skip this schema", async () => {
+    const client = await PGlite.create();
+    try {
+      const db = pgliteDb(client);
+      await db.script(`create table migrations (id text primary key);
+        insert into migrations (id) values ('0001_init');`);
+      await migrate(db);
+      expect(await db.query('select 1 from stores')).toEqual([]);
+      const applied = await db.query<{ id: string }>('select id from paycore_migrations');
+      expect(applied.map((row) => row.id)).toEqual(MIGRATIONS.map((migration) => migration.id));
+      expect(await db.query<{ id: string }>('select id from migrations')).toEqual([
+        { id: '0001_init' },
+      ]);
+    } finally {
+      await client.close();
+    }
   });
 });
 
@@ -58,6 +88,40 @@ describe('0001_init check constraints', () => {
       ['e'.repeat(64), STORE, NOW],
     );
     await insert('pending', null, null);
+  });
+
+  it('store_config: inbox_relays is required', async () => {
+    const db = await freshDb();
+    await seedStore(db);
+    await rejects(
+      db,
+      `insert into store_config (owner, name, network, inbox_relays, updated_at)
+       values ($1, 'Shop', 'mainnet', null, $2)`,
+      [OWNER, NOW],
+    );
+    await rejects(
+      db,
+      `insert into store_config (owner, name, network, updated_at) values ($1, 'Shop', 'mainnet', $2)`,
+      [OWNER, NOW],
+    );
+  });
+
+  it('admin_requests.payload keeps a NUL escape and a lone surrogate (a text column, not jsonb)', async () => {
+    const db = await freshDb();
+    await seedStore(db);
+    const answer = { orderId: 'id\u0000with\ud800lone', note: 'a\udc00b' };
+    const payload = JSON.stringify(answer);
+    expect(payload).toContain('\\u0000');
+    await db.query(
+      `insert into admin_requests (id, owner, kind, payload, created_at)
+       values ('r', $1, 'hand_answer', $2, $3)`,
+      [OWNER, payload, NOW],
+    );
+    const [row] = await db.query<{ payload: string }>(
+      "select payload from admin_requests where id = 'r'",
+    );
+    expect(row?.payload).toBe(payload);
+    expect(JSON.parse(row?.payload ?? '')).toEqual(answer);
   });
 
   it('store_config: network and evm_credit', async () => {
@@ -145,20 +209,62 @@ describe('0001_init check constraints', () => {
     await insert(OWNER);
   });
 
-  it('a store row deleted takes its dependent rows with it', async () => {
+  it('a store row deleted takes its rows in every child table with it', async () => {
     const db = await freshDb();
     await seedStore(db);
+    const other = 'f'.repeat(64);
     await db.query(
-      `insert into ledgers (owner, row_version, lease_epoch, state, updated_at) values ($1, 1, 0, '{}', $2)`,
-      [OWNER, NOW],
+      `insert into stores (owner, store_pubkey, status, created_at) values ($1, $2, 'pending', $3)`,
+      [other, 'e'.repeat(64), NOW],
     );
-    await db.query('insert into leases (owner, holder, epoch, expires_at) values ($1, $2, 1, $3)', [
-      OWNER,
-      'h',
-      NOW,
-    ]);
+    for (const owner of [OWNER, other]) {
+      await db.query(`insert into store_keys (owner, store_key) values ($1, '\\x00')`, [owner]);
+      await db.query(
+        `insert into store_config (owner, name, network, inbox_relays, updated_at)
+         values ($1, 'Shop', 'mainnet', '{}', $2)`,
+        [owner, NOW],
+      );
+      await db.query(
+        `insert into products (owner, d, title, description, price_usd, on_sale, updated_at)
+         values ($1, 'p', 't', 'd', '1', true, $2)`,
+        [owner, NOW],
+      );
+      await db.query(
+        `insert into owner_event_drafts (owner, kind, template, expires_at) values ($1, 30490, '{}', $2)`,
+        [owner, NOW],
+      );
+      await db.query(
+        `insert into owner_events (id, owner, kind, event, committed_at) values ($1, $1, 30490, '{}', $2)`,
+        [owner, NOW],
+      );
+      await db.query(
+        `insert into ledgers (owner, row_version, lease_epoch, state, updated_at) values ($1, 1, 0, '{}', $2)`,
+        [owner, NOW],
+      );
+      await db.query(
+        'insert into leases (owner, holder, epoch, expires_at) values ($1, $2, 1, $3)',
+        [owner, 'h', NOW],
+      );
+      await db.query(
+        `insert into admin_requests (id, owner, kind, payload, created_at)
+         values ($1, $1, 'restart', '{}', $2)`,
+        [owner, NOW],
+      );
+    }
     await db.query('delete from stores where owner = $1', [OWNER]);
-    expect(await db.query('select 1 from ledgers')).toEqual([]);
-    expect(await db.query('select 1 from leases')).toEqual([]);
+    for (const table of CHILD_TABLES) {
+      expect(await db.query(`select owner from ${table}`)).toEqual([{ owner: other }]);
+    }
+  });
+
+  it('every table that references stores is in the cascade test', async () => {
+    const db = await freshDb();
+    const rows = await db.query<{ table_name: string }>(
+      `select distinct tc.table_name from information_schema.table_constraints tc
+       join information_schema.constraint_column_usage ccu on ccu.constraint_name = tc.constraint_name
+       where tc.constraint_type = 'FOREIGN KEY' and ccu.table_name = 'stores'
+       order by tc.table_name`,
+    );
+    expect(rows.map((row) => row.table_name)).toEqual([...CHILD_TABLES].sort());
   });
 });
