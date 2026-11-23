@@ -145,6 +145,46 @@ export class HealGate {
   }
 }
 
+/** What the relays serve for a store, judged: offers the ledger does not honour, and drift (R1). */
+export interface OfferJudgement {
+  offers: OfferVerdict | undefined;
+  drift: string[];
+  views: RelayView[];
+}
+
+/**
+ * Read the relays' views of a store and judge them against its ledger and
+ * the owner events the server committed: at start, and every
+ * `DRIFT_CHECK_SECS` while it runs (a read only: the store's own pool).
+ */
+export async function judgeOffers(
+  pool: QueryPool,
+  store: Pick<StoreBundle, 'owner' | 'storePubkey' | 'config' | 'products' | 'committed'> & {
+    state: LedgerState;
+  },
+): Promise<OfferJudgement> {
+  const { owner, state, committed } = store;
+  const served = await readOfferProblems(
+    pool,
+    store.config,
+    { storePubkey: store.storePubkey, ownerPubkey: owner },
+    state,
+    store.products,
+  );
+  return {
+    offers:
+      served.problems.length === 0
+        ? undefined
+        : {
+            problems: served.problems,
+            heal: healable(served.views, state, committed),
+            key: problemKey(served.problems),
+          },
+    drift: driftProblems(served.views, owner, committed),
+    views: served.views,
+  };
+}
+
 /**
  * Run a store's start checks, in order. Returns `refused` for a store whose
  * data cannot run; throws for a failure a retry may pass (a save refused, a
@@ -172,22 +212,8 @@ export async function startChecks(
   let views: RelayView[] = [];
   let drift: string[] = [];
   if (bundle.status !== 'pending') {
-    const served = await readOfferProblems(
-      deps.pool,
-      config,
-      { storePubkey, ownerPubkey: owner },
-      state,
-      products,
-    );
-    views = served.views;
-    drift = driftProblems(served.views, owner, bundle.committed);
-    if (served.problems.length > 0) {
-      offers = {
-        problems: served.problems,
-        heal: healable(served.views, state, bundle.committed),
-        key: problemKey(served.problems),
-      };
-    }
+    const judged = await judgeOffers(deps.pool, { ...bundle, state });
+    ({ offers, views, drift } = judged);
   }
   const refresh = await deps.treasuries.refreshFor(config.network, state, deps.now());
   if (refresh.kind === 'wrong_cluster') {

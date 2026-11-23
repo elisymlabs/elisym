@@ -45,7 +45,11 @@ export interface SetupPassDeps {
 }
 
 export interface SetupPassOptions {
-  /** An `admin_requests` id marked applied in the pass's save. */
+  /**
+   * An `admin_requests` id marked applied in the pass's save - unless the
+   * committed payout list was never recorded and did not go out this time
+   * (`payoutListPending`): the request then stays pending, retried.
+   */
   appliedRequest?: string;
 }
 
@@ -54,6 +58,8 @@ export type SetupPassResult =
       kind: 'done';
       /** The committed payout list went out (and is now the active one). */
       payoutListOut: boolean;
+      /** The committed payout list was never recorded and did not go out now: it still waits. */
+      payoutListPending: boolean;
       /** The committed authorization went out (undefined: none committed). */
       authorizationOut: boolean | undefined;
       outcomes: { d: string; onSale: boolean; listing: ListingOutcome['listing'] }[];
@@ -88,6 +94,7 @@ interface CommittedRow extends Record<string, unknown> {
   id: string;
   event: NostrEvent | string;
   payouts_string: string | null;
+  recorded: boolean;
 }
 
 function eventOf(row: CommittedRow): NostrEvent {
@@ -99,15 +106,23 @@ export async function newestCommitted(
   db: Db,
   owner: string,
   kind: number,
-): Promise<{ id: string; event: NostrEvent; payoutsString: string | undefined } | undefined> {
+): Promise<
+  | { id: string; event: NostrEvent; payoutsString: string | undefined; recorded: boolean }
+  | undefined
+> {
   const [row] = await db.query<CommittedRow>(
-    `select id, event, payouts_string from owner_events where owner = $1 and kind = $2
+    `select id, event, payouts_string, recorded from owner_events where owner = $1 and kind = $2
      order by (event->>'created_at')::bigint desc, committed_at desc limit 1`,
     [owner, kind],
   );
   return row === undefined
     ? undefined
-    : { id: row.id, event: eventOf(row), payoutsString: row.payouts_string ?? undefined };
+    : {
+        id: row.id,
+        event: eventOf(row),
+        payoutsString: row.payouts_string ?? undefined,
+        recorded: row.recorded,
+      };
 }
 
 function errorText(error: unknown): string {
@@ -246,14 +261,17 @@ export async function runStoreSetupPass(
       : []),
   ];
   const savedAt = deps.now();
+  const payoutListPending = !payoutList.recorded && listOut?.out !== true;
+  const applied = payoutListPending ? undefined : options.appliedRequest;
   // `recorded` commits with the terms it stands for, or not at all.
   await handle.save(state, {
-    ...(options.appliedRequest === undefined ? {} : { appliedRequest: options.appliedRequest }),
+    ...(applied === undefined ? {} : { appliedRequest: applied }),
     alongside: (tx) => markWentOut(tx, owner, savedAt, outEvents),
   });
   return {
     kind: 'done',
     payoutListOut: listOut?.out === true,
+    payoutListPending,
     authorizationOut: authOut?.out,
     outcomes: outcomes.map((outcome) => ({
       d: outcome.d,

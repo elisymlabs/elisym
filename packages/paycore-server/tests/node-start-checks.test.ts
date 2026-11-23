@@ -19,7 +19,7 @@ import {
   problemKey,
   startChecks,
 } from '../src/node/start-checks';
-import type { StoreSupervisor } from '../src/node/supervisor';
+import { DRIFT_CHECK_SECS, type StoreSupervisor } from '../src/node/supervisor';
 import { newHolderId } from '../src/state/leases';
 import {
   BASE_DEVNET_CAIP19,
@@ -366,6 +366,67 @@ describe('a store started by the supervisor', () => {
     const stored = await storedLedger(db, owner);
     expect(stored.orders[wraps.key]?.paid?.signature).toBe(tx);
     expect(JSON.parse(stored.payto?.payouts ?? '[]')).toEqual(SOLANA_PAYOUTS);
+  });
+});
+
+describe('the periodic drift and offer check', () => {
+  let running: StoreSupervisor | undefined;
+  afterEach(async () => {
+    await running?.shutdown();
+    running = undefined;
+  });
+
+  it('reads a running store every DRIFT_CHECK_SECS with its own pool: degraded on drift, active again once it is gone', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const { heal, heals } = testHeal(db, keys, world);
+    const holder = newHolderId();
+    let clock = NOW;
+    const { supervisor } = testSupervisor(db, keys, holder, world, chain({}).rpc, {
+      heal,
+      now: () => clock,
+    });
+    running = supervisor;
+    const owner = seed.owner.pubkey;
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    const node = supervisor.nodeOf(owner);
+    expect(await storeStatus(db, owner)).toBe('active');
+    const pools = world.pools.length;
+
+    const foreign = ownerEvents(
+      seed.owner,
+      seed.store,
+      [{ caip19: USDC_DEVNET_CAIP19, address: OTHER_TREASURY }],
+      NOW - 60,
+    );
+    world.add(foreign.payoutList);
+    const queries = world.queries;
+    await supervisor.recheckOffers();
+    expect(world.queries).toBe(queries);
+    expect(await storeStatus(db, owner)).toBe('active');
+
+    clock += DRIFT_CHECK_SECS;
+    await supervisor.recheckOffers();
+    expect(world.queries).toBeGreaterThan(queries);
+    expect(await storeStatus(db, owner)).toBe('degraded');
+    expect((await openAlerts(db, owner)).map((alert) => alert.kind)).toEqual([
+      'drift',
+      'offer_mismatch',
+    ]);
+    expect(heals).toEqual([]);
+    expect(supervisor.nodeOf(owner)).toBe(node);
+    expect(world.pools.length).toBe(pools);
+
+    world.events.splice(world.events.indexOf(foreign.payoutList), 1);
+    clock += DRIFT_CHECK_SECS;
+    await supervisor.recheckOffers();
+    expect(await storeStatus(db, owner)).toBe('active');
+    expect(await openAlerts(db, owner)).toEqual([]);
+    expect(supervisor.nodeOf(owner)).toBe(node);
   });
 });
 

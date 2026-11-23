@@ -5,7 +5,8 @@
  * opens a fresh ledger handle from the database (a node that halted on a
  * refused save may hold diverged memory; it is never reused).
  */
-import { upgradeLedger } from '@merchant-node/ledger';
+import type { QueryPool } from '@merchant-node/checks';
+import { type LedgerState, upgradeLedger } from '@merchant-node/ledger';
 import { type StoreNode, startStoreNode } from '@merchant-node/store-node';
 import { ALERT_KINDS, clearAlert, raiseAlert } from '../alerts';
 import type { ChainClients } from '../chain/clients';
@@ -17,8 +18,20 @@ import type { StorePools } from '../relay/pools';
 import { type LeasedStore, type StoreStatus, releaseLeases } from '../state/leases';
 import { type LedgerHandle, PgLedgerStore } from '../state/ledger-store';
 import type { WebhookSlots } from '../webhook-fetch';
-import { type OperatorRpcs, StartRefused, type StoreBundle, loadStoreBundle } from './load';
-import { HealGate, type OfferVerdict, controlBackoffMs, startChecks } from './start-checks';
+import {
+  type OperatorRpcs,
+  StartRefused,
+  type StoreBundle,
+  loadStoreBundle,
+  readCommitted,
+} from './load';
+import {
+  HealGate,
+  type OfferVerdict,
+  controlBackoffMs,
+  judgeOffers,
+  startChecks,
+} from './start-checks';
 
 /** Failed starts in a row before a store is marked `halted` (it is still retried). */
 export const MAX_FAILED_STARTS = 3;
@@ -28,6 +41,8 @@ export const MAX_FAILED_STARTS = 3;
  * stopping itself right after it starts is `halted` like one that never starts.
  */
 export const STABLE_RUN_SECS = 30 * 60;
+/** How often a running store's relays are read again for drift and offers (the pump's tick). */
+export const DRIFT_CHECK_SECS = 15 * 60;
 
 /** Something the store runs without (a rail, the webhook sender) or that the relays serve wrongly: `degraded`. */
 export interface StoreNotice {
@@ -78,6 +93,14 @@ export interface SupervisorDeps {
 interface RunningStore {
   node: StoreNode;
   storePubkey: string;
+  /** The store's own pool: the periodic checks read the relays with it while the node runs. */
+  pool: QueryPool;
+  /** What the offers are judged against: the node's config, products and live ledger. */
+  judged: Pick<StoreBundle, 'config' | 'products'> & { state: LedgerState };
+  /** What the store runs without (rails, the webhook sender), as found at its start. */
+  notices: StoreNotice[];
+  /** When the relays were last read for this run (seconds). */
+  checkedAt: number;
   /** The store's webhook sends: aborted right after `node.stop()` (WebhookSlots' order). */
   webhookStop: AbortController;
   unregister: () => void;
@@ -429,6 +452,10 @@ export class StoreSupervisor {
       run.running = {
         node,
         storePubkey: bundle.storePubkey,
+        pool,
+        judged: { config, products: bundle.products, state },
+        notices: startNotices(bundle, []),
+        checkedAt: this.now(),
         webhookStop,
         unregister: checked.unregister,
         generation,
@@ -485,6 +512,57 @@ export class StoreSupervisor {
     });
   }
 
+  /**
+   * Read the relays again for every running store whose last read is
+   * `DRIFT_CHECK_SECS` old (the pump's tick): drift and offers are judged as
+   * at a start, alerts raised or cleared and the store moved between `active`
+   * and `degraded`, with a heal under the same rule. Each check runs on its
+   * store's control queue (so its pool stays open for the read) without
+   * stopping the node. Resolves once the checks queued here are done.
+   */
+  async recheckOffers(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    const now = this.now();
+    const checks: Promise<void>[] = [];
+    for (const run of this.runs.values()) {
+      const { running } = run;
+      if (run.removed || running === undefined || now - running.checkedAt < DRIFT_CHECK_SECS) {
+        continue;
+      }
+      running.checkedAt = now;
+      checks.push(
+        this.enqueue(run, () => this.recheck(run, running.generation)).catch((error: unknown) => {
+          this.storeLog(run.owner)(`the offer check failed: ${errorText(error)}`);
+        }),
+      );
+    }
+    await Promise.all(checks);
+  }
+
+  private async recheck(run: StoreRun, generation: number): Promise<void> {
+    const { running } = run;
+    if (running === undefined || running.generation !== generation) {
+      return;
+    }
+    const committed = await readCommitted(this.deps.db, run.owner);
+    const judged = await judgeOffers(running.pool, {
+      owner: run.owner,
+      storePubkey: running.storePubkey,
+      committed,
+      ...running.judged,
+    });
+    if (run.running?.generation !== generation) {
+      return;
+    }
+    running.checkedAt = this.now();
+    await this.assess(run, judged.offers, [
+      ...running.notices,
+      ...startNotices({ unavailableRails: [], webhookSecretMissing: false }, judged.drift),
+    ]);
+  }
+
   private async started(
     run: StoreRun,
     offers: OfferVerdict | undefined,
@@ -502,6 +580,17 @@ export class StoreSupervisor {
     ]) {
       await clearAlert(db, run.owner, kind, { now });
     }
+    await this.assess(run, offers, notices);
+  }
+
+  /** Raise or clear the notices and the offer alert, set `active` / `degraded`, and plan a heal. */
+  private async assess(
+    run: StoreRun,
+    offers: OfferVerdict | undefined,
+    notices: readonly StoreNotice[],
+  ): Promise<void> {
+    const { db } = this.deps;
+    const now = this.now();
     const log = this.storeLog(run.owner);
     for (const kind of NOTICE_KINDS) {
       const notice = notices.find((entry) => entry.kind === kind);
@@ -542,6 +631,10 @@ export class StoreSupervisor {
         this.storeLog(run.owner)(`the heal pass failed: ${errorText(error)}`);
       });
     };
+    if (run.healTimer !== undefined) {
+      clearTimeout(run.healTimer);
+      run.healTimer = undefined;
+    }
     if (delayMs === 0) {
       runHeal();
     } else {

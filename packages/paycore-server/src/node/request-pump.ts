@@ -2,7 +2,7 @@
  * What makes the holder apply admin requests: a NOTIFY on the requests
  * channel (an admin route queued one) and a poll every `REQUEST_POLL_SECS`
  * (a notify lost while the listen connection was down, a request kept pending
- * by a failure, the suspension clocks). Rounds never overlap: a trigger during
+ * by a failure, the suspension clocks, the periodic drift and offer checks). Rounds never overlap: a trigger during
  * a round runs one more round after it.
  */
 import { type Db, REQUESTS_CHANNEL } from '../db/db';
@@ -13,9 +13,7 @@ export const REQUEST_POLL_MS = 60_000;
 
 export interface RequestPumpDeps {
   db: Pick<Db, 'listen'>;
-  holder: Pick<HolderRequests, 'drainAll'> & {
-    suspensions: Pick<HolderRequests['suspensions'], 'tick'>;
-  };
+  holder: Pick<HolderRequests, 'drainAll' | 'tick'>;
   pollMs?: number;
   log?: (message: string) => void;
 }
@@ -88,9 +86,9 @@ export class RequestPump {
       return;
     }
     try {
-      await this.deps.holder.suspensions.tick();
+      await this.deps.holder.tick();
     } catch (error) {
-      log(`suspension round failed: ${error instanceof Error ? error.message : 'unknown'}`);
+      log(`periodic round failed: ${error instanceof Error ? error.message : 'unknown'}`);
     }
   }
 }

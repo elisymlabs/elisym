@@ -201,10 +201,11 @@ describe('OwnerEventPublisher', () => {
     return store;
   }
 
-  function publisher(db: Db, keys: KeyVault, world: RelayWorld) {
+  function publisher(db: Db, keys: KeyVault, world: RelayWorld, allowlist = [RELAY]) {
     return new OwnerEventPublisher({
       db,
       vault: keys,
+      inboxRelayAllowlist: allowlist,
       makePool: () => world.pool(),
       log: () => undefined,
       now: () => NOW,
@@ -243,6 +244,29 @@ describe('OwnerEventPublisher', () => {
     expect(isOut(next)).toBe(true);
     expect((await ownerEventRow(db, next.id))?.published_at).toBe(NOW);
     expect(await events.runOnce()).toBe(0);
+  });
+
+  it('never connects for a store whose stored inbox relay left the allowlist: backs off, alerts', async () => {
+    const { db, keys, seed, owner } = await settled();
+    const world = new RelayWorld();
+    const next = ownerEvents(seed.owner, seed.store, SOLANA_PAYOUTS, NOW - 30).authorization;
+    await insertOwnerEvent(db, owner, next, undefined, true);
+    const events = publisher(db, keys, world, ['wss://other.example.com']);
+    expect(await events.runOnce()).toBe(1);
+    expect(world.pools).toEqual([]);
+    expect(world.events).toEqual([]);
+    expect(await ownerEventRow(db, next.id)).toMatchObject({
+      published_at: null,
+      publish_attempts: 1,
+      next_attempt_at: NOW + 30,
+    });
+    const alerts = await db.query<{ kind: string; message: string }>(
+      'select kind, message from alerts where owner = $1 and cleared_at is null',
+      [owner],
+    );
+    expect(alerts).toEqual([
+      { kind: 'inbox_relays_refused', message: `inbox relays outside the allowlist: ${RELAY}` },
+    ]);
   });
 
   it('skips a recorded event a newer one of its kind replaced', async () => {

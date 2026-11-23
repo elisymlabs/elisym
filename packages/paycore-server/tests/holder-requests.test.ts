@@ -5,7 +5,13 @@ import { type LedgerState, emptyLedger } from '@merchant-node/ledger';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it } from 'vitest';
-import { chain, landedPayment, requestFor, signatureOf } from '../../merchant-node/tests/fixtures';
+import {
+  OTHER_TREASURY,
+  chain,
+  landedPayment,
+  requestFor,
+  signatureOf,
+} from '../../merchant-node/tests/fixtures';
 import { getRequest, submitRequest } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import type { KeyVault } from '../src/db/keys';
@@ -25,10 +31,12 @@ import {
   TEMPO_RPC,
   USDC_DEVNET_CAIP19,
   WEBHOOK_SECRET,
+  insertOwnerEvent,
   key,
   lease,
   openAlerts,
   orderWraps,
+  ownerEvents,
   publishedStore,
   seedStore,
   sellingLedger,
@@ -47,6 +55,7 @@ import { base58 } from './stores-fixtures';
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000c001';
 const HOOK_URL = 'https://shop.example.com/hook';
 const OPERATOR = 'paycore.test';
+const NEXT_PAYOUTS = [{ caip19: USDC_DEVNET_CAIP19, address: OTHER_TREASURY }];
 
 const supervisors: StoreSupervisor[] = [];
 afterEach(async () => {
@@ -269,20 +278,24 @@ describe('admin requests on the holder (step 13)', () => {
     expect(world.events.length).toBe(published);
   });
 
-  it('keeps a setup request that cannot publish pending, then fails it with an alert', async () => {
+  it('keeps a setup request that cannot publish pending, retried with backoff, then fails it with an alert', async () => {
     const world = new RelayWorld();
     const seed = await publishedStore(world);
     const db = await freshDb();
     const keys = vault();
     await seedStore(db, keys, seed);
     const owner = seed.owner.pubkey;
-    const node = holderOn(db, keys, world);
+    let clock = NOW;
+    const node = holderOn(db, keys, world, {}, { now: () => clock });
     await serveAll(node);
     world.refuse = () => true;
     const id = await submitRequest(db, owner, 'setup', {}, NOW);
     for (let attempt = 1; attempt < MAX_SETUP_ATTEMPTS; attempt += 1) {
       await expect(node.requests.drain(owner)).rejects.toThrow('nothing reached a relay');
       expect((await requestRow(db, owner, id)).state).toBe('pending');
+      // Not due yet: the drain leaves it alone.
+      expect(await node.requests.drain(owner)).toEqual([]);
+      clock += 30 * 2 ** (attempt - 1);
     }
     expect(await node.requests.drain(owner)).toEqual([id]);
     const failed = await requestRow(db, owner, id);
@@ -294,6 +307,106 @@ describe('admin requests on the holder (step 13)', () => {
     await submitRequest(db, owner, 'setup', {}, NOW);
     await node.requests.drain(owner);
     expect((await openAlerts(db, owner)).map((alert) => alert.kind)).not.toContain('setup_failed');
+  });
+
+  it('keeps a record request pending while its committed payout list reaches no relay', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const owner = seed.owner.pubkey;
+    let clock = NOW;
+    const node = holderOn(db, keys, world, {}, { now: () => clock });
+    await serveAll(node);
+    const next = ownerEvents(seed.owner, seed.store, NEXT_PAYOUTS, NOW - 60);
+    await insertOwnerEvent(db, owner, next.payoutList, JSON.stringify(NEXT_PAYOUTS), false);
+    const id = await submitRequest(
+      db,
+      owner,
+      'record_owner_event',
+      { eventId: next.payoutList.id },
+      NOW,
+    );
+    await db.query("update products set price_usd = '2' where owner = $1", [owner]);
+    let listAttempts = 0;
+    world.refuse = (event) => {
+      if (event.id !== next.payoutList.id) {
+        return false;
+      }
+      listAttempts += 1;
+      return true;
+    };
+
+    await expect(node.requests.drain(owner)).rejects.toThrow('payout list reached no relay');
+    expect((await requestRow(db, owner, id)).state).toBe('pending');
+    const saved = await storedLedger(db, owner);
+    // What did go out (the new price) is recorded; the active list is the old one.
+    expect(
+      saved.terms.some((period) => period.terms.amount === '2000000' && period.until === undefined),
+    ).toBe(true);
+    expect(JSON.parse(saved.payto?.payouts ?? '')).toEqual(SOLANA_PAYOUTS);
+    const tried = listAttempts;
+    expect(await node.requests.drain(owner)).toEqual([]);
+    expect(listAttempts).toBe(tried);
+
+    clock += 30;
+    // Only the payout list could go out now: nothing reached a relay, still pending.
+    await expect(node.requests.drain(owner)).rejects.toThrow('nothing reached a relay');
+    expect(listAttempts).toBeGreaterThan(tried);
+    expect((await requestRow(db, owner, id)).state).toBe('pending');
+
+    world.refuse = () => false;
+    clock += 60;
+    expect(await node.requests.drain(owner)).toEqual([id]);
+    expect((await requestRow(db, owner, id)).result).toMatchObject({ payoutListOut: true });
+    expect(JSON.parse((await storedLedger(db, owner)).payto?.payouts ?? '')).toEqual(NEXT_PAYOUTS);
+    const [row] = await db.query<{ recorded: boolean }>(
+      'select recorded from owner_events where id = $1',
+      [next.payoutList.id],
+    );
+    expect(row?.recorded).toBe(true);
+  });
+
+  it('applies a hand answer while an earlier setup request keeps failing', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const buyer = key();
+    const orderKey = `${buyer.pubkey}:${ORDER_ID}`;
+    const state = seed.state ?? sellingLedger();
+    state.orders[orderKey] = {
+      key: orderKey,
+      buyerPubkey: buyer.pubkey,
+      orderId: ORDER_ID,
+      rumorId: 'r'.repeat(64),
+      createdAt: NOW - 600,
+      reference: 'ref',
+      product: `30402:${seed.store.pubkey}:${PRODUCT.d}`,
+      reportedTxs: [],
+    };
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, { ...seed, state });
+    const owner = seed.owner.pubkey;
+    const node = holderOn(db, keys, world);
+    await serveAll(node);
+    // Every setup publish is refused; the buyer's answer (a gift wrap) is taken.
+    world.refuse = (event) => event.kind !== 1059;
+    const setup = await submitRequest(db, owner, 'setup', {}, NOW);
+    const second = await submitRequest(db, owner, 'setup', {}, NOW);
+    const hand = await submitRequest(
+      db,
+      owner,
+      'hand_answer',
+      { key: orderKey, request: { kind: 'delivered' } },
+      NOW,
+    );
+    await expect(node.requests.drain(owner)).rejects.toThrow('nothing reached a relay');
+    expect((await requestRow(db, owner, hand)).state).toBe('applied');
+    expect(wrapsTo(world, buyer.pubkey)).toHaveLength(1);
+    expect((await requestRow(db, owner, setup)).state).toBe('pending');
+    // The setup lane keeps its order: the later setup request waits behind the failing one.
+    expect((await requestRow(db, owner, second)).state).toBe('pending');
   });
 
   it('marks setup requests queued before a pass as covered by it', async () => {

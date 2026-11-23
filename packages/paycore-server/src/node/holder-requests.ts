@@ -21,9 +21,10 @@ import { getPublicKey } from 'nostr-tools/pure';
 import * as z from 'zod';
 import {
   type AdminRequest,
-  drainRequests,
+  getRequest,
   markRequest,
   ownersWithRequests,
+  pendingRequests,
   setRequestResult,
   unsentHandAnswers,
 } from '../admin/requests';
@@ -37,6 +38,7 @@ import {
   newestCommitted,
   runStoreSetupPass,
 } from './setup-pass';
+import { controlBackoffMs } from './start-checks';
 import { NotServed, type StoreSupervisor } from './supervisor';
 import { Suspensions } from './suspension';
 
@@ -45,7 +47,7 @@ export const MAX_SETUP_ATTEMPTS = 5;
 
 export interface HolderRequestsDeps {
   db: Db;
-  supervisor: Pick<StoreSupervisor, 'applyControl' | 'leased'>;
+  supervisor: Pick<StoreSupervisor, 'applyControl' | 'leased' | 'recheckOffers'>;
   /** The setup pass's reads, pools and relays (the hand answers publish with the same). */
   setup: SetupPassDeps;
   log?: (message: string) => void;
@@ -96,12 +98,23 @@ export function healPass(
   };
 }
 
+/** The request kinds that run a setup pass: one lane, applied in order. */
+const SETUP_KINDS: readonly AdminRequest['kind'][] = ['setup', 'record_owner_event'];
+
+/** The committed payout list did not reach a relay: its request stays pending, retried. */
+export class PayoutListNotOut extends Error {
+  constructor(readonly owner: string) {
+    super('the committed payout list reached no relay: retried');
+    this.name = 'PayoutListNotOut';
+  }
+}
+
 export class HolderRequests {
   readonly suspensions: Suspensions;
   /** Per store: one drain at a time (answers sent again and pending requests together). */
   private readonly drains = new Map<string, Promise<unknown>>();
-  /** Failed attempts of setup-type requests, by request id (this process only). */
-  private readonly attempts = new Map<string, number>();
+  /** Failed attempts of setup-kind requests and when the next is due, by request id (this process only). */
+  private readonly attempts = new Map<string, { count: number; nextAt: number }>();
 
   constructor(private readonly deps: HolderRequestsDeps) {
     this.suspensions = new Suspensions({
@@ -111,6 +124,18 @@ export class HolderRequests {
       now: deps.setup.now,
       ...(deps.log === undefined ? {} : { log: deps.log }),
     });
+  }
+
+  /**
+   * The pump's periodic round: the suspension clocks, then the drift and
+   * offer checks of running stores (each at most every `DRIFT_CHECK_SECS`).
+   */
+  async tick(): Promise<void> {
+    try {
+      await this.suspensions.tick();
+    } finally {
+      await this.deps.supervisor.recheckOffers();
+    }
   }
 
   /** Drain every store this holder serves that has work queued. Errors are logged per store. */
@@ -129,9 +154,13 @@ export class HolderRequests {
 
   /**
    * One store's queue: first the hand answers saved and never sent (sent
-   * again as stored), then the pending requests oldest first. A request that
-   * throws stops the drain there (it stays pending, retried on the next one).
-   * Resolves to the ids applied or sent.
+   * again as stored), then the pending requests oldest first, in two lanes:
+   * the setup kinds (`setup`, `record_owner_event`) and the others. A
+   * request that throws, or a setup-kind one waiting for its backoff, holds
+   * the later requests of its own lane only (it stays pending, retried on a
+   * later drain); a failing setup never blocks a hand answer, a restart or a
+   * suspension. The first error is rethrown once the drain is done. Resolves
+   * to the ids applied or sent.
    */
   drain(owner: string): Promise<string[]> {
     const previous = this.drains.get(owner) ?? Promise.resolve();
@@ -143,7 +172,7 @@ export class HolderRequests {
           await this.sendHandAgain(request);
           resent.push(request.id);
         }
-        const applied = await drainRequests(this.deps.db, owner, (request) => this.apply(request));
+        const applied = await this.drainPending(owner);
         return [...resent, ...applied];
       });
     this.drains.set(owner, run);
@@ -154,6 +183,41 @@ export class HolderRequests {
     };
     run.then(cleanup, cleanup);
     return run;
+  }
+
+  private async drainPending(owner: string): Promise<string[]> {
+    const { db } = this.deps;
+    const handed: string[] = [];
+    const held = new Set<boolean>();
+    let failure: { error: unknown } | undefined;
+    for (const request of await pendingRequests(db, owner)) {
+      const setupLane = SETUP_KINDS.includes(request.kind);
+      if (held.has(setupLane)) {
+        continue;
+      }
+      const current = await getRequest(db, owner, request.id);
+      if (current?.state !== 'pending') {
+        continue;
+      }
+      if (setupLane && (this.attempts.get(current.id)?.nextAt ?? 0) > this.now()) {
+        held.add(setupLane);
+        continue;
+      }
+      try {
+        await this.apply(current);
+        handed.push(current.id);
+      } catch (error) {
+        if (error instanceof NotServed) {
+          throw error;
+        }
+        held.add(setupLane);
+        failure ??= { error };
+      }
+    }
+    if (failure !== undefined) {
+      throw failure.error;
+    }
+    return handed;
   }
 
   /**
@@ -205,9 +269,9 @@ export class HolderRequests {
   }
 
   /**
-   * Run a setup-type request; a failure keeps it pending (the drain stops,
-   * the next one retries) until `MAX_SETUP_ATTEMPTS`, then marks it failed
-   * with an alert. A store not served here is never counted.
+   * Run a setup-kind request; a failure keeps it pending, retried after
+   * `controlBackoffMs` (its lane waits meanwhile), until `MAX_SETUP_ATTEMPTS`,
+   * then marks it failed with an alert. A store not served here is never counted.
    */
   private async retried(request: AdminRequest, work: () => Promise<void>): Promise<void> {
     try {
@@ -217,10 +281,11 @@ export class HolderRequests {
       if (error instanceof NotServed) {
         throw error;
       }
-      const attempts = (this.attempts.get(request.id) ?? 0) + 1;
-      this.attempts.set(request.id, attempts);
+      const attempts = (this.attempts.get(request.id)?.count ?? 0) + 1;
       const problem = errorText(error);
       if (attempts < MAX_SETUP_ATTEMPTS) {
+        const waitSecs = Math.ceil(controlBackoffMs(attempts - 1) / 1000);
+        this.attempts.set(request.id, { count: attempts, nextAt: this.now() + waitSecs });
         throw error;
       }
       this.attempts.delete(request.id);
@@ -255,12 +320,20 @@ export class HolderRequests {
     }
   }
 
-  /** A setup pass marking `request` applied in its save; marked after when nothing could be published. */
+  /**
+   * A setup pass marking `request` applied in its save; marked after when
+   * nothing could be published. A committed payout list that is still not
+   * out leaves the request pending (`PayoutListNotOut`, retried with backoff):
+   * whatever else went out is saved.
+   */
   private async passFor(request: AdminRequest): Promise<SetupPassResult> {
     const { db } = this.deps;
     const result = await this.deps.supervisor.applyControl(request.owner, (handle) =>
       runStoreSetupPass(this.deps.setup, request.owner, handle, { appliedRequest: request.id }),
     );
+    if (result.kind === 'done' && result.payoutListPending) {
+      throw new PayoutListNotOut(request.owner);
+    }
     const now = this.now();
     if (result.kind === 'no_payout_list') {
       await markRequest(db, request.owner, request.id, 'applied', now, passSummary(result));

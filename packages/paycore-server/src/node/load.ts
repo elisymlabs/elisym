@@ -301,6 +301,26 @@ function webhookOf(
   return { url, secret };
 }
 
+/** The owner events the server committed for `owner`, in commit order. */
+export async function readCommitted(db: Queryable, owner: string): Promise<CommittedOwnerEvent[]> {
+  const rows = await db.query<{
+    id: string;
+    kind: number;
+    created_at: number;
+    recorded: boolean;
+  }>(
+    `select id, kind, (event->>'created_at')::bigint as created_at, recorded
+     from owner_events where owner = $1 order by committed_at`,
+    [owner],
+  );
+  return rows.map((event) => ({
+    id: event.id,
+    kind: event.kind,
+    createdAt: event.created_at,
+    recorded: event.recorded,
+  }));
+}
+
 /** The store's products, oldest `d` first; all sold out while the store winds down. */
 export async function readProducts(
   db: Queryable,
@@ -363,16 +383,7 @@ export async function loadStoreBundle(
       ? undefined
       : webhookOf(owner, vault, row.webhook_url, row.webhook_secret);
   const products = await readProducts(db, owner, row.status);
-  const committed = await db.query<{
-    id: string;
-    kind: number;
-    created_at: number;
-    recorded: boolean;
-  }>(
-    `select id, kind, (event->>'created_at')::bigint as created_at, recorded
-     from owner_events where owner = $1 order by committed_at`,
-    [owner],
-  );
+  const committed = await readCommitted(db, owner);
   const ledgers = deps.ledgers ?? new PgLedgerStore(db, deps.now);
   const handle = await ledgers.open(owner, deps.epoch, deps.holder);
   const payouts = activePayouts(handle.state, owner);
@@ -398,12 +409,7 @@ export async function loadStoreBundle(
     products,
     ...(webhook === undefined ? {} : { webhook }),
     webhookSecretMissing: row.webhook_url !== null && webhook === undefined,
-    committed: committed.map((event) => ({
-      id: event.id,
-      kind: event.kind,
-      createdAt: event.created_at,
-      recorded: event.recorded,
-    })),
+    committed,
     handle,
   };
 }

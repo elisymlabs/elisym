@@ -10,8 +10,10 @@ import { OFFER_RELAYS, PUBLISH_DEADLINE_MS } from '@merchant-node/constants';
 import { type PublishPool, publishToRelays } from '@merchant-node/publish';
 import { storeAuth } from '@merchant-node/store-node';
 import type { NostrEvent } from 'nostr-tools';
+import { ALERT_KINDS, raiseAlert } from './alerts';
 import type { Db } from './db/db';
 import type { KeyVault } from './db/keys';
+import { allowedInboxRelays } from './node/load';
 import { controlBackoffMs } from './node/start-checks';
 
 /** How many events one round republishes at most. */
@@ -28,6 +30,8 @@ export interface OwnerEventPublisherDeps {
   makePool: () => PublisherPool;
   /** Where offers go besides the inbox relays (default: merchant-node's `OFFER_RELAYS`). */
   offerRelays?: readonly string[];
+  /** `PAYCORE_INBOX_RELAYS` (P7): a stored inbox relay outside it is never connected to. */
+  inboxRelayAllowlist: readonly string[];
   log?: (message: string) => void;
   /** Seconds. */
   now: () => number;
@@ -104,7 +108,21 @@ export class OwnerEventPublisher {
     const { db } = deps;
     const offerRelays = deps.offerRelays ?? OFFER_RELAYS;
     const event = typeof row.event === 'string' ? (JSON.parse(row.event) as NostrEvent) : row.event;
-    const relays = [...new Set([...offerRelays, ...row.inbox_relays])];
+    let inboxRelays: string[];
+    try {
+      // The allowlist may have shrunk since the store was configured or imported (P7).
+      inboxRelays = allowedInboxRelays(row.owner, row.inbox_relays, deps.inboxRelayAllowlist);
+    } catch (error) {
+      const problem = error instanceof Error ? error.message : 'inbox relays refused';
+      this.log(`owner event ${row.id.slice(0, 12)}: not published: ${problem}`);
+      await raiseAlert(db, row.owner, ALERT_KINDS.inboxRelaysRefused, problem, {
+        now: deps.now(),
+        log: (line) => this.log(line),
+      });
+      await this.backOff(row);
+      return;
+    }
+    const relays = [...new Set([...offerRelays, ...inboxRelays])];
     let accepted: string[] = [];
     const pool = deps.makePool();
     try {
@@ -132,8 +150,13 @@ export class OwnerEventPublisher {
       );
       return;
     }
+    await this.backOff(row);
+  }
+
+  private async backOff(row: DueRow): Promise<void> {
+    const now = this.deps.now();
     const attempts = row.publish_attempts + 1;
-    await db.query(
+    await this.deps.db.query(
       'update owner_events set publish_attempts = $2, next_attempt_at = $3 where id = $1',
       [row.id, attempts, now + Math.ceil(controlBackoffMs(attempts - 1) / 1000)],
     );

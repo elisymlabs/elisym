@@ -29,11 +29,8 @@ function fakes() {
         release = resolve;
       });
     },
-    suspensions: {
-      tick: async () => {
-        calls.ticks += 1;
-        return [];
-      },
+    tick: async () => {
+      calls.ticks += 1;
     },
   };
   return {
@@ -100,7 +97,7 @@ describe('RequestPump', () => {
           }
           await world.holder.drainAll();
         },
-        suspensions: world.holder.suspensions,
+        tick: world.holder.tick,
       },
       log: (line) => logs.push(line),
     });

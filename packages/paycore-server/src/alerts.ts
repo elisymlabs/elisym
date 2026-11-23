@@ -23,6 +23,8 @@ export const ALERT_KINDS = {
   drift: 'drift',
   /** A setup pass (an owner event, a config edit, an activation) failed for good. */
   setupFailed: 'setup_failed',
+  /** The store's stored inbox relays are not all in the operator allowlist (P7): nothing is sent there. */
+  inboxRelaysRefused: 'inbox_relays_refused',
 } as const;
 
 export interface AlertOptions {
