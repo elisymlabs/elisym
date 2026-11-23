@@ -7,7 +7,7 @@
  * a valid id and signature count; the newest wins, and of two in the same
  * second the lowest id (NIP-01 replaceable rules, as the checkout picks).
  */
-import { KIND_STORE_AUTH } from '@elisym/commerce';
+import { KIND_PAYTO, KIND_STORE_AUTH } from '@elisym/commerce';
 import { type QueryPool, newest } from '@merchant-node/checks';
 import { OFFER_RELAYS } from '@merchant-node/constants';
 import { listeningPool } from '@merchant-node/relay-pool';
@@ -101,4 +101,35 @@ export async function newestOnRelays(
         validSignature(event),
     ),
   );
+}
+
+export interface NewestDateDeps {
+  /** O's hosted store, if any: a 30490 is read at its address. */
+  store: (owner: string) => Promise<{ storePubkey: string } | undefined>;
+  makePool?: () => NewestReadPool;
+  relays?: readonly string[];
+}
+
+/**
+ * `created_at` of O's newest owner event of `kind` on the offer relays: the
+ * payout list (10133) is O's alone, a store authorization (30490) is read at
+ * O's store's address, and none is known for an owner with no store.
+ */
+export async function newestOwnerEventDate(
+  owner: string,
+  kind: OwnerEventKind,
+  deps: NewestDateDeps,
+): Promise<number | undefined> {
+  const read = {
+    ...(deps.makePool === undefined ? {} : { makePool: deps.makePool }),
+    ...(deps.relays === undefined ? {} : { relays: deps.relays }),
+  };
+  if (kind === KIND_PAYTO) {
+    return (await newestOnRelays(owner, kind, read))?.created_at;
+  }
+  const store = await deps.store(owner);
+  if (store === undefined) {
+    return undefined;
+  }
+  return (await newestOnRelays(owner, kind, { ...read, d: store.storePubkey }))?.created_at;
 }

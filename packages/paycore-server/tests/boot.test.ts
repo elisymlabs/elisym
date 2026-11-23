@@ -1,12 +1,29 @@
 import { EventEmitter } from 'node:events';
+import { KIND_STORE_AUTH } from '@elisym/commerce';
 import type { ProtocolConfig } from '@elisym/pay-core';
 import type { Eip3009Context, Eip3009StartCheck } from '@merchant-node/eip3009';
 import type { Rpc, SolanaRpcApi } from '@solana/kit';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chain } from '../../merchant-node/tests/fixtures';
+import { Eip3009Boot } from '../src/chain/eip3009-boot';
 import type { PaycoreConfig } from '../src/config';
-import type { Db } from '../src/db/db';
-import { type ServerDeps, type ServerHandle, startServer } from '../src/server';
+import { REQUESTS_CHANNEL, STORES_CHANNEL, type Db } from '../src/db/db';
+import { migrate } from '../src/db/migrations';
+import { HolderRequests } from '../src/node/holder-requests';
+import { RequestPump } from '../src/node/request-pump';
+import { StoreSupervisor } from '../src/node/supervisor';
+import { OwnerEventPublisher } from '../src/publisher';
+import { StorePools } from '../src/relay/pools';
+import {
+  FENCE_MARGIN_SECS,
+  type ServerDeps,
+  type ServerHandle,
+  fenceAfterSecs,
+  feeRpcOf,
+  networksInUse,
+  startServer,
+} from '../src/server';
+import { WebhookSlots } from '../src/webhook-fetch';
 import { submitRequest } from './helpers/node-requests';
 import {
   BASE_RPC,
@@ -15,13 +32,17 @@ import {
   RELAY,
   SILENT_EVM,
   SOLANA_RPC,
+  WEBHOOK_SECRET,
+  ownerEvents,
   publishedStore,
   seedStore,
+  settle,
   vault,
   waitFor,
 } from './helpers/node-store';
 import { RelayWorld } from './helpers/node-world';
 import { freshDb } from './pglite-db';
+import { authHeader } from './stores-fixtures';
 
 const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1zcqDFVGPZXAh';
 const MAINNET_GENESIS = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d';
@@ -53,7 +74,54 @@ const CONFIG: PaycoreConfig = {
 const handles: ServerHandle[] = [];
 afterEach(async () => {
   await Promise.all(handles.splice(0).map((handle) => handle.stop()));
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
+
+/** Whether this database call is a lease round's (`acquireLeases`). */
+function isLeaseRound(): boolean {
+  return new Error().stack?.includes('acquireLeases') === true;
+}
+
+/** Lease rounds counted, and held at a gate while it is shut (other transactions pass). */
+class LeaseGate {
+  /** Lease rounds started (their transaction asked for). */
+  rounds = 0;
+  /** Rounds held at the gate now. */
+  held = 0;
+  private opened: Promise<void> | undefined;
+  private release: () => void = () => undefined;
+
+  shut(): void {
+    this.opened = new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  open(): void {
+    this.opened = undefined;
+    this.release();
+  }
+
+  /** `db` with its lease rounds going through the gate. */
+  wrap(db: Db): Db {
+    return {
+      ...db,
+      transaction: async (work) => {
+        if (isLeaseRound()) {
+          this.rounds += 1;
+          const opened = this.opened;
+          if (opened !== undefined) {
+            this.held += 1;
+            await opened;
+            this.held -= 1;
+          }
+        }
+        return db.transaction(work);
+      },
+    };
+  }
+}
 
 /** The database, its close only counted: the tests read it after the shutdown. */
 function keptOpen(db: Db): { db: Db; closes: { count: number } } {
@@ -259,6 +327,8 @@ describe('startServer', () => {
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ status: 'ok' });
     expect((await fetch(`${base}/nothing`)).status).toBe(404);
+    // GET only: another method on the health path is no health answer.
+    expect((await fetch(`${base}/healthz`, { method: 'POST' })).status).toBe(404);
     // An admin route is the admin API's: without NIP-98 it is refused, not a 404.
     expect((await fetch(`${base}/v1/admin/store`)).status).toBe(401);
     await handle.stop();
@@ -278,7 +348,7 @@ describe('startServer', () => {
     expect(setup.closes.count).toBe(1);
   });
 
-  it('stops its nodes once no lease renewal succeeded for the lease TTL, and serves again on the next one', async () => {
+  it('stops its nodes at the fence deadline once no lease renewal succeeded, and serves again on the next one', async () => {
     const clock = { value: NOW };
     const down = { value: false };
     const logs: string[] = [];
@@ -306,19 +376,22 @@ describe('startServer', () => {
     };
     const failedRounds = () => logs.filter((line) => line.startsWith('lease round failed')).length;
 
+    // The 60 s lease less a 1 s renewal interval and the 5 s margin.
+    const deadline = NOW + fenceAfterSecs(20);
+    expect(deadline).toBe(NOW + 54);
     down.value = true;
-    clock.value = NOW + 59;
+    clock.value = deadline - 1;
     await waitFor(() => failedRounds() >= 3, 'lease rounds failing');
-    // Inside the TTL of the last renewal: the store keeps running.
+    // Before the deadline of the last renewal: the store keeps running.
     expect(handle.supervisor?.running).toEqual([owner]);
     expect(await renewals()).toBe(NOW + 60);
 
-    clock.value = NOW + 60;
+    clock.value = deadline;
     await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped');
     expect(handle.supervisor?.leased).toEqual([]);
     const fencedLines = logs.filter((line) => line.startsWith('no lease renewed'));
     expect(fencedLines).toEqual([
-      'no lease renewed for 60 s: stopping every store until a renewal succeeds',
+      'no lease renewed for 54 s: stopping every store until a renewal succeeds',
     ]);
     const failedAtFence = failedRounds();
     await waitFor(() => failedRounds() >= failedAtFence + 3, 'more failed rounds');
@@ -335,13 +408,14 @@ describe('startServer', () => {
       'select holder, epoch from leases where owner = $1',
       [owner],
     );
-    // Taken again after its expiry: a new epoch.
-    expect(lease).toEqual({ holder: handle.holder, epoch: 2 });
+    // Renewed before it ran out (the fence came first): the same epoch, the nodes started afresh.
+    expect(lease).toEqual({ holder: handle.holder, epoch: 1 });
   });
 
   it('a lease round answered after its leases ran out serves nothing', async () => {
     const clock = { value: NOW };
     const slow = { value: false };
+    let leaseRounds = 0;
     const logs: string[] = [];
     const setup = await world({
       now: () => clock.value,
@@ -352,10 +426,13 @@ describe('startServer', () => {
     setup.deps.db = {
       ...db,
       transaction: async (work) => {
+        if (isLeaseRound()) {
+          leaseRounds += 1;
+        }
         const result = await db.transaction(work);
         if (slow.value) {
-          // The answer comes back once the TTL of the round's own leases has passed.
-          clock.value += 60;
+          // The answer comes back at the fence deadline of the round's own leases.
+          clock.value += fenceAfterSecs(20);
         }
         return result;
       },
@@ -365,7 +442,12 @@ describe('startServer', () => {
     await waitFor(() => handle.supervisor?.running.includes(owner) === true, 'the store running');
     slow.value = true;
     await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped');
-    expect(logs.some((line) => line.startsWith('no lease renewed'))).toBe(true);
+    const roundsAtFence = leaseRounds;
+    await waitFor(() => leaseRounds >= roundsAtFence + 5, 'more late rounds');
+    // Each late answer counts as failed: never served again, fenced (and logged) once.
+    expect(handle.supervisor?.leased).toEqual([]);
+    expect(logs).not.toContain('leases renewed again: serving the leased stores');
+    expect(logs.filter((line) => line.startsWith('no lease renewed'))).toHaveLength(1);
     slow.value = false;
     await waitFor(
       () => handle.supervisor?.running.includes(owner) === true,
@@ -391,6 +473,10 @@ describe('startServer', () => {
     const booting = startServer(CONFIG, setup.deps);
     await waitFor(() => setup.trace.includes('treasuries'), 'the fee config read');
     setup.signals.emit('SIGTERM');
+    await settle();
+    // The shutdown waits for the boot step in progress: nothing is torn down under it.
+    expect(setup.trace.filter((step) => step.startsWith('stop:'))).toEqual([]);
+    expect(setup.closes.count).toBe(0);
     release();
     const handle = await booting;
     await handle.stopped;
@@ -399,5 +485,312 @@ describe('startServer', () => {
     expect(serverPools(setup)).toHaveLength(0);
     expect(await setup.db.query('select owner from leases')).toEqual([]);
     expect(setup.closes.count).toBe(1);
+  });
+
+  it('stops for real at each shutdown step: unlisten, pump, holder, publisher, EIP-3009, supervisor, slots, pools, database', async () => {
+    const setup = await world();
+    const unlistened: string[] = [];
+    const { db } = setup;
+    const close = vi.fn(async () => undefined);
+    const unlistenCalls = new Map<string, ReturnType<typeof vi.fn>>();
+    setup.deps.db = {
+      ...db,
+      listen: async (channel, onNotify) => {
+        const unlisten = await db.listen(channel, onNotify);
+        const recorded = vi.fn(async () => {
+          unlistened.push(channel);
+          await unlisten();
+        });
+        unlistenCalls.set(channel, recorded);
+        return recorded;
+      },
+      close,
+    };
+    const keys = vault();
+    const seeded = await publishedStore(setup.relays);
+    const { owner } = await seedStore(db, keys, {
+      ...seeded,
+      status: 'active',
+      webhookUrl: 'https://shop.example.com/hook',
+      webhookSecret: WEBHOOK_SECRET,
+    });
+    setup.poolsBefore = setup.relays.pools.length;
+    const steps = {
+      pump: vi.spyOn(RequestPump.prototype, 'stop'),
+      holder: vi.spyOn(HolderRequests.prototype, 'idle'),
+      publisher: vi.spyOn(OwnerEventPublisher.prototype, 'stop'),
+      eip3009: vi.spyOn(Eip3009Boot.prototype, 'stop'),
+      supervisor: vi.spyOn(StoreSupervisor.prototype, 'shutdown'),
+      pools: vi.spyOn(StorePools.prototype, 'closeAll'),
+    };
+    const forStore = vi.spyOn(WebhookSlots.prototype, 'forStore');
+    const handle = await boot(setup);
+    await waitFor(
+      () => handle.supervisor?.running.includes(owner.pubkey) === true,
+      'the store running',
+    );
+    const slots = forStore.mock.contexts[0] as WebhookSlots | undefined;
+    if (slots === undefined) {
+      throw new Error('the store took no webhook sender');
+    }
+    for (const spy of Object.values(steps)) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+    expect(unlistened).toEqual([]);
+
+    await handle.stop();
+    const storesUnlisten = unlistenCalls.get(STORES_CHANNEL);
+    const requestsUnlisten = unlistenCalls.get(REQUESTS_CHANNEL);
+    if (storesUnlisten === undefined || requestsUnlisten === undefined) {
+      throw new Error('a channel was never listened to');
+    }
+    // Each step ran once, in the shutdown order.
+    const order = [
+      storesUnlisten,
+      steps.pump,
+      requestsUnlisten,
+      steps.holder,
+      steps.publisher,
+      steps.eip3009,
+      steps.supervisor,
+      steps.pools,
+      close,
+    ];
+    for (const step of order) {
+      expect(step).toHaveBeenCalledTimes(1);
+    }
+    const called = order.map((step) => step.mock.invocationCallOrder[0] ?? 0);
+    expect(called).toEqual([...called].sort((left, right) => left - right));
+    // The webhook slots refuse every send once the server stopped.
+    await expect(
+      slots.forStore(owner.pubkey)('https://shop.example.com/hook', { method: 'POST', body: '{}' }),
+    ).rejects.toThrow('The server is shutting down');
+    expect(serverPools(setup).every((pool) => pool.destroyed)).toBe(true);
+  });
+
+  it("dates owner events on the relays through the admin API: a store authorization at the owner's store", async () => {
+    const setup = await world();
+    const keys = vault();
+    const seeded = await publishedStore(setup.relays);
+    await seedStore(setup.db, keys, { ...seeded, status: 'active' });
+    // A newer authorization than the server knows, on the offer relays.
+    setup.relays.add(ownerEvents(seeded.owner, seeded.store, [], NOW + 100).authorization);
+    const handle = await boot(setup);
+    const path = '/v1/admin/owner-events/prepare';
+    const body = JSON.stringify({ kind: KIND_STORE_AUTH });
+    const response = await fetch(`http://127.0.0.1:${handle.port}${path}`, {
+      method: 'POST',
+      headers: {
+        authorization: authHeader({
+          secret: seeded.owner.secretKey,
+          method: 'POST',
+          url: `${CONFIG.publicBase}${path}`,
+          body,
+          createdAt: NOW,
+        }),
+      },
+      body,
+    });
+    expect(response.status).toBe(200);
+    const prepared = (await response.json()) as { template: { created_at: number } };
+    // Dated after the relays' newest.
+    expect(prepared.template.created_at).toBe(NOW + 101);
+  });
+
+  it('a stop during the first lease round starts no store', async () => {
+    const setup = await world();
+    const gate = new LeaseGate();
+    setup.deps.db = gate.wrap(setup.db);
+    await activeStoreWithRequest(setup);
+    gate.shut();
+    const booting = startServer(CONFIG, setup.deps);
+    await waitFor(() => gate.held === 1, 'the first lease round');
+    setup.signals.emit('SIGTERM');
+    gate.open();
+    const handle = await booting;
+    await handle.stopped;
+    expect(serverPools(setup)).toHaveLength(0);
+    expect(handle.supervisor?.leased).toEqual([]);
+    expect(setup.trace).not.toContain('publisher');
+  });
+
+  it('a notify during a lease round makes exactly one more round', async () => {
+    const setup = await world();
+    const gate = new LeaseGate();
+    let notify: () => void = () => undefined;
+    const gated = gate.wrap(setup.db);
+    setup.deps.db = {
+      ...gated,
+      listen: async (channel, onNotify) => {
+        if (channel === STORES_CHANNEL) {
+          notify = onNotify;
+        }
+        return gated.listen(channel, onNotify);
+      },
+    };
+    await boot(setup);
+    expect(gate.rounds).toBe(1);
+    gate.shut();
+    notify();
+    await waitFor(() => gate.held === 1, 'a round held');
+    notify();
+    notify();
+    notify();
+    gate.open();
+    await waitFor(() => gate.rounds === 3, 'one more round');
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 200);
+    });
+    expect(gate.rounds).toBe(3);
+  });
+
+  it('dates the fence from the start of the round that renewed, not from its answer', async () => {
+    const clock = { value: NOW };
+    const setup = await world({ now: () => clock.value, leaseRenewMs: 20 });
+    const { db } = setup;
+    let leaseRounds = 0;
+    setup.deps.db = {
+      ...db,
+      transaction: async (work) => {
+        if (!isLeaseRound()) {
+          return db.transaction(work);
+        }
+        leaseRounds += 1;
+        if (leaseRounds > 1) {
+          throw new Error('database down');
+        }
+        const result = await db.transaction(work);
+        // The first round's answer comes back 10 s after it started.
+        clock.value += 10;
+        return result;
+      },
+    };
+    const { owner } = await activeStoreWithRequest(setup);
+    const handle = await boot(setup);
+    await waitFor(() => handle.supervisor?.running.includes(owner) === true, 'the store running');
+    // The deadline of a round that started at NOW, whatever its answer's time.
+    clock.value = NOW + fenceAfterSecs(20);
+    await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped', 2_000);
+  });
+
+  it('fences at its deadline, a renewal interval and the margin before the lease runs out', () => {
+    expect(fenceAfterSecs(20_000)).toBe(60 - 20 - FENCE_MARGIN_SECS);
+    expect(FENCE_MARGIN_SECS).toBeGreaterThan(0);
+    expect(fenceAfterSecs(1)).toBe(60 - 1 - FENCE_MARGIN_SECS);
+    expect(() => fenceAfterSecs(55_000)).toThrow(/no time to serve/);
+  });
+});
+
+describe('a lease round that never answers (fake timers)', () => {
+  /** A booted server whose lease rounds hang once `hang()` is called; timers faked, advancing with real time. */
+  async function hangingRounds() {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+      shouldAdvanceTime: true,
+    });
+    const clock = { value: NOW };
+    const logs: string[] = [];
+    const setup = await world({
+      now: () => clock.value,
+      log: (message) => logs.push(message),
+      // No sweep in these tests.
+      firstSweepDelayMs: () => 3_600_000,
+    });
+    const gate = new LeaseGate();
+    setup.deps.db = gate.wrap(setup.db);
+    const { owner } = await activeStoreWithRequest(setup);
+    const handle = await boot(setup);
+    await waitFor(() => handle.supervisor?.running.includes(owner) === true, 'the store running');
+    const hang = () => gate.shut();
+    const stop = async () => {
+      gate.open();
+      await handle.stop();
+    };
+    return { clock, logs, handle, owner, hang, stop, gate };
+  }
+
+  it('stops the nodes on the fence timer at the deadline, before the next lease tick', async () => {
+    const { clock, handle, owner, hang, stop, gate } = await hangingRounds();
+    hang();
+    // Default renewals every 20 s: the deadline is 35 s after the last renewal.
+    const fenceAfter = fenceAfterSecs(20_000);
+    expect(fenceAfter).toBe(35);
+    clock.value = NOW + fenceAfter - 1;
+    await vi.advanceTimersByTimeAsync((fenceAfter - 1) * 1000);
+    // The 20 s tick's round hangs; inside the deadline the store runs on.
+    expect(gate.held).toBe(1);
+    expect(handle.supervisor?.running).toEqual([owner]);
+    clock.value = NOW + fenceAfter;
+    // Past the timer at 35 s, before the tick at 40 s.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(handle.supervisor?.running).toEqual([]);
+    expect(handle.supervisor?.leased).toEqual([]);
+    await stop();
+  });
+
+  it('a fence timer that fires before the clock reaches the deadline waits for it again', async () => {
+    const { clock, handle, owner, hang, stop } = await hangingRounds();
+    hang();
+    const fenceAfter = fenceAfterSecs(20_000);
+    // The clock runs behind the timers: at the timer the deadline is a second away.
+    clock.value = NOW + fenceAfter - 1;
+    await vi.advanceTimersByTimeAsync(fenceAfter * 1000 + 500);
+    expect(handle.supervisor?.running).toEqual([owner]);
+    clock.value = NOW + fenceAfter;
+    // Before the tick at 40 s.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(handle.supervisor?.running).toEqual([]);
+    await stop();
+  });
+
+  it('a lease tick after a clock jump past the deadline stops the nodes, though the round hangs', async () => {
+    const { clock, handle, owner, hang, stop, logs } = await hangingRounds();
+    hang();
+    // The wall clock jumps; the fence timer (35 s of the timers' time) is far off.
+    clock.value = NOW + 40;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(handle.supervisor?.running).toEqual([owner]);
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(handle.supervisor?.running).toEqual([]);
+    expect(logs.filter((line) => line.startsWith('no lease renewed'))).toEqual([
+      'no lease renewed for 40 s: stopping every store until a renewal succeeds',
+    ]);
+    await stop();
+  });
+});
+
+describe('boot helpers', () => {
+  it('reads the networks of stores that are not pending, plus the configured ones', async () => {
+    const db = await freshDb();
+    await migrate(db);
+    const keys = vault();
+    const active = await seedStore(db, keys, { status: 'active' });
+    const pending = await seedStore(db, keys, { status: 'pending' });
+    await db.query("update store_config set network = 'devnet' where owner = $1", [
+      active.owner.pubkey,
+    ]);
+    await db.query("update store_config set network = 'mainnet' where owner = $1", [
+      pending.owner.pubkey,
+    ]);
+    const none = { rpcs: { mainnet: { evm: {} }, devnet: { evm: {} } } };
+    expect(await networksInUse(db, none)).toEqual(['devnet']);
+    const mainnetFee = {
+      rpcs: { mainnet: { fee: 'https://fee.example', evm: {} }, devnet: { evm: {} } },
+    };
+    expect(await networksInUse(db, mainnetFee)).toEqual(['mainnet', 'devnet']);
+  });
+
+  it('reads the fee config from the fee RPC, else the Solana RPC, else the public endpoint', () => {
+    const both = {
+      rpcs: {
+        mainnet: { solana: 'https://solana.example', fee: 'https://fee.example', evm: {} },
+        devnet: { solana: 'https://solana-devnet.example', evm: {} },
+      },
+    };
+    expect(feeRpcOf(both, 'mainnet')).toBe('https://fee.example');
+    expect(feeRpcOf(both, 'devnet')).toBe('https://solana-devnet.example');
+    const none = { rpcs: { mainnet: { evm: {} }, devnet: { evm: {} } } };
+    expect(feeRpcOf(none, 'devnet')).toMatch(/^https:\/\/api\.devnet\.solana\.com/);
+    expect(feeRpcOf(none, 'mainnet')).not.toBe(feeRpcOf(none, 'devnet'));
   });
 });

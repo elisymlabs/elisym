@@ -1,7 +1,7 @@
 import type { Eip1193Client } from '@elisym/pay-core/evm';
 import type { RpcTransport } from '@solana/kit';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChainClients, TokenBucket } from '../src/chain/clients';
+import { ChainClients, FEE_RPC_RATE_LIMIT, TokenBucket } from '../src/chain/clients';
 
 const SOLANA_URL = 'https://solana.operator.example';
 const EVM_URL = 'https://base.operator.example';
@@ -250,15 +250,42 @@ describe('ChainClients', () => {
     await read;
     expect(sent.filter((method) => method === 'getAccountInfo')).toHaveLength(1);
     expect(sent.filter((method) => method === 'getSignaturesForAddress')).toHaveLength(1);
-    // The fee bucket has the URL's limit too: a second read right away waits its turn.
-    const again = fee.getAccountInfo('y' as never).send();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(sent.filter((method) => method === 'getAccountInfo')).toHaveLength(1);
-    await vi.advanceTimersByTimeAsync(1000);
-    await again;
-    expect(sent.filter((method) => method === 'getAccountInfo')).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(20_000);
     await Promise.all(sweeps);
+  });
+
+  it('gives the fee bucket a small fixed limit, not the URL limit: a read (two calls) goes at once, more wait at 2/s', async () => {
+    expect(FEE_RPC_RATE_LIMIT).toEqual({ requestsPerSecond: 2 });
+    const sent: string[] = [];
+    const transport = (async (request: Parameters<RpcTransport>[0]) => {
+      sent.push((request.payload as { method: string }).method);
+      return { jsonrpc: '2.0', id: 1, result: null };
+    }) as RpcTransport;
+    for (const urlLimit of [
+      { requestsPerSecond: 1, burst: 1 },
+      { requestsPerSecond: 100, burst: 100 },
+    ]) {
+      sent.length = 0;
+      const clients = new ChainClients({
+        limits: new Map([[SOLANA_URL, urlLimit]]),
+        clock: () => Date.now(),
+        solanaTransportFor: () => transport,
+      });
+      const fee = clients.fee(SOLANA_URL);
+      const calls = Array.from({ length: 4 }, () => fee.getAccountInfo('y' as never).send());
+      await vi.advanceTimersByTimeAsync(0);
+      // A read's two calls at once, below the URL's limit of 1/s too.
+      expect(sent).toHaveLength(2);
+      expect(clients.feeBucketFor(SOLANA_URL).queued).toBe(2);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(sent).toHaveLength(2);
+      // Above a URL limit of 100/s: the rest wait at 2/s.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sent).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sent).toHaveLength(4);
+      await Promise.all(calls);
+    }
   });
 
   it('sends Solana requests through the limited transport, one client per URL', async () => {

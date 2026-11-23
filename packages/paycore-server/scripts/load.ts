@@ -9,7 +9,8 @@
  * use a scratch database, the script writes stores into it) with N published,
  * active stores, a fake relay (every store pool on one in-memory relay world),
  * a fake Solana RPC behind the same token buckets as `ChainClients` (per URL
- * for the stores, and one more per URL for the fee config), and
+ * for the stores at `--rps`, and one more per URL for the fee config at
+ * `FEE_RPC_RATE_LIMIT`), and
  * a local webhook sink behind the real `WebhookSlots` (the fetch guard's
  * resolver and transport replaced). Each store gets M orders, each with a paid
  * receipt, spread over the first half of the run in M rounds (within a round
@@ -38,7 +39,7 @@ import type { LedgerState } from '@merchant-node/ledger';
 import { MerchantRuntime, type RuntimeDeps } from '@merchant-node/runtime';
 import { type Rpc, type SolanaRpcApi, getBase58Decoder } from '@solana/kit';
 import { landedPayment, requestFor } from '../../merchant-node/tests/fixtures';
-import { DEFAULT_RPC_RATE_LIMIT, TokenBucket } from '../src/chain/clients';
+import { DEFAULT_RPC_RATE_LIMIT, FEE_RPC_RATE_LIMIT, TokenBucket } from '../src/chain/clients';
 import type { PaycoreConfig } from '../src/config';
 import type { Transport, TransportRequest, TransportResponse } from '../src/connectors/fetch-guard';
 import type { Db } from '../src/db/db';
@@ -325,7 +326,8 @@ function fakeSolanaRpc(url: string, bucket: TokenBucket): Rpc<SolanaRpcApi> {
           await bucket.take();
           const waited = performance.now() - queuedAt;
           entry.waitsMs.push(waited);
-          if (method === 'getGenesisHash' || method === 'getAccountInfo') {
+          // Only the fee config's own bucket: a store's call of the same method is not a fee read.
+          if (url.startsWith('fee:')) {
             measured.feeReadWaitsMs.push(waited);
           }
           return answer(String(method), params);
@@ -520,7 +522,7 @@ async function main(): Promise<void> {
   const stores = await seedStores(db, world, options.stores);
   console.log(`seeded in ${((performance.now() - seedStart) / 1000).toFixed(1)} s`);
 
-  // As `ChainClients`: one bucket per URL for the stores, one more per URL for the fee config.
+  // As `ChainClients`: one bucket per URL for the stores, one more per URL for the fee config (2/s).
   const buckets = new Map<string, TokenBucket>();
   const clients = new Map<string, Rpc<SolanaRpcApi>>();
   const clientFor = (lane: 'rpc' | 'fee', url: string): Rpc<SolanaRpcApi> => {
@@ -529,7 +531,9 @@ async function main(): Promise<void> {
     if (known !== undefined) {
       return known;
     }
-    const bucket = new TokenBucket({ requestsPerSecond: options.rps });
+    const bucket = new TokenBucket(
+      lane === 'fee' ? FEE_RPC_RATE_LIMIT : { requestsPerSecond: options.rps },
+    );
     buckets.set(name, bucket);
     const client = fakeSolanaRpc(name, bucket);
     clients.set(name, client);
@@ -635,8 +639,9 @@ async function main(): Promise<void> {
     );
     const total = entries.reduce((sum, [, entry]) => sum + entry.calls, 0);
     const waits = entries.flatMap(([, entry]) => entry.waitsMs);
+    const perMinute = (lane === 'fee' ? FEE_RPC_RATE_LIMIT.requestsPerSecond : options.rps) * 60;
     lines.push(
-      `  ${lane} ${networkOf(config, url)} total ${(total / steadyMinutes).toFixed(1)}/min of a ${options.rps * 60}/min bucket (${((100 * total) / steadyMinutes / (options.rps * 60)).toFixed(1)}%); wait ${spread(waits, 'ms')}`,
+      `  ${lane} ${networkOf(config, url)} total ${(total / steadyMinutes).toFixed(1)}/min of a ${perMinute}/min bucket (${((100 * total) / steadyMinutes / perMinute).toFixed(1)}%); wait ${spread(waits, 'ms')}`,
     );
   }
   lines.push(

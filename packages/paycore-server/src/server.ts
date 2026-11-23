@@ -15,11 +15,14 @@
  *    every `LEASE_RENEW_MS` and on every notify, the supervisor reconciled
  *    with what this holder leases. The renewals also stand in for a poll of
  *    the stores (a notify missed while the listen connection was down).
- *    Self-fencing: when no renewal has succeeded for `LEASE_TTL_SECS` (the
- *    database down or hanging), the leases may already be another holder's,
- *    so the server stops its nodes itself (the supervisor reconciled with
- *    nothing leased) instead of waiting for a fenced save to fail; the next
- *    renewal that succeeds starts them again from the database.
+ *    Self-fencing: the leases of a round run out `LEASE_TTL_SECS` after it
+ *    started, and another holder may take them then. The server stops its
+ *    nodes itself (the supervisor reconciled with nothing leased) at
+ *    `fenceAfterSecs` past the last round that succeeded, a renewal interval
+ *    and `FENCE_MARGIN_SECS` before that (the database down or hanging),
+ *    instead of waiting for a fenced save to fail: on a timer at that
+ *    deadline, checked again on every lease tick (a clock that jumped). The
+ *    next renewal that succeeds starts them again from the database.
  * 8. The owner event publisher.
  * 9. The request pump (LISTEN `paycore_requests`, the 60 s poll and tick).
  * 10. HTTP: the admin API and `/healthz`.
@@ -43,7 +46,6 @@
 // cspell:ignore healthz
 import type { Server } from 'node:http';
 import { createRequire } from 'node:module';
-import { KIND_PAYTO } from '@elisym/commerce';
 import type { Network } from '@elisym/pay-core';
 import { EIP3009_SLUGS, type MerchantConfig } from '@merchant-node/config';
 import type { startCheckEip3009 } from '@merchant-node/eip3009';
@@ -66,9 +68,8 @@ import { HolderRequests, healPass } from './node/holder-requests';
 import { RequestPump } from './node/request-pump';
 import type { SetupPassDeps } from './node/setup-pass';
 import { StoreSupervisor } from './node/supervisor';
-import type { OwnerEventKind } from './owner-events';
 import { OwnerEventPublisher } from './publisher';
-import { newestOnRelays } from './relay/newest';
+import { newestOwnerEventDate } from './relay/newest';
 import { StorePools } from './relay/pools';
 import { LEASE_RENEW_MS, LEASE_TTL_SECS, acquireLeases, newHolderId } from './state/leases';
 import { StoreDirectory } from './state/stores';
@@ -78,6 +79,27 @@ const NETWORKS: readonly Network[] = ['mainnet', 'devnet'];
 /** How often the publisher retries recorded owner events no default relay took. */
 export const PUBLISHER_INTERVAL_MS = 60_000;
 export const HEALTH_PATH = '/healthz';
+/**
+ * How long before the lease renewal interval ahead of the leases' expiry the
+ * nodes stop when no renewal succeeds: room for the stop itself and for the
+ * clocks of two instances disagreeing by less than this.
+ */
+export const FENCE_MARGIN_SECS = 5;
+
+/**
+ * Seconds after the start of the last lease round that succeeded at which the
+ * nodes stop when none succeeded since: the leases' TTL, less a renewal
+ * interval (the round that would have renewed them), less the margin.
+ */
+export function fenceAfterSecs(leaseRenewMs: number): number {
+  const secs = LEASE_TTL_SECS - Math.ceil(leaseRenewMs / 1000) - FENCE_MARGIN_SECS;
+  if (secs <= 0) {
+    throw new Error(
+      `a lease renewal every ${leaseRenewMs} ms leaves no time to serve inside the ${LEASE_TTL_SECS} s lease`,
+    );
+  }
+  return secs;
+}
 
 type Signal = 'SIGTERM' | 'SIGINT';
 const SIGNALS: readonly Signal[] = ['SIGTERM', 'SIGINT'];
@@ -107,8 +129,8 @@ export interface ServerDeps {
   treasuryReadConfig?: ConstructorParameters<typeof TreasuryReader>[2];
   eip3009Check?: typeof startCheckEip3009;
   eip3009Sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
-  /** Each store's first-sweep delay (ms); default random over the sweep interval (the supervisor's). */
-  firstSweepDelayMs?: () => number;
+  /** Each store's first-sweep delay (ms); default: until the store's phase of the sweep interval (the supervisor's). */
+  firstSweepDelayMs?: (owner: string) => number;
   /** How the webhook requests resolve and connect (the load script's local sink). */
   webhookFetchDeps?: FetchGuardDeps;
   leaseRenewMs?: number;
@@ -274,9 +296,13 @@ class PaycoreServer implements ServerHandle {
   private pools: StorePools | undefined;
   private unlistenStores: (() => Promise<void>) | undefined;
   private leaseTimer: ReturnType<typeof setInterval> | undefined;
+  /** Fires at the fence deadline of the last round that succeeded. */
+  private fenceTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly leaseRenewMs: number;
+  private readonly fenceAfter: number;
   private leaseRound: Promise<void> | undefined;
   private leaseAgain = false;
-  /** `now` of the last lease round that succeeded: the leases taken then run out `LEASE_TTL_SECS` after it. */
+  /** `now` at the start of the last lease round that succeeded: the leases taken then run out `LEASE_TTL_SECS` after it. */
   private lastRenewedAt: number | undefined;
   /** Whether the nodes were stopped for want of a renewal (logged once until a renewal succeeds). */
   private fenced = false;
@@ -300,6 +326,8 @@ class PaycoreServer implements ServerHandle {
     this.signals = deps.signals ?? process;
     this.holder = deps.holder ?? newHolderId();
     this.makePool = deps.makePool ?? listeningPool;
+    this.leaseRenewMs = deps.leaseRenewMs ?? LEASE_RENEW_MS;
+    this.fenceAfter = fenceAfterSecs(this.leaseRenewMs);
     this.stopped = new Promise<void>((resolve) => {
       this.resolveStopped = resolve;
     });
@@ -429,7 +457,7 @@ class PaycoreServer implements ServerHandle {
       // Checked on the timer too: a round hanging on the database never fails.
       this.fenceIfExpired();
       void this.runLeaseRound();
-    }, deps.leaseRenewMs ?? LEASE_RENEW_MS);
+    }, this.leaseRenewMs);
 
     trace('publisher');
     const publisher = new OwnerEventPublisher({
@@ -471,7 +499,11 @@ class PaycoreServer implements ServerHandle {
       publicBase: config.publicBase,
       operator: config.operator,
       now,
-      newestOnRelays: (owner, kind) => this.newestDate(directory, owner, kind),
+      newestOnRelays: (owner, kind) =>
+        newestOwnerEventDate(owner, kind, {
+          store: (storeOwner) => directory.store(storeOwner),
+          makePool: this.makePool,
+        }),
     });
     const httpServer = serveGateway(routes(admin), {
       port: deps.port ?? config.port,
@@ -482,26 +514,6 @@ class PaycoreServer implements ServerHandle {
     const address = httpServer.address();
     this.port = typeof address === 'object' && address !== null ? address.port : undefined;
     log(`paycore server listening on ${this.port ?? config.port} as holder ${this.holder}`);
-  }
-
-  /** `created_at` of O's newest owner event of `kind` on the offer relays (a 30490: of O's store). */
-  private async newestDate(
-    directory: StoreDirectory,
-    owner: string,
-    kind: OwnerEventKind,
-  ): Promise<number | undefined> {
-    if (kind === KIND_PAYTO) {
-      return (await newestOnRelays(owner, kind, { makePool: this.makePool }))?.created_at;
-    }
-    const store = await directory.store(owner);
-    if (store === undefined) {
-      return undefined;
-    }
-    const event = await newestOnRelays(owner, kind, {
-      d: store.storePubkey,
-      makePool: this.makePool,
-    });
-    return event?.created_at;
   }
 
   /** Take or renew the leases and reconcile; rounds never overlap (one asked meanwhile runs after). */
@@ -530,12 +542,13 @@ class PaycoreServer implements ServerHandle {
         if (this.stopRequested) {
           return;
         }
-        if (this.now() >= at + LEASE_TTL_SECS) {
-          // Answered after the leases it took ran out: they may be another holder's by now.
+        if (this.now() >= at + this.fenceAfter) {
+          // Answered past its own fence deadline: its leases are about to run out, or did.
           this.fenceIfExpired();
           continue;
         }
         this.lastRenewedAt = at;
+        this.armFence();
         if (this.fenced) {
           this.fenced = false;
           this.log('leases renewed again: serving the leased stores');
@@ -547,15 +560,34 @@ class PaycoreServer implements ServerHandle {
         }
       } catch (error) {
         this.log(`lease round failed: ${errorText(error)}`);
-        this.fenceIfExpired();
       }
     } while (this.leaseAgain);
   }
 
+  /** (Re)arm the fence timer at the deadline of the last round that succeeded. */
+  private armFence(): void {
+    clearTimeout(this.fenceTimer);
+    this.fenceTimer = undefined;
+    const { lastRenewedAt } = this;
+    if (this.stopRequested || lastRenewedAt === undefined) {
+      return;
+    }
+    const waitMs = Math.max(0, (lastRenewedAt + this.fenceAfter - this.now()) * 1000);
+    this.fenceTimer = setTimeout(() => {
+      this.fenceTimer = undefined;
+      this.fenceIfExpired();
+      if (!this.fenced) {
+        // The clock is behind the timer: wait for the deadline again.
+        this.armFence();
+      }
+    }, waitMs);
+  }
+
   /**
-   * Stop every node when the last successful renewal is `LEASE_TTL_SECS` old:
-   * the leases may have moved to another holder, whose saves would fence ours
-   * only once a node of ours tries one.
+   * Stop every node once the last successful round is `fenceAfter` old: its
+   * leases run out a renewal interval and `FENCE_MARGIN_SECS` later and may
+   * then move to another holder, whose saves would fence ours only once a
+   * node of ours tries one.
    */
   private fenceIfExpired(): void {
     const { supervisor, lastRenewedAt } = this;
@@ -563,7 +595,7 @@ class PaycoreServer implements ServerHandle {
       this.stopRequested ||
       supervisor === undefined ||
       lastRenewedAt === undefined ||
-      this.now() < lastRenewedAt + LEASE_TTL_SECS
+      this.now() < lastRenewedAt + this.fenceAfter
     ) {
       return;
     }
@@ -600,6 +632,8 @@ class PaycoreServer implements ServerHandle {
       this.httpServer === undefined ? Promise.resolve() : closeServer(this.httpServer);
     clearInterval(this.leaseTimer);
     this.leaseTimer = undefined;
+    clearTimeout(this.fenceTimer);
+    this.fenceTimer = undefined;
     await this.unlistenStores?.().catch(() => undefined);
     // A round in progress would take leases again after the supervisor let them go.
     await this.leaseRound;

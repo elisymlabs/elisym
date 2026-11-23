@@ -1,3 +1,4 @@
+import { CATCH_UP_INTERVAL_MS } from '@merchant-node/constants';
 import type { LedgerState } from '@merchant-node/ledger';
 import { startStoreNode } from '@merchant-node/store-node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,7 +8,8 @@ import type { Db } from '../src/db/db';
 import {
   MAX_FAILED_STARTS,
   type StoreSupervisor,
-  randomFirstSweepDelayMs,
+  sweepPhaseDelayMs,
+  sweepPhaseMs,
 } from '../src/node/supervisor';
 import { LEASE_TTL_SECS, newHolderId } from '../src/state/leases';
 import { PgLedgerStore } from '../src/state/ledger-store';
@@ -152,19 +154,21 @@ describe('StoreSupervisor', () => {
     const db = await freshDb();
     const keys = vault();
     const world = new RelayWorld();
-    await seedStore(db, keys);
-    await seedStore(db, keys);
-    const delays = [0, 3_600_000];
-    const drawn: number[] = [];
+    const first = await seedStore(db, keys);
+    const second = await seedStore(db, keys);
+    const delays = new Map([
+      [first.owner.pubkey, 0],
+      [second.owner.pubkey, 3_600_000],
+    ]);
+    const askedFor: string[] = [];
     /** Fee config reads: the start checks', then the sweeps'. */
     let sweeps = 0;
     const holder = newHolderId();
     const { supervisor } = track(
       testSupervisor(db, keys, holder, world, chain({}).rpc, {
-        firstSweepDelayMs: () => {
-          const delay = delays[drawn.length] ?? 0;
-          drawn.push(delay);
-          return delay;
+        firstSweepDelayMs: (owner) => {
+          askedFor.push(owner);
+          return delays.get(owner) ?? 0;
         },
         treasuries: {
           refreshFor: async () => {
@@ -185,15 +189,103 @@ describe('StoreSupervisor', () => {
     });
     // The other one waits its hour.
     expect(sweeps).toBe(startReads + 1);
-    expect(drawn).toEqual(delays);
+    expect(askedFor.sort()).toEqual([...delays.keys()].sort());
   });
 
-  it('draws a default first-sweep delay over the sweep interval', () => {
-    const drawn = Array.from({ length: 200 }, () => randomFirstSweepDelayMs());
-    expect(drawn.every((delay) => Number.isInteger(delay) && delay >= 0 && delay < 60_000)).toBe(
-      true,
+  it("keeps each store's sweep phase across restarts: the first sweep lands on the same moment of the interval", () => {
+    const owner = key().pubkey;
+    const phase = sweepPhaseMs(owner);
+    expect(phase).toBe(sweepPhaseMs(owner));
+    // Restarts at any moment, minutes apart or a second apart, all wait for the same phase.
+    const base = 1_791_000_000_000;
+    for (const startMs of [base, base + 1_000, base + 17_345, base + 59_999, base + 3_600_123]) {
+      const delay = sweepPhaseDelayMs(owner, startMs);
+      expect(Number.isInteger(delay) && delay >= 0 && delay < CATCH_UP_INTERVAL_MS).toBe(true);
+      expect((startMs + delay) % CATCH_UP_INTERVAL_MS).toBe(phase);
+    }
+    // Started right at its phase: it sweeps at once.
+    expect(sweepPhaseDelayMs(owner, base - (base % CATCH_UP_INTERVAL_MS) + phase)).toBe(0);
+  });
+
+  it("by default waits for the store's phase before its first sweep", async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    // A store whose phase is well ahead of the clock now (more than the test lasts).
+    let owner = key();
+    while (
+      !(
+        sweepPhaseDelayMs(owner.pubkey, Date.now()) > 10_000 &&
+        sweepPhaseDelayMs(owner.pubkey, Date.now()) < 50_000
+      )
+    ) {
+      owner = key();
+    }
+    await seedStore(db, keys, { owner });
+    let feeReads = 0;
+    const holder = newHolderId();
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, {
+        // The helper sweeps at once: this supervisor keeps the default.
+        firstSweepDelayMs: undefined,
+        treasuries: {
+          refreshFor: async () => {
+            feeReads += 1;
+            return { kind: 'unreachable', problem: 'offline' };
+          },
+        },
+      }),
     );
-    expect(new Set(drawn).size).toBeGreaterThan(100);
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    // The start check's read only: no sweep yet.
+    expect(feeReads).toBe(1);
+  });
+
+  it('spreads distinct stores over the sweep interval', () => {
+    const phases = Array.from({ length: 300 }, () => sweepPhaseMs(key().pubkey));
+    expect(phases.every((phase) => phase >= 0 && phase < CATCH_UP_INTERVAL_MS)).toBe(true);
+    expect(new Set(phases).size).toBeGreaterThan(290);
+    // Every tenth of the interval holds some of them.
+    const tenths = new Set(phases.map((phase) => Math.floor((phase * 10) / CATCH_UP_INTERVAL_MS)));
+    expect(tenths.size).toBe(10);
+  });
+
+  it("skips the saves of quiet sweeps: a running store's ledger row stays put across two of them", async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, {
+        // No timed sweep in this test: they are run by hand.
+        firstSweepDelayMs: () => 3_600_000,
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    const runtime = supervisor.nodeOf(owner.pubkey)?.runtime;
+    if (runtime === undefined) {
+      throw new Error('the store is not running');
+    }
+    const rowVersion = async () => {
+      const [row] = await db.query<{ row_version: number }>(
+        'select row_version from ledgers where owner = $1',
+        [owner.pubkey],
+      );
+      return row?.row_version;
+    };
+    // The run's first sweep saves (no sweep saved yet this run).
+    await runtime.sweep(false, NOW);
+    const afterFirst = await rowVersion();
+    await runtime.sweep(false, NOW);
+    await runtime.sweep(false, NOW);
+    expect(await rowVersion()).toBe(afterFirst);
   });
 
   it('isolates stores: one whose save is refused halts, another keeps completing orders', async () => {

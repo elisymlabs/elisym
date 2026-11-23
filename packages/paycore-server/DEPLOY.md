@@ -27,7 +27,7 @@ Read once at startup (`src/config.ts`); a bad value stops the process before any
 | `PAYCORE_TEMPO_RPC_MAINNET` / `_DEVNET`                     | no       | The Tempo rail's RPC (Tempo mainnet on `mainnet`, Moderato on `devnet`).                                                                                                               |
 | `PAYCORE_EVM_RPC_{ETHEREUM,ARBITRUM,BASE}_{MAINNET,DEVNET}` | no       | USDC (EIP-3009) RPC per chain and network.                                                                                                                                             |
 
-Stores never name an RPC: every rail uses the operator's, each URL behind its own rate limiter (10 requests/s). The fee config reads have a limiter of their own on the same URL, so the stores' traffic never delays them past their 10 s deadline, and each store's first sweep starts at a random point of its first minute, so the stores' sweeps do not reach the RPC as one burst.
+Stores never name an RPC: every rail uses the operator's, each URL behind its own rate limiter (10 requests/s). The fee config reads have a limiter of their own on the fee config URL (a fixed 2 requests/s: a read is two calls, about once a minute per network), so the stores' traffic never delays them past their 10 s deadline. **A URL that is both a Solana rail's RPC and the fee config RPC can therefore receive up to 12 requests/s from one instance** (10 for the stores, 2 for the fee config), times the number of instances: size the RPC plan for that. Each store sweeps at its own fixed moment of every minute (derived from the owner key, the same across restarts), so the stores' sweeps do not reach the RPC as one burst and a store restarted often still sweeps every minute.
 
 ### What the boot checks
 
@@ -42,7 +42,7 @@ healthcheck:
       'CMD',
       'bun',
       '-e',
-      "fetch('http://127.0.0.1:8790/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+      "fetch('http://127.0.0.1:8790/healthz').then((response) => process.exit(response.ok ? 0 : 1), () => process.exit(1))",
     ]
   interval: 10s
   timeout: 5s
@@ -87,7 +87,13 @@ Measured with `scripts/load.ts` (fake chains, a 10 requests/s RPC URL, 200 store
 
 ## Losing the database
 
-The lease loop renews this instance's leases every 20 s; a lease runs out 60 s (`LEASE_TTL_SECS`) after its last renewal, and another instance may then take the store. When no renewal has succeeded for 60 s (the database down, or a renewal still hanging), the server **stops every store node itself** and logs `no lease renewed for <n> s: stopping every store until a renewal succeeds`: it does not wait for a node's next save to be refused, so a store is never served by two instances at once, even one that saves nothing for a while. The process keeps running (HTTP, `/healthz`) and keeps trying; on the first renewal that succeeds it logs `leases renewed again: serving the leased stores` and starts the stores it leases again from the database (a store whose lease ran out comes back with a new epoch). A renewal answered only after the leases it took ran out counts as failed. Nothing is lost while stopped: buyers' messages wait on the relays and the listener resumes from its saved point; payments are found by the next sweep.
+The lease loop renews this instance's leases every 20 s; a lease runs out 60 s (`LEASE_TTL_SECS`) after the start of the round that renewed it, and another instance may then take the store. When no renewal has succeeded for 35 s (the TTL, less one renewal interval, less a 5 s margin: the database down, or a renewal still hanging), the server **stops every store node itself**, on a timer at that deadline, and logs `no lease renewed for <n> s: stopping every store until a renewal succeeds`: it does not wait for a node's next save to be refused. The process keeps running (HTTP, `/healthz`) and keeps trying; on the first renewal that succeeds it logs `leases renewed again: serving the leased stores` and starts the stores it leases again from the database (a store whose lease ran out comes back with a new epoch). A renewal answered only after that deadline counts as failed. Nothing is lost while stopped: buyers' messages wait on the relays and the listener resumes from its saved point; payments are found by the next sweep.
+
+What this guarantees, and what it does not:
+
+- **Ledger saves are fenced by the row version**: once another instance took a store and saved, a save by the old holder is refused and its node halts. Two instances never both write a store's ledger.
+- The old holder stops its nodes 25 s before its leases run out by its own clock. If the two instances' clocks disagree by more than that margin (or the old process is frozen past it, e.g. a paused VM), both may serve a store for a short overlap: a buyer may get a reply twice, and a webhook may be sent twice. Keep the hosts' clocks in sync (NTP).
+- Webhook receivers must treat the webhook `eventId` as idempotent anyway (a retry after a timeout, a restore, or such an overlap sends it again) and check the payment on-chain.
 
 ## Backups
 
@@ -112,5 +118,6 @@ docker compose run --rm paycore-server stats
 Before an import:
 
 - **Stop the self-host node yourself and make sure it stays stopped** (disable its service, remove its container). `--node-stopped` is required and is the only real check: import also reads the home's `run.lock`, but only its age - a lock refreshed in the last 90 s refuses the import (so wait 90 s after the node stopped), and an old or missing lock proves nothing. A home **copied from another machine** says nothing about the node still running there: stop that one before copying.
+- **The container runs as uid 1000** (the image's `USER bun`): the mounted home must be readable by it. merchant-node writes `keys.json` (and often the ledger) with mode 0600 for its own user, so either mount a copy owned by 1000:1000, or run the import with `--user` set to the home's owner (`docker compose run --rm --user "$(stat -c %u:%g <home>)" paycore-server import ...`).
 - **`keys.json` must be written by merchant-node 0.5.0 or later**: import reads the owner's public key from it (the owner key itself is never read or decrypted), and an older file does not name it, so the import is refused. Rewrite it first on the self-host machine with a current node (`elisym-merchant encrypt-keys`).
 - The node's last `elisym-merchant setup` must be the one the relays serve: its ledger records the payout list the relays' newest 10133 carries (same date), else the import is refused.

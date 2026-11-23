@@ -115,6 +115,15 @@ async function settle() {
   }
 }
 
+/** Let real I/O run until `done` holds (bounded): a loaded machine may need more turns than `settle`. */
+async function settleUntil(done: () => boolean) {
+  for (let turn = 0; turn < 2000 && !done(); turn += 1) {
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+  }
+}
+
 async function setup(
   save: () => void | Promise<void> = () => undefined,
   extra: Partial<StoreNodeDeps> & { orders?: MerchantOrder[]; resumeAt?: number } = {},
@@ -227,6 +236,32 @@ describe('a store node', () => {
     await settle();
     expect(sweeps(delayed.events)).toBe(2);
     await delayed.node.stop();
+  });
+
+  it('skips the save of a sweep that changed nothing when quietSweepSaveSecs is given, and saves every sweep without it (the CLI)', async () => {
+    const sweepsAndSaves = (events: string[]) => ({
+      sweeps: events.filter((event) => event === 'sweep').length,
+      saves: events.filter((event) => event === 'save').length,
+    });
+    // The start's save, then the first sweep's: a sweep with no earlier sweep save always saves.
+    const quiet = await setup(() => undefined, { quietSweepSaveSecs: 600 });
+    await settle();
+    expect(sweepsAndSaves(quiet.events)).toEqual({ sweeps: 1, saves: 2 });
+    for (let interval = 0; interval < 2; interval += 1) {
+      vi.advanceTimersByTime(CATCH_UP_INTERVAL_MS);
+      await settle();
+    }
+    expect(sweepsAndSaves(quiet.events)).toEqual({ sweeps: 3, saves: 2 });
+    await quiet.node.stop();
+
+    const every = await setup();
+    await settle();
+    for (let interval = 0; interval < 2; interval += 1) {
+      vi.advanceTimersByTime(CATCH_UP_INTERVAL_MS);
+      await settle();
+    }
+    expect(sweepsAndSaves(every.events)).toEqual({ sweeps: 3, saves: 4 });
+    await every.node.stop();
   });
 
   it('stopped before its delayed first sweep, it never sweeps and leaves no timer', async () => {
@@ -447,9 +482,9 @@ describe('a store node', () => {
       },
       now: () => T0 + 60,
     });
-    await settle();
+    await settleUntil(() => sent.length > 0);
     expect(sent).toEqual(['https://hooks.example.com/paid']);
-    await settle();
+    await settleUntil(() => state.orders.k?.webhook?.state === 'sent');
     expect(state.orders.k?.webhook?.state).toBe('sent');
     expect(events.at(-1)).toBe('save');
     expect(events.indexOf('fetch')).toBeLessThan(events.lastIndexOf('save'));
@@ -567,7 +602,7 @@ describe('a store node', () => {
     expect(sent).toEqual([]);
     clock = T0 + 10;
     vi.advanceTimersByTime(WEBHOOK_TICK_MS);
-    await settle();
+    await settleUntil(() => sent.length > 0);
     expect(sent).toHaveLength(1);
   });
 

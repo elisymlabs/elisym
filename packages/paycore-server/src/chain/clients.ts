@@ -8,7 +8,8 @@
  * `FEE_CONFIG_READ_TIMEOUT_MS` from before the genesis and config reads take
  * their tokens, so a long queue would make a fee config read `unreachable`:
  * the fee config is read through `fee(url)`, a client with a bucket of its
- * own, so the stores' sweeps never hold it (load test, sub-plan step 20).
+ * own (`FEE_RPC_RATE_LIMIT`), so the stores' sweeps never hold it (load test,
+ * sub-plan step 20). A URL thus carries its own limit plus the fee bucket's.
  */
 import { type Eip1193Client, createJsonRpcClient } from '@elisym/pay-core/evm';
 import {
@@ -27,6 +28,12 @@ export interface RateLimit {
 }
 
 export const DEFAULT_RPC_RATE_LIMIT: RateLimit = { requestsPerSecond: 10 };
+/**
+ * The fee config bucket of a URL, whatever the URL's own limit: a read is two
+ * calls (genesis, config account) about once a minute per network, so 2/s
+ * lets a read through at once and adds little to what the URL carries.
+ */
+export const FEE_RPC_RATE_LIMIT: RateLimit = { requestsPerSecond: 2 };
 
 /**
  * A token bucket that queues: `take` resolves, in call order, once a token is
@@ -137,10 +144,10 @@ export class ChainClients {
   }
 
   /**
-   * The fee config's client of `url`: behind a bucket of its own (with the
-   * URL's limit), apart from the stores' traffic even when `url` is also a
-   * Solana rail's RPC. Its reads are about one per network a minute, inside
-   * `FEE_CONFIG_READ_TIMEOUT_MS`.
+   * The fee config's client of `url`: behind a bucket of its own
+   * (`FEE_RPC_RATE_LIMIT`), apart from the stores' traffic even when `url` is
+   * also a Solana rail's RPC. Its reads are about one per network a minute,
+   * inside `FEE_CONFIG_READ_TIMEOUT_MS`.
    */
   fee(url: string): Rpc<SolanaRpcApi> {
     return this.solanaClient(this.feeClients, url, this.feeBucketFor(url));
@@ -158,21 +165,22 @@ export class ChainClients {
 
   /** The limiter of `url` (made on first use). */
   bucketFor(url: string): TokenBucket {
-    return this.bucket(`rpc:${url}`, url);
+    return this.bucket(
+      `rpc:${url}`,
+      this.options.limits?.get(url) ?? this.options.defaultLimit ?? DEFAULT_RPC_RATE_LIMIT,
+    );
   }
 
-  /** The fee config's own limiter of `url` (made on first use). */
+  /** The fee config's own limiter of `url` (made on first use): `FEE_RPC_RATE_LIMIT`. */
   feeBucketFor(url: string): TokenBucket {
-    return this.bucket(`fee:${url}`, url);
+    return this.bucket(`fee:${url}`, FEE_RPC_RATE_LIMIT);
   }
 
-  private bucket(key: string, url: string): TokenBucket {
+  private bucket(key: string, limit: RateLimit): TokenBucket {
     const known = this.buckets.get(key);
     if (known !== undefined) {
       return known;
     }
-    const limit =
-      this.options.limits?.get(url) ?? this.options.defaultLimit ?? DEFAULT_RPC_RATE_LIMIT;
     const bucket = new TokenBucket(limit, this.options.clock);
     this.buckets.set(key, bucket);
     return bucket;

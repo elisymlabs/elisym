@@ -4,7 +4,7 @@ import type { Filter, NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { key } from '../../merchant-node/tests/fixtures';
-import { type NewestReadPool, newestOnRelays } from '../src/relay/newest';
+import { type NewestReadPool, newestOnRelays, newestOwnerEventDate } from '../src/relay/newest';
 
 const T = 1_791_000_000;
 
@@ -123,5 +123,54 @@ describe('newestOnRelays', () => {
     ).toBeUndefined();
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(hanging.state.destroyed).toBe(true);
+  });
+});
+
+describe('newestOwnerEventDate', () => {
+  it('dates a payout list by the owner alone, without asking for a store', async () => {
+    const owner = key();
+    const list = signed(owner, KIND_PAYTO, T, 'list');
+    const { pool, asked } = fakePool(async () => [list]);
+    const storesAsked: string[] = [];
+    const date = await newestOwnerEventDate(owner.pubkey, KIND_PAYTO, {
+      store: async (asker) => {
+        storesAsked.push(asker);
+        return undefined;
+      },
+      makePool: () => pool,
+    });
+    expect(date).toBe(T);
+    expect(storesAsked).toEqual([]);
+    expect(asked.map((entry) => entry.filter)).toEqual([
+      { kinds: [KIND_PAYTO], authors: [owner.pubkey] },
+    ]);
+  });
+
+  it("dates a store authorization at the owner's store address, and none for an owner with no store", async () => {
+    const owner = key();
+    const store = key();
+    const ours = signed(owner, KIND_STORE_AUTH, T, '', [['d', store.pubkey]]);
+    const { pool, asked } = fakePool(async () => [ours]);
+    const date = await newestOwnerEventDate(owner.pubkey, KIND_STORE_AUTH, {
+      store: async (asker) => (asker === owner.pubkey ? { storePubkey: store.pubkey } : undefined),
+      makePool: () => pool,
+      relays: ['wss://one.example.com'],
+    });
+    expect(date).toBe(T);
+    expect(asked).toEqual([
+      {
+        relays: ['wss://one.example.com'],
+        filter: { kinds: [KIND_STORE_AUTH], authors: [owner.pubkey], '#d': [store.pubkey] },
+      },
+    ]);
+
+    const none = fakePool(async () => [ours]);
+    expect(
+      await newestOwnerEventDate(key().pubkey, KIND_STORE_AUTH, {
+        store: async () => undefined,
+        makePool: () => none.pool,
+      }),
+    ).toBeUndefined();
+    expect(none.asked).toEqual([]);
   });
 });
