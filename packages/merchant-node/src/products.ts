@@ -33,7 +33,7 @@ export const DELIVERY_REMOVED =
   'delivery: removed in 0.9.0 - the node sends no delivery; act on the signed order.paid webhook (remove the key)';
 
 /** A product id is its directory name: a letter or digit, then letters, digits, dots, dashes, underscores. */
-const PRODUCT_D_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const PRODUCT_D_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 export const PRICE_RE = /^(0|[1-9]\d{0,8})(\.\d{1,6})?$/;
 

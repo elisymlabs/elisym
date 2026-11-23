@@ -129,6 +129,21 @@ function evmChainSchema() {
     .strict();
 }
 
+/**
+ * The payouts as the config holds them. Parsed through this schema, a list
+ * serializes (`JSON.stringify`) in one form - keys `caip19`, `address`,
+ * `signature?` - the string the ledger's `payto.payouts` compares.
+ */
+export const payoutsSchema = z
+  .array(
+    z.object({
+      caip19: z.string(),
+      address: z.string(),
+      signature: z.string().optional(),
+    }),
+  )
+  .min(1);
+
 const configSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
@@ -168,15 +183,7 @@ const configSchema = z
       )
       .min(1)
       .max(MAX_INBOX_RELAYS),
-    payouts: z
-      .array(
-        z.object({
-          caip19: z.string(),
-          address: z.string(),
-          signature: z.string().optional(),
-        }),
-      )
-      .min(1),
+    payouts: payoutsSchema,
     // Only `order.paid` for now: an `events` list can come later without a break.
     webhook: z
       .object({ url: z.string(), allowInsecure: z.boolean().optional() })

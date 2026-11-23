@@ -1,0 +1,222 @@
+import { randomBytes } from 'node:crypto';
+import { type Db, type Queryable, REQUESTS_CHANNEL } from '../db/db';
+
+/** How long an admin route waits for the holder to apply its request before answering 202. */
+export const REQUEST_WAIT_MS = 10_000;
+/** How often a waiting route reads its request again. */
+export const REQUEST_POLL_MS = 250;
+
+export type RequestKind = 'setup' | 'record_owner_event' | 'hand_answer' | 'restart' | 'suspend';
+export type RequestState = 'pending' | 'applied' | 'failed';
+
+/** An `admin_requests` row, its JSON parsed. */
+export interface AdminRequest {
+  id: string;
+  owner: string;
+  kind: RequestKind;
+  payload: unknown;
+  state: RequestState;
+  /** What the holder recorded when it applied or failed it; never a secret. */
+  result: unknown;
+  createdAt: number;
+  appliedAt: number | undefined;
+}
+
+interface RequestRow extends Record<string, unknown> {
+  id: string;
+  owner: string;
+  kind: RequestKind;
+  payload: string;
+  state: RequestState;
+  result: string | null;
+  created_at: number;
+  applied_at: number | null;
+}
+
+let sequence = 0;
+
+/**
+ * A request id that sorts in creation order within this process: the
+ * millisecond, a counter, then randomness. Rows of one second are drained in
+ * id order, so two requests of the same click stay in order.
+ */
+export function newRequestId(nowMs: number = Date.now()): string {
+  sequence = (sequence + 1) % 0x10000;
+  return `${nowMs.toString(16).padStart(12, '0')}${sequence.toString(16).padStart(4, '0')}${randomBytes(8).toString('hex')}`;
+}
+
+function rowToRequest(row: RequestRow): AdminRequest {
+  return {
+    id: row.id,
+    owner: row.owner,
+    kind: row.kind,
+    payload: JSON.parse(row.payload),
+    state: row.state,
+    result: row.result === null ? undefined : JSON.parse(row.result),
+    createdAt: row.created_at,
+    appliedAt: row.applied_at ?? undefined,
+  };
+}
+
+const COLUMNS = 'id, owner, kind, payload, state, result, created_at, applied_at';
+
+/**
+ * Queue a request in `tx` and notify the owner's holder: the notify is sent
+ * when `tx` commits (Postgres holds it until then), never for a rolled-back row.
+ * The payload is JSON text (a buyer-chosen order id may hold a NUL escape).
+ */
+export async function insertRequest(
+  tx: Queryable,
+  owner: string,
+  kind: RequestKind,
+  payload: unknown,
+  now: number,
+): Promise<string> {
+  const id = newRequestId();
+  await tx.query(
+    `insert into admin_requests (id, owner, kind, payload, created_at) values ($1, $2, $3, $4, $5)`,
+    [id, owner, kind, JSON.stringify(payload), now],
+  );
+  await tx.query('select pg_notify($1, $2)', [REQUESTS_CHANNEL, owner]);
+  return id;
+}
+
+/** Queue a request in its own transaction (insert + `pg_notify`); resolves to its id. */
+export function submitRequest(
+  db: Db,
+  owner: string,
+  kind: RequestKind,
+  payload: unknown,
+  now: number,
+): Promise<string> {
+  return db.transaction((tx) => insertRequest(tx, owner, kind, payload, now));
+}
+
+/** A request by id, only when it is `owner`'s. */
+export async function getRequest(
+  db: Queryable,
+  owner: string,
+  id: string,
+): Promise<AdminRequest | undefined> {
+  const [row] = await db.query<RequestRow>(
+    `select ${COLUMNS} from admin_requests where id = $1 and owner = $2`,
+    [id, owner],
+  );
+  return row === undefined ? undefined : rowToRequest(row);
+}
+
+function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
+
+/**
+ * The request once the holder applied or failed it, or `undefined` when it is
+ * still pending after `timeoutMs` (the route answers 202 with its id). Read
+ * again every `pollMs`: the holder marks a request in the ledger's save
+ * transaction, which notifies no one.
+ */
+export async function waitResult(
+  db: Queryable,
+  owner: string,
+  id: string,
+  timeoutMs: number,
+  options: { pollMs?: number; signal?: AbortSignal; clock?: () => number } = {},
+): Promise<AdminRequest | undefined> {
+  const clock = options.clock ?? Date.now;
+  const deadline = clock() + timeoutMs;
+  const pollMs = options.pollMs ?? REQUEST_POLL_MS;
+  for (;;) {
+    const request = await getRequest(db, owner, id);
+    if (request === undefined || request.state !== 'pending') {
+      return request;
+    }
+    const left = deadline - clock();
+    if (left <= 0 || options.signal?.aborted === true) {
+      return undefined;
+    }
+    await delay(Math.min(pollMs, left), options.signal);
+  }
+}
+
+/**
+ * Mark a request with no ledger change applied (or failed), after its effect.
+ * Its effect must be idempotent: a crash before this mark applies it again.
+ * False when it was no longer pending.
+ */
+export async function markRequest(
+  db: Queryable,
+  owner: string,
+  id: string,
+  state: 'applied' | 'failed',
+  now: number,
+  result?: unknown,
+): Promise<boolean> {
+  const rows = await db.query(
+    `update admin_requests set state = $3, applied_at = $4, result = $5
+     where id = $1 and owner = $2 and state = 'pending' returning 1`,
+    [id, owner, state, now, result === undefined ? null : JSON.stringify(result)],
+  );
+  return rows.length > 0;
+}
+
+/** The owner's pending requests, oldest first. */
+export async function pendingRequests(db: Queryable, owner: string): Promise<AdminRequest[]> {
+  const rows = await db.query<RequestRow>(
+    `select ${COLUMNS} from admin_requests where owner = $1 and state = 'pending'
+     order by created_at, id`,
+    [owner],
+  );
+  return rows.map(rowToRequest);
+}
+
+/** Drains running now, per owner: a second drain for the same owner waits for the first. */
+const DRAINS = new Map<string, Promise<unknown>>();
+
+/**
+ * The holder's side: hand each pending request of `owner` to `apply`, oldest
+ * first, one at a time. `apply` marks it (in the ledger save, `appliedRequest`,
+ * or with `markRequest`). A request another drain marked meanwhile is skipped.
+ * A throw stops the drain there, so later requests never overtake an earlier
+ * one, and is rethrown. Resolves to the ids handed to `apply`.
+ */
+export function drainRequests(
+  db: Queryable,
+  owner: string,
+  apply: (request: AdminRequest) => Promise<void>,
+): Promise<string[]> {
+  const previous = DRAINS.get(owner) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(() => drainOnce(db, owner, apply));
+  DRAINS.set(owner, run);
+  const cleanup = (): void => {
+    if (DRAINS.get(owner) === run) {
+      DRAINS.delete(owner);
+    }
+  };
+  run.then(cleanup, cleanup);
+  return run;
+}
+
+async function drainOnce(
+  db: Queryable,
+  owner: string,
+  apply: (request: AdminRequest) => Promise<void>,
+): Promise<string[]> {
+  const handed: string[] = [];
+  for (const request of await pendingRequests(db, owner)) {
+    const current = await getRequest(db, owner, request.id);
+    if (current?.state !== 'pending') {
+      continue;
+    }
+    handed.push(request.id);
+    await apply(current);
+  }
+  return handed;
+}
