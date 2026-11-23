@@ -17,6 +17,7 @@ import { EIP3009_START_CHECK_BACKOFF_SECS } from '@merchant-node/constants';
 import {
   type Eip3009Context,
   type Eip3009Gate,
+  type Eip3009StartCheck,
   chainNameOf,
   eip3009ContextsFor,
   startCheckEip3009,
@@ -37,8 +38,8 @@ export interface Eip3009BootOptions {
   /** Seconds. */
   now: () => number;
   check?: typeof startCheckEip3009;
-  /** Waits between transient checks (tests pass a fake). */
-  sleep?: (ms: number) => Promise<void>;
+  /** Waits between transient checks; resolves early once `signal` aborts (tests pass a fake). */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   backoffSecs?: readonly number[];
 }
 
@@ -52,6 +53,7 @@ export class Eip3009Boot {
   private readonly chains = new Map<string, ChainEntry>();
   private readonly retries: Promise<void>[] = [];
   private stopped = false;
+  private readonly stopping = new AbortController();
 
   constructor(private readonly options: Eip3009BootOptions) {
     for (const config of options.configs) {
@@ -110,9 +112,10 @@ export class Eip3009Boot {
     await Promise.all(this.retries);
   }
 
-  /** End the background retries (at shutdown). */
+  /** End the background retries (at shutdown), cutting a backoff wait short. */
   stop(): void {
     this.stopped = true;
+    this.stopping.abort();
   }
 
   /**
@@ -143,11 +146,11 @@ export class Eip3009Boot {
     const sleep = this.options.sleep ?? defaultSleep;
     const name = chainNameOf(entry.context);
     while (!this.stopped && entry.gate.kind === 'deferred') {
-      await sleep(this.backoffMs(entry.gate.attempts - 1));
+      await sleep(this.backoffMs(entry.gate.attempts - 1), this.stopping.signal);
       if (this.stopped) {
         return;
       }
-      const outcome = await check(entry.context, this.options.now());
+      const outcome = await checkOrTransient(check, entry.context, this.options.now());
       if (outcome.kind === 'transient') {
         this.setGate(entry, this.deferredGate(entry, outcome.problem));
         this.options.log(
@@ -202,8 +205,37 @@ function storeGate(gate: Eip3009Gate): Eip3009Gate {
   return gate.kind === 'deferred' ? { ...gate, nextAt: NEVER } : { ...gate };
 }
 
-function defaultSleep(ms: number): Promise<void> {
+/** A check that throws is a transient failure (logged as one), not a crash of the retry loop. */
+async function checkOrTransient(
+  check: typeof startCheckEip3009,
+  context: Eip3009Context,
+  now: number,
+): Promise<Eip3009StartCheck> {
+  try {
+    return await check(context, now);
+  } catch (error) {
+    return {
+      kind: 'transient',
+      problem: `the start check threw: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms).unref();
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    timer.unref();
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }

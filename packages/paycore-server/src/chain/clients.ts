@@ -1,8 +1,12 @@
 /**
  * The chain clients every store of the process shares: one per operator RPC
  * URL, each behind that URL's rate limiter. A limiter queues a request until
- * the RPC's budget allows it and never fails one: the client's own timeout
- * starts only once the request is sent.
+ * the RPC's budget allows it and never fails one. The EVM client's request
+ * timeout starts only once the request leaves the queue (the Solana transport
+ * has none of its own), but a caller's deadline set around the whole call
+ * covers the queue wait too: merchant-node `TreasuryReader.refresh` races
+ * `FEE_CONFIG_READ_TIMEOUT_MS` from before the genesis and config reads take
+ * their tokens, so a long queue makes a fee config read `unreachable`.
  */
 import { type Eip1193Client, createJsonRpcClient } from '@elisym/pay-core/evm';
 import {
@@ -82,6 +86,7 @@ export class TokenBucket {
       this.timer = undefined;
       this.release();
     }, waitMs);
+    this.timer.unref();
   }
 
   private release(): void {

@@ -45,7 +45,10 @@ function storeContexts(): Eip3009Context[][] {
   );
 }
 
-function boot(check: ReturnType<typeof scriptedCheck>['check'], logs: string[] = []) {
+function boot(
+  check: (context: Eip3009Context, now: number) => Promise<Eip3009StartCheck>,
+  logs: string[] = [],
+) {
   const sleeps: number[] = [];
   const instance = new Eip3009Boot({
     configs: [CONFIG],
@@ -241,5 +244,171 @@ describe('Eip3009Boot', () => {
     await instance.settled();
     expect(calls.filter((caip2) => caip2 === 'eip155:8453')).toHaveLength(1);
     expect(instance.gateOf('eip155:8453')).toMatchObject({ kind: 'deferred' });
+  });
+
+  it('stop cuts a backoff wait short, so settled resolves at shutdown', async () => {
+    const { check, calls } = scriptedCheck({
+      'eip155:8453': [{ kind: 'transient', problem: 'transport' }],
+    });
+    const instance = new Eip3009Boot({
+      configs: [CONFIG],
+      clientFor: fakeClient,
+      log: () => undefined,
+      now: () => NOW,
+      check,
+      backoffSecs: [900],
+    });
+    await instance.start();
+    instance.stop();
+    const first = await Promise.race([
+      instance.settled().then(() => 'settled'),
+      new Promise((resolve) => {
+        setImmediate(() => resolve('still waiting'));
+      }),
+    ]);
+    expect(first).toBe('settled');
+    expect(calls.filter((caip2) => caip2 === 'eip155:8453')).toHaveLength(1);
+  });
+
+  it('a check that throws on a retry is a logged transient, and the retries go on', async () => {
+    let baseCalls = 0;
+    const check = async (context: Eip3009Context): Promise<Eip3009StartCheck> => {
+      if (context.chain.caip2 !== 'eip155:8453') {
+        return { kind: 'passed' };
+      }
+      baseCalls += 1;
+      if (baseCalls === 1) {
+        return { kind: 'transient', problem: 'transport' };
+      }
+      if (baseCalls === 2) {
+        throw new Error('socket hang up');
+      }
+      return { kind: 'passed' };
+    };
+    const logs: string[] = [];
+    const { instance, sleeps } = boot(check, logs);
+    await instance.start();
+    await instance.settled();
+    expect(baseCalls).toBe(3);
+    expect(instance.gateOf('eip155:8453')).toEqual({ kind: 'verified' });
+    expect(sleeps).toEqual([60_000, 120_000]);
+    expect(
+      logs.some(
+        (line) => line.includes('not yet verified') && line.includes('threw: socket hang up'),
+      ),
+    ).toBe(true);
+  });
+
+  it('after the last configured delay the retries keep waiting that delay', async () => {
+    const { check } = scriptedCheck({
+      'eip155:8453': Array.from({ length: 8 }, () => ({
+        kind: 'transient' as const,
+        problem: 'transport',
+      })),
+    });
+    const nextAts: number[] = [];
+    const recording = async (context: Eip3009Context, now: number) => {
+      const gate = instance.gateOf(context.chain.caip2);
+      if (gate?.kind === 'deferred' && gate.attempts > 0) {
+        nextAts.push(gate.nextAt - now);
+      }
+      return await check(context);
+    };
+    const { instance, sleeps } = boot(recording);
+    await instance.start();
+    await instance.settled();
+    expect(sleeps).toEqual([60, 120, 300, 600, 900, 900, 900, 900].map((secs) => secs * 1000));
+    expect(nextAts).toEqual([60, 120, 300, 600, 900, 900, 900, 900]);
+    expect(instance.gateOf('eip155:8453')).toEqual({ kind: 'verified' });
+  });
+
+  it('a wrong answer at boot also ends the retries of a chain deferred before it', async () => {
+    const { check, calls } = scriptedCheck({
+      'eip155:42161': [{ kind: 'transient', problem: 'transport' }],
+      'eip155:8453': [{ kind: 'wrong', problem: 'eth_chainId names another chain' }],
+    });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const instance = new Eip3009Boot({
+      configs: [CONFIG],
+      clientFor: fakeClient,
+      log: () => undefined,
+      now: () => NOW,
+      check,
+      sleep: async () => {
+        await held;
+      },
+    });
+    expect(instance.chainIds).toEqual(['eip155:42161', 'eip155:8453']);
+    await expect(instance.start()).rejects.toThrow(/Base RPC failed the start check/);
+    release();
+    await instance.settled();
+    expect(calls).toEqual(['eip155:42161', 'eip155:8453']);
+    expect(instance.gateOf('eip155:42161')).toMatchObject({ kind: 'deferred' });
+  });
+
+  it('logs the warning of a check passed at boot', async () => {
+    const { check } = scriptedCheck({
+      'eip155:8453': [{ kind: 'passed', warning: 'the RPC answers slowly' }],
+    });
+    const logs: string[] = [];
+    const { instance } = boot(check, logs);
+    await instance.start();
+    expect(logs).toEqual(['warning: Base: the RPC answers slowly']);
+    expect(instance.gateOf('eip155:8453')).toEqual({ kind: 'verified' });
+  });
+
+  it('each registered context holds its own copy of the shared gate', async () => {
+    const { check } = scriptedCheck({
+      'eip155:8453': [{ kind: 'transient', problem: 'transport' }],
+    });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const instance = new Eip3009Boot({
+      configs: [CONFIG],
+      clientFor: fakeClient,
+      log: () => undefined,
+      now: () => NOW,
+      check,
+      sleep: async () => {
+        await held;
+      },
+    });
+    await instance.start();
+    const perStore = storeContexts();
+    for (const contexts of perStore) {
+      instance.register(contexts);
+    }
+    const [first, second] = perStore.map((contexts) =>
+      contexts.find((context) => context.chain.caip2 === 'eip155:8453'),
+    );
+    const [firstArbitrum, secondArbitrum] = perStore.map((contexts) =>
+      contexts.find((context) => context.chain.caip2 === 'eip155:42161'),
+    );
+    if (
+      first === undefined ||
+      second === undefined ||
+      firstArbitrum === undefined ||
+      secondArbitrum === undefined
+    ) {
+      throw new Error('Base and Arbitrum contexts expected for two stores');
+    }
+    const deferredCopy = first.gate;
+    expect(deferredCopy).not.toBe(second.gate);
+    expect(deferredCopy).not.toBe(instance.gateOf('eip155:8453'));
+    expect(firstArbitrum.gate).toEqual({ kind: 'verified' });
+    expect(firstArbitrum.gate).not.toBe(secondArbitrum.gate);
+    expect(firstArbitrum.gate).not.toBe(instance.gateOf('eip155:42161'));
+    release();
+    await instance.settled();
+    // The change replaced each copy; the object a store held before is untouched.
+    expect(deferredCopy).toMatchObject({ kind: 'deferred', attempts: 1 });
+    expect(first.gate).toEqual({ kind: 'verified' });
+    expect(first.gate).not.toBe(second.gate);
+    expect(first.gate).not.toBe(instance.gateOf('eip155:8453'));
   });
 });

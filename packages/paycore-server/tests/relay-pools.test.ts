@@ -338,4 +338,25 @@ describe('StorePools', () => {
     pools.open('a');
     expect(made).toEqual([0, 1]);
   });
+
+  it('closeAll destroys every pool once and forgets them', () => {
+    const destroyed: string[] = [];
+    let next = 0;
+    const names = ['a', 'b', 'c'];
+    const pools = new StorePools(() => {
+      const name = names[next] ?? 'extra';
+      next += 1;
+      return { destroy: () => destroyed.push(name) } as unknown as ReturnType<StorePools['open']>;
+    });
+    for (const name of names) {
+      pools.open(name);
+    }
+    pools.closeAll();
+    expect(destroyed).toEqual(['a', 'b', 'c']);
+    expect(pools.size).toBe(0);
+    pools.closeAll();
+    expect(destroyed).toEqual(['a', 'b', 'c']);
+    pools.open('a');
+    expect(pools.size).toBe(1);
+  });
 });

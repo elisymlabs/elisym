@@ -54,6 +54,117 @@ describe('TokenBucket', () => {
   it('refuses a rate that is not above 0', () => {
     expect(() => new TokenBucket({ requestsPerSecond: 0 })).toThrow(/above 0/);
   });
+
+  it('a new caller never jumps the queue, even when tokens refilled before the timer fired', async () => {
+    let clock = 0;
+    const bucket = new TokenBucket({ requestsPerSecond: 1, burst: 1 }, () => clock);
+    const done: string[] = [];
+    await bucket.take();
+    void bucket.take().then(() => {
+      done.push('waiting');
+    });
+    clock += 1000;
+    void bucket.take().then(() => {
+      done.push('late');
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toEqual([]);
+    expect(bucket.queued).toBe(2);
+    await vi.advanceTimersToNextTimerAsync();
+    expect(done).toEqual(['waiting']);
+    clock += 1000;
+    await vi.advanceTimersToNextTimerAsync();
+    expect(done).toEqual(['waiting', 'late']);
+  });
+
+  it('one refill releases every waiter it has tokens for, in one timer', async () => {
+    let clock = 0;
+    const bucket = new TokenBucket({ requestsPerSecond: 1, burst: 3 }, () => clock);
+    for (let index = 0; index < 3; index++) {
+      await bucket.take();
+    }
+    const done: number[] = [];
+    for (const index of [0, 1, 2, 3]) {
+      void bucket.take().then(() => {
+        done.push(index);
+      });
+    }
+    expect(vi.getTimerCount()).toBe(1);
+    clock += 3000;
+    await vi.advanceTimersToNextTimerAsync();
+    expect(done).toEqual([0, 1, 2]);
+    expect(bucket.queued).toBe(1);
+  });
+
+  it('keeps one timer however many callers wait', () => {
+    const bucket = new TokenBucket({ requestsPerSecond: 1, burst: 1 }, () => Date.now());
+    for (let index = 0; index < 5; index++) {
+      void bucket.take();
+    }
+    expect(bucket.queued).toBe(4);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('wakes once, when a whole token is free, at a rate that does not divide a second', async () => {
+    const bucket = new TokenBucket({ requestsPerSecond: 3, burst: 1 }, () => Date.now());
+    await bucket.take();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      let done = false;
+      void bucket.take().then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(333);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(setTimeoutSpy.mock.calls.map((call) => call[1])).toEqual([334]);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('a burst is at least one request, below one per second too', async () => {
+    for (const limit of [{ requestsPerSecond: 0.5 }, { requestsPerSecond: 5, burst: 0 }]) {
+      const bucket = new TokenBucket(limit, () => Date.now());
+      let done = false;
+      void bucket.take().then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(done).toBe(true);
+    }
+  });
+
+  it('a clock going backwards takes no token away', async () => {
+    let clock = 10_000;
+    const bucket = new TokenBucket({ requestsPerSecond: 1, burst: 2 }, () => clock);
+    await bucket.take();
+    clock -= 5000;
+    let done = false;
+    void bucket.take().then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(true);
+  });
+
+  it('does not keep the process alive while callers wait', () => {
+    vi.useRealTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const bucket = new TokenBucket({ requestsPerSecond: 1, burst: 1 });
+      void bucket.take();
+      void bucket.take();
+      const timer = setTimeoutSpy.mock.results.at(-1)?.value as
+        | { hasRef: () => boolean }
+        | undefined;
+      expect(timer?.hasRef()).toBe(false);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
 });
 
 describe('ChainClients', () => {

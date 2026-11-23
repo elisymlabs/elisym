@@ -165,6 +165,19 @@ describe('NetworkTreasuries', () => {
     expect(devnet.asked.genesis + mainnet.asked.genesis).toBe(2);
   });
 
+  it('a clock gone back before the last read does not reuse it', async () => {
+    const { rpc } = genesisRpc(DEVNET_GENESIS);
+    const { readConfig, reads } = countingConfig();
+    const treasuries = new NetworkTreasuries({ rpcs: { devnet: rpc }, readConfig });
+    await treasuries.boot(NOW);
+    await treasuries.refreshFor('devnet', emptyLedger(), NOW);
+    expect(reads.count).toBe(1);
+    const state = emptyLedger();
+    await treasuries.refreshFor('devnet', state, NOW - 1);
+    expect(reads.count).toBe(2);
+    expect(state.treasuries.devnet?.solana).toEqual({ [SOL_TREASURY]: NOW - 1 });
+  });
+
   it('refuses a network it has no config RPC for', async () => {
     const treasuries = new NetworkTreasuries({ rpcs: {} });
     await expect(treasuries.refreshFor('mainnet', emptyLedger(), NOW)).rejects.toThrow(
