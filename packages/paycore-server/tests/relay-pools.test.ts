@@ -322,7 +322,8 @@ describe('StorePools', () => {
       'the running store wrap',
     );
     expect(first.wraps).toEqual([]);
-    expect(relay.connections.size).toBe(1);
+    // The publishing client's socket closes on its own schedule; only the running store's stays.
+    await waitFor(() => relay.connections.size === 1, 'only the running store connected');
   });
 
   it('refuses a second pool for a running store and opens a fresh one after close', () => {
