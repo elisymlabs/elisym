@@ -40,6 +40,8 @@ create table store_config (
   webhook_url text,
   inbox_relays text[] not null,                 -- P7: from the allowlist; ACTIVE (the node listens and replies there)
   draft_inbox_relays text[],                    -- the merchant's edit; active once its 10050 went out (null: none)
+  previous_inbox_relays text[],                 -- the active list before the last switch: still read for TERMS_STAND_SECS
+  inbox_switched_at bigint,                     -- when inbox_relays last switched (seconds; null: never)
   revision bigint not null default 1,
   updated_at bigint not null
 );

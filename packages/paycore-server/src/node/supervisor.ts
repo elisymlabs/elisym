@@ -117,6 +117,8 @@ interface RunningStore {
   webhookStop: AbortController;
   unregister: () => void;
   generation: number;
+  /** When the inbox relays left at the last switch stop being read: the node is started again then. */
+  listenOnlyUntil?: number;
 }
 
 interface StoreRun {
@@ -470,6 +472,9 @@ export class StoreSupervisor {
         now: this.now,
         stop: (problem) => this.nodeStopped(run, generation, problem),
         haltOnSaveFailure: true,
+        ...(bundle.listenOnlyRelays.length === 0
+          ? {}
+          : { extraListenRelays: bundle.listenOnlyRelays }),
       });
       run.running = {
         node,
@@ -482,6 +487,9 @@ export class StoreSupervisor {
         webhookStop,
         unregister: checked.unregister,
         generation,
+        ...(bundle.listenOnlyUntil === undefined
+          ? {}
+          : { listenOnlyUntil: bundle.listenOnlyUntil }),
       };
     } catch (error) {
       unregister?.();
@@ -544,7 +552,8 @@ export class StoreSupervisor {
    * stopping the node; a store whose check still waits on its queue gets no
    * second one. Resolves once the checks queued here are done: a caller that
    * serves other stores does not await it (one store's long control task
-   * would hold the others).
+   * would hold the others). A node still reading the inbox relays it left
+   * past their window (`listenOnlyUntil`) is started again instead, without them.
    */
   async recheckOffers(): Promise<void> {
     if (this.closed) {
@@ -554,6 +563,21 @@ export class StoreSupervisor {
     const checks: Promise<void>[] = [];
     for (const run of this.runs.values()) {
       const { running } = run;
+      if (
+        !run.removed &&
+        running?.listenOnlyUntil !== undefined &&
+        now >= running.listenOnlyUntil
+      ) {
+        running.listenOnlyUntil = undefined;
+        checks.push(
+          this.applyControl(run.owner, async () => undefined).catch((error: unknown) => {
+            this.storeLog(run.owner)(
+              `the restart without the old inbox relays failed: ${errorText(error)}`,
+            );
+          }),
+        );
+        continue;
+      }
       if (
         run.removed ||
         running === undefined ||

@@ -70,6 +70,14 @@ export interface StoreBundle {
   /** The store has a webhook URL and no secret yet: the store runs `degraded`. */
   webhookSecretMissing: boolean;
   committed: CommittedOwnerEvent[];
+  /**
+   * The inbox relays the store moved away from less than `TERMS_STAND_SECS`
+   * ago, still in the allowlist and not active again: read for orders (buyers
+   * holding the old inbox list still send there), never written to.
+   */
+  listenOnlyRelays: string[];
+  /** When `listenOnlyRelays` stop being read (seconds); undefined when there are none. */
+  listenOnlyUntil?: number;
   /** The ledger as stored (not yet upgraded: the start checks do it). */
   handle: LedgerHandle;
 }
@@ -119,6 +127,8 @@ interface StoreRow extends Record<string, unknown> {
   evm_credit: 'fast' | 'safe' | null;
   webhook_url: string | null;
   inbox_relays: string[] | null;
+  previous_inbox_relays: string[] | null;
+  inbox_switched_at: number | null;
 }
 
 export interface ProductRow extends Record<string, unknown> {
@@ -231,6 +241,39 @@ export function allowedInboxRelays(
     throw new StartRefused(owner, 'no inbox relay');
   }
   return [...new Set(relays.map(spelled))];
+}
+
+/** The relays of `relays` in the allowlist, in its spelling: a relay outside it is never connected to (P7). */
+export function allowedOnly(relays: readonly string[], allowlist: readonly string[]): string[] {
+  return relays.flatMap((relay) => {
+    try {
+      return allowedInboxRelays('', [relay], allowlist);
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * The relays a store moved its inbox away from that its node still reads
+ * (listen only): for `TERMS_STAND_SECS` after the switch - an order sent
+ * there from an open checkout or a buyer holding the old 10050 can be paid
+ * that long - and only those still allowlisted and not active again.
+ */
+export function listenOnlyRelays(
+  previous: readonly string[] | null,
+  switchedAt: number | null,
+  active: readonly string[],
+  allowlist: readonly string[],
+  now: number,
+): { relays: string[]; until?: number } {
+  if (previous === null || switchedAt === null || now >= switchedAt + TERMS_STAND_SECS) {
+    return { relays: [] };
+  }
+  const relays = [
+    ...new Set(allowedOnly(previous, allowlist).filter((relay) => !active.includes(relay))),
+  ];
+  return relays.length === 0 ? { relays } : { relays, until: switchedAt + TERMS_STAND_SECS };
 }
 
 /**
@@ -354,7 +397,8 @@ export async function loadStoreBundle(
 ): Promise<StoreBundle> {
   const [row] = await db.query<StoreRow>(
     `select s.status, s.store_pubkey, k.store_key, k.webhook_secret, c.name, c.nip05, c.network,
-            c.evm_credit, c.webhook_url, c.inbox_relays
+            c.evm_credit, c.webhook_url, c.inbox_relays, c.previous_inbox_relays,
+            c.inbox_switched_at
      from stores s
      left join store_keys k on k.owner = s.owner
      left join store_config c on c.owner = s.owner
@@ -380,6 +424,13 @@ export async function loadStoreBundle(
     throw new StartRefused(owner, 'the sealed store key is not the store pubkey');
   }
   const inboxRelays = allowedInboxRelays(owner, row.inbox_relays, deps.inboxRelayAllowlist);
+  const listenOnly = listenOnlyRelays(
+    row.previous_inbox_relays,
+    row.inbox_switched_at,
+    inboxRelays,
+    deps.inboxRelayAllowlist,
+    deps.now(),
+  );
   const webhook =
     row.webhook_url === null
       ? undefined
@@ -412,6 +463,8 @@ export async function loadStoreBundle(
     ...(webhook === undefined ? {} : { webhook }),
     webhookSecretMissing: row.webhook_url !== null && webhook === undefined,
     committed,
+    listenOnlyRelays: listenOnly.relays,
+    ...(listenOnly.until === undefined ? {} : { listenOnlyUntil: listenOnly.until }),
     handle,
   };
 }

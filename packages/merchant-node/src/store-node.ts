@@ -62,6 +62,14 @@ export interface StoreNodeDeps {
    * writes the whole ledger again (the CLI, writing one file).
    */
   haltOnSaveFailure?: boolean;
+  /**
+   * Relays read for orders besides `config.inboxRelays`, never written to:
+   * the inbox a host just moved away from, where buyers holding its old
+   * inbox list (10050) still send. Replies and copies go to
+   * `config.inboxRelays` only. They count for the resume point like the
+   * inbox relays (a wrap there is never skipped on a restart).
+   */
+  extraListenRelays?: readonly string[];
 }
 
 /** One running store: its runtime and the handle that stops it. */
@@ -196,6 +204,7 @@ export async function startStoreNode(deps: StoreNodeDeps): Promise<StoreNode> {
     },
   });
   const startedAt = now();
+  const listenRelays = [...new Set([...config.inboxRelays, ...(deps.extraListenRelays ?? [])])];
 
   const listener = new InboxListener({
     pool,
@@ -218,7 +227,7 @@ export async function startStoreNode(deps: StoreNodeDeps): Promise<StoreNode> {
     }
     sweepQueued = true;
     // Every wrap received before now is already on the queue, ahead of this sweep.
-    const allLive = listener.allLive(config.inboxRelays);
+    const allLive = listener.allLive(listenRelays);
     const queuedAt = now();
     enqueue(async () => {
       sweepQueued = false;
@@ -236,10 +245,10 @@ export async function startStoreNode(deps: StoreNodeDeps): Promise<StoreNode> {
     halt();
     throw error;
   }
-  for (const relay of config.inboxRelays) {
+  for (const relay of listenRelays) {
     listener.listen(relay, resumeFrom);
   }
-  log(`store ${storePubkey} listening on ${config.inboxRelays.join(', ')}`);
+  log(`store ${storePubkey} listening on ${listenRelays.join(', ')}`);
   sweep();
   every(CATCH_UP_INTERVAL_MS, sweep);
   if (deps.webhook !== undefined && webhookOrigin !== undefined) {

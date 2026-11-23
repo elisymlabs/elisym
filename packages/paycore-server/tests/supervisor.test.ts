@@ -614,15 +614,24 @@ describe('StoreSupervisor', () => {
       webhookSecret: WEBHOOK_SECRET,
     });
     const requests: TransportRequest[] = [];
+    // Whether the node had halted (its inbox subscriptions closed) when its sends were aborted.
+    let haltedAtAbort: boolean | undefined;
     const slots = new WebhookSlots({
       deps: {
         resolve: async () => [{ address: '93.184.216.34', family: 4 }],
         transport: (request) => {
           requests.push(request);
           return new Promise((_resolve, reject) => {
-            request.signal.addEventListener('abort', () => reject(new Error('aborted')), {
-              once: true,
-            });
+            request.signal.addEventListener(
+              'abort',
+              () => {
+                haltedAtAbort = world.pools.every((pool) =>
+                  pool.live.every((subscription) => subscription.closed),
+                );
+                reject(new Error('aborted'));
+              },
+              { once: true },
+            );
           });
         },
       },
@@ -635,8 +644,13 @@ describe('StoreSupervisor', () => {
     await supervisor.idle();
     await waitFor(() => requests.length === 1, 'the webhook request');
     expect(requests[0]?.headers['user-agent']).toBe('paycore-server/test');
+    expect(world.pools.some((pool) => pool.live.some((subscription) => !subscription.closed))).toBe(
+      true,
+    );
     await supervisor.shutdown();
     expect(requests[0]?.signal.aborted).toBe(true);
+    // The order itself: the abort's outcome reaches the node only after it halted.
+    expect(haltedAtAbort).toBe(true);
     const entry = (await storedLedger(db, owner.pubkey)).orders[orderKey]?.webhook;
     expect(entry).toEqual(state.orders[orderKey]?.webhook);
     expect(world.pools.every((pool) => pool.destroyed)).toBe(true);

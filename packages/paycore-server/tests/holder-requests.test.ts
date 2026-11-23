@@ -5,7 +5,7 @@ import { OFFER_RELAYS } from '@merchant-node/constants';
 import { type LedgerState, emptyLedger } from '@merchant-node/ledger';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   OTHER_TREASURY,
   chain,
@@ -17,6 +17,7 @@ import { getRequest } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import type { KeyVault } from '../src/db/keys';
 import { HolderRequests, MAX_SETUP_ATTEMPTS } from '../src/node/holder-requests';
+import { TERMS_STAND_SECS } from '../src/node/load';
 import { RequestPump } from '../src/node/request-pump';
 import {
   DRIFT_CHECK_SECS,
@@ -33,6 +34,7 @@ import {
   NOW,
   PRODUCT,
   RELAY,
+  SILENT_EVM,
   SOLANA_RPC,
   SOLANA_PAYOUTS,
   TEMPO_RPC,
@@ -718,6 +720,37 @@ describe('stores drained on their own (M2)', () => {
     expect((await requestRow(db, stuck.owner.pubkey, stuckRestart)).state).toBe('applied');
   });
 
+  it('kickAll resolves once the drains started; its drained once they are done', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner: ownerKey } = await seedStore(db, keys);
+    const owner = ownerKey.pubkey;
+    const node = holderOn(db, keys, world);
+    await serveAll(node);
+    let release: (() => void) | undefined;
+    const held = node.supervisor.applyControl(
+      owner,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await waitFor(() => release !== undefined, 'the held queue');
+    const id = await submitRequest(db, owner, 'restart', {}, NOW);
+    const { drained } = await node.requests.kickAll();
+    let done = false;
+    void drained.then(() => {
+      done = true;
+    });
+    await settle(100);
+    expect(done).toBe(false);
+    release?.();
+    await held;
+    await drained;
+    expect((await requestRow(db, owner, id)).state).toBe('applied');
+  });
+
   it('folds a kick during a drain into one more drain right after it', async () => {
     const db = await freshDb();
     const keys = vault();
@@ -746,6 +779,74 @@ describe('stores drained on their own (M2)', () => {
     await drained;
     expect((await requestRow(db, owner, first)).state).toBe('applied');
     expect((await requestRow(db, owner, second)).state).toBe('applied');
+  });
+});
+
+describe('idle waits for everything ticks started (shutdown, step 19)', () => {
+  /** A holder over a supervisor serving nothing, whose offer checks finish when the test says. */
+  async function idleHolder() {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const checks: (() => void)[] = [];
+    const requests = new HolderRequests({
+      db,
+      supervisor: {
+        applyControl: (owner) => Promise.reject(new Error(`no store ${owner}`)),
+        leased: [],
+        recheckOffers: () =>
+          new Promise<void>((resolve) => {
+            checks.push(resolve);
+          }),
+      },
+      setup: testSetupDeps(db, keys, world),
+      log: () => undefined,
+    });
+    return { requests, checks };
+  }
+
+  async function idleSettles(requests: HolderRequests): Promise<() => boolean> {
+    let idle = false;
+    void requests.idle().then(() => {
+      idle = true;
+    });
+    await settle();
+    return () => idle;
+  }
+
+  it('waits for the offer checks of every tick, not only the last', async () => {
+    const { requests, checks } = await idleHolder();
+    await requests.tick();
+    await requests.tick();
+    expect(checks).toHaveLength(2);
+    checks[1]?.();
+    const idle = await idleSettles(requests);
+    expect(idle()).toBe(false);
+    checks[0]?.();
+    await settle();
+    expect(idle()).toBe(true);
+  });
+
+  it('waits for the suspension round of every tick, not only the last', async () => {
+    const { requests, checks } = await idleHolder();
+    let finishFirst: () => void = () => undefined;
+    vi.spyOn(requests.suspensions, 'tick')
+      .mockReturnValueOnce(
+        new Promise<string[]>((resolve) => {
+          finishFirst = () => resolve([]);
+        }),
+      )
+      .mockResolvedValueOnce([]);
+    await requests.tick();
+    await requests.tick();
+    for (const check of checks) {
+      check();
+    }
+    const idle = await idleSettles(requests);
+    expect(idle()).toBe(false);
+    finishFirst();
+    await settle();
+    expect(idle()).toBe(true);
   });
 });
 
@@ -1129,5 +1230,98 @@ describe('webhook secrets and rails (decisions)', () => {
     expect(alerts.map((alert) => alert.kind)).toEqual(['rail_unavailable']);
     expect(alerts[0]?.message).toContain('solana-devnet');
     expect(SOLANA_PAYOUTS[0]?.caip19).toBe(USDC_DEVNET_CAIP19);
+  });
+});
+
+describe('inbox relays left at a switch (P2)', () => {
+  const NEW_RELAY = 'wss://inbox-two.example.com';
+
+  /** A published store with a paid order, its draft inbox moved to NEW_RELAY, served with `allowlist`. */
+  async function movingStore() {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const owner = seed.owner.pubkey;
+    await db.query('update store_config set draft_inbox_relays = $2 where owner = $1', [
+      owner,
+      [NEW_RELAY],
+    ]);
+    const buyer = key();
+    const tx = signatureOf(7);
+    const wraps = orderWraps(seed.store, buyer, ORDER_ID, tx);
+    const { rpc } = chain({
+      [tx]: await landedPayment(requestFor(wraps.reference), { blockTime: NOW - 30 }),
+    });
+    const allowlist = [RELAY, NEW_RELAY];
+    const clock = { now: NOW };
+    const node = holderOn(
+      db,
+      keys,
+      world,
+      {
+        inboxRelayAllowlist: allowlist,
+        chains: { solana: () => rpc, tempo: () => SILENT_EVM, evm: () => SILENT_EVM },
+        now: () => clock.now,
+      },
+      { inboxRelayAllowlist: allowlist, now: () => clock.now },
+    );
+    await serveAll(node);
+    const published: { kind: number; relay: string }[] = [];
+    world.refuse = (event, relay) => {
+      published.push({ kind: event.kind, relay });
+      return false;
+    };
+    const id = await submitRequest(db, owner, 'setup', {}, NOW);
+    expect(await node.requests.drain(owner)).toEqual([id]);
+    await node.supervisor.idle();
+    return { db, world, owner, wraps, node, clock, published };
+  }
+
+  it('keeps reading the old inbox after a switch: an order sent there is taken and completed', async () => {
+    const { db, world, owner, wraps, published } = await movingStore();
+    const [config] = await db.query<{
+      inbox_relays: string[];
+      previous_inbox_relays: string[] | null;
+      inbox_switched_at: number | null;
+    }>(
+      'select inbox_relays, previous_inbox_relays, inbox_switched_at from store_config where owner = $1',
+      [owner],
+    );
+    expect(config).toEqual({
+      inbox_relays: [NEW_RELAY],
+      previous_inbox_relays: [RELAY],
+      inbox_switched_at: NOW,
+    });
+    expect(world.liveRelays()).toEqual([NEW_RELAY, RELAY].sort());
+
+    published.length = 0;
+    world.deliver(wraps.order, RELAY);
+    world.deliver(wraps.receipt, RELAY);
+    await waitFor(
+      async () => (await storedLedger(db, owner)).orders[wraps.key]?.deliveredAt !== undefined,
+      'the order sent to the old inbox completed',
+    );
+    // The replies go to the active inbox only.
+    await waitFor(() => published.some((entry) => entry.kind === 1059), 'the reply sent');
+    expect(new Set(published.map((entry) => entry.relay))).toEqual(new Set([NEW_RELAY]));
+  });
+
+  it('stops reading the old inbox once its window ran out', async () => {
+    const { world, owner, node, clock } = await movingStore();
+    const reading = node.supervisor.nodeOf(owner);
+    clock.now = NOW + TERMS_STAND_SECS - 1;
+    await node.supervisor.recheckOffers();
+    await node.supervisor.idle();
+    // Not restarted before the window ends.
+    expect(node.supervisor.nodeOf(owner)).toBe(reading);
+    expect(world.liveRelays()).toEqual([NEW_RELAY, RELAY].sort());
+
+    clock.now = NOW + TERMS_STAND_SECS;
+    await node.supervisor.recheckOffers();
+    await node.supervisor.idle();
+    expect(node.supervisor.running).toEqual([owner]);
+    expect(world.liveRelays()).toEqual([NEW_RELAY]);
   });
 });

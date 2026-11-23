@@ -25,6 +25,8 @@ export class RequestPump {
   private timer: ReturnType<typeof setInterval> | undefined;
   private unlisten: (() => Promise<void>) | undefined;
   private running: Promise<void> | undefined;
+  /** The drains rounds started and that still run: `stop` waits for them. */
+  private readonly drains = new Set<Promise<void>>();
   private again = false;
   private tickAgain = false;
   private stopped = false;
@@ -43,7 +45,11 @@ export class RequestPump {
     this.kick(true);
   }
 
-  /** Stop listening and polling; resolves once the round in progress ends. */
+  /**
+   * Stop listening and polling; resolves once the round in progress and the
+   * drains the rounds started are done. The periodic work a tick started
+   * (suspension rounds, offer checks) is the holder's: `holder.idle()`.
+   */
   async stop(): Promise<void> {
     this.stopped = true;
     clearInterval(this.timer);
@@ -51,6 +57,7 @@ export class RequestPump {
     await this.unlisten?.();
     this.unlisten = undefined;
     await this.running;
+    await Promise.all(this.drains);
   }
 
   /** Run one round now (or right after the one in progress); `tick` also runs the suspension clocks. */
@@ -81,7 +88,11 @@ export class RequestPump {
   private async round(tick: boolean): Promise<void> {
     const log = this.deps.log ?? ((message: string) => console.error(message));
     try {
-      await this.deps.holder.kickAll();
+      const { drained } = await this.deps.holder.kickAll();
+      this.drains.add(drained);
+      void drained.then(() => {
+        this.drains.delete(drained);
+      });
     } catch (error) {
       log(`request round failed: ${error instanceof Error ? error.message : 'unknown'}`);
     }

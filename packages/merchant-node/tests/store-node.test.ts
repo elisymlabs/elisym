@@ -31,6 +31,7 @@ const CONFIG: MerchantConfig = {
 };
 
 interface Subscription {
+  relays: string[];
   filter: Filter;
   params: Parameters<ListenerPool['subscribe']>[2];
   closed: boolean;
@@ -44,22 +45,30 @@ interface Subscription {
 class FakePool implements ListenerPool, PublishPool {
   live: Subscription[] = [];
   published: NostrEvent[] = [];
+  /** The relay of each publish, in order. */
+  publishedTo: string[] = [];
   takes: (event: NostrEvent) => boolean = () => true;
+  /** Relays whose stored wraps read through at once (an empty backfill page); the others never answer. */
+  readsThrough = new Set<string>();
 
-  subscribe(_relays: string[], filter: Filter, params: Subscription['params']) {
-    const entry: Subscription = { filter, params, closed: false };
+  subscribe(relays: string[], filter: Filter, params: Subscription['params']) {
+    const entry: Subscription = { relays, filter, params, closed: false };
     this.live.push(entry);
     return { close: () => (entry.closed = true) };
   }
 
-  subscribeEose() {
+  subscribeEose(relays: string[], _filter: Filter, params: Subscription['params']) {
+    if (relays.every((relay) => this.readsThrough.has(relay))) {
+      params.onclose?.(['closed automatically on eose']);
+    }
     return { close: () => undefined };
   }
 
-  ensureRelay(): Promise<PublishRelay> {
+  ensureRelay(url: string): Promise<PublishRelay> {
     return Promise.resolve({
       publish: (event: NostrEvent) => {
         this.published.push(event);
+        this.publishedTo.push(url);
         return this.takes(event)
           ? Promise.resolve('')
           : Promise.reject(new Error('blocked: rate limited'));
@@ -272,6 +281,35 @@ describe('a store node', () => {
     const later = await setup(undefined, { resumeAt: T0 + 100 });
     expect(later.state.resumeAt).toBe(T0);
     expect(later.pool.live[0]?.filter.since).toBe(readSince(T0));
+  });
+
+  it('moves its resume point only once the listen-only relays read through too', async () => {
+    const OLD = 'wss://old-inbox.example.com';
+    let clock = T0;
+    const { pool, state, node } = await setup(undefined, {
+      extraListenRelays: [OLD],
+      now: () => clock,
+    });
+    pool.readsThrough.add(RELAY);
+    for (const subscription of pool.live) {
+      subscription.params.oneose?.();
+    }
+    vi.advanceTimersByTime(0);
+    await settle();
+    clock = T0 + 100;
+    vi.advanceTimersByTime(CATCH_UP_INTERVAL_MS);
+    await settle();
+    // The inbox relay read through; the old one did not: a restart must read it from T0.
+    expect(state.resumeAt).toBe(T0);
+    pool.readsThrough.add(OLD);
+    pool.live.find((subscription) => subscription.relays.includes(OLD))?.params.oneose?.();
+    vi.advanceTimersByTime(0);
+    await settle();
+    clock = T0 + 200;
+    vi.advanceTimersByTime(CATCH_UP_INTERVAL_MS);
+    await settle();
+    expect(state.resumeAt).toBe(T0 + 200);
+    await node.stop();
   });
 
   it('drops a task queued before stop that had not started', async () => {
@@ -577,8 +615,8 @@ async function shop(options: ShopOptions = {}) {
     orderId: ORDER_ID,
     payment: { medium: 'solana-devnet', reference, tx: SIG },
   });
-  const send = (event: NostrEvent) => {
-    pool.live[0]?.params.onevent(event);
+  const send = (event: NostrEvent, relay = RELAY) => {
+    pool.live.find((subscription) => subscription.relays.includes(relay))?.params.onevent(event);
   };
   return {
     ...setup,
@@ -627,6 +665,24 @@ describe('a store node end to end', () => {
       expect(snapshot.orders[store.orderKey]?.webhook?.state).toBe('pending');
     }
     await store.node.stop();
+  });
+
+  it('takes an order sent to a listen-only relay and replies on the inbox relays only', async () => {
+    const OLD = 'wss://old-inbox.example.com';
+    const store = await shop({
+      transactions: async (reference) => ({ [SIG]: await landedPayment(requestFor(reference)) }),
+      extra: { extraListenRelays: [OLD, RELAY] },
+    });
+    await settle();
+    expect(store.pool.live.map((subscription) => subscription.relays)).toEqual([[RELAY], [OLD]]);
+    store.send(store.order, OLD);
+    store.send(store.receipt, OLD);
+    await settle();
+    expect(store.state.orders[store.orderKey]?.deliveredAt).toBeDefined();
+    expect(store.pool.publishedTo.length).toBeGreaterThan(0);
+    expect(new Set(store.pool.publishedTo)).toEqual(new Set([RELAY]));
+    await store.node.stop();
+    expect(store.pool.live.every((subscription) => subscription.closed)).toBe(true);
   });
 
   it('hands on a wrap read twice (live and backfill) only once', async () => {

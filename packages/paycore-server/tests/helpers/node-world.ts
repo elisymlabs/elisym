@@ -28,6 +28,7 @@ function matches(filter: Filter, event: NostrEvent): boolean {
 }
 
 interface Subscription {
+  relays: string[];
   filter: Filter;
   params: Parameters<ListenerPool['subscribe']>[2];
   closed: boolean;
@@ -65,11 +66,26 @@ export class RelayWorld {
     }
   }
 
-  /** Hand `wrap` to every live subscription of an open pool that waits for its recipient. */
-  deliver(wrap: NostrEvent): void {
+  /**
+   * Hand `wrap` to every live subscription of an open pool that waits for its
+   * recipient (on `relay` only, when named).
+   */
+  deliver(wrap: NostrEvent, relay?: string): void {
     for (const pool of this.pools) {
-      pool.deliver(wrap);
+      pool.deliver(wrap, relay);
     }
+  }
+
+  /** The relays some open pool holds a live subscription on, sorted. */
+  liveRelays(): string[] {
+    const relays = this.pools.flatMap((pool) =>
+      pool.destroyed
+        ? []
+        : pool.live
+            .filter((subscription) => !subscription.closed)
+            .flatMap((subscription) => subscription.relays),
+    );
+    return [...new Set(relays)].sort();
   }
 }
 
@@ -86,8 +102,8 @@ export class WorldPool implements ListenerPool, PublishPool, QueryPool {
     return this.world.events.filter((event) => matches(filter, event));
   }
 
-  subscribe(_relays: string[], filter: Filter, params: Subscription['params']) {
-    const entry: Subscription = { filter, params, closed: false };
+  subscribe(relays: string[], filter: Filter, params: Subscription['params']) {
+    const entry: Subscription = { relays, filter, params, closed: false };
     this.live.push(entry);
     return {
       close: () => {
@@ -114,12 +130,16 @@ export class WorldPool implements ListenerPool, PublishPool, QueryPool {
     });
   }
 
-  deliver(wrap: NostrEvent): void {
+  deliver(wrap: NostrEvent, relay?: string): void {
     if (this.destroyed) {
       return;
     }
     for (const subscription of this.live) {
-      if (!subscription.closed && matches(subscription.filter, wrap)) {
+      if (
+        !subscription.closed &&
+        (relay === undefined || subscription.relays.includes(relay)) &&
+        matches(subscription.filter, wrap)
+      ) {
         subscription.params.onevent(wrap);
       }
     }

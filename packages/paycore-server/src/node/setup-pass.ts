@@ -30,7 +30,13 @@ import type { StorePools } from '../relay/pools';
 import type { StoreStatus } from '../state/leases';
 import type { LedgerHandle } from '../state/ledger-store';
 import { canonicalPayouts } from '../state/stores';
-import { StartRefused, allowedInboxRelays, readProducts } from './load';
+import {
+  StartRefused,
+  TERMS_STAND_SECS,
+  allowedInboxRelays,
+  allowedOnly,
+  readProducts,
+} from './load';
 
 export interface SetupPassDeps {
   db: Db;
@@ -96,6 +102,8 @@ interface StoreRow extends Record<string, unknown> {
   network: Network | null;
   inbox_relays: string[] | null;
   draft_inbox_relays: string[] | null;
+  previous_inbox_relays: string[] | null;
+  inbox_switched_at: number | null;
 }
 
 interface CommittedRow extends Record<string, unknown> {
@@ -153,7 +161,7 @@ export async function runStoreSetupPass(
   const log = deps.log ?? ((message: string) => console.error(message));
   const [row] = await db.query<StoreRow>(
     `select s.status, s.store_pubkey, k.store_key, c.name, c.nip05, c.network, c.inbox_relays,
-            c.draft_inbox_relays
+            c.draft_inbox_relays, c.previous_inbox_relays, c.inbox_switched_at
      from stores s
      left join store_keys k on k.owner = s.owner
      left join store_config c on c.owner = s.owner
@@ -286,16 +294,19 @@ export async function runStoreSetupPass(
   const applied =
     payoutListPending || (switching && !inboxRelaysSwitched) ? undefined : options.appliedRequest;
   // `recorded` commits with the terms it stands for, or not at all; the node
-  // listens on the new inbox relays from the save that says buyers read them.
+  // listens on the new inbox relays from the save that says buyers read them,
+  // and still reads the ones it leaves for `TERMS_STAND_SECS` (`loadStoreBundle`).
   await handle.save(state, {
     ...(applied === undefined ? {} : { appliedRequest: applied }),
     alongside: async (tx) => {
       await markWentOut(tx, owner, savedAt, outEvents);
       if (inboxRelaysSwitched) {
-        await tx.query('update store_config set inbox_relays = $2 where owner = $1', [
-          owner,
-          inboxRelays,
-        ]);
+        await tx.query(
+          `update store_config set inbox_relays = $2, previous_inbox_relays = $3,
+             inbox_switched_at = $4
+           where owner = $1`,
+          [owner, inboxRelays, leftRelays(row, inboxRelays, savedAt), savedAt],
+        );
       }
     },
   });
@@ -315,15 +326,21 @@ export async function runStoreSetupPass(
   };
 }
 
-/** The relays of `relays` in the allowlist, in its spelling: a relay outside it is never connected to (P7). */
-function allowedOnly(relays: readonly string[], allowlist: readonly string[]): string[] {
-  return relays.flatMap((relay) => {
-    try {
-      return allowedInboxRelays('', [relay], allowlist);
-    } catch {
-      return [];
-    }
-  });
+/**
+ * The relays read listen-only after a switch to `next`: the active list it
+ * leaves, and those an earlier switch left whose window still runs (buyers
+ * may hold either list). Filtered by the allowlist when read, not here.
+ */
+function leftRelays(row: StoreRow, next: readonly string[], now: number): string[] {
+  const stillRead =
+    row.previous_inbox_relays !== null &&
+    row.inbox_switched_at !== null &&
+    now < row.inbox_switched_at + TERMS_STAND_SECS
+      ? row.previous_inbox_relays
+      : [];
+  return [...new Set([...(row.inbox_relays ?? []), ...stillRead])].filter(
+    (relay) => !next.includes(relay),
+  );
 }
 
 /** Whether the draft names exactly the active relays (the stored list, every one allowed). */

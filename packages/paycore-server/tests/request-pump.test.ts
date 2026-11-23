@@ -11,6 +11,8 @@ function fakes() {
   const listeners = new Map<string, () => void>();
   const calls = { drains: 0, ticks: 0, unlistened: false };
   let release: (() => void) | undefined;
+  /** What each round's drains are (default: done at once). */
+  let drained: Promise<void> = Promise.resolve();
   const db = {
     listen: async (channel: string, onNotify: () => void) => {
       listeners.set(channel, onNotify);
@@ -22,12 +24,12 @@ function fakes() {
   const holder = {
     kickAll: async () => {
       calls.drains += 1;
-      if (release === undefined) {
-        return;
+      if (release !== undefined) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
       }
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
+      return { drained };
     },
     tick: async () => {
       calls.ticks += 1;
@@ -46,6 +48,14 @@ function fakes() {
       const done = release;
       release = undefined;
       done?.();
+    },
+    /** The drains the next rounds start run until the returned function is called. */
+    slowDrains: () => {
+      let finish: () => void = () => undefined;
+      drained = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return finish;
     },
   };
 }
@@ -113,7 +123,7 @@ describe('RequestPump', () => {
             fail = false;
             throw new Error('db down');
           }
-          await world.holder.kickAll();
+          return world.holder.kickAll();
         },
         tick: world.holder.tick,
       },
@@ -123,5 +133,24 @@ describe('RequestPump', () => {
     await pump.kick(false);
     expect(logs).toEqual(['request round failed: db down']);
     expect(world.calls).toMatchObject({ drains: 1, ticks: 1 });
+  });
+
+  it('resolves stop only once the drains its rounds started are done', async () => {
+    const world = fakes();
+    const finish = world.slowDrains();
+    const pump = new RequestPump({ db: world.db, holder: world.holder, log: () => undefined });
+    await pump.start();
+    await settle();
+    // The round is over: it only started the drains.
+    expect(world.calls.drains).toBe(1);
+    let stopped = false;
+    void pump.stop().then(() => {
+      stopped = true;
+    });
+    await settle();
+    expect(stopped).toBe(false);
+    finish();
+    await settle();
+    expect(stopped).toBe(true);
   });
 });

@@ -5,7 +5,7 @@ import { OTHER_TREASURY } from '../../merchant-node/tests/fixtures';
 import { getRequest } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import type { KeyVault } from '../src/db/keys';
-import { loadStoreBundle } from '../src/node/load';
+import { TERMS_STAND_SECS, loadStoreBundle } from '../src/node/load';
 import { SetupPassFailed, runStoreSetupPass } from '../src/node/setup-pass';
 import { OwnerEventPublisher } from '../src/publisher';
 import { newHolderId } from '../src/state/leases';
@@ -300,6 +300,66 @@ describe('the setup pass: inbox relays (draft vs active)', () => {
       expect(await activeRelays(store.db, store.owner)).toEqual([RELAY]);
       expect(await listening(store)).toEqual([RELAY]);
     }
+  });
+
+  it('records the relays it leaves and when, kept through a second move within their window', async () => {
+    const THIRD = 'wss://inbox-three.example.com';
+    const store = await moved();
+    let clock = NOW;
+    const deps = testSetupDeps(store.db, store.keys, store.world, {
+      inboxRelayAllowlist: [...ALLOWLIST, THIRD],
+      now: () => clock,
+    });
+    const left = async () =>
+      (
+        await store.db.query<{ previous: string[] | null; at: number | null }>(
+          `select previous_inbox_relays as previous, inbox_switched_at as at
+           from store_config where owner = $1`,
+          [store.owner],
+        )
+      )[0];
+    const moveTo = async (relays: string[]) => {
+      await store.db.query('update store_config set draft_inbox_relays = $2 where owner = $1', [
+        store.owner,
+        relays,
+      ]);
+      const result = await runStoreSetupPass(deps, store.owner, await store.open());
+      expect(result).toMatchObject({ kind: 'done', inboxRelaysSwitched: true });
+    };
+    expect(await left()).toEqual({ previous: null, at: null });
+    await runStoreSetupPass(deps, store.owner, await store.open());
+    expect(await left()).toEqual({ previous: [RELAY], at: NOW });
+    // A pass with nothing to switch leaves them alone.
+    clock = NOW + 5;
+    await runStoreSetupPass(deps, store.owner, await store.open());
+    expect(await left()).toEqual({ previous: [RELAY], at: NOW });
+    // A second move within the window: buyers may hold either earlier list.
+    clock = NOW + 10;
+    await moveTo([THIRD]);
+    expect(await left()).toEqual({ previous: [NEW_RELAY, RELAY], at: NOW + 10 });
+    // Back to a relay still read: it is active again, not left.
+    clock = NOW + 20;
+    await moveTo([RELAY]);
+    expect(await left()).toEqual({ previous: [THIRD, NEW_RELAY], at: NOW + 20 });
+    // Past the window the earlier lists are dropped.
+    clock = NOW + 20 + TERMS_STAND_SECS;
+    await moveTo([NEW_RELAY]);
+    expect(await left()).toEqual({ previous: [RELAY], at: NOW + 20 + TERMS_STAND_SECS });
+  });
+
+  it('switches when the active list holds a relay the allowlist dropped since', async () => {
+    const store = await published();
+    const GONE = 'wss://gone.example.com';
+    await store.db.query(
+      'update store_config set inbox_relays = $2, draft_inbox_relays = $3 where owner = $1',
+      [store.owner, [RELAY, GONE], [RELAY]],
+    );
+    const deps = testSetupDeps(store.db, store.keys, store.world, {
+      inboxRelayAllowlist: [RELAY],
+    });
+    const result = await runStoreSetupPass(deps, store.owner, await store.open());
+    expect(result).toMatchObject({ kind: 'done', inboxRelaysSwitched: true });
+    expect(await activeRelays(store.db, store.owner)).toEqual([RELAY]);
   });
 
   it('keeps the old relays when nothing went out', async () => {

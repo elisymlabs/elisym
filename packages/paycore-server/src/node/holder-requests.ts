@@ -129,10 +129,8 @@ export class HolderRequests {
   private readonly drains = new Map<string, Promise<unknown>>();
   /** Per store: the drains the pump kicked, each store on its own (one never waits for another). */
   private readonly kicks = new Map<string, Kick>();
-  /** The suspension round in progress, if any: a tick meanwhile does not start another. */
-  private suspending: Promise<void> | undefined;
-  /** The periodic offer checks started by the last tick. */
-  private rechecking: Promise<void> | undefined;
+  /** The suspension rounds and offer checks ticks started and that still run (`idle` waits for all). */
+  private readonly ticking = new Set<Promise<void>>();
   /** Failed attempts of setup-kind requests and when the next is due, by request id (this process only). */
   private readonly attempts = new Map<string, { count: number; nextAt: number }>();
 
@@ -155,26 +153,14 @@ export class HolderRequests {
   tick(): Promise<void> {
     // Suspensions skips a store whose earlier round still runs, so a hung store
     // never holds another store's round.
-    const round = this.background('suspension round', this.suspensions.tick());
-    this.suspending = round;
-    void round.then(() => {
-      if (this.suspending === round) {
-        this.suspending = undefined;
-      }
-    });
-    const checks = this.background('offer checks', this.deps.supervisor.recheckOffers());
-    this.rechecking = checks;
-    void checks.then(() => {
-      if (this.rechecking === checks) {
-        this.rechecking = undefined;
-      }
-    });
+    this.background('suspension round', this.suspensions.tick());
+    this.background('offer checks', this.deps.supervisor.recheckOffers());
     return Promise.resolve();
   }
 
-  /** `work` settled, its error logged: what a tick starts and does not await. */
-  private background(what: string, work: Promise<unknown>): Promise<void> {
-    return work.then(
+  /** Track `work` until it settles, its error logged: what a tick starts and does not await. */
+  private background(what: string, work: Promise<unknown>): void {
+    const tracked = work.then(
       () => undefined,
       (error: unknown) => {
         (this.deps.log ?? ((line: string) => console.error(line)))(
@@ -182,15 +168,21 @@ export class HolderRequests {
         );
       },
     );
+    this.ticking.add(tracked);
+    void tracked.then(() => {
+      this.ticking.delete(tracked);
+    });
   }
 
   /**
    * Start a drain of every store this holder serves that has work queued, each
    * on its own (`kick`); resolves once they are started, not done, so a store
-   * whose control task runs long never holds another's requests.
+   * whose control task runs long never holds another's requests. `drained`
+   * settles once the drains started here are done (it never rejects).
    */
-  async kickAll(): Promise<void> {
-    await this.kickOwners();
+  async kickAll(): Promise<{ drained: Promise<void> }> {
+    const kicks = await this.kickOwners();
+    return { drained: Promise.all(kicks).then(() => undefined) };
   }
 
   /** Drain every store this holder serves that has work queued, and wait for them. Errors are logged per store. */
@@ -198,14 +190,13 @@ export class HolderRequests {
     await Promise.all(await this.kickOwners());
   }
 
-  /** Resolves once the kicked drains, the suspension round and the offer checks in progress are done (tests, shutdown). */
+  /**
+   * Resolves once every kicked drain, suspension round and offer check in
+   * progress is done, including any started while it waits (tests, shutdown).
+   */
   async idle(): Promise<void> {
     for (;;) {
-      const waits = [
-        ...[...this.kicks.values()].map((kick) => kick.done),
-        ...(this.suspending === undefined ? [] : [this.suspending]),
-        ...(this.rechecking === undefined ? [] : [this.rechecking]),
-      ];
+      const waits = [...[...this.kicks.values()].map((kick) => kick.done), ...this.ticking];
       if (waits.length === 0) {
         return;
       }

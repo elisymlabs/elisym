@@ -5,6 +5,7 @@ import { getRequest } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import { HolderRequests } from '../src/node/holder-requests';
 import { TERMS_STAND_SECS } from '../src/node/load';
+import { RequestPump } from '../src/node/request-pump';
 import type { StoreSupervisor } from '../src/node/supervisor';
 import { Suspensions, outboxEmpty } from '../src/node/suspension';
 import { newHolderId } from '../src/state/leases';
@@ -324,5 +325,94 @@ describe('suspension (step 15)', () => {
     const state = { orders: { a: order } } as unknown as Parameters<typeof outboxEmpty>[0];
     expect(outboxEmpty(state, NOW)).toBe(false);
     expect(outboxEmpty(state, NOW + 10)).toBe(true);
+  });
+});
+
+describe('suspension: stores on their own', () => {
+  /** Two stores whose clocks ran out with an empty outbox, leased by one holder. */
+  async function twoDueStores() {
+    const db = await freshDb();
+    const keys = vault();
+    const owners: string[] = [];
+    for (let index = 0; index < 2; index += 1) {
+      const { owner } = await seedStore(db, keys, { status: 'suspending', state: emptyLedger() });
+      await db.query('update stores set suspending_since = $2 where owner = $1', [
+        owner.pubkey,
+        NOW - TERMS_STAND_SECS - 10,
+      ]);
+      owners.push(owner.pubkey);
+    }
+    owners.sort();
+    const holder = newHolderId();
+    const epochs = new Map((await lease(db, holder)).map((row) => [row.owner, row.epoch]));
+    const open = (owner: string) =>
+      new PgLedgerStore(db, () => NOW).open(owner, epochs.get(owner) ?? 0, holder);
+    return { db, keys, owners, holder, open };
+  }
+
+  it("never holds a store's move to suspended behind another store's round that hangs, nor runs a second round for the busy one", async () => {
+    const { db, owners, open } = await twoDueStores();
+    // The first store in the round's order hangs: run one after the other, it would hold the second.
+    const [hung = '', other = ''] = owners;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls = new Map<string, number>();
+    const rounds = new Suspensions({
+      db,
+      supervisor: {
+        leased: owners,
+        applyControl: async (owner, task) => {
+          const count = (calls.get(owner) ?? 0) + 1;
+          calls.set(owner, count);
+          if (owner === hung && count === 1) {
+            await gate;
+            throw new Error('the control task failed');
+          }
+          return task(await open(owner));
+        },
+      },
+      setup: testSetupDeps(db, vault(), new RelayWorld()),
+      log: () => undefined,
+      now: () => NOW,
+    });
+    const first = rounds.tick();
+    await waitFor(
+      async () => (await storeStatus(db, other)) === 'suspended',
+      'the other store suspended',
+      2_000,
+    );
+    // A second round while the hung one still runs leaves the busy store alone.
+    expect(await rounds.tick()).toEqual([]);
+    expect(calls.get(hung)).toBe(1);
+    release();
+    expect(await first).toEqual([other]);
+    expect(await storeStatus(db, hung)).toBe('suspending');
+    // Once its round is over, the store is taken again.
+    expect(await rounds.tick()).toEqual([hung]);
+    expect(calls.get(hung)).toBe(2);
+  });
+
+  it('a pump tick moves a store whose clock ran out to suspended', async () => {
+    const { db, keys, owners, holder } = await twoDueStores();
+    const world = new RelayWorld();
+    const { supervisor } = testSupervisor(db, keys, holder, world, chain({}).rpc);
+    supervisors.push(supervisor);
+    const requests = new HolderRequests({
+      db,
+      supervisor,
+      setup: testSetupDeps(db, keys, world),
+      log: () => undefined,
+    });
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    const pump = new RequestPump({ db, holder: requests, log: () => undefined });
+    await pump.kick(true);
+    await pump.stop();
+    await requests.idle();
+    for (const owner of owners) {
+      expect(await storeStatus(db, owner)).toBe('suspended');
+    }
   });
 });

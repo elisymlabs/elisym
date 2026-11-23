@@ -5,6 +5,7 @@ import {
   StartRefused,
   TERMS_STAND_SECS,
   activePayouts,
+  listenOnlyRelays,
   loadStoreBundle,
   storeRails,
 } from '../src/node/load';
@@ -243,5 +244,54 @@ describe('loadStoreBundle', () => {
       [owner.pubkey],
     );
     expect(row?.row_version).toBe(2);
+  });
+});
+
+describe('listenOnlyRelays (the inbox relays left at a switch)', () => {
+  const OLD = 'wss://old-inbox.example.com';
+  const GONE = 'wss://gone.example.com';
+
+  it('reads the allowlisted relays left, not active again, until TERMS_STAND_SECS after the switch', () => {
+    expect(listenOnlyRelays([OLD, RELAY, GONE], NOW, [RELAY], [RELAY, OLD], NOW + 10)).toEqual({
+      relays: [OLD],
+      until: NOW + TERMS_STAND_SECS,
+    });
+    expect(
+      listenOnlyRelays([OLD], NOW, [RELAY], [RELAY, OLD], NOW + TERMS_STAND_SECS - 1).relays,
+    ).toEqual([OLD]);
+    expect(listenOnlyRelays([OLD], NOW, [RELAY], [RELAY, OLD], NOW + TERMS_STAND_SECS)).toEqual({
+      relays: [],
+    });
+  });
+
+  it('never reads a relay left that the allowlist no longer holds', () => {
+    expect(listenOnlyRelays([GONE], NOW, [RELAY], [RELAY], NOW + 10)).toEqual({ relays: [] });
+  });
+
+  it('reads nothing more for a store that never switched', () => {
+    expect(listenOnlyRelays(null, null, [RELAY], [RELAY, OLD], NOW)).toEqual({ relays: [] });
+    expect(listenOnlyRelays([OLD], null, [RELAY], [RELAY, OLD], NOW)).toEqual({ relays: [] });
+  });
+
+  it('loads the relays left with the bundle, the allowlist applied', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    await db.query(
+      `update store_config set previous_inbox_relays = $2, inbox_switched_at = $3 where owner = $1`,
+      [owner.pubkey, [OLD, GONE], NOW - 60],
+    );
+    const holder = newHolderId();
+    const [leased] = await lease(db, holder);
+    const loaded = await loadStoreBundle(db, keys, owner.pubkey, {
+      holder,
+      epoch: leased?.epoch ?? 0,
+      rpcs: RPCS,
+      inboxRelayAllowlist: [RELAY, OLD],
+      now: () => NOW,
+    });
+    expect(loaded.config.inboxRelays).toEqual([RELAY]);
+    expect(loaded.listenOnlyRelays).toEqual([OLD]);
+    expect(loaded.listenOnlyUntil).toBe(NOW - 60 + TERMS_STAND_SECS);
   });
 });
