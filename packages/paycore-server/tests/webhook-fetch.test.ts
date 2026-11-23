@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { type Server, createServer } from 'node:https';
@@ -493,6 +494,74 @@ describe('the slots shared by the stores', () => {
     expect((await live).status).toBe(200);
     expect(slots.running).toBe(0);
     expect(received.map((request) => request.path)).toEqual(['/held', '/held?b']);
+  });
+
+  it('a store whose line emptied by a stop queues again at the back of the turn', async () => {
+    const slots = new WebhookSlots({ deps: LOCAL, maxConcurrent: 1 });
+    const blocker = post(slots.forStore('c'), 'https://shop.test/held?c');
+    await until(() => held.length === 1, 'the blocker to hold the only slot');
+    const stopA = new AbortController();
+    const abandoned = post(slots.forStore('a', { signal: stopA.signal }), HOOK_URL);
+    stopA.abort();
+    await expect(abandoned).rejects.toThrow(/store is stopping/u);
+    expect(slots.queued).toBe(0);
+    const fromB = post(slots.forStore('b'), 'https://shop.test/held?b');
+    const fromD = post(slots.forStore('d'), 'https://shop.test/held?d');
+    const againA = post(slots.forStore('a'), 'https://shop.test/held?a');
+    expect(slots.queued).toBe(3);
+    for (let served = 0; served < 3; served++) {
+      held.shift()?.();
+      await until(() => held.length === 1, 'the next send to take the freed slot');
+    }
+    held.shift()?.();
+    const answers = await Promise.all([blocker, fromB, fromD, againA]);
+    expect(answers.every((response) => response.status === 200)).toBe(true);
+    expect(received.map((request) => request.path)).toEqual([
+      '/held?c',
+      '/held?b',
+      '/held?d',
+      '/held?a',
+    ]);
+  });
+
+  it('leaves no abort listener on the store or shutdown signal once its sends are done or refused', async () => {
+    const shutdown = new AbortController();
+    const stop = new AbortController();
+    const slots = new WebhookSlots({
+      deps: LOCAL,
+      maxConcurrent: 1,
+      maxQueuedPerStore: 10,
+      signal: shutdown.signal,
+    });
+    const store = slots.forStore('a', { signal: stop.signal });
+    const listeners = (): number[] => [
+      getEventListeners(shutdown.signal, 'abort').length,
+      getEventListeners(stop.signal, 'abort').length,
+    ];
+    expect(listeners()).toEqual([0, 0]);
+    const blocker = post(slots.forStore('c'), 'https://shop.test/held');
+    await until(() => held.length === 1, 'the blocker to hold the only slot');
+    const queued = Array.from({ length: 10 }, () => post(store, HOOK_URL));
+    expect(slots.queued).toBe(10);
+    expect(listeners()).toEqual([10, 10]);
+    held.shift()?.();
+    const answers = await Promise.all([blocker, ...queued]);
+    expect(answers.every((response) => response.status === 200)).toBe(true);
+    for (let round = 0; round < 20; round++) {
+      expect((await post(store, HOOK_URL)).status).toBe(200);
+    }
+    expect(slots.running).toBe(0);
+    expect(listeners()).toEqual([0, 0]);
+
+    const secondBlocker = post(slots.forStore('c'), 'https://shop.test/held');
+    await until(() => held.length === 1, 'the second blocker to hold the only slot');
+    const stopped = Array.from({ length: 3 }, () => post(store, HOOK_URL));
+    expect(listeners()).toEqual([3, 3]);
+    stop.abort();
+    await expect(Promise.all(stopped)).rejects.toThrow(/store is stopping/u);
+    expect(listeners()).toEqual([0, 0]);
+    held.shift()?.();
+    expect((await secondBlocker).status).toBe(200);
   });
 
   it("a store's stop refuses and aborts only that store's sends", async () => {

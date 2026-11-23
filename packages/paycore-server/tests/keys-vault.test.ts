@@ -43,6 +43,20 @@ describe('KeyVault', () => {
     expect(vault.open(vault.seal(most, OWNER, 'webhook'), OWNER, 'webhook')).toEqual(most);
   });
 
+  it('seals and opens exactly 256 bytes and refuses 257, whatever the exported bound says', () => {
+    const exact = new Uint8Array(randomBytes(256));
+    const sealed = vault.seal(exact, OWNER, 'store');
+    expect(sealed).toHaveLength(1 + 12 + 256 + 16);
+    expect(vault.open(sealed, OWNER, 'store')).toEqual(exact);
+    expect(vault.open(sealedAs('paycore', exact, OWNER, 'store'), OWNER, 'store')).toEqual(exact);
+    expect(() => vault.seal(new Uint8Array(257), OWNER, 'store')).toThrow(
+      'A sealed secret is 1 to 256 bytes',
+    );
+    expect(() =>
+      vault.open(sealedAs('paycore', new Uint8Array(257), OWNER, 'store'), OWNER, 'store'),
+    ).toThrow('Not a sealed secret');
+  });
+
   it('a sealed secret does not open for another owner, purpose, prefix or master key', () => {
     const sealed = vault.seal(randomBytes(32), OWNER, 'store');
     expect(() => vault.open(sealed, OTHER_OWNER, 'store')).toThrow();

@@ -468,4 +468,14 @@ describe('a payout list signed elsewhere', () => {
       /as the recorded one but pays to other payouts/,
     );
   });
+
+  it('is refused as older when the relays serve one dated a single second later', () => {
+    const newest = listAt(T0 - 10);
+    const signed = { event: listAt(T0 - 11), payouts: payoutsString };
+    expect(signedPayoutListProblem(emptyLedger(), signed, newest, T0)).toBe(
+      `the signed payout list (dated ${T0 - 11}) is older than the one the relays serve (dated ${T0 - 10}): buyers would not be served it; sign it with a later date`,
+    );
+    const later = { event: listAt(T0 - 9), payouts: payoutsString };
+    expect(signedPayoutListProblem(emptyLedger(), later, newest, T0)).toBeUndefined();
+  });
 });

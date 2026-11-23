@@ -395,6 +395,13 @@ describe('guardedFetch for webhooks: POST, redirects refused, answer cut', () =>
     expect(web.requests[0]?.headers['accept']).toBe('application/json');
   });
 
+  it('sends accept */* by default and the accept option when given', async () => {
+    const web = new FakeWeb().route('https://shop.example/', { body: 'x' });
+    await guardedFetch('https://shop.example/', LIMITS, web.deps());
+    await guardedFetch('https://shop.example/', { ...LIMITS, accept: 'text/html' }, web.deps());
+    expect(web.requests.map((request) => request.headers['accept'])).toEqual(['*/*', 'text/html']);
+  });
+
   it('drops the caller framing and routing headers, whatever their case', async () => {
     const web = new FakeWeb().route('https://hooks.example/in', { body: 'ok' });
     await guardedFetch(

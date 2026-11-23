@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import type { Eip1193Client } from '@elisym/pay-core/evm';
 import type { MerchantConfig } from '@merchant-node/config';
 import {
@@ -7,8 +8,8 @@ import {
   sweepEip3009,
 } from '@merchant-node/eip3009';
 import { emptyLedger } from '@merchant-node/ledger';
-import { describe, expect, it } from 'vitest';
-import { Eip3009Boot } from '../src/chain/eip3009-boot';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Eip3009Boot, defaultSleep } from '../src/chain/eip3009-boot';
 
 const NOW = 1_791_000_000;
 const BASE_RPC = 'https://base.operator.example';
@@ -410,5 +411,52 @@ describe('Eip3009Boot', () => {
     expect(first.gate).toEqual({ kind: 'verified' });
     expect(first.gate).not.toBe(second.gate);
     expect(first.gate).not.toBe(instance.gateOf('eip155:8453'));
+  });
+});
+
+describe('defaultSleep', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resolves once the time has passed, not before', async () => {
+    vi.useFakeTimers();
+    let settled = false;
+    const sleeping = defaultSleep(1_000, new AbortController().signal).then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await sleeping;
+    expect(settled).toBe(true);
+  });
+
+  it('resolves at once on a signal already aborted, without a timer or a listener', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    controller.abort();
+    await defaultSleep(60_000, controller.signal);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+  });
+
+  it('resolves at once when the signal aborts, and clears its timer and its listener', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const sleeping = defaultSleep(60_000, controller.signal);
+    expect(vi.getTimerCount()).toBe(1);
+    controller.abort();
+    await sleeping;
+    expect(vi.getTimerCount()).toBe(0);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+  });
+
+  it('removes its abort listener when the time passes', async () => {
+    const controller = new AbortController();
+    const started = Date.now();
+    await defaultSleep(20, controller.signal);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(15);
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
   });
 });

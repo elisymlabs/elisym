@@ -221,7 +221,7 @@ async function checkOrTransient(
   }
 }
 
-function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
+export function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) {
       resolve();
