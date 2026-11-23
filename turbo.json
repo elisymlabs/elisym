@@ -55,6 +55,19 @@
       "dependsOn": ["build"],
       "inputs": ["$TURBO_DEFAULT$", "../docs/pages/**", "../../examples/demo-store/README.md"]
     },
+    "@elisym/paycore-server#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "inputs": ["$TURBO_DEFAULT$", "../merchant-node/src/**", "../merchant-node/package.json"]
+    },
+    "@elisym/paycore-server#typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "../merchant-node/src/**", "../merchant-node/package.json"]
+    },
+    "@elisym/paycore-server#test": {
+      "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "../merchant-node/src/**", "../merchant-node/package.json"]
+    },
     "@elisym/merchant-admin#build": {
       "dependsOn": ["^build", "generate"],
       "outputs": ["dist/**"],
