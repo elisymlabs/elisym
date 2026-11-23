@@ -10,6 +10,7 @@ bankr
 baseten
 bech
 behaviour
+bigserial
 Birdeye
 blockhash
 blockhashes
