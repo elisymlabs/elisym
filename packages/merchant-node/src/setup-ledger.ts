@@ -322,6 +322,39 @@ export async function publishAndRecord(
   return outcomes;
 }
 
+/**
+ * Why a payout list signed with a date other than the one `payoutListDate`
+ * picked (an owner event signed elsewhere) may not be published and recorded:
+ * buyers would not be served the terms it records. The relays keep the newest
+ * list, and on a tie the lowest id; a list dated as the recorded one must pay
+ * to the recorded payouts. A list dated after the recorded one must not be too
+ * far ahead of the clock (see `clockProblem`).
+ */
+export function signedPayoutListProblem(
+  state: LedgerState,
+  signed: { event: NostrEvent; payouts: string },
+  newestOnRelays: NostrEvent | undefined,
+  startedAt: number,
+): string | undefined {
+  const signedAt = signed.event.created_at;
+  if (newestOnRelays !== undefined && signedAt < newestOnRelays.created_at) {
+    return `the signed payout list (dated ${signedAt}) is older than the one the relays serve (dated ${newestOnRelays.created_at}): buyers would not be served it; sign it with a later date`;
+  }
+  if (
+    newestOnRelays !== undefined &&
+    signedAt === newestOnRelays.created_at &&
+    newestOnRelays.id !== signed.event.id
+  ) {
+    return `the signed payout list is dated the same second (${signedAt}) as another one the relays serve: on a tie relays keep the lowest id, so buyers may not be served it; sign it with a later date`;
+  }
+  if (state.payto !== undefined && signedAt === state.payto.createdAt) {
+    return signed.payouts === state.payto.payouts
+      ? undefined
+      : `the signed payout list is dated the same second (${signedAt}) as the recorded one but pays to other payouts: sign it with a later date`;
+  }
+  return clockProblem('the payout list', signedAt, startedAt);
+}
+
 /** One setup pass over a store: what it reads, signs and publishes with. */
 export interface SetupPass {
   pool: QueryPool;
@@ -378,8 +411,13 @@ export async function runSetupPass(state: LedgerState, pass: SetupPass): Promise
   }
   const wide = pass.sign({ startedAt, paytoCreatedAt });
   const signedAt = wide.payoutList.created_at;
-  if (signedAt !== paytoCreatedAt && signedAt !== state.payto?.createdAt) {
-    const problem = clockProblem('the payout list', signedAt, startedAt);
+  if (signedAt !== paytoCreatedAt) {
+    const problem = signedPayoutListProblem(
+      state,
+      { event: wide.payoutList, payouts: pass.payoutsString },
+      newestList,
+      startedAt,
+    );
     if (problem !== undefined) {
       throw new Error(problem);
     }

@@ -6,7 +6,7 @@ import { offerProblems, readRelayViews } from '../src/checks';
 import type { MerchantConfig } from '../src/config';
 import { OFFER_RELAYS } from '../src/constants';
 import { emptyLedger } from '../src/ledger';
-import { runSetupPass } from '../src/setup-ledger';
+import { runSetupPass, signedPayoutListProblem } from '../src/setup-ledger';
 import {
   lostHistoryProblem,
   productPriceProblems,
@@ -20,7 +20,7 @@ import {
   ownerEventTemplates,
 } from '../src/store-events';
 import { publishTerms } from '../src/terms';
-import { PAYOUT, T0, USDC_DEVNET_CAIP19, key } from './fixtures';
+import { EIP3009_USDC, PAYER, PAYOUT, T0, USDC_DEVNET_CAIP19, key } from './fixtures';
 
 const INBOX = 'wss://inbox.example.com';
 const PAYOUTS = [{ caip19: USDC_DEVNET_CAIP19, address: PAYOUT as string }];
@@ -146,6 +146,84 @@ describe('the start checks a host runs', () => {
     const result = await readOfferProblems(pool, CONFIG, pubkeys, state, products);
     expect(result.problems).toEqual([]);
     expect(result.served).toBe(true);
+  });
+
+  it('MN8: read the inbox relays too: a listing served only there is judged', async () => {
+    const pool = relayPool();
+    const wide = buildStoreWideEvents(CONFIG, keys, T0, T0);
+    for (const event of [wide.payoutList, ...wide.others]) {
+      pool.add([...OFFER_RELAYS, INBOX], event);
+    }
+    pool.add([INBOX], buildListingEvent(PRODUCT, PAYOUTS, store.secretKey, T0));
+    const state = emptyLedger();
+    state.terms = publishTerms(
+      [],
+      { d: PRODUCT.d, caip19: USDC_DEVNET_CAIP19, payout: PAYOUT, amount: '2000000' },
+      T0,
+      T0,
+    );
+    const result = await readOfferProblems(pool, CONFIG, pubkeys, state, products);
+    expect(result.problems).toEqual([`course: ${USDC_DEVNET_CAIP19} at 1000000`]);
+  });
+
+  /** A store published with `payouts` under `config`, whose ledger records each coin at 1 USD. */
+  async function evmOfferProblems(config: MerchantConfig, payouts: MerchantConfig['payouts']) {
+    const withPayouts = { ...config, payouts };
+    const pool = relayPool();
+    const wide = buildStoreWideEvents(withPayouts, keys, T0, T0);
+    for (const event of [wide.payoutList, ...wide.others]) {
+      pool.add([...OFFER_RELAYS, INBOX], event);
+    }
+    pool.add(OFFER_RELAYS, buildListingEvent(PRODUCT, payouts, store.secretKey, T0));
+    const state = emptyLedger();
+    state.terms = payouts.flatMap((payout) =>
+      publishTerms(
+        [],
+        { d: PRODUCT.d, caip19: payout.caip19, payout: payout.address, amount: '1000000' },
+        T0,
+        T0,
+      ),
+    );
+    return (await readOfferProblems(pool, withPayouts, pubkeys, state, products)).problems;
+  }
+
+  it('MN10: honour a Tempo coin only with a Tempo block on its network', async () => {
+    const tempoUsdc = 'eip155:4217/erc20:0x20c000000000000000000000b9537d11c60e8b50';
+    const evmPayout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+    const payouts = [{ caip19: tempoUsdc, address: evmPayout }];
+    const mainnet: MerchantConfig = { ...CONFIG, network: 'mainnet' };
+    expect(await evmOfferProblems({ ...mainnet, tempo: { network: 'mainnet' } }, payouts)).toEqual(
+      [],
+    );
+    expect(await evmOfferProblems(mainnet, payouts)).toEqual([`${tempoUsdc} ${evmPayout}`]);
+    expect(await evmOfferProblems({ ...mainnet, tempo: { network: 'moderato' } }, payouts)).toEqual(
+      [`${tempoUsdc} ${evmPayout}`],
+    );
+  });
+
+  it('MN11: honour an eip3009 coin only on a chain the evm block verifies', async () => {
+    const base = EIP3009_USDC.find(
+      (coin) => coin.chain.slug === 'base' && coin.chain.network === 'mainnet',
+    );
+    if (base === undefined) {
+      throw new Error('no Base mainnet USDC in the registry');
+    }
+    const evmPayout = '0x5696da2cecea22f127948458382ac2c59bc8e4bb';
+    const payouts = [{ caip19: base.caip19, address: evmPayout }];
+    const mainnet: MerchantConfig = { ...CONFIG, network: 'mainnet' };
+    expect(
+      await evmOfferProblems(
+        { ...mainnet, evm: { base: { rpcUrl: 'https://base.example' } } },
+        payouts,
+      ),
+    ).toEqual([]);
+    expect(await evmOfferProblems(mainnet, payouts)).toEqual([`${base.caip19} ${evmPayout}`]);
+    expect(
+      await evmOfferProblems(
+        { ...mainnet, evm: { arbitrum: { rpcUrl: 'https://arbitrum.example' } } },
+        payouts,
+      ),
+    ).toEqual([`${base.caip19} ${evmPayout}`]);
   });
 
   it('say when nothing was served', async () => {
@@ -284,5 +362,110 @@ describe('a setup pass', () => {
       }),
     ).rejects.toThrow('the clock is behind the last publish of the payout list');
     expect(published).toEqual([]);
+  });
+
+  /** The owner's payout list paying to `address`, signed elsewhere with `date`. */
+  function ownerList(date: number, address: string = PAYOUT): NostrEvent {
+    const config = { ...CONFIG, payouts: [{ caip19: USDC_DEVNET_CAIP19, address }] };
+    return finalizeEvent(
+      ownerEventTemplates(config, owner.pubkey, store.pubkey, date, date, { mode: 'self-host' })
+        .payoutList,
+      owner.secretKey,
+    );
+  }
+
+  /** A pass whose payout list is `payoutList`, signed elsewhere. */
+  function committedPass(
+    pool: ReturnType<typeof relayPool>,
+    published: string[],
+    payoutList: NostrEvent,
+  ) {
+    return {
+      ...pass(pool, { now: T0 }, published),
+      sign: ({ startedAt }: { startedAt: number }) => ({
+        payoutList,
+        others: buildStoreSignedEvents(CONFIG, store.secretKey, owner.pubkey, startedAt, false),
+      }),
+    };
+  }
+
+  it('refuses a signed payout list older than the one the relays serve, before publishing anything', async () => {
+    const pool = relayPool();
+    pool.add(relays, ownerList(T0 - 10));
+    const published: string[] = [];
+    const state = emptyLedger();
+    await expect(
+      runSetupPass(state, committedPass(pool, published, ownerList(T0 - 30))),
+    ).rejects.toThrow(
+      `the signed payout list (dated ${T0 - 30}) is older than the one the relays serve (dated ${T0 - 10})`,
+    );
+    expect(published).toEqual([]);
+    expect(state.payto).toBeUndefined();
+  });
+
+  it('refuses a signed payout list tied with another one the relays serve, and takes the very one they serve', async () => {
+    const pool = relayPool();
+    const served = ownerList(T0 - 10, PAYER);
+    pool.add(relays, served);
+    const published: string[] = [];
+    await expect(
+      runSetupPass(emptyLedger(), committedPass(pool, published, ownerList(T0 - 10))),
+    ).rejects.toThrow(
+      `the signed payout list is dated the same second (${T0 - 10}) as another one the relays serve`,
+    );
+    expect(published).toEqual([]);
+
+    const same = relayPool();
+    const list = ownerList(T0 - 10);
+    same.add(relays, list);
+    const state = emptyLedger();
+    await runSetupPass(state, committedPass(same, published, list));
+    expect(published[0]).toBe('the payout list');
+    expect(state.payto).toEqual({ createdAt: T0 - 10, payouts: payoutsString });
+  });
+
+  it('refuses a signed payout list dated as the recorded one but paying to other payouts', async () => {
+    const published: string[] = [];
+    const state = emptyLedger();
+    state.payto = { createdAt: T0 - 30, payouts: '[]' };
+    await expect(
+      runSetupPass(state, committedPass(relayPool(), published, ownerList(T0 - 30))),
+    ).rejects.toThrow(
+      `the signed payout list is dated the same second (${T0 - 30}) as the recorded one but pays to other payouts`,
+    );
+    expect(published).toEqual([]);
+    expect(state.payto).toEqual({ createdAt: T0 - 30, payouts: '[]' });
+
+    state.payto = { createdAt: T0 - 30, payouts: payoutsString };
+    await runSetupPass(state, committedPass(relayPool(), published, ownerList(T0 - 30)));
+    expect(state.payto).toEqual({ createdAt: T0 - 30, payouts: payoutsString });
+  });
+});
+
+describe('a payout list signed elsewhere', () => {
+  const owner = key();
+  const store = key();
+  const payoutsString = JSON.stringify(PAYOUTS);
+
+  function listAt(date: number): NostrEvent {
+    return finalizeEvent(
+      ownerEventTemplates(CONFIG, owner.pubkey, store.pubkey, date, date, { mode: 'self-host' })
+        .payoutList,
+      owner.secretKey,
+    );
+  }
+
+  it('MN1: is not judged against the clock when it is the recorded list, however far ahead', () => {
+    const ahead = T0 + 86_400;
+    const state = emptyLedger();
+    state.payto = { createdAt: ahead, payouts: payoutsString };
+    const signed = { event: listAt(ahead), payouts: payoutsString };
+    expect(signedPayoutListProblem(state, signed, undefined, T0)).toBeUndefined();
+    expect(signedPayoutListProblem(emptyLedger(), signed, undefined, T0)).toBe(
+      'the clock is behind the last publish of the payout list: fix the clock or wait',
+    );
+    expect(signedPayoutListProblem(state, { ...signed, payouts: '[]' }, undefined, T0)).toMatch(
+      /as the recorded one but pays to other payouts/,
+    );
   });
 });
