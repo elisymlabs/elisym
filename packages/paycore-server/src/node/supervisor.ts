@@ -1,0 +1,540 @@
+/**
+ * The store supervisor (sub-plan step 10): runs one merchant-node store node
+ * per leased store, each with its own control queue. Every start, stop and
+ * admin change of a store runs on that queue, and every change it applies
+ * opens a fresh ledger handle from the database (a node that halted on a
+ * refused save may hold diverged memory; it is never reused).
+ */
+import { upgradeLedger } from '@merchant-node/ledger';
+import { type StoreNode, startStoreNode } from '@merchant-node/store-node';
+import { ALERT_KINDS, clearAlert, raiseAlert } from '../alerts';
+import type { ChainClients } from '../chain/clients';
+import type { Eip3009Boot } from '../chain/eip3009-boot';
+import type { NetworkTreasuries } from '../chain/treasuries';
+import type { Db } from '../db/db';
+import type { KeyVault } from '../db/keys';
+import type { StorePools } from '../relay/pools';
+import { type LeasedStore, type StoreStatus, releaseLeases } from '../state/leases';
+import { type LedgerHandle, PgLedgerStore } from '../state/ledger-store';
+import type { WebhookSlots } from '../webhook-fetch';
+import { type OperatorRpcs, StartRefused, loadStoreBundle } from './load';
+import { HealGate, type OfferVerdict, controlBackoffMs, startChecks } from './start-checks';
+
+/** Failed starts in a row before a store is marked `halted` (it is still retried). */
+export const MAX_FAILED_STARTS = 3;
+
+/** The statuses the supervisor moves a store between; it never touches the others. */
+const RUN_STATUSES: readonly StoreStatus[] = ['active', 'degraded', 'halted'];
+
+export interface SupervisorDeps {
+  db: Db;
+  vault: KeyVault;
+  /** This process's lease holder id. */
+  holder: string;
+  pools: Pick<StorePools, 'open' | 'close'>;
+  chains: Pick<ChainClients, 'solana' | 'tempo' | 'evm'>;
+  treasuries: Pick<NetworkTreasuries, 'refreshFor'>;
+  boot: Pick<Eip3009Boot, 'register'>;
+  webhookSlots: Pick<WebhookSlots, 'forStore'>;
+  rpcs: OperatorRpcs;
+  /** `PAYCORE_INBOX_RELAYS` (P7). */
+  inboxRelayAllowlist: readonly string[];
+  /** The webhook requests' User-Agent. */
+  userAgent: string;
+  /**
+   * The heal pass (a setup pass with the committed owner events), run as a
+   * control task when the start checks find offers it can fix. The caller saves.
+   */
+  heal?: (owner: string, handle: LedgerHandle) => Promise<void>;
+  log?: (message: string) => void;
+  /** Seconds. */
+  now?: () => number;
+}
+
+interface RunningStore {
+  node: StoreNode;
+  storePubkey: string;
+  /** The store's webhook sends: aborted right after `node.stop()` (WebhookSlots' order). */
+  webhookStop: AbortController;
+  unregister: () => void;
+  generation: number;
+}
+
+interface StoreRun {
+  owner: string;
+  epoch: number;
+  status: StoreStatus;
+  queue: Promise<void>;
+  running?: RunningStore;
+  startQueued: boolean;
+  retryTimer?: ReturnType<typeof setTimeout>;
+  healTimer?: ReturnType<typeof setTimeout>;
+  failedStarts: number;
+  retryAttempt: number;
+  heals: HealGate;
+  /** Counts starts: a stop reported by an older node is ignored. */
+  generation: number;
+  removed: boolean;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export class StoreSupervisor {
+  private readonly runs = new Map<string, StoreRun>();
+  /** The queues of runs removed while still stopping: a new run of the store waits for them. */
+  private readonly retired = new Map<string, Promise<void>>();
+  private readonly ledgers: PgLedgerStore;
+  private readonly now: () => number;
+  private readonly log: (message: string) => void;
+  private closed = false;
+
+  constructor(private readonly deps: SupervisorDeps) {
+    this.now = deps.now ?? (() => Math.floor(Date.now() / 1000));
+    this.log = deps.log ?? ((message) => console.error(message));
+    this.ledgers = new PgLedgerStore(deps.db, this.now);
+  }
+
+  /** The owners whose node runs now. */
+  get running(): string[] {
+    return [...this.runs.values()]
+      .filter((run) => run.running !== undefined)
+      .map((run) => run.owner);
+  }
+
+  /** The running node of a store, if any. */
+  nodeOf(owner: string): StoreNode | undefined {
+    return this.runs.get(owner)?.running?.node;
+  }
+
+  /**
+   * Apply the set of stores this holder leases now: start the new ones,
+   * restart one whose lease epoch changed (with a fresh handle), stop the ones
+   * no longer leased. A status change alone never stops a running store.
+   */
+  reconcile(leased: readonly LeasedStore[]): void {
+    if (this.closed) {
+      return;
+    }
+    const seen = new Set<string>();
+    for (const lease of leased) {
+      seen.add(lease.owner);
+      const known = this.runs.get(lease.owner);
+      if (known === undefined) {
+        const run = this.newRun(lease);
+        this.runs.set(lease.owner, run);
+        this.queueStart(run);
+        continue;
+      }
+      known.status = lease.status;
+      if (known.epoch !== lease.epoch) {
+        known.epoch = lease.epoch;
+        this.clearTimers(known);
+        known.failedStarts = 0;
+        known.retryAttempt = 0;
+        void this.enqueue(known, () => this.stopRun(known));
+        this.queueStart(known);
+      } else if (
+        known.running === undefined &&
+        !known.startQueued &&
+        known.retryTimer === undefined
+      ) {
+        this.queueStart(known);
+      }
+    }
+    for (const run of [...this.runs.values()]) {
+      if (!seen.has(run.owner)) {
+        this.remove(run);
+      }
+    }
+  }
+
+  /**
+   * Run `task` on the store's control queue: stop its node, open a fresh
+   * handle on its ledger from the database (upgraded in memory), run the task
+   * (it saves through the handle), then start the node again from the
+   * database. Resolves or rejects with the task.
+   */
+  applyControl<Result>(
+    owner: string,
+    task: (handle: LedgerHandle) => Promise<Result>,
+  ): Promise<Result> {
+    const run = this.runs.get(owner);
+    if (run === undefined || run.removed || this.closed) {
+      return Promise.reject(new Error(`store ${owner} is not run by this holder`));
+    }
+    return this.enqueue(run, async () => {
+      this.clearRetry(run);
+      await this.stopRun(run);
+      try {
+        const handle = await this.ledgers.open(owner, run.epoch, this.deps.holder);
+        upgradeLedger(handle.state, `the ledger of ${owner}`);
+        return await task(handle);
+      } finally {
+        if (!run.removed && !this.closed) {
+          await this.startRun(run);
+        }
+      }
+    });
+  }
+
+  /** Resolves once every store's queue has nothing left to run (tests, shutdown). */
+  async idle(): Promise<void> {
+    for (;;) {
+      const queues = [...[...this.runs.values()].map((run) => run.queue), ...this.retired.values()];
+      await Promise.all(queues);
+      const after = [...[...this.runs.values()].map((run) => run.queue), ...this.retired.values()];
+      if (
+        after.length === queues.length &&
+        after.every((queue, index) => queue === queues[index])
+      ) {
+        return;
+      }
+    }
+  }
+
+  /**
+   * Stop every node (each `stop` awaits its task in progress), release this
+   * holder's leases so another process takes the stores at once, and log the
+   * copies for the admin that were never sent.
+   */
+  async shutdown(): Promise<void> {
+    this.closed = true;
+    let lostCopies = 0;
+    const stops = [...this.runs.values()].map((run) => {
+      this.clearTimers(run);
+      return this.enqueue(run, async () => {
+        lostCopies += await this.stopRun(run);
+      });
+    });
+    await Promise.allSettled(stops);
+    await this.idle();
+    this.runs.clear();
+    await releaseLeases(this.deps.db, this.deps.holder);
+    this.log(
+      `supervisor stopped${lostCopies > 0 ? `: ${lostCopies} copy(ies) for the admin lost (selfCopies.pending)` : ''}`,
+    );
+  }
+
+  private newRun(lease: LeasedStore): StoreRun {
+    return {
+      owner: lease.owner,
+      epoch: lease.epoch,
+      status: lease.status,
+      queue: this.retired.get(lease.owner) ?? Promise.resolve(),
+      startQueued: false,
+      failedStarts: 0,
+      retryAttempt: 0,
+      heals: new HealGate(),
+      generation: 0,
+      removed: false,
+    };
+  }
+
+  private remove(run: StoreRun): void {
+    run.removed = true;
+    this.clearTimers(run);
+    this.runs.delete(run.owner);
+    void this.enqueue(run, () => this.stopRun(run).then(() => undefined));
+    const queue = run.queue;
+    this.retired.set(run.owner, queue);
+    void queue.then(() => {
+      if (this.retired.get(run.owner) === queue) {
+        this.retired.delete(run.owner);
+      }
+    });
+  }
+
+  private enqueue<Result>(run: StoreRun, task: () => Promise<Result>): Promise<Result> {
+    const result = run.queue.then(task);
+    run.queue = result.then(
+      () => undefined,
+      (error: unknown) => {
+        this.storeLog(run.owner)(`error: ${errorText(error)}`);
+      },
+    );
+    return result;
+  }
+
+  private queueStart(run: StoreRun): void {
+    if (run.startQueued || run.removed || this.closed) {
+      return;
+    }
+    run.startQueued = true;
+    void this.enqueue(run, () => this.startRun(run));
+  }
+
+  private clearRetry(run: StoreRun): void {
+    if (run.retryTimer !== undefined) {
+      clearTimeout(run.retryTimer);
+      run.retryTimer = undefined;
+    }
+  }
+
+  private clearTimers(run: StoreRun): void {
+    this.clearRetry(run);
+    if (run.healTimer !== undefined) {
+      clearTimeout(run.healTimer);
+      run.healTimer = undefined;
+    }
+  }
+
+  private storeLog(owner: string): (message: string) => void {
+    return (message) => this.log(`store ${owner.slice(0, 12)}: ${message}`);
+  }
+
+  /** Load, check and start the store's node; on the control queue only. */
+  private async startRun(run: StoreRun): Promise<void> {
+    run.startQueued = false;
+    if (run.removed || this.closed || run.running !== undefined) {
+      return;
+    }
+    this.clearRetry(run);
+    run.generation += 1;
+    const generation = run.generation;
+    const { owner } = run;
+    const log = this.storeLog(owner);
+    const { deps } = this;
+    let storePubkey: string | undefined;
+    let unregister: (() => void) | undefined;
+    let offers: OfferVerdict | undefined;
+    try {
+      const bundle = await loadStoreBundle(deps.db, deps.vault, owner, {
+        holder: deps.holder,
+        epoch: run.epoch,
+        rpcs: deps.rpcs,
+        inboxRelayAllowlist: deps.inboxRelayAllowlist,
+        now: this.now,
+        ledgers: this.ledgers,
+      });
+      const pool = deps.pools.open(bundle.storePubkey);
+      storePubkey = bundle.storePubkey;
+      const checked = await startChecks(bundle, {
+        pool,
+        treasuries: deps.treasuries,
+        boot: deps.boot,
+        evmClientFor: (url) => deps.chains.evm(url),
+        log,
+        now: this.now,
+      });
+      if (checked.kind === 'refused') {
+        throw new StartRefused(owner, checked.problem);
+      }
+      unregister = checked.unregister;
+      offers = checked.offers;
+      const { config, handle, webhook } = bundle;
+      const { state } = handle;
+      const webhookStop = new AbortController();
+      const node = await startStoreNode({
+        pool,
+        config,
+        products: bundle.products,
+        state,
+        storePubkey: bundle.storePubkey,
+        storeSecretKey: bundle.storeSecretKey,
+        save: () => handle.save(state),
+        ...(config.rpcUrl === undefined ? {} : { solanaRpc: deps.chains.solana(config.rpcUrl) }),
+        ...(config.tempo?.rpcUrl === undefined
+          ? {}
+          : { tempoClient: deps.chains.tempo(config.tempo.rpcUrl) }),
+        refreshTreasuries: () => deps.treasuries.refreshFor(config.network, state, this.now()),
+        eip3009: checked.eip3009,
+        ...(checked.outbox === undefined ? {} : { outbox: checked.outbox }),
+        ...(webhook === undefined
+          ? {}
+          : {
+              webhook: {
+                target: webhook,
+                userAgent: deps.userAgent,
+                fetch: deps.webhookSlots.forStore(owner, { signal: webhookStop.signal }),
+              },
+            }),
+        log,
+        now: this.now,
+        stop: (problem) => this.nodeStopped(run, generation, problem),
+        haltOnSaveFailure: true,
+      });
+      run.running = {
+        node,
+        storePubkey: bundle.storePubkey,
+        webhookStop,
+        unregister: checked.unregister,
+        generation,
+      };
+    } catch (error) {
+      unregister?.();
+      if (storePubkey !== undefined) {
+        deps.pools.close(storePubkey);
+      }
+      if (error instanceof StartRefused) {
+        await this.refused(run, error.message);
+      } else {
+        await this.failed(run, `the start failed: ${errorText(error)}`);
+      }
+      return;
+    }
+    log(offers === undefined ? 'started' : `started degraded: ${offers.problems.join('; ')}`);
+    await this.started(run, offers);
+  }
+
+  /** Stop the store's node: on the control queue only. Returns its copies for the admin not sent. */
+  private async stopRun(run: StoreRun): Promise<number> {
+    const { running } = run;
+    if (running === undefined) {
+      return 0;
+    }
+    run.running = undefined;
+    // `stop` halts the node in this same turn, before the abort: a webhook
+    // refused or aborted now commits nothing, and its entry is sent again.
+    const stopping = running.node.stop();
+    running.webhookStop.abort();
+    await stopping;
+    this.deps.pools.close(running.storePubkey);
+    running.unregister();
+    const lost = running.node.selfCopies.pending;
+    if (lost > 0) {
+      this.storeLog(run.owner)(`${lost} copy(ies) for the admin lost: stopped before sending them`);
+    }
+    return lost;
+  }
+
+  /** A node's own `stop`: queued, so a stop reported while its start still runs is handled after it. */
+  private nodeStopped(run: StoreRun, generation: number, problem: string): void {
+    void this.enqueue(run, async () => {
+      if (run.running?.generation !== generation) {
+        return;
+      }
+      await this.stopRun(run);
+      await this.failed(run, `the node stopped: ${problem}`, ALERT_KINDS.nodeStopped);
+    });
+  }
+
+  private async started(run: StoreRun, offers: OfferVerdict | undefined): Promise<void> {
+    run.failedStarts = 0;
+    run.retryAttempt = 0;
+    const { db } = this.deps;
+    const now = this.now();
+    for (const kind of [
+      ALERT_KINDS.startRefused,
+      ALERT_KINDS.startFailed,
+      ALERT_KINDS.nodeStopped,
+    ]) {
+      await clearAlert(db, run.owner, kind, { now });
+    }
+    if (offers === undefined) {
+      run.heals.reset();
+      await clearAlert(db, run.owner, ALERT_KINDS.offerMismatch, { now });
+      await this.setStatus(run, 'active', undefined);
+      return;
+    }
+    const message = `the relays offer buyers what the ledger does not honour: ${offers.problems.join('; ')}`;
+    await raiseAlert(db, run.owner, ALERT_KINDS.offerMismatch, message, {
+      now,
+      log: this.storeLog(run.owner),
+    });
+    await this.setStatus(run, 'degraded', message);
+    const { heal } = this.deps;
+    if (!offers.heal || heal === undefined) {
+      return;
+    }
+    const delayMs = run.heals.plan(offers.key, now * 1000);
+    if (delayMs === undefined) {
+      return;
+    }
+    const runHeal = () => {
+      run.healTimer = undefined;
+      if (run.removed || this.closed) {
+        return;
+      }
+      this.applyControl(run.owner, (handle) => heal(run.owner, handle)).catch((error: unknown) => {
+        this.storeLog(run.owner)(`the heal pass failed: ${errorText(error)}`);
+      });
+    };
+    if (delayMs === 0) {
+      runHeal();
+    } else {
+      run.healTimer = setTimeout(runHeal, delayMs);
+    }
+  }
+
+  private async refused(run: StoreRun, problem: string): Promise<void> {
+    const log = this.storeLog(run.owner);
+    if (!(await this.holdsLease(run))) {
+      log(`start refused (${problem}); the lease moved: not retried here`);
+      return;
+    }
+    log(`start refused: ${problem}`);
+    await this.setStatus(run, 'halted', problem);
+    await raiseAlert(this.deps.db, run.owner, ALERT_KINDS.startRefused, problem, {
+      now: this.now(),
+      log,
+    });
+    this.scheduleRetry(run);
+  }
+
+  private async failed(
+    run: StoreRun,
+    problem: string,
+    kind: string = ALERT_KINDS.startFailed,
+  ): Promise<void> {
+    const log = this.storeLog(run.owner);
+    if (!(await this.holdsLease(run))) {
+      log(`${problem}; the lease moved: not retried here`);
+      return;
+    }
+    run.failedStarts += 1;
+    log(problem);
+    const now = this.now();
+    if (kind !== ALERT_KINDS.startFailed) {
+      await raiseAlert(this.deps.db, run.owner, kind, problem, { now, log });
+    }
+    if (run.failedStarts >= MAX_FAILED_STARTS) {
+      const message = `${run.failedStarts} starts in a row failed; the last: ${problem}`;
+      await this.setStatus(run, 'halted', message);
+      await raiseAlert(this.deps.db, run.owner, ALERT_KINDS.startFailed, message, { now, log });
+    }
+    this.scheduleRetry(run);
+  }
+
+  private scheduleRetry(run: StoreRun): void {
+    if (run.removed || this.closed) {
+      return;
+    }
+    this.clearRetry(run);
+    const delayMs = controlBackoffMs(run.retryAttempt);
+    run.retryAttempt += 1;
+    run.retryTimer = setTimeout(() => {
+      run.retryTimer = undefined;
+      this.queueStart(run);
+    }, delayMs);
+  }
+
+  private async holdsLease(run: StoreRun): Promise<boolean> {
+    const rows = await this.deps.db.query(
+      `select 1 from leases where owner = $1 and holder = $2 and epoch = $3 and expires_at > $4`,
+      [run.owner, this.deps.holder, run.epoch, this.now()],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Move the store between `active`, `degraded` and `halted` while this holder
+   * holds its lease; never out of another status (`suspending` stays). It
+   * becomes `active` only with no open alert left.
+   */
+  private async setStatus(
+    run: StoreRun,
+    status: StoreStatus,
+    reason: string | undefined,
+  ): Promise<void> {
+    await this.deps.db.query(
+      `update stores set status = $2, status_reason = $3
+       where owner = $1 and status = any($4::text[])
+         and exists (select 1 from leases l where l.owner = $1 and l.holder = $5 and l.epoch = $6)
+         and ($2 <> 'active'
+              or not exists (select 1 from alerts a where a.owner = $1 and a.cleared_at is null))`,
+      [run.owner, status, reason ?? null, RUN_STATUSES, this.deps.holder, run.epoch],
+    );
+  }
+}
