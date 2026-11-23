@@ -29,6 +29,8 @@ export async function activateStore(
     if (store.status !== 'pending') {
       return { ok: false, error: 'not_pending' };
     }
+    // Lock order: the store (above), then the tier (the foreign key's share
+    // lock on the tier row at the update), as `tier set` and `store tier`.
     const tier = options.tier ?? store.tier;
     const [known] =
       tier === null ? [] : await tx.query('select 1 from tiers where name = $1', [tier]);

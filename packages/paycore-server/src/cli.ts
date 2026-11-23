@@ -252,6 +252,7 @@ async function storeTier(args: readonly string[], deps: CliDeps): Promise<string
         `This store is ${store.status}: only an active, degraded or halted store moves to another tier${store.status === 'pending' ? ' (a pending store gets its tier at store activate)' : ''}`,
       );
     }
+    // Lock order: the store (above), then the tier (as `tier set`, `activateStore`).
     // Locked so a concurrent `tier set` cannot lower the cap past this check.
     const [target] = await tx.query<{ max_products: number }>(
       'select max_products from tiers where name = $1 for share',
@@ -308,15 +309,25 @@ async function tierSet(name: string, args: readonly string[], deps: CliDeps): Pr
   }
   const cap = Number(max);
   return deps.db.transaction(async (tx) => {
-    // The tier row, then its stores (as product edits lock them): no store
-    // puts a product on sale past the new cap while it is checked.
-    await tx.query('select 1 from tiers where name = $1 for update', [name]);
+    // Lock order (`store tier`, `activateStore`, `tier delete` alike): the
+    // stores, then the tier. The tier's stores are locked as product edits
+    // lock them: none puts a product on sale past the new cap while it is checked.
     const stores = await tx.query<{ owner: string; on_sale: number }>(
       `select s.owner,
          (select count(*)::int from products p where p.owner = s.owner and p.on_sale) as on_sale
        from stores s where s.tier = $1 order by s.created_at, s.owner for update of s`,
       [name],
     );
+    await tx.query('select 1 from tiers where name = $1 for update', [name]);
+    // A store that moved onto the tier before its row was locked here was
+    // checked against the old cap and is not locked: refused, nothing saved.
+    const locked = new Set(stores.map((store) => store.owner));
+    const onTier = await tx.query<{ owner: string }>('select owner from stores where tier = $1', [
+      name,
+    ]);
+    if (onTier.some((store) => !locked.has(store.owner))) {
+      throw new CliFailure(`A store moved onto tier ${name} meanwhile: run tier set again`);
+    }
     const over = stores.filter((store) => store.on_sale > cap);
     if (over.length > 0) {
       throw new CliFailure(
@@ -334,6 +345,9 @@ async function tierSet(name: string, args: readonly string[], deps: CliDeps): Pr
 
 async function tierDelete(name: string, deps: CliDeps): Promise<string> {
   return deps.db.transaction(async (tx) => {
+    // Lock order: the stores on the tier, then the tier (as `tier set`). The
+    // stores are read again once the tier is locked: none can move onto it then.
+    await tx.query('select 1 from stores where tier = $1 for update', [name]);
     const [tier] = await tx.query('select 1 from tiers where name = $1 for update', [name]);
     if (tier === undefined) {
       throw new CliFailure(`No such tier: ${name}`);

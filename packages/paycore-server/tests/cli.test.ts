@@ -273,6 +273,93 @@ describe('operator CLI (step 16)', () => {
     );
   });
 
+  it('locks the stores before the tier in every path that locks both (no deadlock)', async () => {
+    const db = await freshDb();
+    await run(db, 'tier', 'set', 'basic', '--max-products', '5');
+    await run(db, 'tier', 'set', 'other', '--max-products', '5');
+    const served = await pendingStore(db);
+    await run(db, 'store', 'activate', served, '--tier', 'basic');
+    const pending = await pendingStore(db);
+    let locks: string[] = [];
+    /** Which row a statement locks: the stores', or the tier's (`for update` / `for share`, or the foreign key of a store's tier). */
+    const lockOf = (sql: string): string | undefined => {
+      if (/for (update|share)/.test(sql)) {
+        if (/from stores/.test(sql)) {
+          return 'stores';
+        }
+        return /from tiers/.test(sql) ? 'tier' : undefined;
+      }
+      return /^\s*update stores set[^]*tier/.test(sql) ? 'tier' : undefined;
+    };
+    const recording: Db = {
+      ...db,
+      transaction: (work) =>
+        db.transaction((tx) =>
+          work({
+            ...tx,
+            query: (sql, params) => {
+              const lock = lockOf(sql);
+              if (lock !== undefined) {
+                locks.push(lock);
+              }
+              return tx.query(sql, params);
+            },
+          }),
+        ),
+    };
+    const firstLocks = async (...argv: string[]) => {
+      locks = [];
+      expect((await run(recording, ...argv)).code).toBe(0);
+      return [...new Set(locks)];
+    };
+    expect(await firstLocks('tier', 'set', 'basic', '--max-products', '4')).toEqual([
+      'stores',
+      'tier',
+    ]);
+    expect(await firstLocks('store', 'tier', served, 'other')).toEqual(['stores', 'tier']);
+    expect(await firstLocks('store', 'activate', pending, '--tier', 'basic')).toEqual([
+      'stores',
+      'tier',
+    ]);
+    await run(db, 'tier', 'set', 'spare', '--max-products', '1');
+    expect(await firstLocks('tier', 'delete', 'spare')).toEqual(['stores', 'tier']);
+  });
+
+  it('refuses a cap change when a store moved onto the tier before its row was locked', async () => {
+    const db = await freshDb();
+    await run(db, 'tier', 'set', 'basic', '--max-products', '5');
+    await run(db, 'tier', 'set', 'other', '--max-products', '5');
+    const newcomer = await pendingStore(db);
+    await run(db, 'store', 'activate', newcomer, '--tier', 'other');
+    const directory = directoryFor(db);
+    for (const d of ['a', 'b', 'c']) {
+      expect((await directory.putProduct(newcomer, d, PRODUCT)).ok).toBe(true);
+    }
+    // The newcomer moves onto `basic` (checked against its old cap of 5) after
+    // the tier's stores were locked, before the tier row is.
+    const racing: Db = {
+      ...db,
+      transaction: (work) =>
+        db.transaction((tx) =>
+          work({
+            ...tx,
+            query: async (sql, params) => {
+              if (/from tiers where name = \$1 for update/.test(sql)) {
+                await tx.query("update stores set tier = 'basic' where owner = $1", [newcomer]);
+              }
+              return tx.query(sql, params);
+            },
+          }),
+        ),
+    };
+    expect(await run(racing, 'tier', 'set', 'basic', '--max-products', '1')).toEqual(
+      failed('A store moved onto tier basic meanwhile: run tier set again'),
+    );
+    expect(await run(db, 'tier', 'list')).toEqual(
+      ok('basic: 0 stores, --max-products 5\nother: 1 store, --max-products 5'),
+    );
+  });
+
   it('lists stores with status, tier, open alerts and reason', async () => {
     const db = await freshDb();
     expect(await run(db, 'store', 'list')).toEqual(ok('No stores yet'));

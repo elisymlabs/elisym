@@ -18,11 +18,13 @@
  *    Self-fencing: the leases of a round run out `LEASE_TTL_SECS` after it
  *    started, and another holder may take them then. The server stops its
  *    nodes itself (the supervisor reconciled with nothing leased) at
- *    `fenceAfterSecs` past the last round that succeeded, a renewal interval
- *    and `FENCE_MARGIN_SECS` before that (the database down or hanging),
- *    instead of waiting for a fenced save to fail: on a timer at that
- *    deadline, checked again on every lease tick (a clock that jumped). The
- *    next renewal that succeeds starts them again from the database.
+ *    `fenceAfterSecs` past the start of the last round that succeeded,
+ *    `FENCE_MARGIN_SECS` before that (the database down or hanging), instead
+ *    of waiting for a fenced save to fail: on a timer at that deadline,
+ *    checked again on every lease tick (a clock that jumped). A failed round
+ *    is tried again `LEASE_RETRY_MS` later, not only at the next tick, so one
+ *    transient failure costs nothing. The next renewal that succeeds starts
+ *    them again from the database.
  * 8. The owner event publisher.
  * 9. The request pump (LISTEN `paycore_requests`, the 60 s poll and tick).
  * 10. HTTP: the admin API and `/healthz`.
@@ -80,22 +82,24 @@ const NETWORKS: readonly Network[] = ['mainnet', 'devnet'];
 export const PUBLISHER_INTERVAL_MS = 60_000;
 export const HEALTH_PATH = '/healthz';
 /**
- * How long before the lease renewal interval ahead of the leases' expiry the
- * nodes stop when no renewal succeeds: room for the stop itself and for the
- * clocks of two instances disagreeing by less than this.
+ * How long before the leases' expiry the nodes stop when no renewal succeeds:
+ * room for the stop itself and for the clocks of two instances disagreeing by
+ * less than this.
  */
 export const FENCE_MARGIN_SECS = 5;
+/** How soon a lease round that failed is tried again (not only at the next tick). */
+export const LEASE_RETRY_MS = 5_000;
 
 /**
  * Seconds after the start of the last lease round that succeeded at which the
- * nodes stop when none succeeded since: the leases' TTL, less a renewal
- * interval (the round that would have renewed them), less the margin.
+ * nodes stop when none succeeded since: the leases' TTL less the margin. The
+ * renewal interval must be shorter, or no renewal could come before it.
  */
 export function fenceAfterSecs(leaseRenewMs: number): number {
-  const secs = LEASE_TTL_SECS - Math.ceil(leaseRenewMs / 1000) - FENCE_MARGIN_SECS;
-  if (secs <= 0) {
+  const secs = LEASE_TTL_SECS - FENCE_MARGIN_SECS;
+  if (leaseRenewMs >= secs * 1000) {
     throw new Error(
-      `a lease renewal every ${leaseRenewMs} ms leaves no time to serve inside the ${LEASE_TTL_SECS} s lease`,
+      `a lease renewal every ${leaseRenewMs} ms comes no sooner than the ${secs} s fence of the ${LEASE_TTL_SECS} s lease`,
     );
   }
   return secs;
@@ -298,6 +302,8 @@ class PaycoreServer implements ServerHandle {
   private leaseTimer: ReturnType<typeof setInterval> | undefined;
   /** Fires at the fence deadline of the last round that succeeded. */
   private fenceTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The retry of a failed lease round, pending. */
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly leaseRenewMs: number;
   private readonly fenceAfter: number;
   private leaseRound: Promise<void> | undefined;
@@ -545,6 +551,7 @@ class PaycoreServer implements ServerHandle {
         if (this.now() >= at + this.fenceAfter) {
           // Answered past its own fence deadline: its leases are about to run out, or did.
           this.fenceIfExpired();
+          this.retrySoon();
           continue;
         }
         this.lastRenewedAt = at;
@@ -560,8 +567,20 @@ class PaycoreServer implements ServerHandle {
         }
       } catch (error) {
         this.log(`lease round failed: ${errorText(error)}`);
+        this.retrySoon();
       }
     } while (this.leaseAgain);
+  }
+
+  /** Try a failed round again `LEASE_RETRY_MS` later (once pending; it waits for a round in progress). */
+  private retrySoon(): void {
+    if (this.stopRequested || this.retryTimer !== undefined) {
+      return;
+    }
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.runLeaseRound();
+    }, LEASE_RETRY_MS);
   }
 
   /** (Re)arm the fence timer at the deadline of the last round that succeeded. */
@@ -585,7 +604,7 @@ class PaycoreServer implements ServerHandle {
 
   /**
    * Stop every node once the last successful round is `fenceAfter` old: its
-   * leases run out a renewal interval and `FENCE_MARGIN_SECS` later and may
+   * leases run out `FENCE_MARGIN_SECS` later and may
    * then move to another holder, whose saves would fence ours only once a
    * node of ours tries one.
    */
@@ -634,6 +653,8 @@ class PaycoreServer implements ServerHandle {
     this.leaseTimer = undefined;
     clearTimeout(this.fenceTimer);
     this.fenceTimer = undefined;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
     await this.unlistenStores?.().catch(() => undefined);
     // A round in progress would take leases again after the supervisor let them go.
     await this.leaseRound;

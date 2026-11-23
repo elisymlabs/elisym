@@ -16,6 +16,7 @@ import { OwnerEventPublisher } from '../src/publisher';
 import { StorePools } from '../src/relay/pools';
 import {
   FENCE_MARGIN_SECS,
+  LEASE_RETRY_MS,
   type ServerDeps,
   type ServerHandle,
   fenceAfterSecs,
@@ -376,9 +377,9 @@ describe('startServer', () => {
     };
     const failedRounds = () => logs.filter((line) => line.startsWith('lease round failed')).length;
 
-    // The 60 s lease less a 1 s renewal interval and the 5 s margin.
+    // The 60 s lease less the 5 s margin.
     const deadline = NOW + fenceAfterSecs(20);
-    expect(deadline).toBe(NOW + 54);
+    expect(deadline).toBe(NOW + 55);
     down.value = true;
     clock.value = deadline - 1;
     await waitFor(() => failedRounds() >= 3, 'lease rounds failing');
@@ -391,7 +392,7 @@ describe('startServer', () => {
     expect(handle.supervisor?.leased).toEqual([]);
     const fencedLines = logs.filter((line) => line.startsWith('no lease renewed'));
     expect(fencedLines).toEqual([
-      'no lease renewed for 54 s: stopping every store until a renewal succeeds',
+      'no lease renewed for 55 s: stopping every store until a renewal succeeds',
     ]);
     const failedAtFence = failedRounds();
     await waitFor(() => failedRounds() >= failedAtFence + 3, 'more failed rounds');
@@ -673,11 +674,57 @@ describe('startServer', () => {
     await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped', 2_000);
   });
 
-  it('fences at its deadline, a renewal interval and the margin before the lease runs out', () => {
-    expect(fenceAfterSecs(20_000)).toBe(60 - 20 - FENCE_MARGIN_SECS);
+  it('fences at its deadline, the margin before the lease runs out, whatever the renewal interval', () => {
+    expect(fenceAfterSecs(20_000)).toBe(60 - FENCE_MARGIN_SECS);
     expect(FENCE_MARGIN_SECS).toBeGreaterThan(0);
-    expect(fenceAfterSecs(1)).toBe(60 - 1 - FENCE_MARGIN_SECS);
-    expect(() => fenceAfterSecs(55_000)).toThrow(/no time to serve/);
+    expect(fenceAfterSecs(1)).toBe(60 - FENCE_MARGIN_SECS);
+    expect(fenceAfterSecs(54_999)).toBe(55);
+    expect(() => fenceAfterSecs(55_000)).toThrow(/no sooner than the 55 s fence/);
+    expect(LEASE_RETRY_MS).toBe(5_000);
+  });
+
+  it('a stop awaits the lease round in progress: no lease is held after the shutdown', async () => {
+    const setup = await world();
+    const gate = new LeaseGate();
+    let notify: () => void = () => undefined;
+    const gated = gate.wrap(setup.db);
+    setup.deps.db = {
+      ...gated,
+      listen: async (channel, onNotify) => {
+        if (channel === STORES_CHANNEL) {
+          notify = onNotify;
+        }
+        return gated.listen(channel, onNotify);
+      },
+    };
+    const { owner } = await activeStoreWithRequest(setup);
+    const handle = await boot(setup);
+    await waitFor(() => handle.supervisor?.running.includes(owner) === true, 'the store running');
+    gate.shut();
+    notify();
+    await waitFor(() => gate.held === 1, 'a round held');
+    let stopped = false;
+    const stopping = handle.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 200);
+    });
+    // The shutdown waits for the round before the supervisor lets the leases go.
+    expect(stopped).toBe(false);
+    expect(setup.trace).not.toContain('stop:supervisor');
+    gate.open();
+    await stopping;
+    await waitFor(() => gate.held === 0, 'the round answered');
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 100);
+    });
+    expect(
+      await setup.db.query('select owner, expires_at from leases where holder = $1', [
+        handle.holder,
+      ]),
+    ).toEqual([{ owner, expires_at: 0 }]);
+    expect(handle.supervisor?.leased).toEqual([]);
   });
 });
 
@@ -712,16 +759,16 @@ describe('a lease round that never answers (fake timers)', () => {
   it('stops the nodes on the fence timer at the deadline, before the next lease tick', async () => {
     const { clock, handle, owner, hang, stop, gate } = await hangingRounds();
     hang();
-    // Default renewals every 20 s: the deadline is 35 s after the last renewal.
+    // Default renewals every 20 s: the deadline is 55 s after the last renewal.
     const fenceAfter = fenceAfterSecs(20_000);
-    expect(fenceAfter).toBe(35);
+    expect(fenceAfter).toBe(55);
     clock.value = NOW + fenceAfter - 1;
     await vi.advanceTimersByTimeAsync((fenceAfter - 1) * 1000);
     // The 20 s tick's round hangs; inside the deadline the store runs on.
     expect(gate.held).toBe(1);
     expect(handle.supervisor?.running).toEqual([owner]);
     clock.value = NOW + fenceAfter;
-    // Past the timer at 35 s, before the tick at 40 s.
+    // Past the timer at 55 s, before the tick at 60 s.
     await vi.advanceTimersByTimeAsync(1_500);
     expect(handle.supervisor?.running).toEqual([]);
     expect(handle.supervisor?.leased).toEqual([]);
@@ -737,7 +784,7 @@ describe('a lease round that never answers (fake timers)', () => {
     await vi.advanceTimersByTimeAsync(fenceAfter * 1000 + 500);
     expect(handle.supervisor?.running).toEqual([owner]);
     clock.value = NOW + fenceAfter;
-    // Before the tick at 40 s.
+    // Before the tick at 60 s.
     await vi.advanceTimersByTimeAsync(1_500);
     expect(handle.supervisor?.running).toEqual([]);
     await stop();
@@ -746,16 +793,174 @@ describe('a lease round that never answers (fake timers)', () => {
   it('a lease tick after a clock jump past the deadline stops the nodes, though the round hangs', async () => {
     const { clock, handle, owner, hang, stop, logs } = await hangingRounds();
     hang();
-    // The wall clock jumps; the fence timer (35 s of the timers' time) is far off.
-    clock.value = NOW + 40;
+    // The wall clock jumps; the fence timer (55 s of the timers' time) is far off.
+    clock.value = NOW + 56;
     await vi.advanceTimersByTimeAsync(10_000);
     expect(handle.supervisor?.running).toEqual([owner]);
     await vi.advanceTimersByTimeAsync(10_500);
     expect(handle.supervisor?.running).toEqual([]);
     expect(logs.filter((line) => line.startsWith('no lease renewed'))).toEqual([
-      'no lease renewed for 40 s: stopping every store until a renewal succeeds',
+      'no lease renewed for 56 s: stopping every store until a renewal succeeds',
     ]);
     await stop();
+  });
+});
+
+describe('lease rounds that fail (fake timers and clock)', () => {
+  /**
+   * A booted server on the default 20 s renewals whose lease rounds fail while
+   * `fail.always` is set, or `fail.next` more times; with `fail.jumpNext` set,
+   * the wall clock jumps that many seconds while the next round runs. The
+   * injected clock follows the faked one from the first lease round (plus the
+   * jumps); round starts are kept in seconds since, jumps left out.
+   */
+  async function failingRounds() {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+      shouldAdvanceTime: true,
+    });
+    let start: number | undefined;
+    const elapsedSecs = () => (start === undefined ? 0 : Math.floor((Date.now() - start) / 1000));
+    const logs: string[] = [];
+    const fail: {
+      always: boolean;
+      next: number;
+      jumpNext: number;
+      /** A failing round waits for this before it fails. */
+      held?: Promise<void>;
+    } = { always: false, next: 0, jumpNext: 0 };
+    let jumped = 0;
+    const starts: number[] = [];
+    const failed: number[] = [];
+    const setup = await world({
+      now: () => NOW + elapsedSecs() + jumped,
+      log: (message) => logs.push(message),
+      // No sweep in these tests.
+      firstSweepDelayMs: () => 3_600_000,
+    });
+    const { db } = setup;
+    setup.deps.db = {
+      ...db,
+      transaction: async (work) => {
+        if (isLeaseRound()) {
+          start ??= Date.now();
+          starts.push(elapsedSecs());
+          if (fail.always || fail.next > 0) {
+            fail.next = Math.max(0, fail.next - 1);
+            failed.push(elapsedSecs());
+            await fail.held;
+            throw new Error('database down');
+          }
+          jumped += fail.jumpNext;
+          fail.jumpNext = 0;
+        }
+        return db.transaction(work);
+      },
+    };
+    const { owner } = await activeStoreWithRequest(setup);
+    const handle = await boot(setup);
+    await waitFor(() => handle.supervisor?.running.includes(owner) === true, 'the store running');
+    /** Advance the timers to `secs` (and a half) after the first lease round. */
+    const advanceTo = async (secs: number) => {
+      if (start === undefined) {
+        throw new Error('no lease round yet');
+      }
+      await vi.advanceTimersByTimeAsync(Math.max(0, start + secs * 1000 + 500 - Date.now()));
+    };
+    const expiresAt = async () => {
+      const [row] = await db.query<{ expires_at: number }>(
+        'select expires_at from leases where owner = $1',
+        [owner],
+      );
+      return row?.expires_at;
+    };
+    return { logs, fail, starts, failed, handle, owner, advanceTo, expiresAt };
+  }
+
+  it('one failed round between successes stops nothing: it is tried again 5 s later', async () => {
+    const { fail, starts, failed, handle, owner, advanceTo, expiresAt } = await failingRounds();
+    fail.next = 1;
+    await advanceTo(24);
+    expect(starts).toEqual([0, 20]);
+    expect(failed).toEqual([20]);
+    await advanceTo(25);
+    // The retry, before the next tick at 40 s.
+    expect(starts).toEqual([0, 20, 25]);
+    await waitFor(async () => (await expiresAt()) === NOW + 25 + 60, 'the retry renewed');
+    await advanceTo(60);
+    expect(starts).toEqual([0, 20, 25, 40, 60]);
+    expect(failed).toEqual([20]);
+    expect(handle.supervisor?.running).toEqual([owner]);
+  });
+
+  it('a round answered past its deadline (a clock jump) is tried again 5 s later', async () => {
+    const { logs, fail, starts, handle, owner, advanceTo } = await failingRounds();
+    fail.jumpNext = 60;
+    await advanceTo(20);
+    await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped');
+    expect(logs.filter((line) => line.startsWith('no lease renewed'))).toEqual([
+      'no lease renewed for 80 s: stopping every store until a renewal succeeds',
+    ]);
+    await advanceTo(25);
+    // The retry, before the next tick at 40 s: serving again.
+    expect(starts).toEqual([0, 20, 25]);
+    await waitFor(
+      () => handle.supervisor?.running.includes(owner) === true,
+      'the store running again',
+    );
+  });
+
+  it('a stop drops the pending retry of a failed round', async () => {
+    const { fail, failed, handle, advanceTo } = await failingRounds();
+    fail.always = true;
+    await advanceTo(20);
+    expect(failed).toEqual([20]);
+    await handle.stop();
+    // A retry left behind would fire within 5 s (the timers left are PGlite's, far off).
+    const timersLeft = vi.getTimerCount();
+    await vi.advanceTimersByTimeAsync(LEASE_RETRY_MS + 1_000);
+    expect(vi.getTimerCount()).toBe(timersLeft);
+  });
+
+  it('a round that fails during the stop schedules no retry', async () => {
+    const { fail, failed, handle, advanceTo } = await failingRounds();
+    let release: () => void = () => undefined;
+    fail.always = true;
+    fail.held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await advanceTo(20);
+    expect(failed).toEqual([20]);
+    const stopping = handle.stop();
+    release();
+    await stopping;
+    const timersLeft = vi.getTimerCount();
+    await vi.advanceTimersByTimeAsync(LEASE_RETRY_MS + 1_000);
+    expect(vi.getTimerCount()).toBe(timersLeft);
+  });
+
+  it('keeps serving while rounds fail inside the deadline, retried every 5 s; fences at 55 s; serves on the next success', async () => {
+    const { logs, fail, failed, handle, owner, advanceTo } = await failingRounds();
+    fail.always = true;
+    await advanceTo(54);
+    // Failed at the ticks and on every retry since 20 s (at 40 s the tick, then
+    // the retry due then; one retry pending at a time): inside the 55 s deadline.
+    expect(failed).toEqual([20, 25, 30, 35, 40, 40, 45, 50]);
+    expect(handle.supervisor?.running).toEqual([owner]);
+    expect(logs.filter((line) => line.startsWith('no lease renewed'))).toEqual([]);
+    await advanceTo(55);
+    await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped');
+    expect(handle.supervisor?.leased).toEqual([]);
+    expect(logs.filter((line) => line.startsWith('no lease renewed'))).toEqual([
+      'no lease renewed for 55 s: stopping every store until a renewal succeeds',
+    ]);
+    fail.always = false;
+    await advanceTo(60);
+    await waitFor(
+      () => handle.supervisor?.running.includes(owner) === true,
+      'the store running again',
+    );
+    expect(logs).toContain('leases renewed again: serving the leased stores');
   });
 });
 
