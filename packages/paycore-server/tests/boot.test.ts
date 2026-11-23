@@ -271,6 +271,101 @@ describe('startServer', () => {
     expect(setup.closes.count).toBe(1);
   });
 
+  it('stops its nodes once no lease renewal succeeded for the lease TTL, and serves again on the next one', async () => {
+    const clock = { value: NOW };
+    const down = { value: false };
+    const logs: string[] = [];
+    const setup = await world({
+      now: () => clock.value,
+      leaseRenewMs: 20,
+      log: (message) => logs.push(message),
+    });
+    // Lease rounds run in a transaction: refused while the database is "down".
+    const { db } = setup;
+    setup.deps.db = {
+      ...db,
+      transaction: (work) =>
+        down.value ? Promise.reject(new Error('database down')) : db.transaction(work),
+    };
+    const { owner } = await activeStoreWithRequest(setup);
+    const handle = await boot(setup);
+    await waitFor(() => handle.supervisor?.running.includes(owner) === true, 'the store running');
+    const renewals = async () => {
+      const [row] = await db.query<{ expires_at: number }>(
+        'select expires_at from leases where owner = $1',
+        [owner],
+      );
+      return row?.expires_at;
+    };
+    const failedRounds = () => logs.filter((line) => line.startsWith('lease round failed')).length;
+
+    down.value = true;
+    clock.value = NOW + 59;
+    await waitFor(() => failedRounds() >= 3, 'lease rounds failing');
+    // Inside the TTL of the last renewal: the store keeps running.
+    expect(handle.supervisor?.running).toEqual([owner]);
+    expect(await renewals()).toBe(NOW + 60);
+
+    clock.value = NOW + 60;
+    await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped');
+    expect(handle.supervisor?.leased).toEqual([]);
+    const fencedLines = logs.filter((line) => line.startsWith('no lease renewed'));
+    expect(fencedLines).toEqual([
+      'no lease renewed for 60 s: stopping every store until a renewal succeeds',
+    ]);
+    const failedAtFence = failedRounds();
+    await waitFor(() => failedRounds() >= failedAtFence + 3, 'more failed rounds');
+    // Logged once while fenced.
+    expect(logs.filter((line) => line.startsWith('no lease renewed'))).toHaveLength(1);
+
+    down.value = false;
+    await waitFor(
+      () => handle.supervisor?.running.includes(owner) === true,
+      'the store running again',
+    );
+    expect(logs).toContain('leases renewed again: serving the leased stores');
+    const [lease] = await db.query<{ holder: string; epoch: number }>(
+      'select holder, epoch from leases where owner = $1',
+      [owner],
+    );
+    // Taken again after its expiry: a new epoch.
+    expect(lease).toEqual({ holder: handle.holder, epoch: 2 });
+  });
+
+  it('a lease round answered after its leases ran out serves nothing', async () => {
+    const clock = { value: NOW };
+    const slow = { value: false };
+    const logs: string[] = [];
+    const setup = await world({
+      now: () => clock.value,
+      leaseRenewMs: 20,
+      log: (message) => logs.push(message),
+    });
+    const { db } = setup;
+    setup.deps.db = {
+      ...db,
+      transaction: async (work) => {
+        const result = await db.transaction(work);
+        if (slow.value) {
+          // The answer comes back once the TTL of the round's own leases has passed.
+          clock.value += 60;
+        }
+        return result;
+      },
+    };
+    const { owner } = await activeStoreWithRequest(setup);
+    const handle = await boot(setup);
+    await waitFor(() => handle.supervisor?.running.includes(owner) === true, 'the store running');
+    slow.value = true;
+    await waitFor(() => handle.supervisor?.running.length === 0, 'the nodes stopped');
+    expect(logs.some((line) => line.startsWith('no lease renewed'))).toBe(true);
+    slow.value = false;
+    await waitFor(
+      () => handle.supervisor?.running.includes(owner) === true,
+      'the store running again',
+    );
+  });
+
   it('a signal during the boot stops it before the supervisor and unwinds what started', async () => {
     let release: () => void = () => undefined;
     const held = new Promise<void>((resolve) => {

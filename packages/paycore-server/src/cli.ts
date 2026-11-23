@@ -22,6 +22,7 @@ export const CLI_USAGE = `Usage:
   paycore-server store list                      owner, status, tier, open alerts, reason
   paycore-server store activate <O npub|hex> --tier <name>
   paycore-server store suspend <O npub|hex>      sell out every listing, then stop serving it
+  paycore-server store tier <O npub|hex> <tier>  move a served store to another tier
   paycore-server tier list
   paycore-server tier set <name> --max-products <n>
   paycore-server tier delete <name>
@@ -224,6 +225,57 @@ async function storeSuspend(
     throw new CliFailure('This store is pending: it is not served, so there is nothing to suspend');
   }
   throw new CliFailure('This store is already suspended or being suspended');
+}
+
+/** Statuses whose store can move to another tier: served and not winding down. */
+const TIER_MOVABLE_STATUSES: readonly StoreStatus[] = ['active', 'degraded', 'halted'];
+
+async function storeTier(args: readonly string[], deps: CliDeps): Promise<string> {
+  const [subject, tier, ...rest] = args;
+  if (tier === undefined || tier.startsWith('--')) {
+    throw new UsageError('store tier needs the store and the tier name');
+  }
+  if (rest.length > 0) {
+    throw new UsageError(`Unknown argument ${rest[0]}`);
+  }
+  const owner = ownerArg(subject);
+  return deps.db.transaction(async (tx) => {
+    const [store] = await tx.query<{ status: StoreStatus; tier: string | null }>(
+      'select status, tier from stores where owner = $1 for update',
+      [owner],
+    );
+    if (store === undefined) {
+      throw new CliFailure('No such store');
+    }
+    if (!TIER_MOVABLE_STATUSES.includes(store.status)) {
+      throw new CliFailure(
+        `This store is ${store.status}: only an active, degraded or halted store moves to another tier${store.status === 'pending' ? ' (a pending store gets its tier at store activate)' : ''}`,
+      );
+    }
+    // Locked so a concurrent `tier set` cannot lower the cap past this check.
+    const [target] = await tx.query<{ max_products: number }>(
+      'select max_products from tiers where name = $1 for share',
+      [tier],
+    );
+    if (target === undefined) {
+      throw new CliFailure(`No such tier: ${tier}`);
+    }
+    if (store.tier === tier) {
+      return `${npub(owner)} is already on tier ${tier}`;
+    }
+    const [onSale] = await tx.query<{ count: number }>(
+      'select count(*)::int as count from products where owner = $1 and on_sale',
+      [owner],
+    );
+    const count = onSale?.count ?? 0;
+    if (count > target.max_products) {
+      throw new CliFailure(
+        `This store has ${count} products on sale; tier ${tier} allows ${target.max_products}: the merchant stops selling ${count - target.max_products} first`,
+      );
+    }
+    await tx.query('update stores set tier = $2 where owner = $1', [owner, tier]);
+    return `${npub(owner)} moved from tier ${store.tier ?? '-'} to ${tier} (${count} of ${target.max_products} products on sale)`;
+  });
 }
 
 async function tierList(deps: CliDeps): Promise<string> {
@@ -448,6 +500,9 @@ async function dispatch(argv: readonly string[], deps: CliDeps, now: () => numbe
   }
   if (group === 'store' && command === 'suspend') {
     return storeSuspend(argv.slice(2), deps, now);
+  }
+  if (group === 'store' && command === 'tier') {
+    return storeTier(argv.slice(2), deps);
   }
   if (group === 'tier' && command === 'list' && argv.length === 2) {
     return tierList(deps);

@@ -6,6 +6,7 @@
  * refused save may hold diverged memory; it is never reused).
  */
 import type { QueryPool } from '@merchant-node/checks';
+import { QUIET_SWEEP_SAVE_SECS } from '@merchant-node/constants';
 import { type LedgerState, upgradeLedger } from '@merchant-node/ledger';
 import { listeningPool } from '@merchant-node/relay-pool';
 import { type StoreNode, startStoreNode } from '@merchant-node/store-node';
@@ -472,6 +473,8 @@ export class StoreSupervisor {
         now: this.now,
         stop: (problem) => this.nodeStopped(run, generation, problem),
         haltOnSaveFailure: true,
+        // Every save rewrites the whole ledger row: a quiet sweep's is skipped (step 20).
+        quietSweepSaveSecs: QUIET_SWEEP_SAVE_SECS,
         ...(bundle.listenOnlyRelays.length === 0
           ? {}
           : { extraListenRelays: bundle.listenOnlyRelays }),

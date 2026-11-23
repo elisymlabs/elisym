@@ -15,6 +15,11 @@
  *    every `LEASE_RENEW_MS` and on every notify, the supervisor reconciled
  *    with what this holder leases. The renewals also stand in for a poll of
  *    the stores (a notify missed while the listen connection was down).
+ *    Self-fencing: when no renewal has succeeded for `LEASE_TTL_SECS` (the
+ *    database down or hanging), the leases may already be another holder's,
+ *    so the server stops its nodes itself (the supervisor reconciled with
+ *    nothing leased) instead of waiting for a fenced save to fail; the next
+ *    renewal that succeeds starts them again from the database.
  * 8. The owner event publisher.
  * 9. The request pump (LISTEN `paycore_requests`, the 60 s poll and tick).
  * 10. HTTP: the admin API and `/healthz`.
@@ -51,6 +56,7 @@ import { ChainClients } from './chain/clients';
 import { Eip3009Boot } from './chain/eip3009-boot';
 import { NetworkTreasuries } from './chain/treasuries';
 import type { PaycoreConfig } from './config';
+import type { FetchGuardDeps } from './connectors/fetch-guard';
 import { type Db, STORES_CHANNEL } from './db/db';
 import { KeyVault } from './db/keys';
 import { migrate } from './db/migrations';
@@ -64,7 +70,7 @@ import type { OwnerEventKind } from './owner-events';
 import { OwnerEventPublisher } from './publisher';
 import { newestOnRelays } from './relay/newest';
 import { StorePools } from './relay/pools';
-import { LEASE_RENEW_MS, acquireLeases, newHolderId } from './state/leases';
+import { LEASE_RENEW_MS, LEASE_TTL_SECS, acquireLeases, newHolderId } from './state/leases';
 import { StoreDirectory } from './state/stores';
 import { WebhookSlots } from './webhook-fetch';
 
@@ -100,6 +106,8 @@ export interface ServerDeps {
   treasuryReadConfig?: ConstructorParameters<typeof TreasuryReader>[2];
   eip3009Check?: typeof startCheckEip3009;
   eip3009Sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** How the webhook requests resolve and connect (the load script's local sink). */
+  webhookFetchDeps?: FetchGuardDeps;
   leaseRenewMs?: number;
   requestPollMs?: number;
   publisherIntervalMs?: number;
@@ -265,6 +273,10 @@ class PaycoreServer implements ServerHandle {
   private leaseTimer: ReturnType<typeof setInterval> | undefined;
   private leaseRound: Promise<void> | undefined;
   private leaseAgain = false;
+  /** `now` of the last lease round that succeeded: the leases taken then run out `LEASE_TTL_SECS` after it. */
+  private lastRenewedAt: number | undefined;
+  /** Whether the nodes were stopped for want of a renewal (logged once until a renewal succeeds). */
+  private fenced = false;
   private readonly slotsStop = new AbortController();
   private stopRequested = false;
   private stopping: Promise<void> | undefined;
@@ -384,7 +396,10 @@ class PaycoreServer implements ServerHandle {
       chains,
       treasuries,
       boot: eip3009,
-      webhookSlots: new WebhookSlots({ signal: this.slotsStop.signal }),
+      webhookSlots: new WebhookSlots({
+        signal: this.slotsStop.signal,
+        ...(deps.webhookFetchDeps === undefined ? {} : { deps: deps.webhookFetchDeps }),
+      }),
       rpcs: config.rpcs,
       inboxRelayAllowlist: config.inboxRelays,
       userAgent: USER_AGENT,
@@ -405,6 +420,8 @@ class PaycoreServer implements ServerHandle {
     await this.runLeaseRound();
     this.checkpoint();
     this.leaseTimer = setInterval(() => {
+      // Checked on the timer too: a round hanging on the database never fails.
+      this.fenceIfExpired();
       void this.runLeaseRound();
     }, deps.leaseRenewMs ?? LEASE_RENEW_MS);
 
@@ -501,10 +518,21 @@ class PaycoreServer implements ServerHandle {
         return;
       }
       const before = new Set(supervisor.leased);
+      const at = this.now();
       try {
-        const leased = await acquireLeases(this.requireDb(), this.holder, this.now());
+        const leased = await acquireLeases(this.requireDb(), this.holder, at);
         if (this.stopRequested) {
           return;
+        }
+        if (this.now() >= at + LEASE_TTL_SECS) {
+          // Answered after the leases it took ran out: they may be another holder's by now.
+          this.fenceIfExpired();
+          continue;
+        }
+        this.lastRenewedAt = at;
+        if (this.fenced) {
+          this.fenced = false;
+          this.log('leases renewed again: serving the leased stores');
         }
         supervisor.reconcile(leased);
         if (leased.some((lease) => !before.has(lease.owner))) {
@@ -513,8 +541,35 @@ class PaycoreServer implements ServerHandle {
         }
       } catch (error) {
         this.log(`lease round failed: ${errorText(error)}`);
+        this.fenceIfExpired();
       }
     } while (this.leaseAgain);
+  }
+
+  /**
+   * Stop every node when the last successful renewal is `LEASE_TTL_SECS` old:
+   * the leases may have moved to another holder, whose saves would fence ours
+   * only once a node of ours tries one.
+   */
+  private fenceIfExpired(): void {
+    const { supervisor, lastRenewedAt } = this;
+    if (
+      this.stopRequested ||
+      supervisor === undefined ||
+      lastRenewedAt === undefined ||
+      this.now() < lastRenewedAt + LEASE_TTL_SECS
+    ) {
+      return;
+    }
+    if (!this.fenced) {
+      this.fenced = true;
+      this.log(
+        `no lease renewed for ${this.now() - lastRenewedAt} s: stopping every store until a renewal succeeds`,
+      );
+    }
+    if (supervisor.leased.length > 0) {
+      supervisor.reconcile([]);
+    }
   }
 
   private async shutdown(): Promise<void> {

@@ -101,10 +101,34 @@ export interface RuntimeDeps {
   refreshTreasuries?: () => Promise<TreasuryRefresh>;
   /** Stop the node: the fee config RPC serves another cluster. */
   stop?: (problem: string) => void;
+  /**
+   * Skip the save ending a quiet sweep (one that moved nothing but the resume
+   * point and the last-seen times of treasuries already known) while the last
+   * sweep that saved is younger than this many seconds: for a host whose every
+   * save rewrites the whole ledger, where these are nearly every save. Without
+   * it every sweep saves.
+   */
+  quietSweepSaveSecs?: number;
 }
 
 /** What the run log says of a payment that matches no known elisym treasury (paid rule 3). */
 export const FEE_UNRESOLVED_NOTE = 'payment to this order matches no known elisym treasury';
+
+/**
+ * The ledger as JSON without what a quiet sweep moves: the resume point and
+ * the last-seen time of each known treasury (which treasuries are known, and
+ * the latest, are kept).
+ */
+export function quietSweepFingerprint(state: LedgerState): string {
+  const treasuries: Record<string, unknown> = {};
+  for (const [network, entry] of Object.entries(state.treasuries)) {
+    treasuries[network] =
+      entry === undefined
+        ? entry
+        : { ...entry, solana: Object.keys(entry.solana), evm: Object.keys(entry.evm) };
+  }
+  return JSON.stringify({ ...state, resumeAt: undefined, treasuries });
+}
 
 /** A reported transaction this order has already judged: never checked again. */
 function settled(order: MerchantOrder, tx: string): boolean {
@@ -129,6 +153,8 @@ export class MerchantRuntime {
   /** When each delivered order's status was last sent again (this run only). */
   private readonly resentAt = new Map<string, number>();
   private repeatsInFlight = 0;
+  /** When a sweep last saved (this run only): quiet sweeps skip their save until `quietSweepSaveSecs` after it. */
+  private sweepSavedAt: number | undefined;
 
   constructor(private readonly deps: RuntimeDeps) {
     this.check = deps.checkPayment ?? checkPayment;
@@ -316,7 +342,8 @@ export class MerchantRuntime {
 
   /** One catch-up sweep; `allLive` and `queuedAt` were taken when it was queued. */
   async sweep(allLive: boolean, queuedAt: number): Promise<void> {
-    const { state, context, save, log, now } = this.deps;
+    const { state, context, save, log, now, quietSweepSaveSecs } = this.deps;
+    const before = quietSweepSaveSecs === undefined ? undefined : quietSweepFingerprint(state);
     state.resumeAt = resumePointAfterSweep(allLive, queuedAt, state.resumeAt);
     for (const closed of pruneExpiredOrders(state, now())) {
       log(
@@ -396,7 +423,16 @@ export class MerchantRuntime {
     } finally {
       // Saved before anything is sent, even when the chain could not be read this
       // time: a claim made before the error is on disk before its delivery.
-      await save();
+      const quiet =
+        before !== undefined &&
+        quietSweepSaveSecs !== undefined &&
+        this.sweepSavedAt !== undefined &&
+        now() - this.sweepSavedAt < quietSweepSaveSecs &&
+        quietSweepFingerprint(state) === before;
+      if (!quiet) {
+        await save();
+        this.sweepSavedAt = now();
+      }
       await this.deliverPending();
     }
   }

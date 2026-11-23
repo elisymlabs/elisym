@@ -70,6 +70,8 @@ export interface StoreNodeDeps {
    * inbox relays (a wrap there is never skipped on a restart).
    */
   extraListenRelays?: readonly string[];
+  /** `RuntimeDeps.quietSweepSaveSecs`: a host whose saves rewrite the whole ledger skips quiet sweeps' saves. */
+  quietSweepSaveSecs?: number;
 }
 
 /** One running store: its runtime and the handle that stops it. */
@@ -197,6 +199,9 @@ export async function startStoreNode(deps: StoreNodeDeps): Promise<StoreNode> {
       ),
     selfCopies,
     inboxRelayCount: config.inboxRelays.length,
+    ...(deps.quietSweepSaveSecs === undefined
+      ? {}
+      : { quietSweepSaveSecs: deps.quietSweepSaveSecs }),
     log,
     now,
     later: (ms, task) => {

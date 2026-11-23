@@ -8,7 +8,16 @@ import type { PaycoreConfig } from '../src/config';
 import type { Db } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
 import { freshDb } from './pglite-db';
-import { MASTER_KEY, NOW, RELAY, RPCS, activate, directoryFor, ownerKeys } from './stores-fixtures';
+import {
+  MASTER_KEY,
+  NOW,
+  PRODUCT,
+  RELAY,
+  RPCS,
+  activate,
+  directoryFor,
+  ownerKeys,
+} from './stores-fixtures';
 
 const CONFIG: PaycoreConfig = {
   databaseUrl: 'postgres://unused',
@@ -240,6 +249,64 @@ describe('operator CLI (step 16)', () => {
     expect(await run(db, 'store', 'suspend', owner)).toEqual(
       failed('This store is already suspended or being suspended'),
     );
+  });
+
+  it('moves a served store to another tier, refused past the new cap', async () => {
+    const db = await freshDb();
+    await run(db, 'tier', 'set', 'small', '--max-products', '1');
+    await run(db, 'tier', 'set', 'big', '--max-products', '3');
+    const owner = await pendingStore(db);
+    expect(await run(db, 'store', 'tier', owner, 'big')).toEqual(
+      failed(
+        'This store is pending: only an active, degraded or halted store moves to another tier (a pending store gets its tier at store activate)',
+      ),
+    );
+    await run(db, 'store', 'activate', owner, '--tier', 'big');
+    const directory = directoryFor(db);
+    for (const d of ['a', 'b']) {
+      expect((await directory.putProduct(owner, d, PRODUCT)).ok).toBe(true);
+    }
+    expect((await directory.putProduct(owner, 'c', { ...PRODUCT, onSale: false })).ok).toBe(true);
+    expect(await run(db, 'store', 'tier', owner)).toEqual(
+      usage('store tier needs the store and the tier name'),
+    );
+    expect(await run(db, 'store', 'tier', owner, 'big', 'extra')).toEqual(
+      usage('Unknown argument extra'),
+    );
+    expect(await run(db, 'store', 'tier', 'nope', 'big')).toEqual(
+      failed('Give the store as its owner npub or hex key'),
+    );
+    expect(await run(db, 'store', 'tier', ownerKeys().pubkey, 'big')).toEqual(
+      failed('No such store'),
+    );
+    expect(await run(db, 'store', 'tier', owner, 'gold')).toEqual(failed('No such tier: gold'));
+    expect(await run(db, 'store', 'tier', owner, 'big')).toEqual(
+      ok(`${npub(owner)} is already on tier big`),
+    );
+    // Two on sale (the third is not): over the cap of 1.
+    expect(await run(db, 'store', 'tier', owner, 'small')).toEqual(
+      failed(
+        'This store has 2 products on sale; tier small allows 1: the merchant stops selling 1 first',
+      ),
+    );
+    expect(await statusOf(db, owner)).toEqual({ status: 'active', tier: 'big' });
+    await run(db, 'tier', 'set', 'two', '--max-products', '2');
+    await db.query("update stores set status = 'halted' where owner = $1", [owner]);
+    expect(await run(db, 'store', 'tier', npub(owner), 'two')).toEqual(
+      ok(`${npub(owner)} moved from tier big to two (2 of 2 products on sale)`),
+    );
+    expect(await statusOf(db, owner)).toEqual({ status: 'halted', tier: 'two' });
+    // The new cap holds for the next product put on sale.
+    expect((await directory.putProduct(owner, 'c', PRODUCT)).ok).toBe(false);
+    for (const status of ['suspending', 'suspended']) {
+      await db.query('update stores set status = $2 where owner = $1', [owner, status]);
+      expect(await run(db, 'store', 'tier', owner, 'big')).toEqual(
+        failed(
+          `This store is ${status}: only an active, degraded or halted store moves to another tier`,
+        ),
+      );
+    }
+    expect(await statusOf(db, owner)).toEqual({ status: 'suspended', tier: 'two' });
   });
 
   it('lists open alerts, by store too, and clears one', async () => {

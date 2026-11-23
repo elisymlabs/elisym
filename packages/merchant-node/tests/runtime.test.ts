@@ -8,8 +8,14 @@ import {
   MAX_REPEATS_IN_FLIGHT,
   RESEND_EVERY_SECS,
 } from '../src/constants';
+import { recordTreasuryRead } from '../src/fee';
 import type { MerchantOrder } from '../src/ledger';
-import { type DeliveryAttempt, MerchantRuntime, type RuntimeDeps } from '../src/runtime';
+import {
+  type DeliveryAttempt,
+  MerchantRuntime,
+  type RuntimeDeps,
+  quietSweepFingerprint,
+} from '../src/runtime';
 import { SelfCopies } from '../src/self-copies';
 import type { PaymentCheck } from '../src/solana';
 import {
@@ -515,6 +521,118 @@ describe('the sweep', () => {
     await runtime.deliverPending();
     expect(state.orders.k.deliveredAt).toBeUndefined();
     expect(events).toEqual(['deliver:k']);
+  });
+});
+
+describe('quiet sweeps (quietSweepSaveSecs)', () => {
+  const TREASURY = 'GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy';
+  const ROTATED = 'HXtBm8XZbxaTt41uqaKhwUAa6Z1aPyvJdsZVENiWsetg';
+
+  function quiet(options: { quietSweepSaveSecs?: number } = {}) {
+    const clock = { value: T0 + 1000 };
+    const setup = harness('paid', true, () => clock.value);
+    const named = { treasury: TREASURY };
+    const runtime = new MerchantRuntime({
+      ...setup.deps,
+      ...options,
+      refreshTreasuries: async () => {
+        recordTreasuryRead(
+          setup.state,
+          'devnet',
+          { ...named, evmTreasury: undefined },
+          clock.value,
+        );
+        return { kind: 'read', feeBps: 300 };
+      },
+    });
+    const saves = () => setup.events.filter((event) => event === 'save').length;
+    return { ...setup, clock, named, runtime, saves };
+  }
+
+  it('skips the save of a sweep that moved only the resume point and last-seen times, until the window passes', async () => {
+    const { runtime, clock, state, saves, saved } = quiet({ quietSweepSaveSecs: 600 });
+    await runtime.sweep(true, clock.value);
+    // The first sweep of a run always saves.
+    expect(saves()).toBe(1);
+    const firstSaved = saved.at(-1);
+    clock.value += 60;
+    await runtime.sweep(true, clock.value);
+    clock.value += 60;
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(1);
+    // In memory they moved; on disk they wait.
+    expect(state.resumeAt).toBe(clock.value);
+    expect(state.treasuries.devnet?.solana[TREASURY]).toBe(clock.value);
+    expect(saved.at(-1)).toBe(firstSaved);
+    clock.value = T0 + 1000 + 599;
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(1);
+    clock.value = T0 + 1000 + 600;
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(2);
+    expect(JSON.parse(saved.at(-1) ?? '{}').resumeAt).toBe(clock.value);
+    // The window runs from that save again.
+    clock.value += 60;
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(2);
+  });
+
+  it('saves a sweep that changed anything else: a new treasury, a closed order, a new latest', async () => {
+    const { runtime, clock, state, named, saves } = quiet({ quietSweepSaveSecs: 600 });
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(1);
+    // A treasury named for the first time (the latest moves with it).
+    named.treasury = ROTATED;
+    clock.value += 60;
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(2);
+    // Back to the first treasury: known already, but the latest changes.
+    named.treasury = TREASURY;
+    clock.value += 60;
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(3);
+    // An unpaid order closed by the sweep.
+    state.orders.old = {
+      key: 'old',
+      buyerPubkey: 'b'.repeat(64),
+      orderId: ORDER_ID,
+      rumorId: 'r',
+      createdAt: clock.value - 4 * 24 * 60 * 60,
+      reference: 'Ref',
+      product: `30402:${'s'.repeat(64)}:course-101`,
+      reportedTxs: [],
+    };
+    clock.value += 60;
+    await runtime.sweep(true, clock.value);
+    expect(state.closedOrders).toEqual({ old: true });
+    expect(saves()).toBe(4);
+    // Back to quiet.
+    clock.value += 60;
+    await runtime.sweep(true, clock.value);
+    expect(saves()).toBe(4);
+  });
+
+  it('saves every sweep without the option (the CLI)', async () => {
+    const { runtime, clock, saves } = quiet();
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      clock.value += 60;
+      await runtime.sweep(true, clock.value);
+    }
+    expect(saves()).toBe(3);
+  });
+
+  it('the fingerprint leaves out only the resume point and last-seen times', () => {
+    const { state } = quiet();
+    const before = quietSweepFingerprint(state);
+    state.resumeAt = T0 + 5;
+    expect(quietSweepFingerprint(state)).toBe(before);
+    recordTreasuryRead(state, 'devnet', { treasury: TREASURY, evmTreasury: '0xabc' }, T0);
+    const known = quietSweepFingerprint(state);
+    expect(known).not.toBe(before);
+    recordTreasuryRead(state, 'devnet', { treasury: TREASURY, evmTreasury: '0xabc' }, T0 + 60);
+    expect(quietSweepFingerprint(state)).toBe(known);
+    recordTreasuryRead(state, 'devnet', { treasury: TREASURY, evmTreasury: '0xdef' }, T0 + 120);
+    expect(quietSweepFingerprint(state)).not.toBe(known);
   });
 });
 

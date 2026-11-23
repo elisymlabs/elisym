@@ -83,6 +83,12 @@ A second SIGTERM / SIGINT kills the process at once. Set compose `stop_grace_per
 stop_grace_period: 5m
 ```
 
+Measured with `scripts/load.ts` (fake chains, a 10 requests/s RPC URL): shutdown 4 s at 50 stores and 19 s at 200, the longest sweep 36 s. Every store's sweep waits on the same RPC rate limit, so the longest task grows with the stores per RPC URL and the real RPC latency: 5m leaves wide headroom up to a few hundred stores per URL.
+
+## Losing the database
+
+The lease loop renews this instance's leases every 20 s; a lease runs out 60 s (`LEASE_TTL_SECS`) after its last renewal, and another instance may then take the store. When no renewal has succeeded for 60 s (the database down, or a renewal still hanging), the server **stops every store node itself** and logs `no lease renewed for <n> s: stopping every store until a renewal succeeds`: it does not wait for a node's next save to be refused, so a store is never served by two instances at once, even one that saves nothing for a while. The process keeps running (HTTP, `/healthz`) and keeps trying; on the first renewal that succeeds it logs `leases renewed again: serving the leased stores` and starts the stores it leases again from the database (a store whose lease ran out comes back with a new epoch). A renewal answered only after the leases it took ran out counts as failed. Nothing is lost while stopped: buyers' messages wait on the relays and the listener resumes from its saved point; payments are found by the next sweep.
+
 ## Backups
 
 - Nightly `pg_dump` of the database (RPO 24 h), kept off the host, e.g. `docker compose exec -T postgres pg_dump -U paycore -Fc paycore > paycore-$(date +%F).dump`. Restore with `pg_restore` into an empty database, with the same master key.
@@ -101,4 +107,10 @@ docker compose run --rm paycore-server alert list
 docker compose run --rm paycore-server stats
 ```
 
-`store list|activate|suspend`, `tier list|set|delete`, `alert list|clear`, `stats` (read-only), and `import <home> --tier <name> --node-stopped [--webhook-secret-file <path>]` to take over a stopped self-host merchant-node store (the home directory mounted into the container; its store key passphrase from `ELISYM_MERCHANT_PASSPHRASE(_FILE)`; the owner key is never read). `--node-stopped` is the operator's word that the self-host node no longer runs: two nodes on one ledger would double-serve orders.
+`store list|activate|suspend|tier` (`store tier <owner> <tier>` moves an active, degraded or halted store to another tier; refused while it has more products on sale than the new tier allows), `tier list|set|delete`, `alert list|clear`, `stats` (read-only), and `import <home> --tier <name> --node-stopped [--webhook-secret-file <path>]` to take over a stopped self-host merchant-node store (the home directory mounted into the container; its store key passphrase from `ELISYM_MERCHANT_PASSPHRASE(_FILE)`; the owner key is never read). `--node-stopped` is the operator's word that the self-host node no longer runs: two nodes on one ledger would double-serve orders.
+
+Before an import:
+
+- **Stop the self-host node yourself and make sure it stays stopped** (disable its service, remove its container). `--node-stopped` is required and is the only real check: import also reads the home's `run.lock`, but only its age - a lock refreshed in the last 90 s refuses the import (so wait 90 s after the node stopped), and an old or missing lock proves nothing. A home **copied from another machine** says nothing about the node still running there: stop that one before copying.
+- **`keys.json` must be written by merchant-node 0.5.0 or later**: import reads the owner's public key from it (the owner key itself is never read or decrypted), and an older file does not name it, so the import is refused. Rewrite it first on the self-host machine with a current node (`elisym-merchant encrypt-keys`).
+- The node's last `elisym-merchant setup` must be the one the relays serve: its ledger records the payout list the relays' newest 10133 carries (same date), else the import is refused.
