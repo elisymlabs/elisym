@@ -385,6 +385,38 @@ describe('guardedFetch for webhooks: POST, redirects refused, answer cut', () =>
     ]);
   });
 
+  it('keeps a caller accept header over the default', async () => {
+    const web = new FakeWeb().route('https://hooks.example/in', { body: 'ok' });
+    await guardedFetch(
+      'https://hooks.example/in',
+      { ...LIMITS, method: 'POST', body: '{}', headers: { Accept: 'application/json' } },
+      web.deps(),
+    );
+    expect(web.requests[0]?.headers['accept']).toBe('application/json');
+  });
+
+  it('drops the caller framing and routing headers, whatever their case', async () => {
+    const web = new FakeWeb().route('https://hooks.example/in', { body: 'ok' });
+    await guardedFetch(
+      'https://hooks.example/in',
+      {
+        ...LIMITS,
+        method: 'POST',
+        body: '{}',
+        headers: {
+          Host: 'internal.example',
+          'Content-Length': '999',
+          'TRANSFER-ENCODING': 'chunked',
+          connection: 'keep-alive',
+          'X-Kept': 'yes',
+        },
+      },
+      web.deps(),
+    );
+    const sent = web.requests[0]?.headers ?? {};
+    expect(Object.keys(sent).sort()).toEqual(['accept', 'accept-encoding', 'user-agent', 'x-kept']);
+  });
+
   it('a GET has no body and keeps the default user agent', async () => {
     const web = new FakeWeb().route('https://shop.example/', { body: 'x' });
     await guardedFetch('https://shop.example/', LIMITS, web.deps());

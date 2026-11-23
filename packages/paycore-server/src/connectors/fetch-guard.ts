@@ -411,6 +411,9 @@ function requestBytes(body: string | Uint8Array | undefined): Uint8Array | undef
   return typeof body === 'string' ? new TextEncoder().encode(body) : body;
 }
 
+/** Framing and routing headers the transport sets itself; a caller's copy is dropped. */
+const TRANSPORT_HEADERS = new Set(['host', 'content-length', 'transfer-encoding', 'connection']);
+
 function requestHeaders(
   accept: string | undefined,
   extra: Readonly<Record<string, string>> | undefined,
@@ -421,7 +424,10 @@ function requestHeaders(
     'accept-encoding': 'gzip, deflate, br',
   };
   for (const [name, value] of Object.entries(extra ?? {})) {
-    headers[name.toLowerCase()] = value;
+    const lower = name.toLowerCase();
+    if (!TRANSPORT_HEADERS.has(lower)) {
+      headers[lower] = value;
+    }
   }
   return headers;
 }

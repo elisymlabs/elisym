@@ -6,17 +6,18 @@ import { Readable } from 'node:stream';
 import { verifyWebhook } from '@elisym/commerce/webhook';
 import { WEBHOOK_MAX_ANSWER_BYTES } from '@merchant-node/constants';
 import { type LedgerState, emptyLedger, newWebhookEntry } from '@merchant-node/ledger';
+import { startStoreNode } from '@merchant-node/store-node';
 import { type FetchLike, WebhookSender, sendWebhook, testBody } from '@merchant-node/webhook';
+import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   type FetchGuardDeps,
-  FetchGuardError,
   type ResolvedAddress,
   type Transport,
   checkUrl,
   createNodeTransport,
 } from '../src/connectors/fetch-guard';
-import { webhookFetch } from '../src/webhook-fetch';
+import { WebhookSlots, type WebhookSlotsOptions } from '../src/webhook-fetch';
 
 // A self-signed certificate for `shop.test` (valid to 2126), checked in for these tests only.
 const TLS_DIR = join(import.meta.dirname, 'fixtures', 'tls');
@@ -48,7 +49,7 @@ const held: (() => void)[] = [];
 let endlessProduced = 0;
 
 function answer(request: IncomingMessage, response: ServerResponse): void {
-  switch (request.url) {
+  switch (new URL(request.url ?? '/', 'https://shop.test').pathname) {
     case '/redirect':
       response.writeHead(307, { location: '/hook' }).end();
       return;
@@ -123,6 +124,15 @@ const toLocalServer: Transport = (request) => {
 
 const LOCAL: FetchGuardDeps = { resolve: async () => [PUBLIC_IP], transport: toLocalServer };
 
+/** One store's adapter over its own slots. */
+function webhookFetch(options: WebhookSlotsOptions = {}): FetchLike {
+  return new WebhookSlots(options).forStore(STORE);
+}
+
+function post(fetchLike: FetchLike, url: string): Promise<Response> {
+  return fetchLike(url, { method: 'POST', body: '{}' });
+}
+
 function send(fetchLike: FetchLike, url: string, timeoutMs?: number) {
   const { body, eventId } = testBody(STORE);
   return sendWebhook(
@@ -147,7 +157,7 @@ async function until(condition: () => boolean, what: string): Promise<void> {
   }
 }
 
-function paidLedger(): LedgerState {
+function paidLedger(store = STORE): LedgerState {
   const state = emptyLedger();
   const orderId = 'b3a7c2d4-0000-4000-8000-000000000001';
   const order = {
@@ -157,7 +167,8 @@ function paidLedger(): LedgerState {
     rumorId: 'r'.repeat(64),
     createdAt: NOW - 600,
     reference: 'ref',
-    product: `30402:${STORE}:course-101`,
+    product: `30402:${store}:course-101`,
+    deliveredAt: NOW,
     reportedTxs: [],
     paid: {
       signature: 's'.repeat(88),
@@ -167,7 +178,7 @@ function paidLedger(): LedgerState {
       medium: 'solana-devnet',
     },
   };
-  state.orders[order.key] = { ...order, webhook: newWebhookEntry(STORE, order, NOW) };
+  state.orders[order.key] = { ...order, webhook: newWebhookEntry(store, order, NOW) };
   return state;
 }
 
@@ -193,6 +204,7 @@ describe('webhookFetch carrying merchant-node sendWebhook over TLS', () => {
     expect(request.headers['content-type']).toBe('application/json');
     expect(request.headers['user-agent']).toBe(USER_AGENT);
     expect(request.headers['content-length']).toBe(String(Buffer.byteLength(request.body)));
+    expect(request.headers['transfer-encoding']).toBeUndefined();
     expect(request.headers['x-elisym-event']).toBe('test');
     expect(request.headers['x-elisym-timestamp']).toBe(String(NOW));
     const parsed: unknown = JSON.parse(request.body);
@@ -390,18 +402,180 @@ describe('the global concurrency cap', () => {
     expect(await send(adapter, HOOK_URL)).toEqual({ ok: true, status: 200 });
   });
 
-  it('shutdown refuses the queued sends without making them', async () => {
+  it('shutdown refuses the queued sends without making them and aborts the running ones', async () => {
     const shutdown = new AbortController();
-    const adapter = webhookFetch({ deps: LOCAL, maxConcurrent: 1, signal: shutdown.signal });
+    const slots = new WebhookSlots({ deps: LOCAL, maxConcurrent: 1, signal: shutdown.signal });
+    const adapter = slots.forStore(STORE);
     const running = send(adapter, 'https://shop.test/held');
     await until(() => held.length === 1, 'the first send to run');
-    const queued = adapter(HOOK_URL, { method: 'POST', body: '{}' });
+    const queued = slots.forStore('other')(HOOK_URL, { method: 'POST', body: '{}' });
+    expect(slots.queued).toBe(1);
+    const abortedAt = Date.now();
     shutdown.abort();
-    await expect(queued).rejects.toBeInstanceOf(FetchGuardError);
-    expect((await running).ok).toBe(false);
+    await expect(queued).rejects.toThrow(/shutting down/u);
+    const result = await running;
+    expect(result.ok === false && result.error).toMatch(/took too long/u);
+    // Aborted at once, not at the end of its own 10 s budget.
+    expect(Date.now() - abortedAt).toBeLessThan(2_000);
+    expect(slots.running).toBe(0);
+    expect(slots.queued).toBe(0);
     await expect(adapter(HOOK_URL, { method: 'POST', body: '{}' })).rejects.toThrow(
       /shutting down/u,
     );
+    expect(received.map((request) => request.path)).toEqual(['/held']);
+  });
+});
+
+describe('the slots shared by the stores', () => {
+  it("serves the stores in turn: a store with one send waiting goes before another store's backlog", async () => {
+    const slots = new WebhookSlots({ deps: LOCAL, maxConcurrent: 1, maxQueuedPerStore: 10 });
+    const blocker = post(slots.forStore('c'), 'https://shop.test/held?c');
+    await until(() => held.length === 1, 'the blocker to hold the only slot');
+    const storeA = slots.forStore('a');
+    const backlog = Array.from({ length: 10 }, (_unused, index) =>
+      post(storeA, `https://shop.test/held?a${index}`),
+    );
+    const single = post(slots.forStore('b'), 'https://shop.test/held?b');
+    expect(slots.queued).toBe(11);
+    for (let served = 0; served < 3; served++) {
+      held.shift()?.();
+      await until(() => held.length === 1, 'the next send to take the freed slot');
+    }
+    expect(received.map((request) => request.path)).toEqual([
+      '/held?c',
+      '/held?a0',
+      '/held?b',
+      '/held?a1',
+    ]);
+    while (held.length > 0 || slots.queued > 0) {
+      held.shift()?.();
+      await until(() => held.length === 1 || slots.running === 0, 'the backlog to move');
+    }
+    const answers = await Promise.all([blocker, ...backlog, single]);
+    expect(answers.every((response) => response.status === 200)).toBe(true);
+    expect(slots.running).toBe(0);
+  });
+
+  it("refuses a store's send past its waiting limit, leaving the others queued", async () => {
+    const slots = new WebhookSlots({ deps: LOCAL, maxConcurrent: 1, maxQueuedPerStore: 2 });
+    const blocker = post(slots.forStore('c'), 'https://shop.test/held');
+    await until(() => held.length === 1, 'the blocker to run');
+    const storeA = slots.forStore('a');
+    const waiting = [post(storeA, HOOK_URL), post(storeA, HOOK_URL)];
+    await expect(post(storeA, HOOK_URL)).rejects.toThrow(/waiting/u);
+    const other = post(slots.forStore('b'), HOOK_URL);
+    expect(slots.queued).toBe(3);
+    held.shift()?.();
+    const answers = await Promise.all([blocker, ...waiting, other]);
+    expect(answers.map((response) => response.status)).toEqual([200, 200, 200, 200]);
+    expect(slots.running).toBe(0);
+  });
+
+  it('a send aborted while waiting leaves the line: the next live one gets the slot', async () => {
+    const slots = new WebhookSlots({ deps: LOCAL, maxConcurrent: 1 });
+    const blocker = post(slots.forStore('c'), 'https://shop.test/held');
+    await until(() => held.length === 1, 'the blocker to run');
+    const stopA = new AbortController();
+    const storeA = slots.forStore('a', { signal: stopA.signal });
+    const abandoned = [post(storeA, HOOK_URL), post(storeA, HOOK_URL)];
+    const live = post(slots.forStore('b'), 'https://shop.test/held?b');
+    expect(slots.queued).toBe(3);
+    stopA.abort();
+    await expect(Promise.all(abandoned)).rejects.toThrow(/store is stopping/u);
+    expect(slots.queued).toBe(1);
+    expect(slots.running).toBe(1);
+    held.shift()?.();
+    await until(() => held.length === 1, 'the live waiter to get the slot');
+    expect(slots.running).toBe(1);
+    expect(slots.queued).toBe(0);
+    held.shift()?.();
+    expect((await blocker).status).toBe(200);
+    expect((await live).status).toBe(200);
+    expect(slots.running).toBe(0);
+    expect(received.map((request) => request.path)).toEqual(['/held', '/held?b']);
+  });
+
+  it("a store's stop refuses and aborts only that store's sends", async () => {
+    const slots = new WebhookSlots({ deps: LOCAL, maxConcurrent: 2 });
+    const stopA = new AbortController();
+    const storeA = slots.forStore('a', { signal: stopA.signal });
+    const storeB = slots.forStore('b');
+    const runningA = post(storeA, 'https://shop.test/held?a-running');
+    const runningB = post(storeB, 'https://shop.test/held?b-running');
+    await until(() => held.length === 2, 'one send of each store to run');
+    const queuedA = post(storeA, HOOK_URL);
+    const queuedB = post(storeB, 'https://shop.test/hook?b-queued');
+    expect(slots.queued).toBe(2);
+    const stoppedAt = Date.now();
+    stopA.abort();
+    await expect(queuedA).rejects.toThrow(/store is stopping/u);
+    await expect(runningA).rejects.toThrow(/took too long/u);
+    expect(Date.now() - stoppedAt).toBeLessThan(2_000);
+    // The slot store A freed goes to store B's waiting send.
+    expect((await queuedB).status).toBe(200);
+    await expect(post(storeA, HOOK_URL)).rejects.toThrow(/store is stopping/u);
+    for (const release of held.splice(0)) {
+      release();
+    }
+    expect((await runningB).status).toBe(200);
+    expect((await post(storeB, 'https://shop.test/hook?b-after')).status).toBe(200);
+    expect(slots.running).toBe(0);
+    expect(received.map((request) => request.path).sort()).toEqual([
+      '/held?a-running',
+      '/held?b-running',
+      '/hook?b-after',
+      '/hook?b-queued',
+    ]);
+  });
+
+  it("a send refused at the store's stop leaves the ledger entry as it was", async () => {
+    const slots = new WebhookSlots({ deps: LOCAL, maxConcurrent: 1 });
+    const blocker = post(slots.forStore('other'), 'https://shop.test/held');
+    await until(() => held.length === 1, 'the other store to hold the only slot');
+
+    const secretKey = generateSecretKey();
+    const storePubkey = getPublicKey(secretKey);
+    const state = paidLedger(storePubkey);
+    const entry = onlyEntry(state);
+    const stop = new AbortController();
+    let saves = 0;
+    const node = await startStoreNode({
+      pool: {
+        subscribe: () => ({ close: () => undefined }),
+        subscribeEose: () => ({ close: () => undefined }),
+        ensureRelay: async () => ({ publish: async () => '', auth: async () => '' }),
+      },
+      config: { name: 'Shop', network: 'devnet', payouts: [], inboxRelays: ['wss://inbox.test'] },
+      products: new Map(),
+      state,
+      storePubkey,
+      storeSecretKey: secretKey,
+      save: () => {
+        saves += 1;
+      },
+      refreshTreasuries: async () => ({ kind: 'unreachable', problem: 'offline' }),
+      eip3009: [],
+      webhook: {
+        target: { url: HOOK_URL, secret: SECRET },
+        userAgent: USER_AGENT,
+        fetch: slots.forStore(storePubkey, { signal: stop.signal }),
+      },
+      log: () => undefined,
+      now: () => NOW,
+      stop: () => undefined,
+    });
+    await until(() => slots.queued === 1, "the store's webhook to wait for a slot");
+    const savesBeforeStop = saves;
+    const stopping = node.stop();
+    stop.abort();
+    await stopping;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(slots.queued).toBe(0);
+    expect(entry).toMatchObject({ state: 'pending', attempts: 0, nextAt: NOW });
+    expect(entry.lastError).toBeUndefined();
+    expect(saves).toBe(savesBeforeStop);
+    held.shift()?.();
+    expect((await blocker).status).toBe(200);
     expect(received.map((request) => request.path)).toEqual(['/held']);
   });
 });
