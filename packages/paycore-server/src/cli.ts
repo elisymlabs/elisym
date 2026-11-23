@@ -306,12 +306,30 @@ async function tierSet(name: string, args: readonly string[], deps: CliDeps): Pr
   if (!POSITIVE_INT_RE.test(max)) {
     throw new CliFailure('--max-products must be a positive integer');
   }
-  await deps.db.query(
-    `insert into tiers (name, max_products) values ($1, $2)
-     on conflict (name) do update set max_products = $2`,
-    [name, Number(max)],
-  );
-  return `tier ${name} saved`;
+  const cap = Number(max);
+  return deps.db.transaction(async (tx) => {
+    // The tier row, then its stores (as product edits lock them): no store
+    // puts a product on sale past the new cap while it is checked.
+    await tx.query('select 1 from tiers where name = $1 for update', [name]);
+    const stores = await tx.query<{ owner: string; on_sale: number }>(
+      `select s.owner,
+         (select count(*)::int from products p where p.owner = s.owner and p.on_sale) as on_sale
+       from stores s where s.tier = $1 order by s.created_at, s.owner for update of s`,
+      [name],
+    );
+    const over = stores.filter((store) => store.on_sale > cap);
+    if (over.length > 0) {
+      throw new CliFailure(
+        `Tier ${name} has ${over.length} store${over.length === 1 ? '' : 's'} with more than ${cap} products on sale; each merchant stops selling the excess first (or move the store to another tier):\n  ${over.map((store) => `${npub(store.owner)} ${store.on_sale} on sale`).join('\n  ')}`,
+      );
+    }
+    await tx.query(
+      `insert into tiers (name, max_products) values ($1, $2)
+       on conflict (name) do update set max_products = $2`,
+      [name, cap],
+    );
+    return `tier ${name} saved`;
+  });
 }
 
 async function tierDelete(name: string, deps: CliDeps): Promise<string> {
@@ -478,7 +496,9 @@ async function importCommand(
     ].join('\n');
   } catch (error) {
     if (error instanceof ImportRefused) {
-      throw new CliFailure(`import refused: ${error.message}`);
+      // Line by line: a refusal lists its problems one per line.
+      const text = error.message.split('\n').map(printable).join('\n');
+      throw new CliFailure(`import refused: ${text}`);
     }
     throw error;
   }

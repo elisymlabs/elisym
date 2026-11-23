@@ -20,7 +20,6 @@ import {
   loadLedger,
 } from '@merchant-node/ledger';
 import { type Product, loadProducts } from '@merchant-node/products';
-import { checkoutRelaySpelling } from '@merchant-node/relays';
 import { lostHistoryProblem, productPriceProblems } from '@merchant-node/start-checks';
 import { ownerEventTemplates } from '@merchant-node/store-events';
 import { WEBHOOK_SECRET_FILE_ENV, readWebhookSecret } from '@merchant-node/webhook';
@@ -180,8 +179,13 @@ function webhookSecretFrom(path: string, deps: ImportDeps): string {
   return secret;
 }
 
-/** The imported ledger: one a setup pass of this version ran on, with a recorded payout list. */
-function importedLedger(home: MerchantHome, owner: string): LedgerState {
+type RecordedPayoutList = NonNullable<LedgerState['payto']>;
+
+/** The imported ledger: one a setup pass of this version ran on, and the payout list it recorded. */
+function importedLedger(
+  home: MerchantHome,
+  owner: string,
+): { state: LedgerState; recorded: RecordedPayoutList } {
   const loaded = refuseOnThrow(`cannot read ${home.ledger}`, () => loadLedger(home.ledger));
   if (loaded.read === 'missing') {
     throw new ImportRefused(`${home.ledger} does not exist: ${SETUP_FIRST}`);
@@ -189,11 +193,12 @@ function importedLedger(home: MerchantHome, owner: string): LedgerState {
   if (loaded.read === PRE_FEE_LEDGER_VERSION) {
     throw new ImportRefused(`${home.ledger}: ${UPGRADE_FIRST_PROBLEM}`);
   }
-  if (loaded.state.payto === undefined) {
+  const recorded = loaded.state.payto;
+  if (recorded === undefined) {
     throw new ImportRefused(`the ledger records no published payout list: ${SETUP_FIRST}`);
   }
   refuseOnThrow('the ledger', () => activePayouts(loaded.state, owner));
-  return loaded.state;
+  return { state: loaded.state, recorded };
 }
 
 /** Each product as the admin API would take it (`PUT products/:d`): refused with every problem. */
@@ -253,9 +258,8 @@ function configProblems(
       ...input.error.issues.map((issue) => `${issue.path.join('.') || 'config'}: ${issue.message}`),
     );
   }
-  const inboxRelays = [
-    ...new Set(config.inboxRelays.map((relay) => checkoutRelaySpelling(relay) ?? relay)),
-  ];
+  // In checkout spelling and once each already: `loadConfig` rewrites and refuses duplicates.
+  const { inboxRelays } = config;
   for (const relay of inboxRelays) {
     if (!deps.config.inboxRelays.includes(relay)) {
       problems.push(
@@ -290,12 +294,9 @@ async function relaysOwnerEvents(
   owner: string,
   storePubkey: string,
   state: LedgerState,
+  recorded: RecordedPayoutList,
   deps: ImportDeps,
 ): Promise<{ payoutList: NostrEvent; authorization: NostrEvent }> {
-  const recorded = state.payto;
-  if (recorded === undefined) {
-    throw new ImportRefused(`the ledger records no published payout list: ${SETUP_FIRST}`);
-  }
   const payoutList = await deps.readRelays(owner, KIND_PAYTO, {});
   if (payoutList === undefined) {
     throw new ImportRefused(`the relays serve no payout list by this owner: ${SETUP_FIRST}`);
@@ -410,7 +411,7 @@ export async function importStore(options: ImportOptions, deps: ImportDeps): Pro
     throw new ImportRefused(`no such tier: ${options.tier}`);
   }
   const config = refuseOnThrow('config.json', () => loadConfig(home.config));
-  const state = importedLedger(home, owner);
+  const { state, recorded } = importedLedger(home, owner);
   const products = refuseOnThrow('products', () => loadProducts(home.products));
   checkedProducts(products);
   const onSale = [...products.values()].filter((product) => product.onSale).length;
@@ -439,11 +440,13 @@ export async function importStore(options: ImportOptions, deps: ImportDeps): Pro
   if (draft === undefined) {
     throw new ImportRefused('config.json holds no payouts');
   }
-  const recorded = state.payto;
-  if (recorded === undefined) {
-    throw new ImportRefused(`the ledger records no published payout list: ${SETUP_FIRST}`);
-  }
-  const { payoutList, authorization } = await relaysOwnerEvents(owner, storePubkey, state, deps);
+  const { payoutList, authorization } = await relaysOwnerEvents(
+    owner,
+    storePubkey,
+    state,
+    recorded,
+    deps,
+  );
 
   const warnings: string[] = [];
   if (draft.text !== recorded.payouts) {

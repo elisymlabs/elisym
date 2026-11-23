@@ -5,7 +5,13 @@ import { KIND_PAYTO, KIND_STORE_AUTH } from '@elisym/commerce';
 import { verifyWebhook } from '@elisym/commerce/webhook';
 import { newest } from '@merchant-node/checks';
 import { OFFER_RELAYS } from '@merchant-node/constants';
-import { type LedgerState, emptyLedger, loadLedger, recordPayment } from '@merchant-node/ledger';
+import {
+  type LedgerState,
+  PRE_FEE_LEDGER_VERSION,
+  emptyLedger,
+  loadLedger,
+  recordPayment,
+} from '@merchant-node/ledger';
 import { encryptSecret } from '@merchant-node/secret-box';
 import { runSetupPass } from '@merchant-node/setup-ledger';
 import { buildStoreSignedEvents, ownerEventTemplates } from '@merchant-node/store-events';
@@ -24,7 +30,10 @@ import { prepareOwnerEvent } from '../src/owner-events';
 import { newHolderId } from '../src/state/leases';
 import { PgLedgerStore } from '../src/state/ledger-store';
 import {
+  BASE_DEVNET_CAIP19,
   D,
+  TEMPO_DEVNET_CAIP19,
+  TEMPO_PAYOUT,
   type Key,
   NOW,
   PAYOUT,
@@ -46,6 +55,9 @@ const TIER = 'basic';
 const PASSPHRASE = 'correct horse battery staple';
 const WEBHOOK_URL = 'https://hooks.example.com/paid';
 const WEBHOOK_SECRET = 's'.repeat(64);
+const LSM_MAINNET_CAIP19 =
+  'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
+const SETUP_FIRST = 'run `elisym-merchant setup` on the self-host node first';
 /** Where the owner's secret would be: never a key, so any read of it would fail the import. */
 const OWNER_SECRET_GARBAGE = 'not-an-owner-key: import must never read this';
 const CONFIG: Pick<PaycoreConfig, 'inboxRelays' | 'rpcs'> = {
@@ -212,6 +224,56 @@ function relaysOf(world: RelayWorld): NewestOnRelays & { reads: number } {
     { reads: 0 },
   );
   return read;
+}
+
+/** Rewrite the home's config.json: the fixture's, with `changes` over it. */
+function writeConfig(home: Home, changes: Record<string, unknown>): void {
+  writeFileSync(
+    join(home.dir, 'config.json'),
+    JSON.stringify({
+      name: 'Shop',
+      network: 'devnet',
+      rpcUrl: 'https://api.devnet.solana.com',
+      inboxRelays: [RELAY],
+      payouts: [{ caip19: USDC_DEVNET_CAIP19, address: PAYOUT }],
+      ...changes,
+    }),
+  );
+}
+
+function writeProduct(home: Home, d: string, frontmatter: string, body = 'A product.'): void {
+  mkdirSync(join(home.dir, 'products', d), { recursive: true });
+  writeFileSync(join(home.dir, 'products', d, 'PRODUCT.md'), `---\n${frontmatter}\n---\n${body}\n`);
+}
+
+/** The relays' own events of the fixture: its 10133 and its 30490 at d = S. */
+async function servedEvents(
+  home: Home,
+): Promise<{ payoutList: NostrEvent; authorization: NostrEvent }> {
+  const relays = relaysOf(home.world);
+  const payoutList = await relays(home.owner.pubkey, KIND_PAYTO, {});
+  const authorization = await relays(home.owner.pubkey, KIND_STORE_AUTH, { d: home.store.pubkey });
+  if (payoutList === undefined || authorization === undefined) {
+    throw new Error('the fixture published no owner events');
+  }
+  return { payoutList, authorization };
+}
+
+/** `event` re-signed by `signer`, its kind possibly changed: every other field kept. */
+function resigned(event: NostrEvent, signer: Key, kind = event.kind): NostrEvent {
+  return finalizeEvent(
+    { kind, created_at: event.created_at, tags: event.tags, content: event.content },
+    signer.secretKey,
+  );
+}
+
+async function nothingWritten(db: Db): Promise<void> {
+  const [row] = await db.query<{ rows: number }>(
+    `select (select count(*) from stores) + (select count(*) from store_keys)
+       + (select count(*) from store_config) + (select count(*) from products)
+       + (select count(*) from ledgers) + (select count(*) from owner_events) as rows`,
+  );
+  expect(Number(row?.rows)).toBe(0);
 }
 
 async function withTier(db: Db, maxProducts = 10): Promise<void> {
@@ -689,10 +751,8 @@ describe('import (step 17)', () => {
   it('warns when the webhook has no secret file, or config.json payouts differ from the published list', async () => {
     const db = await freshDb();
     await withTier(db);
-    const home = await selfHostHome({
-      webhook: true,
-      configPayouts: [{ caip19: USDC_DEVNET_CAIP19, address: solanaWallet().address }],
-    });
+    const draftPayouts = [{ caip19: USDC_DEVNET_CAIP19, address: solanaWallet().address }];
+    const home = await selfHostHome({ webhook: true, configPayouts: draftPayouts });
     const result = await importStore(
       { home: home.dir, tier: TIER, nodeStopped: true },
       importDeps(db, home),
@@ -711,6 +771,15 @@ describe('import (step 17)', () => {
     });
     expect(JSON.stringify(bundle.config.payouts)).toBe(home.ledger.payto?.payouts);
     expect(bundle.webhookSecretMissing).toBe(true);
+    // The imported 10133 row carries the payouts it pays (the ledger's), never the draft.
+    const [payoutRow] = await db.query<{ payouts_string: string | null; draft: unknown }>(
+      `select e.payouts_string, c.draft_payouts as draft from owner_events e
+       join store_config c on c.owner = e.owner where e.owner = $1 and e.kind = $2`,
+      [home.owner.pubkey, KIND_PAYTO],
+    );
+    expect(payoutRow?.draft).toEqual(draftPayouts);
+    expect(payoutRow?.payouts_string).toBe(home.ledger.payto?.payouts);
+    expect(payoutRow?.payouts_string).not.toBe(JSON.stringify(draftPayouts));
   });
 
   it('keeps the 10133 date at the first prepare when the payouts are unchanged (P9)', async () => {
@@ -780,5 +849,376 @@ describe('import (step 17)', () => {
     const after = (await storedLedger(db, home.owner.pubkey)).payto;
     expect(after?.payouts).toBe(before?.payouts);
     expect(after?.createdAt).toBe(before?.createdAt);
+  });
+
+  it('refuses relay events forged, of another author or of another kind, writing nothing', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    const options = { home: home.dir, tier: TIER, nodeStopped: true };
+    const { payoutList, authorization } = await servedEvents(home);
+    const stranger = key();
+    const relays = relaysOf(home.world);
+    const serving =
+      (kind: number, event: NostrEvent): NewestOnRelays =>
+      async (owner, asked, read) =>
+        asked === kind ? event : relays(owner, asked, read);
+    const forgedPayto = { ...payoutList, sig: authorization.sig };
+    const forgedAuth = { ...authorization, sig: payoutList.sig };
+    for (const event of [
+      forgedPayto,
+      resigned(payoutList, stranger),
+      resigned(payoutList, home.owner, 10050),
+    ]) {
+      expect(
+        await refusal(
+          importStore(options, importDeps(db, home, { readRelays: serving(KIND_PAYTO, event) })),
+        ),
+      ).toBe('the payout list the relays serve is not signed by the owner');
+      await nothingWritten(db);
+    }
+    for (const event of [
+      forgedAuth,
+      resigned(authorization, stranger),
+      resigned(authorization, home.owner, 30491),
+    ]) {
+      expect(
+        await refusal(
+          importStore(
+            options,
+            importDeps(db, home, { readRelays: serving(KIND_STORE_AUTH, event) }),
+          ),
+        ),
+      ).toBe(`the relays serve no authorization of this store key by the owner: ${SETUP_FIRST}`);
+      await nothingWritten(db);
+    }
+    // The same events, served as they were signed, import.
+    await importStore(options, importDeps(db, home));
+    expect(await storeCount(db)).toBe(1);
+  });
+
+  it("reads the 30490 at the store's address: one at another d does not count", async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    const options = { home: home.dir, tier: TIER, nodeStopped: true };
+    const { authorization } = await servedEvents(home);
+    const elsewhere = key().pubkey;
+    home.world.events.splice(home.world.events.indexOf(authorization), 1);
+    home.world.add(
+      finalizeEvent(
+        {
+          kind: KIND_STORE_AUTH,
+          created_at: authorization.created_at + 60,
+          tags: authorization.tags.map((tag) =>
+            tag[1] === home.store.pubkey ? [tag[0] ?? '', elsewhere, ...tag.slice(2)] : tag,
+          ),
+          content: authorization.content,
+        },
+        home.owner.secretKey,
+      ),
+    );
+    const asked: { kind: number; d?: string }[] = [];
+    const relays = relaysOf(home.world);
+    const recording: NewestOnRelays = async (owner, kind, read) => {
+      asked.push({ kind, ...read });
+      return relays(owner, kind, read);
+    };
+    expect(
+      await refusal(importStore(options, importDeps(db, home, { readRelays: recording }))),
+    ).toBe(`the relays serve no authorization of this store key by the owner: ${SETUP_FIRST}`);
+    expect(asked).toEqual([{ kind: KIND_PAYTO }, { kind: KIND_STORE_AUTH, d: home.store.pubkey }]);
+    await nothingWritten(db);
+  });
+
+  it('refuses a keys.json that is malformed, from before 0.5.0, or sealed without its public key', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome({ sealStore: true });
+    const keysPath = join(home.dir, 'keys.json');
+    const options = { home: home.dir, tier: TIER, nodeStopped: true };
+    const attempt = () => refusal(importStore(options, importDeps(db, home)));
+    writeFileSync(keysPath, '{ not json');
+    expect(await attempt()).toMatch(/^cannot read .*keys\.json: /);
+    for (const malformed of [
+      {},
+      { store: 7, ownerPubkey: home.owner.pubkey },
+      { store: 'x', ownerPubkey: home.owner.pubkey.toUpperCase() },
+      { store: 'x', storePubkey: 'abc', ownerPubkey: home.owner.pubkey },
+    ]) {
+      writeFileSync(keysPath, JSON.stringify(malformed));
+      expect(await attempt()).toBe(`${keysPath} holds no usable store key`);
+    }
+    writeFileSync(
+      keysPath,
+      JSON.stringify({ store: bytesToHex(home.store.secretKey), owner: OWNER_SECRET_GARBAGE }),
+    );
+    expect(await attempt()).toBe(
+      `${keysPath} does not name the owner public key (written before 0.5.0): run \`elisym-merchant encrypt-keys\` with a current node to rewrite it`,
+    );
+    writeFileSync(
+      keysPath,
+      JSON.stringify({
+        store: encryptSecret(bytesToHex(home.store.secretKey), PASSPHRASE),
+        owner: OWNER_SECRET_GARBAGE,
+        ownerPubkey: home.owner.pubkey,
+      }),
+    );
+    expect(await attempt()).toBe(`${keysPath} holds a sealed store key without its public key`);
+    await nothingWritten(db);
+    // A plain store key without its public key is derived from it.
+    writeFileSync(
+      keysPath,
+      JSON.stringify({
+        store: bytesToHex(home.store.secretKey),
+        owner: OWNER_SECRET_GARBAGE,
+        ownerPubkey: home.owner.pubkey,
+      }),
+    );
+    expect((await importStore(options, importDeps(db, home))).storePubkey).toBe(home.store.pubkey);
+  });
+
+  it('refuses a store key that already belongs to another store here', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const first = await selfHostHome();
+    await importStore({ home: first.dir, tier: TIER, nodeStopped: true }, importDeps(db, first));
+    const second = await selfHostHome();
+    writeFileSync(
+      join(second.dir, 'keys.json'),
+      JSON.stringify({
+        store: bytesToHex(first.store.secretKey),
+        owner: OWNER_SECRET_GARBAGE,
+        storePubkey: first.store.pubkey,
+        ownerPubkey: second.owner.pubkey,
+      }),
+    );
+    expect(
+      await refusal(
+        importStore({ home: second.dir, tier: TIER, nodeStopped: true }, importDeps(db, second)),
+      ),
+    ).toBe('this store key already belongs to another store on this server');
+    expect(await storeCount(db)).toBe(1);
+  });
+
+  it('counts only products on sale against the tier', async () => {
+    const db = await freshDb();
+    await withTier(db, 1);
+    const home = await selfHostHome();
+    writeProduct(home, 'retired', 'title: Retired\npriceUsd: "2"\nonSale: false');
+    const result = await importStore(
+      { home: home.dir, tier: TIER, nodeStopped: true },
+      importDeps(db, home),
+    );
+    expect(result.products).toBe(2);
+    const products = await db.query<{ d: string; on_sale: boolean }>(
+      'select d, on_sale from products where owner = $1 order by d',
+      [home.owner.pubkey],
+    );
+    expect(products).toEqual([
+      { d: D, on_sale: true },
+      { d: 'retired', on_sale: false },
+    ]);
+  });
+
+  it('refuses a home that lost a product with history, or prices its payouts cannot pay', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    const options = { home: home.dir, tier: TIER, nodeStopped: true };
+    rmSync(join(home.dir, 'products', D), { recursive: true });
+    expect(await refusal(importStore(options, importDeps(db, home)))).toBe(
+      `product ${D} has a history in this store: restore products/${D}/PRODUCT.md (set "onSale: false" to stop selling it)`,
+    );
+    const priced = await selfHostHome({
+      editLedger: (state) => {
+        if (state.payto !== undefined) {
+          state.payto.payouts = JSON.stringify([{ caip19: LSM_MAINNET_CAIP19, address: PAYOUT }]);
+        }
+      },
+    });
+    expect(
+      await refusal(importStore({ ...options, home: priced.dir }, importDeps(db, priced))),
+    ).toBe(`the products are not usable:\n- products/${D}: LSM cannot be paid its price of 1 USD`);
+    await nothingWritten(db);
+  });
+
+  it('refuses a product the admin API would refuse, with every problem', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    writeProduct(home, D, 'title: Course\npriceUsd: "1"', `A course.${String.fromCharCode(0)}`);
+    writeProduct(home, 'second', 'title: Second\npriceUsd: "2"\nsummary: "x\\0"');
+    const message = await refusal(
+      importStore({ home: home.dir, tier: TIER, nodeStopped: true }, importDeps(db, home)),
+    );
+    expect(message.split('\n')).toEqual([
+      'the products are not usable here:',
+      expect.stringMatching(new RegExp(`^- products/${D}: description `)),
+      expect.stringMatching(/^- products\/second: summary /),
+    ]);
+    await nothingWritten(db);
+  });
+
+  it('refuses a ledger of the version before fee support', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome({
+      editLedger: (state) => {
+        // Written by a node before fee support: the type only knows the current version.
+        Object.assign(state, { version: PRE_FEE_LEDGER_VERSION });
+      },
+    });
+    expect(
+      await refusal(
+        importStore({ home: home.dir, tier: TIER, nodeStopped: true }, importDeps(db, home)),
+      ),
+    ).toBe(
+      `${join(home.dir, 'ledger.json')}: this home was last run by a version before protocol-fee support: run \`elisym-merchant setup\` or \`run\` once after upgrading`,
+    );
+    await nothingWritten(db);
+  });
+
+  it('refuses a webhook secret off its size or an empty secret file; takes both size limits', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome({ webhook: true });
+    const options = { home: home.dir, tier: TIER, nodeStopped: true };
+    const secretFile = join(home.dir, 'webhook-secret');
+    const withSecret = (secret: string) => {
+      writeFileSync(secretFile, secret);
+      return refusal(
+        importStore({ ...options, webhookSecretFile: secretFile }, importDeps(db, home)),
+      );
+    };
+    const size = 'the webhook secret must be 32 to 256 bytes';
+    expect(await withSecret('s'.repeat(31))).toBe(size);
+    expect(await withSecret('s'.repeat(257))).toBe(size);
+    // Bytes, not characters: 129 two-byte characters are 258 bytes.
+    expect(await withSecret('é'.repeat(129))).toBe(size);
+    expect(await withSecret('\n')).toBe(
+      `--webhook-secret-file: the webhook secret file ${secretFile} is empty`,
+    );
+    expect(
+      await refusal(importStore({ ...options, webhookSecretFile: '' }, importDeps(db, home))),
+    ).toBe('--webhook-secret-file names no secret');
+    await nothingWritten(db);
+    for (const secret of ['s'.repeat(32), 'é'.repeat(128)]) {
+      const taken = await selfHostHome({ webhook: true });
+      const file = join(taken.dir, 'webhook-secret');
+      writeFileSync(file, `${secret}\n`);
+      const result = await importStore(
+        { home: taken.dir, tier: TIER, nodeStopped: true, webhookSecretFile: file },
+        importDeps(db, taken),
+      );
+      expect(result.webhookSecret).toBe(true);
+      const [row] = await db.query<{ webhook_secret: Uint8Array | null }>(
+        'select webhook_secret from store_keys where owner = $1',
+        [taken.owner.pubkey],
+      );
+      if (row?.webhook_secret === null || row === undefined) {
+        throw new Error('no sealed webhook secret');
+      }
+      expect(
+        Buffer.from(vault().open(row.webhook_secret, taken.owner.pubkey, 'webhook')).toString(
+          'utf8',
+        ),
+      ).toBe(secret);
+    }
+  });
+
+  it('runs safe EVM credit when any chain of config.json asks for it', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    writeConfig(home, {
+      evm: {
+        ethereum: { rpcUrl: 'https://eth.node.example', credit: 'fast' },
+        base: { rpcUrl: 'https://base.node.example', credit: 'safe' },
+      },
+    });
+    await importStore({ home: home.dir, tier: TIER, nodeStopped: true }, importDeps(db, home));
+    const [config] = await db.query<{ evm_credit: string }>(
+      'select evm_credit from store_config where owner = $1',
+      [home.owner.pubkey],
+    );
+    expect(config?.evm_credit).toBe('safe');
+  });
+
+  it('stores inbox relays in checkout spelling', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    writeConfig(home, { inboxRelays: ['wss://Inbox.Example.com//'] });
+    await importStore({ home: home.dir, tier: TIER, nodeStopped: true }, importDeps(db, home));
+    const [config] = await db.query<{ inbox_relays: string[] }>(
+      'select inbox_relays from store_config where owner = $1',
+      [home.owner.pubkey],
+    );
+    expect(config?.inbox_relays).toEqual([RELAY]);
+  });
+
+  it('refuses payouts, published or draft, on a chain this server has no RPC for', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const drafted = await selfHostHome();
+    writeConfig(drafted, {
+      payouts: [
+        { caip19: USDC_DEVNET_CAIP19, address: PAYOUT },
+        { caip19: BASE_DEVNET_CAIP19, address: TEMPO_PAYOUT },
+      ],
+      evm: { base: { rpcUrl: 'https://base.node.example' } },
+    });
+    expect(
+      await refusal(
+        importStore({ home: drafted.dir, tier: TIER, nodeStopped: true }, importDeps(db, drafted)),
+      ),
+    ).toBe('config.json is not usable here:\n- payouts: this server has no RPC for base-devnet');
+    const published = await selfHostHome({
+      editLedger: (state) => {
+        if (state.payto !== undefined) {
+          state.payto.payouts = JSON.stringify([
+            { caip19: TEMPO_DEVNET_CAIP19, address: TEMPO_PAYOUT },
+          ]);
+        }
+      },
+    });
+    expect(
+      await refusal(
+        importStore(
+          { home: published.dir, tier: TIER, nodeStopped: true },
+          importDeps(db, published),
+        ),
+      ),
+    ).toBe('config.json is not usable here:\n- payouts: this server has no RPC for tempo-devnet');
+    await nothingWritten(db);
+  });
+
+  it('prints a refusal through the CLI line by line, control characters escaped', async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    const cli = async (...argv: string[]) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await runCli(argv, cliDeps(db, home, out, err));
+      return { code, out, err };
+    };
+    expect(await cli('import', home.dir, '--tier', 'gold\u001b[2J', '--node-stopped')).toEqual({
+      code: 1,
+      out: [],
+      err: ['import refused: no such tier: gold?[2J'],
+    });
+    writeConfig(home, { inboxRelays: ['wss://nos.lol', 'wss://relay.damus.io'] });
+    const refused = await cli('import', home.dir, '--tier', TIER, '--node-stopped');
+    expect(refused.code).toBe(1);
+    expect(refused.err[0]?.split('\n')).toEqual([
+      'import refused: config.json is not usable here:',
+      expect.stringMatching(/^- inboxRelays: wss:\/\/nos\.lol is not a relay this server allows/),
+      expect.stringMatching(
+        /^- inboxRelays: wss:\/\/relay\.damus\.io is not a relay this server allows/,
+      ),
+    ]);
+    await nothingWritten(db);
   });
 });

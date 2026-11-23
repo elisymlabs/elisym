@@ -124,6 +124,61 @@ describe('operator CLI (step 16)', () => {
     ).toEqual(usage('Unknown argument yes'));
   });
 
+  it('never takes a flag as the value of another, and refuses extra arguments', async () => {
+    const db = await freshDb();
+    await run(db, 'tier', 'set', 'basic', '--max-products', '20');
+    const owner = await pendingStore(db);
+    await run(db, 'store', 'activate', owner, '--tier', 'basic');
+    expect(await run(db, 'tier', 'set', 'basic', '--max-products', '--max-products')).toEqual(
+      usage('--max-products needs a value'),
+    );
+    expect(await run(db, 'store', 'activate', owner, '--tier', '--tier')).toEqual(
+      usage('--tier needs a value'),
+    );
+    expect(await run(db, 'store', 'tier', owner, '--basic')).toEqual(
+      usage('store tier needs the store and the tier name'),
+    );
+    expect(await run(db, 'import', '--tier', 'basic', '--node-stopped')).toEqual(
+      usage('import needs the home directory'),
+    );
+    expect(await run(db, 'tier', 'delete', 'basic', 'extra')).toEqual(usage('Unknown command'));
+    await raiseAlert(db, owner, 'drift', 'x', { now: NOW, log: () => undefined });
+    const [alert] = await db.query<{ id: number }>('select id from alerts');
+    expect(await run(db, 'alert', 'clear', String(alert?.id), 'extra')).toEqual(
+      usage('Unknown command'),
+    );
+    expect(await statusOf(db, owner)).toEqual({ status: 'active', tier: 'basic' });
+    expect(await run(db, 'tier', 'list')).toEqual(ok('basic: 1 store, --max-products 20'));
+    expect(await run(db, 'alert', 'list')).toEqual(
+      ok(
+        `${alert?.id} ${npub(owner)} drift x1 ${new Date(NOW * 1000).toISOString().replace('.000Z', 'Z')} x`,
+      ),
+    );
+  });
+
+  it('refuses import without --node-stopped before reading the home or the relays', async () => {
+    const db = await freshDb();
+    await run(db, 'tier', 'set', 'basic', '--max-products', '20');
+    let reads = 0;
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await runCli(['import', '/nonexistent/paycore-home', '--tier', 'basic'], {
+      ...deps(db, out, err),
+      readRelays: async () => {
+        reads += 1;
+        return undefined;
+      },
+    });
+    expect({ code, out, err }).toEqual({
+      code: 1,
+      out: [],
+      err: [
+        'import refused: stop the self-host node first and say so with --node-stopped: two nodes on one store send every reply and webhook twice',
+      ],
+    });
+    expect(reads).toBe(0);
+  });
+
   it('import needs the relays wired', async () => {
     const db = await freshDb();
     expect(await run(db, 'import', '/tmp/home', '--tier', 'basic', '--node-stopped')).toEqual(
@@ -170,6 +225,52 @@ describe('operator CLI (step 16)', () => {
     expect(await run(db, 'tier', 'delete', 'gold')).toEqual(failed('No such tier: gold'));
     expect(await run(db, 'tier', 'delete', 'empty')).toEqual(ok('tier empty deleted'));
     expect(await run(db, 'tier', 'list')).toEqual(ok('basic: 1 store, --max-products 20'));
+  });
+
+  it('refuses to lower a cap below the products a store on the tier has on sale', async () => {
+    const db = await freshDb();
+    await run(db, 'tier', 'set', 'basic', '--max-products', '5');
+    await run(db, 'tier', 'set', 'other', '--max-products', '5');
+    const directory = directoryFor(db);
+    const big = await pendingStore(db);
+    const small = await pendingStore(db);
+    const elsewhere = await pendingStore(db);
+    await db.query('update stores set created_at = $2 where owner = $1', [small, NOW + 1]);
+    for (const [owner, tier] of [
+      [big, 'basic'],
+      [small, 'basic'],
+      [elsewhere, 'other'],
+    ] as const) {
+      await run(db, 'store', 'activate', owner, '--tier', tier);
+    }
+    for (const d of ['a', 'b', 'c']) {
+      expect((await directory.putProduct(big, d, PRODUCT)).ok).toBe(true);
+      expect((await directory.putProduct(elsewhere, d, PRODUCT)).ok).toBe(true);
+    }
+    // Off sale: not counted.
+    expect((await directory.putProduct(big, 'd', { ...PRODUCT, onSale: false })).ok).toBe(true);
+    expect((await directory.putProduct(small, 'a', PRODUCT)).ok).toBe(true);
+    expect((await directory.putProduct(small, 'b', PRODUCT)).ok).toBe(true);
+    expect(await run(db, 'tier', 'set', 'basic', '--max-products', '1')).toEqual(
+      failed(
+        `Tier basic has 2 stores with more than 1 products on sale; each merchant stops selling the excess first (or move the store to another tier):\n  ${npub(big)} 3 on sale\n  ${npub(small)} 2 on sale`,
+      ),
+    );
+    expect(await run(db, 'tier', 'set', 'basic', '--max-products', '2')).toEqual(
+      failed(
+        `Tier basic has 1 store with more than 2 products on sale; each merchant stops selling the excess first (or move the store to another tier):\n  ${npub(big)} 3 on sale`,
+      ),
+    );
+    expect(await run(db, 'tier', 'list')).toEqual(
+      ok('basic: 2 stores, --max-products 5\nother: 1 store, --max-products 5'),
+    );
+    // Exactly at the cap is fine; another tier's stores do not count.
+    expect(await run(db, 'tier', 'set', 'basic', '--max-products', '3')).toEqual(
+      ok('tier basic saved'),
+    );
+    expect(await run(db, 'tier', 'list')).toEqual(
+      ok('basic: 2 stores, --max-products 3\nother: 1 store, --max-products 5'),
+    );
   });
 
   it('lists stores with status, tier, open alerts and reason', async () => {
@@ -344,6 +445,14 @@ describe('operator CLI (step 16)', () => {
       failed('An alert id is a positive integer (see alert list)'),
     );
     expect(await run(db, 'alert', 'list')).toEqual(ok([serverLine, railLine].join('\n')));
+    // A kind is printed as safely as a message.
+    await raiseAlert(db, other, 'drift\u001b[2J', 'm', { now: NOW, log });
+    const escaped = await db.query<{ id: number }>(
+      "select id from alerts where kind like 'drift_%'",
+    );
+    expect(await run(db, 'alert', 'list', '--owner', other)).toEqual(
+      ok([railLine, `${escaped[0]?.id} ${npub(other)} drift?[2J x1 ${at(NOW)} m`].join('\n')),
+    );
     const [cleared] = await db.query<{ cleared_at: number | null }>(
       'select cleared_at from alerts where id = $1',
       [idOf('drift')],
@@ -398,6 +507,7 @@ describe('operator CLI (step 16)', () => {
     await raiseAlert(db, broken, 'rail_unavailable', 'x', { now: NOW, log });
     await raiseAlert(db, quiet, 'rail_unavailable', 'x', { now: NOW, log });
     await raiseAlert(db, undefined, 'setup_failed', 'x', { now: NOW, log });
+    await raiseAlert(db, undefined, 'zz\u0007', 'x', { now: NOW, log });
     await db.query("update alerts set cleared_at = $1 where kind = 'setup_failed'", [NOW]);
     expect(await run(db, 'stats')).toEqual(
       ok(
@@ -413,9 +523,10 @@ describe('operator CLI (step 16)', () => {
           'orders paid, not delivered: 1',
           'webhook backlog: 2',
           `  ${npub(busy)} 2`,
-          'open alerts: 3',
+          'open alerts: 4',
           '  drift 1',
           '  rail_unavailable 2',
+          '  zz? 1',
           'unreadable ledgers: 1',
           `  ${npub(broken)}`,
         ].join('\n'),
