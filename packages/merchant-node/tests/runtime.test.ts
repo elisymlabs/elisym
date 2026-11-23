@@ -127,6 +127,14 @@ function harness(
   return { ...setup, deps, runtime, events, saved, later, order, receipt, buyer };
 }
 
+/** A save that finishes a little later, then records `saved`. */
+function slowSave(events: string[]): () => Promise<void> {
+  return async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    events.push('saved');
+  };
+}
+
 describe('admitting wraps', () => {
   it('takes each wrap once, and never one dated past the skew allowance', () => {
     const { runtime, order } = harness();
@@ -157,7 +165,9 @@ describe('the webhook outbox', () => {
         network: 'devnet',
         outbox: { storePubkey: setup.store.pubkey, now: () => T0 + 500 },
       },
-      save: () => saved.push(JSON.stringify(setup.state)),
+      save: () => {
+        saved.push(JSON.stringify(setup.state));
+      },
     });
     await runtime.handleWrap(setup.order);
     await runtime.handleWrap(setup.receipt);
@@ -188,6 +198,72 @@ describe('handling wraps', () => {
       saved[events.slice(0, deliverAt).filter((event) => event === 'save').length - 1];
     expect(beforeDelivery).toContain(`"${SIG}"`);
     expect(events.at(-1)).toBe('save');
+  });
+
+  it('waits for an asynchronous save before it delivers', async () => {
+    const { deps, events, order, receipt } = harness();
+    let pendingSaves = 0;
+    const runtime = new MerchantRuntime({
+      ...deps,
+      save: async () => {
+        pendingSaves += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        pendingSaves -= 1;
+        events.push('saved');
+      },
+      deliver: async (order, skip) => {
+        // Nothing is sent while a save is still being written.
+        expect(pendingSaves).toBe(0);
+        return deps.deliver(order, skip);
+      },
+    });
+    await runtime.handleWrap(order);
+    await runtime.handleWrap(receipt);
+    const deliverAt = events.findIndex((event) => event.startsWith('deliver:'));
+    expect(deliverAt).toBeGreaterThan(0);
+    expect(events[deliverAt - 1]).toBe('saved');
+  });
+
+  it('sends nothing when the save fails', async () => {
+    const { deps, events, order, receipt } = harness();
+    let saves = 0;
+    const runtime = new MerchantRuntime({
+      ...deps,
+      save: async () => {
+        saves += 1;
+        if (saves > 1) {
+          throw new Error('lease lost');
+        }
+      },
+    });
+    await runtime.handleWrap(order);
+    await expect(runtime.handleWrap(receipt)).rejects.toThrow('lease lost');
+    expect(events.some((event) => event.startsWith('deliver:'))).toBe(false);
+  });
+
+  it('saves a new receipt of a delivered order before it sends the completion again', async () => {
+    const { deps, events, order, receipt, store, buyer } = harness();
+    const runtime = new MerchantRuntime({ ...deps, save: slowSave(events) });
+    await runtime.handleWrap(order);
+    await runtime.handleWrap(receipt);
+    events.length = 0;
+    const another = wrapped(
+      {
+        type: 'receipt',
+        storePubkey: store.pubkey,
+        orderId: ORDER_ID,
+        payment: {
+          medium: 'solana-devnet',
+          reference: referenceFor(store, buyer, ORDER_ID),
+          tx: signatureOf(8),
+        },
+      },
+      buyer,
+      store.pubkey,
+    );
+    await runtime.handleWrap(another);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events).toEqual(['saved', `deliver:${buyer.pubkey}:${ORDER_ID}`]);
   });
 
   it('reads again a receipt that came before its order', async () => {
@@ -323,6 +399,78 @@ describe('the sweep', () => {
     expect(events).toEqual(['save', 'deliver:k', 'save']);
     expect(state.resumeAt).toBe(T0 + 100);
     expect(runtime).toBeDefined();
+  });
+
+  it('saves before it stops on a fee config from another cluster', async () => {
+    const { deps, events } = harness();
+    const runtime = new MerchantRuntime({
+      ...deps,
+      save: slowSave(events),
+      refreshTreasuries: async () => ({ kind: 'wrong_cluster', problem: 'devnet RPC' }),
+      stop: (problem) => {
+        events.push(`stop:${problem}`);
+      },
+    });
+    await runtime.sweep(true, T0 + 100);
+    expect(events).toEqual(['saved', 'stop:devnet RPC']);
+  });
+
+  it('hands the store copy to its queue only after the save that marks the order delivered', async () => {
+    const { deps, events, state } = harness();
+    state.orders.k = {
+      key: 'k',
+      buyerPubkey: 'b'.repeat(64),
+      orderId: ORDER_ID,
+      rumorId: 'r',
+      createdAt: T0,
+      reference: 'Ref',
+      product: `30402:${'s'.repeat(64)}:course-101`,
+      reportedTxs: [],
+      paid: { signature: SIG, amount: '1', blockTime: T0, caip19: 'x', medium: 'solana-devnet' },
+    };
+    const selfCopies = new SelfCopies({
+      publish: async () => {
+        events.push('copy');
+        return INBOX;
+      },
+      log: () => undefined,
+      later: () => undefined,
+    });
+    const runtime = new MerchantRuntime({ ...deps, save: slowSave(events), selfCopies });
+    await runtime.deliverPending();
+    expect(events).toEqual(['deliver:k', 'saved', 'copy']);
+  });
+
+  it('hands no store copy on when the save fails', async () => {
+    const { deps, events, state } = harness();
+    state.orders.k = {
+      key: 'k',
+      buyerPubkey: 'b'.repeat(64),
+      orderId: ORDER_ID,
+      rumorId: 'r',
+      createdAt: T0,
+      reference: 'Ref',
+      product: `30402:${'s'.repeat(64)}:course-101`,
+      reportedTxs: [],
+      paid: { signature: SIG, amount: '1', blockTime: T0, caip19: 'x', medium: 'solana-devnet' },
+    };
+    const selfCopies = new SelfCopies({
+      publish: async () => {
+        events.push('copy');
+        return INBOX;
+      },
+      log: () => undefined,
+      later: () => undefined,
+    });
+    const runtime = new MerchantRuntime({
+      ...deps,
+      save: async () => {
+        throw new Error('lease lost');
+      },
+      selfCopies,
+    });
+    await expect(runtime.deliverPending()).rejects.toThrow('lease lost');
+    expect(events).toEqual(['deliver:k']);
   });
 
   it('closes unpaid orders past the window on each sweep', async () => {

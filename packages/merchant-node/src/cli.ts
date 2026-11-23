@@ -10,7 +10,6 @@ import { fileURLToPath } from 'node:url';
 import { splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
-import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
 import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
 import {
   type RelayView,
@@ -25,14 +24,12 @@ import {
 import {
   type MerchantConfig,
   configTemplate,
-  hasSolanaRail,
   loadConfig,
   priceProblems,
   tempoRegistryNetwork,
 } from './config';
-import { CATCH_UP_INTERVAL_MS, OFFER_RELAYS, SOLANA_MEDIUMS, WEBHOOK_TICK_MS } from './constants';
-import { deliverOrder, publishSelfCopy } from './deliver';
-import { eip3009ChainsOf, startEip3009Rail, storeMediums } from './eip3009';
+import { OFFER_RELAYS } from './constants';
+import { eip3009ChainsOf, startEip3009Rail } from './eip3009';
 import {
   TreasuryReader,
   type TreasuryRefresh,
@@ -52,7 +49,6 @@ import {
   merchantHome,
   takeLock,
 } from './home';
-import { storeIdentity } from './intake';
 import {
   PASSPHRASE_HINT,
   STORE_KEY_WARNING,
@@ -70,20 +66,16 @@ import {
   openLedgerForUpgrade,
   saveLedger,
 } from './ledger';
-import { InboxListener } from './listener';
 import { printable } from './printable';
 import {
   PRODUCT_FILE,
   type Product,
-  intakeProductIds,
   loadProducts,
   productTemplateText,
   uneditedProducts,
 } from './products';
 import { setupPublisher } from './publish';
 import { listeningPool } from './relay-pool';
-import { MerchantRuntime } from './runtime';
-import { SelfCopies } from './self-copies';
 import {
   historyRefusal,
   payoutListDate,
@@ -92,12 +84,11 @@ import {
   setupClockProblems,
 } from './setup-ledger';
 import { buildStoreWideEvents, productNaddr, storeNostrJson } from './store-events';
-import { tempoContextFor } from './tempo';
+import { startStoreNode, storeAuth } from './store-node';
 import { standingTerms } from './terms';
 import {
   type WebhookTarget,
   WEBHOOK_SECRET_HINT,
-  WebhookSender,
   applySendResult,
   orderPaidBody,
   outcomeText,
@@ -148,11 +139,6 @@ new keys when $ELISYM_MERCHANT_PASSPHRASE (or ..._FILE) is set (--owner-only:
 the owner key only); a command that needs an encrypted key reads it from there.
 A webhook in config.json needs its secret in $ELISYM_MERCHANT_WEBHOOK_SECRET
 (or the file $ELISYM_MERCHANT_WEBHOOK_SECRET_FILE names), at least 32 bytes.`;
-
-/** Answers a relay's NIP-42 challenge with the store key. */
-function storeAuth(storeSecretKey: Uint8Array) {
-  return async (template: EventTemplate) => finalizeEvent(template, storeSecretKey);
-}
 
 function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
@@ -679,169 +665,29 @@ async function run(home: MerchantHome): Promise<void> {
   saveLedger(home.ledger, state);
   warnProfile(views, firstRead);
 
-  // One queue: every ledger change happens in order, and is saved before anything is sent.
-  let queue: Promise<void> = Promise.resolve();
-  const enqueue = (task: () => Promise<void>) => {
-    queue = queue.then(task).catch((error: unknown) => {
-      log(`error: ${errorText(error)}`);
-    });
-  };
-
-  const tempoContext = tempoContextFor(config, storePubkey);
-  const tempo =
-    tempoContext === undefined
-      ? undefined
-      : { ...tempoContext, now: nowSecs, ...(outbox === undefined ? {} : { outbox }) };
-  const mediums = storeMediums(
-    hasSolanaRail(config) ? SOLANA_MEDIUMS[config.network] : undefined,
-    tempo?.medium,
-    evmContexts,
-  );
-  // The store's copies of its replies go to every inbox relay, whichever took the buyer copy.
-  const selfCopies = new SelfCopies({
-    publish: publishSelfCopy({
-      pool,
-      inboxRelays: config.inboxRelays,
-      auth: storeAuth(storeSecretKey),
-      log,
-    }),
+  const node = await startStoreNode({
+    pool,
+    config,
+    products,
+    state,
+    storePubkey,
+    storeSecretKey,
+    save: () => saveLedger(home.ledger, state),
+    refreshTreasuries: () => treasuries.refresh(state, nowSecs()),
+    eip3009: evmContexts,
+    ...(outbox === undefined ? {} : { outbox }),
+    ...(target === undefined ? {} : { webhook: { target, userAgent: USER_AGENT } }),
     log,
+    now: nowSecs,
+    stop: () => process.exit(1),
   });
   process.on('exit', () => {
-    if (selfCopies.pending > 0) {
+    if (node.selfCopies.pending > 0) {
       log(
-        `${selfCopies.pending} copy(ies) for the admin lost: the node stopped before sending them`,
+        `${node.selfCopies.pending} copy(ies) for the admin lost: the node stopped before sending them`,
       );
     }
   });
-  const store = storeIdentity(storePubkey, intakeProductIds(products), mediums);
-  const runtime = new MerchantRuntime({
-    state,
-    store,
-    storeSecretKey,
-    // With no Solana payout the Solana catch-up has no terms to scan and reads nothing.
-    context: {
-      rpc: createSolanaRpc(config.rpcUrl ?? 'https://api.devnet.solana.com'),
-      network: config.network,
-      now: nowSecs,
-      ...(outbox === undefined ? {} : { outbox }),
-    },
-    ...(tempo === undefined ? {} : { tempo }),
-    eip3009: evmContexts,
-    // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
-    ...(hasSolanaRail(config) ? {} : { catchUp: async () => ({ paid: [], incomplete: [] }) }),
-    refreshTreasuries: () => treasuries.refresh(state, nowSecs()),
-    stop: () => process.exit(1),
-    save: () => saveLedger(home.ledger, state),
-    // Completion needs no product: the status carries only the receipt.
-    deliver: async (order, skip) =>
-      await deliverOrder(
-        {
-          pool,
-          inboxRelays: config.inboxRelays,
-          storeSecretKey,
-          auth: storeAuth(storeSecretKey),
-          log,
-          now: nowSecs,
-        },
-        order,
-        skip,
-      ),
-    selfCopies,
-    inboxRelayCount: config.inboxRelays.length,
-    log,
-    now: nowSecs,
-    later: (ms, task) => {
-      setTimeout(() => enqueue(task), ms);
-    },
-  });
-  const startedAt = nowSecs();
-
-  const listener = new InboxListener({
-    pool,
-    storePubkey,
-    auth: storeAuth(storeSecretKey),
-    onWrap: (wrap) => {
-      if (runtime.admit(wrap)) {
-        enqueue(() => runtime.handleWrap(wrap));
-      }
-    },
-    log,
-    now: nowSecs,
-  });
-  // Resume from the last moment every inbox relay was read through. Recorded before
-  // listening, so a run that never reads every relay through does not restart "from now".
-  state.resumeAt = Math.min(state.resumeAt ?? startedAt, startedAt);
-  saveLedger(home.ledger, state);
-  const resumeFrom = state.resumeAt;
-  for (const relay of config.inboxRelays) {
-    listener.listen(relay, resumeFrom);
-  }
-  log(`store ${storePubkey} listening on ${config.inboxRelays.join(', ')}`);
-
-  let sweepQueued = false;
-  const sweep = () => {
-    // A slow sweep never piles up behind itself on the queue.
-    if (sweepQueued) {
-      return;
-    }
-    sweepQueued = true;
-    // Every wrap received before now is already on the queue, ahead of this sweep.
-    const allLive = listener.allLive(config.inboxRelays);
-    const queuedAt = nowSecs();
-    enqueue(async () => {
-      sweepQueued = false;
-      await runtime.sweep(allLive, queuedAt);
-    });
-  };
-  sweep();
-  setInterval(sweep, CATCH_UP_INTERVAL_MS);
-  if (target !== undefined) {
-    startWebhooks(state, store, target, home, enqueue);
-  }
-}
-
-/**
- * Send the webhooks due, every `WEBHOOK_TICK_MS`. Each pick runs on the queue,
- * between tasks, so it only sees entries already saved; the requests run off
- * it, and each outcome is queued back and saved.
- */
-function startWebhooks(
-  state: LedgerState,
-  store: { storePubkey: string },
-  target: WebhookTarget,
-  home: MerchantHome,
-  enqueue: (task: () => Promise<void>) => void,
-): void {
-  const sender = new WebhookSender({
-    state,
-    store,
-    target,
-    commit: (change) => {
-      enqueue(async () => {
-        change();
-        saveLedger(home.ledger, state);
-      });
-    },
-    log,
-    now: nowSecs,
-    userAgent: USER_AGENT,
-  });
-  // Like the sweep: a busy queue holds one pick, never a pile of them.
-  let tickQueued = false;
-  const tick = () => {
-    if (tickQueued) {
-      return;
-    }
-    tickQueued = true;
-    enqueue(async () => {
-      tickQueued = false;
-      void sender.tick();
-    });
-  };
-  tick();
-  setInterval(tick, WEBHOOK_TICK_MS);
-  log(`webhook to ${new URL(target.url).origin} (order.paid)`);
 }
 
 function listOrders(home: MerchantHome): void {

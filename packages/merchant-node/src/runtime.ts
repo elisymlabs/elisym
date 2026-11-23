@@ -57,8 +57,11 @@ export interface RuntimeDeps {
   store: StoreIdentity;
   storeSecretKey: Uint8Array;
   context: SolanaContext;
-  /** Write the ledger to disk. */
-  save: () => void;
+  /**
+   * Write the ledger to storage. Awaited before anything is sent: a save that
+   * throws or rejects stops the task, so nothing unsaved ever goes out.
+   */
+  save: () => void | Promise<void>;
   /**
    * Publish the completed status of one paid order to the store's inbox relays, except
    * `skip` (they took it already); resolves to the relays that took it now and
@@ -161,7 +164,7 @@ export class MerchantRuntime {
       const known = state.orders[orderKey(unwrapped.senderPubkey, message.orderId)];
       if (known?.deliveredAt !== undefined && message.storePubkey === store.storePubkey) {
         if (result.kind === 'receipt') {
-          save();
+          await save();
         }
         this.resend(known);
         return;
@@ -175,7 +178,7 @@ export class MerchantRuntime {
       }
       return;
     }
-    save();
+    await save();
     if (result.kind === 'order') {
       log(`order ${result.order.key}`);
       return;
@@ -241,7 +244,7 @@ export class MerchantRuntime {
         log(`warning: ${order.key} ${tx}: ${FEE_UNRESOLVED_NOTE}`);
       }
     }
-    save();
+    await save();
     if (check.kind === 'paid') {
       await this.deliverPending();
     } else if (check.kind === 'ask_again') {
@@ -323,7 +326,7 @@ export class MerchantRuntime {
     if (this.deps.refreshTreasuries !== undefined) {
       const refresh = await this.deps.refreshTreasuries();
       if (refresh.kind === 'wrong_cluster') {
-        save();
+        await save();
         log(`error: ${refresh.problem}: stopping`);
         this.deps.stop?.(refresh.problem);
         return;
@@ -393,7 +396,7 @@ export class MerchantRuntime {
     } finally {
       // Saved before anything is sent, even when the chain could not be read this
       // time: a claim made before the error is on disk before its delivery.
-      save();
+      await save();
       await this.deliverPending();
     }
   }
@@ -423,6 +426,7 @@ export class MerchantRuntime {
     }
     const at = now();
     let changed = false;
+    const copies: { wrap: NostrEvent; label: string }[] = [];
     pending.forEach((order, index) => {
       const attempt = attempts[index];
       const fresh = (attempt?.taken ?? []).filter(
@@ -437,19 +441,22 @@ export class MerchantRuntime {
         changed = true;
         order.deliveredAt = at;
         log(`completed ${order.key} (${order.paid?.signature ?? ''})`);
-        // One copy per order, of the attempt that made it delivered. Published
-        // after the save below by the copy queue, which never blocks this one.
+        // One copy per order, of the attempt that made it delivered: handed to
+        // the copy queue (which never blocks this one) only once the save below is done.
         if (attempt === undefined) {
           log(`copy for ${order.key} not made: the completed status could not be built`);
         } else {
-          selfCopies?.add(attempt.selfWrap, order.key);
+          copies.push({ wrap: attempt.selfWrap, label: order.key });
         }
       } else {
         log(`completion for ${order.key} taken by ${order.deliveredTo?.length ?? 0}; will retry`);
       }
     });
     if (changed) {
-      save();
+      await save();
+    }
+    for (const copy of copies) {
+      selfCopies?.add(copy.wrap, copy.label);
     }
   }
 }

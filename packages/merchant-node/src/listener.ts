@@ -119,15 +119,61 @@ export function wrapFilter(storePubkey: string, since: number, until?: number): 
 export class InboxListener {
   private readonly live = new Set<string>();
   private readonly attempts = new Map<string, number>();
-  private readonly setTimer: (task: () => void, ms: number) => () => void;
+  private readonly startTimer: (task: () => void, ms: number) => () => void;
+  /** Timers not yet fired and subscriptions still open: all ended by `close`. */
+  private readonly timers = new Set<() => void>();
+  private readonly subscriptions = new Set<{ close(): void }>();
+  private closed = false;
 
   constructor(private readonly options: ListenerOptions) {
-    this.setTimer =
+    this.startTimer =
       options.setTimer ??
       ((task, ms) => {
         const handle = setTimeout(task, ms);
         return () => clearTimeout(handle);
       });
+  }
+
+  /** Stop listening for good: no wrap is handed on, nothing is retried. */
+  close(): void {
+    this.closed = true;
+    this.live.clear();
+    for (const cancel of this.timers) {
+      cancel();
+    }
+    this.timers.clear();
+    for (const subscription of this.subscriptions) {
+      subscription.close();
+    }
+    this.subscriptions.clear();
+  }
+
+  private setTimer(task: () => void, ms: number): () => void {
+    if (this.closed) {
+      return () => undefined;
+    }
+    let cancel: () => void = () => undefined;
+    const run = () => {
+      this.timers.delete(cancel);
+      if (!this.closed) {
+        task();
+      }
+    };
+    const stopTimer = this.startTimer(run, ms);
+    cancel = () => {
+      this.timers.delete(cancel);
+      stopTimer();
+    };
+    this.timers.add(cancel);
+    return cancel;
+  }
+
+  private open(subscription: { close(): void }): void {
+    if (this.closed) {
+      subscription.close();
+      return;
+    }
+    this.subscriptions.add(subscription);
   }
 
   /** Whether every one of `relays` is currently read through and listening. */
@@ -141,6 +187,9 @@ export class InboxListener {
 
   /** Listen on `relay` for every wrap sent since `from`. */
   listen(relay: string, from: number): void {
+    if (this.closed) {
+      return;
+    }
     const { pool, storePubkey, auth, onWrap, log, now } = this.options;
     const since = readSince(from);
     const openedAt = now();
@@ -151,7 +200,7 @@ export class InboxListener {
         return;
       }
       void this.backfill(relay, since, openedAt).then((done) => {
-        if (closed) {
+        if (closed || this.closed) {
           return;
         }
         if (done) {
@@ -164,14 +213,26 @@ export class InboxListener {
         this.setTimer(runBackfill, BACKFILL_RETRY_MS);
       });
     };
-    pool.subscribe([relay], wrapFilter(storePubkey, since), {
+    // Declared first: a pool may call `onclose` before `subscribe` returns.
+    let subscription: { close(): void } | undefined;
+    subscription = pool.subscribe([relay], wrapFilter(storePubkey, since), {
       onauth: auth,
-      onevent: onWrap,
+      onevent: (wrap) => {
+        if (!this.closed) {
+          onWrap(wrap);
+        }
+      },
       // nostr-tools also calls this right before `onclose` when a subscription
       // fails: the backfill starts on the next turn, and only if still open.
       oneose: () => this.setTimer(runBackfill, 0),
       onclose: (reasons) => {
         closed = true;
+        if (subscription !== undefined) {
+          this.subscriptions.delete(subscription);
+        }
+        if (this.closed) {
+          return;
+        }
         this.live.delete(relay);
         const attempt = this.attempts.get(relay) ?? 0;
         this.attempts.set(relay, attempt + 1);
@@ -183,6 +244,9 @@ export class InboxListener {
         this.setTimer(() => this.listen(relay, resumeFrom), pause);
       },
     });
+    if (!closed) {
+      this.open(subscription);
+    }
   }
 
   /** Page backwards through `relay`'s stored wraps in `[since, until]`; true only when read to the end. */
@@ -193,16 +257,29 @@ export class InboxListener {
       let oldest = until;
       let timedOut = false;
       let cancelTimer: (() => void) | undefined;
-      const subscription = pool.subscribeEose([relay], wrapFilter(storePubkey, since, until), {
+      let ended = false;
+      // Declared first: a pool may call `onclose` before `subscribeEose` returns.
+      let subscription: { close(): void } | undefined;
+      subscription = pool.subscribeEose([relay], wrapFilter(storePubkey, since, until), {
         maxWait: LIBRARY_WAIT_MS,
         onauth: auth,
         onevent: (wrap) => {
           received += 1;
           oldest = Math.min(oldest, wrap.created_at);
-          onWrap(wrap);
+          if (!this.closed) {
+            onWrap(wrap);
+          }
         },
         onclose: (reasons) => {
+          ended = true;
           cancelTimer?.();
+          if (subscription !== undefined) {
+            this.subscriptions.delete(subscription);
+          }
+          if (this.closed) {
+            resolve(false);
+            return;
+          }
           if (timedOut || !reasons.every((reason) => reason === EOSE_CLOSE_REASON)) {
             resolve(false);
             return;
@@ -215,9 +292,14 @@ export class InboxListener {
           }
         },
       });
+      if (ended) {
+        return;
+      }
+      const opened = subscription;
+      this.open(opened);
       cancelTimer = this.setTimer(() => {
         timedOut = true;
-        subscription.close();
+        opened.close();
       }, PAGE_WAIT_MS);
     });
   }
