@@ -20,7 +20,7 @@ function fakes() {
     },
   };
   const holder = {
-    drainAll: async () => {
+    kickAll: async () => {
       calls.drains += 1;
       if (release === undefined) {
         return;
@@ -83,6 +83,24 @@ describe('RequestPump', () => {
     expect(world.calls.drains).toBe(4);
   });
 
+  it('keeps the tick of a poll during a round when a notify follows it (R3)', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const world = fakes();
+    const pump = new RequestPump({ db: world.db, holder: world.holder, log: () => undefined });
+    await pump.start();
+    await settle();
+    expect(world.calls).toMatchObject({ drains: 1, ticks: 1 });
+    world.hold();
+    world.listeners.get(REQUESTS_CHANNEL)?.();
+    await settle();
+    vi.advanceTimersByTime(REQUEST_POLL_MS);
+    world.listeners.get(REQUESTS_CHANNEL)?.();
+    world.free();
+    await settle();
+    expect(world.calls).toMatchObject({ drains: 3, ticks: 2 });
+    await pump.stop();
+  });
+
   it('keeps going after a round that throws', async () => {
     const world = fakes();
     let fail = true;
@@ -90,12 +108,12 @@ describe('RequestPump', () => {
     const pump = new RequestPump({
       db: world.db,
       holder: {
-        drainAll: async () => {
+        kickAll: async () => {
           if (fail) {
             fail = false;
             throw new Error('db down');
           }
-          await world.holder.drainAll();
+          await world.holder.kickAll();
         },
         tick: world.holder.tick,
       },

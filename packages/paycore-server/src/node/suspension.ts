@@ -44,6 +44,8 @@ function errorText(error: unknown): string {
 export class Suspensions {
   /** Per store: the next sold-out pass after one that did not get every listing out. */
   private readonly retries = new Map<string, { attempt: number; nextAt: number }>();
+  /** Stores whose round is still running: a later round leaves them to finish it. */
+  private readonly inFlight = new Set<string>();
 
   constructor(private readonly deps: SuspensionDeps) {}
 
@@ -87,32 +89,50 @@ export class Suspensions {
     }
     const suspended: string[] = [];
     const now = this.deps.now();
-    for (const row of rows) {
-      try {
-        if (row.suspending_since === null) {
-          if ((this.retries.get(row.owner)?.nextAt ?? 0) <= now) {
-            await this.deps.supervisor.applyControl(row.owner, (handle) =>
-              this.soldOutPass(row.owner, handle),
-            );
-          }
-        } else if (
-          now - row.suspending_since >= TERMS_STAND_SECS &&
-          outboxEmpty(JSON.parse(row.state) as LedgerState, now)
-        ) {
-          const done = await this.deps.supervisor.applyControl(
-            row.owner,
-            (handle) => this.finish(row.owner, handle),
-            { restart: (finished) => !finished },
-          );
-          if (done) {
+    // Each store on its own: one store's slow pass never holds another's, and
+    // a store still busy from an earlier round is left to finish it.
+    const passes = rows
+      .filter((row) => !this.inFlight.has(row.owner))
+      .map(async (row) => {
+        this.inFlight.add(row.owner);
+        try {
+          if (await this.tickStore(row, now)) {
             suspended.push(row.owner);
           }
+        } catch (error) {
+          this.log(row.owner, `suspension: ${errorText(error)}`);
+        } finally {
+          this.inFlight.delete(row.owner);
         }
-      } catch (error) {
-        this.log(row.owner, `suspension: ${errorText(error)}`);
+      });
+    await Promise.all(passes);
+    return suspended.sort();
+  }
+
+  /** One store's round: its sold-out pass again when due, or its move to `suspended`; true once suspended. */
+  private async tickStore(
+    row: { owner: string; suspending_since: number | null; state: string },
+    now: number,
+  ): Promise<boolean> {
+    if (row.suspending_since === null) {
+      if ((this.retries.get(row.owner)?.nextAt ?? 0) <= now) {
+        await this.deps.supervisor.applyControl(row.owner, (handle) =>
+          this.soldOutPass(row.owner, handle),
+        );
       }
+      return false;
     }
-    return suspended;
+    if (
+      now - row.suspending_since < TERMS_STAND_SECS ||
+      !outboxEmpty(JSON.parse(row.state) as LedgerState, now)
+    ) {
+      return false;
+    }
+    return await this.deps.supervisor.applyControl(
+      row.owner,
+      (handle) => this.finish(row.owner, handle),
+      { restart: (finished) => !finished },
+    );
   }
 
   private log(owner: string, message: string): void {
@@ -171,9 +191,15 @@ export class Suspensions {
     let problem: string | undefined;
     try {
       const result = await runStoreSetupPass(this.deps.setup, owner, handle);
-      complete =
-        result.kind === 'no_payout_list' ||
-        result.outcomes.every((outcome) => outcome.listing !== 'failed');
+      if (result.kind === 'no_payout_list') {
+        // Nothing can be published: complete only when nothing is on sale either.
+        complete = !(handle.state.terms ?? []).some((period) => period.until === undefined);
+        problem = complete
+          ? undefined
+          : 'no payout list committed: the standing terms cannot be retired';
+      } else {
+        complete = result.outcomes.every((outcome) => outcome.listing !== 'failed');
+      }
       if (!complete && result.kind === 'done') {
         problem = `sold-out listings no relay took: ${result.outcomes
           .filter((outcome) => outcome.listing === 'failed')

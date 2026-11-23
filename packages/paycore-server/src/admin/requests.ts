@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { type Db, type Queryable, REQUESTS_CHANNEL } from '../db/db';
+import { type Queryable, REQUESTS_CHANNEL } from '../db/db';
 
 /** How long an admin route waits for the holder to apply its request before answering 202. */
 export const REQUEST_WAIT_MS = 10_000;
@@ -79,17 +79,6 @@ export async function insertRequest(
   );
   await tx.query('select pg_notify($1, $2)', [REQUESTS_CHANNEL, owner]);
   return id;
-}
-
-/** Queue a request in its own transaction (insert + `pg_notify`); resolves to its id. */
-export function submitRequest(
-  db: Db,
-  owner: string,
-  kind: RequestKind,
-  payload: unknown,
-  now: number,
-): Promise<string> {
-  return db.transaction((tx) => insertRequest(tx, owner, kind, payload, now));
 }
 
 /** A request by id, only when it is `owner`'s. */
@@ -175,50 +164,6 @@ export async function pendingRequests(db: Queryable, owner: string): Promise<Adm
     [owner],
   );
   return rows.map(rowToRequest);
-}
-
-/** Drains running now, per owner: a second drain for the same owner waits for the first. */
-const DRAINS = new Map<string, Promise<unknown>>();
-
-/**
- * The holder's side: hand each pending request of `owner` to `apply`, oldest
- * first, one at a time. `apply` marks it (in the ledger save, `appliedRequest`,
- * or with `markRequest`). A request another drain marked meanwhile is skipped.
- * A throw stops the drain there, so later requests never overtake an earlier
- * one, and is rethrown. Resolves to the ids handed to `apply`.
- */
-export function drainRequests(
-  db: Queryable,
-  owner: string,
-  apply: (request: AdminRequest) => Promise<void>,
-): Promise<string[]> {
-  const previous = DRAINS.get(owner) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(() => drainOnce(db, owner, apply));
-  DRAINS.set(owner, run);
-  const cleanup = (): void => {
-    if (DRAINS.get(owner) === run) {
-      DRAINS.delete(owner);
-    }
-  };
-  run.then(cleanup, cleanup);
-  return run;
-}
-
-async function drainOnce(
-  db: Queryable,
-  owner: string,
-  apply: (request: AdminRequest) => Promise<void>,
-): Promise<string[]> {
-  const handed: string[] = [];
-  for (const request of await pendingRequests(db, owner)) {
-    const current = await getRequest(db, owner, request.id);
-    if (current?.state !== 'pending') {
-      continue;
-    }
-    handed.push(request.id);
-    await apply(current);
-  }
-  return handed;
 }
 
 /**

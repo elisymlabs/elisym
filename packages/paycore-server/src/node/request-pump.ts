@@ -1,9 +1,12 @@
 /**
  * What makes the holder apply admin requests: a NOTIFY on the requests
- * channel (an admin route queued one) and a poll every `REQUEST_POLL_SECS`
+ * channel (an admin route queued one) and a poll every `REQUEST_POLL_MS`
  * (a notify lost while the listen connection was down, a request kept pending
- * by a failure, the suspension clocks, the periodic drift and offer checks). Rounds never overlap: a trigger during
- * a round runs one more round after it.
+ * by a failure, the suspension clocks, the periodic drift and offer checks).
+ * A round only starts work: each store's drain runs on its own (`kickAll`)
+ * and the periodic work is queued per store (`tick`), so one store's long
+ * control task never holds another store's requests. Rounds never overlap: a
+ * trigger during a round runs one more round after it.
  */
 import { type Db, REQUESTS_CHANNEL } from '../db/db';
 import type { HolderRequests } from './holder-requests';
@@ -13,7 +16,7 @@ export const REQUEST_POLL_MS = 60_000;
 
 export interface RequestPumpDeps {
   db: Pick<Db, 'listen'>;
-  holder: Pick<HolderRequests, 'drainAll' | 'tick'>;
+  holder: Pick<HolderRequests, 'kickAll' | 'tick'>;
   pollMs?: number;
   log?: (message: string) => void;
 }
@@ -78,7 +81,7 @@ export class RequestPump {
   private async round(tick: boolean): Promise<void> {
     const log = this.deps.log ?? ((message: string) => console.error(message));
     try {
-      await this.deps.holder.drainAll();
+      await this.deps.holder.kickAll();
     } catch (error) {
       log(`request round failed: ${error instanceof Error ? error.message : 'unknown'}`);
     }

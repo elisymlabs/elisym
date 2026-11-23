@@ -8,9 +8,12 @@
  * only one that marks it `recorded`: a 10133 when its payout list went out
  * (the ledger's `state.payto` then holds its payouts string, P9), a 30490
  * when it went out. A store winding down (step 15) publishes every listing
- * sold out.
+ * sold out. The 10050 names the merchant's draft inbox relays; the store
+ * switches to them (`store_config.inbox_relays`, what its node listens on)
+ * only in the save of a pass whose 10050 a default relay took, where buyers
+ * read it - before that, orders still come to the relays buyers know.
  */
-import { KIND_PAYTO, KIND_STORE_AUTH } from '@elisym/commerce';
+import { KIND_INBOX_RELAYS, KIND_PAYTO, KIND_STORE_AUTH } from '@elisym/commerce';
 import type { Network } from '@elisym/pay-core';
 import { OFFER_RELAYS } from '@merchant-node/constants';
 import { feeDeclaration } from '@merchant-node/fee';
@@ -62,6 +65,10 @@ export type SetupPassResult =
       payoutListPending: boolean;
       /** The committed authorization went out (undefined: none committed). */
       authorizationOut: boolean | undefined;
+      /** The draft inbox relays are now the active ones (their 10050 reached a default relay). */
+      inboxRelaysSwitched: boolean;
+      /** The draft inbox relays differ from the active ones and their 10050 reached no default relay. */
+      inboxRelaysPending: boolean;
       outcomes: { d: string; onSale: boolean; listing: ListingOutcome['listing'] }[];
       /** Events no default relay took: buyers may not read them yet. */
       missedDefaults: string[];
@@ -88,6 +95,7 @@ interface StoreRow extends Record<string, unknown> {
   nip05: string | null;
   network: Network | null;
   inbox_relays: string[] | null;
+  draft_inbox_relays: string[] | null;
 }
 
 interface CommittedRow extends Record<string, unknown> {
@@ -144,7 +152,8 @@ export async function runStoreSetupPass(
   const { db } = deps;
   const log = deps.log ?? ((message: string) => console.error(message));
   const [row] = await db.query<StoreRow>(
-    `select s.status, s.store_pubkey, k.store_key, c.name, c.nip05, c.network, c.inbox_relays
+    `select s.status, s.store_pubkey, k.store_key, c.name, c.nip05, c.network, c.inbox_relays,
+            c.draft_inbox_relays
      from stores s
      left join store_keys k on k.owner = s.owner
      left join store_config c on c.owner = s.owner
@@ -182,12 +191,19 @@ export async function runStoreSetupPass(
   if (getPublicKey(storeSecretKey) !== row.store_pubkey) {
     throw new SetupPassFailed(owner, 'the sealed store key is not the store pubkey');
   }
+  // The 10050 names the draft; the active relays (where buyers send orders now) hear it too.
   let inboxRelays: string[];
   try {
-    inboxRelays = allowedInboxRelays(owner, row.inbox_relays, deps.inboxRelayAllowlist);
+    inboxRelays = allowedInboxRelays(
+      owner,
+      row.draft_inbox_relays ?? row.inbox_relays,
+      deps.inboxRelayAllowlist,
+    );
   } catch (error) {
     throw new SetupPassFailed(owner, error instanceof StartRefused ? error.message : 'no relays');
   }
+  const activeRelays = allowedOnly(row.inbox_relays, deps.inboxRelayAllowlist);
+  const switching = !sameRelays(inboxRelays, activeRelays, row.inbox_relays);
   const products = await readProducts(db, owner, row.status);
   const { state } = handle;
   let declare: boolean;
@@ -198,11 +214,12 @@ export async function runStoreSetupPass(
     throw new SetupPassFailed(owner, errorText(error));
   }
   const offerRelays = deps.offerRelays ?? OFFER_RELAYS;
-  const relays = [...new Set([...offerRelays, ...inboxRelays])];
+  const relays = [...new Set([...offerRelays, ...inboxRelays, ...activeRelays])];
   const storePubkey = row.store_pubkey;
   const profile = { name: row.name, ...(row.nip05 === null ? {} : { nip05: row.nip05 }) };
   const pool = deps.pools.open(storePubkey);
   const went = new Map<string, { out: boolean; defaults: boolean }>();
+  let inboxListId: string | undefined;
   let outcomes: ListingOutcome[];
   let missedDefaults: string[];
   try {
@@ -229,19 +246,20 @@ export async function runStoreSetupPass(
         payouts: payouts.list,
         payoutsString,
         storeSecretKey,
-        sign: ({ startedAt }) => ({
-          payoutList: payoutList.event,
-          others: [
-            ...buildStoreSignedEvents(
-              { ...profile, inboxRelays },
-              storeSecretKey,
-              owner,
-              startedAt,
-              declare,
-            ),
-            ...(authorization === undefined ? [] : [authorization.event]),
-          ],
-        }),
+        sign: ({ startedAt }) => {
+          const storeSigned = buildStoreSignedEvents(
+            { ...profile, inboxRelays },
+            storeSecretKey,
+            owner,
+            startedAt,
+            declare,
+          );
+          inboxListId = storeSigned.find((event) => event.kind === KIND_INBOX_RELAYS)?.id;
+          return {
+            payoutList: payoutList.event,
+            others: [...storeSigned, ...(authorization === undefined ? [] : [authorization.event])],
+          };
+        },
         publish,
         now: deps.now,
       });
@@ -262,17 +280,32 @@ export async function runStoreSetupPass(
   ];
   const savedAt = deps.now();
   const payoutListPending = !payoutList.recorded && listOut?.out !== true;
-  const applied = payoutListPending ? undefined : options.appliedRequest;
-  // `recorded` commits with the terms it stands for, or not at all.
+  const inboxOut = inboxListId === undefined ? undefined : went.get(inboxListId);
+  const inboxRelaysSwitched = switching && inboxOut?.out === true && inboxOut.defaults;
+  // A request whose payout list or inbox relays did not go out stays pending: the holder retries it.
+  const applied =
+    payoutListPending || (switching && !inboxRelaysSwitched) ? undefined : options.appliedRequest;
+  // `recorded` commits with the terms it stands for, or not at all; the node
+  // listens on the new inbox relays from the save that says buyers read them.
   await handle.save(state, {
     ...(applied === undefined ? {} : { appliedRequest: applied }),
-    alongside: (tx) => markWentOut(tx, owner, savedAt, outEvents),
+    alongside: async (tx) => {
+      await markWentOut(tx, owner, savedAt, outEvents);
+      if (inboxRelaysSwitched) {
+        await tx.query('update store_config set inbox_relays = $2 where owner = $1', [
+          owner,
+          inboxRelays,
+        ]);
+      }
+    },
   });
   return {
     kind: 'done',
     payoutListOut: listOut?.out === true,
     payoutListPending,
     authorizationOut: authOut?.out,
+    inboxRelaysSwitched,
+    inboxRelaysPending: switching && !inboxRelaysSwitched,
     outcomes: outcomes.map((outcome) => ({
       d: outcome.d,
       onSale: outcome.onSale,
@@ -280,6 +313,30 @@ export async function runStoreSetupPass(
     })),
     missedDefaults,
   };
+}
+
+/** The relays of `relays` in the allowlist, in its spelling: a relay outside it is never connected to (P7). */
+function allowedOnly(relays: readonly string[], allowlist: readonly string[]): string[] {
+  return relays.flatMap((relay) => {
+    try {
+      return allowedInboxRelays('', [relay], allowlist);
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Whether the draft names exactly the active relays (the stored list, every one allowed). */
+function sameRelays(
+  draft: readonly string[],
+  allowedActive: readonly string[],
+  storedActive: readonly string[],
+): boolean {
+  return (
+    allowedActive.length === storedActive.length &&
+    draft.length === allowedActive.length &&
+    draft.every((relay, index) => relay === allowedActive[index])
+  );
 }
 
 /**

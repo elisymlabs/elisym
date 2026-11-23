@@ -109,10 +109,30 @@ export class PayoutListNotOut extends Error {
   }
 }
 
+/** The draft inbox relays' 10050 reached no default relay: the request stays pending, retried. */
+export class InboxRelaysNotOut extends Error {
+  constructor(readonly owner: string) {
+    super('the inbox list naming the new inbox relays reached no default relay: retried');
+    this.name = 'InboxRelaysNotOut';
+  }
+}
+
+/** One store's kicked drains: one runs at a time, and a kick meanwhile runs one more after it. */
+interface Kick {
+  again: boolean;
+  done: Promise<void>;
+}
+
 export class HolderRequests {
   readonly suspensions: Suspensions;
   /** Per store: one drain at a time (answers sent again and pending requests together). */
   private readonly drains = new Map<string, Promise<unknown>>();
+  /** Per store: the drains the pump kicked, each store on its own (one never waits for another). */
+  private readonly kicks = new Map<string, Kick>();
+  /** The suspension round in progress, if any: a tick meanwhile does not start another. */
+  private suspending: Promise<void> | undefined;
+  /** The periodic offer checks started by the last tick. */
+  private rechecking: Promise<void> | undefined;
   /** Failed attempts of setup-kind requests and when the next is due, by request id (this process only). */
   private readonly attempts = new Map<string, { count: number; nextAt: number }>();
 
@@ -127,29 +147,108 @@ export class HolderRequests {
   }
 
   /**
-   * The pump's periodic round: the suspension clocks, then the drift and
-   * offer checks of running stores (each at most every `DRIFT_CHECK_SECS`).
+   * The pump's periodic round, started and not awaited (a store whose control
+   * task runs long holds only its own queue): the suspension clocks (one round
+   * at a time), and the drift and offer checks of running stores, each queued
+   * on its own store's control queue (each at most every `DRIFT_CHECK_SECS`).
    */
-  async tick(): Promise<void> {
-    try {
-      await this.suspensions.tick();
-    } finally {
-      await this.deps.supervisor.recheckOffers();
+  tick(): Promise<void> {
+    // Suspensions skips a store whose earlier round still runs, so a hung store
+    // never holds another store's round.
+    const round = this.background('suspension round', this.suspensions.tick());
+    this.suspending = round;
+    void round.then(() => {
+      if (this.suspending === round) {
+        this.suspending = undefined;
+      }
+    });
+    const checks = this.background('offer checks', this.deps.supervisor.recheckOffers());
+    this.rechecking = checks;
+    void checks.then(() => {
+      if (this.rechecking === checks) {
+        this.rechecking = undefined;
+      }
+    });
+    return Promise.resolve();
+  }
+
+  /** `work` settled, its error logged: what a tick starts and does not await. */
+  private background(what: string, work: Promise<unknown>): Promise<void> {
+    return work.then(
+      () => undefined,
+      (error: unknown) => {
+        (this.deps.log ?? ((line: string) => console.error(line)))(
+          `${what} failed: ${errorText(error)}`,
+        );
+      },
+    );
+  }
+
+  /**
+   * Start a drain of every store this holder serves that has work queued, each
+   * on its own (`kick`); resolves once they are started, not done, so a store
+   * whose control task runs long never holds another's requests.
+   */
+  async kickAll(): Promise<void> {
+    await this.kickOwners();
+  }
+
+  /** Drain every store this holder serves that has work queued, and wait for them. Errors are logged per store. */
+  async drainAll(): Promise<void> {
+    await Promise.all(await this.kickOwners());
+  }
+
+  /** Resolves once the kicked drains, the suspension round and the offer checks in progress are done (tests, shutdown). */
+  async idle(): Promise<void> {
+    for (;;) {
+      const waits = [
+        ...[...this.kicks.values()].map((kick) => kick.done),
+        ...(this.suspending === undefined ? [] : [this.suspending]),
+        ...(this.rechecking === undefined ? [] : [this.rechecking]),
+      ];
+      if (waits.length === 0) {
+        return;
+      }
+      await Promise.all(waits);
     }
   }
 
-  /** Drain every store this holder serves that has work queued. Errors are logged per store. */
-  async drainAll(): Promise<void> {
+  /**
+   * Drain `owner` now, or once more right after its drain in progress (kicks
+   * meanwhile fold into that one). Never rejects: errors are logged.
+   */
+  kick(owner: string): Promise<void> {
+    const known = this.kicks.get(owner);
+    if (known !== undefined) {
+      known.again = true;
+      return known.done;
+    }
+    const kick: Kick = { again: true, done: Promise.resolve() };
+    this.kicks.set(owner, kick);
+    kick.done = this.runKicks(owner, kick);
+    return kick.done;
+  }
+
+  private async kickOwners(): Promise<Promise<void>[]> {
     const owners = await ownersWithRequests(this.deps.db, this.deps.supervisor.leased);
-    await Promise.all(
-      owners.map((owner) =>
-        this.drain(owner).catch((error: unknown) => {
+    return owners.map((owner) => this.kick(owner));
+  }
+
+  private async runKicks(owner: string, kick: Kick): Promise<void> {
+    try {
+      while (kick.again) {
+        kick.again = false;
+        try {
+          await this.drain(owner);
+        } catch (error) {
           if (!(error instanceof NotServed)) {
             this.log(owner, `requests: ${errorText(error)}`);
           }
-        }),
-      ),
-    );
+        }
+      }
+    } finally {
+      this.kicks.delete(owner);
+    }
   }
 
   /**
@@ -169,8 +268,9 @@ export class HolderRequests {
       .then(async () => {
         const resent: string[] = [];
         for (const request of await unsentHandAnswers(this.deps.db, owner)) {
-          await this.sendHandAgain(request);
-          resent.push(request.id);
+          if (await this.sendHandAgain(request)) {
+            resent.push(request.id);
+          }
         }
         const applied = await this.drainPending(owner);
         return [...resent, ...applied];
@@ -218,16 +318,6 @@ export class HolderRequests {
       throw failure.error;
     }
     return handed;
-  }
-
-  /**
-   * Run the setup pass of a store now (its activation, or by hand): on its
-   * control queue, saved through a fresh handle.
-   */
-  activateStore(owner: string): Promise<SetupPassResult> {
-    return this.deps.supervisor.applyControl(owner, (handle) =>
-      runStoreSetupPass(this.deps.setup, owner, handle),
-    );
   }
 
   private log(owner: string, message: string): void {
@@ -295,7 +385,7 @@ export class HolderRequests {
         this.deps.db,
         request.owner,
         ALERT_KINDS.setupFailed,
-        `${request.kind} failed ${attempts} times: ${problem}`,
+        `${request.kind} failed ${attempts} times: ${problem}${setupRemedy(problem)}`,
         { now, log: (line) => this.log(request.owner, line) },
       );
     }
@@ -323,8 +413,9 @@ export class HolderRequests {
   /**
    * A setup pass marking `request` applied in its save; marked after when
    * nothing could be published. A committed payout list that is still not
-   * out leaves the request pending (`PayoutListNotOut`, retried with backoff):
-   * whatever else went out is saved.
+   * out leaves the request pending (`PayoutListNotOut`, retried with backoff),
+   * and so does a relay edit whose 10050 reached no default relay
+   * (`InboxRelaysNotOut`): whatever else went out is saved.
    */
   private async passFor(request: AdminRequest): Promise<SetupPassResult> {
     const { db } = this.deps;
@@ -333,6 +424,9 @@ export class HolderRequests {
     );
     if (result.kind === 'done' && result.payoutListPending) {
       throw new PayoutListNotOut(request.owner);
+    }
+    if (result.kind === 'done' && result.inboxRelaysPending) {
+      throw new InboxRelaysNotOut(request.owner);
     }
     const now = this.now();
     if (result.kind === 'no_payout_list') {
@@ -429,25 +523,45 @@ export class HolderRequests {
     );
   }
 
-  /** Send a saved hand answer whose outcome was never written, as stored. */
-  private async sendHandAgain(request: AdminRequest): Promise<void> {
+  /**
+   * Send a saved hand answer whose outcome was never written, as stored; true
+   * when it was sent. One send only: a send that throws writes
+   * `{ done: false, problem }` (the admin offers to send it again), so it
+   * neither holds the pending requests nor restarts the node on every drain.
+   */
+  private async sendHandAgain(request: AdminRequest): Promise<boolean> {
     const { db } = this.deps;
     const parsed = HandPayloadSchema.safeParse(request.payload);
     if (!parsed.success) {
       await setRequestResult(db, request.owner, request.id, { problem: 'not a hand answer' });
-      return;
+      return false;
     }
-    await this.deps.supervisor.applyControl(request.owner, async (handle) => {
-      const plan = planHandAnswer(
-        handle.state,
-        parsed.data.key,
-        this.handRequest(handle, parsed.data),
-      );
-      const outcome = plan.ok
-        ? await this.publishHand(request.owner, plan)
-        : { done: false, problem: plan.problem };
-      await setRequestResult(db, request.owner, request.id, outcome);
-    });
+    try {
+      await this.deps.supervisor.applyControl(request.owner, async (handle) => {
+        const plan = planHandAnswer(
+          handle.state,
+          parsed.data.key,
+          this.handRequest(handle, parsed.data),
+        );
+        const outcome = plan.ok
+          ? await this.publishHand(request.owner, plan)
+          : { done: false, problem: plan.problem };
+        await setRequestResult(db, request.owner, request.id, outcome);
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof NotServed) {
+        throw error;
+      }
+      const problem = errorText(error);
+      this.log(request.owner, `the hand answer ${request.id} was not sent again: ${problem}`);
+      try {
+        await setRequestResult(db, request.owner, request.id, { done: false, problem });
+      } catch (writeError) {
+        this.log(request.owner, `its outcome was not written: ${errorText(writeError)}`);
+      }
+      return false;
+    }
   }
 
   private handRequest(
@@ -495,6 +609,17 @@ export class HolderRequests {
       setup.pools.close(store.pubkey);
     }
   }
+}
+
+/**
+ * What the operator alert adds to a setup failure it can name the remedy of:
+ * a committed payout list the relays would not serve (a newer or same-second
+ * one is out there, R1 drift) is fixed only by the owner signing a new one.
+ */
+function setupRemedy(problem: string): string {
+  return problem.includes('the signed payout list')
+    ? '. Remedy: the owner re-signs the payout list in the admin (prepare, sign and commit a new one, dated after the one the relays serve)'
+    : '';
 }
 
 /** The store key, opened, and the allowlisted inbox relays: what a hand answer is published with. */

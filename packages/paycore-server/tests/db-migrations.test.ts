@@ -136,11 +136,15 @@ describe('0001_init check constraints', () => {
     await expect(insert('testnet', 'fast')).rejects.toThrow();
     await expect(insert('mainnet', 'slow')).rejects.toThrow();
     await insert('devnet', 'safe');
-    const [row] = await db.query<{ draft_payouts: unknown; revision: number }>(
-      'select draft_payouts, revision from store_config where owner = $1',
-      [OWNER],
-    );
-    expect(row).toEqual({ draft_payouts: [], revision: 1 });
+    const [row] = await db.query<{
+      draft_payouts: unknown;
+      draft_inbox_relays: string[] | null;
+      revision: number;
+    }>('select draft_payouts, draft_inbox_relays, revision from store_config where owner = $1', [
+      OWNER,
+    ]);
+    // No relay edit yet: the inbox relays are the active ones only.
+    expect(row).toEqual({ draft_payouts: [], draft_inbox_relays: null, revision: 1 });
   });
 
   it('owner_event_drafts: kind, and a 10133 without its payouts string', async () => {

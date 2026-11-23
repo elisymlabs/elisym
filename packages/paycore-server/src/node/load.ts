@@ -133,8 +133,10 @@ export interface ProductRow extends Record<string, unknown> {
 
 /**
  * The active payouts (P9): exactly the list the ledger recorded when its
- * payout list went out, parsed back from its canonical string. No list yet
- * (a store never set up): none.
+ * payout list went out, parsed back from its canonical string, entries and
+ * order as recorded. No list yet (a store never set up): none. The one
+ * reading of it (the loader, the holder, the admin): a recorded string that is
+ * not a payout list throws `StartRefused` - the store cannot run on it.
  */
 export function activePayouts(state: LedgerState, owner: string): StoreConfig['payouts'] {
   if (state.payto === undefined) {

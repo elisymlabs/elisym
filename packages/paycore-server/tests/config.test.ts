@@ -63,6 +63,27 @@ describe('configFromEnv', () => {
     expect(() => configFromEnv(withoutKey)).toThrow('PAYCORE_MASTER_KEY is required');
   });
 
+  it('takes a public base that is a bare origin and path only', () => {
+    for (const base of [
+      'https://api.paycore.example/?x=1',
+      'https://api.paycore.example/#top',
+      'https://user@api.paycore.example',
+      'https://user:pass@api.paycore.example',
+      'https://:pass@api.paycore.example',
+    ]) {
+      expect(() => configFromEnv({ ...BASE_ENV, PAYCORE_PUBLIC_BASE: base }), base).toThrow(
+        'bare origin and path',
+      );
+    }
+    expect(
+      configFromEnv({ ...BASE_ENV, PAYCORE_PUBLIC_BASE: 'https://api.paycore.example/paycore/' })
+        .publicBase,
+    ).toBe('https://api.paycore.example/paycore');
+    expect(() => configFromEnv({ ...BASE_ENV, PAYCORE_PUBLIC_BASE: 'not a url' })).toThrow(
+      'must be a URL',
+    );
+  });
+
   it('checks the public base, operator, port and proxy flag', () => {
     expect(() => configFromEnv({ ...BASE_ENV, PAYCORE_PUBLIC_BASE: 'http://api.example' })).toThrow(
       'https',

@@ -1,7 +1,9 @@
 import type { RelayView } from '@merchant-node/checks';
+import { OFFER_RELAYS } from '@merchant-node/constants';
 import { LEDGER_VERSION, type LedgerState, emptyLedger } from '@merchant-node/ledger';
 import { buildListingEvent } from '@merchant-node/store-events';
 import type { NostrEvent } from 'nostr-tools';
+import type { SimplePool } from 'nostr-tools/pool';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   OTHER_TREASURY,
@@ -10,6 +12,7 @@ import {
   requestFor,
   signatureOf,
 } from '../../merchant-node/tests/fixtures';
+import { clearAlert, raiseAlert } from '../src/alerts';
 import { loadStoreBundle } from '../src/node/load';
 import {
   CONTROL_BACKOFF_MAX_MS,
@@ -19,7 +22,12 @@ import {
   problemKey,
   startChecks,
 } from '../src/node/start-checks';
-import { DRIFT_CHECK_SECS, type StoreSupervisor } from '../src/node/supervisor';
+import {
+  DRIFT_CHECK_SECS,
+  type StoreSupervisor,
+  type SupervisorDeps,
+} from '../src/node/supervisor';
+import { StorePools } from '../src/relay/pools';
 import { newHolderId } from '../src/state/leases';
 import {
   BASE_DEVNET_CAIP19,
@@ -47,7 +55,7 @@ import {
   vault,
   waitFor,
 } from './helpers/node-store';
-import { RelayWorld } from './helpers/node-world';
+import { RelayWorld, type WorldPool } from './helpers/node-world';
 import { freshDb } from './pglite-db';
 
 const UNREACHABLE = { kind: 'unreachable', problem: 'offline' } as const;
@@ -68,6 +76,7 @@ async function checked(options: Parameters<typeof seedStore>[2], world = new Rel
   const registered: unknown[] = [];
   const outcome = startChecks(bundle, {
     pool: world.pool(),
+    publicPool: world.pool(),
     treasuries: { refreshFor: async () => UNREACHABLE },
     boot: {
       register: (contexts) => {
@@ -145,6 +154,7 @@ describe('startChecks', () => {
     });
     const outcome = await startChecks(bundle, {
       pool: new RelayWorld().pool(),
+      publicPool: new RelayWorld().pool(),
       treasuries: { refreshFor: async () => ({ kind: 'wrong_cluster', problem: 'mainnet RPC' }) },
       boot: { register: () => () => undefined },
       evmClientFor: () => SILENT_EVM,
@@ -202,6 +212,21 @@ describe('healable', () => {
   it('heals a payout list the server committed, or one older than it', () => {
     expect(healable([view({ payoutList: payto('p1', NOW - 100) })], state, committed)).toBe(true);
     expect(healable([view({ payoutList: payto('px', NOW - 200) })], state, committed)).toBe(true);
+  });
+
+  it('heals listings that differ even beside a newer payout list the server never committed', () => {
+    const foreign = payto('px', NOW - 50);
+    expect(
+      healable([view({ listings: [listing('l2', D)], payoutList: foreign })], state, committed),
+    ).toBe(true);
+    expect(
+      healable([view({ listings: [listing('l3', 'unknown')], payoutList: foreign })], state, []),
+    ).toBe(true);
+  });
+
+  it('heals when no payout list is served at all (the committed one is republished)', () => {
+    expect(healable([view({ listings: [listing('l1', D)] })], state, committed)).toBe(true);
+    expect(healable([view({})], state, [])).toBe(true);
   });
 
   it('does not heal a newer payout list the server never committed (R1 drift)', () => {
@@ -419,7 +444,9 @@ describe('the periodic drift and offer check', () => {
     ]);
     expect(heals).toEqual([]);
     expect(supervisor.nodeOf(owner)).toBe(node);
-    expect(world.pools.length).toBe(pools);
+    // No new store pool: one public read pool, already closed.
+    expect(world.pools.length).toBe(pools + 1);
+    expect(world.pools.at(-1)?.destroyed).toBe(true);
 
     world.events.splice(world.events.indexOf(foreign.payoutList), 1);
     clock += DRIFT_CHECK_SECS;
@@ -436,5 +463,248 @@ describe('an empty ledger', () => {
     expect((await outcome).kind).toBe('ready');
     expect(bundle.config.payouts).toEqual([]);
     expect(bundle.rails).toEqual({ solana: false, tempo: false, evm: [] });
+  });
+});
+
+/** A pool on `world` recording every relay it is asked to read. */
+function recordingPool(world: RelayWorld, relays: string[]): WorldPool {
+  const pool = world.pool();
+  const query = pool.querySync.bind(pool);
+  pool.querySync = async (asked, filter) => {
+    relays.push(...asked);
+    return query(asked, filter);
+  };
+  return pool;
+}
+
+describe('the relay reads of a store', () => {
+  const runs: StoreSupervisor[] = [];
+  afterEach(async () => {
+    await Promise.all(runs.splice(0).map((supervisor) => supervisor.shutdown()));
+  });
+
+  async function store(
+    options: { world?: RelayWorld; rpcs?: typeof RPCS; heal?: SupervisorDeps['heal'] } = {},
+  ) {
+    const world = options.world ?? new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const holder = newHolderId();
+    let clock = NOW;
+    const own: string[] = [];
+    const publicRelays: string[] = [];
+    const publicPools: WorldPool[] = [];
+    const { supervisor, logs } = testSupervisor(db, keys, holder, world, chain({}).rpc, {
+      now: () => clock,
+      pools: new StorePools(() => recordingPool(world, own) as unknown as SimplePool),
+      publicReads: () => {
+        const pool = recordingPool(world, publicRelays);
+        publicPools.push(pool);
+        return pool;
+      },
+      ...(options.rpcs === undefined ? {} : { rpcs: options.rpcs }),
+      ...(options.heal === undefined ? {} : { heal: options.heal }),
+    });
+    runs.push(supervisor);
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    return {
+      world,
+      seed,
+      db,
+      holder,
+      supervisor,
+      logs,
+      own,
+      publicRelays,
+      publicPools,
+      owner: seed.owner.pubkey,
+      later: (secs: number) => {
+        clock += secs;
+      },
+    };
+  }
+
+  it('reads the public offer relays with a short-lived pool, and only the inbox relays with its own (minor 6)', async () => {
+    const { supervisor, own, publicRelays, publicPools, later, owner } = await store();
+    expect(supervisor.running).toEqual([owner]);
+    expect(own.length).toBeGreaterThan(0);
+    expect(new Set(own)).toEqual(new Set([RELAY]));
+    expect(new Set(publicRelays)).toEqual(new Set(OFFER_RELAYS));
+    expect(publicPools).toHaveLength(1);
+    expect(publicPools.every((pool) => pool.destroyed)).toBe(true);
+
+    own.length = 0;
+    publicRelays.length = 0;
+    later(DRIFT_CHECK_SECS);
+    await supervisor.recheckOffers();
+    expect(new Set(own)).toEqual(new Set([RELAY]));
+    expect(new Set(publicRelays)).toEqual(new Set(OFFER_RELAYS));
+    expect(publicPools).toHaveLength(2);
+    expect(publicPools.every((pool) => pool.destroyed)).toBe(true);
+  });
+
+  it('keeps the start notices on a recheck: never active while a rail is off (S9)', async () => {
+    const { db, supervisor, later, owner } = await store({
+      rpcs: { devnet: { tempo: 'https://t' } },
+    });
+    expect(await storeStatus(db, owner)).toBe('degraded');
+    later(DRIFT_CHECK_SECS);
+    await supervisor.recheckOffers();
+    expect(await storeStatus(db, owner)).toBe('degraded');
+    expect((await openAlerts(db, owner)).map((alert) => alert.kind)).toEqual(['rail_unavailable']);
+  });
+
+  it('heals a problem set again once it cleared and came back (S11)', async () => {
+    const world = new RelayWorld();
+    const heals: string[] = [];
+    // A heal that fixes nothing: the problem set stays until the relays change.
+    const run = await store({
+      world,
+      heal: async (owner) => {
+        heals.push(owner);
+      },
+    });
+    // A listing the ledger never recorded.
+    const repriced = buildListingEvent(
+      { ...PRODUCT, priceUsd: '2' },
+      SOLANA_PAYOUTS,
+      run.seed.store.secretKey,
+      NOW - 60,
+    );
+    world.add(repriced);
+    run.later(DRIFT_CHECK_SECS);
+    await run.supervisor.recheckOffers();
+    await run.supervisor.idle();
+    expect(heals).toEqual([run.owner]);
+    expect(await storeStatus(run.db, run.owner)).toBe('degraded');
+
+    world.events.splice(world.events.indexOf(repriced), 1);
+    run.later(DRIFT_CHECK_SECS);
+    await run.supervisor.recheckOffers();
+    expect(await storeStatus(run.db, run.owner)).toBe('active');
+
+    world.add(repriced);
+    run.later(DRIFT_CHECK_SECS);
+    await run.supervisor.recheckOffers();
+    await run.supervisor.idle();
+    expect(heals).toEqual([run.owner, run.owner]);
+  });
+
+  it('writes no status once the lease moved (S15)', async () => {
+    const { db, world, seed, supervisor, later, owner } = await store();
+    expect(await storeStatus(db, owner)).toBe('active');
+    await db.query("update leases set holder = 'another' where owner = $1", [owner]);
+    world.add(
+      ownerEvents(
+        seed.owner,
+        seed.store,
+        [{ caip19: USDC_DEVNET_CAIP19, address: OTHER_TREASURY }],
+        NOW - 60,
+      ).payoutList,
+    );
+    later(DRIFT_CHECK_SECS);
+    await supervisor.recheckOffers();
+    expect((await openAlerts(db, owner)).map((alert) => alert.kind)).toContain('drift');
+    expect(await storeStatus(db, owner)).toBe('active');
+  });
+
+  it('runs degraded, the open alerts its reason, when an alert raised elsewhere is open (minor 1, S16)', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, { ...seed, status: 'halted' });
+    await raiseAlert(db, seed.owner.pubkey, 'setup_failed', 'setup failed 5 times', {
+      now: NOW,
+      log: () => undefined,
+    });
+    const holder = newHolderId();
+    const { supervisor } = testSupervisor(db, keys, holder, world, chain({}).rpc);
+    runs.push(supervisor);
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([seed.owner.pubkey]);
+    const [row] = await db.query<{ status: string; status_reason: string | null }>(
+      'select status, status_reason from stores where owner = $1',
+      [seed.owner.pubkey],
+    );
+    expect(row).toEqual({
+      status: 'degraded',
+      status_reason: 'setup_failed: setup failed 5 times',
+    });
+
+    await clearAlert(db, seed.owner.pubkey, 'setup_failed', { now: NOW });
+    await supervisor.applyControl(seed.owner.pubkey, async () => undefined);
+    const [after] = await db.query<{ status: string; status_reason: string | null }>(
+      'select status, status_reason from stores where owner = $1',
+      [seed.owner.pubkey],
+    );
+    expect(after).toEqual({ status: 'active', status_reason: null });
+  });
+
+  it('queues no second periodic check behind one still waiting', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const holder = newHolderId();
+    let clock = NOW;
+    let armed = false;
+    let reads = 0;
+    let release: (() => void) | undefined;
+    const hung = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { supervisor } = testSupervisor(db, keys, holder, world, chain({}).rpc, {
+      now: () => clock,
+      publicReads: () => {
+        const pool = world.pool();
+        if (armed) {
+          reads += 1;
+          const query = pool.querySync.bind(pool);
+          pool.querySync = async (relays, filter) => {
+            await hung;
+            return query(relays, filter);
+          };
+        }
+        return pool;
+      },
+    });
+    runs.push(supervisor);
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    armed = true;
+    clock += DRIFT_CHECK_SECS;
+    const first = supervisor.recheckOffers();
+    await waitFor(() => reads === 1, 'the first check reading');
+    clock += DRIFT_CHECK_SECS;
+    const second = supervisor.recheckOffers();
+    release?.();
+    await first;
+    await second;
+    await supervisor.idle();
+    expect(reads).toBe(1);
+    expect(await storeStatus(db, seed.owner.pubkey)).toBe('active');
+  });
+
+  it('skips a periodic check queued for a run that was restarted before it ran (S21)', async () => {
+    const { world, supervisor, later, owner } = await store();
+    const before = world.queries;
+    await supervisor.applyControl(owner, async () => undefined);
+    const perStart = world.queries - before;
+    expect(perStart).toBeGreaterThan(0);
+
+    later(DRIFT_CHECK_SECS);
+    const queried = world.queries;
+    const restart = supervisor.applyControl(owner, async () => undefined);
+    const checks = supervisor.recheckOffers();
+    await restart;
+    await checks;
+    await supervisor.idle();
+    expect(world.queries - queried).toBe(perStart);
   });
 });

@@ -40,8 +40,10 @@ export function controlBackoffMs(attempt: number): number {
 }
 
 export interface StartCheckDeps {
-  /** The store's own relay pool (P8). */
+  /** The store's own relay pool (P8): read for its inbox relays only. */
   pool: QueryPool;
+  /** An unauthenticated, short-lived pool for the public offer relays (closed by the caller after the checks). */
+  publicPool: QueryPool;
   treasuries: Pick<NetworkTreasuries, 'refreshFor'>;
   boot: Pick<Eip3009Boot, 'register'>;
   /** The shared EVM clients (`ChainClients.evm`). */
@@ -145,6 +147,39 @@ export class HealGate {
   }
 }
 
+/**
+ * A read pool over two: the store's inbox relays through its own pool (the
+ * sockets it keeps, authenticated as its S), every other relay through
+ * `publicPool` (unauthenticated, closed after the read), so a store keeps no
+ * socket to the public offer relays for its whole run.
+ */
+export function splitReadPool(
+  storePool: QueryPool,
+  publicPool: QueryPool,
+  inboxRelays: readonly string[],
+): QueryPool {
+  const own = new Set(inboxRelays);
+  return {
+    async querySync(relays, filter, params) {
+      const mine = relays.filter((relay) => own.has(relay));
+      const others = relays.filter((relay) => !own.has(relay));
+      const publicParams = params.maxWait === undefined ? {} : { maxWait: params.maxWait };
+      const [first, second] = await Promise.all([
+        mine.length === 0 ? [] : storePool.querySync(mine, filter, params),
+        others.length === 0 ? [] : publicPool.querySync(others, filter, publicParams),
+      ]);
+      const seen = new Set<string>();
+      return [...first, ...second].filter((event) => {
+        if (seen.has(event.id)) {
+          return false;
+        }
+        seen.add(event.id);
+        return true;
+      });
+    },
+  };
+}
+
 /** What the relays serve for a store, judged: offers the ledger does not honour, and drift (R1). */
 export interface OfferJudgement {
   offers: OfferVerdict | undefined;
@@ -155,17 +190,18 @@ export interface OfferJudgement {
 /**
  * Read the relays' views of a store and judge them against its ledger and
  * the owner events the server committed: at start, and every
- * `DRIFT_CHECK_SECS` while it runs (a read only: the store's own pool).
+ * `DRIFT_CHECK_SECS` while it runs (a read only: the inbox relays through the
+ * store's own pool, the public offer relays through `publicPool`).
  */
 export async function judgeOffers(
-  pool: QueryPool,
+  pools: { store: QueryPool; publicPool: QueryPool },
   store: Pick<StoreBundle, 'owner' | 'storePubkey' | 'config' | 'products' | 'committed'> & {
     state: LedgerState;
   },
 ): Promise<OfferJudgement> {
   const { owner, state, committed } = store;
   const served = await readOfferProblems(
-    pool,
+    splitReadPool(pools.store, pools.publicPool, store.config.inboxRelays),
     store.config,
     { storePubkey: store.storePubkey, ownerPubkey: owner },
     state,
@@ -212,7 +248,10 @@ export async function startChecks(
   let views: RelayView[] = [];
   let drift: string[] = [];
   if (bundle.status !== 'pending') {
-    const judged = await judgeOffers(deps.pool, { ...bundle, state });
+    const judged = await judgeOffers(
+      { store: deps.pool, publicPool: deps.publicPool },
+      { ...bundle, state },
+    );
     ({ offers, views, drift } = judged);
   }
   const refresh = await deps.treasuries.refreshFor(config.network, state, deps.now());

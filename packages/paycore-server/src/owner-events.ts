@@ -13,6 +13,8 @@ import { getEventHash, verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
 import { insertRequest } from './admin/requests';
 import type { Db, Queryable } from './db/db';
+import { WINDING_DOWN_STATUSES } from './node/load';
+import type { StoreStatus } from './state/leases';
 import { parseLedger } from './state/ledger-store';
 import { canonicalPayouts } from './state/stores';
 
@@ -45,7 +47,8 @@ export type OwnerEventError =
   | 'no_draft'
   | 'expired'
   | 'mismatch'
-  | 'stale';
+  | 'stale'
+  | 'suspended';
 
 export interface OwnerEventRefusal {
   ok: false;
@@ -62,6 +65,13 @@ export type CommitResult =
   | OwnerEventRefusal;
 
 const HEX_RE = /^[0-9a-f]+$/;
+
+/** A store winding down publishes nothing new: its listings are sold out for good. */
+const WINDING_DOWN: OwnerEventRefusal = {
+  ok: false,
+  error: 'suspended',
+  message: 'the store is suspended or being suspended: it takes no more owner events',
+};
 
 const SignedEventSchema = z.object({
   id: z.string().length(64).regex(HEX_RE),
@@ -112,14 +122,22 @@ export async function prepareOwnerEvent(
 ): Promise<PrepareResult> {
   const now = deps.now();
   return deps.db.transaction(async (tx): Promise<PrepareResult> => {
-    const [store] = await tx.query<{ store_pubkey: string; draft_payouts: unknown }>(
-      `select s.store_pubkey, c.draft_payouts from stores s join store_config c on c.owner = s.owner
+    const [store] = await tx.query<{
+      status: StoreStatus;
+      store_pubkey: string;
+      draft_payouts: unknown;
+    }>(
+      `select s.status, s.store_pubkey, c.draft_payouts from stores s
+       join store_config c on c.owner = s.owner
        where s.owner = $1 for update of s`,
       [owner],
     );
     const state = await ledgerOf(tx, owner);
     if (store === undefined || state === undefined) {
       return { ok: false, error: 'no_store' };
+    }
+    if (WINDING_DOWN_STATUSES.includes(store.status)) {
+      return WINDING_DOWN;
     }
     const lastCommitted = await newestCommitted(tx, owner, kind);
     let template: EventTemplate;
@@ -205,6 +223,29 @@ export async function prepareOwnerEvent(
   });
 }
 
+/**
+ * A new `record_owner_event` request for an unrecorded event, unless one is
+ * pending already; undefined then. The payload text is compared as
+ * `insertRequest` writes it (JSON text: a jsonb cast could fail on another
+ * row's NUL escape).
+ */
+async function recordAgain(
+  tx: Queryable,
+  owner: string,
+  eventId: string,
+  now: number,
+): Promise<string | undefined> {
+  const payload = { eventId };
+  const [pending] = await tx.query(
+    `select 1 from admin_requests
+     where owner = $1 and kind = 'record_owner_event' and state = 'pending' and payload = $2`,
+    [owner, JSON.stringify(payload)],
+  );
+  return pending === undefined
+    ? insertRequest(tx, owner, 'record_owner_event', payload, now)
+    : undefined;
+}
+
 function sameTemplate(event: NostrEvent, template: EventTemplate, owner: string): boolean {
   return (
     event.kind === template.kind &&
@@ -222,7 +263,9 @@ function sameTemplate(event: NostrEvent, template: EventTemplate, owner: string)
  * 10133 dated as the relays' newest only when it keeps the ledger's recorded
  * date). Stored `recorded = false` with the draft's payouts string, and a
  * `record_owner_event` request queued for the holder. Committing the same
- * event again answers `alreadyCommitted`.
+ * event again answers `alreadyCommitted`; when it is still unrecorded and no
+ * request to record it is pending (the last one failed), a new one is queued.
+ * Refused for a store winding down.
  */
 export async function commitOwnerEvent(
   deps: OwnerEventDeps,
@@ -244,17 +287,28 @@ export async function commitOwnerEvent(
   const kind = parsed.data.kind;
   const now = deps.now();
   return deps.db.transaction(async (tx): Promise<CommitResult> => {
-    const [store] = await tx.query('select 1 from stores where owner = $1 for update', [owner]);
+    const [store] = await tx.query<{ status: StoreStatus }>(
+      'select status from stores where owner = $1 for update',
+      [owner],
+    );
     const state = await ledgerOf(tx, owner);
     if (store === undefined || state === undefined) {
       return { ok: false, error: 'no_store' };
     }
-    const [known] = await tx.query('select 1 from owner_events where id = $1 and owner = $2', [
-      event.id,
-      owner,
-    ]);
+    if (WINDING_DOWN_STATUSES.includes(store.status)) {
+      return WINDING_DOWN;
+    }
+    const [known] = await tx.query<{ recorded: boolean }>(
+      'select recorded from owner_events where id = $1 and owner = $2',
+      [event.id, owner],
+    );
     if (known !== undefined) {
-      return { ok: true, id: event.id, requestId: undefined, alreadyCommitted: true };
+      return {
+        ok: true,
+        id: event.id,
+        requestId: known.recorded ? undefined : await recordAgain(tx, owner, event.id, now),
+        alreadyCommitted: true,
+      };
     }
     const [draft] = await tx.query<{
       template: unknown;

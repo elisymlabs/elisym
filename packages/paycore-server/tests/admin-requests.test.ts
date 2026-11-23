@@ -1,18 +1,17 @@
 import { emptyLedger } from '@merchant-node/ledger';
 import { describe, expect, it } from 'vitest';
 import {
-  type AdminRequest,
-  drainRequests,
   getRequest,
   markRequest,
   newRequestId,
   pendingRequests,
-  submitRequest,
+  setRequestResult,
   waitResult,
 } from '../src/admin/requests';
 import { REQUESTS_CHANNEL } from '../src/db/db';
 import { acquireLeases } from '../src/state/leases';
 import { PgLedgerStore } from '../src/state/ledger-store';
+import { submitRequest } from './helpers/node-requests';
 import { freshDb } from './pglite-db';
 import { NOW, activate, directoryFor, ownerKeys } from './stores-fixtures';
 
@@ -70,7 +69,7 @@ describe('admin requests', () => {
     });
   });
 
-  it('drains pending requests in order, one at a time, and never applies one twice', async () => {
+  it('lists pending requests oldest first, per owner', async () => {
     const { db, owner } = await servedStore();
     const ids: string[] = [];
     for (const kind of ['setup', 'record_owner_event', 'restart'] as const) {
@@ -79,45 +78,39 @@ describe('admin requests', () => {
     const other = ownerKeys().pubkey;
     await directoryFor(db).createStore(other, { name: 'Other', network: 'devnet' });
     await submitRequest(db, other, 'setup', {}, NOW);
-    const seen: string[] = [];
-    let running = 0;
-    const apply = async (request: AdminRequest) => {
-      running += 1;
-      expect(running).toBe(1);
-      seen.push(request.id);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      await markRequest(db, owner, request.id, 'applied', NOW);
-      running -= 1;
-    };
-    const [first, second] = await Promise.all([
-      drainRequests(db, owner, apply),
-      drainRequests(db, owner, apply),
-    ]);
-    expect(first).toEqual(ids);
-    expect(second).toEqual([]);
-    expect(seen).toEqual(ids);
-    expect(await drainRequests(db, owner, apply)).toEqual([]);
-    expect(await pendingRequests(db, owner)).toEqual([]);
+    expect((await pendingRequests(db, owner)).map((request) => request.id)).toEqual(ids);
+    await markRequest(db, owner, ids[0] ?? '', 'applied', NOW);
+    expect((await pendingRequests(db, owner)).map((request) => request.id)).toEqual(ids.slice(1));
     expect(await pendingRequests(db, other)).toHaveLength(1);
   });
 
-  it('stops at a throw so later requests never overtake, and resumes there', async () => {
+  it("marks only a pending request, and only its owner's", async () => {
     const { db, owner } = await servedStore();
-    const first = await submitRequest(db, owner, 'setup', {}, NOW);
-    const second = await submitRequest(db, owner, 'restart', {}, NOW);
-    let fail = true;
-    const seen: string[] = [];
-    const apply = async (request: AdminRequest) => {
-      seen.push(request.id);
-      if (fail) {
-        throw new Error('relay down');
-      }
-      await markRequest(db, owner, request.id, 'applied', NOW);
-    };
-    await expect(drainRequests(db, owner, apply)).rejects.toThrow('relay down');
-    expect(seen).toEqual([first]);
-    fail = false;
-    expect(await drainRequests(db, owner, apply)).toEqual([first, second]);
+    const id = await submitRequest(db, owner, 'restart', {}, NOW);
+    expect(await markRequest(db, ownerKeys().pubkey, id, 'failed', NOW + 1)).toBe(false);
+    expect(await markRequest(db, owner, id, 'applied', NOW, { first: true })).toBe(true);
+    // Applied once: a second mark (applied or failed) changes nothing.
+    expect(await markRequest(db, owner, id, 'failed', NOW + 5, { second: true })).toBe(false);
+    expect(await getRequest(db, owner, id)).toMatchObject({
+      state: 'applied',
+      appliedAt: NOW,
+      result: { first: true },
+    });
+  });
+
+  it("writes a result only on its owner's applied request", async () => {
+    const { db, owner } = await servedStore();
+    const id = await submitRequest(db, owner, 'hand_answer', {}, NOW);
+    expect(await setRequestResult(db, owner, id, { sent: 1 })).toBe(false);
+    expect(await getRequest(db, owner, id)).toMatchObject({ state: 'pending', result: undefined });
+    await markRequest(db, owner, id, 'applied', NOW);
+    expect(await setRequestResult(db, ownerKeys().pubkey, id, { sent: 2 })).toBe(false);
+    expect(await setRequestResult(db, owner, id, { sent: 3 })).toBe(true);
+    expect((await getRequest(db, owner, id))?.result).toEqual({ sent: 3 });
+    const failed = await submitRequest(db, owner, 'setup', {}, NOW);
+    await markRequest(db, owner, failed, 'failed', NOW, { problem: 'x' });
+    expect(await setRequestResult(db, owner, failed, { sent: 4 })).toBe(false);
+    expect((await getRequest(db, owner, failed))?.result).toEqual({ problem: 'x' });
   });
 
   it('a request marked in the fenced save is applied once, also across a crash before the mark', async () => {
@@ -128,7 +121,7 @@ describe('admin requests', () => {
     const ledgers = new PgLedgerStore(db, () => NOW);
     let effects = 0;
     let crash = true;
-    const apply = async (request: AdminRequest) => {
+    const apply = async (request: { id: string }) => {
       const handle = await ledgers.open(owner, lease?.epoch ?? 0, holder);
       const next = { ...emptyLedger(), resumeAt: (handle.state.resumeAt ?? 0) + 1 };
       effects += 1;
@@ -137,11 +130,18 @@ describe('admin requests', () => {
       }
       await handle.save(next, { appliedRequest: request.id });
     };
-    await expect(drainRequests(db, owner, apply)).rejects.toThrow('crash');
+    const drain = async () => {
+      const pending = await pendingRequests(db, owner);
+      for (const request of pending) {
+        await apply(request);
+      }
+      return pending.map((request) => request.id);
+    };
+    await expect(drain()).rejects.toThrow('crash');
     expect((await getRequest(db, owner, id))?.state).toBe('pending');
     crash = false;
-    expect(await drainRequests(db, owner, apply)).toEqual([id]);
-    expect(await drainRequests(db, owner, apply)).toEqual([]);
+    expect(await drain()).toEqual([id]);
+    expect(await drain()).toEqual([]);
     expect(effects).toBe(2);
     expect((await getRequest(db, owner, id))?.state).toBe('applied');
     expect((await ledgers.open(owner, lease?.epoch ?? 0, holder)).state.resumeAt).toBe(1);

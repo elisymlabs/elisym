@@ -3,6 +3,7 @@ import * as z from 'zod';
 import { publicBaseOf } from '../config';
 import type { Db } from '../db/db';
 import { type GatewayRequest, WindowLimiter, ipKey } from '../gateway/http';
+import { activePayouts } from '../node/load';
 import {
   type OwnerEventKind,
   type OwnerEventRefusal,
@@ -17,7 +18,6 @@ import {
   type Refusal,
   type StoreDirectory,
   type StoreRecord,
-  activePayouts,
 } from '../state/stores';
 import { authIdExpiry } from './auth-ids';
 import { checkNip98 } from './nip98';
@@ -158,7 +158,7 @@ export function createAdminApi(
       activePayouts:
         state?.payto === undefined
           ? null
-          : { createdAt: state.payto.createdAt, payouts: activePayouts(state) },
+          : { createdAt: state.payto.createdAt, payouts: activePayouts(state, store.owner) },
       webhookSecretSet,
     };
   };
@@ -322,6 +322,7 @@ export function createAdminApi(
       }
       return answerRequest(owner, store.status === 'pending', result.requestId, {
         id: result.id,
+        ...(result.alreadyCommitted ? { alreadyCommitted: true } : {}),
       });
     }
     if (route === 'POST /v1/admin/webhook/secret') {

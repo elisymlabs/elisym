@@ -10,7 +10,7 @@ import { OFFER_RELAYS, PUBLISH_DEADLINE_MS } from '@merchant-node/constants';
 import { type PublishPool, publishToRelays } from '@merchant-node/publish';
 import { storeAuth } from '@merchant-node/store-node';
 import type { NostrEvent } from 'nostr-tools';
-import { ALERT_KINDS, raiseAlert } from './alerts';
+import { ALERT_KINDS, clearAlert, raiseAlert } from './alerts';
 import type { Db } from './db/db';
 import type { KeyVault } from './db/keys';
 import { allowedInboxRelays } from './node/load';
@@ -148,6 +148,8 @@ export class OwnerEventPublisher {
         'update owner_events set published_at = $2 where id = $1 and published_at is null',
         [row.id, now],
       );
+      // The store's relays are back in the allowlist (or the allowlist grew back).
+      await clearAlert(db, row.owner, ALERT_KINDS.inboxRelaysRefused, { now });
       return;
     }
     await this.backOff(row);

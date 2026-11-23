@@ -1,6 +1,7 @@
 import { createPrivateKey, generateKeyPairSync, sign } from 'node:crypto';
 import { KIND_PAYTO, KIND_STORE_AUTH, paytoProofMessage } from '@elisym/commerce';
 import { verifyWebhook } from '@elisym/commerce/webhook';
+import { OFFER_RELAYS } from '@merchant-node/constants';
 import { type LedgerState, emptyLedger } from '@merchant-node/ledger';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
@@ -12,15 +13,21 @@ import {
   requestFor,
   signatureOf,
 } from '../../merchant-node/tests/fixtures';
-import { getRequest, submitRequest } from '../src/admin/requests';
+import { getRequest } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import type { KeyVault } from '../src/db/keys';
 import { HolderRequests, MAX_SETUP_ATTEMPTS } from '../src/node/holder-requests';
-import type { StoreSupervisor, SupervisorDeps } from '../src/node/supervisor';
+import { RequestPump } from '../src/node/request-pump';
+import {
+  DRIFT_CHECK_SECS,
+  type StoreSupervisor,
+  type SupervisorDeps,
+} from '../src/node/supervisor';
 import { commitOwnerEvent, prepareOwnerEvent } from '../src/owner-events';
 import { activateStore } from '../src/state/activation';
 import { newHolderId } from '../src/state/leases';
 import { StoreDirectory } from '../src/state/stores';
+import { submitRequest } from './helpers/node-requests';
 import {
   type Key,
   NOW,
@@ -44,6 +51,7 @@ import {
   storedLedger,
   testHeal,
   testSetupDeps,
+  settle,
   testSupervisor,
   vault,
   waitFor,
@@ -221,6 +229,81 @@ describe('owner events committed and recorded by the holder (step 12)', () => {
   });
 });
 
+describe('record requests replaced or refused (step 12)', () => {
+  it('marks a record request of an event a newer committed one replaced, without a pass (H7)', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const owner = seed.owner.pubkey;
+    const older = ownerEvents(seed.owner, seed.store, NEXT_PAYOUTS, NOW - 120).payoutList;
+    const newer = ownerEvents(seed.owner, seed.store, SOLANA_PAYOUTS, NOW - 60).payoutList;
+    await insertOwnerEvent(db, owner, older, JSON.stringify(NEXT_PAYOUTS), false);
+    await db.query('update owner_events set committed_at = $2 where id = $1', [older.id, NOW - 1]);
+    await insertOwnerEvent(db, owner, newer, JSON.stringify(SOLANA_PAYOUTS), false);
+    const node = holderOn(db, keys, world);
+    await serveAll(node);
+    const id = await submitRequest(db, owner, 'record_owner_event', { eventId: older.id }, NOW);
+    const version = await rowVersion(db, owner);
+    expect(await node.requests.drain(owner)).toEqual([id]);
+    const request = await requestRow(db, owner, id);
+    expect(request.state).toBe('applied');
+    expect(request.result).toEqual({ recorded: false, replacedBy: newer.id });
+    expect(world.events.some((event) => event.id === older.id || event.id === newer.id)).toBe(
+      false,
+    );
+    expect(await rowVersion(db, owner)).toBe(version);
+  });
+
+  it('names the remedy in the setup_failed alert when the relays serve a newer payout list (minor 5)', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const owner = seed.owner.pubkey;
+    const committed = ownerEvents(seed.owner, seed.store, NEXT_PAYOUTS, NOW - 120).payoutList;
+    await insertOwnerEvent(db, owner, committed, JSON.stringify(NEXT_PAYOUTS), false);
+    // R1 drift: a newer list by O that the server never committed.
+    world.add(ownerEvents(seed.owner, seed.store, SOLANA_PAYOUTS, NOW - 60).payoutList);
+    let clock = NOW;
+    const node = holderOn(db, keys, world, {}, { now: () => clock });
+    await serveAll(node);
+    const id = await submitRequest(db, owner, 'record_owner_event', { eventId: committed.id }, NOW);
+    for (let attempt = 1; attempt < MAX_SETUP_ATTEMPTS; attempt += 1) {
+      await expect(node.requests.drain(owner)).rejects.toThrow('the signed payout list');
+      clock += 30 * 2 ** (attempt - 1);
+    }
+    await node.requests.drain(owner);
+    expect((await requestRow(db, owner, id)).state).toBe('failed');
+    const alert = (await openAlerts(db, owner)).find((entry) => entry.kind === 'setup_failed');
+    expect(alert?.message).toContain('the signed payout list');
+    expect(alert?.message).toContain('re-signs the payout list in the admin');
+  });
+
+  it('names no payout-list remedy for another setup failure', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const owner = seed.owner.pubkey;
+    let clock = NOW;
+    const node = holderOn(db, keys, world, {}, { now: () => clock });
+    await serveAll(node);
+    world.refuse = () => true;
+    await submitRequest(db, owner, 'setup', {}, NOW);
+    for (let attempt = 1; attempt <= MAX_SETUP_ATTEMPTS; attempt += 1) {
+      await node.requests.drain(owner).catch(() => undefined);
+      clock += 30 * 2 ** (attempt - 1);
+    }
+    const alert = (await openAlerts(db, owner)).find((entry) => entry.kind === 'setup_failed');
+    expect(alert?.message).toContain('nothing reached');
+    expect(alert?.message).not.toContain('Remedy');
+  });
+});
+
 describe('admin requests on the holder (step 13)', () => {
   it('lets only the lease holder apply a request', async () => {
     const db = await freshDb();
@@ -368,6 +451,67 @@ describe('admin requests on the holder (step 13)', () => {
     expect(row?.recorded).toBe(true);
   });
 
+  it('keeps a setup request pending while the 10050 naming new inbox relays reaches no default relay', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const owner = seed.owner.pubkey;
+    const newRelay = 'wss://inbox-two.example.com';
+    const allowlist = [RELAY, newRelay];
+    await db.query('update store_config set draft_inbox_relays = $2 where owner = $1', [
+      owner,
+      [newRelay],
+    ]);
+    let clock = NOW;
+    const node = holderOn(
+      db,
+      keys,
+      world,
+      { inboxRelayAllowlist: allowlist },
+      { inboxRelayAllowlist: allowlist, now: () => clock },
+    );
+    await serveAll(node);
+    world.refuse = (event, relay) => event.kind === 10050 && OFFER_RELAYS.includes(relay);
+    const activeRelays = async () =>
+      (
+        await db.query<{ inbox_relays: string[] }>(
+          'select inbox_relays from store_config where owner = $1',
+          [owner],
+        )
+      )[0]?.inbox_relays;
+
+    const id = await submitRequest(db, owner, 'setup', {}, NOW);
+    await expect(node.requests.drain(owner)).rejects.toThrow('reached no default relay');
+    expect((await requestRow(db, owner, id)).state).toBe('pending');
+    expect(await activeRelays()).toEqual([RELAY]);
+    // Not due yet: left alone.
+    expect(await node.requests.drain(owner)).toEqual([]);
+
+    world.refuse = () => false;
+    clock += 30;
+    expect(await node.requests.drain(owner)).toEqual([id]);
+    expect((await requestRow(db, owner, id)).state).toBe('applied');
+    expect(await activeRelays()).toEqual([newRelay]);
+
+    // A move that never gets out fails for good after MAX_SETUP_ATTEMPTS, with an alert.
+    await db.query('update store_config set draft_inbox_relays = $2 where owner = $1', [
+      owner,
+      [RELAY],
+    ]);
+    world.refuse = (event, relay) => event.kind === 10050 && OFFER_RELAYS.includes(relay);
+    const next = await submitRequest(db, owner, 'setup', {}, NOW);
+    for (let attempt = 1; attempt < MAX_SETUP_ATTEMPTS; attempt += 1) {
+      await expect(node.requests.drain(owner)).rejects.toThrow('reached no default relay');
+      expect((await requestRow(db, owner, next)).state).toBe('pending');
+      clock += 30 * 2 ** (attempt - 1);
+    }
+    expect(await node.requests.drain(owner)).toEqual([next]);
+    expect((await requestRow(db, owner, next)).state).toBe('failed');
+    expect((await openAlerts(db, owner)).map((alert) => alert.kind)).toContain('setup_failed');
+  });
+
   it('applies a hand answer while an earlier setup request keeps failing', async () => {
     const world = new RelayWorld();
     const seed = await publishedStore(world);
@@ -407,6 +551,36 @@ describe('admin requests on the holder (step 13)', () => {
     expect((await requestRow(db, owner, setup)).state).toBe('pending');
     // The setup lane keeps its order: the later setup request waits behind the failing one.
     expect((await requestRow(db, owner, second)).state).toBe('pending');
+  });
+
+  it('holds the later setup-lane requests while the first waits for its backoff (H12)', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const owner = seed.owner.pubkey;
+    let clock = NOW;
+    const node = holderOn(db, keys, world, {}, { now: () => clock });
+    await serveAll(node);
+    world.refuse = () => true;
+    const setup = await submitRequest(db, owner, 'setup', {}, NOW);
+    // Applies without a pass (its event is recorded), but only in its turn.
+    const record = await submitRequest(
+      db,
+      owner,
+      'record_owner_event',
+      { eventId: seed.ownerEvents?.[0]?.event.id },
+      NOW,
+    );
+    await expect(node.requests.drain(owner)).rejects.toThrow('nothing reached a relay');
+    expect((await requestRow(db, owner, record)).state).toBe('pending');
+    expect(await node.requests.drain(owner)).toEqual([]);
+    expect((await requestRow(db, owner, record)).state).toBe('pending');
+
+    world.refuse = () => false;
+    clock += 30;
+    expect(await node.requests.drain(owner)).toEqual([setup, record]);
   });
 
   it('marks setup requests queued before a pass as covered by it', async () => {
@@ -465,6 +639,113 @@ describe('admin requests on the holder (step 13)', () => {
     expect(states.every((row) => row.state === 'applied')).toBe(true);
     expect((await storedLedger(db, owner.pubkey)).payto?.payouts).toBe(JSON.stringify([payout]));
     expect(node.supervisor.running).toEqual([owner.pubkey]);
+  });
+});
+
+describe('stores drained on their own (M2)', () => {
+  it("never delays a store's requests behind another store's control task that hangs", async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const store = key();
+    const buyer = key();
+    const { state, orderKey } = ledgerWithOpenOrder(store, buyer);
+    const healthy = await seedStore(db, keys, { store, state });
+    const stuck = await seedStore(db, keys);
+    const stuckKeys = [stuck.owner.pubkey, stuck.store.pubkey];
+    let release: (() => void) | undefined;
+    const hung = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let armed = false;
+    let hanging = false;
+    let clock = NOW;
+    const node = holderOn(db, keys, world, {
+      now: () => clock,
+      // The stuck store's periodic check never gets its public read answered.
+      publicReads: () => {
+        const pool = world.pool();
+        const query = pool.querySync.bind(pool);
+        pool.querySync = async (relays, filter) => {
+          if (armed && filter.authors?.some((author) => stuckKeys.includes(author)) === true) {
+            hanging = true;
+            await hung;
+          }
+          return query(relays, filter);
+        };
+        return pool;
+      },
+    });
+    await serveAll(node);
+    const pump = new RequestPump({ db, holder: node.requests, log: () => undefined });
+    let stuckRestart = '';
+    try {
+      armed = true;
+      clock += DRIFT_CHECK_SECS;
+      // The poll's round ends although the stuck store's check (a control task) hangs.
+      await pump.kick(true);
+      await waitFor(() => hanging, 'the stuck check');
+
+      stuckRestart = await submitRequest(db, stuck.owner.pubkey, 'restart', {}, NOW);
+      const hand = await submitRequest(
+        db,
+        healthy.owner.pubkey,
+        'hand_answer',
+        { key: orderKey, request: { kind: 'delivered' } },
+        NOW,
+      );
+      await pump.kick(false);
+      await waitFor(
+        async () => (await requestRow(db, healthy.owner.pubkey, hand)).result !== undefined,
+        'the hand answer sent',
+      );
+      expect(wrapsTo(world, buyer.pubkey)).toHaveLength(1);
+
+      // A later notify starts a new round while the stuck store still hangs.
+      const restart = await submitRequest(db, healthy.owner.pubkey, 'restart', {}, NOW);
+      await pump.kick(false);
+      await waitFor(
+        async () => (await requestRow(db, healthy.owner.pubkey, restart)).state === 'applied',
+        'the second request applied',
+      );
+      expect((await requestRow(db, stuck.owner.pubkey, stuckRestart)).state).toBe('pending');
+    } finally {
+      // Never leave the stuck queue hanging (the supervisor's shutdown waits for it).
+      release?.();
+      await node.requests.idle();
+      await pump.stop();
+    }
+    expect((await requestRow(db, stuck.owner.pubkey, stuckRestart)).state).toBe('applied');
+  });
+
+  it('folds a kick during a drain into one more drain right after it', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner: ownerKey } = await seedStore(db, keys);
+    const owner = ownerKey.pubkey;
+    const node = holderOn(db, keys, world);
+    await serveAll(node);
+    let release: (() => void) | undefined;
+    const held = node.supervisor.applyControl(
+      owner,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await waitFor(() => release !== undefined, 'the held queue');
+    const first = await submitRequest(db, owner, 'restart', {}, NOW);
+    const drained = node.requests.kick(owner);
+    // The drain read its requests and waits on the queue; a request queued now is not among them.
+    await settle(100);
+    const second = await submitRequest(db, owner, 'restart', {}, NOW);
+    expect(node.requests.kick(owner)).toBe(drained);
+    release?.();
+    await held;
+    await drained;
+    expect((await requestRow(db, owner, first)).state).toBe('applied');
+    expect((await requestRow(db, owner, second)).state).toBe('applied');
   });
 });
 
@@ -628,6 +909,64 @@ describe('hand answers (step 14)', () => {
     expect(wrapsTo(world, buyer.pubkey)).toHaveLength(1);
     expect((await requestRow(db, owner, id)).result).toMatchObject({ done: true, rerun: true });
     expect(await requests.drain(owner)).toEqual([]);
+  });
+});
+
+describe('hand answers whose publish throws (M3)', () => {
+  it('writes the failure once, never holds the pending requests and never restarts the node again for it', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const store = key();
+    const buyer = key();
+    const { state, orderKey } = ledgerWithOpenOrder(store, buyer);
+    const { owner: ownerKey } = await seedStore(db, keys, { store, state });
+    const owner = ownerKey.pubkey;
+    const node = holderOn(db, keys, world);
+    const pools = testSetupDeps(db, keys, world).pools;
+    const requests = new HolderRequests({
+      db,
+      supervisor: node.supervisor,
+      setup: testSetupDeps(db, keys, world, {
+        pools: {
+          open: (storePubkey) => {
+            if (storePubkey === store.pubkey) {
+              throw new Error('relays down');
+            }
+            return pools.open(storePubkey);
+          },
+          close: (storePubkey) => pools.close(storePubkey),
+        },
+      }),
+      log: () => undefined,
+    });
+    await serveAll(node);
+    const hand = await submitRequest(
+      db,
+      owner,
+      'hand_answer',
+      { key: orderKey, request: { kind: 'delivered' } },
+      NOW,
+    );
+    const restart = await submitRequest(db, owner, 'restart', {}, NOW);
+
+    await expect(requests.drain(owner)).rejects.toThrow('relays down');
+    expect((await requestRow(db, owner, hand)).state).toBe('applied');
+    // Its lane keeps its order (H1): the restart queued after it waits.
+    expect((await requestRow(db, owner, restart)).state).toBe('pending');
+
+    // The next drain sends it again once: the failure is its outcome, the restart applied.
+    expect(await requests.drain(owner)).toEqual([restart]);
+    expect((await requestRow(db, owner, hand)).result).toEqual({
+      done: false,
+      problem: 'relays down',
+    });
+    expect((await requestRow(db, owner, restart)).state).toBe('applied');
+
+    const node1 = node.supervisor.nodeOf(owner);
+    expect(await requests.drain(owner)).toEqual([]);
+    expect(node.supervisor.nodeOf(owner)).toBe(node1);
+    expect(wrapsTo(world, buyer.pubkey)).toHaveLength(0);
   });
 });
 

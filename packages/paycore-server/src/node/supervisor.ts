@@ -7,6 +7,7 @@
  */
 import type { QueryPool } from '@merchant-node/checks';
 import { type LedgerState, upgradeLedger } from '@merchant-node/ledger';
+import { listeningPool } from '@merchant-node/relay-pool';
 import { type StoreNode, startStoreNode } from '@merchant-node/store-node';
 import { ALERT_KINDS, clearAlert, raiseAlert } from '../alerts';
 import type { ChainClients } from '../chain/clients';
@@ -85,10 +86,19 @@ export interface SupervisorDeps {
    * control task when the start checks find offers it can fix. The caller saves.
    */
   heal?: (owner: string, handle: LedgerHandle) => Promise<void>;
+  /**
+   * A new unauthenticated pool for one read of the public offer relays (at a
+   * start and in each periodic check), destroyed right after it: a store's own
+   * pool keeps sockets to its inbox relays only. Default: a fresh nostr-tools pool.
+   */
+  publicReads?: () => PublicReadPool;
   log?: (message: string) => void;
   /** Seconds. */
   now?: () => number;
 }
+
+/** A pool for one public read, destroyed after it. */
+export type PublicReadPool = QueryPool & { destroy: () => void };
 
 interface RunningStore {
   node: StoreNode;
@@ -101,6 +111,8 @@ interface RunningStore {
   notices: StoreNotice[];
   /** When the relays were last read for this run (seconds). */
   checkedAt: number;
+  /** A periodic check waits on the control queue: no second one is queued behind it. */
+  recheckQueued: boolean;
   /** The store's webhook sends: aborted right after `node.stop()` (WebhookSlots' order). */
   webhookStop: AbortController;
   unregister: () => void;
@@ -219,8 +231,11 @@ export class StoreSupervisor {
         this.clearTimers(known);
         known.failedStarts = 0;
         known.retryAttempt = 0;
-        void this.enqueue(known, () => this.stopRun(known));
-        this.queueStart(known);
+        // One task: a start queued before this one may run first, and it is stopped and started again here.
+        void this.enqueue(known, async () => {
+          await this.stopRun(known);
+          await this.startRun(known);
+        });
       } else if (
         known.running === undefined &&
         !known.startQueued &&
@@ -403,14 +418,21 @@ export class StoreSupervisor {
       });
       const pool = deps.pools.open(bundle.storePubkey);
       storePubkey = bundle.storePubkey;
-      const checked = await startChecks(bundle, {
-        pool,
-        treasuries: deps.treasuries,
-        boot: deps.boot,
-        evmClientFor: (url) => deps.chains.evm(url),
-        log,
-        now: this.now,
-      });
+      const publicPool = this.publicReads();
+      let checked: Awaited<ReturnType<typeof startChecks>>;
+      try {
+        checked = await startChecks(bundle, {
+          pool,
+          publicPool,
+          treasuries: deps.treasuries,
+          boot: deps.boot,
+          evmClientFor: (url) => deps.chains.evm(url),
+          log,
+          now: this.now,
+        });
+      } finally {
+        publicPool.destroy();
+      }
       if (checked.kind === 'refused') {
         throw new StartRefused(owner, checked.problem);
       }
@@ -456,6 +478,7 @@ export class StoreSupervisor {
         judged: { config, products: bundle.products, state },
         notices: startNotices(bundle, []),
         checkedAt: this.now(),
+        recheckQueued: false,
         webhookStop,
         unregister: checked.unregister,
         generation,
@@ -518,7 +541,10 @@ export class StoreSupervisor {
    * at a start, alerts raised or cleared and the store moved between `active`
    * and `degraded`, with a heal under the same rule. Each check runs on its
    * store's control queue (so its pool stays open for the read) without
-   * stopping the node. Resolves once the checks queued here are done.
+   * stopping the node; a store whose check still waits on its queue gets no
+   * second one. Resolves once the checks queued here are done: a caller that
+   * serves other stores does not await it (one store's long control task
+   * would hold the others).
    */
   async recheckOffers(): Promise<void> {
     if (this.closed) {
@@ -528,33 +554,45 @@ export class StoreSupervisor {
     const checks: Promise<void>[] = [];
     for (const run of this.runs.values()) {
       const { running } = run;
-      if (run.removed || running === undefined || now - running.checkedAt < DRIFT_CHECK_SECS) {
+      if (
+        run.removed ||
+        running === undefined ||
+        running.recheckQueued ||
+        now - running.checkedAt < DRIFT_CHECK_SECS
+      ) {
         continue;
       }
       running.checkedAt = now;
+      running.recheckQueued = true;
       checks.push(
-        this.enqueue(run, () => this.recheck(run, running.generation)).catch((error: unknown) => {
-          this.storeLog(run.owner)(`the offer check failed: ${errorText(error)}`);
-        }),
+        this.enqueue(run, () => this.recheck(run, running))
+          .catch((error: unknown) => {
+            this.storeLog(run.owner)(`the offer check failed: ${errorText(error)}`);
+          })
+          .finally(() => {
+            running.recheckQueued = false;
+          }),
       );
     }
     await Promise.all(checks);
   }
 
-  private async recheck(run: StoreRun, generation: number): Promise<void> {
+  /** One periodic check, on the control queue: skipped when the run it was queued for is gone. */
+  private async recheck(run: StoreRun, queuedFor: RunningStore): Promise<void> {
     const { running } = run;
-    if (running === undefined || running.generation !== generation) {
+    if (running === undefined || running.generation !== queuedFor.generation) {
       return;
     }
     const committed = await readCommitted(this.deps.db, run.owner);
-    const judged = await judgeOffers(running.pool, {
-      owner: run.owner,
-      storePubkey: running.storePubkey,
-      committed,
-      ...running.judged,
-    });
-    if (run.running?.generation !== generation) {
-      return;
+    const publicPool = this.publicReads();
+    let judged: Awaited<ReturnType<typeof judgeOffers>>;
+    try {
+      judged = await judgeOffers(
+        { store: running.pool, publicPool },
+        { owner: run.owner, storePubkey: running.storePubkey, committed, ...running.judged },
+      );
+    } finally {
+      publicPool.destroy();
     }
     running.checkedAt = this.now();
     await this.assess(run, judged.offers, [
@@ -700,6 +738,10 @@ export class StoreSupervisor {
     }, delayMs);
   }
 
+  private publicReads(): PublicReadPool {
+    return (this.deps.publicReads ?? listeningPool)();
+  }
+
   private async holdsLease(run: StoreRun): Promise<boolean> {
     const rows = await this.deps.db.query(
       `select 1 from leases where owner = $1 and holder = $2 and epoch = $3 and expires_at > $4`,
@@ -711,7 +753,9 @@ export class StoreSupervisor {
   /**
    * Move the store between `active`, `degraded` and `halted` while this holder
    * holds its lease; never out of another status (`suspending` stays). It
-   * becomes `active` only with no open alert left.
+   * becomes `active` only with no open alert left: with one open (raised
+   * elsewhere: a setup pass, the publisher) it is `degraded`, the open alerts
+   * its reason.
    */
   private async setStatus(
     run: StoreRun,
@@ -719,11 +763,16 @@ export class StoreSupervisor {
     reason: string | undefined,
   ): Promise<void> {
     await this.deps.db.query(
-      `update stores set status = $2, status_reason = $3
+      `with open as (
+         select string_agg(a.kind || ': ' || a.message, '; ' order by a.kind) as reasons
+           from alerts a where a.owner = $1 and a.cleared_at is null
+       )
+       update stores set
+         status = case when $2 = 'active' and (select reasons from open) is not null
+                       then 'degraded' else $2 end,
+         status_reason = case when $2 = 'active' then (select reasons from open) else $3 end
        where owner = $1 and status = any($4::text[])
-         and exists (select 1 from leases l where l.owner = $1 and l.holder = $5 and l.epoch = $6)
-         and ($2 <> 'active'
-              or not exists (select 1 from alerts a where a.owner = $1 and a.cleared_at is null))`,
+         and exists (select 1 from leases l where l.owner = $1 and l.holder = $5 and l.epoch = $6)`,
       [run.owner, status, reason ?? null, RUN_STATUSES, this.deps.holder, run.epoch],
     );
   }

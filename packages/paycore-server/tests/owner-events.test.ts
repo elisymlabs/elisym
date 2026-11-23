@@ -3,7 +3,7 @@ import { emptyLedger } from '@merchant-node/ledger';
 import type { EventTemplate } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
-import { pendingRequests } from '../src/admin/requests';
+import { markRequest, pendingRequests } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import {
   DRAFT_TTL_SECS,
@@ -44,6 +44,23 @@ async function prepared(db: Db, owner: string, kind: OwnerEventKind, newestOnRel
     throw new Error(`prepare refused: ${result.error}`);
   }
   return result;
+}
+
+/** O's event of `kind` committed directly (another tab), dated `createdAt`. */
+async function insertCommitted(
+  db: Db,
+  owner: { secret: Uint8Array; pubkey: string },
+  kind: OwnerEventKind,
+  createdAt: number,
+  tags: string[][] = [['t', 'other']],
+) {
+  const event = finalizeEvent({ kind, created_at: createdAt, tags, content: '' }, owner.secret);
+  await db.query(
+    `insert into owner_events (id, owner, kind, event, payouts_string, committed_at)
+     values ($1, $2, $3, $4::jsonb, $5, $6)`,
+    [event.id, owner.pubkey, kind, JSON.stringify(event), kind === KIND_PAYTO ? '[]' : null, NOW],
+  );
+  return event;
 }
 
 async function setPayto(db: Db, owner: string, payto: { createdAt: number; payouts: string }) {
@@ -95,6 +112,29 @@ describe('prepare', () => {
       ok: false,
       error: 'clock',
     });
+  });
+
+  it('dates an unchanged list after a list committed since, never at its recorded date', async () => {
+    const db = await freshDb();
+    const { owner, directory } = await storeWithDraft(db);
+    const text =
+      canonicalPayouts((await directory.settings(owner.pubkey))?.draftPayouts)?.text ?? '';
+    await setPayto(db, owner.pubkey, { createdAt: NOW - 500, payouts: text });
+    // Another list was committed after the recorded one, and the merchant went back.
+    await insertCommitted(db, owner, KIND_PAYTO, NOW - 100);
+    expect((await prepared(db, owner.pubkey, KIND_PAYTO, NOW - 500)).template.created_at).toBe(
+      NOW - 99,
+    );
+  });
+
+  it('dates a 30490 after the last committed one, even one dated ahead of the clock', async () => {
+    const db = await freshDb();
+    const { owner } = await storeWithDraft(db);
+    await insertCommitted(db, owner, KIND_STORE_AUTH, NOW + 5);
+    expect((await prepared(db, owner.pubkey, KIND_STORE_AUTH)).template.created_at).toBe(NOW + 6);
+    expect((await prepared(db, owner.pubkey, KIND_STORE_AUTH, NOW + 20)).template.created_at).toBe(
+      NOW + 21,
+    );
   });
 
   it('refuses a 10133 without draft payouts', async () => {
@@ -258,6 +298,73 @@ describe('commit', () => {
       ok: false,
       error: 'stale',
     });
+  });
+
+  it('refuses a list dated the same second as another committed one', async () => {
+    const db = await freshDb();
+    const { owner } = await storeWithDraft(db);
+    const draft = await prepared(db, owner.pubkey, KIND_PAYTO);
+    const event = finalizeEvent(draft.template, owner.secret);
+    await insertCommitted(db, owner, KIND_PAYTO, event.created_at);
+    expect(await commitOwnerEvent(deps(db), owner.pubkey, event)).toEqual({
+      ok: false,
+      error: 'stale',
+    });
+  });
+
+  it('queues the recording again for an unrecorded event whose request failed', async () => {
+    const db = await freshDb();
+    const { owner } = await storeWithDraft(db);
+    const draft = await prepared(db, owner.pubkey, KIND_PAYTO);
+    const event = finalizeEvent(draft.template, owner.secret);
+    const first = await commitOwnerEvent(deps(db), owner.pubkey, event);
+    if (!first.ok || first.requestId === undefined) {
+      throw new Error('commit refused');
+    }
+    await markRequest(db, owner.pubkey, first.requestId, 'failed', NOW, { problem: 'relays down' });
+    const again = await commitOwnerEvent(deps(db, NOW + 1), owner.pubkey, event);
+    expect(again).toMatchObject({ ok: true, id: event.id, alreadyCommitted: true });
+    const requests = await pendingRequests(db, owner.pubkey);
+    expect(requests.map((request) => [request.id, request.kind, request.payload])).toEqual([
+      [again.ok ? again.requestId : '', 'record_owner_event', { eventId: event.id }],
+    ]);
+    // Pending already: nothing more is queued.
+    expect(await commitOwnerEvent(deps(db, NOW + 2), owner.pubkey, event)).toMatchObject({
+      alreadyCommitted: true,
+      requestId: undefined,
+    });
+    // Recorded: nothing to do.
+    await db.query('update owner_events set recorded = true where id = $1', [event.id]);
+    await markRequest(db, owner.pubkey, again.ok ? (again.requestId ?? '') : '', 'failed', NOW);
+    expect(await commitOwnerEvent(deps(db, NOW + 3), owner.pubkey, event)).toMatchObject({
+      alreadyCommitted: true,
+      requestId: undefined,
+    });
+    expect(await pendingRequests(db, owner.pubkey)).toEqual([]);
+  });
+
+  it('refuses owner events for a store winding down', async () => {
+    for (const status of ['suspending', 'suspended']) {
+      const db = await freshDb();
+      const { owner } = await storeWithDraft(db);
+      const draft = await prepared(db, owner.pubkey, KIND_PAYTO);
+      const event = finalizeEvent(draft.template, owner.secret);
+      await db.query("insert into tiers (name, max_products) values ('t', 1)");
+      await db.query("update stores set status = $2, tier = 't' where owner = $1", [
+        owner.pubkey,
+        status,
+      ]);
+      expect(await prepareOwnerEvent(deps(db), owner.pubkey, KIND_STORE_AUTH)).toMatchObject({
+        ok: false,
+        error: 'suspended',
+      });
+      expect(await commitOwnerEvent(deps(db), owner.pubkey, event)).toMatchObject({
+        ok: false,
+        error: 'suspended',
+      });
+      expect(await db.query('select 1 from owner_events')).toEqual([]);
+      expect(await pendingRequests(db, owner.pubkey)).toEqual([]);
+    }
   });
 
   it('accepts a list that keeps its recorded date, the relays serving that date', async () => {

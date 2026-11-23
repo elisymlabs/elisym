@@ -297,6 +297,150 @@ describe('StoreSupervisor', () => {
     expect((await lease(db, holder)).map((leased) => leased.owner)).toEqual([owner.pubkey]);
   });
 
+  it('halts a store whose start checks refuse it at once, and retries it with backoff (S3, S18)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys, {
+      products: [{ ...PRODUCT, priceUsd: '0.0000001' }],
+    });
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc));
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    // One refused start is enough: not counted toward MAX_FAILED_STARTS.
+    expect(supervisor.running).toEqual([]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('halted');
+    const alerts = await openAlerts(db, owner.pubkey);
+    expect(alerts.map((alert) => alert.kind)).toEqual(['start_refused']);
+    expect(alerts[0]?.message).toContain('the products are not usable');
+
+    await db.query("update products set price_usd = '1' where owner = $1", [owner.pubkey]);
+    vi.advanceTimersByTime(29_999);
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([]);
+    vi.advanceTimersByTime(1);
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('active');
+    expect(await openAlerts(db, owner.pubkey)).toEqual([]);
+  });
+
+  it('does not count a failed start once its lease expired, even with the same holder and epoch (S17)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor, logs } = track(
+      testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc, {
+        treasuries: {
+          refreshFor: async () => {
+            await db.query('update leases set expires_at = $2 where owner = $1', [
+              owner.pubkey,
+              NOW,
+            ]);
+            throw new Error('config RPC down');
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([]);
+    expect(
+      logs.some((line) => line.includes('config RPC down; the lease moved: not retried here')),
+    ).toBe(true);
+  });
+
+  it('ignores a stop reported by a node already replaced (S7)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    let reads = 0;
+    let release: (() => void) | undefined;
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc, {
+        treasuries: {
+          refreshFor: async () => {
+            reads += 1;
+            if (reads === 2) {
+              // The first node's first sweep: held, then the fee config of another cluster.
+              await new Promise<void>((resolve) => {
+                release = resolve;
+              });
+              return { kind: 'wrong_cluster', problem: 'mainnet RPC' };
+            }
+            return { kind: 'unreachable', problem: 'offline' };
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await waitFor(() => release !== undefined, 'the first sweep');
+    const first = supervisor.nodeOf(owner.pubkey);
+    // The control task stops the first node (its sweep reports the stop), then starts a second.
+    const control = supervisor.applyControl(owner.pubkey, async () => undefined);
+    release?.();
+    await control;
+    await supervisor.idle();
+    expect(supervisor.nodeOf(owner.pubkey)).toBeDefined();
+    expect(supervisor.nodeOf(owner.pubkey)).not.toBe(first);
+    expect(await openAlerts(db, owner.pubkey)).toEqual([]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('active');
+  });
+
+  it('takes the EIP-3009 contexts off the boot gates when its node stops (S6)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys);
+    const holder = newHolderId();
+    let registered = 0;
+    let unregistered = 0;
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc, {
+        boot: {
+          register: () => {
+            registered += 1;
+            return () => {
+              unregistered += 1;
+            };
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect([registered, unregistered]).toEqual([1, 0]);
+    supervisor.reconcile([]);
+    await supervisor.idle();
+    expect([registered, unregistered]).toEqual([1, 1]);
+  });
+
+  it('runs a store whose lease epoch changed while its first start was still queued (minor 4)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const [first] = await lease(db, holder);
+    await db.query('update leases set expires_at = 0 where owner = $1', [owner.pubkey]);
+    const [second] = await lease(db, holder);
+    if (first === undefined || second === undefined) {
+      throw new Error('no lease');
+    }
+    expect(second.epoch).toBe(first.epoch + 1);
+    const { supervisor } = track(testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc));
+    supervisor.reconcile([first]);
+    supervisor.reconcile([second]);
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    const [row] = await db.query<{ lease_epoch: number }>(
+      'select lease_epoch from ledgers where owner = $1',
+      [owner.pubkey],
+    );
+    expect(row?.lease_epoch).toBe(second.epoch);
+  });
+
   it('retries failed starts after 30 s doubling, halts after three in a row, and clears it all on a start', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const db = await freshDb();

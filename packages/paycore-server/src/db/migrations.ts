@@ -38,7 +38,8 @@ create table store_config (
   draft_payouts jsonb not null default '[]',    -- P9: the draft; active = the ledger's state.payto
   evm_credit text not null default 'fast' check (evm_credit in ('fast','safe')),
   webhook_url text,
-  inbox_relays text[] not null,                 -- P7: from the allowlist
+  inbox_relays text[] not null,                 -- P7: from the allowlist; ACTIVE (the node listens and replies there)
+  draft_inbox_relays text[],                    -- the merchant's edit; active once its 10050 went out (null: none)
   revision bigint not null default 1,
   updated_at bigint not null
 );

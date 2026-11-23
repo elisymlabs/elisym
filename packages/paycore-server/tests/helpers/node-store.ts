@@ -311,6 +311,7 @@ export function testSupervisor(
     },
     rpcs: RPCS,
     inboxRelayAllowlist: [RELAY],
+    publicReads: () => world.pool(),
     userAgent: 'paycore-server/test',
     log: (message) => logs.push(message),
     now: () => NOW,

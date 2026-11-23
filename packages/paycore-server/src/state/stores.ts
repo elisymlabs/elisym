@@ -1,5 +1,4 @@
 import { randomBytes } from 'node:crypto';
-import { isIP } from 'node:net';
 import { parseCaip19, splitNip05, verifyPaytoProof } from '@elisym/commerce';
 import { type Network, settlementOf } from '@elisym/pay-core';
 import {
@@ -20,9 +19,10 @@ import * as z from 'zod';
 import { recordAuthId } from '../admin/auth-ids';
 import { type RequestKind, insertRequest } from '../admin/requests';
 import type { NetworkRpcs } from '../config';
-import { FetchGuardError, checkUrl, isPublicAddress } from '../connectors/fetch-guard';
+import { FetchGuardError, checkUrl } from '../connectors/fetch-guard';
 import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
+import { WINDING_DOWN_STATUSES, activePayouts } from '../node/load';
 import type { StoreStatus } from './leases';
 import { insertLedger, parseLedger } from './ledger-store';
 
@@ -64,7 +64,10 @@ export interface StoreSettings {
   draftPayouts: Payout[];
   evmCredit: EvmCredit;
   webhookUrl: string | undefined;
+  /** The merchant's inbox relays (the draft): active once a setup pass got their 10050 out. */
   inboxRelays: string[];
+  /** The inbox relays the node listens on and replies to now. */
+  activeInboxRelays: string[];
   revision: number;
   updatedAt: number;
 }
@@ -246,33 +249,20 @@ export function canonicalPayouts(payouts: unknown): { list: Payout[]; text: stri
   return { list: parsed.data, text: JSON.stringify(parsed.data) };
 }
 
-/** The payouts the ledger records as published (the active list), or none. */
-export function activePayouts(state: LedgerState): Payout[] {
-  if (state.payto === undefined) {
-    return [];
-  }
-  try {
-    return canonicalPayouts(JSON.parse(state.payto.payouts))?.list ?? [];
-  } catch {
-    return [];
-  }
-}
-
-/** Why a webhook URL is refused for a hosted store, or undefined (https, port 443, a public host). */
+/**
+ * Why a webhook URL is refused for a hosted store, or undefined: https, port
+ * 443, a public DNS name (`webhookUrlProblem` refuses every IP literal, so a
+ * private address can only come from DNS, which the send-time guard checks).
+ */
 export function hostedWebhookProblem(value: string): string | undefined {
   const problem = webhookUrlProblem(value, false);
   if (problem !== undefined) {
     return problem;
   }
-  let url: URL;
   try {
-    url = checkUrl(value);
+    checkUrl(value);
   } catch (error) {
     return error instanceof FetchGuardError ? error.message : 'is not usable';
-  }
-  const host = url.hostname.replace(/^\[|\]$/g, '');
-  if (isIP(host) !== 0 && !isPublicAddress(host)) {
-    return 'must name a public host';
   }
   return undefined;
 }
@@ -296,6 +286,7 @@ interface ConfigRow extends Record<string, unknown> {
   evm_credit: EvmCredit;
   webhook_url: string | null;
   inbox_relays: string[];
+  draft_inbox_relays: string[] | null;
   revision: number;
   updated_at: number;
 }
@@ -336,7 +327,8 @@ function toSettings(row: ConfigRow): StoreSettings {
     draftPayouts: Array.isArray(draft) ? (canonicalPayouts(draft)?.list ?? []) : [],
     evmCredit: row.evm_credit,
     webhookUrl: row.webhook_url ?? undefined,
-    inboxRelays: row.inbox_relays,
+    inboxRelays: row.draft_inbox_relays ?? row.inbox_relays,
+    activeInboxRelays: row.inbox_relays,
     revision: row.revision,
     updatedAt: row.updated_at,
   };
@@ -358,8 +350,22 @@ function toProduct(row: ProductRow): ProductRecord {
 const STORE_SELECT = `select s.owner, s.store_pubkey, s.status, s.status_reason, s.tier, t.max_products,
   s.suspending_since, s.created_at from stores s left join tiers t on t.name = s.tier`;
 
-/** Statuses in which the merchant's edits are refused: the store is being wound down. */
-const WINDING_DOWN: readonly StoreStatus[] = ['suspending', 'suspended'];
+/** An edit of a store winding down: its listings are sold out for good. */
+export const WINDING_DOWN_REFUSAL: Refusal = {
+  ok: false,
+  error: 'suspended',
+  problems: ['the store is suspended or being suspended: it takes no more changes'],
+};
+
+/**
+ * A request for a `suspended` store: no holder serves it any more, so it
+ * would wait forever. A `suspending` store is still served (open orders).
+ */
+export const SUSPENDED_REFUSAL: Refusal = {
+  ok: false,
+  error: 'suspended',
+  problems: ['the store is suspended: nothing serves it any more'],
+};
 
 /**
  * The stores as the admin API and the loader see them: rows, sealed keys,
@@ -395,7 +401,8 @@ export class StoreDirectory {
 
   async settings(owner: string, tx: Queryable = this.db): Promise<StoreSettings | undefined> {
     const [row] = await tx.query<ConfigRow>(
-      `select name, nip05, network, draft_payouts, evm_credit, webhook_url, inbox_relays, revision, updated_at
+      `select name, nip05, network, draft_payouts, evm_credit, webhook_url, inbox_relays,
+         draft_inbox_relays, revision, updated_at
        from store_config where owner = $1`,
       [owner],
     );
@@ -455,26 +462,6 @@ export class StoreDirectory {
       }
       return { created: inserted.length > 0, store };
     });
-  }
-
-  /** S and the webhook secret, opened (the loader's; never sent to the admin). */
-  async secrets(
-    owner: string,
-  ): Promise<{ storeSecretKey: Uint8Array; webhookSecret: string | undefined } | undefined> {
-    const [row] = await this.db.query<{ store_key: Uint8Array; webhook_secret: Uint8Array | null }>(
-      'select store_key, webhook_secret from store_keys where owner = $1',
-      [owner],
-    );
-    if (row === undefined) {
-      return undefined;
-    }
-    return {
-      storeSecretKey: this.vault.open(row.store_key, owner, 'store'),
-      webhookSecret:
-        row.webhook_secret === null
-          ? undefined
-          : Buffer.from(this.vault.open(row.webhook_secret, owner, 'webhook')).toString('utf8'),
-    };
   }
 
   async hasWebhookSecret(owner: string): Promise<boolean> {
@@ -606,7 +593,8 @@ export class StoreDirectory {
 
   /**
    * Replace the draft config (P9: the payouts stay a draft until prepare ->
-   * sign -> commit -> record). Refused with every problem when a payout has no
+   * sign -> commit -> record; the inbox relays stay a draft until a setup pass
+   * got their 10050 out, `draft_inbox_relays`). Refused with every problem when a payout has no
    * valid wallet signature, a chain has no operator RPC, an inbox relay is
    * outside the allowlist, the webhook URL is not https on port 443 to a
    * public host, or a product's price cannot be paid in a coin.
@@ -622,8 +610,8 @@ export class StoreDirectory {
       if (store === undefined || current === undefined) {
         return { ok: false, error: 'no_store' };
       }
-      if (WINDING_DOWN.includes(store.status)) {
-        return { ok: false, error: 'suspended' };
+      if (WINDING_DOWN_STATUSES.includes(store.status)) {
+        return WINDING_DOWN_REFUSAL;
       }
       const checked = this.checkConfig(
         owner,
@@ -636,7 +624,7 @@ export class StoreDirectory {
       }
       await tx.query(
         `update store_config set name = $2, nip05 = $3, draft_payouts = $4::jsonb, evm_credit = $5,
-           webhook_url = $6, inbox_relays = $7, revision = revision + 1, updated_at = $8
+           webhook_url = $6, draft_inbox_relays = $7, revision = revision + 1, updated_at = $8
          where owner = $1`,
         [
           owner,
@@ -698,8 +686,8 @@ export class StoreDirectory {
       if (store === undefined || settings === undefined || state === undefined) {
         return { ok: false, error: 'no_store' };
       }
-      if (WINDING_DOWN.includes(store.status)) {
-        return { ok: false, error: 'suspended' };
+      if (WINDING_DOWN_STATUSES.includes(store.status)) {
+        return WINDING_DOWN_REFUSAL;
       }
       const [existing] = await tx.query<{ on_sale: boolean }>(
         'select on_sale from products where owner = $1 and d = $2',
@@ -715,7 +703,7 @@ export class StoreDirectory {
           return { ok: false, error: 'product_cap', problems: [`at most ${max} products on sale`] };
         }
       }
-      const payouts = [...settings.draftPayouts, ...activePayouts(state)];
+      const payouts = [...settings.draftPayouts, ...activePayouts(state, owner)];
       const problems = priceProblems({ payouts }, [{ d, priceUsd: input.priceUsd }]);
       if (problems.length > 0) {
         return { ok: false, error: 'bad_price', problems };
@@ -768,6 +756,9 @@ export class StoreDirectory {
       if (store === undefined || state === undefined) {
         return { ok: false, error: 'no_store' };
       }
+      if (WINDING_DOWN_STATUSES.includes(store.status)) {
+        return WINDING_DOWN_REFUSAL;
+      }
       const [existing] = await tx.query('select 1 from products where owner = $1 and d = $2', [
         owner,
         d,
@@ -804,6 +795,9 @@ export class StoreDirectory {
       const store = await this.lockedStore(tx, owner);
       if (store === undefined) {
         return { ok: false, error: 'no_store' };
+      }
+      if (store.status === 'suspended') {
+        return SUSPENDED_REFUSAL;
       }
       await tx.query(
         'update store_keys set webhook_secret = $2, webhook_rotated_at = $3 where owner = $1',
@@ -881,6 +875,9 @@ export class StoreDirectory {
       if (store.status === 'pending') {
         return { ok: false, error: 'inactive' };
       }
+      if (store.status === 'suspended') {
+        return SUSPENDED_REFUSAL;
+      }
       const request =
         input.kind === 'complete'
           ? { kind: 'delivered' as const }
@@ -908,8 +905,8 @@ export class StoreDirectory {
       if (store.status === 'pending') {
         return { ok: false, error: 'inactive' };
       }
-      if (WINDING_DOWN.includes(store.status)) {
-        return { ok: false, error: 'suspended' };
+      if (WINDING_DOWN_STATUSES.includes(store.status)) {
+        return WINDING_DOWN_REFUSAL;
       }
       // A second click answers with the suspension already queued.
       const [queued] = await tx.query<{ id: string }>(

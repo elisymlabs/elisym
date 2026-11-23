@@ -24,6 +24,7 @@ import {
   TEMPO_RPC,
   USDC_DEVNET_CAIP19,
   WEBHOOK_SECRET,
+  key,
   lease,
   seedStore,
   sellingLedger,
@@ -154,6 +155,80 @@ describe('loadStoreBundle', () => {
     });
     expect(loaded.config.webhook).toEqual({ url: 'https://shop.example.com/hook' });
     expect(loaded.webhookSecretMissing).toBe(false);
+  });
+
+  it('runs without an EVM rail the operator has no RPC for, naming it', async () => {
+    const state = sellingLedger();
+    state.terms = publishTerms(
+      state.terms,
+      { d: 'course-101', caip19: BASE_DEVNET_CAIP19, payout: EVM_PAYOUT, amount: '1000000' },
+      NOW - 3600,
+      NOW - 3600,
+    );
+    const loaded = await (await load({ state }, { devnet: { solana: SOLANA_RPC } })).bundle;
+    expect(loaded.rails.evm).toEqual(['base']);
+    expect(loaded.config.evm).toBeUndefined();
+    expect(loaded.unavailableRails).toEqual(['base-devnet']);
+  });
+
+  it('refuses a store with no inbox relay', async () => {
+    const { bundle } = await load({ inboxRelays: [] });
+    await expect(bundle).rejects.toThrow(StartRefused);
+    await expect(bundle).rejects.toThrow('no inbox relay');
+  });
+
+  it('refuses a webhook secret shorter than the minimum', async () => {
+    const { bundle } = await load({
+      webhookUrl: 'https://shop.example.com/hook',
+      webhookSecret: 'w'.repeat(31),
+    });
+    await expect(bundle).rejects.toThrow('the webhook secret is too short');
+    const exact = await load({
+      webhookUrl: 'https://shop.example.com/hook',
+      webhookSecret: 'w'.repeat(32),
+    });
+    expect((await exact.bundle).webhook?.secret).toBe('w'.repeat(32));
+  });
+
+  it('refuses a sealed store key that is not the store pubkey', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    await db.query('update stores set store_pubkey = $2 where owner = $1', [
+      owner.pubkey,
+      key().pubkey,
+    ]);
+    const holder = newHolderId();
+    const [leased] = await lease(db, holder);
+    await expect(
+      loadStoreBundle(db, keys, owner.pubkey, {
+        holder,
+        epoch: leased?.epoch ?? 0,
+        rpcs: RPCS,
+        inboxRelayAllowlist: [RELAY],
+        now: () => NOW,
+      }),
+    ).rejects.toThrow('the sealed store key is not the store pubkey');
+  });
+
+  it('listens on the active inbox relays, never the draft', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    await db.query('update store_config set draft_inbox_relays = $2 where owner = $1', [
+      owner.pubkey,
+      ['wss://inbox-two.example.com'],
+    ]);
+    const holder = newHolderId();
+    const [leased] = await lease(db, holder);
+    const loaded = await loadStoreBundle(db, keys, owner.pubkey, {
+      holder,
+      epoch: leased?.epoch ?? 0,
+      rpcs: RPCS,
+      inboxRelayAllowlist: [RELAY, 'wss://inbox-two.example.com'],
+      now: () => NOW,
+    });
+    expect(loaded.config.inboxRelays).toEqual([RELAY]);
   });
 
   it('reads the products and the ledger handle under the lease', async () => {

@@ -1,16 +1,25 @@
 import { emptyLedger, type LedgerState } from '@merchant-node/ledger';
+import { publishTerms } from '@merchant-node/terms';
 import { getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { pendingRequests } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
 import { serializeLedger } from '../src/state/ledger-store';
-import { canonicalPayouts, hostedWebhookProblem } from '../src/state/stores';
+import {
+  SUSPENDED_REFUSAL,
+  StoreDirectory,
+  WINDING_DOWN_REFUSAL,
+  canonicalPayouts,
+  hostedWebhookProblem,
+} from '../src/state/stores';
 import { freshDb } from './pglite-db';
 import {
   MASTER_KEY,
+  NOW,
   PRODUCT,
   RELAY,
+  RPCS,
   USDC_DEVNET,
   activate,
   directoryFor,
@@ -30,6 +39,25 @@ function configInput(owner: string, overrides: Record<string, unknown> = {}) {
   return { name: 'Shop', payouts: signedPayouts(owner), inboxRelays: [RELAY], ...overrides };
 }
 
+/** S and the webhook secret as sealed in `store_keys`, opened. */
+async function openSecrets(db: Db, owner: string) {
+  const vault = new KeyVault(MASTER_KEY);
+  const [row] = await db.query<{ store_key: Uint8Array; webhook_secret: Uint8Array | null }>(
+    'select store_key, webhook_secret from store_keys where owner = $1',
+    [owner],
+  );
+  if (row === undefined) {
+    throw new Error(`no store_keys row for ${owner}`);
+  }
+  return {
+    storeSecretKey: vault.open(row.store_key, owner, 'store'),
+    webhookSecret:
+      row.webhook_secret === null
+        ? undefined
+        : Buffer.from(vault.open(row.webhook_secret, owner, 'webhook')).toString('utf8'),
+  };
+}
+
 async function writeLedger(db: Db, owner: string, state: LedgerState): Promise<void> {
   await db.query('update ledgers set state = $2 where owner = $1', [owner, serializeLedger(state)]);
 }
@@ -40,22 +68,23 @@ describe('StoreDirectory: create', () => {
     const { owner, directory } = await newStore(db);
     const store = await directory.store(owner);
     expect(store).toMatchObject({ owner, status: 'pending', tier: undefined });
-    const secrets = await directory.secrets(owner);
-    expect(secrets?.webhookSecret).toBeUndefined();
-    expect(getPublicKey(secrets?.storeSecretKey ?? new Uint8Array())).toBe(store?.storePubkey);
+    const secrets = await openSecrets(db, owner);
+    expect(secrets.webhookSecret).toBeUndefined();
+    expect(getPublicKey(secrets.storeSecretKey)).toBe(store?.storePubkey);
     const [keys] = await db.query<{ store_key: Uint8Array }>(
       'select store_key from store_keys where owner = $1',
       [owner],
     );
-    expect(
-      Buffer.from(keys?.store_key ?? []).includes(Buffer.from(secrets?.storeSecretKey ?? [])),
-    ).toBe(false);
+    expect(Buffer.from(keys?.store_key ?? []).includes(Buffer.from(secrets.storeSecretKey))).toBe(
+      false,
+    );
     expect(await directory.ledgerState(owner)).toEqual(emptyLedger());
     expect(await directory.settings(owner)).toMatchObject({
       name: 'Shop',
       network: 'devnet',
       draftPayouts: [],
       inboxRelays: [RELAY],
+      activeInboxRelays: [RELAY],
       evmCredit: 'fast',
     });
   });
@@ -163,6 +192,18 @@ describe('StoreDirectory: config', () => {
       expect(result.ok ? [] : result.problems?.[0], webhookUrl).toMatch(/^webhookUrl: /);
     }
     expect(hostedWebhookProblem('https://hooks.example:443/paid')).toBeUndefined();
+    // Every IP literal is refused, private or public: a webhook names a public DNS host.
+    for (const literal of [
+      'https://10.0.0.1/paid',
+      'https://169.254.169.254/paid',
+      'https://[::1]/paid',
+      'https://[fd00::1]/paid',
+      'https://[::ffff:127.0.0.1]/paid',
+      'https://8.8.8.8/paid',
+      'https://0x7f000001/paid',
+    ]) {
+      expect(hostedWebhookProblem(literal), literal).toBeDefined();
+    }
     const good = await directory.putConfig(
       owner,
       configInput(owner, { webhookUrl: 'https://hooks.example/paid' }),
@@ -212,18 +253,50 @@ describe('StoreDirectory: config', () => {
     expect((await pendingRequests(db, owner)).map((request) => request.kind)).toEqual(['setup']);
   });
 
-  it('refuses edits of a store being suspended', async () => {
+  it('refuses edits of a store being suspended or suspended', async () => {
+    for (const status of ['suspending', 'suspended']) {
+      const db = await freshDb();
+      const { owner, directory } = await newStore(db);
+      await directory.putProduct(owner, 'old', PRODUCT);
+      await activate(db, owner, 2, status);
+      expect(await directory.putConfig(owner, configInput(owner))).toEqual(WINDING_DOWN_REFUSAL);
+      expect(await directory.putProduct(owner, 'socks', PRODUCT)).toEqual(WINDING_DOWN_REFUSAL);
+      expect(await directory.deleteProduct(owner, 'old')).toEqual(WINDING_DOWN_REFUSAL);
+      expect(await directory.product(owner, 'old')).toMatchObject({ onSale: true });
+      expect(await pendingRequests(db, owner)).toEqual([]);
+    }
+  });
+
+  it('keeps the inbox relays a draft: the active ones are what the node listens on', async () => {
     const db = await freshDb();
-    const { owner, directory } = await newStore(db);
-    await activate(db, owner, 2, 'suspending');
-    expect(await directory.putConfig(owner, configInput(owner))).toEqual({
-      ok: false,
-      error: 'suspended',
+    const owner = ownerKeys().pubkey;
+    const other = 'wss://relay.other.example';
+    const directory = new StoreDirectory({
+      db,
+      vault: new KeyVault(MASTER_KEY),
+      inboxRelays: [RELAY, other],
+      rpcs: RPCS,
+      now: () => NOW,
     });
-    expect(await directory.putProduct(owner, 'socks', PRODUCT)).toEqual({
-      ok: false,
-      error: 'suspended',
+    await directory.createStore(owner, { name: 'Shop', network: 'devnet' });
+    await activate(db, owner);
+    const [created] = await db.query<{ inbox_relays: string[]; draft: string[] | null }>(
+      'select inbox_relays, draft_inbox_relays as draft from store_config where owner = $1',
+      [owner],
+    );
+    expect(created).toEqual({ inbox_relays: [RELAY, other], draft: null });
+    expect(
+      (await directory.putConfig(owner, configInput(owner, { inboxRelays: [other] }))).ok,
+    ).toBe(true);
+    expect(await directory.settings(owner)).toMatchObject({
+      inboxRelays: [other],
+      activeInboxRelays: [RELAY, other],
     });
+    const [edited] = await db.query<{ inbox_relays: string[]; draft: string[] | null }>(
+      'select inbox_relays, draft_inbox_relays as draft from store_config where owner = $1',
+      [owner],
+    );
+    expect(edited).toEqual({ inbox_relays: [RELAY, other], draft: [other] });
   });
 });
 
@@ -290,6 +363,55 @@ describe('StoreDirectory: products', () => {
     });
   });
 
+  it('does not count a product already on sale against the cap when it is put again', async () => {
+    const db = await freshDb();
+    const { owner, directory } = await newStore(db);
+    await activate(db, owner, 2);
+    expect((await directory.putProduct(owner, 'a', PRODUCT)).ok).toBe(true);
+    expect((await directory.putProduct(owner, 'b', PRODUCT)).ok).toBe(true);
+    // The operator lowered the tier below what is on sale: edits go on, a new one waits.
+    await db.query("update tiers set max_products = 1 where name = 'tier-2'");
+    expect(await directory.putProduct(owner, 'a', { ...PRODUCT, priceUsd: '7' })).toMatchObject({
+      ok: true,
+      product: { priceUsd: '7', onSale: true },
+    });
+    expect(await directory.putProduct(owner, 'c', PRODUCT)).toMatchObject({ error: 'product_cap' });
+  });
+
+  it('checks a price against the active payouts too, with no draft yet', async () => {
+    const db = await freshDb();
+    const { owner, directory } = await newStore(db);
+    const state = emptyLedger();
+    state.payto = {
+      createdAt: NOW - 60,
+      payouts: JSON.stringify([{ caip19: USDC_DEVNET, address: solanaWallet().address }]),
+    };
+    await writeLedger(db, owner, state);
+    expect((await directory.settings(owner))?.draftPayouts).toEqual([]);
+    const result = await directory.putProduct(owner, 'a', { ...PRODUCT, priceUsd: '0.0000001' });
+    expect(result).toMatchObject({ ok: false, error: 'bad_price' });
+    expect(await directory.product(owner, 'a')).toBeUndefined();
+    expect((await directory.putProduct(owner, 'a', PRODUCT)).ok).toBe(true);
+  });
+
+  it('keeps sold out a product whose only history is its terms', async () => {
+    const db = await freshDb();
+    const { owner, directory } = await newStore(db);
+    await directory.putProduct(owner, 'terms-only', PRODUCT);
+    const state = emptyLedger();
+    state.terms = publishTerms(
+      [],
+      { d: 'terms-only', caip19: USDC_DEVNET, payout: solanaWallet().address, amount: '5000000' },
+      NOW - 60,
+      NOW - 60,
+    );
+    await writeLedger(db, owner, state);
+    expect(await directory.deleteProduct(owner, 'terms-only')).toMatchObject({
+      outcome: 'stopped',
+    });
+    expect(await directory.product(owner, 'terms-only')).toMatchObject({ onSale: false });
+  });
+
   it('removes a product never published, keeps one with a history sold out', async () => {
     const db = await freshDb();
     const { owner, directory } = await newStore(db);
@@ -316,7 +438,7 @@ describe('StoreDirectory: webhook secret', () => {
       throw new Error('rotation refused');
     }
     expect(rotated.secret).toMatch(/^[0-9a-f]{64}$/);
-    expect((await directory.secrets(owner))?.webhookSecret).toBe(rotated.secret);
+    expect((await openSecrets(db, owner)).webhookSecret).toBe(rotated.secret);
     const requests = await db.query<{ payload: string; result: string | null }>(
       'select payload, result from admin_requests where owner = $1',
       [owner],
@@ -375,6 +497,28 @@ describe('StoreDirectory: orders and requests', () => {
     const second = await directory.requestSuspend(owner);
     expect(first.ok && second.ok && first.requestId === second.requestId).toBe(true);
     expect(await pendingRequests(db, owner)).toHaveLength(1);
+  });
+
+  it('refuses requests no holder would apply for a suspended store; serves a suspending one', async () => {
+    const db = await freshDb();
+    const { owner, directory } = await newStore(db);
+    const key = `${'b'.repeat(64)}:x`;
+    await activate(db, owner, 2, 'suspended');
+    expect(await directory.requestHandAnswer(owner, key, { kind: 'complete' })).toEqual(
+      SUSPENDED_REFUSAL,
+    );
+    expect(await directory.rotateWebhookSecret(owner)).toEqual(SUSPENDED_REFUSAL);
+    expect(await directory.requestSuspend(owner)).toEqual(WINDING_DOWN_REFUSAL);
+    expect(await pendingRequests(db, owner)).toEqual([]);
+    expect((await openSecrets(db, owner)).webhookSecret).toBeUndefined();
+    // Still winding down: open orders are answered, webhooks still go out.
+    await activate(db, owner, 2, 'suspending');
+    expect((await directory.requestHandAnswer(owner, key, { kind: 'complete' })).ok).toBe(true);
+    expect((await directory.rotateWebhookSecret(owner)).ok).toBe(true);
+    expect((await pendingRequests(db, owner)).map((request) => request.kind)).toEqual([
+      'hand_answer',
+      'restart',
+    ]);
   });
 
   it('queues a hand answer with the order key, as merchant-node reads it', async () => {

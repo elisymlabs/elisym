@@ -2,15 +2,19 @@ import { OFFER_RELAYS } from '@merchant-node/constants';
 import type { NostrEvent } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
 import { OTHER_TREASURY } from '../../merchant-node/tests/fixtures';
+import { getRequest } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import type { KeyVault } from '../src/db/keys';
+import { loadStoreBundle } from '../src/node/load';
 import { SetupPassFailed, runStoreSetupPass } from '../src/node/setup-pass';
 import { OwnerEventPublisher } from '../src/publisher';
 import { newHolderId } from '../src/state/leases';
 import { PgLedgerStore } from '../src/state/ledger-store';
+import { submitRequest } from './helpers/node-requests';
 import {
   NOW,
   RELAY,
+  RPCS,
   SOLANA_PAYOUTS,
   USDC_DEVNET_CAIP19,
   insertOwnerEvent,
@@ -37,7 +41,16 @@ async function published(world = new RelayWorld()) {
   const [leased] = await lease(db, holder);
   const open = () =>
     new PgLedgerStore(db, () => NOW).open(seed.owner.pubkey, leased?.epoch ?? 0, holder);
-  return { db, keys, world, seed, owner: seed.owner.pubkey, open };
+  return {
+    db,
+    keys,
+    world,
+    seed,
+    owner: seed.owner.pubkey,
+    open,
+    holder,
+    epoch: leased?.epoch ?? 0,
+  };
 }
 
 async function ownerEventRow(db: Db, id: string) {
@@ -193,6 +206,154 @@ describe('the server setup pass', () => {
   });
 });
 
+describe('the setup pass: inbox relays (draft vs active)', () => {
+  const NEW_RELAY = 'wss://inbox-two.example.com';
+  const ALLOWLIST = [RELAY, NEW_RELAY];
+
+  /** A published store whose merchant moved its inbox to `NEW_RELAY` (the draft). */
+  async function moved() {
+    const store = await published();
+    await store.db.query('update store_config set draft_inbox_relays = $2 where owner = $1', [
+      store.owner,
+      [NEW_RELAY],
+    ]);
+    return store;
+  }
+
+  async function listening(store: Awaited<ReturnType<typeof published>>): Promise<string[]> {
+    const bundle = await loadStoreBundle(store.db, store.keys, store.owner, {
+      holder: store.holder,
+      epoch: store.epoch,
+      rpcs: RPCS,
+      inboxRelayAllowlist: ALLOWLIST,
+      now: () => NOW,
+    });
+    return bundle.config.inboxRelays;
+  }
+
+  async function activeRelays(db: Db, owner: string): Promise<string[] | undefined> {
+    const [row] = await db.query<{ inbox_relays: string[] }>(
+      'select inbox_relays from store_config where owner = $1',
+      [owner],
+    );
+    return row?.inbox_relays;
+  }
+
+  function newestInboxList(world: RelayWorld, storePubkey: string): string[] | undefined {
+    const lists = world.events
+      .filter((event) => event.kind === 10050 && event.pubkey === storePubkey)
+      .sort((left, right) => right.created_at - left.created_at);
+    return lists[0]?.tags.filter((tag) => tag[0] === 'relay').map((tag) => tag[1]);
+  }
+
+  it('a restart before the pass listens on the old relays: buyers still read the old 10050', async () => {
+    const store = await moved();
+    expect(await listening(store)).toEqual([RELAY]);
+    expect(newestInboxList(store.world, store.seed.store.pubkey)).toEqual([RELAY]);
+  });
+
+  it('switches once the 10050 naming the new relays reached a default relay', async () => {
+    const store = await moved();
+    const offered: string[] = [];
+    store.world.refuse = (event, relay) => {
+      if (event.kind === 10050) {
+        offered.push(relay);
+      }
+      return false;
+    };
+    const deps = testSetupDeps(store.db, store.keys, store.world, {
+      inboxRelayAllowlist: ALLOWLIST,
+    });
+    const result = await runStoreSetupPass(deps, store.owner, await store.open());
+    // The old inbox hears of the move too: buyers who read the store's list there.
+    expect([...new Set(offered)].sort()).toEqual([...OFFER_RELAYS, RELAY, NEW_RELAY].sort());
+    expect(result).toMatchObject({
+      kind: 'done',
+      inboxRelaysSwitched: true,
+      inboxRelaysPending: false,
+    });
+    expect(newestInboxList(store.world, store.seed.store.pubkey)).toEqual([NEW_RELAY]);
+    expect(await activeRelays(store.db, store.owner)).toEqual([NEW_RELAY]);
+    expect(await listening(store)).toEqual([NEW_RELAY]);
+    // Nothing left to switch on the next pass.
+    const again = await runStoreSetupPass(deps, store.owner, await store.open());
+    expect(again).toMatchObject({ inboxRelaysSwitched: false, inboxRelaysPending: false });
+  });
+
+  it('keeps the old relays when the 10050 was refused, or reached no default relay', async () => {
+    for (const refuse of [
+      (event: NostrEvent) => event.kind === 10050,
+      (event: NostrEvent, relay: string) => event.kind === 10050 && OFFER_RELAYS.includes(relay),
+    ]) {
+      const store = await moved();
+      store.world.refuse = refuse;
+      const deps = testSetupDeps(store.db, store.keys, store.world, {
+        inboxRelayAllowlist: ALLOWLIST,
+      });
+      const result = await runStoreSetupPass(deps, store.owner, await store.open());
+      expect(result).toMatchObject({
+        kind: 'done',
+        payoutListOut: true,
+        inboxRelaysSwitched: false,
+        inboxRelaysPending: true,
+      });
+      expect(await activeRelays(store.db, store.owner)).toEqual([RELAY]);
+      expect(await listening(store)).toEqual([RELAY]);
+    }
+  });
+
+  it('keeps the old relays when nothing went out', async () => {
+    const store = await moved();
+    store.world.refuse = () => true;
+    const deps = testSetupDeps(store.db, store.keys, store.world, {
+      inboxRelayAllowlist: ALLOWLIST,
+    });
+    await expect(runStoreSetupPass(deps, store.owner, await store.open())).rejects.toThrow(
+      SetupPassFailed,
+    );
+    expect(await activeRelays(store.db, store.owner)).toEqual([RELAY]);
+  });
+});
+
+describe('the setup pass: what it marks', () => {
+  it('marks the request applied when the payout list already recorded did not go out again', async () => {
+    const { db, keys, world, owner, open } = await published();
+    await db.query("update products set price_usd = '2' where owner = $1", [owner]);
+    world.refuse = (event) => event.kind === 10133;
+    const id = await submitRequest(db, owner, 'setup', {}, NOW);
+    const result = await runStoreSetupPass(pass(db, keys, world), owner, await open(), {
+      appliedRequest: id,
+    });
+    expect(result).toMatchObject({ kind: 'done', payoutListOut: false, payoutListPending: false });
+    expect((await getRequest(db, owner, id))?.state).toBe('applied');
+  });
+
+  it('keeps a request pending while a committed, never-recorded payout list did not go out', async () => {
+    const { db, keys, world, seed, owner, open } = await published();
+    const next = ownerEvents(seed.owner, seed.store, NEXT, NOW - 60);
+    await insertOwnerEvent(db, owner, next.payoutList, JSON.stringify(NEXT), false);
+    await db.query("update products set price_usd = '2' where owner = $1", [owner]);
+    world.refuse = (event) => event.id === next.payoutList.id;
+    const id = await submitRequest(db, owner, 'record_owner_event', {}, NOW);
+    const result = await runStoreSetupPass(pass(db, keys, world), owner, await open(), {
+      appliedRequest: id,
+    });
+    expect(result).toMatchObject({ kind: 'done', payoutListOut: false, payoutListPending: true });
+    expect((await getRequest(db, owner, id))?.state).toBe('pending');
+  });
+
+  it('leaves a committed 30490 unrecorded when it reached no relay', async () => {
+    const { db, keys, world, seed, owner, open } = await published();
+    const next = ownerEvents(seed.owner, seed.store, SOLANA_PAYOUTS, NOW - 30).authorization;
+    await insertOwnerEvent(db, owner, next, undefined, false);
+    await db.query("update products set price_usd = '2' where owner = $1", [owner]);
+    world.refuse = (event) => event.id === next.id;
+    const result = await runStoreSetupPass(pass(db, keys, world), owner, await open());
+    expect(result).toMatchObject({ kind: 'done', authorizationOut: false });
+    expect(await ownerEventRow(db, next.id)).toMatchObject({ recorded: false, published_at: null });
+  });
+});
+
 describe('OwnerEventPublisher', () => {
   /** A published store whose seeded owner events a default relay already took. */
   async function settled() {
@@ -267,6 +428,30 @@ describe('OwnerEventPublisher', () => {
     expect(alerts).toEqual([
       { kind: 'inbox_relays_refused', message: `inbox relays outside the allowlist: ${RELAY}` },
     ]);
+    // The allowlist takes the relay back: the next republish goes out and clears the alert.
+    await db.query('update owner_events set next_attempt_at = 0 where id = $1', [next.id]);
+    expect(await publisher(db, keys, world).runOnce()).toBe(1);
+    expect((await ownerEventRow(db, next.id))?.published_at).toBe(NOW);
+    expect(
+      await db.query('select 1 from alerts where owner = $1 and cleared_at is null', [owner]),
+    ).toEqual([]);
+  });
+
+  it('keeps the alert while republishing still fails', async () => {
+    const { db, keys, seed, owner } = await settled();
+    const world = new RelayWorld();
+    const next = ownerEvents(seed.owner, seed.store, SOLANA_PAYOUTS, NOW - 30).authorization;
+    await insertOwnerEvent(db, owner, next, undefined, true);
+    await publisher(db, keys, world, ['wss://other.example.com']).runOnce();
+    await db.query('update owner_events set next_attempt_at = 0 where id = $1', [next.id]);
+    world.refuse = () => true;
+    expect(await publisher(db, keys, world).runOnce()).toBe(1);
+    expect(
+      await db.query<{ kind: string }>(
+        'select kind from alerts where owner = $1 and cleared_at is null',
+        [owner],
+      ),
+    ).toEqual([{ kind: 'inbox_relays_refused' }]);
   });
 
   it('skips a recorded event a newer one of its kind replaced', async () => {

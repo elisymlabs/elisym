@@ -1,9 +1,11 @@
 import { KIND_PAYTO, KIND_STORE_AUTH } from '@elisym/commerce';
+import { emptyLedger } from '@merchant-node/ledger';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { ADMIN_PREFIX, NEW_STORES_PER_IP_PER_HOUR, createAdminApi } from '../src/admin/api';
 import { type AdminRequest, markRequest } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
+import { serializeLedger } from '../src/state/ledger-store';
 import { freshDb } from './pglite-db';
 import {
   BASE,
@@ -258,6 +260,39 @@ describe('admin API: store', () => {
   });
 });
 
+describe('admin API: active payouts', () => {
+  it('shows the payout list the ledger recorded, apart from the draft', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    const draft = signedPayouts(owner.pubkey);
+    expect(
+      (
+        await call(owner.secret, {
+          method: 'PUT',
+          path: '/v1/admin/store/config',
+          body: { name: 'Shop', payouts: draft, inboxRelays: [RELAY] },
+        })
+      ).status,
+    ).toBe(200);
+    const before = await call(owner.secret, { method: 'GET', path: '/v1/admin/store' });
+    expect(before.body).toMatchObject({ activePayouts: null });
+    const recorded = [
+      { caip19: draft[0]?.caip19 ?? '', address: 'Recorded1111111111111111111111111' },
+    ];
+    const state = emptyLedger();
+    state.payto = { createdAt: NOW - 60, payouts: JSON.stringify(recorded) };
+    await db.query('update ledgers set state = $2 where owner = $1', [
+      owner.pubkey,
+      serializeLedger(state),
+    ]);
+    const after = await call(owner.secret, { method: 'GET', path: '/v1/admin/store' });
+    expect(after.body).toMatchObject({
+      activePayouts: { createdAt: NOW - 60, payouts: recorded },
+      config: { draftPayouts: draft },
+    });
+  });
+});
+
 describe('admin API: products', () => {
   it('writes, reads, caps and stops products', async () => {
     const db = await freshDb();
@@ -326,6 +361,23 @@ describe('admin API: owner events', () => {
       body: { event },
     });
     expect(again.body).toEqual({ id: event.id, alreadyCommitted: true });
+    // Its recording failed: committing it again queues a new one, answered like the first.
+    const [request] = await db.query<{ id: string }>(
+      "select id from admin_requests where kind = 'record_owner_event'",
+    );
+    await markRequest(db, owner.pubkey, request?.id ?? '', 'failed', NOW);
+    const retried = await call(owner.secret, {
+      method: 'POST',
+      path: '/v1/admin/owner-events/commit',
+      body: { event },
+    });
+    expect(retried.status).toBe(202);
+    expect(retried.body).toMatchObject({
+      id: event.id,
+      alreadyCommitted: true,
+      request: { state: 'pending' },
+    });
+    expect(field(retried.body?.request, 'id')).not.toBe(request?.id);
   });
 
   it('refuses a commit by another key, and a stale one the relays outdate', async () => {
@@ -389,6 +441,24 @@ describe('admin API: webhook secret, orders, hand answers', () => {
       answeredByHand: {},
       unresolvedPayments: [],
     });
+  });
+
+  it('refuses with 409 what no holder would apply for a suspended store', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    await activate(db, owner.pubkey, 2, 'suspended');
+    const key = encodeURIComponent(`${'b'.repeat(64)}:order-1`);
+    for (const [path, body] of [
+      [`/v1/admin/orders/${key}/hand`, { kind: 'complete' }],
+      ['/v1/admin/webhook/secret', undefined],
+      ['/v1/admin/owner-events/prepare', { kind: KIND_STORE_AUTH }],
+      ['/v1/admin/store/suspend', undefined],
+    ] as const) {
+      const answer = await call(owner.secret, { method: 'POST', path, body });
+      expect(answer.status, path).toBe(409);
+      expect(answer.body, path).toMatchObject({ error: 'suspended' });
+    }
+    expect(await db.query('select 1 from admin_requests')).toEqual([]);
   });
 
   it('queues a hand answer for a well-formed key only', async () => {
