@@ -11,32 +11,11 @@ import { splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
 import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
-import {
-  type RelayView,
-  checkDomain,
-  checkInboxRelays,
-  offerProblems,
-  profileCapabilities,
-  profileMemoMarkerWarning,
-  readBeforeSetup,
-  readRelayViews,
-} from './checks';
-import {
-  type MerchantConfig,
-  configTemplate,
-  loadConfig,
-  priceProblems,
-  tempoRegistryNetwork,
-} from './config';
+import { type RelayView, checkDomain, checkInboxRelays } from './checks';
+import { type MerchantConfig, configTemplate, loadConfig } from './config';
 import { OFFER_RELAYS } from './constants';
-import { eip3009ChainsOf, startEip3009Rail } from './eip3009';
-import {
-  TreasuryReader,
-  type TreasuryRefresh,
-  feeConfigRpcUrl,
-  feeDeclaration,
-  profileFeeWarning,
-} from './fee';
+import { startEip3009Rail } from './eip3009';
+import { TreasuryReader, type TreasuryRefresh, feeConfigRpcUrl, feeDeclaration } from './fee';
 import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
@@ -76,16 +55,15 @@ import {
 } from './products';
 import { setupPublisher } from './publish';
 import { listeningPool } from './relay-pool';
+import { runSetupPass } from './setup-ledger';
 import {
-  historyRefusal,
-  payoutListDate,
-  planListings,
-  publishAndRecord,
-  setupClockProblems,
-} from './setup-ledger';
+  lostHistoryProblem,
+  productPriceProblems,
+  profileWarnings,
+  readOfferProblems,
+} from './start-checks';
 import { buildStoreWideEvents, productNaddr, storeNostrJson } from './store-events';
 import { startStoreNode, storeAuth } from './store-node';
-import { standingTerms } from './terms';
 import {
   type WebhookTarget,
   WEBHOOK_SECRET_HINT,
@@ -402,9 +380,9 @@ async function reportDomain(
 function loadStore(home: MerchantHome): { config: MerchantConfig; products: Map<string, Product> } {
   const config = loadConfig(home.config);
   const products = loadProducts(home.products);
-  const problems = priceProblems(config, products.values());
-  if (problems.length > 0) {
-    throw new Error(`the products are not usable:\n- ${problems.join('\n- ')}`);
+  const problem = productPriceProblems(config, products.values());
+  if (problem !== undefined) {
+    throw new Error(problem);
   }
   return { config, products };
 }
@@ -416,24 +394,14 @@ function treasuryReader(config: MerchantConfig): TreasuryReader {
 
 /** Warn (never refuse) when the store profile buyers read does not declare fee support or marked memos. */
 function warnProfile(views: readonly RelayView[], refresh: TreasuryRefresh): void {
-  const { found, feeSupport, memoMarker } = profileCapabilities(views);
-  const warning = profileFeeWarning(
-    found,
-    feeSupport,
-    refresh.kind === 'read' ? refresh.feeBps : undefined,
-  );
-  if (warning !== undefined) {
+  for (const warning of profileWarnings(views, refresh)) {
     log(`warning: ${warning}`);
-  }
-  const memoWarning = profileMemoMarkerWarning(found, memoMarker);
-  if (memoWarning !== undefined) {
-    log(`warning: ${memoWarning}`);
   }
 }
 
 /** Refuse a home whose ledger has a history for a product with no directory (see `historyRefusal`). */
 function refuseLostHistory(state: LedgerState, products: ReadonlyMap<string, Product>): void {
-  const refusal = historyRefusal(state, products);
+  const refusal = lostHistoryProblem(state, products);
   if (refusal !== undefined) {
     throw new Error(refusal);
   }
@@ -484,23 +452,6 @@ async function setup(home: MerchantHome): Promise<void> {
       );
     }
     const relays = [...new Set([...OFFER_RELAYS, ...config.inboxRelays])];
-    // New terms start before the first publish: a buyer may read them at once.
-    const startedAt = nowSecs();
-    const payouts = JSON.stringify(config.payouts);
-    const { payoutList: newestList, listings: served } = await readBeforeSetup(
-      pool,
-      relays,
-      OFFER_RELAYS,
-      loaded,
-      [...new Set([...products.keys(), ...Object.keys(state.listings)])],
-    );
-    const paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
-    const plans = planListings(state, products.values(), config.payouts, served, startedAt);
-    const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
-    if (clock.length > 0) {
-      throw new Error(clock.join('; '));
-    }
-    const wide = buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt, declaration.declare);
     const publisher = setupPublisher(
       pool,
       relays,
@@ -508,20 +459,21 @@ async function setup(home: MerchantHome): Promise<void> {
       storeAuth(keys.storeSecretKey),
       log,
     );
-    const outcomes = await publishAndRecord(state, {
-      plans,
+    const outcomes = await runSetupPass(state, {
+      pool,
+      relays,
+      defaultRelays: OFFER_RELAYS,
+      pubkeys: loaded,
+      products,
       payouts: config.payouts,
+      payoutsString: JSON.stringify(config.payouts),
       storeSecretKey: keys.storeSecretKey,
-      wide,
+      sign: ({ startedAt, paytoCreatedAt }) =>
+        buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt, declaration.declare),
       publish: publisher.publish,
-      payoutList: { createdAt: paytoCreatedAt, payouts },
-      startedAt,
       now: nowSecs,
     });
     const { missedDefaults } = publisher;
-    // Orders can come from the moment the store is published: a later first run
-    // reads back from here, not from its own start.
-    state.resumeAt ??= startedAt;
     saveLedger(home.ledger, state);
     console.log(`store   ${loaded.storePubkey}`);
     console.log(`owner   ${loaded.ownerPubkey}`);
@@ -565,17 +517,12 @@ async function refuseOffersNotHonoured(
   state: LedgerState,
   products: ReadonlyMap<string, Product>,
 ): Promise<RelayView[]> {
-  // Judged twice: from the default relays, which every page reads, and with the
-  // store's own inbox relays too, which a page reads when its naddr hints them.
-  const views = [OFFER_RELAYS, [...new Set([...OFFER_RELAYS, ...config.inboxRelays])]];
-  const read = await readRelayViews(pool, views, pubkeys, [...products.keys()]);
-  const { problems, served } = offerProblems(
-    read,
-    config.inboxRelays,
-    config.network,
-    standingTerms(state.terms),
-    config.tempo === undefined ? undefined : tempoRegistryNetwork(config.tempo.network),
-    eip3009ChainsOf(config),
+  const { problems, served, views } = await readOfferProblems(
+    pool,
+    config,
+    pubkeys,
+    state,
+    products,
   );
   if (problems.length > 0) {
     throw new Error(
@@ -587,7 +534,7 @@ async function refuseOffersNotHonoured(
       'warning: no relay served a listing or the payout list; run setup if the store is not published',
     );
   }
-  return read;
+  return views;
 }
 
 /** A stop request's exit code (128 + the signal's number). */

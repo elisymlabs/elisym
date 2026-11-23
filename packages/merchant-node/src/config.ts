@@ -436,9 +436,9 @@ export function configTemplate(network: Network): MerchantConfig {
  * Every product price a configured payout cannot carry: a coin must be able to
  * pay each product's USD price, or that product's listing could not be paid.
  */
-export function priceProblems(
+export function priceProblems<Priced extends Pick<Product, 'd' | 'priceUsd'>>(
   config: Pick<MerchantConfig, 'payouts'>,
-  products: Iterable<Product>,
+  products: Iterable<Priced>,
 ): string[] {
   const problems: string[] = [];
   for (const product of products) {

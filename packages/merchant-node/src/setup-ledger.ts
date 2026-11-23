@@ -1,5 +1,6 @@
 import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
+import { type QueryPool, readBeforeSetup } from './checks';
 import { TERMS_CLOCK_MARGIN_SECS } from './constants';
 import type { LedgerState, PublishedListing } from './ledger';
 import {
@@ -318,5 +319,81 @@ export async function publishAndRecord(
     setup.startedAt - TERMS_CLOCK_MARGIN_SECS,
     finishedAt - TERMS_CLOCK_MARGIN_SECS,
   );
+  return outcomes;
+}
+
+/** One setup pass over a store: what it reads, signs and publishes with. */
+export interface SetupPass {
+  pool: QueryPool;
+  /** Every relay the store publishes to: the default relays and its inbox relays. */
+  relays: readonly string[];
+  /** The relays every page reads; listings are read back from these. */
+  defaultRelays: readonly string[];
+  pubkeys: { storePubkey: string; ownerPubkey: string };
+  products: ReadonlyMap<string, ListedProduct>;
+  /** The payouts the listings accept and the new terms pay to. */
+  payouts: StoreConfig['payouts'];
+  /** The payout list as recorded in `state.payto` when it goes out (compared as a string by `payoutListDate`). */
+  payoutsString: string;
+  storeSecretKey: Uint8Array;
+  /**
+   * The store-wide events, signed: given when the pass started and the date
+   * `payoutListDate` picks; the payout list is recorded with the date it is
+   * signed with.
+   */
+  sign: (dates: { startedAt: number; paytoCreatedAt: number }) => {
+    payoutList: NostrEvent;
+    others: readonly NostrEvent[];
+  };
+  publish: (event: NostrEvent, name: string) => Promise<boolean>;
+  now: () => number;
+}
+
+/**
+ * Read what the relays serve, plan and date the listings and the payout list,
+ * refuse a clock behind the last publish, then publish and record
+ * (`publishAndRecord`). Orders can come from the moment the store is
+ * published: a first run reads back from here (`resumeAt`). The caller saves.
+ */
+export async function runSetupPass(state: LedgerState, pass: SetupPass): Promise<ListingOutcome[]> {
+  // New terms start before the first publish: a buyer may read them at once.
+  const startedAt = pass.now();
+  const { payoutList: newestList, listings: served } = await readBeforeSetup(
+    pass.pool,
+    pass.relays,
+    pass.defaultRelays,
+    pass.pubkeys,
+    [...new Set([...pass.products.keys(), ...Object.keys(state.listings)])],
+  );
+  const paytoCreatedAt = payoutListDate(
+    state,
+    pass.payoutsString,
+    newestList?.created_at,
+    startedAt,
+  );
+  const plans = planListings(state, pass.products.values(), pass.payouts, served, startedAt);
+  const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
+  if (clock.length > 0) {
+    throw new Error(clock.join('; '));
+  }
+  const wide = pass.sign({ startedAt, paytoCreatedAt });
+  const signedAt = wide.payoutList.created_at;
+  if (signedAt !== paytoCreatedAt && signedAt !== state.payto?.createdAt) {
+    const problem = clockProblem('the payout list', signedAt, startedAt);
+    if (problem !== undefined) {
+      throw new Error(problem);
+    }
+  }
+  const outcomes = await publishAndRecord(state, {
+    plans,
+    payouts: pass.payouts,
+    storeSecretKey: pass.storeSecretKey,
+    wide,
+    publish: pass.publish,
+    payoutList: { createdAt: signedAt, payouts: pass.payoutsString },
+    startedAt,
+    now: pass.now,
+  });
+  state.resumeAt ??= startedAt;
   return outcomes;
 }
