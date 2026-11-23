@@ -21,7 +21,7 @@ import type { StoreConfig } from '@merchant-node/store-events';
 import type { TermsPeriod } from '@merchant-node/terms';
 import type { WebhookTarget } from '@merchant-node/webhook';
 import { getPublicKey } from 'nostr-tools/pure';
-import type { Db } from '../db/db';
+import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import type { StoreStatus } from '../state/leases';
 import { type LedgerHandle, PgLedgerStore } from '../state/ledger-store';
@@ -56,10 +56,19 @@ export interface StoreBundle {
   storePubkey: string;
   storeSecretKey: Uint8Array;
   config: MerchantConfig;
+  /** The chains the store's payouts and standing terms need (P10). */
   rails: StoreRails;
+  /** Rails the store needs and the operator has no RPC for: off in `config`, the store runs `degraded`. */
+  unavailableRails: string[];
   products: Map<string, Product>;
-  /** Present when the store has a webhook URL (its secret is required then). */
+  /**
+   * The webhook sender's target: present when the store has a webhook URL and
+   * its secret. A URL without a secret still queues entries (`config.webhook`),
+   * sent once a secret exists.
+   */
   webhook?: WebhookTarget;
+  /** The store has a webhook URL and no secret yet: the store runs `degraded`. */
+  webhookSecretMissing: boolean;
   committed: CommittedOwnerEvent[];
   /** The ledger as stored (not yet upgraded: the start checks do it). */
   handle: LedgerHandle;
@@ -91,6 +100,9 @@ export class StartRefused extends Error {
   }
 }
 
+/** Statuses winding the store down (step 15): every product is sold out. */
+export const WINDING_DOWN_STATUSES: readonly StoreStatus[] = ['suspending', 'suspended'];
+
 /** Past the end of a terms period by this much, nothing can pay it any more (P10). */
 export const TERMS_STAND_SECS = UNPAID_ORDER_LIFETIME_SECS + MAX_FUTURE_SKEW_SECS;
 
@@ -109,7 +121,7 @@ interface StoreRow extends Record<string, unknown> {
   inbox_relays: string[] | null;
 }
 
-interface ProductRow extends Record<string, unknown> {
+export interface ProductRow extends Record<string, unknown> {
   d: string;
   title: string;
   description: string;
@@ -221,43 +233,46 @@ export function allowedInboxRelays(
 
 /**
  * The parts of `MerchantConfig` that switch rails on, from the operator's RPCs
- * only: `rpcUrl` (Solana), `tempo`, `evm`. A rail with no operator RPC
- * refuses the start.
+ * only: `rpcUrl` (Solana), `tempo`, `evm`. A rail with no operator RPC stays
+ * off and is named in `unavailable` (the store runs without it, `degraded`,
+ * instead of every rail stopping for one).
  */
 export function railConfig(
-  owner: string,
   network: Network,
   rails: StoreRails,
   rpcs: OperatorRpcs,
   credit: 'fast' | 'safe',
-): Pick<MerchantConfig, 'rpcUrl' | 'tempo' | 'evm'> {
+): { config: Pick<MerchantConfig, 'rpcUrl' | 'tempo' | 'evm'>; unavailable: string[] } {
   const operator = rpcs[network] ?? {};
-  const missing = (what: string) =>
-    new StartRefused(owner, `no operator ${what} RPC on ${network}: the store's payouts need one`);
   const config: Pick<MerchantConfig, 'rpcUrl' | 'tempo' | 'evm'> = {};
+  const unavailable: string[] = [];
   if (rails.solana) {
     if (operator.solana === undefined) {
-      throw missing('Solana');
+      unavailable.push(`solana-${network}`);
+    } else {
+      config.rpcUrl = operator.solana;
     }
-    config.rpcUrl = operator.solana;
   }
   if (rails.tempo) {
     if (operator.tempo === undefined) {
-      throw missing('Tempo');
+      unavailable.push(`tempo-${network}`);
+    } else {
+      config.tempo = { network: TEMPO_NETWORK[network], rpcUrl: operator.tempo };
     }
-    config.tempo = { network: TEMPO_NETWORK[network], rpcUrl: operator.tempo };
   }
   for (const slug of rails.evm) {
     const rpcUrl = operator.evm?.[slug];
     if (rpcUrl === undefined) {
-      throw missing(slug);
+      unavailable.push(`${slug}-${network}`);
+    } else {
+      config.evm = { ...config.evm, [slug]: { rpcUrl, credit } };
     }
-    config.evm = { ...config.evm, [slug]: { rpcUrl, credit } };
   }
-  return config;
+  return { config, unavailable };
 }
 
-function productOf(row: ProductRow): Product {
+/** A product row as merchant-node reads a product; `soldOut` stops it whatever the row says. */
+export function productOf(row: ProductRow, soldOut = false): Product {
   return {
     d: row.d,
     title: row.title,
@@ -265,7 +280,7 @@ function productOf(row: ProductRow): Product {
     ...(row.summary === null ? {} : { summary: row.summary }),
     ...(row.url === null ? {} : { url: row.url }),
     priceUsd: row.price_usd,
-    onSale: row.on_sale,
+    onSale: soldOut ? false : row.on_sale,
     file: `products/${row.d}`,
   };
 }
@@ -273,14 +288,11 @@ function productOf(row: ProductRow): Product {
 function webhookOf(
   owner: string,
   vault: KeyVault,
-  url: string | null,
+  url: string,
   sealed: Uint8Array | null,
 ): WebhookTarget | undefined {
-  if (url === null) {
-    return undefined;
-  }
   if (sealed === null) {
-    throw new StartRefused(owner, 'the store has a webhook URL and no webhook secret');
+    return undefined;
   }
   const secret = Buffer.from(vault.open(sealed, owner, 'webhook')).toString('utf8');
   if (Buffer.byteLength(secret, 'utf8') < WEBHOOK_MIN_SECRET_BYTES) {
@@ -289,12 +301,28 @@ function webhookOf(
   return { url, secret };
 }
 
+/** The store's products, oldest `d` first; all sold out while the store winds down. */
+export async function readProducts(
+  db: Queryable,
+  owner: string,
+  status: StoreStatus,
+): Promise<Map<string, Product>> {
+  const rows = await db.query<ProductRow>(
+    `select d, title, description, summary, url, price_usd, on_sale
+     from products where owner = $1 order by d`,
+    [owner],
+  );
+  const soldOut = WINDING_DOWN_STATUSES.includes(status);
+  return new Map(rows.map((product) => [product.d, productOf(product, soldOut)]));
+}
+
 /**
  * Read a leased store: its rows, its secrets opened with the vault, and a
  * handle on its ledger for this run. Throws `StartRefused` when the store's
- * own data cannot run (relays outside the allowlist, a rail without an
- * operator RPC, a webhook without its secret), any other error for a read
- * that may pass on a retry.
+ * own data cannot run (relays outside the allowlist, a sealed key that does
+ * not open), any other error for a read that may pass on a retry. A rail with
+ * no operator RPC and a webhook URL with no secret do not refuse the start:
+ * `unavailableRails` / `webhookSecretMissing` say so (the store runs `degraded`).
  */
 export async function loadStoreBundle(
   db: Db,
@@ -330,12 +358,11 @@ export async function loadStoreBundle(
     throw new StartRefused(owner, 'the sealed store key is not the store pubkey');
   }
   const inboxRelays = allowedInboxRelays(owner, row.inbox_relays, deps.inboxRelayAllowlist);
-  const webhook = webhookOf(owner, vault, row.webhook_url, row.webhook_secret);
-  const productRows = await db.query<ProductRow>(
-    `select d, title, description, summary, url, price_usd, on_sale
-     from products where owner = $1 order by d`,
-    [owner],
-  );
+  const webhook =
+    row.webhook_url === null
+      ? undefined
+      : webhookOf(owner, vault, row.webhook_url, row.webhook_secret);
+  const products = await readProducts(db, owner, row.status);
   const committed = await db.query<{
     id: string;
     kind: number;
@@ -350,14 +377,15 @@ export async function loadStoreBundle(
   const handle = await ledgers.open(owner, deps.epoch, deps.holder);
   const payouts = activePayouts(handle.state, owner);
   const rails = storeRails(payouts, handle.state.terms ?? [], row.network, deps.now());
+  const operatorRails = railConfig(row.network, rails, deps.rpcs, row.evm_credit);
   const config: MerchantConfig = {
     name: row.name,
     ...(row.nip05 === null ? {} : { nip05: row.nip05 }),
     network: row.network,
     payouts,
     inboxRelays,
-    ...railConfig(owner, row.network, rails, deps.rpcs, row.evm_credit),
-    ...(webhook === undefined ? {} : { webhook: { url: webhook.url } }),
+    ...operatorRails.config,
+    ...(row.webhook_url === null ? {} : { webhook: { url: row.webhook_url } }),
   };
   return {
     owner,
@@ -366,8 +394,10 @@ export async function loadStoreBundle(
     storeSecretKey,
     config,
     rails,
-    products: new Map(productRows.map((product) => [product.d, productOf(product)])),
+    unavailableRails: operatorRails.unavailable,
+    products,
     ...(webhook === undefined ? {} : { webhook }),
+    webhookSecretMissing: row.webhook_url !== null && webhook === undefined,
     committed: committed.map((event) => ({
       id: event.id,
       kind: event.kind,

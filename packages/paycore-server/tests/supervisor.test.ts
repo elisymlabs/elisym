@@ -18,6 +18,7 @@ import {
   openAlerts,
   orderWraps,
   seedStore,
+  settle,
   sellingLedger,
   storeStatus,
   storedLedger,
@@ -346,6 +347,46 @@ describe('StoreSupervisor', () => {
     expect(supervisor.running).toEqual([owner.pubkey]);
     expect(await storeStatus(db, owner.pubkey)).toBe('active');
     expect(await openAlerts(db, owner.pubkey)).toEqual([]);
+  });
+
+  it('counts a node that stops itself right after starting toward the halt (decision 3)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner, store } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, chain({}).rpc));
+    const until = async (check: () => boolean, what: string) => {
+      for (let round = 0; round < 200 && !check(); round += 1) {
+        await settle(5);
+      }
+      if (!check()) {
+        throw new Error(`never: ${what}`);
+      }
+      await supervisor.idle();
+    };
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    const backoffs = [30_000, 60_000];
+    for (let stop = 1; stop <= MAX_FAILED_STARTS; stop += 1) {
+      expect(supervisor.running).toEqual([owner.pubkey]);
+      await bumpRow(db, owner.pubkey);
+      world.deliver(
+        orderWraps(store, key(), `b3a7c2d4-0000-4000-8000-00000000c10${stop}`, TX).order,
+      );
+      await until(() => supervisor.running.length === 0, `stop ${stop}`);
+      if (stop < MAX_FAILED_STARTS) {
+        expect(await storeStatus(db, owner.pubkey)).toBe('active');
+        vi.advanceTimersByTime(backoffs[stop - 1] ?? 0);
+        await until(() => supervisor.running.length === 1, `restart ${stop}`);
+      }
+    }
+    expect(await storeStatus(db, owner.pubkey)).toBe('halted');
+    expect((await openAlerts(db, owner.pubkey)).map((alert) => alert.kind)).toEqual([
+      'node_stopped',
+      'start_failed',
+    ]);
   });
 
   it('restarts a store whose lease epoch changed, and never stops one turned degraded', async () => {

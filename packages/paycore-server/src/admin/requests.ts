@@ -220,3 +220,54 @@ async function drainOnce(
   }
   return handed;
 }
+
+/**
+ * Write the result of a request already marked applied in a ledger save (a
+ * hand answer's delivery outcome, a setup pass's summary). False when the
+ * request is not `owner`'s applied one.
+ */
+export async function setRequestResult(
+  db: Queryable,
+  owner: string,
+  id: string,
+  result: unknown,
+): Promise<boolean> {
+  const rows = await db.query(
+    `update admin_requests set result = $3 where id = $1 and owner = $2 and state = 'applied'
+     returning 1`,
+    [id, owner, JSON.stringify(result)],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * The owner's hand answers saved (applied) whose delivery outcome was never
+ * written: the holder stopped between the save and the publish. Oldest first.
+ */
+export async function unsentHandAnswers(db: Queryable, owner: string): Promise<AdminRequest[]> {
+  const rows = await db.query<RequestRow>(
+    `select ${COLUMNS} from admin_requests
+     where owner = $1 and kind = 'hand_answer' and state = 'applied' and result is null
+     order by created_at, id`,
+    [owner],
+  );
+  return rows.map(rowToRequest);
+}
+
+/** Of `owners`, the ones with a pending request or an unsent hand answer. */
+export async function ownersWithRequests(
+  db: Queryable,
+  owners: readonly string[],
+): Promise<string[]> {
+  if (owners.length === 0) {
+    return [];
+  }
+  const rows = await db.query<{ owner: string }>(
+    `select distinct owner from admin_requests
+     where owner = any($1::text[])
+       and (state = 'pending' or (kind = 'hand_answer' and state = 'applied' and result is null))
+     order by owner`,
+    [owners],
+  );
+  return rows.map((row) => row.owner);
+}

@@ -24,6 +24,7 @@ import {
 } from '@merchant-node/start-checks';
 import type { Eip3009Boot } from '../chain/eip3009-boot';
 import type { NetworkTreasuries } from '../chain/treasuries';
+import { driftProblems } from './drift';
 import type { CommittedOwnerEvent, StoreBundle } from './load';
 
 const KIND_PAYTO = 10133;
@@ -68,6 +69,8 @@ export type StartCheckOutcome =
       outbox?: WebhookOutbox;
       /** Present when the relays offer what the ledger does not honour (the store runs `degraded`). */
       offers?: OfferVerdict;
+      /** What the relays serve that the server never made (R1): the store runs `degraded`. */
+      drift: string[];
       refresh: TreasuryRefresh;
     };
 
@@ -167,6 +170,7 @@ export async function startChecks(
   }
   let offers: OfferVerdict | undefined;
   let views: RelayView[] = [];
+  let drift: string[] = [];
   if (bundle.status !== 'pending') {
     const served = await readOfferProblems(
       deps.pool,
@@ -176,6 +180,7 @@ export async function startChecks(
       products,
     );
     views = served.views;
+    drift = driftProblems(served.views, owner, bundle.committed);
     if (served.problems.length > 0) {
       offers = {
         problems: served.problems,
@@ -196,8 +201,9 @@ export async function startChecks(
   for (const warning of profileWarnings(views, refresh)) {
     deps.log(`warning: ${warning}`);
   }
+  // A webhook URL queues entries even without its secret yet: they are sent once one exists.
   const outbox: WebhookOutbox | undefined =
-    bundle.webhook === undefined ? undefined : { storePubkey, now: deps.now };
+    config.webhook === undefined ? undefined : { storePubkey, now: deps.now };
   const eip3009 = eip3009ContextsFor(config, storePubkey, {
     clientFor: deps.evmClientFor,
     ...(outbox === undefined ? {} : { outbox }),
@@ -214,6 +220,7 @@ export async function startChecks(
     unregister,
     ...(outbox === undefined ? {} : { outbox }),
     ...(offers === undefined ? {} : { offers }),
+    drift,
     refresh,
   };
 }

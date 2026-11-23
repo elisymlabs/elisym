@@ -17,11 +17,35 @@ import type { StorePools } from '../relay/pools';
 import { type LeasedStore, type StoreStatus, releaseLeases } from '../state/leases';
 import { type LedgerHandle, PgLedgerStore } from '../state/ledger-store';
 import type { WebhookSlots } from '../webhook-fetch';
-import { type OperatorRpcs, StartRefused, loadStoreBundle } from './load';
+import { type OperatorRpcs, StartRefused, type StoreBundle, loadStoreBundle } from './load';
 import { HealGate, type OfferVerdict, controlBackoffMs, startChecks } from './start-checks';
 
 /** Failed starts in a row before a store is marked `halted` (it is still retried). */
 export const MAX_FAILED_STARTS = 3;
+/**
+ * A node that ran this long before it failed counts as a new streak: until
+ * then a start that succeeded does not clear the count, so a node that keeps
+ * stopping itself right after it starts is `halted` like one that never starts.
+ */
+export const STABLE_RUN_SECS = 30 * 60;
+
+/** Something the store runs without (a rail, the webhook sender) or that the relays serve wrongly: `degraded`. */
+export interface StoreNotice {
+  kind: string;
+  message: string;
+}
+
+/** The notice kinds a start decides afresh: each is raised when present and cleared when not. */
+const NOTICE_KINDS: readonly string[] = [
+  ALERT_KINDS.railUnavailable,
+  ALERT_KINDS.webhookSecretMissing,
+  ALERT_KINDS.drift,
+];
+
+export interface ControlOptions<Result> {
+  /** Whether the node starts again after the task (default: always). False retires the run. */
+  restart?: (result: Result) => boolean;
+}
 
 /** The statuses the supervisor moves a store between; it never touches the others. */
 const RUN_STATUSES: readonly StoreStatus[] = ['active', 'degraded', 'halted'];
@@ -71,14 +95,48 @@ interface StoreRun {
   healTimer?: ReturnType<typeof setTimeout>;
   failedStarts: number;
   retryAttempt: number;
+  /** When the running node started (seconds); undefined while none runs. */
+  startedAt?: number;
   heals: HealGate;
   /** Counts starts: a stop reported by an older node is ignored. */
   generation: number;
   removed: boolean;
 }
 
+/** A control task for a store this holder does not serve (not leased here, or being removed). */
+export class NotServed extends Error {
+  constructor(readonly owner: string) {
+    super(`store ${owner} is not run by this holder`);
+    this.name = 'NotServed';
+  }
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** What a started store runs without, or what the relays serve that the server never made. */
+export function startNotices(
+  bundle: Pick<StoreBundle, 'unavailableRails' | 'webhookSecretMissing'>,
+  drift: readonly string[],
+): StoreNotice[] {
+  const notices: StoreNotice[] = [];
+  if (bundle.unavailableRails.length > 0) {
+    notices.push({
+      kind: ALERT_KINDS.railUnavailable,
+      message: `no operator RPC for ${bundle.unavailableRails.join(', ')}: payments there are not verified`,
+    });
+  }
+  if (bundle.webhookSecretMissing) {
+    notices.push({
+      kind: ALERT_KINDS.webhookSecretMissing,
+      message: 'the webhook URL has no secret: webhooks queue and are sent once one is set',
+    });
+  }
+  if (drift.length > 0) {
+    notices.push({ kind: ALERT_KINDS.drift, message: drift.join('; ') });
+  }
+  return notices;
 }
 
 export class StoreSupervisor {
@@ -101,6 +159,11 @@ export class StoreSupervisor {
     return [...this.runs.values()]
       .filter((run) => run.running !== undefined)
       .map((run) => run.owner);
+  }
+
+  /** The owners this holder serves now (running, halted or retrying). */
+  get leased(): string[] {
+    return [...this.runs.values()].filter((run) => !run.removed).map((run) => run.owner);
   }
 
   /** The running node of a store, if any. */
@@ -159,20 +222,26 @@ export class StoreSupervisor {
   applyControl<Result>(
     owner: string,
     task: (handle: LedgerHandle) => Promise<Result>,
+    options: ControlOptions<Result> = {},
   ): Promise<Result> {
     const run = this.runs.get(owner);
     if (run === undefined || run.removed || this.closed) {
-      return Promise.reject(new Error(`store ${owner} is not run by this holder`));
+      return Promise.reject(new NotServed(owner));
     }
     return this.enqueue(run, async () => {
       this.clearRetry(run);
       await this.stopRun(run);
+      let restart = true;
       try {
         const handle = await this.ledgers.open(owner, run.epoch, this.deps.holder);
         upgradeLedger(handle.state, `the ledger of ${owner}`);
-        return await task(handle);
+        const result = await task(handle);
+        restart = options.restart?.(result) ?? true;
+        return result;
       } finally {
-        if (!run.removed && !this.closed) {
+        if (!restart) {
+          this.remove(run);
+        } else if (!run.removed && !this.closed) {
           await this.startRun(run);
         }
       }
@@ -299,6 +368,7 @@ export class StoreSupervisor {
     let storePubkey: string | undefined;
     let unregister: (() => void) | undefined;
     let offers: OfferVerdict | undefined;
+    const notices: StoreNotice[] = [];
     try {
       const bundle = await loadStoreBundle(deps.db, deps.vault, owner, {
         holder: deps.holder,
@@ -323,6 +393,7 @@ export class StoreSupervisor {
       }
       unregister = checked.unregister;
       offers = checked.offers;
+      notices.push(...startNotices(bundle, checked.drift));
       const { config, handle, webhook } = bundle;
       const { state } = handle;
       const webhookStop = new AbortController();
@@ -374,8 +445,12 @@ export class StoreSupervisor {
       }
       return;
     }
-    log(offers === undefined ? 'started' : `started degraded: ${offers.problems.join('; ')}`);
-    await this.started(run, offers);
+    const problems = [
+      ...notices.map((notice) => notice.message),
+      ...(offers === undefined ? [] : offers.problems),
+    ];
+    log(problems.length === 0 ? 'started' : `started degraded: ${problems.join('; ')}`);
+    await this.started(run, offers, notices);
   }
 
   /** Stop the store's node: on the control queue only. Returns its copies for the admin not sent. */
@@ -410,11 +485,16 @@ export class StoreSupervisor {
     });
   }
 
-  private async started(run: StoreRun, offers: OfferVerdict | undefined): Promise<void> {
-    run.failedStarts = 0;
-    run.retryAttempt = 0;
+  private async started(
+    run: StoreRun,
+    offers: OfferVerdict | undefined,
+    notices: readonly StoreNotice[],
+  ): Promise<void> {
     const { db } = this.deps;
     const now = this.now();
+    // The failed-start count and the backoff carry on until the node proves stable (see `failed`);
+    // a restart for a control task keeps the time the node first started.
+    run.startedAt ??= now;
     for (const kind of [
       ALERT_KINDS.startRefused,
       ALERT_KINDS.startFailed,
@@ -422,18 +502,29 @@ export class StoreSupervisor {
     ]) {
       await clearAlert(db, run.owner, kind, { now });
     }
+    const log = this.storeLog(run.owner);
+    for (const kind of NOTICE_KINDS) {
+      const notice = notices.find((entry) => entry.kind === kind);
+      if (notice === undefined) {
+        await clearAlert(db, run.owner, kind, { now });
+      } else {
+        await raiseAlert(db, run.owner, kind, notice.message, { now, log });
+      }
+    }
+    const reasons = notices.map((notice) => notice.message);
     if (offers === undefined) {
       run.heals.reset();
       await clearAlert(db, run.owner, ALERT_KINDS.offerMismatch, { now });
-      await this.setStatus(run, 'active', undefined);
+      if (reasons.length === 0) {
+        await this.setStatus(run, 'active', undefined);
+      } else {
+        await this.setStatus(run, 'degraded', reasons.join('; '));
+      }
       return;
     }
     const message = `the relays offer buyers what the ledger does not honour: ${offers.problems.join('; ')}`;
-    await raiseAlert(db, run.owner, ALERT_KINDS.offerMismatch, message, {
-      now,
-      log: this.storeLog(run.owner),
-    });
-    await this.setStatus(run, 'degraded', message);
+    await raiseAlert(db, run.owner, ALERT_KINDS.offerMismatch, message, { now, log });
+    await this.setStatus(run, 'degraded', [...reasons, message].join('; '));
     const { heal } = this.deps;
     if (!offers.heal || heal === undefined) {
       return;
@@ -465,6 +556,7 @@ export class StoreSupervisor {
       return;
     }
     log(`start refused: ${problem}`);
+    run.startedAt = undefined;
     await this.setStatus(run, 'halted', problem);
     await raiseAlert(this.deps.db, run.owner, ALERT_KINDS.startRefused, problem, {
       now: this.now(),
@@ -483,9 +575,14 @@ export class StoreSupervisor {
       log(`${problem}; the lease moved: not retried here`);
       return;
     }
+    const now = this.now();
+    if (run.startedAt !== undefined && now - run.startedAt >= STABLE_RUN_SECS) {
+      run.failedStarts = 0;
+      run.retryAttempt = 0;
+    }
+    run.startedAt = undefined;
     run.failedStarts += 1;
     log(problem);
-    const now = this.now();
     if (kind !== ALERT_KINDS.startFailed) {
       await raiseAlert(this.deps.db, run.owner, kind, problem, { now, log });
     }

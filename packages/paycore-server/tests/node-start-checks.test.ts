@@ -281,7 +281,7 @@ describe('a store started by the supervisor', () => {
     expect(raised).toEqual([{ count: 1 }]);
   });
 
-  it('alerts once on a newer payout list the server never committed, with no heal and no restart', async () => {
+  it('alerts once (drift and offers) on a newer payout list the server never committed, with no heal and no restart', async () => {
     const world = new RelayWorld();
     const seed = await publishedStore(world);
     const foreign = ownerEvents(
@@ -302,8 +302,13 @@ describe('a store started by the supervisor', () => {
     expect(heals).toEqual([]);
     expect(await storeStatus(db, owner)).toBe('degraded');
     const alerts = await openAlerts(db, owner);
-    expect(alerts.map((alert) => [alert.kind, alert.count])).toEqual([['offer_mismatch', 1]]);
-    expect(alerts[0]?.message).toContain(OTHER_TREASURY);
+    // R1 drift: the newest list on the relays is one the server never committed.
+    expect(alerts.map((alert) => [alert.kind, alert.count])).toEqual([
+      ['drift', 1],
+      ['offer_mismatch', 1],
+    ]);
+    expect(alerts[0]?.message).toContain(foreign.payoutList.id);
+    expect(alerts[1]?.message).toContain(OTHER_TREASURY);
   });
 
   it('heals a committed payout list that went out and was never recorded: the active list switches', async () => {

@@ -20,6 +20,8 @@ export class RequestNotPending extends Error {
 export interface SaveOptions {
   /** An `admin_requests` id marked `applied` in the same transaction as the save. */
   appliedRequest?: string;
+  /** More writes that commit with the save or not at all (the setup pass marks owner events recorded). */
+  alongside?: (tx: Queryable) => Promise<void>;
 }
 
 /**
@@ -118,6 +120,7 @@ export class LedgerHandle {
           throw new RequestNotPending(options.appliedRequest);
         }
       }
+      await options.alongside?.(tx);
       return row.row_version;
     });
     this.version = rowVersion;

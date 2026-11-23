@@ -35,12 +35,13 @@ interface Subscription {
 
 /**
  * Every relay at once, as one store of events: what any pool publishes is
- * served to every pool's reads. `refuse` decides which publishes no relay takes.
+ * served to every pool's reads (once per event id). `refuse` decides which
+ * publishes a relay does not take.
  */
 export class RelayWorld {
   readonly events: NostrEvent[] = [];
   readonly pools: WorldPool[] = [];
-  refuse: (event: NostrEvent) => boolean = () => false;
+  refuse: (event: NostrEvent, relay: string) => boolean = () => false;
   /** Runs before each read is answered (tests record what the database held then). */
   beforeQuery: (() => Promise<void>) | undefined;
   queries = 0;
@@ -59,7 +60,9 @@ export class RelayWorld {
   }
 
   add(event: NostrEvent): void {
-    this.events.push(event);
+    if (!this.events.some((known) => known.id === event.id)) {
+      this.events.push(event);
+    }
   }
 
   /** Hand `wrap` to every live subscription of an open pool that waits for its recipient. */
@@ -97,10 +100,10 @@ export class WorldPool implements ListenerPool, PublishPool, QueryPool {
     return { close: () => undefined };
   }
 
-  ensureRelay(): Promise<PublishRelay> {
+  ensureRelay(url: string): Promise<PublishRelay> {
     return Promise.resolve({
       publish: (event: NostrEvent) => {
-        if (this.destroyed || this.world.refuse(event)) {
+        if (this.destroyed || this.world.refuse(event, url)) {
           return Promise.reject(new Error('blocked: refused'));
         }
         this.published.push(event);

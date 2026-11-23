@@ -19,7 +19,9 @@ import {
 } from '../../../merchant-node/tests/fixtures';
 import type { Db } from '../../src/db/db';
 import { KeyVault } from '../../src/db/keys';
-import { type OperatorRpcs, loadStoreBundle } from '../../src/node/load';
+import { healPass } from '../../src/node/holder-requests';
+import type { OperatorRpcs } from '../../src/node/load';
+import type { SetupPassDeps } from '../../src/node/setup-pass';
 import { type SupervisorDeps, StoreSupervisor } from '../../src/node/supervisor';
 import { StorePools } from '../../src/relay/pools';
 import { type LeasedStore, type StoreStatus, acquireLeases } from '../../src/state/leases';
@@ -240,65 +242,36 @@ export async function publishedStore(
   };
 }
 
-/**
- * The heal pass the way step 11 runs it (a stand-in until `setup-pass.ts`):
- * a setup pass with the newest committed 10133 / 30490 and that 10133's
- * payouts, saved through the handle; the events that went out are marked recorded.
- */
+/** The setup pass's deps over `world` (its own pools: the store's node is stopped while it runs). */
+export function testSetupDeps(
+  db: Db,
+  keys: KeyVault,
+  world: RelayWorld,
+  overrides: Partial<SetupPassDeps> = {},
+): SetupPassDeps {
+  return {
+    db,
+    vault: keys,
+    pools: new StorePools(world.factory()),
+    treasuries: { refreshFor: async () => ({ kind: 'unreachable', problem: 'offline' }) },
+    inboxRelayAllowlist: [RELAY],
+    log: () => undefined,
+    now: () => NOW,
+    ...overrides,
+  };
+}
+
+/** The supervisor's heal hook as the server wires it (`healPass`), counting the heals. */
 export function testHeal(
   db: Db,
   keys: KeyVault,
   world: RelayWorld,
 ): { heal: (owner: string, handle: LedgerHandle) => Promise<void>; heals: string[] } {
   const heals: string[] = [];
+  const pass = healPass(testSetupDeps(db, keys, world));
   const heal = async (owner: string, handle: LedgerHandle) => {
     heals.push(owner);
-    const bundle = await loadStoreBundle(db, keys, owner, {
-      holder: handle.holder,
-      epoch: handle.epoch,
-      rpcs: RPCS,
-      inboxRelayAllowlist: [RELAY],
-      now: () => NOW,
-    });
-    const newestOf = async (kind: number) => {
-      const [row] = await db.query<{ event: NostrEvent; payouts_string: string | null }>(
-        `select event, payouts_string from owner_events where owner = $1 and kind = $2
-         order by committed_at desc, (event->>'created_at')::bigint desc limit 1`,
-        [owner, kind],
-      );
-      return row;
-    };
-    const payoutList = await newestOf(10133);
-    const authorization = await newestOf(30490);
-    if (payoutList === undefined || payoutList.payouts_string === null) {
-      throw new Error('no committed payout list');
-    }
-    const payoutsString = payoutList.payouts_string;
-    const payouts = JSON.parse(payoutsString) as { caip19: string; address: string }[];
-    await runSetupPass(handle.state, {
-      pool: world.pool(),
-      relays: [...new Set([...OFFER_RELAYS, ...bundle.config.inboxRelays])],
-      defaultRelays: OFFER_RELAYS,
-      pubkeys: { storePubkey: bundle.storePubkey, ownerPubkey: owner },
-      products: bundle.products,
-      payouts,
-      payoutsString,
-      storeSecretKey: bundle.storeSecretKey,
-      sign: ({ startedAt }) => ({
-        payoutList: payoutList.event,
-        others: [
-          ...buildStoreSignedEvents(bundle.config, bundle.storeSecretKey, owner, startedAt, true),
-          ...(authorization === undefined ? [] : [authorization.event]),
-        ],
-      }),
-      publish: async (event) => {
-        world.add(event);
-        return true;
-      },
-      now: () => NOW,
-    });
-    await handle.save(handle.state);
-    await db.query('update owner_events set recorded = true where owner = $1', [owner]);
+    await pass(owner, handle);
   };
   return { heal, heals };
 }
@@ -350,12 +323,13 @@ export async function lease(db: Db, holder: string, now = NOW): Promise<LeasedSt
   return acquireLeases(db, holder, now);
 }
 
-/** A buyer's order for `d` at `store` and its paid receipt naming `tx`, dated a minute ago. */
+/** A buyer's order for `d` at `store` and its paid receipt naming `tx`, dated `createdAt` (a minute ago). */
 export function orderWraps(
   store: Key,
   buyer: Key,
   orderId: string,
   tx: string,
+  createdAt = NOW - 60,
 ): { order: NostrEvent; receipt: NostrEvent; reference: string; key: string } {
   const reference = deriveOrderPaymentReference({
     storePubkey: store.pubkey,
@@ -363,7 +337,7 @@ export function orderWraps(
     orderId,
   }).solana;
   const wrap = (message: Parameters<typeof buildOrderMessage>[0]) =>
-    wrapOrderMessage(buildOrderMessage(message, NOW - 60), buyer.secretKey, store.pubkey)
+    wrapOrderMessage(buildOrderMessage(message, createdAt), buyer.secretKey, store.pubkey)
       .recipientWrap;
   return {
     reference,

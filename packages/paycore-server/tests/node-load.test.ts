@@ -75,10 +75,14 @@ describe('loadStoreBundle', () => {
     expect(config.inboxRelays).toEqual([RELAY]);
   });
 
-  it('refuses a rail the operator has no RPC for', async () => {
+  it('runs without a rail the operator has no RPC for, naming it', async () => {
     const { bundle } = await load({}, { devnet: { tempo: TEMPO_RPC } });
-    await expect(bundle).rejects.toBeInstanceOf(StartRefused);
-    await expect(bundle).rejects.toThrow('no operator Solana RPC on devnet');
+    const loaded = await bundle;
+    expect(loaded.rails.solana).toBe(true);
+    expect(loaded.config.rpcUrl).toBeUndefined();
+    expect(loaded.unavailableRails).toEqual(['solana-devnet']);
+    const served = await (await load()).bundle;
+    expect(served.unavailableRails).toEqual([]);
   });
 
   it('takes the active payouts from the ledger, never the draft', async () => {
@@ -134,9 +138,11 @@ describe('loadStoreBundle', () => {
     );
   });
 
-  it('refuses a webhook URL without its secret, and opens the secret when sealed', async () => {
-    const without = await load({ webhookUrl: 'https://shop.example.com/hook' });
-    await expect(without.bundle).rejects.toThrow('no webhook secret');
+  it('keeps the webhook URL without its secret (no sender), and opens the secret when sealed', async () => {
+    const without = await (await load({ webhookUrl: 'https://shop.example.com/hook' })).bundle;
+    expect(without.webhook).toBeUndefined();
+    expect(without.webhookSecretMissing).toBe(true);
+    expect(without.config.webhook).toEqual({ url: 'https://shop.example.com/hook' });
     const withSecret = await load({
       webhookUrl: 'https://shop.example.com/hook',
       webhookSecret: WEBHOOK_SECRET,
@@ -147,6 +153,7 @@ describe('loadStoreBundle', () => {
       secret: WEBHOOK_SECRET,
     });
     expect(loaded.config.webhook).toEqual({ url: 'https://shop.example.com/hook' });
+    expect(loaded.webhookSecretMissing).toBe(false);
   });
 
   it('reads the products and the ledger handle under the lease', async () => {

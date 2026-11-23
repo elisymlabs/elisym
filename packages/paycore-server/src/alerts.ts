@@ -5,7 +5,7 @@
  */
 import type { Queryable } from './db/db';
 
-/** The kinds the store supervisor raises. Other modules add their own. */
+/** The kinds the store supervisor and the holder's request handling raise. */
 export const ALERT_KINDS = {
   /** A start refused by a check (lost history, prices, relays, RPCs, a webhook without its secret). */
   startRefused: 'start_refused',
@@ -15,6 +15,14 @@ export const ALERT_KINDS = {
   nodeStopped: 'node_stopped',
   /** The relays offer buyers terms the ledger does not honour: the store runs `degraded`. */
   offerMismatch: 'offer_mismatch',
+  /** A rail the store needs has no operator RPC: it runs without that rail, `degraded`. */
+  railUnavailable: 'rail_unavailable',
+  /** The store has a webhook URL and no secret: entries queue, nothing is sent; `degraded`. */
+  webhookSecretMissing: 'webhook_secret_missing',
+  /** The relays serve a store profile or payout list the server never made (R1). */
+  drift: 'drift',
+  /** A setup pass (an owner event, a config edit, an activation) failed for good. */
+  setupFailed: 'setup_failed',
 } as const;
 
 export interface AlertOptions {
