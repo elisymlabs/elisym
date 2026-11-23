@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chain, landedPayment, requestFor, signatureOf } from '../../merchant-node/tests/fixtures';
 import type { TransportRequest } from '../src/connectors/fetch-guard';
 import type { Db } from '../src/db/db';
-import { MAX_FAILED_STARTS, type StoreSupervisor } from '../src/node/supervisor';
+import {
+  MAX_FAILED_STARTS,
+  type StoreSupervisor,
+  randomFirstSweepDelayMs,
+} from '../src/node/supervisor';
 import { LEASE_TTL_SECS, newHolderId } from '../src/state/leases';
 import { PgLedgerStore } from '../src/state/ledger-store';
 import { WebhookSlots } from '../src/webhook-fetch';
@@ -144,6 +148,54 @@ describe('file vs pg LedgerStore parity', () => {
 });
 
 describe('StoreSupervisor', () => {
+  it("spreads the stores' first sweeps: each node waits the delay drawn for it", async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    await seedStore(db, keys);
+    await seedStore(db, keys);
+    const delays = [0, 3_600_000];
+    const drawn: number[] = [];
+    /** Fee config reads: the start checks', then the sweeps'. */
+    let sweeps = 0;
+    const holder = newHolderId();
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, {
+        firstSweepDelayMs: () => {
+          const delay = delays[drawn.length] ?? 0;
+          drawn.push(delay);
+          return delay;
+        },
+        treasuries: {
+          refreshFor: async () => {
+            sweeps += 1;
+            return { kind: 'unreachable', problem: 'offline' };
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toHaveLength(2);
+    // Each start check read the fee config once; the sweeps' reads come after.
+    const startReads = 2;
+    await waitFor(() => sweeps === startReads + 1, 'the undelayed store swept');
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    // The other one waits its hour.
+    expect(sweeps).toBe(startReads + 1);
+    expect(drawn).toEqual(delays);
+  });
+
+  it('draws a default first-sweep delay over the sweep interval', () => {
+    const drawn = Array.from({ length: 200 }, () => randomFirstSweepDelayMs());
+    expect(drawn.every((delay) => Number.isInteger(delay) && delay >= 0 && delay < 60_000)).toBe(
+      true,
+    );
+    expect(new Set(drawn).size).toBeGreaterThan(100);
+  });
+
   it('isolates stores: one whose save is refused halts, another keeps completing orders', async () => {
     const db = await freshDb();
     const keys = vault();

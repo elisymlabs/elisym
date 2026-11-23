@@ -72,6 +72,13 @@ export interface StoreNodeDeps {
   extraListenRelays?: readonly string[];
   /** `RuntimeDeps.quietSweepSaveSecs`: a host whose saves rewrite the whole ledger skips quiet sweeps' saves. */
   quietSweepSaveSecs?: number;
+  /**
+   * Wait this long before the first sweep (then every `CATCH_UP_INTERVAL_MS`
+   * from it): a host running many stores spreads their sweeps over the
+   * interval, so their RPC calls do not arrive as one burst. Default 0: the
+   * first sweep runs at once (the CLI).
+   */
+  firstSweepDelayMs?: number;
 }
 
 /** One running store: its runtime and the handle that stops it. */
@@ -254,8 +261,19 @@ export async function startStoreNode(deps: StoreNodeDeps): Promise<StoreNode> {
     listener.listen(relay, resumeFrom);
   }
   log(`store ${storePubkey} listening on ${listenRelays.join(', ')}`);
-  sweep();
-  every(CATCH_UP_INTERVAL_MS, sweep);
+  const firstSweepDelayMs = deps.firstSweepDelayMs ?? 0;
+  if (firstSweepDelayMs > 0) {
+    later(firstSweepDelayMs, () => {
+      if (stopped) {
+        return;
+      }
+      sweep();
+      every(CATCH_UP_INTERVAL_MS, sweep);
+    });
+  } else {
+    sweep();
+    every(CATCH_UP_INTERVAL_MS, sweep);
+  }
   if (deps.webhook !== undefined && webhookOrigin !== undefined) {
     startWebhooks({ ...deps, save }, deps.webhook, store, enqueue, every);
     log(`webhook to ${webhookOrigin} (order.paid)`);

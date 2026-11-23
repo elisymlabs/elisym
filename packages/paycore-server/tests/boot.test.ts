@@ -92,7 +92,9 @@ async function world(overrides: Partial<ServerDeps> = {}): Promise<World> {
   const signals = new EventEmitter();
   const trace: string[] = [];
   const genesis = { value: DEVNET_GENESIS };
-  const rpc = {
+  const storesRpc = chain({}).rpc;
+  // The fee config is read through `chains.fee` only: genesis reads are traced there.
+  const feeRpc = {
     ...(chain({}).rpc as object),
     getGenesisHash: () => ({
       send: async () => {
@@ -107,7 +109,12 @@ async function world(overrides: Partial<ServerDeps> = {}): Promise<World> {
     log: () => undefined,
     now: () => NOW,
     makePool: relays.factory(),
-    chains: { solana: () => rpc, tempo: () => SILENT_EVM, evm: () => SILENT_EVM },
+    chains: {
+      solana: () => storesRpc,
+      fee: () => feeRpc,
+      tempo: () => SILENT_EVM,
+      evm: () => SILENT_EVM,
+    },
     treasuryReadConfig: async () => {
       trace.push('fee-config');
       return {

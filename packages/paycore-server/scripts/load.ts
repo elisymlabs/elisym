@@ -3,14 +3,18 @@
  *
  *   bun scripts/load.ts [--stores 200] [--orders 10] [--minutes 3]
  *     [--webhook-latency-ms 200] [--stalled-stores 0] [--rps 10] [--abandoned-every 5]
+ *     [--burst-orders 0]
  *
  * Boots the real server (`startServer`) on pglite (or `DATABASE_URL` when set:
  * use a scratch database, the script writes stores into it) with N published,
  * active stores, a fake relay (every store pool on one in-memory relay world),
- * a fake Solana RPC behind the same per-URL token bucket as `ChainClients`, and
+ * a fake Solana RPC behind the same token buckets as `ChainClients` (per URL
+ * for the stores, and one more per URL for the fee config), and
  * a local webhook sink behind the real `WebhookSlots` (the fetch guard's
  * resolver and transport replaced). Each store gets M orders, each with a paid
- * receipt, spread over the first half of the run; each paid order queues a
+ * receipt, spread over the first half of the run in M rounds (within a round
+ * each store's order at a random moment; `--burst-orders 1`: every store's at
+ * once, a synthetic burst of receipts on the RPC); each paid order queues a
  * webhook. Every `--abandoned-every`-th order of a store (0: none) gets no
  * payment and no receipt: an abandoned checkout, open for the sweeps to scan
  * until it expires. `--stalled-stores K`: the first K stores' webhook endpoints never
@@ -22,7 +26,7 @@
  * what they changed, webhook queue wait, sweep duration, shutdown time, RSS.
  *
  * Measured through the real code with the prototypes wrapped (save, open,
- * refreshFor, forStore): nothing in `src` changes for it.
+ * `MerchantRuntime.sweep`, forStore): nothing in `src` changes for it.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -31,10 +35,10 @@ import { PGlite } from '@electric-sql/pglite';
 import { WEBHOOK_TIMESTAMP_HEADER, WEBHOOK_TOLERANCE_SECS } from '@elisym/commerce/webhook';
 import type { Network, ProtocolConfig } from '@elisym/pay-core';
 import type { LedgerState } from '@merchant-node/ledger';
+import { MerchantRuntime, type RuntimeDeps } from '@merchant-node/runtime';
 import { type Rpc, type SolanaRpcApi, getBase58Decoder } from '@solana/kit';
 import { landedPayment, requestFor } from '../../merchant-node/tests/fixtures';
 import { DEFAULT_RPC_RATE_LIMIT, TokenBucket } from '../src/chain/clients';
-import { NetworkTreasuries } from '../src/chain/treasuries';
 import type { PaycoreConfig } from '../src/config';
 import type { Transport, TransportRequest, TransportResponse } from '../src/connectors/fetch-guard';
 import type { Db } from '../src/db/db';
@@ -65,7 +69,7 @@ const SINK_ADDRESS = { address: '93.184.216.34', family: 4 as const };
 const SAMPLE_MS = 5_000;
 const ALL_RUNNING_TIMEOUT_MS = 10 * 60_000;
 const USAGE = `Usage: bun scripts/load.ts [--stores 200] [--orders 10] [--minutes 3]
-  [--webhook-latency-ms 200] [--stalled-stores 0] [--rps 10] [--abandoned-every 5]`;
+  [--webhook-latency-ms 200] [--stalled-stores 0] [--rps 10] [--abandoned-every 5] [--burst-orders 0]`;
 
 interface Options {
   stores: number;
@@ -75,6 +79,7 @@ interface Options {
   stalledStores: number;
   rps: number;
   abandonedEvery: number;
+  burstOrders: number;
 }
 
 const DEFAULTS: Options = {
@@ -85,6 +90,7 @@ const DEFAULTS: Options = {
   stalledStores: 0,
   rps: DEFAULT_RPC_RATE_LIMIT.requestsPerSecond,
   abandonedEvery: 5,
+  burstOrders: 0,
 };
 
 const FLAGS: Record<string, keyof Options> = {
@@ -95,6 +101,7 @@ const FLAGS: Record<string, keyof Options> = {
   '--stalled-stores': 'stalledStores',
   '--rps': 'rps',
   '--abandoned-every': 'abandonedEvery',
+  '--burst-orders': 'burstOrders',
 };
 
 function parseOptions(argv: readonly string[]): Options {
@@ -192,13 +199,15 @@ interface SaveRecord {
   owner: string;
   bytes: number;
   kind: SaveKind;
-  /** The save ending a sweep. */
+  /** Saved while a sweep held the store's queue (its own save, or a delivery's after it). */
   sweep: boolean;
 }
 
 interface Measurements {
   saves: SaveRecord[];
   sweepMs: number[];
+  /** Sweeps that saved nothing (a quiet sweep's save skipped, nothing delivered). */
+  sweepsWithoutSave: number;
   /** Per RPC URL and method: calls and their bucket waits (ms). */
   rpc: Map<string, { calls: number; waitsMs: number[] }>;
   feeReadWaitsMs: number[];
@@ -212,6 +221,7 @@ interface Measurements {
 const measured: Measurements = {
   saves: [],
   sweepMs: [],
+  sweepsWithoutSave: 0,
   rpc: new Map(),
   feeReadWaitsMs: [],
   webhookWaitsMs: [],
@@ -223,7 +233,8 @@ const measured: Measurements = {
 /** Wrap the prototypes the measurements read; the server code itself is unchanged. */
 function instrument(): void {
   const lastSaved = new Map<string, string>();
-  const sweepStarts = new WeakMap<LedgerState, number>();
+  /** The ledgers whose store is sweeping now, and whether that sweep saved. */
+  const sweeping = new WeakMap<LedgerState, { saved: boolean }>();
 
   const open = PgLedgerStore.prototype.open;
   PgLedgerStore.prototype.open = async function openMeasured(owner, epoch, holder) {
@@ -236,26 +247,37 @@ function instrument(): void {
   LedgerHandle.prototype.save = async function saveMeasured(state, options) {
     const text = JSON.stringify(state);
     await save.call(this, state, options);
-    // A sweep holds its store's queue: its own save is the first after its refresh.
-    const started = sweepStarts.get(state);
-    if (started !== undefined) {
-      sweepStarts.delete(state);
-      measured.sweepMs.push(performance.now() - started);
+    // A sweep holds its store's queue: every save while it runs is its own.
+    const sweep = sweeping.get(state);
+    if (sweep !== undefined) {
+      sweep.saved = true;
     }
     measured.saves.push({
       at: performance.now(),
       owner: this.owner,
       bytes: Buffer.byteLength(text),
       kind: saveKind(lastSaved.get(this.owner), text),
-      sweep: started !== undefined,
+      sweep: sweep !== undefined,
     });
     lastSaved.set(this.owner, text);
   };
 
-  const refreshFor = NetworkTreasuries.prototype.refreshFor;
-  NetworkTreasuries.prototype.refreshFor = function refreshMeasured(network, state, now) {
-    sweepStarts.set(state, performance.now());
-    return refreshFor.call(this, network, state, now);
+  const runSweep = MerchantRuntime.prototype.sweep;
+  MerchantRuntime.prototype.sweep = async function sweepMeasured(allLive, queuedAt) {
+    // `deps` is private: the script reads the ledger it sweeps.
+    const { state } = (this as unknown as { deps: Pick<RuntimeDeps, 'state'> }).deps;
+    const sweep = { saved: false };
+    sweeping.set(state, sweep);
+    const startedAt = performance.now();
+    try {
+      await runSweep.call(this, allLive, queuedAt);
+    } finally {
+      sweeping.delete(state);
+      measured.sweepMs.push(performance.now() - startedAt);
+      if (!sweep.saved) {
+        measured.sweepsWithoutSave += 1;
+      }
+    }
   };
 
   const forStore = WebhookSlots.prototype.forStore;
@@ -403,7 +425,7 @@ async function placeOrder(world: RelayWorld, store: Store, abandoned: boolean): 
   world.deliver(wraps.receipt);
 }
 
-/** The orders, spread evenly over `windowMs`, in store order within each round. */
+/** The orders in rounds over `windowMs`; within a round at random moments, or all at once (`burstOrders`). */
 async function driveOrders(
   world: RelayWorld,
   stores: readonly Store[],
@@ -415,7 +437,14 @@ async function driveOrders(
   for (let round = 0; round < options.orders; round += 1) {
     const roundStart = performance.now();
     const abandoned = options.abandonedEvery > 0 && (round + 1) % options.abandonedEvery === 0;
-    await Promise.all(stores.map((store) => placeOrder(world, store, abandoned)));
+    await Promise.all(
+      stores.map(async (store) => {
+        if (options.burstOrders === 0) {
+          await sleep(Math.random() * pauseMs);
+        }
+        await placeOrder(world, store, abandoned);
+      }),
+    );
     placed += stores.length;
     await sleep(Math.max(0, pauseMs - (performance.now() - roundStart)));
   }
@@ -484,24 +513,26 @@ async function main(): Promise<void> {
     rpcs: { mainnet: { evm: {} }, devnet: { solana: SOLANA_RPC, evm: {} } },
   };
   console.log(
-    `load: ${options.stores} stores, ${options.orders} orders each, ${options.minutes} min, webhook latency ${options.webhookLatencyMs} ms, ${options.stalledStores} stalled endpoint(s), RPC bucket ${options.rps}/s, ${process.env.DATABASE_URL ? 'postgres' : 'pglite'}`,
+    `load: ${options.stores} stores, ${options.orders} orders each${options.burstOrders === 0 ? '' : ' (in bursts)'}, ${options.minutes} min, webhook latency ${options.webhookLatencyMs} ms, ${options.stalledStores} stalled endpoint(s), RPC bucket ${options.rps}/s, ${process.env.DATABASE_URL ? 'postgres' : 'pglite'}`,
   );
 
   const seedStart = performance.now();
   const stores = await seedStores(db, world, options.stores);
   console.log(`seeded in ${((performance.now() - seedStart) / 1000).toFixed(1)} s`);
 
+  // As `ChainClients`: one bucket per URL for the stores, one more per URL for the fee config.
   const buckets = new Map<string, TokenBucket>();
   const clients = new Map<string, Rpc<SolanaRpcApi>>();
-  const solana = (url: string): Rpc<SolanaRpcApi> => {
-    const known = clients.get(url);
+  const clientFor = (lane: 'rpc' | 'fee', url: string): Rpc<SolanaRpcApi> => {
+    const name = `${lane}:${url}`;
+    const known = clients.get(name);
     if (known !== undefined) {
       return known;
     }
     const bucket = new TokenBucket({ requestsPerSecond: options.rps });
-    buckets.set(url, bucket);
-    const client = fakeSolanaRpc(url, bucket);
-    clients.set(url, client);
+    buckets.set(name, bucket);
+    const client = fakeSolanaRpc(name, bucket);
+    clients.set(name, client);
     return client;
   };
   const logs: string[] = [];
@@ -512,7 +543,12 @@ async function main(): Promise<void> {
     signals,
     log: (message) => logs.push(message),
     makePool: world.factory(),
-    chains: { solana, tempo: () => SILENT_EVM, evm: () => SILENT_EVM },
+    chains: {
+      solana: (url) => clientFor('rpc', url),
+      fee: (url) => clientFor('fee', url),
+      tempo: () => SILENT_EVM,
+      evm: () => SILENT_EVM,
+    },
     treasuryReadConfig: async (rpc) => {
       // The config account read, through the same bucket as every other call.
       await (rpc as unknown as Rpc<SolanaRpcApi>)
@@ -578,19 +614,29 @@ async function main(): Promise<void> {
     `orders placed: ${placed}; paid ${delivered[0]?.paid ?? 0}; webhooks sent ${delivered[0]?.sent ?? 0}, pending ${delivered[0]?.pending ?? 0}`,
   );
   lines.push(`steady window: ${steadyMinutes.toFixed(2)} min`);
-  lines.push('RPC calls per minute (steady window, by URL network and method) vs bucket:');
+  lines.push(
+    'RPC calls per minute (steady window, by bucket - rpc: the stores, fee: the fee config - network and method):',
+  );
+  const laneOf = (name: string) => {
+    const [lane = '', url = ''] = name.split(/:(.*)/s);
+    return { lane, url };
+  };
   for (const [name, entry] of [...measured.rpc.entries()].sort()) {
-    const [url = '', method = ''] = name.split(' ');
+    const [bucketName = '', method = ''] = name.split(' ');
+    const { lane, url } = laneOf(bucketName);
     lines.push(
-      `  ${networkOf(config, url)} ${method}: ${entry.calls} calls, ${(entry.calls / steadyMinutes).toFixed(1)}/min; bucket wait ${spread(entry.waitsMs, 'ms')}`,
+      `  ${lane} ${networkOf(config, url)} ${method}: ${entry.calls} calls, ${(entry.calls / steadyMinutes).toFixed(1)}/min; bucket wait ${spread(entry.waitsMs, 'ms')}`,
     );
   }
-  for (const [url] of buckets) {
-    const total = [...measured.rpc.entries()]
-      .filter(([name]) => name.startsWith(`${url} `))
-      .reduce((sum, [, entry]) => sum + entry.calls, 0);
+  for (const [bucketName] of buckets) {
+    const { lane, url } = laneOf(bucketName);
+    const entries = [...measured.rpc.entries()].filter(([name]) =>
+      name.startsWith(`${bucketName} `),
+    );
+    const total = entries.reduce((sum, [, entry]) => sum + entry.calls, 0);
+    const waits = entries.flatMap(([, entry]) => entry.waitsMs);
     lines.push(
-      `  ${networkOf(config, url)} total ${(total / steadyMinutes).toFixed(1)}/min of a ${options.rps * 60}/min bucket (${((100 * total) / steadyMinutes / (options.rps * 60)).toFixed(1)}%)`,
+      `  ${lane} ${networkOf(config, url)} total ${(total / steadyMinutes).toFixed(1)}/min of a ${options.rps * 60}/min bucket (${((100 * total) / steadyMinutes / (options.rps * 60)).toFixed(1)}%); wait ${spread(waits, 'ms')}`,
     );
   }
   lines.push(
@@ -616,7 +662,10 @@ async function main(): Promise<void> {
   );
   const orderSaves = steadySaves.length - sweepSaves.length;
   lines.push(
-    `  ending a sweep: ${sweepSaves.length} (${(sweepSaves.length / steadyMinutes / options.stores).toFixed(2)}/min per store), of which only resumeAt / treasury last-seen moved: ${housekeeping.length}`,
+    `  sweeps: ${measured.sweepMs.length} (whole run), ${measured.sweepsWithoutSave} of them saved nothing (quiet, save skipped)`,
+  );
+  lines.push(
+    `  during a sweep: ${sweepSaves.length} (${(sweepSaves.length / steadyMinutes / options.stores).toFixed(2)}/min per store), of which only resumeAt / treasury last-seen moved: ${housekeeping.length}`,
   );
   lines.push(
     `  the rest (orders, deliveries, webhooks, starts): ${orderSaves}, ${placed === 0 ? '-' : (orderSaves / placed).toFixed(1)} per order placed`,

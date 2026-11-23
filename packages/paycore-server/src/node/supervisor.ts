@@ -5,8 +5,9 @@
  * opens a fresh ledger handle from the database (a node that halted on a
  * refused save may hold diverged memory; it is never reused).
  */
+import { randomInt } from 'node:crypto';
 import type { QueryPool } from '@merchant-node/checks';
-import { QUIET_SWEEP_SAVE_SECS } from '@merchant-node/constants';
+import { CATCH_UP_INTERVAL_MS, QUIET_SWEEP_SAVE_SECS } from '@merchant-node/constants';
 import { type LedgerState, upgradeLedger } from '@merchant-node/ledger';
 import { listeningPool } from '@merchant-node/relay-pool';
 import { type StoreNode, startStoreNode } from '@merchant-node/store-node';
@@ -93,9 +94,20 @@ export interface SupervisorDeps {
    * pool keeps sockets to its inbox relays only. Default: a fresh nostr-tools pool.
    */
   publicReads?: () => PublicReadPool;
+  /**
+   * How long each node waits before its first sweep (ms). Default: random in
+   * [0, `CATCH_UP_INTERVAL_MS`), so the stores' sweeps spread over the
+   * interval instead of hitting the shared RPCs as one burst (step 20).
+   */
+  firstSweepDelayMs?: () => number;
   log?: (message: string) => void;
   /** Seconds. */
   now?: () => number;
+}
+
+/** A first-sweep delay spread evenly over the sweep interval. */
+export function randomFirstSweepDelayMs(): number {
+  return randomInt(CATCH_UP_INTERVAL_MS);
 }
 
 /** A pool for one public read, destroyed after it. */
@@ -475,6 +487,7 @@ export class StoreSupervisor {
         haltOnSaveFailure: true,
         // Every save rewrites the whole ledger row: a quiet sweep's is skipped (step 20).
         quietSweepSaveSecs: QUIET_SWEEP_SAVE_SECS,
+        firstSweepDelayMs: (deps.firstSweepDelayMs ?? randomFirstSweepDelayMs)(),
         ...(bundle.listenOnlyRelays.length === 0
           ? {}
           : { extraListenRelays: bundle.listenOnlyRelays }),

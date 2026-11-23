@@ -223,6 +223,44 @@ describe('ChainClients', () => {
     expect(sent.filter((url) => url === 'https://slow.example')).toHaveLength(1);
   });
 
+  it('reads the fee config through its own bucket: a saturated store bucket on the same URL never delays it', async () => {
+    const sent: string[] = [];
+    const transport = (async (request: Parameters<RpcTransport>[0]) => {
+      sent.push((request.payload as { method: string }).method);
+      return { jsonrpc: '2.0', id: 1, result: null };
+    }) as RpcTransport;
+    const clients = new ChainClients({
+      defaultLimit: { requestsPerSecond: 1, burst: 1 },
+      clock: () => Date.now(),
+      solanaTransportFor: () => transport,
+    });
+    const stores = clients.solana(SOLANA_URL);
+    const fee = clients.fee(SOLANA_URL);
+    expect(fee).not.toBe(stores);
+    expect(clients.fee(SOLANA_URL)).toBe(fee);
+    expect(clients.feeBucketFor(SOLANA_URL)).not.toBe(clients.bucketFor(SOLANA_URL));
+    // Twenty sweeps' calls queued on the stores' bucket: 19 s of backlog at 1/s.
+    const sweeps = Array.from({ length: 20 }, () =>
+      stores.getSignaturesForAddress('x' as never).send(),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(clients.bucketFor(SOLANA_URL).queued).toBe(19);
+    const read = fee.getAccountInfo('y' as never).send();
+    await vi.advanceTimersByTimeAsync(0);
+    await read;
+    expect(sent.filter((method) => method === 'getAccountInfo')).toHaveLength(1);
+    expect(sent.filter((method) => method === 'getSignaturesForAddress')).toHaveLength(1);
+    // The fee bucket has the URL's limit too: a second read right away waits its turn.
+    const again = fee.getAccountInfo('y' as never).send();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent.filter((method) => method === 'getAccountInfo')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    await again;
+    expect(sent.filter((method) => method === 'getAccountInfo')).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await Promise.all(sweeps);
+  });
+
   it('sends Solana requests through the limited transport, one client per URL', async () => {
     const payloads: unknown[] = [];
     const transport = (async (request: Parameters<RpcTransport>[0]) => {

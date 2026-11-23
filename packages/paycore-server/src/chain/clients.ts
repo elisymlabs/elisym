@@ -6,7 +6,9 @@
  * has none of its own), but a caller's deadline set around the whole call
  * covers the queue wait too: merchant-node `TreasuryReader.refresh` races
  * `FEE_CONFIG_READ_TIMEOUT_MS` from before the genesis and config reads take
- * their tokens, so a long queue makes a fee config read `unreachable`.
+ * their tokens, so a long queue would make a fee config read `unreachable`:
+ * the fee config is read through `fee(url)`, a client with a bucket of its
+ * own, so the stores' sweeps never hold it (load test, sub-plan step 20).
  */
 import { type Eip1193Client, createJsonRpcClient } from '@elisym/pay-core/evm';
 import {
@@ -123,6 +125,7 @@ export interface ChainClientsOptions {
 export class ChainClients {
   private readonly buckets = new Map<string, TokenBucket>();
   private readonly solanaClients = new Map<string, Rpc<SolanaRpcApi>>();
+  private readonly feeClients = new Map<string, Rpc<SolanaRpcApi>>();
   private readonly tempoClients = new Map<string, Eip1193Client>();
   private readonly evmClients = new Map<string, Eip1193Client>();
 
@@ -130,14 +133,17 @@ export class ChainClients {
 
   /** The Solana RPC client of `url` (the rail's RPC, or a fee config RPC). */
   solana(url: string): Rpc<SolanaRpcApi> {
-    const known = this.solanaClients.get(url);
-    if (known !== undefined) {
-      return known;
-    }
-    const inner = this.options.solanaTransportFor?.(url) ?? createDefaultRpcTransport({ url });
-    const client = createSolanaRpcFromTransport(limitedTransport(inner, this.bucketFor(url)));
-    this.solanaClients.set(url, client);
-    return client;
+    return this.solanaClient(this.solanaClients, url, this.bucketFor(url));
+  }
+
+  /**
+   * The fee config's client of `url`: behind a bucket of its own (with the
+   * URL's limit), apart from the stores' traffic even when `url` is also a
+   * Solana rail's RPC. Its reads are about one per network a minute, inside
+   * `FEE_CONFIG_READ_TIMEOUT_MS`.
+   */
+  fee(url: string): Rpc<SolanaRpcApi> {
+    return this.solanaClient(this.feeClients, url, this.feeBucketFor(url));
   }
 
   /** The Tempo client of `url`, for `StoreNodeDeps.tempoClient`. */
@@ -152,15 +158,39 @@ export class ChainClients {
 
   /** The limiter of `url` (made on first use). */
   bucketFor(url: string): TokenBucket {
-    const known = this.buckets.get(url);
+    return this.bucket(`rpc:${url}`, url);
+  }
+
+  /** The fee config's own limiter of `url` (made on first use). */
+  feeBucketFor(url: string): TokenBucket {
+    return this.bucket(`fee:${url}`, url);
+  }
+
+  private bucket(key: string, url: string): TokenBucket {
+    const known = this.buckets.get(key);
     if (known !== undefined) {
       return known;
     }
     const limit =
       this.options.limits?.get(url) ?? this.options.defaultLimit ?? DEFAULT_RPC_RATE_LIMIT;
     const bucket = new TokenBucket(limit, this.options.clock);
-    this.buckets.set(url, bucket);
+    this.buckets.set(key, bucket);
     return bucket;
+  }
+
+  private solanaClient(
+    cache: Map<string, Rpc<SolanaRpcApi>>,
+    url: string,
+    bucket: TokenBucket,
+  ): Rpc<SolanaRpcApi> {
+    const known = cache.get(url);
+    if (known !== undefined) {
+      return known;
+    }
+    const inner = this.options.solanaTransportFor?.(url) ?? createDefaultRpcTransport({ url });
+    const client = createSolanaRpcFromTransport(limitedTransport(inner, bucket));
+    cache.set(url, client);
+    return client;
   }
 
   private eip1193(cache: Map<string, Eip1193Client>, url: string): Eip1193Client {

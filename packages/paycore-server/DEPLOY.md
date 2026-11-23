@@ -27,7 +27,7 @@ Read once at startup (`src/config.ts`); a bad value stops the process before any
 | `PAYCORE_TEMPO_RPC_MAINNET` / `_DEVNET`                     | no       | The Tempo rail's RPC (Tempo mainnet on `mainnet`, Moderato on `devnet`).                                                                                                               |
 | `PAYCORE_EVM_RPC_{ETHEREUM,ARBITRUM,BASE}_{MAINNET,DEVNET}` | no       | USDC (EIP-3009) RPC per chain and network.                                                                                                                                             |
 
-Stores never name an RPC: every rail uses the operator's, each URL behind its own rate limiter.
+Stores never name an RPC: every rail uses the operator's, each URL behind its own rate limiter (10 requests/s). The fee config reads have a limiter of their own on the same URL, so the stores' traffic never delays them past their 10 s deadline, and each store's first sweep starts at a random point of its first minute, so the stores' sweeps do not reach the RPC as one burst.
 
 ### What the boot checks
 
@@ -83,7 +83,7 @@ A second SIGTERM / SIGINT kills the process at once. Set compose `stop_grace_per
 stop_grace_period: 5m
 ```
 
-Measured with `scripts/load.ts` (fake chains, a 10 requests/s RPC URL): shutdown 4 s at 50 stores and 19 s at 200, the longest sweep 36 s. Every store's sweep waits on the same RPC rate limit, so the longest task grows with the stores per RPC URL and the real RPC latency: 5m leaves wide headroom up to a few hundred stores per URL.
+Measured with `scripts/load.ts` (fake chains, a 10 requests/s RPC URL, 200 stores): shutdown 10 ms and the longest sweep 45 ms once the stores' sweeps are spread over the minute (19 s and ~36 s while they all swept in the same second). A real sweep is its RPC calls times the RPC's latency, plus a backlog when the stores of one URL near its rate: 5m leaves wide headroom.
 
 ## Losing the database
 

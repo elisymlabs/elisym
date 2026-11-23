@@ -313,6 +313,8 @@ export function testSupervisor(
     inboxRelayAllowlist: [RELAY],
     publicReads: () => world.pool(),
     userAgent: 'paycore-server/test',
+    // Sweep at once: the tests wait on a node's first sweep.
+    firstSweepDelayMs: () => 0,
     log: (message) => logs.push(message),
     now: () => NOW,
     ...overrides,

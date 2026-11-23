@@ -101,11 +101,14 @@ export interface ServerDeps {
   holder?: string;
   /** Every relay pool the server opens: the stores', the public reads', the publisher's. */
   makePool?: () => SimplePool;
-  chains?: Pick<ChainClients, 'solana' | 'tempo' | 'evm'>;
+  /** `fee` reads the fee config (a bucket apart from the stores' `solana`). */
+  chains?: Pick<ChainClients, 'solana' | 'fee' | 'tempo' | 'evm'>;
   /** What the fee config is read with (`TreasuryReader`'s, for tests). */
   treasuryReadConfig?: ConstructorParameters<typeof TreasuryReader>[2];
   eip3009Check?: typeof startCheckEip3009;
   eip3009Sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Each store's first-sweep delay (ms); default random over the sweep interval (the supervisor's). */
+  firstSweepDelayMs?: () => number;
   /** How the webhook requests resolve and connect (the load script's local sink). */
   webhookFetchDeps?: FetchGuardDeps;
   leaseRenewMs?: number;
@@ -346,7 +349,7 @@ class PaycoreServer implements ServerHandle {
     trace('treasuries');
     const treasuries = new NetworkTreasuries({
       rpcs: Object.fromEntries(
-        NETWORKS.map((network) => [network, chains.solana(feeRpcOf(config, network))]),
+        NETWORKS.map((network) => [network, chains.fee(feeRpcOf(config, network))]),
       ),
       ...(deps.treasuryReadConfig === undefined ? {} : { readConfig: deps.treasuryReadConfig }),
     });
@@ -405,6 +408,9 @@ class PaycoreServer implements ServerHandle {
       userAgent: USER_AGENT,
       heal: healPass(setup),
       publicReads: this.makePool,
+      ...(deps.firstSweepDelayMs === undefined
+        ? {}
+        : { firstSweepDelayMs: deps.firstSweepDelayMs }),
       log,
       now,
     });

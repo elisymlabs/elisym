@@ -203,6 +203,42 @@ describe('a store node', () => {
     expect(events.filter((event) => event === 'sweep')).toHaveLength(sweeps + 1);
   });
 
+  it('sweeps at once by default (the CLI), and after firstSweepDelayMs when given, then on its interval from it', async () => {
+    const sweeps = (events: string[]) => events.filter((event) => event === 'sweep').length;
+    const immediate = await setup();
+    await settle();
+    expect(sweeps(immediate.events)).toBe(1);
+    await immediate.node.stop();
+
+    const delayed = await setup(() => undefined, { firstSweepDelayMs: 25_000 });
+    await settle();
+    expect(sweeps(delayed.events)).toBe(0);
+    vi.advanceTimersByTime(24_999);
+    await settle();
+    expect(sweeps(delayed.events)).toBe(0);
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(sweeps(delayed.events)).toBe(1);
+    // The interval runs from the first sweep, not from the start.
+    vi.advanceTimersByTime(CATCH_UP_INTERVAL_MS - 1);
+    await settle();
+    expect(sweeps(delayed.events)).toBe(1);
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(sweeps(delayed.events)).toBe(2);
+    await delayed.node.stop();
+  });
+
+  it('stopped before its delayed first sweep, it never sweeps and leaves no timer', async () => {
+    const { node, events } = await setup(() => undefined, { firstSweepDelayMs: 25_000 });
+    await settle();
+    await node.stop();
+    vi.advanceTimersByTime(CATCH_UP_INTERVAL_MS * 2);
+    await settle();
+    expect(events.filter((event) => event === 'sweep')).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('once stopped, takes no task, closes its subscriptions and ends its timers', async () => {
     const { pool, node, events } = await setup();
     await settle();
