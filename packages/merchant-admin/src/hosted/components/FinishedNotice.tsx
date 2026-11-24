@@ -1,6 +1,11 @@
 import { useState } from 'react';
 import type { HostedApi } from '../lib/api';
-import { type Finished, refreshRequest } from '../lib/owner-flow';
+import {
+  type FinishTexts,
+  type Finished,
+  OWNER_EVENT_TEXTS,
+  refreshRequest,
+} from '../lib/owner-flow';
 import { BUTTON_SECONDARY } from '../styles';
 import { Notice } from './Notice';
 
@@ -8,17 +13,19 @@ interface Props {
   finished: Finished;
   api: Pick<HostedApi, 'request'>;
   onRefreshed: (finished: Finished) => void;
+  /** What a refresh says once the request is applied or still applying. */
+  texts?: FinishTexts;
 }
 
-/** How an owner event ended; Refresh while the store is still applying it. */
-export function FinishedNotice({ finished, api, onRefreshed }: Props) {
+/** How a queued request ended; Refresh while the store is still applying it. */
+export function FinishedNotice({ finished, api, onRefreshed, texts = OWNER_EVENT_TEXTS }: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const { stillId } = finished;
 
   const refresh = async (id: string) => {
     setRefreshing(true);
     try {
-      onRefreshed(await refreshRequest(api, id));
+      onRefreshed(await refreshRequest(api, id, texts));
     } finally {
       setRefreshing(false);
     }

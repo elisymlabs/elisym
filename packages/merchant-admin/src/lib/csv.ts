@@ -4,6 +4,9 @@
  * formula is prefixed with `'` (buyers write the email and the reference).
  */
 import { CLAIM_LABELS, type NodeAmount, type OrderRow, STATE_LABELS, wholeUnits } from './core';
+import { csvCell } from './csv-cell';
+
+export { csvCell };
 
 export const CSV_COLUMNS = [
   'time_utc',
@@ -23,14 +26,6 @@ export const CSV_COLUMNS = [
   'transactions',
   'notes',
 ] as const;
-
-const FORMULA_START = /^[=+\-@\t\r]/;
-
-/** One cell, quoted, safe to open in a spreadsheet. */
-export function csvCell(value: string): string {
-  const safe = FORMULA_START.test(value) ? `'${value}` : value;
-  return `"${safe.replaceAll('"', '""')}"`;
-}
 
 function amountOf(amount: NodeAmount): string {
   return amount.asset === undefined

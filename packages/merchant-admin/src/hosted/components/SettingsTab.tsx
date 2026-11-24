@@ -4,6 +4,8 @@ import type { StoreSession } from '../lib/store-session';
 import type { StoreView } from '../lib/types';
 import { Notice } from './Notice';
 import { SettingsForm } from './SettingsForm';
+import { SuspendStore } from './SuspendStore';
+import { WebhookSecret } from './WebhookSecret';
 
 interface Props {
   session: StoreSession;
@@ -11,7 +13,10 @@ interface Props {
   onChanged: () => void;
 }
 
-/** The store's settings; a save refused as stale reads them again and says so. */
+/**
+ * The store's settings (a save refused as stale reads them again and says
+ * so), the webhook secret, and suspending the store.
+ */
 export function SettingsTab({ session, view, onChanged }: Props) {
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; text: string } | undefined>(
     undefined,
@@ -21,7 +26,7 @@ export function SettingsTab({ session, view, onChanged }: Props) {
     return <Notice tone="warn">Your store has no settings yet. Reload the page.</Notice>;
   }
   return (
-    <div className="flex flex-col gap-16">
+    <div className="flex flex-col gap-24">
       <SettingsForm
         key={config.revision}
         session={session}
@@ -36,6 +41,8 @@ export function SettingsTab({ session, view, onChanged }: Props) {
         }}
       />
       {notice === undefined ? null : <Notice tone={notice.tone}>{notice.text}</Notice>}
+      <WebhookSecret session={session} view={view} onChanged={onChanged} />
+      <SuspendStore session={session} view={view} onChanged={onChanged} />
     </div>
   );
 }

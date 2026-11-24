@@ -107,7 +107,15 @@ export type CommitOutcome =
   /** Refused before it was taken; `prepareAgain` when a fresh prepare may fix it. */
   | { kind: 'refused'; prepareAgain: boolean; message: string };
 
-function requestOutcome(request: CommitAnswer['request'], pendingStore: boolean): CommitOutcome {
+/**
+ * What a queued request's answer means: applied (200), failed (422), or
+ * pending (202: followed on an active store, applied at activation on a
+ * pending one). Owner events, hand answers and suspensions all answer so.
+ */
+export function requestOutcome(
+  request: CommitAnswer['request'],
+  pendingStore: boolean,
+): Exclude<CommitOutcome, { kind: 'refused' }> {
   if (request === undefined) {
     // Committed before: on a pending store it still waits for the activation.
     return pendingStore ? { kind: 'on_activation' } : { kind: 'done' };
@@ -192,6 +200,19 @@ export async function followRequest(
   return { kind: 'still' };
 }
 
+/** What the page says once a request was taken and applied, applies at activation, or is still applying. */
+export interface FinishTexts {
+  done: string;
+  onActivation: string;
+  still: string;
+}
+
+export const OWNER_EVENT_TEXTS: FinishTexts = {
+  done: DONE,
+  onActivation: ON_ACTIVATION,
+  still: STILL_APPLYING,
+};
+
 /** What the page says once a commit was taken (or failed after it). */
 export interface Finished {
   tone: 'info' | 'error';
@@ -205,30 +226,32 @@ export async function finishCommit(
   api: Pick<HostedApi, 'request'>,
   outcome: Exclude<CommitOutcome, { kind: 'refused' }>,
   options: FollowOptions = {},
+  texts: FinishTexts = OWNER_EVENT_TEXTS,
 ): Promise<Finished> {
   if (outcome.kind === 'done') {
-    return { tone: 'info', message: DONE };
+    return { tone: 'info', message: texts.done };
   }
   if (outcome.kind === 'on_activation') {
-    return { tone: 'info', message: ON_ACTIVATION };
+    return { tone: 'info', message: texts.onActivation };
   }
   if (outcome.kind === 'failed') {
     return { tone: 'error', message: outcome.message };
   }
   const followed = await followRequest(api, outcome.requestId, options);
   if (followed.kind === 'done') {
-    return { tone: 'info', message: DONE };
+    return { tone: 'info', message: texts.done };
   }
   if (followed.kind === 'failed') {
     return { tone: 'error', message: followed.message };
   }
-  return { tone: 'info', message: STILL_APPLYING, stillId: outcome.requestId };
+  return { tone: 'info', message: texts.still, stillId: outcome.requestId };
 }
 
 /** Refresh: read a still-applying request once more. */
 export async function refreshRequest(
   api: Pick<HostedApi, 'request'>,
   id: string,
+  texts: FinishTexts = OWNER_EVENT_TEXTS,
 ): Promise<Finished> {
   return finishCommit(
     api,
@@ -237,5 +260,6 @@ export async function refreshRequest(
       attempts: 1,
       sleep: async () => undefined,
     },
+    texts,
   );
 }

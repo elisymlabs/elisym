@@ -4,10 +4,13 @@ import { errorMessage } from '../lib/errors';
 import type { StoreSession } from '../lib/store-session';
 import type { StoreView } from '../lib/types';
 import { BUTTON_SECONDARY, CARD } from '../styles';
+import { EmbedTab } from './EmbedTab';
 import { ForgetOnDevice } from './ForgetOnDevice';
 import { Notice } from './Notice';
+import { OrdersTab } from './OrdersTab';
 import { Overview } from './Overview';
 import { PayoutsTab } from './PayoutsTab';
+import { ProductsTab } from './ProductsTab';
 import { SettingsTab } from './SettingsTab';
 
 interface Props {
@@ -17,12 +20,15 @@ interface Props {
   onSignOut: () => void;
 }
 
-type Tab = 'overview' | 'payouts' | 'settings';
+type Tab = 'overview' | 'products' | 'orders' | 'payouts' | 'settings' | 'embed';
 
 const TABS: readonly { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' },
+  { id: 'products', label: 'Products' },
+  { id: 'orders', label: 'Orders' },
   { id: 'payouts', label: 'Payouts' },
   { id: 'settings', label: 'Settings' },
+  { id: 'embed', label: 'Embed' },
 ];
 
 export const READ_FAILED_KEPT = 'The page shows your store as it was last read.';
@@ -59,7 +65,13 @@ export function StoreShell({ session, store, onSignOut }: Props) {
   }, [api]);
 
   let content: ReactNode;
-  if (tab === 'payouts') {
+  if (tab === 'products') {
+    content = <ProductsTab session={session} view={view} onChanged={reload} />;
+  } else if (tab === 'orders') {
+    content = <OrdersTab session={session} view={view} onChanged={reload} />;
+  } else if (tab === 'embed') {
+    content = <EmbedTab session={session} view={view} onChanged={reload} />;
+  } else if (tab === 'payouts') {
     content = <PayoutsTab session={session} view={view} onChanged={reload} />;
   } else if (tab === 'settings') {
     content = <SettingsTab session={session} view={view} onChanged={reload} />;
@@ -78,7 +90,7 @@ export function StoreShell({ session, store, onSignOut }: Props) {
             Sign out
           </button>
         </div>
-        <div role="tablist" className="border-line flex gap-4 border-b">
+        <div role="tablist" className="border-line flex flex-wrap gap-4 border-b">
           {TABS.map((item) => (
             <button
               key={item.id}

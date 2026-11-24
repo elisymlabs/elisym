@@ -8,6 +8,8 @@ export interface ConfigEdit {
   payouts?: Payout[];
   evmCredit?: EvmCredit;
   inboxRelays?: string[];
+  /** Null: no webhook. */
+  webhookUrl?: string | null;
 }
 
 /**
@@ -23,7 +25,7 @@ export function fullConfig(config: StoreConfig, edit: ConfigEdit): ConfigInput {
     ...(nip05 === '' ? {} : { nip05 }),
     payouts: edit.payouts ?? config.draftPayouts,
     evmCredit: edit.evmCredit ?? config.evmCredit,
-    webhookUrl: config.webhookUrl ?? null,
+    webhookUrl: edit.webhookUrl === undefined ? (config.webhookUrl ?? null) : edit.webhookUrl,
     inboxRelays: edit.inboxRelays ?? config.inboxRelays,
     expectedRevision: config.revision,
   };

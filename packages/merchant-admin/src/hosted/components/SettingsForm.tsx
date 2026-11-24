@@ -17,6 +17,8 @@ interface Props {
 
 export const NAME_EMPTY = 'Enter the store name.';
 export const NO_RELAYS = 'Keep one inbox relay at least.';
+export const WEBHOOK_NOT_HTTPS =
+  'Enter the webhook address as a full https:// URL, or leave it empty for no webhook.';
 export const PAYOUTS_FIRST =
   'Save your payout addresses first (Payouts tab): settings cannot be saved without them.';
 
@@ -28,12 +30,26 @@ const CREDITS: readonly { value: EvmCredit; label: string }[] = [
   },
 ];
 
-/** Name, nip05, inbox relays, EVM credit: saved as the whole config, at the revision read. */
+/** The typed webhook address: null for none, undefined when it is no https URL. */
+export function webhookUrlInput(typed: string): string | null | undefined {
+  const text = typed.trim();
+  if (text === '') {
+    return null;
+  }
+  try {
+    return new URL(text).protocol === 'https:' ? text : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Name, nip05, inbox relays, webhook URL, EVM credit: saved as the whole config, at the revision read. */
 export function SettingsForm({ session, config, onSaved, onStale }: Props) {
   const [name, setName] = useState(config.name);
   const [nip05, setNip05] = useState(config.nip05 ?? '');
   const [relays, setRelays] = useState<string[]>(config.inboxRelays);
   const [credit, setCredit] = useState<EvmCredit>(config.evmCredit);
+  const [webhook, setWebhook] = useState(config.webhookUrl ?? '');
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | undefined>(undefined);
   const hasPayouts = config.draftPayouts.length > 0;
@@ -47,6 +63,11 @@ export function SettingsForm({ session, config, onSaved, onStale }: Props) {
       setProblem(NO_RELAYS);
       return;
     }
+    const webhookUrl = webhookUrlInput(webhook);
+    if (webhookUrl === undefined) {
+      setProblem(WEBHOOK_NOT_HTTPS);
+      return;
+    }
     setBusy(true);
     setProblem(undefined);
     try {
@@ -56,6 +77,7 @@ export function SettingsForm({ session, config, onSaved, onStale }: Props) {
           nip05: nip05.trim(),
           inboxRelays: relays,
           evmCredit: credit,
+          webhookUrl,
         }),
       );
       onSaved();
@@ -89,6 +111,16 @@ export function SettingsForm({ session, config, onSaved, onStale }: Props) {
           value={nip05}
           placeholder="shop@example.com"
           onChange={(event) => setNip05(event.target.value)}
+        />
+      </label>
+      <label className="text-14 flex flex-col gap-4">
+        Webhook URL (optional: your server is told of each paid order)
+        <input
+          id="settings-webhook"
+          className={INPUT}
+          value={webhook}
+          placeholder="https://shop.example.com/paycore-webhook"
+          onChange={(event) => setWebhook(event.target.value)}
         />
       </label>
       <InboxRelays allowed={session.meta.inboxRelays} selected={relays} onChange={setRelays} />

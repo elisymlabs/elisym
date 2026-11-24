@@ -48,6 +48,17 @@ curl -si https://<public base host>/v1/meta -H 'Origin: https://admin.elisym.net
 curl -si https://<public base host>/v1/meta -H 'Origin: https://other.example' | grep -ci '^access-control'   # 0
 ```
 
+In production set `PAYCORE_ADMIN_ORIGIN=https://admin.elisym.network` (the hosted admin, `packages/merchant-admin`, page `/hosted/`). The admin side is turned on in the same release window: its committed `PAYCORE_API_BASE` must equal this server's `PAYCORE_PUBLIC_BASE` and its `PAYCORE_OPERATOR` this server's operator (`packages/merchant-admin/DEPLOY.md`, "Hosted mode").
+
+#### Admin smoke
+
+The whole hosted flow runs in CI against the real admin API on pglite with the admin's own browser client (`tests/hosted-smoke.test.ts`: create, config with wallet proofs, both owner events, activation, a product, an order in the ledger, the orders view, a hand answer applied by a holder). After a deploy, check it live:
+
+1. The three `curl` lines above (CORS for the admin origin only, `Date` exposed).
+2. Open `https://admin.elisym.network/hosted/`, sign in with a test owner key and create a store; the browser devtools show every call to the public base answered without a CORS error.
+3. Run the manual devnet checklist in `packages/merchant-admin/DEPLOY.md` (Phantom and MetaMask proofs, owner events, activation with `store activate`, products, an order, the webhook secret).
+4. Suspend the test store from Settings (or `store suspend`) when done.
+
 ```yaml
 healthcheck:
   test:

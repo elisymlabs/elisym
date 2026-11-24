@@ -48,9 +48,15 @@ export function storeApi(overrides: Partial<StoreApi> = {}): StoreApi {
     createStore: unexpected('createStore'),
     putConfig: unexpected('putConfig'),
     products: async () => ({ products: [] }),
+    putProduct: unexpected('putProduct'),
+    deleteProduct: unexpected('deleteProduct'),
     prepareOwnerEvent: unexpected('prepareOwnerEvent'),
     commitOwnerEvent: unexpected('commitOwnerEvent'),
     request: unexpected('request'),
+    orders: async () => ({ orders: [], answeredByHand: {}, unresolvedPayments: [] }),
+    handAnswer: unexpected('handAnswer'),
+    rotateWebhookSecret: unexpected('rotateWebhookSecret'),
+    suspend: unexpected('suspend'),
     ...overrides,
   };
 }

@@ -11,9 +11,15 @@ export type StoreApi = Pick<
   | 'createStore'
   | 'putConfig'
   | 'products'
+  | 'putProduct'
+  | 'deleteProduct'
   | 'prepareOwnerEvent'
   | 'commitOwnerEvent'
   | 'request'
+  | 'orders'
+  | 'handAnswer'
+  | 'rotateWebhookSecret'
+  | 'suspend'
 >;
 
 /** A signed-in owner's session, as every store screen gets it. */
