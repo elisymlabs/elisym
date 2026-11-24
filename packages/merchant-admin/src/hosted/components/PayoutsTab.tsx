@@ -35,7 +35,6 @@ export function PayoutsTab({ session, view, onChanged }: Props) {
           onChanged();
         }}
         onStale={() => {
-          setSaved(undefined);
           setNotice({ tone: 'error', text: STALE_RELOADED });
           onChanged();
         }}

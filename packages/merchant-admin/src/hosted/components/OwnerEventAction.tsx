@@ -53,7 +53,7 @@ export function OwnerEventAction({
 }: Props) {
   const [stage, setStage] = useState<Stage>({ kind: 'idle' });
   const running = useRef(false);
-  const lifetime = useRef(new AbortController());
+  const lifetime = useRef<AbortController | undefined>(undefined);
   const { api } = session;
 
   useEffect(() => {
@@ -84,12 +84,14 @@ export function OwnerEventAction({
     }
     const outcome = await commitSigned(api, event, pendingStore);
     if (outcome.kind !== 'refused') {
-      const { signal } = lifetime.current;
+      // The server took it: the store view changed, read it again even if this page is left.
+      onCommitted();
+      const signal = lifetime.current?.signal;
       const finished = await finishCommit(api, outcome, {
-        signal,
+        ...(signal === undefined ? {} : { signal }),
         ...(session.sleep === undefined ? {} : { sleep: session.sleep }),
       });
-      if (signal.aborted) {
+      if (signal?.aborted === true) {
         return;
       }
       setStage({ kind: 'finished', finished });

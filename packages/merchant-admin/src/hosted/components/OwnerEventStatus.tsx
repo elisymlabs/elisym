@@ -22,7 +22,7 @@ interface Props {
 export function OwnerEventStatus({ id, committed, pendingStore, session, onChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [finished, setFinished] = useState<Finished | undefined>(undefined);
-  const lifetime = useRef(new AbortController());
+  const lifetime = useRef<AbortController | undefined>(undefined);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -37,16 +37,20 @@ export function OwnerEventStatus({ id, committed, pendingStore, session, onChang
     setBusy(true);
     setFinished(undefined);
     try {
-      const { signal } = lifetime.current;
+      const signal = lifetime.current?.signal;
       const outcome = await commitSigned(session.api, committed.event, false);
+      if (outcome.kind !== 'refused') {
+        // The server took it: the store view changed, read it again even if this page is left.
+        onChanged();
+      }
       const next =
         outcome.kind === 'refused'
           ? { tone: 'error' as const, message: outcome.message }
           : await finishCommit(session.api, outcome, {
-              signal,
+              ...(signal === undefined ? {} : { signal }),
               ...(session.sleep === undefined ? {} : { sleep: session.sleep }),
             });
-      if (signal.aborted) {
+      if (signal?.aborted === true) {
         return;
       }
       setFinished(next);

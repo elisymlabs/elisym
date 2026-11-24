@@ -647,7 +647,7 @@ describe('review round 1', () => {
     expect(container.querySelector('button')).toBeNull();
   });
 
-  it('stops following, and tells nobody, once the page is left', async () => {
+  it('reloads the store once the commit is taken, then stops following once the page is left', async () => {
     const { OwnerEventAction } = await import('../../src/hosted/components/OwnerEventAction');
     const wakes: (() => void)[] = [];
     const request = vi.fn(async (id: string) => ({
@@ -686,6 +686,7 @@ describe('review round 1', () => {
     await settle(() => container.querySelector('#confirm-owner-event') !== null);
     await click(signButton(container));
     await settle(() => wakes.length === 1);
+    expect(onCommitted).toHaveBeenCalledTimes(1);
     await mounted.unmount();
     mounted = undefined;
     await act(async () => {
@@ -694,10 +695,56 @@ describe('review round 1', () => {
     await turns(5);
     expect(request).not.toHaveBeenCalled();
     expect(wakes).toEqual([]);
-    expect(onCommitted).not.toHaveBeenCalled();
+    expect(onCommitted).toHaveBeenCalledTimes(1);
   });
 
-  it('stops following a Retry, and tells nobody, once the page is left', async () => {
+  it('leaves the store read again when the merchant switches tabs mid-follow', async () => {
+    const wakes: (() => void)[] = [];
+    let view = needingSigning();
+    const { container, session } = await open(
+      view,
+      {
+        store: async () => view,
+        prepareOwnerEvent: async () => ({
+          template: payoutListTemplate(PAYOUTS),
+          expiresAt: NOW + 900,
+        }),
+        commitOwnerEvent: async (event) => {
+          view = needingSigning({
+            payouts: { needsSigning: false },
+            ownerEvents: { payto: { event, committedAt: NOW, publishedAt: null }, auth: null },
+          });
+          return pendingAnswer(event);
+        },
+        request: async (id) => ({ request: { ...applied(id), state: 'pending' as const } }),
+      },
+      PAYOUTS,
+    );
+    session.sleep = () =>
+      new Promise<void>((resolve) => {
+        wakes.push(resolve);
+      });
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    await click(signButton(container));
+    await settle(() => wakes.length === 1);
+    await click(buttonNamed(container, 'Settings'));
+    await click(buttonNamed(container, 'Overview'));
+    await settle(() => container.querySelector('#payto-status') !== null);
+    expect(container.querySelector('#payto-status')?.textContent).toBe(
+      'Signed, not published yet.',
+    );
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (button) => button.textContent === 'Publish payout list',
+      ),
+    ).toBe(false);
+    await act(async () => {
+      wakes.shift()?.();
+    });
+  });
+
+  it('reloads the store once a Retry is taken, then stops following it once the page is left', async () => {
     const { OwnerEventStatus } = await import('../../src/hosted/components/OwnerEventStatus');
     const event = signed(authorizationTemplate());
     const wakes: (() => void)[] = [];
@@ -721,6 +768,7 @@ describe('review round 1', () => {
     );
     await click(buttonNamed(mounted.container, 'Retry publishing'));
     await settle(() => wakes.length === 1);
+    expect(onChanged).toHaveBeenCalledTimes(1);
     await mounted.unmount();
     mounted = undefined;
     await act(async () => {
@@ -728,7 +776,7 @@ describe('review round 1', () => {
     });
     await turns(5);
     expect(request).not.toHaveBeenCalled();
-    expect(onChanged).not.toHaveBeenCalled();
+    expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
   it('checks a payout list against what this page saved until the config moves past that save', async () => {

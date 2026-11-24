@@ -223,6 +223,42 @@ describe('onboarding', () => {
     await settle(() => done.container.querySelector('#onboarding-products') !== null);
   });
 
+  it('checks the payout list against a newer draft once a read brings a higher revision', async () => {
+    solanaWallet();
+    const theirs = [
+      {
+        caip19: SOLANA_USDC,
+        address: 'FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM',
+        signature: 's',
+      },
+    ];
+    const newer = created({ draftPayouts: theirs, revision: 3 });
+    const { container } = await start({
+      createStore: async () => created(),
+      putConfig: async (input) => ({
+        config: storeConfig({ draftPayouts: input.payouts, inboxRelays: RELAYS, revision: 2 }),
+        requestId: null,
+      }),
+      store: async () => ({ ...newer, payouts: { needsSigning: true } }),
+      prepareOwnerEvent: async () => ({
+        template: payoutListTemplate(theirs),
+        expiresAt: NOW + 900,
+      }),
+    });
+    await createStore(container);
+    await settle(() => text(container).includes('Sign with Test Wallet'));
+    await click(buttonNamed(container, 'Sign with Test Wallet'));
+    await settle(
+      () => container.querySelector('#payout-state-0')?.textContent === 'Signed from this device',
+    );
+    await click(buttonNamed(container, 'Save payouts'));
+    await settle(() => text(container).includes('Sign with your owner key'));
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    expect(container.querySelector('#confirm-address-0')?.textContent).toBe(theirs[0]?.address);
+    expect(container.querySelector('#confirm-tick-0')).not.toBeNull();
+  });
+
   it('asks for a name, and says a refused creation in a fixed sentence', async () => {
     const createStore = vi.fn(async (): Promise<StoreView> => {
       throw new ApiError(429, 'rate_limited', { message: LEAK });
