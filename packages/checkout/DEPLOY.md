@@ -2,19 +2,40 @@
 
 The checkout is two things served from one origin, `https://pay.elisym.network`:
 
-- `/v1/embed.js`, `/v2/embed.js` and `/v3/embed.js` - the loaders merchants include, each
-  pinned by an SRI hash (`src/embed/v1.sri`, `src/embed/v2.sri`, `src/embed/v3.sri`). v1
-  frames the checkout in place; v2 shows it in a modal behind a button by default
-  (`display="inline"` frames it in place); v3 is v2 plus `customer-ref`, the account a payment
-  credits. Their bytes never change under their path; a changed loader ships as `/v4/embed.js`.
+- `/v1/embed.js` to `/v4/embed.js` - the loaders merchants include, each pinned by an SRI
+  hash (`src/embed/v1.sri` to `src/embed/v4.sri`). v1 frames the checkout in place; v2 shows
+  it in a modal behind a button by default (`display="inline"` frames it in place); v3 is v2
+  plus `customer-ref`, the account a payment credits; v4 is v3 plus one global, `PayCore`,
+  whose `PayCore.open({ product, ... })` opens the checkout in a modal from code. Their bytes
+  never change under their path once released; a changed loader ships as `/v5/embed.js`.
 - `/checkout` - the iframe app the loaders frame.
 
-The production bytes of the loaders are committed (`embed-prod/v1/embed.js`,
-`embed-prod/v2/embed.js`, `embed-prod/v3/embed.js`), and a production build copies them as
-they are, so a toolchain update can never change them. Other origins build the loaders from
-their frozen sources (`src/embed/v1/`, `src/embed/v2/`, `src/embed/v3/`), which are never
-edited: `embed-prod/frozen.sha256` lists their hashes. `bun scripts/build-embeds.ts --from-source` rebuilds them for production to
-compare with the committed bytes.
+The production bytes of the loaders are committed (`embed-prod/v1/embed.js` to
+`embed-prod/v4/embed.js`), and a production build copies them as they are, so a toolchain
+update can never change them. Other origins build the loaders from their frozen sources
+(`src/embed/v1/` to `src/embed/v4/`), which are never edited once released:
+`embed-prod/frozen.sha256` lists their hashes. `bun scripts/build-embeds.ts --from-source`
+rebuilds them for production to compare with the committed bytes.
+
+### Freezing a loader (`scripts/freeze.ts`)
+
+`bun scripts/freeze.ts --loader v4` builds `src/embed/v4/` for `https://pay.elisym.network`
+and writes `embed-prod/v4/embed.js`, `src/embed/v4.sri`, v4's pin line in
+`tests/loader-pins.test.ts` and the manifest. It refuses:
+
+- a loader listed in `RELEASED_LOADERS` (`scripts/frozen.ts`; v1 to v3);
+- any loader when `git fetch origin main` fails, `origin/main` does not resolve, or
+  `origin/main` already holds `src/embed/vN.sri` (fail closed: merchants pin those bytes);
+- sources not formatted (`bunx oxfmt src/embed/vN` first, so a format pass never changes the
+  bytes).
+
+The re-freeze rule: while v4 is unreleased (under review on its branch), **every commit
+that changes `src/embed/v4/` re-runs `bun scripts/freeze.ts --loader v4`** (after
+`bunx oxfmt` on the sources), so the build's pin checks stay green. Plain `bun
+scripts/freeze.ts` rewrites only the manifest. The commit that merges v4 to `main` is its
+final freeze: it adds `v4` to `RELEASED_LOADERS` (and to the pin test's list) and the
+`src/embed/v4/` ignores in `.oxfmtrc.json`, `.oxlintrc.json` and `cspell.json`; from then on
+v4 is never frozen again.
 
 The build (`vite.config.ts`, `scripts/build-embeds.ts`, `scripts/check-size.ts`) refuses to
 produce a deployment that breaks either one.
@@ -53,10 +74,13 @@ The build fails when:
   `api.mainnet-beta.solana.com` (it rejects browser requests and keeps no full history);
 - any RPC URL is not `https:` (plain `http:` is accepted only for `localhost` / `127.0.0.1`);
 - a Production build would frame any origin other than `https://pay.elisym.network`;
-- a production-origin `v1/embed.js`, `v2/embed.js` or `v3/embed.js` differs from its `.sri`, or a committed
+- a production-origin `v1/embed.js` to `v4/embed.js` differs from its `.sri`, or a committed
   `embed-prod/` file does;
-- a frozen loader source differs from `embed-prod/frozen.sha256`;
-- the size budgets or the loaders' global-scope check fail.
+- a frozen loader source differs from `embed-prod/frozen.sha256` (an unreleased v4 changed
+  without `bun scripts/freeze.ts --loader v4`);
+- a loader is over its size budget (5 KB gzip for v1 to v3, 6 KB for v4);
+- the global-scope check fails: v1 to v3 add no global and v4 adds exactly `PayCore`, each
+  one expression statement that touches no `document` at load.
 
 ## The widget's RPC key
 
@@ -106,7 +130,7 @@ whatever a store publishes; no public endpoint stands in. Each value must be `ht
 
 A preview's loader frames that very deployment's checkout (`https://$VERCEL_URL`), never
 production and never a newer deployment of the same branch. A preview build without
-`VERCEL_URL` fails. Its `v1/embed.js`, `v2/embed.js` and `v3/embed.js` therefore differ from the pinned bytes,
+`VERCEL_URL` fails. Its `v1/embed.js` to `v4/embed.js` therefore differ from the pinned bytes,
 and the SRI check is skipped. Those files are for testing only.
 
 Vercel Deployment Protection must allow the preview to be framed by a test page on another
@@ -117,14 +141,33 @@ or use Protection Bypass for Automation and open the preview once with
 
 ### Preview checklist
 
-- [ ] The build log prints `first screen`, `v1/embed.js`, `v2/embed.js` and `v3/embed.js` lines
-      and no error.
+- [ ] The build log prints `first screen` and `v1/embed.js` to `v4/embed.js` lines and no
+      error.
 - [ ] `/checkout` responds with the `Content-Security-Policy`, `Referrer-Policy: no-referrer`
       and `Cache-Control: no-cache` headers.
-- [ ] `/v1/embed.js`, `/v2/embed.js` and `/v3/embed.js` respond with `Access-Control-Allow-Origin: *` and the
+- [ ] `/v1/embed.js` to `/v4/embed.js` respond with `Access-Control-Allow-Origin: *` and the
       immutable `Cache-Control`.
 - [ ] With the preview's `/v3/embed.js`, the button opens the checkout in a modal; the close
       button, Escape and a click outside it close it, and focus returns to the button.
+- [ ] With the preview's `/v4/embed.js`, `<elisym-buy>` behaves as with v3 (the item above).
+- [ ] With the preview's `/v4/embed.js`, this opens the checkout in a modal with the frame
+      focused: `const checkout = PayCore.open({ product, network: 'devnet' })` (a devnet
+      `product` naddr). A devnet purchase fires `status` events `ready -> ordered -> paying -> paid -> completed` on the
+      handle and `checkout.state` follows them; the page gets no `elisym-status`.
+- [ ] `checkout.closed` settles (with the last state) on each of: `checkout.close()`, Escape,
+      a click on the backdrop, the close button, the checkout's own Done, and a second
+      `PayCore.open` (which then shows a fresh checkout). Each time focus goes back to what
+      was focused before, and no `<elisym-checkout>` stays in the page.
+- [ ] A second `PayCore.open` while the first is `ordered` or `paying` throws an `Error` with
+      `code: 'busy'`, and the first stays open.
+- [ ] On a test page whose CSP has no `frame-src` for the preview, `PayCore.open` fires one
+      `error` (`reason: 'unavailable'`) about 10 s after opening, and stays open until closed.
+- [ ] Page CSS cannot hide or restyle the programmatic checkout: on a test page with
+      `<style>elisym-checkout{display:none!important} body>*{display:none}</style>`, the
+      `PayCore.open` modal still shows and works, both in a browser with constructable
+      stylesheets (current Chrome, Firefox, Safari) and on the CSSOM fallback path (Safari 14.1,
+      or with `delete ShadowRoot.prototype.adoptedStyleSheets` run before `/v4/embed.js`
+      loads). The same page's `<elisym-buy>` looks as with v3.
 - [ ] A test page with `<elisym-buy product="<devnet naddr>" network="devnet" theme="dark">` and the
       preview's `/v1/embed.js` shows the offer. The page receives `ready` and nothing else
       about the product.
@@ -151,10 +194,18 @@ or use Protection Bypass for Automation and open the preview once with
 ## Production release
 
 1. Merge to `main`. Vercel builds Production with the variables above.
-2. Check that the build log's `v1/embed.js`, `v2/embed.js` and `v3/embed.js` lines equal
-   `src/embed/v1.sri`, `src/embed/v2.sri` and `src/embed/v3.sri`, and that
-   `https://pay.elisym.network/v3/embed.js` hashes to `src/embed/v3.sri` before any page or doc
-   points at it.
+2. Check that the build log's `v1/embed.js` to `v4/embed.js` lines equal `src/embed/v1.sri`
+   to `src/embed/v4.sri`, and that `https://pay.elisym.network/v4/embed.js` (and
+   `/v3/embed.js`) hashes to `src/embed/v4.sri` (and `src/embed/v3.sri`) before any page or
+   doc points at it:
+
+   ```sh
+   curl -s https://pay.elisym.network/v4/embed.js | openssl dgst -sha384 -binary | openssl base64 -A
+   ```
+
+   The output, prefixed with `sha384-`, must equal `src/embed/v4.sri`. The docs and the
+   hosted admin's v4 snippet ship only after this check.
+
 3. Run the preview checklist against `https://pay.elisym.network`, with a mainnet product,
    before announcing it. Real money is involved, so a person does this step.
 4. Merchants pin (v1 and v2 are kept working as they are; new pages use v3):
