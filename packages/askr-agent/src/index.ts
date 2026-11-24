@@ -3,6 +3,7 @@ export {
   type Availability,
   StoreCatalog,
   availabilityOf,
+  hasBuyButton,
   tokenize,
   topAttrs,
 } from './catalog/store-catalog';

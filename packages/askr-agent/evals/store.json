@@ -595,5 +595,6 @@
       "title": "How to choose a sleeping bag",
       "body": "Pick a comfort rating about 5 degrees colder than the coldest night you expect. Down is lighter and packs smaller; synthetic keeps its warmth when damp."
     }
-  ]
+  ],
+  "payable": ["filter"]
 }

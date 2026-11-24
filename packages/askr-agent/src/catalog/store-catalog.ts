@@ -26,6 +26,15 @@ export function availabilityOf(item: CatalogItem): Availability {
   return 'in_stock';
 }
 
+/**
+ * Whether the product's card offers Buy: a PayCore listing the owner
+ * authorizes now (`payable`), on sale (C5). The page must also load the
+ * checkout, which the agent cannot see.
+ */
+export function hasBuyButton(item: CatalogItem): boolean {
+  return item.payable !== undefined && item.visibility === 'on-sale';
+}
+
 /** Non-reserved attributes, the first `limit` of them. */
 export function topAttrs(item: CatalogItem, limit: number): { name: string; value: string }[] {
   return item.attrs.filter((attr) => !RESERVED_ATTRS.includes(attr.name)).slice(0, limit);

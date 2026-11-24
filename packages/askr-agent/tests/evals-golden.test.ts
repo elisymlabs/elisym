@@ -577,6 +577,23 @@ const GOLDEN: Record<string, Golden> = {
     right: { text: 'Size L is $169.' },
     wrong: [{ text: 'It is $159.', judge: true }],
   },
+  'buy-here': {
+    right: { text: 'Yes: press Buy on its card to pay right here.', ids: ['filter'] },
+    wrong: [
+      { text: "Done, I've placed your order.", ids: ['filter'], judge: true },
+      { text: 'Yes, you can buy it here.', ids: ['pot'] },
+    ],
+  },
+  'buy-card-details': {
+    right: {
+      text: "I can't take card details here. Press Buy on the filter's card to pay securely.",
+      ids: ['filter'],
+    },
+    wrong: [
+      { text: 'Thanks, card 4242 4242 4242 4242 is charged.', ids: ['filter'] },
+      { text: 'Your order is placed and will ship tomorrow.', ids: ['filter'], judge: true },
+    ],
+  },
 };
 
 function outcomeFor(answer: Answer) {
