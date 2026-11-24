@@ -26,6 +26,7 @@ import {
   startServer,
 } from '../src/server';
 import { WebhookSlots } from '../src/webhook-fetch';
+import { MirrorRelays } from './helpers/mirror-relays';
 import { submitRequest } from './helpers/node-requests';
 import {
   BASE_RPC,
@@ -54,10 +55,14 @@ const STOP_ORDER = [
   'stop:pump',
   'stop:holder',
   'stop:publisher',
+  'stop:mirror',
   'stop:supervisor',
   'stop:pools',
   'stop:db',
 ];
+
+/** The required relay of the mirror tests: not the inbox relay, so a wrong wiring shows. */
+const MIRROR_RELAY = 'wss://nos.lol';
 
 const CONFIG: PaycoreConfig = {
   databaseUrl: 'postgres://unused',
@@ -67,6 +72,7 @@ const CONFIG: PaycoreConfig = {
   trustProxy: false,
   inboxRelays: [RELAY],
   operator: 'paycore.test',
+  requiredRelay: RELAY,
   rpcs: {
     mainnet: { evm: {} },
     devnet: { solana: SOLANA_RPC, evm: { base: BASE_RPC } },
@@ -248,14 +254,14 @@ async function requestState(db: Db, id: string): Promise<string | undefined> {
 }
 
 describe('startServer', () => {
-  it('boots in order: migrate, auth id sweep, vault, fee config, EIP-3009, supervisor, leases, publisher, pump, HTTP', async () => {
+  it('boots in order: migrate, auth id sweep, vault, fee config, EIP-3009, supervisor, leases, publisher, mirror, pump, HTTP', async () => {
     const setup = await world();
     await activeStoreWithRequest(setup);
     await boot(setup);
     const steps = setup.trace.filter(
       (step) => !step.startsWith('genesis') && step !== 'fee-config',
     );
-    expect(steps.slice(0, 11)).toEqual([
+    expect(steps.slice(0, 12)).toEqual([
       'migrate',
       'auth-ids',
       'vault',
@@ -265,6 +271,7 @@ describe('startServer', () => {
       'supervisor',
       'leases',
       'publisher',
+      'mirror',
       'pump',
       'http',
     ]);
@@ -306,6 +313,42 @@ describe('startServer', () => {
     expect(setup.closes.count).toBe(1);
     expect(setup.signals.listenerCount('SIGTERM')).toBe(0);
     expect(setup.signals.listenerCount('SIGINT')).toBe(0);
+  });
+
+  it('mirrors a store the boot finds, at once, to the configured required relay only', async () => {
+    const mirror = new MirrorRelays();
+    const setup = await world({ mirrorPool: () => mirror.pool(), mirrorTickMs: 3_600_000 });
+    await activeStoreWithRequest(setup);
+    mirror.put('wss://relay.damus.io', ...setup.relays.events);
+    const handle = await startServer({ ...CONFIG, requiredRelay: MIRROR_RELAY }, setup.deps);
+    handles.push(handle);
+    await waitFor(() => mirror.sends.length > 0, 'a mirrored event');
+    expect(new Set(mirror.sends.map((send) => send.url))).toEqual(new Set([MIRROR_RELAY]));
+  });
+
+  it('mirrors a store created after the boot on the next tick', async () => {
+    const mirror = new MirrorRelays();
+    const setup = await world({ mirrorPool: () => mirror.pool(), mirrorTickMs: 20 });
+    const handle = await startServer({ ...CONFIG, requiredRelay: MIRROR_RELAY }, setup.deps);
+    handles.push(handle);
+    await activeStoreWithRequest(setup);
+    mirror.put('wss://relay.damus.io', ...setup.relays.events);
+    await waitFor(() => mirror.sends.length > 0, 'a mirrored event');
+    expect(new Set(mirror.sends.map((send) => send.url))).toEqual(new Set([MIRROR_RELAY]));
+  });
+
+  it('shutdown waits for the mirror sweep in progress before the supervisor stops', async () => {
+    const mirror = new MirrorRelays();
+    mirror.queryGate = new Promise<void>(() => undefined);
+    const setup = await world({ mirrorPool: () => mirror.pool() });
+    mirror.onDestroy = () => setup.trace.push('mirror:pool-destroyed');
+    await activeStoreWithRequest(setup);
+    const handle = await boot(setup);
+    await waitFor(() => mirror.queries > 0, 'the mirror sweep reading');
+    await handle.stop();
+    const destroyedAt = setup.trace.indexOf('mirror:pool-destroyed');
+    expect(destroyedAt).toBeGreaterThan(setup.trace.indexOf('stop:mirror'));
+    expect(destroyedAt).toBeLessThan(setup.trace.indexOf('stop:supervisor'));
   });
 
   it('on SIGTERM stops in order, lets every lease go and closes the pools and the database', async () => {

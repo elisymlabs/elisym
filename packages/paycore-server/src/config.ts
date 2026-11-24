@@ -1,11 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { type ChainConfig, type Network, settlementOf } from '@elisym/pay-core';
 import { EIP3009_SLUGS, type Eip3009Slug, isEip3009Slug } from '@merchant-node/config';
+import { OFFER_RELAYS } from '@merchant-node/constants';
 import { checkoutRelaySpelling } from '@merchant-node/relays';
 
 /** The inbox relays a hosted store may use unless PAYCORE_INBOX_RELAYS says otherwise (P7). */
 export const DEFAULT_INBOX_RELAYS: readonly string[] = ['wss://relay.elisym.network'];
 export const DEFAULT_PORT = 8790;
+/** The relay every hosted store's events must reach unless PAYCORE_REQUIRED_RELAY says otherwise. */
+export const DEFAULT_REQUIRED_RELAY = 'wss://relay.elisym.network';
 const MASTER_KEY_RE = /^[0-9a-f]{64}$/;
 /** A DNS name as the 30490 `operator` names the service: labels of letters, digits and dashes. */
 const OPERATOR_RE =
@@ -37,6 +40,11 @@ export interface PaycoreConfig {
   inboxRelays: string[];
   /** The 30490 `operator` of every hosted store (R2). */
   operator: string;
+  /**
+   * PAYCORE_REQUIRED_RELAY: the offer relay the mirror sweep copies every
+   * store's newest events to, in the checkout's spelling (one of the offer relays).
+   */
+  requiredRelay: string;
   rpcs: Record<Network, NetworkRpcs>;
   /**
    * PAYCORE_ADMIN_ORIGIN: the one browser origin the admin API and `/v1/meta`
@@ -215,6 +223,23 @@ export function adminOriginFrom(value: string | undefined): string | undefined {
   return value;
 }
 
+/**
+ * PAYCORE_REQUIRED_RELAY: one of the offer relays (the relays the checkout
+ * always reads), in the checkout's spelling. Unset: `wss://relay.elisym.network`.
+ */
+export function requiredRelayFrom(
+  value: string | undefined,
+  offerRelays: readonly string[] = OFFER_RELAYS,
+): string {
+  const spelling = checkoutRelaySpelling(value ?? DEFAULT_REQUIRED_RELAY);
+  if (spelling === undefined || !offerRelays.includes(spelling)) {
+    throw new Error(
+      `PAYCORE_REQUIRED_RELAY must be one of the offer relays (${offerRelays.join(', ')}), got ${String(value)}`,
+    );
+  }
+  return spelling;
+}
+
 function portFrom(value: string | undefined): number {
   if (value === undefined) {
     return DEFAULT_PORT;
@@ -247,6 +272,7 @@ export function configFromEnv(
     trustProxy: trust === '1',
     inboxRelays: inboxRelaysFrom(env.PAYCORE_INBOX_RELAYS),
     operator: operatorFrom(env.PAYCORE_OPERATOR, publicBase),
+    requiredRelay: requiredRelayFrom(env.PAYCORE_REQUIRED_RELAY),
     rpcs,
   };
 }

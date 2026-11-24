@@ -78,6 +78,7 @@ const FULL_CONFIG: PaycoreConfig = {
   port: 8790,
   trustProxy: false,
   operator: 'paycore.example',
+  requiredRelay: RELAY,
   ...CONFIG,
 };
 

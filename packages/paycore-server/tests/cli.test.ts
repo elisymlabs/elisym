@@ -27,6 +27,7 @@ const CONFIG: PaycoreConfig = {
   trustProxy: false,
   inboxRelays: [RELAY],
   operator: 'paycore.example',
+  requiredRelay: RELAY,
   rpcs: RPCS,
 };
 

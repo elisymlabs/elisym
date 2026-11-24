@@ -120,6 +120,12 @@ create table alerts (
 create unique index alerts_open on alerts (coalesce(owner, ''), kind) where cleared_at is null;
 `,
   },
+  {
+    id: '0002_mirror_swept_at',
+    sql: `
+alter table stores add column mirror_swept_at bigint;  -- the last required-relay mirror sweep claimed (seconds; null: never)
+`,
+  },
 ];
 
 const LOCK_ID = 7_302_101;

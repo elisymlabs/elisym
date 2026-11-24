@@ -27,12 +27,14 @@
  *    transient failure costs nothing. The next renewal that succeeds starts
  *    them again from the database.
  * 8. The owner event publisher.
- * 9. The request pump (LISTEN `paycore_requests`, the 60 s poll and tick).
- * 10. HTTP: the admin API and `/healthz`.
+ * 9. The required-relay mirror sweep (`relay/mirror.ts`): a tick every
+ *    `MIRROR_TICK_MS`, each store swept once per `MIRROR_SWEEP_SECS` across instances.
+ * 10. The request pump (LISTEN `paycore_requests`, the 60 s poll and tick).
+ * 11. HTTP: the admin API and `/healthz`.
  *
  * Shutdown (`stop`, idempotent): HTTP stops accepting, the lease loop stops
  * (a round in progress is awaited, so no lease is taken after they are let
- * go; the auth id sweeps stop, one in progress awaited), then `pump.stop()` -> `holder.idle()` -> `publisher.stop()` ->
+ * go; the auth id sweeps stop, one in progress awaited), then `pump.stop()` -> `holder.idle()` -> `publisher.stop()` -> `mirror.stop()` ->
  * `supervisor.shutdown()` (every node stopped, the leases released) -> the
  * webhook slots and relay pools closed -> the database closed. The pump and
  * the holder go before the supervisor: a drain or a tick still running after
@@ -74,6 +76,7 @@ import { RequestPump } from './node/request-pump';
 import type { SetupPassDeps } from './node/setup-pass';
 import { StoreSupervisor } from './node/supervisor';
 import { OwnerEventPublisher } from './publisher';
+import { MIRROR_TICK_MS, type MirrorPool, MirrorSweeper } from './relay/mirror';
 import { newestOwnerEventDate } from './relay/newest';
 import { StorePools } from './relay/pools';
 import { LEASE_RENEW_MS, LEASE_TTL_SECS, acquireLeases, newHolderId } from './state/leases';
@@ -145,6 +148,10 @@ export interface ServerDeps {
   leaseRenewMs?: number;
   requestPollMs?: number;
   publisherIntervalMs?: number;
+  /** Default: `MIRROR_TICK_MS`. */
+  mirrorTickMs?: number;
+  /** The mirror sweep's relay pools (default: `makePool`). */
+  mirrorPool?: () => MirrorPool;
   /** Default: `AUTH_ID_SWEEP_MS`. */
   authIdSweepMs?: number;
   /** Default: `config.port`; 0 picks a free port (tests). */
@@ -307,6 +314,7 @@ class PaycoreServer implements ServerHandle {
   private holderRequests: HolderRequests | undefined;
   private pump: RequestPump | undefined;
   private publisher: OwnerEventPublisher | undefined;
+  private mirror: MirrorSweeper | undefined;
   private httpServer: Server | undefined;
   private pools: StorePools | undefined;
   private unlistenStores: (() => Promise<void>) | undefined;
@@ -498,6 +506,21 @@ class PaycoreServer implements ServerHandle {
     publisher.start(deps.publisherIntervalMs ?? PUBLISHER_INTERVAL_MS);
     publisher.runOnce().catch((error: unknown) => {
       log(`publisher round failed: ${errorText(error)}`);
+    });
+
+    trace('mirror');
+    const mirror = new MirrorSweeper({
+      db,
+      vault,
+      makePool: deps.mirrorPool ?? this.makePool,
+      requiredRelay: config.requiredRelay,
+      log,
+      now,
+    });
+    this.mirror = mirror;
+    mirror.start(deps.mirrorTickMs ?? MIRROR_TICK_MS);
+    mirror.runOnce().catch((error: unknown) => {
+      log(`mirror sweep failed: ${errorText(error)}`);
     });
 
     trace('pump');
@@ -704,6 +727,8 @@ class PaycoreServer implements ServerHandle {
     await this.holderRequests?.idle();
     trace('stop:publisher');
     await this.publisher?.stop();
+    trace('stop:mirror');
+    await this.mirror?.stop();
     this.eip3009?.stop();
     trace('stop:supervisor');
     await this.supervisor?.shutdown();

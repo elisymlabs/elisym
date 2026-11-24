@@ -512,6 +512,7 @@ async function main(): Promise<void> {
     trustProxy: false,
     inboxRelays: [RELAY],
     operator: 'paycore.test',
+    requiredRelay: RELAY,
     rpcs: { mainnet: { evm: {} }, devnet: { solana: SOLANA_RPC, evm: {} } },
   };
   console.log(

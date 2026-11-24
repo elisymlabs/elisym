@@ -4,6 +4,7 @@ import {
   adminOriginFrom,
   configFromEnv,
   inboxRelaysFrom,
+  requiredRelayFrom,
   rpcEnvNames,
 } from '../src/config';
 
@@ -24,8 +25,25 @@ describe('configFromEnv', () => {
       trustProxy: false,
       inboxRelays: ['wss://relay.elisym.network'],
       operator: 'api.paycore.example',
+      requiredRelay: 'wss://relay.elisym.network',
       rpcs: { mainnet: { evm: {} }, devnet: { evm: {} } },
     });
+  });
+
+  it('reads the required relay: one of the offer relays, in the checkout spelling', () => {
+    expect(
+      configFromEnv({ ...BASE_ENV, PAYCORE_REQUIRED_RELAY: 'wss://nos.lol/' }).requiredRelay,
+    ).toBe('wss://nos.lol');
+    expect(configFromEnv({ ...BASE_ENV, PAYCORE_REQUIRED_RELAY: '' }).requiredRelay).toBe(
+      'wss://relay.elisym.network',
+    );
+    for (const value of ['wss://relay.example', 'https://relay.elisym.network', 'not a url']) {
+      expect(() => configFromEnv({ ...BASE_ENV, PAYCORE_REQUIRED_RELAY: value })).toThrow(
+        'PAYCORE_REQUIRED_RELAY',
+      );
+    }
+    expect(requiredRelayFrom('wss://a.example', ['wss://a.example'])).toBe('wss://a.example');
+    expect(() => requiredRelayFrom(undefined, ['wss://a.example'])).toThrow('wss://a.example');
   });
 
   it('reads the operator RPCs per network', () => {
