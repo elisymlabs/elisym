@@ -1,4 +1,4 @@
-import { buildCatalogAuth, buildConfigEvent } from '@elisym/askr';
+import { buildCatalogAuth, buildConfigDelegation, buildConfigEvent } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NO_EOSE_TIMEOUT_MS, STORE_CHECK_PREFIX, STORE_CHECK_TTL_MS } from '../src/constants';
@@ -12,6 +12,7 @@ import {
   publishStore,
   sign,
   type TestStore,
+  testKey,
 } from './fixtures';
 
 const NOW = 1_800_000_000_000;
@@ -55,6 +56,28 @@ describe('checkStore: whether the widget shows for a store (B)', () => {
     const later = { ...deps, now: () => NOW + STORE_CHECK_TTL_MS };
     expect((await checkStore(owner, later)).visibility).toBe('show');
     expect(gateway.sessions).toHaveLength(2);
+  });
+
+  it("shows a store whose only settings are an active config delegate's, with its launcher text", async () => {
+    const { owner, store, relay, gateway, deps } = setup({ published: false, mode: 'unavailable' });
+    const delegate = testKey();
+    const at = NOW / 1000;
+    relay.storeOnly(
+      MAIN_RELAY,
+      sign(buildConfigDelegation({ key: delegate.pubkey, createdAt: at - 100 }), store.owner),
+    );
+    relay.storeOnly(
+      MAIN_RELAY,
+      sign(
+        buildConfigEvent(
+          { ...store.configInput, launcherText: 'Ask us', createdAt: at - 10 },
+          delegate.secretKey,
+        ),
+        delegate,
+      ),
+    );
+    expect(await checkStore(owner, deps)).toEqual({ visibility: 'show', launcherText: 'Ask us' });
+    expect(gateway.sessions).toHaveLength(0);
   });
 
   it('events that are no valid config still ask the gateway, and hide a store it does not serve', async () => {

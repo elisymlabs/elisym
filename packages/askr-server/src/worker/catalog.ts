@@ -1,15 +1,16 @@
 import {
-  CONFIG_D_TAG,
   type CatalogItem,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
+  KIND_CONFIG_DELEGATION,
   KIND_POLICY,
   type Policy,
   type StoreConfig,
+  configAddress,
+  configCandidates,
   decryptPrivateConfig,
   parseAddress,
   parseCatalogItem,
-  parseConfig,
   parsePolicy,
   policiesInUse,
   resolveStoreKeys,
@@ -21,9 +22,18 @@ import { getPublicKey } from 'nostr-tools/pure';
 
 const AUTHORITY_KINDS: readonly number[] = [KIND_CATALOG_AUTH, KIND_DELETION];
 
-/** The owner's events a store needs first: its config, authority (30497) and deletions. */
+/**
+ * The owner's events a store needs first: its config, authority (30497),
+ * config delegations (30498) and deletions. Active delegates' configs are a
+ * second read (`delegateConfigFilters`).
+ */
 export function ownerFilters(owner: string): Filter[] {
-  return [{ kinds: [KIND_CONFIG, ...AUTHORITY_KINDS], authors: [owner] }];
+  return [
+    {
+      kinds: [KIND_CONFIG, KIND_CATALOG_AUTH, KIND_CONFIG_DELEGATION, KIND_DELETION],
+      authors: [owner],
+    },
+  ];
 }
 
 /**
@@ -114,20 +124,31 @@ function newestPerAddress(
   return kept;
 }
 
-/** The store's config (30496) from the owner's events, when genuine, parseable and not deleted (NIP-09). */
+/**
+ * The store's config (30496): the newest candidate of the owner and its active
+ * config delegates (1.3), when genuine, parseable and not deleted (NIP-09).
+ */
 export function storeConfig(
   events: readonly NostrEvent[],
   owner: string,
   now: number,
 ): StoreConfig | undefined {
-  const event = newestSigned(events, KIND_CONFIG, owner, now, CONFIG_D_TAG);
-  if (!event) {
+  const newest = configCandidates(events, owner, { now })[0];
+  if (!newest) {
     return undefined;
+  }
+  if (newest.event.pubkey !== owner) {
+    return newest.config;
   }
   // A deletion dated past the clock skew is ignored, like the config versions and the listings'
   // deletions: one rule for the server, the admin and the widget.
-  const deletion = newestDeletion(events, `${KIND_CONFIG}:${owner}:${CONFIG_D_TAG}`, owner, now);
-  return deletion && deletion.created_at >= event.created_at ? undefined : parseConfig(event);
+  const deletion = newestDeletion(events, configAddress(owner), owner, now);
+  return deletion && deletion.created_at >= newest.event.created_at ? undefined : newest.config;
+}
+
+/** Whether a config is signed by the store's owner itself, not by a delegate: only those note origins (1.5). */
+export function isOwnerSigned(config: Pick<StoreConfig, 'owner' | 'signer'>): boolean {
+  return (config.signer ?? config.owner) === config.owner;
 }
 
 /**

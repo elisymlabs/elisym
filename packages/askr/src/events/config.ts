@@ -29,7 +29,14 @@ export interface ProductSource {
 }
 
 export interface StoreConfig {
+  /** The store's identity: the owner key O. */
   owner: string;
+  /**
+   * Who signed this config: the owner, or a delegate the owner authorizes with
+   * a 30498. Its private part is encrypted from this key. Always set by
+   * `parseConfig`; optional so a caller building one by hand need not name it.
+   */
+  signer?: string;
   assistant: string;
   /** Origins allowed to embed the widget and get tickets. */
   origins: string[];
@@ -275,14 +282,20 @@ function originsFrom(values: string[]): string[] | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+export interface ParseConfigOptions {
+  /** The store's owner when the event is signed by a delegate (30498); defaults to the event's author. */
+  owner?: string;
+}
+
 /**
  * Read a config's public part, or `undefined` when anything required is
  * missing, duplicated or malformed (fail closed: a store with an unreadable
  * config gets no assistant). The caller checked signature and that the author
- * is the store owner.
+ * is the store owner or one of its active delegates (`configCandidates`).
  */
 export function parseConfig(
   event: Pick<NostrEvent, 'kind' | 'pubkey' | 'tags' | 'content' | 'created_at'>,
+  options: ParseConfigOptions = {},
 ): StoreConfig | undefined {
   const tags = event.tags;
   if (event.kind !== KIND_CONFIG || tagValue(tags, 'd') !== CONFIG_D_TAG) {
@@ -346,7 +359,8 @@ export function parseConfig(
     return undefined;
   }
   const config: StoreConfig = {
-    owner: event.pubkey,
+    owner: options.owner ?? event.pubkey,
+    signer: event.pubkey,
     assistant,
     origins,
     linkOrigins,
@@ -384,13 +398,20 @@ const PrivateConfigSchema = z.object({
   notes: z.string().max(LIMITS.CONFIG_NOTES_CHARS),
 });
 
-/** Decrypt the private part with the assistant key, or `undefined` when it does not open. */
+/**
+ * Decrypt the private part with the assistant key, or `undefined` when it does
+ * not open. It is encrypted from the config's signer (the owner unless a
+ * delegate signed it).
+ */
 export function decryptPrivateConfig(
-  config: Pick<StoreConfig, 'owner' | 'privateContent'>,
+  config: Pick<StoreConfig, 'owner' | 'signer' | 'privateContent'>,
   assistantSecretKey: Uint8Array,
 ): StorePrivateConfig | undefined {
   try {
-    const conversationKey = nip44.v2.utils.getConversationKey(assistantSecretKey, config.owner);
+    const conversationKey = nip44.v2.utils.getConversationKey(
+      assistantSecretKey,
+      config.signer ?? config.owner,
+    );
     const parsed = PrivateConfigSchema.safeParse(
       JSON.parse(nip44.v2.decrypt(config.privateContent, conversationKey)),
     );

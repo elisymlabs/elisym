@@ -31,6 +31,7 @@ export {
   type StoreConfigInput,
   type StorePrivateConfig,
   type PrivateConfigEncrypt,
+  type ParseConfigOptions,
   StoreConfigInputSchema,
   assistantDisplayName,
   buildConfigEvent,
@@ -50,6 +51,18 @@ export {
   readCatalogAuthority,
   resolveStoreKeys,
 } from './events/catalog-auth';
+export {
+  type ConfigCandidate,
+  type ConfigCandidateOptions,
+  type ConfigDelegationInput,
+  buildConfigDelegation,
+  buildConfigDelegationRevocation,
+  configAddress,
+  configCandidates,
+  delegateConfigFilters,
+  readConfigDelegates,
+  storeConfigFilters,
+} from './events/config-delegation';
 export {
   type Answer,
   type Ask,
