@@ -433,7 +433,7 @@ describe('signPayoutProof - unavailable', () => {
     const evm = chooseEvm(fakeEvmProvider());
     const attempts: Parameters<typeof signPayoutProof>[0][] = [
       {
-        wallet: { id: 'evm:never', name: 'x', icon: undefined, family: 'evm' },
+        wallet: { id: 'evm:never', name: 'x', family: 'evm' },
         ownerPubkey: OWNER,
         caip19: BASE_USDC,
       },

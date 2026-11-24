@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { type Finished, commitSigned, finishCommit } from '../lib/owner-flow';
 import type { StoreSession } from '../lib/store-session';
 import type { CommittedOwnerEvent } from '../lib/types';
@@ -22,6 +22,13 @@ interface Props {
 export function OwnerEventStatus({ id, committed, pendingStore, session, onChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [finished, setFinished] = useState<Finished | undefined>(undefined);
+  const lifetime = useRef(new AbortController());
+
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
 
   const retry = async () => {
     if (busy) {
@@ -30,15 +37,18 @@ export function OwnerEventStatus({ id, committed, pendingStore, session, onChang
     setBusy(true);
     setFinished(undefined);
     try {
+      const { signal } = lifetime.current;
       const outcome = await commitSigned(session.api, committed.event, false);
       const next =
         outcome.kind === 'refused'
           ? { tone: 'error' as const, message: outcome.message }
-          : await finishCommit(
-              session.api,
-              outcome,
-              session.sleep === undefined ? {} : { sleep: session.sleep },
-            );
+          : await finishCommit(session.api, outcome, {
+              signal,
+              ...(session.sleep === undefined ? {} : { sleep: session.sleep }),
+            });
+      if (signal.aborted) {
+        return;
+      }
       setFinished(next);
       onChanged();
     } finally {

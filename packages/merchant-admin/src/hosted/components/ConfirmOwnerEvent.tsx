@@ -11,7 +11,6 @@ interface Props {
   storePubkey: string;
   operator: string;
   proven: ProvenPayouts;
-  busy: boolean;
   onSign: () => void;
   onCancel: () => void;
 }
@@ -27,7 +26,6 @@ export function ConfirmOwnerEvent({
   storePubkey,
   operator,
   proven,
-  busy,
   onSign,
   onCancel,
 }: Props) {
@@ -98,15 +96,10 @@ export function ConfirmOwnerEvent({
         </>
       )}
       <div className="flex gap-8">
-        <button
-          type="button"
-          className={BUTTON_SECONDARY}
-          disabled={busy || !ready}
-          onClick={onSign}
-        >
+        <button type="button" className={BUTTON_SECONDARY} disabled={!ready} onClick={onSign}>
           Sign and publish
         </button>
-        <button type="button" className={BUTTON_SECONDARY} disabled={busy} onClick={onCancel}>
+        <button type="button" className={BUTTON_SECONDARY} onClick={onCancel}>
           Cancel
         </button>
       </div>

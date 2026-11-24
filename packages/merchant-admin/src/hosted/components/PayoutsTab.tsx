@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { STALE_RELOADED } from '../lib/errors';
+import { type SavedPayouts, expectedPayouts } from '../lib/payout-rows';
 import type { StoreSession } from '../lib/store-session';
-import type { Payout, StoreView } from '../lib/types';
+import type { StoreView } from '../lib/types';
 import { Notice } from './Notice';
 import { PayoutListSection } from './PayoutListSection';
 import { PayoutsForm } from './PayoutsForm';
@@ -17,7 +18,7 @@ export function PayoutsTab({ session, view, onChanged }: Props) {
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; text: string } | undefined>(
     undefined,
   );
-  const [saved, setSaved] = useState<Payout[] | undefined>(undefined);
+  const [saved, setSaved] = useState<SavedPayouts | undefined>(undefined);
   const config = view.config;
   if (config === null) {
     return <Notice tone="warn">Your store has no settings yet. Reload the page.</Notice>;
@@ -28,8 +29,8 @@ export function PayoutsTab({ session, view, onChanged }: Props) {
         key={config.revision}
         session={session}
         config={config}
-        onSaved={(_config, payouts) => {
-          setSaved(payouts);
+        onSaved={(next, payouts) => {
+          setSaved({ payouts, revision: next.revision });
           setNotice({ tone: 'info', text: 'Payouts saved.' });
           onChanged();
         }}
@@ -43,7 +44,7 @@ export function PayoutsTab({ session, view, onChanged }: Props) {
       <PayoutListSection
         session={session}
         view={view}
-        payouts={saved ?? config.draftPayouts}
+        payouts={expectedPayouts(saved, config)}
         onChanged={onChanged}
       />
     </div>

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { GENERIC_ERROR } from '../lib/errors';
 import {
   type Checked,
@@ -31,17 +31,15 @@ interface Props {
 type Stage =
   | { kind: 'idle' }
   | { kind: 'busy' }
-  | { kind: 'confirm'; checked: Checked; preparedAgain: boolean }
+  | { kind: 'confirm'; checked: Checked }
   | { kind: 'finished'; finished: Finished };
-
-function sameAccept(left: Checked, right: Checked): boolean {
-  return JSON.stringify(left.accept) === JSON.stringify(right.accept);
-}
 
 /**
  * One owner event (A13): prepare, check locally, confirm, sign with O,
  * commit, then follow. A commit refused because the prepared change went
- * stale is prepared again once, by itself.
+ * stale is prepared again once, by itself, and signed with no second confirm:
+ * the fresh template passed the same check against the same rows, so it names
+ * the addresses the merchant confirmed. Leaving the page stops the follow.
  */
 export function OwnerEventAction({
   kind,
@@ -55,7 +53,14 @@ export function OwnerEventAction({
 }: Props) {
   const [stage, setStage] = useState<Stage>({ kind: 'idle' });
   const running = useRef(false);
+  const lifetime = useRef(new AbortController());
   const { api } = session;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
 
   const prepare = () =>
     prepareChecked(api, {
@@ -79,11 +84,14 @@ export function OwnerEventAction({
     }
     const outcome = await commitSigned(api, event, pendingStore);
     if (outcome.kind !== 'refused') {
-      const finished = await finishCommit(
-        api,
-        outcome,
-        session.sleep === undefined ? {} : { sleep: session.sleep },
-      );
+      const { signal } = lifetime.current;
+      const finished = await finishCommit(api, outcome, {
+        signal,
+        ...(session.sleep === undefined ? {} : { sleep: session.sleep }),
+      });
+      if (signal.aborted) {
+        return;
+      }
       setStage({ kind: 'finished', finished });
       onCommitted();
       return;
@@ -97,11 +105,7 @@ export function OwnerEventAction({
       fail(again.message);
       return;
     }
-    if (sameAccept(again.checked, checked)) {
-      await signAndCommit(again.checked, true);
-      return;
-    }
-    setStage({ kind: 'confirm', checked: again.checked, preparedAgain: true });
+    await signAndCommit(again.checked, true);
   };
 
   const exclusive = async (work: () => Promise<void>) => {
@@ -124,11 +128,11 @@ export function OwnerEventAction({
         fail(prepared.message);
         return;
       }
-      setStage({ kind: 'confirm', checked: prepared.checked, preparedAgain: false });
+      setStage({ kind: 'confirm', checked: prepared.checked });
     });
 
   if (stage.kind === 'confirm') {
-    const { checked, preparedAgain } = stage;
+    const { checked } = stage;
     return (
       <ConfirmOwnerEvent
         key={checked.template.created_at}
@@ -136,8 +140,7 @@ export function OwnerEventAction({
         storePubkey={storePubkey}
         operator={session.operator}
         proven={session.proven}
-        busy={false}
-        onSign={() => void exclusive(() => signAndCommit(checked, preparedAgain))}
+        onSign={() => void exclusive(() => signAndCommit(checked, false))}
         onCancel={() => setStage({ kind: 'idle' })}
       />
     );

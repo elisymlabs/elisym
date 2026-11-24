@@ -44,7 +44,7 @@ describe('watchWallets - solana (Wallet Standard)', () => {
     const stop = watchWallets('solana', onChange);
     track(stop);
     expect(lastList(onChange)).toEqual([
-      { id: expect.stringMatching(/^solana:/), name: 'Early', icon: ICON, family: 'solana' },
+      { id: expect.stringMatching(/^solana:/), name: 'Early', family: 'solana' },
     ]);
 
     track(
@@ -55,7 +55,7 @@ describe('watchWallets - solana (Wallet Standard)', () => {
     );
     const list = lastList(onChange);
     expect(list.map((choice) => choice.name)).toEqual(['Early', 'Late']);
-    expect(list[1]?.icon).toBeUndefined();
+    expect(list.every((choice) => !('icon' in choice))).toBe(true);
     expect(new Set(list.map((choice) => choice.id)).size).toBe(2);
   });
 
@@ -99,6 +99,54 @@ describe('watchWallets - solana (Wallet Standard)', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('one malformed wallet in a register call does not cost the others', () => {
+    const throwing = (field: string) =>
+      Object.defineProperty(fakeSolanaWallet({ name: `bad-${field}` }), field, {
+        get() {
+          throw new Error(`no ${field}`);
+        },
+      });
+    const badName = fakeSolanaWallet({ name: 'bad-name-string' });
+    Object.defineProperty(badName, 'name', {
+      value: {
+        toString() {
+          throw new Error('no name');
+        },
+      },
+    });
+    const first = fakeSolanaWallet({ name: 'A' });
+    const last = fakeSolanaWallet({ name: 'C' });
+    let registry: { register: (...wallets: unknown[]) => unknown } | undefined;
+    const keepRegistry = (event: Event) => {
+      registry = (event as CustomEvent<typeof registry>).detail;
+    };
+    window.addEventListener('wallet-standard:app-ready', keepRegistry);
+    track(() => window.removeEventListener('wallet-standard:app-ready', keepRegistry));
+    const onChange = vi.fn();
+    track(watchWallets('solana', onChange));
+    expect(() =>
+      registry?.register(first, throwing('chains'), throwing('features'), badName, null, last),
+    ).not.toThrow();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(lastList(onChange).map((choice) => choice.name)).toEqual(['A', 'C']);
+  });
+
+  it('a register call whose last wallet is not offered still announces the earlier ones', () => {
+    let registry: { register: (...wallets: unknown[]) => unknown } | undefined;
+    const keepRegistry = (event: Event) => {
+      registry = (event as CustomEvent<typeof registry>).detail;
+    };
+    window.addEventListener('wallet-standard:app-ready', keepRegistry);
+    track(() => window.removeEventListener('wallet-standard:app-ready', keepRegistry));
+    const onChange = vi.fn();
+    track(watchWallets('solana', onChange));
+    registry?.register(
+      fakeSolanaWallet({ name: 'Offered' }),
+      fakeSolanaWallet({ name: 'Unsigned', withSignMessage: false }),
+    );
+    expect(lastList(onChange).map((choice) => choice.name)).toEqual(['Offered']);
+  });
+
   it('a wallet whose register throws is simply skipped', () => {
     const onChange = vi.fn();
     track(watchWallets('solana', onChange));
@@ -118,9 +166,8 @@ describe('watchWallets - evm (EIP-6963)', () => {
     track(announceEvmWallet(window, { uuid: 'u-1', name: 'First', icon: ICON }, fakeEvmProvider()));
     const onChange = vi.fn();
     track(watchWallets('evm', onChange));
-    expect(lastList(onChange)).toEqual([
-      { id: 'evm:u-1', name: 'First', icon: ICON, family: 'evm' },
-    ]);
+    expect(lastList(onChange)).toEqual([{ id: 'evm:u-1', name: 'First', family: 'evm' }]);
+    expect(Object.keys(lastList(onChange)[0] ?? {})).toEqual(['id', 'name', 'family']);
 
     track(
       announceEvmWallet(
@@ -132,8 +179,8 @@ describe('watchWallets - evm (EIP-6963)', () => {
     track(announceEvmWallet(window, { uuid: 'u-1', name: 'Again' }, fakeEvmProvider()));
     expect(onChange).toHaveBeenCalledTimes(2);
     expect(lastList(onChange)).toEqual([
-      { id: 'evm:u-1', name: 'First', icon: ICON, family: 'evm' },
-      { id: 'evm:u-2', name: 'Second', icon: undefined, family: 'evm' },
+      { id: 'evm:u-1', name: 'First', family: 'evm' },
+      { id: 'evm:u-2', name: 'Second', family: 'evm' },
     ]);
   });
 
@@ -158,6 +205,40 @@ describe('watchWallets - evm (EIP-6963)', () => {
     );
     window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail: undefined }));
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('ignores an announcement whose getters throw, and keeps taking the next ones', () => {
+    const onChange = vi.fn();
+    track(watchWallets('evm', onChange));
+    const throwingInfo = Object.defineProperty({ provider: fakeEvmProvider() }, 'info', {
+      get() {
+        throw new Error('no info');
+      },
+    });
+    const throwingUuid = {
+      info: Object.defineProperty({ name: 'X' }, 'uuid', {
+        get() {
+          throw new Error('no uuid');
+        },
+      }),
+      provider: fakeEvmProvider(),
+    };
+    const throwingRequest = {
+      info: { uuid: 'bad-request', name: 'X' },
+      provider: Object.defineProperty({}, 'request', {
+        get() {
+          throw new Error('no request');
+        },
+      }),
+    };
+    for (const detail of [throwingInfo, throwingUuid, throwingRequest]) {
+      expect(() =>
+        window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail })),
+      ).not.toThrow();
+    }
+    expect(onChange).not.toHaveBeenCalled();
+    track(announceEvmWallet(window, { uuid: 'fine', name: 'Fine' }, fakeEvmProvider()));
+    expect(lastList(onChange).map((choice) => choice.id)).toEqual(['evm:fine']);
   });
 
   it('stops listening once stopped, and the families stay apart', () => {

@@ -12,14 +12,12 @@ export type WalletFamily = 'solana' | 'evm';
 export interface WalletChoice {
   id: string;
   name: string;
-  icon: string | undefined;
   family: WalletFamily;
 }
 
 /** The part of a Wallet Standard wallet a proof uses. */
 export interface StandardWallet {
   name: string;
-  icon?: string;
   chains: readonly string[];
   features: Record<string, unknown>;
 }
@@ -40,11 +38,6 @@ let solanaCounter = 0;
 /** The wallet behind a choice, or undefined when this page never offered it. */
 export function knownWallet(choice: WalletChoice): KnownWallet | undefined {
   return KNOWN_WALLETS.get(choice.id);
-}
-
-/** Only an inline image is shown: a remote icon URL would make the page fetch from a wallet's server. */
-function inlineIcon(icon: unknown): string | undefined {
-  return typeof icon === 'string' && icon.startsWith('data:') ? icon : undefined;
 }
 
 function canSignMessages(wallet: StandardWallet): boolean {
@@ -76,25 +69,29 @@ function solanaId(wallet: StandardWallet): string {
 function watchSolana(target: Window, onChange: (wallets: WalletChoice[]) => void): () => void {
   const found: WalletChoice[] = [];
   let stopped = false;
+  const offerSolana = (wallet: StandardWallet): boolean => {
+    if (stopped || !canSignMessages(wallet)) {
+      return false;
+    }
+    const name = String(wallet.name);
+    const id = solanaId(wallet);
+    if (found.some((choice) => choice.id === id)) {
+      return false;
+    }
+    KNOWN_WALLETS.set(id, { family: 'solana', wallet });
+    found.push({ id, name, family: 'solana' });
+    return true;
+  };
   const api = {
     register: (...wallets: StandardWallet[]) => {
       let added = false;
       for (const wallet of wallets) {
-        if (stopped || !canSignMessages(wallet)) {
+        // A wallet whose getters throw is skipped alone: the others in the same call still count.
+        try {
+          added = offerSolana(wallet) || added;
+        } catch {
           continue;
         }
-        const id = solanaId(wallet);
-        if (found.some((choice) => choice.id === id)) {
-          continue;
-        }
-        KNOWN_WALLETS.set(id, { family: 'solana', wallet });
-        found.push({
-          id,
-          name: String(wallet.name),
-          icon: inlineIcon(wallet.icon),
-          family: 'solana',
-        });
-        added = true;
       }
       if (added) {
         onChange([...found]);
@@ -121,33 +118,45 @@ function watchSolana(target: Window, onChange: (wallets: WalletChoice[]) => void
 }
 
 interface Eip6963Detail {
-  info?: { uuid?: unknown; name?: unknown; icon?: unknown };
+  info?: { uuid?: unknown; name?: unknown };
   provider?: { request?: unknown };
 }
 
 /** Collect EIP-6963 wallets as they announce themselves: ask once, take each uuid once. */
 function watchEvm(target: Window, onChange: (wallets: WalletChoice[]) => void): () => void {
   const found: WalletChoice[] = [];
-  const listener = (event: Event): void => {
-    const detail = (event as CustomEvent<unknown>).detail as Eip6963Detail | undefined;
+  const offerEvm = (detail: Eip6963Detail | undefined): boolean => {
     const info = detail?.info;
     const provider = detail?.provider;
+    const uuid = info?.uuid;
+    const name = info?.name;
     if (
-      info === undefined ||
-      typeof info.uuid !== 'string' ||
-      typeof info.name !== 'string' ||
+      typeof uuid !== 'string' ||
+      typeof name !== 'string' ||
       provider === undefined ||
       typeof provider.request !== 'function'
     ) {
-      return;
+      return false;
     }
-    const id = `evm:${info.uuid}`;
+    const id = `evm:${uuid}`;
     if (found.some((choice) => choice.id === id)) {
-      return;
+      return false;
     }
     KNOWN_WALLETS.set(id, { family: 'evm', provider: provider as Eip1193Provider });
-    found.push({ id, name: info.name, icon: inlineIcon(info.icon), family: 'evm' });
-    onChange([...found]);
+    found.push({ id, name, family: 'evm' });
+    return true;
+  };
+  const listener = (event: Event): void => {
+    let added = false;
+    // An announcement whose getters throw is ignored.
+    try {
+      added = offerEvm((event as CustomEvent<unknown>).detail as Eip6963Detail | undefined);
+    } catch {
+      return;
+    }
+    if (added) {
+      onChange([...found]);
+    }
   };
   target.addEventListener('eip6963:announceProvider', listener);
   target.dispatchEvent(new Event('eip6963:requestProvider'));

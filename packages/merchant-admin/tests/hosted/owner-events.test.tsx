@@ -575,3 +575,218 @@ describe('a signed event that is not published', () => {
     await turns(2);
   });
 });
+
+describe('review round 1', () => {
+  const EVM = 'eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e';
+  const EVM_ADDRESS = '0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed';
+
+  it('signs a fresh prepare that passes the check with no second confirm, even when an EVM address differs only in case', async () => {
+    const payouts: Payout[] = [{ caip19: EVM, address: EVM_ADDRESS, signature: '0xsig' }];
+    const upper: Payout[] = [
+      { ...payouts[0], address: '0x5AAEB6053F3E94C9B9A09F33669435E7EF1BEAED' } as Payout,
+    ];
+    let round = 0;
+    const commits: NostrEvent[] = [];
+    const { container, signEvent } = await open(
+      needingSigning({ config: storeConfig({ draftPayouts: payouts, revision: 2 }) }),
+      {
+        prepareOwnerEvent: async () => {
+          round += 1;
+          return {
+            template: payoutListTemplate(round === 1 ? payouts : upper, NOW + round),
+            expiresAt: NOW + 900,
+          };
+        },
+        commitOwnerEvent: async (event) => {
+          commits.push(event);
+          if (commits.length === 1) {
+            throw new ApiError(409, 'mismatch');
+          }
+          return { id: event.id, request: applied('r1') };
+        },
+      },
+      payouts,
+    );
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    await click(signButton(container));
+    await settle(() => text(container).includes(DONE));
+    expect(signEvent).toHaveBeenCalledTimes(2);
+    expect(commits[1]?.tags).toEqual(payoutListTemplate(upper).tags);
+  });
+
+  it('keeps the button, disabled, while it runs although the event stopped being needed', async () => {
+    const { OwnerEventAction } = await import('../../src/hosted/components/OwnerEventAction');
+    let answer: (value: { template: EventTemplate; expiresAt: number }) => void = () => undefined;
+    const fake = fakeSession({
+      prepareOwnerEvent: () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    });
+    const element = (needed: boolean) => (
+      <OwnerEventAction
+        kind={10133}
+        label="Publish payout list"
+        session={fake.session}
+        storePubkey={needingSigning().storePubkey}
+        pendingStore={false}
+        payouts={PAYOUTS}
+        needed={needed}
+        onCommitted={() => undefined}
+      />
+    );
+    mounted = await mount(element(true));
+    const { container } = mounted;
+    await click(buttonNamed(container, 'Publish payout list'));
+    await mounted.rerender(element(false));
+    expect(buttonNamed(container, 'Publish payout list').disabled).toBe(true);
+    answer({ template: payoutListTemplate(PAYOUTS), expiresAt: NOW + 900 });
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    await click(buttonNamed(container, 'Cancel'));
+    expect(container.querySelector('button')).toBeNull();
+  });
+
+  it('stops following, and tells nobody, once the page is left', async () => {
+    const { OwnerEventAction } = await import('../../src/hosted/components/OwnerEventAction');
+    const wakes: (() => void)[] = [];
+    const request = vi.fn(async (id: string) => ({
+      request: { ...applied(id), state: 'pending' as const },
+    }));
+    const fake = fakeSession({
+      prepareOwnerEvent: async () => ({
+        template: payoutListTemplate(PAYOUTS),
+        expiresAt: NOW + 900,
+      }),
+      commitOwnerEvent: async (event) => pendingAnswer(event),
+      request,
+    });
+    fake.session.sleep = () =>
+      new Promise<void>((resolve) => {
+        wakes.push(resolve);
+      });
+    for (const payout of PAYOUTS) {
+      fake.session.proven.add(payout.caip19, payout.address);
+    }
+    const onCommitted = vi.fn();
+    mounted = await mount(
+      <OwnerEventAction
+        kind={10133}
+        label="Publish payout list"
+        session={fake.session}
+        storePubkey={needingSigning().storePubkey}
+        pendingStore={false}
+        payouts={PAYOUTS}
+        needed
+        onCommitted={onCommitted}
+      />,
+    );
+    const { container } = mounted;
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    await click(signButton(container));
+    await settle(() => wakes.length === 1);
+    await mounted.unmount();
+    mounted = undefined;
+    await act(async () => {
+      wakes.shift()?.();
+    });
+    await turns(5);
+    expect(request).not.toHaveBeenCalled();
+    expect(wakes).toEqual([]);
+    expect(onCommitted).not.toHaveBeenCalled();
+  });
+
+  it('stops following a Retry, and tells nobody, once the page is left', async () => {
+    const { OwnerEventStatus } = await import('../../src/hosted/components/OwnerEventStatus');
+    const event = signed(authorizationTemplate());
+    const wakes: (() => void)[] = [];
+    const request = vi.fn(async (id: string) => ({
+      request: { ...applied(id), state: 'pending' as const },
+    }));
+    const fake = fakeSession({ commitOwnerEvent: async () => pendingAnswer(event), request });
+    fake.session.sleep = () =>
+      new Promise<void>((resolve) => {
+        wakes.push(resolve);
+      });
+    const onChanged = vi.fn();
+    mounted = await mount(
+      <OwnerEventStatus
+        id="auth"
+        committed={{ event, committedAt: NOW, publishedAt: null }}
+        pendingStore={false}
+        session={fake.session}
+        onChanged={onChanged}
+      />,
+    );
+    await click(buttonNamed(mounted.container, 'Retry publishing'));
+    await settle(() => wakes.length === 1);
+    await mounted.unmount();
+    mounted = undefined;
+    await act(async () => {
+      wakes.shift()?.();
+    });
+    await turns(5);
+    expect(request).not.toHaveBeenCalled();
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('checks a payout list against what this page saved until the config moves past that save', async () => {
+    const mine: Payout[] = [PAYOUTS[0] as Payout];
+    const theirs: Payout[] = [PAYOUTS[1] as Payout];
+    let view = storeView({
+      status: 'active',
+      config: storeConfig({ draftPayouts: mine, revision: 2 }),
+    });
+    let saves = 0;
+    const { container, signEvent } = await open(
+      view,
+      {
+        putConfig: async (input) => {
+          saves += 1;
+          if (saves > 1) {
+            throw new ApiError(409, 'stale_config');
+          }
+          return {
+            config: storeConfig({ draftPayouts: input.payouts, revision: 3 }),
+            requestId: null,
+          };
+        },
+        store: async () => view,
+        prepareOwnerEvent: async () => ({
+          template: payoutListTemplate(theirs),
+          expiresAt: NOW + 900,
+        }),
+      },
+      PAYOUTS,
+    );
+    await click(buttonNamed(container, 'Payouts'));
+    // Saved here at revision 3, yet the server's draft at that revision names another address.
+    view = storeView({
+      status: 'active',
+      config: storeConfig({ draftPayouts: theirs, revision: 3 }),
+      payouts: { needsSigning: true },
+    });
+    await click(buttonNamed(container, 'Save payouts'));
+    await settle(() => text(container).includes('Payouts saved.'));
+    await settle(() =>
+      [...container.querySelectorAll('button')].some(
+        (button) => button.textContent === 'Publish payout list',
+      ),
+    );
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => text(container).includes(TEMPLATE_PROBLEMS.payouts));
+    expect(signEvent).not.toHaveBeenCalled();
+
+    // Changed elsewhere since (revision 4, read again after a stale save): checked against that draft.
+    view = storeView({
+      status: 'active',
+      config: storeConfig({ draftPayouts: theirs, revision: 4 }),
+      payouts: { needsSigning: true },
+    });
+    await click(buttonNamed(container, 'Save payouts'));
+    await settle(() => inputById(container, 'payout-address-0').value === OTHER_SOLANA_ADDRESS);
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+  });
+});

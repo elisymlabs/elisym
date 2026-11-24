@@ -348,3 +348,63 @@ describe('overview', () => {
     expect(container.querySelector('#store-status')?.textContent).toBe('Active');
   });
 });
+
+describe('review round 1', () => {
+  it('saves the nip05 trimmed, and the relays in the allowlist order', async () => {
+    const puts: ConfigInput[] = [];
+    const { container } = await open(configured(), {
+      putConfig: async (input) => {
+        puts.push(input);
+        return { config: storeConfig({ revision: 8 }), requestId: null };
+      },
+    });
+    await click(buttonNamed(container, 'Settings'));
+    await type(inputById(container, 'settings-nip05'), '  a@b.example ');
+    await click(inputById(container, 'inbox-relay-0'));
+    await click(inputById(container, 'inbox-relay-0'));
+    await click(buttonNamed(container, 'Save settings'));
+    await settle(() => puts.length === 1);
+    expect(puts[0]).toMatchObject({ nip05: 'a@b.example', inboxRelays: RELAYS });
+  });
+
+  it('clears the read warning after a good read, and reads the products again for the new view', async () => {
+    const event = signed(authorizationTemplate());
+    let fail = true;
+    let products: ProductRecord[] = [];
+    const first = storeView({
+      status: 'active',
+      ownerEvents: { payto: null, auth: { event, committedAt: NOW, publishedAt: null } },
+    });
+    const { container } = await open(first, {
+      commitOwnerEvent: async () => ({ id: event.id, alreadyCommitted: true }),
+      products: async () => ({ products }),
+      store: async () => {
+        if (fail) {
+          throw new ApiError(0, 'network');
+        }
+        return { ...first };
+      },
+    });
+    const state = () => container.querySelector('#check-product')?.lastElementChild?.textContent;
+    await settle(() => state() === 'To do');
+    await click(buttonNamed(container, 'Retry publishing'));
+    await settle(() => text(container).includes(READ_FAILED_KEPT));
+    fail = false;
+    products = [product(true)];
+    await click(buttonNamed(container, 'Retry publishing'));
+    await settle(() => !text(container).includes(READ_FAILED_KEPT));
+    await settle(() => state() === 'Done');
+  });
+
+  it('offers no "Publish payout list" with no payouts saved', async () => {
+    const { container } = await open(
+      storeView({ status: 'active', config: storeConfig(), payouts: { needsSigning: true } }),
+    );
+    expect(container.querySelector('#payto-status')?.textContent).toBe('Save your payouts first.');
+    expect(
+      [...container.querySelectorAll('button')].some(
+        (button) => button.textContent === 'Publish payout list',
+      ),
+    ).toBe(false);
+  });
+});

@@ -1,4 +1,4 @@
-import type { Payout } from './types';
+import type { Payout, StoreConfig } from './types';
 import { familyOf } from './wallets';
 
 /** One payout row of the editor: a coin, the address (empty: not used), its wallet signature. */
@@ -47,4 +47,23 @@ export function payoutsOf(
     });
   }
   return { ok: true, payouts };
+}
+
+/** Payouts this page saved, and the config revision that save made. */
+export interface SavedPayouts {
+  payouts: Payout[];
+  revision: number;
+}
+
+/**
+ * The rows a payout list must name: what this page saved, until the config
+ * moves past that save (changed elsewhere since), then the config's draft.
+ */
+export function expectedPayouts(
+  saved: SavedPayouts | undefined,
+  config: StoreConfig,
+): readonly Payout[] {
+  return saved !== undefined && config.revision <= saved.revision
+    ? saved.payouts
+    : config.draftPayouts;
 }

@@ -108,7 +108,11 @@ export type CommitOutcome =
   | { kind: 'refused'; prepareAgain: boolean; message: string };
 
 function requestOutcome(request: CommitAnswer['request'], pendingStore: boolean): CommitOutcome {
-  if (request === undefined || request.state === 'applied') {
+  if (request === undefined) {
+    // Committed before: on a pending store it still waits for the activation.
+    return pendingStore ? { kind: 'on_activation' } : { kind: 'done' };
+  }
+  if (request.state === 'applied') {
     return { kind: 'done' };
   }
   if (request.state === 'failed') {
@@ -149,6 +153,8 @@ export type FollowOutcome =
 export interface FollowOptions {
   attempts?: number;
   sleep?: (ms: number) => Promise<void>;
+  /** The page left: no further reads. */
+  signal?: AbortSignal;
 }
 
 function delay(ms: number): Promise<void> {
@@ -157,7 +163,7 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-/** Read request `id` every 2 s until it is applied or failed, at most 30 s. */
+/** Read request `id` every 2 s until it is applied or failed, at most 30 s; a read that fails is skipped. */
 export async function followRequest(
   api: Pick<HostedApi, 'request'>,
   id: string,
@@ -167,6 +173,9 @@ export async function followRequest(
   const sleep = options.sleep ?? delay;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await sleep(FOLLOW_INTERVAL_MS);
+    if (options.signal?.aborted === true) {
+      return { kind: 'still' };
+    }
     let request: RequestView;
     try {
       ({ request } = await api.request(id));

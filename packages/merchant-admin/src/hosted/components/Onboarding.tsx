@@ -1,8 +1,9 @@
 import { type ReactNode, useState } from 'react';
 import { AuthLayout } from '../../components/AuthLayout';
 import { STALE_RELOADED, errorMessage } from '../lib/errors';
+import { type SavedPayouts, expectedPayouts } from '../lib/payout-rows';
 import type { StoreSession } from '../lib/store-session';
-import type { Payout, StoreView } from '../lib/types';
+import type { StoreView } from '../lib/types';
 import { BUTTON_SECONDARY, CARD } from '../styles';
 import { AuthorizationSection } from './AuthorizationSection';
 import { CreateStore } from './CreateStore';
@@ -29,7 +30,7 @@ export const FIRST_SAVE_NEEDS_PAYOUT =
  */
 export function Onboarding({ session, onOpen, onSignOut }: Props) {
   const [view, setView] = useState<StoreView | undefined>(undefined);
-  const [saved, setSaved] = useState<Payout[] | undefined>(undefined);
+  const [saved, setSaved] = useState<SavedPayouts | undefined>(undefined);
   const [relays, setRelays] = useState<string[]>(session.meta.inboxRelays);
   const [notice, setNotice] = useState<string | undefined>(undefined);
 
@@ -63,7 +64,7 @@ export function Onboarding({ session, onOpen, onSignOut }: Props) {
           config={config}
           edit={{ inboxRelays: relays }}
           onSaved={(next, payouts) => {
-            setSaved(payouts);
+            setSaved({ payouts, revision: next.revision });
             setView({ ...view, config: next });
             reload();
           }}
@@ -82,7 +83,7 @@ export function Onboarding({ session, onOpen, onSignOut }: Props) {
         <PayoutListSection
           session={session}
           view={view}
-          payouts={saved ?? config.draftPayouts}
+          payouts={expectedPayouts(saved, config)}
           onChanged={() => reload()}
         />
         <AuthorizationSection session={session} view={view} onChanged={() => reload()} />
