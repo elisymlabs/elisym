@@ -47,6 +47,42 @@ describe('the page loads an older loader that has not run yet', () => {
     await mounted.unmount();
   });
 
+  it('says so for a v1 script too', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const older = pageLoads('v1');
+    const mounted = await mount({ product: PRODUCT, customerRef: 'user_42' });
+    expect(loaderScripts()).toEqual([older]);
+    expect(olderLoaderWarnings(error.mock.calls)).toEqual([[OLDER_LOADER_WARNING]]);
+    await mounted.unmount();
+  });
+
+  it('says so for a script of an unknown version', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const unknown = pageLoads('v5');
+    const mounted = await mount({ product: PRODUCT, customerRef: 'user_42' });
+    expect(loaderScripts()).toEqual([unknown]);
+    expect(olderLoaderWarnings(error.mock.calls)).toEqual([[OLDER_LOADER_WARNING]]);
+    await mounted.unmount();
+  });
+
+  it('says nothing when the page loads v4 itself', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const own = pageLoads('v4');
+    const mounted = await mount({ product: PRODUCT, customerRef: 'user_42' });
+    expect(loaderScripts()).toEqual([own]);
+    expect(olderLoaderWarnings(error.mock.calls)).toEqual([]);
+    await mounted.unmount();
+  });
+
+  it('says so when v4 sits next to an older script', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    pageLoads('v4');
+    pageLoads('v2');
+    const mounted = await mount({ product: PRODUCT, customerRef: 'user_42' });
+    expect(olderLoaderWarnings(error.mock.calls)).toEqual([[OLDER_LOADER_WARNING]]);
+    await mounted.unmount();
+  });
+
   it('says nothing for an empty reference that is not required', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     pageLoads('v1');
