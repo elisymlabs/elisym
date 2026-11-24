@@ -1,11 +1,11 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
-import { ADMIN_CORE_DIR, DEDUPE } from './vite.config';
+import { ALIASES, DEDUPE } from './vite.config';
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: { '@merchant-admin-core': ADMIN_CORE_DIR },
+    alias: ALIASES,
     dedupe: DEDUPE,
   },
   test: {

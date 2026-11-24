@@ -1,56 +1,38 @@
 /**
- * Fails the build when the admin is not safe to deploy: its page loads only
- * its own files with no inline script, no chunk names the checkout's origin or
- * a Node built-in, and `vercel.json` sets the admin CSP on every path.
+ * Fails the build when the admin is not safe to deploy: its two pages (`/`,
+ * self-host, and `/hosted/`) load only their own files with no inline script,
+ * no chunk names the checkout's origin (but the one loader URL) or a Node
+ * built-in, and `vercel.json` sets each page's CSP on its own disjoint path:
+ * the hosted page connects only to the committed API's origin, or nowhere.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import {
-  chunkProblems,
-  cspOfEveryPath,
-  cspProblems,
-  headerProblems,
-  htmlProblems,
-} from './build-checks';
+import { PAYCORE_API_BASE, PAYCORE_OPERATOR } from '../src/hosted/config';
+import { hostedConnectSrc, readHostedConfig } from '../src/hosted/lib/hosted-config';
+import { V3_LOADER_URL, type VercelConfig, vercelProblems } from './admin-checks';
+import { chunkProblems, htmlProblems } from './build-checks';
 
 const DIST = new URL('../dist/', import.meta.url);
 
-/** The admin CSP's load-bearing directives, exactly. */
-const ADMIN_CSP: Record<string, string[]> = {
-  'default-src': ["'none'"],
-  'script-src': ["'self'"],
-  'style-src': ["'self'"],
-  'img-src': ["'self'", 'data:'],
-  'connect-src': ['wss:'],
-  'frame-src': ["'none'"],
-  'frame-ancestors': ["'none'"],
-  'base-uri': ["'none'"],
-  'form-action': ["'none'"],
-  'object-src': ["'none'"],
-  'worker-src': ["'none'"],
-};
-
-/** No opener handle, no referrer, no sniffing, on every path. */
-const ADMIN_HEADERS: Record<string, string> = {
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Referrer-Policy': 'no-referrer',
-  'X-Content-Type-Options': 'nosniff',
-};
-
-const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+const config = readHostedConfig(PAYCORE_API_BASE, PAYCORE_OPERATOR);
+const vercel: VercelConfig = JSON.parse(
+  readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'),
+);
 
 const problems = [
+  ...(config.kind === 'invalid' ? [config.problem] : []),
   ...htmlProblems(readFileSync(new URL('index.html', DIST), 'utf8')),
+  ...htmlProblems(readFileSync(new URL('hosted/index.html', DIST), 'utf8')),
   ...readdirSync(new URL('assets/', DIST))
     .filter((name) => name.endsWith('.js'))
     .flatMap((name) =>
-      chunkProblems(name, readFileSync(new URL(`assets/${name}`, DIST), 'utf8'), [
-        'pay.elisym.network',
-      ]),
+      chunkProblems(
+        name,
+        readFileSync(new URL(`assets/${name}`, DIST), 'utf8'),
+        ['pay.elisym.network'],
+        [V3_LOADER_URL],
+      ),
     ),
-  ...cspProblems(cspOfEveryPath(vercel), ADMIN_CSP),
-  ...headerProblems(vercel, ADMIN_HEADERS),
-  // The page that holds the key is never kept in a cache (nor, in most browsers, the back/forward cache).
-  ...headerProblems(vercel, { 'Cache-Control': 'no-store' }, '/((?!assets/).*)'),
+  ...vercelProblems(vercel, hostedConnectSrc(config)),
 ];
 if (problems.length > 0) {
   console.error(problems.join('\n'));

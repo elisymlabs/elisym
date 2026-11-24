@@ -346,6 +346,7 @@
         "nostr-tools": "~2.23.0",
         "react": "~19.2.0",
         "react-dom": "~19.2.0",
+        "zod": "~4.6.7",
       },
       "devDependencies": {
         "@tailwindcss/vite": "~4.2.0",
@@ -353,6 +354,7 @@
         "@types/react": "~19.2.0",
         "@types/react-dom": "~19.2.0",
         "@vitejs/plugin-react": "~4.7.0",
+        "fake-indexeddb": "~6.2.5",
         "happy-dom": "~21.0.4",
         "tailwindcss": "~4.2.0",
         "typescript": "~5.7.0",

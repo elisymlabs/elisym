@@ -113,6 +113,12 @@ export function SignIn({ onKey }: Props) {
               Start one in the quickstart
             </a>
           </p>
+          <p className="text-13 text-text-3 mt-8 text-center">
+            Store hosted by PayCore?{' '}
+            <a href="/hosted/" className="text-text-2 hover:text-text underline underline-offset-2">
+              Sign in with your owner key
+            </a>
+          </p>
         </div>
 
         <TrustPanel />
