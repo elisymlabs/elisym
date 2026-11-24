@@ -1,4 +1,4 @@
-import { short } from '../lib/core';
+import { short } from '../lib/short';
 import { Icon } from './Icon';
 
 interface Props {

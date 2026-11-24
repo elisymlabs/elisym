@@ -71,3 +71,58 @@ export function vercelProblems(vercel: VercelConfig, hostedConnect: string[]): s
       : [`the first rewrite must send ${HOSTED_SOURCE} to /hosted/index.html`]),
   ];
 }
+
+/**
+ * Marks of the relay read code (nostr-tools' pool and relay, the self-host
+ * session): none may reach the page that holds the owner key, whose CSP lets
+ * it connect to the PayCore API only. (`wss://` itself is no mark: the hex
+ * helpers' module holds nostr-tools' `normalizeURL`.)
+ */
+export const RELAY_CODE_MARKS = ['subscribeMany', '"REQ"', "'REQ'"] as const;
+
+const ASSET_RE = /^\/assets\/([\w.-]+\.js)$/;
+const CHUNK_IMPORT_RE = /(?:from|import)\s*\(?\s*["']\.\/([\w.-]+\.js)["']/g;
+
+/** The scripts a page loads: its module script and its modulepreloads, by asset file name. */
+function pageScripts(html: string): string[] {
+  const tags = html.match(/<(?:script|link)\b[^>]*>/g) ?? [];
+  return tags.flatMap((tag) => {
+    const isScript = tag.startsWith('<script');
+    const isPreload = /\brel="modulepreload"/.test(tag);
+    if (!isScript && !isPreload) {
+      return [];
+    }
+    const url = /\b(?:src|href)="([^"]+)"/.exec(tag)?.[1] ?? '';
+    const name = ASSET_RE.exec(url)?.[1];
+    return name === undefined ? [] : [name];
+  });
+}
+
+/** Every chunk a page can run: its scripts and, transitively, the chunks they import. */
+export function reachableChunks(html: string, readChunk: (name: string) => string): string[] {
+  const seen = new Set<string>();
+  const queue = pageScripts(html);
+  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    if (seen.has(next)) {
+      continue;
+    }
+    seen.add(next);
+    for (const match of readChunk(next).matchAll(CHUNK_IMPORT_RE)) {
+      const imported = match[1];
+      if (imported !== undefined) {
+        queue.push(imported);
+      }
+    }
+  }
+  return [...seen];
+}
+
+/** The hosted page's chunks that carry relay read code. */
+export function hostedRelayProblems(html: string, readChunk: (name: string) => string): string[] {
+  return reachableChunks(html, readChunk).flatMap((name) => {
+    const code = readChunk(name);
+    return RELAY_CODE_MARKS.filter((mark) => code.includes(mark)).map(
+      (mark) => `${name} is loaded by /hosted/ and holds relay code (${mark})`,
+    );
+  });
+}

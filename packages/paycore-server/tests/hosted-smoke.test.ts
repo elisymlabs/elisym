@@ -14,6 +14,7 @@ import { checkOwnerTemplate } from '@hosted-admin/owner-event-check';
 import { finishCommit, requestOutcome } from '@hosted-admin/owner-flow';
 import { secretKeySigner } from '@hosted-admin/signer';
 import type { OwnerEventKind, Payout } from '@hosted-admin/types';
+import { getBase58Decoder } from '@solana/kit';
 import { afterEach, describe, expect, it } from 'vitest';
 import { chain } from '../../merchant-node/tests/fixtures';
 import { createAdminApi } from '../src/admin/api';
@@ -43,6 +44,7 @@ import { freshDb } from './pglite-db';
 import { BASE, OPERATOR, solanaWallet } from './stores-fixtures';
 
 const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000c0de';
+const REFUND_ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000c0df';
 
 const supervisors: StoreSupervisor[] = [];
 afterEach(async () => {
@@ -192,13 +194,25 @@ describe('the hosted admin, end to end against the real server', () => {
       reportedTxs: [],
     };
     state.unresolvedPayments.push({ key: orderKey, tx: '3'.repeat(88), at: NOW - 500 });
+    // A second one, refunded by hand below.
+    const refundKey = `${buyer.pubkey}:${REFUND_ORDER_ID}`;
+    state.orders[refundKey] = {
+      ...state.orders[orderKey],
+      key: refundKey,
+      orderId: REFUND_ORDER_ID,
+      rumorId: 's'.repeat(64),
+      createdAt: NOW - 700,
+      reportedTxs: [],
+    };
+    state.unresolvedPayments.push({ key: refundKey, tx: '4'.repeat(88), at: NOW - 500 });
     await db.query('update ledgers set state = $2 where owner = $1', [
       owner.pubkey,
       serializeLedger(state),
     ]);
 
     // The orders view, through the client, as the Orders tab reads it.
-    const [entry] = orderEntries(await api.orders());
+    const [entry, refundEntry] = orderEntries(await api.orders());
+    expect(refundEntry).toMatchObject({ key: refundKey, state: 'unresolved' });
     expect(entry).toMatchObject({
       key: orderKey,
       orderId: ORDER_ID,
@@ -224,10 +238,51 @@ describe('the hosted admin, end to end against the real server', () => {
 
     const after = await api.orders();
     expect(after.answeredByHand[orderKey]).toEqual({ kind: 'delivered' });
-    expect(after.unresolvedPayments).toEqual([]);
-    expect(orderEntries(after).map((answered) => [answered.orderId, answered.state])).toEqual([
-      [ORDER_ID, 'answered'],
-    ]);
+    expect(after.unresolvedPayments.map((payment) => payment.key)).toEqual([refundKey]);
+
+    // A refund sent by hand, typed in USDC as the form takes it: subunits by the coin's decimals.
+    const refundTx = getBase58Decoder().decode(new Uint8Array(64).fill(5));
+    const refund = handInput({
+      kind: 'refunded',
+      tx: refundTx,
+      amount: '2.5',
+      caip19: USDC_DEVNET_CAIP19,
+    });
+    if (!refund.ok) {
+      throw new Error(refund.message);
+    }
+    expect(refund.input).toEqual({
+      kind: 'refunded',
+      tx: refundTx,
+      amount: '2500000',
+      asset: USDC_DEVNET_CAIP19,
+    });
+    const refunded = await api.handAnswer(refundKey, refund.input);
+    await second.drainAll();
+    expect(
+      await finishCommit(api, requestOutcome(refunded.request, false), {
+        sleep: async () => undefined,
+      }),
+    ).toMatchObject({ tone: 'info' });
+
+    const closed = await api.orders();
+    expect(closed.answeredByHand[refundKey]).toEqual({
+      kind: 'refunded',
+      tx: refundTx,
+      amount: '2500000',
+      caip19: USDC_DEVNET_CAIP19,
+    });
+    expect(closed.unresolvedPayments).toEqual([]);
+    expect(
+      orderEntries(closed)
+        .map((answered) => [answered.orderId, answered.state])
+        .sort(),
+    ).toEqual(
+      [
+        [ORDER_ID, 'answered'],
+        [REFUND_ORDER_ID, 'answered'],
+      ].sort(),
+    );
     expect(
       world.events.some(
         (event) =>

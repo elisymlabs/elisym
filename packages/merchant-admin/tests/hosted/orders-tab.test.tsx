@@ -1,3 +1,4 @@
+import { getBase58Decoder } from '@solana/kit';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NOTHING_ON_SALE } from '../../src/hosted/components/EmbedTab';
@@ -6,7 +7,11 @@ import { NEEDS_ANSWER, ORDERS_KEPT, OrdersTab } from '../../src/hosted/component
 import { StoreShell } from '../../src/hosted/components/StoreShell';
 import { ApiError } from '../../src/hosted/lib/api';
 import { GENERIC_REQUEST_FAILURE } from '../../src/hosted/lib/errors';
-import { AMOUNT_PROBLEMS } from '../../src/hosted/lib/hand-answer';
+import {
+  AMOUNT_PROBLEMS,
+  BAD_SOLANA_TX,
+  EVM_REFUNDS_LATER,
+} from '../../src/hosted/lib/hand-answer';
 import type { StoreApi } from '../../src/hosted/lib/store-session';
 import type { HandInput, OrderView, OrdersView, StoreView } from '../../src/hosted/lib/types';
 import { type Mounted, buttonNamed, click, inputById, mount, settle, turns } from '../mount';
@@ -23,6 +28,8 @@ import {
 
 const BUYER = 'b'.repeat(64);
 const TX = '5'.repeat(88);
+const SOLANA_SIG = getBase58Decoder().decode(new Uint8Array(64).fill(9));
+const TEMPO_USD = 'eip155:42431/erc20:0x20c0000000000000000000000000000000000000';
 const PAID = {
   signature: TX,
   amount: '5000000',
@@ -308,12 +315,13 @@ describe('hand answers', () => {
     expect(text(container)).not.toContain(FINAL_FIRST);
   });
 
-  it('records a refund in subunits of the chosen coin', async () => {
+  it('records a refund in subunits of the chosen coin, and says EIP-3009 refunds wait', async () => {
     const sent: HandInput[] = [];
     const view = activeView({
       config: storeConfig({
         draftPayouts: [
           { caip19: SOLANA_USDC, address: SOLANA_ADDRESS },
+          { caip19: TEMPO_USD, address: '0xab' },
           { caip19: BASE_SEPOLIA_USDC, address: '0xab' },
         ],
       }),
@@ -336,22 +344,151 @@ describe('hand answers', () => {
       },
       view,
     );
+    expect(text(container)).toContain(EVM_REFUNDS_LATER(['USDC on Base Sepolia']));
     await click(inputById(container, `${HAND}-refunded`));
+    const offered = [...container.querySelectorAll(`#${HAND}-coin option`)].map((option) =>
+      option.getAttribute('value'),
+    );
+    expect(offered).toEqual(['', SOLANA_USDC, TEMPO_USD]);
     await click(inputById(container, `${HAND}-final`));
-    await type(inputById(container, `${HAND}-tx`), ' 0xrefund ');
+    await type(inputById(container, `${HAND}-tx`), ` 0x${'AB'.repeat(32)} `);
     await type(inputById(container, `${HAND}-amount`), '1.0000001');
     // Two coins: none is chosen for the merchant.
     await click(buttonNamed(container, 'Send answer'));
     expect(text(container)).toContain('Choose the coin the refund was paid in.');
-    await choose(container, `${HAND}-coin`, BASE_SEPOLIA_USDC);
+    await choose(container, `${HAND}-coin`, SOLANA_USDC);
+    await click(buttonNamed(container, 'Send answer'));
+    expect(text(container)).toContain(BAD_SOLANA_TX);
+    await choose(container, `${HAND}-coin`, TEMPO_USD);
     await click(buttonNamed(container, 'Send answer'));
     expect(text(container)).toContain(AMOUNT_PROBLEMS.decimals);
     await type(inputById(container, `${HAND}-amount`), '2.5');
     await click(buttonNamed(container, 'Send answer'));
     await settle(() => text(container).includes(HAND_TEXTS.done));
     expect(sent).toEqual([
-      { kind: 'refunded', tx: '0xrefund', amount: '2500000', asset: BASE_SEPOLIA_USDC },
+      { kind: 'refunded', tx: `0x${'ab'.repeat(32)}`, amount: '2500000', asset: TEMPO_USD },
     ]);
+  });
+
+  it('offers no refund when no payout coin takes one yet', async () => {
+    const { container } = await openStuck(
+      {},
+      activeView({
+        config: storeConfig({ draftPayouts: [{ caip19: BASE_SEPOLIA_USDC, address: '0xab' }] }),
+      }),
+    );
+    expect(inputById(container, `${HAND}-refunded`).disabled).toBe(true);
+    expect(inputById(container, `${HAND}-complete`).checked).toBe(true);
+    expect(text(container)).toContain(EVM_REFUNDS_LATER(['USDC on Base Sepolia']));
+  });
+
+  it('keeps how the answer ended across collapse and expand, and offers no second answer', async () => {
+    let calls = 0;
+    const { container } = await openStuck({
+      handAnswer: async () => {
+        calls += 1;
+        return {
+          request: {
+            id: 'r1',
+            kind: 'hand_answer',
+            state: 'applied',
+            result: null,
+            createdAt: NOW,
+            appliedAt: NOW,
+          },
+        };
+      },
+    });
+    await click(inputById(container, `${HAND}-final`));
+    await click(buttonNamed(container, 'Send answer'));
+    await settle(() => text(container).includes(HAND_TEXTS.done));
+    await click(rowButton(container, 'stuck'));
+    await click(rowButton(container, 'stuck'));
+    expect(text(container)).toContain(HAND_TEXTS.done);
+    expect(container.querySelector(`#${HAND}-final`)).toBeNull();
+    expect(calls).toBe(1);
+  });
+
+  it('keeps following an answer collapsed while it is sent, and says how it ended', async () => {
+    let calls = 0;
+    let release: () => void = () => undefined;
+    const { container, onChanged } = await openStuck({
+      handAnswer: async () => {
+        calls += 1;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { request: { id: 'r1', state: 'pending' } };
+      },
+      request: async (id) => ({
+        request: {
+          id,
+          kind: 'hand_answer',
+          state: 'applied',
+          result: null,
+          createdAt: NOW,
+          appliedAt: NOW,
+        },
+      }),
+    });
+    await click(inputById(container, `${HAND}-final`));
+    await click(buttonNamed(container, 'Send answer'));
+    expect(text(container)).toContain('Sending the answer...');
+    expect(buttonNamed(container, 'Send answer').disabled).toBe(true);
+    await click(rowButton(container, 'stuck'));
+    await click(rowButton(container, 'stuck'));
+    expect(buttonNamed(container, 'Send answer').disabled).toBe(true);
+    await act(async () => release());
+    await settle(() => text(container).includes(HAND_TEXTS.done));
+    expect(calls).toBe(1);
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(container.querySelector(`#${HAND}-final`)).toBeNull();
+  });
+
+  it('stops following once the orders are left', async () => {
+    let release: () => void = () => undefined;
+    const { container, onChanged } = await openStuck({
+      handAnswer: async () => ({ request: { id: 'r1', state: 'pending' } }),
+      request: async (id) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return {
+          request: {
+            id,
+            kind: 'hand_answer',
+            state: 'applied',
+            result: null,
+            createdAt: NOW,
+            appliedAt: NOW,
+          },
+        };
+      },
+    });
+    await click(inputById(container, `${HAND}-final`));
+    await click(buttonNamed(container, 'Send answer'));
+    await settle(() => onChanged.mock.calls.length === 1);
+    await mounted?.unmount();
+    mounted = undefined;
+    await act(async () => release());
+    await turns(3);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('says a pending store answer goes out at activation, with no follow', async () => {
+    const request = vi.fn();
+    const { container, sleeps } = await openStuck(
+      {
+        handAnswer: async () => ({ request: { id: 'r1', state: 'pending' } }),
+        request,
+      },
+      activeView({ status: 'pending' }),
+    );
+    await click(inputById(container, `${HAND}-final`));
+    await click(buttonNamed(container, 'Send answer'));
+    await settle(() => text(container).includes(HAND_TEXTS.onActivation));
+    expect(request).not.toHaveBeenCalled();
+    expect(sleeps).toEqual([]);
   });
 
   it('picks the only payout coin by itself, and Refresh reads a still-applying answer again', async () => {
@@ -380,11 +517,13 @@ describe('hand answers', () => {
     });
     await click(inputById(container, `${HAND}-refunded`));
     await click(inputById(container, `${HAND}-final`));
-    await type(inputById(container, `${HAND}-tx`), 'tx1');
+    await type(inputById(container, `${HAND}-tx`), SOLANA_SIG);
     await type(inputById(container, `${HAND}-amount`), '3');
     await click(buttonNamed(container, 'Send answer'));
     await settle(() => text(container).includes(HAND_TEXTS.still));
-    expect(sent).toEqual([{ kind: 'refunded', tx: 'tx1', amount: '3000000', asset: SOLANA_USDC }]);
+    expect(sent).toEqual([
+      { kind: 'refunded', tx: SOLANA_SIG, amount: '3000000', asset: SOLANA_USDC },
+    ]);
     applied = true;
     const refreshes = [...container.querySelectorAll('button')].filter(
       (button) => button.textContent === 'Refresh',
@@ -519,6 +658,26 @@ describe('hand answers', () => {
 });
 
 describe('an order answered by hand', () => {
+  it('links the refund transaction on its explorer, with the amount in the coin', async () => {
+    const { container } = await openTab({
+      orders: [],
+      answeredByHand: {
+        [`${BUYER}:gone`]: {
+          kind: 'refunded',
+          tx: SOLANA_SIG,
+          amount: '2500000',
+          caip19: SOLANA_USDC,
+        },
+      },
+      unresolvedPayments: [],
+    });
+    await click(rowButton(container, 'gone'));
+    expect(field(container, 'hand')).toBe('refunded by hand: 2.5 USDC');
+    expect(container.querySelector('a')?.getAttribute('href')).toBe(
+      `https://explorer.solana.com/tx/${SOLANA_SIG}?cluster=devnet`,
+    );
+  });
+
   it('offers no hand answer and counts none, though a payment on it is still listed', async () => {
     const { container } = await openTab({
       orders: [order('stuck')],

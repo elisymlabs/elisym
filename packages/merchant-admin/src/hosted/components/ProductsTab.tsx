@@ -86,7 +86,7 @@ export function ProductsTab({ session, view, onChanged }: Props) {
         <button
           type="button"
           className={BUTTON_SECONDARY}
-          disabled={editing !== undefined || importing}
+          disabled={products === undefined || editing !== undefined || importing}
           onClick={() => {
             setNotice(undefined);
             setEditing({ kind: 'new' });

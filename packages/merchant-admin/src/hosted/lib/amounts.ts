@@ -13,7 +13,7 @@ const AmountDecimal = Decimal.clone({ precision: 100, toExpNeg: -100, toExpPos: 
 /** The server's refund amount: 1 to 39 digits, no leading zero (`REFUND_AMOUNT_RE`). */
 export const MAX_SUBUNIT_DIGITS = 39;
 
-const TYPED_AMOUNT_RE = /^\d+(?:\.\d+)?$/;
+const TYPED_AMOUNT_RE = /^(\d+)(?:\.(\d+))?$/;
 
 export type AmountProblem = 'format' | 'negative' | 'zero' | 'decimals' | 'large';
 
@@ -21,27 +21,37 @@ export type SubunitsOutcome =
   | { ok: true; subunits: string }
   | { ok: false; problem: AmountProblem };
 
-/** A coin amount typed in whole units (`1.5`) as integer subunits of a coin with `decimals`. */
+/**
+ * A coin amount typed in whole units (`1.5`) as integer subunits of a coin
+ * with `decimals`. The decimals and the size are judged on the typed digits
+ * before any arithmetic, so no amount is ever rounded into range.
+ */
 export function toSubunits(typed: string, decimals: number): SubunitsOutcome {
   const text = typed.trim();
   if (text.startsWith('-')) {
     return { ok: false, problem: 'negative' };
   }
-  if (!TYPED_AMOUNT_RE.test(text)) {
+  const match = TYPED_AMOUNT_RE.exec(text);
+  if (match === null) {
     return { ok: false, problem: 'format' };
   }
-  const subunits = new AmountDecimal(text).times(new AmountDecimal(10).pow(decimals));
-  if (!subunits.isInteger()) {
+  const whole = (match[1] ?? '').replace(/^0+/, '');
+  const fraction = (match[2] ?? '').replace(/0+$/, '');
+  if (fraction.length > decimals) {
     return { ok: false, problem: 'decimals' };
   }
-  if (subunits.isZero()) {
+  if (whole === '' && fraction === '') {
     return { ok: false, problem: 'zero' };
   }
-  const digits = subunits.toFixed(0);
-  if (digits.length > MAX_SUBUNIT_DIGITS) {
+  if (whole.length + decimals > MAX_SUBUNIT_DIGITS) {
     return { ok: false, problem: 'large' };
   }
-  return { ok: true, subunits: digits };
+  const subunits = new AmountDecimal(
+    `${whole === '' ? '0' : whole}.${fraction === '' ? '0' : fraction}`,
+  )
+    .times(new AmountDecimal(10).pow(decimals))
+    .toFixed(0);
+  return { ok: true, subunits };
 }
 
 /** Integer subunits of a coin with `decimals`, in whole units (`1500000`, 6 -> `1.5`). */

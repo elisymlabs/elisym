@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../lib/errors';
 import {
   CSV_COLUMNS,
@@ -44,6 +44,10 @@ function problemLine(problem: CsvProblem): string {
 export function CsvImport({ session, locked, onBusy, onImported }: Props) {
   const [stage, setStage] = useState<Stage>({ kind: 'idle' });
   const [inputKey, setInputKey] = useState(0);
+  const running = useRef<AbortController | undefined>(undefined);
+
+  // Leaving the tab stops the run between rows: nothing more is sent, and nothing is shown.
+  useEffect(() => () => running.current?.abort(), []);
 
   const choose = async (file: File | undefined) => {
     if (file === undefined) {
@@ -70,18 +74,29 @@ export function CsvImport({ session, locked, onBusy, onImported }: Props) {
   };
 
   const run = async (rows: CsvRow[]) => {
+    const controller = new AbortController();
+    running.current = controller;
     setStage({ kind: 'running', rows, written: 0 });
     onBusy(true);
     const outcome = await importProducts(
       rows,
       (d, input) => session.api.putProduct(d, input),
-      (written) => setStage({ kind: 'running', rows, written }),
+      (written) => {
+        if (!controller.signal.aborted) {
+          setStage({ kind: 'running', rows, written });
+        }
+      },
+      controller.signal,
     );
+    if (controller.signal.aborted) {
+      return;
+    }
+    running.current = undefined;
     onBusy(false);
     setInputKey((key) => key + 1);
     if (outcome.done) {
       setStage({ kind: 'done', written: outcome.written });
-    } else {
+    } else if ('failed' in outcome) {
       setStage({
         kind: 'stopped',
         written: outcome.written,

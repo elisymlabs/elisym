@@ -130,20 +130,42 @@ describe('the products list', () => {
   it('applies only the newest read: a slow earlier answer does not overwrite it', async () => {
     let release: (() => void) | undefined;
     let reads = 0;
-    const fake = fakeSession({
+    const { container } = await open([], {
       products: async () => {
         reads += 1;
         if (reads === 1) {
+          return { products: [] };
+        }
+        if (reads === 2) {
           return new Promise((resolve) => {
             release = () => resolve({ products: [TEA] });
           });
         }
         return { products: [MUG] };
       },
-      putProduct: async (d: string, input: ProductInput) => ({
-        product: { ...input, d, onSale: true, updatedAt: NOW },
-        requestId: null,
-      }),
+    });
+    for (const d of ['one', 'two']) {
+      await click(buttonNamed(container, 'Add product'));
+      await type(inputById(container, 'product-d'), d);
+      await type(inputById(container, 'product-title'), 'Mug');
+      await type(inputById(container, 'product-price'), '1');
+      await click(buttonNamed(container, 'Save product'));
+      await settle(() => container.querySelector('#product-d') === null);
+    }
+    await settle(() => text(container).includes('mug - $12.5'));
+    await act(async () => release?.());
+    await turns(3);
+    expect(text(container)).toContain('mug - $12.5');
+    expect(text(container)).not.toContain('Green tea');
+  });
+
+  it('holds Add product until the list is read, so a new id cannot replace a product unseen', async () => {
+    let release: (() => void) | undefined;
+    const fake = fakeSession({
+      products: () =>
+        new Promise((resolve) => {
+          release = () => resolve({ products: [TEA] });
+        }),
     });
     mounted = await mount(
       <ProductsTab
@@ -153,16 +175,9 @@ describe('the products list', () => {
       />,
     );
     const { container } = mounted;
-    await click(buttonNamed(container, 'Add product'));
-    await type(inputById(container, 'product-d'), 'mug');
-    await type(inputById(container, 'product-title'), 'Mug');
-    await type(inputById(container, 'product-price'), '1');
-    await click(buttonNamed(container, 'Save product'));
-    await settle(() => text(container).includes('mug - $12.5'));
+    expect(buttonNamed(container, 'Add product').disabled).toBe(true);
     await act(async () => release?.());
-    await turns(3);
-    expect(text(container)).toContain('mug - $12.5');
-    expect(text(container)).not.toContain('Green tea');
+    await settle(() => !buttonNamed(container, 'Add product').disabled);
   });
 
   it('says when there are none', async () => {
@@ -364,8 +379,11 @@ describe('the CSV import', () => {
     );
     await settle(() => text(container).includes('2 products are ready'));
     expect(puts).toEqual([]);
+    const chosen = inputById(container, 'csv-file');
     await click(buttonNamed(container, 'Import products'));
     await settle(() => text(container).includes('Imported 2 products.'));
+    // The file input is a fresh one: the same file can be chosen again.
+    expect(inputById(container, 'csv-file')).not.toBe(chosen);
     expect(puts).toEqual(['b', 'a']);
     expect(onChanged).toHaveBeenCalledTimes(1);
     expect(products).toHaveBeenCalled();
@@ -441,6 +459,29 @@ describe('the CSV import', () => {
       `Line 2 (a) was not saved: ${errorMessage(new ApiError(400, 'bad_price'))}`,
     );
     expect(onChanged).not.toHaveBeenCalled();
+  });
+
+  it('stops sending when the tab is left mid-import', async () => {
+    const puts: string[] = [];
+    let release: (() => void) | undefined;
+    const { container } = await open([], {
+      putProduct: (d: string, input: ProductInput) => {
+        puts.push(d);
+        return new Promise((resolve) => {
+          release = () =>
+            resolve({ product: { ...input, d, onSale: true, updatedAt: NOW }, requestId: null });
+        });
+      },
+    });
+    await chooseFile(container, new File([`${HEADER}\na,A,1,,,,\nb,B,1,,,,`], 'p.csv'));
+    await settle(() => text(container).includes('2 products are ready'));
+    await click(buttonNamed(container, 'Import products'));
+    await settle(() => puts.length === 1);
+    await mounted?.unmount();
+    mounted = undefined;
+    await act(async () => release?.());
+    await turns(5);
+    expect(puts).toEqual(['a']);
   });
 
   it('is held while a product is being edited', async () => {

@@ -6,6 +6,8 @@ import {
   HOSTED_SOURCE,
   SELF_HOST_SOURCE,
   V3_LOADER_URL,
+  hostedRelayProblems,
+  reachableChunks,
   vercelProblems,
 } from '../scripts/admin-checks';
 import {
@@ -21,6 +23,8 @@ import {
 import { duplicatePackages } from '../scripts/one-copy';
 import { PAYCORE_API_BASE, PAYCORE_OPERATOR } from '../src/hosted/config';
 import { hostedConnectSrc, readHostedConfig } from '../src/hosted/lib/hosted-config';
+import { short as labelsShort } from '../src/lib/core';
+import { short } from '../src/lib/short';
 
 const vercel = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
 
@@ -327,5 +331,70 @@ describe('build checks', () => {
         { name: 'nostr-tools', dir: '/b' },
       ]).get('nostr-tools'),
     ).toEqual(['/a', '/b']);
+  });
+});
+
+describe('the hosted page loads no relay code', () => {
+  const HTML = [
+    '<link rel="icon" href="/favicon.svg" />',
+    '<script type="module" crossorigin src="/assets/hosted-a.js"></script>',
+    '<link rel="modulepreload" crossorigin href="/assets/shared-b.js">',
+    '<link rel="stylesheet" crossorigin href="/assets/shared-b.css">',
+  ].join('\n');
+
+  function reader(chunks: Record<string, string>) {
+    return (name: string) => {
+      const code = chunks[name];
+      if (code === undefined) {
+        throw new Error(`no chunk ${name}`);
+      }
+      return code;
+    };
+  }
+
+  it('follows the module script, the modulepreloads and their static and dynamic imports', () => {
+    const chunks = {
+      'hosted-a.js': 'import{a}from"./shared-b.js";import"./side-c.js";',
+      'shared-b.js': 'export const a=1;const l=()=>import("./lazy-d.js");',
+      'side-c.js': 'import {a} from "./shared-b.js";',
+      'lazy-d.js': '',
+      'main-e.js': 'subscribeMany',
+    };
+    expect(reachableChunks(HTML, reader(chunks)).sort()).toEqual([
+      'hosted-a.js',
+      'lazy-d.js',
+      'shared-b.js',
+      'side-c.js',
+    ]);
+    expect(hostedRelayProblems(HTML, reader(chunks))).toEqual([]);
+  });
+
+  it('names a reachable chunk with relay code, however deep', () => {
+    const chunks = {
+      'hosted-a.js': 'import"./side-c.js";',
+      'shared-b.js': 'p.subscribeMany(r,f);',
+      'side-c.js': 'import("./lazy-d.js")',
+      'lazy-d.js': 'ws.send(JSON.stringify(["REQ",id,filter]))',
+    };
+    expect(hostedRelayProblems(HTML, reader(chunks))).toEqual([
+      'shared-b.js is loaded by /hosted/ and holds relay code (subscribeMany)',
+      'lazy-d.js is loaded by /hosted/ and holds relay code ("REQ")',
+    ]);
+    expect(
+      hostedRelayProblems(HTML, reader({ ...chunks, 'shared-b.js': "send(['REQ'])" })),
+    ).toContain(`shared-b.js is loaded by /hosted/ and holds relay code ('REQ')`);
+  });
+
+  it('shortens as the self-host labels do', () => {
+    for (const value of [
+      '',
+      'abc',
+      'a'.repeat(17),
+      'b'.repeat(18),
+      `${'1'.repeat(8)}x${'2'.repeat(80)}`,
+    ]) {
+      expect(short(value)).toBe(labelsShort(value));
+    }
+    expect(short('0123456789abcdefXYZ')).toBe('01234567...bcdefXYZ');
   });
 });

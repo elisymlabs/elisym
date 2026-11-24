@@ -66,10 +66,6 @@ export function OrdersTab({ session, view, onChanged }: Props) {
 
   useEffect(() => {
     load();
-    // A read still running when the tab is left is ignored.
-    return () => {
-      reads.current += 1;
-    };
   }, [load]);
 
   let warning: string | undefined;

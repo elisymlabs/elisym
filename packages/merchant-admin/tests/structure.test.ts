@@ -34,6 +34,62 @@ function imports(code: string): string[] {
   );
 }
 
+/** Files that read the relays (the self-host session and its relay client): never run by `/hosted/`. */
+const FORBIDDEN_FOR_HOSTED_FILES = [join('lib', 'core.ts'), join('lib', 'deps.ts')];
+/** Packages and aliases of relay code: the shared admin core, the buyer relay client, nostr-tools' pools and relays (its root re-exports them). */
+const FORBIDDEN_FOR_HOSTED_PACKAGES =
+  /^(@merchant-admin-core|@elisym\/commerce\/buyer$|nostr-tools$|nostr-tools\/(pool|abstract-pool|relay|abstract-relay)$)/;
+
+/** The value imports of `code` (`import type` and `export type` lines are erased by the build). */
+function valueImports(code: string): string[] {
+  return [
+    ...code.matchAll(/^\s*(import|export)(?!\s+type\b)[^;]*?\sfrom\s*['"]([^'"]+)['"]/gms),
+    ...code.matchAll(/^\s*import\s*['"]([^'"]+)['"]/gm),
+  ].map((match) => match[2] ?? match[1] ?? '');
+}
+
+function resolveSource(from: string, target: string): string | undefined {
+  const base = join(from, '..', target);
+  return ['', '.ts', '.tsx', join('', 'index.ts'), join('', 'index.tsx')]
+    .map((ending) => (ending.startsWith('index') ? join(base, ending) : `${base}${ending}`))
+    .find((candidate) => {
+      try {
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+}
+
+/** Every source file (relative to `src`) and every package a module runs, transitively. */
+function walkFrom(entry: string): { files: string[]; packages: string[] } {
+  const seen = new Set<string>();
+  const packages = new Set<string>();
+  const queue = [entry];
+  for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+    if (seen.has(path)) {
+      continue;
+    }
+    seen.add(path);
+    for (const target of valueImports(readFileSync(path, 'utf8'))) {
+      if (!target.startsWith('.')) {
+        packages.add(target);
+        continue;
+      }
+      const resolved = resolveSource(path, target);
+      if (resolved === undefined) {
+        throw new Error(`${path}: cannot resolve ${target}`);
+      }
+      queue.push(resolved);
+    }
+  }
+  return { files: [...seen].map((path) => relative(SRC, path)), packages: [...packages] };
+}
+
+function hostedGraph() {
+  return walkFrom(join(SRC, 'hosted', 'main.tsx'));
+}
+
 describe('the admin source', () => {
   const sources = files(SRC).filter((path) => /\.(ts|tsx)$/.test(path));
 
@@ -113,12 +169,24 @@ describe('the admin source', () => {
     expect(imports(rules).sort()).toEqual(['decimal.js-light', 'zod']);
   });
 
-  it('keeps hosted mode off the relay session code', () => {
-    for (const path of sources.filter((file) => relative(SRC, file).startsWith(`hosted${sep}`))) {
-      for (const target of imports(readFileSync(path, 'utf8'))) {
-        expect(target, path).not.toMatch(/@merchant-admin-core|lib\/core$/);
-      }
+  it('keeps hosted mode off the relay session code, through every import it runs', () => {
+    const graph = hostedGraph();
+    // The walk reaches the shared pieces hosted mode uses, so it is no empty pass.
+    expect(graph.files).toContain(join('components', 'TxLink.tsx'));
+    expect(graph.files).toContain(join('lib', 'short.ts'));
+    expect(graph.files).toContain(join('lib', 'csv-cell.ts'));
+    for (const file of graph.files) {
+      expect(FORBIDDEN_FOR_HOSTED_FILES, file).not.toContain(file);
     }
+    for (const target of graph.packages) {
+      expect(target).not.toMatch(FORBIDDEN_FOR_HOSTED_PACKAGES);
+    }
+  });
+
+  it('finds relay code reached through a shared file, as the walk is transitive', () => {
+    expect(walkFrom(join(SRC, 'components', 'Dashboard.tsx')).files).toContain(
+      join('lib', 'core.ts'),
+    );
   });
 
   it('draws the focus ring in the readable accent, never the light-mode lime', () => {

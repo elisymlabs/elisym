@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { getBase58Decoder } from '@solana/kit';
 import { describe, expect, it } from 'vitest';
 import {
   MAX_SUBUNIT_DIGITS,
@@ -10,12 +13,14 @@ import {
 import { fullConfig } from '../../src/hosted/lib/config-input';
 import {
   AMOUNT_PROBLEMS,
-  BAD_TX,
-  MAX_REFUND_TX,
+  BAD_SOLANA_TX,
+  BAD_TEMPO_TX,
+  EVM_REFUNDS_LATER,
   NO_COIN,
   NO_TX,
   handInput,
   refundCoins,
+  refundsLaterCoins,
 } from '../../src/hosted/lib/hand-answer';
 import {
   type OrderEntry,
@@ -36,6 +41,8 @@ import { BASE_SEPOLIA_USDC, NOW, SOLANA_ADDRESS, SOLANA_USDC, storeConfig } from
 
 const BUYER = 'b'.repeat(64);
 const TX = '5'.repeat(88);
+const SOLANA_SIG = getBase58Decoder().decode(new Uint8Array(64).fill(7));
+const TEMPO_USD = 'eip155:42431/erc20:0x20c0000000000000000000000000000000000000';
 
 function order(orderId: string, overrides: Partial<OrderView> = {}): OrderView {
   return {
@@ -67,6 +74,7 @@ describe('coin amounts in subunits', () => {
     [18, '0.000000000000000001', '1'],
     [18, '123456789.123456789123456789', '123456789123456789123456789'],
     [0, '7', '7'],
+    [6, `${'0'.repeat(50)}1.5${'0'.repeat(50)}`, '1500000'],
   ])('decimals %i: %s is %s subunits', (decimals, typed, subunits) => {
     expect(toSubunits(typed, decimals)).toEqual({ ok: true, subunits });
   });
@@ -89,10 +97,32 @@ describe('coin amounts in subunits', () => {
     [6, '+1', 'format'],
     [6, 'NaN', 'format'],
     [6, 'Infinity', 'format'],
+    [6, `1.${'0'.repeat(120)}1`, 'decimals'],
+    [6, `0.${'0'.repeat(200)}`, 'zero'],
+    [0, '9'.repeat(5000), 'large'],
     [0, '1'.repeat(MAX_SUBUNIT_DIGITS + 1), 'large'],
     [18, `1${'0'.repeat(MAX_SUBUNIT_DIGITS - 18)}`, 'large'],
   ])('decimals %i: refuses %j as %s', (decimals, typed, problem) => {
     expect(toSubunits(typed, decimals)).toEqual({ ok: false, problem });
+  });
+
+  it('bounds the subunits by the server refund rule, read from its source', () => {
+    // Tests run from the package root (vitest's root).
+    const source = readFileSync(
+      join(process.cwd(), '..', 'paycore-server', 'src', 'state', 'stores.ts'),
+      'utf8',
+    );
+    const literal = /const REFUND_AMOUNT_RE = \/(.+)\/;/.exec(source)?.[1];
+    if (literal === undefined) {
+      throw new Error('no REFUND_AMOUNT_RE in paycore-server/src/state/stores.ts');
+    }
+    const server = new RegExp(literal);
+    expect(server.test('9'.repeat(MAX_SUBUNIT_DIGITS))).toBe(true);
+    expect(server.test('1'.repeat(MAX_SUBUNIT_DIGITS + 1))).toBe(false);
+    for (const typed of ['1', '0.000001', '9'.repeat(MAX_SUBUNIT_DIGITS - 6)]) {
+      const outcome = toSubunits(typed, 6);
+      expect(outcome.ok && server.test(outcome.subunits), typed).toBe(true);
+    }
   });
 
   it('takes the largest amount the server takes, and no more', () => {
@@ -126,7 +156,7 @@ describe('coin amounts in subunits', () => {
 });
 
 describe('hand answers', () => {
-  const refund = { kind: 'refunded' as const, tx: TX, amount: '12.5', caip19: SOLANA_USDC };
+  const refund = { kind: 'refunded' as const, tx: SOLANA_SIG, amount: '12.5', caip19: SOLANA_USDC };
 
   it('completes with nothing else', () => {
     expect(handInput({ ...refund, kind: 'complete', tx: '', amount: '' })).toEqual({
@@ -136,19 +166,32 @@ describe('hand answers', () => {
   });
 
   it('sends a refund in subunits of its coin, with the coin', () => {
-    expect(handInput({ ...refund, tx: ` ${TX} ` })).toEqual({
+    expect(handInput({ ...refund, tx: ` ${SOLANA_SIG} ` })).toEqual({
       ok: true,
-      input: { kind: 'refunded', tx: TX, amount: '12500000', asset: SOLANA_USDC },
+      input: { kind: 'refunded', tx: SOLANA_SIG, amount: '12500000', asset: SOLANA_USDC },
+    });
+  });
+
+  it('sends a Tempo refund hash lowercase, as the ledger keeps it', () => {
+    const hash = `0x${'Ab'.repeat(32)}`;
+    expect(handInput({ ...refund, caip19: TEMPO_USD, tx: hash, amount: '1' })).toEqual({
+      ok: true,
+      input: { kind: 'refunded', tx: hash.toLowerCase(), amount: '1000000', asset: TEMPO_USD },
     });
   });
 
   it.each([
     [{ tx: '' }, NO_TX],
     [{ tx: '   ' }, NO_TX],
-    [{ tx: 'a b' }, BAD_TX],
-    [{ tx: 'a'.repeat(MAX_REFUND_TX + 1) }, BAD_TX],
+    [{ tx: 'a b' }, BAD_SOLANA_TX],
+    [{ tx: `0x${'ab'.repeat(32)}` }, BAD_SOLANA_TX],
+    [{ tx: `${SOLANA_SIG}x` }, BAD_SOLANA_TX],
+    [{ caip19: TEMPO_USD, tx: SOLANA_SIG }, BAD_TEMPO_TX],
+    [{ caip19: TEMPO_USD, tx: `0x${'ab'.repeat(31)}` }, BAD_TEMPO_TX],
+    [{ caip19: TEMPO_USD, tx: ` 0x${'ab'.repeat(32)} 1` }, BAD_TEMPO_TX],
     [{ caip19: '' }, NO_COIN],
     [{ caip19: 'solana:x/token:y' }, NO_COIN],
+    [{ caip19: BASE_SEPOLIA_USDC, tx: `0x${'ab'.repeat(32)}` }, NO_COIN],
     [{ amount: '0' }, AMOUNT_PROBLEMS.zero],
     [{ amount: '-2' }, AMOUNT_PROBLEMS.negative],
     [{ amount: '0.0000001' }, AMOUNT_PROBLEMS.decimals],
@@ -157,30 +200,29 @@ describe('hand answers', () => {
     expect(handInput({ ...refund, ...edit })).toEqual({ ok: false, message });
   });
 
-  it('takes a refund transaction of the longest length the server takes', () => {
-    const tx = 'a'.repeat(MAX_REFUND_TX);
-    expect(handInput({ ...refund, tx })).toMatchObject({ ok: true, input: { tx } });
-  });
-
-  it('offers the store payout coins the registry knows, live ones first, each once', () => {
+  it('offers the payout coins a refund is recorded in, live ones first, each once; EIP-3009 ones apart', () => {
     const view = storeView({
       activePayouts: {
         createdAt: NOW,
-        payouts: [{ caip19: BASE_SEPOLIA_USDC, address: '0xab' }],
+        payouts: [{ caip19: TEMPO_USD, address: '0xab' }],
       },
       config: storeConfig({
         draftPayouts: [
           { caip19: SOLANA_USDC, address: SOLANA_ADDRESS },
           { caip19: BASE_SEPOLIA_USDC, address: '0xab' },
+          { caip19: TEMPO_USD, address: '0xab' },
           { caip19: 'solana:x/token:y', address: SOLANA_ADDRESS },
         ],
       }),
     });
-    expect(refundCoins(view)).toEqual([
-      { caip19: BASE_SEPOLIA_USDC, label: 'USDC on Base Sepolia' },
-      { caip19: SOLANA_USDC, label: 'USDC on Solana' },
-    ]);
+    expect(refundCoins(view).map((coin) => coin.caip19)).toEqual([TEMPO_USD, SOLANA_USDC]);
+    expect(refundCoins(view)[1]).toEqual({ caip19: SOLANA_USDC, label: 'USDC on Solana' });
+    expect(refundsLaterCoins(view)).toEqual(['USDC on Base Sepolia']);
+    expect(EVM_REFUNDS_LATER(['USDC on Base Sepolia'])).toBe(
+      'Refunds in USDC on Base Sepolia cannot be recorded here yet. Completing the order still works.',
+    );
     expect(refundCoins(storeView())).toEqual([]);
+    expect(refundsLaterCoins(storeView())).toEqual([]);
   });
 });
 

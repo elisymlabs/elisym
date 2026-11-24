@@ -1,6 +1,5 @@
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WEBHOOK_NOT_HTTPS, webhookUrlInput } from '../../src/hosted/components/SettingsForm';
 import { SettingsTab } from '../../src/hosted/components/SettingsTab';
 import {
   SUSPEND_EXPLAINED,
@@ -17,6 +16,12 @@ import {
 import { ApiError } from '../../src/hosted/lib/api';
 import type { StoreApi } from '../../src/hosted/lib/store-session';
 import type { ConfigInput, Payout, StoreView } from '../../src/hosted/lib/types';
+import {
+  MAX_WEBHOOK_URL,
+  WEBHOOK_NOT_USABLE,
+  WEBHOOK_REFUSED,
+  webhookUrlInput,
+} from '../../src/hosted/lib/webhook-url';
 import { type Mounted, buttonNamed, click, inputById, mount, settle } from '../mount';
 import { storeView } from './fakes';
 import {
@@ -75,12 +80,49 @@ async function open(current: StoreView, overrides: Partial<StoreApi> = {}) {
 }
 
 describe('the webhook URL', () => {
-  it('reads a typed URL: empty is none, only https is taken', () => {
+  it('reads a typed URL as the server would: empty is none', () => {
     expect(webhookUrlInput('  ')).toBeNull();
     expect(webhookUrlInput(` ${HOOK} `)).toBe(HOOK);
-    expect(webhookUrlInput('http://shop.example.com/hook')).toBeUndefined();
-    expect(webhookUrlInput('javascript:alert(1)')).toBeUndefined();
-    expect(webhookUrlInput('shop.example.com')).toBeUndefined();
+    expect(webhookUrlInput('https://shop.example.com:443/hook')).toBe(
+      'https://shop.example.com:443/hook',
+    );
+    const longest = `https://shop.example.com/${'a'.repeat(MAX_WEBHOOK_URL - 25)}`;
+    expect(longest).toHaveLength(MAX_WEBHOOK_URL);
+    expect(webhookUrlInput(longest)).toBe(longest);
+  });
+
+  it.each([
+    'http://shop.example.com/hook',
+    'javascript:alert(1)',
+    'shop.example.com',
+    'https://shop.example.com:8443/hook',
+    'https://user:pass@shop.example.com/hook',
+    'https://user@shop.example.com/hook',
+    'https://:pass@shop.example.com/hook',
+    'https://127.0.0.1/hook',
+    'https://[::1]/hook',
+    'https://10.0.0.1/hook',
+    'https://localhost/hook',
+    'https://shop.local/hook',
+    'https://shop/hook',
+    `https://shop.example.com/${'a'.repeat(MAX_WEBHOOK_URL - 24)}`,
+  ])('refuses %s, as the server does', (typed) => {
+    expect(webhookUrlInput(typed)).toBeUndefined();
+  });
+
+  it('says a server refusal of a changed webhook URL in its own sentence', async () => {
+    const { container } = await open(view(), {
+      putConfig: async () => {
+        throw new ApiError(400, 'bad_config', { problems: [LEAK] });
+      },
+    });
+    await click(buttonNamed(container, 'Save settings'));
+    await settle(() => text(container).includes('Some settings are not valid'));
+    expect(text(container)).not.toContain(WEBHOOK_REFUSED);
+    await type(inputById(container, 'settings-webhook'), 'https://other.example.com/h');
+    await click(buttonNamed(container, 'Save settings'));
+    await settle(() => text(container).includes(WEBHOOK_REFUSED));
+    expect(text(container)).not.toContain('SECRET');
   });
 
   it('saves a new URL, or none, in the whole config at the revision read', async () => {
@@ -108,7 +150,7 @@ describe('the webhook URL', () => {
     const { container } = await open(view(), { putConfig });
     await type(inputById(container, 'settings-webhook'), 'http://shop.example.com/hook');
     await click(buttonNamed(container, 'Save settings'));
-    expect(text(container)).toContain(WEBHOOK_NOT_HTTPS);
+    expect(text(container)).toContain(WEBHOOK_NOT_USABLE);
     expect(putConfig).not.toHaveBeenCalled();
   });
 });

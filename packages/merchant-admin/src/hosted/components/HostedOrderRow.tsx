@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { errorMessage } from '../lib/errors';
 import { ORDER_STATE_LABELS, type OrderEntry, utcText } from '../lib/orders';
+import { type Finished, finishCommit, requestOutcome } from '../lib/owner-flow';
 import type { StoreSession } from '../lib/store-session';
-import type { StoreView } from '../lib/types';
-import { HandAnswerForm } from './HandAnswerForm';
+import type { HandInput, StoreView } from '../lib/types';
+import { FinishedNotice } from './FinishedNotice';
+import { HAND_TEXTS, HandAnswerForm } from './HandAnswerForm';
 import { HostedOrderDetails } from './HostedOrderDetails';
 
 interface Props {
@@ -12,13 +15,88 @@ interface Props {
   onAnswered: () => void;
 }
 
-/** One order: its summary, and on demand its details and, for an unresolved payment, the hand answer. */
+type Answer =
+  | { kind: 'idle'; refusal?: string }
+  | { kind: 'busy' }
+  | { kind: 'finished'; finished: Finished };
+
+/**
+ * One order: its summary, and on demand its details and, for an unresolved
+ * payment, the hand answer. The row sends the answer and keeps how it ended,
+ * so collapsing it neither stops the follow nor offers a second answer.
+ */
 export function HostedOrderRow({ session, view, entry, onAnswered }: Props) {
   const [open, setOpen] = useState(false);
-  // Once sent, the form stays to say how it ended, though the order is answered now.
-  const [sent, setSent] = useState(false);
+  const [answer, setAnswer] = useState<Answer>({ kind: 'idle' });
+  const running = useRef(false);
+  const lifetime = useRef<AbortController | undefined>(undefined);
   const { order } = entry;
-  const answerable = sent || (entry.unresolved.length > 0 && entry.hand === undefined);
+  // Once answered here the outcome shows instead (checked first below), never a second form.
+  const answerable = entry.unresolved.length > 0 && entry.hand === undefined;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    lifetime.current = controller;
+    return () => controller.abort();
+  }, []);
+
+  const send = async (input: HandInput) => {
+    if (running.current) {
+      return;
+    }
+    running.current = true;
+    setAnswer({ kind: 'busy' });
+    let taken;
+    try {
+      taken = await session.api.handAnswer(entry.key, input);
+    } catch (error) {
+      running.current = false;
+      setAnswer({ kind: 'idle', refusal: errorMessage(error) });
+      return;
+    }
+    onAnswered();
+    const signal = lifetime.current?.signal;
+    const finished = await finishCommit(
+      session.api,
+      requestOutcome(taken.request, view.status === 'pending'),
+      {
+        ...(signal === undefined ? {} : { signal }),
+        ...(session.sleep === undefined ? {} : { sleep: session.sleep }),
+      },
+      HAND_TEXTS,
+    );
+    if (signal?.aborted === true) {
+      return;
+    }
+    setAnswer({ kind: 'finished', finished });
+    onAnswered();
+  };
+
+  let outcome;
+  if (answer.kind === 'finished') {
+    outcome = (
+      <FinishedNotice
+        finished={answer.finished}
+        api={session.api}
+        texts={HAND_TEXTS}
+        onRefreshed={(finished) => {
+          setAnswer({ kind: 'finished', finished });
+          onAnswered();
+        }}
+      />
+    );
+  } else if (answerable) {
+    outcome = (
+      <HandAnswerForm
+        view={view}
+        orderKey={entry.key}
+        busy={answer.kind === 'busy'}
+        refusal={answer.kind === 'idle' ? answer.refusal : undefined}
+        onSend={(input) => void send(input)}
+      />
+    );
+  }
+
   return (
     <li className="border-line flex flex-col gap-12 border-b py-12" data-order={entry.key}>
       <button
@@ -44,16 +122,11 @@ export function HostedOrderRow({ session, view, entry, onAnswered }: Props) {
       {open ? (
         <div className="flex flex-col gap-16 pl-12">
           <HostedOrderDetails entry={entry} />
-          {answerable ? (
-            <HandAnswerForm
-              session={session}
-              view={view}
-              orderKey={entry.key}
-              onAnswered={() => {
-                setSent(true);
-                onAnswered();
-              }}
-            />
+          {outcome}
+          {answer.kind === 'busy' ? (
+            <p className="text-13 text-text-2" role="status">
+              Sending the answer...
+            </p>
           ) : null}
         </div>
       ) : null}

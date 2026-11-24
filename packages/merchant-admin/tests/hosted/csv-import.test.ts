@@ -54,6 +54,15 @@ describe('parseCsv (RFC 4180)', () => {
     ]);
   });
 
+  it('ends the last line at a lone CR at the very end of the file', () => {
+    expect(parseCsv('a,b\r\nc,d\r')).toEqual([
+      { line: 1, cells: ['a', 'b'] },
+      { line: 2, cells: ['c', 'd'] },
+    ]);
+    expect(parseCsv('"q"\r')).toEqual([{ line: 1, cells: ['q'] }]);
+    expect(parseCsv('"a\r"')).toEqual([{ line: 1, cells: ['a\r'] }]);
+  });
+
   it('keeps a lone CR inside a cell, and reads a final line without a line break', () => {
     expect(parseCsv('a\rb,c')).toEqual([{ line: 1, cells: ['a\rb', 'c'] }]);
   });
@@ -232,6 +241,14 @@ describe('the shared product rules', () => {
 
 describe('importProducts', () => {
   const rows = rowsOf(`${HEADER}\na,A,1,,,,\nb,B,2,,,,\nc,C,3,,,,`);
+
+  it('sends no further row once aborted', async () => {
+    const controller = new AbortController();
+    const put = vi.fn(async () => undefined);
+    const outcome = await importProducts(rows, put, () => controller.abort(), controller.signal);
+    expect(outcome).toEqual({ done: false, aborted: true, written: 1 });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
 
   it('writes every row in order, one at a time', async () => {
     const order: string[] = [];

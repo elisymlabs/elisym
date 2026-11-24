@@ -4,6 +4,7 @@ import { fullConfig } from '../lib/config-input';
 import { errorMessage } from '../lib/errors';
 import type { StoreSession } from '../lib/store-session';
 import type { EvmCredit, StoreConfig } from '../lib/types';
+import { WEBHOOK_NOT_USABLE, WEBHOOK_REFUSED, webhookUrlInput } from '../lib/webhook-url';
 import { BUTTON_SECONDARY, INPUT } from '../styles';
 import { InboxRelays } from './InboxRelays';
 import { Notice } from './Notice';
@@ -17,8 +18,6 @@ interface Props {
 
 export const NAME_EMPTY = 'Enter the store name.';
 export const NO_RELAYS = 'Keep one inbox relay at least.';
-export const WEBHOOK_NOT_HTTPS =
-  'Enter the webhook address as a full https:// URL, or leave it empty for no webhook.';
 export const PAYOUTS_FIRST =
   'Save your payout addresses first (Payouts tab): settings cannot be saved without them.';
 
@@ -29,19 +28,6 @@ const CREDITS: readonly { value: EvmCredit; label: string }[] = [
     label: 'Safe: an EVM payment counts once its block is safe from reorgs (minutes)',
   },
 ];
-
-/** The typed webhook address: null for none, undefined when it is no https URL. */
-export function webhookUrlInput(typed: string): string | null | undefined {
-  const text = typed.trim();
-  if (text === '') {
-    return null;
-  }
-  try {
-    return new URL(text).protocol === 'https:' ? text : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** Name, nip05, inbox relays, webhook URL, EVM credit: saved as the whole config, at the revision read. */
 export function SettingsForm({ session, config, onSaved, onStale }: Props) {
@@ -65,7 +51,7 @@ export function SettingsForm({ session, config, onSaved, onStale }: Props) {
     }
     const webhookUrl = webhookUrlInput(webhook);
     if (webhookUrl === undefined) {
-      setProblem(WEBHOOK_NOT_HTTPS);
+      setProblem(WEBHOOK_NOT_USABLE);
       return;
     }
     setBusy(true);
@@ -82,8 +68,11 @@ export function SettingsForm({ session, config, onSaved, onStale }: Props) {
       );
       onSaved();
     } catch (error) {
+      const webhookChanged = webhookUrl !== (config.webhookUrl ?? null);
       if (error instanceof ApiError && error.code === 'stale_config') {
         onStale();
+      } else if (error instanceof ApiError && error.code === 'bad_config' && webhookChanged) {
+        setProblem(WEBHOOK_REFUSED);
       } else {
         setProblem(errorMessage(error));
       }

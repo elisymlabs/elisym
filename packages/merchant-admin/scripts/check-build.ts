@@ -3,12 +3,18 @@
  * self-host, and `/hosted/`) load only their own files with no inline script,
  * no chunk names the checkout's origin (but the one loader URL) or a Node
  * built-in, and `vercel.json` sets each page's CSP on its own disjoint path:
- * the hosted page connects only to the committed API's origin, or nowhere.
+ * the hosted page connects only to the committed API's origin, or nowhere,
+ * and loads no chunk that holds relay read code.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { PAYCORE_API_BASE, PAYCORE_OPERATOR } from '../src/hosted/config';
 import { hostedConnectSrc, readHostedConfig } from '../src/hosted/lib/hosted-config';
-import { V3_LOADER_URL, type VercelConfig, vercelProblems } from './admin-checks';
+import {
+  V3_LOADER_URL,
+  type VercelConfig,
+  hostedRelayProblems,
+  vercelProblems,
+} from './admin-checks';
 import { chunkProblems, htmlProblems } from './build-checks';
 
 const DIST = new URL('../dist/', import.meta.url);
@@ -33,6 +39,9 @@ const problems = [
       ),
     ),
   ...vercelProblems(vercel, hostedConnectSrc(config)),
+  ...hostedRelayProblems(readFileSync(new URL('hosted/index.html', DIST), 'utf8'), (name) =>
+    readFileSync(new URL(`assets/${name}`, DIST), 'utf8'),
+  ),
 ];
 if (problems.length > 0) {
   console.error(problems.join('\n'));

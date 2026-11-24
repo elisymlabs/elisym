@@ -65,6 +65,7 @@ export interface CsvRecord {
  * RFC 4180 records: cells split by commas, lines by CRLF or LF; a quoted cell
  * may hold commas, line breaks and `""` for a quote. A quote inside an
  * unquoted cell, text after a closing quote, or a quote left open is refused.
+ * A lone CR at the very end of the file ends the last line.
  * Blank lines are skipped.
  */
 export function parseCsv(text: string): CsvRecord[] | undefined {
@@ -108,8 +109,11 @@ export function parseCsv(text: string): CsvRecord[] | undefined {
       cells.push(cell);
       cell = '';
       afterQuote = false;
-    } else if (char === '\n' || (char === '\r' && source[index + 1] === '\n')) {
-      if (char === '\r') {
+    } else if (
+      char === '\n' ||
+      (char === '\r' && (source[index + 1] === '\n' || index + 1 === source.length))
+    ) {
+      if (char === '\r' && source[index + 1] === '\n') {
         index += 1;
       }
       endRecord();
@@ -236,6 +240,7 @@ export function checkProductsCsv(text: string): CsvCheck {
 
 export type ImportOutcome =
   | { done: true; written: number }
+  | { done: false; aborted: true; written: number }
   | { done: false; written: number; failed: CsvRow; error: unknown };
 
 /** Each row in turn; the first refusal stops the run, and the outcome says how far it got. */
@@ -243,9 +248,14 @@ export async function importProducts(
   rows: readonly CsvRow[],
   putProduct: (d: string, input: ProductInput) => Promise<unknown>,
   onWritten?: (written: number) => void,
+  /** Checked before each row: once aborted, no further row is sent. */
+  signal?: AbortSignal,
 ): Promise<ImportOutcome> {
   let written = 0;
   for (const row of rows) {
+    if (signal?.aborted === true) {
+      return { done: false, aborted: true, written };
+    }
     try {
       await putProduct(row.d, row.input);
     } catch (error) {

@@ -1,20 +1,25 @@
-import { useEffect, useRef, useState } from 'react';
-import { errorMessage } from '../lib/errors';
-import { type HandForm, handInput, refundCoins } from '../lib/hand-answer';
-import { type FinishTexts, type Finished, finishCommit, requestOutcome } from '../lib/owner-flow';
-import type { StoreSession } from '../lib/store-session';
-import type { StoreView } from '../lib/types';
+import { useState } from 'react';
+import {
+  EVM_REFUNDS_LATER,
+  type HandForm,
+  handInput,
+  refundCoins,
+  refundsLaterCoins,
+} from '../lib/hand-answer';
+import type { FinishTexts } from '../lib/owner-flow';
+import type { HandInput, StoreView } from '../lib/types';
 import { BUTTON_SECONDARY, INPUT } from '../styles';
-import { FinishedNotice } from './FinishedNotice';
 import { Notice } from './Notice';
 
 interface Props {
-  session: StoreSession;
   view: StoreView;
   /** The order key the unresolved payment is on. */
   orderKey: string;
-  /** The store took the answer: the orders changed. */
-  onAnswered: () => void;
+  /** An answer is being sent. */
+  busy: boolean;
+  /** Why the server refused the last answer sent, in a fixed sentence. */
+  refusal?: string | undefined;
+  onSend: (input: HandInput) => void;
 }
 
 export const HAND_TEXTS: FinishTexts = {
@@ -25,15 +30,15 @@ export const HAND_TEXTS: FinishTexts = {
 
 export const FINAL_FIRST = 'Tick the box to confirm: an order is answered by hand only once.';
 
-type Stage = { kind: 'form' } | { kind: 'busy' } | { kind: 'finished'; finished: Finished };
-
 /**
- * Answer one order by hand: complete it (the buyer is told it is delivered),
- * or record a refund already sent, with its transaction, amount and coin.
- * The answer is final, so it is sent only once the merchant ticks so.
+ * The hand answer for one order: complete it (the buyer is told it is
+ * delivered), or record a refund already sent, with its transaction, amount
+ * and coin. The answer is final, so it is sent only once the merchant ticks
+ * so. The row sends it and keeps how it ended.
  */
-export function HandAnswerForm({ session, view, orderKey, onAnswered }: Props) {
+export function HandAnswerForm({ view, orderKey, busy, refusal, onSend }: Props) {
   const coins = refundCoins(view);
+  const later = refundsLaterCoins(view);
   const [form, setForm] = useState<HandForm>({
     kind: 'complete',
     tx: '',
@@ -42,18 +47,10 @@ export function HandAnswerForm({ session, view, orderKey, onAnswered }: Props) {
   });
   const [final, setFinal] = useState(false);
   const [problem, setProblem] = useState<string | undefined>(undefined);
-  const [stage, setStage] = useState<Stage>({ kind: 'form' });
-  const lifetime = useRef<AbortController | undefined>(undefined);
-  const running = useRef(false);
   const id = `hand-${orderKey.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+  const shown = problem ?? refusal;
 
-  useEffect(() => {
-    const controller = new AbortController();
-    lifetime.current = controller;
-    return () => controller.abort();
-  }, []);
-
-  const send = async () => {
+  const send = () => {
     if (!final) {
       setProblem(FINAL_FIRST);
       return;
@@ -63,52 +60,9 @@ export function HandAnswerForm({ session, view, orderKey, onAnswered }: Props) {
       setProblem(built.message);
       return;
     }
-    if (running.current) {
-      return;
-    }
-    running.current = true;
     setProblem(undefined);
-    setStage({ kind: 'busy' });
-    let answer;
-    try {
-      answer = await session.api.handAnswer(orderKey, built.input);
-    } catch (error) {
-      running.current = false;
-      setProblem(errorMessage(error));
-      setStage({ kind: 'form' });
-      return;
-    }
-    onAnswered();
-    const signal = lifetime.current?.signal;
-    const finished = await finishCommit(
-      session.api,
-      requestOutcome(answer.request, view.status === 'pending'),
-      {
-        ...(signal === undefined ? {} : { signal }),
-        ...(session.sleep === undefined ? {} : { sleep: session.sleep }),
-      },
-      HAND_TEXTS,
-    );
-    if (signal?.aborted === true) {
-      return;
-    }
-    setStage({ kind: 'finished', finished });
-    onAnswered();
+    onSend(built.input);
   };
-
-  if (stage.kind === 'finished') {
-    return (
-      <FinishedNotice
-        finished={stage.finished}
-        api={session.api}
-        texts={HAND_TEXTS}
-        onRefreshed={(finished) => {
-          setStage({ kind: 'finished', finished });
-          onAnswered();
-        }}
-      />
-    );
-  }
 
   const update = (edit: Partial<HandForm>) => setForm((current) => ({ ...current, ...edit }));
 
@@ -132,11 +86,13 @@ export function HandAnswerForm({ session, view, orderKey, onAnswered }: Props) {
             id={`${id}-refunded`}
             name={`${id}-kind`}
             checked={form.kind === 'refunded'}
+            disabled={coins.length === 0}
             onChange={() => update({ kind: 'refunded' })}
           />
           Record a refund you already sent from your wallet
         </label>
       </fieldset>
+      {later.length === 0 ? null : <Notice tone="info">{EVM_REFUNDS_LATER(later)}</Notice>}
       {form.kind === 'refunded' ? (
         <div className="flex flex-col gap-12">
           <label className="text-14 flex flex-col gap-4">
@@ -186,16 +142,11 @@ export function HandAnswerForm({ session, view, orderKey, onAnswered }: Props) {
         This answer is final: an order is answered by hand only once
       </label>
       <div>
-        <button
-          type="button"
-          className={BUTTON_SECONDARY}
-          disabled={stage.kind === 'busy'}
-          onClick={() => void send()}
-        >
+        <button type="button" className={BUTTON_SECONDARY} disabled={busy} onClick={send}>
           Send answer
         </button>
       </div>
-      {problem === undefined ? null : <Notice tone="error">{problem}</Notice>}
+      {shown === undefined ? null : <Notice tone="error">{shown}</Notice>}
     </div>
   );
 }

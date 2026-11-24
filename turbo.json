@@ -113,6 +113,7 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "../paycore-server/src/config.ts",
+        "../paycore-server/src/state/stores.ts",
         "../react/src/constants.ts",
         "../merchant-node/src/product-rules.ts",
         "../merchant-node/src/admin/**",
