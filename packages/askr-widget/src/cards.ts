@@ -164,7 +164,9 @@ export async function resolveCards(
   }
   const cards = new Map<string, CatalogItem>();
   for (const [address, listing] of listings) {
-    const item = listing ? parseCatalogItem(listing, { now }) : undefined;
+    const item = listing
+      ? parseCatalogItem(listing, { now, catalogKey: config.catalogKey })
+      : undefined;
     if (item && item.address === address) {
       cards.set(address, item);
     }

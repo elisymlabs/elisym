@@ -2,10 +2,10 @@
 import { type CatalogItemInput, buildCatalogAuth } from '@elisym/askr';
 import { KIND_DELETION, buildProductEvent, buildStoreAuthEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
-import { finalizeEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Overview } from '../src/components/Overview';
-import { countListed, readAuthority } from '../src/lib/store-data';
+import { countListed, readAuthority, readListings } from '../src/lib/store-data';
 import {
   NOW,
   OWNER,
@@ -26,6 +26,7 @@ afterEach(async () => {
   mounted = undefined;
 });
 
+const OTHER_KEY = 'f'.repeat(64);
 const CATALOG_AUTH = finalizeEvent(
   buildCatalogAuth({ key: SERVER_KEY, mode: 'hosted', createdAt: NOW - 100 }),
   OWNER_KEY,
@@ -113,7 +114,7 @@ describe('the catalog size against the plan', () => {
     expect(await countListed(reader, SERVER_KEY, 'EUR', NOW)).toBe(2);
   });
 
-  it('leaves out listings with payment terms, as the assistant does', async () => {
+  it('counts listings with payment terms of the catalog key (a PayCore store), as the assistant does', async () => {
     const paid = Array.from({ length: 4 }, (_value, index) =>
       finalizeEvent(
         buildProductEvent({
@@ -131,8 +132,35 @@ describe('the catalog size against the plan', () => {
     );
     const container = await overview([CATALOG_AUTH, ...paid, ...products(3)], 2);
     await settle(() => (container.textContent ?? '').includes('indexes up to'));
-    expect(container.textContent).toContain('Your catalog has 3 products');
-    expect(await countListed(fakeReader(paid), SERVER_KEY, 'USD', NOW)).toBe(0);
+    expect(container.textContent).toContain('Your catalog has 7 products');
+    expect(await countListed(fakeReader(paid), SERVER_KEY, 'USD', NOW)).toBe(4);
+    // Another key's listings never count, with or without payment terms.
+    expect(await countListed(fakeReader(paid), OTHER_KEY, 'USD', NOW)).toBe(0);
+  });
+
+  it("reads the catalog key's listings with payment terms into the editor, never another key's", async () => {
+    const terms = [
+      'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    ];
+    const paidListing = (d: string, secret: Uint8Array) =>
+      finalizeEvent(
+        buildProductEvent({
+          d,
+          title: 'P',
+          description: '',
+          price: { amount: '5', currency: 'USD' },
+          accept: terms,
+          createdAt: NOW - 1,
+        }),
+        secret,
+      );
+    const stranger = generateSecretKey();
+    const reader = fakeReader([
+      paidListing('own', SERVER_KEY_SECRET),
+      paidListing('foreign', stranger),
+    ]);
+    const own = await readListings(reader, SERVER_KEY, NOW);
+    expect(own.map((entry) => entry.d)).toEqual(['own']);
   });
 
   it('counts as the server does: the newest version per product, unexpired, future deletions ignored', async () => {

@@ -232,7 +232,7 @@ describe('resolveCards', () => {
     expect(context.queries).toHaveLength(0);
   });
 
-  it('shows no card for a listing of the product key that carries payment terms', async () => {
+  it('shows a card for a listing of the product key that carries payment terms (a PayCore store key)', async () => {
     const context = setup();
     const key = context.store.catalogKey;
     publishItem(context.relay, key, { ...ITEM, d: 'scarf' });
@@ -257,7 +257,9 @@ describe('resolveCards', () => {
       cache: new CardCache(new MemoryStorage()),
       now: localSecs(),
     });
-    expect([...cards.keys()]).toEqual([address(key, 'scarf')]);
+    expect([...cards.keys()]).toEqual([address(key, 'scarf'), address(key, 'paid')]);
+    // No Buy yet: the widget learns the owner's 30490s in block 2.
+    expect(cards.get(address(key, 'paid'))?.payable).toBeUndefined();
   });
 
   it('a product key the owner authorized only with a 30490 gets no cards and no fetch', async () => {

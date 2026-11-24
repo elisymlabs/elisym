@@ -207,7 +207,7 @@ function listingsOf(events: readonly NostrEvent[], key: string, now: number): Ca
             ),
           }
         : event;
-      const item = parseCatalogItem(readable, { now });
+      const item = parseCatalogItem(readable, { now, catalogKey: key });
       return item === undefined ? [] : [inputOfListing(item, hidden)];
     });
 }
@@ -258,7 +258,7 @@ export async function countListed(
       return false;
     }
     // Only the store's currency counts against the plan: the assistant leaves the rest out.
-    return parseCatalogItem(event, { now })?.price.currency === currency;
+    return parseCatalogItem(event, { now, catalogKey: key })?.price.currency === currency;
   }).length;
 }
 
