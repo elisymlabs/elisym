@@ -8,7 +8,7 @@ import {
   parseSecretKey,
   secretKeySigner,
 } from '../lib/signer';
-import { BUTTON_PRIMARY, BUTTON_SECONDARY, CARD, INPUT, LINK } from '../styles';
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, CARD, KEY_INPUT, LINK } from '../styles';
 import { NewOwnerKey } from './NewOwnerKey';
 import { Notice } from './Notice';
 import { type RememberChoice, type RememberHandle, RememberOption } from './RememberOption';
@@ -200,7 +200,7 @@ export function SignIn({ onSigner }: Props) {
           <input
             id="owner-key"
             ref={input}
-            className={INPUT}
+            className={KEY_INPUT}
             type="text"
             placeholder="nsec1... or 64 hex characters"
             autoComplete="off"
