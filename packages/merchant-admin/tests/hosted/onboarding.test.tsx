@@ -104,6 +104,23 @@ describe('onboarding', () => {
     expect(createStore).not.toHaveBeenCalled();
   });
 
+  it('creates the store with no address when the address field holds only spaces', async () => {
+    const creates: CreateStoreInput[] = [];
+    const { container } = await start({
+      createStore: async (input) => {
+        creates.push(input);
+        return created();
+      },
+    });
+    await type(inputById(container, 'onboard-name'), 'My Shop');
+    await click(inputById(container, 'onboard-network-devnet'));
+    await type(inputById(container, 'onboard-nip05'), '   ');
+    await click(buttonNamed(container, 'Create store'));
+    await settle(() => creates.length === 1);
+    expect(container.textContent).not.toContain(NIP05_NOT_USABLE);
+    expect(creates).toEqual([{ name: 'My Shop', network: 'devnet' }]);
+  });
+
   it('creates the store, saves the first payouts with the inbox relays, signs both owner events, then points at products', async () => {
     const { key } = solanaWallet();
     const creates: CreateStoreInput[] = [];

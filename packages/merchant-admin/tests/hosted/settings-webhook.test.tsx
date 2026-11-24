@@ -368,6 +368,21 @@ describe('the store address (nip05)', () => {
     expect(node).toContain(`splitNip05(value)?.local !== '${OWNER_NAME}'`);
   });
 
+  it('saves a blank-looking address as no address', async () => {
+    const puts: ConfigInput[] = [];
+    const { container } = await open(view(), {
+      putConfig: async (input) => {
+        puts.push(input);
+        return { config: storeConfig({ revision: 4 }), requestId: null };
+      },
+    });
+    await type(inputById(container, 'settings-nip05'), '   ');
+    await click(buttonNamed(container, 'Save settings'));
+    await settle(() => puts.length === 1);
+    expect(text(container)).not.toContain(NIP05_NOT_USABLE);
+    expect(puts[0]?.nip05).toBeUndefined();
+  });
+
   it('refuses an address the server would not take before saving', async () => {
     const putConfig = vi.fn();
     const { container } = await open(view(), { putConfig });
