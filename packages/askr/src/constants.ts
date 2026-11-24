@@ -110,6 +110,24 @@ export const RESERVED_ATTRS: readonly string[] = ['sku', 'source-id'];
 /** The wildcard a variant carries for an option it accepts any value of (a Woo "Any" variation). */
 export const ANY_OPTION_VALUE = '*';
 
+/**
+ * The network of each chain a PayCore listing can name in `accept` (CAIP-2),
+ * so a reader can tell mainnet from devnet without the payment registry. A
+ * test keeps it equal to `@elisym/pay-core`'s chain table.
+ */
+export const PAYABLE_CHAIN_NETWORKS: Readonly<Record<string, 'mainnet' | 'devnet'>> = {
+  'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp': 'mainnet',
+  'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1': 'devnet',
+  'eip155:4217': 'mainnet',
+  'eip155:42431': 'devnet',
+  'eip155:1': 'mainnet',
+  'eip155:11155111': 'devnet',
+  'eip155:42161': 'mainnet',
+  'eip155:421614': 'devnet',
+  'eip155:8453': 'mainnet',
+  'eip155:84532': 'devnet',
+};
+
 export const PRODUCT_SOURCES = ['catalog', 'admin', 'connector'] as const;
 export type ProductSourceKind = (typeof PRODUCT_SOURCES)[number];
 

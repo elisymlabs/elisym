@@ -1,5 +1,6 @@
 import {
   HEX_PUBKEY_RE,
+  KIND_STORE_AUTH,
   buildStoreAuthEvent,
   buildStoreRevocationEvent,
   isEventShaped,
@@ -15,6 +16,8 @@ export interface CatalogAuthInput {
   key: string;
   /** `hosted` for the server K, `self-host` for a merchant K. */
   mode: 'hosted' | 'self-host';
+  /** The hosting operator, only with `hosted` (a PayCore store key mirrors its 30490). */
+  operator?: string;
   /** Unix seconds (NIP-40). */
   expiresAt?: number;
   createdAt?: number;
@@ -29,6 +32,7 @@ export function buildCatalogAuth(input: CatalogAuthInput): EventTemplate {
   const base = { storePubkey: input.key, mode: input.mode, kind: KIND_CATALOG_AUTH };
   return buildStoreAuthEvent({
     ...base,
+    ...(input.operator === undefined ? {} : { operator: input.operator }),
     ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
     ...(input.createdAt === undefined ? {} : { createdAt: input.createdAt }),
   });
@@ -60,6 +64,28 @@ export function readCatalogAuthority(
   owner: string,
   now: number = nowSecs(),
 ): Set<string> {
+  return activeAuthorizedKeys(events, owner, now, KIND_CATALOG_AUTH);
+}
+
+/**
+ * Every key the owner currently authorizes as a PayCore store (an active
+ * 30490, any mode): a listing by one of them can be bought (C2). Revoked,
+ * expired and deleted authorizations do not count.
+ */
+export function readPayableKeys(
+  events: readonly NostrEvent[],
+  owner: string,
+  now: number = nowSecs(),
+): Set<string> {
+  return activeAuthorizedKeys(events, owner, now, KIND_STORE_AUTH);
+}
+
+function activeAuthorizedKeys(
+  events: readonly NostrEvent[],
+  owner: string,
+  now: number,
+  kind: number,
+): Set<string> {
   const candidates = new Set<string>();
   for (const event of events) {
     // A malformed relay entry is skipped, never read: one bad entry must not
@@ -67,14 +93,18 @@ export function readCatalogAuthority(
     if (!isEventShaped(event)) {
       continue;
     }
-    if (event.pubkey === owner && event.kind === KIND_CATALOG_AUTH) {
+    if (event.pubkey === owner && event.kind === kind) {
       const key = tagValue(event.tags, 'd');
       if (key !== undefined && HEX_PUBKEY_RE.test(key)) {
         candidates.add(key);
       }
     }
   }
-  return new Set([...candidates].filter((key) => isCatalogKey(events, owner, key, now)));
+  return new Set(
+    [...candidates].filter(
+      (key) => resolveStoreAuth(events, owner, key, now, kind).status === 'active',
+    ),
+  );
 }
 
 export interface StoreKeys {
