@@ -357,6 +357,7 @@ describe('<elisym-buy> v4, modal', () => {
 
   it('page code setting modal again on elisym-close keeps a modal frame', async () => {
     const mounted = mount();
+    const frame = frameOf(mounted);
     mounted.element.addEventListener('elisym-close', () =>
       mounted.element.setAttribute('display', 'modal'),
     );
@@ -365,6 +366,8 @@ describe('<elisym-buy> v4, modal', () => {
     await aTaskLater();
     expect(mounted.element.querySelector('iframe')).toBeNull();
     expect(decodeCheckoutParams(new URL(frameOf(mounted).src).hash)?.display).toBe('modal');
+    // Back to what it was framed with: the very same frame, not a reload.
+    expect(frameOf(mounted)).toBe(frame);
   });
 
   it('a theme change while open reloads the frame in place and stays open', async () => {
@@ -1052,6 +1055,33 @@ describe('PayCore.open options', () => {
     }
   });
 
+  it('refuses a setter-only option too', () => {
+    const options = {};
+    Object.defineProperty(options, 'product', { set: () => undefined, enumerable: true });
+    expect(() => PAY_CORE.open(options)).toThrow('elisym: option product is not a plain value');
+  });
+
+  it('reads each value once, from its descriptor: a Proxy cannot answer twice', () => {
+    const get = vi.fn(() => 'naddr1evil');
+    const options = new Proxy({ product: NADDR }, { get });
+    const opened = openCheckout({});
+    opened.handle.close();
+    standInWindows();
+    PAY_CORE.open(options);
+    const frame = hostsOnPage()[0]?.shadowRoot?.querySelector('iframe');
+    expect(framedParams(frame ?? document.createElement('iframe'))?.naddr).toBe(NADDR);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('accepts theme auto, and a customerRef of up to 128 characters', () => {
+    expect(framedParams(openCheckout({ theme: 'auto' }).frame)?.theme).toBe('auto');
+    const longest = 'a'.repeat(128);
+    expect(framedParams(openCheckout({ customerRef: longest }).frame)?.customerRef).toBe(longest);
+    expect(() => PAY_CORE.open({ product: NADDR, customerRef: 'a'.repeat(129) })).toThrow(
+      TypeError,
+    );
+  });
+
   it('never runs a getter: the option is refused', () => {
     const getter = vi.fn(() => NADDR);
     const options = {};
@@ -1073,6 +1103,7 @@ describe('PayCore.open options', () => {
     const prototype = Object.prototype as Record<string, unknown>;
     prototype.customerRef = 'attacker';
     prototype.theme = 'neon';
+    prototype.network = 'mainnet';
     try {
       const opened = openCheckout();
       // Read from the fragment itself: the decoded object would see the polluted prototype too.
@@ -1081,6 +1112,7 @@ describe('PayCore.open options', () => {
     } finally {
       delete prototype.customerRef;
       delete prototype.theme;
+      delete prototype.network;
     }
   });
 
@@ -1416,6 +1448,23 @@ describe('PayCore.open, one at a time', () => {
     },
   );
 
+  it('a close listener opening another during a replacement: that one stays, this one throws', () => {
+    const first = openCheckout();
+    let opened: ReturnType<typeof PAY_CORE.open> | undefined;
+    first.handle.addEventListener('close', () => {
+      opened = PAY_CORE.open({ product: NADDR, theme: 'dark' });
+    });
+    expect(() => PAY_CORE.open({ product: NADDR })).toThrow('another checkout opened');
+    expect(hostsOnPage()).toHaveLength(1);
+    expect(opened?.state).toBeUndefined();
+    const dialog = hostsOnPage()[0]?.shadowRoot?.querySelector('dialog');
+    expect(dialog?.dataset.theme).toBe('dark');
+    // It is the open one: a later open sees it, busy or replaced.
+    const frame = hostsOnPage()[0]?.shadowRoot?.querySelector('iframe');
+    deliver({ type: 'status', state: 'paying' }, ORIGIN, targetOf(frame ?? first.frame));
+    expect(() => PAY_CORE.open({ product: NADDR })).toThrow('paying');
+  });
+
   it('a closed checkout never blocks, whatever its last state', () => {
     const first = openCheckout();
     deliver({ type: 'status', state: 'paying' }, ORIGIN, first.target);
@@ -1448,9 +1497,28 @@ describe('PayCore.open, one at a time', () => {
 });
 
 describe('PayCore.open, when the checkout never answers', () => {
+  it('before the first load, hello gives up silently: a slow load is no failure', () => {
+    vi.useFakeTimers();
+    const opened = openCheckout();
+    vi.advanceTimersByTime(11_000);
+    expect(opened.events).toEqual([]);
+    // Hello stopped all the same.
+    const posted = opened.target.posted.length;
+    vi.advanceTimersByTime(1_000);
+    expect(opened.target.posted).toHaveLength(posted);
+    // The checkout loads at last and answers: it works, and nothing was said.
+    opened.frame.dispatchEvent(new Event('load'));
+    expect(opened.target.posted).toHaveLength(posted + 1);
+    deliver({ type: 'ack' }, ORIGIN, opened.target);
+    deliver({ type: 'status', state: 'ready' }, ORIGIN, opened.target);
+    vi.advanceTimersByTime(11_000);
+    expect(opened.events).toEqual(['status:ready']);
+  });
+
   it('says error once, unavailable, and stays open', () => {
     vi.useFakeTimers();
     const opened = openCheckout();
+    opened.frame.dispatchEvent(new Event('load'));
     vi.advanceTimersByTime(9_900);
     expect(opened.events).toEqual([]);
     vi.advanceTimersByTime(600);
@@ -1488,6 +1556,7 @@ describe('PayCore.open, when the checkout never answers', () => {
   it('an ack from elsewhere does not stop the hello', () => {
     vi.useFakeTimers();
     const opened = openCheckout();
+    opened.frame.dispatchEvent(new Event('load'));
     deliver({ type: 'ack' }, 'https://evil.example', opened.target);
     deliver({ type: 'ack' }, ORIGIN, window);
     vi.advanceTimersByTime(10_500);
@@ -2046,5 +2115,53 @@ describe('the CSSOM path, details', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('details the first review asked for', () => {
+  it('<elisym-buy> frames only an naddr1 product, and carries collect-email', () => {
+    expect(framesNothing(mountBare({ product: 'npub1qqtest' }))).toBe(true);
+    expect(framedParams(frameOf(mount({ 'collect-email': '' })))?.collectEmail).toBe(true);
+    expect(framedParams(frameOf(mount()))?.collectEmail).toBe(false);
+  });
+
+  it('a message with no source is never heard, even by a frame with no window', () => {
+    const opened = openCheckout();
+    Object.defineProperty(opened.frame, 'contentWindow', { get: () => null, configurable: true });
+    deliver({ type: 'status', state: 'paid' }, ORIGIN, null);
+    deliver({ type: 'close' }, ORIGIN, null);
+    expect(opened.events).toEqual([]);
+    const mounted = mount();
+    const frame = frameOf(mounted);
+    Object.defineProperty(frame, 'contentWindow', { get: () => null, configurable: true });
+    const states: unknown[] = [];
+    mounted.element.addEventListener('elisym-status', (event) => states.push(event));
+    deliver({ type: 'status', state: 'paid' }, ORIGIN, null);
+    expect(states).toEqual([]);
+  });
+
+  it('a frame reloaded while open and closed before it shows is not focused', async () => {
+    vi.useFakeTimers();
+    const mounted = mount();
+    mounted.button.click();
+    mounted.element.setAttribute('theme', 'dark');
+    const fresh = frameOf(mounted);
+    const focus = vi.spyOn(fresh, 'focus');
+    mounted.closeButton.click();
+    vi.advanceTimersByTime(300);
+    expect(mounted.dialog.open).toBe(false);
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it('connected again after page code took its frame out, it frames again', () => {
+    standInWindows();
+    const element = document.createElement('elisym-buy') as ElisymBuy;
+    element.setAttribute('product', NADDR);
+    element.setAttribute('display', 'inline');
+    document.body.appendChild(element);
+    element.innerHTML = '';
+    // A move: still connected when told, so the frame was never dropped on the way.
+    element.connectedCallback();
+    expect(element.querySelectorAll('iframe')).toHaveLength(1);
   });
 });

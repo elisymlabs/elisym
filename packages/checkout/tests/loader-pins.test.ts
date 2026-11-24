@@ -24,7 +24,7 @@ const PINS: Readonly<Record<string, string>> = {
   v1: 'sha384-n2Bj5LKM3OGGlQOwpooaauimc99mLR+4ookl8AeVpG3GjG4aLBc7jV1l2WEljNhH',
   v2: 'sha384-XM3Y69QJCGeQZMDRkZsoggZJgFT0DqK9jHpMNx1dDDEHAVcjP62KsLd8vjsgE0gJ',
   v3: 'sha384-FPsJfAuhwQU0mlPKTKLwCTp1YGK6aFRh0pT+Gl1T3UML2jlIK7EkW8FW5ue2qFJX',
-  v4: 'sha384-zXrVAQ1IV1QL6VJXt4Vu7yOTm6ZJaNhv1a8fROj01TL7pGd/36tS4riQmhEIsOAl',
+  v4: 'sha384-x6dXYbL43ZTUT6tSX44pwUJazMDSiOULx6bsJD2JVk+eooivU9FcyYcvLD43LwWV',
 };
 const LOADERS = Object.keys(PINS);
 
@@ -164,6 +164,7 @@ describe('the global-scope check', () => {
     expect(globalsAdded('(function(){window.Extra=1})()')).toEqual(['Extra']);
     expect(globalsAdded('var leaked=1')).toEqual(['leaked', 'top-level statements']);
     expect(globalsAdded('const hidden=1;(function(){})()')).toEqual(['top-level statements']);
+    expect(globalsAdded('(function(){})();let after=1')).toEqual(['top-level statements']);
     expect(globalsAdded('(function(){document.title})()')).toEqual(['throws at load']);
     expect(globalsAdded('(function(){window.PayCore={}})()')).toEqual(['PayCore']);
     // v4 must add exactly PayCore: nothing, or one more, fails.
@@ -204,5 +205,12 @@ describe('freezing a loader', () => {
     const twice = `${text}\n  v4: '${PINS.v4}',\n`;
     expect(() => withPin(twice, 'v4', sri)).toThrow('2 pin lines for v4');
     expect(() => withPin(text, 'v4', 'sha384-short')).toThrow('not a loader');
+    // Only a line that is exactly the pin counts: not an indented or commented copy.
+    const pin = `sha384-${'C'.repeat(64)}`;
+    for (const copy of [`    v4: '${pin}',`, `//  v4: '${pin}',`, `  v4: '${pin}', // old`]) {
+      expect(() => withPin(copy, 'v4', sri), copy).toThrow('0 pin lines for v4');
+      const both = `${copy}\n  v4: '${pin}',\n`;
+      expect(withPin(both, 'v4', sri), copy).toBe(`${copy}\n  v4: '${sri}',\n`);
+    }
   });
 });

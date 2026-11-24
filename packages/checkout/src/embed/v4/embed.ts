@@ -262,20 +262,26 @@ class CheckoutFrame {
     // A stopped frame (page code may re-insert it) never says hello again.
     iframe.addEventListener('load', () => {
       if (this.live) {
-        this.hello();
+        this.hello(true);
       }
     });
     window.addEventListener('message', this.onMessage);
   }
 
-  /** Say hello to the checkout origin until it acknowledges, for a while after each start. */
-  hello(): void {
+  /**
+   * Say hello to the checkout origin until it acknowledges, for a while after
+   * each start. Only a hello started by a load gives up out loud: one said
+   * before the first load (a slow one) proves nothing about the checkout.
+   */
+  hello(loaded = false): void {
     this.stopHello();
     const started = Date.now();
     const hello = () => {
       if (Date.now() - started > HELLO_FOR_MS) {
         this.stopHello();
-        this.hooks.unavailable();
+        if (loaded) {
+          this.hooks.unavailable();
+        }
         return;
       }
       this.iframe.contentWindow?.postMessage({ type: 'hello' }, CHECKOUT_ORIGIN);
@@ -1114,6 +1120,10 @@ function open(options: unknown): Checkout {
     parts.root.adoptedStyleSheets = [own, shared];
   }
   current?.close();
+  // A `close` listener may have opened another checkout meanwhile: it stays, this one never opens.
+  if (current !== undefined) {
+    throw new Error('elisym: another checkout opened while this one was replacing it');
+  }
   const checkout = new Checkout(params, parts.host, parts.root, byHand);
   current = checkout;
   return checkout;
