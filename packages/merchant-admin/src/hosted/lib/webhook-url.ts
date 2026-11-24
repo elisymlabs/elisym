@@ -12,8 +12,6 @@ export const MAX_WEBHOOK_URL = 2048;
 
 export const WEBHOOK_NOT_USABLE =
   'Enter the webhook address as a full https:// URL on a public domain name (no IP address, port, user name or password), or leave it empty for no webhook.';
-export const WEBHOOK_REFUSED =
-  'The server did not take this webhook URL. Check that it is a public https:// address, then save again.';
 
 /** The typed webhook address: null for none, undefined when the server would refuse it. */
 export function webhookUrlInput(typed: string): string | null | undefined {

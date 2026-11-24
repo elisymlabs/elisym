@@ -369,6 +369,29 @@ describe('the hosted page loads no relay code', () => {
     expect(hostedRelayProblems(HTML, reader(chunks))).toEqual([]);
   });
 
+  it('visits chunks that import each other once each, and ends', { timeout: 2000 }, () => {
+    const chunks = {
+      'hosted-a.js': 'import"./shared-b.js";',
+      'shared-b.js': 'import"./side-c.js";export const b=1;',
+      'side-c.js': 'import"./shared-b.js";import"./hosted-a.js";',
+    };
+    const reads: string[] = [];
+    // A walk that revisits would never end (synchronously, past any timeout): stop it loudly.
+    const counted = (name: string) => {
+      if (reads.length > 20) {
+        throw new Error('the walk revisits chunks');
+      }
+      reads.push(name);
+      return reader(chunks)(name);
+    };
+    expect(reachableChunks(HTML, counted).sort()).toEqual([
+      'hosted-a.js',
+      'shared-b.js',
+      'side-c.js',
+    ]);
+    expect(reads.sort()).toEqual(['hosted-a.js', 'shared-b.js', 'side-c.js']);
+  });
+
   it('names a reachable chunk with relay code, however deep', () => {
     const chunks = {
       'hosted-a.js': 'import"./side-c.js";',

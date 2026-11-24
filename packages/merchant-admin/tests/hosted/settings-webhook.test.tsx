@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SettingsTab } from '../../src/hosted/components/SettingsTab';
@@ -14,12 +16,12 @@ import {
   SECRET_ONCE,
 } from '../../src/hosted/components/WebhookSecret';
 import { ApiError } from '../../src/hosted/lib/api';
+import { NIP05_NOT_USABLE, OWNER_NAME, nip05Usable } from '../../src/hosted/lib/nip05';
 import type { StoreApi } from '../../src/hosted/lib/store-session';
 import type { ConfigInput, Payout, StoreView } from '../../src/hosted/lib/types';
 import {
   MAX_WEBHOOK_URL,
   WEBHOOK_NOT_USABLE,
-  WEBHOOK_REFUSED,
   webhookUrlInput,
 } from '../../src/hosted/lib/webhook-url';
 import { type Mounted, buttonNamed, click, inputById, mount, settle } from '../mount';
@@ -110,18 +112,15 @@ describe('the webhook URL', () => {
     expect(webhookUrlInput(typed)).toBeUndefined();
   });
 
-  it('says a server refusal of a changed webhook URL in its own sentence', async () => {
+  it('says a bad_config refusal generically, whatever changed', async () => {
     const { container } = await open(view(), {
       putConfig: async () => {
         throw new ApiError(400, 'bad_config', { problems: [LEAK] });
       },
     });
-    await click(buttonNamed(container, 'Save settings'));
-    await settle(() => text(container).includes('Some settings are not valid'));
-    expect(text(container)).not.toContain(WEBHOOK_REFUSED);
     await type(inputById(container, 'settings-webhook'), 'https://other.example.com/h');
     await click(buttonNamed(container, 'Save settings'));
-    await settle(() => text(container).includes(WEBHOOK_REFUSED));
+    await settle(() => text(container).includes('Some settings are not valid'));
     expect(text(container)).not.toContain('SECRET');
   });
 
@@ -330,5 +329,51 @@ describe('suspending the store', () => {
     });
     await settle(() => text(container).includes(SUSPEND_TEXTS.done));
     expect(suspend).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the store address (nip05)', () => {
+  it.each(['shop@example.com', 'example.com', ' Shop@Example.com '])('takes %j', (typed) => {
+    expect(nip05Usable(typed.trim())).toBe(true);
+  });
+
+  it.each([
+    'owner@example.com',
+    'OWNER@example.com',
+    'shop@localhost',
+    'shop@127.0.0.1',
+    'shop@@example.com',
+    'not an address',
+    `${'a'.repeat(1100)}@example.com`,
+    `shop@${'a'.repeat(250)}.com`,
+  ])('refuses %j, as the server does', (typed) => {
+    expect(nip05Usable(typed)).toBe(false);
+  });
+
+  it('is the server rule: its bound and the reserved owner name, read from its source', () => {
+    // Tests run from the package root (vitest's root).
+    const stores = readFileSync(
+      join(process.cwd(), '..', 'paycore-server', 'src', 'state', 'stores.ts'),
+      'utf8',
+    );
+    const schema = /export const CreateStoreInputSchema = z([\s\S]*?)\.strict\(\);/.exec(
+      stores,
+    )?.[1];
+    expect(schema).toContain('splitNip05(value) !== undefined');
+    expect(schema).toContain(`splitNip05(value)?.local !== '${OWNER_NAME}'`);
+    const node = readFileSync(
+      join(process.cwd(), '..', 'merchant-node', 'src', 'config.ts'),
+      'utf8',
+    );
+    expect(node).toContain(`splitNip05(value)?.local !== '${OWNER_NAME}'`);
+  });
+
+  it('refuses an address the server would not take before saving', async () => {
+    const putConfig = vi.fn();
+    const { container } = await open(view(), { putConfig });
+    await type(inputById(container, 'settings-nip05'), 'owner@example.com');
+    await click(buttonNamed(container, 'Save settings'));
+    expect(text(container)).toContain(NIP05_NOT_USABLE);
+    expect(putConfig).not.toHaveBeenCalled();
   });
 });

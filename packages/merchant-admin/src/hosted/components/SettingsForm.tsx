@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { ApiError } from '../lib/api';
 import { fullConfig } from '../lib/config-input';
 import { errorMessage } from '../lib/errors';
+import { NIP05_NOT_USABLE, nip05Usable } from '../lib/nip05';
 import type { StoreSession } from '../lib/store-session';
 import type { EvmCredit, StoreConfig } from '../lib/types';
-import { WEBHOOK_NOT_USABLE, WEBHOOK_REFUSED, webhookUrlInput } from '../lib/webhook-url';
+import { WEBHOOK_NOT_USABLE, webhookUrlInput } from '../lib/webhook-url';
 import { BUTTON_SECONDARY, INPUT } from '../styles';
 import { InboxRelays } from './InboxRelays';
 import { Notice } from './Notice';
@@ -49,6 +50,10 @@ export function SettingsForm({ session, config, onSaved, onStale }: Props) {
       setProblem(NO_RELAYS);
       return;
     }
+    if (!nip05Usable(nip05.trim())) {
+      setProblem(NIP05_NOT_USABLE);
+      return;
+    }
     const webhookUrl = webhookUrlInput(webhook);
     if (webhookUrl === undefined) {
       setProblem(WEBHOOK_NOT_USABLE);
@@ -68,11 +73,8 @@ export function SettingsForm({ session, config, onSaved, onStale }: Props) {
       );
       onSaved();
     } catch (error) {
-      const webhookChanged = webhookUrl !== (config.webhookUrl ?? null);
       if (error instanceof ApiError && error.code === 'stale_config') {
         onStale();
-      } else if (error instanceof ApiError && error.code === 'bad_config' && webhookChanged) {
-        setProblem(WEBHOOK_REFUSED);
       } else {
         setProblem(errorMessage(error));
       }

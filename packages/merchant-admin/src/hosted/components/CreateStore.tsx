@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { errorMessage } from '../lib/errors';
+import { NIP05_NOT_USABLE, nip05Usable } from '../lib/nip05';
 import type { StoreSession } from '../lib/store-session';
 import type { Network, StoreView } from '../lib/types';
 import { BUTTON_SECONDARY, INPUT } from '../styles';
@@ -35,10 +36,14 @@ export function CreateStore({ session, onCreated }: Props) {
     if (network === undefined) {
       return;
     }
+    const address = nip05.trim();
+    if (!nip05Usable(address)) {
+      setProblem(NIP05_NOT_USABLE);
+      return;
+    }
     setBusy(true);
     setProblem(undefined);
     try {
-      const address = nip05.trim();
       onCreated(
         await session.api.createStore({
           name: trimmed,

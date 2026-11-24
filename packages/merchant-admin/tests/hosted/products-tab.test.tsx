@@ -461,10 +461,12 @@ describe('the CSV import', () => {
     expect(onChanged).not.toHaveBeenCalled();
   });
 
-  it('stops sending when the tab is left mid-import', async () => {
+  it('stops sending when the tab is left mid-import, and reads nothing again after', async () => {
     const puts: string[] = [];
     let release: (() => void) | undefined;
-    const { container } = await open([], {
+    const products = vi.fn(async () => ({ products: [] }));
+    const { container, onChanged } = await open([], {
+      products,
       putProduct: (d: string, input: ProductInput) => {
         puts.push(d);
         return new Promise((resolve) => {
@@ -477,11 +479,15 @@ describe('the CSV import', () => {
     await settle(() => text(container).includes('2 products are ready'));
     await click(buttonNamed(container, 'Import products'));
     await settle(() => puts.length === 1);
+    const reads = products.mock.calls.length;
     await mounted?.unmount();
     mounted = undefined;
     await act(async () => release?.());
     await turns(5);
     expect(puts).toEqual(['a']);
+    // The one product written is not reported: the tab is gone, so no store or products read follows.
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(products).toHaveBeenCalledTimes(reads);
   });
 
   it('is held while a product is being edited', async () => {

@@ -7,6 +7,7 @@ import { PASTE_REFUSED } from '../../src/hosted/components/PasteProof';
 import { PROOF_ERRORS } from '../../src/hosted/components/PayoutRow';
 import { ApiError } from '../../src/hosted/lib/api';
 import { STALE_RELOADED } from '../../src/hosted/lib/errors';
+import { NIP05_NOT_USABLE } from '../../src/hosted/lib/nip05';
 import { ON_ACTIVATION } from '../../src/hosted/lib/owner-flow';
 import { ROWS_PROBLEMS } from '../../src/hosted/lib/payout-rows';
 import type { StoreApi } from '../../src/hosted/lib/store-session';
@@ -92,6 +93,17 @@ function solanaWallet(options: Parameters<typeof fakeSolanaWallet>[0] = {}) {
 }
 
 describe('onboarding', () => {
+  it('refuses a store address the server would not take before creating', async () => {
+    const createStore = vi.fn();
+    const { container } = await start({ createStore });
+    await type(inputById(container, 'onboard-name'), 'My Shop');
+    await click(inputById(container, 'onboard-network-devnet'));
+    await type(inputById(container, 'onboard-nip05'), 'owner@example.com');
+    await click(buttonNamed(container, 'Create store'));
+    expect(container.textContent).toContain(NIP05_NOT_USABLE);
+    expect(createStore).not.toHaveBeenCalled();
+  });
+
   it('creates the store, saves the first payouts with the inbox relays, signs both owner events, then points at products', async () => {
     const { key } = solanaWallet();
     const creates: CreateStoreInput[] = [];
