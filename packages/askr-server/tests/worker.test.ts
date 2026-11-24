@@ -1,3 +1,4 @@
+// cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 import {
   CONFIG_D_TAG,
   KIND_CATALOG_AUTH,
@@ -18,7 +19,12 @@ import {
   type Usage,
   costOf,
 } from '@elisym/askr-agent';
-import { KIND_DELETION, buildStoreAuthEvent } from '@elisym/commerce';
+import {
+  KIND_DELETION,
+  buildProductEvent,
+  buildStoreAuthEvent,
+  buildStoreRevocationEvent,
+} from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -981,7 +987,7 @@ describe('worker catalogs (5.1, 2.4)', () => {
     await waitUntil(() => !setup.worker.catalogs.has(store.owner));
   });
 
-  it('a config naming a paycore source is unservable, and no other relay or 30490 is read', async () => {
+  it('a config naming a paycore source is unservable, and no other relay is read', async () => {
     const store = syntheticStore();
     const signed = store.events.find((event) => event.kind === KIND_CONFIG);
     if (signed === undefined) {
@@ -1020,13 +1026,46 @@ describe('worker catalogs (5.1, 2.4)', () => {
     expect(setup.worker.isUnservable(store.owner)).toBe(true);
     expect(setup.pool.relays.get('wss://nos.lol')?.requests).toEqual([]);
     expect([...setup.pool.relays.keys()].sort()).toEqual(['wss://nos.lol', RELAY].sort());
-    expect(
-      setup.pool
-        .relay(RELAY)
-        .requests.some((filters) => filters.some((filter) => filter.kinds?.includes(30490))),
-    ).toBe(false);
+  });
+
+  it('a 30490 revocation arriving on the live REQ removes Buy after the reload, the product stays', async () => {
+    const store = syntheticStore();
+    const paid = finalizeEvent(
+      buildProductEvent({
+        d: 'paid',
+        title: 'Paid',
+        description: '',
+        price: { amount: '5', currency: 'USD' },
+        accept: [DEVNET_USDC],
+        createdAt: NOW - 50,
+      }),
+      store.catalogSecret,
+    );
+    const storeAuth = finalizeEvent(
+      buildStoreAuthEvent({ storePubkey: store.catalogKey, mode: 'hosted', createdAt: NOW - 100 }),
+      store.ownerSecret,
+    );
+    const setup = await harness({
+      stores: [{ ...store, events: [...store.events, paid, storeAuth] }],
+    });
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.catalogs.get(store.owner)?.items.get('paid')?.payable?.network).toBe(
+      'devnet',
+    );
+    setup.pool
+      .relay(RELAY)
+      .accept(
+        finalizeEvent(buildStoreRevocationEvent(store.catalogKey, NOW - 10), store.ownerSecret),
+      );
+    await waitUntil(
+      () => setup.worker.catalogs.get(store.owner)?.items.get('paid')?.payable === undefined,
+    );
+    expect(setup.worker.catalogs.get(store.owner)?.items.has('paid')).toBe(true);
   });
 });
+
+const DEVNET_USDC =
+  'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 
 /** A store on keys given by the test: its config names `catalogSecret`'s key and, when given, a separate policy key. */
 function storeOnKeys(input: {

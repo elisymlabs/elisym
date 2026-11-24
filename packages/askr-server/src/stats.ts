@@ -89,6 +89,9 @@ interface ActivityTotals {
   answers: number;
   links: number;
   carts: number;
+  /** Buy presses on PayCore cards and payments their checkout reported (advisory). */
+  buys: number;
+  paid: number;
 }
 
 /**
@@ -160,6 +163,8 @@ export interface OperatorStats {
       conversations: number;
       answers: number;
       carts: number;
+      buys: number;
+      paid: number;
       spentUsd: string;
     }[];
   };
@@ -556,22 +561,30 @@ async function usageSection(
     answers_7: number;
     links_7: number;
     carts_7: number;
+    buys_7: number;
+    paid_7: number;
     active_7: number;
     conversations_window: number;
     answers_window: number;
     links_window: number;
     carts_window: number;
+    buys_window: number;
+    paid_window: number;
     active_window: number;
   }>(
     `select coalesce(sum(conversations) filter (where day > $1), 0)::int8 as conversations_7,
        coalesce(sum(answers) filter (where day > $1), 0)::int8 as answers_7,
        coalesce(sum(links) filter (where day > $1), 0)::int8 as links_7,
        coalesce(sum(carts) filter (where day > $1), 0)::int8 as carts_7,
+       coalesce(sum(buys) filter (where day > $1), 0)::int8 as buys_7,
+       coalesce(sum(paid) filter (where day > $1), 0)::int8 as paid_7,
        count(distinct owner) filter (where day > $1 and answers > 0)::int8 as active_7,
        coalesce(sum(conversations) filter (where day > $2), 0)::int8 as conversations_window,
        coalesce(sum(answers) filter (where day > $2), 0)::int8 as answers_window,
        coalesce(sum(links) filter (where day > $2), 0)::int8 as links_window,
        coalesce(sum(carts) filter (where day > $2), 0)::int8 as carts_window,
+       coalesce(sum(buys) filter (where day > $2), 0)::int8 as buys_window,
+       coalesce(sum(paid) filter (where day > $2), 0)::int8 as paid_window,
        count(distinct owner) filter (where day > $2 and answers > 0)::int8 as active_window
      from activity_days where day > least($1::int, $2::int)`,
     [recentFrom, windowFrom],
@@ -607,10 +620,13 @@ async function usageSection(
     conversations: number;
     answers: number;
     carts: number;
+    buys: number;
+    paid: number;
     spent: string;
   }>(
     `select a.owner, s.tier, sum(a.conversations)::int8 as conversations,
        sum(a.answers)::int8 as answers, sum(a.carts)::int8 as carts,
+       sum(a.buys)::int8 as buys, sum(a.paid)::int8 as paid,
        (select coalesce(sum(d.spent), 0) from store_days d
         where d.owner = a.owner and d.day > $1)::text as spent
      from activity_days a join stores s on s.owner = a.owner
@@ -628,12 +644,16 @@ async function usageSection(
         answers: activity?.answers_7 ?? 0,
         links: activity?.links_7 ?? 0,
         carts: activity?.carts_7 ?? 0,
+        buys: activity?.buys_7 ?? 0,
+        paid: activity?.paid_7 ?? 0,
       },
       window: {
         conversations: activity?.conversations_window ?? 0,
         answers: activity?.answers_window ?? 0,
         links: activity?.links_window ?? 0,
         carts: activity?.carts_window ?? 0,
+        buys: activity?.buys_window ?? 0,
+        paid: activity?.paid_window ?? 0,
       },
     },
     lifetimeConversations: lifetime?.conversations ?? 0,
@@ -647,6 +667,8 @@ async function usageSection(
       conversations: row.conversations,
       answers: row.answers,
       carts: row.carts,
+      buys: row.buys,
+      paid: row.paid,
       spentUsd: new Decimal(row.spent).toString(),
     })),
   };
@@ -1098,7 +1120,7 @@ function usageText(stats: OperatorStats): string[] {
   return [
     `USAGE         7 d / ${stats.windowDays} d`,
     `${label('active')}${count(usage.activeStores.days7)} / ${count(usage.activeStores.window)} stores answering`,
-    `${label('activity')}conversations ${count(days7.conversations)} / ${count(window.conversations)}   answers ${count(days7.answers)} / ${count(window.answers)}   product opens ${count(days7.links)} / ${count(window.links)}   carts ${count(days7.carts)} / ${count(window.carts)}`,
+    `${label('activity')}conversations ${count(days7.conversations)} / ${count(window.conversations)}   answers ${count(days7.answers)} / ${count(window.answers)}   product opens ${count(days7.links)} / ${count(window.links)}   carts ${count(days7.carts)} / ${count(window.carts)}   buys ${count(days7.buys)} / ${count(window.buys)}   paid ${count(days7.paid)} / ${count(window.paid)}`,
     `${label('lifetime')}conversations ${count(usage.lifetimeConversations)}`,
     `${label('open now')}sessions held ${count(usage.openSessions)}`,
     `${label('silent')}active, never answered ${count(usage.silent.neverAnswered)}; quiet for ${stats.windowDays} d ${count(usage.silent.quiet)}`,
@@ -1132,7 +1154,7 @@ function topText(stats: OperatorStats): string[] {
   }
   for (const store of stats.usage.top) {
     lines.push(
-      `  ${npub(store.owner)}  ${store.tier ?? '-'}  conversations ${count(store.conversations)}  answers ${count(store.answers)}  carts ${count(store.carts)}  ${usd(store.spentUsd)}`,
+      `  ${npub(store.owner)}  ${store.tier ?? '-'}  conversations ${count(store.conversations)}  answers ${count(store.answers)}  carts ${count(store.carts)}  buys ${count(store.buys)}  paid ${count(store.paid)}  ${usd(store.spentUsd)}`,
     );
   }
   return lines;

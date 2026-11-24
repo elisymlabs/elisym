@@ -30,6 +30,9 @@ export interface ActivityDay {
   answers: number;
   links: number;
   carts: number;
+  /** Buy presses on PayCore cards and payments their checkout reported (advisory, C6). */
+  buys: number;
+  paid: number;
 }
 
 /** Tables keyed by a store's owner without a foreign key: moved along with it (K21). */
@@ -828,7 +831,7 @@ export class StoreDirectory {
     budget: { resetsAt: number };
     sessions: number;
     conversations: number;
-    clicks: { address: string; count: number; carts: number }[];
+    clicks: { address: string; count: number; carts: number; buys: number; paid: number }[];
     days: ActivityDay[];
   }> {
     const window = await budgetWindow(this.db, owner, now);
@@ -847,9 +850,15 @@ export class StoreDirectory {
       'select conversations from store_totals where owner = $1',
       [owner],
     );
-    const clicks = await this.db.query<{ address: string; count: number; carts: number }>(
-      `select address, count, carts from clicks where owner = $1
-       order by count + carts desc, carts desc, address limit 100`,
+    const clicks = await this.db.query<{
+      address: string;
+      count: number;
+      carts: number;
+      buys: number;
+      paid: number;
+    }>(
+      `select address, count, carts, buys, paid from clicks where owner = $1
+       order by count + carts + buys desc, paid desc, carts desc, address limit 100`,
       [owner],
     );
     return {
@@ -868,8 +877,10 @@ export class StoreDirectory {
         answers: number;
         links: number;
         carts: number;
+        buys: number;
+        paid: number;
       }>(
-        `select day, conversations, answers, links, carts from activity_days
+        `select day, conversations, answers, links, carts, buys, paid from activity_days
          where owner = $1 and day > $2 order by day`,
         [owner, utcDay(now) - ACTIVITY_DAYS],
       ),

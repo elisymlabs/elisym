@@ -374,6 +374,17 @@ alter table billing_subscriptions add column scheduled_at bigint;
 alter table billing_subscriptions add column billing_cycle_anchor bigint;
 `,
   },
+  {
+    id: '0013_buy_clicks',
+    sql: `
+-- Presses of a PayCore card's Buy button and the payments its checkout reported (advisory, as
+-- the browser reports them: never billing), per listing and per UTC day.
+alter table clicks add column buys bigint not null default 0;
+alter table clicks add column paid bigint not null default 0;
+alter table activity_days add column buys integer not null default 0;
+alter table activity_days add column paid integer not null default 0;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

@@ -1,8 +1,12 @@
 import type { LlmMessage } from '@elisym/askr-agent';
 import type { NostrEvent } from 'nostr-tools';
 
-/** What a handoff click was: a product link opened, or an add to cart pressed. */
-export type ClickKind = 'link' | 'cart';
+/**
+ * What a handoff click was: a product link opened, an add to cart pressed, a
+ * Buy pressed on a PayCore card, or that checkout reporting a payment (C6).
+ * Advisory, as the browser reports it: never billing.
+ */
+export type ClickKind = 'link' | 'cart' | 'buy' | 'paid';
 
 export type StoreStatus = 'pending' | 'active' | 'suspended';
 

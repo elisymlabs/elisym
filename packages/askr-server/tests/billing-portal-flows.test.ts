@@ -675,10 +675,9 @@ describe('the scheduled change, stored and shown', () => {
   });
 
   it('migration 0011 adds the three nullable columns, the interval checked', async () => {
-    expect(MIGRATIONS.map((entry) => entry.id).slice(-3, -1)).toEqual([
-      '0010_billing',
-      '0011_billing_schedule',
-    ]);
+    const ids = MIGRATIONS.map((entry) => entry.id);
+    expect(ids.indexOf('0011_billing_schedule')).toBe(ids.indexOf('0010_billing') + 1);
+    expect(ids.indexOf('0010_billing')).toBeGreaterThanOrEqual(0);
     const client = await PGlite.create();
     const db = pgliteDb(client);
     await migrate(db);
