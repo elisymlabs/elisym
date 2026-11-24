@@ -62,7 +62,7 @@ describe('the pinned loaders', () => {
   });
 
   it('every released loader has its pin here, and every loader is frozen', () => {
-    expect(RELEASED_LOADERS).toEqual(['v1', 'v2', 'v3']);
+    expect(RELEASED_LOADERS).toEqual(['v1', 'v2', 'v3', 'v4']);
     for (const version of RELEASED_LOADERS) {
       expect(LOADERS).toContain(version);
     }
@@ -183,11 +183,11 @@ describe('the global-scope check', () => {
 
 describe('freezing a loader', () => {
   it('refuses a released loader and a bad name, before anything else', () => {
-    for (const version of ['v1', 'v2', 'v3']) {
+    for (const version of ['v1', 'v2', 'v3', 'v4']) {
       expect(freezeRefusal(version)).toContain(`${version} is released`);
     }
-    expect(freezeRefusal('v4')).toBeUndefined();
-    expect(freezeRefusal('v4', ['v4'])).toContain('v4 is released');
+    expect(freezeRefusal('v5')).toBeUndefined();
+    expect(freezeRefusal('v5', ['v5'])).toContain('v5 is released');
     for (const name of ['', 'v0', '4', 'v4/../v3', 'V4', 'v4 ']) {
       expect(freezeRefusal(name), name).toContain('is not a loader name');
     }

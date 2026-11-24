@@ -16,7 +16,7 @@ export const FROZEN_MANIFEST = 'embed-prod/frozen.sha256';
  * frozen again. A loader joins in the commit that first merges it to `main`;
  * `tests/loader-pins.test.ts` holds each one's pin, so taking one out shows.
  */
-export const RELEASED_LOADERS: readonly string[] = ['v1', 'v2', 'v3'];
+export const RELEASED_LOADERS: readonly string[] = ['v1', 'v2', 'v3', 'v4'];
 /** The test that holds each loader's pin, one `  vN: 'sha384-...',` line per loader. */
 export const PIN_TEST = 'tests/loader-pins.test.ts';
 
