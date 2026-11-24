@@ -350,6 +350,51 @@ describe('startServer', () => {
     await expect(fetch(`${base}/healthz`)).rejects.toThrow();
   });
 
+  it('serves the public /v1/meta, with CORS for the admin origin only', async () => {
+    const setup = await world();
+    const handle = await startServer(
+      { ...CONFIG, adminOrigin: 'https://admin.paycore.test' },
+      setup.deps,
+    );
+    handles.push(handle);
+    const base = `http://127.0.0.1:${handle.port}`;
+    const meta = await fetch(`${base}/v1/meta`, {
+      headers: { origin: 'https://admin.paycore.test' },
+    });
+    expect(meta.status).toBe(200);
+    expect(meta.headers.get('access-control-allow-origin')).toBe('https://admin.paycore.test');
+    expect(meta.headers.get('access-control-expose-headers')).toBe('date');
+    expect(meta.headers.get('cache-control')).toBe('no-store');
+    const body: unknown = await meta.json();
+    expect(body).toEqual({
+      publicBase: 'http://localhost',
+      operator: 'paycore.test',
+      networks: {
+        mainnet: { coins: [] },
+        devnet: {
+          coins: [
+            'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+            'eip155:84532/erc20:0x036cbd53842c5426634e7929541ec2318f3dcf7e',
+          ],
+        },
+      },
+      inboxRelays: [RELAY],
+      pendingMaxProducts: 20,
+    });
+    expect(JSON.stringify(body)).not.toContain(SOLANA_RPC);
+    expect(JSON.stringify(body)).not.toContain(BASE_RPC);
+    const other = await fetch(`${base}/v1/meta`, { headers: { origin: 'https://other.test' } });
+    expect(other.headers.get('access-control-allow-origin')).toBeNull();
+    expect((await fetch(`${base}/v1/meta`, { method: 'POST' })).status).toBe(404);
+    const unauthorized = await fetch(`${base}/v1/admin/store`, {
+      headers: { origin: 'https://admin.paycore.test' },
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get('access-control-allow-origin')).toBe(
+      'https://admin.paycore.test',
+    );
+  });
+
   it('a second stop is a no-op', async () => {
     const setup = await world();
     const handle = await boot(setup);

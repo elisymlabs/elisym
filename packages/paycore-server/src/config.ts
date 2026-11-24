@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
-import type { Network } from '@elisym/pay-core';
-import { EIP3009_SLUGS, type Eip3009Slug } from '@merchant-node/config';
+import { type ChainConfig, type Network, settlementOf } from '@elisym/pay-core';
+import { EIP3009_SLUGS, type Eip3009Slug, isEip3009Slug } from '@merchant-node/config';
 import { checkoutRelaySpelling } from '@merchant-node/relays';
 
 /** The inbox relays a hosted store may use unless PAYCORE_INBOX_RELAYS says otherwise (P7). */
@@ -38,6 +38,24 @@ export interface PaycoreConfig {
   /** The 30490 `operator` of every hosted store (R2). */
   operator: string;
   rpcs: Record<Network, NetworkRpcs>;
+  /**
+   * PAYCORE_ADMIN_ORIGIN: the one browser origin the admin API and `/v1/meta`
+   * answer with CORS headers (A2); unset: no CORS headers at all.
+   */
+  adminOrigin?: string;
+}
+
+/** Whether the operator configured the RPC of `chain`'s rail: only then can a store be paid on it. */
+export function hasOperatorRpc(
+  rpcs: NetworkRpcs,
+  chain: Pick<ChainConfig, 'family' | 'settlement' | 'slug'>,
+): boolean {
+  const rail = settlementOf(chain);
+  return (
+    (rail === 'solana' && rpcs.solana !== undefined) ||
+    (rail === 'tempo' && rpcs.tempo !== undefined) ||
+    (rail === 'eip3009' && isEip3009Slug(chain.slug) && rpcs.evm[chain.slug] !== undefined)
+  );
 }
 
 /** An empty variable is an unset one. */
@@ -174,6 +192,29 @@ function operatorFrom(value: string | undefined, publicBase: string): string {
   return operator;
 }
 
+/**
+ * PAYCORE_ADMIN_ORIGIN: an exact origin, `https://host[:port]` (http only on
+ * localhost), no path and no trailing slash - spelled as the browser sends it
+ * in `Origin`, since the two are compared byte for byte.
+ */
+export function adminOriginFrom(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const url = URL.canParse(value) ? new URL(value) : undefined;
+  const local = url?.hostname === 'localhost' || url?.hostname === '127.0.0.1';
+  if (
+    url === undefined ||
+    url.origin !== value ||
+    !(url.protocol === 'https:' || (url.protocol === 'http:' && local))
+  ) {
+    throw new Error(
+      `PAYCORE_ADMIN_ORIGIN must be an exact origin such as https://admin.example (https, no path, no trailing slash), got ${value}`,
+    );
+  }
+  return value;
+}
+
 function portFrom(value: string | undefined): number {
   if (value === undefined) {
     return DEFAULT_PORT;
@@ -196,7 +237,9 @@ export function configFromEnv(
     throw new Error('PAYCORE_TRUST_PROXY must be 1 or 0');
   }
   const rpcs = { mainnet: networkRpcs(env, 'mainnet'), devnet: networkRpcs(env, 'devnet') };
+  const adminOrigin = adminOriginFrom(env.PAYCORE_ADMIN_ORIGIN);
   return {
+    ...(adminOrigin === undefined ? {} : { adminOrigin }),
     databaseUrl: required(env, 'DATABASE_URL'),
     masterKeyHex: masterKeyFrom(env, read),
     publicBase,

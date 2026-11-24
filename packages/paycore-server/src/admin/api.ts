@@ -8,10 +8,12 @@ import {
   type OwnerEventKind,
   type OwnerEventRefusal,
   commitOwnerEvent,
+  committedOwnerEvents,
   prepareOwnerEvent,
 } from '../owner-events';
 import {
   ConfigInputSchema,
+  canonicalPayouts,
   CreateStoreInputSchema,
   HandInputSchema,
   ProductInputSchema,
@@ -21,6 +23,7 @@ import {
 } from '../state/stores';
 import { authIdExpiry } from './auth-ids';
 import { checkNip98 } from './nip98';
+import { merchantResult } from './request-results';
 import { type AdminRequest, REQUEST_WAIT_MS, getRequest, waitResult } from './requests';
 
 export const ADMIN_PREFIX = '/v1/admin/';
@@ -37,6 +40,10 @@ const PrepareSchema = z
   .object({ kind: z.union([z.literal(KIND_PAYTO), z.literal(KIND_STORE_AUTH)]) })
   .strict();
 /** The kind picks the relays' newest to judge staleness; the rest is checked by `commitOwnerEvent`. */
+/** The admin's config: the whole config (built from the last GET plus the edit) and the revision it read. */
+const AdminConfigSchema = ConfigInputSchema.extend({
+  expectedRevision: z.number().int().nonnegative(),
+});
 const CommitSchema = z
   .object({
     event: z.looseObject({ kind: z.union([z.literal(KIND_PAYTO), z.literal(KIND_STORE_AUTH)]) }),
@@ -93,6 +100,7 @@ const REFUSAL_STATUS: Record<string, number> = {
   inactive: 409,
   product_cap: 409,
   no_draft: 409,
+  stale_config: 409,
   expired: 409,
   stale: 409,
   clock: 409,
@@ -105,12 +113,17 @@ function refused(refusal: Refusal | OwnerEventRefusal): Response {
   return json(body, REFUSAL_STATUS[refusal.error] ?? 400);
 }
 
+/** A request as the merchant sees it: its result whitelisted (A15), a failure always with a code. */
 function requestView(request: AdminRequest) {
+  const result = merchantResult(request.kind, request.result);
   return {
     id: request.id,
     kind: request.kind,
     state: request.state,
-    result: request.result ?? null,
+    result:
+      request.state === 'failed' && result?.code === undefined
+        ? { ...result, code: 'failed' }
+        : result,
     createdAt: request.createdAt,
     appliedAt: request.appliedAt ?? null,
   };
@@ -139,18 +152,23 @@ export function createAdminApi(
   const directory = deps.directory;
 
   const view = async (store: StoreRecord) => {
-    const [settings, webhookSecretSet, state] = await Promise.all([
+    const [settings, webhookSecretSet, state, alerts, committed] = await Promise.all([
       directory.settings(store.owner),
       directory.hasWebhookSecret(store.owner),
       directory.ledgerState(store.owner),
+      directory.openAlertKinds(store.owner),
+      committedOwnerEvents(deps.db, store.owner),
     ]);
+    const draft = settings === undefined ? undefined : canonicalPayouts(settings.draftPayouts);
     return {
       owner: store.owner,
       storePubkey: store.storePubkey,
       status: store.status,
-      statusReason: store.statusReason ?? null,
+      // A15: the open alerts' kinds; their messages (raw error texts) stay with the operator.
+      alerts,
       tier: store.tier?.name ?? null,
-      maxProducts: store.tier?.maxProducts ?? null,
+      // The cap that applies: the tier's, or the pending one (as `putProduct` judges it).
+      maxProducts: store.tier?.maxProducts ?? directory.pendingMaxProducts,
       suspendingSince: store.suspendingSince ?? null,
       createdAt: store.createdAt,
       config: settings ?? null,
@@ -159,6 +177,11 @@ export function createAdminApi(
         state?.payto === undefined
           ? null
           : { createdAt: state.payto.createdAt, payouts: activePayouts(state, store.owner) },
+      // The draft differs from the newest committed payout list (not `state.payto`, unset until activation).
+      payouts: {
+        needsSigning: draft !== undefined && draft.text !== committed.paytoPayouts,
+      },
+      ownerEvents: { payto: committed.payto, auth: committed.auth },
       webhookSecretSet,
     };
   };
@@ -233,11 +256,12 @@ export function createAdminApi(
       return json(await view(store), 200);
     }
     if (route === 'PUT /v1/admin/store/config') {
-      const input = ConfigInputSchema.safeParse(parseJson(body));
+      const input = AdminConfigSchema.safeParse(parseJson(body));
       if (!input.success) {
         return json({ error: 'bad_request' }, 400);
       }
-      const result = await directory.putConfig(owner, input.data);
+      const { expectedRevision, ...config } = input.data;
+      const result = await directory.putConfig(owner, config, expectedRevision);
       return result.ok
         ? json({ config: result.settings, requestId: result.requestId ?? null }, 200)
         : refused(result);

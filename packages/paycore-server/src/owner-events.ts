@@ -355,3 +355,52 @@ export async function commitOwnerEvent(
     return { ok: true, id: event.id, requestId, alreadyCommitted: false };
   });
 }
+
+/** O's committed event of one kind as the admin shows it (the newest by `created_at`). */
+export interface CommittedOwnerEvent {
+  /** The O-signed event: public once published, so the admin can post it back to commit (Retry). */
+  event: NostrEvent;
+  committedAt: number;
+  /** When a default relay took it; null until then (or when its record request failed). */
+  publishedAt: number | null;
+}
+
+export interface CommittedOwnerEvents {
+  payto: CommittedOwnerEvent | null;
+  auth: CommittedOwnerEvent | null;
+  /** The 10133's canonical payouts string (P9), to compare with the draft. */
+  paytoPayouts: string | undefined;
+}
+
+/** O's newest committed 10133 and 30490 (by event `created_at`, as `newestCommitted` judges). */
+export async function committedOwnerEvents(
+  db: Queryable,
+  owner: string,
+): Promise<CommittedOwnerEvents> {
+  const rows = await db.query<{
+    kind: number;
+    event: NostrEvent | string;
+    payouts_string: string | null;
+    committed_at: number;
+    published_at: number | null;
+  }>(
+    `select distinct on (kind) kind, event, payouts_string, committed_at, published_at
+     from owner_events where owner = $1
+     order by kind, (event->>'created_at')::bigint desc, committed_at desc`,
+    [owner],
+  );
+  const of = (kind: OwnerEventKind) => rows.find((row) => row.kind === kind);
+  const view = (row: (typeof rows)[number] | undefined): CommittedOwnerEvent | null =>
+    row === undefined
+      ? null
+      : {
+          event: typeof row.event === 'string' ? (JSON.parse(row.event) as NostrEvent) : row.event,
+          committedAt: row.committed_at,
+          publishedAt: row.published_at,
+        };
+  return {
+    payto: view(of(KIND_PAYTO)),
+    auth: view(of(KIND_STORE_AUTH)),
+    paytoPayouts: of(KIND_PAYTO)?.payouts_string ?? undefined,
+  };
+}

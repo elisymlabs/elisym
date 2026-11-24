@@ -6,7 +6,8 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "@merchant-node/*": ["../merchant-node/src/*"]
+      "@merchant-node/*": ["../merchant-node/src/*"],
+      "@hosted-admin/*": ["../merchant-admin/src/hosted/lib/*"]
     }
   },
   "include": ["src", "tests", "scripts"],

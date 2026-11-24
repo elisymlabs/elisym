@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PORT, configFromEnv, inboxRelaysFrom, rpcEnvNames } from '../src/config';
+import {
+  DEFAULT_PORT,
+  adminOriginFrom,
+  configFromEnv,
+  inboxRelaysFrom,
+  rpcEnvNames,
+} from '../src/config';
 
 const KEY = 'cd'.repeat(32);
 const BASE_ENV = {
@@ -121,6 +127,38 @@ describe('PAYCORE_INBOX_RELAYS', () => {
   it('refuses a local, private or plain relay', () => {
     for (const relay of ['ws://relay.example', 'wss://localhost', 'wss://10.0.0.1', '']) {
       expect(() => inboxRelaysFrom(relay), relay).toThrow('PAYCORE_INBOX_RELAYS');
+    }
+  });
+});
+
+describe('PAYCORE_ADMIN_ORIGIN', () => {
+  it('takes an exact origin, and none when unset or empty', () => {
+    expect(
+      configFromEnv({ ...BASE_ENV, PAYCORE_ADMIN_ORIGIN: 'https://admin.elisym.network' })
+        .adminOrigin,
+    ).toBe('https://admin.elisym.network');
+    expect(adminOriginFrom('https://admin.example:8443')).toBe('https://admin.example:8443');
+    expect(adminOriginFrom('http://localhost:5173')).toBe('http://localhost:5173');
+    expect(configFromEnv(BASE_ENV).adminOrigin).toBeUndefined();
+    expect(configFromEnv({ ...BASE_ENV, PAYCORE_ADMIN_ORIGIN: '' }).adminOrigin).toBeUndefined();
+  });
+
+  it('refuses at boot anything the browser would not send as Origin byte for byte', () => {
+    for (const value of [
+      'https://admin.example/',
+      'https://admin.example/hosted',
+      'https://Admin.example',
+      'https://admin.example:443',
+      'https://admin.example?x=1',
+      'https://user@admin.example',
+      'http://admin.example',
+      'admin.example',
+      '*',
+      'null',
+    ]) {
+      expect(() => configFromEnv({ ...BASE_ENV, PAYCORE_ADMIN_ORIGIN: value }), value).toThrow(
+        'PAYCORE_ADMIN_ORIGIN',
+      );
     }
   });
 });

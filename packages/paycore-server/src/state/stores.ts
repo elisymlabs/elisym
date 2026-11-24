@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { parseCaip19, splitNip05, verifyPaytoProof } from '@elisym/commerce';
-import { type Network, settlementOf } from '@elisym/pay-core';
+import type { Network } from '@elisym/pay-core';
 import {
   type EvmCredit,
   type MerchantConfig,
@@ -11,14 +11,18 @@ import {
   webhookUrlProblem,
 } from '@merchant-node/config';
 import { type LedgerState, emptyLedger } from '@merchant-node/ledger';
-import { PRICE_RE, PRODUCT_D_RE } from '@merchant-node/products';
+import {
+  PRODUCT_D_RE,
+  ProductInputSchema,
+  storableString as storable,
+} from '@merchant-node/product-rules';
+import { orderProductD } from '@merchant-node/products';
 import { checkoutRelaySpelling } from '@merchant-node/relays';
-import Decimal from 'decimal.js-light';
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import * as z from 'zod';
 import { recordAuthId } from '../admin/auth-ids';
 import { type RequestKind, insertRequest } from '../admin/requests';
-import type { NetworkRpcs } from '../config';
+import { type NetworkRpcs, hasOperatorRpc } from '../config';
 import { FetchGuardError, checkUrl } from '../connectors/fetch-guard';
 import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
@@ -32,12 +36,8 @@ export const PENDING_MAX_PRODUCTS = 20;
 const MAX_INBOX_RELAYS = 5;
 /** A webhook secret: 32 random bytes as 64 hex characters (`openssl rand -hex 32`). */
 const WEBHOOK_SECRET_BYTES = 32;
-const MAX_TITLE = 200;
 const MAX_TAG_VALUE = 1024;
-const MAX_DESCRIPTION = 64 * 1024;
 const MAX_NAME = 100;
-const NUL = String.fromCharCode(0);
-const LONE_SURROGATE_RE = /\p{Cs}/u;
 const REFUND_AMOUNT_RE = /^[1-9]\d{0,38}$/;
 
 export interface Payout {
@@ -124,6 +124,8 @@ export interface OrderView {
   buyerPubkey: string;
   orderId: string;
   product: string;
+  /** The product's current title by its `d` (it may have changed since the order); null once removed. */
+  productTitle: string | null;
   createdAt: number;
   email: string | undefined;
   customerRef: string | undefined;
@@ -159,38 +161,7 @@ export interface StoreDirectoryOptions {
   pendingMaxProducts?: number;
 }
 
-/** Postgres `text` holds no NUL, and a lone surrogate is no UTF-8: refused, never stored half. */
-function isStorable(value: string): boolean {
-  return !value.includes(NUL) && !LONE_SURROGATE_RE.test(value);
-}
-
-const NOT_STORABLE = 'holds a character that cannot be stored (NUL or a lone surrogate)';
-
-function storable(max: number) {
-  return z.string().max(max).refine(isStorable, { message: NOT_STORABLE });
-}
-
-function isHttpsUrl(value: string): boolean {
-  return URL.canParse(value) && new URL(value).protocol === 'https:';
-}
-
-/** As merchant-node reads a PRODUCT.md (`products.ts`), as JSON. */
-export const ProductInputSchema = z
-  .object({
-    title: storable(MAX_TITLE)
-      .transform((value) => value.trim())
-      .refine((value) => value.length > 0, { message: 'is empty' }),
-    description: storable(MAX_DESCRIPTION).transform((value) => value.trim()),
-    summary: storable(MAX_TAG_VALUE).optional(),
-    url: storable(MAX_TAG_VALUE)
-      .refine(isHttpsUrl, { message: 'must be an https link' })
-      .optional(),
-    priceUsd: z.string().refine((value) => PRICE_RE.test(value) && new Decimal(value).gt(0), {
-      message: 'must be a USD amount above 0, such as "49" or "0.50"',
-    }),
-    onSale: z.boolean().optional(),
-  })
-  .strict();
+export { ProductInputSchema };
 
 export const ConfigInputSchema = z
   .object({
@@ -379,7 +350,8 @@ export class StoreDirectory {
   private readonly allowedRelays: readonly string[];
   private readonly rpcs: Record<Network, NetworkRpcs>;
   private readonly now: () => number;
-  private readonly pendingMaxProducts: number;
+  /** The products on sale a store on no tier (`pending`) may hold. */
+  readonly pendingMaxProducts: number;
 
   constructor(options: StoreDirectoryOptions) {
     this.db = options.db;
@@ -464,6 +436,15 @@ export class StoreDirectory {
     });
   }
 
+  /** The kinds of the store's open alerts (A15: the merchant sees kinds, never the messages). */
+  async openAlertKinds(owner: string): Promise<string[]> {
+    const rows = await this.db.query<{ kind: string }>(
+      'select kind from alerts where owner = $1 and cleared_at is null order by kind',
+      [owner],
+    );
+    return rows.map((row) => row.kind);
+  }
+
   async hasWebhookSecret(owner: string): Promise<boolean> {
     const [row] = await this.db.query<{ set: boolean }>(
       'select webhook_secret is not null as set from store_keys where owner = $1',
@@ -527,13 +508,7 @@ export class StoreDirectory {
           `${path}.signature: does not prove ${payout.address} for this owner and coin`,
         );
       }
-      const rail = settlementOf(caip19.chain);
-      const slug = caip19.chain.slug;
-      const served =
-        caip19.chain.network !== network ||
-        (rail === 'solana' && rpcs.solana !== undefined) ||
-        (rail === 'tempo' && rpcs.tempo !== undefined) ||
-        (rail === 'eip3009' && isEip3009Slug(slug) && rpcs.evm[slug] !== undefined);
+      const served = caip19.chain.network !== network || hasOperatorRpc(rpcs, caip19.chain);
       if (!served) {
         problems.push(
           `${path}.caip19: this server takes no payments on ${caip19.chain.chainName ?? caip19.chain.caip2}`,
@@ -597,11 +572,14 @@ export class StoreDirectory {
    * got their 10050 out, `draft_inbox_relays`). Refused with every problem when a payout has no
    * valid wallet signature, a chain has no operator RPC, an inbox relay is
    * outside the allowlist, the webhook URL is not https on port 443 to a
-   * public host, or a product's price cannot be paid in a coin.
+   * public host, or a product's price cannot be paid in a coin. With
+   * `expectedRevision` (the admin route; import passes none), refused as
+   * `stale_config` when the config changed since that revision was read.
    */
   async putConfig(
     owner: string,
     input: ConfigInput,
+    expectedRevision?: number,
   ): Promise<{ ok: true; settings: StoreSettings; requestId: string | undefined } | Refusal> {
     const now = this.now();
     return this.db.transaction(async (tx) => {
@@ -612,6 +590,9 @@ export class StoreDirectory {
       }
       if (WINDING_DOWN_STATUSES.includes(store.status)) {
         return WINDING_DOWN_REFUSAL;
+      }
+      if (expectedRevision !== undefined && expectedRevision !== current.revision) {
+        return { ok: false, error: 'stale_config' };
       }
       const checked = this.checkConfig(
         owner,
@@ -814,6 +795,14 @@ export class StoreDirectory {
     if (state === undefined) {
       return undefined;
     }
+    const titles = new Map(
+      (
+        await this.db.query<{ d: string; title: string }>(
+          'select d, title from products where owner = $1',
+          [owner],
+        )
+      ).map((row) => [row.d, row.title]),
+    );
     const orders = Object.values(state.orders)
       .map(
         (order): OrderView => ({
@@ -821,6 +810,7 @@ export class StoreDirectory {
           buyerPubkey: order.buyerPubkey,
           orderId: order.orderId,
           product: order.product,
+          productTitle: titles.get(orderProductD(order)) ?? null,
           createdAt: order.createdAt,
           email: order.email,
           customerRef: order.customerRef,

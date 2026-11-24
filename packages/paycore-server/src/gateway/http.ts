@@ -20,6 +20,46 @@ const ADMIN_PATH_PREFIX = '/v1/admin/';
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'DELETE']);
 /** The shape of a NIP-98 header; checked before an admin body is read, the signature after. */
 const NOSTR_AUTH_RE = /^Nostr [A-Za-z0-9+/=]+$/;
+/** The public meta route (A2: CORS like the admin API). */
+export const META_PATH = '/v1/meta';
+/** How long a browser may keep a preflight answer. */
+const CORS_MAX_AGE_SECS = 600;
+
+/** Whether `path` answers the admin origin with CORS headers: the admin API and `/v1/meta`. */
+export function isCorsPath(path: string): boolean {
+  return path.startsWith(ADMIN_PATH_PREFIX) || path === META_PATH;
+}
+
+/**
+ * The CORS headers of an answer (A2): for exactly `adminOrigin` (the `Origin`
+ * header compared byte for byte) on a CORS path, else none but `vary`. A
+ * preflight adds the methods, headers and max age. No credentials.
+ */
+export function corsHeadersOf(input: {
+  adminOrigin: string | undefined;
+  origin: string | undefined;
+  path: string;
+  preflight: boolean;
+}): Record<string, string> {
+  if (input.adminOrigin === undefined || !isCorsPath(input.path)) {
+    return {};
+  }
+  if (input.origin !== input.adminOrigin) {
+    return { vary: 'origin' };
+  }
+  return {
+    vary: 'origin',
+    'access-control-allow-origin': input.adminOrigin,
+    'access-control-expose-headers': 'date',
+    ...(input.preflight
+      ? {
+          'access-control-allow-methods': 'GET, POST, PUT, DELETE',
+          'access-control-allow-headers': 'authorization, content-type',
+          'access-control-max-age': String(CORS_MAX_AGE_SECS),
+        }
+      : {}),
+  };
+}
 
 /**
  * The body cap for a request by its normalized path, or `unauthorized` for an
@@ -160,12 +200,28 @@ async function handleIncoming(
   incoming: IncomingMessage,
   outgoing: ServerResponse,
   handler: (input: GatewayRequest) => Promise<Response>,
-  trustProxy: boolean,
+  options: GatewayOptions,
 ): Promise<void> {
   const method = incoming.method ?? 'GET';
   const hasBody = METHODS_WITH_BODY.has(method);
   // Parsed as the handler's Request parses it, so the cap follows the path that is routed.
   const url = new URL(`http://localhost${incoming.url ?? '/'}`);
+  const preflight = method === 'OPTIONS' && isCorsPath(url.pathname);
+  // Set first: every answer below carries them, the early 401/413 and a 500 included.
+  const cors = corsHeadersOf({
+    adminOrigin: options.adminOrigin,
+    origin: incoming.headers.origin,
+    path: url.pathname,
+    preflight,
+  });
+  for (const [name, value] of Object.entries(cors)) {
+    outgoing.setHeader(name, value);
+  }
+  if (preflight) {
+    outgoing.statusCode = 204;
+    outgoing.end();
+    return;
+  }
   const limit = bodyLimitOf(url.pathname, incoming.headers.authorization);
   if (hasBody && limit === 'unauthorized') {
     outgoing.statusCode = 401;
@@ -192,17 +248,27 @@ async function handleIncoming(
     headers,
     ...(body === undefined ? {} : { body }),
   });
-  const response = await handler({ request, clientAddress: clientAddressOf(incoming, trustProxy) });
+  const response = await handler({
+    request,
+    clientAddress: clientAddressOf(incoming, options.trustProxy),
+  });
   await writeResponse(response, outgoing);
+}
+
+export interface GatewayOptions {
+  port: number;
+  trustProxy: boolean;
+  /** PAYCORE_ADMIN_ORIGIN: the one origin answered with CORS headers; unset: none. */
+  adminOrigin?: string | undefined;
 }
 
 /** Serve a fetch-style handler over `node:http` (runs on Node and on Bun). */
 export function serveGateway(
   handler: (input: GatewayRequest) => Promise<Response>,
-  options: { port: number; trustProxy: boolean },
+  options: GatewayOptions,
 ): Server {
   const server = createServer((incoming, outgoing) => {
-    handleIncoming(incoming, outgoing, handler, options.trustProxy).catch(() => {
+    handleIncoming(incoming, outgoing, handler, options).catch(() => {
       outgoing.statusCode = 500;
       outgoing.end();
     });

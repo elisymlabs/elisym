@@ -242,6 +242,20 @@ describe('StoreDirectory: config', () => {
     ]);
   });
 
+  it('refuses a stale expected revision, and checks none without one (import)', async () => {
+    const db = await freshDb();
+    const { owner, directory } = await newStore(db);
+    const first = await directory.putConfig(owner, configInput(owner), 1);
+    expect(first.ok && first.settings.revision).toBe(2);
+    expect(await directory.putConfig(owner, configInput(owner, { name: 'Late' }), 1)).toEqual({
+      ok: false,
+      error: 'stale_config',
+    });
+    expect((await directory.settings(owner))?.name).toBe('Shop');
+    const unchecked = await directory.putConfig(owner, configInput(owner, { name: 'Import' }));
+    expect(unchecked.ok && unchecked.settings).toMatchObject({ name: 'Import', revision: 3 });
+  });
+
   it('queues a setup for a served store, none for a pending one', async () => {
     const db = await freshDb();
     const { owner, directory } = await newStore(db);
@@ -485,6 +499,45 @@ describe('StoreDirectory: orders and requests', () => {
     expect(orders?.orders.map((order) => [order.orderId, order.email])).toEqual([
       ['two\u0000', 'two\u0000@buyer.example'],
       ['one', 'one@buyer.example'],
+    ]);
+  });
+
+  it('names the product of each order by its current title, null once the product is removed', async () => {
+    const db = await freshDb();
+    const { owner, directory } = await newStore(db);
+    await activate(db, owner);
+    await directory.putProduct(owner, 'socks', { ...PRODUCT, title: 'Old socks' });
+    await directory.putProduct(owner, 'socks', { ...PRODUCT, title: 'Wool socks' });
+    const state = emptyLedger();
+    const buyer = 'b'.repeat(64);
+    for (const [orderId, d, createdAt] of [
+      ['one', 'socks', 10],
+      ['two', 'hats', 20],
+    ] as const) {
+      const key = `${buyer}:${orderId}`;
+      state.orders[key] = {
+        key,
+        buyerPubkey: buyer,
+        orderId,
+        rumorId: 'r',
+        createdAt,
+        reference: 'ref',
+        product: `30402:s:${d}`,
+        reportedTxs: [],
+      };
+    }
+    await writeLedger(db, owner, state);
+    const titles = async () =>
+      (await directory.orders(owner))?.orders.map((order) => [order.orderId, order.productTitle]);
+    expect(await titles()).toEqual([
+      ['two', null],
+      ['one', 'Wool socks'],
+    ]);
+    // Never published: removed, so its orders lose the title.
+    expect(await directory.deleteProduct(owner, 'socks')).toMatchObject({ outcome: 'removed' });
+    expect(await titles()).toEqual([
+      ['two', null],
+      ['one', null],
     ]);
   });
 

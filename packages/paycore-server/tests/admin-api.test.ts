@@ -3,9 +3,15 @@ import { emptyLedger } from '@merchant-node/ledger';
 import { finalizeEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { ADMIN_PREFIX, NEW_STORES_PER_IP_PER_HOUR, createAdminApi } from '../src/admin/api';
-import { type AdminRequest, markRequest } from '../src/admin/requests';
+import {
+  type AdminRequest,
+  type RequestKind,
+  insertRequest,
+  markRequest,
+} from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import { serializeLedger } from '../src/state/ledger-store';
+import { ConfigInputSchema } from '../src/state/stores';
 import { freshDb } from './pglite-db';
 import {
   BASE,
@@ -196,7 +202,7 @@ describe('admin API: store', () => {
     const put = (body: unknown) =>
       call(owner.secret, { method: 'PUT', path: '/v1/admin/store/config', body });
     const payouts = signedPayouts(owner.pubkey);
-    const base = { name: 'Shop', payouts, inboxRelays: [RELAY] };
+    const base = { name: 'Shop', payouts, inboxRelays: [RELAY], expectedRevision: 1 };
     const unsigned = await put({
       ...base,
       payouts: payouts.map(({ caip19, address }) => ({ caip19, address })),
@@ -229,9 +235,9 @@ describe('admin API: store', () => {
     expect((await call(owner.secret, { method: 'GET', path })).body).toMatchObject({
       request: { id, kind: 'suspend', state: 'pending' },
     });
-    await markRequest(db, owner.pubkey, id, 'applied', NOW, { status: 'suspending' });
+    await markRequest(db, owner.pubkey, id, 'applied', NOW, { suspending: true, entered: true });
     expect((await call(owner.secret, { method: 'GET', path })).body).toMatchObject({
-      request: { state: 'applied', result: { status: 'suspending' }, appliedAt: NOW },
+      request: { state: 'applied', result: { suspending: true, entered: true }, appliedAt: NOW },
     });
     expect((await call(ownerKeys().secret, { method: 'GET', path })).status).toBe(404);
   });
@@ -240,14 +246,14 @@ describe('admin API: store', () => {
     const db = await freshDb();
     const { owner, call } = await created(db, {
       waitResult: async (requestOwner, id) => {
-        await markRequest(db, requestOwner, id, 'applied', NOW, { ok: true });
+        await markRequest(db, requestOwner, id, 'applied', NOW, { suspending: true });
         return {
           id,
           owner: requestOwner,
           kind: 'suspend',
           payload: {},
           state: 'applied',
-          result: { ok: true },
+          result: { suspending: true },
           createdAt: NOW,
           appliedAt: NOW,
         };
@@ -256,7 +262,9 @@ describe('admin API: store', () => {
     await activate(db, owner.pubkey);
     const response = await call(owner.secret, { method: 'POST', path: '/v1/admin/store/suspend' });
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ request: { state: 'applied', result: { ok: true } } });
+    expect(response.body).toMatchObject({
+      request: { state: 'applied', result: { suspending: true } },
+    });
   });
 });
 
@@ -270,7 +278,7 @@ describe('admin API: active payouts', () => {
         await call(owner.secret, {
           method: 'PUT',
           path: '/v1/admin/store/config',
-          body: { name: 'Shop', payouts: draft, inboxRelays: [RELAY] },
+          body: { name: 'Shop', payouts: draft, inboxRelays: [RELAY], expectedRevision: 1 },
         })
       ).status,
     ).toBe(200);
@@ -338,7 +346,12 @@ describe('admin API: owner events', () => {
     await call(owner.secret, {
       method: 'PUT',
       path: '/v1/admin/store/config',
-      body: { name: 'Shop', payouts: signedPayouts(owner.pubkey), inboxRelays: [RELAY] },
+      body: {
+        name: 'Shop',
+        payouts: signedPayouts(owner.pubkey),
+        inboxRelays: [RELAY],
+        expectedRevision: 1,
+      },
     });
     const prepared = await call(owner.secret, {
       method: 'POST',
@@ -479,5 +492,420 @@ describe('admin API: webhook secret, orders, hand answers', () => {
     ] as const) {
       expect((await call(owner.secret, { method: 'POST', path, body })).status).toBe(400);
     }
+  });
+});
+
+const RAW_TEXT = 'fetch failed. URL: https://rpc.example/?api-key=SECRET123';
+
+describe('admin API: store view (phase 2)', () => {
+  it('shows a pending store the pending cap, no alerts, nothing to sign and no owner events', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    const view = await call(owner.secret, { method: 'GET', path: '/v1/admin/store' });
+    expect(view.body).toMatchObject({
+      status: 'pending',
+      tier: null,
+      maxProducts: 20,
+      alerts: [],
+      payouts: { needsSigning: false },
+      ownerEvents: { payto: null, auth: null },
+    });
+    expect(view.body).not.toHaveProperty('statusReason');
+    await activate(db, owner.pubkey, 7);
+    expect(
+      (await call(owner.secret, { method: 'GET', path: '/v1/admin/store' })).body,
+    ).toMatchObject({ tier: 'tier-7', maxProducts: 7 });
+  });
+
+  it('shows open alert kinds, never their messages nor the status reason', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    await activate(db, owner.pubkey, 2, 'degraded');
+    await db.query('update stores set status_reason = $2 where owner = $1', [
+      owner.pubkey,
+      `rail_unavailable: ${RAW_TEXT}`,
+    ]);
+    for (const [kind, cleared] of [
+      ['rail_unavailable', null],
+      ['drift', null],
+      ['setup_failed', NOW],
+    ] as const) {
+      await db.query(
+        `insert into alerts (owner, kind, message, created_at, last_seen_at, cleared_at)
+         values ($1, $2, $3, $4, $4, $5)`,
+        [owner.pubkey, kind, RAW_TEXT, NOW, cleared],
+      );
+    }
+    await db.query(
+      `insert into alerts (owner, kind, message, created_at, last_seen_at) values ($1, 'other', $2, $3, $3)`,
+      [ownerKeys().pubkey, RAW_TEXT, NOW],
+    );
+    const view = await call(owner.secret, { method: 'GET', path: '/v1/admin/store' });
+    expect(view.body).toMatchObject({ status: 'degraded', alerts: ['drift', 'rail_unavailable'] });
+    expect(view.text).not.toContain('SECRET123');
+    expect(view.text).not.toContain('rpc.example');
+  });
+
+  it('tracks the payout list to sign against the newest committed one, a pending store included', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db, {
+      waitResult: async () => {
+        throw new Error('waited for a pending store');
+      },
+    });
+    const view = async () =>
+      (await call(owner.secret, { method: 'GET', path: '/v1/admin/store' })).body ?? {};
+    const config = { name: 'Shop', inboxRelays: [RELAY] };
+    expect(
+      (
+        await call(owner.secret, {
+          method: 'PUT',
+          path: '/v1/admin/store/config',
+          body: { ...config, payouts: signedPayouts(owner.pubkey), expectedRevision: 1 },
+        })
+      ).status,
+    ).toBe(200);
+    expect(await view()).toMatchObject({ payouts: { needsSigning: true } });
+    const sign = async () => {
+      const prepared = await call(owner.secret, {
+        method: 'POST',
+        path: '/v1/admin/owner-events/prepare',
+        body: { kind: KIND_PAYTO },
+      });
+      return finalizeEvent(
+        prepared.body?.template as Parameters<typeof finalizeEvent>[0],
+        owner.secret,
+      );
+    };
+    const event = await sign();
+    const commit = (signed: unknown) =>
+      call(owner.secret, {
+        method: 'POST',
+        path: '/v1/admin/owner-events/commit',
+        body: { event: signed },
+      });
+    // Pending: no holder, the commit answers 202 and `state.payto` stays unset.
+    expect((await commit(event)).status).toBe(202);
+    const committed = await view();
+    expect(committed).toMatchObject({
+      payouts: { needsSigning: false },
+      activePayouts: null,
+      ownerEvents: { payto: { event, committedAt: NOW, publishedAt: null }, auth: null },
+    });
+    // Its recording failed: still signed (nothing to sign), not published; Retry posts the view's event back.
+    const [request] = await db.query<{ id: string }>(
+      "select id from admin_requests where kind = 'record_owner_event'",
+    );
+    await markRequest(db, owner.pubkey, request?.id ?? '', 'failed', NOW, { problem: RAW_TEXT });
+    const failed = await view();
+    expect(failed).toMatchObject({
+      payouts: { needsSigning: false },
+      ownerEvents: { payto: { publishedAt: null } },
+    });
+    const shown = field(field(field(failed, 'ownerEvents'), 'payto'), 'event');
+    expect(shown).toEqual(JSON.parse(JSON.stringify(event)));
+    const retried = await commit(shown);
+    expect(retried.status).toBe(202);
+    expect(retried.body).toMatchObject({ id: event.id, alreadyCommitted: true });
+    await db.query('update owner_events set published_at = $2 where id = $1', [event.id, NOW + 5]);
+    expect(await view()).toMatchObject({ ownerEvents: { payto: { publishedAt: NOW + 5 } } });
+    // A new draft needs a new signature; once committed, the newer list is the one shown.
+    expect(
+      (
+        await call(owner.secret, {
+          method: 'PUT',
+          path: '/v1/admin/store/config',
+          body: { ...config, payouts: signedPayouts(owner.pubkey), expectedRevision: 2 },
+        })
+      ).status,
+    ).toBe(200);
+    expect(await view()).toMatchObject({ payouts: { needsSigning: true } });
+    const newer = await sign();
+    expect(newer.created_at).toBeGreaterThan(event.created_at);
+    expect((await commit(newer)).status).toBe(202);
+    expect(await view()).toMatchObject({
+      payouts: { needsSigning: false },
+      ownerEvents: { payto: { event: newer, publishedAt: null } },
+    });
+    // The newest by `created_at`, not by commit time.
+    await db.query('update owner_events set committed_at = $2 where id = $1', [event.id, NOW + 99]);
+    expect(await view()).toMatchObject({ ownerEvents: { payto: { event: newer } } });
+  });
+
+  it('shows the committed authorization', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    const prepared = await call(owner.secret, {
+      method: 'POST',
+      path: '/v1/admin/owner-events/prepare',
+      body: { kind: KIND_STORE_AUTH },
+    });
+    const event = finalizeEvent(
+      prepared.body?.template as Parameters<typeof finalizeEvent>[0],
+      owner.secret,
+    );
+    await call(owner.secret, {
+      method: 'POST',
+      path: '/v1/admin/owner-events/commit',
+      body: { event },
+    });
+    expect(
+      (await call(owner.secret, { method: 'GET', path: '/v1/admin/store' })).body,
+    ).toMatchObject({
+      payouts: { needsSigning: false },
+      ownerEvents: { payto: null, auth: { event, committedAt: NOW, publishedAt: null } },
+    });
+  });
+});
+
+describe('admin API: config revision', () => {
+  it('keeps every field of a full PUT built from the view, and refuses a stale revision', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    const put = (body: unknown) =>
+      call(owner.secret, { method: 'PUT', path: '/v1/admin/store/config', body });
+    const payouts = signedPayouts(owner.pubkey);
+    const first = await put({
+      name: 'Shop',
+      payouts,
+      inboxRelays: [RELAY],
+      webhookUrl: 'https://hooks.example/x',
+      evmCredit: 'safe',
+      expectedRevision: 1,
+    });
+    expect(first.status).toBe(200);
+    const config = (await call(owner.secret, { method: 'GET', path: '/v1/admin/store' })).body
+      ?.config as {
+      name: string;
+      draftPayouts: unknown;
+      inboxRelays: string[];
+      webhookUrl?: string;
+      evmCredit: string;
+      revision: number;
+    };
+    expect(config).toMatchObject({
+      revision: 2,
+      webhookUrl: 'https://hooks.example/x',
+      evmCredit: 'safe',
+    });
+    const full = {
+      name: 'Renamed',
+      payouts: config.draftPayouts,
+      inboxRelays: config.inboxRelays,
+      webhookUrl: config.webhookUrl ?? null,
+      evmCredit: config.evmCredit,
+      expectedRevision: config.revision,
+    };
+    const second = await put(full);
+    expect(second.status).toBe(200);
+    expect(second.body).toMatchObject({
+      config: {
+        name: 'Renamed',
+        webhookUrl: 'https://hooks.example/x',
+        evmCredit: 'safe',
+        draftPayouts: payouts,
+        revision: 3,
+      },
+    });
+    const stale = await put({ ...full, name: 'Late' });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toEqual({ error: 'stale_config' });
+    // The admin route needs the revision; the import's schema stays without one.
+    const { expectedRevision: _revision, ...withoutRevision } = full;
+    expect((await put(withoutRevision)).status).toBe(400);
+    expect((await put({ ...full, expectedRevision: -1 })).status).toBe(400);
+    expect(ConfigInputSchema.safeParse(full).success).toBe(false);
+    expect(ConfigInputSchema.safeParse(withoutRevision).success).toBe(true);
+    expect(
+      (await call(owner.secret, { method: 'GET', path: '/v1/admin/store' })).body,
+    ).toMatchObject({ config: { name: 'Renamed', revision: 3 } });
+  });
+});
+
+describe('admin API: request results (A15)', () => {
+  it('shows a whitelisted result, a failure only as its code, never the recorded text', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    await activate(db, owner.pubkey);
+    const key = `${'b'.repeat(64)}:order-1`;
+    const cases: [RequestKind, 'applied' | 'failed', unknown, unknown][] = [
+      ['setup', 'failed', { problem: RAW_TEXT }, { code: 'setup_failed' }],
+      ['record_owner_event', 'failed', { problem: RAW_TEXT }, { code: 'setup_failed' }],
+      [
+        'record_owner_event',
+        'failed',
+        { problem: 'no such owner event' },
+        { code: 'no_owner_event' },
+      ],
+      ['hand_answer', 'failed', { problem: `no order ${key} in the ledger` }, { code: 'no_order' }],
+      [
+        'hand_answer',
+        'failed',
+        { problem: `${key} was already answered as delivered: the other answer is refused` },
+        { code: 'already_answered' },
+      ],
+      [
+        'hand_answer',
+        'failed',
+        {
+          problem: `${key} is paid: the node completes it itself (a refund of a paid order is not handled here)`,
+        },
+        { code: 'order_paid' },
+      ],
+      [
+        'hand_answer',
+        'failed',
+        { problem: 'the refund tx is neither a Solana signature nor a Tempo hash' },
+        { code: 'bad_refund_tx' },
+      ],
+      [
+        'hand_answer',
+        'failed',
+        {
+          problem:
+            'the refund amount must be subunits above 0 (an unpaid order is released with complete, never a zero refund)',
+        },
+        { code: 'bad_refund_amount' },
+      ],
+      [
+        'hand_answer',
+        'failed',
+        { problem: 'the store has several payouts: pass --asset <caip19> for the coin refunded' },
+        { code: 'bad_refund_asset' },
+      ],
+      [
+        'hand_answer',
+        'failed',
+        { problem: '--asset eip155:1/erc20:0x00 is not an asset this node knows' },
+        { code: 'bad_refund_asset' },
+      ],
+      ['hand_answer', 'failed', { problem: 'not a hand answer' }, { code: 'bad_request' }],
+      [
+        'hand_answer',
+        'applied',
+        { done: false, problem: RAW_TEXT },
+        { done: false, code: 'failed' },
+      ],
+      [
+        'hand_answer',
+        'applied',
+        { done: true, rerun: false, taken: 2, copyTaken: 1, relays: 2, extra: RAW_TEXT },
+        { done: true, rerun: false, taken: 2, copyTaken: 1, relays: 2 },
+      ],
+      ['suspend', 'failed', undefined, { code: 'failed' }],
+      [
+        'suspend',
+        'applied',
+        { suspending: true, entered: false },
+        { suspending: true, entered: false },
+      ],
+      ['restart', 'applied', { restarted: true, note: RAW_TEXT }, { restarted: true }],
+      ['setup', 'applied', { coveredBy: 'abc123' }, { coveredBy: 'abc123' }],
+      ['setup', 'applied', { coveredBy: RAW_TEXT }, null],
+      ['setup', 'applied', { setup: 'no_payout_list' }, { setup: 'no_payout_list' }],
+      [
+        'setup',
+        'applied',
+        {
+          setup: 'done',
+          payoutListOut: true,
+          authorizationOut: null,
+          listings: [
+            { d: 'socks', listing: 'out' },
+            { d: 'hats', listing: RAW_TEXT },
+          ],
+          missedDefaults: ['the payout list', 'products/socks', RAW_TEXT],
+        },
+        {
+          setup: 'done',
+          payoutListOut: true,
+          authorizationOut: null,
+          listings: [{ d: 'socks', listing: 'out' }],
+          missedDefaults: ['the payout list', 'products/socks'],
+        },
+      ],
+      [
+        'record_owner_event',
+        'applied',
+        { recorded: false, replacedBy: 'f'.repeat(64) },
+        { recorded: false, replacedBy: 'f'.repeat(64) },
+      ],
+      ['setup', 'applied', { problem: { nested: RAW_TEXT } }, null],
+    ];
+    for (const [kind, state, result, expected] of cases) {
+      const id = await db.transaction((tx) => insertRequest(tx, owner.pubkey, kind, {}, NOW));
+      await markRequest(db, owner.pubkey, id, state, NOW, result);
+      const answer = await call(owner.secret, { method: 'GET', path: `/v1/admin/requests/${id}` });
+      const label = `${kind} ${JSON.stringify(result)}`;
+      expect(answer.body?.request, label).toMatchObject({ id, kind, state });
+      expect(field(answer.body?.request, 'result'), label).toEqual(expected);
+      expect(answer.text, label).not.toContain('SECRET123');
+      expect(answer.text, label).not.toContain('order-1');
+    }
+  });
+
+  it('whitelists the result a request route waits for too', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db, {
+      waitResult: async (requestOwner, id) => {
+        await markRequest(db, requestOwner, id, 'failed', NOW, { problem: RAW_TEXT });
+        return {
+          id,
+          owner: requestOwner,
+          kind: 'hand_answer',
+          payload: {},
+          state: 'failed',
+          result: { problem: RAW_TEXT },
+          createdAt: NOW,
+          appliedAt: NOW,
+        };
+      },
+    });
+    await activate(db, owner.pubkey);
+    const answered = await call(owner.secret, {
+      method: 'POST',
+      path: `/v1/admin/orders/${encodeURIComponent(`${'b'.repeat(64)}:x`)}/hand`,
+      body: { kind: 'complete' },
+    });
+    expect(answered.status).toBe(422);
+    expect(answered.body).toMatchObject({
+      request: { state: 'failed', result: { code: 'failed' } },
+    });
+    expect(answered.text).not.toContain('SECRET123');
+  });
+
+  it('names the current product title in the orders answer', async () => {
+    const db = await freshDb();
+    const { owner, call } = await created(db);
+    await activate(db, owner.pubkey);
+    await call(owner.secret, { method: 'PUT', path: '/v1/admin/products/socks', body: PRODUCT });
+    const state = emptyLedger();
+    const buyer = 'b'.repeat(64);
+    for (const [orderId, d] of [
+      ['one', 'socks'],
+      ['two', 'gone'],
+    ] as const) {
+      state.orders[`${buyer}:${orderId}`] = {
+        key: `${buyer}:${orderId}`,
+        buyerPubkey: buyer,
+        orderId,
+        rumorId: 'r',
+        createdAt: orderId === 'one' ? 1 : 2,
+        reference: 'ref',
+        product: `30402:s:${d}`,
+        reportedTxs: [],
+      };
+    }
+    await db.query('update ledgers set state = $2 where owner = $1', [
+      owner.pubkey,
+      serializeLedger(state),
+    ]);
+    const orders = await call(owner.secret, { method: 'GET', path: '/v1/admin/orders' });
+    expect(orders.body).toMatchObject({
+      orders: [
+        { orderId: 'two', productTitle: null },
+        { orderId: 'one', productTitle: 'Socks' },
+      ],
+    });
   });
 });

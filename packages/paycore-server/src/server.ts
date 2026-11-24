@@ -58,6 +58,7 @@ import { listeningPool } from '@merchant-node/relay-pool';
 import type { SimplePool } from 'nostr-tools/pool';
 import { createAdminApi } from './admin/api';
 import { sweepAuthIds } from './admin/auth-ids';
+import { type MetaView, metaView } from './admin/meta';
 import { ChainClients } from './chain/clients';
 import { Eip3009Boot } from './chain/eip3009-boot';
 import { NetworkTreasuries } from './chain/treasuries';
@@ -67,7 +68,7 @@ import { type Db, STORES_CHANNEL } from './db/db';
 import { KeyVault } from './db/keys';
 import { migrate } from './db/migrations';
 import { createPgDb } from './db/pg';
-import { type GatewayRequest, serveGateway } from './gateway/http';
+import { type GatewayRequest, META_PATH, serveGateway } from './gateway/http';
 import { HolderRequests, healPass } from './node/holder-requests';
 import { RequestPump } from './node/request-pump';
 import type { SetupPassDeps } from './node/setup-pass';
@@ -247,14 +248,18 @@ function jsonResponse(body: unknown, status: number): Response {
   });
 }
 
-/** The HTTP routes: `/healthz`, the admin API, else 404. */
+/** The HTTP routes: `/healthz`, `/v1/meta`, the admin API, else 404. */
 function routes(
   admin: (input: GatewayRequest) => Promise<Response | undefined>,
+  meta: MetaView,
 ): (input: GatewayRequest) => Promise<Response> {
   return async (input) => {
     const url = new URL(input.request.url);
     if (url.pathname === HEALTH_PATH && input.request.method === 'GET') {
       return jsonResponse({ status: 'ok' }, 200);
+    }
+    if (url.pathname === META_PATH && input.request.method === 'GET') {
+      return jsonResponse(meta, 200);
     }
     return (await admin(input)) ?? jsonResponse({ error: 'not_found' }, 404);
   };
@@ -526,9 +531,10 @@ class PaycoreServer implements ServerHandle {
           makePool: this.makePool,
         }),
     });
-    const httpServer = serveGateway(routes(admin), {
+    const httpServer = serveGateway(routes(admin, metaView(config, directory.pendingMaxProducts)), {
       port: deps.port ?? config.port,
       trustProxy: config.trustProxy,
+      adminOrigin: config.adminOrigin,
     });
     this.httpServer = httpServer;
     await listening(httpServer);
