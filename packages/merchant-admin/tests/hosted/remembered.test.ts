@@ -236,6 +236,36 @@ describe('remembering a key on this device', () => {
     expect((await unlockKey(key)).ok).toBe(true);
   });
 
+  it.each([
+    ['another algorithm (AES-CBC)', { name: 'AES-CBC', length: 256 }, ['encrypt', 'decrypt']],
+    ['an AES-GCM key that cannot encrypt', { name: 'AES-GCM', length: 256 }, ['decrypt']],
+    ['an AES-GCM key that cannot decrypt', { name: 'AES-GCM', length: 256 }, ['encrypt']],
+  ] as const)(
+    'replaces %s put in the device slot, so what it remembers opens',
+    async (_name, algorithm, usages) => {
+      const planted = await crypto.subtle.generateKey(algorithm, false, [...usages]);
+      const request = indexedDB.open('paycore-hosted', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('device');
+      const db = await new Promise<IDBDatabase>((resolve) => {
+        request.onsuccess = () => resolve(request.result);
+      });
+      const put = db
+        .transaction('device', 'readwrite')
+        .objectStore('device')
+        .put(planted, 'remember-key');
+      await new Promise((resolve) => {
+        put.onsuccess = resolve;
+      });
+      db.close();
+      const key = await rememberedOf(generateSecretKey());
+      const device = await storedDeviceKey();
+      expect(device).not.toBe(planted);
+      expect(device.algorithm.name).toBe('AES-GCM');
+      expect(device.usages.sort()).toEqual(['decrypt', 'encrypt']);
+      expect((await unlockKey(key)).ok).toBe(true);
+    },
+  );
+
   it('refuses a sealed key moved under another owner', async () => {
     const key = await rememberedOf(generateSecretKey());
     const other = getPublicKey(generateSecretKey());
@@ -444,7 +474,10 @@ describe('the key file', () => {
     expect(text).toContain(`Owner key: ${nsec}`);
     expect(text).toContain(`Owner ID: ${npub}`);
     expect(text).toContain('https://admin.elisym.network/hosted/ and paste the owner key');
-    expect(text).toContain('Whoever has this file controls your store');
+    expect(text).toContain(
+      'Keep this file private. Whoever has this file controls your store: its payout addresses, products and orders. Nobody can recover the key for you if you lose it.',
+    );
+    expect(text.split('\n')[0]).toBe('PayCore owner key');
     expect(text).not.toMatch(/askr/i);
   });
 });

@@ -541,6 +541,37 @@ describe('StoreDirectory: orders and requests', () => {
     ]);
   });
 
+  it('takes the title from the own product of the store only, never from another store with the same d', async () => {
+    const db = await freshDb();
+    const mine = await newStore(db);
+    const theirs = await newStore(db);
+    await mine.directory.putProduct(mine.owner, 'socks', { ...PRODUCT, title: 'My socks' });
+    await theirs.directory.putProduct(theirs.owner, 'socks', { ...PRODUCT, title: 'Their socks' });
+    await theirs.directory.putProduct(theirs.owner, 'hats', { ...PRODUCT, title: 'Their hats' });
+    const state = emptyLedger();
+    const buyer = 'b'.repeat(64);
+    for (const [orderId, d, createdAt] of [
+      ['one', 'socks', 10],
+      ['two', 'hats', 20],
+    ] as const) {
+      const key = `${buyer}:${orderId}`;
+      state.orders[key] = {
+        key,
+        buyerPubkey: buyer,
+        orderId,
+        rumorId: 'r',
+        createdAt,
+        reference: 'ref',
+        product: `30402:s:${d}`,
+        reportedTxs: [],
+      };
+    }
+    await writeLedger(db, mine.owner, state);
+    expect(
+      (await mine.directory.orders(mine.owner))?.orders.map((order) => order.productTitle),
+    ).toEqual([null, 'My socks']);
+  });
+
   it('queues one suspension and refuses it for a pending store', async () => {
     const db = await freshDb();
     const { owner, directory } = await newStore(db);

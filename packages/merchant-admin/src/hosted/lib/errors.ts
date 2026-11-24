@@ -39,6 +39,8 @@ const CODES: Readonly<Record<string, string>> = {
     'Your settings were changed elsewhere since this page read them. Refresh to see them, then make your change again.',
   no_payouts: 'Add a payout address and save your settings first.',
   unsigned_payout: 'A payout address has no wallet signature. Sign it with its wallet first.',
+  bad_payouts:
+    'Your saved payouts cannot be published as a payout list. Check each address and its wallet signature, save them again, then retry.',
   no_draft: 'The change to sign expired. Retry.',
   expired: 'The change to sign expired. Retry.',
   mismatch: 'The change you signed is no longer the one waiting. Retry.',

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_PRODUCT_DESCRIPTION,
+  MAX_PRODUCT_TAG_VALUE,
   MAX_PRODUCT_TITLE,
   PRICE_RE,
   PRODUCT_D_RE,
@@ -62,6 +64,46 @@ describe('product rules (shared with the PayCore server and the hosted admin)', 
       { title: 't'.repeat(MAX_PRODUCT_TITLE + 1), description: '', priceUsd: '5' },
     ]) {
       expect(ProductInputSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it('takes each text at its limit and refuses one character more', () => {
+    const base = { title: 'Socks', description: '', priceUsd: '5' };
+    const link = (length: number) => `https://shop.example/${'a'.repeat(length - 21)}`;
+    expect(MAX_PRODUCT_TITLE).toBe(200);
+    expect(MAX_PRODUCT_TAG_VALUE).toBe(1024);
+    expect(MAX_PRODUCT_DESCRIPTION).toBe(64 * 1024);
+    expect(link(100).length).toBe(100);
+    for (const [field, value, limit] of [
+      ['title', (length: number) => 't'.repeat(length), MAX_PRODUCT_TITLE],
+      ['summary', (length: number) => 's'.repeat(length), MAX_PRODUCT_TAG_VALUE],
+      ['url', link, MAX_PRODUCT_TAG_VALUE],
+      ['description', (length: number) => 'd'.repeat(length), MAX_PRODUCT_DESCRIPTION],
+    ] as const) {
+      expect(ProductInputSchema.safeParse({ ...base, [field]: value(limit) }).success, field).toBe(
+        true,
+      );
+      expect(
+        ProductInputSchema.safeParse({ ...base, [field]: value(limit + 1) }).success,
+        field,
+      ).toBe(false);
+    }
+  });
+
+  it('refuses unstorable text in every text field, and a non-boolean onSale', () => {
+    const base = { title: 'Socks', description: '', priceUsd: '5' };
+    for (const field of ['title', 'description', 'summary', 'url']) {
+      for (const bad of ['a\u0000', '\ud800']) {
+        const value = field === 'url' ? `https://shop.example/${bad}` : bad;
+        expect(
+          ProductInputSchema.safeParse({ ...base, [field]: value }).success,
+          `${field} ${JSON.stringify(value)}`,
+        ).toBe(false);
+      }
+    }
+    expect(ProductInputSchema.safeParse({ ...base, onSale: false }).data?.onSale).toBe(false);
+    for (const onSale of ['true', 1, null]) {
+      expect(ProductInputSchema.safeParse({ ...base, onSale }).success, String(onSale)).toBe(false);
     }
   });
 });

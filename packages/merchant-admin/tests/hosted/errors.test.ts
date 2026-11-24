@@ -16,6 +16,9 @@ describe('what the merchant reads', () => {
   it('is a fixed sentence per refusal code and unauthorized reason', () => {
     expect(errorMessage(new ApiError(409, 'stale_config'))).toContain('changed elsewhere');
     expect(errorMessage(new ApiError(0, 'network'))).toContain('could not be reached');
+    expect(errorMessage(new ApiError(409, 'bad_payouts'))).toContain(
+      'cannot be published as a payout list',
+    );
     expect(errorMessage(new ApiError(401, 'unauthorized', { reason: 'stale' }))).toContain(
       'clock is off by more than a minute',
     );

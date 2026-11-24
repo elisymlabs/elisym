@@ -100,6 +100,105 @@ describe('build checks', () => {
     ]);
   });
 
+  it('vercelProblems names each missing or weakened rule on its own', () => {
+    const connect = hostedConnectSrc(HOSTED);
+    const withHeaders = (
+      edit: (rule: { source: string; headers: { key: string; value: string }[] }) => typeof rule,
+    ) => ({ ...vercel, headers: vercel.headers.map(edit) });
+    const noStoreGone = withHeaders((rule) => ({
+      ...rule,
+      headers: rule.headers.filter(
+        (header) => header.key !== 'Cache-Control' || rule.source !== '/((?!assets/).*)',
+      ),
+    }));
+    expect(vercelProblems(noStoreGone, connect)).toEqual([
+      expect.stringContaining('Cache-Control on /((?!assets/).*)'),
+    ]);
+    const noPermissions = withHeaders((rule) => ({
+      ...rule,
+      headers: rule.headers.filter((header) => header.key !== 'Permissions-Policy'),
+    }));
+    expect(vercelProblems(noPermissions, connect)).toEqual([
+      expect.stringContaining('Permissions-Policy on /(.*)'),
+    ]);
+    const permanent = {
+      ...vercel,
+      redirects: [{ source: '/hosted', destination: '/hosted/', permanent: true }],
+    };
+    expect(vercelProblems(permanent, connect)).toEqual([
+      expect.stringContaining('/hosted must redirect'),
+    ]);
+    const elsewhere = {
+      ...vercel,
+      redirects: [{ source: '/hosted', destination: '/', permanent: false }],
+    };
+    expect(vercelProblems(elsewhere, connect)).toEqual([
+      expect.stringContaining('/hosted must redirect'),
+    ]);
+    const wrongDestination = {
+      ...vercel,
+      rewrites: [
+        { source: HOSTED_SOURCE, destination: '/index.html' },
+        ...vercel.rewrites.slice(1),
+      ],
+    };
+    expect(vercelProblems(wrongDestination, connect)).toEqual([
+      expect.stringContaining('the first rewrite'),
+    ]);
+    const noRewrites = { ...vercel, rewrites: undefined };
+    expect(vercelProblems(noRewrites, connect)).toEqual([
+      expect.stringContaining('the first rewrite'),
+    ]);
+  });
+
+  it('reads header names in any case, as HTTP does: a lowercase CSP is still a CSP', () => {
+    const lower = {
+      ...vercel,
+      headers: [
+        ...vercel.headers,
+        {
+          source: '/x/(.*)',
+          headers: [{ key: 'content-security-policy', value: 'default-src *' }],
+        },
+      ],
+    };
+    expect(cspSources(lower)).toContain('/x/(.*)');
+    expect(vercelProblems(lower, hostedConnectSrc(HOSTED))).toEqual([
+      expect.stringContaining('CSP rules are on'),
+    ]);
+    const renamed = {
+      headers: [
+        {
+          source: HOSTED_SOURCE,
+          headers: [{ key: 'CONTENT-SECURITY-POLICY', value: "connect-src 'none'" }],
+        },
+      ],
+    };
+    expect(cspOf(renamed, HOSTED_SOURCE)).toBe("connect-src 'none'");
+    expect(
+      headerProblems(
+        { headers: [{ source: '/(.*)', headers: [{ key: 'permissions-policy', value: 'x' }] }] },
+        { 'Permissions-Policy': 'x' },
+      ),
+    ).toEqual([]);
+  });
+
+  it('a base with a path is allowed, and the hosted page connects to its origin only', () => {
+    const read = readHostedConfig('https://api.example/base', 'paycore.example');
+    expect(read).toEqual({
+      kind: 'configured',
+      config: { apiBase: 'https://api.example/base', operator: 'paycore.example' },
+    });
+    expect(hostedConnectSrc(read)).toEqual(['https://api.example']);
+    expect(readHostedConfig('https://api.example/base/', 'paycore.example').kind).toBe('invalid');
+    expect(readHostedConfig('https://api.example:8443', 'paycore.example')).toMatchObject({
+      kind: 'configured',
+    });
+    expect(
+      hostedConnectSrc(readHostedConfig('https://api.example:8443', 'paycore.example')),
+    ).toEqual(['https://api.example:8443']);
+  });
+
   it('every path cuts the opener handle, the referrer, sniffing and powerful features', () => {
     expect(headerProblems(vercel, ADMIN_HEADERS)).toEqual([]);
     expect(ADMIN_HEADERS).toMatchObject({

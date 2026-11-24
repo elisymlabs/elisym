@@ -14,7 +14,15 @@ import {
 import { serializeLedger } from '../src/state/ledger-store';
 import { canonicalPayouts } from '../src/state/stores';
 import { freshDb } from './pglite-db';
-import { NOW, OPERATOR, RELAY, directoryFor, ownerKeys, signedPayouts } from './stores-fixtures';
+import {
+  NOW,
+  OPERATOR,
+  RELAY,
+  USDC_DEVNET,
+  directoryFor,
+  ownerKeys,
+  signedPayouts,
+} from './stores-fixtures';
 
 async function storeWithDraft(db: Db) {
   const owner = ownerKeys();
@@ -147,6 +155,23 @@ describe('prepare', () => {
     });
     expect(await prepareOwnerEvent(deps(db), ownerKeys().pubkey, KIND_PAYTO)).toMatchObject({
       error: 'no_store',
+    });
+  });
+
+  it('refuses a draft payout without a valid proof, naming only its coin', async () => {
+    const db = await freshDb();
+    const { owner } = await storeWithDraft(db);
+    const [payout] = signedPayouts(owner.pubkey);
+    // Another owner's proof: written past the config check, as an old row could hold it.
+    const foreign = signedPayouts(ownerKeys().pubkey)[0];
+    await db.query('update store_config set draft_payouts = $2::jsonb where owner = $1', [
+      owner.pubkey,
+      JSON.stringify([{ ...payout, signature: foreign?.signature }]),
+    ]);
+    expect(await prepareOwnerEvent(deps(db), owner.pubkey, KIND_PAYTO)).toEqual({
+      ok: false,
+      error: 'unsigned_payout',
+      message: USDC_DEVNET,
     });
   });
 

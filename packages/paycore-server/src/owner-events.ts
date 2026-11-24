@@ -40,6 +40,7 @@ export type OwnerEventError =
   | 'no_store'
   | 'no_payouts'
   | 'unsigned_payout'
+  | 'bad_payouts'
   | 'clock'
   | 'malformed'
   | 'signature'
@@ -189,12 +190,9 @@ export async function prepareOwnerEvent(
             operator: deps.operator,
           },
         ).payoutList;
-      } catch (error) {
-        return {
-          ok: false,
-          error: 'unsigned_payout',
-          message: error instanceof Error ? error.message : 'not a payout list',
-        };
+      } catch {
+        // A15: the builder's text names addresses and rules, never shown; the admin says it by code.
+        return { ok: false, error: 'bad_payouts' };
       }
     } else {
       const date = Math.max(now, (lastCommitted ?? 0) + 1, (relays.newestOnRelays ?? 0) + 1);

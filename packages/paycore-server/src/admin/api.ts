@@ -106,6 +106,7 @@ const REFUSAL_STATUS: Record<string, number> = {
   clock: 409,
   no_payouts: 409,
   unsigned_payout: 409,
+  bad_payouts: 409,
 };
 
 function refused(refusal: Refusal | OwnerEventRefusal): Response {

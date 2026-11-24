@@ -139,6 +139,8 @@ describe('PAYCORE_ADMIN_ORIGIN', () => {
     ).toBe('https://admin.elisym.network');
     expect(adminOriginFrom('https://admin.example:8443')).toBe('https://admin.example:8443');
     expect(adminOriginFrom('http://localhost:5173')).toBe('http://localhost:5173');
+    expect(adminOriginFrom('http://127.0.0.1:8080')).toBe('http://127.0.0.1:8080');
+    expect(adminOriginFrom('http://127.0.0.1')).toBe('http://127.0.0.1');
     expect(configFromEnv(BASE_ENV).adminOrigin).toBeUndefined();
     expect(configFromEnv({ ...BASE_ENV, PAYCORE_ADMIN_ORIGIN: '' }).adminOrigin).toBeUndefined();
   });
@@ -152,6 +154,8 @@ describe('PAYCORE_ADMIN_ORIGIN', () => {
       'https://admin.example?x=1',
       'https://user@admin.example',
       'http://admin.example',
+      'http://10.0.0.1',
+      'http://localhost.example',
       'admin.example',
       '*',
       'null',
