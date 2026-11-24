@@ -1,23 +1,36 @@
+import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { useEffect, useState } from 'react';
 import type { HostedConfig } from '../lib/hosted-config';
-import { type SessionApi, type SessionLoad, loadSession } from '../lib/session';
+import { ProvenPayouts } from '../lib/proven';
+import { type SessionLoad, loadSession } from '../lib/session';
+import type { StoreApi, StoreSession } from '../lib/store-session';
+import type { Meta } from '../lib/types';
 import { BUTTON_SECONDARY } from '../styles';
-import { ForgetOnDevice } from './ForgetOnDevice';
+import { Onboarding } from './Onboarding';
 import { SessionMessage } from './SessionMessage';
 import { StoreShell } from './StoreShell';
 
 interface Props {
-  api: SessionApi;
+  api: StoreApi;
   config: HostedConfig;
   /** O, hex. */
   owner: string;
+  /** O's signature, by the signer the page holds. */
+  signEvent: (template: EventTemplate) => Promise<NostrEvent>;
   onSignOut: () => void;
+  /** Tests shorten the wait between reads of a followed request. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+function localNow(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
 /** A signed-in owner: the server checked against the committed config, then their store. */
-export function Session({ api, config, owner, onSignOut }: Props) {
+export function Session({ api, config, owner, signEvent, onSignOut, sleep }: Props) {
   const [load, setLoad] = useState<SessionLoad | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
+  const [proven] = useState(() => new ProvenPayouts());
 
   useEffect(() => {
     let current = true;
@@ -78,16 +91,24 @@ export function Session({ api, config, owner, onSignOut }: Props) {
       </SessionMessage>
     );
   }
+  const session = (meta: Meta): StoreSession => ({
+    api,
+    owner,
+    operator: config.operator,
+    meta,
+    signEvent,
+    proven,
+    localNow,
+    ...(sleep === undefined ? {} : { sleep }),
+  });
   if (load.kind === 'no_store') {
     return (
-      <SessionMessage title="No store yet">
-        <p className="text-15 text-text-2 leading-relaxed">
-          There is no store for this owner key on PayCore yet.
-        </p>
-        <ForgetOnDevice owner={owner} />
-        {signOut}
-      </SessionMessage>
+      <Onboarding
+        session={session(load.meta)}
+        onOpen={() => setAttempt((count) => count + 1)}
+        onSignOut={onSignOut}
+      />
     );
   }
-  return <StoreShell owner={owner} store={load.store} meta={load.meta} onSignOut={onSignOut} />;
+  return <StoreShell session={session(load.meta)} store={load.store} onSignOut={onSignOut} />;
 }

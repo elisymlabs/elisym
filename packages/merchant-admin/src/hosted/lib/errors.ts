@@ -115,3 +115,7 @@ export function requestFailureMessage(result: unknown): string {
     ? (sentence(REQUEST_RESULTS, code) ?? GENERIC_REQUEST_FAILURE)
     : GENERIC_REQUEST_FAILURE;
 }
+
+/** A save refused as `stale_config`, once the page has read the config again. */
+export const STALE_RELOADED =
+  'Your settings were changed elsewhere since this page read them. The page now shows them: make your change again.';

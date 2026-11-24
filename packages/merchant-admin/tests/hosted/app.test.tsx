@@ -5,12 +5,13 @@ import { HostedApp } from '../../src/hosted/App';
 import { ApiError } from '../../src/hosted/lib/api';
 import { readHostedConfig } from '../../src/hosted/lib/hosted-config';
 import { rememberKey } from '../../src/hosted/lib/remembered';
-import { OTHER_OPERATOR, OTHER_SERVER, type SessionApi } from '../../src/hosted/lib/session';
+import { OTHER_OPERATOR, OTHER_SERVER } from '../../src/hosted/lib/session';
 import type { Signer } from '../../src/hosted/lib/signer';
+import type { StoreApi } from '../../src/hosted/lib/store-session';
 import { markTabSignedIn } from '../../src/hosted/lib/tab-session';
 import type { StoreView } from '../../src/hosted/lib/types';
 import { type Mounted, buttonNamed, click, inputById, mount, settle, turns } from '../mount';
-import { CONFIG, META, OWNER, OWNER_KEY, storeView } from './fakes';
+import { CONFIG, META, OWNER, OWNER_KEY, storeApi, storeView } from './fakes';
 import { MemoryStorage, freshDeviceKeys, installStorage, plainForms } from './stored';
 
 const TAB_SESSION_KEY = 'paycore-hosted.tab-session';
@@ -31,11 +32,11 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-function fakeApi(overrides: Partial<SessionApi> = {}): SessionApi {
-  return { meta: async () => META, store: async () => storeView(), ...overrides };
+function fakeApi(overrides: Partial<StoreApi> = {}): StoreApi {
+  return storeApi({ meta: async () => META, store: async () => storeView(), ...overrides });
 }
 
-async function app(api: SessionApi = fakeApi(), config = CONFIGURED) {
+async function app(api: StoreApi = fakeApi(), config = CONFIGURED) {
   const signers: Signer[] = [];
   const createApi = vi.fn((signer: Signer, apiBase: string) => {
     signers.push(signer);
@@ -120,7 +121,7 @@ describe('a signed-in session', () => {
     await settle(() => (container.textContent ?? '').includes(OTHER_SERVER));
   });
 
-  it('says there is no store yet', async () => {
+  it('starts the onboarding when there is no store yet', async () => {
     const { container } = await app(
       fakeApi({
         store: async () => {
@@ -129,7 +130,8 @@ describe('a signed-in session', () => {
       }),
     );
     await pasteOwnerKey(container);
-    await settle(() => (container.textContent ?? '').includes('No store yet'));
+    await settle(() => (container.textContent ?? '').includes('Create your store'));
+    expect(container.querySelector('#onboard-name')).not.toBeNull();
   });
 
   it('says why it failed, and opens the store on Retry', async () => {

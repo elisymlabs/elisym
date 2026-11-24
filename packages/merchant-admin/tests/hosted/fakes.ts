@@ -1,5 +1,6 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import type { HostedConfig } from '../../src/hosted/lib/hosted-config';
+import type { StoreApi } from '../../src/hosted/lib/store-session';
 import type { Meta, StoreView } from '../../src/hosted/lib/types';
 
 export const OPERATOR = 'paycore.example';
@@ -32,6 +33,24 @@ export function storeView(overrides: Partial<StoreView> = {}): StoreView {
     webhookSecretSet: false,
     payouts: { needsSigning: false },
     ownerEvents: { payto: null, auth: null },
+    ...overrides,
+  };
+}
+
+/** A store API whose every call not given fails as a test bug would. */
+export function storeApi(overrides: Partial<StoreApi> = {}): StoreApi {
+  const unexpected = (name: string) => async () => {
+    throw new Error(`unexpected call: ${name}`);
+  };
+  return {
+    meta: async () => META,
+    store: async () => storeView(),
+    createStore: unexpected('createStore'),
+    putConfig: unexpected('putConfig'),
+    products: async () => ({ products: [] }),
+    prepareOwnerEvent: unexpected('prepareOwnerEvent'),
+    commitOwnerEvent: unexpected('commitOwnerEvent'),
+    request: unexpected('request'),
     ...overrides,
   };
 }

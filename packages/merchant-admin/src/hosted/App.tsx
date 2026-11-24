@@ -1,11 +1,12 @@
+import type { EventTemplate } from 'nostr-tools';
 import { useRef, useState } from 'react';
 import { OwnTabNotice } from '../components/OwnTabNotice';
 import { NotAvailable } from './components/NotAvailable';
 import { Session } from './components/Session';
 import { SignIn } from './components/SignIn';
 import type { HostedConfigRead } from './lib/hosted-config';
-import type { SessionApi } from './lib/session';
 import type { Signer } from './lib/signer';
+import type { StoreApi } from './lib/store-session';
 import { clearTabSignedIn, markTabSignedIn } from './lib/tab-session';
 
 interface Props {
@@ -13,14 +14,14 @@ interface Props {
   ownTab: boolean;
   /** The committed config, read: hosted mode runs only when it is set and valid. */
   config: HostedConfigRead;
-  createApi: (signer: Signer, apiBase: string) => SessionApi;
+  createApi: (signer: Signer, apiBase: string) => StoreApi;
   /** Leaves the page for a new document, so nothing of the key stays reachable. */
   leave: () => void;
 }
 
 interface Signed {
   owner: string;
-  api: SessionApi;
+  api: StoreApi;
 }
 
 /**
@@ -56,10 +57,24 @@ export function HostedApp({ ownTab, config, createApi, leave }: Props) {
     leave();
   };
 
+  const signEvent = (template: EventTemplate) => {
+    const current = signer.current;
+    if (current === undefined) {
+      return Promise.reject(new Error('signed out'));
+    }
+    return current.signEvent(template);
+  };
+
   if (signed === undefined) {
     return <SignIn onSigner={onSigner} />;
   }
   return (
-    <Session api={signed.api} config={config.config} owner={signed.owner} onSignOut={signOut} />
+    <Session
+      api={signed.api}
+      config={config.config}
+      owner={signed.owner}
+      signEvent={signEvent}
+      onSignOut={signOut}
+    />
   );
 }
