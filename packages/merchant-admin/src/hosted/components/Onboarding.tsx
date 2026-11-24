@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useRef, useState } from 'react';
 import { AuthLayout } from '../../components/AuthLayout';
 import { STALE_RELOADED, errorMessage } from '../lib/errors';
 import { type SavedPayouts, expectedPayouts } from '../lib/payout-rows';
@@ -34,13 +34,24 @@ export function Onboarding({ session, onOpen, onSignOut }: Props) {
   const [relays, setRelays] = useState<string[]>(session.meta.inboxRelays);
   const [notice, setNotice] = useState<string | undefined>(undefined);
 
+  const reads = useRef(0);
+
+  /** Read the store again; only the newest read's answer counts (an older one may land later). */
   const reload = (after?: string) => {
+    reads.current += 1;
+    const read = reads.current;
     session.api.store().then(
       (next) => {
-        setView(next);
-        setNotice(after);
+        if (read === reads.current) {
+          setView(next);
+          setNotice(after);
+        }
       },
-      (error: unknown) => setNotice(errorMessage(error)),
+      (error: unknown) => {
+        if (read === reads.current) {
+          setNotice(errorMessage(error));
+        }
+      },
     );
   };
 

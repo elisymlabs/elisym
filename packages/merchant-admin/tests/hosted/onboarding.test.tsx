@@ -259,6 +259,86 @@ describe('onboarding', () => {
     expect(container.querySelector('#confirm-tick-0')).not.toBeNull();
   });
 
+  it.each([true, false])(
+    'keeps the newer view, and no warning, when an older read lands after it (it fails: %s)',
+    async (oldFails) => {
+      const payouts = [
+        {
+          caip19: SOLANA_USDC,
+          address: 'FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM',
+          signature: 's',
+        },
+      ];
+      const first = storeView({
+        status: 'active',
+        config: storeConfig({ draftPayouts: payouts, revision: 2 }),
+        payouts: { needsSigning: true },
+      });
+      let committed: NostrEvent | undefined;
+      const releases: (() => void)[] = [];
+      let reads = 0;
+      const view = (publishedAt: number | null): StoreView => ({
+        ...first,
+        payouts: { needsSigning: false },
+        ownerEvents: {
+          payto:
+            committed === undefined ? null : { event: committed, committedAt: NOW, publishedAt },
+          auth: null,
+        },
+      });
+      const { container, session } = await start({
+        createStore: async () => first,
+        prepareOwnerEvent: async () => ({
+          template: payoutListTemplate(payouts),
+          expiresAt: NOW + 900,
+        }),
+        commitOwnerEvent: async (event) => {
+          committed = event;
+          return { id: event.id, request: { id: 'r1', state: 'pending' } };
+        },
+        request: async (id) => ({
+          request: {
+            id,
+            kind: 'record_owner_event',
+            state: 'applied',
+            result: null,
+            createdAt: NOW,
+            appliedAt: NOW,
+          },
+        }),
+        store: async () => {
+          reads += 1;
+          if (reads === 1) {
+            // The read at acceptance answers last, and fails.
+            await new Promise<void>((resolve) => {
+              releases.push(resolve);
+            });
+            if (oldFails) {
+              throw new ApiError(0, 'network');
+            }
+            return view(null);
+          }
+          return view(NOW);
+        },
+      });
+      session.proven.add(SOLANA_USDC, payouts[0]?.address ?? '');
+      await createStore(container);
+      await settle(() => text(container).includes('Sign with your owner key'));
+      await click(buttonNamed(container, 'Publish payout list'));
+      await settle(() => container.querySelector('#confirm-owner-event') !== null);
+      await click(buttonNamed(container, 'Sign and publish'));
+      await settle(
+        () => container.querySelector('#payto-status')?.textContent === 'Signed and published.',
+      );
+      await act(async () => {
+        releases.shift()?.();
+      });
+      await settle(() => reads === 2);
+      expect(container.querySelector('#payto-status')?.textContent).toBe('Signed and published.');
+      expect(text(container)).not.toContain('could not be reached');
+    },
+  );
+
   it('asks for a name, and says a refused creation in a fixed sentence', async () => {
     const createStore = vi.fn(async (): Promise<StoreView> => {
       throw new ApiError(429, 'rate_limited', { message: LEAK });

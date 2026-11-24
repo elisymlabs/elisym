@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useState } from 'react';
+import { type ReactNode, useCallback, useRef, useState } from 'react';
 import { AuthLayout } from '../../components/AuthLayout';
 import { errorMessage } from '../lib/errors';
 import type { StoreSession } from '../lib/store-session';
@@ -37,13 +37,24 @@ export function StoreShell({ session, store, onSignOut }: Props) {
   const [warning, setWarning] = useState<string | undefined>(undefined);
   const { api } = session;
 
+  const reads = useRef(0);
+
+  /** Read the store again; only the newest read's answer counts (an older one may land later). */
   const reload = useCallback(() => {
+    reads.current += 1;
+    const read = reads.current;
     api.store().then(
       (next) => {
-        setView(next);
-        setWarning(undefined);
+        if (read === reads.current) {
+          setView(next);
+          setWarning(undefined);
+        }
       },
-      (error: unknown) => setWarning(`${errorMessage(error)} ${READ_FAILED_KEPT}`),
+      (error: unknown) => {
+        if (read === reads.current) {
+          setWarning(`${errorMessage(error)} ${READ_FAILED_KEPT}`);
+        }
+      },
     );
   }, [api]);
 

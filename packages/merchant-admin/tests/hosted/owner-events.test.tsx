@@ -838,3 +838,156 @@ describe('review round 1', () => {
     await settle(() => container.querySelector('#confirm-owner-event') !== null);
   });
 });
+
+describe('the store read after a follow', () => {
+  function committedView(event: NostrEvent, publishedAt: number | null): StoreView {
+    return needingSigning({
+      payouts: { needsSigning: false },
+      ownerEvents: { payto: { event, committedAt: NOW, publishedAt }, auth: null },
+    });
+  }
+
+  it('reads the store again when the request applies, and shows it published', async () => {
+    let committed: NostrEvent | undefined;
+    let applied_ = false;
+    const store = vi.fn(async () =>
+      committed === undefined ? needingSigning() : committedView(committed, applied_ ? NOW : null),
+    );
+    const { container } = await open(
+      needingSigning(),
+      {
+        store,
+        prepareOwnerEvent: async () => ({
+          template: payoutListTemplate(PAYOUTS),
+          expiresAt: NOW + 900,
+        }),
+        commitOwnerEvent: async (event) => {
+          committed = event;
+          return pendingAnswer(event);
+        },
+        request: async (id) => {
+          applied_ = true;
+          return { request: applied(id) };
+        },
+      },
+      PAYOUTS,
+    );
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    await click(signButton(container));
+    await settle(
+      () => container.querySelector('#payto-status')?.textContent === 'Signed and published.',
+    );
+    expect(store).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads the store again when a Retry applies, and shows it published', async () => {
+    const event = signed(payoutListTemplate(PAYOUTS));
+    let appliedNow = false;
+    const store = vi.fn(async () => committedView(event, appliedNow ? NOW : null));
+    const { container } = await open(committedView(event, null), {
+      store,
+      commitOwnerEvent: async () => pendingAnswer(event),
+      request: async (id) => {
+        appliedNow = true;
+        return { request: applied(id) };
+      },
+    });
+    await click(buttonNamed(container, 'Retry publishing'));
+    await settle(
+      () => container.querySelector('#payto-status')?.textContent === 'Signed and published.',
+    );
+    expect(store).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the newer view when an older read lands after it', async () => {
+    let committed: NostrEvent | undefined;
+    let release: () => void = () => undefined;
+    const store = vi.fn(async (): Promise<StoreView> => {
+      if (committed === undefined) {
+        return needingSigning();
+      }
+      const event = committed;
+      if (store.mock.calls.length === 1) {
+        // The read at acceptance answers last.
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return committedView(event, null);
+      }
+      return committedView(event, NOW);
+    });
+    const { container } = await open(
+      needingSigning(),
+      {
+        store,
+        prepareOwnerEvent: async () => ({
+          template: payoutListTemplate(PAYOUTS),
+          expiresAt: NOW + 900,
+        }),
+        commitOwnerEvent: async (event) => {
+          committed = event;
+          return pendingAnswer(event);
+        },
+        request: async (id) => ({ request: applied(id) }),
+      },
+      PAYOUTS,
+    );
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    await click(signButton(container));
+    await settle(
+      () => container.querySelector('#payto-status')?.textContent === 'Signed and published.',
+    );
+    await act(async () => {
+      release();
+    });
+    await turns(5);
+    expect(container.querySelector('#payto-status')?.textContent).toBe('Signed and published.');
+  });
+
+  it('shows no warning from an older read that failed after a newer good one', async () => {
+    let committed: NostrEvent | undefined;
+    let fail: () => void = () => undefined;
+    const store = vi.fn(async (): Promise<StoreView> => {
+      if (committed === undefined) {
+        return needingSigning();
+      }
+      const event = committed;
+      if (store.mock.calls.length === 1) {
+        await new Promise<void>((resolve) => {
+          fail = resolve;
+        });
+        throw new ApiError(0, 'network');
+      }
+      return committedView(event, NOW);
+    });
+    const { container } = await open(
+      needingSigning(),
+      {
+        store,
+        prepareOwnerEvent: async () => ({
+          template: payoutListTemplate(PAYOUTS),
+          expiresAt: NOW + 900,
+        }),
+        commitOwnerEvent: async (event) => {
+          committed = event;
+          return pendingAnswer(event);
+        },
+        request: async (id) => ({ request: applied(id) }),
+      },
+      PAYOUTS,
+    );
+    await click(buttonNamed(container, 'Publish payout list'));
+    await settle(() => container.querySelector('#confirm-owner-event') !== null);
+    await click(signButton(container));
+    await settle(
+      () => container.querySelector('#payto-status')?.textContent === 'Signed and published.',
+    );
+    await act(async () => {
+      fail();
+    });
+    await turns(5);
+    expect(text(container)).not.toContain('could not be reached');
+  });
+});
