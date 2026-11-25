@@ -41,6 +41,32 @@ const CODES: Readonly<Record<string, string>> = {
   proof_running:
     "Your store's site is being checked for another request right now. Retry in a minute.",
   moved_meanwhile: 'Your store was moved by another request while your site was checked. Retry.',
+  shopify_onboarding:
+    'This store is still being set up in the Askr app in Shopify. Finish the setup there first.',
+  shopify_billing:
+    'This store is linked to a Shopify shop, so its plan is chosen in the Askr app in Shopify.',
+  uninstalled: 'The Askr app is not installed on this shop. Install it again, then retry.',
+  not_onboarded: 'Askr is not set up for this shop yet. Reload the app to set it up.',
+  owner_managed:
+    'You manage this store with your own owner key, so the app does not change its settings.',
+  shopify_refused: 'Shopify did not answer the app just now. Reload the app and retry.',
+  shopify_reauth: 'Shopify needs the app to be opened again. Reload the app and retry.',
+  bad_settings:
+    'Some settings are not valid: each domain must be a full https address like https://shop.example. Check the fields and save again.',
+  onboarding_expired: 'This setup took too long and expired. Start again.',
+  onboarding_replaced: 'Someone else started the setup meanwhile. Start again.',
+  not_onboarding: 'This setup is no longer waiting to be finished. Start again.',
+  onboarded: 'Askr is already set up for this shop.',
+  owner_taken: 'This key already belongs to an Askr store. Start again: a new key will be made.',
+  bad_events: 'The setup could not be signed correctly. Start again.',
+  managed_by_delegate:
+    'This store is managed by the Askr app in Shopify. Change it there, from your Shopify admin.',
+  too_many_origins:
+    'Too many storefront domains: your shop keeps its own two, and you can add 18 more at most.',
+  shopify_managed:
+    'This product source is managed by the Askr app in Shopify and follows your shop there.',
+  shopify_linked:
+    'This store is linked to a Shopify shop, so its key cannot be replaced from here. Manage it from the Askr app in Shopify.',
   not_found: 'The server does not know this action.',
   bad_request: 'The server could not read the request. Check the fields and retry.',
   bad_email: 'That email address was not accepted. Enter one like you@yourshop.com.',

@@ -56,7 +56,7 @@
     },
     "packages/askr": {
       "name": "@elisym/askr",
-      "version": "0.3.0",
+      "version": "0.5.0",
       "dependencies": {
         "@elisym/commerce": "~0.14.0",
         "zod": "~4.6.7",
@@ -101,7 +101,7 @@
     },
     "packages/askr-agent": {
       "name": "@elisym/askr-agent",
-      "version": "0.3.1",
+      "version": "0.3.3",
       "dependencies": {
         "@elisym/askr": "~0.3.0",
         "decimal.js-light": "~2.5.1",
@@ -167,6 +167,10 @@
         "vitest": "~4.1.12",
       },
     },
+    "packages/askr-shopify": {
+      "name": "@elisym/askr-shopify",
+      "version": "0.1.0",
+    },
     "packages/askr-widget": {
       "name": "@elisym/askr-widget",
       "version": "0.1.0",
@@ -210,7 +214,7 @@
     },
     "packages/cli": {
       "name": "@elisym/cli",
-      "version": "0.38.0",
+      "version": "0.40.0",
       "bin": {
         "elisym": "./dist/index.js",
       },
@@ -307,7 +311,7 @@
     },
     "packages/mcp": {
       "name": "@elisym/mcp",
-      "version": "0.35.1",
+      "version": "0.36.0",
       "bin": {
         "elisym-mcp": "./dist/index.js",
       },
@@ -746,6 +750,8 @@
     "@elisym/askr-landing": ["@elisym/askr-landing@workspace:packages/askr-landing"],
 
     "@elisym/askr-server": ["@elisym/askr-server@workspace:packages/askr-server"],
+
+    "@elisym/askr-shopify": ["@elisym/askr-shopify@workspace:packages/askr-shopify"],
 
     "@elisym/askr-widget": ["@elisym/askr-widget@workspace:packages/askr-widget"],
 

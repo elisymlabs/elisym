@@ -417,7 +417,8 @@ describe('the billing cycle anchor is read and kept', () => {
   });
 
   it('migration 0012 adds a nullable billing_cycle_anchor', async () => {
-    expect(MIGRATIONS.map((entry) => entry.id).at(-1)).toBe('0012_billing_cycle_anchor');
+    const ids = MIGRATIONS.map((entry) => entry.id);
+    expect(ids[ids.indexOf('0011_billing_schedule') + 1]).toBe('0012_billing_cycle_anchor');
     const client = await PGlite.create();
     const db = pgliteDb(client);
     await migrate(db);

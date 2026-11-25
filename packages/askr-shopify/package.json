@@ -1,0 +1,8 @@
+{
+  "name": "@elisym/askr-shopify",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Askr's Shopify app configuration and theme app extension (deployed with the Shopify CLI).",
+  "license": "MIT",
+  "author": "elisym labs"
+}

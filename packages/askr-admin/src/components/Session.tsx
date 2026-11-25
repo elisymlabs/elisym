@@ -14,6 +14,7 @@ import { ownSignedEvents, withStoredEvents } from '../lib/stored-events';
 import type { StoreStatus, StoreView } from '../lib/types';
 import { BillingReturnNotice } from './BillingReturnNotice';
 import { FinishMove } from './FinishMove';
+import { ManagedByShopify } from './ManagedByShopify';
 import { MovedAway } from './MovedAway';
 import { Notice } from './Notice';
 import { Onboarding } from './Onboarding';
@@ -230,6 +231,10 @@ export function Session({
   }
   // Nothing signed yet: no config on the relay and none waiting on the server.
   const view = load.state === 'ready' ? load.view : undefined;
+  // The Shopify app manages this store: nothing here may change it (askr-shopify 5.3).
+  if (view?.delegation?.active === true) {
+    return <ManagedByShopify onSignOut={onSignOut} />;
+  }
   const needsSetup =
     view === undefined ||
     (config === undefined &&

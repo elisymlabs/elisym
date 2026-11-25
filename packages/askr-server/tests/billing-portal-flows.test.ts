@@ -675,7 +675,8 @@ describe('the scheduled change, stored and shown', () => {
   });
 
   it('migration 0011 adds the three nullable columns, the interval checked', async () => {
-    expect(MIGRATIONS.map((entry) => entry.id).slice(-3, -1)).toEqual([
+    const ids = MIGRATIONS.map((entry) => entry.id);
+    expect(ids.slice(ids.indexOf('0010_billing'), ids.indexOf('0010_billing') + 2)).toEqual([
       '0010_billing',
       '0011_billing_schedule',
     ]);

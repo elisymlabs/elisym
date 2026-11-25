@@ -10,6 +10,15 @@ const ADMIN_PATH_PREFIX = '/v1/admin/';
 /** Stripe's events: a subscription with its items and an invoice stay far below this. */
 const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024;
 const WEBHOOK_PATH = '/v1/stripe/webhook';
+/**
+ * Shopify's webhooks (askr-shopify 3.2): every subscribed topic is read whole to check its HMAC,
+ * a product's included, so it gets the webhook cap.
+ */
+const SHOPIFY_WEBHOOK_PATH = '/v1/shopify/webhooks';
+const SHOPIFY_PATH_PREFIX = '/v1/shopify/';
+/** The embedded admin's calls (settings with their private part), behind a session token. */
+const MAX_SHOPIFY_BODY_BYTES = 256 * 1024;
+const BEARER_AUTH_RE = /^Bearer [A-Za-z0-9_.-]+$/;
 const CATALOG_PATH = '/v1/admin/catalog';
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'DELETE']);
 /** The shape of a NIP-98 header; checked before an admin body is read, the signature after. */
@@ -25,8 +34,13 @@ export function bodyLimitOf(
   path: string,
   authorization: string | undefined,
 ): number | 'unauthorized' {
-  if (method === 'POST' && path === WEBHOOK_PATH) {
+  if (method === 'POST' && (path === WEBHOOK_PATH || path === SHOPIFY_WEBHOOK_PATH)) {
     return MAX_WEBHOOK_BODY_BYTES;
+  }
+  if (path.startsWith(SHOPIFY_PATH_PREFIX)) {
+    return authorization !== undefined && BEARER_AUTH_RE.test(authorization)
+      ? MAX_SHOPIFY_BODY_BYTES
+      : MAX_BODY_BYTES;
   }
   if (!path.startsWith(ADMIN_PATH_PREFIX)) {
     return MAX_BODY_BYTES;

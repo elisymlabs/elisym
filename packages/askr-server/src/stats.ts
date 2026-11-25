@@ -308,7 +308,9 @@ async function storeSection(
        count(*) filter (where exists (select 1 from billing_subscriptions
                                       where ${planSubscriptionsWhereFor('s.owner', '$3')}))::int8
          as paying
-     from stores s`,
+     from stores s
+     -- An unfinished Shopify onboarding is nobody's store yet (askr-shopify 3.1).
+     where s.shopify_onboarding_until is null`,
     [now - RECENT_DAYS * SECS_PER_DAY, now - options.days * SECS_PER_DAY, LIVE_STATUSES],
   );
   const byPlan = await tx.query<{

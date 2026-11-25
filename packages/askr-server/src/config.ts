@@ -334,6 +334,53 @@ export function billingFromEnv(
   return { secretKey, webhookSecret };
 }
 
+/** The Shopify app's credentials (askr-shopify plan 3): all set, or the app is off here. */
+export interface ShopifyAppSecrets {
+  /** The app's client ID (API key): the session token's `aud`. */
+  apiKey: string;
+  /** The app's client secret: session tokens, webhooks and token exchange. */
+  apiSecret: string;
+  /** The Partner API token the plan reconcile reads subscriptions with. */
+  partnerToken: string;
+}
+
+const SHOPIFY_SETTINGS = [
+  'ASKR_SHOPIFY_API_KEY',
+  'ASKR_SHOPIFY_API_SECRET_FILE',
+  'ASKR_SHOPIFY_PARTNER_TOKEN_FILE',
+] as const;
+
+/**
+ * ASKR_SHOPIFY_API_KEY, ASKR_SHOPIFY_API_SECRET_FILE and ASKR_SHOPIFY_PARTNER_TOKEN_FILE (the
+ * secrets as files, like the Stripe ones). None set: the Shopify app is off on this instance
+ * (its routes answer 404, no Shopify job runs). Some but not all, or an empty file, stops the
+ * server. `read` is for tests. The values are never logged.
+ */
+export function shopifyFromEnv(
+  rawEnv: Env,
+  read: (path: string) => string,
+): ShopifyAppSecrets | undefined {
+  const env = withoutEmpty(rawEnv);
+  const [apiKey, secretFile, partnerFile] = SHOPIFY_SETTINGS.map((name) => env[name]);
+  if (apiKey === undefined && secretFile === undefined && partnerFile === undefined) {
+    return undefined;
+  }
+  if (apiKey === undefined || secretFile === undefined || partnerFile === undefined) {
+    throw new Error(
+      `The Shopify app needs all of ${SHOPIFY_SETTINGS.join(', ')}: set all, or none to turn it off.`,
+    );
+  }
+  const apiSecret = read(secretFile).trim();
+  const partnerToken = read(partnerFile).trim();
+  if (apiSecret === '') {
+    throw new Error('ASKR_SHOPIFY_API_SECRET_FILE names an empty file');
+  }
+  if (partnerToken === '') {
+    throw new Error('ASKR_SHOPIFY_PARTNER_TOKEN_FILE names an empty file');
+  }
+  return { apiKey: apiKey.trim(), apiSecret, partnerToken };
+}
+
 const FALLBACK_FIELDS = 6;
 const OPENROUTER_MODEL_RE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/iu;
 
