@@ -138,6 +138,8 @@ button:disabled { cursor: default; opacity: 0.4; }
   background: var(--cc-accent); color: var(--cc-accent-text); white-space: pre-wrap;
 }
 .theirs { align-self: flex-start; }
+/* A Buy milestone (paid, refused...): the widget's own line, not the assistant's. */
+.note { align-self: center; font-size: 12.5px; color: var(--cc-muted); text-align: center; }
 .component { align-self: stretch; display: flex; flex-direction: column; gap: 10px; }
 .component-title { font-weight: 600; }
 .cards {

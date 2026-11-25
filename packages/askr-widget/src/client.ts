@@ -31,6 +31,7 @@ import {
   MAX_QUERY_ATTEMPTS,
 } from './constants';
 import type { ClickKind, Gateway } from './gateway';
+import type { BuyNote } from './paycore';
 import {
   type HistoryRead,
   type RelayConnect,
@@ -73,6 +74,12 @@ export interface ChatTurn {
   status?: string;
 }
 
+/** A Buy milestone in the log (C5): the visitor's own, never sent to the assistant. */
+export interface ChatNote {
+  id: number;
+  note: BuyNote;
+}
+
 export interface ChatSnapshot {
   phase: ChatPhase;
   retryReason?: RetryReason;
@@ -80,6 +87,8 @@ export interface ChatSnapshot {
   /** Whether to show the "by Askr" line; the gateway's latest grant decides. */
   branding: boolean;
   turns: readonly ChatTurn[];
+  /** In the order they happened; shown after whatever the log held at the time. */
+  notes: readonly ChatNote[];
   inFlightAskId?: string;
   /** Set with the `moved` phase: the store's new owner key, hex. */
   movedTo?: string;
@@ -207,6 +216,7 @@ export class ChatClient {
   private sessionEnd: number | undefined;
   private newestAnswerAt = Number.NEGATIVE_INFINITY;
   private inFlight: InFlight | undefined;
+  private readonly notes: ChatNote[] = [];
 
   private readonly listeners = new Set<(snapshot: ChatSnapshot) => void>();
 
@@ -238,6 +248,7 @@ export class ChatClient {
       phase: this.phase,
       branding: this.branding,
       turns: [...this.turns.values()].sort((left, right) => left.askedAt - right.askedAt),
+      notes: [...this.notes],
     };
     if (this.retryReason !== undefined && this.phase === 'retry') {
       snapshot.retryReason = this.retryReason;
@@ -337,6 +348,12 @@ export class ChatClient {
     if (this.ticket) {
       void this.gateway.reportClick(this.ticket, address, kind);
     }
+  }
+
+  /** Add a Buy milestone to the log: local only, nothing is published. */
+  note(note: BuyNote): void {
+    this.notes.push({ id: this.notes.length + 1, note });
+    this.emit();
   }
 
   private emit(): void {
@@ -623,7 +640,10 @@ export class ChatClient {
 
   private ticketExpired(): boolean {
     const expiration = this.ticket ? singleTag(this.ticket, 'expiration') : undefined;
-    return expiration === undefined || Number(expiration) <= this.now();
+    // A malformed expiration reads as expired, as the assistant reads it: renew before sending.
+    return (
+      expiration === undefined || !/^\d{1,12}$/.test(expiration) || Number(expiration) <= this.now()
+    );
   }
 
   private becomeUnavailable(): void {

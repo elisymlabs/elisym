@@ -6,7 +6,11 @@ import {
   buildConfigEvent,
   parseConfig,
 } from '@elisym/askr';
-import { buildProductEvent } from '@elisym/commerce';
+import {
+  buildProductEvent,
+  buildStoreAuthEvent,
+  buildStoreRevocationEvent,
+} from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 import { describe, expect, it } from 'vitest';
@@ -258,8 +262,52 @@ describe('resolveCards', () => {
       now: localSecs(),
     });
     expect([...cards.keys()]).toEqual([address(key, 'scarf'), address(key, 'paid')]);
-    // No Buy yet: the widget learns the owner's 30490s in block 2.
+    // No live 30490 among the authority events: shown, without Buy.
     expect(cards.get(address(key, 'paid'))?.payable).toBeUndefined();
+  });
+
+  it("a live 30490 by the owner makes the key's listing with payment terms payable; revoked, or by another signer, it does not", async () => {
+    const context = setup();
+    const key = context.store.catalogKey;
+    context.relay.storeOnly(
+      MAIN_RELAY,
+      sign(
+        buildProductEvent({
+          d: 'paid',
+          title: 'Paid',
+          description: '',
+          price: { amount: '5', currency: 'USD' },
+          accept: [PAYMENT_TERM],
+          createdAt: localSecs() - 50,
+        }),
+        key,
+      ),
+    );
+    const authorization = buildStoreAuthEvent({
+      storePubkey: key.pubkey,
+      mode: 'hosted',
+      operator: 'elisym.network',
+      createdAt: localSecs() - 100,
+    });
+    const payableWith = async (extra: NostrEvent[]) =>
+      (
+        await resolveCards([address(key, 'paid')], {
+          config: context.config,
+          authorityEvents: [...context.authority, ...extra],
+          query: context.query,
+          cache: new CardCache(new MemoryStorage()),
+          now: localSecs(),
+        })
+      ).get(address(key, 'paid'))?.payable;
+    const live = await payableWith([sign(authorization, context.store.owner)]);
+    expect(live?.network).toBe('devnet');
+    expect(live?.naddr.startsWith('naddr1')).toBe(true);
+    const revoked = await payableWith([
+      sign(authorization, context.store.owner),
+      sign(buildStoreRevocationEvent(key.pubkey, localSecs() - 50), context.store.owner),
+    ]);
+    expect(revoked).toBeUndefined();
+    expect(await payableWith([sign(authorization, key)])).toBeUndefined();
   });
 
   it('a product key the owner authorized only with a 30490 gets no cards and no fetch', async () => {

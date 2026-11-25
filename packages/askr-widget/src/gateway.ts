@@ -22,8 +22,12 @@ export type SessionResult =
   | { kind: 'unavailable' }
   | { kind: 'error' };
 
-/** What a handoff click was: a product link opened, or an add to cart pressed. */
-export type ClickKind = 'link' | 'cart';
+/**
+ * What a handoff click was: a product link opened, an add to cart pressed, Buy pressed (the
+ * page's PayCore checkout opened), or that checkout reporting a payment. Browser-reported, so
+ * advisory only.
+ */
+export type ClickKind = 'link' | 'cart' | 'buy' | 'paid';
 
 /** The Askr gateway (3). Injectable, so tests can drive grants and refusals. */
 export interface Gateway {

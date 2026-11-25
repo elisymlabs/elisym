@@ -221,6 +221,8 @@ export class FakeGateway implements Gateway {
   branding = true;
   /** Gateway clock minus local clock. */
   skewSecs = 0;
+  /** Replaces the ticket's `expiration` value, to grant a malformed ticket. */
+  ticketExpiration: string | undefined;
   /** Names this key in the ticket's `p` instead of the visitor's. */
   ticketVisitor: string | undefined;
   /** The store moved to this owner key (K21): any other store is answered as moved. */
@@ -245,12 +247,21 @@ export class FakeGateway implements Gateway {
     if (this.mode !== 'grant') {
       return { kind: this.mode };
     }
+    const template = buildTicket({
+      visitor: this.ticketVisitor ?? visitor,
+      store,
+      now: localSecs() + this.skewSecs,
+    });
+    const expiration = this.ticketExpiration;
     const ticket = sign(
-      buildTicket({
-        visitor: this.ticketVisitor ?? visitor,
-        store,
-        now: localSecs() + this.skewSecs,
-      }),
+      expiration === undefined
+        ? template
+        : {
+            ...template,
+            tags: template.tags.map((tag) =>
+              tag[0] === 'expiration' ? ['expiration', expiration] : tag,
+            ),
+          },
       this.gatewayKey,
     );
     return {

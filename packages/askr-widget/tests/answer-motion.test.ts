@@ -23,7 +23,7 @@ describe('entrances play once', () => {
       throw new Error('no log');
     }
     const turns = [{ askId: 'a1', askedAt: 0, text: 'Tents?' }];
-    widget.update({ phase: 'waiting', branding: true, inFlightAskId: 'a1', turns });
+    widget.update({ phase: 'waiting', branding: true, notes: [], inFlightAskId: 'a1', turns });
     const added: Node[] = [];
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -31,7 +31,7 @@ describe('entrances play once', () => {
       }
     });
     observer.observe(log, { childList: true });
-    widget.update({ phase: 'waiting', branding: true, inFlightAskId: 'a1', turns });
+    widget.update({ phase: 'waiting', branding: true, notes: [], inFlightAskId: 'a1', turns });
     await new Promise((resolve) => setTimeout(resolve, 0));
     observer.disconnect();
     expect(added).toHaveLength(0);
@@ -40,13 +40,14 @@ describe('entrances play once', () => {
   it('the status line is left alone while it says the same', () => {
     const widget = view();
     const turns = [{ askId: 'a1', askedAt: 0, text: 'Tents?', status: 'Looking' }];
-    widget.update({ phase: 'waiting', branding: true, inFlightAskId: 'a1', turns });
+    widget.update({ phase: 'waiting', branding: true, notes: [], inFlightAskId: 'a1', turns });
     const first = widget.panel.querySelector('.status span');
-    widget.update({ phase: 'waiting', branding: true, inFlightAskId: 'a1', turns });
+    widget.update({ phase: 'waiting', branding: true, notes: [], inFlightAskId: 'a1', turns });
     expect(widget.panel.querySelector('.status span')).toBe(first);
     widget.update({
       phase: 'waiting',
       branding: true,
+      notes: [],
       inFlightAskId: 'a1',
       turns: [{ ...turns[0], askId: 'a1', askedAt: 0, text: 'Tents?', status: 'Comparing' }],
     });

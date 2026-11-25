@@ -86,7 +86,7 @@ describe('the widget language', () => {
     expect(widget.launcher.querySelector('.launcher-hint')?.textContent).toBe(
       'О любом товаре здесь',
     );
-    widget.update({ phase: 'ready', branding: true, turns: [], config: storeIn('fr') });
+    widget.update({ phase: 'ready', branding: true, notes: [], turns: [], config: storeIn('fr') });
     expect(launcherText(widget)).toBe('Спросить ИИ');
     expect(widget.panel.querySelector('input')?.placeholder).toBe('Спросите о товарах...');
   });
@@ -96,7 +96,7 @@ describe('the widget language', () => {
     expect(launcherText(paged)).toBe('KI fragen');
     const stored = view([null, 'pl']);
     expect(launcherText(stored)).toBe('Ask AI');
-    stored.update({ phase: 'ready', branding: true, turns: [], config: storeIn('fr') });
+    stored.update({ phase: 'ready', branding: true, notes: [], turns: [], config: storeIn('fr') });
     expect(launcherText(stored)).toBe("Demander à l'IA");
     expect(stored.launcher.querySelector('.launcher-hint')?.textContent).toBe(
       'Sur tous nos produits',
@@ -109,7 +109,7 @@ describe('the widget language', () => {
   it("keeps the store's own greeting in any language", () => {
     const widget = view(['es']);
     const config = { ...storeIn('en'), greeting: 'Welcome to Northwind' };
-    widget.update({ phase: 'ready', branding: true, turns: [], config });
+    widget.update({ phase: 'ready', branding: true, notes: [], turns: [], config });
     expect(widget.panel.querySelector('.bubble.theirs')?.textContent).toBe('Welcome to Northwind');
   });
 });
@@ -156,7 +156,7 @@ describe("the store's launcher text", () => {
     const widget = view([null, 'pl']);
     widget.setLauncherText('Ask our stylist');
     const config = { ...storeIn('fr'), launcherText: 'Ask our stylist' };
-    widget.update({ phase: 'ready', branding: true, turns: [], config });
+    widget.update({ phase: 'ready', branding: true, notes: [], turns: [], config });
     expect(hint(widget).textContent).toBe('Sur tous nos produits');
     expect(label(widget).textContent).toBe('Ask our stylist');
     expect(hint(widget).hidden).toBe(true);
@@ -166,9 +166,9 @@ describe("the store's launcher text", () => {
     const widget = view(['en']);
     widget.setLauncherText('From the check');
     const withText = { ...storeIn('en'), launcherText: 'From the config' };
-    widget.update({ phase: 'ready', branding: true, turns: [], config: withText });
+    widget.update({ phase: 'ready', branding: true, notes: [], turns: [], config: withText });
     expect(label(widget).textContent).toBe('From the config');
-    widget.update({ phase: 'ready', branding: true, turns: [], config: storeIn('en') });
+    widget.update({ phase: 'ready', branding: true, notes: [], turns: [], config: storeIn('en') });
     expect(label(widget).textContent).toBe('Ask AI');
     expect(label(widget).hasAttribute('dir')).toBe(false);
     expect(label(widget).lang).toBe('en');
@@ -263,7 +263,7 @@ describe('two widgets, two languages', () => {
     const russian = view(['ru']);
     view(['en']);
     expect(STRINGS.addToCart).toBe('Add to cart');
-    russian.update({ phase: 'ready', branding: true, turns: [] });
+    russian.update({ phase: 'ready', branding: true, notes: [], turns: [] });
     expect(STRINGS.addToCart).toBe('В корзину');
   });
 

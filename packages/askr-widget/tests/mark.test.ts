@@ -105,6 +105,7 @@ describe('the mark in the widget', () => {
     widget.update({
       phase: 'waiting',
       branding: true,
+      notes: [],
       inFlightAskId: 'a1',
       turns: [{ askId: 'a1', askedAt: 0, text: 'Tents?', status: 'Looking through tents' }],
     });
@@ -115,12 +116,13 @@ describe('the mark in the widget', () => {
     widget.update({
       phase: 'waiting',
       branding: true,
+      notes: [],
       inFlightAskId: 'a1',
       turns: [{ askId: 'a1', askedAt: 0, text: 'Tents?', status: 'Comparing weight' }],
     });
     // One mark for the status, re-used: a stream of updates never piles marks up.
     expect(status?.querySelector('svg.status-mark')).toBe(first);
-    widget.update({ phase: 'ready', branding: true, turns: [] });
+    widget.update({ phase: 'ready', branding: true, notes: [], turns: [] });
     expect(status?.querySelector('svg.status-mark')).toBeNull();
   });
 });

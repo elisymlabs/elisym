@@ -3,6 +3,7 @@ import { HEX_PUBKEY_RE } from '@elisym/commerce';
 import { decode } from 'nostr-tools/nip19';
 import { type ChatClient, type ChatSnapshot, type ChatTurn } from '../client';
 import { ELEMENT_NAME, PANEL_OPEN_PREFIX } from '../constants';
+import type { BuyNote } from '../paycore';
 import { readItem, removeItem, storageArea, writeItem } from '../storage';
 import type { StoreCheck } from '../store-check';
 import { renderAnswer } from './answer-view';
@@ -62,6 +63,7 @@ export class WidgetView {
   private readonly composer: HTMLFormElement;
   private language: string;
   private readonly turnViews = new Map<string, TurnView>();
+  private readonly noteViews = new Set<number>();
   private config: StoreConfig | undefined;
   /** The store's own launcher text: from the store check first, then from each config. */
   private launcherText: string | undefined;
@@ -211,6 +213,14 @@ export class WidgetView {
         this.log.append(root);
       }
     }
+    for (const { id, note } of snapshot.notes) {
+      if (!this.noteViews.has(id)) {
+        const view = element(this.document, 'div', 'bubble note', noteText(note));
+        view.lang = this.language;
+        this.noteViews.add(id);
+        this.log.append(view);
+      }
+    }
     this.renderStatus(snapshot);
     this.renderChips(snapshot);
     const ready = snapshot.phase === 'ready';
@@ -243,6 +253,7 @@ export class WidgetView {
             document: this.document,
             config: this.config,
             reportClick: (address, kind) => client.reportClick(address, kind),
+            note: (note) => client.note(note),
             pageOrigin: globalThis.location?.origin,
             resolveCards: (addresses) => client.resolveCards(addresses),
             language: this.language,
@@ -332,6 +343,19 @@ export class WidgetView {
       this.chips.append(button);
     }
   }
+}
+
+/** A Buy milestone in the widget's language (C5); an error claims no cause. */
+export function noteText(note: BuyNote): string {
+  const texts: Record<BuyNote, string> = {
+    busy: STRINGS.buyBusy,
+    'open-failed': STRINGS.buyFailed,
+    paid: STRINGS.buyPaid,
+    completed: STRINGS.buyCompleted,
+    refused: STRINGS.buyRefused,
+    error: STRINGS.buyError,
+  };
+  return texts[note];
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';

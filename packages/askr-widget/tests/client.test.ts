@@ -210,11 +210,12 @@ describe('bootstrap', () => {
     expect(setup.client.snapshot().phase).toBe('failed');
     expect(relay.connections.map((connection) => connection.url)).not.toContain('wss://nos.lol');
     expect(relay.connections.every((connection) => connection.url === MAIN_RELAY)).toBe(true);
-    expect(
-      relay.requests.some((request) =>
-        request.filters.some((filter) => filter.kinds?.includes(30490)),
-      ),
-    ).toBe(false);
+    // The owner's 30490s are read with the config, on the Askr relay alone.
+    const storeAuthReads = relay.requests.filter((request) =>
+      request.filters.some((filter) => filter.kinds?.includes(30490)),
+    );
+    expect(storeAuthReads.length).toBeGreaterThan(0);
+    expect(storeAuthReads.every((request) => request.url === MAIN_RELAY)).toBe(true);
   });
 
   it('a ticket naming another A than the config re-reads the config once, then is unavailable', async () => {
@@ -384,6 +385,23 @@ describe('answer timeout', () => {
     expect(asks.map((ask) => ask.message.ask_id)).toEqual([askId, askId]);
     expect(new Set(asks.map((ask) => ask.rumorId)).size).toBe(2);
     expect(setup.client.snapshot().phase).toBe('waiting');
+  });
+});
+
+describe('a malformed ticket expiration', () => {
+  it('reads as expired: the ticket is renewed before the ask is sent; a well-formed one is not', async () => {
+    for (const expiration of ['abc', '123x', '1e12', '9999999999999', undefined]) {
+      const store = makeStore();
+      const gateway = new FakeGateway(store.gatewayKey, store.assistant.pubkey);
+      gateway.ticketExpiration = expiration;
+      const setup = await started(harness({}, { store, gateway }));
+      expect(setup.gateway.sessions).toHaveLength(1);
+      setup.client.ask('hello');
+      await settle();
+      expect(setup.gateway.sessions).toHaveLength(expiration === undefined ? 1 : 2);
+      expect(asksTo(setup.relay, setup.store.assistant)).toHaveLength(1);
+      setup.client.stop();
+    }
   });
 });
 
