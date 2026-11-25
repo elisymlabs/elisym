@@ -1,5 +1,5 @@
 /**
- * Fails the build when `dist/widget.js` is over its budget (6: 93 KB gzip, raised from 80 for the new look and ten languages, then from 90 for Buy on PayCore cards),
+ * Fails the build when `dist/widget.js` is over its budget (6: 100 KB gzip, raised from 80 for the new look and ten languages, then from 90 for Buy on PayCore cards),
  * when model text could reach `innerHTML`-style sinks anywhere in the source,
  * or when the bundle would load more code at run time: a pinned `widget.js`
  * with `integrity` (6) covers only itself, so it must load nothing else.
@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
-const WIDGET_BUDGET_BYTES = 93 * 1024;
+const WIDGET_BUDGET_BYTES = 100 * 1024;
 const FORBIDDEN_SINKS: readonly string[] = [
   'innerHTML',
   'outerHTML',

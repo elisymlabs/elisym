@@ -523,7 +523,7 @@ describe('a store node', () => {
         },
       },
     );
-    await settle();
+    await settleUntil(() => events.includes('stop:the ledger could not be saved: lease lost'));
     expect(fetched).toBe(true);
     expect(events).toContain('stop:the ledger could not be saved: lease lost');
     expect(vi.getTimerCount()).toBe(0);
@@ -723,7 +723,7 @@ describe('a store node end to end', () => {
     // Each wrap is taken once.
     expect(store.node.runtime.seenWraps.size).toBe(1);
     store.send(store.receipt);
-    await settle();
+    await settleUntil(() => store.state.orders[store.orderKey]?.deliveredAt !== undefined);
     const order = store.state.orders[store.orderKey];
     expect(order?.paid?.signature).toBe(SIG);
     expect(order?.webhook?.state).toBe('pending');
@@ -748,7 +748,11 @@ describe('a store node end to end', () => {
     expect(store.pool.live.map((subscription) => subscription.relays)).toEqual([[RELAY], [OLD]]);
     store.send(store.order, OLD);
     store.send(store.receipt, OLD);
-    await settle();
+    await settleUntil(
+      () =>
+        store.state.orders[store.orderKey]?.deliveredAt !== undefined &&
+        store.pool.publishedTo.length > 0,
+    );
     expect(store.state.orders[store.orderKey]?.deliveredAt).toBeDefined();
     expect(store.pool.publishedTo.length).toBeGreaterThan(0);
     expect(new Set(store.pool.publishedTo)).toEqual(new Set([RELAY]));
