@@ -1040,3 +1040,38 @@ describe('an uninstall racing a reinstall (deepsec, launch prep)', () => {
     expect(h.logs.some((line) => line.includes('during its uninstall: kept'))).toBe(true);
   });
 });
+
+describe('uninstall race, confirm round (launch prep)', () => {
+  it('still works off a genuine uninstall when the token turned dead meanwhile', async () => {
+    const h = await harness();
+    const { owner } = await h.onboard();
+    await h.webhook('app/uninstalled', {});
+    const transaction = h.db.transaction.bind(h.db);
+    let calls = 0;
+    vi.spyOn(h.db, 'transaction').mockImplementation(async (work) => {
+      calls += 1;
+      // The uninstall's own transaction comes after the probe's token read.
+      if (calls === 2) {
+        await h.db.query('update shopify_shops set needs_reauth = true where shop = $1', [SHOP]);
+      }
+      return transaction(work);
+    });
+    await h.app.runJobs();
+    expect((await h.shops.shop(SHOP))?.uninstalledAt).toBe(NOW);
+    expect((await h.directory.connector(owner))?.enabled).toBe(false);
+  });
+
+  it('exchanges a new token on open when Shopify refuses the stored one, so a quick reinstall is kept', async () => {
+    const h = await harness();
+    const { owner } = await h.onboard();
+    // Uninstalled and installed again before the webhook is worked off: the stored token is dead.
+    await h.webhook('app/uninstalled', {});
+    const exchanges = h.shop.exchanges;
+    await h.call('GET', '/v1/shopify/store');
+    expect(h.shop.exchanges).toBe(exchanges + 1);
+    await h.app.runJobs();
+    expect((await h.shops.shop(SHOP))?.uninstalledAt).toBeNull();
+    expect((await h.directory.connector(owner))?.enabled).toBe(true);
+    expect(h.logs.some((line) => line.includes('still installed: ignored'))).toBe(true);
+  });
+});

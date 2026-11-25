@@ -436,6 +436,11 @@ export class ShopDirectory {
     });
   }
 
+  /** Shopify refused the stored token: the next admin open exchanges a new one. */
+  async markReauth(shop: string): Promise<void> {
+    await this.db.query('update shopify_shops set needs_reauth = true where shop = $1', [shop]);
+  }
+
   /** A shop row's sealed access token, opened; undefined when there is none. */
   openAccessToken(shop: string, sealed: Uint8Array | null): string | undefined {
     return sealed === null ? undefined : this.vault.openText(sealed, shop, 'shopify-access');

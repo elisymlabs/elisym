@@ -288,6 +288,34 @@ export class ShopifyApp {
     return saved;
   }
 
+  /**
+   * An admin open of a linked shop (plan 3.7): the `askr.store` metafield is written when
+   * missing. Shopify refusing the stored token means the app was installed again since (an
+   * uninstall revoked it): the token is exchanged anew here, once, so the reinstall is known
+   * before its uninstall is worked off.
+   */
+  private async storeOpen(shop: ShopRecord, sessionToken: string): Promise<ShopRecord> {
+    if (!shop.onboarded || shop.owner === null) {
+      return shop;
+    }
+    const owner = shop.owner;
+    try {
+      await this.writeStoreMetafield(shop.shop, owner);
+      return shop;
+    } catch (error) {
+      if (!(error instanceof ShopifyRefused)) {
+        this.log(`metafield of ${shop.shop} not written: ${errorText(error)}`);
+        return shop;
+      }
+    }
+    await this.deps.shops.markReauth(shop.shop);
+    const renewed = await this.ensureTokens(shop.shop, sessionToken);
+    await this.writeStoreMetafield(shop.shop, owner).catch((error: unknown) =>
+      this.log(`metafield of ${shop.shop} not written: ${errorText(error)}`),
+    );
+    return renewed;
+  }
+
   /** Write the store's npub to the app installation's `askr.store` metafield when missing. */
   private async writeStoreMetafield(shop: string, owner: string): Promise<void> {
     const token = await this.token(shop);
@@ -377,12 +405,8 @@ export class ShopifyApp {
       }
       const shop = await this.ensureTokens(session.shop, sessionToken);
       if (route === 'GET /v1/shopify/store') {
-        if (shop.onboarded && shop.owner !== null) {
-          await this.writeStoreMetafield(shop.shop, shop.owner).catch((error: unknown) =>
-            this.log(`metafield of ${shop.shop} not written: ${errorText(error)}`),
-          );
-        }
-        return json(await this.storeView(shop), 200);
+        const current = await this.storeOpen(shop, sessionToken);
+        return json(await this.storeView(current), 200);
       }
       if (route === 'POST /v1/shopify/onboard/begin') {
         return await this.begin(request, url, shop, body);
@@ -810,7 +834,9 @@ export class ShopifyApp {
       const current = row.needs_reauth
         ? undefined
         : this.deps.shops.openAccessToken(shop, row.access_token);
-      if (current !== probe.token) {
+      // Only a usable new token means a reinstall: one turned dead meanwhile (needs_reauth) is
+      // the same uninstall.
+      if (current !== undefined && current !== probe.token) {
         this.log(`shop ${shop} installed the app again during its uninstall: kept`);
         return null;
       }
