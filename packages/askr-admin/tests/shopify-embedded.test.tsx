@@ -532,3 +532,17 @@ describe('embedded admin confirm round (askr-shopify phase 3)', () => {
     }
   });
 });
+
+describe('the embedded plan, a paused store (phase 4 review)', () => {
+  it('offers no Free start for a suspended store and says it is paused', async () => {
+    const server = fakeServer();
+    server.state.onboarded = true;
+    server.state.status = 'suspended';
+    server.state.tier = 'free';
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Plan: free'));
+    expect(text(container)).toContain('(paused)');
+    expect(text(container)).not.toContain('Start on Free');
+  });
+});

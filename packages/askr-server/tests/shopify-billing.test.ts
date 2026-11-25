@@ -1,6 +1,7 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runCli } from '../src/cli';
+import { CONFIG_NOT_LOADED, isShortRetryOutcome } from '../src/connectors/service';
 import { HOLDER, NOW, TIER } from './fixtures';
 import { BASE, SHOP, harness, nip98 } from './shopify-fixtures';
 
@@ -157,5 +158,44 @@ describe('the standalone admin and operator for a linked store (askr-shopify 3.6
       directory: h.directory,
     });
     expect(printed).not.toContain('Shopify');
+  });
+});
+
+describe('phase 4 review round', () => {
+  it('answers a Free choice another tab made meanwhile as already active', async () => {
+    const h = await harness();
+    const { owner } = await h.onboard();
+    const activate = h.directory.activateFree.bind(h.directory);
+    vi.spyOn(h.directory, 'activateFree').mockImplementationOnce(async (...args) => {
+      // The other tab wins first.
+      await activate(...args);
+      return activate(...args);
+    });
+    const late = await h.call('POST', '/v1/shopify/plan/free', { body: {} });
+    expect(late).toMatchObject({ status: 200, body: { activation: 'already_active' } });
+    expect(await h.directory.statusOf(owner)).toEqual({ status: 'active', tier: TIER.name });
+  });
+
+  it('short-retries only a Shopify app connector whose config was not loaded yet', () => {
+    const notLoaded = { status: 'error' as const, message: CONFIG_NOT_LOADED };
+    expect(isShortRetryOutcome({ via: 'shopify_app' }, notLoaded)).toBe(true);
+    expect(isShortRetryOutcome({}, notLoaded)).toBe(false);
+    expect(isShortRetryOutcome({ via: 'shopify_app' }, { status: 'error', message: 'boom' })).toBe(
+      false,
+    );
+    expect(
+      isShortRetryOutcome(
+        { via: 'shopify_app' },
+        { status: 'source_closed', url: 'https://x.example', reason: CONFIG_NOT_LOADED },
+      ),
+    ).toBe(false);
+  });
+
+  it('warns about a linked shop on activation only, never on suspend', async () => {
+    const h = await harness();
+    const { owner } = await h.onboard();
+    await runCli(['store', 'activate', owner, '--tier', TIER.name], { directory: h.directory });
+    const suspended = await runCli(['store', 'suspend', owner], { directory: h.directory });
+    expect(suspended).not.toContain('Shopify');
   });
 });

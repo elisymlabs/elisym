@@ -533,6 +533,18 @@ export class ShopifyApp {
       return json({ error: 'free_unavailable' }, 409);
     }
     if (outcome === null) {
+      // Changed meanwhile (another tab's Free, the operator): answered by its state now, as the
+      // standalone admin's choice is.
+      const current = await this.deps.directory.store(owner);
+      if (current?.status === 'active') {
+        return json({ ...(await this.storeView(shop)), activation: 'already_active' }, 200);
+      }
+      if (current?.status === 'suspended') {
+        return json({ error: 'not_pending' }, 409);
+      }
+      if (current?.tier !== undefined) {
+        return json({ error: 'operator_managed' }, 409);
+      }
       return json({ error: 'read_failed' }, 503);
     }
     this.log(

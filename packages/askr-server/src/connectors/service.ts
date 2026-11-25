@@ -63,6 +63,22 @@ export function shopIdentity(url: string): string | undefined {
 /** The refusal a sync gets before the store's config reached the worker's cache or the relay. */
 export const CONFIG_NOT_LOADED = 'The store config is not loaded yet';
 
+/**
+ * Whether a sync outcome is retried soon without counting as a failure (askr-shopify 3.6): only a
+ * Shopify app connector's sync that met its store config not loaded yet. Every other connector
+ * and outcome keeps today's backoff.
+ */
+export function isShortRetryOutcome(
+  connector: Pick<ConnectorRecord, 'via'>,
+  result: ConnectorSyncResult,
+): boolean {
+  return (
+    connector.via === 'shopify_app' &&
+    result.status === 'error' &&
+    result.message === CONFIG_NOT_LOADED
+  );
+}
+
 /** Why the store's config does not let this connector sync, or undefined when it does (1.4). */
 function configRefusal(
   config: StoreConfig | undefined,
@@ -127,10 +143,7 @@ export class ConnectorService {
       ...(deps.now ? { now: deps.now } : {}),
       // A Shopify app store's first sync often meets its config still on its way to the relay
       // (askr-shopify 3.6); every other connector keeps today's backoff.
-      isShortRetry: (connector, result) =>
-        connector.via === 'shopify_app' &&
-        result.status === 'error' &&
-        result.message === CONFIG_NOT_LOADED,
+      isShortRetry: isShortRetryOutcome,
       onError: (error) =>
         deps.log?.(`connector sync failed: ${error instanceof Error ? error.message : 'unknown'}`),
     });

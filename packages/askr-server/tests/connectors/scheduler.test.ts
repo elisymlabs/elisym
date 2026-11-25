@@ -443,6 +443,22 @@ describe('first imports and short retries (askr-shopify 3.6)', () => {
     expect(saved.at(-1)).toEqual({ status: 'error', at: 420_000, nextRunAt: 420_000 + 240_000 });
   });
 
+  it('gives short retries again after a success', async () => {
+    const outcomes = [...Array.from({ length: 11 }, () => NOT_LOADED), OK, NOT_LOADED];
+    const { clock, saved, instance } = scheduler(
+      [{ storeId: 'a', intervalMs: 60_000, runFirst: true }],
+      outcomes,
+    );
+    await instance.start();
+    // Ten short retries, one backoff (120 s), then the success.
+    await clock.advance(10 * 30_000 + 120_000);
+    expect(saved.at(-1)?.status).toBe('ok');
+    await clock.advance(60_000);
+    const last = saved.at(-1);
+    expect(last?.status).toBe('error');
+    expect((last?.nextRunAt ?? 0) - (last?.at ?? 0)).toBe(30_000);
+  });
+
   it('keeps the usual backoff for an outcome that is not a short retry', async () => {
     const { clock, saved, instance } = scheduler(
       [{ storeId: 'a', intervalMs: 60_000, runFirst: true }],
