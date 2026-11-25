@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    # commerce-p*: the stacked commerce PRs target each other; comcore: the Askr stack.
-    branches: [main, evm, 'commerce-p*', comcore]
+    # commerce-p*: the stacked commerce PRs target each other; comcore: the Askr stack;
+    # paycore-server: the PayCore server stack.
+    branches: [main, evm, 'commerce-p*', comcore, paycore-server]
 
 concurrency:
   group: ci-${{ github.ref }}
