@@ -3,6 +3,7 @@ import { BillingService, createStripeWebhook } from '../billing/service';
 import type { StripeGateway } from '../billing/stripe';
 import type { BillingSecrets } from '../config';
 import type { Db } from '../db/db';
+import { SHOPIFY_PREFIX } from '../shopify/app';
 import type { GatewayRequest } from './gateway';
 import { createServerLlmsTxt } from './server-llms';
 
@@ -13,6 +14,11 @@ export interface RouteHandlers {
   adminPages?: ((input: GatewayRequest) => Response | undefined) | undefined;
   admin: (input: GatewayRequest) => Promise<Response | undefined>;
   storeDocs: (input: GatewayRequest) => Promise<Response | undefined>;
+  /**
+   * The Shopify app's routes (`/v1/shopify/`, askr-shopify 3); unset when the app is off here,
+   * and then every such path answers 404.
+   */
+  shopify?: ((input: GatewayRequest) => Promise<Response | undefined>) | undefined;
   /** Stripe's webhook (`POST /v1/stripe/webhook`); undefined for other paths. */
   stripeWebhook?: ((request: Request) => Promise<Response | undefined>) | undefined;
   gateway: (input: GatewayRequest) => Promise<Response>;
@@ -23,15 +29,32 @@ export interface RouteHandlers {
  * `/llms.txt`, the admin API (billing's checkout and portal included), the public store files,
  * Stripe's webhook, and the gateway for the rest.
  */
+/** The Shopify app's paths: its API and webhooks, and its embedded admin page. */
+function isShopifyPath(path: string): boolean {
+  return path.startsWith(SHOPIFY_PREFIX) || path === '/shopify' || path.startsWith('/shopify/');
+}
+
 export function composeHandler(
   handlers: RouteHandlers,
 ): (input: GatewayRequest) => Promise<Response> {
   // A fixed file pointing agents to the store files and the docs.
   const serverLlmsTxt = createServerLlmsTxt(handlers.publicBase);
+  const shopify =
+    handlers.shopify ??
+    ((input: GatewayRequest) =>
+      Promise.resolve(
+        isShopifyPath(new URL(input.request.url).pathname)
+          ? new Response(JSON.stringify({ error: 'not_found' }), {
+              status: 404,
+              headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+            })
+          : undefined,
+      ));
   return async (input) =>
     handlers.adminPages?.(input) ??
     serverLlmsTxt(input) ??
     (await handlers.admin(input)) ??
+    (await shopify(input)) ??
     (await handlers.storeDocs(input)) ??
     (await handlers.stripeWebhook?.(input.request)) ??
     handlers.gateway(input);
@@ -47,6 +70,7 @@ export interface RoutesDeps extends Pick<
   /** The Stripe client for the secret key (the real one, or a test double). */
   stripeFor: (secretKey: string) => StripeGateway;
   adminPages?: (input: GatewayRequest) => Response | undefined;
+  shopify?: (input: GatewayRequest) => Promise<Response | undefined>;
   storeDocs: (input: GatewayRequest) => Promise<Response | undefined>;
   gateway: (input: GatewayRequest) => Promise<Response>;
   now?: () => number;
@@ -93,6 +117,7 @@ export function createRoutes(deps: RoutesDeps): {
     adminPages: deps.adminPages,
     admin,
     storeDocs: deps.storeDocs,
+    shopify: deps.shopify,
     stripeWebhook: createStripeWebhook(billing),
     gateway: deps.gateway,
   });

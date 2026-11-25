@@ -230,9 +230,20 @@ export async function runCli(args: readonly string[], deps: CliDeps): Promise<st
       throw new Error('The store changed meanwhile; try again');
     }
     const done = `${nip19.npubEncode(owner)} is ${status}`;
-    return billed
-      ? `${done}\nwarning: this store's plan was paid through Stripe; with --tier the operator manages it now, and billing no longer changes it (if its subscription is still live, Stripe keeps charging it until you cancel it there)`
-      : done;
+    const warnings = [
+      ...(billed
+        ? [
+            "warning: this store's plan was paid through Stripe; with --tier the operator manages it now, and billing no longer changes it (if its subscription is still live, Stripe keeps charging it until you cancel it there)",
+          ]
+        : []),
+      // A linked store is billed through Shopify (askr-shopify 3.6): the operator's tier wins.
+      ...(command === 'activate' && (await directory.shopifyHold(owner)).linked
+        ? [
+            'warning: this store is linked to a Shopify shop; with an operator tier the Shopify app no longer changes its plan',
+          ]
+        : []),
+    ];
+    return [done, ...warnings].join('\n');
   }
   if (group === 'tier' && command === 'list' && subject === undefined) {
     const tiers = await directory.listTiers();

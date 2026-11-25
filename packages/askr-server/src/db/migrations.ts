@@ -375,7 +375,63 @@ alter table billing_subscriptions add column billing_cycle_anchor bigint;
 `,
   },
   {
-    id: '0013_buy_clicks',
+    id: '0013_shopify',
+    sql: `
+-- The Shopify app (askr-shopify plan 3.1). Every column is null or false for a store without a
+-- linked shop, so nothing changes for one.
+-- The config delegate D: its key (sealed like the catalog key, context = owner), and a D' minted
+-- for a give-back until the owner's grant promotes it. delegate_active: D is the owner's active
+-- delegate, from onboarding until the owner revokes it.
+alter table stores add column config_delegate text unique;
+alter table stores add column config_delegate_secret bytea;
+alter table stores add column pending_delegate text unique;
+alter table stores add column pending_delegate_secret bytea;
+alter table stores add column delegate_active boolean not null default false;
+-- Set while a Shopify onboarding is unfinished (unix seconds it expires at): such a store is
+-- refused by every admin route and deleted once expired.
+alter table stores add column shopify_onboarding_until bigint;
+alter table stores drop constraint stores_plan_source_check;
+alter table stores add constraint stores_plan_source_check
+  check (plan_source in ('operator', 'free', 'billing', 'shopify'));
+
+-- One row per shop that installed the app. Tokens sealed with the shop as context.
+create table shopify_shops (
+  shop text primary key,
+  owner text unique references stores (owner) on delete set null on update cascade,
+  onboarded boolean not null default false,
+  access_token bytea,
+  refresh_token bytea,
+  token_expires_at bigint,
+  needs_reauth boolean not null default false,
+  needs_relink boolean not null default false,
+  scopes text,
+  shop_id text,
+  primary_origin text,
+  installed_at bigint,
+  uninstalled_at bigint
+);
+
+-- Webhook deliveries recorded on receipt (deduped by Shopify's webhook id) and worked off later.
+create table shopify_webhooks (
+  id text primary key,
+  shop text not null,
+  topic text not null,
+  payload jsonb not null,
+  received_at bigint not null,
+  -- Until when one instance works on it (unix seconds); another takes it over after that.
+  claimed_until bigint not null default 0,
+  done_at bigint
+);
+create index shopify_webhooks_open on shopify_webhooks (received_at) where done_at is null;
+
+-- A connector the Shopify app manages (read through the Admin API, not public pages), and a
+-- request to run it at once (the first import after activation).
+alter table connectors add column via text check (via in ('shopify_app'));
+alter table connectors add column run_requested boolean not null default false;
+`,
+  },
+  {
+    id: '0014_buy_clicks',
     sql: `
 -- Presses of a PayCore card's Buy button and the payments its checkout reported (advisory, as
 -- the browser reports them: never billing), per listing and per UTC day.

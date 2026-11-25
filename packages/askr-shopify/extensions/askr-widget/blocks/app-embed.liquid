@@ -1,0 +1,16 @@
+{% comment %}
+  Askr's assistant on every storefront page (askr-shopify plan 4). The store id is the app
+  installation metafield `askr.store` the server writes at setup; without it nothing renders.
+{% endcomment %}
+{%- assign askr_store = app.metafields.askr.store.value -%}
+{%- if askr_store != blank -%}
+  <script src="https://app.askr.elisym.network/widget.js" data-store="{{ askr_store | escape }}" async></script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Askr assistant",
+  "target": "body",
+  "settings": []
+}
+{% endschema %}

@@ -338,3 +338,6 @@ Isora
 Adeje
 llmstxt
 hashtextextended
+myshopify
+metafields
+Metafields
