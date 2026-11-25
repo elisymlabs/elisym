@@ -11,7 +11,7 @@ import {
 } from './constants';
 import type { FetchGuardDeps } from './fetch-guard';
 import { PageCache, RequestBudgetError, ShopHttp, ShopRateLimiter } from './http';
-import { type ConnectorSyncResult, syncConnector } from './runner';
+import { type ConnectorSyncResult, type ShopifyAppSource, syncConnector } from './runner';
 import { ConnectorScheduler, type SchedulerTimers } from './scheduler';
 import { type VerificationFailure, verifyOrigin } from './verification';
 
@@ -34,6 +34,12 @@ export interface ConnectorServiceDeps {
   /** How long a proof's page read answers later proofs (default `PROOF_PAGE_CACHE_MS`). */
   proofPageCacheMs?: number;
   fetch?: FetchGuardDeps;
+  /**
+   * The Shopify app on this instance (askr-shopify 3.5): the Admin API reads of a store's
+   * installed shop, or why there are none. Unset: the app is off here, and connectors it
+   * manages are neither scheduled nor synced.
+   */
+  shopifyApp?: { sourceFor(owner: string): Promise<ShopifyAppSource | string> };
   timers?: SchedulerTimers;
   now?: () => number;
   pace?: number;
@@ -69,7 +75,16 @@ function configRefusal(
   if (config.catalogKey !== store.catalogKey) {
     return "The store config does not name the server's catalog key";
   }
-  // The widget adds to the cart of the shop the config names (6, 7.4): it must be this one.
+  // The widget adds to the cart of the shop the config names (6, 7.4): it must be this one. A
+  // config the Shopify app's delegate signed follows the shop's domain on its own; it may lag the
+  // connector until the relay has it (askr-shopify 3.5), and the shop's token proves the shop.
+  if (
+    connector.via === 'shopify_app' &&
+    config.signer !== undefined &&
+    config.signer !== config.owner
+  ) {
+    return undefined;
+  }
   const shopUrl = config.source.shopUrl;
   if (connector.platform !== 'google' && shopUrl === undefined) {
     return 'The store config does not name the shop URL: sign the config again with the shop URL';
@@ -100,6 +115,7 @@ export class ConnectorService {
         deps.directory.scheduledConnectors(
           deps.holder,
           Math.floor((deps.now?.() ?? Date.now()) / 1000),
+          deps.shopifyApp !== undefined,
         ),
       sync: (connector) => this.syncScheduled(connector),
       saveStatus: (connector, result, at, nextRunAt) =>
@@ -180,6 +196,17 @@ export class ConnectorService {
     if (refusal !== undefined || config === undefined) {
       return { status: 'error', message: refusal ?? 'The store config is not loaded yet' };
     }
+    let shopifyApp: ShopifyAppSource | undefined;
+    if (connector.via === 'shopify_app') {
+      const source =
+        this.deps.shopifyApp === undefined
+          ? 'The Shopify app is not on here'
+          : await this.deps.shopifyApp.sourceFor(store.owner);
+      if (typeof source === 'string') {
+        return { status: 'error', message: source };
+      }
+      shopifyApp = source;
+    }
     return syncConnector({
       platform: connector.platform,
       url: connector.url,
@@ -192,6 +219,7 @@ export class ConnectorService {
       maxItems: options.maxProducts,
       importPolicies: connector.importPolicies,
       ...(connector.currency === undefined ? {} : { currency: connector.currency }),
+      ...(shopifyApp === undefined ? {} : { shopifyApp }),
       ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}),
       ...(this.deps.pace === undefined ? {} : { pace: this.deps.pace }),
       ...this.deadline(options.dryRun),
@@ -222,6 +250,11 @@ export class ConnectorService {
     const renewal = setInterval(() => {
       this.deps.directory
         .renewCatalogSync(store.owner, holder, nowSecs(), SYNC_HOLD_SECS)
+        .then((held) => {
+          if (!held) {
+            this.deps.log?.(`catalog sync guard of ${store.owner} was lost while its sync ran`);
+          }
+        })
         .catch((error: unknown) =>
           this.deps.log?.(
             `connector sync guard renewal failed: ${error instanceof Error ? error.message : 'unknown'}`,

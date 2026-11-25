@@ -16,6 +16,7 @@ import {
   fetchShopifyPolicies,
   fetchShopifyProducts,
   type ImportedPolicy,
+  type ShopifyProduct,
   mapShopifyProduct,
 } from './shopify';
 import { type VerificationFailure, verifyOrigins } from './verification';
@@ -79,6 +80,11 @@ export interface ConnectorSyncOptions {
   currency?: string;
   /** Shopify: import the refund/shipping/privacy/terms pages as policies (default true). */
   importPolicies?: boolean;
+  /**
+   * A shop the Shopify app reads through the Admin API (askr-shopify 3.5) instead of its public
+   * pages: no site proof (the shop's token proves the shop), the same mapping and caps.
+   */
+  shopifyApp?: ShopifyAppSource;
   dryRun?: boolean;
   /** The tier's products indexed at most (9): a larger catalog is not synced. */
   maxItems?: number;
@@ -86,6 +92,12 @@ export interface ConnectorSyncOptions {
   now?: number;
   pace?: number;
   sleep?: (ms: number) => Promise<void>;
+}
+
+/** The Admin API reads of a shop the Shopify app manages (askr-shopify 3.5). */
+export interface ShopifyAppSource {
+  readProducts(signal: AbortSignal): Promise<{ products: ShopifyProduct[]; malformed: number }>;
+  readPolicies(): Promise<ImportedPolicy[]>;
 }
 
 interface FetchedCatalog {
@@ -240,7 +252,19 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
     const configured = options.origins.map((origin) => originOf(origin) ?? origin);
     const linkConfigured = (options.linkOrigins ?? []).map((origin) => originOf(origin) ?? origin);
     let catalog: FetchedCatalog;
-    if (options.platform === 'google') {
+    const app = options.shopifyApp;
+    if (app !== undefined) {
+      if (options.currency === undefined) {
+        throw new Error('The shop currency is unknown');
+      }
+      const { products, malformed } = await app.readProducts(deadline.signal);
+      const shop = { origin: url.origin, currency: options.currency };
+      catalog = {
+        drafts: products.map((product) => mapShopifyProduct(product, shop)),
+        skipped: malformedSkips(malformed),
+        lossy: new Set(),
+      };
+    } else if (options.platform === 'google') {
       catalog = await fetchGoogle(http, url.toString(), nowSecs * 1000);
     } else {
       // Shopify/Woo: the shop's own origin, one of the config's `origin` entries (the widget
@@ -287,7 +311,10 @@ export async function syncConnector(options: ConnectorSyncOptions): Promise<Conn
     let policyError: string | undefined;
     if (importPolicies) {
       try {
-        policies = await fetchShopifyPolicies(http, url.origin);
+        policies =
+          app === undefined
+            ? await fetchShopifyPolicies(http, url.origin)
+            : await app.readPolicies();
       } catch (error) {
         policyError = errorMessage(error);
       }

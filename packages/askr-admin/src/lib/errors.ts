@@ -41,6 +41,12 @@ const CODES: Readonly<Record<string, string>> = {
   proof_running:
     "Your store's site is being checked for another request right now. Retry in a minute.",
   moved_meanwhile: 'Your store was moved by another request while your site was checked. Retry.',
+  shopify_onboarding:
+    'This store is still being set up in the Askr app in Shopify. Finish the setup there first.',
+  shopify_managed:
+    'This product source is managed by the Askr app in Shopify and follows your shop there.',
+  shopify_linked:
+    'This store is linked to a Shopify shop, so its key cannot be replaced from here. Manage it from the Askr app in Shopify.',
   not_found: 'The server does not know this action.',
   bad_request: 'The server could not read the request. Check the fields and retry.',
   bad_email: 'That email address was not accepted. Enter one like you@yourshop.com.',

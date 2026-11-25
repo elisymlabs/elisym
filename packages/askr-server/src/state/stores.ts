@@ -2,6 +2,7 @@ import {
   KIND_CATALOG_AUTH,
   type ConnectorPlatform,
   KIND_CONFIG,
+  KIND_CONFIG_DELEGATION,
   type SyncDiff,
   parseConfig,
 } from '@elisym/askr';
@@ -34,6 +35,49 @@ export interface ActivityDay {
 
 /** Tables keyed by a store's owner without a foreign key: moved along with it (K21). */
 const OWNER_TABLES = ['sessions', 'store_days', 'reservations', 'clicks', 'store_totals'] as const;
+
+/**
+ * Delete a store with the rows keyed by its owner that have no foreign key (askr-shopify 3.1);
+ * the rest go by cascade. Run inside the caller's transaction.
+ */
+export async function deleteStoreRows(tx: Queryable, owner: string): Promise<void> {
+  for (const table of OWNER_TABLES) {
+    await tx.query(`delete from ${table} where owner = $1`, [owner]);
+  }
+  await tx.query('delete from stores where owner = $1', [owner]);
+}
+
+/**
+ * Insert a new `pending` store for O with a fresh A and server K (7.3); false (nothing inserted)
+ * when O has one.
+ * `onboardingUntil` marks an unfinished Shopify onboarding (askr-shopify 3.1).
+ */
+export async function insertStore(
+  tx: Queryable,
+  vault: KeyVault,
+  owner: string,
+  now: number,
+  onboardingUntil?: number,
+): Promise<boolean> {
+  const assistantSecretKey = generateSecretKey();
+  const catalogSecretKey = generateSecretKey();
+  const inserted = await tx.query(
+    `insert into stores (owner, status, assistant, assistant_key, catalog_key, catalog_key_secret,
+       created_at, shopify_onboarding_until)
+     values ($1, 'pending', $2, $3, $4, $5, $6, $7)
+     on conflict (owner) do nothing returning 1`,
+    [
+      owner,
+      getPublicKey(assistantSecretKey),
+      vault.seal(assistantSecretKey, owner, 'assistant'),
+      getPublicKey(catalogSecretKey),
+      vault.seal(catalogSecretKey, owner, 'catalog'),
+      now,
+      onboardingUntil ?? null,
+    ],
+  );
+  return inserted.length > 0;
+}
 
 export {
   type HeldOrigin,
@@ -131,10 +175,12 @@ function dTagOf(alias: string): string {
  * key them the same way (`addressOf`).
  */
 function replaceKeyOf(alias: string): string {
+  // The signer is part of a config's key: an owner's and a delegate's config of the same `d` are
+  // two addresses (askr-shopify 2). A store with one signer keys exactly as before.
   return `case when (${alias}.event->>'kind')::int = ${KIND_DELETION}
     then (select string_agg(tag->>1, ' ' order by tag->>1)
           from jsonb_array_elements(${alias}.event->'tags') tag where tag->>0 = 'a')
-    else ${dTagOf(alias)} end`;
+    else coalesce(${alias}.event->>'pubkey', '') || ':' || ${dTagOf(alias)} end`;
 }
 
 /**
@@ -149,7 +195,7 @@ function replaceKeyOf(alias: string): string {
 const PRUNE_REPLACED_SQL = `
   delete from store_events e
   where e.owner = $1
-    and (e.event->>'kind')::int in (${KIND_CONFIG}, ${KIND_CATALOG_AUTH}, ${KIND_DELETION})
+    and (e.event->>'kind')::int in (${KIND_CONFIG}, ${KIND_CATALOG_AUTH}, ${KIND_CONFIG_DELEGATION}, ${KIND_DELETION})
     and exists (
       select 1 from store_events n
       where n.owner = e.owner and n.id <> e.id
@@ -183,9 +229,14 @@ export interface ConnectorSettings {
   importPolicies: boolean;
 }
 
+/** Who manages a connector: the Shopify app (askr-shopify 3.5), or the merchant (absent). */
+export type ConnectorVia = 'shopify_app';
+
 export interface ConnectorRecord extends ConnectorSettings {
   owner: string;
   enabled: boolean;
+  /** Set for a connector the Shopify app manages: read through the Admin API. */
+  via?: ConnectorVia;
   lastStatus: unknown;
   /** Unix ms. */
   lastRunAt: number | null;
@@ -205,6 +256,7 @@ interface ConnectorRow extends Record<string, unknown> {
   currency: string | null;
   import_policies: boolean;
   enabled: boolean;
+  via: ConnectorVia | null;
   last_status: unknown;
   last_run_at: number | null;
   next_run_at: number | null;
@@ -218,6 +270,7 @@ function connectorOf(row: ConnectorRow): ConnectorRecord {
     ...(row.currency === null ? {} : { currency: row.currency }),
     importPolicies: row.import_policies,
     enabled: row.enabled,
+    ...(row.via === null || row.via === undefined ? {} : { via: row.via }),
     lastStatus: row.last_status,
     lastRunAt: row.last_run_at,
     nextRunAt: row.next_run_at,
@@ -288,21 +341,7 @@ export class StoreDirectory {
     if (existing) {
       return existing;
     }
-    const assistantSecretKey = generateSecretKey();
-    const catalogSecretKey = generateSecretKey();
-    await this.db.query(
-      `insert into stores (owner, status, assistant, assistant_key, catalog_key, catalog_key_secret, created_at)
-       values ($1, 'pending', $2, $3, $4, $5, $6)
-       on conflict (owner) do nothing`,
-      [
-        owner,
-        getPublicKey(assistantSecretKey),
-        this.vault.seal(assistantSecretKey, owner, 'assistant'),
-        getPublicKey(catalogSecretKey),
-        this.vault.seal(catalogSecretKey, owner, 'catalog'),
-        now,
-      ],
-    );
+    await insertStore(this.db, this.vault, owner, now);
     const created = await this.store(owner);
     if (!created) {
       throw new Error('store was not created');
@@ -410,7 +449,7 @@ export class StoreDirectory {
       `select s.owner, s.status, s.tier, s.contact_email as email,
          coalesce((select sum(a.answers) from activity_days a
                    where a.owner = s.owner and a.day > $1), 0)::int4 as answers
-       from stores s order by s.created_at`,
+       from stores s where s.shopify_onboarding_until is null order by s.created_at`,
       [utcDay(now) - ACTIVITY_DAYS],
     );
   }
@@ -434,6 +473,7 @@ export class StoreDirectory {
         `update stores set status = $2, tier = coalesce($3, tier),
            plan_source = case when $3::text is null then plan_source else 'operator' end
          where owner = $1 and ($2 = 'pending' or coalesce($3, tier) is not null)
+           and shopify_onboarding_until is null
          returning 1`,
         [owner, status, tierName ?? null],
       );
@@ -488,6 +528,34 @@ export class StoreDirectory {
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, owner]);
       return 'activated';
     });
+  }
+
+  /**
+   * Every stored config, authorization and deletion of a store, published or not, any signer:
+   * what the Shopify app decides the current config and D's standing from (askr-shopify 3.4).
+   */
+  async authorityEvents(owner: string): Promise<NostrEvent[]> {
+    const rows = await this.db.query<{ event: NostrEvent }>(
+      `select event from store_events where owner = $1
+         and (event->>'kind')::int in ($2, $3, $4, $5)`,
+      [owner, KIND_CONFIG, KIND_CATALOG_AUTH, KIND_CONFIG_DELEGATION, KIND_DELETION],
+    );
+    return rows.map((row) => row.event);
+  }
+
+  /**
+   * A store's Shopify standing (askr-shopify 3.1, 1.5): `onboarding` while its Shopify
+   * onboarding is unfinished (the admin API refuses it), `linked` while a shop is linked (recover
+   * refuses it). Both false for every other store, and for no store.
+   */
+  async shopifyHold(owner: string): Promise<{ onboarding: boolean; linked: boolean }> {
+    const [row] = await this.db.query<{ onboarding: boolean; linked: boolean }>(
+      `select (s.shopify_onboarding_until is not null) as onboarding,
+         exists (select 1 from shopify_shops sh where sh.owner = s.owner) as linked
+       from stores s where s.owner = $1`,
+      [owner],
+    );
+    return row ?? { onboarding: false, linked: false };
   }
 
   /** Whether the server holds a config `owner` signed that parses (it lists at least one origin). */
@@ -582,7 +650,11 @@ export class StoreDirectory {
           'insert into store_events (id, owner, event) values ($1, $2, ($3::text)::jsonb)',
           [event.id, owner, JSON.stringify(event)],
         );
-        const origins = event.kind === KIND_CONFIG ? parseConfig(event)?.origins : undefined;
+        // Only the owner's own configs prove a site: a delegate's never do (askr-shopify 1.5).
+        const origins =
+          event.kind === KIND_CONFIG && event.pubkey === owner
+            ? parseConfig(event)?.origins
+            : undefined;
         if (origins !== undefined && origins.length > 0) {
           // Dated by the server's clock, never the event's: a backdated config proves nothing.
           await noteOriginsLocked(tx, owner, origins, nowSecs());
@@ -752,9 +824,13 @@ export class StoreDirectory {
       await tx.query('update catalog_syncs set holder = null, expires_at = 0 where owner = $1', [
         from,
       ]);
+      // A delegate is sealed under the old owner and named by its grants: the move drops it and
+      // the shop has to be linked again (askr-shopify 3.1).
+      await tx.query('update shopify_shops set needs_relink = true where owner = $1', [from]);
       await tx.query(
         `update stores set owner = $2, assistant_key = $3, catalog_key_secret = $4,
-           next_assistant_key = $5
+           next_assistant_key = $5, config_delegate = null, config_delegate_secret = null,
+           pending_delegate = null, pending_delegate_secret = null, delegate_active = false
          where owner = $1`,
         [
           from,
@@ -1197,15 +1273,22 @@ export class StoreDirectory {
    * interval and product cap (K19): one instance syncs a store, the one
    * whose worker has its config.
    */
-  async scheduledConnectors(holder: string, now: number): Promise<ScheduledConnector[]> {
+  async scheduledConnectors(
+    holder: string,
+    now: number,
+    shopifyApp = false,
+  ): Promise<ScheduledConnector[]> {
+    // A connector the Shopify app manages is synced only where the app is on (askr-shopify 3.5):
+    // elsewhere it would be read as a public shop.
     const rows = await this.db.query<
       ConnectorRow & { sync_interval_minutes: number; max_products: number }
     >(
       `select c.*, t.sync_interval_minutes, t.max_products from connectors c
        join stores s on s.owner = c.owner join tiers t on t.name = s.tier
        join leases l on l.owner = c.owner
-       where c.enabled and s.status = 'active' and l.holder = $1 and l.expires_at > $2`,
-      [holder, now],
+       where c.enabled and s.status = 'active' and l.holder = $1 and l.expires_at > $2
+         and (c.via is null or $3::boolean)`,
+      [holder, now, shopifyApp],
     );
     return rows.map((row) => ({
       ...connectorOf(row),

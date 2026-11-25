@@ -336,3 +336,6 @@ Calle
 Isora
 Adeje
 llmstxt
+myshopify
+metafields
+Metafields

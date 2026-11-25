@@ -377,6 +377,15 @@ export function createAdminApi(
     if ((await deps.directory.statusOf(from)) === undefined) {
       return json({ error: 'no_store' }, 404);
     }
+    // A store linked to a Shopify shop is re-keyed only through its owner key, and one still
+    // onboarding is nobody's yet (askr-shopify 1.5, 3.1).
+    const hold = await deps.directory.shopifyHold(from);
+    if (hold.onboarding) {
+      return json({ error: 'shopify_onboarding' }, 409);
+    }
+    if (hold.linked) {
+      return json({ error: 'shopify_linked' }, 409);
+    }
     let settings: { config: StoreConfig; event: NostrEvent } | undefined;
     try {
       settings = await newestConfigOf(from);
@@ -734,6 +743,11 @@ export function createAdminApi(
     }
     const owner = auth.pubkey;
     const route = `${request.method} ${url.pathname}`;
+    // A store in an unfinished Shopify onboarding is refused everywhere here, so nothing is
+    // stored, chosen or activated for it before the app finishes (askr-shopify 3.1).
+    if ((await deps.directory.shopifyHold(owner)).onboarding) {
+      return json({ error: 'shopify_onboarding' }, 409);
+    }
     if (route === 'POST /v1/admin/store/recover') {
       return recover(owner, body, clientAddress);
     }
@@ -837,6 +851,14 @@ export function createAdminApi(
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);
+    }
+    // A connector the Shopify app manages follows the shop: it goes with the app, never by hand
+    // (askr-shopify 5.3).
+    const managed =
+      (route === 'PUT /v1/admin/connector' || route === 'DELETE /v1/admin/connector') &&
+      (await deps.directory.connector(owner))?.via === 'shopify_app';
+    if (managed) {
+      return json({ error: 'shopify_managed' }, 409);
     }
     if (route === 'PUT /v1/admin/connector') {
       const parsed = ConnectorRequestSchema.safeParse(parseJson(body));
