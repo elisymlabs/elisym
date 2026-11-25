@@ -29,7 +29,9 @@ import { Shell } from '../src/components/Shell';
 import { StoreFields } from '../src/components/StoreFields';
 import type { SessionDeps } from '../src/lib/deps';
 import { cspSources } from '../src/lib/embed';
+import { FORM_SOURCE_LABELS } from '../src/lib/labels';
 import {
+  CHECKOUT_ORIGIN,
   CHECKOUT_V4_INTEGRITY,
   CHECKOUT_V4_SNIPPET,
   CHECKOUT_V4_SRC,
@@ -657,6 +659,32 @@ describe('the plan count of a PayCore store', () => {
 
 describe('the embed code of a PayCore store', () => {
   const PACKAGES = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
+  it('is the code the docs show, with the CSP rows the Embed tab lists', () => {
+    const embed = readFileSync(join(PACKAGES, 'docs', 'pages', 'askr', 'embed.mdx'), 'utf8');
+    expect(embed).toContain(CHECKOUT_V4_SNIPPET);
+    for (const source of cspSources(true).filter((row) => row.sources.includes(CHECKOUT_ORIGIN))) {
+      expect(embed).toMatch(
+        new RegExp(`\\| \`${source.directive}\` +\\| \`${CHECKOUT_ORIGIN}\` +\\|`),
+      );
+    }
+  });
+
+  it('is described in the admin guide with the labels the admin shows', () => {
+    const guide = readFileSync(join(PACKAGES, 'docs', 'pages', 'askr', 'admin.mdx'), 'utf8');
+    for (const label of [
+      FORM_SOURCE_LABELS.paycore,
+      'PayCore store - authorization inactive',
+      'Sell from this store',
+      'your PayCore store',
+      'your PayCore store (authorization inactive)',
+    ]) {
+      expect(guide, label).toContain(label);
+    }
+    // The guide's own links to the Embed tab's Buy button section.
+    expect(guide).toContain('\n### Buy button\n');
+    expect(guide).toContain('(#buy-button)');
+  });
 
   it('pins the released checkout v4 loader', () => {
     const sri = readFileSync(join(PACKAGES, 'checkout', 'src', 'embed', 'v4.sri'), 'utf8').trim();

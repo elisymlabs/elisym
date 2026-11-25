@@ -54,6 +54,8 @@ const STATUS_BADGE: Readonly<Record<StoreStatus, { label: string; tone: string }
 
 export function Overview({ view, config, configFromServer, onOpenBilling, catalogReader }: Props) {
   const { tier, usage, events } = view;
+  // A product pressed only for Buy (counted for the operator) has no opens or cart presses to show.
+  const shownClicks = usage.clicks.filter((click) => click.count + click.carts > 0);
   const badge = STATUS_BADGE[view.status];
   // A pending store with no plan chooses one in Billing; one with a plan is managed by us.
   const choosing = view.status === 'pending' && tier === null;
@@ -168,7 +170,7 @@ export function Overview({ view, config, configFromServer, onOpenBilling, catalo
         description="Product pages opened and add to cart presses from the chat's cards. Advisory: a click is counted as the visitor's browser reports it."
         flush
       >
-        {usage.clicks.length === 0 ? (
+        {shownClicks.length === 0 ? (
           <p className="text-14 text-text-2 px-20 py-16">No clicks yet.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -181,7 +183,7 @@ export function Overview({ view, config, configFromServer, onOpenBilling, catalo
                 </tr>
               </thead>
               <tbody>
-                {usage.clicks.slice(0, TOP_CLICKS).map((click) => (
+                {shownClicks.slice(0, TOP_CLICKS).map((click) => (
                   <tr key={click.address}>
                     <td className="text-13 max-w-320 truncate font-mono">
                       {dOfAddress(click.address)}

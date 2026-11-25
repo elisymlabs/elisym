@@ -98,7 +98,7 @@ export function renderLlmsTxt(): string {
     '',
     "## How a shopper's agent reads a store",
     '',
-    `Every active store has two public, read-only files on the ${PRODUCT_NAME} server, with its Store ID (its npub) in place of \`npub1...\`. Reading them opens no chat and costs the store none of its chat budget. Nothing is bought there: purchases happen on the store's own product pages.`,
+    `Every active store has two public, read-only files on the ${PRODUCT_NAME} server, with its Store ID (its npub) in place of \`npub1...\`. Reading them opens no chat and costs the store none of its chat budget. Nothing is bought there: purchases happen on the store's own site.`,
     '',
     `- \`${STORE_FILES_BASE}/llms.txt\`: the store's products (title, price, link to its page) and its policies, as Markdown`,
     `- \`${STORE_FILES_BASE}/catalog.json\`: the same store, policies and products as JSON, for programs`,

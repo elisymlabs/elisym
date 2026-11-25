@@ -187,14 +187,33 @@ describe('the snippets', () => {
 });
 
 describe('the copy', () => {
-  it('offers the three product sources the admin has, and no PayCore store', async () => {
+  it('offers the four product sources the admin has, the PayCore store among them', async () => {
     const page = await render(<App />);
-    expect(page.querySelectorAll('#sources h3')).toHaveLength(3);
-    expect(page.textContent).not.toMatch(/pay ?core/i);
-    for (const file of filesIn(join(PACKAGE, 'src')).filter((path) => /\.tsx?$/.test(path))) {
-      expect(readFileSync(file, 'utf8'), file).not.toMatch(/pay ?core/i);
+    const sources = [...page.querySelectorAll('#sources h3')].map((title) => title.textContent);
+    expect(sources).toEqual([
+      'Your shop, connected',
+      'The admin',
+      'Your code or your agent',
+      'Your PayCore store',
+    ]);
+    expect(docsPage('overview')).toContain('## Sell from your PayCore store');
+  });
+
+  it('spells PayCore as one word, in the page, every source file and the Askr docs', async () => {
+    const page = await render(<App />);
+    const docs = readdirSync(join(PACKAGES, 'docs/pages/askr')).map((name) =>
+      join(PACKAGES, 'docs/pages/askr', name),
+    );
+    const sources = filesIn(join(PACKAGE, 'src')).filter((path) => /\.tsx?$/.test(path));
+    const texts = [
+      ['page', page.textContent ?? ''],
+      ...[...sources, ...docs].map((file) => [file, readFileSync(file, 'utf8')]),
+    ];
+    for (const [where, text] of texts) {
+      for (const match of (text ?? '').matchAll(/(?<![-#/\w])pay\s*core(?![-\w])/gi)) {
+        expect(match[0], where).toBe('PayCore');
+      }
     }
-    expect(docsPage('overview')).not.toMatch(/pay ?core/i);
   });
 
   it('has no em dash, rendered or in the page source', async () => {

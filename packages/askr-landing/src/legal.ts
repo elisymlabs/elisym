@@ -12,7 +12,7 @@ export const LEGAL_ADDRESS =
   'Calle Isora 18, 0805, Costa Adeje, 38678 Adeje, Santa Cruz de Tenerife, Spain';
 
 /** When the privacy policy and the terms last changed, as both pages say it. */
-export const LEGAL_LAST_UPDATED = '21 November 2026';
+export const LEGAL_LAST_UPDATED = '25 November 2026';
 
 /** The pages' paths on this site; `vercel.json` serves them without `.html` (`cleanUrls`). */
 export const PRIVACY_PATH = '/privacy';

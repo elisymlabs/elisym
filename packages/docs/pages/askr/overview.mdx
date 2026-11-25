@@ -1,6 +1,6 @@
 # Askr: a shopping assistant for your site
 
-Askr puts a chat assistant on your store's site. It answers visitors from your own catalog and policies, shows product cards with prices taken from the catalog (never from the model), and hands off to the product page or your cart. It sells nothing itself and takes no payments.
+Askr puts a chat assistant on your store's site. It answers visitors from your own catalog and policies, shows product cards with prices taken from the catalog (never from the model), and hands off to the product page or your cart. It sells nothing itself and takes no payments. If your products come from a [PayCore store](#sell-from-your-paycore-store), their cards get a **Buy** button that opens the PayCore checkout on your page: the payment goes from the visitor's wallet to your store, and Askr never sees the payment or the wallet.
 
 Your catalog, policies and the assistant's settings live on Nostr, signed by keys you control. The Askr server runs the assistant: it reads what you published, answers visitors, and keeps the budget your plan allows.
 
@@ -11,9 +11,10 @@ Your catalog, policies and the assistant's settings live on Nostr, signed by key
 | Owner key            | You. It is the store's identity: the embed snippet names its npub.                | The store config and which catalog keys may write your products.          |
 | Catalog key (server) | The Askr server, one per store.                                                   | Products and policies you edit in the admin, or that a connector imports. |
 | Catalog key (yours)  | Your backend, CI or agent ([Catalog from an agent](/askr/catalog-from-an-agent)). | Products and policies you publish yourself.                               |
+| PayCore store key    | PayCore, or your own PayCore node.                                                | The products of your [PayCore store](#sell-from-your-paycore-store).      |
 | Assistant key        | The Askr server, one per store.                                                   | The assistant's replies.                                                  |
 
-A catalog key writes products only once the owner key authorizes it. The owner can revoke it at any time in the admin, and a leaked catalog key never touches payments: listings it signs can never carry payment terms.
+A catalog key writes products only once the owner key authorizes it. The owner can revoke it at any time in the admin, and a leaked catalog key never touches payments: payment terms in listings it signs are ignored, and no card of its products can take payment. The one exception is a PayCore store key that your owner key has also authorized in PayCore: only its products get a Buy button, and only while that PayCore authorization is active.
 
 ## Product sources
 
@@ -22,6 +23,18 @@ A store reads its products from exactly one source, chosen in the admin:
 - **Admin**: import a CSV or edit products in the admin, attributes, sizes, colors and other variants included; each change is live when saved. They are signed by the server's catalog key. In a CSV file, a column such as `attr:Material` is an attribute and `option:Size` an option; each variant is one row with the same `d`, with optional `variant_id`, `variant_price` and `variant_available` columns, and `*` in an option cell means any value of that option. The admin offers an example file.
 - **Your catalog key**: publish from your own code with the SDK, or from an agent with the MCP tools.
 - **Connector**: Shopify, WooCommerce or a Google product feed, imported on a schedule. Only public endpoints are read: no store token is needed. A shop behind a bot check (such as Cloudflare's) that refuses automated readers cannot be read; let the `AskrConnector` user agent through, or use a CSV file or a feed. Shopify tags that are the shop's own bookkeeping (`key: value` and the like) are not imported as topics. Shopify and WooCommerce also get native add-to-cart on the shop's own site.
+- **Your PayCore store**: the products of a store you run with PayCore, with a Buy button on their cards. See [Sell from your PayCore store](#sell-from-your-paycore-store).
+
+## Sell from your PayCore store
+
+If you sell with PayCore, the chat can sell your PayCore products too. Askr finds your PayCore store through your secret key: sign in to Askr with the same secret key you sign in to PayCore with (the owner key). The admin finds the stores that key authorized in PayCore, and choosing **My PayCore store** as the product source sells from the newest active one. No PayCore store yet? The admin links to PayCore to set one up: there, sign in with your Askr secret key instead of creating a new owner key, or Askr cannot find the store. If your Askr store and your PayCore store already have different keys, [replace your Askr secret key](#replacing-a-lost-or-leaked-secret-key) with your PayCore owner key: tick **I already made and saved a new secret key here** and paste the PayCore owner key, then prove the site with the new Store ID. The move is refused if that key already has, or once had, an Askr store of its own.
+
+- **Buy in the chat.** A product on sale and in stock gets a **Buy** button that opens the PayCore checkout on your page, where the visitor pays from their own wallet. The chat notes when a payment is received and when the order is complete; those notes stay in the visitor's browser and are never sent to the assistant. The assistant never takes payment details and never confirms a payment itself.
+- **The checkout script.** The button shows only on pages that load the PayCore checkout script: copy it from the admin's Embed tab ([Embed the widget](/askr/embed#buy-with-paycore)). Without it, the cards show their price and the product page link, where the product has one.
+- **Your PayCore authorization decides.** If you revoke it in PayCore, or it expires, the products stay in the chat without a Buy button. The admin says so: for a hosted store it links to PayCore to authorize the store again, for a store on your own PayCore node it tells you to do it there, and if you have another active PayCore store it offers to sell from that one instead.
+- **Currency and plan.** PayCore prices are in US dollars, so the store's currency is `USD`. Your plan's product limit applies: past it, the assistant leaves the rest of the store's products out.
+- **Older pinned widgets** show no PayCore products at all: replace a pinned snippet with the current one from the Embed tab.
+- **Replacing your secret key.** Your new key does not own your PayCore store, so the chat shows its products without a Buy button until the new key authorizes the store in PayCore. A store on your own PayCore node: authorize it there with the new key. A hosted PayCore store cannot change its owner key yet: [message us](https://askr.elisym.network/contact).
 
 ## Onboarding
 

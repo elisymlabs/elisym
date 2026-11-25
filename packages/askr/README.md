@@ -2,8 +2,10 @@
 
 The Askr protocol: a shopping assistant a merchant embeds on their site, built on Nostr.
 
-- Catalog listings (NIP-99 kind 30402, no payment tags), policies (kind 30495) and the store's
-  assistant config (kind 30496, private part encrypted to the assistant key).
+- Catalog listings (NIP-99 kind 30402; listings with payment tags are dropped, except from the
+  store's configured catalog key, whose items are `payable` only while the owner authorizes that
+  key as a PayCore store (kind 30490)), policies (kind 30495) and the store's assistant config (kind 30496, private part
+  encrypted to the assistant key).
 - Catalog-key authority (kind 30497): the owner authorizes the keys that publish the catalog,
   with revocation, deletion and expiry semantics.
 - Encrypted visitor <-> assistant chat (NIP-59 gift wraps with NIP-40 expiration), session

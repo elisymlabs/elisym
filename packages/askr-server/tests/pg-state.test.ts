@@ -765,11 +765,15 @@ describe('product clicks in the usage (7.3)', () => {
     await state.countClick(store.owner, tent, 'link', NOW);
     await state.countClick(store.owner, tent, 'cart', NOW);
     await state.countClick(store.owner, tent, 'link', NOW);
+    // Buy presses do not move a product up the list.
+    for (let press = 0; press < 5; press += 1) {
+      await state.countClick(store.owner, mug, 'buy', NOW);
+    }
     const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
     expect(clicks).toEqual([
       { address: tent, count: 2, carts: 1, buys: 0, paid: 0 },
       { address: scarf, count: 0, carts: 2, buys: 0, paid: 0 },
-      { address: mug, count: 1, carts: 0, buys: 0, paid: 0 },
+      { address: mug, count: 1, carts: 0, buys: 5, paid: 0 },
     ]);
   });
 
@@ -788,10 +792,8 @@ describe('product clicks in the usage (7.3)', () => {
     expect(await state.clicksFor(store.owner, course, 'link')).toBe(0);
     expect(await state.clicksFor(store.owner, course, 'cart')).toBe(0);
     const { clicks, days } = await directory.usage(store.owner, store.assistant, NOW);
-    expect(clicks).toEqual([
-      { address: course, count: 0, carts: 0, buys: 2, paid: 1 },
-      { address: mug, count: 1, carts: 0, buys: 1, paid: 0 },
-    ]);
+    // The admin's list leaves out a product with only Buy presses, and Buys never rank one.
+    expect(clicks).toEqual([{ address: mug, count: 1, carts: 0, buys: 1, paid: 0 }]);
     expect(days).toEqual([
       {
         day: Math.floor(NOW / 86_400),
@@ -805,37 +807,23 @@ describe('product clicks in the usage (7.3)', () => {
     ]);
   });
 
-  it('puts the one paid for first when buys and opens tie', async () => {
+  it('ranks by opens and cart presses alone: Buy presses and payments never reorder or list one', async () => {
     const store = syntheticStore();
     const { state, directory } = await stateWith([storeRecord(store)]);
-    const [unpaid, paid] = ['aaa-unpaid', 'zzz-paid'].map(
+    const [first, second, boughtOnly] = ['aaa-opened', 'zzz-paid', 'mmm-bought'].map(
       (dTag) => `30402:${store.catalogKey}:${dTag}`,
     );
-    if (unpaid === undefined || paid === undefined) {
+    if (first === undefined || second === undefined || boughtOnly === undefined) {
       throw new Error('no addresses');
     }
-    await state.countClick(store.owner, unpaid, 'buy', NOW);
-    await state.countClick(store.owner, paid, 'buy', NOW);
-    await state.countClick(store.owner, paid, 'paid', NOW);
+    await state.countClick(store.owner, first, 'link', NOW);
+    await state.countClick(store.owner, second, 'link', NOW);
+    await state.countClick(store.owner, second, 'buy', NOW);
+    await state.countClick(store.owner, second, 'paid', NOW);
+    await state.countClick(store.owner, boughtOnly, 'buy', NOW);
+    await state.countClick(store.owner, boughtOnly, 'paid', NOW);
     const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
-    expect(clicks.map((click) => click.address)).toEqual([paid, unpaid]);
-  });
-
-  it('more Buy presses come before more payments: payments only break ties', async () => {
-    const store = syntheticStore();
-    const { state, directory } = await stateWith([storeRecord(store)]);
-    const [boughtTwice, paidOnce] = ['zzz-bought', 'aaa-paid'].map(
-      (dTag) => `30402:${store.catalogKey}:${dTag}`,
-    );
-    if (boughtTwice === undefined || paidOnce === undefined) {
-      throw new Error('no addresses');
-    }
-    await state.countClick(store.owner, boughtTwice, 'buy', NOW);
-    await state.countClick(store.owner, boughtTwice, 'buy', NOW);
-    await state.countClick(store.owner, paidOnce, 'buy', NOW);
-    await state.countClick(store.owner, paidOnce, 'paid', NOW);
-    const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
-    expect(clicks.map((click) => click.address)).toEqual([boughtTwice, paidOnce]);
+    expect(clicks.map((click) => click.address)).toEqual([first, second]);
   });
 
   it('puts the one added to cart more first when the totals tie', async () => {

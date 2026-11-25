@@ -9,7 +9,7 @@ Agents read these files without the chat, so they cost none of your plan's chat 
 **Your store's `llms.txt`**, at `https://app.askr.elisym.network/s/<your Store ID>/llms.txt`: a Markdown file in the [llms.txt](https://llmstxt.org) form, with
 
 - your store's name, sites, language and currency, and that its shopping assistant is Askr;
-- a note that the file is read-only: purchases happen on your own product pages;
+- a note that the file is read-only: purchases happen on your own site;
 - every published policy in full (returns, shipping, warranty, FAQ...);
 - every visible product with its title, price and currency, a short summary and the link to its page on your site;
 - a link to `catalog.json`.
@@ -37,7 +37,7 @@ Agents look for `llms.txt` at a site's root, so put a short one there that point
 
 - [Products and policies for AI agents](https://app.askr.elisym.network/s/npub1.../llms.txt): every product with its price and page, and the store's policies, read-only
 - [Catalog as JSON](https://app.askr.elisym.network/s/npub1.../catalog.json): the same, machine-readable
-- [Askr](https://askr.elisym.network): the shopping assistant this store uses. Purchases happen on this site's product pages.
+- [Askr](https://askr.elisym.network): the shopping assistant this store uses. Purchases happen on this site.
 ```
 
 Save it as `llms.txt` where your site serves files from its root (often a `public/` or `static/` folder), so it opens at `https://yoursite.com/llms.txt`. If your site already has an `llms.txt`, do not replace it: add the **Shopping assistant** part, from its heading on, to the end. `askr embed --llms-txt <path>/llms.txt` does either for you: it writes the file, or appends that part to an existing one (once).

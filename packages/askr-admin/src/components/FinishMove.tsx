@@ -163,9 +163,10 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
       >
         {layout && moved?.active !== true ? (
           <Notice tone="warn">
-            If these products come from your PayCore store, move that store to your new key in
-            PayCore too: until your new key is its owner, the chat shows its products without a Buy
-            button.
+            If these products come from your PayCore store, the chat shows them without a Buy button
+            until your new key authorizes that store in PayCore. A store on your own PayCore node:
+            authorize it there with your new key. A hosted PayCore store cannot change its owner key
+            yet: message us.
           </Notice>
         ) : null}
         {load.privateLost ? (

@@ -63,7 +63,9 @@ export function PrivacyPolicy() {
             day on AI models, against your plan's budget; the number of conversations; and per day
             the conversations started, questions answered, product pages opened and add to cart
             presses from the assistant's product cards, with opens and presses also counted per
-            product. These are counts: they do not say who chatted.
+            product; for a PayCore store, also Buy presses that opened the checkout and payments the
+            checkout reported as received to the chat. These are counts: they do not say who
+            chatted.
           </li>
           <li>
             <strong className="text-text font-medium">Key and site history</strong>: each website
@@ -138,13 +140,14 @@ export function PrivacyPolicy() {
           <strong className="text-text font-medium">Your IP address.</strong> Our server and our
           relay receive your IP address with every request, as any website does: when the page loads
           the chat script, when the chat asks for a session pass, when you open a product or press
-          add to cart from a card, and on the chat&apos;s connection to relay.elisym.network. Our
-          server uses it only to limit how many requests can come from one address per minute. It is
-          held in the server&apos;s memory for that count and never written to our database. Our
-          servers and relay keep no access or connection logs. Their logs never contain IP
-          addresses; they may contain Store IDs and error details, are capped in size and
-          overwritten, and also sit in the server&apos;s 7-day snapshots. The relay stores no IP
-          address with the messages it holds.
+          add to cart or Buy from a card, when the chat passes on a payment the checkout reported,
+          and on the chat&apos;s connection to relay.elisym.network. Our server uses it only to
+          limit how many requests can come from one address per minute. It is held in the
+          server&apos;s memory for that count and never written to our database. Our servers and
+          relay keep no access or connection logs. Their logs never contain IP addresses; they may
+          contain Store IDs and error details, are capped in size and overwritten, and also sit in
+          the server&apos;s 7-day snapshots. The relay stores no IP address with the messages it
+          holds.
         </p>
         <p>
           <strong className="text-text font-medium">The AI model.</strong>
@@ -165,9 +168,14 @@ export function PrivacyPolicy() {
         </p>
         <p>
           The assistant is an AI, and the chat always says so. It cannot take orders or payments:
-          checkout stays on the store&apos;s own site. Product cards show the store&apos;s product
-          pictures, which your browser loads, with no referrer, from wherever the store hosts its
-          images (often its shop platform&apos;s image service).
+          checkout stays on the store&apos;s own site. If the store sells with PayCore, a Buy button
+          opens the PayCore checkout, a separate service with its own terms, in a frame on the
+          store&apos;s page. Your wallet connects to it there, and your payment goes on the
+          blockchain to the store; the assistant and the chat never see your wallet or payment
+          details. The chat tells our server only that the checkout opened or reported a payment as
+          received, which it counts. Product cards show the store&apos;s product pictures, which
+          your browser loads, with no referrer, from wherever the store hosts its images (often its
+          shop platform&apos;s image service).
         </p>
         <p>
           <strong className="text-text font-medium">Why.</strong>

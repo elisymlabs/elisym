@@ -40,7 +40,7 @@ export function renderServerLlmsTxt(publicBase: string): string {
     '',
     `> This host runs the server of Askr, a shopping assistant for online stores: its chat widget, the chat sessions and the merchant admin. Every active store also has two public, read-only files here for AI agents.`,
     '',
-    "Nothing can be bought or ordered on this host: purchases happen on each store's own product pages. The store files are public: they need no sign-in, open no chat and cost the store none of its chat budget.",
+    "Nothing can be bought or ordered on this host: purchases happen on each store's own site. The store files are public: they need no sign-in, open no chat and cost the store none of its chat budget.",
     '',
     '## Store files for AI agents',
     '',

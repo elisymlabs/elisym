@@ -230,6 +230,19 @@ describe('the privacy policy says what the code does', () => {
     expect(page).toContain('relay.elisym.network');
   });
 
+  it('every click kind the chat reports, Buy and payments included', async () => {
+    const page = textOf(await render(<PrivacyPolicy />));
+    expect(read('askr-widget/src/gateway.ts')).toContain(
+      "export type ClickKind = 'link' | 'cart' | 'buy' | 'paid';",
+    );
+    expect(page).toContain('product pages opened and add to cart presses');
+    expect(page).toContain('Buy presses that opened the checkout and payments the checkout');
+    expect(page).toContain('add to cart or Buy from a card, when the chat passes on a payment');
+    expect(page).toContain('a separate service with its own terms');
+    const terms = textOf(await render(<TermsOfService />));
+    expect(terms).toContain('opens the PayCore checkout, a separate service with its own terms');
+  });
+
   it('the browser storage the chat and the admin use', async () => {
     const page = textOf(await render(<PrivacyPolicy />));
     const widget = read('askr-widget/src/constants.ts');

@@ -61,6 +61,10 @@ function planLine(name: string): string | undefined {
 }
 
 describe('llms.txt', () => {
+  it("tells a shopper's agent that purchases happen on the store's own site", () => {
+    expect(text).toContain("Nothing is bought there: purchases happen on the store's own site.");
+  });
+
   it('is in the llms.txt form: one H1, the pitch as the summary quote, then sections', () => {
     const lines = text.split('\n');
     expect(lines[0]).toBe('# Askr');

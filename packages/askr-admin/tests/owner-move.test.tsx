@@ -262,20 +262,23 @@ describe('finishing a move to a new secret key (K21)', () => {
     const catalog = await mountMoved(movedDeps(oldConfig('catalog')));
     expect(nameField(catalog)).toBe('Moved Tea');
     expect(catalog.textContent).not.toContain('with our help');
-    expect(catalog.textContent).not.toContain('move that store to your new key');
+    expect(catalog.textContent).not.toContain('until your new key authorizes that store');
   });
 
   it('previous settings naming a paycore source are not found: the form starts empty, nothing breaks', async () => {
     const container = await mountMoved(movedDeps(paycoreConfig()));
     expect(container.textContent).toContain('Your previous settings could not be found');
     expect(nameField(container)).toBe('');
-    expect(container.textContent).not.toContain('move that store to your new key');
+    expect(container.textContent).not.toContain('until your new key authorizes that store');
   });
 
   it("a PayCore store's settings: warns to move the store too, and authorizes both its key and the server key", async () => {
     const deps = movedDeps(payCoreLayoutConfig());
     const container = await mountMoved(deps);
-    expect(container.textContent).toContain('move that store to your new key in PayCore too');
+    expect(container.textContent).toContain('until your new key authorizes that store in PayCore');
+    expect(container.textContent).toContain(
+      'A hosted PayCore store cannot change its owner key yet',
+    );
     await click(buttonNamed(container, 'Sign with my new key'));
     await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length > 0);
     const signed = vi.mocked(deps.api.storeEvents).mock.calls[0]?.[0] ?? [];
@@ -353,7 +356,7 @@ describe('finishing a move to a new secret key (K21)', () => {
     const source = container.querySelector('#store-source');
     expect(source instanceof HTMLSelectElement ? source.value : '').toBe('paycore');
     expect(container.textContent).toContain('PayCore store');
-    expect(container.textContent).not.toContain('move that store to your new key');
+    expect(container.textContent).not.toContain('until your new key authorizes that store');
     await click(buttonNamed(container, 'Sign with my new key'));
     await settle(() => vi.mocked(api.storeEvents).mock.calls.length > 0);
     const signed = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];

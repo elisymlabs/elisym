@@ -857,8 +857,9 @@ export class StoreDirectory {
       buys: number;
       paid: number;
     }>(
-      `select address, count, carts, buys, paid from clicks where owner = $1
-       order by count + carts + buys desc, paid desc, carts desc, address limit 100`,
+      // The admin lists page opens and cart presses; Buy presses and payments are the operator's.
+      `select address, count, carts, buys, paid from clicks where owner = $1 and count + carts > 0
+       order by count + carts desc, carts desc, address limit 100`,
       [owner],
     );
     return {
