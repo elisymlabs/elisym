@@ -31,6 +31,12 @@
  *    `MIRROR_SEND_CAP` sends per store per sweep; a refusal is logged and
  *    tried again next period, never within this one.
  *
+ * A store that moved to a new owner key: until its latest move switched,
+ * buyers still anchor on the former owner, so the former owner's payout
+ * list, authorization and their deletions are swept as the owner's are;
+ * after the switch, only the former owners' authorizations at S (their
+ * revocations) are.
+ *
  * `stop` claims no further store and abandons the one in progress at once
  * (its claim stands: that store waits for the next period).
  *
@@ -63,6 +69,7 @@ import type { Filter, NostrEvent } from 'nostr-tools';
 import type { Db } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import { parseLedger } from '../state/ledger-store';
+import { storeMoves } from '../state/move-rows';
 
 /** How long a store waits between two sweeps. */
 export const MIRROR_SWEEP_SECS = 15 * 60;
@@ -189,25 +196,60 @@ async function listingDs(db: Db, owner: string, signal: AbortSignal): Promise<st
   return [...new Set([...products.map((product) => product.d), ...published])].sort();
 }
 
+/**
+ * A moved store's former owners as the sweep treats them: `anchored`, the
+ * former owner buyers still read while the latest move has not switched
+ * (swept as the owner is); `revoked`, the others (only their 30490 at S).
+ */
+export interface FormerOwnerSweep {
+  anchored: string[];
+  revoked: string[];
+}
+
+const NO_FORMER_OWNERS: FormerOwnerSweep = { anchored: [], revoked: [] };
+
+/** How the sweep treats the store's former owners, from its moves (oldest first). */
+export function formerOwnerSweep(
+  moves: readonly { fromOwner: string; switchedAt: number | undefined }[],
+): FormerOwnerSweep {
+  const latest = moves.at(-1);
+  const anchored =
+    latest !== undefined && latest.switchedAt === undefined ? [latest.fromOwner] : [];
+  return {
+    anchored,
+    revoked: moves.map((move) => move.fromOwner).filter((owner) => !anchored.includes(owner)),
+  };
+}
+
 /** Every filter a store's sweep reads, each side alike. */
 async function readStoreEvents(
   read: (filter: Filter) => Promise<NostrEvent[]>,
   owner: string,
   storePubkey: string,
   ds: readonly string[],
+  former: FormerOwnerSweep = NO_FORMER_OWNERS,
 ): Promise<NostrEvent[]> {
   const listingAddresses = ds.map((d) => productAddress({ storePubkey, d }));
   // One after another: a relay limits the subscriptions open at once.
   const events: NostrEvent[] = [
     ...(await read({ kinds: [KIND_STORE_PROFILE, KIND_INBOX_RELAYS], authors: [storePubkey] })),
-    ...(await read({ kinds: [KIND_PAYTO], authors: [owner] })),
-    ...(await read({ kinds: [KIND_STORE_AUTH], authors: [owner], '#d': [storePubkey] })),
-    ...(await read({
-      kinds: [KIND_DELETION],
-      authors: [owner],
-      '#a': [storeAuthAddress(owner, storePubkey), payoutListAddress(owner)],
-    })),
   ];
+  for (const author of [owner, ...former.anchored]) {
+    events.push(
+      ...(await read({ kinds: [KIND_PAYTO], authors: [author] })),
+      ...(await read({ kinds: [KIND_STORE_AUTH], authors: [author], '#d': [storePubkey] })),
+      ...(await read({
+        kinds: [KIND_DELETION],
+        authors: [author],
+        '#a': [storeAuthAddress(author, storePubkey), payoutListAddress(author)],
+      })),
+    );
+  }
+  if (former.revoked.length > 0) {
+    events.push(
+      ...(await read({ kinds: [KIND_STORE_AUTH], authors: former.revoked, '#d': [storePubkey] })),
+    );
+  }
   events.push(
     ...(await readListingChunks(ds, (chunk) =>
       read({ kinds: [KIND_PRODUCT], authors: [storePubkey], '#d': chunk }),
@@ -232,16 +274,25 @@ function storeAddresses(
   owner: string,
   storePubkey: string,
   ds: readonly string[],
+  former: FormerOwnerSweep = NO_FORMER_OWNERS,
 ): MirrorAddress[] {
   return [
-    {
-      kind: KIND_STORE_AUTH,
-      author: owner,
-      d: storePubkey,
-      deletion: storeAuthAddress(owner, storePubkey),
-      deletionCovers: true,
-    },
-    { kind: KIND_PAYTO, author: owner, deletion: payoutListAddress(owner), deletionCovers: false },
+    ...[owner, ...former.anchored].flatMap((author) => [
+      {
+        kind: KIND_STORE_AUTH,
+        author,
+        d: storePubkey,
+        deletion: storeAuthAddress(author, storePubkey),
+        deletionCovers: true,
+      },
+      {
+        kind: KIND_PAYTO,
+        author,
+        deletion: payoutListAddress(author),
+        deletionCovers: false,
+      },
+    ]),
+    ...former.revoked.map((author) => ({ kind: KIND_STORE_AUTH, author, d: storePubkey })),
     { kind: KIND_STORE_PROFILE, author: storePubkey },
     { kind: KIND_INBOX_RELAYS, author: storePubkey },
     ...ds.map((d) => ({
@@ -494,7 +545,12 @@ export class MirrorSweeper {
     const label = `mirror ${owner.slice(0, 12)}`;
     const timeoutMs = deps.readTimeoutMs ?? MIRROR_READ_TIMEOUT_MS;
     const ds = await listingDs(deps.db, owner, signal);
-    // A stop during the last ledger read: open no pool and start no relay read.
+    // A stop during the last ledger read: read nothing more.
+    if (signal.aborted) {
+      throw new SweepStopped();
+    }
+    const former = formerOwnerSweep(await storeMoves(deps.db, storePubkey));
+    // A stop during the moves read: open no pool and start no relay read.
     if (signal.aborted) {
       throw new SweepStopped();
     }
@@ -512,6 +568,7 @@ export class MirrorSweeper {
         owner,
         storePubkey,
         ds,
+        former,
       );
       let required: NostrEvent[];
       try {
@@ -521,6 +578,7 @@ export class MirrorSweeper {
           owner,
           storePubkey,
           ds,
+          former,
         );
       } catch (error) {
         if (error instanceof SweepStopped) {
@@ -530,7 +588,12 @@ export class MirrorSweeper {
         this.log(`${label}: ${deps.requiredRelay} not read (${reason}): skipped this round`);
         return { owner, outcome: 'skipped', reason };
       }
-      const plan = mirrorPlan(source, required, storeAddresses(owner, storePubkey, ds), deps.now());
+      const plan = mirrorPlan(
+        source,
+        required,
+        storeAddresses(owner, storePubkey, ds, former),
+        deps.now(),
+      );
       if (plan.length > MIRROR_SEND_CAP) {
         this.log(`${label}: ${plan.length} events missing, ${MIRROR_SEND_CAP} sent this round`);
       }

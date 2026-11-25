@@ -10,7 +10,9 @@ import {
   parseLedger,
   serializeLedger,
 } from '../src/state/ledger-store';
+import { movableStore, moveDeps, moved } from './move-fixtures';
 import { freshDb } from './pglite-db';
+import { ownerKeys } from './stores-fixtures';
 
 const NOW = 1_790_000_000;
 const OWNER = 'a'.repeat(64);
@@ -386,5 +388,23 @@ describe('PgLedgerStore', () => {
   it('opening a store with no ledger row throws', async () => {
     const { store } = await setup();
     await expect(store.open('f'.repeat(64), 1, 'h1')).rejects.toThrow('No ledger');
+  });
+});
+
+describe('ledger handles across a store move', () => {
+  it("a handle opened for the former owner never saves after the move (its owner fence); the new owner's does", async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const owner = store.owner.pubkey;
+    const epoch = await lease(db, 'holder', NOW);
+    const ledgers = new PgLedgerStore(db, () => NOW);
+    const old = await ledgers.open(owner, epoch, 'holder');
+    const to = ownerKeys();
+    expect((await moved(moveDeps(db, store.directory), store, to)).result.ok).toBe(true);
+    await expect(old.save(old.state)).rejects.toBeInstanceOf(LedgerConflict);
+    // The lease kept its holder and epoch: the new owner's run saves under it.
+    const fresh = await ledgers.open(to.pubkey, epoch, 'holder');
+    await fresh.save(fresh.state);
+    expect(fresh.rowVersion).toBe(old.rowVersion + 1);
   });
 });

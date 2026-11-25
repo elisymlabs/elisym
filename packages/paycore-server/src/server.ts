@@ -548,6 +548,8 @@ class PaycoreServer implements ServerHandle {
       publicBase: config.publicBase,
       operator: config.operator,
       now,
+      storeMoves: config.storeMoves,
+      log,
       newestOnRelays: (owner, kind) =>
         newestOwnerEventDate(owner, kind, {
           store: (storeOwner) => directory.store(storeOwner),

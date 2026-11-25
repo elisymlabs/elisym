@@ -138,6 +138,7 @@ export default defineConfig({
         { text: 'Quickstart', link: '/commerce/quickstart' },
         { text: 'The widget', link: '/commerce/widget' },
         { text: 'Credit an account', link: '/commerce/credit-an-account' },
+        { text: 'Move a hosted store to a new owner key', link: '/commerce/hosted-move' },
       ],
     },
     {

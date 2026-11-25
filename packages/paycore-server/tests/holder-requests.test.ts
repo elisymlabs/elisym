@@ -28,6 +28,7 @@ import { commitOwnerEvent, prepareOwnerEvent } from '../src/owner-events';
 import { activateStore } from '../src/state/activation';
 import { newHolderId } from '../src/state/leases';
 import { StoreDirectory } from '../src/state/stores';
+import { simulateMove, switchedAt } from './helpers/node-move';
 import { submitRequest } from './helpers/node-requests';
 import {
   type Key,
@@ -1323,5 +1324,35 @@ describe('inbox relays left at a switch (P2)', () => {
     await node.supervisor.idle();
     expect(node.supervisor.running).toEqual([owner]);
     expect(world.liveRelays()).toEqual([NEW_RELAY]);
+  });
+});
+
+describe('a setup request of a store switching to a new owner key', () => {
+  it('stays pending (MoveSwitchNotOut) while the new 30490 is not out, what went out saved; applied once it switched', async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const move = await simulateMove(db, keys, seed);
+    const owner = move.next.pubkey;
+    let clock = NOW;
+    world.refuse = (event) => event.id === move.events.authorization.id;
+    const node = holderOn(db, keys, world, {}, { now: () => clock });
+    await serveAll(node);
+    const id = await submitRequest(db, owner, 'setup', { moveFrom: seed.owner.pubkey }, NOW);
+
+    await expect(node.requests.drain(owner)).rejects.toThrow(
+      'the profile naming the new owner key reached no default relay',
+    );
+    expect((await requestRow(db, owner, id)).state).toBe('pending');
+    expect(JSON.parse((await storedLedger(db, owner)).payto?.payouts ?? '')).toEqual(move.payouts);
+    expect(await switchedAt(db, move.moveId)).toBeNull();
+
+    world.refuse = () => false;
+    clock += 30;
+    expect(await node.requests.drain(owner)).toEqual([id]);
+    expect((await requestRow(db, owner, id)).state).toBe('applied');
+    expect(await switchedAt(db, move.moveId)).not.toBeNull();
   });
 });

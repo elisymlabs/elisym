@@ -9,17 +9,18 @@ import { type MerchantOrder, openOrders, undeliveredOrders } from '@merchant-nod
 import { printable } from '@merchant-node/printable';
 import { nip19 } from 'nostr-tools';
 import type { PaycoreConfig } from './config';
-import type { Db } from './db/db';
+import type { Db, Queryable } from './db/db';
 import type { KeyVault } from './db/keys';
 import { ImportRefused, type NewestOnRelays, importStore } from './import';
 import { activateStore } from './state/activation';
 import type { StoreStatus } from './state/leases';
 import { parseLedger } from './state/ledger-store';
+import { currentOwnerAfterMove } from './state/move-rows';
 import { StoreDirectory } from './state/stores';
 
 export const CLI_USAGE = `Usage:
   paycore-server                                 run the server
-  paycore-server store list                      owner, status, tier, open alerts, reason
+  paycore-server store list                      owner, status, tier, open alerts, moves, reason
   paycore-server store activate <O npub|hex> --tier <name>
   paycore-server store suspend <O npub|hex>      sell out every listing, then stop serving it
   paycore-server store tier <O npub|hex> <tier>  move a served store to another tier
@@ -150,6 +151,17 @@ function directoryOf(deps: CliDeps, now: () => number): StoreDirectory {
   });
 }
 
+/**
+ * "No such store", or for an owner key that moved its store away the key it
+ * is under now (the operator acts on that one).
+ */
+async function noStore(db: Queryable, owner: string): Promise<CliFailure> {
+  const current = await currentOwnerAfterMove(db, owner);
+  return new CliFailure(
+    current === undefined ? 'No such store' : `This store moved to ${npub(current)}`,
+  );
+}
+
 async function storeList(deps: CliDeps): Promise<string> {
   const rows = await deps.db.query<{
     owner: string;
@@ -157,9 +169,11 @@ async function storeList(deps: CliDeps): Promise<string> {
     tier: string | null;
     status_reason: string | null;
     alerts: number;
+    moves: number;
   }>(
     `select s.owner, s.status, s.tier, s.status_reason,
-       (select count(*)::int from alerts a where a.owner = s.owner and a.cleared_at is null) as alerts
+       (select count(*)::int from alerts a where a.owner = s.owner and a.cleared_at is null) as alerts,
+       (select count(*)::int from store_moves m where m.store_pubkey = s.store_pubkey) as moves
      from stores s order by s.created_at, s.owner`,
   );
   if (rows.length === 0) {
@@ -172,6 +186,8 @@ async function storeList(deps: CliDeps): Promise<string> {
         row.status,
         row.tier ?? '-',
         `alerts:${row.alerts}`,
+        // Only a store that moved to a new owner key says how often.
+        ...(row.moves === 0 ? [] : [`moves:${row.moves}`]),
         ...(row.status_reason === null ? [] : [printable(row.status_reason)]),
       ].join(' '),
     )
@@ -190,7 +206,7 @@ async function storeActivate(args: readonly string[], deps: CliDeps, now: number
     return `${npub(owner)} is active on tier ${tier} (setup request ${result.requestId})`;
   }
   if (result.error === 'no_store') {
-    throw new CliFailure('No such store');
+    throw await noStore(deps.db, owner);
   }
   if (result.error === 'no_tier') {
     throw new CliFailure(`No such tier: ${tier}`);
@@ -219,7 +235,7 @@ async function storeSuspend(
     return `${npub(owner)}: suspension queued (request ${result.requestId}); its listings sell out, then it stops once its open orders can no longer be paid`;
   }
   if (result.error === 'no_store') {
-    throw new CliFailure('No such store');
+    throw await noStore(deps.db, owner);
   }
   if (result.error === 'inactive') {
     throw new CliFailure('This store is pending: it is not served, so there is nothing to suspend');
@@ -245,7 +261,7 @@ async function storeTier(args: readonly string[], deps: CliDeps): Promise<string
       [owner],
     );
     if (store === undefined) {
-      throw new CliFailure('No such store');
+      throw await noStore(tx, owner);
     }
     if (!TIER_MOVABLE_STATUSES.includes(store.status)) {
       throw new CliFailure(

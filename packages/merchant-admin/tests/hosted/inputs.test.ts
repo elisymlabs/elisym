@@ -12,10 +12,10 @@ describe('hosted input styles', () => {
     expect(TEXT_INPUT.split(' ')).not.toContain('masked');
   });
 
-  it('uses the masked style in the sign-in key field only', () => {
+  it('uses the masked style in the owner key fields only: sign-in, and the new key of a move', () => {
     const users = readdirSync(COMPONENTS).filter((name) =>
       readFileSync(join(COMPONENTS, name), 'utf8').includes('KEY_INPUT'),
     );
-    expect(users).toEqual(['SignIn.tsx']);
+    expect(users).toEqual(['MoveKeyChoice.tsx', 'SignIn.tsx']);
   });
 });

@@ -88,7 +88,9 @@ function errorText(error: unknown): string {
 
 /**
  * The heal pass the supervisor runs when a start finds offers the committed
- * owner events can fix: a setup pass, saved through the handle.
+ * owner events can fix, or a move still switching: a setup pass, saved
+ * through the handle. Whether the switch went out is the supervisor's next
+ * check (it heals again while it has not), never an error here.
  */
 export function healPass(
   setup: SetupPassDeps,
@@ -114,6 +116,18 @@ export class InboxRelaysNotOut extends Error {
   constructor(readonly owner: string) {
     super('the inbox list naming the new inbox relays reached no default relay: retried');
     this.name = 'InboxRelaysNotOut';
+  }
+}
+
+/**
+ * The store's latest move did not switch: the profile naming the new owner
+ * reached no default relay (its 10133 or 30490 did not). The request stays
+ * pending, retried; whatever else went out is saved.
+ */
+export class MoveSwitchNotOut extends Error {
+  constructor(readonly owner: string) {
+    super('the profile naming the new owner key reached no default relay: retried');
+    this.name = 'MoveSwitchNotOut';
   }
 }
 
@@ -406,7 +420,8 @@ export class HolderRequests {
    * nothing could be published. A committed payout list that is still not
    * out leaves the request pending (`PayoutListNotOut`, retried with backoff),
    * and so does a relay edit whose 10050 reached no default relay
-   * (`InboxRelaysNotOut`): whatever else went out is saved.
+   * (`InboxRelaysNotOut`) and a move whose new-owner profile did not go out
+   * (`MoveSwitchNotOut`): whatever else went out is saved.
    */
   private async passFor(request: AdminRequest): Promise<SetupPassResult> {
     const { db } = this.deps;
@@ -418,6 +433,9 @@ export class HolderRequests {
     }
     if (result.kind === 'done' && result.inboxRelaysPending) {
       throw new InboxRelaysNotOut(request.owner);
+    }
+    if (result.kind === 'done' && result.moveSwitchPending) {
+      throw new MoveSwitchNotOut(request.owner);
     }
     const now = this.now();
     if (result.kind === 'no_payout_list') {

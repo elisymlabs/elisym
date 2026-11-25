@@ -1,6 +1,7 @@
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import type { HostedApi } from './api';
 import type { ProvenPayouts } from './proven';
+import type { Signer } from './signer';
 import type { Meta } from './types';
 
 /** What the store screens call. */
@@ -20,7 +21,17 @@ export type StoreApi = Pick<
   | 'handAnswer'
   | 'rotateWebhookSecret'
   | 'suspend'
+  | 'prepareMove'
+  | 'move'
 >;
+
+/** A move the server took: the page goes on as the new owner, following the store's setup request. */
+export interface CompletedMove {
+  /** O': from now on the page's only key. */
+  signer: Signer;
+  /** The setup request to follow, read by O'; none when there is nothing to follow. */
+  requestId: string | undefined;
+}
 
 /** A signed-in owner's session, as every store screen gets it. */
 export interface StoreSession {
@@ -38,4 +49,6 @@ export interface StoreSession {
   localNow: () => number;
   /** How a followed request waits between reads (tests shorten it). */
   sleep?: (ms: number) => Promise<void>;
+  /** After a move: O is closed and the page goes on signed in as O'. */
+  switchOwner: (move: CompletedMove) => void;
 }

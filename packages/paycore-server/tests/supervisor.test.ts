@@ -3,9 +3,13 @@ import type { LedgerState } from '@merchant-node/ledger';
 import { startStoreNode } from '@merchant-node/store-node';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chain, landedPayment, requestFor, signatureOf } from '../../merchant-node/tests/fixtures';
+import { getRequest } from '../src/admin/requests';
 import type { TransportRequest } from '../src/connectors/fetch-guard';
 import type { Db } from '../src/db/db';
+import { HolderRequests, MAX_SETUP_ATTEMPTS, healPass } from '../src/node/holder-requests';
+import { controlBackoffMs } from '../src/node/start-checks';
 import {
+  DRIFT_CHECK_SECS,
   MAX_FAILED_STARTS,
   type StoreSupervisor,
   sweepPhaseDelayMs,
@@ -14,6 +18,8 @@ import {
 import { LEASE_TTL_SECS, newHolderId } from '../src/state/leases';
 import { PgLedgerStore } from '../src/state/ledger-store';
 import { WebhookSlots } from '../src/webhook-fetch';
+import { simulateMove, switchedAt } from './helpers/node-move';
+import { submitRequest } from './helpers/node-requests';
 import {
   NOW,
   PRODUCT,
@@ -23,11 +29,14 @@ import {
   lease,
   openAlerts,
   orderWraps,
+  publishedStore,
   seedStore,
   settle,
   sellingLedger,
   storeStatus,
   storedLedger,
+  testHeal,
+  testSetupDeps,
   testSupervisor,
   vault,
   waitFor,
@@ -800,5 +809,216 @@ describe('StoreSupervisor', () => {
     expect(world.pools.every((pool) => pool.destroyed)).toBe(true);
     const leases = await db.query<{ expires_at: number }>('select expires_at from leases');
     expect(leases).toEqual([{ expires_at: 0 }]);
+  });
+});
+
+describe('a store that moved to a new owner key', () => {
+  it("runs the new owner's node only after the former owner's stopped: one pool for S at a time, no failed start", async () => {
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const holder = newHolderId();
+    const { supervisor, pools } = track(testSupervisor(db, keys, holder, world, chain({}).rpc));
+    const order: string[] = [];
+    let most = 0;
+    const open = pools.open.bind(pools);
+    const close = pools.close.bind(pools);
+    pools.open = (storePubkey) => {
+      const pool = open(storePubkey);
+      most = Math.max(most, pools.size);
+      order.push('open');
+      return pool;
+    };
+    pools.close = (storePubkey) => {
+      if (pools.size > 0) {
+        order.push('close');
+      }
+      close(storePubkey);
+    };
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([seed.owner.pubkey]);
+
+    // The former owner's node takes a while to stop: the new owner's start must wait for it.
+    const node = supervisor.nodeOf(seed.owner.pubkey);
+    if (node === undefined) {
+      throw new Error('no node');
+    }
+    const stop = node.stop.bind(node);
+    node.stop = async () => {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 300);
+      });
+      await stop();
+    };
+    const move = await simulateMove(db, keys, seed, { switchedAt: NOW - 20 });
+    const leased = await lease(db, holder);
+    expect(leased.map((entry) => [entry.owner, entry.storePubkey])).toEqual([
+      [move.next.pubkey, seed.store.pubkey],
+    ]);
+    supervisor.reconcile(leased);
+    await supervisor.idle();
+
+    expect(supervisor.running).toEqual([move.next.pubkey]);
+    expect(order).toEqual(['open', 'close', 'open']);
+    expect(most).toBe(1);
+    expect(await openAlerts(db, move.next.pubkey)).toEqual([]);
+    expect(await storeStatus(db, move.next.pubkey)).toBe('active');
+  });
+
+  it('heals a move still switching at the start; a failed switch is healed again after the backoff, no alert meanwhile', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const move = await simulateMove(db, keys, seed);
+    const holder = newHolderId();
+    const { heal, heals } = testHeal(db, keys, world);
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, chain({}).rpc, { heal }));
+    world.refuse = (event) => event.id === move.events.authorization.id;
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+
+    expect(heals).toEqual([move.next.pubkey]);
+    expect(await switchedAt(db, move.moveId)).toBeNull();
+    expect(await openAlerts(db, move.next.pubkey)).toEqual([]);
+    expect(await storeStatus(db, move.next.pubkey)).toBe('active');
+    // A periodic check while the next heal waits queues no second one.
+    await supervisor.recheckOffers();
+    await supervisor.idle();
+    expect(heals).toHaveLength(1);
+
+    world.refuse = () => false;
+    vi.advanceTimersByTime(29_999);
+    await supervisor.idle();
+    expect(heals).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    await supervisor.idle();
+    expect(heals).toHaveLength(2);
+    expect(await switchedAt(db, move.moveId)).not.toBeNull();
+    expect(await openAlerts(db, move.next.pubkey)).toEqual([]);
+    expect(await storeStatus(db, move.next.pubkey)).toBe('active');
+    // Switched: no more heals for it.
+    vi.advanceTimersByTime(60 * 60_000);
+    await supervisor.idle();
+    expect(heals).toHaveLength(2);
+  });
+
+  it('clears the setup_failed alert of a setup request that ran out of attempts once a heal switches; active again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const move = await simulateMove(db, keys, seed);
+    const owner = move.next.pubkey;
+    const holder = newHolderId();
+    let clock = NOW;
+    // The heal on the same clock as the setup passes: its profile is the newest.
+    const heal = healPass(testSetupDeps(db, keys, world, { now: () => clock }));
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, chain({}).rpc, { heal }));
+    const requests = new HolderRequests({
+      db,
+      supervisor,
+      setup: testSetupDeps(db, keys, world, { now: () => clock }),
+      log: () => undefined,
+    });
+    world.refuse = (event) => event.id === move.events.authorization.id;
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    const id = await submitRequest(db, owner, 'setup', {}, NOW);
+    for (let attempt = 1; attempt < MAX_SETUP_ATTEMPTS; attempt += 1) {
+      await expect(requests.drain(owner)).rejects.toThrow('the new owner key');
+      clock += 30 * 2 ** (attempt - 1);
+    }
+    expect(await requests.drain(owner)).toEqual([id]);
+    expect((await getRequest(db, owner, id))?.state).toBe('failed');
+    expect((await openAlerts(db, owner)).map((alert) => alert.kind)).toEqual(['setup_failed']);
+
+    world.refuse = () => false;
+    vi.advanceTimersByTime(30_000);
+    await supervisor.idle();
+    expect(await switchedAt(db, move.moveId)).not.toBeNull();
+    expect(await openAlerts(db, owner)).toEqual([]);
+    expect(await storeStatus(db, owner)).toBe('active');
+  });
+});
+
+describe('a moved store, its periodic checks (review round 1)', () => {
+  it("queues the switch heal from a periodic check, judging the former owner's profile as the server's", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const move = await simulateMove(db, keys, seed, { switchedAt: NOW - 20 });
+    const holder = newHolderId();
+    const { heal, heals } = testHeal(db, keys, world);
+    let clock = NOW;
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, { heal, now: () => clock }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(heals).toEqual([]);
+
+    // The store's latest move is switching (as after a later move): the relays still name O.
+    await db.query('update store_moves set switched_at = null');
+    world.refuse = (event) => event.id === move.events.authorization.id;
+    clock = NOW + DRIFT_CHECK_SECS;
+    await supervisor.recheckOffers();
+    await supervisor.idle();
+
+    expect(heals).toEqual([move.next.pubkey]);
+    // Never a drift alert, not even one the heal's restart cleared again.
+    expect(await db.query("select kind from alerts where kind = 'drift'")).toEqual([]);
+    expect(await openAlerts(db, move.next.pubkey)).toEqual([]);
+    expect(await storeStatus(db, move.next.pubkey)).toBe('active');
+  });
+
+  it('spaces the switch heals by a backoff that grows with each attempt', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const world = new RelayWorld();
+    const seed = await publishedStore(world);
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys, seed);
+    const move = await simulateMove(db, keys, seed);
+    const holder = newHolderId();
+    const { heal, heals } = testHeal(db, keys, world);
+    // The supervisor's clock follows the faked timers (one step is a second).
+    let elapsedMs = 0;
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, {
+        heal,
+        now: () => NOW + Math.floor(elapsedMs / 1000),
+      }),
+    );
+    world.refuse = (event) => event.id === move.events.authorization.id;
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(heals).toHaveLength(1);
+    // When each heal ran, in ms since the first.
+    const healedAt = [0];
+    while (heals.length < 3 && elapsedMs < 200_000) {
+      elapsedMs += 1000;
+      vi.advanceTimersByTime(1000);
+      await supervisor.idle();
+      if (heals.length > healedAt.length) {
+        healedAt.push(elapsedMs);
+      }
+    }
+    expect(heals).toHaveLength(3);
+    const gaps = [(healedAt[1] ?? 0) - (healedAt[0] ?? 0), (healedAt[2] ?? 0) - (healedAt[1] ?? 0)];
+    // Each wait is the backoff of its attempt: 30 s after the first, 60 s after the second.
+    expect(gaps).toEqual([controlBackoffMs(0), controlBackoffMs(1)]);
+    expect(gaps[1]).toBeGreaterThan(gaps[0] ?? 0);
+    expect(await openAlerts(db, move.next.pubkey)).toEqual([]);
   });
 });

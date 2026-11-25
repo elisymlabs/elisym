@@ -54,7 +54,7 @@ export function corsHeadersOf(input: {
     ...(input.preflight
       ? {
           'access-control-allow-methods': 'GET, POST, PUT, DELETE',
-          'access-control-allow-headers': 'authorization, content-type',
+          'access-control-allow-headers': 'authorization, content-type, x-new-owner-authorization',
           'access-control-max-age': String(CORS_MAX_AGE_SECS),
         }
       : {}),

@@ -16,6 +16,7 @@ import type { Db, Queryable } from './db/db';
 import { WINDING_DOWN_STATUSES } from './node/load';
 import type { StoreStatus } from './state/leases';
 import { parseLedger } from './state/ledger-store';
+import { isSwitching } from './state/move-rows';
 import { canonicalPayouts } from './state/stores';
 
 /** A prepared template may be signed and committed within this long. */
@@ -49,7 +50,8 @@ export type OwnerEventError =
   | 'expired'
   | 'mismatch'
   | 'stale'
-  | 'suspended';
+  | 'suspended'
+  | 'switching';
 
 export interface OwnerEventRefusal {
   ok: false;
@@ -74,7 +76,17 @@ const WINDING_DOWN: OwnerEventRefusal = {
   message: 'the store is suspended or being suspended: it takes no more owner events',
 };
 
-const SignedEventSchema = z.object({
+/**
+ * A new payout list while the store switches to its new owner key: buyers
+ * still read the former owner's terms, which a new list could replace.
+ */
+const SWITCHING: OwnerEventRefusal = {
+  ok: false,
+  error: 'switching',
+  message: 'the store is switching to its new owner key: its payout list changes after that',
+};
+
+export const SignedEventSchema = z.object({
   id: z.string().length(64).regex(HEX_RE),
   pubkey: z.string().length(64).regex(HEX_RE),
   created_at: z.number().int().nonnegative(),
@@ -139,6 +151,9 @@ export async function prepareOwnerEvent(
     }
     if (WINDING_DOWN_STATUSES.includes(store.status)) {
       return WINDING_DOWN;
+    }
+    if (kind === KIND_PAYTO && (await isSwitching(tx, store.store_pubkey))) {
+      return SWITCHING;
     }
     const lastCommitted = await newestCommitted(tx, owner, kind);
     let template: EventTemplate;
@@ -244,7 +259,8 @@ async function recordAgain(
     : undefined;
 }
 
-function sameTemplate(event: NostrEvent, template: EventTemplate, owner: string): boolean {
+/** Whether `event` is `template` exactly (id, date, tags, content) as signed by `owner`. */
+export function sameTemplate(event: NostrEvent, template: EventTemplate, owner: string): boolean {
   return (
     event.kind === template.kind &&
     event.created_at === template.created_at &&
@@ -285,8 +301,8 @@ export async function commitOwnerEvent(
   const kind = parsed.data.kind;
   const now = deps.now();
   return deps.db.transaction(async (tx): Promise<CommitResult> => {
-    const [store] = await tx.query<{ status: StoreStatus }>(
-      'select status from stores where owner = $1 for update',
+    const [store] = await tx.query<{ status: StoreStatus; store_pubkey: string }>(
+      'select status, store_pubkey from stores where owner = $1 for update',
       [owner],
     );
     const state = await ledgerOf(tx, owner);
@@ -295,6 +311,9 @@ export async function commitOwnerEvent(
     }
     if (WINDING_DOWN_STATUSES.includes(store.status)) {
       return WINDING_DOWN;
+    }
+    if (kind === KIND_PAYTO && (await isSwitching(tx, store.store_pubkey))) {
+      return SWITCHING;
     }
     const [known] = await tx.query<{ recorded: boolean }>(
       'select recorded from owner_events where id = $1 and owner = $2',

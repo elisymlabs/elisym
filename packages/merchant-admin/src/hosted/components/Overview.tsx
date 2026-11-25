@@ -58,12 +58,14 @@ export function Overview({ session, view, onChanged }: Props) {
         </Notice>
       ))}
       <Checklist api={session.api} view={view} />
-      <PayoutListSection
-        session={session}
-        view={view}
-        payouts={view.config?.draftPayouts ?? []}
-        onChanged={onChanged}
-      />
+      {view.switching === true ? null : (
+        <PayoutListSection
+          session={session}
+          view={view}
+          payouts={view.config?.draftPayouts ?? []}
+          onChanged={onChanged}
+        />
+      )}
       <AuthorizationSection session={session} view={view} onChanged={onChanged} />
     </div>
   );

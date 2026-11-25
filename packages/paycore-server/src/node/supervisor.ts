@@ -20,6 +20,7 @@ import type { KeyVault } from '../db/keys';
 import type { StorePools } from '../relay/pools';
 import { type LeasedStore, type StoreStatus, releaseLeases } from '../state/leases';
 import { type LedgerHandle, PgLedgerStore } from '../state/ledger-store';
+import { formerOwners, isSwitching } from '../state/move-rows';
 import type { WebhookSlots } from '../webhook-fetch';
 import {
   type OperatorRpcs,
@@ -152,6 +153,8 @@ interface RunningStore {
 
 interface StoreRun {
   owner: string;
+  /** S: a store that moved to a new owner key keeps it, and its runs chain by it. */
+  storePubkey: string;
   epoch: number;
   status: StoreStatus;
   queue: Promise<void>;
@@ -164,6 +167,8 @@ interface StoreRun {
   /** When the running node started (seconds); undefined while none runs. */
   startedAt?: number;
   heals: HealGate;
+  /** The heals that finish a move's switch: spaced by `controlBackoffMs`, outside `heals`. */
+  moveSwitch: { attempts: number; nextAt: number; timer?: ReturnType<typeof setTimeout> };
   /** Counts starts: a stop reported by an older node is ignored. */
   generation: number;
   removed: boolean;
@@ -209,6 +214,12 @@ export class StoreSupervisor {
   private readonly runs = new Map<string, StoreRun>();
   /** The queues of runs removed while still stopping: a new run of the store waits for them. */
   private readonly retired = new Map<string, Promise<void>>();
+  /**
+   * The same by store pubkey: a store that moved to a new owner key gets a
+   * new run (a new owner), which waits for the former owner's to stop (its
+   * pool closed) before it opens the store's pool again.
+   */
+  private readonly retiredByStore = new Map<string, Promise<void>>();
   private readonly ledgers: PgLedgerStore;
   private readonly now: () => number;
   private readonly log: (message: string) => void;
@@ -246,9 +257,14 @@ export class StoreSupervisor {
     if (this.closed) {
       return;
     }
-    const seen = new Set<string>();
+    const seen = new Set(leased.map((lease) => lease.owner));
+    // The vanished runs first: a moved store's new run chains behind its former owner's.
+    for (const run of [...this.runs.values()]) {
+      if (!seen.has(run.owner)) {
+        this.remove(run);
+      }
+    }
     for (const lease of leased) {
-      seen.add(lease.owner);
       const known = this.runs.get(lease.owner);
       if (known === undefined) {
         const run = this.newRun(lease);
@@ -273,11 +289,6 @@ export class StoreSupervisor {
         known.retryTimer === undefined
       ) {
         this.queueStart(known);
-      }
-    }
-    for (const run of [...this.runs.values()]) {
-      if (!seen.has(run.owner)) {
-        this.remove(run);
       }
     }
   }
@@ -320,9 +331,9 @@ export class StoreSupervisor {
   /** Resolves once every store's queue has nothing left to run (tests, shutdown). */
   async idle(): Promise<void> {
     for (;;) {
-      const queues = [...[...this.runs.values()].map((run) => run.queue), ...this.retired.values()];
+      const queues = this.queues();
       await Promise.all(queues);
-      const after = [...[...this.runs.values()].map((run) => run.queue), ...this.retired.values()];
+      const after = this.queues();
       if (
         after.length === queues.length &&
         after.every((queue, index) => queue === queues[index])
@@ -355,16 +366,34 @@ export class StoreSupervisor {
     );
   }
 
+  private queues(): Promise<void>[] {
+    return [
+      ...[...this.runs.values()].map((run) => run.queue),
+      ...this.retired.values(),
+      ...this.retiredByStore.values(),
+    ];
+  }
+
   private newRun(lease: LeasedStore): StoreRun {
+    // Behind every run of the same store still stopping: by owner, and by S (a move's former owner).
+    const before = [
+      this.retired.get(lease.owner),
+      this.retiredByStore.get(lease.storePubkey),
+      ...[...this.runs.values()]
+        .filter((run) => run.storePubkey === lease.storePubkey)
+        .map((run) => run.queue),
+    ].filter((queue): queue is Promise<void> => queue !== undefined);
     return {
       owner: lease.owner,
+      storePubkey: lease.storePubkey,
       epoch: lease.epoch,
       status: lease.status,
-      queue: this.retired.get(lease.owner) ?? Promise.resolve(),
+      queue: Promise.all(before).then(() => undefined),
       startQueued: false,
       failedStarts: 0,
       retryAttempt: 0,
       heals: new HealGate(),
+      moveSwitch: { attempts: 0, nextAt: 0 },
       generation: 0,
       removed: false,
     };
@@ -377,9 +406,13 @@ export class StoreSupervisor {
     void this.enqueue(run, () => this.stopRun(run).then(() => undefined));
     const queue = run.queue;
     this.retired.set(run.owner, queue);
+    this.retiredByStore.set(run.storePubkey, queue);
     void queue.then(() => {
       if (this.retired.get(run.owner) === queue) {
         this.retired.delete(run.owner);
+      }
+      if (this.retiredByStore.get(run.storePubkey) === queue) {
+        this.retiredByStore.delete(run.storePubkey);
       }
     });
   }
@@ -415,6 +448,10 @@ export class StoreSupervisor {
     if (run.healTimer !== undefined) {
       clearTimeout(run.healTimer);
       run.healTimer = undefined;
+    }
+    if (run.moveSwitch.timer !== undefined) {
+      clearTimeout(run.moveSwitch.timer);
+      run.moveSwitch.timer = undefined;
     }
   }
 
@@ -643,12 +680,19 @@ export class StoreSupervisor {
       return;
     }
     const committed = await readCommitted(this.deps.db, run.owner);
+    const formers = await formerOwners(this.deps.db, running.storePubkey);
     const publicPool = this.publicReads();
     let judged: Awaited<ReturnType<typeof judgeOffers>>;
     try {
       judged = await judgeOffers(
         { store: running.pool, publicPool },
-        { owner: run.owner, storePubkey: running.storePubkey, committed, ...running.judged },
+        {
+          owner: run.owner,
+          storePubkey: running.storePubkey,
+          committed,
+          formerOwners: formers,
+          ...running.judged,
+        },
       );
     } finally {
       publicPool.destroy();
@@ -658,6 +702,7 @@ export class StoreSupervisor {
       ...running.notices,
       ...startNotices({ unavailableRails: [], webhookSecretMissing: false }, judged.drift),
     ]);
+    await this.planMoveSwitch(run);
   }
 
   private async started(
@@ -678,6 +723,47 @@ export class StoreSupervisor {
       await clearAlert(db, run.owner, kind, { now });
     }
     await this.assess(run, offers, notices);
+    await this.planMoveSwitch(run);
+  }
+
+  /**
+   * While the store's latest move has not switched (no profile naming the
+   * new owner went out), queue a heal pass - at a start and at every periodic
+   * check, each spaced by `controlBackoffMs` after the last, one at a time.
+   * Outside the offer verdict and `HealGate`: it raises no alert and leaves
+   * the status alone (the admin shows the switch).
+   */
+  private async planMoveSwitch(run: StoreRun): Promise<void> {
+    const { heal } = this.deps;
+    if (heal === undefined || run.removed || this.closed) {
+      return;
+    }
+    if (!(await isSwitching(this.deps.db, run.storePubkey))) {
+      run.moveSwitch.attempts = 0;
+      run.moveSwitch.nextAt = 0;
+      return;
+    }
+    if (run.moveSwitch.timer !== undefined) {
+      return;
+    }
+    const nowMs = this.now() * 1000;
+    const at = Math.max(nowMs, run.moveSwitch.nextAt);
+    run.moveSwitch.nextAt = at + controlBackoffMs(run.moveSwitch.attempts);
+    run.moveSwitch.attempts += 1;
+    const runHeal = () => {
+      run.moveSwitch.timer = undefined;
+      if (run.removed || this.closed) {
+        return;
+      }
+      this.applyControl(run.owner, (handle) => heal(run.owner, handle)).catch((error: unknown) => {
+        this.storeLog(run.owner)(`the switch to the new owner key failed: ${errorText(error)}`);
+      });
+    };
+    if (at === nowMs) {
+      runHeal();
+    } else {
+      run.moveSwitch.timer = setTimeout(runHeal, at - nowMs);
+    }
   }
 
   /** Raise or clear the notices and the offer alert, set `active` / `degraded`, and plan a heal. */

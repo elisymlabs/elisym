@@ -1,7 +1,13 @@
 import type { NostrEvent } from 'nostr-tools';
 import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
-import { ApiError, createHostedApi, parseMeta, serverOffset } from '../../src/hosted/lib/api';
+import {
+  ApiError,
+  NEW_OWNER_HEADER,
+  createHostedApi,
+  parseMeta,
+  serverOffset,
+} from '../../src/hosted/lib/api';
 import { KIND_HTTP_AUTH, nip98Header, sha256Hex } from '../../src/hosted/lib/nip98';
 import { secretKeySigner } from '../../src/hosted/lib/signer';
 
@@ -178,7 +184,7 @@ describe('the API client', () => {
 
   it('reads /v1/meta unsigned, and strictly', async () => {
     const { seen, fetcher } = recorder([() => json(META)]);
-    expect(await api(fetcher).meta()).toEqual(META);
+    expect(await api(fetcher).meta()).toEqual({ ...META, storeMoves: false });
     expect(seen[0]?.url).toBe(`${BASE}/v1/meta`);
     expect(seen[0]?.event).toBeUndefined();
     expect(new Headers(seen[0]?.init.headers).get('authorization')).toBeNull();
@@ -190,6 +196,8 @@ describe('the API client', () => {
       { ...META, networks: { mainnet: { coins: [1] } } },
       { ...META, inboxRelays: 'wss://relay.example' },
       { ...META, pendingMaxProducts: 1.5 },
+      { ...META, storeMoves: 'yes' },
+      { ...META, storeMoves: 1 },
       [META],
     ]) {
       expect(parseMeta(broken)).toBeUndefined();
@@ -290,5 +298,105 @@ describe('the clock', () => {
     const { seen, fetcher } = recorder([() => json({})]);
     await api(fetcher).store();
     expect(seen[0]?.event?.created_at).toBe(LOCAL_NOW);
+  });
+});
+
+describe('moving the store', () => {
+  const newKey = generateSecretKey();
+  const NEW_OWNER = getPublicKey(newKey);
+  const PAYTO = {
+    kind: 10133,
+    created_at: LOCAL_NOW,
+    tags: [],
+    content: '',
+    pubkey: NEW_OWNER,
+    id: 'a'.repeat(64),
+    sig: 'b'.repeat(128),
+  };
+  const INPUT = { to: NEW_OWNER, payto: PAYTO, auth: { ...PAYTO, kind: 30490 } };
+
+  function newOwnerEvent(init: RequestInit): NostrEvent | undefined {
+    const header = new Headers(init.headers).get(NEW_OWNER_HEADER);
+    return header === null ? undefined : eventOf(header);
+  }
+
+  it('reads storeMoves from /v1/meta: true when on, false when off or not said', () => {
+    expect(parseMeta({ ...META, storeMoves: true })?.storeMoves).toBe(true);
+    expect(parseMeta({ ...META, storeMoves: false })?.storeMoves).toBe(false);
+    expect(parseMeta(META)?.storeMoves).toBe(false);
+  });
+
+  it('prepares as O alone, with `to` and the proven payouts', async () => {
+    const { seen, fetcher } = recorder([() => json({ payto: {}, auth: {}, expiresAt: 1 })]);
+    const payouts = [{ caip19: 'solana:x/token:y', address: 'Addr', signature: 'sig' }];
+    await api(fetcher).prepareMove({ to: NEW_OWNER, payouts });
+    expect(seen[0]?.url).toBe(`${BASE}/v1/admin/store/move/prepare`);
+    expect(seen[0]?.init.method).toBe('POST');
+    expect(seen[0]?.event?.pubkey).toBe(OWNER);
+    expect(JSON.parse(String(seen[0]?.init.body))).toEqual({ to: NEW_OWNER, payouts });
+    expect(newOwnerEvent(seen[0]?.init ?? {})).toBeUndefined();
+  });
+
+  it('authorizes the move by O and, in X-New-Owner-Authorization, by the new owner over the same URL, method, body and time', async () => {
+    const { seen, fetcher } = recorder([
+      () => json({ request: { id: 'r1', state: 'pending' } }, 202),
+    ]);
+    const answer = await api(fetcher).move(INPUT, secretKeySigner(newKey));
+    expect(answer).toEqual({ request: { id: 'r1', state: 'pending' } });
+    const [sent] = seen;
+    if (sent?.event === undefined) {
+      throw new Error('unsigned');
+    }
+    const second = newOwnerEvent(sent.init);
+    if (second === undefined) {
+      throw new Error('no second authorization');
+    }
+    const body = String(sent.init.body);
+    expect(sent.url).toBe(`${BASE}/v1/admin/store/move`);
+    expect(JSON.parse(body)).toEqual(INPUT);
+    for (const [event, pubkey] of [
+      [sent.event, OWNER],
+      [second, NEW_OWNER],
+    ] as const) {
+      expect(verifyEvent(event)).toBe(true);
+      expect(event.kind).toBe(KIND_HTTP_AUTH);
+      expect(event.pubkey).toBe(pubkey);
+      expect(event.created_at).toBe(LOCAL_NOW);
+      expect(tag(event, 'u')).toBe(`${BASE}/v1/admin/store/move`);
+      expect(tag(event, 'method')).toBe('POST');
+      expect(tag(event, 'payload')).toBe(await sha256Hex(body));
+    }
+    expect(second.id).not.toBe(sent.event.id);
+    expect(NEW_OWNER_HEADER).toBe('x-new-owner-authorization');
+  });
+
+  it('signs both again, with the refusal’s clock, when refused as stale', async () => {
+    const { seen, fetcher } = recorder([
+      () => json({ error: 'unauthorized', reason: 'stale' }, 401, { date: dateAhead(600) }),
+      () => json({ alreadyMoved: true, request: { id: 'r1', state: 'pending' } }, 200),
+    ]);
+    const answer = await api(fetcher).move(INPUT, secretKeySigner(newKey));
+    expect(answer.alreadyMoved).toBe(true);
+    expect(seen.map((entry) => entry.event?.created_at)).toEqual([LOCAL_NOW, LOCAL_NOW + 600]);
+    expect(seen.map((entry) => newOwnerEvent(entry.init)?.created_at)).toEqual([
+      LOCAL_NOW,
+      LOCAL_NOW + 600,
+    ]);
+    expect(newOwnerEvent(seen[0]?.init ?? {})?.id).not.toBe(newOwnerEvent(seen[1]?.init ?? {})?.id);
+  });
+
+  it('takes a failed setup request (422 with its request) as the move’s outcome, and a refusal as a refusal', async () => {
+    const failed = { request: { id: 'r1', kind: 'setup', state: 'failed', result: null } };
+    expect(
+      await api(recorder([() => json(failed, 422)]).fetcher).move(INPUT, secretKeySigner(newKey)),
+    ).toEqual(failed);
+    for (const code of ['taken', 'key_in_use', 'moved', 'busy', 'switching', 'payouts_differ']) {
+      await expect(
+        api(recorder([() => json({ error: code }, 409)]).fetcher).move(
+          INPUT,
+          secretKeySigner(newKey),
+        ),
+      ).rejects.toMatchObject({ code, status: 409 });
+    }
   });
 });

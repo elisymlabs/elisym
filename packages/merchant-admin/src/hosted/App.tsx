@@ -6,7 +6,7 @@ import { Session } from './components/Session';
 import { SignIn } from './components/SignIn';
 import type { HostedConfigRead } from './lib/hosted-config';
 import type { Signer } from './lib/signer';
-import type { StoreApi } from './lib/store-session';
+import type { CompletedMove, StoreApi } from './lib/store-session';
 import { clearTabSignedIn, markTabSignedIn } from './lib/tab-session';
 
 interface Props {
@@ -22,6 +22,8 @@ interface Props {
 interface Signed {
   owner: string;
   api: StoreApi;
+  /** Signed in by a move: the store's setup request, followed by the new owner. */
+  moveRequestId?: string;
 }
 
 /**
@@ -49,6 +51,18 @@ export function HostedApp({ ownTab, config, createApi, leave }: Props) {
     setSigned({ owner: next.pubkey, api: createApi(next, config.config.apiBase) });
   };
 
+  /** A move was taken: O is zeroed, and the page goes on as O' alone. */
+  const switchOwner = (move: CompletedMove) => {
+    signer.current?.close();
+    signer.current = move.signer;
+    markTabSignedIn(move.signer.pubkey);
+    setSigned({
+      owner: move.signer.pubkey,
+      api: createApi(move.signer, config.config.apiBase),
+      ...(move.requestId === undefined ? {} : { moveRequestId: move.requestId }),
+    });
+  };
+
   const signOut = () => {
     signer.current?.close();
     signer.current = undefined;
@@ -70,11 +84,14 @@ export function HostedApp({ ownTab, config, createApi, leave }: Props) {
   }
   return (
     <Session
+      key={signed.owner}
       api={signed.api}
       config={config.config}
       owner={signed.owner}
       signEvent={signEvent}
       onSignOut={signOut}
+      onSwitchOwner={switchOwner}
+      {...(signed.moveRequestId === undefined ? {} : { moveRequestId: signed.moveRequestId })}
     />
   );
 }

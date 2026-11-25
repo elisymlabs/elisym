@@ -89,13 +89,18 @@ const ANSWER_HEADERS = {
 describe('admin HTTP: CORS (A2)', () => {
   it('answers a preflight from the admin origin with 204 and no body, before any auth check', async () => {
     const base = await gateway(ADMIN_ORIGIN);
-    for (const path of ['/v1/admin/store/config', '/v1/meta']) {
+    // The move route: its second NIP-98 header (the new owner key's) is allowed too.
+    for (const [path, method, headers] of [
+      ['/v1/admin/store/config', 'PUT', 'authorization, content-type'],
+      ['/v1/meta', 'PUT', 'authorization, content-type'],
+      ['/v1/admin/store/move', 'POST', 'authorization, content-type, x-new-owner-authorization'],
+    ] as const) {
       const response = await fetch(`${base}${path}`, {
         method: 'OPTIONS',
         headers: {
           origin: ADMIN_ORIGIN,
-          'access-control-request-method': 'PUT',
-          'access-control-request-headers': 'authorization, content-type',
+          'access-control-request-method': method,
+          'access-control-request-headers': headers,
         },
       });
       expect(response.status, path).toBe(204);
@@ -103,7 +108,7 @@ describe('admin HTTP: CORS (A2)', () => {
       expect(corsOf(response), path).toEqual({
         ...ANSWER_HEADERS,
         'access-control-allow-methods': 'GET, POST, PUT, DELETE',
-        'access-control-allow-headers': 'authorization, content-type',
+        'access-control-allow-headers': 'authorization, content-type, x-new-owner-authorization',
         'access-control-max-age': '600',
       });
     }

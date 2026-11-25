@@ -25,6 +25,7 @@ import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import type { StoreStatus } from '../state/leases';
 import { type LedgerHandle, PgLedgerStore } from '../state/ledger-store';
+import { type FormerOwner, formerOwners } from '../state/move-rows';
 
 /** The operator's RPCs of one network: stores never name their own. */
 export interface NetworkRpcs {
@@ -70,6 +71,8 @@ export interface StoreBundle {
   /** The store has a webhook URL and no secret yet: the store runs `degraded`. */
   webhookSecretMissing: boolean;
   committed: CommittedOwnerEvent[];
+  /** The store's former owners, oldest first (its moves to new owner keys). */
+  formerOwners: FormerOwner[];
   /**
    * The inbox relays the store moved away from less than `TERMS_STAND_SECS`
    * ago, still in the allowlist and not active again: read for orders (buyers
@@ -437,6 +440,7 @@ export async function loadStoreBundle(
       : webhookOf(owner, vault, row.webhook_url, row.webhook_secret);
   const products = await readProducts(db, owner, row.status);
   const committed = await readCommitted(db, owner);
+  const formers = await formerOwners(db, row.store_pubkey);
   const ledgers = deps.ledgers ?? new PgLedgerStore(db, deps.now);
   const handle = await ledgers.open(owner, deps.epoch, deps.holder);
   const payouts = activePayouts(handle.state, owner);
@@ -463,6 +467,7 @@ export async function loadStoreBundle(
     ...(webhook === undefined ? {} : { webhook }),
     webhookSecretMissing: row.webhook_url !== null && webhook === undefined,
     committed,
+    formerOwners: formers,
     listenOnlyRelays: listenOnly.relays,
     ...(listenOnly.until === undefined ? {} : { listenOnlyUntil: listenOnly.until }),
     handle,

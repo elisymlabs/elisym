@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { STALE_RELOADED } from '../lib/errors';
 import type { StoreSession } from '../lib/store-session';
 import type { StoreView } from '../lib/types';
+import { MoveStore } from './MoveStore';
 import { Notice } from './Notice';
 import { SettingsForm } from './SettingsForm';
 import { SuspendStore } from './SuspendStore';
@@ -15,7 +16,8 @@ interface Props {
 
 /**
  * The store's settings (a save refused as stale reads them again and says
- * so), the webhook secret, and suspending the store.
+ * so), the webhook secret, moving the store to a new owner key, and
+ * suspending the store.
  */
 export function SettingsTab({ session, view, onChanged }: Props) {
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; text: string } | undefined>(
@@ -42,6 +44,7 @@ export function SettingsTab({ session, view, onChanged }: Props) {
       />
       {notice === undefined ? null : <Notice tone={notice.tone}>{notice.text}</Notice>}
       <WebhookSecret session={session} view={view} onChanged={onChanged} />
+      <MoveStore session={session} view={view} />
       <SuspendStore session={session} view={view} onChanged={onChanged} />
     </div>
   );

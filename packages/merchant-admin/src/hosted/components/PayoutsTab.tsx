@@ -13,6 +13,9 @@ interface Props {
   onChanged: () => void;
 }
 
+export const PAYOUTS_WAIT_FOR_SWITCH =
+  'Your store is switching to its new owner key. Payout changes wait until that is done: press Refresh above in a moment.';
+
 /** The payout addresses (each proven by its wallet) and the payout list O signs from them. */
 export function PayoutsTab({ session, view, onChanged }: Props) {
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; text: string } | undefined>(
@@ -22,6 +25,9 @@ export function PayoutsTab({ session, view, onChanged }: Props) {
   const config = view.config;
   if (config === null) {
     return <Notice tone="warn">Your store has no settings yet. Reload the page.</Notice>;
+  }
+  if (view.switching === true) {
+    return <Notice tone="info">{PAYOUTS_WAIT_FOR_SWITCH}</Notice>;
   }
   return (
     <div className="flex flex-col gap-24">

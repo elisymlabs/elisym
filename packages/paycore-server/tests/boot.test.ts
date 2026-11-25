@@ -77,6 +77,7 @@ const CONFIG: PaycoreConfig = {
     mainnet: { evm: {} },
     devnet: { solana: SOLANA_RPC, evm: { base: BASE_RPC } },
   },
+  storeMoves: false,
 };
 
 const handles: ServerHandle[] = [];
@@ -423,6 +424,7 @@ describe('startServer', () => {
       },
       inboxRelays: [RELAY],
       pendingMaxProducts: 20,
+      storeMoves: false,
     });
     expect(JSON.stringify(body)).not.toContain(SOLANA_RPC);
     expect(JSON.stringify(body)).not.toContain(BASE_RPC);

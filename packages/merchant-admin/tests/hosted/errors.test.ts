@@ -4,6 +4,7 @@ import {
   GENERIC_ALERT,
   GENERIC_ERROR,
   GENERIC_REQUEST_FAILURE,
+  MOVED_KEY,
   alertMessage,
   errorMessage,
   requestFailureMessage,
@@ -28,6 +29,32 @@ describe('what the merchant reads', () => {
     expect(errorMessage(new ApiError(401, 'unauthorized', { reason: 'new' }))).toContain(
       'did not accept your signature',
     );
+  });
+
+  it('says each refusal of a move in its own sentence', () => {
+    const sentences = new Map(
+      [
+        'taken',
+        'key_in_use',
+        'moved',
+        'busy',
+        'stale',
+        'switching',
+        'payouts_differ',
+        'no_payouts',
+      ].map((code) => [code, errorMessage(new ApiError(409, code))]),
+    );
+    expect(new Set(sentences.values()).size).toBe(sentences.size);
+    for (const sentence of sentences.values()) {
+      expect(sentence).not.toBe(GENERIC_ERROR);
+    }
+    expect(sentences.get('moved')).toBe(MOVED_KEY);
+    expect(MOVED_KEY).toBe('This store moved to another owner key.');
+    expect(sentences.get('taken')).toContain('never owned a store');
+    expect(sentences.get('key_in_use')).toContain('already has a payout list');
+    expect(sentences.get('switching')).toContain('still switching');
+    expect(sentences.get('payouts_differ')).toContain('sign each one again');
+    expect(sentences.get('busy')).toContain('earlier change');
   });
 
   it('never carries a text the server or an exception sent', () => {
