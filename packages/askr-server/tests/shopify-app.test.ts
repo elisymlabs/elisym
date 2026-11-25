@@ -458,6 +458,23 @@ describe('settings signed by D (askr-shopify 3.4)', () => {
     }
   });
 
+  it('refuses more domains than fit beside the shop own two, never cutting them', async () => {
+    const h = await harness();
+    await h.onboard();
+    const extra = (count: number) =>
+      Array.from({ length: count }, (_unused, index) => `https://d${index}.example`);
+    const over = await h.call('PUT', '/v1/shopify/settings', {
+      body: { ...settings, origins: extra(19) },
+    });
+    expect(over).toMatchObject({ status: 400, body: { error: 'too_many_origins', max: 18 } });
+    const fits = await h.call('PUT', '/v1/shopify/settings', {
+      body: { ...settings, origins: extra(18) },
+    });
+    expect(fits.status).toBe(200);
+    const read = await h.call('GET', '/v1/shopify/settings');
+    expect((read.body.config as { origins: string[] }).origins).toHaveLength(20);
+  });
+
   it('refuses past the rate limit and past the 60 s skew', async () => {
     const h = await harness();
     await h.onboard();

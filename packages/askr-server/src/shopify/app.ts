@@ -627,7 +627,11 @@ export class ShopifyApp {
     const own = [input.shopUrl, `https://${input.shop}`];
     const origins = [
       ...new Set([...own, ...input.settings.origins.filter((origin) => !own.includes(origin))]),
-    ].slice(0, LIMITS.MAX_ORIGINS);
+    ];
+    // Never cut silently: the merchant hears how many extra domains fit.
+    if (origins.length > LIMITS.MAX_ORIGINS) {
+      return json({ error: 'too_many_origins', max: LIMITS.MAX_ORIGINS - own.length }, 400);
+    }
     let event: NostrEvent;
     try {
       event = signDelegateConfig({

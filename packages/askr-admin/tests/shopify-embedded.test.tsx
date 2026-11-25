@@ -57,6 +57,8 @@ function fakeServer() {
     status: 'pending',
     tier: null as string | null,
     stillOnboarding: false,
+    storeFails: false,
+    saveError: undefined as string | undefined,
   };
   const view = () => ({
     shop: SHOP,
@@ -90,7 +92,7 @@ function fakeServer() {
       return reply({ now: NOW });
     }
     if (route === 'GET /v1/shopify/store') {
-      return reply(view());
+      return state.storeFails ? reply({ error: 'shopify_refused' }, 502) : reply(view());
     }
     if (route === 'POST /v1/shopify/onboard/begin') {
       return reply({ catalogKey, delegate, now: NOW });
@@ -113,6 +115,9 @@ function fakeServer() {
       return reply(state.settings);
     }
     if (route === 'PUT /v1/shopify/settings') {
+      if (state.saveError !== undefined) {
+        return reply({ error: state.saveError }, 400);
+      }
       state.saved = call.body;
       return reply({ saved: true });
     }
@@ -482,5 +487,48 @@ describe('embedded admin review round (askr-shopify phase 3)', () => {
     expect(storageProblems(html, new Map())).toEqual([
       'assets/e.js, loaded by the embedded admin, is not in the build',
     ]);
+  });
+});
+
+describe('embedded admin confirm round (askr-shopify phase 3)', () => {
+  it('drops the key of a store finished elsewhere even when the reload fails', async () => {
+    const server = fakeServer();
+    server.state.finishError = 'onboarded';
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Set up Askr for'));
+    await act(async () => buttonNamed(container, 'Set up Askr').click());
+    await settle(() => text(container).includes('Save your owner key'));
+    server.state.storeFails = true;
+    await act(async () =>
+      (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click(),
+    );
+    await act(async () => buttonNamed(container, 'Finish setup').click());
+    await settle(() => !text(container).includes('Save your owner key'));
+    expect(text(container)).not.toContain('nsec1');
+    expect(text(container)).toContain('Shopify did not answer');
+  });
+
+  it('says how to write a domain, and how many fit, when a save is refused', async () => {
+    for (const [code, words] of [
+      ['bad_settings', 'full https address'],
+      ['too_many_origins', '18 more at most'],
+    ] as const) {
+      const server = fakeServer();
+      server.state.onboarded = true;
+      server.state.saveError = code;
+      server.state.settings = { config: SETTINGS_CONFIG, private: null, inCharge: true };
+      mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+      const container = mounted.container;
+      await settle(() => text(container).includes('Overview'));
+      await act(async () => buttonNamed(container, 'Settings').click());
+      await settle(() =>
+        [...container.querySelectorAll('button')].some((button) => button.textContent === 'Save'),
+      );
+      await act(async () => buttonNamed(container, 'Save').click());
+      await settle(() => text(container).includes(words));
+      await mounted.unmount();
+      mounted = undefined;
+    }
   });
 });

@@ -563,18 +563,22 @@ export class StoreDirectory {
   }
 
   /**
-   * A store's Shopify standing (askr-shopify 3.1, 1.5): `onboarding` while its Shopify
+   * A store's Shopify standing (askr-shopify 3.1, 1.5, 5.3): `onboarding` while its Shopify
    * onboarding is unfinished (the admin API refuses it), `linked` while a shop is linked (recover
-   * refuses it). Both false for every other store, and for no store.
+   * refuses it), `delegated` while the app's delegate manages it (the admin API writes nothing).
+   * All false for every other store, and for no store.
    */
-  async shopifyHold(owner: string): Promise<{ onboarding: boolean; linked: boolean }> {
-    const [row] = await this.db.query<{ onboarding: boolean; linked: boolean }>(
+  async shopifyHold(
+    owner: string,
+  ): Promise<{ onboarding: boolean; linked: boolean; delegated: boolean }> {
+    const [row] = await this.db.query<{ onboarding: boolean; linked: boolean; delegated: boolean }>(
       `select (s.shopify_onboarding_until is not null) as onboarding,
-         exists (select 1 from shopify_shops sh where sh.owner = s.owner) as linked
+         exists (select 1 from shopify_shops sh where sh.owner = s.owner) as linked,
+         s.delegate_active as delegated
        from stores s where s.owner = $1`,
       [owner],
     );
-    return row ?? { onboarding: false, linked: false };
+    return row ?? { onboarding: false, linked: false, delegated: false };
   }
 
   /** Whether the server holds a config `owner` signed that parses (it lists at least one origin). */

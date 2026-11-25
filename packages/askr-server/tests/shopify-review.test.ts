@@ -730,6 +730,8 @@ describe('deepsec round (askr-shopify phase 2)', () => {
   it('keeps a Shopify app connector out of the admin connector routes', async () => {
     const h = await harness();
     const { owner, ownerSecret } = await h.onboard();
+    // Once the merchant took the store over: the app's connector still follows the shop.
+    await h.db.query('update stores set delegate_active = false where owner = $1', [owner]);
     const put = await h.admin('PUT', '/v1/admin/connector', ownerSecret, {
       platform: 'shopify',
       url: 'https://evil.example',

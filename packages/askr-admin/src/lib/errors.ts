@@ -59,6 +59,10 @@ const CODES: Readonly<Record<string, string>> = {
   onboarded: 'Askr is already set up for this shop.',
   owner_taken: 'This key already belongs to an Askr store. Start again: a new key will be made.',
   bad_events: 'The setup could not be signed correctly. Start again.',
+  managed_by_delegate:
+    'This store is managed by the Askr app in Shopify. Change it there, from your Shopify admin.',
+  too_many_origins:
+    'Too many storefront domains: your shop keeps its own two, and you can add 18 more at most.',
   shopify_managed:
     'This product source is managed by the Askr app in Shopify and follows your shop there.',
   shopify_linked:

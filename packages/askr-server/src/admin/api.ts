@@ -55,6 +55,17 @@ export const MAX_READ_BACK_BYTES = 1024 * 1024;
 /** A stored event may be dated at most this far ahead (clock skew of the signer). */
 const MAX_AHEAD_SECS = 10 * 60;
 const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
+/** The writes refused while the Shopify app's delegate manages a store (askr-shopify 5.3). */
+const MANAGED_BY_DELEGATE_ROUTES: ReadonlySet<string> = new Set([
+  'POST /v1/admin/store/events',
+  'POST /v1/admin/store/assistant/rotate',
+  'PUT /v1/admin/connector',
+  'DELETE /v1/admin/connector',
+  'POST /v1/admin/connector/preview',
+  'POST /v1/admin/connector/enable',
+  'POST /v1/admin/connector/disable',
+  'POST /v1/admin/catalog',
+]);
 
 const RecoverRequestSchema = z.object({
   from: z.string().max(100),
@@ -465,7 +476,15 @@ export function createAdminApi(
       movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
       email: (await deps.directory.contactEmail(store.owner)) ?? null,
       billing: deps.billing === undefined ? BILLING_OFF : await deps.billing.view(store.owner),
+      // The Shopify app (askr-shopify 5.3): `linked` while a shop is linked, `active` while the
+      // app's delegate manages the store (the admin shows it read only). Both false otherwise.
+      delegation: await delegationOf(store.owner),
     };
+  };
+
+  const delegationOf = async (owner: string) => {
+    const hold = await deps.directory.shopifyHold(owner);
+    return { linked: hold.linked, active: hold.delegated };
   };
 
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -792,6 +811,14 @@ export function createAdminApi(
     }
     if (route === 'GET /v1/admin/store') {
       return json(await view(store), 200);
+    }
+    // While the Shopify app's delegate manages the store, nothing here writes its settings,
+    // products, policies, connector or keys: an older admin, CLI or MCP fails loudly instead of
+    // taking the store away from the app (askr-shopify 5.3).
+    if (MANAGED_BY_DELEGATE_ROUTES.has(route) || POLICY_PATH_RE.test(url.pathname)) {
+      if ((await deps.directory.shopifyHold(owner)).delegated && request.method !== 'GET') {
+        return json({ error: 'managed_by_delegate' }, 409);
+      }
     }
     if (route === 'POST /v1/admin/store/events') {
       return storeEvents(store, body);
