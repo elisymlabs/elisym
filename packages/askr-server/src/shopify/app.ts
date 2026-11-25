@@ -319,8 +319,10 @@ export class ShopifyApp {
   /** Write the store's npub to the app installation's `askr.store` metafield when missing. */
   private async writeStoreMetafield(shop: string, owner: string): Promise<void> {
     const token = await this.token(shop);
+    // No usable token (none, or a refresh Shopify refused): as good as a refusal, so an admin
+    // open exchanges a new one.
     if (token === undefined) {
-      return;
+      throw new ShopifyRefused('no usable token for the shop', 401);
     }
     const value = npubEncode(owner);
     const answer = MetafieldAnswerSchema.parse(

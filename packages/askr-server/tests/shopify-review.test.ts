@@ -9,6 +9,7 @@ import {
   parseConfig,
 } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
+import { npubEncode } from 'nostr-tools/nip19';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it, vi } from 'vitest';
 import { ShopRateLimiter } from '../src/connectors/http';
@@ -1073,5 +1074,41 @@ describe('uninstall race, confirm round (launch prep)', () => {
     expect((await h.shops.shop(SHOP))?.uninstalledAt).toBeNull();
     expect((await h.directory.connector(owner))?.enabled).toBe(true);
     expect(h.logs.some((line) => line.includes('still installed: ignored'))).toBe(true);
+  });
+});
+
+describe('storeOpen, confirm round 2 (launch prep)', () => {
+  it('exchanges on open when the refresh of a token near expiry is refused, keeping a quick reinstall', async () => {
+    const h = await harness();
+    h.shop.expiresIn = 100;
+    const { owner } = await h.onboard();
+    await h.webhook('app/uninstalled', {});
+    const exchanges = h.shop.exchanges;
+    h.shop.metafield = null;
+    await h.call('GET', '/v1/shopify/store');
+    expect(h.shop.exchanges).toBe(exchanges + 1);
+    // Shopify dropped the installation's metafield: it is written again in the same open.
+    expect(h.shop.metafield).toBe(npubEncode(owner));
+    await h.app.runJobs();
+    expect((await h.shops.shop(SHOP))?.uninstalledAt).toBeNull();
+    expect((await h.directory.connector(owner))?.enabled).toBe(true);
+  });
+
+  it('never re-exchanges on a metafield call that failed for another reason', async () => {
+    const h = await harness();
+    await h.onboard();
+    const exchanges = h.shop.exchanges;
+    h.shop.graphqlStatus = 503;
+    await h.call('GET', '/v1/shopify/store');
+    expect(h.shop.exchanges).toBe(exchanges);
+    expect((await h.shops.shop(SHOP))?.needsReauth).toBe(false);
+  });
+
+  it('writes no metafield while the onboarding is unfinished', async () => {
+    const h = await harness();
+    const secret = generateSecretKey();
+    expect((await begin(h, secret)).response.status).toBe(200);
+    await h.call('GET', '/v1/shopify/store');
+    expect(h.shop.metafieldWrites).toBe(0);
   });
 });
