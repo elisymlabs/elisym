@@ -38,3 +38,25 @@ pre[data-v] > code:focus-visible {
 pre[data-v].has-diff > code {
   position: relative;
 }
+
+/* Askr wordmark on the Askr overview: black on the light theme, white on the dark
+   one. Vocs marks the dark theme with an inline `color-scheme: dark` style (its
+   own `dark` variant matches the same selector). */
+img.askr-logo {
+  display: block;
+  width: auto;
+  height: 48px;
+  margin: 8px 0 24px;
+}
+
+img.askr-logo--dark {
+  display: none;
+}
+
+:where([style*=':dark'], [style*=': dark']) img.askr-logo--light {
+  display: none;
+}
+
+:where([style*=':dark'], [style*=': dark']) img.askr-logo--dark {
+  display: block;
+}
