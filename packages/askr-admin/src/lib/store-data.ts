@@ -1,17 +1,18 @@
 import {
-  CONFIG_D_TAG,
   D_TAG_RE,
   type CatalogItem,
   type CatalogItemInput,
   KIND_CATALOG_AUTH,
-  KIND_CONFIG,
   KIND_POLICY,
   type Policy,
   type StoreConfig,
+  configCandidates,
+  delegateConfigFilters,
   parseCatalogItem,
-  parseConfig,
   parsePolicy,
   readCatalogAuthority,
+  readConfigDelegates,
+  storeConfigFilters,
 } from '@elisym/askr';
 import {
   KIND_DELETION,
@@ -84,8 +85,9 @@ function deleted(event: NostrEvent, deletions: readonly NostrEvent[], now: numbe
 }
 
 /**
- * The owner's config as the relay holds it: none, the newest one, or a newest
+ * The store's config as the relay holds it: none, the newest one, or a newest
  * one that does not parse (then the newest that does, if the relay kept one).
+ * Candidates are the owner's configs and its active delegates' (1.3).
  */
 export type ConfigRead =
   | { state: 'none' }
@@ -103,39 +105,45 @@ export async function readConfig(
   owner: string,
   now: number = nowSecs(),
 ): Promise<ConfigRead> {
-  const events = await reader.query({
-    kinds: [KIND_CONFIG],
-    authors: [owner],
-    '#d': [CONFIG_D_TAG],
-  });
-  const [newest] = newestByD(events, KIND_CONFIG, owner, now);
+  const events = await readConfigEvents(reader, owner, now);
+  const [newest, ...older] = configCandidates(events, owner, { now, isGenuine: verifyEvent });
   if (newest === undefined) {
     return { state: 'none' };
   }
-  const config = parseConfig(newest);
-  if (config !== undefined) {
-    return { state: 'ok', config, id: newest.id };
+  if (newest.config !== undefined) {
+    return { state: 'ok', config: newest.config, id: newest.event.id };
   }
-  const older = events
-    .filter((event) => event.id !== newest.id && event.created_at <= newest.created_at)
-    .sort((left, right) => right.created_at - left.created_at || left.id.localeCompare(right.id));
-  for (const event of newestByDAll(older, owner, now)) {
-    const fallback = parseConfig(event);
-    if (fallback !== undefined) {
-      return { state: 'unreadable', newestAt: newest.created_at, fallback, fallbackId: event.id };
-    }
-  }
+  const fallback = older.find((candidate) => candidate.config !== undefined);
   return {
     state: 'unreadable',
-    newestAt: newest.created_at,
-    fallback: undefined,
-    fallbackId: undefined,
+    newestAt: newest.event.created_at,
+    fallback: fallback?.config,
+    fallbackId: fallback?.event.id,
   };
 }
 
-/** Signed configs of `owner`, newest first, each passing the same checks as `newestByD`. */
-function newestByDAll(events: readonly NostrEvent[], owner: string, now: number): NostrEvent[] {
-  return events.filter((event) => newestByD([event], KIND_CONFIG, owner, now).length === 1);
+/**
+ * The owner's configs, delegations and deletions, then its active delegates'
+ * configs and deletions when it has any (1.3). The owner's deletions of its
+ * own config are not applied here: the admin shows a deleted config, as it
+ * always has.
+ */
+async function readConfigEvents(
+  reader: RelayReader,
+  owner: string,
+  now: number,
+): Promise<NostrEvent[]> {
+  const ownerEvents = (
+    await Promise.all(storeConfigFilters(owner).map((filter) => reader.query(filter)))
+  ).flat();
+  const delegates = readConfigDelegates(ownerEvents, owner, now);
+  if (delegates.length === 0) {
+    return ownerEvents;
+  }
+  const delegateEvents = (
+    await Promise.all(delegateConfigFilters(delegates).map((filter) => reader.query(filter)))
+  ).flat();
+  return [...ownerEvents, ...delegateEvents];
 }
 
 export interface AuthorityRead {

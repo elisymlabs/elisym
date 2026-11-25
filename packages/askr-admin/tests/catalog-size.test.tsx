@@ -84,6 +84,13 @@ describe('the catalog size against the plan', () => {
     );
   });
 
+  it("reads the owner's authority for a config a delegate signed, never the delegate's", async () => {
+    const delegated = adminConfig({ source: { kind: 'catalog' }, signer: OTHER_KEY });
+    const container = await overview([CATALOG_AUTH, ...products(5)], 3, delegated);
+    await settle(() => (container.textContent ?? '').includes('indexes up to'));
+    expect(container.textContent).toContain('Your catalog has 5 products');
+  });
+
   it('says nothing at or under the plan, and nothing for a key the owner does not authorize', async () => {
     for (const events of [[CATALOG_AUTH, ...products(3)], products(5)]) {
       const container = await overview(events, 3);

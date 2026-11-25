@@ -5,6 +5,8 @@ import {
   KIND_CONFIG,
   buildCatalogAuth,
   buildCatalogItemEvent,
+  buildConfigDelegation,
+  buildConfigDelegationRevocation,
   buildConfigEvent,
   unwrapChatMessage,
 } from '@elisym/askr';
@@ -1766,6 +1768,152 @@ describe('server core review 2: worker', () => {
     setup.state.leaseGate = undefined;
     const taken = await setup.state.acquireLeases('other', setup.clock.now, 60);
     expect(taken.map((lease) => lease.store.owner)).toEqual([store.owner]);
+  });
+});
+
+describe('catalog loader with a config delegate (askr-shopify 1.3, 1.5)', () => {
+  function delegateConfigOf(store: SyntheticStore, delegateSecret: Uint8Array, createdAt: number) {
+    return finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant: store.assistant,
+          origins: ['https://delegated.example'],
+          name: 'Delegated Shop',
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'catalog' },
+          catalogKey: store.catalogKey,
+          createdAt,
+        },
+        delegateSecret,
+      ),
+      delegateSecret,
+    );
+  }
+
+  it("serves a delegate's config published after the grant's reload, and notes no origins of it", async () => {
+    const store = syntheticStore();
+    const delegateSecret = generateSecretKey();
+    const delegate = getPublicKey(delegateSecret);
+    // Only the grant and the catalog: the owner never signs a config.
+    const withoutConfig = {
+      ...store,
+      events: [
+        ...store.events.filter((event) => event.kind !== KIND_CONFIG),
+        finalizeEvent(
+          buildConfigDelegation({ key: delegate, createdAt: NOW - 90 }),
+          store.ownerSecret,
+        ),
+      ],
+    };
+    const setup = await harness({ stores: [withoutConfig] });
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.isUnservable(store.owner)).toBe(true);
+    // The live REQ already covers the delegate, so its first config reloads the store.
+    setup.pool.relay(RELAY).accept(delegateConfigOf(store, delegateSecret, NOW - 10));
+    await waitUntil(() => setup.worker.catalogs.has(store.owner), 20_000);
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.catalogs.get(store.owner)?.config.name).toBe('Delegated Shop');
+    expect(setup.worker.catalogs.get(store.owner)?.items.size).toBe(2);
+    setup.worker.noteLoadedOrigins();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await originsOf(setup, store.owner)).toEqual([]);
+    // Revoked: the store has no config again.
+    setup.pool
+      .relay(RELAY)
+      .accept(finalizeEvent(buildConfigDelegationRevocation(delegate, NOW - 5), store.ownerSecret));
+    await waitUntil(() => !setup.worker.catalogs.has(store.owner), 20_000);
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.isUnservable(store.owner)).toBe(true);
+    // The live REQ no longer follows the revoked delegate.
+    const followsDelegate = () =>
+      setup.pool
+        .relay(RELAY)
+        .open.some((subscription) =>
+          subscription.filters.some((filter) => filter.authors?.includes(delegate) === true),
+        );
+    await waitUntil(() => !followsDelegate(), 20_000);
+  });
+
+  it("a failed read of the delegate's events keeps the cache and is retried", async () => {
+    const store = syntheticStore();
+    const delegateSecret = generateSecretKey();
+    const delegate = getPublicKey(delegateSecret);
+    const setup = await harness({
+      historyTimeoutMs: 100,
+      stores: [
+        {
+          ...store,
+          events: [
+            ...store.events.filter((event) => event.kind !== KIND_CONFIG),
+            finalizeEvent(
+              buildConfigDelegation({ key: delegate, createdAt: NOW - 90 }),
+              store.ownerSecret,
+            ),
+            delegateConfigOf(store, delegateSecret, NOW - 20),
+          ],
+        },
+      ],
+    });
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.catalogs.get(store.owner)?.config.name).toBe('Delegated Shop');
+    const relay = setup.pool.relay(RELAY);
+    // Only the history read of the delegate's configs hangs; the live REQ has no kinds.
+    relay.holdEose = (filters) =>
+      filters.some(
+        (filter) =>
+          filter.authors?.includes(delegate) === true &&
+          filter.kinds?.includes(KIND_CONFIG) === true,
+      );
+    const renamed = finalizeEvent(
+      buildConfigEvent(
+        {
+          assistant: store.assistant,
+          origins: ['https://delegated.example'],
+          name: 'Renamed Shop',
+          language: 'en',
+          currency: 'USD',
+          source: { kind: 'catalog' },
+          catalogKey: store.catalogKey,
+          createdAt: NOW - 10,
+        },
+        delegateSecret,
+      ),
+      delegateSecret,
+    );
+    relay.accept(renamed);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(setup.worker.catalogs.get(store.owner)?.config.name).toBe('Delegated Shop');
+    relay.holdEose = undefined;
+    await waitUntil(
+      () => setup.worker.catalogs.get(store.owner)?.config.name === 'Renamed Shop',
+      20_000,
+    );
+  });
+
+  it("an owner's config newer than the delegate's is served and notes its origins", async () => {
+    const store = syntheticStore();
+    const delegateSecret = generateSecretKey();
+    const delegate = getPublicKey(delegateSecret);
+    const setup = await harness({
+      stores: [
+        {
+          ...store,
+          events: [
+            ...store.events,
+            finalizeEvent(
+              buildConfigDelegation({ key: delegate, createdAt: NOW - 200 }),
+              store.ownerSecret,
+            ),
+            delegateConfigOf(store, delegateSecret, NOW - 150),
+          ],
+        },
+      ],
+    });
+    await setup.worker.catalogsSettled();
+    expect(setup.worker.catalogs.get(store.owner)?.config.name).toBe('Example Shop');
+    await waitUntil(async () => (await originsOf(setup, store.owner)).length > 0, 20_000);
+    expect(await originsOf(setup, store.owner)).toEqual([ORIGIN]);
   });
 });
 

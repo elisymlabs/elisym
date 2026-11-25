@@ -24,11 +24,11 @@ function storeAuth(owner: ReturnType<typeof makeStore>['owner'], key: string): N
 }
 
 describe('store data', () => {
-  it("asks for the config and the owner's 30497, 30490 and kind 5 events", () => {
+  it("asks for the config and the owner's 30497, 30490, 30498 and kind 5 events", () => {
     const store = makeStore();
     const filters = storeFilters(store.owner.pubkey);
     const kinds = filters.flatMap((filter) => filter.kinds ?? []);
-    expect(kinds.sort((left, right) => left - right)).toEqual([5, 30490, 30496, 30497]);
+    expect(kinds.sort((left, right) => left - right)).toEqual([5, 30490, 30496, 30497, 30498]);
     expect(filters.every((filter) => filter.authors?.join() === store.owner.pubkey)).toBe(true);
   });
 

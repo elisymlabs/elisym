@@ -392,6 +392,102 @@ describe('S10: reads trust only genuine events', () => {
     expect(signed.config?.name).toBe('Genuine');
   });
 
+  it("readSigned: an active delegate's config, from the relay or stored, is the store's", async () => {
+    const setup = await harness();
+    const { session, secret } = await sessionFor(setup);
+    const now = nowSecs();
+    const owner = getPublicKey(secret);
+    const delegateSecret = generateSecretKey();
+    const delegate = getPublicKey(delegateSecret);
+    setup.fake.relay.push(configBy(secret, setup, { name: 'Owner', createdAt: now - 100 }));
+    // A delegate config with no grant is nobody's.
+    setup.fake.relay.push(
+      configBy(delegateSecret, setup, { name: 'Relay D', createdAt: now - 20 }),
+    );
+    expect((await drive(readSigned(session, owner, secret))).config?.name).toBe('Owner');
+    // The grant is read from the relay with the owner's events.
+    setup.fake.relay.push(
+      signedAt(askr.buildConfigDelegation({ key: delegate }), secret, now - 90),
+    );
+    const read = await drive(readSigned(session, owner, secret));
+    expect([read.config?.name, read.config?.signer]).toEqual(['Relay D', delegate]);
+    // A newer one the server holds and the relay does not have yet.
+    setup.fake.stored.push({
+      event: configBy(delegateSecret, setup, { name: 'Stored D', createdAt: now - 10 }),
+      published: false,
+      stopped: false,
+    });
+    expect((await drive(readSigned(session, owner, secret))).config?.name).toBe('Stored D');
+    // A revocation dated past the clock skew still revokes, as in every other reader.
+    setup.fake.relay.push(
+      signedAt(askr.buildConfigDelegationRevocation(delegate), secret, now + 11 * 60),
+    );
+    expect((await drive(readSigned(session, owner, secret))).config?.name).toBe('Owner');
+  });
+
+  it('readSigned: the clock skew still bounds owner configs and catalog authority (10 min)', async () => {
+    const setup = await harness();
+    const { session, secret } = await sessionFor(setup);
+    const now = nowSecs();
+    const owner = getPublicKey(secret);
+    const key = setup.fake.catalogKey;
+    setup.fake.relay.push(
+      configBy(secret, setup, { name: 'Now', createdAt: now - 100 }),
+      configBy(secret, setup, { name: 'Ahead', createdAt: now + 12 * 60 }),
+      signedAt(askr.buildCatalogAuth({ key, mode: 'hosted' }), secret, now - 100),
+      signedAt(askr.buildCatalogRevocation(key), secret, now + 12 * 60),
+    );
+    const read = await drive(readSigned(session, owner, secret));
+    expect(read.config?.name).toBe('Now');
+    expect(read.authorized.has(key)).toBe(true);
+    expect(read.authNewestAt.get(key)).toBe(now - 100);
+  });
+
+  it("readSigned: the delegate's deletion of its config dated 12 minutes ahead voids it, as elsewhere", async () => {
+    const setup = await harness();
+    const { session, secret } = await sessionFor(setup);
+    const now = nowSecs();
+    const owner = getPublicKey(secret);
+    const delegateSecret = generateSecretKey();
+    const delegate = getPublicKey(delegateSecret);
+    setup.fake.relay.push(
+      configBy(secret, setup, { name: 'Owner', createdAt: now - 100 }),
+      signedAt(askr.buildConfigDelegation({ key: delegate }), secret, now - 90),
+      configBy(delegateSecret, setup, { name: 'Delegated', createdAt: now - 10 }),
+    );
+    expect((await drive(readSigned(session, owner, secret))).config?.name).toBe('Delegated');
+    setup.fake.relay.push(
+      signedAt(
+        {
+          kind: 5,
+          created_at: 0,
+          tags: [['a', `${askr.KIND_CONFIG}:${delegate}:${askr.CONFIG_D_TAG}`]],
+          content: '',
+        },
+        delegateSecret,
+        now + 12 * 60,
+      ),
+    );
+    expect((await drive(readSigned(session, owner, secret))).config?.name).toBe('Owner');
+  });
+
+  it("readSigned: a stranger's config signed as if by the delegate is no candidate", async () => {
+    const setup = await harness();
+    const { session, secret } = await sessionFor(setup, true);
+    const now = nowSecs();
+    const owner = getPublicKey(secret);
+    const delegate = getPublicKey(generateSecretKey());
+    setup.fake.relay.push(
+      configBy(secret, setup, { name: 'Owner', createdAt: now - 100 }),
+      signedAt(askr.buildConfigDelegation({ key: delegate }), secret, now - 90),
+      {
+        ...configBy(generateSecretKey(), setup, { name: 'Posing', createdAt: now }),
+        pubkey: delegate,
+      },
+    );
+    expect((await drive(readSigned(session, owner, secret))).config?.name).toBe('Owner');
+  });
+
   it('readListings and readPolicySlugs: forged, wrong-author and same-second-deleted events are left out', async () => {
     const setup = await harness();
     const { session } = await sessionFor(setup, true);

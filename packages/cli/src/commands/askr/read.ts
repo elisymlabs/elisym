@@ -4,6 +4,7 @@
  * holds for it (a store that is not active, or not fully published yet, has
  * its settings only there). Every event is signature checked.
  */
+import type * as AskrModule from '@elisym/askr';
 import type { StoreConfig, StorePrivateConfig } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import * as nip44 from 'nostr-tools/nip44';
@@ -43,8 +44,13 @@ function verifies(event: NostrEvent): boolean {
   }
 }
 
-/** Signed by `author`, signature checked, not dated past the clock skew. */
-function genuine(events: readonly unknown[], author: string, now: number): NostrEvent[] {
+/** Signed by `author`, signature checked, not dated past the clock skew (`aheadSecs`). */
+function genuine(
+  events: readonly unknown[],
+  author: string,
+  now: number,
+  aheadSecs: number = MAX_AHEAD_SECS,
+): NostrEvent[] {
   return events.flatMap((value) => {
     if (!isEventShaped(value)) {
       return [];
@@ -58,7 +64,7 @@ function genuine(events: readonly unknown[], author: string, now: number): Nostr
       content: value.content,
       sig: value.sig,
     };
-    return event.pubkey === author && event.created_at <= now + MAX_AHEAD_SECS && verifies(event)
+    return event.pubkey === author && event.created_at <= now + aheadSecs && verifies(event)
       ? [event]
       : [];
   });
@@ -121,7 +127,7 @@ export async function readSigned(
   const { askr } = session;
   const now = session.nowSecs();
   const relayEvents = await session.relayQuery({
-    kinds: [askr.KIND_CONFIG, askr.KIND_CATALOG_AUTH, KIND_DELETION],
+    kinds: [askr.KIND_CONFIG, askr.KIND_CATALOG_AUTH, askr.KIND_CONFIG_DELEGATION, KIND_DELETION],
     authors: [owner],
   });
   const stored = await session.call<StoredEventsView>('GET', '/v1/admin/store/events');
@@ -129,24 +135,25 @@ export async function readSigned(
     throw refusalExit(session, stored);
   }
   const storedEvents = Array.isArray(stored.body.events) ? stored.body.events : [];
-  const seen = new Set<string>();
-  const events = genuine([...relayEvents, ...storedEvents], owner, now).filter((event) => {
-    if (seen.has(event.id)) {
-      return false;
-    }
-    seen.add(event.id);
-    return true;
-  });
-  const configs = events
-    .filter((event) => event.kind === askr.KIND_CONFIG && dOf(event) === askr.CONFIG_D_TAG)
-    .sort((left, right) => (isNewer(left, right) ? -1 : 1));
-  let config: StoreConfig | undefined;
-  for (const event of configs) {
-    config = askr.parseConfig(event);
-    if (config !== undefined) {
-      break;
-    }
-  }
+  // Every genuine owner event however dated: a revocation of a delegate counts even when dated
+  // past the clock skew, as every other reader reads it (it can only refuse).
+  const ownerEvents = unique(
+    genuine([...relayEvents, ...storedEvents], owner, now, Number.POSITIVE_INFINITY),
+  );
+  const events = ownerEvents.filter((event) => event.created_at <= now + MAX_AHEAD_SECS);
+  // A store with an active config delegate (1.3): its configs and deletions are candidates too.
+  const delegates = askr.readConfigDelegates(ownerEvents, owner, now);
+  const delegateRelay =
+    delegates.length === 0
+      ? []
+      : await session.relayQuery({ kinds: [askr.KIND_CONFIG, KIND_DELETION], authors: delegates });
+  const delegateEvents = unique(
+    delegates.flatMap((delegate) =>
+      genuine([...delegateRelay, ...storedEvents], delegate, now, Number.POSITIVE_INFINITY),
+    ),
+  );
+  // The candidates apply the clock skew to configs themselves.
+  const config = newestParseableConfig(askr, [...ownerEvents, ...delegateEvents], owner, now);
   const privatePart =
     config === undefined
       ? undefined
@@ -163,6 +170,33 @@ export async function readSigned(
     authorized: askr.readCatalogAuthority(events, owner, now),
     authNewestAt,
   };
+}
+
+function unique(events: readonly NostrEvent[]): NostrEvent[] {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    if (seen.has(event.id)) {
+      return false;
+    }
+    seen.add(event.id);
+    return true;
+  });
+}
+
+/**
+ * The store's config the CLI works from: the newest candidate of the owner and
+ * its active delegates that parses (1.3). Deletions of the owner's config are
+ * not applied, as before; a delegate's deleted config is no candidate.
+ */
+export function newestParseableConfig(
+  askr: Pick<typeof AskrModule, 'configCandidates'>,
+  events: readonly NostrEvent[],
+  owner: string,
+  now: number,
+): StoreConfig | undefined {
+  return askr
+    .configCandidates(events, owner, { now, isGenuine: verifies, maxAheadSecs: MAX_AHEAD_SECS })
+    .find((candidate) => candidate.config !== undefined)?.config;
 }
 
 export interface ListingCounts {

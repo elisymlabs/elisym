@@ -1,5 +1,11 @@
 // cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
-import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
+import {
+  KIND_CATALOG_AUTH,
+  KIND_CONFIG,
+  KIND_CONFIG_DELEGATION,
+  buildConfigDelegation,
+  buildConfigEvent,
+} from '@elisym/askr';
 import {
   buildProductEvent,
   buildStoreAuthEvent,
@@ -9,7 +15,7 @@ import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it } from 'vitest';
 import { buildStoreCatalog, keyFilters, ownerFilters } from '../src/worker/catalog';
-import { NOW, type SyntheticStore, syntheticStore } from './fixtures';
+import { NOW, ORIGIN, type SyntheticStore, syntheticStore } from './fixtures';
 
 const STORE_AUTH_KIND = 30490;
 
@@ -49,7 +55,10 @@ describe('a PayCore store as a catalog source on the server', () => {
   it("asks the relay for the owner's 30490s with the rest of the authority, the keys' never", () => {
     const store = syntheticStore();
     expect(ownerFilters(store.owner)).toEqual([
-      { kinds: [KIND_CONFIG, KIND_CATALOG_AUTH, STORE_AUTH_KIND, 5], authors: [store.owner] },
+      {
+        kinds: [KIND_CONFIG, KIND_CATALOG_AUTH, STORE_AUTH_KIND, 5, KIND_CONFIG_DELEGATION],
+        authors: [store.owner],
+      },
     ]);
     const keyKinds = keyFilters(store.catalogKey, store.catalogKey).flatMap(
       (filter) => filter.kinds ?? [],
@@ -160,6 +169,58 @@ describe('a PayCore store as a catalog source on the server', () => {
     );
     expect(lapsed?.items.get('paid')).toBeDefined();
     expect(lapsed?.items.get('paid')?.payable).toBeUndefined();
+  });
+
+  it("a config a delegate signed sells through the owner's 30490, never the delegate's", () => {
+    const store = syntheticStore();
+    const delegateSecret = generateSecretKey();
+    const delegate = getPublicKey(delegateSecret);
+    const delegated = [
+      ...store.events,
+      paidListingOf(store),
+      finalizeEvent(
+        buildConfigDelegation({ key: delegate, createdAt: NOW - 90 }),
+        store.ownerSecret,
+      ),
+      finalizeEvent(
+        buildConfigEvent(
+          {
+            assistant: store.assistant,
+            origins: [ORIGIN],
+            name: 'Delegated Shop',
+            language: 'en',
+            currency: 'USD',
+            source: { kind: 'catalog' },
+            catalogKey: store.catalogKey,
+            private: { voice: 'v', instructions: 'from the delegate', notes: '' },
+            createdAt: NOW - 10,
+          },
+          delegateSecret,
+        ),
+        delegateSecret,
+      ),
+    ];
+    const owners = buildStoreCatalog(
+      [...delegated, storeAuthOf(store)],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+    );
+    expect(owners?.config.name).toBe('Delegated Shop');
+    expect(owners?.items.get('paid')?.payable?.network).toBe('devnet');
+    const delegates = finalizeEvent(
+      buildStoreAuthEvent({ storePubkey: store.catalogKey, mode: 'hosted', createdAt: NOW - 50 }),
+      delegateSecret,
+    );
+    const notOwners = buildStoreCatalog(
+      [...delegated, delegates],
+      store.owner,
+      store.assistantSecret,
+      NOW,
+    );
+    expect(notOwners?.config.name).toBe('Delegated Shop');
+    expect(notOwners?.items.has('paid')).toBe(true);
+    expect(notOwners?.items.get('paid')?.payable).toBeUndefined();
   });
 
   it('a 30490 signed by someone else, or for another key, gives no Buy', () => {

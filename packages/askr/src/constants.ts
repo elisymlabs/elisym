@@ -6,6 +6,10 @@
 export const KIND_POLICY = 30495;
 export const KIND_CONFIG = 30496;
 export const KIND_CATALOG_AUTH = 30497;
+/** The owner's authorization of a delegate key that may sign the store's config (30496) only. */
+export const KIND_CONFIG_DELEGATION = 30498;
+/** Active config delegates a reader takes configs from, newest grants first. */
+export const MAX_CONFIG_DELEGATES = 4;
 /** The chat rumor inside a gift wrap: not kind 14, so DM clients never show it as a human DM. */
 export const KIND_CHAT_MESSAGE = 4495;
 /** A gateway session ticket: signed, never published. */
