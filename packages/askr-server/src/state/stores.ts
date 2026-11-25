@@ -110,6 +110,41 @@ interface CatalogSyncRow extends Record<string, unknown> {
  * cannot both pass a cap. Its own: not the migrations' `LOCK_ID` (`db/migrations.ts`).
  */
 export const FREE_PLAN_LOCK_ID = 7_301_996;
+
+/** A per-owner transaction lock: opening a store and moving one away from that key take turns. */
+const OWNER_LOCK_SQL = `select pg_advisory_xact_lock(hashtextextended('askr:store-owner:' || $1, 0))`;
+
+/** Opening a store under a key a store moved away from: that key never opens a store again. */
+export class StoreMovedError extends Error {
+  constructor() {
+    super('a store moved away from this key');
+    this.name = 'StoreMovedError';
+  }
+}
+
+/** A NUL or a lone surrogate, which a jsonb column refuses. */
+const NUL = String.fromCharCode(0);
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+function jsonbRefuses(text: string): boolean {
+  return text.includes(NUL) || LONE_SURROGATE_RE.test(text);
+}
+
+/**
+ * The JSON text of `value` for a jsonb column, or null when some string in it is one jsonb
+ * refuses: a signed event with such text (anyone holding the old key can sign one) must never
+ * make the statement fail, so it is dropped instead.
+ */
+export function jsonbText(value: unknown): string | null {
+  let storable = true;
+  const text = JSON.stringify(value, (key: string, entry: unknown) => {
+    if (jsonbRefuses(key) || (typeof entry === 'string' && jsonbRefuses(entry))) {
+      storable = false;
+    }
+    return entry;
+  });
+  return storable ? text : null;
+}
 const DAY_SECS = 24 * 60 * 60;
 
 /**
@@ -293,19 +328,28 @@ export class StoreDirectory {
     }
     const assistantSecretKey = generateSecretKey();
     const catalogSecretKey = generateSecretKey();
-    await this.db.query(
-      `insert into stores (owner, status, assistant, assistant_key, catalog_key, catalog_key_secret, created_at)
+    await this.db.transaction(async (tx) => {
+      // Under the owner's lock a move away from it has either committed (and is seen here) or
+      // waits until this store exists, so a key a store moved away from never opens a new one.
+      await tx.query(OWNER_LOCK_SQL, [owner]);
+      const moved = await tx.query('select 1 from store_moves where from_owner = $1', [owner]);
+      if (moved.length > 0) {
+        throw new StoreMovedError();
+      }
+      await tx.query(
+        `insert into stores (owner, status, assistant, assistant_key, catalog_key, catalog_key_secret, created_at)
        values ($1, 'pending', $2, $3, $4, $5, $6)
        on conflict (owner) do nothing`,
-      [
-        owner,
-        getPublicKey(assistantSecretKey),
-        this.vault.seal(assistantSecretKey, owner, 'assistant'),
-        getPublicKey(catalogSecretKey),
-        this.vault.seal(catalogSecretKey, owner, 'catalog'),
-        now,
-      ],
-    );
+        [
+          owner,
+          getPublicKey(assistantSecretKey),
+          this.vault.seal(assistantSecretKey, owner, 'assistant'),
+          getPublicKey(catalogSecretKey),
+          this.vault.seal(catalogSecretKey, owner, 'catalog'),
+          now,
+        ],
+      );
+    });
     const created = await this.store(owner);
     if (!created) {
       throw new Error('store was not created');
@@ -719,6 +763,7 @@ export class StoreDirectory {
     config: NostrEvent | undefined,
   ): Promise<MoveResult> {
     return this.db.transaction(async (tx) => {
+      await tx.query(OWNER_LOCK_SQL, [from]);
       const [row] = await tx.query<{
         assistant_key: Uint8Array;
         catalog_key_secret: Uint8Array;
@@ -773,7 +818,7 @@ export class StoreDirectory {
       await tx.query(
         `insert into store_moves (from_owner, to_owner, moved_at, config)
          values ($1, $2, $3, ($4::text)::jsonb)`,
-        [from, to, now, config === undefined ? null : JSON.stringify(config)],
+        [from, to, now, config === undefined ? null : jsonbText(config)],
       );
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, from]);
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, to]);

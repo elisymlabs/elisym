@@ -8,7 +8,11 @@ import { PageCache, ShopBusyError, ShopRateLimiter } from '../src/connectors/htt
 import { ConnectorService } from '../src/connectors/service';
 import { createGateway } from '../src/gateway/gateway';
 import { onSharedHost } from '../src/state/origins';
-import { ORIGIN_DROPPED_GRACE_SECS, ORIGIN_PROOF_AGE_SECS } from '../src/state/stores';
+import {
+  ORIGIN_DROPPED_GRACE_SECS,
+  ORIGIN_PROOF_AGE_SECS,
+  StoreMovedError,
+} from '../src/state/stores';
 import { FakeWeb, MemoryRelay } from './connectors/helpers';
 import { HOLDER, NOW, stateWith, storeRecord, syntheticStore } from './fixtures';
 
@@ -543,6 +547,52 @@ describe('moves and origins in the state (K21)', () => {
 });
 
 describe('the move itself (K21)', () => {
+  it.each([
+    ['a NUL', 'tea\u0000'],
+    ['a lone high surrogate', 'tea\uD800'],
+    ['a lone low surrogate', 'tea\uDC00'],
+  ])(
+    'moves a store whose last config holds %s, keeping no config for it (jsonb refuses it)',
+    async (_name, content) => {
+      const { store, seeded } = await setup();
+      const hostile = finalizeEvent(
+        { kind: 30_496, created_at: NOW, tags: [['d', 'askr']], content },
+        store.ownerSecret,
+      );
+      const to = getPublicKey(generateSecretKey());
+      expect(await seeded.directory.moveStore(store.owner, to, NOW, hostile)).toEqual({ ok: true });
+      expect(await seeded.directory.movedFrom(to)).toEqual({ from: store.owner, config: null });
+    },
+  );
+
+  it('keeps a config whose text is only escaped look-alikes and real pairs', async () => {
+    const { store, seeded } = await setup();
+    const event = finalizeEvent(
+      { kind: 30_496, created_at: NOW, tags: [['d', 'askr']], content: 'a \\u0000 b 😀' },
+      store.ownerSecret,
+    );
+    const to = getPublicKey(generateSecretKey());
+    expect(await seeded.directory.moveStore(store.owner, to, NOW, event)).toEqual({ ok: true });
+    expect((await seeded.directory.movedFrom(to))?.config).toEqual(
+      JSON.parse(JSON.stringify(event)),
+    );
+  });
+
+  it('never opens a store under a key a store moved away from, even past a stale check', async () => {
+    const { store, seeded, call } = await setup();
+    const to = getPublicKey(generateSecretKey());
+    expect(await seeded.directory.moveStore(store.owner, to, NOW, undefined)).toEqual({ ok: true });
+    await expect(seeded.directory.createStore(store.owner, NOW)).rejects.toBeInstanceOf(
+      StoreMovedError,
+    );
+    expect(await seeded.directory.store(store.owner)).toBeUndefined();
+    // The API's own check read the key before the move committed: the create still refuses.
+    vi.spyOn(seeded.directory, 'wasMoved').mockResolvedValue(false);
+    const opened = await call('POST', '/v1/admin/store', store.ownerSecret);
+    expect(opened).toEqual({ status: 409, body: { error: 'moved' } });
+    expect(await seeded.directory.store(store.owner)).toBeUndefined();
+  });
+
   it('carries sessions, budgets and reservations, drops the lease, frees a sync guard, keeps the newest move', async () => {
     const { store, seeded } = await setup();
     const { db, directory, state } = seeded;
