@@ -84,6 +84,13 @@ export function CatalogKeys({ deps, view, config }: Props) {
     if (key === view.catalogKey) {
       labels.push('the server key of this admin');
     }
+    // A store key the owner signed a 30490 for is a PayCore store, not a merchant catalog key.
+    const payCore = authority?.stores.find((store) => store.key === key);
+    if (payCore !== undefined) {
+      labels.push(
+        payCore.active ? 'your PayCore store' : 'your PayCore store (authorization inactive)',
+      );
+    }
     if (key === config?.catalogKey) {
       labels.push('your product source');
     }

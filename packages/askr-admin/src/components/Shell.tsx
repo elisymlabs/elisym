@@ -222,7 +222,15 @@ export function Shell({
       />
     );
   } else {
-    content = <EmbedSection api={deps.api} view={view} config={config} />;
+    content = (
+      <EmbedSection
+        api={deps.api}
+        view={view}
+        config={config}
+        reader={deps.reader}
+        now={deps.now}
+      />
+    );
   }
   const current = TABS.find((entry) => entry.id === tab) ?? TABS[0];
   return (

@@ -5,7 +5,7 @@ import { errorMessage } from '../lib/errors';
 import { HELP } from '../lib/help';
 import { newestConfig } from '../lib/save';
 import { npubOf } from '../lib/signer';
-import { authorizationOf, formOfConfig, signStoreEvents } from '../lib/store-form';
+import { authorizationsOf, formOfConfig, signStoreEvents } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
 import { ConfigUnreadable } from './ConfigUnreadable';
 import { Notice } from './Notice';
@@ -62,8 +62,11 @@ export function RotateAssistant({ deps, view, config, configError, onRetry, onCh
         signer: deps.signer,
         now: deps.now(),
         previousCreatedAt: source.createdAt,
-        // Only the config changes: the source key's authorization stays as it is.
-        authorized: new Set([authorizationOf(form, view.catalogKey).key]),
+        // Only the config changes: the source's authorizations (both keys of a PayCore store)
+        // stay as they are.
+        authorized: new Set(
+          authorizationsOf(form, view.catalogKey).map((authorization) => authorization.key),
+        ),
       });
       await postSigned(deps, events);
       setDone(

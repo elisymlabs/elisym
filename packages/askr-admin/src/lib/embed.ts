@@ -1,5 +1,6 @@
 import { ASKR_API_BASE, ASKR_RELAYS } from '@elisym/askr';
 import { WIDGET_ELEMENT, WIDGET_SCRIPT_URL } from '../constants';
+import { CHECKOUT_ORIGIN } from './paycore';
 import type { PinnedWidget } from './types';
 
 /** The one-line embed: the script mounts the chat for the store it names. */
@@ -41,12 +42,28 @@ export interface CspSource {
   why: string;
 }
 
-/** The sources a site with a Content-Security-Policy must allow (6). */
-export function cspSources(): CspSource[] {
+/**
+ * The sources a site with a Content-Security-Policy must allow (6). A PayCore
+ * store's pages also load the pinned checkout v4 and frame its checkout (C4).
+ */
+export function cspSources(payCore = false): CspSource[] {
   // The widget reads and writes only the compiled-in Askr relay (K20).
   const relayOrigins = ASKR_RELAYS.map((relay) => new URL(relay).origin);
+  const checkout: CspSource[] = payCore
+    ? [
+        {
+          directive: 'frame-src',
+          sources: [CHECKOUT_ORIGIN],
+          why: 'the PayCore checkout behind the Buy button',
+        },
+      ]
+    : [];
   return [
-    { directive: 'script-src', sources: [ASKR_API_BASE], why: 'loads widget.js' },
+    {
+      directive: 'script-src',
+      sources: payCore ? [ASKR_API_BASE, CHECKOUT_ORIGIN] : [ASKR_API_BASE],
+      why: payCore ? 'loads widget.js and the PayCore checkout script' : 'loads widget.js',
+    },
     {
       directive: 'connect-src',
       sources: [ASKR_API_BASE, ...relayOrigins],
@@ -57,6 +74,7 @@ export function cspSources(): CspSource[] {
       sources: ['https:'],
       why: 'product images live on any https host',
     },
+    ...checkout,
   ];
 }
 

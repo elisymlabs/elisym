@@ -193,7 +193,7 @@ describe('the catalog size against the plan', () => {
     expect(await countListed(reader, SERVER_KEY, 'EUR', NOW)).toBe(0);
   });
 
-  it('reads authority as 30497 and kind 5 only, never a 30490', async () => {
+  it('reads 30490s beside 30497s and kind 5s, but a 30490 never authorizes a catalog key', async () => {
     const asked: number[] = [];
     const reader = fakeReader([STORE_AUTH, CATALOG_AUTH]);
     const authority = await readAuthority(
@@ -206,8 +206,9 @@ describe('the catalog size against the plan', () => {
       OWNER,
       NOW,
     );
-    expect(asked.sort((left, right) => left - right)).toEqual([5, 30497]);
+    expect(asked.sort((left, right) => left - right)).toEqual([5, 30490, 30497]);
     expect(authority.keys).toEqual(new Set([SERVER_KEY]));
+    expect(authority.stores.map((store) => store.key)).toEqual([SERVER_KEY]);
   });
 
   it('says nothing when the owner authorized the key only with a 30490', async () => {

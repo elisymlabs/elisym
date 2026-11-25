@@ -4,6 +4,7 @@ import {
   PRODUCT_SOURCES,
   type ProductSourceKind,
 } from '@elisym/askr';
+import type { FormSourceKind } from './store-form';
 
 export const SOURCE_LABELS: Readonly<Record<ProductSourceKind, string>> = {
   admin: 'Here in the admin (CSV import and product editor)',
@@ -17,9 +18,17 @@ export const PLATFORM_LABELS: Readonly<Record<ConnectorPlatform, string>> = {
   google: 'Google product feed',
 };
 
-export const SOURCE_OPTIONS = PRODUCT_SOURCES.map((source) => ({
+/** The form's sources: the config's, plus a PayCore store (saved as a catalog source, C1). */
+export const FORM_SOURCE_LABELS: Readonly<Record<FormSourceKind, string>> = {
+  ...SOURCE_LABELS,
+  paycore: 'My PayCore store (products with a Buy button in the chat)',
+};
+
+const FORM_SOURCES: readonly FormSourceKind[] = [...PRODUCT_SOURCES, 'paycore'];
+
+export const SOURCE_OPTIONS = FORM_SOURCES.map((source) => ({
   value: source,
-  label: SOURCE_LABELS[source],
+  label: FORM_SOURCE_LABELS[source],
 }));
 
 export const PLATFORM_OPTIONS = CONNECTOR_PLATFORMS.map((platform) => ({
@@ -27,8 +36,8 @@ export const PLATFORM_OPTIONS = CONNECTOR_PLATFORMS.map((platform) => ({
   label: PLATFORM_LABELS[platform],
 }));
 
-export function sourceKindOf(value: string): ProductSourceKind | undefined {
-  return PRODUCT_SOURCES.find((source) => source === value);
+export function sourceKindOf(value: string): FormSourceKind | undefined {
+  return FORM_SOURCES.find((source) => source === value);
 }
 
 export function platformOf(value: string): ConnectorPlatform | undefined {
