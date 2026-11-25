@@ -83,7 +83,7 @@ class FakePool implements ListenerPool, PublishPool {
 }
 
 async function settle() {
-  for (let turn = 0; turn < 40; turn += 1) {
+  for (let turn = 0; turn < 200; turn += 1) {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });

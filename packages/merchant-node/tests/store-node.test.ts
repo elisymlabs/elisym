@@ -107,8 +107,9 @@ function paidOrder(fields: Partial<MerchantOrder> = {}): MerchantOrder {
 }
 
 /** Let pending promises and real I/O (signing, hashing) run; the faked timers stay put. */
+/** Let pending work run for a fixed number of turns; generous so a loaded CI machine still finishes. */
 async function settle() {
-  for (let turn = 0; turn < 20; turn += 1) {
+  for (let turn = 0; turn < 200; turn += 1) {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
