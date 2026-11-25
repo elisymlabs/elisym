@@ -60,6 +60,9 @@ export function shopIdentity(url: string): string | undefined {
   }
 }
 
+/** The refusal a sync gets before the store's config reached the worker's cache or the relay. */
+export const CONFIG_NOT_LOADED = 'The store config is not loaded yet';
+
 /** Why the store's config does not let this connector sync, or undefined when it does (1.4). */
 function configRefusal(
   config: StoreConfig | undefined,
@@ -67,7 +70,7 @@ function configRefusal(
   connector: ConnectorRecord,
 ): string | undefined {
   if (config === undefined) {
-    return 'The store config is not loaded yet';
+    return CONFIG_NOT_LOADED;
   }
   if (config.source.kind !== 'connector' || config.source.platform !== connector.platform) {
     return `The store config does not name the ${connector.platform} connector as its product source`;
@@ -122,6 +125,12 @@ export class ConnectorService {
         deps.directory.saveConnectorStatus(connector.owner, result, at, nextRunAt),
       ...(deps.timers ? { timers: deps.timers } : {}),
       ...(deps.now ? { now: deps.now } : {}),
+      // A Shopify app store's first sync often meets its config still on its way to the relay
+      // (askr-shopify 3.6); every other connector keeps today's backoff.
+      isShortRetry: (connector, result) =>
+        connector.via === 'shopify_app' &&
+        result.status === 'error' &&
+        result.message === CONFIG_NOT_LOADED,
       onError: (error) =>
         deps.log?.(`connector sync failed: ${error instanceof Error ? error.message : 'unknown'}`),
     });
@@ -194,7 +203,7 @@ export class ConnectorService {
     const config = this.deps.configFor(store.owner) ?? (await this.deps.readConfig?.(store.owner));
     const refusal = configRefusal(config, store, connector);
     if (refusal !== undefined || config === undefined) {
-      return { status: 'error', message: refusal ?? 'The store config is not loaded yet' };
+      return { status: 'error', message: refusal ?? CONFIG_NOT_LOADED };
     }
     let shopifyApp: ShopifyAppSource | undefined;
     if (connector.via === 'shopify_app') {

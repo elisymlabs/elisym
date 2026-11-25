@@ -150,6 +150,7 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
           client: new ShopifyClient(shopifySecrets),
           syncClient,
           publicBase,
+          ...(freeTier === undefined ? {} : { freeTier }),
           storesChanged: () => storesChanged(),
           log,
         });

@@ -17,7 +17,7 @@ import { npubEncode } from 'nostr-tools/nip19';
 import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import * as z from 'zod';
 import { AUTH_WINDOW_SECS, checkNip98 } from '../admin/nip98';
-import type { ShopifyAppSecrets } from '../config';
+import type { FreeTier, ShopifyAppSecrets } from '../config';
 import type { ShopifyAppSource } from '../connectors/runner';
 import { type Db, type Queryable, STORES_CHANNEL } from '../db/db';
 import type { GatewayRequest } from '../gateway/gateway';
@@ -132,6 +132,8 @@ export interface ShopifyAppDeps {
   syncClient: SyncRelayClient;
   /** The configured public base: the owner's NIP-98 `u` is compared with it. */
   publicBase: string;
+  /** ASKR_FREE_TIER: the Free tier and its caps, shared with standalone signups (Q9). */
+  freeTier?: FreeTier;
   /** Called when a store changed, so it is served, published and synced at once. */
   storesChanged: () => void;
   /** Called once a new webhook delivery is recorded; by default it runs the jobs at once. */
@@ -388,6 +390,9 @@ export class ShopifyApp {
       if (route === 'POST /v1/shopify/onboard/finish') {
         return await this.finish(shop, body);
       }
+      if (route === 'POST /v1/shopify/plan/free') {
+        return await this.freePlan(shop);
+      }
       if (route === 'GET /v1/shopify/settings' || route === 'PUT /v1/shopify/settings') {
         return await this.settings(shop, request.method, body);
       }
@@ -478,6 +483,64 @@ export class ShopifyApp {
     );
     const saved = await this.deps.shops.shop(shop.shop);
     return json(await this.storeView(saved ?? shop), 200);
+  }
+
+  /**
+   * `POST /v1/shopify/plan/free` (plan 3.6): the merchant's Free choice, with exactly the checks
+   * of the standalone admin's: a pending store that never had a tier and holds settings it can
+   * run on, the Free tier and its caps under the Free lock. Never for an uninstalled shop, so a
+   * store is not turned on again while the app is gone.
+   */
+  private async freePlan(shop: ShopRecord): Promise<Response> {
+    const owner = shop.owner;
+    if (owner === null) {
+      return json({ error: 'not_onboarded' }, 409);
+    }
+    const store = await this.deps.directory.store(owner);
+    if (store === undefined) {
+      return json({ error: 'no_store' }, 404);
+    }
+    if (!shop.onboarded || (await this.deps.directory.shopifyHold(owner)).onboarding) {
+      return json({ error: 'shopify_onboarding' }, 409);
+    }
+    if (shop.uninstalledAt !== null) {
+      return json({ error: 'uninstalled' }, 409);
+    }
+    if (store.status === 'active') {
+      return json({ ...(await this.storeView(shop)), activation: 'already_active' }, 200);
+    }
+    if (store.status === 'suspended') {
+      return json({ error: 'not_pending' }, 409);
+    }
+    if (store.tier !== undefined) {
+      return json({ error: 'operator_managed' }, 409);
+    }
+    if (!(await this.deps.directory.hasStoredConfig(owner))) {
+      return json({ error: 'no_settings' }, 409);
+    }
+    const freeTier = this.deps.freeTier;
+    if (freeTier === undefined) {
+      return json({ error: 'free_unavailable' }, 409);
+    }
+    const outcome = await this.deps.directory.activateFree(owner, freeTier.tier, this.now(), {
+      perDay: freeTier.perDay,
+      maxActive: freeTier.maxActive,
+    });
+    if (outcome === 'capacity_reached') {
+      return json({ error: 'capacity_reached' }, 409);
+    }
+    if (outcome === 'no_tier') {
+      return json({ error: 'free_unavailable' }, 409);
+    }
+    if (outcome === null) {
+      return json({ error: 'read_failed' }, 503);
+    }
+    this.log(
+      `store ${owner} of ${shop.shop} activated on ${freeTier.tier}: Free chosen in Shopify`,
+    );
+    this.deps.storesChanged();
+    const saved = await this.deps.shops.shop(shop.shop);
+    return json({ ...(await this.storeView(saved ?? shop)), activation: 'activated' }, 200);
   }
 
   /** `GET`/`PUT /v1/shopify/settings` (plan 3.4): D-signed settings, built by the server. */

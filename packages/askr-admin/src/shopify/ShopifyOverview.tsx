@@ -1,11 +1,15 @@
 import { Notice } from '../components/Notice';
 import { Section } from '../components/Section';
+import type { ShopifyApi } from './api';
 import { themeEditorUrl } from './bridge';
+import { ShopifyPlan } from './ShopifyPlan';
 import type { ShopifyView } from './types';
 
 interface Props {
+  api: ShopifyApi;
   view: ShopifyView;
   apiKey: string;
+  onView: (view: ShopifyView) => void;
 }
 
 type Store = NonNullable<ShopifyView['store']>;
@@ -39,7 +43,7 @@ function syncLine(store: Store): string {
 }
 
 /** Where the store stands (askr-shopify 5.2): status, product sync, and the theme embed. */
-export function ShopifyOverview({ view, apiKey }: Props) {
+export function ShopifyOverview({ api, view, apiKey, onView }: Props) {
   const store = view.store;
   if (store === null) {
     return null;
@@ -50,6 +54,7 @@ export function ShopifyOverview({ view, apiKey }: Props) {
         <p className="text-14">{statusLine(store)}</p>
         <p className="text-14 text-text-2">{syncLine(store)}</p>
       </Section>
+      <ShopifyPlan api={api} view={view} onView={onView} />
       <Section
         title="Show it on your store"
         description="Turn on the Askr assistant in your theme editor. It appears on every page of your storefront."

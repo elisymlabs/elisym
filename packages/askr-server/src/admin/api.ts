@@ -523,6 +523,10 @@ export function createAdminApi(
     if (!parsed.success) {
       return json({ error: 'bad_request' }, 400);
     }
+    // A store linked to a Shopify shop is billed through Shopify (askr-shopify 3.6).
+    if ((await deps.directory.shopifyHold(store.owner)).linked) {
+      return json({ error: 'shopify_billing' }, 409);
+    }
     if (store.status !== 'pending' || store.tier !== undefined) {
       return planRefused(store);
     }
@@ -796,6 +800,10 @@ export function createAdminApi(
       return choosePlan(store, body);
     }
     if (route === 'POST /v1/admin/billing/checkout' || route === 'POST /v1/admin/billing/portal') {
+      // A store linked to a Shopify shop is billed through Shopify, whatever its tier (3.6).
+      if ((await deps.directory.shopifyHold(owner)).linked) {
+        return json({ error: 'shopify_billing' }, 409);
+      }
       if (deps.billing === undefined) {
         return json({ error: 'billing_unavailable' }, 503);
       }

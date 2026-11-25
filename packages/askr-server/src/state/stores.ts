@@ -37,6 +37,18 @@ export interface ActivityDay {
 const OWNER_TABLES = ['sessions', 'store_days', 'reservations', 'clicks', 'store_totals'] as const;
 
 /**
+ * Mark a store's Shopify app connector to run as soon as an instance schedules it (askr-shopify
+ * 3.6): an activation's first import, whichever instance leases the store. Only `via` rows carry
+ * the mark, so it changes nothing for any other connector.
+ */
+export async function requestFirstImport(tx: Queryable, owner: string): Promise<void> {
+  await tx.query(
+    `update connectors set run_requested = true where owner = $1 and via = 'shopify_app'`,
+    [owner],
+  );
+}
+
+/**
  * Delete a store with the rows keyed by its owner that have no foreign key (askr-shopify 3.1);
  * the rest go by cascade. Run inside the caller's transaction.
  */
@@ -247,6 +259,8 @@ export interface ScheduledConnector extends ConnectorRecord {
   storeId: string;
   intervalMs: number;
   maxProducts: number;
+  /** An activation asked for this connector's first import (askr-shopify 3.6). */
+  runFirst: boolean;
 }
 
 interface ConnectorRow extends Record<string, unknown> {
@@ -257,6 +271,7 @@ interface ConnectorRow extends Record<string, unknown> {
   import_policies: boolean;
   enabled: boolean;
   via: ConnectorVia | null;
+  run_requested: boolean;
   last_status: unknown;
   last_run_at: number | null;
   next_run_at: number | null;
@@ -480,6 +495,9 @@ export class StoreDirectory {
       if (rows.length === 0) {
         return false;
       }
+      if (status === 'active') {
+        await requestFirstImport(tx, owner);
+      }
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, owner]);
       return true;
     });
@@ -525,6 +543,7 @@ export class StoreDirectory {
          where owner = $1 and status = 'pending' and tier is null`,
         [owner, tier, now],
       );
+      await requestFirstImport(tx, owner);
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, owner]);
       return 'activated';
     });
@@ -1293,6 +1312,7 @@ export class StoreDirectory {
     return rows.map((row) => ({
       ...connectorOf(row),
       storeId: row.owner,
+      runFirst: row.run_requested === true,
       intervalMs: row.sync_interval_minutes * 60_000,
       maxProducts: row.max_products,
     }));
@@ -1305,7 +1325,8 @@ export class StoreDirectory {
     nextRunAt: number | null,
   ): Promise<void> {
     await this.db.query(
-      `update connectors set last_status = ($2::text)::jsonb, last_run_at = $3, next_run_at = $4
+      `update connectors set last_status = ($2::text)::jsonb, last_run_at = $3, next_run_at = $4,
+         run_requested = false
        where owner = $1`,
       [owner, JSON.stringify(status), at, nextRunAt],
     );

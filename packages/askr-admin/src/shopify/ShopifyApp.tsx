@@ -77,7 +77,9 @@ export function ShopifyApp({ api, shop, apiKey }: Props) {
           </button>
         ))}
       </nav>
-      {tab === 'overview' ? <ShopifyOverview view={view} apiKey={apiKey} /> : null}
+      {tab === 'overview' ? (
+        <ShopifyOverview api={api} view={view} apiKey={apiKey} onView={setView} />
+      ) : null}
       {tab === 'settings' ? <ShopifySettings api={api} /> : null}
       {tab === 'key' ? <OwnerKeyInfo npub={store.npub} /> : null}
     </main>

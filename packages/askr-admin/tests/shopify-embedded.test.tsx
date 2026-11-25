@@ -39,6 +39,8 @@ function fakeServer() {
     inCharge: true,
     saved: undefined as unknown,
     settings: undefined as unknown,
+    status: 'pending',
+    tier: null as string | null,
   };
   const view = () => ({
     shop: SHOP,
@@ -48,8 +50,8 @@ function fakeServer() {
           owner: state.owner,
           npub: 'npub1store',
           onboarding: false,
-          status: 'pending',
-          tier: null,
+          status: state.status,
+          tier: state.tier,
           connector: null,
           delegation: { active: true, inCharge: state.inCharge },
         }
@@ -85,6 +87,11 @@ function fakeServer() {
       state.owner = events[0]?.pubkey ?? '';
       state.onboarded = true;
       return reply(view());
+    }
+    if (route === 'POST /v1/shopify/plan/free') {
+      state.status = 'active';
+      state.tier = 'free';
+      return reply({ ...view(), activation: 'activated' });
     }
     if (route === 'GET /v1/shopify/settings') {
       return reply(state.settings);
@@ -301,5 +308,20 @@ describe('the embedded page helpers (askr-shopify 5.1)', () => {
     const files = readdirSync(dir).map((name) => readFileSync(join(dir, name), 'utf8'));
     expect(files.filter((code) => /localStorage|sessionStorage|indexedDB/.test(code))).toEqual([]);
     expect(files.filter((code) => /remembered|tab-session|journal/.test(code))).toEqual([]);
+  });
+});
+
+describe('the embedded plan (askr-shopify 3.6)', () => {
+  it('starts a pending store on Free and shows the plan', async () => {
+    const server = fakeServer();
+    server.state.onboarded = true;
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Start on Free'));
+    expect(text(container)).toContain('Choose a plan to turn it on');
+    await act(async () => buttonNamed(container, 'Start on Free').click());
+    await settle(() => text(container).includes('Plan: free'));
+    expect(text(container)).toContain('Your assistant is live');
+    expect(server.calls.filter((call) => call.path === '/v1/shopify/plan/free')).toHaveLength(1);
   });
 });

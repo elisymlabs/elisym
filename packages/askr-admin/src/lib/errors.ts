@@ -43,6 +43,17 @@ const CODES: Readonly<Record<string, string>> = {
   moved_meanwhile: 'Your store was moved by another request while your site was checked. Retry.',
   shopify_onboarding:
     'This store is still being set up in the Askr app in Shopify. Finish the setup there first.',
+  shopify_billing:
+    'This store is linked to a Shopify shop, so its plan is chosen in the Askr app in Shopify.',
+  uninstalled: 'The Askr app is not installed on this shop. Install it again, then retry.',
+  not_onboarded: 'Askr is not set up for this shop yet. Reload the app to set it up.',
+  owner_managed:
+    'You manage this store with your own owner key, so the app does not change its settings.',
+  shopify_refused: 'Shopify did not answer the app just now. Reload the app and retry.',
+  shopify_reauth: 'Shopify needs the app to be opened again. Reload the app and retry.',
+  bad_settings: 'Some settings are not valid. Check the fields and retry.',
+  onboarding_expired: 'This setup took too long and expired. Start again.',
+  onboarding_replaced: 'Someone else started the setup meanwhile. Start again.',
   shopify_managed:
     'This product source is managed by the Askr app in Shopify and follows your shop there.',
   shopify_linked:

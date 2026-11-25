@@ -291,7 +291,9 @@ export interface Harness {
   ): Promise<number>;
 }
 
-export async function harness(): Promise<Harness> {
+export async function harness(
+  options: { freeTier?: { tier: string; perDay: number; maxActive: number } | null } = {},
+): Promise<Harness> {
   const db = await freshDb();
   const vault = new KeyVault(MASTER_KEY);
   const directory = new StoreDirectory(db, vault);
@@ -310,6 +312,9 @@ export async function harness(): Promise<Harness> {
     client: new ShopifyClient({ apiKey: API_KEY, apiSecret: API_SECRET }, fakeShopifyFetch(shop)),
     syncClient: relay,
     publicBase: BASE,
+    ...(options.freeTier === null
+      ? {}
+      : { freeTier: options.freeTier ?? { tier: TIER.name, perDay: 10, maxActive: 10 } }),
     storesChanged: () => changed.push('changed'),
     webhookRecorded: () => undefined,
     now: () => clock.now,

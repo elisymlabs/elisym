@@ -106,6 +106,11 @@ export class ShopifyApi {
     return (await this.call('POST', '/v1/shopify/onboard/finish', { events })) as ShopifyView;
   }
 
+  /** The merchant's Free choice (`POST /v1/shopify/plan/free`). */
+  async freePlan(): Promise<ShopifyView> {
+    return (await this.call('POST', '/v1/shopify/plan/free', {})) as ShopifyView;
+  }
+
   async settings(): Promise<SettingsRead> {
     return (await this.call('GET', '/v1/shopify/settings')) as SettingsRead;
   }

@@ -381,3 +381,77 @@ describe('ConnectorScheduler', () => {
     expect(errors).toHaveLength(3);
   });
 });
+
+describe('first imports and short retries (askr-shopify 3.6)', () => {
+  const NOT_LOADED: ConnectorSyncResult = { status: 'error', message: 'not loaded' };
+
+  function scheduler(
+    stores: (Store & { runFirst?: boolean })[],
+    outcomes: ConnectorSyncResult[],
+    random = 0.5,
+  ) {
+    const clock = new FakeClock();
+    const runs: number[] = [];
+    const saved: { status: string; nextRunAt: number; at: number }[] = [];
+    const instance = new ConnectorScheduler<Store & { runFirst?: boolean }>({
+      loadStores: async () => stores,
+      sync: async () => {
+        runs.push(clock.now);
+        return outcomes.shift() ?? OK;
+      },
+      saveStatus: async (_store, result, at, nextRunAt) => {
+        saved.push({ status: result.status, at, nextRunAt });
+      },
+      timers: clock,
+      now: () => clock.now,
+      random: () => random,
+      isShortRetry: (_store, result) => result === NOT_LOADED,
+    });
+    running.push(instance as unknown as ConnectorScheduler<Store>);
+    return { clock, runs, saved, instance };
+  }
+
+  it('runs a new entry marked runFirst at once, others at their random point', async () => {
+    const first = scheduler([{ storeId: 'a', intervalMs: 1_000, runFirst: true }], []);
+    await first.instance.start();
+    await first.clock.advance(0);
+    expect(first.runs).toEqual([0]);
+    const other = scheduler([{ storeId: 'a', intervalMs: 1_000 }], []);
+    await other.instance.start();
+    await other.clock.advance(499);
+    expect(other.runs).toEqual([]);
+    await other.clock.advance(1);
+    expect(other.runs).toEqual([500]);
+  });
+
+  it('retries a short-retry outcome every 30 s, ten times, without backing off, then as usual', async () => {
+    const outcomes = Array.from({ length: 12 }, () => NOT_LOADED);
+    const { clock, runs, saved, instance } = scheduler(
+      [{ storeId: 'a', intervalMs: 60_000, runFirst: true }],
+      outcomes,
+    );
+    await instance.start();
+    await clock.advance(10 * 30_000);
+    expect(runs).toEqual(Array.from({ length: 11 }, (_unused, index) => index * 30_000));
+    // The eleventh is past the short retries: the usual backoff (interval x 2^1).
+    expect(saved.at(-1)).toEqual({ status: 'error', at: 300_000, nextRunAt: 300_000 + 120_000 });
+    expect(saved.slice(0, 10).map((entry) => entry.nextRunAt - entry.at)).toEqual(
+      Array.from({ length: 10 }, () => 30_000),
+    );
+    // Spent until a success: the twelfth backs off further (interval x 2^2), not 30 s.
+    await clock.advance(120_000);
+    expect(saved.at(-1)).toEqual({ status: 'error', at: 420_000, nextRunAt: 420_000 + 240_000 });
+  });
+
+  it('keeps the usual backoff for an outcome that is not a short retry', async () => {
+    const { clock, saved, instance } = scheduler(
+      [{ storeId: 'a', intervalMs: 60_000, runFirst: true }],
+      [FAILED, OK],
+    );
+    await instance.start();
+    await clock.advance(0);
+    expect(saved[0]).toEqual({ status: 'error', at: 0, nextRunAt: 120_000 });
+    await clock.advance(120_000);
+    expect(saved[1]).toEqual({ status: 'ok', at: 120_000, nextRunAt: 180_000 });
+  });
+});
