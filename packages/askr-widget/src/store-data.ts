@@ -2,10 +2,14 @@ import {
   CONFIG_D_TAG,
   KIND_CATALOG_AUTH,
   KIND_CONFIG,
+  KIND_CONFIG_DELEGATION,
   type StoreConfig,
-  parseConfig,
+  configAddress,
+  configCandidates,
+  delegateConfigFilters,
+  readConfigDelegates,
 } from '@elisym/askr';
-import { KIND_DELETION, newestDeletion, newestSigned } from '@elisym/commerce';
+import { KIND_DELETION, newestDeletion } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 
@@ -21,26 +25,47 @@ export interface StoreData {
 export function storeFilters(owner: string): Filter[] {
   return [
     { kinds: [KIND_CONFIG], authors: [owner], '#d': [CONFIG_D_TAG] },
-    { kinds: [KIND_CATALOG_AUTH, KIND_DELETION], authors: [owner] },
+    { kinds: [KIND_CATALOG_AUTH, KIND_CONFIG_DELEGATION, KIND_DELETION], authors: [owner] },
   ];
 }
 
-/** The owner's current config, or none: missing, unreadable, or deleted by NIP-09. */
+/**
+ * The owner's events from `storeFilters`, plus its active config delegates'
+ * configs and deletions when it has any (a second read, 1.3).
+ */
+export async function readStoreEvents(
+  owner: string,
+  query: RelayQuery,
+  now: number,
+): Promise<NostrEvent[]> {
+  const events = await query(storeFilters(owner));
+  const delegates = readConfigDelegates(events, owner, now);
+  return delegates.length === 0
+    ? events
+    : [...events, ...(await query(delegateConfigFilters(delegates)))];
+}
+
+/**
+ * The store's current config, or none: missing, unreadable, or deleted by
+ * NIP-09. The newest candidate of the owner and its active delegates (1.3).
+ */
 export function readStoreConfig(
   events: readonly NostrEvent[],
   owner: string,
   now: number,
 ): StoreConfig | undefined {
-  const newest = newestSigned(events, KIND_CONFIG, owner, now, CONFIG_D_TAG);
+  const newest = configCandidates(events, owner, { now })[0];
   if (!newest) {
     return undefined;
   }
-  // A deletion dated past the clock skew is ignored, like a config would be (the server's rule).
-  const deletion = newestDeletion(events, `${KIND_CONFIG}:${owner}:${CONFIG_D_TAG}`, owner, now);
-  if (deletion && deletion.created_at >= newest.created_at) {
-    return undefined;
+  if (newest.event.pubkey === owner) {
+    // A deletion dated past the clock skew is ignored, like a config would be (the server's rule).
+    const deletion = newestDeletion(events, configAddress(owner), owner, now);
+    if (deletion && deletion.created_at >= newest.event.created_at) {
+      return undefined;
+    }
   }
-  return parseConfig(newest);
+  return newest.config;
 }
 
 function isAuthorityEvent(event: NostrEvent, owner: string): boolean {
@@ -59,7 +84,7 @@ export async function loadStoreData(
   query: RelayQuery,
   now: number,
 ): Promise<StoreData | undefined> {
-  const events = await query(storeFilters(owner));
+  const events = await readStoreEvents(owner, query, now);
   const config = readStoreConfig(events, owner, now);
   if (!config) {
     return undefined;

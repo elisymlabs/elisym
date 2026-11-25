@@ -113,7 +113,7 @@ export function Session({
     if (status.current !== undefined && (!active || pending.current > 0)) {
       try {
         const read = await deps.api.storedEvents();
-        own = ownSignedEvents(read.events, deps.signer.pubkey);
+        own = ownSignedEvents(read.events, deps.signer.pubkey, deps.now());
         truncated = read.truncated;
       } catch (error) {
         // An active store's settings are on the relay too (or soon): it falls back to the relay.

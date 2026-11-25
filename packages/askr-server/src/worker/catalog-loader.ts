@@ -1,3 +1,4 @@
+import { delegateConfigFilters, readConfigDelegates } from '@elisym/askr';
 import type { StoreCatalog } from '@elisym/askr-agent';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { CONNECTION_TIMEOUT_MS, STABLE_CONNECTION_MS } from '../constants';
@@ -9,6 +10,7 @@ import type { StoreRecord } from '../state/types';
 import {
   buildStoreCatalog,
   deletionFilters,
+  isOwnerSigned,
   keyFilters,
   ownerFilters,
   storeConfig,
@@ -43,6 +45,12 @@ export interface CatalogLoaderDeps {
 export class CatalogLoader {
   readonly catalogs = new Map<string, StoreCatalog>();
   private readonly unservable = new Set<string>();
+  /**
+   * Each store's active config delegates as its last reload read them (1.3),
+   * kept even when the store is unservable: the live REQ must see a delegate's
+   * first config, which is what makes such a store servable.
+   */
+  private readonly delegates = new Map<string, readonly string[]>();
   private readonly dirty = new Set<string>();
   /** Paces reload retries; reset by a reload that succeeded. */
   private readonly backoff = new Backoff();
@@ -108,6 +116,7 @@ export class CatalogLoader {
     this.dirty.delete(owner);
     this.catalogs.delete(owner);
     this.unservable.delete(owner);
+    this.delegates.delete(owner);
   }
 
   private async pump(): Promise<void> {
@@ -157,10 +166,18 @@ export class CatalogLoader {
   /** True when the cache now reflects the relay (5.1); false keeps the old cache. */
   private async reload(store: StoreRecord): Promise<boolean> {
     const now = this.deps.now();
-    const ownerEvents = await this.readAll(ownerFilters(store.owner));
-    if (!ownerEvents) {
+    const ownerOnly = await this.readAll(ownerFilters(store.owner));
+    if (!ownerOnly) {
       return false;
     }
+    const delegates = readConfigDelegates(ownerOnly, store.owner, now);
+    const delegateEvents =
+      delegates.length === 0 ? [] : await this.readAll(delegateConfigFilters(delegates));
+    if (!delegateEvents) {
+      return false;
+    }
+    const ownerEvents = [...ownerOnly, ...delegateEvents];
+    this.noteDelegates(store.owner, delegates);
     const config = storeConfig(ownerEvents, store.owner, now);
     if (!config) {
       this.settle(store.owner, undefined);
@@ -203,10 +220,22 @@ export class CatalogLoader {
     if (catalog) {
       this.catalogs.set(owner, catalog);
       this.unservable.delete(owner);
-      this.deps.onConfig?.(owner, catalog.config.origins);
+      // A delegate's origins never become recovery proofs (1.5).
+      if (isOwnerSigned(catalog.config)) {
+        this.deps.onConfig?.(owner, catalog.config.origins);
+      }
     } else {
       this.catalogs.delete(owner);
       this.unservable.add(owner);
+    }
+  }
+
+  /** Only leased stores' entries are read (`authors`), and `drop` forgets a store's. */
+  private noteDelegates(owner: string, delegates: readonly string[]): void {
+    if (delegates.length === 0) {
+      this.delegates.delete(owner);
+    } else {
+      this.delegates.set(owner, delegates);
     }
   }
 
@@ -215,7 +244,10 @@ export class CatalogLoader {
     return this.unservable.has(owner);
   }
 
-  /** Author to owners for every leased store: the owner, and the keys its cached config names. */
+  /**
+   * Author to owners for every leased store: the owner, its active config
+   * delegates, and the keys its cached config names.
+   */
   private authors(): Map<string, Set<string>> {
     const authors = new Map<string, Set<string>>();
     const add = (author: string, owner: string) => {
@@ -225,6 +257,9 @@ export class CatalogLoader {
     };
     for (const store of this.deps.leased()) {
       add(store.owner, store.owner);
+      for (const delegate of this.delegates.get(store.owner) ?? []) {
+        add(delegate, store.owner);
+      }
       const config = this.catalogs.get(store.owner)?.config;
       if (config) {
         add(config.catalogKey, store.owner);

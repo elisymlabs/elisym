@@ -1,5 +1,5 @@
 // cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
-import { KIND_CATALOG_AUTH, KIND_CONFIG } from '@elisym/askr';
+import { KIND_CATALOG_AUTH, KIND_CONFIG, KIND_CONFIG_DELEGATION } from '@elisym/askr';
 import { buildProductEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { finalizeEvent } from 'nostr-tools/pure';
@@ -50,7 +50,10 @@ describe('no paycore source on the server', () => {
     ].flatMap((filter) => filter.kinds ?? []);
     expect(kinds).not.toContain(STORE_AUTH_KIND);
     expect(ownerFilters(store.owner)).toEqual([
-      { kinds: [KIND_CONFIG, KIND_CATALOG_AUTH, 5], authors: [store.owner] },
+      {
+        kinds: [KIND_CONFIG, KIND_CATALOG_AUTH, KIND_CONFIG_DELEGATION, 5],
+        authors: [store.owner],
+      },
     ]);
   });
 

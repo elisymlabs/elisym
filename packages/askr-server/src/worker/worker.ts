@@ -47,6 +47,7 @@ import type {
   SessionState,
   StoreRecord,
 } from '../state/types';
+import { isOwnerSigned } from './catalog';
 import { CatalogLoader } from './catalog-loader';
 import { intakeWrap } from './intake';
 
@@ -204,7 +205,10 @@ export class Worker {
    */
   noteLoadedOrigins(): void {
     for (const [owner, catalog] of this.loader.catalogs) {
-      this.noteOrigins(owner, catalog.config.origins);
+      // A delegate's origins never become recovery proofs (1.5).
+      if (isOwnerSigned(catalog.config)) {
+        this.noteOrigins(owner, catalog.config.origins);
+      }
     }
   }
 

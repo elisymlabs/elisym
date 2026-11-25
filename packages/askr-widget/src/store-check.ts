@@ -4,7 +4,7 @@ import { STORE_CHECK_PREFIX, STORE_CHECK_TTL_MS } from './constants';
 import type { Gateway } from './gateway';
 import { type RelayConnect, type RelayConnection, queryHistory } from './relay';
 import { type KeyValueStorage, readItem, writeItem } from './storage';
-import { readStoreConfig, storeFilters } from './store-data';
+import { readStoreConfig, readStoreEvents } from './store-data';
 
 /**
  * Whether the widget shows on the page: `hide` only for a store the Askr service does not serve
@@ -91,9 +91,14 @@ async function decide(
     return { visibility: 'show', certain: false };
   }
   try {
-    const events = await queryHistory(connection, storeFilters(owner));
+    const nowSecs = Math.floor(now / 1000);
+    const events = await readStoreEvents(
+      owner,
+      (filters) => queryHistory(connection, filters),
+      nowSecs,
+    );
     // A store's settings reach the relay only once it is active: this store has been served.
-    const config = readStoreConfig(events, owner, Math.floor(now / 1000));
+    const config = readStoreConfig(events, owner, nowSecs);
     if (config !== undefined) {
       return { visibility: 'show', launcherText: config.launcherText, certain: true };
     }

@@ -28,7 +28,7 @@ describe('store data', () => {
     const store = makeStore();
     const kinds = storeFilters(store.owner.pubkey).flatMap((filter) => filter.kinds ?? []);
     expect(kinds).not.toContain(STORE_AUTH_KIND);
-    expect(kinds.sort((left, right) => left - right)).toEqual([5, 30496, 30497]);
+    expect(kinds.sort((left, right) => left - right)).toEqual([5, 30496, 30497, 30498]);
   });
 
   it('reads once, and keeps no 30490 a relay returns among the authority events', async () => {

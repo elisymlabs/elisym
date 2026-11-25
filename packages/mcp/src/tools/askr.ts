@@ -7,17 +7,18 @@
  */
 import {
   ASKR_RELAYS,
-  CONFIG_D_TAG,
   CatalogItemFieldsSchema,
-  KIND_CONFIG,
   type SyncDiff,
   type SyncRelayClient,
+  configCandidates,
   connectSyncClient,
-  parseConfig,
+  delegateConfigFilters,
+  readConfigDelegates,
   setPolicy,
+  storeConfigFilters,
   syncCatalog,
 } from '@elisym/askr';
-import { newestSigned, nowSecs } from '@elisym/commerce';
+import { nowSecs } from '@elisym/commerce';
 import { nip19 } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
 import * as z from 'zod';
@@ -117,28 +118,26 @@ function messageOf(error: unknown): string {
 
 /**
  * Why visitors would not see what this key writes, or undefined when they
- * would: the store's config (30496, signed by the owner) names the key its
- * products (or policies) are read from.
+ * would: the store's config (30496, signed by the owner or an active config
+ * delegate, 1.3) names the key its products (or policies) are read from.
  */
-async function configWarning(
+export async function configWarning(
   client: SyncRelayClient,
   store: string,
   key: string,
   role: 'products' | 'policies',
 ): Promise<string | undefined> {
   // Runs after the write succeeded: a failed read is a warning, never the call's result.
+  const now = nowSecs();
   let events: Awaited<ReturnType<SyncRelayClient['query']>>;
   try {
-    events = await client.query(ASKR_RELAYS, {
-      kinds: [KIND_CONFIG],
-      authors: [store],
-      '#d': [CONFIG_D_TAG],
-    });
+    events = await queryAll(client, storeConfigFilters(store));
+    const delegates = readConfigDelegates(events, store, now);
+    events = [...events, ...(await queryAll(client, delegateConfigFilters(delegates)))];
   } catch {
     return 'Could not read the store config to check that visitors will see this.';
   }
-  const newest = newestSigned(events, KIND_CONFIG, store, nowSecs(), CONFIG_D_TAG);
-  const config = newest === undefined ? undefined : parseConfig(newest);
+  const config = configCandidates(events, store, { now })[0]?.config;
   if (config === undefined) {
     return 'The store has no published config yet: visitors see nothing until the owner finishes onboarding in the Askr admin.';
   }
@@ -147,6 +146,14 @@ async function configWarning(
     return `The store config reads its ${role} from another key: visitors will not see these ${role} until the owner names this catalog key as the store's ${role === 'products' ? 'product source' : 'policy key'} in the Askr admin.`;
   }
   return undefined;
+}
+
+async function queryAll(
+  client: SyncRelayClient,
+  filters: ReturnType<typeof storeConfigFilters>,
+): Promise<Awaited<ReturnType<SyncRelayClient['query']>>> {
+  const reads = await Promise.all(filters.map((filter) => client.query(ASKR_RELAYS, filter)));
+  return reads.flat();
 }
 
 function diffText(

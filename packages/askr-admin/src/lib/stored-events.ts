@@ -1,3 +1,4 @@
+import { KIND_CONFIG, readConfigDelegates } from '@elisym/askr';
 import type { NostrEvent } from 'nostr-tools';
 import { matchFilter } from 'nostr-tools/filter';
 import { verifyEvent } from 'nostr-tools/pure';
@@ -30,12 +31,33 @@ function verifies(event: NostrEvent): boolean {
   }
 }
 
+const KIND_DELETION = 5;
+
 /**
  * The stored events the admin may use: signed by the owner, each signature
  * checked, as relay data is. The server holds them, but O signed them, so
- * nothing else is trusted.
+ * nothing else is trusted. With a config delegate the owner authorizes in
+ * them (30498), that delegate's configs and deletions are kept too (1.3).
  */
-export function ownSignedEvents(events: readonly unknown[], owner: string): NostrEvent[] {
+export function ownSignedEvents(
+  events: readonly unknown[],
+  owner: string,
+  now: number = Math.floor(Date.now() / 1000),
+): NostrEvent[] {
+  const signed = signedEvents(events);
+  const own = signed.filter((event) => event.pubkey === owner);
+  const delegates = new Set(readConfigDelegates(own, owner, now));
+  if (delegates.size === 0) {
+    return own;
+  }
+  return signed.filter(
+    (event) =>
+      event.pubkey === owner ||
+      (delegates.has(event.pubkey) && (event.kind === KIND_CONFIG || event.kind === KIND_DELETION)),
+  );
+}
+
+function signedEvents(events: readonly unknown[]): NostrEvent[] {
   return events.flatMap((value) => {
     if (!isEventShaped(value)) {
       return [];
@@ -50,7 +72,7 @@ export function ownSignedEvents(events: readonly unknown[], owner: string): Nost
       content: value.content,
       sig: value.sig,
     };
-    return event.pubkey === owner && verifies(event) ? [event] : [];
+    return verifies(event) ? [event] : [];
   });
 }
 
