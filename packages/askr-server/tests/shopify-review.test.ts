@@ -996,3 +996,47 @@ describe('webhook bodies are never kept (launch prep)', () => {
     expect(rows).toEqual([{ payload: null }]);
   });
 });
+
+describe('an uninstall racing a reinstall (deepsec, launch prep)', () => {
+  it('keeps the new install when a token exchange lands between the probe and the update', async () => {
+    const h = await harness();
+    const { owner } = await h.onboard();
+    await h.webhook('app/uninstalled', {});
+    const graphql = ShopifyClient.prototype.graphql;
+    let raced = false;
+    const spy = vi.spyOn(ShopifyClient.prototype, 'graphql').mockImplementation(async function (
+      this: ShopifyClient,
+      ...args
+    ) {
+      try {
+        return await graphql.apply(this, args);
+      } finally {
+        if (!raced && args[2] === '{ shop { id } }') {
+          raced = true;
+          // The merchant installs the app again right after Shopify refused the old token: the
+          // reinstall's token exchange saves a new token.
+          h.shop.installed = true;
+          await h.shops.saveTokens(
+            SHOP,
+            {
+              accessToken: 'shpat_new',
+              refreshToken: 'shprt_new',
+              expiresAt: NOW + 3600,
+              scopes: '',
+            },
+            NOW,
+          );
+        }
+      }
+    });
+    try {
+      await h.app.runJobs();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(raced).toBe(true);
+    expect((await h.directory.connector(owner))?.enabled).toBe(true);
+    expect(await h.shops.shop(SHOP)).toMatchObject({ hasTokens: true, uninstalledAt: null });
+    expect(h.logs.some((line) => line.includes('during its uninstall: kept'))).toBe(true);
+  });
+});

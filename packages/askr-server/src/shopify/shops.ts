@@ -436,6 +436,11 @@ export class ShopDirectory {
     });
   }
 
+  /** A shop row's sealed access token, opened; undefined when there is none. */
+  openAccessToken(shop: string, sealed: Uint8Array | null): string | undefined {
+    return sealed === null ? undefined : this.vault.openText(sealed, shop, 'shopify-access');
+  }
+
   /** The sealed D of a store, opened; undefined when it has none. */
   async delegateSecret(owner: string): Promise<Uint8Array | undefined> {
     const [row] = await this.db.query<{ config_delegate_secret: Uint8Array | null }>(

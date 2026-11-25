@@ -764,17 +764,19 @@ export class ShopifyApp {
    * Whether Shopify still accepts the shop's token: true when an Admin call succeeds, false when
    * Shopify refuses it or there is no usable token. Any other failure throws (retried later).
    */
-  private async stillInstalled(shop: string): Promise<boolean> {
+  private async stillInstalled(
+    shop: string,
+  ): Promise<{ installed: boolean; token: string | undefined }> {
     const token = await this.token(shop);
     if (token === undefined) {
-      return false;
+      return { installed: false, token };
     }
     try {
       await this.deps.client.graphql(shop, token, '{ shop { id } }');
-      return true;
+      return { installed: true, token };
     } catch (error) {
       if (error instanceof ShopifyRefused) {
-        return false;
+        return { installed: false, token };
       }
       throw error;
     }
@@ -787,16 +789,29 @@ export class ShopifyApp {
   private async uninstalled(shop: string): Promise<void> {
     // The HMAC covers the body, not the topic: Shopify itself confirms the uninstall, since it
     // revokes the shop's token then. A token that still works means the app is installed.
-    if (await this.stillInstalled(shop)) {
+    const probe = await this.stillInstalled(shop);
+    if (probe.installed) {
       this.log(`webhook app/uninstalled for ${shop}, but the app is still installed: ignored`);
       return;
     }
     const owner = await this.deps.db.transaction(async (tx) => {
-      const [row] = await tx.query<{ owner: string | null }>(
-        'select owner from shopify_shops where shop = $1 for update',
-        [shop],
-      );
+      const [row] = await tx.query<{
+        owner: string | null;
+        access_token: Uint8Array | null;
+        needs_reauth: boolean;
+      }>('select owner, access_token, needs_reauth from shopify_shops where shop = $1 for update', [
+        shop,
+      ]);
       if (row === undefined) {
+        return null;
+      }
+      // A token saved after the probe (a reinstall's exchange) is not the one Shopify refused:
+      // the shop is installed again, and nothing changes.
+      const current = row.needs_reauth
+        ? undefined
+        : this.deps.shops.openAccessToken(shop, row.access_token);
+      if (current !== probe.token) {
+        this.log(`shop ${shop} installed the app again during its uninstall: kept`);
         return null;
       }
       await tx.query(
