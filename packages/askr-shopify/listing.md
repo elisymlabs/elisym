@@ -26,7 +26,7 @@ in sync. It reads no customer or order data. Turn it on in the theme editor: no 
 ## Feature list [80 each]
 
 - Answers from your own products and policies, never invented prices
-- Product cards with live prices, variants and one-tap add to cart
+- Product cards with your catalog's prices, variants and one-tap add to cart
 - Syncs products and policies from Shopify automatically
 - Turns on in the theme editor as an app embed, no code
 - Speaks your shoppers' language and follows your brand voice
@@ -61,8 +61,9 @@ in sync. It reads no customer or order data. Turn it on in the theme editor: no 
 4. Press **Open the theme editor**, turn on **Askr assistant** under App embeds and save.
 5. Open the storefront: an **Ask AI** button appears. Ask about a product: the answer shows product
    cards with the store's prices, and **Add to cart** adds the variant to the Shopify cart.
-6. Uninstall the app: the button disappears from the storefront on the next page load, and the app's
-   data is erased 48 hours later when Shopify sends `shop/redact`.
+6. Uninstall the app: the button disappears from the storefront on the next page load, and the
+   store's data is erased 48 hours later when Shopify sends `shop/redact` (a store its owner took
+   over with the owner key is only unlinked).
 
 The app needs no account or login beyond Shopify. It requests only `read_products` and
 `read_legal_policies`.

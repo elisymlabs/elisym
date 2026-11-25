@@ -102,7 +102,7 @@ export function PrivacyPolicy() {
         </p>
         <p>
           <strong className="text-text font-medium">The Askr app for Shopify.</strong>
-          {` If you add ${PRODUCT_NAME} to a Shopify store through our Shopify app, we also keep your shop's myshopify.com address and Shopify ID, its primary domain, when the app was installed or uninstalled, and the access tokens Shopify gives the app, encrypted like the store keys. The app asks Shopify only to read products and legal policies: it reads your products with their variants, prices, availability and images, your refund, shipping, privacy and terms of service pages, and your shop's name, currency, primary domain and primary language. It reads no customer, order or payment data. We hold a third key for your store, the app's delegate key, encrypted the same way: it signs your store's settings. We write your Store ID to the app's data in your shop, so your theme can load the assistant. Your owner key is made in your browser inside your Shopify admin and never sent to us. Shopify's session tokens name the staff member using the app; we use them only to check each request and never keep them. Shopify also tells us when the app is uninstalled or the shop changes: we keep only that a notice came (its id, topic and shop) for 30 days, never what it said.`}
+          {` If you add ${PRODUCT_NAME} to a Shopify store through our Shopify app, we also keep your shop's myshopify.com address and Shopify ID, its primary domain, when the app was installed or uninstalled, and the access tokens Shopify gives the app, encrypted like the store keys. The app asks Shopify only to read products and legal policies: it reads your products with their variants, prices, availability and images, your refund, shipping, privacy and terms of service pages, and your shop's name, currency, primary domain and primary language. It reads no customer, order or payment data. We hold a third key for your store, the app's delegate key, encrypted the same way: it signs your store's settings. We write your Store ID to the app's data in your shop, so your theme can load the assistant. Your owner key is made in your browser inside your Shopify admin and never sent to us. Shopify's session tokens name the staff member using the app; we use them to check each request and to get the app's access token from Shopify, and never keep them. Shopify also tells us when the app is uninstalled or the shop changes: we keep only that a notice came (its id, topic and shop) for 30 days, never what it said.`}
         </p>
         <p>
           <strong className="text-text font-medium">Why.</strong> We use this data to provide the
@@ -120,9 +120,11 @@ export function PrivacyPolicy() {
           Shopify app, your store goes back to pending and the Shopify tokens are deleted; 48 hours
           later, when Shopify asks apps to erase the shop&apos;s data, we delete the store and its
           Shopify record from our server and remove its settings, products and policies from our
-          relay. The events your own owner key signed stay on the relay. When Shopify asks about a
-          shop&apos;s customers, there is nothing to give or erase: {PRODUCT_NAME} keeps no data
-          about them.
+          relay. The events your own owner key signed stay on the relay. If you revoked the
+          app&apos;s delegate key with your owner key, so you manage the store yourself, we only
+          unlink the store from the shop and keep it. When Shopify asks about a shop&apos;s
+          customers, there is nothing we can find: nothing {PRODUCT_NAME} keeps is linked to a
+          Shopify customer, and a shopper&apos;s chat is anonymous (section 3).
         </p>
       </LegalSection>
 

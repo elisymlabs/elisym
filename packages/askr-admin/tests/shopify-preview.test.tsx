@@ -1,3 +1,6 @@
+import { buildCatalogAuth, buildConfigDelegation } from '@elisym/askr';
+import type { NostrEvent } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { act } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PREVIEW_SHOP, createMockServer } from '../src/shopify-preview/mock-server';
@@ -44,4 +47,72 @@ describe('the local preview of the embedded admin (dev only)', () => {
     await settle(() => text().includes('Saved.'));
     expect(text()).toContain('Saved. Your assistant uses the new settings shortly.');
   }, 30_000);
+});
+
+describe('the preview mock answers like the server (dev only)', () => {
+  async function onboarded(
+    scenario = { ownerManages: false, replaceNextFinish: false, suspended: false },
+  ) {
+    const server = createMockServer(scenario);
+    const api = new ShopifyApi({
+      token: () => Promise.resolve('t'),
+      base: '',
+      fetch: server.fetch,
+    });
+    const ownerSecret = generateSecretKey();
+    const keys = await api.begin(PREVIEW_SHOP, ownerSecret, await api.time());
+    const events = [
+      finalizeEvent(
+        buildCatalogAuth({ key: keys.catalogKey, mode: 'hosted', createdAt: keys.now }),
+        ownerSecret,
+      ),
+      finalizeEvent(
+        buildConfigDelegation({ key: keys.delegate, createdAt: keys.now }),
+        ownerSecret,
+      ),
+    ];
+    return { server, api, events, scenario };
+  }
+
+  const settings = (origins: string[]) => ({
+    origins,
+    linkOrigins: [],
+    name: 'Tea',
+    language: 'en',
+    currency: 'EUR',
+    private: { voice: '', instructions: '', notes: '' },
+  });
+
+  it('refuses a forged finish and replaces the next one when asked', async () => {
+    const { api, events, scenario } = await onboarded();
+    const forged = { ...events[0], sig: events[1]?.sig } as NostrEvent;
+    await expect(api.finish([forged, events[1] as NostrEvent])).rejects.toMatchObject({
+      code: 'bad_events',
+    });
+    scenario.replaceNextFinish = true;
+    await expect(api.finish(events)).rejects.toMatchObject({ code: 'onboarding_replaced' });
+    expect((await api.finish(events)).onboarded).toBe(true);
+  });
+
+  it('keeps the shop origins, caps the extras, and refuses writes the server would', async () => {
+    const { api, events, scenario } = await onboarded();
+    const view = await api.finish(events);
+    expect(view.store?.connector?.enabled).toBe(true);
+    const extra = (count: number) =>
+      Array.from({ length: count }, (_unused, index) => `https://d${index}.example`);
+    await api.saveSettings(settings(extra(18)));
+    const read = await api.settings();
+    expect(read.config?.origins.slice(0, 2)).toEqual([
+      'https://preview-tea.example',
+      `https://${PREVIEW_SHOP}`,
+    ]);
+    expect(read.config?.origins).toHaveLength(20);
+    await expect(api.saveSettings(settings(extra(19)))).rejects.toMatchObject({
+      code: 'too_many_origins',
+    });
+    scenario.ownerManages = true;
+    await expect(api.saveSettings(settings([]))).rejects.toMatchObject({ code: 'owner_managed' });
+    scenario.suspended = true;
+    await expect(api.freePlan()).rejects.toMatchObject({ code: 'not_pending' });
+  });
 });

@@ -96,7 +96,8 @@ export function createMockServer(scenario: PreviewScenario): {
             url: PRIMARY,
             currency: 'EUR',
             importPolicies: true,
-            enabled: state.status === 'active',
+            // As the server creates it at setup: enabled; only an uninstall turns it off.
+            enabled: true,
             lastStatus: state.lastRunAt === null ? null : { status: 'ok' },
             lastRunAt: state.lastRunAt,
             nextRunAt: null,

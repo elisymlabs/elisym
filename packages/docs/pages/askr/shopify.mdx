@@ -16,8 +16,8 @@ If two people set the app up at the same time, the last one to start wins; the o
 
 ## What the app reads from Shopify
 
-- **Products**: every active product published to your Online Store, with its variants, options, prices, availability and images. Products are read through the Shopify Admin API, so a password-protected storefront or a bot check does not matter. They are synced on your plan's interval; edit them in Shopify.
-- **Policies**: your refund, shipping, privacy and terms of service pages, from Shopify's policy settings. Edit them in Shopify; the app shows them read only.
+- **Products**: every active product published to your Online Store, with its variants, options, prices, availability and images. Products are read through the Shopify Admin API, not your public pages, so a bot check in front of your storefront does not matter. They are synced on your plan's interval; edit them in Shopify.
+- **Policies**: your refund, shipping, privacy and terms of service pages, from Shopify's policy settings, imported as they are. Edit them in Shopify.
 - **Your shop's domains**: the primary domain and your `myshopify.com` address are always among your store's sites. When you change the primary domain in Shopify, the app follows it on its own.
 
 The app asks Shopify only to read products and legal policies. It reads no customer or order data.
@@ -40,6 +40,6 @@ The app starts your store on Free. Paid plans through Shopify billing come in a 
 
 When you uninstall the app, your assistant stops answering, the product sync stops and the store goes back to pending, without a plan. Install the app again and choose a plan, and it comes back as it was: the same store, settings and products.
 
-48 hours after an uninstall, Shopify asks apps to erase a shop's data. Askr then deletes your store: its settings, products and policies are removed from the Askr relay, and the store is deleted from the Askr server. The events your owner key signed during setup (the authorizations of the catalog key and of the app's delegate) stay on the relay, as they are yours.
+48 hours after an uninstall, Shopify asks apps to erase a shop's data. Askr then deletes your store: its settings, products and policies are removed from the Askr relay, and the store is deleted from the Askr server. The events your owner key signed during setup (the authorizations of the catalog key and of the app's delegate) stay on the relay, as they are yours. If you had revoked the app's delegate with your owner key, so you manage the store yourself, the store is not deleted: it is only unlinked from the shop.
 
-Askr keeps no data about your shop's customers: a shopper chatting with the assistant is an anonymous chat key, never a Shopify customer. See the [privacy policy](https://askr.elisym.network/privacy).
+Nothing Askr keeps is linked to your shop's customers: a shopper chatting with the assistant is an anonymous chat key, never a Shopify customer, and a chat is deleted within 24 hours. See the [privacy policy](https://askr.elisym.network/privacy).
