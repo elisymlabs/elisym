@@ -596,6 +596,7 @@ export class ShopifyApp {
     const saved = await this.saveDelegateConfig(owner, events, {
       settings: { ...parsed.data, linkOrigins: parsed.data.linkOrigins ?? [] },
       shopUrl: shop.primaryOrigin,
+      shop: shop.shop,
     });
     if (saved !== undefined) {
       return saved;
@@ -611,7 +612,7 @@ export class ShopifyApp {
   private async saveDelegateConfig(
     owner: string,
     events: readonly NostrEvent[],
-    input: { settings: DelegateSettings; shopUrl: string },
+    input: { settings: DelegateSettings; shopUrl: string; shop: string },
   ): Promise<Response | undefined> {
     const store = await this.deps.directory.store(owner);
     const delegateSecret = await this.deps.shops.delegateSecret(owner);
@@ -622,9 +623,11 @@ export class ShopifyApp {
     if (createdAt === undefined) {
       return json({ error: 'rate_limited' }, 429);
     }
-    const origins = input.settings.origins.includes(input.shopUrl)
-      ? input.settings.origins
-      : [input.shopUrl, ...input.settings.origins];
+    // The shop's own origins (primary and myshopify) are always listed, first.
+    const own = [input.shopUrl, `https://${input.shop}`];
+    const origins = [
+      ...new Set([...own, ...input.settings.origins.filter((origin) => !own.includes(origin))]),
+    ].slice(0, LIMITS.MAX_ORIGINS);
     let event: NostrEvent;
     try {
       event = signDelegateConfig({
@@ -866,6 +869,7 @@ export class ShopifyApp {
             ...(privatePart === undefined ? {} : { private: privatePart }),
           },
           shopUrl: origin,
+          shop,
         });
         if (refused !== undefined) {
           throw new Error(`the delegate config was not saved (${refused.status})`);

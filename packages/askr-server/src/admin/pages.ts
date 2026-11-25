@@ -101,6 +101,16 @@ export function createAdminPages(
         headers: { location: `${ADMIN_PAGES_PREFIX}${url.search}` },
       });
     }
+    // The embedded Shopify page is in the same build but served only at /shopify/ (5.1).
+    if (url.pathname.startsWith(`${ADMIN_PAGES_PREFIX}shopify/`)) {
+      return new Response('Not found', {
+        status: 404,
+        headers: {
+          'content-type': 'text/plain; charset=utf-8',
+          'x-content-type-options': 'nosniff',
+        },
+      });
+    }
     const lastSegment = url.pathname.slice(url.pathname.lastIndexOf('/') + 1);
     const path =
       url.pathname === ADMIN_PAGES_PREFIX || !lastSegment.includes('.')

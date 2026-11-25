@@ -6,6 +6,7 @@ import {
   type AdminFile,
   SHOPIFY_API_KEY_PLACEHOLDER,
   SHOPIFY_INDEX,
+  createAdminPages,
   createShopifyPage,
   shopifyCsp,
 } from '../src/admin/pages';
@@ -111,5 +112,53 @@ describe('the Shopify app configuration matches the server (askr-shopify 4)', ()
     expect(liquid).toContain(`src="${ASKR_API_BASE}/widget.js"`);
     expect(liquid).toContain('data-store="{{ askr_store | escape }}"');
     expect(liquid).toContain('"target": "body"');
+  });
+});
+
+describe('embedded page review round (askr-shopify phase 3)', () => {
+  const page = createShopifyPage(files(PAGE), RELAY, 'client-id');
+
+  it('keeps the rest of the CSP and headers closed, and HEAD bodiless', async () => {
+    const response = await get(page, '/shopify/?shop=tea.myshopify.com');
+    const csp = response?.headers.get('content-security-policy') ?? '';
+    expect(csp.startsWith("default-src 'none';")).toBe(true);
+    expect(csp).toContain("base-uri 'none'");
+    expect(csp).toContain("form-action 'none'");
+    expect(response?.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(response?.headers.get('referrer-policy')).toBe('no-referrer');
+    const head = await get(page, '/shopify/', 'HEAD');
+    expect(head?.status).toBe(200);
+    expect(await head?.text()).toBe('');
+  });
+
+  it('leaves paths that only start like /shopify to the gateway when the app is off', async () => {
+    const handler = composeHandler({
+      publicBase: ASKR_API_BASE,
+      admin: async () => undefined,
+      storeDocs: async () => undefined,
+      gateway: async () => new Response('gateway'),
+    });
+    for (const path of ['/shopifyx', '/shopify.js', '/v1/shopifyx']) {
+      const response = await handler({
+        request: new Request(`http://internal${path}`),
+        clientAddress: '203.0.113.9',
+      });
+      expect(await response.text()).toBe('gateway');
+    }
+  });
+
+  it('never serves the embedded page under /admin/', async () => {
+    const admin = createAdminPages(
+      new Map([
+        ['/admin/index.html', { body: new TextEncoder().encode('admin'), type: 'text/html' }],
+        [SHOPIFY_INDEX, { body: new TextEncoder().encode(PAGE), type: 'text/html' }],
+      ]),
+      RELAY,
+    );
+    const request = (path: string) =>
+      admin({ request: new Request(`http://internal${path}`), clientAddress: '203.0.113.9' });
+    expect(request('/admin/shopify/index.html')?.status).toBe(404);
+    expect(request('/admin/shopify/')?.status).toBe(404);
+    expect(await request('/admin/settings')?.text()).toBe('admin');
   });
 });

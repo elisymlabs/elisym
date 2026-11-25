@@ -440,8 +440,10 @@ describe('settings signed by D (askr-shopify 3.4)', () => {
       ).status,
     ).toBe(200);
     const read = await h.call('GET', '/v1/shopify/settings');
+    // The shop's own origins are always kept, the primary and the myshopify one.
     expect((read.body.config as { origins: string[] }).origins).toEqual([
       PRIMARY,
+      `https://${SHOP}`,
       'https://extra.example',
     ]);
     for (const extra of [

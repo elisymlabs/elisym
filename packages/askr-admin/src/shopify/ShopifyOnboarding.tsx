@@ -71,10 +71,21 @@ export function ShopifyOnboarding({ api, shop, onDone }: Props) {
       setPending(undefined);
       onDone(view);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.code.startsWith('onboarding_')) {
+      const code = caught instanceof ApiError ? caught.code : '';
+      if (code === 'onboarded') {
+        // Another staff member finished first: this key is not the store's, the store is set up.
+        setPending(undefined);
+        try {
+          onDone(await api.store());
+        } catch (reloadError) {
+          setError(errorMessage(reloadError));
+        }
+      } else if (code.startsWith('onboarding_') || code === 'not_onboarding') {
         // Replaced by another staff member's setup, or expired: start again with a new key.
         setPending(undefined);
-        setError('This setup was replaced or expired. Start again: a new key will be made.');
+        setError(
+          'This setup was replaced or expired, so the key shown is not your store key. Start again: a new key will be made.',
+        );
       } else {
         setError(errorMessage(caught));
       }

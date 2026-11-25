@@ -19,6 +19,21 @@ import { buttonNamed, type Mounted, mount, settle } from './mount';
 const BASE = 'https://app.askr.test';
 const SHOP = 'tea.myshopify.com';
 const NOW = 1_800_000_000;
+/** A config as the settings read returns it, for tests that need one without signing. */
+const SETTINGS_CONFIG = {
+  owner: 'a'.repeat(64),
+  assistant: 'b'.repeat(64),
+  origins: ['https://tea.example'],
+  linkOrigins: [],
+  name: 'Tea House',
+  language: 'en',
+  currency: 'EUR',
+  source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
+  catalogKey: 'c'.repeat(64),
+  policyKey: 'c'.repeat(64),
+  privateContent: '',
+  createdAt: NOW,
+};
 
 interface Call {
   method: string;
@@ -41,6 +56,7 @@ function fakeServer() {
     settings: undefined as unknown,
     status: 'pending',
     tier: null as string | null,
+    stillOnboarding: false,
   };
   const view = () => ({
     shop: SHOP,
@@ -49,7 +65,7 @@ function fakeServer() {
       ? {
           owner: state.owner,
           npub: 'npub1store',
-          onboarding: false,
+          onboarding: state.stillOnboarding,
           status: state.status,
           tier: state.tier,
           connector: null,
@@ -193,6 +209,9 @@ describe('the embedded settings (askr-shopify 3.4)', () => {
         language: 'de',
         currency: 'EUR',
         greeting: 'Hallo',
+        displayName: 'Tea',
+        contact: 'https://tea.example/contact',
+        linkOrigins: ['https://blog.tea.example'],
         source: { kind: 'connector', platform: 'shopify', shopUrl: 'https://tea.example' },
         catalogKey: server.catalogKey,
         createdAt: NOW,
@@ -220,11 +239,13 @@ describe('the embedded settings (askr-shopify 3.4)', () => {
     await settle(() => server.state.saved !== undefined);
     expect(server.state.saved).toEqual({
       origins: ['https://tea.example', `https://${SHOP}`],
-      linkOrigins: [],
+      linkOrigins: ['https://blog.tea.example'],
       name: 'Tea House',
       language: 'de',
       currency: 'EUR',
       greeting: 'Hallo',
+      contact: 'https://tea.example/contact',
+      displayName: 'Tea',
       private: { voice: 'warm', instructions: 'Be brief', notes: '' },
     });
   });
@@ -323,5 +344,143 @@ describe('the embedded plan (askr-shopify 3.6)', () => {
     await settle(() => text(container).includes('Plan: free'));
     expect(text(container)).toContain('Your assistant is live');
     expect(server.calls.filter((call) => call.path === '/v1/shopify/plan/free')).toHaveLength(1);
+  });
+});
+
+describe('embedded admin review round (askr-shopify phase 3)', () => {
+  it('signs the NIP-98 payload over the exact body and asks a token per call', async () => {
+    const server = fakeServer();
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Set up Askr for'));
+    await act(async () => buttonNamed(container, 'Set up Askr').click());
+    await settle(() => text(container).includes('Save your owner key'));
+    const begin = server.calls.find((call) => call.path === '/v1/shopify/onboard/begin');
+    const proof = JSON.parse(
+      atob((begin?.headers.get('x-askr-owner-authorization') ?? '').replace(/^Nostr /, '')),
+    ) as NostrEvent;
+    const digest = await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(JSON.stringify(begin?.body)),
+    );
+    const hex = [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+    expect(proof.tags).toContainEqual(['payload', hex]);
+    const tokens = server.calls.map((call) => call.headers.get('authorization'));
+    expect(new Set(tokens).size).toBe(tokens.length);
+  });
+
+  it('starts a new key unticked after a replaced setup', async () => {
+    const server = fakeServer();
+    server.state.finishError = 'onboarding_replaced';
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Set up Askr for'));
+    await act(async () => buttonNamed(container, 'Set up Askr').click());
+    await settle(() => text(container).includes('Save your owner key'));
+    await act(async () =>
+      (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click(),
+    );
+    await act(async () => buttonNamed(container, 'Finish setup').click());
+    await settle(() => text(container).includes('Set up Askr for'));
+    server.state.finishError = undefined;
+    await act(async () => buttonNamed(container, 'Set up Askr').click());
+    await settle(() => text(container).includes('Save your owner key'));
+    expect((container.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(
+      false,
+    );
+    expect(buttonNamed(container, 'Finish setup').disabled).toBe(true);
+  });
+
+  it('drops the key and shows the store when another staff member finished first', async () => {
+    const server = fakeServer();
+    server.state.finishError = 'onboarded';
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Set up Askr for'));
+    await act(async () => buttonNamed(container, 'Set up Askr').click());
+    await settle(() => text(container).includes('Save your owner key'));
+    server.state.onboarded = true;
+    await act(async () =>
+      (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click(),
+    );
+    await act(async () => buttonNamed(container, 'Finish setup').click());
+    await settle(() => text(container).includes('Overview'));
+    expect(text(container)).not.toContain('nsec1');
+  });
+
+  it('starts again when the setup expired before finishing', async () => {
+    const server = fakeServer();
+    server.state.finishError = 'not_onboarding';
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Set up Askr for'));
+    await act(async () => buttonNamed(container, 'Set up Askr').click());
+    await settle(() => text(container).includes('Save your owner key'));
+    await act(async () =>
+      (container.querySelector('input[type="checkbox"]') as HTMLInputElement).click(),
+    );
+    await act(async () => buttonNamed(container, 'Finish setup').click());
+    await settle(() => text(container).includes('not your store key'));
+    expect(text(container)).not.toContain('nsec1');
+  });
+
+  it('upper-cases the currency on save', async () => {
+    const server = fakeServer();
+    server.state.onboarded = true;
+    server.state.settings = {
+      config: { ...SETTINGS_CONFIG, currency: 'eur' },
+      private: null,
+      inCharge: true,
+    };
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Overview'));
+    await act(async () => buttonNamed(container, 'Settings').click());
+    await settle(() =>
+      [...container.querySelectorAll('button')].some((b) => b.textContent === 'Save'),
+    );
+    await act(async () => buttonNamed(container, 'Save').click());
+    await settle(() => server.state.saved !== undefined);
+    expect((server.state.saved as { currency: string }).currency).toBe('EUR');
+  });
+
+  it('shows onboarding, not the overview, for a store still being set up', async () => {
+    const server = fakeServer();
+    server.state.onboarded = true;
+    server.state.stillOnboarding = true;
+    mounted = await mount(<ShopifyApp api={server.api} shop={SHOP} apiKey="key" />);
+    const container = mounted.container;
+    await settle(() => text(container).includes('Set up Askr for'));
+    expect(text(container)).not.toContain('Overview');
+  });
+
+  it('refuses an answer without a clock and an empty session token', async () => {
+    const api = new ShopifyApi({
+      token: () => Promise.resolve('t'),
+      base: BASE,
+      fetch: async () => new Response(JSON.stringify({ now: 'soon' }), { status: 200 }),
+    });
+    await expect(api.time()).rejects.toThrow();
+    Reflect.set(globalThis, 'shopify', { idToken: () => Promise.resolve('') });
+    try {
+      await expect(sessionToken()).rejects.toThrow(/no session/);
+    } finally {
+      Reflect.deleteProperty(globalThis, 'shopify');
+    }
+  });
+
+  it('flags every kind of browser storage and a page with no chunk to check', () => {
+    const html = `<script type="module" src="/admin/assets/e.js"></script>`;
+    for (const code of ['sessionStorage.x', 'indexedDB.open()', 'localStorage.y']) {
+      expect(storageProblems(html, new Map([['assets/e.js', code]]))).toHaveLength(1);
+    }
+    expect(storageProblems('<html></html>', new Map())).toEqual([
+      'the embedded page loads no chunk under /admin/assets/: nothing was checked',
+    ]);
+    expect(storageProblems(html, new Map())).toEqual([
+      'assets/e.js, loaded by the embedded admin, is not in the build',
+    ]);
   });
 });

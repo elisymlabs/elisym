@@ -51,9 +51,14 @@ const CODES: Readonly<Record<string, string>> = {
     'You manage this store with your own owner key, so the app does not change its settings.',
   shopify_refused: 'Shopify did not answer the app just now. Reload the app and retry.',
   shopify_reauth: 'Shopify needs the app to be opened again. Reload the app and retry.',
-  bad_settings: 'Some settings are not valid. Check the fields and retry.',
+  bad_settings:
+    'Some settings are not valid: each domain must be a full https address like https://shop.example. Check the fields and save again.',
   onboarding_expired: 'This setup took too long and expired. Start again.',
   onboarding_replaced: 'Someone else started the setup meanwhile. Start again.',
+  not_onboarding: 'This setup is no longer waiting to be finished. Start again.',
+  onboarded: 'Askr is already set up for this shop.',
+  owner_taken: 'This key already belongs to an Askr store. Start again: a new key will be made.',
+  bad_events: 'The setup could not be signed correctly. Start again.',
   shopify_managed:
     'This product source is managed by the Askr app in Shopify and follows your shop there.',
   shopify_linked:

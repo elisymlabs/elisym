@@ -69,18 +69,29 @@ export function storageProblems(html: string, chunks: ReadonlyMap<string, string
   const queue = [...html.matchAll(/\/admin\/(assets\/[^"'\s>]+\.js)/g)].map(
     (match) => match[1] ?? '',
   );
+  if (queue.length === 0) {
+    return ['the embedded page loads no chunk under /admin/assets/: nothing was checked'];
+  }
+  const missing: string[] = [];
   while (queue.length > 0) {
     const name = queue.pop() ?? '';
     if (seen.has(name)) {
       continue;
     }
     seen.add(name);
-    const code = chunks.get(name) ?? '';
+    const code = chunks.get(name);
+    if (code === undefined) {
+      missing.push(`${name}, loaded by the embedded admin, is not in the build`);
+      continue;
+    }
     for (const match of code.matchAll(/["'](?:\.\/|\/admin\/assets\/)([^"']+\.js)["']/g)) {
       queue.push(`assets/${match[1] ?? ''}`);
     }
   }
-  return [...seen]
-    .filter((name) => STORAGE_RE.test(chunks.get(name) ?? ''))
-    .map((name) => `${name}, loaded by the embedded admin, touches browser storage`);
+  return [
+    ...missing,
+    ...[...seen]
+      .filter((name) => STORAGE_RE.test(chunks.get(name) ?? ''))
+      .map((name) => `${name}, loaded by the embedded admin, touches browser storage`),
+  ];
 }
