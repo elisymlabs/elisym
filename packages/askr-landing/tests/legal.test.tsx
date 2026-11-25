@@ -488,3 +488,18 @@ describe('facts the privacy policy repeats agree between sections', () => {
     }
   });
 });
+
+describe('the Shopify app in the privacy policy (askr-shopify launch prep)', () => {
+  it('names what the app reads, keeps and erases, and Shopify as a controller', async () => {
+    const page = await render(<PrivacyPolicy />);
+    const merchants = sectionText(page, 'merchants');
+    expect(merchants).toContain('The Askr app for Shopify.');
+    expect(merchants).toContain('only to read products and legal policies');
+    expect(merchants).toContain('It reads no customer, order or payment data.');
+    expect(merchants).toContain('never what it said');
+    expect(merchants).toContain('48 hours later, when Shopify asks apps to erase');
+    expect(merchants).toContain('we only unlink the store from the shop and keep it');
+    expect(merchants).toContain('to get the app&apos;s access token'.replace('&apos;', "'"));
+    expect(sectionText(page, 'processors')).toContain('Shopify, if you use our Shopify app');
+  });
+});

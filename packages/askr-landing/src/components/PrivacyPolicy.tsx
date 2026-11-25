@@ -101,6 +101,10 @@ export function PrivacyPolicy() {
           {` Paid plans are sold through Stripe as the merchant of record (shown as "Sold through Link"). You buy a paid plan yourself in the admin, or at the checkout link the ${PRODUCT_NAME} CLI gives you, through Stripe Checkout. You give your payment details to Stripe, not to us: ${PRODUCT_NAME} never sees or stores your full card number. Stripe shares with us, in our Stripe account, your name, email address, billing address, the plan, its billing period, payment status and invoices, and the card brand and last digits. Our server keeps only your Stripe customer ID; for each subscription, its ID, status, plan, billing period, whether it is set to cancel, when Stripe created it, when its current period ends and when we last updated it; and the ID of the last checkout your store opened, all linked to your store's public key (its Store ID). It also keeps the IDs and types of the Stripe events it received, and log lines that name your store and the event. Your card details never reach it.`}
         </p>
         <p>
+          <strong className="text-text font-medium">The Askr app for Shopify.</strong>
+          {` If you add ${PRODUCT_NAME} to a Shopify store through our Shopify app, we also keep your shop's myshopify.com address and Shopify ID, its primary domain, when the app was installed or uninstalled, and the access tokens Shopify gives the app, encrypted like the store keys. The app asks Shopify only to read products and legal policies: it reads your products with their variants, prices, availability and images, your refund, shipping, privacy and terms of service pages, and your shop's name, currency, primary domain and primary language. It reads no customer, order or payment data. We hold a third key for your store, the app's delegate key, encrypted the same way: it signs your store's settings. We write your Store ID to the app's data in your shop, so your theme can load the assistant. Your owner key is made in your browser inside your Shopify admin and never sent to us. Shopify's session tokens name the staff member using the app; we use them to check each request and to get the app's access token from Shopify, and never keep them. Shopify also tells us when the app is uninstalled or the shop changes: we keep only that a notice came (its id, topic and shop) for 30 days, never what it said.`}
+        </p>
+        <p>
           <strong className="text-text font-medium">Why.</strong> We use this data to provide the
           service you signed up for (our contract with you), to keep plan limits and stop abuse (our
           legitimate interest in a working, fair service), and to keep the billing records the law
@@ -112,7 +116,15 @@ export function PrivacyPolicy() {
           our server and remove its events (settings, products and policies) from our relay&apos;s
           database. Copies that others made of those public listings may remain. The store&apos;s
           data then leaves our database dumps as they roll over (section 5). Billing records are
-          kept for as long as Spanish tax and accounting law requires.
+          kept for as long as Spanish tax and accounting law requires. When you uninstall the
+          Shopify app, your store goes back to pending and the Shopify tokens are deleted; 48 hours
+          later, when Shopify asks apps to erase the shop&apos;s data, we delete the store and its
+          Shopify record from our server and remove its settings, products and policies from our
+          relay. The events your own owner key signed stay on the relay. If you revoked the
+          app&apos;s delegate key with your owner key, so you manage the store yourself, we only
+          unlink the store from the shop and keep it. When Shopify asks about a shop&apos;s
+          customers, there is nothing we can find: nothing {PRODUCT_NAME} keeps is linked to a
+          Shopify customer, and a shopper&apos;s chat is anonymous (section 3).
         </p>
       </LegalSection>
 
@@ -216,6 +228,11 @@ export function PrivacyPolicy() {
             paid plans. It receives buyers&apos; payment data directly and is an independent
             controller for it, under its own privacy policy. We receive the customer and
             subscription details Stripe shares with us (section 2), never the full card number.
+          </li>
+          <li>
+            Shopify, if you use our Shopify app: we receive your shop&apos;s data from it as
+            described in section 2. Shopify is an independent controller for your shop&apos;s data,
+            under its own privacy policy.
           </li>
           <li>Vercel: hosting of this website, askr.elisym.network.</li>
           <li>Google (Google Forms): our request form, and what you write in it.</li>

@@ -9,6 +9,7 @@
   "scripts": {
     "build": "vite build && bun scripts/check-build.ts",
     "dev": "vite",
+    "dev:shopify": "vite --open /admin/shopify/preview.html",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint src/ tests/ scripts/"

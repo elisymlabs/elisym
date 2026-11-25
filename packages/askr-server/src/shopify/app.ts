@@ -288,11 +288,41 @@ export class ShopifyApp {
     return saved;
   }
 
+  /**
+   * An admin open of a linked shop (plan 3.7): the `askr.store` metafield is written when
+   * missing. Shopify refusing the stored token means the app was installed again since (an
+   * uninstall revoked it): the token is exchanged anew here, once, so the reinstall is known
+   * before its uninstall is worked off.
+   */
+  private async storeOpen(shop: ShopRecord, sessionToken: string): Promise<ShopRecord> {
+    if (!shop.onboarded || shop.owner === null) {
+      return shop;
+    }
+    const owner = shop.owner;
+    try {
+      await this.writeStoreMetafield(shop.shop, owner);
+      return shop;
+    } catch (error) {
+      if (!(error instanceof ShopifyRefused)) {
+        this.log(`metafield of ${shop.shop} not written: ${errorText(error)}`);
+        return shop;
+      }
+    }
+    await this.deps.shops.markReauth(shop.shop);
+    const renewed = await this.ensureTokens(shop.shop, sessionToken);
+    await this.writeStoreMetafield(shop.shop, owner).catch((error: unknown) =>
+      this.log(`metafield of ${shop.shop} not written: ${errorText(error)}`),
+    );
+    return renewed;
+  }
+
   /** Write the store's npub to the app installation's `askr.store` metafield when missing. */
   private async writeStoreMetafield(shop: string, owner: string): Promise<void> {
     const token = await this.token(shop);
+    // No usable token (none, or a refresh Shopify refused): as good as a refusal, so an admin
+    // open exchanges a new one.
     if (token === undefined) {
-      return;
+      throw new ShopifyRefused('no usable token for the shop', 401);
     }
     const value = npubEncode(owner);
     const answer = MetafieldAnswerSchema.parse(
@@ -377,12 +407,8 @@ export class ShopifyApp {
       }
       const shop = await this.ensureTokens(session.shop, sessionToken);
       if (route === 'GET /v1/shopify/store') {
-        if (shop.onboarded && shop.owner !== null) {
-          await this.writeStoreMetafield(shop.shop, shop.owner).catch((error: unknown) =>
-            this.log(`metafield of ${shop.shop} not written: ${errorText(error)}`),
-          );
-        }
-        return json(await this.storeView(shop), 200);
+        const current = await this.storeOpen(shop, sessionToken);
+        return json(await this.storeView(current), 200);
       }
       if (route === 'POST /v1/shopify/onboard/begin') {
         return await this.begin(request, url, shop, body);
@@ -698,7 +724,7 @@ export class ShopifyApp {
       this.log(`webhook ${topic} for ${shop} does not match its body; dropped`);
       return json({ ok: true }, 200);
     }
-    if (await this.deps.shops.recordWebhook(id, shop, topic, payload, this.now())) {
+    if (await this.deps.shops.recordWebhook(id, shop, topic, this.now())) {
       if (this.deps.webhookRecorded === undefined) {
         this.kickJobs();
       } else {
@@ -764,17 +790,19 @@ export class ShopifyApp {
    * Whether Shopify still accepts the shop's token: true when an Admin call succeeds, false when
    * Shopify refuses it or there is no usable token. Any other failure throws (retried later).
    */
-  private async stillInstalled(shop: string): Promise<boolean> {
+  private async stillInstalled(
+    shop: string,
+  ): Promise<{ installed: boolean; token: string | undefined }> {
     const token = await this.token(shop);
     if (token === undefined) {
-      return false;
+      return { installed: false, token };
     }
     try {
       await this.deps.client.graphql(shop, token, '{ shop { id } }');
-      return true;
+      return { installed: true, token };
     } catch (error) {
       if (error instanceof ShopifyRefused) {
-        return false;
+        return { installed: false, token };
       }
       throw error;
     }
@@ -787,16 +815,31 @@ export class ShopifyApp {
   private async uninstalled(shop: string): Promise<void> {
     // The HMAC covers the body, not the topic: Shopify itself confirms the uninstall, since it
     // revokes the shop's token then. A token that still works means the app is installed.
-    if (await this.stillInstalled(shop)) {
+    const probe = await this.stillInstalled(shop);
+    if (probe.installed) {
       this.log(`webhook app/uninstalled for ${shop}, but the app is still installed: ignored`);
       return;
     }
     const owner = await this.deps.db.transaction(async (tx) => {
-      const [row] = await tx.query<{ owner: string | null }>(
-        'select owner from shopify_shops where shop = $1 for update',
-        [shop],
-      );
+      const [row] = await tx.query<{
+        owner: string | null;
+        access_token: Uint8Array | null;
+        needs_reauth: boolean;
+      }>('select owner, access_token, needs_reauth from shopify_shops where shop = $1 for update', [
+        shop,
+      ]);
       if (row === undefined) {
+        return null;
+      }
+      // A token saved after the probe (a reinstall's exchange) is not the one Shopify refused:
+      // the shop is installed again, and nothing changes.
+      const current = row.needs_reauth
+        ? undefined
+        : this.deps.shops.openAccessToken(shop, row.access_token);
+      // Only a usable new token means a reinstall: one turned dead meanwhile (needs_reauth) is
+      // the same uninstall.
+      if (current !== undefined && current !== probe.token) {
+        this.log(`shop ${shop} installed the app again during its uninstall: kept`);
         return null;
       }
       await tx.query(

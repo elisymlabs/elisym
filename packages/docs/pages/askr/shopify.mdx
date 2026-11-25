@@ -1,0 +1,45 @@
+# Askr on Shopify
+
+The Askr app for Shopify puts the assistant on a Shopify store without code: you install it from the Shopify App Store, manage it inside your Shopify admin, and turn it on in the theme editor. It reads your products and policies from Shopify itself.
+
+The app is on its way to the Shopify App Store. Until it is listed there, a Shopify shop can use Askr with the [Shopify connector](/askr/overview#product-sources) and the [embed snippet](/askr/embed).
+
+## Set it up
+
+1. Install Askr from the Shopify App Store and open it from your Shopify admin.
+2. Press **Set up Askr**. The app makes an owner key for your store in your browser: the root of your Askr store. Askr never sees it.
+3. Save the owner key: **Download key file**, or copy it. Tick **I saved my owner key somewhere safe**, then **Finish setup**. The key is shown only during this step. You do not need it day to day; keep it private, since whoever has it controls your store.
+4. In **Overview**, press **Start on Free**. Your assistant goes live, and the first import of your products starts at once.
+5. Press **Open the theme editor**. Under App embeds, turn on **Askr assistant** and save. The assistant appears on every page of your storefront.
+
+If two people set the app up at the same time, the last one to start wins; the other is asked to start again with a new key. A setup left unfinished for 24 hours is discarded, and you start again.
+
+## What the app reads from Shopify
+
+- **Products**: every active product published to your Online Store, with its variants, options, prices, availability and images. Products are read through the Shopify Admin API, not your public pages, so a bot check in front of your storefront does not matter. They are synced on your plan's interval; edit them in Shopify.
+- **Policies**: your refund, shipping, privacy and terms of service pages, from Shopify's policy settings, imported as they are. Edit them in Shopify.
+- **Your shop's domains**: the primary domain and your `myshopify.com` address are always among your store's sites. When you change the primary domain in Shopify, the app follows it on its own.
+
+The app asks Shopify only to read products and legal policies. It reads no customer or order data.
+
+## Settings
+
+The app's **Settings** page sets the store name, the greeting, the chat button text, the language and the currency, any other domain your storefront runs on (up to 18 besides your shop's own two), and how the assistant answers: its voice, instructions and notes. Only your assistant reads the last three.
+
+## How the app manages your store
+
+The app keeps your store with a delegate key of its own, which your owner key authorized during setup. The delegate signs only your store's settings; it cannot publish products or policies, and it can never replace your owner key. Products and policies are signed by the store's catalog key, as for every Askr store. The Askr server holds both keys, encrypted.
+
+If you sign in to the [Askr admin](https://app.askr.elisym.network/admin/) with your owner key, it shows that the store is managed by the Shopify app, and changes nothing. Managing the store with your own key instead of the app comes in a later version; until then, your owner key is your backup.
+
+## Plans
+
+The app starts your store on Free. Paid plans through Shopify billing come in a later version. A store linked to a Shopify shop is never billed through Stripe.
+
+## Uninstalling
+
+When you uninstall the app, your assistant stops answering, the product sync stops and the store goes back to pending, without a plan. Install the app again and choose a plan, and it comes back as it was: the same store, settings and products.
+
+48 hours after an uninstall, Shopify asks apps to erase a shop's data. Askr then deletes your store: its settings, products and policies are removed from the Askr relay, and the store is deleted from the Askr server. The events your owner key signed during setup (the authorizations of the catalog key and of the app's delegate) stay on the relay, as they are yours. If you had revoked the app's delegate with your owner key, so you manage the store yourself, the store is not deleted: it is only unlinked from the shop.
+
+Nothing Askr keeps is linked to your shop's customers: a shopper chatting with the assistant is an anonymous chat key, never a Shopify customer, and a chat is deleted within 24 hours. See the [privacy policy](https://askr.elisym.network/privacy).

@@ -15,6 +15,7 @@ Your catalog, policies and the assistant's settings live on Nostr, signed by key
 | Catalog key (server) | The Askr server, one per store.                                                   | Products and policies you edit in the admin, or that a connector imports. |
 | Catalog key (yours)  | Your backend, CI or agent ([Catalog from an agent](/askr/catalog-from-an-agent)). | Products and policies you publish yourself.                               |
 | Assistant key        | The Askr server, one per store.                                                   | The assistant's replies.                                                  |
+| Delegate key         | The Askr server, only for a store set up with the [Shopify app](/askr/shopify).    | The store config, on the owner key's behalf; it can be revoked.           |
 
 A catalog key writes products only once the owner key authorizes it. The owner can revoke it at any time in the admin, and a leaked catalog key never touches payments: listings it signs can never carry payment terms.
 

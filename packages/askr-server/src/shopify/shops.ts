@@ -436,6 +436,16 @@ export class ShopDirectory {
     });
   }
 
+  /** Shopify refused the stored token: the next admin open exchanges a new one. */
+  async markReauth(shop: string): Promise<void> {
+    await this.db.query('update shopify_shops set needs_reauth = true where shop = $1', [shop]);
+  }
+
+  /** A shop row's sealed access token, opened; undefined when there is none. */
+  openAccessToken(shop: string, sealed: Uint8Array | null): string | undefined {
+    return sealed === null ? undefined : this.vault.openText(sealed, shop, 'shopify-access');
+  }
+
   /** The sealed D of a store, opened; undefined when it has none. */
   async delegateSecret(owner: string): Promise<Uint8Array | undefined> {
     const [row] = await this.db.query<{ config_delegate_secret: Uint8Array | null }>(
@@ -516,17 +526,13 @@ export class ShopDirectory {
   }
 
   /** Record a webhook delivery; false when this delivery id was recorded before. */
-  async recordWebhook(
-    id: string,
-    shop: string,
-    topic: string,
-    payload: unknown,
-    now: number,
-  ): Promise<boolean> {
+  async recordWebhook(id: string, shop: string, topic: string, now: number): Promise<boolean> {
+    // The body is never kept: a shop body names its owner's email, phone and address, and every
+    // handled topic reads what it needs from Shopify itself. The column holds JSON null.
     const rows = await this.db.query(
       `insert into shopify_webhooks (id, shop, topic, payload, received_at)
-       values ($1, $2, $3, ($4::text)::jsonb, $5) on conflict (id) do nothing returning 1`,
-      [id, shop, topic, JSON.stringify(payload ?? null), now],
+       values ($1, $2, $3, 'null'::jsonb, $4) on conflict (id) do nothing returning 1`,
+      [id, shop, topic, now],
     );
     return rows.length > 0;
   }
@@ -538,17 +544,16 @@ export class ShopDirectory {
   async claimWebhook(
     now: number,
     holdSecs: number,
-  ): Promise<{ id: string; shop: string; topic: string; payload: unknown } | undefined> {
+  ): Promise<{ id: string; shop: string; topic: string } | undefined> {
     const [row] = await this.db.query<{
       id: string;
       shop: string;
       topic: string;
-      payload: unknown;
     }>(
       `update shopify_webhooks set claimed_until = $1::bigint + $2::bigint
        where id = (select id from shopify_webhooks where done_at is null and claimed_until <= $1
                    order by received_at, id limit 1 for update skip locked)
-       returning id, shop, topic, payload`,
+       returning id, shop, topic`,
       [now, holdSecs],
     );
     return row;
