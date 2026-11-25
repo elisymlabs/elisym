@@ -1,7 +1,13 @@
 import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { describe, expect, it, vi } from 'vitest';
 import { runCli } from '../src/cli';
-import { CONFIG_NOT_LOADED, isShortRetryOutcome } from '../src/connectors/service';
+import { ShopRateLimiter } from '../src/connectors/http';
+import { SHORT_RETRY_MS } from '../src/connectors/scheduler';
+import {
+  CONFIG_NOT_LOADED,
+  ConnectorService,
+  isShortRetryOutcome,
+} from '../src/connectors/service';
 import { HOLDER, NOW, TIER } from './fixtures';
 import { BASE, SHOP, harness, nip98 } from './shopify-fixtures';
 
@@ -197,5 +203,66 @@ describe('phase 4 review round', () => {
     await runCli(['store', 'activate', owner, '--tier', TIER.name], { directory: h.directory });
     const suspended = await runCli(['store', 'suspend', owner], { directory: h.directory });
     expect(suspended).not.toContain('Shopify');
+  });
+});
+
+describe('phase 4 confirm round', () => {
+  it('answers an operator change made meanwhile as the standalone admin does', async () => {
+    for (const [change, error] of [
+      [`update stores set status = 'suspended', tier = $2 where owner = $1`, 'not_pending'],
+      [`update stores set tier = $2 where owner = $1`, 'operator_managed'],
+    ] as const) {
+      const h = await harness();
+      const { owner } = await h.onboard();
+      vi.spyOn(h.directory, 'activateFree').mockImplementationOnce(async () => {
+        await h.db.query(change, [owner, TIER.name]);
+        return null;
+      });
+      expect(await h.call('POST', '/v1/shopify/plan/free', { body: {} })).toMatchObject({
+        status: 409,
+        body: { error },
+      });
+    }
+  });
+
+  it('has the connector service retry a not-loaded first sync in 30 s, not back off', async () => {
+    const h = await harness();
+    const { owner } = await h.onboard();
+    await h.directory.activateFree(owner, TIER.name, NOW, { perDay: 10, maxActive: 10 });
+    await h.db.query(
+      `insert into leases (owner, holder, epoch, expires_at) values ($1, $2, 1, $3)`,
+      [owner, HOLDER, NOW + 600],
+    );
+    const pending: { callback: () => void; ms: number }[] = [];
+    const service = new ConnectorService({
+      directory: h.directory,
+      holder: HOLDER,
+      client: h.relay,
+      configFor: () => undefined,
+      readConfig: async () => undefined,
+      limiter: new ShopRateLimiter(0),
+      shopifyApp: h.app,
+      timers: {
+        setTimeout: (callback, ms) => {
+          pending.push({ callback, ms });
+          return pending.length;
+        },
+        clearTimeout: () => undefined,
+      },
+      now: () => NOW * 1000,
+    });
+    await service.start();
+    // The activation asked for the first import: it is due at once.
+    expect(pending.map((timer) => timer.ms)).toEqual([0]);
+    pending[0]?.callback();
+    await vi.waitFor(async () => {
+      const [row] = await h.db.query<{ last_status: { message?: string } | null }>(
+        'select last_status from connectors where owner = $1',
+        [owner],
+      );
+      expect(row?.last_status?.message).toBe(CONFIG_NOT_LOADED);
+    });
+    expect(pending.map((timer) => timer.ms)).toEqual([0, SHORT_RETRY_MS]);
+    service.stop();
   });
 });
