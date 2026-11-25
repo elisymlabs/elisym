@@ -60,6 +60,17 @@ export const MAX_READ_BACK_BYTES = 1024 * 1024;
 /** A stored event may be dated at most this far ahead (clock skew of the signer). */
 const MAX_AHEAD_SECS = 10 * 60;
 const POLICY_PATH_RE = /^\/v1\/admin\/policies\/([a-z0-9-]{1,64})$/;
+/** The writes refused while the Shopify app's delegate manages a store (askr-shopify 5.3). */
+const MANAGED_BY_DELEGATE_ROUTES: ReadonlySet<string> = new Set([
+  'POST /v1/admin/store/events',
+  'POST /v1/admin/store/assistant/rotate',
+  'PUT /v1/admin/connector',
+  'DELETE /v1/admin/connector',
+  'POST /v1/admin/connector/preview',
+  'POST /v1/admin/connector/enable',
+  'POST /v1/admin/connector/disable',
+  'POST /v1/admin/catalog',
+]);
 
 const RecoverRequestSchema = z.object({
   from: z.string().max(100),
@@ -382,6 +393,15 @@ export function createAdminApi(
     if ((await deps.directory.statusOf(from)) === undefined) {
       return json({ error: 'no_store' }, 404);
     }
+    // A store linked to a Shopify shop is re-keyed only through its owner key, and one still
+    // onboarding is nobody's yet (askr-shopify 1.5, 3.1).
+    const hold = await deps.directory.shopifyHold(from);
+    if (hold.onboarding) {
+      return json({ error: 'shopify_onboarding' }, 409);
+    }
+    if (hold.linked) {
+      return json({ error: 'shopify_linked' }, 409);
+    }
     let settings: { config: StoreConfig; event: NostrEvent } | undefined;
     try {
       settings = await newestConfigOf(from);
@@ -461,7 +481,15 @@ export function createAdminApi(
       movedFrom: (await deps.directory.movedFrom(store.owner))?.from ?? null,
       email: (await deps.directory.contactEmail(store.owner)) ?? null,
       billing: deps.billing === undefined ? BILLING_OFF : await deps.billing.view(store.owner),
+      // The Shopify app (askr-shopify 5.3): `linked` while a shop is linked, `active` while the
+      // app's delegate manages the store (the admin shows it read only). Both false otherwise.
+      delegation: await delegationOf(store.owner),
     };
+  };
+
+  const delegationOf = async (owner: string) => {
+    const hold = await deps.directory.shopifyHold(owner);
+    return { linked: hold.linked, active: hold.delegated };
   };
 
   const storeEvents = async (store: StoreRecord, body: string): Promise<Response> => {
@@ -518,6 +546,10 @@ export function createAdminApi(
     const parsed = PlanRequestSchema.safeParse(parseJson(body));
     if (!parsed.success) {
       return json({ error: 'bad_request' }, 400);
+    }
+    // A store linked to a Shopify shop is billed through Shopify (askr-shopify 3.6).
+    if ((await deps.directory.shopifyHold(store.owner)).linked) {
+      return json({ error: 'shopify_billing' }, 409);
     }
     if (store.status !== 'pending' || store.tier !== undefined) {
       return planRefused(store);
@@ -739,6 +771,11 @@ export function createAdminApi(
     }
     const owner = auth.pubkey;
     const route = `${request.method} ${url.pathname}`;
+    // A store in an unfinished Shopify onboarding is refused everywhere here, so nothing is
+    // stored, chosen or activated for it before the app finishes (askr-shopify 3.1).
+    if ((await deps.directory.shopifyHold(owner)).onboarding) {
+      return json({ error: 'shopify_onboarding' }, 409);
+    }
     if (route === 'POST /v1/admin/store/recover') {
       return recover(owner, body, clientAddress);
     }
@@ -789,6 +826,14 @@ export function createAdminApi(
     if (route === 'GET /v1/admin/store') {
       return json(await view(store), 200);
     }
+    // While the Shopify app's delegate manages the store, nothing here writes its settings,
+    // products, policies, connector or keys: an older admin, CLI or MCP fails loudly instead of
+    // taking the store away from the app (askr-shopify 5.3).
+    if (MANAGED_BY_DELEGATE_ROUTES.has(route) || POLICY_PATH_RE.test(url.pathname)) {
+      if ((await deps.directory.shopifyHold(owner)).delegated && request.method !== 'GET') {
+        return json({ error: 'managed_by_delegate' }, 409);
+      }
+    }
     if (route === 'POST /v1/admin/store/events') {
       return storeEvents(store, body);
     }
@@ -796,6 +841,10 @@ export function createAdminApi(
       return choosePlan(store, body);
     }
     if (route === 'POST /v1/admin/billing/checkout' || route === 'POST /v1/admin/billing/portal') {
+      // A store linked to a Shopify shop is billed through Shopify, whatever its tier (3.6).
+      if ((await deps.directory.shopifyHold(owner)).linked) {
+        return json({ error: 'shopify_billing' }, 409);
+      }
       if (deps.billing === undefined) {
         return json({ error: 'billing_unavailable' }, 503);
       }
@@ -851,6 +900,14 @@ export function createAdminApi(
     }
     if (route === 'POST /v1/admin/store/assistant/rotate') {
       return json({ nextAssistant: await deps.directory.beginRotation(owner) }, 200);
+    }
+    // A connector the Shopify app manages follows the shop: it goes with the app, never by hand
+    // (askr-shopify 5.3).
+    const managed =
+      (route === 'PUT /v1/admin/connector' || route === 'DELETE /v1/admin/connector') &&
+      (await deps.directory.connector(owner))?.via === 'shopify_app';
+    if (managed) {
+      return json({ error: 'shopify_managed' }, 409);
     }
     if (route === 'PUT /v1/admin/connector') {
       const parsed = ConnectorRequestSchema.safeParse(parseJson(body));

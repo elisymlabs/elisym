@@ -175,6 +175,11 @@ export interface StoreView {
    */
   budgetPaused: BudgetPause | null;
   billing: BillingView;
+  /**
+   * The Shopify app (askr-shopify 5.3): `linked` while a shop is linked, `active` while the app's
+   * delegate manages the store. Absent from a server before the Shopify app.
+   */
+  delegation?: { linked: boolean; active: boolean };
 }
 
 /** `GET /v1/admin/store/moved-settings`: what the previous owner key signed (K21). */

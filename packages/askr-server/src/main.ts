@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
-import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
+import { type AdminFile, createAdminPages, createShopifyPage, loadAdminFiles } from './admin/pages';
 import { createStripeGateway } from './billing/stripe';
 import { type CliDeps, migratesFirst, runCli } from './cli';
 import {
@@ -14,6 +14,7 @@ import {
   freeTierWarning,
   publicBaseOf,
   serveConfigFromEnv,
+  shopifyFromEnv,
   turnReserveFromEnv,
   workerSettings,
 } from './config';
@@ -32,6 +33,9 @@ import { WidgetVersions, widgetBundle } from './gateway/widget';
 import { StoreEventPublisher } from './publisher';
 import { createServerPool } from './relay/pool';
 import { poolSyncClient } from './relay/sync-client';
+import { ShopifyApp } from './shopify/app';
+import { ShopifyClient } from './shopify/client';
+import { ShopDirectory } from './shopify/shops';
 import { reserveWarning } from './state/budget';
 import { PgState } from './state/pg-state';
 import { StoreDirectory } from './state/stores';
@@ -41,6 +45,8 @@ import { readStoreConfig } from './worker/config-read';
 import { Worker } from './worker/worker';
 
 const STORE_POLL_MS = 60_000;
+/** How often the Shopify app works off webhooks and expires onboardings (a webhook also runs it). */
+const SHOPIFY_JOBS_MS = 30_000;
 
 function required(name: string): string {
   const value = process.env[name];
@@ -98,6 +104,8 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const freeTier = freeTierFromEnv(process.env);
   // Refuses to start on one Stripe secret without the other; neither turns billing off.
   const billingSecrets = billingFromEnv(process.env, (path) => readFileSync(path, 'utf8'));
+  // Refuses to start on some but not all Shopify settings; none turns the Shopify app off.
+  const shopifySecrets = shopifyFromEnv(process.env, (path) => readFileSync(path, 'utf8'));
   // A tier whose monthly budget is below one turn's reservation still answers, one turn at a time.
   for (const { tier } of await directory.listTiers()) {
     const warning = reserveWarning(tier, config.reserveUsd);
@@ -128,6 +136,24 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   const publisher = new StoreEventPublisher({ directory, pool, relayUrl, log });
   const catalogs = worker.catalogs;
   const syncClient = poolSyncClient(pool, relayUrl);
+  // A trailing slash is stripped once at startup, so NIP-98 `u` compares exactly.
+  const publicBase = publicBaseOf(process.env.ASKR_PUBLIC_BASE ?? ASKR_API_BASE);
+  let storesChanged: () => void = () => undefined;
+  const shopify =
+    shopifySecrets === undefined
+      ? undefined
+      : new ShopifyApp({
+          secrets: shopifySecrets,
+          db,
+          shops: new ShopDirectory(db, vault),
+          directory,
+          client: new ShopifyClient(shopifySecrets),
+          syncClient,
+          publicBase,
+          ...(freeTier === undefined ? {} : { freeTier }),
+          storesChanged: () => storesChanged(),
+          log,
+        });
   const connectors = new ConnectorService({
     directory,
     holder: worker.holderId,
@@ -135,16 +161,19 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     configFor: (owner) => catalogs.get(owner)?.config,
     readConfig: (owner) => readStoreConfig(pool, relayUrl, owner, Math.floor(Date.now() / 1000)),
     limiter: new ShopRateLimiter(),
+    ...(shopify === undefined ? {} : { shopifyApp: shopify }),
     log,
   });
 
   let server: Server | undefined;
   let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let shopifyTimer: ReturnType<typeof setInterval> | undefined;
   let unlisten: (() => Promise<void>) | undefined;
   let shuttingDown = false;
   async function stopServing(): Promise<void> {
     server?.close();
     clearInterval(pollTimer);
+    clearInterval(shopifyTimer);
     connectors.stop();
     await unlisten?.().catch(() => undefined);
     // Turns in flight get a bounded wait, then the leases are given up so another instance
@@ -185,8 +214,12 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   if (shuttingDown) {
     return;
   }
+  storesChanged = onStoresChanged;
   // The poll covers a notify missed while the listening connection was down (7.3).
   pollTimer = setInterval(onStoresChanged, STORE_POLL_MS);
+  if (shopify !== undefined) {
+    shopifyTimer = setInterval(() => shopify.kickJobs(), SHOPIFY_JOBS_MS);
+  }
   onStoresChanged();
   await connectors.start();
   if (shuttingDown) {
@@ -205,8 +238,6 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     isListed: (owner, address) => isListed(catalogs.get(owner), address),
     isUnservable: (owner) => worker.isUnservable(owner),
   });
-  // A trailing slash is stripped once at startup, so NIP-98 `u` compares exactly.
-  const publicBase = publicBaseOf(process.env.ASKR_PUBLIC_BASE ?? ASKR_API_BASE);
   // The public store files for AI agents: from the worker's cached catalogs, never the model.
   const storeDocs = createStoreDocs({
     statusOf: statusFromDirectory(directory),
@@ -216,6 +247,11 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   });
   const files = adminFiles(log);
   const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
+  // The embedded admin is served only where the Shopify app is on and the admin is built in.
+  const shopifyPage =
+    files === undefined || shopifySecrets === undefined
+      ? undefined
+      : createShopifyPage(files, relayUrl, shopifySecrets.apiKey);
   const { handler, billing } = createRoutes({
     db,
     directory,
@@ -227,10 +263,20 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     billingSecrets,
     stripeFor: (secretKey) => createStripeGateway(secretKey),
     ...(adminPages === undefined ? {} : { adminPages }),
+    ...(shopify === undefined
+      ? {}
+      : {
+          shopify: async (input) => shopifyPage?.(input) ?? (await shopify.handle(input)),
+        }),
     storeDocs,
     gateway,
     log,
   });
+  log(
+    shopify === undefined
+      ? 'the Shopify app is off (no ASKR_SHOPIFY_* settings)'
+      : 'the Shopify app is on',
+  );
   log(
     billing === undefined
       ? 'billing is off (no ASKR_STRIPE_SECRET_KEY_FILE): paid plans go through us'

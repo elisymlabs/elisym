@@ -6,7 +6,14 @@ export interface ScheduledStore {
   storeId: string;
   /** Poll interval for this store's tier, in milliseconds. */
   intervalMs: number;
+  /** Run a new entry at once instead of at a random point of its first interval (a first import). */
+  runFirst?: boolean;
 }
+
+/** A run the scheduler retries soon without counting it as a failure (askr-shopify 3.6). */
+export const SHORT_RETRY_MS = 30_000;
+/** Short retries in a row at most; after them, the usual backoff applies. */
+export const MAX_SHORT_RETRIES = 10;
 
 export interface SchedulerTimers {
   setTimeout(callback: () => void, ms: number): unknown;
@@ -31,6 +38,12 @@ export interface ConnectorSchedulerDeps<Store extends ScheduledStore> {
   random?: () => number;
   maxConcurrent?: number;
   maxBackoffMs?: number;
+  /**
+   * Whether a run's outcome is one that clears up on its own soon (a store config not loaded
+   * yet): retried after `SHORT_RETRY_MS`, at most `MAX_SHORT_RETRIES` times in a row, without
+   * counting toward the backoff. Unset: every outcome backs off as before.
+   */
+  isShortRetry?: (store: Store, result: ConnectorSyncResult) => boolean;
   onError?: (error: unknown) => void;
 }
 
@@ -38,6 +51,8 @@ interface Entry<Store> {
   store: Store;
   timer: unknown;
   failures: number;
+  /** Short retries in a row so far (`isShortRetry`). */
+  shortRetries: number;
   running: boolean;
 }
 
@@ -126,10 +141,14 @@ export class ConnectorScheduler<Store extends ScheduledStore> {
           store,
           timer: undefined,
           failures: 0,
+          shortRetries: 0,
           running: false,
         };
         this.entries.set(store.storeId, fresh);
-        this.schedule(fresh, Math.floor(this.random() * store.intervalMs));
+        this.schedule(
+          fresh,
+          store.runFirst === true ? 0 : Math.floor(this.random() * store.intervalMs),
+        );
       } else if (entry.store.intervalMs !== store.intervalMs) {
         entry.store = store;
         if (!entry.running) {
@@ -224,8 +243,19 @@ export class ConnectorScheduler<Store extends ScheduledStore> {
       this.drain();
       return;
     }
-    entry.failures = result.status === 'ok' ? 0 : entry.failures + 1;
-    const delay = this.delayFor(entry);
+    let delay: number;
+    if (
+      entry.shortRetries < MAX_SHORT_RETRIES &&
+      this.deps.isShortRetry?.(entry.store, result) === true
+    ) {
+      entry.shortRetries += 1;
+      delay = SHORT_RETRY_MS;
+    } else {
+      // Spent short retries stay spent until a run succeeds: then the usual backoff applies.
+      entry.shortRetries = result.status === 'ok' ? 0 : entry.shortRetries;
+      entry.failures = result.status === 'ok' ? 0 : entry.failures + 1;
+      delay = this.delayFor(entry);
+    }
     const at = this.now();
     this.schedule(entry, delay);
     try {

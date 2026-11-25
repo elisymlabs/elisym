@@ -848,7 +848,7 @@ describe('migration 0013 (Buy clicks)', () => {
   it('keeps clicks and activity counted before it, the new columns at 0', async () => {
     const client = await PGlite.create();
     const db = pgliteDb(client);
-    const index = MIGRATIONS.findIndex((entry) => entry.id === '0013_buy_clicks');
+    const index = MIGRATIONS.findIndex((entry) => entry.id === '0014_buy_clicks');
     expect(index).toBeGreaterThan(0);
     await db.script(
       'create table migrations (id text primary key, applied_at timestamptz not null default now());',
