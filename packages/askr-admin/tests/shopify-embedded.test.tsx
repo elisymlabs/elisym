@@ -174,7 +174,10 @@ describe('the embedded admin onboarding (askr-shopify 3.3, 5.1)', () => {
     await act(async () => buttonNamed(container, 'Finish setup').click());
     await settle(() => text(container).includes('Overview'));
     const finished = server.calls.find((call) => call.path === '/v1/shopify/onboard/finish');
-    const events = (finished?.body as { events: NostrEvent[] }).events;
+    if (finished === undefined) {
+      throw new Error('no finish call');
+    }
+    const events = (finished.body as { events: NostrEvent[] }).events;
     expect(events.map((event) => [event.kind, event.created_at, event.pubkey])).toEqual([
       [KIND_CATALOG_AUTH, NOW, proof.pubkey],
       [KIND_CONFIG_DELEGATION, NOW, proof.pubkey],

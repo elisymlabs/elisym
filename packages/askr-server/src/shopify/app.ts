@@ -132,7 +132,7 @@ export interface ShopifyAppDeps {
   syncClient: SyncRelayClient;
   /** The configured public base: the owner's NIP-98 `u` is compared with it. */
   publicBase: string;
-  /** ASKR_FREE_TIER: the Free tier and its caps, shared with standalone signups (Q9). */
+  /** ASKR_FREE_TIER: the Free tier and its caps, shared with standalone sign-ups (Q9). */
   freeTier?: FreeTier;
   /** Called when a store changed, so it is served, published and synced at once. */
   storesChanged: () => void;
