@@ -1,0 +1,32 @@
+# Askr's Shopify app (askr-shopify plan 4). Deployed with `shopify app deploy`; the client id is
+# the app's, from the Partner dashboard (phase 0).
+client_id = "SET_FROM_PARTNER_DASHBOARD"
+name = "Askr"
+handle = "askr"
+application_url = "https://app.askr.elisym.network/shopify/"
+embedded = true
+
+[access_scopes]
+scopes = "read_products,read_legal_policies"
+
+[auth]
+redirect_urls = ["https://app.askr.elisym.network/shopify/"]
+
+[webhooks]
+api_version = "2026-10"
+
+# Only the topics the server works off: products are read on the plan's sync cadence (Q2).
+[[webhooks.subscriptions]]
+topics = ["app/uninstalled", "shop/update"]
+uri = "https://app.askr.elisym.network/v1/shopify/webhooks"
+
+[[webhooks.subscriptions]]
+compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+uri = "https://app.askr.elisym.network/v1/shopify/webhooks"
+
+[pos]
+embedded = false
+
+[build]
+automatically_update_urls_on_dev = false
+include_config_on_deploy = true

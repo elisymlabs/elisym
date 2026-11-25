@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { ASKR_API_BASE, ASKR_RELAYS, type StoreConfig } from '@elisym/askr';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from 'nostr-tools/utils';
-import { type AdminFile, createAdminPages, loadAdminFiles } from './admin/pages';
+import { type AdminFile, createAdminPages, createShopifyPage, loadAdminFiles } from './admin/pages';
 import { createStripeGateway } from './billing/stripe';
 import { type CliDeps, migratesFirst, runCli } from './cli';
 import {
@@ -246,6 +246,11 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
   });
   const files = adminFiles(log);
   const adminPages = files === undefined ? undefined : createAdminPages(files, relayUrl);
+  // The embedded admin is served only where the Shopify app is on and the admin is built in.
+  const shopifyPage =
+    files === undefined || shopifySecrets === undefined
+      ? undefined
+      : createShopifyPage(files, relayUrl, shopifySecrets.apiKey);
   const { handler, billing } = createRoutes({
     db,
     directory,
@@ -257,7 +262,11 @@ async function serve(db: Db, vault: KeyVault): Promise<void> {
     billingSecrets,
     stripeFor: (secretKey) => createStripeGateway(secretKey),
     ...(adminPages === undefined ? {} : { adminPages }),
-    ...(shopify === undefined ? {} : { shopify: (input) => shopify.handle(input) }),
+    ...(shopify === undefined
+      ? {}
+      : {
+          shopify: async (input) => shopifyPage?.(input) ?? (await shopify.handle(input)),
+        }),
     storeDocs,
     gateway,
     log,

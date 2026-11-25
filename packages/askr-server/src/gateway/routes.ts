@@ -29,6 +29,11 @@ export interface RouteHandlers {
  * `/llms.txt`, the admin API (billing's checkout and portal included), the public store files,
  * Stripe's webhook, and the gateway for the rest.
  */
+/** The Shopify app's paths: its API and webhooks, and its embedded admin page. */
+function isShopifyPath(path: string): boolean {
+  return path.startsWith(SHOPIFY_PREFIX) || path === '/shopify' || path.startsWith('/shopify/');
+}
+
 export function composeHandler(
   handlers: RouteHandlers,
 ): (input: GatewayRequest) => Promise<Response> {
@@ -38,7 +43,7 @@ export function composeHandler(
     handlers.shopify ??
     ((input: GatewayRequest) =>
       Promise.resolve(
-        new URL(input.request.url).pathname.startsWith(SHOPIFY_PREFIX)
+        isShopifyPath(new URL(input.request.url).pathname)
           ? new Response(JSON.stringify({ error: 'not_found' }), {
               status: 404,
               headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
