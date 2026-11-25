@@ -771,7 +771,7 @@ describe('a store node end to end', () => {
     await settle();
     store.send(store.order);
     store.send(store.receipt);
-    await settle();
+    await settleUntil(() => store.state.orders[store.orderKey]?.deliveredAt !== undefined);
     expect(store.state.orders[store.orderKey]?.deliveredAt).toBeDefined();
     const published = store.pool.published.length;
     const saved = saves;
@@ -789,7 +789,7 @@ describe('a store node end to end', () => {
     const timers = vi.getTimerCount();
     store.send(store.order);
     store.send(store.receipt);
-    await settle();
+    await settleUntil(() => vi.getTimerCount() === timers + 1);
     expect(vi.getTimerCount()).toBe(timers + 1);
     await store.node.stop();
     expect(vi.getTimerCount()).toBe(0);
@@ -814,7 +814,7 @@ describe('a store node end to end', () => {
     store.send(store.order);
     await settle();
     store.send(store.receipt);
-    await settle();
+    await settleUntil(() => holding);
     // The receipt's save is held; the node is stopped meanwhile.
     expect(holding).toBe(true);
     const stopping = store.node.stop();
