@@ -1,0 +1,39 @@
+# Askr events
+
+What an Askr store publishes on Nostr, and how a reader decides which settings are current. Every Askr reader (the widget, the server, the admin, the CLI and the MCP tools) follows these rules through the `@elisym/askr` package.
+
+## Kinds
+
+| Kind | What it is | Signed by |
+| --- | --- | --- |
+| 30496 | The store config, `d=askr`: name, origins, language, currency, the product source, the catalog and policy keys, the assistant key. Its private part (voice, instructions, notes) is NIP-44 encrypted from the signer to the assistant key. | The owner key, or an active config delegate |
+| 30497 | A catalog key authorization: `d` is the key, `p` the same key, `mode` `hosted` (the Askr server's key) or `self-host` (yours). | The owner key |
+| 30498 | A config delegation: `d` is the delegate's key, `p` the same key, `mode` `hosted`. | The owner key |
+| 30402 | A product listing. | An authorized catalog key |
+| 30495 | A policy. | An authorized catalog key |
+| 5 | A NIP-09 deletion, naming addresses in `a` tags. | The signer of the address, or the owner key |
+
+## Authorizations: 30497 and 30498
+
+Both kinds follow the same rules for each `d`:
+
+- The newest event for that `d` decides. A revocation (`mode` `revoked`) dated at or after the newest grant revokes it.
+- A NIP-09 deletion by the owner of `30497:<owner>:<key>` or `30498:<owner>:<key>`, dated at or after the grant, voids it.
+- An `expiration` tag (NIP-40) ends it.
+
+A config delegate may sign only the store config (30496 `d=askr`) and deletions of its own config address, `30496:<delegate>:askr`. It never signs 30497 or 30498, so it can never authorize a key or replace the owner. The Askr app for Shopify uses one delegate per store ([Askr on Shopify](/askr/shopify)). A store without a delegate publishes no 30498.
+
+## Which config is current
+
+A reader collects candidates and then applies its own rule to them:
+
+1. **Active delegates**: the `d` of each owner 30498 that is active now, at most the 4 newest grants.
+2. **Candidates**: the owner's 30496 `d=askr` and each active delegate's 30496 `d=askr`, as one list, newest first. On the same second the owner comes first, then delegates by public key; a signer's own same-second configs are ordered by lowest id.
+3. **Deletions**: a deletion of a config address counts only when signed by that address's signer or by the owner. A delegate can never delete the owner's config.
+4. Events with a bad signature, or dated more than 15 minutes ahead (10 for the CLI), are no candidates.
+
+Without a delegate the list is exactly the owner's configs, so a store without one reads exactly as before. The widget and the server take the newest candidate and honour its deletion; the admin and the CLI take the newest one that parses; the MCP tools read the newest candidate to warn about a store without settings.
+
+A reader fetches `authors: [owner], kinds: [30496], #d: [askr]` and `authors: [owner], kinds: [30498, 5]`, then, only when a delegate is active, `authors: [delegates...], kinds: [30496], #d: [askr]` and their deletions of their own config address. `@elisym/askr` exports these as `storeConfigFilters(owner)` and `delegateConfigFilters(delegates)`, the delegates as `readConfigDelegates(events, owner, now)`, and the candidates, each already parsed with the store's owner, as `configCandidates(events, owner, { now })`.
+
+A config a delegate signed never proves a site for a key replacement: only the owner's own configs, and the sites the server read from Shopify for a linked shop, do.

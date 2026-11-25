@@ -149,6 +149,8 @@ export default defineConfig({
         { text: 'Embed the widget', link: '/askr/embed' },
         { text: 'AI agents and your store', link: '/askr/ai-agents' },
         { text: 'Catalog from an agent', link: '/askr/catalog-from-an-agent' },
+        { text: 'Askr on Shopify', link: '/askr/shopify' },
+        { text: 'Askr events', link: '/askr/protocol' },
       ],
     },
     {

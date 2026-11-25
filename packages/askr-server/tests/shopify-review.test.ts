@@ -986,3 +986,13 @@ describe('confirmation edges (review of the deepsec fixes, round 2)', () => {
     expect((await h.directory.connector(owner))?.url).toBe('https://new-tea.example');
   });
 });
+
+describe('webhook bodies are never kept (launch prep)', () => {
+  it('stores no part of a delivery body, which names the shop owner', async () => {
+    const h = await harness();
+    await h.onboard();
+    await h.webhook('shop/update', { email: 'owner@tea.example', phone: '+34 600 000 000' });
+    const rows = await h.db.query<{ payload: unknown }>('select payload from shopify_webhooks');
+    expect(rows).toEqual([{ payload: null }]);
+  });
+});

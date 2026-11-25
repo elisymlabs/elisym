@@ -698,7 +698,7 @@ export class ShopifyApp {
       this.log(`webhook ${topic} for ${shop} does not match its body; dropped`);
       return json({ ok: true }, 200);
     }
-    if (await this.deps.shops.recordWebhook(id, shop, topic, payload, this.now())) {
+    if (await this.deps.shops.recordWebhook(id, shop, topic, this.now())) {
       if (this.deps.webhookRecorded === undefined) {
         this.kickJobs();
       } else {
