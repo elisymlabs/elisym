@@ -10,7 +10,7 @@ import {
   priceInSubunits,
   splitNip05,
 } from '@elisym/commerce';
-import { type NostrEvent, finalizeEvent, getPublicKey } from 'nostr-tools/pure';
+import { type EventTemplate, type NostrEvent, finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import type { Product } from './products';
 import type { ListingTerms, PayoutTerms } from './terms';
 
@@ -143,6 +143,67 @@ export function productNaddr(storePubkey: string, d: string, hints: readonly str
 }
 
 /**
+ * The store-wide events the store key signs at `createdAt`: the profile, then
+ * the inbox list (kind 10050).
+ */
+export function buildStoreSignedEvents(
+  config: Pick<StoreConfig, 'name' | 'nip05' | 'inboxRelays'>,
+  storeSecretKey: Uint8Array,
+  ownerPubkey: string,
+  createdAt: number,
+  /** Declare protocol-fee support in the store profile (see `setup`): only a node that can judge splits. */
+  feeSupport: boolean,
+): NostrEvent[] {
+  return [
+    finalizeEvent(
+      buildStoreProfileEvent({
+        name: config.name,
+        ownerPubkey,
+        createdAt,
+        fee: feeSupport,
+        // Every node from 0.11 accepts both Tempo memo forms for every order.
+        memoMarker: true,
+        ...(config.nip05 === undefined ? {} : { nip05: config.nip05 }),
+      }),
+      storeSecretKey,
+    ),
+    finalizeEvent(
+      {
+        kind: KIND_INBOX_RELAYS,
+        created_at: createdAt,
+        tags: config.inboxRelays.map((relay) => ['relay', relay]),
+        content: '',
+      },
+      storeSecretKey,
+    ),
+  ];
+}
+
+/**
+ * The store-wide events the owner key signs, unsigned: the payout list (kind
+ * 10133, dated `paytoCreatedAt`) and the store's authorization (kind 30490, at
+ * `createdAt`) in `auth.mode`, naming `auth.operator` when given.
+ */
+export function ownerEventTemplates(
+  config: Pick<StoreConfig, 'payouts'>,
+  ownerPubkey: string,
+  storePubkey: string,
+  paytoCreatedAt: number,
+  createdAt: number,
+  auth: { mode: 'self-host' | 'hosted'; operator?: string },
+): { payoutList: EventTemplate; authorization: EventTemplate } {
+  return {
+    payoutList: buildPaytoEvent({ ownerPubkey, accept: config.payouts, createdAt: paytoCreatedAt }),
+    authorization: buildStoreAuthEvent({
+      storePubkey,
+      mode: auth.mode,
+      ...(auth.operator === undefined ? {} : { operator: auth.operator }),
+      createdAt,
+    }),
+  };
+}
+
+/**
  * The store-wide events, signed: the owner's payout list (dated `paytoCreatedAt`),
  * then the profile, inbox list (store key) and authorization (owner key), at `createdAt`.
  */
@@ -156,33 +217,14 @@ export function buildStoreWideEvents(
 ): { payoutList: NostrEvent; others: NostrEvent[] } {
   const storePubkey = getPublicKey(keys.storeSecretKey);
   const ownerPubkey = getPublicKey(keys.ownerSecretKey);
-  const byStore = (template: Parameters<typeof finalizeEvent>[0]) =>
-    finalizeEvent(template, keys.storeSecretKey);
-  const byOwner = (template: Parameters<typeof finalizeEvent>[0]) =>
-    finalizeEvent(template, keys.ownerSecretKey);
+  const owned = ownerEventTemplates(config, ownerPubkey, storePubkey, paytoCreatedAt, createdAt, {
+    mode: 'self-host',
+  });
   return {
-    payoutList: byOwner(
-      buildPaytoEvent({ ownerPubkey, accept: config.payouts, createdAt: paytoCreatedAt }),
-    ),
+    payoutList: finalizeEvent(owned.payoutList, keys.ownerSecretKey),
     others: [
-      byStore(
-        buildStoreProfileEvent({
-          name: config.name,
-          ownerPubkey,
-          createdAt,
-          fee: feeSupport,
-          // Every node from 0.11 accepts both Tempo memo forms for every order.
-          memoMarker: true,
-          ...(config.nip05 === undefined ? {} : { nip05: config.nip05 }),
-        }),
-      ),
-      byStore({
-        kind: KIND_INBOX_RELAYS,
-        created_at: createdAt,
-        tags: config.inboxRelays.map((relay) => ['relay', relay]),
-        content: '',
-      }),
-      byOwner(buildStoreAuthEvent({ storePubkey, mode: 'self-host', createdAt })),
+      ...buildStoreSignedEvents(config, keys.storeSecretKey, ownerPubkey, createdAt, feeSupport),
+      finalizeEvent(owned.authorization, keys.ownerSecretKey),
     ],
   };
 }

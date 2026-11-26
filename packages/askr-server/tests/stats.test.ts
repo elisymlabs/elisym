@@ -159,11 +159,18 @@ async function addActivity(
   db: Db,
   owner: string,
   day: number,
-  counts: { conversations?: number; answers?: number; links?: number; carts?: number },
+  counts: {
+    conversations?: number;
+    answers?: number;
+    links?: number;
+    carts?: number;
+    buys?: number;
+    paid?: number;
+  },
 ): Promise<void> {
   await db.query(
-    `insert into activity_days (owner, day, conversations, answers, links, carts)
-     values ($1, $2, $3, $4, $5, $6)`,
+    `insert into activity_days (owner, day, conversations, answers, links, carts, buys, paid)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       owner,
       day,
@@ -171,6 +178,8 @@ async function addActivity(
       counts.answers ?? 0,
       counts.links ?? 0,
       counts.carts ?? 0,
+      counts.buys ?? 0,
+      counts.paid ?? 0,
     ],
   );
 }
@@ -633,7 +642,8 @@ describe('stats: usage', () => {
     const linksOnly = await addStore(db);
     await addActivity(db, linksOnly, TODAY, { links: 4 });
     const older = await addStore(db);
-    await addActivity(db, older, TODAY - 10, { answers: 1, carts: 2 });
+    await addActivity(db, older, TODAY - 10, { answers: 1, carts: 2, buys: 5, paid: 2 });
+    await addActivity(db, linksOnly, TODAY - 1, { buys: 2, paid: 1 });
     const report = await stats(db);
     expect(report.usage.activeStores).toEqual({ days7: 1, window: 2 });
     expect(report.usage.activity.days7).toEqual({
@@ -641,8 +651,13 @@ describe('stats: usage', () => {
       answers: 3,
       links: 4,
       carts: 0,
+      buys: 2,
+      paid: 1,
     });
     expect(report.usage.activity.window.carts).toBe(2);
+    expect(report.usage.activity.window.buys).toBe(7);
+    expect(report.usage.activity.window.paid).toBe(3);
+    expect(formatStats(report)).toContain('buys 2 / 7   paid 1 / 3');
     expect(report.usage.silent).toEqual({ neverAnswered: 1, quiet: 0 });
   });
 
@@ -671,7 +686,13 @@ describe('stats: usage', () => {
   it('ranks top stores by answers with spend over the same window (10.10)', async () => {
     const db = await freshDb();
     const first = await addStore(db, { tier: 'growth' });
-    await addActivity(db, first, TODAY, { answers: 9, conversations: 3, carts: 1 });
+    await addActivity(db, first, TODAY, {
+      answers: 9,
+      conversations: 3,
+      carts: 1,
+      buys: 4,
+      paid: 2,
+    });
     await addSpend(db, first, TODAY, '1.5');
     await addSpend(db, first, TODAY - 30, '100');
     const second = await addStore(db);
@@ -679,9 +700,28 @@ describe('stats: usage', () => {
     await addActivity(db, second, TODAY - 30, { answers: 100 });
     const report = await stats(db);
     expect(report.usage.top).toEqual([
-      { owner: first, tier: 'growth', conversations: 3, answers: 9, carts: 1, spentUsd: '1.5' },
-      { owner: second, tier: 'starter', conversations: 0, answers: 4, carts: 0, spentUsd: '0' },
+      {
+        owner: first,
+        tier: 'growth',
+        conversations: 3,
+        answers: 9,
+        carts: 1,
+        buys: 4,
+        paid: 2,
+        spentUsd: '1.5',
+      },
+      {
+        owner: second,
+        tier: 'starter',
+        conversations: 0,
+        answers: 4,
+        carts: 0,
+        buys: 0,
+        paid: 0,
+        spentUsd: '0',
+      },
     ]);
+    expect(formatStats(report)).toContain('carts 1  buys 4  paid 2');
   });
 
   it('counts connectors per platform and lists enabled failing ones with ms times (16, 10.1)', async () => {
@@ -1303,6 +1343,8 @@ describe('stats: review round', () => {
       answers: 0,
       links: 0,
       carts: 0,
+      buys: 0,
+      paid: 0,
     });
     expect(report.usage.activity.window.links).toBe(5);
     expect(report.usage.activeStores).toEqual({ days7: 0, window: 1 });

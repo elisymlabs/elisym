@@ -54,7 +54,7 @@ const ClickRequestSchema = z.object({
   }),
   address: z.string().max(512),
   /** Absent from a widget older than add to cart counting: a link open. */
-  kind: z.enum(['link', 'cart']).optional(),
+  kind: z.enum(['link', 'cart', 'buy', 'paid']).optional(),
 });
 
 export interface GatewayDeps {

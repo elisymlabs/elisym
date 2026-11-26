@@ -100,7 +100,7 @@ export const HELP = {
 
   // Settings: products
   productSource: {
-    text: 'Where the assistant reads your products and policies from. Here in the admin: you edit them here or import a CSV. My own catalog key: your backend, the SDK or an MCP server publishes them. My online shop or product feed: a connector imports them on a schedule.',
+    text: 'Where the assistant reads your products and policies from. Here in the admin: you edit them here or import a CSV. My own catalog key: your backend, the SDK or an MCP server publishes them. My online shop or product feed: a connector imports them on a schedule. My PayCore store: the products of your PayCore store, with a Buy button on their cards.',
     anchor: 'where-your-products-come-from',
   },
   platform: {

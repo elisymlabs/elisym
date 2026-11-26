@@ -56,12 +56,13 @@
     },
     "packages/askr": {
       "name": "@elisym/askr",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "dependencies": {
         "@elisym/commerce": "~0.14.0",
         "zod": "~4.6.7",
       },
       "devDependencies": {
+        "@elisym/pay-core": "~0.5.0",
         "@types/node": "~25.5.0",
         "decimal.js-light": "~2.5.1",
         "nostr-tools": "~2.23.0",
@@ -101,7 +102,7 @@
     },
     "packages/askr-agent": {
       "name": "@elisym/askr-agent",
-      "version": "0.3.3",
+      "version": "0.4.0",
       "dependencies": {
         "@elisym/askr": "~0.3.0",
         "decimal.js-light": "~2.5.1",
@@ -214,7 +215,7 @@
     },
     "packages/cli": {
       "name": "@elisym/cli",
-      "version": "0.40.0",
+      "version": "0.40.1",
       "bin": {
         "elisym": "./dist/index.js",
       },
@@ -311,7 +312,7 @@
     },
     "packages/mcp": {
       "name": "@elisym/mcp",
-      "version": "0.36.0",
+      "version": "0.36.1",
       "bin": {
         "elisym-mcp": "./dist/index.js",
       },
@@ -350,13 +351,17 @@
         "nostr-tools": "~2.23.0",
         "react": "~19.2.0",
         "react-dom": "~19.2.0",
+        "zod": "~4.6.7",
       },
       "devDependencies": {
+        "@noble/curves": "~2.0.1",
+        "@noble/hashes": "~2.0.1",
         "@tailwindcss/vite": "~4.2.0",
         "@types/node": "~25.5.0",
         "@types/react": "~19.2.0",
         "@types/react-dom": "~19.2.0",
         "@vitejs/plugin-react": "~4.7.0",
+        "fake-indexeddb": "~6.2.5",
         "happy-dom": "~21.0.4",
         "tailwindcss": "~4.2.0",
         "typescript": "~5.7.0",
@@ -387,7 +392,7 @@
     },
     "packages/merchant-node": {
       "name": "@elisym/merchant-node",
-      "version": "0.14.0",
+      "version": "0.14.1",
       "bin": {
         "elisym-merchant": "./dist/cli.js",
       },
@@ -453,9 +458,34 @@
         "vitest": "~4.1.12",
       },
     },
+    "packages/paycore-server": {
+      "name": "@elisym/paycore-server",
+      "version": "0.1.0",
+      "dependencies": {
+        "@elisym/commerce": "~0.14.0",
+        "@elisym/pay-core": "~0.5.0",
+        "@solana-program/token": "~0.14.0",
+        "@solana/kit": "~6.8.0",
+        "decimal.js-light": "~2.5.1",
+        "nostr-tools": "~2.23.0",
+        "pg": "~8.23.1",
+        "ws": "~8.21.0",
+        "yaml": "~2.8.3",
+        "zod": "~4.6.7",
+      },
+      "devDependencies": {
+        "@electric-sql/pglite": "~0.5.13",
+        "@types/node": "~25.5.0",
+        "@types/pg": "~8.23.1",
+        "@types/ws": "~8.18.1",
+        "tsup": "~8.4.0",
+        "typescript": "~5.7.0",
+        "vitest": "~4.1.12",
+      },
+    },
     "packages/react": {
       "name": "@elisym/react",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@types/node": "~25.5.0",
         "@types/react": "~19.2.0",
@@ -776,6 +806,8 @@
     "@elisym/pay-core": ["@elisym/pay-core@workspace:packages/pay-core"],
 
     "@elisym/pay-stats": ["@elisym/pay-stats@workspace:packages/pay-stats"],
+
+    "@elisym/paycore-server": ["@elisym/paycore-server@workspace:packages/paycore-server"],
 
     "@elisym/react": ["@elisym/react@workspace:packages/react"],
 

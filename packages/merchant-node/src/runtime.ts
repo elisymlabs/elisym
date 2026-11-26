@@ -57,8 +57,11 @@ export interface RuntimeDeps {
   store: StoreIdentity;
   storeSecretKey: Uint8Array;
   context: SolanaContext;
-  /** Write the ledger to disk. */
-  save: () => void;
+  /**
+   * Write the ledger to storage. Awaited before anything is sent: a save that
+   * throws or rejects stops the task, so nothing unsaved ever goes out.
+   */
+  save: () => void | Promise<void>;
   /**
    * Publish the completed status of one paid order to the store's inbox relays, except
    * `skip` (they took it already); resolves to the relays that took it now and
@@ -98,10 +101,34 @@ export interface RuntimeDeps {
   refreshTreasuries?: () => Promise<TreasuryRefresh>;
   /** Stop the node: the fee config RPC serves another cluster. */
   stop?: (problem: string) => void;
+  /**
+   * Skip the save ending a quiet sweep (one that moved nothing but the resume
+   * point and the last-seen times of treasuries already known) while the last
+   * sweep that saved is younger than this many seconds: for a host whose every
+   * save rewrites the whole ledger, where these are nearly every save. Without
+   * it every sweep saves.
+   */
+  quietSweepSaveSecs?: number;
 }
 
 /** What the run log says of a payment that matches no known elisym treasury (paid rule 3). */
 export const FEE_UNRESOLVED_NOTE = 'payment to this order matches no known elisym treasury';
+
+/**
+ * The ledger as JSON without what a quiet sweep moves: the resume point and
+ * the last-seen time of each known treasury (which treasuries are known, and
+ * the latest, are kept).
+ */
+export function quietSweepFingerprint(state: LedgerState): string {
+  const treasuries: Record<string, unknown> = {};
+  for (const [network, entry] of Object.entries(state.treasuries)) {
+    treasuries[network] =
+      entry === undefined
+        ? entry
+        : { ...entry, solana: Object.keys(entry.solana), evm: Object.keys(entry.evm) };
+  }
+  return JSON.stringify({ ...state, resumeAt: undefined, treasuries });
+}
 
 /** A reported transaction this order has already judged: never checked again. */
 function settled(order: MerchantOrder, tx: string): boolean {
@@ -126,6 +153,8 @@ export class MerchantRuntime {
   /** When each delivered order's status was last sent again (this run only). */
   private readonly resentAt = new Map<string, number>();
   private repeatsInFlight = 0;
+  /** When a sweep last saved (this run only): quiet sweeps skip their save until `quietSweepSaveSecs` after it. */
+  private sweepSavedAt: number | undefined;
 
   constructor(private readonly deps: RuntimeDeps) {
     this.check = deps.checkPayment ?? checkPayment;
@@ -161,7 +190,7 @@ export class MerchantRuntime {
       const known = state.orders[orderKey(unwrapped.senderPubkey, message.orderId)];
       if (known?.deliveredAt !== undefined && message.storePubkey === store.storePubkey) {
         if (result.kind === 'receipt') {
-          save();
+          await save();
         }
         this.resend(known);
         return;
@@ -175,7 +204,7 @@ export class MerchantRuntime {
       }
       return;
     }
-    save();
+    await save();
     if (result.kind === 'order') {
       log(`order ${result.order.key}`);
       return;
@@ -241,7 +270,7 @@ export class MerchantRuntime {
         log(`warning: ${order.key} ${tx}: ${FEE_UNRESOLVED_NOTE}`);
       }
     }
-    save();
+    await save();
     if (check.kind === 'paid') {
       await this.deliverPending();
     } else if (check.kind === 'ask_again') {
@@ -313,7 +342,8 @@ export class MerchantRuntime {
 
   /** One catch-up sweep; `allLive` and `queuedAt` were taken when it was queued. */
   async sweep(allLive: boolean, queuedAt: number): Promise<void> {
-    const { state, context, save, log, now } = this.deps;
+    const { state, context, save, log, now, quietSweepSaveSecs } = this.deps;
+    const before = quietSweepSaveSecs === undefined ? undefined : quietSweepFingerprint(state);
     state.resumeAt = resumePointAfterSweep(allLive, queuedAt, state.resumeAt);
     for (const closed of pruneExpiredOrders(state, now())) {
       log(
@@ -323,7 +353,7 @@ export class MerchantRuntime {
     if (this.deps.refreshTreasuries !== undefined) {
       const refresh = await this.deps.refreshTreasuries();
       if (refresh.kind === 'wrong_cluster') {
-        save();
+        await save();
         log(`error: ${refresh.problem}: stopping`);
         this.deps.stop?.(refresh.problem);
         return;
@@ -393,7 +423,16 @@ export class MerchantRuntime {
     } finally {
       // Saved before anything is sent, even when the chain could not be read this
       // time: a claim made before the error is on disk before its delivery.
-      save();
+      const quiet =
+        before !== undefined &&
+        quietSweepSaveSecs !== undefined &&
+        this.sweepSavedAt !== undefined &&
+        now() - this.sweepSavedAt < quietSweepSaveSecs &&
+        quietSweepFingerprint(state) === before;
+      if (!quiet) {
+        await save();
+        this.sweepSavedAt = now();
+      }
       await this.deliverPending();
     }
   }
@@ -423,6 +462,7 @@ export class MerchantRuntime {
     }
     const at = now();
     let changed = false;
+    const copies: { wrap: NostrEvent; label: string }[] = [];
     pending.forEach((order, index) => {
       const attempt = attempts[index];
       const fresh = (attempt?.taken ?? []).filter(
@@ -437,19 +477,22 @@ export class MerchantRuntime {
         changed = true;
         order.deliveredAt = at;
         log(`completed ${order.key} (${order.paid?.signature ?? ''})`);
-        // One copy per order, of the attempt that made it delivered. Published
-        // after the save below by the copy queue, which never blocks this one.
+        // One copy per order, of the attempt that made it delivered: handed to
+        // the copy queue (which never blocks this one) only once the save below is done.
         if (attempt === undefined) {
           log(`copy for ${order.key} not made: the completed status could not be built`);
         } else {
-          selfCopies?.add(attempt.selfWrap, order.key);
+          copies.push({ wrap: attempt.selfWrap, label: order.key });
         }
       } else {
         log(`completion for ${order.key} taken by ${order.deliveredTo?.length ?? 0}; will retry`);
       }
     });
     if (changed) {
-      save();
+      await save();
+    }
+    for (const copy of copies) {
+      selfCopies?.add(copy.wrap, copy.label);
     }
   }
 }

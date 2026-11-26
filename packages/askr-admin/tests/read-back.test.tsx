@@ -620,6 +620,47 @@ describe('the overview', () => {
     expect(badge?.classList.contains(tone)).toBe(true);
   });
 
+  it('leaves out a product with no page opens or cart presses (only Buy presses)', async () => {
+    const usage = {
+      ...storeView().usage,
+      clicks: [
+        { address: `30402:${'a'.repeat(64)}:bought-only`, count: 0, carts: 0 },
+        { address: `30402:${'a'.repeat(64)}:carted`, count: 0, carts: 1 },
+        { address: `30402:${'a'.repeat(64)}:opened`, count: 1, carts: 0 },
+      ],
+    };
+    mounted = await mount(
+      <Overview
+        {...overviewProps()}
+        view={storeView({ usage })}
+        config={undefined}
+        configFromServer={false}
+      />,
+    );
+    const rows = mounted.container.querySelectorAll('table[aria-label="Product clicks"] tbody tr');
+    expect([...rows].map((row) => row.querySelector('td')?.textContent)).toEqual([
+      'carted',
+      'opened',
+    ]);
+  });
+
+  it('says no clicks yet when every product had only Buy presses', async () => {
+    const usage = {
+      ...storeView().usage,
+      clicks: [{ address: `30402:${'a'.repeat(64)}:bought-only`, count: 0, carts: 0 }],
+    };
+    mounted = await mount(
+      <Overview
+        {...overviewProps()}
+        view={storeView({ usage })}
+        config={undefined}
+        configFromServer={false}
+      />,
+    );
+    expect(mounted.container.textContent).toContain('No clicks yet.');
+    expect(mounted.container.querySelector('table[aria-label="Product clicks"]')).toBeNull();
+  });
+
   it('says no clicks yet with none', async () => {
     mounted = await mount(
       <Overview

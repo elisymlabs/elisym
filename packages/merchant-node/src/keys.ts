@@ -147,6 +147,7 @@ export function openSecret(
   const secret = hexToBytes(hex);
   const expected = name === 'store' ? keys.storePubkey : keys.ownerPubkey;
   if (getPublicKey(secret) !== expected) {
+    secret.fill(0);
     throw new Error(`keys.json: the ${name} key does not match its public key`);
   }
   return secret;

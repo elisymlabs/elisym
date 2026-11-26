@@ -21,6 +21,7 @@ export const CATEGORIES = [
   'honesty',
   'prices',
   'history',
+  'buy',
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
@@ -36,6 +37,7 @@ export const RUBRIC_CATEGORIES: readonly Category[] = [
   'honesty',
   'prices',
   'history',
+  'buy',
 ];
 export const MAX_RUBRIC_CRITERIA = 3;
 
@@ -120,6 +122,8 @@ const EvalStoreSchema = z
       .strict()
       .optional(),
     items: z.array(CatalogItemInputSchema).min(1),
+    /** Ids of items sold through PayCore with a live authorization: their cards have Buy (C8). */
+    payable: z.array(z.string().min(1)).optional(),
     policies: z.array(PolicyInputSchema.omit({ createdAt: true }).strict()),
   })
   .strict();
@@ -187,6 +191,11 @@ export function lintCases(cases: readonly EvalCase[], store: EvalStore): string[
   const problems: string[] = [];
   const productIds = new Set(store.items.map((item) => item.d));
   const policySlugs = new Set(store.policies.map((policy) => policy.slug));
+  for (const productId of store.payable ?? []) {
+    if (!productIds.has(productId)) {
+      problems.push(`store: payable names unknown product ${productId}`);
+    }
+  }
   const seen = new Set<string>();
   for (const testCase of cases) {
     const where = `case ${testCase.id}`;

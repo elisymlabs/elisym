@@ -55,11 +55,35 @@
       "dependsOn": ["build"],
       "inputs": ["$TURBO_DEFAULT$", "../docs/pages/**", "../../examples/demo-store/README.md"]
     },
+    "@elisym/paycore-server#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "inputs": ["$TURBO_DEFAULT$", "../merchant-node/src/**", "../merchant-node/package.json"]
+    },
+    "@elisym/paycore-server#typecheck": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../merchant-node/src/**",
+        "../merchant-node/package.json",
+        "../merchant-admin/src/hosted/lib/**"
+      ]
+    },
+    "@elisym/paycore-server#test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../merchant-node/src/**",
+        "../merchant-node/package.json",
+        "../merchant-admin/src/hosted/lib/**"
+      ]
+    },
     "@elisym/merchant-admin#build": {
       "dependsOn": ["^build", "generate"],
       "outputs": ["dist/**"],
       "inputs": [
         "$TURBO_DEFAULT$",
+        "../merchant-node/src/product-rules.ts",
         "../merchant-node/src/admin/**",
         "../merchant-node/src/constants.ts",
         "../merchant-node/src/order-rules.ts",
@@ -74,6 +98,7 @@
       "dependsOn": ["^build"],
       "inputs": [
         "$TURBO_DEFAULT$",
+        "../merchant-node/src/product-rules.ts",
         "../merchant-node/src/admin/**",
         "../merchant-node/src/constants.ts",
         "../merchant-node/src/order-rules.ts",
@@ -87,6 +112,10 @@
       "dependsOn": ["build"],
       "inputs": [
         "$TURBO_DEFAULT$",
+        "../paycore-server/src/config.ts",
+        "../paycore-server/src/state/stores.ts",
+        "../react/src/constants.ts",
+        "../merchant-node/src/product-rules.ts",
         "../merchant-node/src/admin/**",
         "../merchant-node/src/constants.ts",
         "../merchant-node/src/order-rules.ts",

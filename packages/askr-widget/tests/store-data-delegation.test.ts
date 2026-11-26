@@ -2,12 +2,18 @@ import {
   CONFIG_D_TAG,
   KIND_CONFIG,
   type StoreConfig,
+  buildCatalogAuth,
   buildConfigDelegation,
   buildConfigDelegationRevocation,
   buildConfigEvent,
   parseConfig,
 } from '@elisym/askr';
-import { newestDeletion, newestSigned } from '@elisym/commerce';
+import {
+  buildProductEvent,
+  buildStoreAuthEvent,
+  newestDeletion,
+  newestSigned,
+} from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 import { describe, expect, it } from 'vitest';
@@ -16,8 +22,13 @@ import {
   seededRandom,
   withoutSigner,
 } from '../../askr/tests/shared/config-event-sets';
+import { CardCache, resolveCards } from '../src/cards';
 import { loadStoreData, readStoreConfig } from '../src/store-data';
-import { localSecs, makeStore, sign, testKey } from './fixtures';
+import { MemoryStorage, localSecs, makeStore, sign, testKey } from './fixtures';
+
+// cspell:ignore EtWTRABZaYq6iMfeYKouRu166VU2xqa1 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+const PAYMENT_TERM =
+  'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 
 /** `readStoreConfig` as it was before config delegation (frozen for 9.1). */
 function frozenReadStoreConfig(
@@ -123,6 +134,63 @@ describe('widget config reader with config delegation', () => {
     expect((await loadStoreData(store.owner.pubkey, relayOf(revoked), now))?.config.name).toBe(
       'Shop',
     );
+  });
+
+  it("a delegate's config sells through the owner's 30490 (Buy), never the delegate's", async () => {
+    const store = makeStore();
+    const delegate = testKey();
+    const now = localSecs();
+    const listing = sign(
+      buildProductEvent({
+        d: 'paid',
+        title: 'Paid',
+        description: '',
+        price: { amount: '5', currency: 'USD' },
+        accept: [PAYMENT_TERM],
+        createdAt: now - 50,
+      }),
+      store.catalogKey,
+    );
+    const address = `30402:${store.catalogKey.pubkey}:paid`;
+    const authorization = buildStoreAuthEvent({
+      storePubkey: store.catalogKey.pubkey,
+      mode: 'hosted',
+      createdAt: now - 80,
+    });
+    const base = [
+      sign(
+        buildCatalogAuth({ key: store.catalogKey.pubkey, mode: 'hosted', createdAt: now - 95 }),
+        store.owner,
+      ),
+      sign(buildConfigDelegation({ key: delegate.pubkey, createdAt: now - 90 }), store.owner),
+      sign(
+        buildConfigEvent(
+          { ...store.configInput, name: 'Delegated', createdAt: now - 10 },
+          delegate.secretKey,
+        ),
+        delegate,
+      ),
+      listing,
+    ];
+    const payableWith = async (authorizer: typeof delegate) => {
+      const events = [...base, sign(authorization, authorizer)];
+      const data = await loadStoreData(store.owner.pubkey, relayOf(events), now);
+      if (data === undefined) {
+        throw new Error('no store');
+      }
+      expect(data.config.signer).toBe(delegate.pubkey);
+      const cards = await resolveCards([address], {
+        config: data.config,
+        authorityEvents: data.authorityEvents,
+        query: relayOf(events),
+        cache: new CardCache(new MemoryStorage()),
+        now,
+      });
+      expect(cards.has(address)).toBe(true);
+      return cards.get(address)?.payable;
+    };
+    expect((await payableWith(store.owner))?.network).toBe('devnet');
+    expect(await payableWith(delegate)).toBeUndefined();
   });
 
   it("the owner's deletion of its own config address does not void a newer delegate config", () => {

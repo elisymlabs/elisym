@@ -33,7 +33,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@elisym/askr": "~0.5.0",
+    "@elisym/askr": "~0.6.0",
     "@elisym/commerce": "~0.14.0",
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",

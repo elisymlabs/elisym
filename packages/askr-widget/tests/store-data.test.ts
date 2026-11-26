@@ -24,14 +24,15 @@ function storeAuth(owner: ReturnType<typeof makeStore>['owner'], key: string): N
 }
 
 describe('store data', () => {
-  it('asks only for the config, 30497 and kind 5: never a 30490', () => {
+  it("asks for the config and the owner's 30497, 30490, 30498 and kind 5 events", () => {
     const store = makeStore();
-    const kinds = storeFilters(store.owner.pubkey).flatMap((filter) => filter.kinds ?? []);
-    expect(kinds).not.toContain(STORE_AUTH_KIND);
-    expect(kinds.sort((left, right) => left - right)).toEqual([5, 30496, 30497, 30498]);
+    const filters = storeFilters(store.owner.pubkey);
+    const kinds = filters.flatMap((filter) => filter.kinds ?? []);
+    expect(kinds.sort((left, right) => left - right)).toEqual([5, 30490, 30496, 30497, 30498]);
+    expect(filters.every((filter) => filter.authors?.join() === store.owner.pubkey)).toBe(true);
   });
 
-  it('reads once, and keeps no 30490 a relay returns among the authority events', async () => {
+  it("reads once, and keeps the owner's 30490 among the authority events, never another signer's", async () => {
     const store = makeStore();
     const now = localSecs();
     const config = sign(
@@ -42,18 +43,20 @@ describe('store data', () => {
       buildCatalogAuth({ key: store.catalogKey.pubkey, mode: 'hosted', createdAt: now - 100 }),
       store.owner,
     );
+    const owned = storeAuth(store.owner, store.catalogKey.pubkey);
+    const foreign = storeAuth(store.catalogKey, store.catalogKey.pubkey);
     const calls: Filter[][] = [];
     const data = await loadStoreData(
       store.owner.pubkey,
       async (filters) => {
         calls.push(filters);
-        return [config, grant, storeAuth(store.owner, store.catalogKey.pubkey)];
+        return [config, grant, owned, foreign];
       },
       now,
     );
     expect(calls).toHaveLength(1);
     expect(data?.config.source).toEqual({ kind: 'catalog' });
-    expect(data?.authorityEvents.map((event) => event.id)).toEqual([grant.id]);
+    expect(data?.authorityEvents.map((event) => event.id)).toEqual([grant.id, owned.id]);
   });
 
   it('a config naming a paycore source loads as no store, with no further read', async () => {

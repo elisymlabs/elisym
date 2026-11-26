@@ -25,7 +25,15 @@ import type {
 export { monthStartDay, utcDay } from './budget-window';
 
 /** A column of `activity_days`: what the widget did on a day. */
-export type ActivityKind = 'conversations' | 'answers' | 'links' | 'carts';
+export type ActivityKind = 'conversations' | 'answers' | 'links' | 'carts' | 'buys' | 'paid';
+
+/** The `clicks` column and the `activity_days` column each click kind counts in. */
+const CLICK_COLUMNS: Record<ClickKind, { click: string; activity: ActivityKind }> = {
+  link: { click: 'count', activity: 'links' },
+  cart: { click: 'carts', activity: 'carts' },
+  buy: { click: 'buys', activity: 'buys' },
+  paid: { click: 'paid', activity: 'paid' },
+};
 
 /**
  * Add one to a store's count for today (UTC). A store already gone (deleted, or moved under this
@@ -785,15 +793,18 @@ export class PgState implements ServerState {
   }
 
   async countClick(owner: string, address: string, kind: ClickKind, now: number): Promise<void> {
+    const columns = CLICK_COLUMNS[kind];
+    // The column comes from the fixed map above, never from the request. `count` has no
+    // default: a first click of another kind starts it at 0.
     await this.db.query(
-      kind === 'cart'
-        ? `insert into clicks (owner, address, count, carts) values ($1, $2, 0, 1)
-           on conflict (owner, address) do update set carts = clicks.carts + 1`
-        : `insert into clicks (owner, address, count) values ($1, $2, 1)
-           on conflict (owner, address) do update set count = clicks.count + 1`,
+      columns.click === 'count'
+        ? `insert into clicks (owner, address, count) values ($1, $2, 1)
+           on conflict (owner, address) do update set count = clicks.count + 1`
+        : `insert into clicks (owner, address, count, ${columns.click}) values ($1, $2, 0, 1)
+           on conflict (owner, address) do update set ${columns.click} = clicks.${columns.click} + 1`,
       [owner, address],
     );
-    await countActivity(this.db, owner, now, kind === 'cart' ? 'carts' : 'links');
+    await countActivity(this.db, owner, now, columns.activity);
   }
 
   /**
@@ -907,10 +918,10 @@ export class PgState implements ServerState {
   }
 
   async clicksFor(owner: string, address: string, kind: ClickKind = 'link'): Promise<number> {
-    const [row] = await this.db.query<{ count: number; carts: number }>(
-      'select count, carts from clicks where owner = $1 and address = $2',
+    const [row] = await this.db.query<Record<string, number>>(
+      'select count, carts, buys, paid from clicks where owner = $1 and address = $2',
       [owner, address],
     );
-    return (kind === 'cart' ? row?.carts : row?.count) ?? 0;
+    return row?.[CLICK_COLUMNS[kind].click] ?? 0;
   }
 }

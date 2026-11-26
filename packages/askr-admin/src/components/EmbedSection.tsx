@@ -11,7 +11,10 @@ import {
   scriptSnippet,
 } from '../lib/embed';
 import { HELP } from '../lib/help';
+import { CHECKOUT_V4_SNIPPET, detectPayCore, hasPayCoreLayout } from '../lib/paycore';
+import type { RelayReader } from '../lib/relay';
 import { npubOf } from '../lib/signer';
+import { readAuthority } from '../lib/store-data';
 import type { PinnedWidget, StoreView } from '../lib/types';
 import { AddToCartHook } from './AddToCartHook';
 import { ContactLinks } from './ContactLinks';
@@ -22,8 +25,15 @@ import { Section } from './Section';
 
 interface Props {
   api: Pick<AdminClient, 'pinnedWidget'>;
-  view: Pick<StoreView, 'owner' | 'status' | 'tier'>;
+  view: Pick<StoreView, 'owner' | 'status' | 'tier' | 'catalogKey'>;
   config: StoreConfig | undefined;
+  /** Reads the owner's 30490s, to tell a PayCore store; none: never one. */
+  reader?: RelayReader;
+  now?: () => number;
+}
+
+function defaultNow(): number {
+  return Math.floor(Date.now() / 1000);
 }
 
 type PinnedLoad =
@@ -63,9 +73,40 @@ function nativeCartOf(
  * The embed code, where to paste it and what add to cart needs; the chat
  * element, the pinned version and the CSP sources under Advanced (6).
  */
-export function EmbedSection({ api, view, config }: Props) {
+export function EmbedSection({ api, view, config, reader, now }: Props) {
   const npub = npubOf(view.owner);
   const [pinned, setPinned] = useState<PinnedLoad>({ state: 'loading' });
+  const [payCoreCheck, setPayCoreCheck] = useState<'no' | 'yes' | 'failed'>('no');
+  const [payCoreAttempt, setPayCoreAttempt] = useState(0);
+  const payCore = payCoreCheck === 'yes';
+  // A catalog source whose products come from another key, with the policies on the server's,
+  // may be a PayCore store: the owner's 30490 for its key tells.
+  const maybePayCore = config !== undefined && hasPayCoreLayout(config, view.catalogKey);
+
+  useEffect(() => {
+    setPayCoreCheck('no');
+    if (!maybePayCore || reader === undefined || config === undefined) {
+      return undefined;
+    }
+    let current = true;
+    const read = async () => {
+      try {
+        const authority = await readAuthority(reader, view.owner, (now ?? defaultNow)());
+        if (current) {
+          const found = detectPayCore(config, view.catalogKey, authority.stores);
+          setPayCoreCheck(found === undefined ? 'no' : 'yes');
+        }
+      } catch {
+        if (current) {
+          setPayCoreCheck('failed');
+        }
+      }
+    };
+    void read();
+    return () => {
+      current = false;
+    };
+  }, [maybePayCore, reader, now, config, view.owner, view.catalogKey, payCoreAttempt]);
 
   useEffect(() => {
     let current = true;
@@ -203,6 +244,31 @@ export function EmbedSection({ api, view, config }: Props) {
           ))}
         </ul>
       </Section>
+      {payCoreCheck === 'failed' ? (
+        <Notice tone="warn">
+          Whether your products come from a PayCore store could not be checked, so the code its Buy
+          button needs is not shown.{' '}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => setPayCoreAttempt((attempt) => attempt + 1)}
+          >
+            Retry
+          </button>
+        </Notice>
+      ) : null}
+      {payCore ? (
+        <Section
+          title="Buy button"
+          description="Your products come from your PayCore store, so their cards can take payment in the chat. Paste this once on every page with the chat, next to its code: the Buy button shows only where the page loads it. The browser runs it only if it matches its integrity hash."
+        >
+          <CopyBlock label="PayCore checkout script" text={CHECKOUT_V4_SNIPPET} />
+          <p className="text-13 text-text-2">
+            An older pinned version of the chat shows no products from a PayCore store: update the
+            chat code to show them.
+          </p>
+        </Section>
+      ) : null}
       <Section
         title="Add to cart"
         info={HELP.addToCart}
@@ -249,7 +315,7 @@ export function EmbedSection({ api, view, config }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {cspSources().map((source) => (
+                  {cspSources(payCore).map((source) => (
                     <tr key={source.directive} className="align-top">
                       <td className="font-mono whitespace-nowrap">{source.directive}</td>
                       <td className="font-mono break-all">{source.sources.join(' ')}</td>

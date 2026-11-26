@@ -1,11 +1,19 @@
-import { type StorePrivateConfig, parseConfig } from '@elisym/askr';
+import { type StoreConfig, type StorePrivateConfig, parseConfig } from '@elisym/askr';
 import { useCallback, useEffect, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
+import { detectPayCore, hasPayCoreLayout } from '../lib/paycore';
 import { saveSettings } from '../lib/save';
-import { EMPTY_FORM, type StoreForm, formOfConfig, withConnector } from '../lib/store-form';
+import {
+  EMPTY_FORM,
+  type StoreForm,
+  formOfConfig,
+  withConnector,
+  withPayCore,
+} from '../lib/store-form';
 import { ownSignedEvents } from '../lib/stored-events';
 import type { StoreView } from '../lib/types';
+import { usePayCoreChoices } from '../lib/use-paycore-choices';
 import { Notice } from './Notice';
 import { Section } from './Section';
 import { StoreSettingsForm } from './StoreSettingsForm';
@@ -28,6 +36,8 @@ type Load =
       found: boolean;
       /** Found, but its private instructions could not be read. */
       privateLost: boolean;
+      /** The settings found, to tell a PayCore store once the new key's 30490s are read. */
+      config: StoreConfig | undefined;
     };
 
 /** The private part as the server read it, if it has the expected shape. */
@@ -47,11 +57,13 @@ function privatePartOf(value: unknown): StorePrivateConfig | undefined {
  * The last step of replacing the secret key (K21): the settings the previous
  * key signed last, shown for review and signed with the new key. Nothing is
  * signed unasked: if someone else had the old key, the last settings may be
- * theirs. Only the product source's key is authorized again; other catalog
- * keys the old key authorized are left out, as one of them may be a thief's.
+ * theirs. Only the product source's keys are authorized again (a PayCore
+ * store's S and the server K); other catalog keys the old key authorized are
+ * left out, as one of them may be a thief's.
  */
 export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
   const [load, setLoad] = useState<Load>({ state: 'loading' });
+  const payCore = usePayCoreChoices(deps);
 
   const read = useCallback(async () => {
     setLoad({ state: 'loading' });
@@ -62,7 +74,13 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
         moved.signedBy === null ? [] : ownSignedEvents([moved.config], moved.signedBy);
       const config = event === undefined ? undefined : parseConfig(event);
       if (config === undefined) {
-        setLoad({ state: 'ready', form: EMPTY_FORM, found: false, privateLost: false });
+        setLoad({
+          state: 'ready',
+          form: EMPTY_FORM,
+          found: false,
+          privateLost: false,
+          config: undefined,
+        });
         return;
       }
       const privatePart = privatePartOf(moved.private);
@@ -71,6 +89,7 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
         form: formOfConfig(config, privatePart),
         found: true,
         privateLost: privatePart === undefined,
+        config,
       });
     } catch (failure) {
       setLoad({ state: 'failed', error: errorMessage(failure) });
@@ -94,6 +113,45 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
       </Notice>
     );
   } else {
+    const layout = load.config !== undefined && hasPayCoreLayout(load.config, view.catalogKey);
+    // The new key's own 30490 for the store, once read: a store moved first reads as PayCore.
+    const moved =
+      load.config === undefined || payCore.state !== 'read'
+        ? undefined
+        : detectPayCore(load.config, view.catalogKey, payCore.stores);
+    let form;
+    if (layout && payCore.state === 'reading') {
+      form = <p className="text-14 text-text-2">Checking your PayCore store...</p>;
+    } else if (layout && payCore.state === 'failed') {
+      form = (
+        <Notice tone="error">
+          Whether these products come from your PayCore store could not be checked, so the form
+          waits.{' '}
+          <button type="button" className="underline" onClick={payCore.retry}>
+            Retry
+          </button>
+        </Notice>
+      );
+    } else {
+      form = (
+        <StoreSettingsForm
+          // Opened once the new key's PayCore store is known (a PayCore layout waits above). The
+          // connector's own fields (a feed, a currency) join at render: a reload of the store must
+          // not read the moved settings again and drop what the merchant typed.
+          initial={withConnector(withPayCore(load.form, moved), view.connector)}
+          payCore={payCore}
+          submitLabel="Sign with my new key"
+          onSubmit={async (submitted) => {
+            const outcome = await saveSettings({ deps, view, form: submitted });
+            if (outcome.connectorError !== undefined) {
+              throw new Error(outcome.connectorError);
+            }
+            await onDone();
+            return 'Signed.';
+          }}
+        />
+      );
+    }
     body = (
       <Section
         title="Check and sign your settings"
@@ -103,25 +161,20 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
             : 'Your previous settings could not be found. Fill them in again and sign with your new key.'
         }
       >
+        {layout && moved?.active !== true ? (
+          <Notice tone="warn">
+            If these products come from your PayCore store, the chat shows them without a Buy button
+            until your new key authorizes that store in PayCore. A store on your own PayCore node:
+            authorize it there with your new key. A hosted PayCore store cannot change its owner key
+            yet: message us.
+          </Notice>
+        ) : null}
         {load.privateLost ? (
           <Notice tone="warn">
             Your private instructions could not be read, so they are empty below. Enter them again.
           </Notice>
         ) : null}
-        <StoreSettingsForm
-          // The connector's own fields (a feed, a currency) join at render: a reload of the store
-          // must not read the moved settings again and drop what the merchant typed.
-          initial={withConnector(load.form, view.connector)}
-          submitLabel="Sign with my new key"
-          onSubmit={async (form) => {
-            const outcome = await saveSettings({ deps, view, form });
-            if (outcome.connectorError !== undefined) {
-              throw new Error(outcome.connectorError);
-            }
-            await onDone();
-            return 'Signed.';
-          }}
-        />
+        {form}
       </Section>
     );
   }

@@ -36,7 +36,7 @@ The plan line below says how many products the assistant reads, how many questio
 
 ### Product clicks
 
-For each product: **Page opened** counts how often a visitor opened its page from a card in the chat, and **Added to cart** how often they pressed the card's add to cart button. Both are reported by the visitor's browser, so take them as a guide rather than exact figures. A page still running an older chat version counts its add to cart presses as page opens. The busiest products come first, up to ten.
+For each product: **Page opened** counts how often a visitor opened its page from a card in the chat, and **Added to cart** how often they pressed the card's add to cart button. Both are reported by the visitor's browser, so take them as a guide rather than exact figures. A page still running an older chat version counts its add to cart presses as page opens. The busiest products come first, up to ten. A product whose cards were only used to Buy is not listed here.
 
 ### Last 30 days
 
@@ -92,7 +92,7 @@ The language your products and policies are written in, as a language tag such a
 
 ### Currency
 
-The three-letter code of the currency your prices are in, such as `USD` or `EUR`. A product priced in another currency is left out of the assistant's catalog and never offered, so publish all your prices in this currency.
+The three-letter code of the currency your prices are in, such as `USD` or `EUR`. A product priced in another currency is left out of the assistant's catalog and never offered, so publish all your prices in this currency. With **My PayCore store** as the source the currency is `USD`, the currency of PayCore prices, and cannot be changed.
 
 **Example:** `USD`, `EUR` or `GBP`.
 
@@ -152,8 +152,13 @@ Where the assistant reads your products and policies from. Exactly one source co
 - **Here in the admin (CSV import and product editor)**: you edit products on the Products page or import a CSV file, and write policies on the Policies page. The server's own catalog key signs them.
 - **My own catalog key (SDK, MCP or my backend)**: your own code publishes products and policies, signed with a key you hold. See [Your catalog key](#your-catalog-key).
 - **My online shop or product feed (connector)**: a connector imports products from Shopify, WooCommerce or a Google product feed on your plan's schedule. See [Platform](#platform).
+- **My PayCore store (products with a Buy button in the chat)**: the products of your PayCore store, whose cards can take payment. See [Your PayCore store](#your-paycore-store).
 
 Changing the source does not delete what the old source published; the assistant just stops reading it.
+
+### Your PayCore store
+
+Shown for **My PayCore store**: the PayCore store the chat sells from. The admin finds the stores your secret key authorized in PayCore, and choosing this source links the newest active one (if the stores are still being read then, press **Sell from this store** once it is found). Its products come from the store's own key, and saving authorizes that key and the server's (for your policies) for your store. The currency is locked to `USD`, the currency of PayCore prices, and your plan's product limit applies. If your PayCore authorization of the store is revoked or expired, it reads **PayCore store - authorization inactive**: its products show without a Buy button until you authorize it again, in PayCore for a hosted store (the admin links there) or on your own PayCore node. If another of your PayCore stores is active, **Use ... instead** sells from that one. With no PayCore store yet, the admin links to PayCore to set one up: sign in there with this same secret key. For the Buy button, add the checkout script from the [Embed page](#buy-button). See [Sell from your PayCore store](/askr/overview#sell-from-your-paycore-store).
 
 ### Platform
 
@@ -407,6 +412,10 @@ The chat code: paste it once before `</body>` on every page that should show the
 <script src="https://app.askr.elisym.network/widget.js" data-store="npub1...your Store ID..." data-theme="dark" data-lang="de" async></script>
 ```
 
+### Buy button
+
+Shown when your products come from your PayCore store: the PayCore checkout script, to paste once on every page with the chat, next to its code. The Buy button shows only on pages that load it. The Content Security Policy list under it then includes the checkout. See [Buy with PayCore](/askr/embed#buy-with-paycore).
+
 ### Add to cart
 
 Whether product cards get an add to cart button. A Shopify or WooCommerce connector gives one on your shop's own site, with nothing to add. Otherwise your developer adds a small hook to your pages that puts the product in your cart. See [Embed the widget](/askr/embed).
@@ -423,7 +432,7 @@ Your secret key is your store. If someone else may have it, replace it: you make
 
 ### Catalog keys
 
-The keys allowed to publish your products and policies. The server's own key is one of them, used by the admin and connectors. Authorize your own key to publish from your backend, the SDK or an MCP server, and revoke a key you no longer use. Revoking a key your settings read from hides what it published until you point the settings at another key.
+The keys allowed to publish your products and policies. The server's own key is one of them, used by the admin and connectors. Authorize your own key to publish from your backend, the SDK or an MCP server, and revoke a key you no longer use. Revoking a key your settings read from hides what it published until you point the settings at another key. Your PayCore store's key is listed as **your PayCore store**, or **your PayCore store (authorization inactive)** while your PayCore authorization of it is revoked or expired.
 
 ### Assistant key
 

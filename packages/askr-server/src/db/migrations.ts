@@ -430,6 +430,17 @@ alter table connectors add column via text check (via in ('shopify_app'));
 alter table connectors add column run_requested boolean not null default false;
 `,
   },
+  {
+    id: '0014_buy_clicks',
+    sql: `
+-- Presses of a PayCore card's Buy button and the payments its checkout reported (advisory, as
+-- the browser reports them: never billing), per listing and per UTC day.
+alter table clicks add column buys bigint not null default 0;
+alter table clicks add column paid bigint not null default 0;
+alter table activity_days add column buys integer not null default 0;
+alter table activity_days add column paid integer not null default 0;
+`,
+  },
 ];
 
 const LOCK_ID = 7_301_995;

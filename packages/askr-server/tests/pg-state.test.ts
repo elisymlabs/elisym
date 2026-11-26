@@ -765,12 +765,65 @@ describe('product clicks in the usage (7.3)', () => {
     await state.countClick(store.owner, tent, 'link', NOW);
     await state.countClick(store.owner, tent, 'cart', NOW);
     await state.countClick(store.owner, tent, 'link', NOW);
+    // Buy presses do not move a product up the list.
+    for (let press = 0; press < 5; press += 1) {
+      await state.countClick(store.owner, mug, 'buy', NOW);
+    }
     const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
     expect(clicks).toEqual([
-      { address: tent, count: 2, carts: 1 },
-      { address: scarf, count: 0, carts: 2 },
-      { address: mug, count: 1, carts: 0 },
+      { address: tent, count: 2, carts: 1, buys: 0, paid: 0 },
+      { address: scarf, count: 0, carts: 2, buys: 0, paid: 0 },
+      { address: mug, count: 1, carts: 0, buys: 5, paid: 0 },
     ]);
+  });
+
+  it('counts Buy presses and reported payments apart, each in its own column (C6)', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const course = `30402:${store.catalogKey}:course`;
+    const mug = `30402:${store.catalogKey}:mug`;
+    await state.countClick(store.owner, course, 'buy', NOW);
+    await state.countClick(store.owner, course, 'buy', NOW);
+    await state.countClick(store.owner, course, 'paid', NOW);
+    await state.countClick(store.owner, mug, 'link', NOW);
+    await state.countClick(store.owner, mug, 'buy', NOW);
+    expect(await state.clicksFor(store.owner, course, 'buy')).toBe(2);
+    expect(await state.clicksFor(store.owner, course, 'paid')).toBe(1);
+    expect(await state.clicksFor(store.owner, course, 'link')).toBe(0);
+    expect(await state.clicksFor(store.owner, course, 'cart')).toBe(0);
+    const { clicks, days } = await directory.usage(store.owner, store.assistant, NOW);
+    // The admin's list leaves out a product with only Buy presses, and Buys never rank one.
+    expect(clicks).toEqual([{ address: mug, count: 1, carts: 0, buys: 1, paid: 0 }]);
+    expect(days).toEqual([
+      {
+        day: Math.floor(NOW / 86_400),
+        conversations: 0,
+        answers: 0,
+        links: 1,
+        carts: 0,
+        buys: 3,
+        paid: 1,
+      },
+    ]);
+  });
+
+  it('ranks by opens and cart presses alone: Buy presses and payments never reorder or list one', async () => {
+    const store = syntheticStore();
+    const { state, directory } = await stateWith([storeRecord(store)]);
+    const [first, second, boughtOnly] = ['aaa-opened', 'zzz-paid', 'mmm-bought'].map(
+      (dTag) => `30402:${store.catalogKey}:${dTag}`,
+    );
+    if (first === undefined || second === undefined || boughtOnly === undefined) {
+      throw new Error('no addresses');
+    }
+    await state.countClick(store.owner, first, 'link', NOW);
+    await state.countClick(store.owner, second, 'link', NOW);
+    await state.countClick(store.owner, second, 'buy', NOW);
+    await state.countClick(store.owner, second, 'paid', NOW);
+    await state.countClick(store.owner, boughtOnly, 'buy', NOW);
+    await state.countClick(store.owner, boughtOnly, 'paid', NOW);
+    const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
+    expect(clicks.map((click) => click.address)).toEqual([first, second]);
   });
 
   it('puts the one added to cart more first when the totals tie', async () => {
@@ -788,6 +841,43 @@ describe('product clicks in the usage (7.3)', () => {
     await state.countClick(store.owner, added, 'cart', NOW);
     const { clicks } = await directory.usage(store.owner, store.assistant, NOW);
     expect(clicks.map((click) => click.address)).toEqual([added, opened]);
+  });
+});
+
+describe('migration 0013 (Buy clicks)', () => {
+  it('keeps clicks and activity counted before it, the new columns at 0', async () => {
+    const client = await PGlite.create();
+    const db = pgliteDb(client);
+    const index = MIGRATIONS.findIndex((entry) => entry.id === '0014_buy_clicks');
+    expect(index).toBeGreaterThan(0);
+    await db.script(
+      'create table migrations (id text primary key, applied_at timestamptz not null default now());',
+    );
+    for (const entry of MIGRATIONS.slice(0, index)) {
+      await db.script(entry.sql);
+      await db.query('insert into migrations (id) values ($1)', [entry.id]);
+    }
+    const owner = 'a'.repeat(64);
+    await db.query(
+      `insert into stores (owner, status, assistant, assistant_key, catalog_key,
+         catalog_key_secret, created_at)
+       values ($1, 'pending', $2, $3, $4, $5, 0)`,
+      [owner, 'b'.repeat(64), new Uint8Array(1), 'c'.repeat(64), new Uint8Array(1)],
+    );
+    await db.query(`insert into clicks (owner, address, count, carts) values ($1, 'x', 3, 2)`, [
+      owner,
+    ]);
+    await db.query(`insert into activity_days (owner, day, links, carts) values ($1, 1, 3, 2)`, [
+      owner,
+    ]);
+    await migrate(db);
+    expect(await db.query('select count, carts, buys, paid from clicks')).toEqual([
+      { count: 3, carts: 2, buys: 0, paid: 0 },
+    ]);
+    expect(await db.query('select links, carts, buys, paid from activity_days')).toEqual([
+      { links: 3, carts: 2, buys: 0, paid: 0 },
+    ]);
+    await client.close();
   });
 });
 
@@ -809,8 +899,8 @@ describe('daily activity (7.3)', () => {
     const { days } = await directory.usage(store.owner, store.assistant, NOW + 86_400);
     const today = Math.floor(NOW / 86_400);
     expect(days).toEqual([
-      { day: today, conversations: 1, answers: 2, links: 1, carts: 0 },
-      { day: today + 1, conversations: 0, answers: 0, links: 0, carts: 1 },
+      { day: today, conversations: 1, answers: 2, links: 1, carts: 0, buys: 0, paid: 0 },
+      { day: today + 1, conversations: 0, answers: 0, links: 0, carts: 1, buys: 0, paid: 0 },
     ]);
     expect((await directory.list(NOW))[0]?.answers).toBe(2);
   });

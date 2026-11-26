@@ -1,0 +1,41 @@
+{
+  "name": "@elisym/paycore-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PayCore server: many hosted PayCore stores in one process - leases, the stores' ledgers in Postgres, the admin API and the operator CLI.",
+  "license": "MIT",
+  "author": "elisym labs",
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/ tests/",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@elisym/commerce": "~0.14.0",
+    "@elisym/pay-core": "~0.5.0",
+    "@solana-program/token": "~0.14.0",
+    "@solana/kit": "~6.8.0",
+    "decimal.js-light": "~2.5.1",
+    "nostr-tools": "~2.23.0",
+    "pg": "~8.23.1",
+    "ws": "~8.21.0",
+    "yaml": "~2.8.3",
+    "zod": "~4.6.7"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "~0.5.13",
+    "@types/node": "~25.5.0",
+    "@types/pg": "~8.23.1",
+    "@types/ws": "~8.18.1",
+    "tsup": "~8.4.0",
+    "typescript": "~5.7.0",
+    "vitest": "~4.1.12"
+  },
+  "engines": {
+    "node": ">=22.4"
+  }
+}

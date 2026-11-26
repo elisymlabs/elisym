@@ -13,24 +13,32 @@ import {
   parseCatalogItem,
   parsePolicy,
   policiesInUse,
+  readPayableKeys,
   resolveStoreKeys,
 } from '@elisym/askr';
 import { StoreCatalog } from '@elisym/askr-agent';
-import { KIND_DELETION, KIND_PRODUCT, newestDeletion, newestSigned } from '@elisym/commerce';
+import {
+  KIND_DELETION,
+  KIND_PRODUCT,
+  KIND_STORE_AUTH,
+  newestDeletion,
+  newestSigned,
+} from '@elisym/commerce';
 import type { Filter, NostrEvent } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
 
-const AUTHORITY_KINDS: readonly number[] = [KIND_CATALOG_AUTH, KIND_DELETION];
+/** The owner's authority: catalog keys (30497), PayCore store keys (30490, Buy) and deletions. */
+const AUTHORITY_KINDS: readonly number[] = [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_DELETION];
 
 /**
- * The owner's events a store needs first: its config, authority (30497),
+ * The owner's events a store needs first: its config, authority (30497, 30490),
  * config delegations (30498) and deletions. Active delegates' configs are a
  * second read (`delegateConfigFilters`).
  */
 export function ownerFilters(owner: string): Filter[] {
   return [
     {
-      kinds: [KIND_CONFIG, KIND_CATALOG_AUTH, KIND_CONFIG_DELEGATION, KIND_DELETION],
+      kinds: [KIND_CONFIG, ...AUTHORITY_KINDS, KIND_CONFIG_DELEGATION],
       authors: [owner],
     },
   ];
@@ -178,10 +186,11 @@ export function buildStoreCatalog(
     (event) => event.pubkey === owner && AUTHORITY_KINDS.includes(event.kind),
   );
   const keys = resolveStoreKeys(config, authority, now);
+  const payableKeys = readPayableKeys(authority, owner, now);
   const items: CatalogItem[] = [];
   if (keys.productKey !== undefined) {
     for (const event of newestPerAddress(events, KIND_PRODUCT, keys.productKey, now)) {
-      const item = parseCatalogItem(event, { now });
+      const item = parseCatalogItem(event, { now, catalogKey: keys.productKey, payableKeys });
       if (item) {
         items.push(item);
       }

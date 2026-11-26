@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from 'react';
 import { errorMessage } from '../lib/errors';
 import type { StoreForm } from '../lib/store-form';
+import type { PayCoreChoices } from '../lib/use-paycore-choices';
 import { Notice } from './Notice';
 import { StoreFields } from './StoreFields';
 
@@ -13,6 +14,8 @@ interface Props {
   canSubmit?: boolean;
   /** Shown just above the submit button. */
   children?: ReactNode;
+  /** The owner's PayCore stores, for the PayCore source. */
+  payCore?: PayCoreChoices;
 }
 
 export function StoreSettingsForm({
@@ -21,6 +24,7 @@ export function StoreSettingsForm({
   onSubmit,
   canSubmit = true,
   children,
+  payCore,
 }: Props) {
   const [form, setForm] = useState(initial);
   const [busy, setBusy] = useState(false);
@@ -48,7 +52,7 @@ export function StoreSettingsForm({
         void submit();
       }}
     >
-      <StoreFields form={form} onChange={setForm} />
+      <StoreFields form={form} onChange={setForm} {...(payCore === undefined ? {} : { payCore })} />
       {error === '' ? null : <Notice tone="error">{error}</Notice>}
       {done === '' ? null : <Notice tone="success">{done}</Notice>}
       {children}

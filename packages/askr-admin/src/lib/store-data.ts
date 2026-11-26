@@ -17,11 +17,13 @@ import {
 import {
   KIND_DELETION,
   KIND_PRODUCT,
+  KIND_STORE_AUTH,
   MAX_FUTURE_SKEW_SECS,
   newestDeletion,
 } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import { verifyEvent } from 'nostr-tools/pure';
+import { type PayCoreStoreAuth, payCoreStoresOf } from './paycore';
 import type { RelayReader } from './relay';
 
 function dOf(event: NostrEvent): string | undefined {
@@ -149,6 +151,8 @@ export interface AuthorityRead {
   keys: Set<string>;
   /** The date of the newest 30497 per key: a new one for that key must be dated after it. */
   newestAt: Map<string, number>;
+  /** The PayCore store keys the owner signed a 30490 for, newest first (C7). */
+  stores: PayCoreStoreAuth[];
 }
 
 /** The owner's authorizations, signature checked (the shared reader does not check signatures). */
@@ -159,7 +163,7 @@ export async function readAuthority(
 ): Promise<AuthorityRead> {
   const events = (
     await reader.query({
-      kinds: [KIND_CATALOG_AUTH, KIND_DELETION],
+      kinds: [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_DELETION],
       authors: [owner],
     })
   ).filter((event) => verifyEvent(event));
@@ -170,7 +174,11 @@ export async function readAuthority(
       newestAt.set(key, event.created_at);
     }
   }
-  return { keys: readCatalogAuthority(events, owner, now), newestAt };
+  return {
+    keys: readCatalogAuthority(events, owner, now),
+    newestAt,
+    stores: payCoreStoresOf(events, owner, now),
+  };
 }
 
 function isHidden(event: NostrEvent): boolean {
@@ -215,7 +223,7 @@ function listingsOf(events: readonly NostrEvent[], key: string, now: number): Ca
             ),
           }
         : event;
-      const item = parseCatalogItem(readable, { now });
+      const item = parseCatalogItem(readable, { now, catalogKey: key });
       return item === undefined ? [] : [inputOfListing(item, hidden)];
     });
 }
@@ -266,7 +274,7 @@ export async function countListed(
       return false;
     }
     // Only the store's currency counts against the plan: the assistant leaves the rest out.
-    return parseCatalogItem(event, { now })?.price.currency === currency;
+    return parseCatalogItem(event, { now, catalogKey: key })?.price.currency === currency;
   }).length;
 }
 

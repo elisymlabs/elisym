@@ -23,7 +23,7 @@ const POINTS: { icon: IconName; title: string; body: string }[] = [
   {
     icon: 'ban',
     title: 'No payments',
-    body: `${PRODUCT_NAME} never touches money. Checkout stays where it is on your site.`,
+    body: `${PRODUCT_NAME} never touches money. Checkout stays where it is on your site, or in the PayCore checkout on your page if you sell with PayCore.`,
   },
   {
     icon: 'shield',

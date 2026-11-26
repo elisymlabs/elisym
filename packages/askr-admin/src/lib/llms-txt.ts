@@ -37,7 +37,7 @@ export function siteLlmsTxtSection(npub: string): string {
     '',
     `- [Products and policies for AI agents](${storeLlmsTxtUrl(npub)}): every product with its price and page, and the store's policies, read-only`,
     `- [Catalog as JSON](${storeCatalogJsonUrl(npub)}): the same, machine-readable`,
-    `- [Askr](${ASKR_SITE_URL}): the shopping assistant this store uses. Purchases happen on this site's product pages.`,
+    `- [Askr](${ASKR_SITE_URL}): the shopping assistant this store uses. Purchases happen on this site.`,
     '',
   ].join('\n');
 }

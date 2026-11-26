@@ -64,14 +64,17 @@ function connectorConfig(platform: ConnectorPlatform, shopUrl: string | null = S
 function context(
   config: StoreConfig = storeConfig(),
   pageOrigin: string | undefined = SHOP,
-): CardContext & { clicks: string[] } {
+): CardContext & { clicks: string[]; notes: string[] } {
   const clicks: string[] = [];
+  const notes: string[] = [];
   return {
     document,
     config,
     reportClick: (address, kind) => clicks.push(`${kind} ${address}`),
+    note: (note) => notes.push(note),
     pageOrigin,
     clicks,
+    notes,
   };
 }
 

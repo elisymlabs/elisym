@@ -1,0 +1,804 @@
+import { CATCH_UP_INTERVAL_MS } from '@merchant-node/constants';
+import type { LedgerState } from '@merchant-node/ledger';
+import { startStoreNode } from '@merchant-node/store-node';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { chain, landedPayment, requestFor, signatureOf } from '../../merchant-node/tests/fixtures';
+import type { TransportRequest } from '../src/connectors/fetch-guard';
+import type { Db } from '../src/db/db';
+import {
+  MAX_FAILED_STARTS,
+  type StoreSupervisor,
+  sweepPhaseDelayMs,
+  sweepPhaseMs,
+} from '../src/node/supervisor';
+import { LEASE_TTL_SECS, newHolderId } from '../src/state/leases';
+import { PgLedgerStore } from '../src/state/ledger-store';
+import { WebhookSlots } from '../src/webhook-fetch';
+import {
+  NOW,
+  PRODUCT,
+  RELAY,
+  WEBHOOK_SECRET,
+  key,
+  lease,
+  openAlerts,
+  orderWraps,
+  seedStore,
+  settle,
+  sellingLedger,
+  storeStatus,
+  storedLedger,
+  testSupervisor,
+  vault,
+  waitFor,
+} from './helpers/node-store';
+import { RelayWorld } from './helpers/node-world';
+import { freshDb } from './pglite-db';
+
+const ORDER_ID = 'b3a7c2d4-0000-4000-8000-00000000c001';
+const TX = signatureOf(7);
+const HOOK_URL = 'https://shop.example.com/hook';
+
+const supervisors: StoreSupervisor[] = [];
+afterEach(async () => {
+  vi.useRealTimers();
+  await Promise.all(supervisors.splice(0).map((supervisor) => supervisor.shutdown()));
+});
+
+function track<Value extends { supervisor: StoreSupervisor }>(value: Value): Value {
+  supervisors.push(value.supervisor);
+  return value;
+}
+
+/** A Solana chain where `tx` paid the order `orderId` of `buyer` at `store`. */
+async function paidChain(store: ReturnType<typeof key>, buyer: ReturnType<typeof key>) {
+  const wraps = orderWraps(store, buyer, ORDER_ID, TX);
+  const { rpc } = chain({
+    [TX]: await landedPayment(requestFor(wraps.reference), { blockTime: NOW - 30 }),
+  });
+  return { wraps, rpc };
+}
+
+async function delivered(db: Db, owner: string, orderKey: string): Promise<boolean> {
+  return (await storedLedger(db, owner)).orders[orderKey]?.deliveredAt !== undefined;
+}
+
+/** Bump the fence under the running holder, as a takeover that saved would. */
+async function bumpRow(
+  db: Db,
+  owner: string,
+  change: (state: LedgerState) => void = () => undefined,
+) {
+  const state = await storedLedger(db, owner);
+  change(state);
+  await db.query('update ledgers set state = $2, row_version = row_version + 1 where owner = $1', [
+    owner,
+    JSON.stringify(state),
+  ]);
+}
+
+describe('file vs pg LedgerStore parity', () => {
+  it('saves the same ledger for an order, its paid receipt, its delivery and its webhook', async () => {
+    const store = key();
+    const buyer = key();
+    const { wraps, rpc } = await paidChain(store, buyer);
+    const webhookSends: string[] = [];
+
+    async function run(save: (state: LedgerState) => Promise<void>, state: LedgerState) {
+      const world = new RelayWorld();
+      const pool = world.pool();
+      const node = await startStoreNode({
+        pool,
+        config: {
+          name: 'Shop',
+          network: 'devnet',
+          payouts: [],
+          inboxRelays: [RELAY],
+          rpcUrl: 'https://rpc',
+        },
+        products: new Map([[PRODUCT.d, PRODUCT]]),
+        state,
+        storePubkey: store.pubkey,
+        storeSecretKey: store.secretKey,
+        solanaRpc: rpc,
+        save: () => save(state),
+        refreshTreasuries: async () => ({ kind: 'unreachable', problem: 'offline' }),
+        eip3009: [],
+        outbox: { storePubkey: store.pubkey, now: () => NOW },
+        webhook: {
+          target: { url: HOOK_URL, secret: WEBHOOK_SECRET },
+          userAgent: 'test',
+          fetch: async (url) => {
+            webhookSends.push(url);
+            return new Response(null, { status: 200 });
+          },
+        },
+        log: () => undefined,
+        now: () => NOW,
+        stop: () => undefined,
+        haltOnSaveFailure: true,
+      });
+      world.deliver(wraps.order);
+      world.deliver(wraps.receipt);
+      await waitFor(() => state.orders[wraps.key]?.webhook?.state === 'sent', 'the webhook sent');
+      await node.stop();
+    }
+
+    const snapshots: string[] = [];
+    const fileState = sellingLedger();
+    await run(async (state) => {
+      snapshots.push(JSON.stringify(state, null, 2));
+    }, fileState);
+
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys, { store });
+    const holder = newHolderId();
+    const [leased] = await lease(db, holder);
+    const handle = await new PgLedgerStore(db, () => NOW).open(
+      owner.pubkey,
+      leased?.epoch ?? 0,
+      holder,
+    );
+    await run((state) => handle.save(state), handle.state);
+
+    const fileSaved = JSON.parse(snapshots.at(-1) ?? '{}') as LedgerState;
+    expect(fileSaved.orders[wraps.key]?.webhook?.state).toBe('sent');
+    expect(await storedLedger(db, owner.pubkey)).toEqual(fileSaved);
+    expect(webhookSends).toEqual([HOOK_URL, HOOK_URL]);
+  });
+});
+
+describe('StoreSupervisor', () => {
+  it("spreads the stores' first sweeps: each node waits the delay drawn for it", async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const first = await seedStore(db, keys);
+    const second = await seedStore(db, keys);
+    const delays = new Map([
+      [first.owner.pubkey, 0],
+      [second.owner.pubkey, 3_600_000],
+    ]);
+    const askedFor: string[] = [];
+    /** Fee config reads: the start checks', then the sweeps'. */
+    let sweeps = 0;
+    const holder = newHolderId();
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, {
+        firstSweepDelayMs: (owner) => {
+          askedFor.push(owner);
+          return delays.get(owner) ?? 0;
+        },
+        treasuries: {
+          refreshFor: async () => {
+            sweeps += 1;
+            return { kind: 'unreachable', problem: 'offline' };
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toHaveLength(2);
+    // Each start check read the fee config once; the sweeps' reads come after.
+    const startReads = 2;
+    await waitFor(() => sweeps === startReads + 1, 'the undelayed store swept');
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    // The other one waits its hour.
+    expect(sweeps).toBe(startReads + 1);
+    expect(askedFor.sort()).toEqual([...delays.keys()].sort());
+  });
+
+  it("keeps each store's sweep phase across restarts: the first sweep lands on the same moment of the interval", () => {
+    const owner = key().pubkey;
+    const phase = sweepPhaseMs(owner);
+    expect(phase).toBe(sweepPhaseMs(owner));
+    // Restarts at any moment, minutes apart or a second apart, all wait for the same phase.
+    const base = 1_791_000_000_000;
+    for (const startMs of [base, base + 1_000, base + 17_345, base + 59_999, base + 3_600_123]) {
+      const delay = sweepPhaseDelayMs(owner, startMs);
+      expect(Number.isInteger(delay) && delay >= 0 && delay < CATCH_UP_INTERVAL_MS).toBe(true);
+      expect((startMs + delay) % CATCH_UP_INTERVAL_MS).toBe(phase);
+    }
+    // Started right at its phase: it sweeps at once.
+    expect(sweepPhaseDelayMs(owner, base - (base % CATCH_UP_INTERVAL_MS) + phase)).toBe(0);
+  });
+
+  it("by default waits for the store's phase before its first sweep", async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    // A store whose phase is well ahead of the clock now (more than the test lasts).
+    let owner = key();
+    while (
+      !(
+        sweepPhaseDelayMs(owner.pubkey, Date.now()) > 10_000 &&
+        sweepPhaseDelayMs(owner.pubkey, Date.now()) < 50_000
+      )
+    ) {
+      owner = key();
+    }
+    await seedStore(db, keys, { owner });
+    let feeReads = 0;
+    const holder = newHolderId();
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, {
+        // The helper sweeps at once: this supervisor keeps the default.
+        firstSweepDelayMs: undefined,
+        treasuries: {
+          refreshFor: async () => {
+            feeReads += 1;
+            return { kind: 'unreachable', problem: 'offline' };
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 300);
+    });
+    // The start check's read only: no sweep yet.
+    expect(feeReads).toBe(1);
+  });
+
+  it('spreads distinct stores over the sweep interval', () => {
+    const phases = Array.from({ length: 300 }, () => sweepPhaseMs(key().pubkey));
+    expect(phases.every((phase) => phase >= 0 && phase < CATCH_UP_INTERVAL_MS)).toBe(true);
+    expect(new Set(phases).size).toBeGreaterThan(290);
+    // Every tenth of the interval holds some of them.
+    const tenths = new Set(phases.map((phase) => Math.floor((phase * 10) / CATCH_UP_INTERVAL_MS)));
+    expect(tenths.size).toBe(10);
+  });
+
+  it("skips the saves of quiet sweeps: a running store's ledger row stays put across two of them", async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, world, chain({}).rpc, {
+        // No timed sweep in this test: they are run by hand.
+        firstSweepDelayMs: () => 3_600_000,
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    const runtime = supervisor.nodeOf(owner.pubkey)?.runtime;
+    if (runtime === undefined) {
+      throw new Error('the store is not running');
+    }
+    const rowVersion = async () => {
+      const [row] = await db.query<{ row_version: number }>(
+        'select row_version from ledgers where owner = $1',
+        [owner.pubkey],
+      );
+      return row?.row_version;
+    };
+    // The run's first sweep saves (no sweep saved yet this run).
+    await runtime.sweep(false, NOW);
+    const afterFirst = await rowVersion();
+    await runtime.sweep(false, NOW);
+    await runtime.sweep(false, NOW);
+    expect(await rowVersion()).toBe(afterFirst);
+  });
+
+  it('isolates stores: one whose save is refused halts, another keeps completing orders', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const failing = await seedStore(db, keys);
+    const healthy = await seedStore(db, keys);
+    const buyer = key();
+    const { wraps, rpc } = await paidChain(healthy.store, buyer);
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, rpc));
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running.sort()).toEqual([failing.owner.pubkey, healthy.owner.pubkey].sort());
+
+    await bumpRow(db, failing.owner.pubkey);
+    world.deliver(orderWraps(failing.store, buyer, ORDER_ID, TX).order);
+    await waitFor(() => !supervisor.running.includes(failing.owner.pubkey), 'the halt');
+    await supervisor.idle();
+    expect((await openAlerts(db, failing.owner.pubkey)).map((alert) => alert.kind)).toEqual([
+      'node_stopped',
+    ]);
+
+    world.deliver(wraps.order);
+    world.deliver(wraps.receipt);
+    await waitFor(() => delivered(db, healthy.owner.pubkey, wraps.key), 'the healthy order');
+    expect(supervisor.running).toEqual([healthy.owner.pubkey]);
+    expect(await openAlerts(db, healthy.owner.pubkey)).toEqual([]);
+  });
+
+  it('fences a holder whose lease moved: it halts, and the new holder reloads what was saved', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner, store } = await seedStore(db, keys);
+    const first = newHolderId();
+    const old = track(testSupervisor(db, keys, first, world, chain({}).rpc));
+    old.supervisor.reconcile(await lease(db, first));
+    await old.supervisor.idle();
+    const earlier = orderWraps(store, key(), ORDER_ID, TX);
+    world.deliver(earlier.order);
+    await waitFor(
+      async () => (await storedLedger(db, owner.pubkey)).orders[earlier.key] !== undefined,
+      'the first order saved',
+    );
+
+    const later = NOW + LEASE_TTL_SECS + 1;
+    const second = newHolderId();
+    const takeover = track(
+      testSupervisor(db, keys, second, world, chain({}).rpc, { now: () => later }),
+    );
+    const leased = await lease(db, second, later);
+    expect(leased[0]?.epoch).toBe(2);
+    takeover.supervisor.reconcile(leased);
+    await takeover.supervisor.idle();
+    // The new run's first save writes the ledger it loaded: the order saved before is in it.
+    const reloaded = await db.query<{ lease_epoch: number; state: string }>(
+      'select lease_epoch, state from ledgers where owner = $1',
+      [owner.pubkey],
+    );
+    expect(reloaded[0]?.lease_epoch).toBe(2);
+    expect(
+      (JSON.parse(reloaded[0]?.state ?? '{}') as LedgerState).orders[earlier.key],
+    ).toBeDefined();
+
+    const next = orderWraps(store, key(), 'b3a7c2d4-0000-4000-8000-00000000c002', TX);
+    world.deliver(next.order);
+    await waitFor(() => !old.supervisor.running.includes(owner.pubkey), 'the stale holder halts');
+    await old.supervisor.idle();
+    await waitFor(
+      async () => (await storedLedger(db, owner.pubkey)).orders[next.key] !== undefined,
+      'the new holder saved the order',
+    );
+    expect(takeover.supervisor.running).toEqual([owner.pubkey]);
+    expect(old.logs.some((line) => line.includes('the lease moved: not retried here'))).toBe(true);
+  });
+
+  it('applies a control task on a fresh handle after a conflict halt, never the halted memory', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner, store } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, chain({}).rpc));
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    await bumpRow(db, owner.pubkey, (state) => {
+      state.seenRumors.marker = true;
+    });
+    const unsaved = orderWraps(store, key(), ORDER_ID, TX);
+    world.deliver(unsaved.order);
+    await waitFor(() => !supervisor.running.includes(owner.pubkey), 'the halt');
+    const seen = await supervisor.applyControl(owner.pubkey, async (handle) => {
+      const marked = handle.state.seenRumors.marker === true;
+      const hasUnsaved = handle.state.orders[unsaved.key] !== undefined;
+      handle.state.seenRumors.applied = true;
+      await handle.save(handle.state);
+      return { marked, hasUnsaved };
+    });
+    expect(seen).toEqual({ marked: true, hasUnsaved: false });
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    const restarted = await storedLedger(db, owner.pubkey);
+    expect(restarted.seenRumors.applied).toBe(true);
+    expect(restarted.seenRumors.marker).toBe(true);
+    expect(restarted.orders[unsaved.key]).toBeUndefined();
+  });
+
+  it('never lets a payment of one store be claimed by another sharing its payout', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const first = await seedStore(db, keys);
+    const second = await seedStore(db, keys);
+    const buyer = key();
+    const { wraps, rpc } = await paidChain(first.store, buyer);
+    const same = orderWraps(second.store, buyer, ORDER_ID, TX);
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, rpc));
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    world.deliver(same.order);
+    world.deliver(same.receipt);
+    world.deliver(wraps.order);
+    world.deliver(wraps.receipt);
+    await waitFor(() => delivered(db, first.owner.pubkey, wraps.key), 'the paid order');
+    await waitFor(
+      async () =>
+        (await storedLedger(db, second.owner.pubkey)).orders[same.key]?.reportedTxs.includes(TX) ===
+        true,
+      'the other receipt read',
+    );
+    await supervisor.idle();
+    const other = await storedLedger(db, second.owner.pubkey);
+    expect(other.orders[same.key]?.paid).toBeUndefined();
+    expect(other.claims[TX]).toBeUndefined();
+    expect((await storedLedger(db, first.owner.pubkey)).claims[TX]).toBe(wraps.key);
+  });
+
+  it('refuses a store its data cannot run: halted with an alert at once, still leased', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys, { inboxRelays: ['wss://other.example.com'] });
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc));
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('halted');
+    expect((await openAlerts(db, owner.pubkey)).map((alert) => alert.kind)).toEqual([
+      'start_refused',
+    ]);
+    expect((await lease(db, holder)).map((leased) => leased.owner)).toEqual([owner.pubkey]);
+  });
+
+  it('halts a store whose start checks refuse it at once, and retries it with backoff (S3, S18)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys, {
+      products: [{ ...PRODUCT, priceUsd: '0.0000001' }],
+    });
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc));
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    // One refused start is enough: not counted toward MAX_FAILED_STARTS.
+    expect(supervisor.running).toEqual([]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('halted');
+    const alerts = await openAlerts(db, owner.pubkey);
+    expect(alerts.map((alert) => alert.kind)).toEqual(['start_refused']);
+    expect(alerts[0]?.message).toContain('the products are not usable');
+
+    await db.query("update products set price_usd = '1' where owner = $1", [owner.pubkey]);
+    vi.advanceTimersByTime(29_999);
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([]);
+    vi.advanceTimersByTime(1);
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('active');
+    expect(await openAlerts(db, owner.pubkey)).toEqual([]);
+  });
+
+  it('does not count a failed start once its lease expired, even with the same holder and epoch (S17)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor, logs } = track(
+      testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc, {
+        treasuries: {
+          refreshFor: async () => {
+            await db.query('update leases set expires_at = $2 where owner = $1', [
+              owner.pubkey,
+              NOW,
+            ]);
+            throw new Error('config RPC down');
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([]);
+    expect(
+      logs.some((line) => line.includes('config RPC down; the lease moved: not retried here')),
+    ).toBe(true);
+  });
+
+  it('ignores a stop reported by a node already replaced (S7)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    let reads = 0;
+    let release: (() => void) | undefined;
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc, {
+        treasuries: {
+          refreshFor: async () => {
+            reads += 1;
+            if (reads === 2) {
+              // The first node's first sweep: held, then the fee config of another cluster.
+              await new Promise<void>((resolve) => {
+                release = resolve;
+              });
+              return { kind: 'wrong_cluster', problem: 'mainnet RPC' };
+            }
+            return { kind: 'unreachable', problem: 'offline' };
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await waitFor(() => release !== undefined, 'the first sweep');
+    const first = supervisor.nodeOf(owner.pubkey);
+    // The control task stops the first node (its sweep reports the stop), then starts a second.
+    const control = supervisor.applyControl(owner.pubkey, async () => undefined);
+    release?.();
+    await control;
+    await supervisor.idle();
+    expect(supervisor.nodeOf(owner.pubkey)).toBeDefined();
+    expect(supervisor.nodeOf(owner.pubkey)).not.toBe(first);
+    expect(await openAlerts(db, owner.pubkey)).toEqual([]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('active');
+  });
+
+  it('takes the EIP-3009 contexts off the boot gates when its node stops (S6)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    await seedStore(db, keys);
+    const holder = newHolderId();
+    let registered = 0;
+    let unregistered = 0;
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc, {
+        boot: {
+          register: () => {
+            registered += 1;
+            return () => {
+              unregistered += 1;
+            };
+          },
+        },
+      }),
+    );
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect([registered, unregistered]).toEqual([1, 0]);
+    supervisor.reconcile([]);
+    await supervisor.idle();
+    expect([registered, unregistered]).toEqual([1, 1]);
+  });
+
+  it('runs a store whose lease epoch changed while its first start was still queued (minor 4)', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const [first] = await lease(db, holder);
+    await db.query('update leases set expires_at = 0 where owner = $1', [owner.pubkey]);
+    const [second] = await lease(db, holder);
+    if (first === undefined || second === undefined) {
+      throw new Error('no lease');
+    }
+    expect(second.epoch).toBe(first.epoch + 1);
+    const { supervisor } = track(testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc));
+    supervisor.reconcile([first]);
+    supervisor.reconcile([second]);
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    const [row] = await db.query<{ lease_epoch: number }>(
+      'select lease_epoch from ledgers where owner = $1',
+      [owner.pubkey],
+    );
+    expect(row?.lease_epoch).toBe(second.epoch);
+  });
+
+  it('retries failed starts after 30 s doubling, halts after three in a row, and clears it all on a start', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const db = await freshDb();
+    const keys = vault();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    let reads = 0;
+    let failing = true;
+    const { supervisor } = track(
+      testSupervisor(db, keys, holder, new RelayWorld(), chain({}).rpc, {
+        treasuries: {
+          refreshFor: async () => {
+            reads += 1;
+            if (failing) {
+              throw new Error('config RPC down');
+            }
+            return { kind: 'unreachable', problem: 'offline' };
+          },
+        },
+      }),
+    );
+    const step = async (ms: number) => {
+      vi.advanceTimersByTime(ms);
+      await supervisor.idle();
+    };
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    expect(reads).toBe(1);
+    await step(29_999);
+    expect(reads).toBe(1);
+    await step(1);
+    expect(reads).toBe(2);
+    expect(await storeStatus(db, owner.pubkey)).toBe('active');
+    await step(59_999);
+    expect(reads).toBe(2);
+    await step(1);
+    expect(reads).toBe(MAX_FAILED_STARTS);
+    expect(await storeStatus(db, owner.pubkey)).toBe('halted');
+    expect((await openAlerts(db, owner.pubkey)).map((alert) => alert.kind)).toEqual([
+      'start_failed',
+    ]);
+    await step(119_999);
+    expect(reads).toBe(3);
+    failing = false;
+    await step(1);
+    // The fourth start's read, then the first sweep's.
+    expect(reads).toBeGreaterThanOrEqual(4);
+    expect(supervisor.running).toEqual([owner.pubkey]);
+    expect(await storeStatus(db, owner.pubkey)).toBe('active');
+    expect(await openAlerts(db, owner.pubkey)).toEqual([]);
+  });
+
+  it('counts a node that stops itself right after starting toward the halt (decision 3)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner, store } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, chain({}).rpc));
+    const until = async (check: () => boolean, what: string) => {
+      for (let round = 0; round < 200 && !check(); round += 1) {
+        await settle(5);
+      }
+      if (!check()) {
+        throw new Error(`never: ${what}`);
+      }
+      await supervisor.idle();
+    };
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    const backoffs = [30_000, 60_000];
+    for (let stop = 1; stop <= MAX_FAILED_STARTS; stop += 1) {
+      expect(supervisor.running).toEqual([owner.pubkey]);
+      await bumpRow(db, owner.pubkey);
+      world.deliver(
+        orderWraps(store, key(), `b3a7c2d4-0000-4000-8000-00000000c10${stop}`, TX).order,
+      );
+      await until(() => supervisor.running.length === 0, `stop ${stop}`);
+      if (stop < MAX_FAILED_STARTS) {
+        expect(await storeStatus(db, owner.pubkey)).toBe('active');
+        vi.advanceTimersByTime(backoffs[stop - 1] ?? 0);
+        await until(() => supervisor.running.length === 1, `restart ${stop}`);
+      }
+    }
+    expect(await storeStatus(db, owner.pubkey)).toBe('halted');
+    expect((await openAlerts(db, owner.pubkey)).map((alert) => alert.kind)).toEqual([
+      'node_stopped',
+      'start_failed',
+    ]);
+  });
+
+  it('restarts a store whose lease epoch changed, and never stops one turned degraded', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const { owner } = await seedStore(db, keys);
+    const holder = newHolderId();
+    const { supervisor } = track(testSupervisor(db, keys, holder, world, chain({}).rpc));
+    const [leased] = await lease(db, holder);
+    if (leased === undefined) {
+      throw new Error('no lease');
+    }
+    supervisor.reconcile([leased]);
+    await supervisor.idle();
+    const node = supervisor.nodeOf(owner.pubkey);
+    supervisor.reconcile([{ ...leased, status: 'degraded' }]);
+    await supervisor.idle();
+    expect(supervisor.nodeOf(owner.pubkey)).toBe(node);
+
+    await db.query('update leases set expires_at = 0 where owner = $1', [owner.pubkey]);
+    const [again] = await lease(db, holder);
+    expect(again?.epoch).toBe(leased.epoch + 1);
+    supervisor.reconcile(again === undefined ? [] : [again]);
+    await supervisor.idle();
+    const restarted = supervisor.nodeOf(owner.pubkey);
+    expect(restarted).toBeDefined();
+    expect(restarted).not.toBe(node);
+    expect(world.pools.filter((pool) => !pool.destroyed)).toHaveLength(1);
+    // The new run saves under the new epoch.
+    const [row] = await db.query<{ lease_epoch: number }>(
+      'select lease_epoch from ledgers where owner = $1',
+      [owner.pubkey],
+    );
+    expect(row?.lease_epoch).toBe(leased.epoch + 1);
+
+    supervisor.reconcile([]);
+    await supervisor.idle();
+    expect(supervisor.running).toEqual([]);
+    expect(world.pools.every((pool) => pool.destroyed)).toBe(true);
+  });
+
+  it('stops the node before ending its webhook sends: a send refused at stop leaves its entry untouched', async () => {
+    const db = await freshDb();
+    const keys = vault();
+    const world = new RelayWorld();
+    const state = sellingLedger();
+    const store = key();
+    const buyer = key();
+    const orderKey = `${buyer.pubkey}:${ORDER_ID}`;
+    state.orders[orderKey] = {
+      key: orderKey,
+      buyerPubkey: buyer.pubkey,
+      orderId: ORDER_ID,
+      rumorId: 'r'.repeat(64),
+      createdAt: NOW - 600,
+      reference: 'ref',
+      product: `30402:${store.pubkey}:${PRODUCT.d}`,
+      reportedTxs: [TX],
+      paid: {
+        signature: TX,
+        amount: '1000000',
+        blockTime: NOW - 500,
+        caip19: 'x',
+        medium: 'solana-devnet',
+      },
+      deliveredAt: NOW - 400,
+      webhook: {
+        state: 'pending',
+        eventId: 'e'.repeat(64),
+        createdAt: NOW - 500,
+        deadline: NOW + 3600,
+        attempts: 0,
+        nextAt: NOW - 10,
+      },
+    };
+    const { owner } = await seedStore(db, keys, {
+      store,
+      state,
+      webhookUrl: HOOK_URL,
+      webhookSecret: WEBHOOK_SECRET,
+    });
+    const requests: TransportRequest[] = [];
+    // Whether the node had halted (its inbox subscriptions closed) when its sends were aborted.
+    let haltedAtAbort: boolean | undefined;
+    const slots = new WebhookSlots({
+      deps: {
+        resolve: async () => [{ address: '93.184.216.34', family: 4 }],
+        transport: (request) => {
+          requests.push(request);
+          return new Promise((_resolve, reject) => {
+            request.signal.addEventListener(
+              'abort',
+              () => {
+                haltedAtAbort = world.pools.every((pool) =>
+                  pool.live.every((subscription) => subscription.closed),
+                );
+                reject(new Error('aborted'));
+              },
+              { once: true },
+            );
+          });
+        },
+      },
+    });
+    const holder = newHolderId();
+    const { supervisor } = testSupervisor(db, keys, holder, world, chain({}).rpc, {
+      webhookSlots: slots,
+    });
+    supervisor.reconcile(await lease(db, holder));
+    await supervisor.idle();
+    await waitFor(() => requests.length === 1, 'the webhook request');
+    expect(requests[0]?.headers['user-agent']).toBe('paycore-server/test');
+    expect(world.pools.some((pool) => pool.live.some((subscription) => !subscription.closed))).toBe(
+      true,
+    );
+    await supervisor.shutdown();
+    expect(requests[0]?.signal.aborted).toBe(true);
+    // The order itself: the abort's outcome reaches the node only after it halted.
+    expect(haltedAtAbort).toBe(true);
+    const entry = (await storedLedger(db, owner.pubkey)).orders[orderKey]?.webhook;
+    expect(entry).toEqual(state.orders[orderKey]?.webhook);
+    expect(world.pools.every((pool) => pool.destroyed)).toBe(true);
+    const leases = await db.query<{ expires_at: number }>('select expires_at from leases');
+    expect(leases).toEqual([{ expires_at: 0 }]);
+  });
+});

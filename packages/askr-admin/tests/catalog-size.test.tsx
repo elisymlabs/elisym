@@ -2,10 +2,10 @@
 import { type CatalogItemInput, buildCatalogAuth } from '@elisym/askr';
 import { KIND_DELETION, buildProductEvent, buildStoreAuthEvent } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
-import { finalizeEvent } from 'nostr-tools/pure';
+import { finalizeEvent, generateSecretKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Overview } from '../src/components/Overview';
-import { countListed, readAuthority } from '../src/lib/store-data';
+import { countListed, readAuthority, readListings } from '../src/lib/store-data';
 import {
   NOW,
   OWNER,
@@ -26,6 +26,7 @@ afterEach(async () => {
   mounted = undefined;
 });
 
+const OTHER_KEY = 'f'.repeat(64);
 const CATALOG_AUTH = finalizeEvent(
   buildCatalogAuth({ key: SERVER_KEY, mode: 'hosted', createdAt: NOW - 100 }),
   OWNER_KEY,
@@ -83,6 +84,13 @@ describe('the catalog size against the plan', () => {
     );
   });
 
+  it("reads the owner's authority for a config a delegate signed, never the delegate's", async () => {
+    const delegated = adminConfig({ source: { kind: 'catalog' }, signer: OTHER_KEY });
+    const container = await overview([CATALOG_AUTH, ...products(5)], 3, delegated);
+    await settle(() => (container.textContent ?? '').includes('indexes up to'));
+    expect(container.textContent).toContain('Your catalog has 5 products');
+  });
+
   it('says nothing at or under the plan, and nothing for a key the owner does not authorize', async () => {
     for (const events of [[CATALOG_AUTH, ...products(3)], products(5)]) {
       const container = await overview(events, 3);
@@ -113,7 +121,7 @@ describe('the catalog size against the plan', () => {
     expect(await countListed(reader, SERVER_KEY, 'EUR', NOW)).toBe(2);
   });
 
-  it('leaves out listings with payment terms, as the assistant does', async () => {
+  it('counts listings with payment terms of the catalog key (a PayCore store), as the assistant does', async () => {
     const paid = Array.from({ length: 4 }, (_value, index) =>
       finalizeEvent(
         buildProductEvent({
@@ -131,8 +139,35 @@ describe('the catalog size against the plan', () => {
     );
     const container = await overview([CATALOG_AUTH, ...paid, ...products(3)], 2);
     await settle(() => (container.textContent ?? '').includes('indexes up to'));
-    expect(container.textContent).toContain('Your catalog has 3 products');
-    expect(await countListed(fakeReader(paid), SERVER_KEY, 'USD', NOW)).toBe(0);
+    expect(container.textContent).toContain('Your catalog has 7 products');
+    expect(await countListed(fakeReader(paid), SERVER_KEY, 'USD', NOW)).toBe(4);
+    // Another key's listings never count, with or without payment terms.
+    expect(await countListed(fakeReader(paid), OTHER_KEY, 'USD', NOW)).toBe(0);
+  });
+
+  it("reads the catalog key's listings with payment terms into the editor, never another key's", async () => {
+    const terms = [
+      'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1/token:4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    ];
+    const paidListing = (d: string, secret: Uint8Array) =>
+      finalizeEvent(
+        buildProductEvent({
+          d,
+          title: 'P',
+          description: '',
+          price: { amount: '5', currency: 'USD' },
+          accept: terms,
+          createdAt: NOW - 1,
+        }),
+        secret,
+      );
+    const stranger = generateSecretKey();
+    const reader = fakeReader([
+      paidListing('own', SERVER_KEY_SECRET),
+      paidListing('foreign', stranger),
+    ]);
+    const own = await readListings(reader, SERVER_KEY, NOW);
+    expect(own.map((entry) => entry.d)).toEqual(['own']);
   });
 
   it('counts as the server does: the newest version per product, unexpired, future deletions ignored', async () => {
@@ -165,7 +200,7 @@ describe('the catalog size against the plan', () => {
     expect(await countListed(reader, SERVER_KEY, 'EUR', NOW)).toBe(0);
   });
 
-  it('reads authority as 30497 and kind 5 only, never a 30490', async () => {
+  it('reads 30490s beside 30497s and kind 5s, but a 30490 never authorizes a catalog key', async () => {
     const asked: number[] = [];
     const reader = fakeReader([STORE_AUTH, CATALOG_AUTH]);
     const authority = await readAuthority(
@@ -178,8 +213,9 @@ describe('the catalog size against the plan', () => {
       OWNER,
       NOW,
     );
-    expect(asked.sort((left, right) => left - right)).toEqual([5, 30497]);
+    expect(asked.sort((left, right) => left - right)).toEqual([5, 30490, 30497]);
     expect(authority.keys).toEqual(new Set([SERVER_KEY]));
+    expect(authority.stores.map((store) => store.key)).toEqual([SERVER_KEY]);
   });
 
   it('says nothing when the owner authorized the key only with a 30490', async () => {

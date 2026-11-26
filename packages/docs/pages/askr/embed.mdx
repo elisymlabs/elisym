@@ -15,7 +15,7 @@ Optional settings on the same script tag:
 | `data-theme` | `light`, `dark` | follows the visitor's system |
 | `data-lang` | `en`, `ru`, `es`, `de`, `fr`, `pt`, `it`, `zh`, `ja`, `ko` | the page's own `lang` (`<html lang="de">`), then your store's language, then English |
 
-The language sets the widget's own texts: the button, the placeholder, statuses and the cart buttons. Your store's language is read when the chat opens, so with neither `data-lang` nor a `lang` on the page the button shows English until then. `<askr-chat lang="ru">` works the same way when you place the element yourself. Your greeting, your chat button text and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
+The language sets the widget's own texts: the button, the placeholder, statuses, the cart and Buy buttons and the chat's checkout notes. Your store's language is read when the chat opens, so with neither `data-lang` nor a `lang` on the page the button shows English until then. `<askr-chat lang="ru">` works the same way when you place the element yourself. Your greeting, your chat button text and the assistant's name stay as you wrote them, and the assistant answers in the language the visitor writes in. On a multilingual site that sets `lang` on each page, leave `data-lang` out and the widget follows the page.
 
 To place the element yourself, put `<askr-chat store="npub1..."></askr-chat>` where it should go and load the script without `data-store`.
 
@@ -66,6 +66,22 @@ Each product card links to the product page. The add-to-cart button, in order of
 
 A sold-out product, or a sold-out variant, shows a label instead of the button.
 
+## Buy with PayCore
+
+When your products come from your [PayCore store](/askr/overview#sell-from-your-paycore-store), a product in stock gets a **Buy** button that opens the PayCore checkout. Load the checkout script once on every page with the chat; the admin's **Embed** tab shows it:
+
+```html
+<script
+  src="https://pay.elisym.network/v4/embed.js"
+  integrity="sha384-x6dXYbL43ZTUT6tSX44pwUJazMDSiOULx6bsJD2JVk+eooivU9FcyYcvLD43LwWV"
+  crossorigin="anonymous"
+></script>
+```
+
+The widget never loads the checkout itself: the Buy button shows only on a page that loaded this script. Without it, the card falls back to the rules above, and the browser console says once that the checkout is missing. The Buy button takes the place of your hook and the native cart.
+
+The checkout runs in its own frame, and the visitor pays from their wallet there; the widget sees no wallet or payment data. The chat notes what happened in the visitor's own browser: a payment already open, a checkout that could not open, a payment received, a completed order, a product that cannot be bought right now, a checkout that is unavailable. These notes are never sent to the assistant.
+
 ## Content Security Policy
 
 If your site sends a CSP, allow:
@@ -75,6 +91,13 @@ If your site sends a CSP, allow:
 | `script-src`  | `https://app.askr.elisym.network`                              | `widget.js`, or the pinned `/widget/<id>.js`                      |
 | `connect-src` | `https://app.askr.elisym.network` `wss://relay.elisym.network` | the chat session and the chat itself                              |
 | `img-src`     | `https:`                                                       | product images, wherever you host them |
+
+With the [PayCore checkout](#buy-with-paycore), also allow:
+
+| Directive    | Source                       | Why                                  |
+| ------------ | ---------------------------- | ------------------------------------ |
+| `script-src` | `https://pay.elisym.network` | the checkout script                  |
+| `frame-src`  | `https://pay.elisym.network` | the checkout behind the Buy button   |
 
 The widget adds no inline scripts or styles, so a strict `script-src` and `style-src` hold.
 

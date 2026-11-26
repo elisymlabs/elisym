@@ -47,6 +47,7 @@ function answerContext(items: Map<string, CatalogItem>): AnswerContext {
     document,
     config,
     reportClick: () => undefined,
+    note: () => undefined,
     pageOrigin: 'https://shop.example',
     resolveCards: async () => items,
   };

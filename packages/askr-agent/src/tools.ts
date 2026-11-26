@@ -5,6 +5,7 @@ import {
   AVAILABILITY,
   type StoreCatalog,
   availabilityOf,
+  hasBuyButton,
   priceOf,
   tokenize,
   topAttrs,
@@ -331,6 +332,7 @@ function summarize(catalog: StoreCatalog, item: CatalogItem) {
       (attr) => `${sanitizeText(attr.name, 32)}: ${sanitizeText(attr.value, 128)}`,
     ),
     ...(catalog.pageUrl(item) ? {} : { no_page_link: true }),
+    ...(hasBuyButton(item) ? { buy_button: true } : {}),
   };
 }
 

@@ -1,5 +1,6 @@
 import { MAX_FUTURE_SKEW_SECS } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
+import { type QueryPool, readBeforeSetup } from './checks';
 import { TERMS_CLOCK_MARGIN_SECS } from './constants';
 import type { LedgerState, PublishedListing } from './ledger';
 import {
@@ -318,5 +319,119 @@ export async function publishAndRecord(
     setup.startedAt - TERMS_CLOCK_MARGIN_SECS,
     finishedAt - TERMS_CLOCK_MARGIN_SECS,
   );
+  return outcomes;
+}
+
+/**
+ * Why a payout list signed with a date other than the one `payoutListDate`
+ * picked (an owner event signed elsewhere) may not be published and recorded:
+ * buyers would not be served the terms it records. The relays keep the newest
+ * list, and on a tie the lowest id; a list dated as the recorded one must pay
+ * to the recorded payouts. A list dated after the recorded one must not be too
+ * far ahead of the clock (see `clockProblem`).
+ */
+export function signedPayoutListProblem(
+  state: LedgerState,
+  signed: { event: NostrEvent; payouts: string },
+  newestOnRelays: NostrEvent | undefined,
+  startedAt: number,
+): string | undefined {
+  const signedAt = signed.event.created_at;
+  if (newestOnRelays !== undefined && signedAt < newestOnRelays.created_at) {
+    return `the signed payout list (dated ${signedAt}) is older than the one the relays serve (dated ${newestOnRelays.created_at}): buyers would not be served it; sign it with a later date`;
+  }
+  if (
+    newestOnRelays !== undefined &&
+    signedAt === newestOnRelays.created_at &&
+    newestOnRelays.id !== signed.event.id
+  ) {
+    return `the signed payout list is dated the same second (${signedAt}) as another one the relays serve: on a tie relays keep the lowest id, so buyers may not be served it; sign it with a later date`;
+  }
+  if (state.payto !== undefined && signedAt === state.payto.createdAt) {
+    return signed.payouts === state.payto.payouts
+      ? undefined
+      : `the signed payout list is dated the same second (${signedAt}) as the recorded one but pays to other payouts: sign it with a later date`;
+  }
+  return clockProblem('the payout list', signedAt, startedAt);
+}
+
+/** One setup pass over a store: what it reads, signs and publishes with. */
+export interface SetupPass {
+  pool: QueryPool;
+  /** Every relay the store publishes to: the default relays and its inbox relays. */
+  relays: readonly string[];
+  /** The relays every page reads; listings are read back from these. */
+  defaultRelays: readonly string[];
+  pubkeys: { storePubkey: string; ownerPubkey: string };
+  products: ReadonlyMap<string, ListedProduct>;
+  /** The payouts the listings accept and the new terms pay to. */
+  payouts: StoreConfig['payouts'];
+  /** The payout list as recorded in `state.payto` when it goes out (compared as a string by `payoutListDate`). */
+  payoutsString: string;
+  storeSecretKey: Uint8Array;
+  /**
+   * The store-wide events, signed: given when the pass started and the date
+   * `payoutListDate` picks; the payout list is recorded with the date it is
+   * signed with.
+   */
+  sign: (dates: { startedAt: number; paytoCreatedAt: number }) => {
+    payoutList: NostrEvent;
+    others: readonly NostrEvent[];
+  };
+  publish: (event: NostrEvent, name: string) => Promise<boolean>;
+  now: () => number;
+}
+
+/**
+ * Read what the relays serve, plan and date the listings and the payout list,
+ * refuse a clock behind the last publish, then publish and record
+ * (`publishAndRecord`). Orders can come from the moment the store is
+ * published: a first run reads back from here (`resumeAt`). The caller saves.
+ */
+export async function runSetupPass(state: LedgerState, pass: SetupPass): Promise<ListingOutcome[]> {
+  // New terms start before the first publish: a buyer may read them at once.
+  const startedAt = pass.now();
+  const { payoutList: newestList, listings: served } = await readBeforeSetup(
+    pass.pool,
+    pass.relays,
+    pass.defaultRelays,
+    pass.pubkeys,
+    [...new Set([...pass.products.keys(), ...Object.keys(state.listings)])],
+  );
+  const paytoCreatedAt = payoutListDate(
+    state,
+    pass.payoutsString,
+    newestList?.created_at,
+    startedAt,
+  );
+  const plans = planListings(state, pass.products.values(), pass.payouts, served, startedAt);
+  const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
+  if (clock.length > 0) {
+    throw new Error(clock.join('; '));
+  }
+  const wide = pass.sign({ startedAt, paytoCreatedAt });
+  const signedAt = wide.payoutList.created_at;
+  if (signedAt !== paytoCreatedAt) {
+    const problem = signedPayoutListProblem(
+      state,
+      { event: wide.payoutList, payouts: pass.payoutsString },
+      newestList,
+      startedAt,
+    );
+    if (problem !== undefined) {
+      throw new Error(problem);
+    }
+  }
+  const outcomes = await publishAndRecord(state, {
+    plans,
+    payouts: pass.payouts,
+    storeSecretKey: pass.storeSecretKey,
+    wide,
+    publish: pass.publish,
+    payoutList: { createdAt: signedAt, payouts: pass.payoutsString },
+    startedAt,
+    now: pass.now,
+  });
+  state.resumeAt ??= startedAt;
   return outcomes;
 }

@@ -312,3 +312,182 @@ describe('listen', () => {
     expect(listener.isLive(RELAY)).toBe(false);
   });
 });
+
+describe('close', () => {
+  it('ends every subscription and timer, hands nothing on and retries nothing', async () => {
+    const { pool, timers, received, listener } = setup(T0 + 3600);
+    listener.listen(RELAY, T0);
+    pool.live[0]?.params.oneose?.();
+    timers.run(0);
+    await settle();
+    expect(listener.isLive(RELAY)).toBe(true);
+    pool.pageEnd = 'hang';
+    listener.listen('wss://other.example.com', T0);
+    pool.live[1]?.params.oneose?.();
+    timers.run(0);
+    await settle();
+    listener.close();
+    expect(listener.isLive(RELAY)).toBe(false);
+    expect(pool.live.every((subscription) => subscription.closed)).toBe(true);
+    expect(pool.pages.every((page) => page.closed)).toBe(true);
+    // A relay closing afterwards, a late wrap, or any timer firing changes nothing.
+    pool.live[0]?.params.onclose?.(['relay connection closed']);
+    pool.live[0]?.params.onevent(wrapAt(T0 + 10, 'late'));
+    const pages = pool.pages.length;
+    timers.run(Number.MAX_SAFE_INTEGER);
+    await settle();
+    expect(pool.live).toHaveLength(2);
+    expect(pool.pages).toHaveLength(pages);
+    expect(received).toEqual([]);
+    listener.listen(RELAY, T0);
+    expect(pool.live).toHaveLength(2);
+    expect(listener.isLive(RELAY)).toBe(false);
+  });
+});
+
+describe('close, step by step', () => {
+  it('ends a retry that is waiting out its pause', async () => {
+    const { pool, timers, listener } = setup(T0 + 3600);
+    listener.listen(RELAY, T0);
+    pool.live[0]?.params.onclose?.(['connection failed']);
+    expect(timers.queue.map((timer) => timer.ms)).toEqual([1_000]);
+    listener.close();
+    expect(timers.queue).toEqual([]);
+  });
+
+  it('ends a backfill page in progress: nothing handed on, read or retried', async () => {
+    const { pool, timers, received, logs, listener } = setup(T0 + 3600);
+    pool.pageEnd = 'hang';
+    listener.listen(RELAY, T0);
+    pool.live[0]?.params.oneose?.();
+    timers.run(0);
+    await settle();
+    const page = pool.pages[0];
+    expect(page?.closed).toBe(false);
+    listener.close();
+    expect(page?.closed).toBe(true);
+    page?.params.onevent(wrapAt(T0 + 10, 'late'));
+    await settle();
+    expect(received).toEqual([]);
+    expect(logs.some((line) => line.startsWith('could not read'))).toBe(false);
+    expect(listener.isLive(RELAY)).toBe(false);
+  });
+
+  it('copes with a pool that closes a subscription before returning it', () => {
+    const timers = new Timers();
+    const closes: string[] = [];
+    const pool: ListenerPool = {
+      subscribe: (_relays, _filter, params) => {
+        params.onclose?.(['connection failed']);
+        return { close: () => closes.push('live') };
+      },
+      subscribeEose: (_relays, _filter, params) => {
+        params.onclose?.(['connection failed']);
+        return { close: () => closes.push('page') };
+      },
+    };
+    const listener = new InboxListener({
+      pool,
+      storePubkey: store.pubkey,
+      auth: async (template) => finalizeEvent(template, store.secretKey),
+      onWrap: () => undefined,
+      log: () => undefined,
+      now: () => T0,
+      setTimer: timers.set,
+    });
+    listener.listen(RELAY, T0);
+    // Retried after the pause, and the dead subscription is not kept to close later.
+    expect(timers.queue.map((timer) => timer.ms)).toEqual([1_000]);
+    listener.close();
+    expect(closes).toEqual([]);
+    expect(timers.queue).toEqual([]);
+  });
+
+  it('settles a backfill page that a pool closes before returning it', async () => {
+    const timers = new Timers();
+    const pool: ListenerPool = {
+      subscribe: () => ({ close: () => undefined }),
+      subscribeEose: (_relays, _filter, params) => {
+        params.onclose?.(['closed automatically on eose']);
+        return { close: () => undefined };
+      },
+    };
+    const listener = new InboxListener({
+      pool,
+      storePubkey: store.pubkey,
+      auth: async (template) => finalizeEvent(template, store.secretKey),
+      onWrap: () => undefined,
+      log: () => undefined,
+      now: () => T0,
+      setTimer: timers.set,
+    });
+    await expect(listener.backfill(RELAY, T0, T0 + 10)).resolves.toBe(true);
+    // No page timer is left behind for a page that already ended.
+    expect(timers.queue).toEqual([]);
+  });
+});
+
+describe('what close still holds', () => {
+  it('holds only what is open now: closed subscriptions and fired or cancelled timers are let go', async () => {
+    const cancels: number[] = [];
+    const timers = new Timers();
+    const setTimer = (task: () => void, ms: number) => {
+      const cancel = timers.set(task, ms);
+      const index = cancels.length;
+      cancels.push(0);
+      return () => {
+        cancels[index] = (cancels[index] ?? 0) + 1;
+        cancel();
+      };
+    };
+    const live: { params: Parameters<ListenerPool['subscribe']>[2]; closes: number }[] = [];
+    const pages: { closes: number }[] = [];
+    const pool: ListenerPool = {
+      subscribe: (_relays, _filter, params) => {
+        const entry = { params, closes: 0 };
+        live.push(entry);
+        return {
+          close: () => {
+            entry.closes += 1;
+          },
+        };
+      },
+      subscribeEose: (_relays, _filter, params) => {
+        const entry = { closes: 0 };
+        pages.push(entry);
+        queueMicrotask(() => params.onclose?.(['closed automatically on eose']));
+        return {
+          close: () => {
+            entry.closes += 1;
+          },
+        };
+      },
+    };
+    const listener = new InboxListener({
+      pool,
+      storePubkey: store.pubkey,
+      auth: async (template) => finalizeEvent(template, store.secretKey),
+      onWrap: () => undefined,
+      log: () => undefined,
+      now: () => T0 + 3600,
+      setTimer,
+    });
+    listener.listen(RELAY, T0);
+    // Read through (one page, its timer cancelled when it ended), then dropped and
+    // reopened (the retry timer fires).
+    live[0]?.params.oneose?.();
+    timers.run(0);
+    await settle();
+    expect(listener.isLive(RELAY)).toBe(true);
+    live[0]?.params.onclose?.(['relay connection closed']);
+    timers.run(1_000);
+    expect(live).toHaveLength(2);
+    const cancelledBefore = [...cancels];
+    listener.close();
+    // Only the subscription open now is closed; the ended ones are not touched again.
+    expect(live.map((entry) => entry.closes)).toEqual([0, 1]);
+    expect(pages.map((entry) => entry.closes)).toEqual([0]);
+    // No timer that already fired or was cancelled is cancelled again.
+    expect(cancels).toEqual(cancelledBefore);
+  });
+});

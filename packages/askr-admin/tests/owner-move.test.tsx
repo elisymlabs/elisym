@@ -6,7 +6,8 @@ import {
   decryptPrivateConfig,
   parseConfig,
 } from '@elisym/askr';
-import type { NostrEvent } from 'nostr-tools';
+import { KIND_STORE_AUTH, buildStoreAuthEvent } from '@elisym/commerce';
+import type { Filter, NostrEvent } from 'nostr-tools';
 import { npubEncode, nsecEncode } from 'nostr-tools/nip19';
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -27,7 +28,7 @@ import {
   sessionDeps,
   storeView,
 } from './fakes';
-import { type Mounted, buttonNamed, click, mount, settle } from './mount';
+import { type Mounted, buttonNamed, chooseOption, click, mount, settle } from './mount';
 
 let mounted: Mounted | undefined;
 afterEach(async () => {
@@ -75,6 +76,28 @@ function paycoreConfig(): NostrEvent {
       tags: valid.tags.map((tag) => (tag[0] === 'source' ? ['source', 'paycore'] : tag)),
       content: valid.content,
     },
+    OLD_KEY,
+  );
+}
+
+/** The old config of a PayCore store: products from its store key, policies from the server's. */
+function payCoreLayoutConfig(): NostrEvent {
+  return finalizeEvent(
+    buildConfigEvent(
+      {
+        assistant: ASSISTANT,
+        origins: ['https://tea.example'],
+        name: 'Moved Tea',
+        language: 'en',
+        currency: 'USD',
+        source: { kind: 'catalog' },
+        catalogKey: BACKEND,
+        policyKey: SERVER_KEY,
+        private: PRIVATE_PART,
+        createdAt: NOW - 500,
+      },
+      OLD_KEY,
+    ),
     OLD_KEY,
   );
 }
@@ -131,6 +154,46 @@ async function mountMoved(deps: SessionDeps) {
   const { container } = mounted;
   await settle(() => (container.textContent ?? '').includes('Check and sign your settings'));
   return container;
+}
+
+/** A relay whose PayCore choices reads (30490s) wait until `end` lets them pass or fail. */
+function heldChoicesReader(events: readonly NostrEvent[]) {
+  const base = fakeReader(events);
+  let outcome: 'hold' | 'pass' | 'fail' = 'hold';
+  const waiting: (() => void)[] = [];
+  return {
+    reader: {
+      query: async (filter: Filter) => {
+        if (filter.kinds?.includes(KIND_STORE_AUTH) === true) {
+          if (outcome === 'hold') {
+            await new Promise<void>((resolve) => waiting.push(resolve));
+          }
+          if (outcome === 'fail') {
+            throw new Error('The relay did not answer the whole read');
+          }
+        }
+        return base.query(filter);
+      },
+    },
+    end: (next: 'pass' | 'fail') => {
+      outcome = next;
+      for (const resume of waiting.splice(0)) {
+        resume();
+      }
+    },
+  };
+}
+
+function movedApi(config: NostrEvent) {
+  return fakeApi({
+    store: vi.fn(async () => storeView({ movedFrom: OLD, assistant: ASSISTANT })),
+    movedSettings: vi.fn(async () => ({
+      from: OLD,
+      signedBy: OLD,
+      config,
+      private: PRIVATE_PART,
+    })),
+  });
 }
 
 function nameField(container: HTMLElement): string {
@@ -199,15 +262,193 @@ describe('finishing a move to a new secret key (K21)', () => {
     const catalog = await mountMoved(movedDeps(oldConfig('catalog')));
     expect(nameField(catalog)).toBe('Moved Tea');
     expect(catalog.textContent).not.toContain('with our help');
-    expect(catalog.textContent).not.toContain('PayCore');
+    expect(catalog.textContent).not.toContain('until your new key authorizes that store');
   });
 
   it('previous settings naming a paycore source are not found: the form starts empty, nothing breaks', async () => {
     const container = await mountMoved(movedDeps(paycoreConfig()));
     expect(container.textContent).toContain('Your previous settings could not be found');
     expect(nameField(container)).toBe('');
-    expect(container.textContent).not.toContain('PayCore');
+    expect(container.textContent).not.toContain('until your new key authorizes that store');
   });
+
+  it("a PayCore store's settings: warns to move the store too, and authorizes both its key and the server key", async () => {
+    const deps = movedDeps(payCoreLayoutConfig());
+    const container = await mountMoved(deps);
+    expect(container.textContent).toContain('until your new key authorizes that store in PayCore');
+    expect(container.textContent).toContain(
+      'A hosted PayCore store cannot change its owner key yet',
+    );
+    await click(buttonNamed(container, 'Sign with my new key'));
+    await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length > 0);
+    const signed = vi.mocked(deps.api.storeEvents).mock.calls[0]?.[0] ?? [];
+    const config = signed.find((event) => event.kind === KIND_CONFIG);
+    const parsed = config === undefined ? undefined : parseConfig(config);
+    expect(parsed?.catalogKey).toBe(BACKEND);
+    expect(parsed?.policyKey).toBe(SERVER_KEY);
+    const authorized = signed
+      .filter((event) => event.kind === KIND_CATALOG_AUTH)
+      .map((event) => [
+        event.tags.find((tag) => tag[0] === 'd')?.[1],
+        event.tags.find((tag) => tag[0] === 'mode')?.[1],
+      ]);
+    expect(authorized).toEqual([
+      [BACKEND, 'self-host'],
+      [SERVER_KEY, 'hosted'],
+    ]);
+  });
+
+  it("the new key has no 30490, though the old key's store had one: choosing PayCore links to its onboarding", async () => {
+    const oldStoreAuth = finalizeEvent(
+      {
+        ...buildStoreAuthEvent({ storePubkey: BACKEND, mode: 'hosted' }),
+        created_at: NOW - 400,
+      },
+      OLD_KEY,
+    );
+    const api = fakeApi({
+      store: vi.fn(async () => storeView({ movedFrom: OLD, assistant: ASSISTANT })),
+      movedSettings: vi.fn(async () => ({
+        from: OLD,
+        signedBy: OLD,
+        config: payCoreLayoutConfig(),
+        private: PRIVATE_PART,
+      })),
+    });
+    const container = await mountMoved(
+      sessionDeps(api, fakeReader([...oldAuthorizations(), oldStoreAuth])),
+    );
+    const source = container.querySelector('#store-source');
+    if (!(source instanceof HTMLSelectElement)) {
+      throw new Error('no source field');
+    }
+    expect(source.value).toBe('catalog');
+    await chooseOption(source, 'paycore');
+    await settle(() =>
+      (container.textContent ?? '').includes('No PayCore store is set up for this Store ID yet'),
+    );
+  });
+
+  it("a PayCore store already moved to the new key reads as that store, and its 30497 mirrors the new key's 30490", async () => {
+    const newStoreAuth = finalizeEvent(
+      {
+        ...buildStoreAuthEvent({
+          storePubkey: BACKEND,
+          mode: 'hosted',
+          operator: 'elisym.network',
+        }),
+        created_at: NOW - 100,
+      },
+      OWNER_KEY,
+    );
+    const api = fakeApi({
+      store: vi.fn(async () => storeView({ movedFrom: OLD, assistant: ASSISTANT })),
+      movedSettings: vi.fn(async () => ({
+        from: OLD,
+        signedBy: OLD,
+        config: payCoreLayoutConfig(),
+        private: PRIVATE_PART,
+      })),
+    });
+    const deps = sessionDeps(api, fakeReader([...oldAuthorizations(), newStoreAuth]));
+    const container = await mountMoved(deps);
+    await settle(() => container.querySelector('#store-source') !== null);
+    const source = container.querySelector('#store-source');
+    expect(source instanceof HTMLSelectElement ? source.value : '').toBe('paycore');
+    expect(container.textContent).toContain('PayCore store');
+    expect(container.textContent).not.toContain('until your new key authorizes that store');
+    await click(buttonNamed(container, 'Sign with my new key'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length > 0);
+    const signed = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
+    const authorized = signed
+      .filter((event) => event.kind === KIND_CATALOG_AUTH)
+      .map((event) => [
+        event.tags.find((tag) => tag[0] === 'd')?.[1],
+        event.tags.find((tag) => tag[0] === 'mode'),
+      ]);
+    expect(authorized).toEqual([
+      [BACKEND, ['mode', 'hosted', 'elisym.network']],
+      [SERVER_KEY, ['mode', 'hosted']],
+    ]);
+  });
+
+  it("a PayCore layout waits for the new key's 30490 read, and a failed one is retried", async () => {
+    let failing = true;
+    const relay = fakeReader(oldAuthorizations());
+    const api = fakeApi({
+      store: vi.fn(async () => storeView({ movedFrom: OLD, assistant: ASSISTANT })),
+      movedSettings: vi.fn(async () => ({
+        from: OLD,
+        signedBy: OLD,
+        config: payCoreLayoutConfig(),
+        private: PRIVATE_PART,
+      })),
+    });
+    const deps = sessionDeps(api, {
+      query: async (filter) => {
+        if (failing && filter.kinds?.includes(30490) === true) {
+          throw new Error('The relay did not answer the whole read');
+        }
+        return relay.query(filter);
+      },
+    });
+    const container = await mountMoved(deps);
+    await settle(() => (container.textContent ?? '').includes('the form waits'));
+    expect(container.querySelector('#store-source')).toBeNull();
+    failing = false;
+    await click(buttonNamed(container, 'Retry'));
+    await settle(() => container.querySelector('#store-source') !== null);
+  });
+
+  it("a PayCore layout is held while the new key's 30490 read is pending, then opens as that store", async () => {
+    const newStoreAuth = finalizeEvent(
+      {
+        ...buildStoreAuthEvent({
+          storePubkey: BACKEND,
+          mode: 'hosted',
+          operator: 'elisym.network',
+        }),
+        created_at: NOW - 100,
+      },
+      OWNER_KEY,
+    );
+    const relay = heldChoicesReader([...oldAuthorizations(), newStoreAuth]);
+    const api = movedApi(payCoreLayoutConfig());
+    const container = await mountMoved(sessionDeps(api, relay.reader));
+    expect(container.textContent).toContain('Checking your PayCore store...');
+    expect(container.querySelector('#store-source')).toBeNull();
+    relay.end('pass');
+    await settle(() => container.querySelector('#store-source') !== null);
+    const source = container.querySelector('#store-source');
+    expect(source instanceof HTMLSelectElement ? source.value : '').toBe('paycore');
+    await click(buttonNamed(container, 'Sign with my new key'));
+    await settle(() => vi.mocked(api.storeEvents).mock.calls.length > 0);
+    const signed = vi.mocked(api.storeEvents).mock.calls[0]?.[0] ?? [];
+    const storeAuth = signed.find(
+      (event) =>
+        event.kind === KIND_CATALOG_AUTH &&
+        event.tags.find((tag) => tag[0] === 'd')?.[1] === BACKEND,
+    );
+    expect(storeAuth?.tags.find((tag) => tag[0] === 'mode')).toEqual([
+      'mode',
+      'hosted',
+      'elisym.network',
+    ]);
+  });
+
+  it.each(['pending', 'failed'] as const)(
+    'settings of another layout show at once while the 30490 read is %s',
+    async (outcome) => {
+      const relay = heldChoicesReader(oldAuthorizations());
+      if (outcome === 'failed') {
+        relay.end('fail');
+      }
+      const container = await mountMoved(sessionDeps(movedApi(oldConfig()), relay.reader));
+      expect(container.querySelector('#store-source')).not.toBeNull();
+      expect(nameField(container)).toBe('Moved Tea');
+      relay.end('pass');
+    },
+  );
 
   it('shows a failed read and retries on request', async () => {
     const deps = movedDeps(oldConfig());

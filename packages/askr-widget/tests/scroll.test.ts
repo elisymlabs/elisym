@@ -147,12 +147,18 @@ describe('the panel log', () => {
   it('jumps to the end of a restored history, then glides as new questions land', () => {
     stubMotion(false);
     const { view, glide, jumps } = panel();
-    view.update({ phase: 'ready', branding: true, turns: [turn('a'), turn('b'), turn('c')] });
+    view.update({
+      phase: 'ready',
+      branding: true,
+      notes: [],
+      turns: [turn('a'), turn('b'), turn('c')],
+    });
     expect(glide).not.toHaveBeenCalled();
     expect(jumps).toEqual([432]);
     view.update({
       phase: 'ready',
       branding: true,
+      notes: [],
       turns: [turn('a'), turn('b'), turn('c'), turn('d')],
     });
     expect(glide).toHaveBeenCalledWith({ top: 532, behavior: 'smooth' });
@@ -160,6 +166,7 @@ describe('the panel log', () => {
     view.update({
       phase: 'ready',
       branding: true,
+      notes: [],
       turns: [turn('a'), turn('b'), turn('c'), turn('d')],
     });
     expect(glide).not.toHaveBeenCalled();
@@ -168,17 +175,17 @@ describe('the panel log', () => {
   it('jumps for the first question of a fresh chat, then glides for the next', () => {
     stubMotion(false);
     const { view, glide, jumps } = panel();
-    view.update({ phase: 'ready', branding: true, turns: [turn('a')] });
+    view.update({ phase: 'ready', branding: true, notes: [], turns: [turn('a')] });
     expect(glide).not.toHaveBeenCalled();
     expect(jumps).toEqual([232]);
-    view.update({ phase: 'ready', branding: true, turns: [turn('a'), turn('b')] });
+    view.update({ phase: 'ready', branding: true, notes: [], turns: [turn('a'), turn('b')] });
     expect(glide).toHaveBeenCalledWith({ top: 332, behavior: 'smooth' });
   });
 
   it('shows the newest message at once when asked, as the panel opens', () => {
     stubMotion(false);
     const { view, glide, jumps } = panel();
-    view.update({ phase: 'ready', branding: true, turns: [turn('a')] });
+    view.update({ phase: 'ready', branding: true, notes: [], turns: [turn('a')] });
     jumps.length = 0;
     view.jumpToNewest();
     expect(jumps).toEqual([232]);

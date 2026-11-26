@@ -9,13 +9,7 @@ import { PENDING_CONTACT_TEXT } from './activation';
 import { type SessionDeps, postSigned } from './deps';
 import { errorMessage } from './errors';
 import type { SignedJournal } from './journal';
-import {
-  type ServerKeys,
-  type StoreForm,
-  authorizationOf,
-  connectorOf,
-  signStoreEvents,
-} from './store-form';
+import { type ServerKeys, type StoreForm, connectorOf, signStoreEvents } from './store-form';
 import type { StoreView } from './types';
 
 /** The assistant a new config names: the next A while a rotation is under way (1.5). */
@@ -64,7 +58,6 @@ export async function saveSettings(input: SaveInput): Promise<SaveOutcome> {
   const now = input.deps.now();
   // Checked before anything is signed: a bad feed address must not leave half a save.
   const connector = connectorOf(input.form);
-  const authKey = authorizationOf(input.form, input.view.catalogKey).key;
   const events = await signStoreEvents({
     form: input.form,
     keys: keysOfView(input.view),
@@ -77,7 +70,7 @@ export async function saveSettings(input: SaveInput): Promise<SaveOutcome> {
     ...(input.authorized === undefined
       ? {}
       : { authorized: authorizedNow(input.authorized, journal) }),
-    authCreatedAt: nextAuthDate(authKey, now, input.relayNewestAt, journal),
+    authCreatedAt: (key) => nextAuthDate(key, now, input.relayNewestAt, journal),
   });
   await postSigned(input.deps, events);
   return connectorStep(input, connector);

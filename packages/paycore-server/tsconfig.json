@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@merchant-node/*": ["../merchant-node/src/*"],
+      "@hosted-admin/*": ["../merchant-admin/src/hosted/lib/*"]
+    }
+  },
+  "include": ["src", "tests", "scripts"],
+  "exclude": ["node_modules", "dist"]
+}

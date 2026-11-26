@@ -9,7 +9,7 @@ import {
   delegateConfigFilters,
   readConfigDelegates,
 } from '@elisym/askr';
-import { KIND_DELETION, newestDeletion } from '@elisym/commerce';
+import { KIND_DELETION, KIND_STORE_AUTH, newestDeletion } from '@elisym/commerce';
 import type { NostrEvent } from 'nostr-tools';
 import type { Filter } from 'nostr-tools/filter';
 
@@ -18,14 +18,20 @@ export type RelayQuery = (filters: Filter[]) => Promise<NostrEvent[]>;
 
 export interface StoreData {
   config: StoreConfig;
-  /** The owner's 30497 and kind 5 events: what `readCatalogAuthority` reads. */
+  /**
+   * The owner's 30497, 30490 and kind 5 events: what `readCatalogAuthority` and
+   * `readPayableKeys` read.
+   */
   authorityEvents: NostrEvent[];
 }
 
 export function storeFilters(owner: string): Filter[] {
   return [
     { kinds: [KIND_CONFIG], authors: [owner], '#d': [CONFIG_D_TAG] },
-    { kinds: [KIND_CATALOG_AUTH, KIND_CONFIG_DELEGATION, KIND_DELETION], authors: [owner] },
+    {
+      kinds: [KIND_CATALOG_AUTH, KIND_STORE_AUTH, KIND_CONFIG_DELEGATION, KIND_DELETION],
+      authors: [owner],
+    },
   ];
 }
 
@@ -70,7 +76,10 @@ export function readStoreConfig(
 
 function isAuthorityEvent(event: NostrEvent, owner: string): boolean {
   return (
-    event.pubkey === owner && (event.kind === KIND_CATALOG_AUTH || event.kind === KIND_DELETION)
+    event.pubkey === owner &&
+    (event.kind === KIND_CATALOG_AUTH ||
+      event.kind === KIND_STORE_AUTH ||
+      event.kind === KIND_DELETION)
   );
 }
 

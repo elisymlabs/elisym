@@ -4,6 +4,7 @@ export {
   type CatalogItem,
   type CatalogItemInput,
   type CatalogOption,
+  type CatalogPayable,
   type CatalogVariant,
   type ParseCatalogItemOptions,
   CatalogItemFieldsSchema,
@@ -49,6 +50,7 @@ export {
   buildCatalogRevocation,
   isCatalogKey,
   readCatalogAuthority,
+  readPayableKeys,
   resolveStoreKeys,
 } from './events/catalog-auth';
 export {

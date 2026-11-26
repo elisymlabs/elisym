@@ -63,3 +63,26 @@ export function buttonNamed(container: HTMLElement, text: string): HTMLButtonEle
   }
   return found;
 }
+
+export async function click(element: HTMLElement): Promise<void> {
+  await act(async () => {
+    element.click();
+  });
+}
+
+/** Settle a few event-loop turns inside `act`, without a condition. */
+export async function turns(count = 20): Promise<void> {
+  for (let round = 0; round < count; round += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+  }
+}
+
+export function inputById(container: HTMLElement, id: string): HTMLInputElement {
+  const found = container.querySelector(`#${id}`);
+  if (!(found instanceof HTMLInputElement)) {
+    throw new Error(`no input #${id}`);
+  }
+  return found;
+}

@@ -10,36 +10,12 @@ import { fileURLToPath } from 'node:url';
 import { splitNip05 } from '@elisym/commerce';
 import { createSolanaRpc } from '@solana/kit';
 import { SimplePool } from 'nostr-tools/pool';
-import { type EventTemplate, finalizeEvent } from 'nostr-tools/pure';
 import { ADMIN_HOST, DEFAULT_ADMIN_PORT, isAdminPort, startAdminServer } from './admin-server';
-import {
-  type RelayView,
-  checkDomain,
-  checkInboxRelays,
-  offerProblems,
-  profileCapabilities,
-  profileMemoMarkerWarning,
-  readBeforeSetup,
-  readRelayViews,
-} from './checks';
-import {
-  type MerchantConfig,
-  configTemplate,
-  hasSolanaRail,
-  loadConfig,
-  priceProblems,
-  tempoRegistryNetwork,
-} from './config';
-import { CATCH_UP_INTERVAL_MS, OFFER_RELAYS, SOLANA_MEDIUMS, WEBHOOK_TICK_MS } from './constants';
-import { deliverOrder, publishSelfCopy } from './deliver';
-import { eip3009ChainsOf, startEip3009Rail, storeMediums } from './eip3009';
-import {
-  TreasuryReader,
-  type TreasuryRefresh,
-  feeConfigRpcUrl,
-  feeDeclaration,
-  profileFeeWarning,
-} from './fee';
+import { type RelayView, checkDomain, checkInboxRelays } from './checks';
+import { type MerchantConfig, configTemplate, loadConfig } from './config';
+import { OFFER_RELAYS } from './constants';
+import { startEip3009Rail } from './eip3009';
+import { TreasuryReader, type TreasuryRefresh, feeConfigRpcUrl, feeDeclaration } from './fee';
 import { type HandRequest, applyHandAnswer, buildHandAnswer, planHandAnswer } from './hand';
 import { handOutcome, publishHandAnswer } from './hand-publish';
 import {
@@ -52,7 +28,6 @@ import {
   merchantHome,
   takeLock,
 } from './home';
-import { storeIdentity } from './intake';
 import {
   PASSPHRASE_HINT,
   STORE_KEY_WARNING,
@@ -70,34 +45,28 @@ import {
   openLedgerForUpgrade,
   saveLedger,
 } from './ledger';
-import { InboxListener } from './listener';
 import { printable } from './printable';
 import {
   PRODUCT_FILE,
   type Product,
-  intakeProductIds,
   loadProducts,
   productTemplateText,
   uneditedProducts,
 } from './products';
 import { setupPublisher } from './publish';
 import { listeningPool } from './relay-pool';
-import { MerchantRuntime } from './runtime';
-import { SelfCopies } from './self-copies';
+import { runSetupPass } from './setup-ledger';
 import {
-  historyRefusal,
-  payoutListDate,
-  planListings,
-  publishAndRecord,
-  setupClockProblems,
-} from './setup-ledger';
+  lostHistoryProblem,
+  productPriceProblems,
+  profileWarnings,
+  readOfferProblems,
+} from './start-checks';
 import { buildStoreWideEvents, productNaddr, storeNostrJson } from './store-events';
-import { tempoContextFor } from './tempo';
-import { standingTerms } from './terms';
+import { startStoreNode, storeAuth } from './store-node';
 import {
   type WebhookTarget,
   WEBHOOK_SECRET_HINT,
-  WebhookSender,
   applySendResult,
   orderPaidBody,
   outcomeText,
@@ -148,11 +117,6 @@ new keys when $ELISYM_MERCHANT_PASSPHRASE (or ..._FILE) is set (--owner-only:
 the owner key only); a command that needs an encrypted key reads it from there.
 A webhook in config.json needs its secret in $ELISYM_MERCHANT_WEBHOOK_SECRET
 (or the file $ELISYM_MERCHANT_WEBHOOK_SECRET_FILE names), at least 32 bytes.`;
-
-/** Answers a relay's NIP-42 challenge with the store key. */
-function storeAuth(storeSecretKey: Uint8Array) {
-  return async (template: EventTemplate) => finalizeEvent(template, storeSecretKey);
-}
 
 function nowSecs(): number {
   return Math.floor(Date.now() / 1000);
@@ -416,9 +380,9 @@ async function reportDomain(
 function loadStore(home: MerchantHome): { config: MerchantConfig; products: Map<string, Product> } {
   const config = loadConfig(home.config);
   const products = loadProducts(home.products);
-  const problems = priceProblems(config, products.values());
-  if (problems.length > 0) {
-    throw new Error(`the products are not usable:\n- ${problems.join('\n- ')}`);
+  const problem = productPriceProblems(config, products.values());
+  if (problem !== undefined) {
+    throw new Error(problem);
   }
   return { config, products };
 }
@@ -430,24 +394,14 @@ function treasuryReader(config: MerchantConfig): TreasuryReader {
 
 /** Warn (never refuse) when the store profile buyers read does not declare fee support or marked memos. */
 function warnProfile(views: readonly RelayView[], refresh: TreasuryRefresh): void {
-  const { found, feeSupport, memoMarker } = profileCapabilities(views);
-  const warning = profileFeeWarning(
-    found,
-    feeSupport,
-    refresh.kind === 'read' ? refresh.feeBps : undefined,
-  );
-  if (warning !== undefined) {
+  for (const warning of profileWarnings(views, refresh)) {
     log(`warning: ${warning}`);
-  }
-  const memoWarning = profileMemoMarkerWarning(found, memoMarker);
-  if (memoWarning !== undefined) {
-    log(`warning: ${memoWarning}`);
   }
 }
 
 /** Refuse a home whose ledger has a history for a product with no directory (see `historyRefusal`). */
 function refuseLostHistory(state: LedgerState, products: ReadonlyMap<string, Product>): void {
-  const refusal = historyRefusal(state, products);
+  const refusal = lostHistoryProblem(state, products);
   if (refusal !== undefined) {
     throw new Error(refusal);
   }
@@ -498,23 +452,6 @@ async function setup(home: MerchantHome): Promise<void> {
       );
     }
     const relays = [...new Set([...OFFER_RELAYS, ...config.inboxRelays])];
-    // New terms start before the first publish: a buyer may read them at once.
-    const startedAt = nowSecs();
-    const payouts = JSON.stringify(config.payouts);
-    const { payoutList: newestList, listings: served } = await readBeforeSetup(
-      pool,
-      relays,
-      OFFER_RELAYS,
-      loaded,
-      [...new Set([...products.keys(), ...Object.keys(state.listings)])],
-    );
-    const paytoCreatedAt = payoutListDate(state, payouts, newestList?.created_at, startedAt);
-    const plans = planListings(state, products.values(), config.payouts, served, startedAt);
-    const clock = setupClockProblems(state, plans, paytoCreatedAt, startedAt);
-    if (clock.length > 0) {
-      throw new Error(clock.join('; '));
-    }
-    const wide = buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt, declaration.declare);
     const publisher = setupPublisher(
       pool,
       relays,
@@ -522,20 +459,21 @@ async function setup(home: MerchantHome): Promise<void> {
       storeAuth(keys.storeSecretKey),
       log,
     );
-    const outcomes = await publishAndRecord(state, {
-      plans,
+    const outcomes = await runSetupPass(state, {
+      pool,
+      relays,
+      defaultRelays: OFFER_RELAYS,
+      pubkeys: loaded,
+      products,
       payouts: config.payouts,
+      payoutsString: JSON.stringify(config.payouts),
       storeSecretKey: keys.storeSecretKey,
-      wide,
+      sign: ({ startedAt, paytoCreatedAt }) =>
+        buildStoreWideEvents(config, keys, startedAt, paytoCreatedAt, declaration.declare),
       publish: publisher.publish,
-      payoutList: { createdAt: paytoCreatedAt, payouts },
-      startedAt,
       now: nowSecs,
     });
     const { missedDefaults } = publisher;
-    // Orders can come from the moment the store is published: a later first run
-    // reads back from here, not from its own start.
-    state.resumeAt ??= startedAt;
     saveLedger(home.ledger, state);
     console.log(`store   ${loaded.storePubkey}`);
     console.log(`owner   ${loaded.ownerPubkey}`);
@@ -579,17 +517,12 @@ async function refuseOffersNotHonoured(
   state: LedgerState,
   products: ReadonlyMap<string, Product>,
 ): Promise<RelayView[]> {
-  // Judged twice: from the default relays, which every page reads, and with the
-  // store's own inbox relays too, which a page reads when its naddr hints them.
-  const views = [OFFER_RELAYS, [...new Set([...OFFER_RELAYS, ...config.inboxRelays])]];
-  const read = await readRelayViews(pool, views, pubkeys, [...products.keys()]);
-  const { problems, served } = offerProblems(
-    read,
-    config.inboxRelays,
-    config.network,
-    standingTerms(state.terms),
-    config.tempo === undefined ? undefined : tempoRegistryNetwork(config.tempo.network),
-    eip3009ChainsOf(config),
+  const { problems, served, views } = await readOfferProblems(
+    pool,
+    config,
+    pubkeys,
+    state,
+    products,
   );
   if (problems.length > 0) {
     throw new Error(
@@ -601,7 +534,7 @@ async function refuseOffersNotHonoured(
       'warning: no relay served a listing or the payout list; run setup if the store is not published',
     );
   }
-  return read;
+  return views;
 }
 
 /** A stop request's exit code (128 + the signal's number). */
@@ -679,169 +612,29 @@ async function run(home: MerchantHome): Promise<void> {
   saveLedger(home.ledger, state);
   warnProfile(views, firstRead);
 
-  // One queue: every ledger change happens in order, and is saved before anything is sent.
-  let queue: Promise<void> = Promise.resolve();
-  const enqueue = (task: () => Promise<void>) => {
-    queue = queue.then(task).catch((error: unknown) => {
-      log(`error: ${errorText(error)}`);
-    });
-  };
-
-  const tempoContext = tempoContextFor(config, storePubkey);
-  const tempo =
-    tempoContext === undefined
-      ? undefined
-      : { ...tempoContext, now: nowSecs, ...(outbox === undefined ? {} : { outbox }) };
-  const mediums = storeMediums(
-    hasSolanaRail(config) ? SOLANA_MEDIUMS[config.network] : undefined,
-    tempo?.medium,
-    evmContexts,
-  );
-  // The store's copies of its replies go to every inbox relay, whichever took the buyer copy.
-  const selfCopies = new SelfCopies({
-    publish: publishSelfCopy({
-      pool,
-      inboxRelays: config.inboxRelays,
-      auth: storeAuth(storeSecretKey),
-      log,
-    }),
+  const node = await startStoreNode({
+    pool,
+    config,
+    products,
+    state,
+    storePubkey,
+    storeSecretKey,
+    save: () => saveLedger(home.ledger, state),
+    refreshTreasuries: () => treasuries.refresh(state, nowSecs()),
+    eip3009: evmContexts,
+    ...(outbox === undefined ? {} : { outbox }),
+    ...(target === undefined ? {} : { webhook: { target, userAgent: USER_AGENT } }),
     log,
+    now: nowSecs,
+    stop: () => process.exit(1),
   });
   process.on('exit', () => {
-    if (selfCopies.pending > 0) {
+    if (node.selfCopies.pending > 0) {
       log(
-        `${selfCopies.pending} copy(ies) for the admin lost: the node stopped before sending them`,
+        `${node.selfCopies.pending} copy(ies) for the admin lost: the node stopped before sending them`,
       );
     }
   });
-  const store = storeIdentity(storePubkey, intakeProductIds(products), mediums);
-  const runtime = new MerchantRuntime({
-    state,
-    store,
-    storeSecretKey,
-    // With no Solana payout the Solana catch-up has no terms to scan and reads nothing.
-    context: {
-      rpc: createSolanaRpc(config.rpcUrl ?? 'https://api.devnet.solana.com'),
-      network: config.network,
-      now: nowSecs,
-      ...(outbox === undefined ? {} : { outbox }),
-    },
-    ...(tempo === undefined ? {} : { tempo }),
-    eip3009: evmContexts,
-    // No Solana payout configured: the Solana sweep reads nothing (no cluster to guess).
-    ...(hasSolanaRail(config) ? {} : { catchUp: async () => ({ paid: [], incomplete: [] }) }),
-    refreshTreasuries: () => treasuries.refresh(state, nowSecs()),
-    stop: () => process.exit(1),
-    save: () => saveLedger(home.ledger, state),
-    // Completion needs no product: the status carries only the receipt.
-    deliver: async (order, skip) =>
-      await deliverOrder(
-        {
-          pool,
-          inboxRelays: config.inboxRelays,
-          storeSecretKey,
-          auth: storeAuth(storeSecretKey),
-          log,
-          now: nowSecs,
-        },
-        order,
-        skip,
-      ),
-    selfCopies,
-    inboxRelayCount: config.inboxRelays.length,
-    log,
-    now: nowSecs,
-    later: (ms, task) => {
-      setTimeout(() => enqueue(task), ms);
-    },
-  });
-  const startedAt = nowSecs();
-
-  const listener = new InboxListener({
-    pool,
-    storePubkey,
-    auth: storeAuth(storeSecretKey),
-    onWrap: (wrap) => {
-      if (runtime.admit(wrap)) {
-        enqueue(() => runtime.handleWrap(wrap));
-      }
-    },
-    log,
-    now: nowSecs,
-  });
-  // Resume from the last moment every inbox relay was read through. Recorded before
-  // listening, so a run that never reads every relay through does not restart "from now".
-  state.resumeAt = Math.min(state.resumeAt ?? startedAt, startedAt);
-  saveLedger(home.ledger, state);
-  const resumeFrom = state.resumeAt;
-  for (const relay of config.inboxRelays) {
-    listener.listen(relay, resumeFrom);
-  }
-  log(`store ${storePubkey} listening on ${config.inboxRelays.join(', ')}`);
-
-  let sweepQueued = false;
-  const sweep = () => {
-    // A slow sweep never piles up behind itself on the queue.
-    if (sweepQueued) {
-      return;
-    }
-    sweepQueued = true;
-    // Every wrap received before now is already on the queue, ahead of this sweep.
-    const allLive = listener.allLive(config.inboxRelays);
-    const queuedAt = nowSecs();
-    enqueue(async () => {
-      sweepQueued = false;
-      await runtime.sweep(allLive, queuedAt);
-    });
-  };
-  sweep();
-  setInterval(sweep, CATCH_UP_INTERVAL_MS);
-  if (target !== undefined) {
-    startWebhooks(state, store, target, home, enqueue);
-  }
-}
-
-/**
- * Send the webhooks due, every `WEBHOOK_TICK_MS`. Each pick runs on the queue,
- * between tasks, so it only sees entries already saved; the requests run off
- * it, and each outcome is queued back and saved.
- */
-function startWebhooks(
-  state: LedgerState,
-  store: { storePubkey: string },
-  target: WebhookTarget,
-  home: MerchantHome,
-  enqueue: (task: () => Promise<void>) => void,
-): void {
-  const sender = new WebhookSender({
-    state,
-    store,
-    target,
-    commit: (change) => {
-      enqueue(async () => {
-        change();
-        saveLedger(home.ledger, state);
-      });
-    },
-    log,
-    now: nowSecs,
-    userAgent: USER_AGENT,
-  });
-  // Like the sweep: a busy queue holds one pick, never a pile of them.
-  let tickQueued = false;
-  const tick = () => {
-    if (tickQueued) {
-      return;
-    }
-    tickQueued = true;
-    enqueue(async () => {
-      tickQueued = false;
-      void sender.tick();
-    });
-  };
-  tick();
-  setInterval(tick, WEBHOOK_TICK_MS);
-  log(`webhook to ${new URL(target.url).origin} (order.paid)`);
 }
 
 function listOrders(home: MerchantHome): void {

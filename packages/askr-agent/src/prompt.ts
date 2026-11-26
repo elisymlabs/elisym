@@ -1,5 +1,5 @@
 import { assistantDisplayName } from '@elisym/askr';
-import { type StoreCatalog, availabilityOf, topAttrs } from './catalog/store-catalog';
+import { type StoreCatalog, availabilityOf, hasBuyButton, topAttrs } from './catalog/store-catalog';
 import { FENCE_RULE, fence, sanitizeText } from './fence';
 import type { SystemBlock } from './llm/types';
 import { skillIndex } from './skills';
@@ -27,15 +27,17 @@ export function estimateTokens(text: string): number {
   return Math.ceil(latin / 4 + alphabetic / 1.5 + ideographic);
 }
 const MAX_CATALOG_CHARS = CATALOG_IN_PROMPT_TOKENS * 4;
+const CATALOG_LINE_CHARS = 400;
+const BUY_MARKER = ' | buy';
 const PRIVATE_FENCE_CHARS = 16_000;
 
-const GLOBAL_RULES = `You are a shopping assistant embedded on an online store's website. You help visitors find, understand and compare the store's products, and you send them to the product pages. You cannot take orders, payments or returns.
+const GLOBAL_RULES = `You are a shopping assistant embedded on an online store's website. You help visitors find, understand and compare the store's products, and you send them to the product pages. You cannot take orders, payments or returns yourself.
 
 Grounding
 - State products, prices, availability and store terms only from the catalog below or from tool results in this conversation. When a fact is not there, say it is unknown.
 - Never invent a product, a price, a discount, a total or a policy. Never convert prices into another currency: give the store's currency and say you cannot convert.
 - Product ids are for the tools only. In your text, card reasons, titles and chips, call a product by its name; never write an id or handle, such as "(id: pack-45)" or "(pack-45)".
-- The cards show the price, image and link, so do not restate prices in your text unless you quote them exactly from a tool result.
+- The cards show the price and, when the store gives them, an image and a link, so do not restate prices in your text unless you quote them exactly from a tool result.
 - When asked about a fee or an amount in a store policy (shipping, returns), quote it exactly as the policy states it, in the policy's own currency.
 - When the visitor states a budget, present only products within it. Mention a pricier product only when nothing fits, and say plainly that it is over the budget, without stating the budget amount or the difference.
 
@@ -47,6 +49,10 @@ Presentation
 - Never write links, URLs or images in your text; the cards carry the product links.
 - A note like "[shown, in order: ...]" in an earlier assistant turn records what was shown then; never repeat it. Refer to a card only when you present it in this answer: if the visitor asks about a product shown earlier, present it again.
 - Answer in the visitor's language. Write search queries in the catalog's language, even when the visitor writes in another.
+
+Buying
+- A product marked buy can be paid for in this chat with the Buy button on its card, through the store's own checkout. When the visitor wants to buy one, present it and tell them to press Buy on its card; if they see no Buy button, send them to the product page.
+- Never ask for, accept or repeat payment details (card numbers, wallet keys, recovery phrases), and never confirm a payment, an order or a delivery yourself: the checkout and the store do that.
 
 Honesty
 - You are an AI assistant, not a person. If asked whether you are a bot or a human, say plainly that you are an AI assistant. Never claim to be human.
@@ -73,10 +79,12 @@ function catalogLines(catalog: StoreCatalog): string {
       const attrs = topAttrs(item, 4)
         .map((attr) => `${attr.name}=${attr.value}`)
         .join('; ');
-      return sanitizeText(
+      // The marker is added after the cut, so a long title or attribute never drops it.
+      const marker = hasBuyButton(item) ? BUY_MARKER : '';
+      return `${sanitizeText(
         `${item.d} | ${item.title} | ${price} | ${availabilityOf(item)}${attrs ? ` | ${attrs}` : ''}`,
-        400,
-      );
+        CATALOG_LINE_CHARS - marker.length,
+      )}${marker}`;
     })
     .join('\n');
 }
@@ -123,7 +131,7 @@ export function storeBlock(catalog: StoreCatalog): StoreBlockResult {
   const fits = estimateTokens(lines) <= CATALOG_IN_PROMPT_TOKENS;
   if (fits && catalog.items.size > 0) {
     parts.push(
-      `The whole catalog (id | title | price | availability | attributes). Use get_product_details for descriptions and variants:\n${fence('catalog', lines, MAX_CATALOG_CHARS)}`,
+      `The whole catalog (id | title | price | availability | attributes, then "buy" when its card has a Buy button). Use get_product_details for descriptions and variants:\n${fence('catalog', lines, MAX_CATALOG_CHARS)}`,
     );
   } else {
     parts.push(`The catalog has ${catalog.items.size} products: use search_products to find them.`);

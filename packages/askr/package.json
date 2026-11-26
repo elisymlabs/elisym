@@ -1,6 +1,6 @@
 {
   "name": "@elisym/askr",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Askr protocol: catalog, policy and assistant config events on Nostr, catalog-key authority, encrypted assistant chat, session tickets and catalog sync.",
   "keywords": [
     "commerce",
@@ -59,6 +59,7 @@
     "zod": "~4.6.7"
   },
   "devDependencies": {
+    "@elisym/pay-core": "~0.5.0",
     "@types/node": "~25.5.0",
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",

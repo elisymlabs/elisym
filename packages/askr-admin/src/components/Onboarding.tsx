@@ -9,6 +9,7 @@ import { npubOf } from '../lib/signer';
 import { EMPTY_FORM } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
 import { useBusyUntilLeave } from '../lib/use-busy-until-leave';
+import { usePayCoreChoices } from '../lib/use-paycore-choices';
 import { ContactLinks } from './ContactLinks';
 import { Notice } from './Notice';
 import { PlanIntentLine } from './PlanIntentLine';
@@ -61,6 +62,7 @@ export function Onboarding({
   const [typedEmail, setTypedEmail] = useState('');
   const email = contactEmailOf(typedEmail);
   const ownerNpub = npubOf(deps.signer.pubkey);
+  const payCore = usePayCoreChoices(deps);
 
   /** Open the chosen plan's checkout: true once the page is leaving for it. */
   const checkout = async (chosen: PlanIntent): Promise<boolean> => {
@@ -194,6 +196,7 @@ export function Onboarding({
           </div>
           <StoreSettingsForm
             initial={EMPTY_FORM}
+            payCore={payCore}
             submitLabel="Sign and save"
             onSubmit={async (form) => {
               const outcome = await saveSettings({ deps, view, form });

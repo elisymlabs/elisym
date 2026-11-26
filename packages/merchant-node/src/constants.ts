@@ -117,6 +117,12 @@ export const WEBHOOK_FIRST_PAUSE_SECS = 30;
 
 export const WEBHOOK_MAX_PAUSE_SECS = 60 * 60;
 
+/**
+ * How long a host may skip the saves of quiet sweeps (`quietSweepSaveSecs`):
+ * a restart then reads its inbox again from at most this far back.
+ */
+export const QUIET_SWEEP_SAVE_SECS = 10 * 60;
+
 /** How often a running node looks for webhooks due. */
 export const WEBHOOK_TICK_MS = 5_000;
 

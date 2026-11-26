@@ -27,10 +27,10 @@ export function TermsOfService() {
 
       <LegalSection id="service" title="2. The service">
         <p>
-          {`${PRODUCT_NAME} is an AI shopping assistant for your store's websites. You add one script tag to your pages, and a chat answers your visitors' questions from your own products and policies and links them to your product pages and cart. You manage it in the admin or with the ${PRODUCT_NAME} CLI. Your products come from a file, from the admin, or from a connector that reads your Shopify, WooCommerce or Google product feed on a schedule.`}
+          {`${PRODUCT_NAME} is an AI shopping assistant for your store's websites. You add one script tag to your pages, and a chat answers your visitors' questions from your own products and policies and links them to your product pages and cart. You manage it in the admin or with the ${PRODUCT_NAME} CLI. Your products come from a file, from the admin, from a connector that reads your Shopify, WooCommerce or Google product feed on a schedule, or from your PayCore store.`}
         </p>
         <p>
-          {`${PRODUCT_NAME} does not take orders, payments or returns: checkout stays on your site. Your store's settings, products and policies are published as signed, public listings on the open Nostr network, as described in the privacy policy.`}
+          {`${PRODUCT_NAME} does not take orders, payments or returns: checkout stays on your site. If your products come from your PayCore store, a Buy button on their cards opens the PayCore checkout, a separate service with its own terms, on your pages; the payment goes on the blockchain to your store, never through ${PRODUCT_NAME}. Your store's settings, products and policies are published as signed, public listings on the open Nostr network, as described in the privacy policy.`}
         </p>
       </LegalSection>
 

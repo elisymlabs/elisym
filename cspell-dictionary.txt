@@ -10,6 +10,7 @@ bankr
 baseten
 bech
 behaviour
+bigserial
 Birdeye
 blockhash
 blockhashes
@@ -336,6 +337,7 @@ Calle
 Isora
 Adeje
 llmstxt
+hashtextextended
 myshopify
 metafields
 Metafields

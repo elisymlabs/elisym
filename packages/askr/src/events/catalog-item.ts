@@ -1,10 +1,19 @@
-import { type ProductPrice, nowSecs, parseProduct, tagsNamed, tagValues } from '@elisym/commerce';
+import {
+  type ProductPrice,
+  encodeProductNaddr,
+  nowSecs,
+  parseProduct,
+  tagsNamed,
+  tagValues,
+} from '@elisym/commerce';
 import Decimal from 'decimal.js-light';
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import * as z from 'zod';
 import {
   ANY_OPTION_VALUE,
+  ASKR_RELAYS,
   LIMITS,
+  PAYABLE_CHAIN_NETWORKS,
   RESERVED_ATTRS,
   VISIBILITIES,
   type Visibility,
@@ -37,6 +46,13 @@ export interface CatalogVariant {
   values: string[];
 }
 
+/** How a listing is bought through PayCore's checkout, when it can be. */
+export interface CatalogPayable {
+  /** The listing's `naddr`, with the Askr relay as its hint. */
+  naddr: string;
+  network: 'mainnet' | 'devnet';
+}
+
 export interface CatalogItem {
   author: string;
   d: string;
@@ -59,6 +75,8 @@ export interface CatalogItem {
   variants: CatalogVariant[];
   visibility: Exclude<Visibility, 'hidden'>;
   createdAt: number;
+  /** Set only for a PayCore listing whose author the owner authorizes as a store now (C2). */
+  payable?: CatalogPayable;
 }
 
 /** `30402:<author>:<d>`. */
@@ -133,16 +151,37 @@ function readVariants(tags: NostrEvent['tags'], options: CatalogOption[]): Catal
   return variants;
 }
 
+export interface ParseCatalogItemOptions {
+  now?: number;
+  /**
+   * The store's configured, authorized catalog key. Its listings are kept even
+   * when they carry `accept` (a PayCore store key S serving as the catalog
+   * key); any other author's payable listing is dropped.
+   */
+  catalogKey?: string;
+  /** Keys the owner authorizes as PayCore stores now (an active 30490): only their listings get `payable`. */
+  payableKeys?: ReadonlySet<string>;
+}
+
+/** The one network every accepted coin is on, or none when they are mixed or a chain is unknown. */
+function acceptNetwork(accept: readonly string[]): 'mainnet' | 'devnet' | undefined {
+  const networks = new Set(
+    accept.map((caip19) => PAYABLE_CHAIN_NETWORKS[caip19.split('/', 1)[0] ?? '']),
+  );
+  const [only] = networks;
+  return networks.size === 1 ? only : undefined;
+}
+
 /**
  * Read a 30402 listing for Askr, or `undefined` when it is not shown:
  * unreadable by `parseProduct`, `hidden`, an unknown visibility, or expired.
  * A catalog key K never publishes payment tags (1.1), so a listing that
- * carries `accept` is dropped too. The caller has checked the signature and
- * that the author is authorized.
+ * carries `accept` is dropped, unless its author is the store's configured
+ * catalog key: a PayCore store key S is both a store key and a catalog key,
+ * and payment is gated by the owner's 30490 (`payableKeys`), not by the
+ * 30497. The caller has checked the signature and that the author is
+ * authorized.
  */
-export interface ParseCatalogItemOptions {
-  now?: number;
-}
 
 export function parseCatalogItem(
   event: Pick<NostrEvent, 'kind' | 'pubkey' | 'tags' | 'content' | 'created_at'>,
@@ -153,7 +192,7 @@ export function parseCatalogItem(
   if (!product) {
     return undefined;
   }
-  if (product.accept.length > 0) {
+  if (product.accept.length > 0 && event.pubkey !== parseOptions.catalogKey) {
     return undefined;
   }
   const expiration = tagsNamed(event.tags, 'expiration');
@@ -212,6 +251,17 @@ export function parseCatalogItem(
   }
   if (sourceId !== undefined) {
     item.sourceId = sourceId;
+  }
+  const network = acceptNetwork(product.accept);
+  if (
+    product.accept.length > 0 &&
+    network !== undefined &&
+    parseOptions.payableKeys?.has(event.pubkey) === true
+  ) {
+    item.payable = {
+      naddr: encodeProductNaddr({ storePubkey: event.pubkey, d: product.d }, [...ASKR_RELAYS]),
+      network,
+    };
   }
   return item;
 }

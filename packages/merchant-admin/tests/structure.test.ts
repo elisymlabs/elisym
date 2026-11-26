@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { V3_LOADER_URL } from '../scripts/admin-checks';
 import {
   HEADER_BAR,
   HEADER_HOME_LINK,
@@ -14,6 +15,8 @@ import {
 const ROOT = new URL('../', import.meta.url).pathname;
 const SRC = join(ROOT, 'src');
 const CORE_DIR = join(ROOT, '../merchant-node/src/admin');
+/** The one source file that may name the checkout loader URL (A9). */
+const EMBED_CONSTANTS = join('hosted', 'lib', 'embed-constants.ts');
 
 /** The merchant-node admin modules this app may use: no DOM building, no node-only code. */
 const ALLOWED_CORE = ['session', 'history', 'reader', 'store', 'key', 'labels'];
@@ -29,6 +32,62 @@ function imports(code: string): string[] {
   return [...code.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map(
     (match) => match[1] ?? '',
   );
+}
+
+/** Files that read the relays (the self-host session and its relay client): never run by `/hosted/`. */
+const FORBIDDEN_FOR_HOSTED_FILES = [join('lib', 'core.ts'), join('lib', 'deps.ts')];
+/** Packages and aliases of relay code: the shared admin core, the buyer relay client, nostr-tools' pools and relays (its root re-exports them). */
+const FORBIDDEN_FOR_HOSTED_PACKAGES =
+  /^(@merchant-admin-core|@elisym\/commerce\/buyer$|nostr-tools$|nostr-tools\/(pool|abstract-pool|relay|abstract-relay)$)/;
+
+/** The value imports of `code` (`import type` and `export type` lines are erased by the build). */
+function valueImports(code: string): string[] {
+  return [
+    ...code.matchAll(/^\s*(import|export)(?!\s+type\b)[^;]*?\sfrom\s*['"]([^'"]+)['"]/gms),
+    ...code.matchAll(/^\s*import\s*['"]([^'"]+)['"]/gm),
+  ].map((match) => match[2] ?? match[1] ?? '');
+}
+
+function resolveSource(from: string, target: string): string | undefined {
+  const base = join(from, '..', target);
+  return ['', '.ts', '.tsx', join('', 'index.ts'), join('', 'index.tsx')]
+    .map((ending) => (ending.startsWith('index') ? join(base, ending) : `${base}${ending}`))
+    .find((candidate) => {
+      try {
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+}
+
+/** Every source file (relative to `src`) and every package a module runs, transitively. */
+function walkFrom(entry: string): { files: string[]; packages: string[] } {
+  const seen = new Set<string>();
+  const packages = new Set<string>();
+  const queue = [entry];
+  for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+    if (seen.has(path)) {
+      continue;
+    }
+    seen.add(path);
+    for (const target of valueImports(readFileSync(path, 'utf8'))) {
+      if (!target.startsWith('.')) {
+        packages.add(target);
+        continue;
+      }
+      const resolved = resolveSource(path, target);
+      if (resolved === undefined) {
+        throw new Error(`${path}: cannot resolve ${target}`);
+      }
+      queue.push(resolved);
+    }
+  }
+  return { files: [...seen].map((path) => relative(SRC, path)), packages: [...packages] };
+}
+
+function hostedGraph() {
+  return walkFrom(join(SRC, 'hosted', 'main.tsx'));
 }
 
 describe('the admin source', () => {
@@ -55,15 +114,79 @@ describe('the admin source', () => {
     }
   });
 
-  it('loads no checkout loader and renders no raw HTML', () => {
+  it('renders no raw HTML and sets no inline style, anywhere in src', () => {
     for (const path of sources) {
       const code = readFileSync(path, 'utf8');
-      expect(code).not.toMatch(/@elisym\/react|pay\.elisym\.network/);
-      expect(code).not.toMatch(/dangerouslySetInnerHTML|innerHTML/);
+      expect(code, path).not.toMatch(
+        /dangerouslySetInnerHTML|innerHTML|outerHTML|insertAdjacentHTML|document\.write/,
+      );
       // The CSP has style-src 'self': an inline style attribute would be refused.
-      expect(code).not.toMatch(/\bstyle=\{/);
-      expect(code).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
+      expect(code, path).not.toMatch(/\bstyle=\{/);
     }
+  });
+
+  it('loads no checkout loader; only the embed constants name its one v3 URL', () => {
+    for (const path of sources) {
+      const code = readFileSync(path, 'utf8');
+      expect(code, path).not.toMatch(/@elisym\/react/);
+      const named = code.match(/pay\.elisym\.network/g) ?? [];
+      if (relative(SRC, path) === EMBED_CONSTANTS) {
+        const exact = code.split(V3_LOADER_URL).length - 1;
+        expect(named).toHaveLength(exact);
+        expect(code, path).not.toMatch(
+          new RegExp(`${V3_LOADER_URL.replace(/[./]/g, '\\$&')}[\\w./?#%&=:-]`),
+        );
+      } else {
+        expect(named, path).toEqual([]);
+      }
+    }
+  });
+
+  it('touches browser storage only where hosted mode keeps a sealed key or the tab session', () => {
+    for (const path of sources) {
+      const code = readFileSync(path, 'utf8');
+      const file = relative(SRC, path);
+      expect(code, file).not.toMatch(/document\.cookie/);
+      if (file !== join('hosted', 'lib', 'remembered.ts')) {
+        expect(code, file).not.toMatch(/localStorage|indexedDB/);
+      }
+      if (file !== join('hosted', 'lib', 'tab-session.ts')) {
+        expect(code, file).not.toMatch(/sessionStorage/);
+      }
+    }
+  });
+
+  it('reads the product rules only by their own alias, from hosted mode, and they stay a leaf', () => {
+    for (const path of sources) {
+      for (const target of imports(readFileSync(path, 'utf8'))) {
+        if (target.startsWith('@merchant-product-rules')) {
+          expect(target).toBe('@merchant-product-rules');
+          expect(relative(SRC, path).startsWith(`hosted${sep}`)).toBe(true);
+        }
+      }
+    }
+    const rules = readFileSync(join(ROOT, '../merchant-node/src/product-rules.ts'), 'utf8');
+    expect(imports(rules).sort()).toEqual(['decimal.js-light', 'zod']);
+  });
+
+  it('keeps hosted mode off the relay session code, through every import it runs', () => {
+    const graph = hostedGraph();
+    // The walk reaches the shared pieces hosted mode uses, so it is no empty pass.
+    expect(graph.files).toContain(join('components', 'TxLink.tsx'));
+    expect(graph.files).toContain(join('lib', 'short.ts'));
+    expect(graph.files).toContain(join('lib', 'csv-cell.ts'));
+    for (const file of graph.files) {
+      expect(FORBIDDEN_FOR_HOSTED_FILES, file).not.toContain(file);
+    }
+    for (const target of graph.packages) {
+      expect(target).not.toMatch(FORBIDDEN_FOR_HOSTED_PACKAGES);
+    }
+  });
+
+  it('finds relay code reached through a shared file, as the walk is transitive', () => {
+    expect(walkFrom(join(SRC, 'components', 'Dashboard.tsx')).files).toContain(
+      join('lib', 'core.ts'),
+    );
   });
 
   it('draws the focus ring in the readable accent, never the light-mode lime', () => {
@@ -72,10 +195,12 @@ describe('the admin source', () => {
     );
   });
 
-  it('asks for the key only in a tab it claimed as its own', () => {
-    const main = readFileSync(join(SRC, 'main.tsx'), 'utf8');
-    expect(main).toMatch(/const ownTab = claimWindow\(window\);/);
-    expect(main).toMatch(/ownTab=\{ownTab\}/);
+  it('asks for a key only in a tab it claimed as its own, on both pages', () => {
+    for (const entry of ['main.tsx', join('hosted', 'main.tsx')]) {
+      const main = readFileSync(join(SRC, entry), 'utf8');
+      expect(main, entry).toMatch(/const ownTab = claimWindow\(window\);/);
+      expect(main, entry).toMatch(/ownTab=\{ownTab\}/);
+    }
   });
 
   it('builds the session for every listing of the store', () => {

@@ -2,7 +2,7 @@
   "name": "@elisym/merchant-admin",
   "version": "0.0.1",
   "private": true,
-  "description": "elisym hosted store admin: paste the store key, see the store's orders from its relays.",
+  "description": "elisym PayCore admin: a self-hosted store by its store key and relays, or a store hosted by PayCore by its owner key.",
   "license": "MIT",
   "author": "elisym labs",
   "type": "module",
@@ -20,14 +20,18 @@
     "decimal.js-light": "~2.5.1",
     "nostr-tools": "~2.23.0",
     "react": "~19.2.0",
-    "react-dom": "~19.2.0"
+    "react-dom": "~19.2.0",
+    "zod": "~4.6.7"
   },
   "devDependencies": {
+    "@noble/curves": "~2.0.1",
+    "@noble/hashes": "~2.0.1",
     "@tailwindcss/vite": "~4.2.0",
     "@types/node": "~25.5.0",
     "@types/react": "~19.2.0",
     "@types/react-dom": "~19.2.0",
     "@vitejs/plugin-react": "~4.7.0",
+    "fake-indexeddb": "~6.2.5",
     "happy-dom": "~21.0.4",
     "tailwindcss": "~4.2.0",
     "typescript": "~5.7.0",

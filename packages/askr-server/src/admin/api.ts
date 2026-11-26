@@ -33,7 +33,12 @@ import type { GatewayRequest } from '../gateway/gateway';
 import { WindowLimiter, ipKey } from '../gateway/limits';
 import { budgetReached } from '../state/budget';
 import { randomId } from '../state/pg-state';
-import { type CatalogSyncEnd, proofOrigins, type StoreDirectory } from '../state/stores';
+import {
+  type CatalogSyncEnd,
+  proofOrigins,
+  type StoreDirectory,
+  StoreMovedError,
+} from '../state/stores';
 import type { StoreRecord } from '../state/types';
 import { AUTH_WINDOW_SECS, checkNip98 } from './nip98';
 
@@ -796,7 +801,16 @@ export function createAdminApi(
       if (!storesPerIp.hit(ipKey(clientAddress), now() * 1000)) {
         return json({ error: 'rate_limited' }, 429);
       }
-      const store = await deps.directory.createStore(owner, now());
+      let store;
+      try {
+        store = await deps.directory.createStore(owner, now());
+      } catch (error) {
+        // A move away from this key committed after the check above.
+        if (error instanceof StoreMovedError) {
+          return json({ error: 'moved' }, 409);
+        }
+        throw error;
+      }
       if (created.data.email !== undefined) {
         await deps.directory.setContactEmail(owner, created.data.email);
       }

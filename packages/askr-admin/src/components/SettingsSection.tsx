@@ -1,10 +1,12 @@
 import { type StoreConfig, type StorePrivateConfig, decryptPrivateConfigWith } from '@elisym/askr';
 import { useEffect, useRef, useState } from 'react';
 import type { SessionDeps } from '../lib/deps';
+import { detectPayCore, hasPayCoreLayout } from '../lib/paycore';
 import { newestConfig, saveSettings, savedMessage } from '../lib/save';
 import { type AuthorityRead, readAuthority } from '../lib/store-data';
-import { EMPTY_FORM, formOfConfig, withConnector } from '../lib/store-form';
+import { EMPTY_FORM, formOfConfig, withConnector, withPayCore } from '../lib/store-form';
 import type { StoreView } from '../lib/types';
+import { usePayCoreChoices } from '../lib/use-paycore-choices';
 import { ConfigUnreadable } from './ConfigUnreadable';
 import { Notice } from './Notice';
 import { Section } from './Section';
@@ -60,6 +62,7 @@ export function SettingsSection({
   const sourceIdentity = identityOf(newestConfig(config, deps.journal));
   const [authority, setAuthority] = useState<AuthorityState>({ state: 'reading' });
   const [authorityAttempt, setAuthorityAttempt] = useState(0);
+  const payCore = usePayCoreChoices(deps);
 
   // Consent to replace an undecryptable private part is for that config only.
   useEffect(() => {
@@ -120,8 +123,19 @@ export function SettingsSection({
   const { source } = loaded;
   const authorities = authority.state === 'read' ? authority.read : undefined;
   const undecryptable = source !== undefined && loaded.privatePart === undefined;
+  // A catalog whose key the owner signed a 30490 for reads back as a PayCore store (C7).
+  const payCoreStore =
+    source === undefined || authorities === undefined
+      ? undefined
+      : detectPayCore(source, view.catalogKey, authorities.stores);
+  // A config laid out like a PayCore store waits for the 30490 read: shown before it, it would
+  // read as a merchant catalog, and a save would sign its store key as one.
+  const heldForPayCore =
+    source !== undefined && authorities === undefined && hasPayCoreLayout(source, view.catalogKey);
   const initial = withConnector(
-    source === undefined ? EMPTY_FORM : formOfConfig(source, loaded.privatePart),
+    source === undefined
+      ? EMPTY_FORM
+      : withPayCore(formOfConfig(source, loaded.privatePart), payCoreStore),
     view.connector,
   );
   return (
@@ -171,45 +185,54 @@ export function SettingsSection({
         </Notice>
       ) : null}
       {saved === '' ? null : <Notice tone="success">{saved}</Notice>}
-      <StoreSettingsForm
-        // Keyed on what the relay holds: this page's own save does not reset the form.
-        key={`${config?.createdAt ?? 0}:${decryptAttempt}:${loaded.privatePart === undefined ? 'sealed' : 'open'}`}
-        initial={initial}
-        submitLabel="Sign and save"
-        canSubmit={authorities !== undefined && (!undecryptable || replacePrivate)}
-        onSubmit={async (form) => {
-          setSaved('');
-          if (authorities === undefined) {
-            throw new Error('Your catalog key authorizations are not read yet. Retry above.');
-          }
-          const outcome = await saveSettings({
-            deps,
-            view,
-            form,
-            previousCreatedAt: Math.max(source?.createdAt ?? 0, configUnreadableAt ?? 0),
-            authorized: authorities.keys,
-            relayNewestAt: authorities.newestAt,
-          });
-          const message = savedMessage(view);
-          setSaved(outcome.note === undefined ? message : `${message} ${outcome.note}`);
-          await onSaved();
-          if (outcome.connectorError !== undefined) {
-            throw new Error(outcome.connectorError);
-          }
-          return '';
-        }}
-      >
-        {undecryptable ? (
-          <label className="text-14 text-error flex items-center gap-8">
-            <input
-              type="checkbox"
-              checked={replacePrivate}
-              onChange={(event) => setReplacePrivate(event.target.checked)}
-            />
-            Replace the private voice, instructions and notes with what is in the form
-          </label>
-        ) : null}
-      </StoreSettingsForm>
+      {heldForPayCore ? (
+        <p className="text-14 text-text-2">
+          {authority.state === 'failed'
+            ? 'Whether these products come from your PayCore store could not be checked yet: the form opens once it is.'
+            : 'Checking your PayCore store...'}
+        </p>
+      ) : (
+        <StoreSettingsForm
+          // Keyed on what the relay holds: this page's own save does not reset the form.
+          key={`${config?.createdAt ?? 0}:${decryptAttempt}:${loaded.privatePart === undefined ? 'sealed' : 'open'}`}
+          initial={initial}
+          payCore={payCore}
+          submitLabel="Sign and save"
+          canSubmit={authorities !== undefined && (!undecryptable || replacePrivate)}
+          onSubmit={async (form) => {
+            setSaved('');
+            if (authorities === undefined) {
+              throw new Error('Your catalog key authorizations are not read yet. Retry above.');
+            }
+            const outcome = await saveSettings({
+              deps,
+              view,
+              form,
+              previousCreatedAt: Math.max(source?.createdAt ?? 0, configUnreadableAt ?? 0),
+              authorized: authorities.keys,
+              relayNewestAt: authorities.newestAt,
+            });
+            const message = savedMessage(view);
+            setSaved(outcome.note === undefined ? message : `${message} ${outcome.note}`);
+            await onSaved();
+            if (outcome.connectorError !== undefined) {
+              throw new Error(outcome.connectorError);
+            }
+            return '';
+          }}
+        >
+          {undecryptable ? (
+            <label className="text-14 text-error flex items-center gap-8">
+              <input
+                type="checkbox"
+                checked={replacePrivate}
+                onChange={(event) => setReplacePrivate(event.target.checked)}
+              />
+              Replace the private voice, instructions and notes with what is in the form
+            </label>
+          ) : null}
+        </StoreSettingsForm>
+      )}
     </div>
   );
 }

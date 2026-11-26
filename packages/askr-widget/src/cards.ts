@@ -4,6 +4,7 @@ import {
   parseAddress,
   parseCatalogItem,
   readCatalogAuthority,
+  readPayableKeys,
 } from '@elisym/askr';
 import type { Component } from '@elisym/askr/chat';
 import { KIND_DELETION, isEventShaped, newestDeletion, newestSigned } from '@elisym/commerce';
@@ -163,8 +164,13 @@ export async function resolveCards(
     });
   }
   const cards = new Map<string, CatalogItem>();
+  // Buy only while the owner's PayCore authorization (30490) for the key is live; the products
+  // themselves show either way.
+  const payableKeys = readPayableKeys(options.authorityEvents, config.owner, now);
   for (const [address, listing] of listings) {
-    const item = listing ? parseCatalogItem(listing, { now }) : undefined;
+    const item = listing
+      ? parseCatalogItem(listing, { now, catalogKey: config.catalogKey, payableKeys })
+      : undefined;
     if (item && item.address === address) {
       cards.set(address, item);
     }

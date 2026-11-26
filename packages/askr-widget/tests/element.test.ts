@@ -40,9 +40,9 @@ describe('<askr-chat>', () => {
       () => undefined,
     );
     const footer = view.panel.querySelector<HTMLElement>('.footer');
-    view.update({ phase: 'ready', branding: false, turns: [] });
+    view.update({ phase: 'ready', branding: false, notes: [], turns: [] });
     expect(footer?.hidden).toBe(true);
-    view.update({ phase: 'ready', branding: true, turns: [] });
+    view.update({ phase: 'ready', branding: true, notes: [], turns: [] });
     expect(footer?.hidden).toBe(false);
   });
 
@@ -54,10 +54,22 @@ describe('<askr-chat>', () => {
     );
     const key = testKey();
     const config = parseConfig(sign(buildConfigEvent(makeStore().configInput, key.secretKey), key));
-    view.update({ phase: 'moved', branding: true, turns: [], ...(config ? { config } : {}) });
+    view.update({
+      phase: 'moved',
+      branding: true,
+      notes: [],
+      turns: [],
+      ...(config ? { config } : {}),
+    });
     expect(view.panel.querySelector('.status a')).toBeNull();
     expect(view.panel.textContent).toContain('unavailable');
-    view.update({ phase: 'unavailable', branding: true, turns: [], ...(config ? { config } : {}) });
+    view.update({
+      phase: 'unavailable',
+      branding: true,
+      notes: [],
+      turns: [],
+      ...(config ? { config } : {}),
+    });
     expect(view.panel.querySelector('.status a')?.getAttribute('href')).toBe(
       'https://shop.example/contact',
     );

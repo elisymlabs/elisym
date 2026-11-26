@@ -31,6 +31,9 @@ export interface ActivityDay {
   answers: number;
   links: number;
   carts: number;
+  /** Buy presses on PayCore cards and payments their checkout reported (advisory, C6). */
+  buys: number;
+  paid: number;
 }
 
 /** Tables keyed by a store's owner without a foreign key: moved along with it (K21). */
@@ -71,6 +74,13 @@ export async function insertStore(
   now: number,
   onboardingUntil?: number,
 ): Promise<boolean> {
+  // Under the owner's lock a move away from it has either committed (and is seen here) or
+  // waits until this store exists, so a key a store moved away from never opens a new one.
+  await tx.query(OWNER_LOCK_SQL, [owner]);
+  const moved = await tx.query('select 1 from store_moves where from_owner = $1', [owner]);
+  if (moved.length > 0) {
+    throw new StoreMovedError();
+  }
   const assistantSecretKey = generateSecretKey();
   const catalogSecretKey = generateSecretKey();
   const inserted = await tx.query(
@@ -163,6 +173,41 @@ interface CatalogSyncRow extends Record<string, unknown> {
  * cannot both pass a cap. Its own: not the migrations' `LOCK_ID` (`db/migrations.ts`).
  */
 export const FREE_PLAN_LOCK_ID = 7_301_996;
+
+/** A per-owner transaction lock: opening a store and moving one away from that key take turns. */
+const OWNER_LOCK_SQL = `select pg_advisory_xact_lock(hashtextextended('askr:store-owner:' || $1, 0))`;
+
+/** Opening a store under a key a store moved away from: that key never opens a store again. */
+export class StoreMovedError extends Error {
+  constructor() {
+    super('a store moved away from this key');
+    this.name = 'StoreMovedError';
+  }
+}
+
+/** A NUL or a lone surrogate, which a jsonb column refuses. */
+const NUL = String.fromCharCode(0);
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+function jsonbRefuses(text: string): boolean {
+  return text.includes(NUL) || LONE_SURROGATE_RE.test(text);
+}
+
+/**
+ * The JSON text of `value` for a jsonb column, or null when some string in it is one jsonb
+ * refuses: a signed event with such text (anyone holding the old key can sign one) must never
+ * make the statement fail, so it is dropped instead.
+ */
+export function jsonbText(value: unknown): string | null {
+  let storable = true;
+  const text = JSON.stringify(value, (key: string, entry: unknown) => {
+    if (jsonbRefuses(key) || (typeof entry === 'string' && jsonbRefuses(entry))) {
+      storable = false;
+    }
+    return entry;
+  });
+  return storable ? text : null;
+}
 const DAY_SECS = 24 * 60 * 60;
 
 /**
@@ -356,7 +401,9 @@ export class StoreDirectory {
     if (existing) {
       return existing;
     }
-    await insertStore(this.db, this.vault, owner, now);
+    await this.db.transaction(async (tx) => {
+      await insertStore(tx, this.vault, owner, now);
+    });
     const created = await this.store(owner);
     if (!created) {
       throw new Error('store was not created');
@@ -811,6 +858,7 @@ export class StoreDirectory {
     config: NostrEvent | undefined,
   ): Promise<MoveResult> {
     return this.db.transaction(async (tx) => {
+      await tx.query(OWNER_LOCK_SQL, [from]);
       const [row] = await tx.query<{
         assistant_key: Uint8Array;
         catalog_key_secret: Uint8Array;
@@ -869,7 +917,7 @@ export class StoreDirectory {
       await tx.query(
         `insert into store_moves (from_owner, to_owner, moved_at, config)
          values ($1, $2, $3, ($4::text)::jsonb)`,
-        [from, to, now, config === undefined ? null : JSON.stringify(config)],
+        [from, to, now, config === undefined ? null : jsonbText(config)],
       );
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, from]);
       await tx.query('select pg_notify($1, $2)', [STORES_CHANNEL, to]);
@@ -927,7 +975,7 @@ export class StoreDirectory {
     budget: { resetsAt: number };
     sessions: number;
     conversations: number;
-    clicks: { address: string; count: number; carts: number }[];
+    clicks: { address: string; count: number; carts: number; buys: number; paid: number }[];
     days: ActivityDay[];
   }> {
     const window = await budgetWindow(this.db, owner, now);
@@ -946,8 +994,15 @@ export class StoreDirectory {
       'select conversations from store_totals where owner = $1',
       [owner],
     );
-    const clicks = await this.db.query<{ address: string; count: number; carts: number }>(
-      `select address, count, carts from clicks where owner = $1
+    const clicks = await this.db.query<{
+      address: string;
+      count: number;
+      carts: number;
+      buys: number;
+      paid: number;
+    }>(
+      // The admin lists page opens and cart presses; Buy presses and payments are the operator's.
+      `select address, count, carts, buys, paid from clicks where owner = $1 and count + carts > 0
        order by count + carts desc, carts desc, address limit 100`,
       [owner],
     );
@@ -967,8 +1022,10 @@ export class StoreDirectory {
         answers: number;
         links: number;
         carts: number;
+        buys: number;
+        paid: number;
       }>(
-        `select day, conversations, answers, links, carts from activity_days
+        `select day, conversations, answers, links, carts, buys, paid from activity_days
          where owner = $1 and day > $2 order by day`,
         [owner, utcDay(now) - ACTIVITY_DAYS],
       ),

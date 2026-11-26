@@ -7,3 +7,6 @@ b0c0919e65cafe3a58be140762119c8b5134cb9f7c09aaeba399fd89ab6aa4b9  src/embed/v2/p
 4dbf24de110deb520ae36b4e96b63e09480ed4594a803e5a9b8fa06cda5bbc9d  src/embed/v3/embed.ts
 124226bb23b399cdeb8af2c31a380a7849044ea5bba5da80d95942379335b2ea  src/embed/v3/entry.ts
 57e20393b9ad29a2b39ff6356bfe172ae99053adc08abcdabcf38b40516443a5  src/embed/v3/protocol.ts
+84bd14bf1bc592d08bec9230004f9bd047c1feddce2aebad8e01f2f0199be6aa  src/embed/v4/embed.ts
+f338b47bf658889f48890fc038763ac878d8db612a55a280c223bd8d6ea839b2  src/embed/v4/entry.ts
+30fc0d0d9b1325865933e5e3822c8b735356f6f96c3264e744e6ec491d0bdc0a  src/embed/v4/protocol.ts

@@ -10,7 +10,7 @@ const QUESTIONS = [
   },
   {
     question: `Does ${PRODUCT_NAME} take payments or place orders?`,
-    answer: `No. ${PRODUCT_NAME} sells nothing and never touches money. It sends the visitor to your product page or your own cart, and checkout stays exactly where it is.`,
+    answer: `No. ${PRODUCT_NAME} sells nothing and never touches money. It sends the visitor to your product page or your own cart, and checkout stays exactly where it is. If you sell with PayCore, a Buy button on the card opens the PayCore checkout on your page, and the payment goes from the visitor's wallet to your store, never through ${PRODUCT_NAME}.`,
   },
   {
     question: 'What happens when it does not know the answer?',

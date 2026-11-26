@@ -129,6 +129,21 @@ function evmChainSchema() {
     .strict();
 }
 
+/**
+ * The payouts as the config holds them. Parsed through this schema, a list
+ * serializes (`JSON.stringify`) in one form - keys `caip19`, `address`,
+ * `signature?` - the string the ledger's `payto.payouts` compares.
+ */
+export const payoutsSchema = z
+  .array(
+    z.object({
+      caip19: z.string(),
+      address: z.string(),
+      signature: z.string().optional(),
+    }),
+  )
+  .min(1);
+
 const configSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
@@ -168,15 +183,7 @@ const configSchema = z
       )
       .min(1)
       .max(MAX_INBOX_RELAYS),
-    payouts: z
-      .array(
-        z.object({
-          caip19: z.string(),
-          address: z.string(),
-          signature: z.string().optional(),
-        }),
-      )
-      .min(1),
+    payouts: payoutsSchema,
     // Only `order.paid` for now: an `events` list can come later without a break.
     webhook: z
       .object({ url: z.string(), allowInsecure: z.boolean().optional() })
@@ -436,9 +443,9 @@ export function configTemplate(network: Network): MerchantConfig {
  * Every product price a configured payout cannot carry: a coin must be able to
  * pay each product's USD price, or that product's listing could not be paid.
  */
-export function priceProblems(
+export function priceProblems<Priced extends Pick<Product, 'd' | 'priceUsd'>>(
   config: Pick<MerchantConfig, 'payouts'>,
-  products: Iterable<Product>,
+  products: Iterable<Priced>,
 ): string[] {
   const problems: string[] = [];
   for (const product of products) {

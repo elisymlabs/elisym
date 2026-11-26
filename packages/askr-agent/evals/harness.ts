@@ -8,6 +8,7 @@ import {
   type Policy,
   type StoreConfig,
   buildCatalogItemEvent,
+  catalogAddress,
   parseAddress,
   parseCatalogItem,
 } from '@elisym/askr';
@@ -61,12 +62,23 @@ export function buildCatalog(store: EvalStore, now: number): BuiltCatalog {
   const key = getPublicKey(secret);
   const rejected: string[] = [];
   const items = store.items.flatMap((input) => {
-    const parsed = parseCatalogItem(finalizeEvent(buildCatalogItemEvent(input), secret), { now });
+    const parsed = parseCatalogItem(finalizeEvent(buildCatalogItemEvent(input), secret), {
+      now,
+      catalogKey: key,
+    });
     if (!parsed) {
       rejected.push(input.d);
       return [];
     }
-    return [parsed];
+    // The agent reads only `payable`; the naddr is a stand-in, never opened.
+    return [
+      store.payable?.includes(input.d) === true
+        ? {
+            ...parsed,
+            payable: { naddr: `naddr:${catalogAddress(key, input.d)}`, network: 'devnet' as const },
+          }
+        : parsed,
+    ];
   });
   const config: StoreConfig = {
     ...store.config,

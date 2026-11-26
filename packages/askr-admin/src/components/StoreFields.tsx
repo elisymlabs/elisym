@@ -1,10 +1,13 @@
 import { LIMITS } from '@elisym/askr';
 import { HELP } from '../lib/help';
 import { PLATFORM_OPTIONS, SOURCE_OPTIONS, platformOf, sourceKindOf } from '../lib/labels';
+import { discoveredStore } from '../lib/paycore';
 import { npubOf } from '../lib/signer';
-import type { StoreForm } from '../lib/store-form';
+import { PAYCORE_CURRENCY, type FormSourceKind, type StoreForm, linkOf } from '../lib/store-form';
+import type { PayCoreChoices } from '../lib/use-paycore-choices';
 import { FieldGroup } from './FieldGroup';
 import { InfoTip } from './InfoTip';
+import { PayCoreSource } from './PayCoreSource';
 import { SelectField } from './SelectField';
 import { TextAreaField } from './TextAreaField';
 import { TextField } from './TextField';
@@ -12,12 +15,30 @@ import { TextField } from './TextField';
 interface Props {
   form: StoreForm;
   onChange: (form: StoreForm) => void;
+  /** The owner's PayCore stores, for the PayCore source; none where the page does not read them. */
+  payCore?: PayCoreChoices;
 }
 
 /** Every field of the store's Askr config (2.3), public and private. */
-export function StoreFields({ form, onChange }: Props) {
+export function StoreFields({ form, onChange, payCore }: Props) {
   const set = <Key extends keyof StoreForm>(key: Key, value: StoreForm[Key]) =>
     onChange({ ...form, [key]: value });
+  // A PayCore store sells in USD, and the newest one discovery finds is linked unless one is.
+  const chooseSource = (source: FormSourceKind) => {
+    if (source !== 'paycore') {
+      set('source', source);
+      return;
+    }
+    const discovered = payCore?.state === 'read' ? discoveredStore(payCore.stores) : undefined;
+    onChange({
+      ...form,
+      source,
+      currency: PAYCORE_CURRENCY,
+      ...(form.payCore === undefined && discovered !== undefined
+        ? { payCore: linkOf(discovered) }
+        : {}),
+    });
+  };
   return (
     <div className="flex flex-col gap-32">
       <FieldGroup id="group-store" title="Store">
@@ -105,7 +126,7 @@ export function StoreFields({ form, onChange }: Props) {
           label="Where your products come from"
           value={form.source}
           options={SOURCE_OPTIONS}
-          onChange={(value) => set('source', sourceKindOf(value) ?? form.source)}
+          onChange={(value) => chooseSource(sourceKindOf(value) ?? form.source)}
         />
         {form.keptPolicy !== undefined && form.keptPolicy.source !== form.source ? (
           <p className="text-13 text-warn">
@@ -169,6 +190,9 @@ export function StoreFields({ form, onChange }: Props) {
               Saving sets up the connector; preview and turn on syncing in the Connector tab.
             </p>
           </>
+        ) : null}
+        {form.source === 'paycore' ? (
+          <PayCoreSource form={form} onChange={onChange} choices={payCore} />
         ) : null}
         {form.source === 'catalog' ? (
           <TextField

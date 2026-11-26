@@ -249,6 +249,27 @@ describe('the merchant CLI', () => {
     }
   });
 
+  it('MN22: run, check and setup refuse a price a payout cannot carry, before any relay', () => {
+    const home = scratchDir();
+    expect(cli(['init', '--home', home]).code).toBe(0);
+    // LSM has no USD price: no product can be paid in it.
+    const lsm =
+      'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/token:86T4G3zJaBxQAuWAbfXggE5d5XEt4bns3Y41jgVLpump';
+    const config = configTemplate('mainnet');
+    config.payouts = [{ caip19: lsm, address: PAYOUT }];
+    config.inboxRelays = ['ws://localhost:9'];
+    writeFileSync(join(home, 'config.json'), JSON.stringify(config));
+    editProduct(home);
+    for (const command of ['run', 'check', 'setup']) {
+      const run = cli([command, '--home', home]);
+      expect(run.code).not.toBe(0);
+      expect(run.output).toMatch(
+        /the products are not usable:\n- products\/my-product: LSM cannot be paid its price of 10 USD/,
+      );
+      expect(run.output).not.toMatch(/inbox relays|relay /);
+    }
+  });
+
   it('M6: has no --product and no deliver: complete answers by hand', () => {
     const home = scratchDir();
     expect(cli(['init', '--home', home]).code).toBe(0);

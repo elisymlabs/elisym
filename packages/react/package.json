@@ -1,6 +1,6 @@
 {
   "name": "@elisym/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "React component for the PayCore checkout: the <elisym-buy> widget, pinned to the v3 loader.",
   "keywords": [
     "checkout",

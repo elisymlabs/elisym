@@ -58,7 +58,7 @@ const FEATURES: Feature[] = [
   },
   {
     title: 'Puts the pick in the cart',
-    body: 'Every card opens the product page. On Shopify and WooCommerce, Add to cart works out of the box; any other site connects its cart with one small hook.',
+    body: 'Every card opens the product page, or opens the PayCore checkout with Buy for a PayCore store. On Shopify and WooCommerce, Add to cart works out of the box; any other site connects its cart with one small hook.',
     scene: (
       <>
         <p className="wgt-mine">I also need a charger for them</p>

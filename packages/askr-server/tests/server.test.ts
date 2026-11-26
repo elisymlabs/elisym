@@ -482,10 +482,15 @@ describe('gateway (3)', () => {
     expect((await click('cart')).status).toBe(204);
     expect(await state.clicksFor(store.owner, address, 'link')).toBe(2);
     expect(await state.clicksFor(store.owner, address, 'cart')).toBe(2);
-    for (const kind of ['buy', '', 7, null]) {
+    expect((await click('buy')).status).toBe(204);
+    expect((await click('paid')).status).toBe(204);
+    expect(await state.clicksFor(store.owner, address, 'buy')).toBe(1);
+    expect(await state.clicksFor(store.owner, address, 'paid')).toBe(1);
+    for (const kind of ['purchase', 'BUY', '', 7, null]) {
       expect((await click(kind)).status).toBe(400);
     }
     expect(await state.clicksFor(store.owner, address, 'cart')).toBe(2);
+    expect(await state.clicksFor(store.owner, address, 'buy')).toBe(1);
   });
 });
 

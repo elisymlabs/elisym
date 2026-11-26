@@ -52,7 +52,11 @@ function tag(event: NostrEvent, name: string): string[] | undefined {
 
 async function sign(
   form: StoreForm,
-  extra: { previousCreatedAt?: number; authorized?: Set<string>; authCreatedAt?: number } = {},
+  extra: {
+    previousCreatedAt?: number;
+    authorized?: Set<string>;
+    authCreatedAt?: (key: string) => number;
+  } = {},
 ) {
   return signStoreEvents({ form, keys: { assistant, serverKey }, signer, now: NOW, ...extra });
 }
@@ -117,12 +121,17 @@ describe('the onboarding events', () => {
     expect(tag(auth, 'mode')).toEqual(['mode', 'self-host']);
   });
 
-  it('offers no paycore source: the choices are the admin, a catalog key and a connector', () => {
-    expect(SOURCE_OPTIONS.map((option) => option.value)).toEqual(['catalog', 'admin', 'connector']);
+  it('offers a PayCore store as a form-only source: the config kinds stay the admin, a catalog key and a connector', () => {
+    expect(SOURCE_OPTIONS.map((option) => option.value)).toEqual([
+      'catalog',
+      'admin',
+      'connector',
+      'paycore',
+    ]);
     expect(Object.keys(SOURCE_LABELS).sort()).toEqual(['admin', 'catalog', 'connector']);
-    expect(sourceKindOf('paycore')).toBeUndefined();
+    expect(sourceKindOf('paycore')).toBe('paycore');
     expect(sourceKindOf('catalog')).toBe('catalog');
-    expect(Object.keys(EMPTY_FORM)).not.toContain('paycoreKey');
+    expect(sourceKindOf('shopify')).toBeUndefined();
   });
 
   it('connector source: the shop URL rides on the source tag, normalized, and the server K is hosted', async () => {
@@ -306,7 +315,7 @@ describe('the onboarding events', () => {
   });
 
   it('dates the authorization it signs with the date it is given', async () => {
-    const [, auth] = await sign(BASE_FORM, { authCreatedAt: NOW + 77 });
+    const [, auth] = await sign(BASE_FORM, { authCreatedAt: () => NOW + 77 });
     expect(auth?.created_at).toBe(NOW + 77);
   });
 });

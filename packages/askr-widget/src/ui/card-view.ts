@@ -11,6 +11,7 @@ import {
   nativeCartPlatform,
   nativeCartVariantId,
 } from '../native-cart';
+import { type BuyNote, buyable, hintMissingCheckout, pagePayCore, startBuy } from '../paycore';
 import {
   type CartButton,
   type PickState,
@@ -245,8 +246,10 @@ function unpicked(state: PickState): string[] {
 export interface CardContext {
   document: Document;
   config: StoreConfig;
-  /** Advisory handoff count (3): a product link opened, or an add to cart pressed. */
+  /** Advisory handoff count (3): a product link opened, an add to cart or Buy pressed, a payment. */
   reportClick: (address: string, kind: ClickKind) => void;
+  /** A Buy milestone for the chat log (C5): shown to the visitor, never sent to the assistant. */
+  note: (note: BuyNote) => void;
   pageOrigin: string | undefined;
   /** The widget's language, for the card's own texts (the reason is the model's). */
   language?: string;
@@ -337,7 +340,7 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
       hook: hostAddToCartHook(),
       native: nativeCartPlatform(context.config, context.pageOrigin),
     });
-  let renderedKind: CartButton['kind'] | undefined;
+  let renderedKind: CartButton['kind'] | 'buy' | undefined;
   const nativeAddable = item.variants.some(
     (variant) => variant.available && nativeCartVariantId(variant) !== undefined,
   );
@@ -381,15 +384,45 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
     );
   };
 
+  /** Buy when the page loaded checkout v4 and the product is payable and on sale (C4, C5). */
+  const currentKind = (state: PickState): CartButton['kind'] | 'buy' => {
+    const button = currentButton(state);
+    if (button.kind === 'sold-out' || !buyable(item)) {
+      return button.kind;
+    }
+    if (pagePayCore() === undefined) {
+      hintMissingCheckout();
+      return button.kind;
+    }
+    return 'buy';
+  };
+
   const update = (): void => {
     const state = pickState(item, pick);
     price.textContent = formatPrice(item, state.variant?.price);
     const button = currentButton(state);
-    renderedKind = button.kind;
+    renderedKind = currentKind(state);
     actionBox.replaceChildren();
     actionBox.classList.remove('waits-for-pick', 'hint-shown');
     if (button.kind === 'sold-out') {
       actionBox.append(element(document, 'span', 'label sold-out', STRINGS.soldOut));
+    } else if (renderedKind === 'buy' && item.payable !== undefined) {
+      const { payable } = item;
+      const buy = element(document, 'button', 'cart buy', STRINGS.buy);
+      buy.type = 'button';
+      buy.addEventListener('click', () => {
+        const payCore = pagePayCore();
+        if (payCore === undefined) {
+          context.note('open-failed');
+          return;
+        }
+        startBuy(payCore, payable, {
+          note: context.note,
+          opened: () => context.reportClick(item.address, 'buy'),
+          paid: () => context.reportClick(item.address, 'paid'),
+        });
+      });
+      actionBox.append(buy);
     } else if (button.kind === 'hook') {
       const cart = cartButtonElement(document);
       const add = cart.button;
@@ -451,7 +484,7 @@ export function renderCard(context: CardContext, item: CatalogItem, reason?: str
   update();
   // The host may set its hook after the card rendered (6): pick it up before the visitor acts.
   const refresh = (): void => {
-    if (currentButton(pickState(item, pick)).kind !== renderedKind) {
+    if (currentKind(pickState(item, pick)) !== renderedKind) {
       update();
     }
   };

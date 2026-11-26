@@ -8,10 +8,18 @@
 import * as nodeFs from 'node:fs';
 import { join } from 'node:path';
 import { LIMITS } from '@elisym/commerce';
-import Decimal from 'decimal.js-light';
 import YAML from 'yaml';
 import * as z from 'zod';
 import type { MerchantOrder } from './ledger';
+import {
+  MAX_PRODUCT_TITLE,
+  PRICE_PROBLEM,
+  PRODUCT_D_RE,
+  isHttpsUrl,
+  isPriceUsd,
+} from './product-rules';
+
+export { PRICE_RE, PRODUCT_D_RE } from './product-rules';
 
 /** The file of a product, in its directory. */
 export const PRODUCT_FILE = 'PRODUCT.md';
@@ -31,11 +39,6 @@ const TEMPLATE_BODY_0_8 = 'What the buyer gets.';
  */
 export const DELIVERY_REMOVED =
   'delivery: removed in 0.9.0 - the node sends no delivery; act on the signed order.paid webhook (remove the key)';
-
-/** A product id is its directory name: a letter or digit, then letters, digits, dots, dashes, underscores. */
-const PRODUCT_D_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-
-export const PRICE_RE = /^(0|[1-9]\d{0,8})(\.\d{1,6})?$/;
 
 /** A byte order mark an editor may put before the first line. */
 const BOM = String.fromCharCode(0xfeff);
@@ -69,15 +72,13 @@ const QUOTE_IT = 'must be a quoted string (quote it: a bare number is read as a 
 
 const frontmatterSchema = z
   .object({
-    title: z.string().trim().min(1).max(200),
+    title: z.string().trim().min(1).max(MAX_PRODUCT_TITLE),
     priceUsd: z
       .string({
         error: (issue) =>
           issue.input === undefined ? undefined : `${QUOTE_IT}, such as "49" or "0.50"`,
       })
-      .refine((value) => PRICE_RE.test(value) && new Decimal(value).gt(0), {
-        message: 'must be a USD amount above 0, such as "49" or "0.50"',
-      }),
+      .refine(isPriceUsd, { message: PRICE_PROBLEM }),
     onSale: z.boolean().optional(),
     summary: z.string().max(LIMITS.MAX_TAG_VALUE_LENGTH).optional(),
     url: z
@@ -89,14 +90,6 @@ const frontmatterSchema = z
       .optional(),
   })
   .strict();
-
-function isHttpsUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
 
 type Parsed =
   | { ok: true; product: Omit<Product, 'd' | 'file'> }

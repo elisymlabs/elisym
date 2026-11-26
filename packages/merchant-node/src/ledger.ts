@@ -418,17 +418,29 @@ export function loadLedger(path: string): LoadedLedger {
     }
     throw error;
   }
-  const state = JSON.parse(text) as LedgerState;
+  return upgradeLedger(JSON.parse(text), path);
+}
+
+/**
+ * A ledger read from `where` (a file, a database row), converted to this
+ * version in memory: refuses a ledger from 0.7 and an unknown version. `read`
+ * says which version it held. Mutates and returns `raw`.
+ */
+export function upgradeLedger(raw: unknown, where: string): LoadedLedger {
+  if (typeof raw !== 'object' || raw === null) {
+    throw new Error(`Unknown ledger version in ${where}`);
+  }
+  const state = raw as LedgerState;
   const version: unknown = state.version;
   if (version === 1 || version === 2) {
-    throw new Error(`${path}: ${OLD_HOME_PROBLEM}`);
+    throw new Error(`${where}: ${OLD_HOME_PROBLEM}`);
   }
   if (
     version !== LEDGER_VERSION &&
     version !== PRE_MEMO_LEDGER_VERSION &&
     version !== PRE_FEE_LEDGER_VERSION
   ) {
-    throw new Error(`Unknown ledger version in ${path}`);
+    throw new Error(`Unknown ledger version in ${where}`);
   }
   // A ledger before fee support never saw a split payment (only a fee-aware
   // setup declares the store's support, and it saves this version first): the

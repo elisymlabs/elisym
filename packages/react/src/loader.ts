@@ -1,8 +1,15 @@
 import { V3_LOADER_INTEGRITY, V3_LOADER_SRC } from './constants';
 
 const ELEMENT_NAME = 'elisym-buy';
-/** Any loader from the checkout's origin (v1, v2, v3), run or not yet. */
+/** Any loader from the checkout's origin (v1 to v4), run or not yet. */
 const ANY_LOADER_SELECTOR = 'script[src^="https://pay.elisym.network/"][src$="/embed.js"]';
+/** Loaders that take a customer reference, by their class's `loader` marker. */
+const CURRENT_LOADERS: readonly unknown[] = ['v3', 'v4'];
+/** Their scripts: v4 is served next to v3, on the same origin. */
+const CURRENT_LOADER_URLS: readonly (string | null)[] = [
+  V3_LOADER_SRC,
+  new URL('/v4/embed.js', V3_LOADER_SRC).href,
+];
 const OLDER_LOADER_ERROR =
   'elisym: customer-ref needs the v3 loader; another loader defined <elisym-buy> first';
 
@@ -30,14 +37,18 @@ export function ensureLoader(document: Document): void {
   document.head.append(script);
 }
 
-/** Whether `<elisym-buy>` is, or is about to be, owned by a loader other than v3. */
+/** Whether `<elisym-buy>` is, or is about to be, owned by a loader older than v3 (or unknown). */
 function olderLoaderOwns(document: Document): boolean {
   const defined: unknown = document.defaultView?.customElements.get(ELEMENT_NAME);
   if (defined !== undefined) {
-    return !(typeof defined === 'function' && 'loader' in defined && defined.loader === 'v3');
+    return !(
+      typeof defined === 'function' &&
+      'loader' in defined &&
+      CURRENT_LOADERS.includes(defined.loader)
+    );
   }
   const loaders = [...document.querySelectorAll(ANY_LOADER_SELECTOR)];
-  return loaders.some((script) => script.getAttribute('src') !== V3_LOADER_SRC);
+  return loaders.some((script) => !CURRENT_LOADER_URLS.includes(script.getAttribute('src')));
 }
 
 /**
