@@ -78,7 +78,7 @@ The build fails when:
   `embed-prod/` file does;
 - a frozen loader source differs from `embed-prod/frozen.sha256` (an unreleased v4 changed
   without `bun scripts/freeze.ts --loader v4`);
-- a loader is over its size budget (5 KB gzip for v1 to v3, 6 KB for v4);
+- a loader is over its size budget (5 KB gzip for v1 to v3, 7 KB for v4);
 - the global-scope check fails: v1 to v3 add no global and v4 adds exactly `PayCore`, each
   one expression statement that touches no `document` at load.
 
