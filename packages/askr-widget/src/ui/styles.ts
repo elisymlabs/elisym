@@ -219,6 +219,11 @@ a.card-title:hover { text-decoration: underline; }
   background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer; text-overflow: ellipsis;
 }
 .selector select:hover { border-color: var(--cc-muted); }
+/* The open list is drawn by the browser, on its own light ground in some engines (Chrome on
+   Windows), while the options inherit the theme's text color: a dark theme's light text goes
+   unreadable there, so each option names its own ground and text. */
+.selector option { background-color: var(--cc-bg); color: var(--cc-text); }
+.selector option[value=''] { color: var(--cc-muted); }
 /* The price on its own line and the button full width under it, always: a long price
    ("from 149.00 USD / month"), a short one, or sold out lay the card out the same. */
 .card-foot { margin-top: auto; display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding-top: 2px; }

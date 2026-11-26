@@ -1,6 +1,6 @@
 {
   "name": "@elisym/askr-widget",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Askr browser chat widget: a shopping assistant for any store's site, over Nostr.",
   "license": "MIT",
