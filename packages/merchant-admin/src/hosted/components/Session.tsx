@@ -1,11 +1,13 @@
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { useEffect, useState } from 'react';
+import { MOVED_KEY } from '../lib/errors';
 import type { HostedConfig } from '../lib/hosted-config';
 import { ProvenPayouts } from '../lib/proven';
 import { type SessionLoad, loadSession } from '../lib/session';
-import type { StoreApi, StoreSession } from '../lib/store-session';
+import type { CompletedMove, StoreApi, StoreSession } from '../lib/store-session';
 import type { Meta } from '../lib/types';
 import { BUTTON_SECONDARY } from '../styles';
+import { ForgetOnDevice } from './ForgetOnDevice';
 import { Onboarding } from './Onboarding';
 import { SessionMessage } from './SessionMessage';
 import { StoreShell } from './StoreShell';
@@ -18,6 +20,10 @@ interface Props {
   /** O's signature, by the signer the page holds. */
   signEvent: (template: EventTemplate) => Promise<NostrEvent>;
   onSignOut: () => void;
+  /** A move was taken: the page goes on as the new owner. */
+  onSwitchOwner: (move: CompletedMove) => void;
+  /** Signed in by a move: the store's setup request to follow. */
+  moveRequestId?: string;
   /** Tests shorten the wait between reads of a followed request. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -27,7 +33,16 @@ function localNow(): number {
 }
 
 /** A signed-in owner: the server checked against the committed config, then their store. */
-export function Session({ api, config, owner, signEvent, onSignOut, sleep }: Props) {
+export function Session({
+  api,
+  config,
+  owner,
+  signEvent,
+  onSignOut,
+  onSwitchOwner,
+  moveRequestId,
+  sleep,
+}: Props) {
   const [load, setLoad] = useState<SessionLoad | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
   const [proven] = useState(() => new ProvenPayouts());
@@ -70,6 +85,17 @@ export function Session({ api, config, owner, signEvent, onSignOut, sleep }: Pro
       </SessionMessage>
     );
   }
+  if (load.kind === 'moved') {
+    return (
+      <SessionMessage title="This store moved">
+        <p className="text-15 text-text-2 leading-relaxed" role="alert">
+          {MOVED_KEY} Sign in with the new owner key to open it.
+        </p>
+        <ForgetOnDevice owner={owner} />
+        {signOut}
+      </SessionMessage>
+    );
+  }
   if (load.kind === 'failed') {
     return (
       <SessionMessage title="Your store could not be opened">
@@ -99,6 +125,7 @@ export function Session({ api, config, owner, signEvent, onSignOut, sleep }: Pro
     signEvent,
     proven,
     localNow,
+    switchOwner: onSwitchOwner,
     ...(sleep === undefined ? {} : { sleep }),
   });
   if (load.kind === 'no_store') {
@@ -110,5 +137,12 @@ export function Session({ api, config, owner, signEvent, onSignOut, sleep }: Pro
       />
     );
   }
-  return <StoreShell session={session(load.meta)} store={load.store} onSignOut={onSignOut} />;
+  return (
+    <StoreShell
+      session={session(load.meta)}
+      store={load.store}
+      onSignOut={onSignOut}
+      {...(moveRequestId === undefined ? {} : { moveRequestId })}
+    />
+  );
 }

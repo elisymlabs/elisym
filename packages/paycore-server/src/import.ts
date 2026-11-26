@@ -33,6 +33,7 @@ import { type KeyVault, MAX_SECRET_BYTES } from './db/keys';
 import { activePayouts, railConfig, storeRails } from './node/load';
 import type { OwnerEventKind } from './owner-events';
 import { insertLedger } from './state/ledger-store';
+import { lockOwnerKey, movedAway } from './state/move-rows';
 import {
   ConfigInputSchema,
   ProductInputSchema,
@@ -96,6 +97,9 @@ export class ImportRefused extends Error {
   }
 }
 
+/** An owner key that moved its store to another key never opens a store here again. */
+const MOVED_AWAY =
+  'this owner key moved its store to another key on this server: it cannot have a store again';
 const SETUP_FIRST = 'run `elisym-merchant setup` on the self-host node first';
 
 /** `keys.json` as import reads it: the store key and both public keys; the owner key is never looked at. */
@@ -418,6 +422,9 @@ async function importOpened(
         : 'this store key already belongs to another store on this server',
     );
   }
+  if (await movedAway(deps.db, owner)) {
+    throw new ImportRefused(MOVED_AWAY);
+  }
   const [tier] = await deps.db.query<{ max_products: number }>(
     'select max_products from tiers where name = $1',
     [options.tier],
@@ -481,6 +488,11 @@ async function importOpened(
       ? null
       : deps.vault.seal(Buffer.from(webhookSecret, 'utf8'), owner, 'webhook');
   await deps.db.transaction(async (tx) => {
+    // The lock a store move takes: a key moved away meanwhile is refused here.
+    await lockOwnerKey(tx, owner);
+    if (await movedAway(tx, owner)) {
+      throw new ImportRefused(MOVED_AWAY);
+    }
     const inserted = await tx.query(
       `insert into stores (owner, store_pubkey, status, tier, plan_source, created_at)
        values ($1, $2, 'active', $3, 'operator', $4) on conflict do nothing returning 1`,

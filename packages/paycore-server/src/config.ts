@@ -51,6 +51,11 @@ export interface PaycoreConfig {
    * answer with CORS headers (A2); unset: no CORS headers at all.
    */
   adminOrigin?: string;
+  /**
+   * PAYCORE_STORE_MOVES=1: the store move routes are served (default off,
+   * until every instance runs code that knows `store_moves`).
+   */
+  storeMoves: boolean;
 }
 
 /** Whether the operator configured the RPC of `chain`'s rail: only then can a store be paid on it. */
@@ -261,6 +266,10 @@ export function configFromEnv(
   if (trust !== undefined && trust !== '1' && trust !== '0') {
     throw new Error('PAYCORE_TRUST_PROXY must be 1 or 0');
   }
+  const moves = env.PAYCORE_STORE_MOVES;
+  if (moves !== undefined && moves !== '1' && moves !== '0') {
+    throw new Error('PAYCORE_STORE_MOVES must be 1 or 0');
+  }
   const rpcs = { mainnet: networkRpcs(env, 'mainnet'), devnet: networkRpcs(env, 'devnet') };
   const adminOrigin = adminOriginFrom(env.PAYCORE_ADMIN_ORIGIN);
   return {
@@ -274,5 +283,6 @@ export function configFromEnv(
     operator: operatorFrom(env.PAYCORE_OPERATOR, publicBase),
     requiredRelay: requiredRelayFrom(env.PAYCORE_REQUIRED_RELAY),
     rpcs,
+    storeMoves: moves === '1',
   };
 }

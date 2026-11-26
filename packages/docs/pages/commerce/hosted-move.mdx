@@ -1,0 +1,33 @@
+# Move a hosted store to a new owner key
+
+A store hosted by PayCore belongs to its owner key: the key you sign in to the [hosted admin](https://admin.elisym.network/hosted/) with, and the key that signs the store's payout list and authorizes PayCore to run it. You can move the store to a new owner key, for example when the current one may have been seen by someone else. The store itself stays: its Store ID, products, orders, payments, payout addresses and webhook do not change. Only the key that owns it changes.
+
+A move needs **both keys**: the current owner key and the new one each sign it. A lost owner key cannot move the store from the admin: [message us](https://askr.elisym.network/contact).
+
+## Before you start
+
+- **Your payout wallets.** Every payout wallet signs again, this time for the new key. Have each wallet at hand (a browser wallet, or for EVM addresses any tool that signs a message). A store with no payouts cannot move: add them first.
+- **The new key.** Paste a key you already have, or make one in the admin and save it (a password manager, or the downloaded key file). It must be a key that never owned a PayCore store and was never used for one.
+- **Not while a change is still applying.** A store that is still applying an earlier change, or still switching from an earlier move, is refused until that is done. A store being suspended cannot move.
+
+## Move the store
+
+1. Sign in to the hosted admin with your current owner key and open **Settings**. Under **Move store**, choose **Move to a new owner key**.
+2. Paste the new owner key and choose **Use this key**, or choose **Create a new owner key**, save it, tick **I saved my key** and **Continue**.
+3. Sign each payout address with its wallet for the new key. The addresses stay as they are.
+4. Read what changes (below), tick that you want to move the store, and choose **Move store**. The admin checks what PayCore prepared before anything is signed: the new key signs the payout list and the authorization of PayCore, and the current key signs the end of its own authorization.
+5. Choose **Continue with the new key**. This device forgets the current owner key and offers to remember the new one, and the admin goes on signed in with the new key.
+
+Right after the move the admin shows **Switching to the new owner key**: PayCore publishes the store under the new key on the relays. Until that is done, the store keeps selling on its previous payout list, and payout changes wait. A store that was never activated switches when PayCore activates it.
+
+## What changes for buyers
+
+- **Returning buyers pin the new key.** A buyer's checkout remembers the owner key of a store at the first purchase. After the move, a returning buyer's checkout refuses the store (the owner changed) until they pin the new key, as on a first purchase.
+- **Payout notice for 72 hours.** For 72 hours after the move, buyers see that the store's payout list changed recently.
+- **Your domain names the new key.** A level A store's domain names its owner key in `nostr.json` (or in its `_elisym` TXT record). Update it to the new owner key: the admin shows the file for the new key after the move, and the Embed tab shows it from then on. From the moment the store switches to the new key until you update the domain, the checkout refuses the store for every buyer (owner mismatch).
+- **Askr Buy buttons.** If your current owner key also runs an Askr store selling these products, its Buy buttons stop once the move is done, since the current key no longer authorizes the store. To sell them there again, [replace your Askr secret key](/askr/overview#replacing-a-lost-or-leaked-secret-key) with the new owner key.
+
+## After the move
+
+- **The old key is done.** The previous owner key can never open a PayCore store again. Signing in with it says "This store moved to another owner key."
+- **The move cannot be undone.** To move again, move the store from the new key to another one, the same way, once the switch is done.

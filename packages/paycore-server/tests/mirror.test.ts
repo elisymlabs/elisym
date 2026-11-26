@@ -704,3 +704,69 @@ describe('MirrorSweeper', () => {
     });
   }
 });
+
+describe('MirrorSweeper: a moved store', () => {
+  async function movedStore(db: Db, vault: KeyVault, switchedAt: number | null) {
+    const current = await addStore(db, vault);
+    const former = ownerKeys();
+    const earlier = ownerKeys();
+    for (const [from, to, at] of [
+      [earlier.pubkey, former.pubkey, T - 100],
+      [former.pubkey, current.owner.pubkey, switchedAt],
+    ] as const) {
+      await db.query(
+        `insert into store_moves (from_owner, to_owner, store_pubkey, moved_at, switched_at, old_events)
+         values ($1, $2, $3, $4, $5, '[]')`,
+        [from, to, current.store.pubkey, T - 200, at],
+      );
+    }
+    const payto = (author: Keys) => sign(author, { kind: KIND_PAYTO, created_at: T, tags: [] });
+    const revoked = (author: Keys) =>
+      sign(author, {
+        kind: KIND_STORE_AUTH,
+        created_at: T + 10,
+        tags: [
+          ['d', current.store.pubkey],
+          ['p', current.store.pubkey],
+          ['mode', 'revoked'],
+        ],
+      });
+    return { ...current, former, earlier, payto, revoked };
+  }
+
+  it("sweeps the former owner's payout list, authorization and deletions until the move switched; an earlier owner's revocation only", async () => {
+    const db = await freshDb();
+    const { relays, vault, sweeper } = setup(db);
+    const moved = await movedStore(db, vault, null);
+    const formerList = moved.payto(moved.former);
+    const formerAuth = storeAuthorization(moved.former, moved.store, T);
+    const formerDeletion = deletion(moved.former, [payoutListAddress(moved.former.pubkey)], T + 5);
+    const earlierList = moved.payto(moved.earlier);
+    const earlierRevocation = moved.revoked(moved.earlier);
+    relays.put(DAMUS, formerList, formerAuth, formerDeletion, earlierList, earlierRevocation);
+
+    const sweeps = await sweeper().runOnce();
+
+    expect(sweeps).toEqual([{ owner: moved.owner.pubkey, outcome: 'swept', sent: 4, refused: 0 }]);
+    expect(new Set(sentIds(relays))).toEqual(
+      new Set([formerDeletion.id, formerList.id, formerAuth.id, earlierRevocation.id]),
+    );
+    expect(relays.sends.every((send) => send.url === REQUIRED)).toBe(true);
+  });
+
+  it("after the switch sweeps only the former owners' authorizations at the store (their revocations)", async () => {
+    const db = await freshDb();
+    const { relays, vault, sweeper } = setup(db);
+    const moved = await movedStore(db, vault, T);
+    const formerList = moved.payto(moved.former);
+    const formerDeletion = deletion(moved.former, [payoutListAddress(moved.former.pubkey)], T + 5);
+    const formerRevocation = moved.revoked(moved.former);
+    const earlierRevocation = moved.revoked(moved.earlier);
+    relays.put(DAMUS, formerList, formerDeletion, formerRevocation, earlierRevocation);
+
+    const sweeps = await sweeper().runOnce();
+
+    expect(sweeps).toEqual([{ owner: moved.owner.pubkey, outcome: 'swept', sent: 2, refused: 0 }]);
+    expect(new Set(sentIds(relays))).toEqual(new Set([formerRevocation.id, earlierRevocation.id]));
+  });
+});

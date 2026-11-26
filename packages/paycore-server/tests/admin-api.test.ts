@@ -6,12 +6,15 @@ import { ADMIN_PREFIX, NEW_STORES_PER_IP_PER_HOUR, createAdminApi } from '../src
 import {
   type AdminRequest,
   type RequestKind,
+  getRequest,
   insertRequest,
   markRequest,
 } from '../src/admin/requests';
 import type { Db } from '../src/db/db';
 import { serializeLedger } from '../src/state/ledger-store';
+import type { MoveTemplates } from '../src/state/moves';
 import { ConfigInputSchema } from '../src/state/stores';
+import { movableStore, moveDeps, moved, provenPayouts, signMove } from './move-fixtures';
 import { freshDb } from './pglite-db';
 import {
   BASE,
@@ -24,6 +27,7 @@ import {
   directoryFor,
   ownerKeys,
   signedPayouts,
+  solanaWallet,
 } from './stores-fixtures';
 
 /** `value[name]` of a JSON object answer, or undefined. */
@@ -907,5 +911,478 @@ describe('admin API: request results (A15)', () => {
         { orderId: 'one', productTitle: 'Socks' },
       ],
     });
+  });
+});
+
+/** The move routes' harness: the flag, the relay reads by (key, kind), and whether a read ran inside a transaction. */
+function moveHarness(
+  db: Db,
+  directory: ReturnType<typeof directoryFor>,
+  options: {
+    storeMoves?: boolean;
+    relays?: Record<string, number>;
+    waitResult?: (owner: string, id: string) => Promise<AdminRequest | undefined>;
+  } = {},
+) {
+  let openTransactions = 0;
+  const readsInTransaction: string[] = [];
+  const reads: string[] = [];
+  const tracked: Db = {
+    ...db,
+    transaction: async (work) => {
+      openTransactions += 1;
+      try {
+        return await db.transaction(work);
+      } finally {
+        openTransactions -= 1;
+      }
+    },
+  };
+  const api = createAdminApi({
+    directory,
+    db: tracked,
+    publicBase: BASE,
+    operator: OPERATOR,
+    now: () => NOW,
+    waitResult: async (owner, id) => options.waitResult?.(owner, id),
+    storeMoves: options.storeMoves ?? true,
+    log: () => undefined,
+    newestOnRelays: async (key, kind) => {
+      reads.push(`${key}:${kind}`);
+      if (openTransactions > 0) {
+        readsInTransaction.push(`${key}:${kind}`);
+      }
+      return options.relays?.[`${key}:${kind}`];
+    },
+  });
+  const call = async (input: {
+    method: string;
+    path: string;
+    body?: unknown;
+    owner: Uint8Array;
+    /** The new key's header: a secret signs it, a string is sent as is, null sends none. */
+    second?: Uint8Array | string | null;
+    secondBody?: string;
+    authorization?: string;
+  }) => {
+    const body = input.body === undefined ? undefined : JSON.stringify(input.body);
+    const url = `${BASE}${input.path}`;
+    const sign = (secret: Uint8Array, signedBody?: string) =>
+      authHeader({
+        secret,
+        method: input.method,
+        url,
+        ...(signedBody === undefined ? {} : { body: signedBody }),
+      });
+    const headers: Record<string, string> = {
+      authorization: input.authorization ?? sign(input.owner, body),
+    };
+    if (input.second instanceof Uint8Array) {
+      headers['x-new-owner-authorization'] = sign(input.second, input.secondBody ?? body);
+    } else if (typeof input.second === 'string') {
+      headers['x-new-owner-authorization'] = input.second;
+    }
+    const response = await api({
+      request: new Request(`http://internal${input.path}`, {
+        method: input.method,
+        headers,
+        ...(body === undefined ? {} : { body }),
+      }),
+      clientAddress: '203.0.113.7',
+    });
+    if (response === undefined) {
+      throw new Error('no answer');
+    }
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  return { call, reads, readsInTransaction, sign: authHeader };
+}
+
+describe('admin API: store move', () => {
+  it('prepares, then moves with both authorizations; reads the relays outside any transaction', async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const to = ownerKeys();
+    const { call, reads, readsInTransaction } = moveHarness(db, store.directory);
+    const prepared = await call({
+      method: 'POST',
+      path: '/v1/admin/store/move/prepare',
+      owner: store.owner.secret,
+      body: { to: to.pubkey, payouts: provenPayouts(store.wallet, to.pubkey) },
+    });
+    expect(prepared.status).toBe(200);
+    expect(Object.keys(prepared.body).sort()).toEqual([
+      'auth',
+      'expiresAt',
+      'payto',
+      'revocation',
+      'to',
+    ]);
+    const templates = prepared.body as unknown as MoveTemplates;
+    const move = await call({
+      method: 'POST',
+      path: '/v1/admin/store/move',
+      owner: store.owner.secret,
+      second: to.secret,
+      body: { to: to.pubkey, ...signMove(templates, store.owner, to) },
+    });
+    expect(move.status).toBe(202);
+    expect(move.body).toMatchObject({
+      owner: to.pubkey,
+      storePubkey: store.storePubkey,
+      switching: true,
+      request: { state: 'pending' },
+    });
+    expect(reads).toEqual([
+      `${to.pubkey}:${KIND_PAYTO}`,
+      `${store.owner.pubkey}:${KIND_STORE_AUTH}`,
+      `${to.pubkey}:${KIND_PAYTO}`,
+      `${store.owner.pubkey}:${KIND_STORE_AUTH}`,
+    ]);
+    expect(readsInTransaction).toEqual([]);
+
+    // The same move again: the setup request it queued.
+    const again = await call({
+      method: 'POST',
+      path: '/v1/admin/store/move',
+      owner: store.owner.secret,
+      second: to.secret,
+      body: { to: to.pubkey, ...signMove(templates, store.owner, to) },
+    });
+    expect(again).toMatchObject({
+      status: 200,
+      body: { alreadyMoved: true, requestId: (move.body.request as { id: string }).id },
+    });
+
+    // O is moved: every other route says so without naming O'.
+    for (const route of [
+      { method: 'GET', path: '/v1/admin/store' },
+      { method: 'POST', path: '/v1/admin/store', body: { name: 'Again', network: 'devnet' } },
+      { method: 'GET', path: '/v1/admin/products' },
+    ]) {
+      const answer = await call({ ...route, owner: store.owner.secret });
+      expect(answer, route.path).toEqual({ status: 409, body: { error: 'moved' } });
+    }
+    const other = ownerKeys();
+    expect(
+      await call({
+        method: 'POST',
+        path: '/v1/admin/store/move/prepare',
+        owner: store.owner.secret,
+        body: { to: other.pubkey, payouts: provenPayouts(store.wallet, other.pubkey) },
+      }),
+    ).toEqual({ status: 409, body: { error: 'moved' } });
+
+    // O' sees the store switching, with its own committed payouts as the active ones.
+    const view = await call({ method: 'GET', path: '/v1/admin/store', owner: to.secret });
+    expect(view.status).toBe(200);
+    expect(view.body).toMatchObject({
+      owner: to.pubkey,
+      storePubkey: store.storePubkey,
+      status: 'active',
+      switching: true,
+      alerts: [],
+      activePayouts: {
+        createdAt: templates.payto.created_at,
+        payouts: provenPayouts(store.wallet, to.pubkey),
+      },
+      payouts: { needsSigning: false },
+    });
+    // A new payout list waits for the switch.
+    expect(
+      await call({
+        method: 'POST',
+        path: '/v1/admin/owner-events/prepare',
+        owner: to.secret,
+        body: { kind: KIND_PAYTO },
+      }),
+    ).toMatchObject({ status: 409, body: { error: 'switching' } });
+    // Once switched, the ledger's list is the active one again.
+    await db.query('update store_moves set switched_at = $1', [NOW]);
+    const after = await call({ method: 'GET', path: '/v1/admin/store', owner: to.secret });
+    expect(after.body).toMatchObject({
+      switching: false,
+      activePayouts: {
+        createdAt: NOW - 3600,
+        payouts: provenPayouts(store.wallet, store.owner.pubkey),
+      },
+    });
+  });
+
+  it('refuses a missing, broken, foreign, replayed or other-body second authorization (401), recording neither id', async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const to = ownerKeys();
+    const { call } = moveHarness(db, store.directory);
+    const prepared = await call({
+      method: 'POST',
+      path: '/v1/admin/store/move/prepare',
+      owner: store.owner.secret,
+      body: { to: to.pubkey, payouts: provenPayouts(store.wallet, to.pubkey) },
+    });
+    const body = {
+      to: to.pubkey,
+      ...signMove(prepared.body as unknown as MoveTemplates, store.owner, to),
+    };
+    const move = { method: 'POST', path: '/v1/admin/store/move', body };
+    const ownerHeader = authHeader({
+      secret: store.owner.secret,
+      method: 'POST',
+      url: `${BASE}/v1/admin/store/move`,
+      body: JSON.stringify(body),
+    });
+    const refusal = (reason: string) => ({
+      status: 401,
+      body: { error: 'unauthorized', reason, header: 'x-new-owner-authorization' },
+    });
+    expect(
+      await call({ ...move, owner: store.owner.secret, authorization: ownerHeader, second: null }),
+    ).toEqual(refusal('missing'));
+    expect(
+      await call({
+        ...move,
+        owner: store.owner.secret,
+        authorization: ownerHeader,
+        second: 'Nostr !!',
+      }),
+    ).toEqual(refusal('malformed'));
+    expect(
+      await call({
+        ...move,
+        owner: store.owner.secret,
+        authorization: ownerHeader,
+        second: store.owner.secret,
+      }),
+    ).toEqual(refusal('new_owner'));
+    expect(
+      await call({
+        ...move,
+        owner: store.owner.secret,
+        authorization: ownerHeader,
+        second: to.secret,
+        secondBody: '{"other":1}',
+      }),
+    ).toEqual(refusal('payload'));
+    // O's authorization was refused with the second each time, never recorded: it still moves now.
+    const secondHeader = authHeader({
+      secret: to.secret,
+      method: 'POST',
+      url: `${BASE}/v1/admin/store/move`,
+      body: JSON.stringify(body),
+    });
+    expect(
+      (
+        await call({
+          ...move,
+          owner: store.owner.secret,
+          authorization: ownerHeader,
+          second: secondHeader,
+        })
+      ).status,
+    ).toBe(202);
+    // Replayed: the same second authorization with a fresh O one.
+    expect(await call({ ...move, owner: store.owner.secret, second: secondHeader })).toEqual({
+      status: 401,
+      body: { error: 'unauthorized', reason: 'replay' },
+    });
+    // A broken O authorization is refused before anything else.
+    expect(
+      await call({
+        ...move,
+        owner: store.owner.secret,
+        authorization: 'Nostr !!',
+        second: to.secret,
+      }),
+    ).toEqual({ status: 401, body: { error: 'unauthorized', reason: 'malformed' } });
+  });
+
+  it('answers 404 for both move routes while PAYCORE_STORE_MOVES is off', async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const to = ownerKeys();
+    const { call } = moveHarness(db, store.directory, { storeMoves: false });
+    for (const path of ['/v1/admin/store/move/prepare', '/v1/admin/store/move']) {
+      expect(
+        await call({
+          method: 'POST',
+          path,
+          owner: store.owner.secret,
+          second: to.secret,
+          body: { to: to.pubkey, payouts: [] },
+        }),
+      ).toEqual({ status: 404, body: { error: 'not_found' } });
+    }
+  });
+
+  it('maps the move refusals to 409, a bad body to 400', async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const live = await movableStore(db);
+    const to = ownerKeys();
+    const { call } = moveHarness(db, store.directory, {
+      relays: { [`${to.pubkey}:${KIND_PAYTO}`]: NOW - 5 },
+    });
+    const prepare = (body: unknown) =>
+      call({
+        method: 'POST',
+        path: '/v1/admin/store/move/prepare',
+        owner: store.owner.secret,
+        body,
+      });
+    expect(
+      await prepare({
+        to: live.owner.pubkey,
+        payouts: provenPayouts(store.wallet, live.owner.pubkey),
+      }),
+    ).toEqual({ status: 409, body: { error: 'taken' } });
+    expect(
+      await prepare({ to: to.pubkey, payouts: provenPayouts(store.wallet, to.pubkey) }),
+    ).toEqual({ status: 409, body: { error: 'key_in_use' } });
+    const fresh = ownerKeys();
+    expect(
+      await prepare({ to: fresh.pubkey, payouts: provenPayouts(solanaWallet(), fresh.pubkey) }),
+    ).toEqual({ status: 409, body: { error: 'payouts_differ' } });
+    for (const body of [{ to: 'X'.repeat(64), payouts: [] }, { to: fresh.pubkey }, {}]) {
+      expect(await prepare(body)).toEqual({ status: 400, body: { error: 'bad_request' } });
+    }
+  });
+});
+
+describe('admin API: store move (review round 1)', () => {
+  async function preparedBody(
+    call: ReturnType<typeof moveHarness>['call'],
+    store: Awaited<ReturnType<typeof movableStore>>,
+    to: ReturnType<typeof ownerKeys>,
+  ) {
+    const prepared = await call({
+      method: 'POST',
+      path: '/v1/admin/store/move/prepare',
+      owner: store.owner.secret,
+      body: { to: to.pubkey, payouts: provenPayouts(store.wallet, to.pubkey) },
+    });
+    expect(prepared.status).toBe(200);
+    return {
+      to: to.pubkey,
+      ...signMove(prepared.body as unknown as MoveTemplates, store.owner, to),
+    };
+  }
+
+  it("records O's authorization too: replayed with a fresh new-key header it is refused", async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const to = ownerKeys();
+    const { call } = moveHarness(db, store.directory);
+    const body = await preparedBody(call, store, to);
+    const ownerHeader = authHeader({
+      secret: store.owner.secret,
+      method: 'POST',
+      url: `${BASE}/v1/admin/store/move`,
+      body: JSON.stringify(body),
+    });
+    const move = { method: 'POST', path: '/v1/admin/store/move', body, owner: store.owner.secret };
+    expect((await call({ ...move, authorization: ownerHeader, second: to.secret })).status).toBe(
+      202,
+    );
+    expect(await call({ ...move, authorization: ownerHeader, second: to.secret })).toEqual({
+      status: 401,
+      body: { error: 'unauthorized', reason: 'replay' },
+    });
+  });
+
+  it("answers the move with its setup request read as the new owner's once the holder applied it", async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const to = ownerKeys();
+    const { call } = moveHarness(db, store.directory, {
+      // The holder applies the request while the route waits; it is the new owner's row.
+      waitResult: async (owner, id) => {
+        await markRequest(db, owner, id, 'applied', NOW, { setup: 'done' });
+        return getRequest(db, owner, id);
+      },
+    });
+    const body = await preparedBody(call, store, to);
+    const move = await call({
+      method: 'POST',
+      path: '/v1/admin/store/move',
+      owner: store.owner.secret,
+      second: to.secret,
+      body,
+    });
+    expect(move).toMatchObject({
+      status: 200,
+      body: { owner: to.pubkey, request: { state: 'applied', result: { setup: 'done' } } },
+    });
+  });
+
+  it('answers busy (a request of the store pending) with 409', async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const to = ownerKeys();
+    const { call } = moveHarness(db, store.directory);
+    const body = await preparedBody(call, store, to);
+    await db.query(
+      `insert into admin_requests (id, owner, kind, payload, created_at) values ('ab', $1, 'restart', '{}', $2)`,
+      [store.owner.pubkey, NOW],
+    );
+    expect(
+      await call({
+        method: 'POST',
+        path: '/v1/admin/store/move',
+        owner: store.owner.secret,
+        second: to.secret,
+        body,
+      }),
+    ).toEqual({ status: 409, body: { error: 'busy' } });
+  });
+
+  it("judges a chained store's switch by its latest move: switching while the newest has not switched", async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const deps = moveDeps(db, store.directory);
+    const next = ownerKeys();
+    const last = ownerKeys();
+    expect((await moved(deps, store, next)).result.ok).toBe(true);
+    await db.query('update store_moves set switched_at = $1', [NOW]);
+    await db.query("update admin_requests set state = 'applied'");
+    const chained = { owner: next, wallet: store.wallet };
+    expect((await moved(deps, chained, last)).result.ok).toBe(true);
+    await db.query("update admin_requests set state = 'applied'");
+    // The older move switched, the newer not: the store switches.
+    const { call } = moveHarness(db, store.directory);
+    const view = await call({ method: 'GET', path: '/v1/admin/store', owner: last.secret });
+    expect(view.body).toMatchObject({ switching: true });
+    expect(
+      await call({
+        method: 'POST',
+        path: '/v1/admin/owner-events/prepare',
+        owner: last.secret,
+        body: { kind: KIND_PAYTO },
+      }),
+    ).toMatchObject({ status: 409, body: { error: 'switching' } });
+    const third = ownerKeys();
+    expect(
+      await call({
+        method: 'POST',
+        path: '/v1/admin/store/move/prepare',
+        owner: last.secret,
+        body: { to: third.pubkey, payouts: provenPayouts(store.wallet, third.pubkey) },
+      }),
+    ).toMatchObject({ status: 409, body: { error: 'switching' } });
+    // A draft prepared while switched, committed once the newest move is switching again.
+    await db.query('update store_moves set switched_at = $1', [NOW]);
+    const lastStore = { ...store, owner: last };
+    const body = await preparedBody(call, lastStore, third);
+    await db.query(
+      'update store_moves set switched_at = null where id = (select max(id) from store_moves)',
+    );
+    expect(
+      await call({
+        method: 'POST',
+        path: '/v1/admin/store/move',
+        owner: last.secret,
+        second: third.secret,
+        body,
+      }),
+    ).toMatchObject({ status: 409, body: { error: 'switching' } });
   });
 });

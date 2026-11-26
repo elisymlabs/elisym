@@ -1,8 +1,9 @@
 import { type StoreConfig, type StorePrivateConfig, parseConfig } from '@elisym/askr';
 import { useCallback, useEffect, useState } from 'react';
+import { CONTACT_URL } from '../constants';
 import type { SessionDeps } from '../lib/deps';
 import { errorMessage } from '../lib/errors';
-import { detectPayCore, hasPayCoreLayout } from '../lib/paycore';
+import { PAYCORE_ONBOARDING_URL, detectPayCore, hasPayCoreLayout } from '../lib/paycore';
 import { saveSettings } from '../lib/save';
 import {
   EMPTY_FORM,
@@ -165,8 +166,15 @@ export function FinishMove({ deps, view, onDone, onSignOut }: Props) {
           <Notice tone="warn">
             If these products come from your PayCore store, the chat shows them without a Buy button
             until your new key authorizes that store in PayCore. A store on your own PayCore node:
-            authorize it there with your new key. A hosted PayCore store cannot change its owner key
-            yet: message us.
+            authorize it there with your new key. A hosted PayCore store: move it to your new key in{' '}
+            <a className="underline" href={PAYCORE_ONBOARDING_URL} target="_blank" rel="noreferrer">
+              PayCore
+            </a>{' '}
+            (Settings, Move store), signing with both keys; if the old key is lost,{' '}
+            <a className="underline" href={CONTACT_URL} target="_blank" rel="noreferrer">
+              message us
+            </a>
+            .
           </Notice>
         ) : null}
         {load.privateLost ? (

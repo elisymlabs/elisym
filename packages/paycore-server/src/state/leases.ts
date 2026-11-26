@@ -20,6 +20,8 @@ export const RELEASED_STATUSES: readonly StoreStatus[] = ['pending', 'suspended'
 
 export interface LeasedStore {
   owner: string;
+  /** S: unchanged by a move, so the runs of one store chain by it across owners. */
+  storePubkey: string;
   epoch: number;
   status: StoreStatus;
 }
@@ -60,12 +62,23 @@ export async function acquireLeases(
        where leases.holder = $1 or leases.expires_at <= $2`,
       [holder, now, now + ttlSecs, LEASED_STATUSES],
     );
-    return tx.query<{ owner: string; epoch: number; status: StoreStatus }>(
-      `select s.owner, l.epoch, s.status from stores s join leases l on l.owner = s.owner
+    const rows = await tx.query<{
+      owner: string;
+      store_pubkey: string;
+      epoch: number;
+      status: StoreStatus;
+    }>(
+      `select s.owner, s.store_pubkey, l.epoch, s.status from stores s join leases l on l.owner = s.owner
        where l.holder = $1 and l.expires_at > $2 and s.status = any($3::text[])
        order by s.owner`,
       [holder, now, LEASED_STATUSES],
     );
+    return rows.map((row) => ({
+      owner: row.owner,
+      storePubkey: row.store_pubkey,
+      epoch: row.epoch,
+      status: row.status,
+    }));
   });
 }
 

@@ -7,6 +7,7 @@ import { CLI_USAGE, type CliDeps, migratesFirst, parseOwner, runCli } from '../s
 import type { PaycoreConfig } from '../src/config';
 import type { Db } from '../src/db/db';
 import { KeyVault } from '../src/db/keys';
+import { movableStore, moveDeps, moved } from './move-fixtures';
 import { freshDb } from './pglite-db';
 import {
   MASTER_KEY,
@@ -29,6 +30,7 @@ const CONFIG: PaycoreConfig = {
   operator: 'paycore.example',
   requiredRelay: RELAY,
   rpcs: RPCS,
+  storeMoves: false,
 };
 
 interface Run {
@@ -620,5 +622,42 @@ describe('operator CLI (step 16)', () => {
         ].join('\n'),
       ),
     );
+  });
+});
+
+describe('operator CLI: moved stores', () => {
+  it('answers activate, suspend and tier for a moved owner key with the key the store is under now', async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const deps = moveDeps(db, store.directory);
+    const next = ownerKeys();
+    const last = ownerKeys();
+    expect((await moved(deps, store, next)).result.ok).toBe(true);
+    await db.query('update store_moves set switched_at = $1', [NOW]);
+    await db.query("update admin_requests set state = 'applied'");
+    expect((await moved(deps, { owner: next, wallet: store.wallet }, last)).result.ok).toBe(true);
+    const answer = failed(`This store moved to ${npub(last.pubkey)}`);
+    for (const former of [store.owner.pubkey, next.pubkey]) {
+      expect(await run(db, 'store', 'activate', former, '--tier', 'tier-5')).toEqual(answer);
+      expect(await run(db, 'store', 'suspend', npub(former))).toEqual(answer);
+      expect(await run(db, 'store', 'tier', former, 'tier-5')).toEqual(answer);
+    }
+    expect(await run(db, 'store', 'suspend', ownerKeys().pubkey)).toEqual(failed('No such store'));
+    // The list counts the moves of a store that moved; the alert list has one row per move.
+    const plain = await movableStore(db);
+    const list = await run(db, 'store', 'list');
+    expect(list.code).toBe(0);
+    // Both were created in the same second: the list orders them by key.
+    expect(list.out.split('\n').sort()).toEqual(
+      [
+        `${npub(last.pubkey)} active tier-5 alerts:0 moves:2`,
+        `${npub(plain.owner.pubkey)} active tier-5 alerts:0`,
+      ].sort(),
+    );
+    const alerts = await run(db, 'alert', 'list');
+    expect(alerts.code).toBe(0);
+    expect(alerts.out.split('\n').filter((line) => line.includes(' moved x1 '))).toHaveLength(2);
+    expect(alerts.out).toContain(npub(store.owner.pubkey));
+    expect(alerts.out).toContain(npub(next.pubkey));
   });
 });

@@ -2,7 +2,7 @@
  * What PayCore's server answers hosted mode (`packages/paycore-server/src/admin/api.ts`,
  * `/v1/meta`), as JSON: fields the server leaves undefined are absent.
  */
-import type { NostrEvent } from 'nostr-tools';
+import type { EventTemplate, NostrEvent } from 'nostr-tools';
 
 export type Network = 'mainnet' | 'devnet';
 
@@ -28,6 +28,8 @@ export interface Meta {
   /** The inbox relays a store may name. */
   inboxRelays: string[];
   pendingMaxProducts: number;
+  /** Moving a store to a new owner key is on (`PAYCORE_STORE_MOVES`); false when the server does not say. */
+  storeMoves: boolean;
 }
 
 export interface StoreConfig {
@@ -67,6 +69,11 @@ export interface StoreView {
   webhookSecretSet: boolean;
   payouts: { needsSigning: boolean };
   ownerEvents: { payto: CommittedOwnerEvent | null; auth: CommittedOwnerEvent | null };
+  /**
+   * The store moved to this owner key and the relays do not name it yet: the
+   * store still sells on the former owner's terms, so payout edits wait.
+   */
+  switching?: boolean;
 }
 
 export interface CreateStoreInput {
@@ -161,3 +168,42 @@ export interface OrdersView {
 export type HandInput =
   | { kind: 'complete' }
   | { kind: 'refunded'; tx: string; amount: string; asset?: string };
+
+/** `POST /v1/admin/store/move/prepare`: what the move asks for. */
+export interface MovePrepareInput {
+  /** The new owner key O', hex. */
+  to: string;
+  /** Every active payout, proven for O' by its wallet. */
+  payouts: Payout[];
+}
+
+/**
+ * What the server prepared: O' signs the payout list and the authorization,
+ * O signs the revocation of its own authorization (none when O never had one).
+ */
+export interface MoveTemplates {
+  to?: string;
+  payto: EventTemplate;
+  auth: EventTemplate;
+  revocation?: EventTemplate | null;
+  expiresAt: number;
+}
+
+/** `POST /v1/admin/store/move`: the prepared events, signed. */
+export interface MoveInput {
+  to: string;
+  payto: NostrEvent;
+  auth: NostrEvent;
+  revocation?: NostrEvent;
+}
+
+/**
+ * The move's answer: the store's setup request, read by O' (null for a
+ * pending store: nothing to set up before its activation). The same move
+ * again answers `alreadyMoved` with that request's id.
+ */
+export interface MoveAnswer {
+  request?: RequestAnswer['request'] | null;
+  alreadyMoved?: true;
+  requestId?: string | null;
+}

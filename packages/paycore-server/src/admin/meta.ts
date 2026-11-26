@@ -2,7 +2,8 @@
  * `GET /v1/meta` (public, no authorization): what the hosted admin needs
  * before signing in - the base NIP-98 `u` is checked against, the operator
  * its 30490 must name, the coins a payout may use per network, the inbox
- * relay allowlist and a pending store's product cap. Nothing secret: the
+ * relay allowlist, a pending store's product cap and whether a store can
+ * move to a new owner key. Nothing secret: the
  * operator's RPC URLs only decide which coins are listed, never appear.
  */
 import { priceInSubunits } from '@elisym/commerce';
@@ -15,6 +16,8 @@ export interface MetaView {
   networks: Record<Network, { coins: string[] }>;
   inboxRelays: string[];
   pendingMaxProducts: number;
+  /** Whether the store move routes are served (PAYCORE_STORE_MOVES): the admin offers a move only then. */
+  storeMoves: boolean;
 }
 
 /** Whether a coin can be paid a USD price 1:1 (a stablecoin): a product price is USD. */
@@ -45,7 +48,7 @@ export function servedCoins(rpcs: NetworkRpcs, network: Network): string[] {
 }
 
 export function metaView(
-  config: Pick<PaycoreConfig, 'publicBase' | 'operator' | 'rpcs' | 'inboxRelays'>,
+  config: Pick<PaycoreConfig, 'publicBase' | 'operator' | 'rpcs' | 'inboxRelays' | 'storeMoves'>,
   pendingMaxProducts: number,
 ): MetaView {
   return {
@@ -57,5 +60,6 @@ export function metaView(
     },
     inboxRelays: [...config.inboxRelays],
     pendingMaxProducts,
+    storeMoves: config.storeMoves,
   };
 }

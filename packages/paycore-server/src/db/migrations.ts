@@ -126,6 +126,61 @@ create unique index alerts_open on alerts (coalesce(owner, ''), kind) where clea
 alter table stores add column mirror_swept_at bigint;  -- the last required-relay mirror sweep claimed (seconds; null: never)
 `,
   },
+  {
+    id: '0003_store_moves',
+    sql: `
+set local lock_timeout = '5s';
+alter table store_keys drop constraint store_keys_owner_fkey,
+  add constraint store_keys_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+alter table store_config drop constraint store_config_owner_fkey,
+  add constraint store_config_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+alter table products drop constraint products_owner_fkey,
+  add constraint products_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+alter table owner_event_drafts drop constraint owner_event_drafts_owner_fkey,
+  add constraint owner_event_drafts_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+alter table owner_events drop constraint owner_events_owner_fkey,
+  add constraint owner_events_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+alter table ledgers drop constraint ledgers_owner_fkey,
+  add constraint ledgers_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+alter table leases drop constraint leases_owner_fkey,
+  add constraint leases_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+alter table admin_requests drop constraint admin_requests_owner_fkey,
+  add constraint admin_requests_owner_fkey foreign key (owner) references stores (owner)
+    on delete cascade on update cascade;
+create table store_moves (
+  id bigserial primary key,
+  from_owner text not null unique,              -- O: never owns a store on this server again
+  to_owner text not null,                       -- O'
+  store_pubkey text not null,                   -- S, unchanged by the move
+  moved_at bigint not null,
+  switched_at bigint,                           -- created_at of the first profile naming O' that went out (null: switching)
+  revocation jsonb,                             -- O's signed 30490 revocation (null: O never published a 30490)
+  revocation_published_at bigint,
+  publish_attempts integer not null default 0,
+  next_attempt_at bigint not null default 0,
+  old_events jsonb not null                     -- O's owner_events rows as they were at the move
+);
+create index store_moves_to_owner on store_moves (to_owner);
+create index store_moves_store_pubkey on store_moves (store_pubkey);
+create table store_move_drafts (
+  owner text primary key references stores (owner) on delete cascade on update cascade,
+  to_owner text not null,
+  payto jsonb not null,                         -- O' 10133 template
+  payouts_string text not null,                 -- the exact payouts string of that template (P9)
+  auth jsonb not null,                          -- O' 30490 template
+  revocation jsonb,                             -- O's revocation template (null: none needed)
+  revocation_after bigint,                      -- the newest O 30490 date the revocation is dated after
+  expires_at bigint not null
+);
+`,
+  },
 ];
 
 const LOCK_ID = 7_302_101;

@@ -14,9 +14,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/App';
 import { KeysSection } from '../src/components/KeysSection';
 import { Session } from '../src/components/Session';
+import { CONTACT_URL } from '../src/constants';
 import { ApiError } from '../src/lib/api';
 import type { SessionDeps } from '../src/lib/deps';
 import { errorMessage } from '../src/lib/errors';
+import { PAYCORE_ONBOARDING_URL } from '../src/lib/paycore';
 import { secretKeySigner } from '../src/lib/signer';
 import {
   NOW,
@@ -277,8 +279,21 @@ describe('finishing a move to a new secret key (K21)', () => {
     const container = await mountMoved(deps);
     expect(container.textContent).toContain('until your new key authorizes that store in PayCore');
     expect(container.textContent).toContain(
-      'A hosted PayCore store cannot change its owner key yet',
+      'A hosted PayCore store: move it to your new key in PayCore (Settings, Move store), signing with both keys; if the old key is lost, message us.',
     );
+    expect(container.textContent).not.toContain('cannot change its owner key');
+    const link = [...container.querySelectorAll('a')].find(
+      (anchor) => anchor.textContent === 'PayCore',
+    );
+    expect(link?.getAttribute('href')).toBe(PAYCORE_ONBOARDING_URL);
+    expect(link?.getAttribute('target')).toBe('_blank');
+    expect(link?.getAttribute('rel')).toBe('noreferrer');
+    const contact = [...container.querySelectorAll('a')].find(
+      (anchor) => anchor.textContent === 'message us',
+    );
+    expect(contact?.getAttribute('href')).toBe(CONTACT_URL);
+    expect(CONTACT_URL).toBe('https://askr.elisym.network/contact');
+    expect(contact?.getAttribute('target')).toBe('_blank');
     await click(buttonNamed(container, 'Sign with my new key'));
     await settle(() => vi.mocked(deps.api.storeEvents).mock.calls.length > 0);
     const signed = vi.mocked(deps.api.storeEvents).mock.calls[0]?.[0] ?? [];

@@ -43,6 +43,7 @@ describe('/v1/meta', () => {
         operator: 'api.paycore.example',
         rpcs: { mainnet: ALL_RPCS, devnet: { evm: {} } },
         inboxRelays: ['wss://relay.elisym.network'],
+        storeMoves: true,
       },
       20,
     );
@@ -52,6 +53,7 @@ describe('/v1/meta', () => {
       networks: { devnet: { coins: [] } },
       inboxRelays: ['wss://relay.elisym.network'],
       pendingMaxProducts: 20,
+      storeMoves: true,
     });
     expect(JSON.stringify(view)).not.toMatch(/sol\.example|secret|tempo\.example|eth\.example/);
   });

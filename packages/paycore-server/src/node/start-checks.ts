@@ -24,6 +24,7 @@ import {
 } from '@merchant-node/start-checks';
 import type { Eip3009Boot } from '../chain/eip3009-boot';
 import type { NetworkTreasuries } from '../chain/treasuries';
+import type { FormerOwner } from '../state/move-rows';
 import { driftProblems } from './drift';
 import type { CommittedOwnerEvent, StoreBundle } from './load';
 
@@ -197,6 +198,8 @@ export async function judgeOffers(
   pools: { store: QueryPool; publicPool: QueryPool },
   store: Pick<StoreBundle, 'owner' | 'storePubkey' | 'config' | 'products' | 'committed'> & {
     state: LedgerState;
+    /** The store's former owners (its moves): their profiles are judged by `driftProblems`. */
+    formerOwners?: readonly FormerOwner[];
   },
 ): Promise<OfferJudgement> {
   const { owner, state, committed } = store;
@@ -216,7 +219,7 @@ export async function judgeOffers(
             heal: healable(served.views, state, committed),
             key: problemKey(served.problems),
           },
-    drift: driftProblems(served.views, owner, committed),
+    drift: driftProblems(served.views, owner, committed, store.formerOwners ?? []),
     views: served.views,
   };
 }

@@ -27,7 +27,20 @@ describe('configFromEnv', () => {
       operator: 'api.paycore.example',
       requiredRelay: 'wss://relay.elisym.network',
       rpcs: { mainnet: { evm: {} }, devnet: { evm: {} } },
+      storeMoves: false,
     });
+  });
+
+  it('reads PAYCORE_STORE_MOVES strictly: 1 or 0, unset or empty is off', () => {
+    expect(configFromEnv({ ...BASE_ENV, PAYCORE_STORE_MOVES: '1' }).storeMoves).toBe(true);
+    expect(configFromEnv({ ...BASE_ENV, PAYCORE_STORE_MOVES: '0' }).storeMoves).toBe(false);
+    expect(configFromEnv({ ...BASE_ENV, PAYCORE_STORE_MOVES: '' }).storeMoves).toBe(false);
+    expect(configFromEnv(BASE_ENV).storeMoves).toBe(false);
+    for (const value of ['true', 'yes', 'on', ' 1', '01', '2']) {
+      expect(() => configFromEnv({ ...BASE_ENV, PAYCORE_STORE_MOVES: value })).toThrow(
+        'PAYCORE_STORE_MOVES must be 1 or 0',
+      );
+    }
   });
 
   it('reads the required relay: one of the offer relays, in the checkout spelling', () => {

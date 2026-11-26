@@ -3,6 +3,7 @@ import { generateSecretKey, getPublicKey } from 'nostr-tools/pure';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ForgetOnDevice } from '../../src/hosted/components/ForgetOnDevice';
+import { MoveKeyChoice } from '../../src/hosted/components/MoveKeyChoice';
 import { SignIn } from '../../src/hosted/components/SignIn';
 import { forgetKey, readRemembered, rememberKey } from '../../src/hosted/lib/remembered';
 import * as signerModule from '../../src/hosted/lib/signer';
@@ -217,5 +218,120 @@ describe('forgetting when the browser refuses', () => {
     await click(confirm);
     expect(container.textContent).toContain('did not let the admin forget it');
     expect(container.textContent).toContain('Continue on this device');
+  });
+});
+
+describe('the move key step leaves no copy of the new key behind', () => {
+  const TEMPLATE = { kind: 1, created_at: 0, tags: [], content: '' };
+
+  async function keyStep(check: (pubkey: string) => string | undefined = () => undefined) {
+    const signers: Signer[] = [];
+    const onKey = vi.fn((secretKey: Uint8Array) => {
+      signers.push(signerModule.secretKeySigner(secretKey));
+    });
+    const onCancel = vi.fn();
+    mounted = await mount(<MoveKeyChoice check={check} onKey={onKey} onCancel={onCancel} />);
+    return { container: mounted.container, onKey, onCancel, signers };
+  }
+
+  function savedBox(container: HTMLElement): HTMLInputElement {
+    const saved = [...container.querySelectorAll('input[type="checkbox"]')].find(
+      (box) => box.id === '',
+    );
+    if (!(saved instanceof HTMLInputElement)) {
+      throw new Error('no "I saved my key" box');
+    }
+    return saved;
+  }
+
+  it('zeroes the pasted key once it was handed on, and the copy handed on still signs', async () => {
+    const secretKey = generateSecretKey();
+    const { container, onKey, signers } = await keyStep();
+    inputById(container, 'move-new-key').value = nip19.nsecEncode(secretKey);
+    await click(buttonNamed(container, 'Use this key'));
+    expect(onKey).toHaveBeenCalledTimes(1);
+    expect(handed.parsed).toHaveLength(1);
+    expect(isZero(handed.parsed[0])).toBe(true);
+    expect(inputById(container, 'move-new-key').value).toBe('');
+    const event = await signers[0]?.signEvent(TEMPLATE);
+    expect(event?.pubkey).toBe(getPublicKey(secretKey));
+  });
+
+  it('zeroes a pasted key it refused (the current owner key)', async () => {
+    const secretKey = generateSecretKey();
+    const { container, onKey } = await keyStep(
+      () => 'That is the owner key you are signed in with.',
+    );
+    inputById(container, 'move-new-key').value = nip19.nsecEncode(secretKey);
+    await click(buttonNamed(container, 'Use this key'));
+    expect(onKey).not.toHaveBeenCalled();
+    expect(handed.parsed).toHaveLength(1);
+    expect(isZero(handed.parsed[0])).toBe(true);
+  });
+
+  it('zeroes a new key after Continue, once handed on, and the copy handed on still signs', async () => {
+    const { container, onKey, signers } = await keyStep();
+    await click(buttonNamed(container, 'Create a new owner key'));
+    const made = handed.made[0];
+    if (made === undefined) {
+      throw new Error('no key made');
+    }
+    const pubkey = getPublicKey(made.secretKey);
+    expect(isZero(made.secretKey)).toBe(false);
+    await click(savedBox(container));
+    await click(buttonNamed(container, 'Continue'));
+    expect(onKey).toHaveBeenCalledTimes(1);
+    expect(isZero(made.secretKey)).toBe(true);
+    const event = await signers[0]?.signEvent(TEMPLATE);
+    expect(event?.pubkey).toBe(pubkey);
+  });
+
+  it('zeroes a new key on Back, and hands nothing on', async () => {
+    const { container, onKey } = await keyStep();
+    await click(buttonNamed(container, 'Create a new owner key'));
+    await click(buttonNamed(container, 'Back'));
+    expect(handed.made).toHaveLength(1);
+    expect(isZero(handed.made[0]?.secretKey)).toBe(true);
+    expect(onKey).not.toHaveBeenCalled();
+    expect(container.querySelector('#move-new-key')).not.toBeNull();
+  });
+
+  it('clears a typed key from the field on pagehide', async () => {
+    const { container, onKey } = await keyStep();
+    inputById(container, 'move-new-key').value = nip19.nsecEncode(generateSecretKey());
+    await act(async () => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
+    expect(inputById(container, 'move-new-key').value).toBe('');
+    expect(onKey).not.toHaveBeenCalled();
+  });
+
+  it('zeroes a new key when the step goes away without Continue or Back', async () => {
+    const { container, onKey } = await keyStep();
+    await click(buttonNamed(container, 'Create a new owner key'));
+    const made = handed.made[0];
+    expect(made !== undefined && !isZero(made.secretKey)).toBe(true);
+    await mounted?.unmount();
+    mounted = undefined;
+    expect(isZero(made?.secretKey)).toBe(true);
+    expect(onKey).not.toHaveBeenCalled();
+  });
+
+  it('zeroes a new key on pagehide and shows the paste field again', async () => {
+    const { container, onKey } = await keyStep();
+    await click(buttonNamed(container, 'Create a new owner key'));
+    const made = handed.made[0];
+    if (made === undefined) {
+      throw new Error('no key made');
+    }
+    const nsec = nip19.nsecEncode(Uint8Array.from(made.secretKey));
+    expect(container.textContent).toContain(nsec);
+    await act(async () => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
+    expect(isZero(made.secretKey)).toBe(true);
+    expect(container.textContent).not.toContain(nsec);
+    expect(container.querySelector('#move-new-key')).not.toBeNull();
+    expect(onKey).not.toHaveBeenCalled();
   });
 });

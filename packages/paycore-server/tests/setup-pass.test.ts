@@ -10,6 +10,7 @@ import { SetupPassFailed, runStoreSetupPass } from '../src/node/setup-pass';
 import { OwnerEventPublisher } from '../src/publisher';
 import { newHolderId } from '../src/state/leases';
 import { PgLedgerStore } from '../src/state/ledger-store';
+import { profilesOn, simulateMove, switchedAt } from './helpers/node-move';
 import { submitRequest } from './helpers/node-requests';
 import {
   NOW,
@@ -523,5 +524,162 @@ describe('OwnerEventPublisher', () => {
     await insertOwnerEvent(db, owner, newer, undefined, false);
     expect(await publisher(db, keys, world).runOnce()).toBe(0);
     expect(world.events).toEqual([]);
+  });
+});
+
+describe('the setup pass of a store switching to a new owner key', () => {
+  async function movedStore(options: Parameters<typeof simulateMove>[3] = {}) {
+    const store = await published();
+    const move = await simulateMove(store.db, store.keys, store.seed, options);
+    const open = () =>
+      new PgLedgerStore(store.db, () => NOW).open(move.next.pubkey, store.epoch, store.holder);
+    return { ...store, ...move, open };
+  }
+
+  it('keeps the profile naming the former owner while the new 30490 is not out; saves what went out, the request held', async () => {
+    const { db, keys, world, seed, next, payouts, events, moveId, open } = await movedStore();
+    const requestId = await submitRequest(db, next.pubkey, 'setup', {}, NOW);
+    world.refuse = (event) => event.id === events.authorization.id;
+
+    const result = await runStoreSetupPass(pass(db, keys, world), next.pubkey, await open(), {
+      appliedRequest: requestId,
+    });
+
+    expect(result).toMatchObject({ kind: 'done', payoutListOut: true, moveSwitchPending: true });
+    expect(profilesOn(world, seed.store)[0]).toEqual({ owner: seed.owner.pubkey, createdAt: NOW });
+    expect(profilesOn(world, seed.store).some((profile) => profile.owner === next.pubkey)).toBe(
+      false,
+    );
+    expect(await switchedAt(db, moveId)).toBeNull();
+    // The save happened: the new owner's list is recorded and active.
+    expect((await ownerEventRow(db, events.payoutList.id))?.recorded).toBe(true);
+    expect((await ownerEventRow(db, events.authorization.id))?.recorded).toBe(false);
+    expect((await storedLedger(db, next.pubkey)).payto).toEqual({
+      createdAt: NOW - 30,
+      payouts: JSON.stringify(payouts),
+    });
+    // The request it was to mark stays pending (the holder retries it).
+    expect((await getRequest(db, next.pubkey, requestId))?.state).toBe('pending');
+  });
+
+  it("publishes the profile naming the new owner once its 10133 and 30490 are out: switched_at is that profile's date", async () => {
+    const { db, keys, world, seed, next, moveId, open } = await movedStore();
+    const requestId = await submitRequest(db, next.pubkey, 'setup', {}, NOW);
+    await db.query(
+      `insert into alerts (owner, kind, message, created_at, last_seen_at)
+       values ($1, 'setup_failed', 'm', $2, $2)`,
+      [next.pubkey, NOW - 5],
+    );
+    // A clock that moves on with every read: the save is later than the pass's start.
+    let tick = NOW;
+    const deps = testSetupDeps(db, keys, world, {
+      now: () => {
+        tick += 1;
+        return tick;
+      },
+    });
+
+    const result = await runStoreSetupPass(deps, next.pubkey, await open(), {
+      appliedRequest: requestId,
+    });
+
+    expect(result).toMatchObject({ kind: 'done', moveSwitchPending: false });
+    const [newest] = profilesOn(world, seed.store);
+    expect(newest?.owner).toBe(next.pubkey);
+    expect(
+      profilesOn(world, seed.store).filter((profile) => profile.createdAt > NOW - 3600),
+    ).toEqual([{ owner: next.pubkey, createdAt: newest?.createdAt }]);
+    expect(await switchedAt(db, moveId)).toBe(newest?.createdAt);
+    expect(tick).toBeGreaterThan(newest?.createdAt ?? 0);
+    expect((await getRequest(db, next.pubkey, requestId))?.state).toBe('applied');
+    expect(
+      await db.query("select 1 from alerts where kind = 'setup_failed' and cleared_at is null"),
+    ).toEqual([]);
+  });
+
+  it('orders the store-wide events: payout list, then 30490, the inbox list, the profile last', async () => {
+    const { db, keys, world, next, events, open } = await movedStore();
+    const sent: number[] = [];
+    world.refuse = (event) => {
+      sent.push(event.kind);
+      return false;
+    };
+    await runStoreSetupPass(pass(db, keys, world), next.pubkey, await open());
+    const wide = sent.filter((kind) => kind !== 30402);
+    expect([...new Set(wide)]).toEqual([10133, 30490, 10050, 0]);
+    expect(world.events.some((event) => event.id === events.authorization.id)).toBe(true);
+  });
+
+  it('refuses a new payout list dated the same second as the recorded one (the move dates it a second later)', async () => {
+    const same = await movedStore({ paytoAt: NOW - 3600 });
+    await expect(
+      runStoreSetupPass(pass(same.db, same.keys, same.world), same.next.pubkey, await same.open()),
+    ).rejects.toThrow('same second');
+    const later = await movedStore({ paytoAt: NOW - 3599 });
+    expect(
+      await runStoreSetupPass(
+        pass(later.db, later.keys, later.world),
+        later.next.pubkey,
+        await later.open(),
+      ),
+    ).toMatchObject({ kind: 'done', payoutListOut: true, moveSwitchPending: false });
+  });
+
+  it('a pending store moved (switched at the move) then activated: its first profile names the new owner', async () => {
+    const { db, keys, world, seed, next, moveId, open } = await movedStore({
+      switchedAt: NOW - 20,
+    });
+    const result = await runStoreSetupPass(pass(db, keys, world), next.pubkey, await open());
+    expect(result).toMatchObject({ kind: 'done', moveSwitchPending: false });
+    expect(profilesOn(world, seed.store)[0]).toEqual({ owner: next.pubkey, createdAt: NOW });
+    expect(
+      profilesOn(world, seed.store).filter((profile) => profile.createdAt === NOW),
+    ).toHaveLength(1);
+    expect(await switchedAt(db, moveId)).toBe(NOW - 20);
+  });
+});
+
+describe('the setup pass of a moved store (review round 1)', () => {
+  async function movedStore(options: Parameters<typeof simulateMove>[3] = {}) {
+    const store = await published();
+    const move = await simulateMove(store.db, store.keys, store.seed, options);
+    const open = () =>
+      new PgLedgerStore(store.db, () => NOW).open(move.next.pubkey, store.epoch, store.holder);
+    return { ...store, ...move, open };
+  }
+
+  it("keeps the former owner's profile while the new 10133 is not out, even with the new 30490 out", async () => {
+    const { db, keys, world, seed, next, events, moveId, open } = await movedStore();
+    world.refuse = (event) => event.id === events.payoutList.id;
+    // A listing changes too (its price): something goes out, so the pass saves.
+    await db.query("update products set price_usd = '2' where owner = $1", [next.pubkey]);
+    const result = await runStoreSetupPass(pass(db, keys, world), next.pubkey, await open());
+    expect(result).toMatchObject({ kind: 'done', payoutListOut: false, authorizationOut: true });
+    expect(result.kind === 'done' && result.moveSwitchPending).toBe(true);
+    expect(profilesOn(world, seed.store)[0]).toEqual({ owner: seed.owner.pubkey, createdAt: NOW });
+    expect(await switchedAt(db, moveId)).toBeNull();
+  });
+
+  it('needs the new profile on a default relay: one only an inbox relay took does not switch', async () => {
+    const { db, keys, world, seed, next, moveId, open } = await movedStore();
+    world.refuse = (event, relay) =>
+      event.kind === 0 && event.created_at === NOW && OFFER_RELAYS.includes(relay);
+    const result = await runStoreSetupPass(pass(db, keys, world), next.pubkey, await open());
+    expect(result.kind === 'done' && result.moveSwitchPending).toBe(true);
+    expect(profilesOn(world, seed.store)[0]).toEqual({ owner: next.pubkey, createdAt: NOW });
+    expect(await switchedAt(db, moveId)).toBeNull();
+  });
+
+  it('signs no former-owner profile once the move switched, whatever else fails', async () => {
+    const { db, keys, world, seed, next, events, moveId, open } = await movedStore({
+      switchedAt: NOW - 20,
+    });
+    world.refuse = (event) => event.id === events.authorization.id;
+    const result = await runStoreSetupPass(pass(db, keys, world), next.pubkey, await open());
+    expect(result.kind === 'done' && result.moveSwitchPending).toBe(false);
+    expect(profilesOn(world, seed.store).filter((profile) => profile.createdAt === NOW)).toEqual([
+      { owner: next.pubkey, createdAt: NOW },
+    ]);
+    expect(await switchedAt(db, moveId)).toBe(NOW - 20);
   });
 });

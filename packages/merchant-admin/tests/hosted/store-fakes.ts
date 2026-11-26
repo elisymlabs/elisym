@@ -94,6 +94,7 @@ export function fakeSession(overrides: Partial<StoreApi> = {}): FakeSession {
       sleep: async (ms) => {
         sleeps.push(ms);
       },
+      switchOwner: vi.fn(),
     },
   };
 }

@@ -12,6 +12,7 @@ export const META: Meta = {
   networks: { mainnet: { coins: [] }, devnet: { coins: [] } },
   inboxRelays: ['wss://relay.example'],
   pendingMaxProducts: 20,
+  storeMoves: false,
 };
 
 export const OWNER_KEY = generateSecretKey();
@@ -57,6 +58,8 @@ export function storeApi(overrides: Partial<StoreApi> = {}): StoreApi {
     handAnswer: unexpected('handAnswer'),
     rotateWebhookSecret: unexpected('rotateWebhookSecret'),
     suspend: unexpected('suspend'),
+    prepareMove: unexpected('prepareMove'),
+    move: unexpected('move'),
     ...overrides,
   };
 }

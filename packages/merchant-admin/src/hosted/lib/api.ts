@@ -1,7 +1,8 @@
 /**
  * Hosted mode's client for PayCore's server (`packages/paycore-server/src/admin/api.ts`).
  * Every admin call, reads included, carries a fresh NIP-98 authorization by O
- * over the exact URL, method and body string sent. Authorizations alone are
+ * over the exact URL, method and body string sent (a move carries a second
+ * one by the new owner O', in `X-New-Owner-Authorization`). Authorizations alone are
  * dated by the server's clock: local time plus an offset learned from every
  * answer's `Date` header (exposed by the server's CORS); a call refused as
  * `stale` is signed again once, with the offset that answer brought. Owner
@@ -18,6 +19,10 @@ import type {
   CreateStoreInput,
   HandInput,
   Meta,
+  MoveAnswer,
+  MoveInput,
+  MovePrepareInput,
+  MoveTemplates,
   Network,
   OrdersView,
   OwnerEventKind,
@@ -70,7 +75,17 @@ export interface HostedApi {
   orders(): Promise<OrdersView>;
   handAnswer(orderKey: string, input: HandInput): Promise<RequestAnswer>;
   request(id: string): Promise<{ request: RequestView }>;
+  /** Templates for moving the store to `input.to`; signed by O. */
+  prepareMove(input: MovePrepareInput): Promise<MoveTemplates>;
+  /**
+   * Move the store: authorized by O and, in `X-New-Owner-Authorization`, by
+   * `newOwner` (O'), both over the same URL, method and body.
+   */
+  move(input: MoveInput, newOwner: Signer): Promise<MoveAnswer>;
 }
+
+/** The header that carries the new owner's NIP-98 authorization of a move. */
+export const NEW_OWNER_HEADER = 'x-new-owner-authorization';
 
 export interface HostedApiOptions {
   /** The API base, exactly as `/v1/meta` names its `publicBase`. */
@@ -97,14 +112,15 @@ export function parseMeta(value: unknown): Meta | undefined {
   if (!isRecord(value) || !isRecord(value.networks)) {
     return undefined;
   }
-  const { publicBase, operator, inboxRelays, pendingMaxProducts } = value;
+  const { publicBase, operator, inboxRelays, pendingMaxProducts, storeMoves } = value;
   if (
     typeof publicBase !== 'string' ||
     typeof operator !== 'string' ||
     !OPERATOR_RE.test(operator) ||
     !isStringArray(inboxRelays) ||
     typeof pendingMaxProducts !== 'number' ||
-    !Number.isSafeInteger(pendingMaxProducts)
+    !Number.isSafeInteger(pendingMaxProducts) ||
+    (storeMoves !== undefined && typeof storeMoves !== 'boolean')
   ) {
     return undefined;
   }
@@ -116,7 +132,14 @@ export function parseMeta(value: unknown): Meta | undefined {
     }
     networks[network] = { coins: entry.coins };
   }
-  return { publicBase, operator, networks, inboxRelays, pendingMaxProducts };
+  return {
+    publicBase,
+    operator,
+    networks,
+    inboxRelays,
+    pendingMaxProducts,
+    storeMoves: storeMoves === true,
+  };
 }
 
 /** The server's clock less the local one, in seconds, from a `Date` header; undefined when there is none. */
@@ -152,6 +175,8 @@ function segment(value: string): string {
 interface CallOptions {
   /** A 422 that carries its `request` is the request's failed outcome, not a refusal. */
   requestOutcome?: boolean;
+  /** A second authorization over the same request, by the new owner (a move). */
+  newOwner?: Signer;
 }
 
 export function createHostedApi(options: HostedApiOptions): HostedApi {
@@ -181,16 +206,31 @@ export function createHostedApi(options: HostedApiOptions): HostedApi {
     return { response, learned: learned !== undefined };
   };
 
-  const signedSend = async (method: string, url: string, body: string) => {
+  const signedSend = async (
+    method: string,
+    url: string,
+    body: string,
+    newOwner: Signer | undefined,
+  ) => {
+    const createdAt = localNow() + offset;
     const headers: Record<string, string> = {
       authorization: await nip98Header({
         signEvent: (template) => signer.signEvent(template),
         url,
         method,
         body,
-        createdAt: localNow() + offset,
+        createdAt,
       }),
     };
+    if (newOwner !== undefined) {
+      headers[NEW_OWNER_HEADER] = await nip98Header({
+        signEvent: (template) => newOwner.signEvent(template),
+        url,
+        method,
+        body,
+        createdAt,
+      });
+    }
     if (body !== '') {
       headers['content-type'] = 'application/json';
     }
@@ -205,7 +245,7 @@ export function createHostedApi(options: HostedApiOptions): HostedApi {
   ): Promise<T> => {
     const url = `${base}${path}`;
     const body = payload === undefined ? '' : JSON.stringify(payload);
-    const first = await signedSend(method, url, body);
+    const first = await signedSend(method, url, body, callOptions.newOwner);
     let { response } = first;
     let text = await readText(response);
     let parsed = parseJson(text);
@@ -216,7 +256,7 @@ export function createHostedApi(options: HostedApiOptions): HostedApi {
       parsed.reason === 'stale';
     // Once, and only when this answer told the server's time: the next one is dated by it.
     if (stale && first.learned) {
-      ({ response } = await signedSend(method, url, body));
+      ({ response } = await signedSend(method, url, body, callOptions.newOwner));
       text = await readText(response);
       parsed = parseJson(text);
     }
@@ -266,5 +306,8 @@ export function createHostedApi(options: HostedApiOptions): HostedApi {
     handAnswer: (orderKey, input) =>
       call('POST', `/v1/admin/orders/${segment(orderKey)}/hand`, input, { requestOutcome: true }),
     request: (id) => call('GET', `/v1/admin/requests/${segment(id)}`),
+    prepareMove: (input) => call('POST', '/v1/admin/store/move/prepare', input),
+    move: (input, newOwner) =>
+      call('POST', '/v1/admin/store/move', input, { requestOutcome: true, newOwner }),
   };
 }

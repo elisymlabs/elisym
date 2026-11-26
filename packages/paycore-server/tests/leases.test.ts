@@ -29,6 +29,11 @@ async function seed(db: Db, stores: Record<string, StoreStatus>): Promise<void> 
   }
 }
 
+/** The leases as compared below: the store pubkey is checked once, in the first test. */
+async function leasesOf(...args: Parameters<typeof acquireLeases>) {
+  return (await acquireLeases(...args)).map(({ storePubkey: _storePubkey, ...lease }) => lease);
+}
+
 async function setStatus(db: Db, owner: string, status: StoreStatus): Promise<void> {
   await db.query('update stores set status = $2 where owner = $1', [owner, status]);
 }
@@ -53,11 +58,12 @@ describe('leases', () => {
       [ownerOf('6')]: 'suspended',
     });
     const leased = await acquireLeases(db, 'h1', NOW, TTL);
+    const storeOf = (index: number) => `${index}`.padStart(64, '0');
     expect(leased).toEqual([
-      { owner: ownerOf('1'), epoch: 1, status: 'active' },
-      { owner: ownerOf('2'), epoch: 1, status: 'degraded' },
-      { owner: ownerOf('3'), epoch: 1, status: 'halted' },
-      { owner: ownerOf('4'), epoch: 1, status: 'suspending' },
+      { owner: ownerOf('1'), storePubkey: storeOf(1), epoch: 1, status: 'active' },
+      { owner: ownerOf('2'), storePubkey: storeOf(2), epoch: 1, status: 'degraded' },
+      { owner: ownerOf('3'), storePubkey: storeOf(3), epoch: 1, status: 'halted' },
+      { owner: ownerOf('4'), storePubkey: storeOf(4), epoch: 1, status: 'suspending' },
     ]);
     expect(await leaseRow(db, ownerOf('5'))).toBeUndefined();
     expect(await leaseRow(db, ownerOf('6'))).toBeUndefined();
@@ -68,7 +74,7 @@ describe('leases', () => {
     const owner = ownerOf('1');
     await seed(db, { [owner]: 'active' });
     await acquireLeases(db, 'h1', NOW, TTL);
-    expect(await acquireLeases(db, 'h1', NOW + 20, TTL)).toEqual([
+    expect(await leasesOf(db, 'h1', NOW + 20, TTL)).toEqual([
       { owner, epoch: 1, status: 'active' },
     ]);
     expect(await leaseRow(db, owner)).toEqual({
@@ -76,7 +82,7 @@ describe('leases', () => {
       epoch: 1,
       expires_at: NOW + 20 + TTL,
     });
-    expect(await acquireLeases(db, 'h2', NOW + 21, TTL)).toEqual([]);
+    expect(await leasesOf(db, 'h2', NOW + 21, TTL)).toEqual([]);
     expect((await leaseRow(db, owner))?.holder).toBe('h1');
   });
 
@@ -85,10 +91,10 @@ describe('leases', () => {
     const owner = ownerOf('1');
     await seed(db, { [owner]: 'active' });
     await acquireLeases(db, 'h1', NOW, TTL);
-    expect(await acquireLeases(db, 'h2', NOW + TTL, TTL)).toEqual([
+    expect(await leasesOf(db, 'h2', NOW + TTL, TTL)).toEqual([
       { owner, epoch: 2, status: 'active' },
     ]);
-    expect(await acquireLeases(db, 'h1', NOW + TTL + 1, TTL)).toEqual([]);
+    expect(await leasesOf(db, 'h1', NOW + TTL + 1, TTL)).toEqual([]);
     expect((await leaseRow(db, owner))?.holder).toBe('h2');
   });
 
@@ -97,7 +103,7 @@ describe('leases', () => {
     const owner = ownerOf('1');
     await seed(db, { [owner]: 'active' });
     await acquireLeases(db, 'h1', NOW, TTL);
-    expect(await acquireLeases(db, 'h1', NOW + TTL, TTL)).toEqual([
+    expect(await leasesOf(db, 'h1', NOW + TTL, TTL)).toEqual([
       { owner, epoch: 2, status: 'active' },
     ]);
   });
@@ -111,7 +117,7 @@ describe('leases', () => {
     for (const status of ['degraded', 'halted', 'suspending'] as const) {
       await setStatus(db, owner, status);
       at += 10;
-      expect(await acquireLeases(db, 'h1', at, TTL)).toEqual([{ owner, epoch: 1, status }]);
+      expect(await leasesOf(db, 'h1', at, TTL)).toEqual([{ owner, epoch: 1, status }]);
     }
   });
 
@@ -122,13 +128,13 @@ describe('leases', () => {
     for (const [step, status] of (['suspended', 'pending'] as const).entries()) {
       const at = NOW + step * 100;
       await setStatus(db, owner, 'active');
-      expect(await acquireLeases(db, 'h1', at, TTL)).toHaveLength(1);
+      expect(await leasesOf(db, 'h1', at, TTL)).toHaveLength(1);
       await setStatus(db, owner, status);
-      expect(await acquireLeases(db, 'h1', at + 1, TTL)).toEqual([]);
+      expect(await leasesOf(db, 'h1', at + 1, TTL)).toEqual([]);
       expect((await leaseRow(db, owner))?.expires_at).toBe(0);
       // Free at once for anyone.
       await setStatus(db, owner, 'active');
-      expect(await acquireLeases(db, 'h2', at + 2, TTL)).toEqual([
+      expect(await leasesOf(db, 'h2', at + 2, TTL)).toEqual([
         { owner, epoch: 2 * (step + 1), status: 'active' },
       ]);
       await releaseLeases(db, 'h2');
@@ -153,7 +159,7 @@ describe('leases', () => {
     await releaseLeases(db, 'h1');
     expect((await leaseRow(db, mine))?.expires_at).toBe(0);
     expect((await leaseRow(db, theirs))?.expires_at).toBe(NOW + TTL);
-    expect(await acquireLeases(db, 'h3', NOW + 1, TTL)).toEqual([
+    expect(await leasesOf(db, 'h3', NOW + 1, TTL)).toEqual([
       { owner: mine, epoch: 2, status: 'active' },
     ]);
   });

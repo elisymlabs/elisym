@@ -29,6 +29,7 @@ import type { KeyVault } from '../db/keys';
 import { WINDING_DOWN_STATUSES, activePayouts } from '../node/load';
 import type { StoreStatus } from './leases';
 import { insertLedger, parseLedger } from './ledger-store';
+import { StoreMovedError, lockOwnerKey, movedAway } from './move-rows';
 
 /** A store not on a tier yet (`pending`) may hold this many products on sale. */
 export const PENDING_MAX_PRODUCTS = 20;
@@ -392,7 +393,9 @@ export class StoreDirectory {
   /**
    * Create a `pending` store for `owner` (R1: one per owner key): a new store
    * key S sealed, an empty ledger, the config with the allowlisted inbox
-   * relays. An existing store is returned as it is (`created: false`).
+   * relays. An existing store is returned as it is (`created: false`). An
+   * owner key that moved its store away is refused (`StoreMovedError`), under
+   * the same per-key lock a move takes, so a move and a creation never race.
    */
   async createStore(
     owner: string,
@@ -404,6 +407,10 @@ export class StoreDirectory {
     const sealed = this.vault.seal(storeKey, owner, 'store');
     storeKey.fill(0);
     return this.db.transaction(async (tx) => {
+      await lockOwnerKey(tx, owner);
+      if (await movedAway(tx, owner)) {
+        throw new StoreMovedError(owner);
+      }
       const inserted = await tx.query(
         `insert into stores (owner, store_pubkey, status, created_at) values ($1, $2, 'pending', $3)
          on conflict (owner) do nothing returning 1`,
@@ -434,6 +441,35 @@ export class StoreDirectory {
       }
       return { created: inserted.length > 0, store };
     });
+  }
+
+  /**
+   * Reseal the store's secrets for a new owner key, in `tx` (a move): the
+   * associated data names the owner, so the store key, and the webhook
+   * secret when one is set, are opened under `from` and sealed under `to`.
+   */
+  async resealKeys(tx: Queryable, from: string, to: string): Promise<void> {
+    const [row] = await tx.query<{ store_key: Uint8Array; webhook_secret: Uint8Array | null }>(
+      'select store_key, webhook_secret from store_keys where owner = $1',
+      [from],
+    );
+    if (row === undefined) {
+      throw new Error(`the store of ${from} has no keys`);
+    }
+    const storeKey = this.vault.open(row.store_key, from, 'store');
+    const sealedStore = this.vault.seal(storeKey, to, 'store');
+    storeKey.fill(0);
+    let sealedWebhook: Uint8Array | null = null;
+    if (row.webhook_secret !== null) {
+      const secret = this.vault.open(row.webhook_secret, from, 'webhook');
+      sealedWebhook = this.vault.seal(secret, to, 'webhook');
+      secret.fill(0);
+    }
+    await tx.query('update store_keys set store_key = $2, webhook_secret = $3 where owner = $1', [
+      from,
+      sealedStore,
+      sealedWebhook,
+    ]);
   }
 
   /** The kinds of the store's open alerts (A15: the merchant sees kinds, never the messages). */
@@ -478,15 +514,81 @@ export class StoreDirectory {
     input: ConfigInput,
     products: readonly ProductRecord[],
   ): { problems: string[]; payouts?: Payout[]; inboxRelays?: string[] } {
-    const problems: string[] = [];
     const canonical = canonicalPayouts(input.payouts);
     if (canonical === undefined) {
       return {
         problems: ['payouts: must be a list of { caip19, address, signature }, at least one'],
       };
     }
+    const problems = this.payoutProblems(owner, network, canonical.list);
+    const inboxRelays = input.inboxRelays.map((relay) => checkoutRelaySpelling(relay) ?? relay);
+    inboxRelays.forEach((relay, index) => {
+      if (!this.allowedRelays.includes(relay)) {
+        problems.push(
+          `inboxRelays.${index}: not a relay this server allows (${this.allowedRelays.join(', ')})`,
+        );
+      }
+    });
+    const webhookUrl = input.webhookUrl ?? undefined;
+    if (webhookUrl !== undefined) {
+      const problem = hostedWebhookProblem(webhookUrl);
+      if (problem !== undefined) {
+        problems.push(`webhookUrl: ${problem}`);
+      }
+    }
+    if (problems.length > 0) {
+      return { problems };
+    }
+    problems.push(
+      ...this.nodeProblems(network, { ...input, inboxRelays }, canonical.list, products),
+    );
+    return problems.length > 0 ? { problems } : { problems, payouts: canonical.list, inboxRelays };
+  }
+
+  /**
+   * Why a payout list proven for a new owner key `to` cannot replace the
+   * store's (a move, D4): the payout part of `checkConfig` - each wallet's
+   * proof for `to`, an operator RPC for each chain, then the node's own rules
+   * and the products' prices on the store's config with these payouts.
+   */
+  checkMovePayouts(
+    to: string,
+    settings: StoreSettings,
+    payouts: unknown,
+    products: readonly ProductRecord[],
+  ): { problems: string[]; payouts?: { list: Payout[]; text: string } } {
+    const canonical = canonicalPayouts(payouts);
+    if (canonical === undefined) {
+      return {
+        problems: ['payouts: must be a list of { caip19, address, signature }, at least one'],
+      };
+    }
+    const problems = this.payoutProblems(to, settings.network, canonical.list);
+    if (problems.length > 0) {
+      return { problems };
+    }
+    problems.push(
+      ...this.nodeProblems(
+        settings.network,
+        {
+          name: settings.name,
+          ...(settings.nip05 === undefined ? {} : { nip05: settings.nip05 }),
+          evmCredit: settings.evmCredit,
+          webhookUrl: settings.webhookUrl ?? null,
+          inboxRelays: settings.activeInboxRelays,
+        },
+        canonical.list,
+        products,
+      ),
+    );
+    return problems.length > 0 ? { problems } : { problems, payouts: canonical };
+  }
+
+  /** Each payout's wallet proof for `owner` and an operator RPC for its chain. */
+  private payoutProblems(owner: string, network: Network, list: readonly Payout[]): string[] {
+    const problems: string[] = [];
     const rpcs = this.rpcs[network];
-    canonical.list.forEach((payout, index) => {
+    list.forEach((payout, index) => {
       const path = `payouts.${index}`;
       const caip19 = parseCaip19(payout.caip19);
       if (caip19 === undefined) {
@@ -515,25 +617,18 @@ export class StoreDirectory {
         );
       }
     });
-    const inboxRelays = input.inboxRelays.map((relay) => checkoutRelaySpelling(relay) ?? relay);
-    inboxRelays.forEach((relay, index) => {
-      if (!this.allowedRelays.includes(relay)) {
-        problems.push(
-          `inboxRelays.${index}: not a relay this server allows (${this.allowedRelays.join(', ')})`,
-        );
-      }
-    });
+    return problems;
+  }
+
+  /** The node's own rules on the config it would run with (operator RPCs), and the products' prices. */
+  private nodeProblems(
+    network: Network,
+    input: Omit<ConfigInput, 'payouts'>,
+    payouts: readonly Payout[],
+    products: readonly ProductRecord[],
+  ): string[] {
+    const rpcs = this.rpcs[network];
     const webhookUrl = input.webhookUrl ?? undefined;
-    if (webhookUrl !== undefined) {
-      const problem = hostedWebhookProblem(webhookUrl);
-      if (problem !== undefined) {
-        problems.push(`webhookUrl: ${problem}`);
-      }
-    }
-    if (problems.length > 0) {
-      return { problems };
-    }
-    // The node's own rules, on the config the node would run with (operator RPCs).
     const evm: NonNullable<MerchantConfig['evm']> = {};
     for (const [slug, rpcUrl] of Object.entries(rpcs.evm)) {
       if (isEip3009Slug(slug) && rpcUrl !== undefined) {
@@ -554,16 +649,15 @@ export class StoreDirectory {
             },
           }),
       evm,
-      inboxRelays,
-      payouts: canonical.list,
+      inboxRelays: input.inboxRelays,
+      payouts: [...payouts],
       ...(webhookUrl === undefined ? {} : { webhook: { url: webhookUrl } }),
     };
-    // The RPCs are the operator's: a missing one is reported per payout above, not as the merchant's field.
+    // The RPCs are the operator's: a missing one is reported per payout, not as the merchant's field.
     const nodeProblems = configProblems(merchant).filter(
       (problem) => !problem.startsWith('rpcUrl:'),
     );
-    problems.push(...nodeProblems, ...priceProblems(merchant, products));
-    return problems.length > 0 ? { problems } : { problems, payouts: canonical.list, inboxRelays };
+    return [...nodeProblems, ...priceProblems(merchant, products)];
   }
 
   /**

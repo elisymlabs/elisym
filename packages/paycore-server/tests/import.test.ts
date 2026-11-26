@@ -79,6 +79,7 @@ const FULL_CONFIG: PaycoreConfig = {
   trustProxy: false,
   operator: 'paycore.example',
   requiredRelay: RELAY,
+  storeMoves: false,
   ...CONFIG,
 };
 
@@ -1025,6 +1026,76 @@ describe('import (step 17)', () => {
       }),
     );
     expect((await importStore(options, importDeps(db, home))).storePubkey).toBe(home.store.pubkey);
+  });
+
+  it('refuses an owner key that moved its store away, also when its move commits during the import', async () => {
+    const MOVED =
+      'this owner key moved its store to another key on this server: it cannot have a store again';
+    const moveRow = (db: Db, owner: string) =>
+      db.query(
+        `insert into store_moves (from_owner, to_owner, store_pubkey, moved_at, old_events)
+         values ($1, $2, $3, $4, '[]')`,
+        [owner, 'c'.repeat(64), 'd'.repeat(64), NOW],
+      );
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    await moveRow(db, home.owner.pubkey);
+    expect(
+      await refusal(
+        importStore({ home: home.dir, tier: TIER, nodeStopped: true }, importDeps(db, home)),
+      ),
+    ).toBe(MOVED);
+    // The move commits after the import's first look, before its transaction (it waits on the key's lock).
+    const racing = await freshDb();
+    await withTier(racing);
+    const late = await selfHostHome();
+    const moveFirst: Db = {
+      ...racing,
+      transaction: async (work) => {
+        await moveRow(racing, late.owner.pubkey);
+        return racing.transaction(work);
+      },
+    };
+    expect(
+      await refusal(
+        importStore({ home: late.dir, tier: TIER, nodeStopped: true }, importDeps(moveFirst, late)),
+      ),
+    ).toBe(MOVED);
+    expect(await storeCount(racing)).toBe(0);
+  });
+
+  it("takes the owner key's lock (as a move does) before it looks for a move and writes the store", async () => {
+    const db = await freshDb();
+    await withTier(db);
+    const home = await selfHostHome();
+    const statements: { sql: string; params: unknown[] }[] = [];
+    const watched: Db = {
+      ...db,
+      transaction: (work) =>
+        db.transaction((tx) =>
+          work({
+            ...tx,
+            query: (sql, params) => {
+              statements.push({ sql, params: params ?? [] });
+              return tx.query(sql, params);
+            },
+          }),
+        ),
+    };
+    await importStore({ home: home.dir, tier: TIER, nodeStopped: true }, importDeps(watched, home));
+    const lockAt = statements.findIndex(
+      (statement) =>
+        statement.sql.includes('pg_advisory_xact_lock') &&
+        statement.params[0] === home.owner.pubkey,
+    );
+    const lookAt = statements.findIndex((statement) => statement.sql.includes('store_moves'));
+    const insertAt = statements.findIndex((statement) =>
+      statement.sql.includes('insert into stores'),
+    );
+    expect(lockAt).toBe(0);
+    expect(lookAt).toBeGreaterThan(lockAt);
+    expect(insertAt).toBeGreaterThan(lookAt);
   });
 
   it('refuses a store key that already belongs to another store here', async () => {

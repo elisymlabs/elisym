@@ -76,6 +76,7 @@ function session(api: StoreApi, onSignOut: () => void) {
       owner={OWNER}
       signEvent={async (template: EventTemplate) => signed(template)}
       onSignOut={onSignOut}
+      onSwitchOwner={() => undefined}
       sleep={async () => undefined}
     />
   );

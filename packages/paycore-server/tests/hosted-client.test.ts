@@ -43,7 +43,7 @@ function harness(db: Db, localNow: () => number): Harness {
     now: () => NOW,
   });
   const meta = metaView(
-    { publicBase: BASE, operator: OPERATOR, rpcs: RPCS, inboxRelays: [RELAY] },
+    { publicBase: BASE, operator: OPERATOR, rpcs: RPCS, inboxRelays: [RELAY], storeMoves: false },
     directory.pendingMaxProducts,
   );
   const sent: Request[] = [];
@@ -89,6 +89,7 @@ describe('hosted admin client against the real admin API', () => {
       },
       inboxRelays: [RELAY],
       pendingMaxProducts: 20,
+      storeMoves: false,
     });
   });
 

@@ -6,6 +6,7 @@ import type { StoreView } from '../lib/types';
 import { BUTTON_SECONDARY, CARD } from '../styles';
 import { EmbedTab } from './EmbedTab';
 import { ForgetOnDevice } from './ForgetOnDevice';
+import { MoveSwitching } from './MoveSwitching';
 import { Notice } from './Notice';
 import { OrdersTab } from './OrdersTab';
 import { Overview } from './Overview';
@@ -18,6 +19,8 @@ interface Props {
   /** The view the session opened with. */
   store: StoreView;
   onSignOut: () => void;
+  /** Signed in by a move: the store's setup request to follow. */
+  moveRequestId?: string;
 }
 
 type Tab = 'overview' | 'products' | 'orders' | 'payouts' | 'settings' | 'embed';
@@ -37,7 +40,7 @@ export const READ_FAILED_KEPT = 'The page shows your store as it was last read.'
  * The signed-in store, in tabs. Every change reads the store again; a read
  * that fails keeps the last view, with a warning.
  */
-export function StoreShell({ session, store, onSignOut }: Props) {
+export function StoreShell({ session, store, onSignOut, moveRequestId }: Props) {
   const [view, setView] = useState(store);
   const [tab, setTab] = useState<Tab>('overview');
   const [warning, setWarning] = useState<string | undefined>(undefined);
@@ -106,6 +109,12 @@ export function StoreShell({ session, store, onSignOut }: Props) {
           ))}
         </div>
         {warning === undefined ? null : <Notice tone="warn">{warning}</Notice>}
+        <MoveSwitching
+          session={session}
+          view={view}
+          onChanged={reload}
+          {...(moveRequestId === undefined ? {} : { requestId: moveRequestId })}
+        />
         {content}
         <ForgetOnDevice owner={session.owner} />
       </div>

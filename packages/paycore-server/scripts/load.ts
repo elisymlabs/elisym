@@ -514,6 +514,7 @@ async function main(): Promise<void> {
     operator: 'paycore.test',
     requiredRelay: RELAY,
     rpcs: { mainnet: { evm: {} }, devnet: { solana: SOLANA_RPC, evm: {} } },
+    storeMoves: false,
   };
   console.log(
     `load: ${options.stores} stores, ${options.orders} orders each${options.burstOrders === 0 ? '' : ' (in bursts)'}, ${options.minutes} min, webhook latency ${options.webhookLatencyMs} ms, ${options.stalledStores} stalled endpoint(s), RPC bucket ${options.rps}/s, ${process.env.DATABASE_URL ? 'postgres' : 'pglite'}`,

@@ -53,6 +53,16 @@ describe('opening a session', () => {
     expect(await loadSession(api, CONFIG)).toEqual({ kind: 'no_store', meta: META });
   });
 
+  it('says the store moved when the owner key was moved away from (409 moved)', async () => {
+    const api = fakeApi(
+      async () => META,
+      async () => {
+        throw new ApiError(409, 'moved');
+      },
+    );
+    expect(await loadSession(api, CONFIG)).toEqual({ kind: 'moved' });
+  });
+
   it('fails, in a fixed sentence, when meta or the store cannot be read', async () => {
     const noMeta = fakeApi(
       async () => {

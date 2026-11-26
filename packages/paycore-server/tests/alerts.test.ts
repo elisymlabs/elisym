@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { clearAlert, raiseAlert } from '../src/alerts';
+import { movableStore, moveDeps, moved } from './move-fixtures';
 import { freshDb } from './pglite-db';
+import { ownerKeys } from './stores-fixtures';
 
 const OWNER = 'a'.repeat(64);
 const NOW = 1_790_000_000;
@@ -67,5 +69,48 @@ describe('alerts', () => {
       { message: 'one', cleared_at: NOW + 1 },
       { message: 'two', cleared_at: null },
     ]);
+  });
+});
+
+describe('alerts of a moved store', () => {
+  it("drops (and logs) a stale run's raise and clear for the former owner; the new owner's are untouched", async () => {
+    const db = await freshDb();
+    const store = await movableStore(db);
+    const former = store.owner.pubkey;
+    const to = ownerKeys();
+    expect((await moved(moveDeps(db, store.directory), store, to)).result.ok).toBe(true);
+    const lines: string[] = [];
+    const log = (line: string) => lines.push(line);
+
+    await raiseAlert(db, former, 'start_failed', 'stale run', { now: NOW, log });
+    expect(await clearAlert(db, former, 'moved', { now: NOW, log })).toBe(false);
+    const open = await db.query<{ owner: string; kind: string }>(
+      'select owner, kind from alerts where cleared_at is null order by owner, kind',
+    );
+    expect(open).toEqual([{ owner: former, kind: 'moved' }]);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      { alert: 'start_failed', owner: former, message: 'stale run', dropped: 'moved' },
+      { clear: 'moved', owner: former, dropped: 'moved' },
+    ]);
+
+    // The new owner's alerts behave as any store's.
+    await raiseAlert(db, to.pubkey, 'start_failed', 'new run', { now: NOW, log: () => undefined });
+    expect(await store.directory.openAlertKinds(to.pubkey)).toEqual(['start_failed']);
+    expect(await clearAlert(db, to.pubkey, 'start_failed', { now: NOW })).toBe(true);
+    expect(await store.directory.openAlertKinds(to.pubkey)).toEqual([]);
+  });
+
+  it('an owner key that never had a store (or the whole server) still opens alerts', async () => {
+    const db = await freshDb();
+    const unknown = 'e'.repeat(64);
+    await raiseAlert(db, unknown, 'drift', 'x', { now: NOW, log: () => undefined });
+    await raiseAlert(db, undefined, 'drift', 'y', { now: NOW, log: () => undefined });
+    expect(
+      await db.query('select owner, kind from alerts where cleared_at is null order by id'),
+    ).toEqual([
+      { owner: unknown, kind: 'drift' },
+      { owner: null, kind: 'drift' },
+    ]);
+    expect(await clearAlert(db, unknown, 'drift', { now: NOW })).toBe(true);
   });
 });

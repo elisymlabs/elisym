@@ -12,6 +12,8 @@ export type SessionLoad =
   /** Nothing usable came back: a retry may work. */
   | { kind: 'failed'; message: string }
   | { kind: 'no_store'; meta: Meta }
+  /** O's store moved to another owner key: O can never open a store again. */
+  | { kind: 'moved' }
   | { kind: 'ready'; meta: Meta; store: StoreView };
 
 export const OTHER_OPERATOR =
@@ -41,6 +43,9 @@ export async function loadSession(api: SessionApi, config: HostedConfig): Promis
   } catch (error) {
     if (error instanceof ApiError && error.code === 'no_store') {
       return { kind: 'no_store', meta };
+    }
+    if (error instanceof ApiError && error.code === 'moved') {
+      return { kind: 'moved' };
     }
     return { kind: 'failed', message: errorMessage(error) };
   }

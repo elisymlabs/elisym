@@ -12,8 +12,21 @@
  * switches to them (`store_config.inbox_relays`, what its node listens on)
  * only in the save of a pass whose 10050 a default relay took, where buyers
  * read it - before that, orders still come to the relays buyers know.
+ *
+ * While the store switches to a new owner key (its latest move has no
+ * `switched_at`), the pass signs two profiles: one naming the former owner,
+ * one naming the new owner. The new owner's profile goes out only once the
+ * new owner's 10133 and 30490 reached a default relay in this pass, else the
+ * former owner's does: buyers never read a profile naming an owner whose
+ * payout list they cannot find. The save of the pass whose new-owner profile
+ * reached a default relay sets `switched_at` (that profile's date).
  */
-import { KIND_INBOX_RELAYS, KIND_PAYTO, KIND_STORE_AUTH } from '@elisym/commerce';
+import {
+  KIND_INBOX_RELAYS,
+  KIND_PAYTO,
+  KIND_STORE_AUTH,
+  KIND_STORE_PROFILE,
+} from '@elisym/commerce';
 import type { Network } from '@elisym/pay-core';
 import { OFFER_RELAYS } from '@merchant-node/constants';
 import { feeDeclaration } from '@merchant-node/fee';
@@ -23,12 +36,14 @@ import { buildStoreSignedEvents } from '@merchant-node/store-events';
 import { storeAuth } from '@merchant-node/store-node';
 import type { NostrEvent } from 'nostr-tools';
 import { getPublicKey } from 'nostr-tools/pure';
+import { ALERT_KINDS, clearAlert } from '../alerts';
 import type { NetworkTreasuries } from '../chain/treasuries';
 import type { Db, Queryable } from '../db/db';
 import type { KeyVault } from '../db/keys';
 import type { StorePools } from '../relay/pools';
 import type { StoreStatus } from '../state/leases';
 import type { LedgerHandle } from '../state/ledger-store';
+import { latestMove } from '../state/move-rows';
 import { canonicalPayouts } from '../state/stores';
 import {
   StartRefused,
@@ -57,7 +72,8 @@ export interface SetupPassOptions {
   /**
    * An `admin_requests` id marked applied in the pass's save - unless the
    * committed payout list was never recorded and did not go out this time
-   * (`payoutListPending`): the request then stays pending, retried.
+   * (`payoutListPending`), the inbox relays did not switch, or a move did
+   * not switch (`moveSwitchPending`): the request then stays pending, retried.
    */
   appliedRequest?: string;
 }
@@ -75,6 +91,8 @@ export type SetupPassResult =
       inboxRelaysSwitched: boolean;
       /** The draft inbox relays differ from the active ones and their 10050 reached no default relay. */
       inboxRelaysPending: boolean;
+      /** The store's latest move still waits for a profile naming the new owner to reach a default relay. */
+      moveSwitchPending: boolean;
       outcomes: { d: string; onSale: boolean; listing: ListingOutcome['listing'] }[];
       /** Events no default relay took: buyers may not read them yet. */
       missedDefaults: string[];
@@ -211,7 +229,9 @@ export async function runStoreSetupPass(
     throw new SetupPassFailed(owner, error instanceof StartRefused ? error.message : 'no relays');
   }
   const activeRelays = allowedOnly(row.inbox_relays, deps.inboxRelayAllowlist);
-  const switching = !sameRelays(inboxRelays, activeRelays, row.inbox_relays);
+  const inboxSwitching = !sameRelays(inboxRelays, activeRelays, row.inbox_relays);
+  const move = await latestMove(db, row.store_pubkey);
+  const moving = move !== undefined && move.switchedAt === undefined ? move : undefined;
   const products = await readProducts(db, owner, row.status);
   const { state } = handle;
   let declare: boolean;
@@ -227,6 +247,12 @@ export async function runStoreSetupPass(
   const profile = { name: row.name, ...(row.nip05 === null ? {} : { nip05: row.nip05 }) };
   const pool = deps.pools.open(storePubkey);
   const went = new Map<string, { out: boolean; defaults: boolean }>();
+  const reachedDefault = (id: string): boolean => {
+    const entry = went.get(id);
+    return entry?.out === true && entry.defaults;
+  };
+  /** While moving: the profile naming the new owner (in `others`) and its stand-in naming the former one. */
+  let profiles: { next: NostrEvent; former: NostrEvent } | undefined;
   let inboxListId: string | undefined;
   let outcomes: ListingOutcome[];
   let missedDefaults: string[];
@@ -238,10 +264,18 @@ export async function runStoreSetupPass(
       storeAuth(storeSecretKey),
       (message) => log(`store ${owner.slice(0, 12)}: ${message}`),
     );
+    const newOwnerOut = (): boolean =>
+      reachedDefault(payoutList.event.id) &&
+      (authorization === undefined || reachedDefault(authorization.event.id));
     const publish = async (event: NostrEvent, name: string): Promise<boolean> => {
+      // The profile naming the new owner only after its payout list and authorization are out.
+      const sent =
+        profiles !== undefined && event.id === profiles.next.id && !newOwnerOut()
+          ? profiles.former
+          : event;
       const missed = publisher.missedDefaults.length;
-      const out = await publisher.publish(event, name);
-      went.set(event.id, { out, defaults: publisher.missedDefaults.length === missed });
+      const out = await publisher.publish(sent, name);
+      went.set(sent.id, { out, defaults: publisher.missedDefaults.length === missed });
       return out;
     };
     try {
@@ -263,9 +297,30 @@ export async function runStoreSetupPass(
             declare,
           );
           inboxListId = storeSigned.find((event) => event.kind === KIND_INBOX_RELAYS)?.id;
+          const owned = authorization === undefined ? [] : [authorization.event];
+          if (moving === undefined) {
+            return { payoutList: payoutList.event, others: [...storeSigned, ...owned] };
+          }
+          const next = storeSigned.find((event) => event.kind === KIND_STORE_PROFILE);
+          const former = buildStoreSignedEvents(
+            { ...profile, inboxRelays },
+            storeSecretKey,
+            moving.fromOwner,
+            startedAt,
+            declare,
+          ).find((event) => event.kind === KIND_STORE_PROFILE);
+          if (next === undefined || former === undefined) {
+            throw new Error('the store profiles were not built');
+          }
+          profiles = { next, former };
+          // The authorization, the inbox list (it names no owner), then the profile: it decides last.
           return {
             payoutList: payoutList.event,
-            others: [...storeSigned, ...(authorization === undefined ? [] : [authorization.event])],
+            others: [
+              ...owned,
+              ...storeSigned.filter((event) => event.kind !== KIND_STORE_PROFILE),
+              next,
+            ],
           };
         },
         publish,
@@ -289,10 +344,17 @@ export async function runStoreSetupPass(
   const savedAt = deps.now();
   const payoutListPending = !payoutList.recorded && listOut?.out !== true;
   const inboxOut = inboxListId === undefined ? undefined : went.get(inboxListId);
-  const inboxRelaysSwitched = switching && inboxOut?.out === true && inboxOut.defaults;
-  // A request whose payout list or inbox relays did not go out stays pending: the holder retries it.
+  const inboxRelaysSwitched = inboxSwitching && inboxOut?.out === true && inboxOut.defaults;
+  const switchedProfile =
+    moving !== undefined && profiles !== undefined && reachedDefault(profiles.next.id)
+      ? profiles.next
+      : undefined;
+  const moveSwitchPending = moving !== undefined && switchedProfile === undefined;
+  // A request whose payout list, inbox relays or move switch did not go out stays pending: the holder retries it.
   const applied =
-    payoutListPending || (switching && !inboxRelaysSwitched) ? undefined : options.appliedRequest;
+    payoutListPending || (inboxSwitching && !inboxRelaysSwitched) || moveSwitchPending
+      ? undefined
+      : options.appliedRequest;
   // `recorded` commits with the terms it stands for, or not at all; the node
   // listens on the new inbox relays from the save that says buyers read them,
   // and still reads the ones it leaves for `TERMS_STAND_SECS` (`loadStoreBundle`).
@@ -308,6 +370,15 @@ export async function runStoreSetupPass(
           [owner, inboxRelays, leftRelays(row, inboxRelays, savedAt), savedAt],
         );
       }
+      if (moving !== undefined && switchedProfile !== undefined) {
+        // Buyers are told of the new owner from this profile's date on.
+        await tx.query(
+          'update store_moves set switched_at = $2 where id = $1 and switched_at is null',
+          [moving.id, switchedProfile.created_at],
+        );
+        // A setup request that ran out of attempts waiting for this switch raised it.
+        await clearAlert(tx, owner, ALERT_KINDS.setupFailed, { now: savedAt });
+      }
     },
   });
   return {
@@ -316,7 +387,8 @@ export async function runStoreSetupPass(
     payoutListPending,
     authorizationOut: authOut?.out,
     inboxRelaysSwitched,
-    inboxRelaysPending: switching && !inboxRelaysSwitched,
+    inboxRelaysPending: inboxSwitching && !inboxRelaysSwitched,
+    moveSwitchPending,
     outcomes: outcomes.map((outcome) => ({
       d: outcome.d,
       onSale: outcome.onSale,

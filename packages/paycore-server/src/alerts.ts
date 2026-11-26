@@ -4,6 +4,7 @@
  * operator or the code that raised it clears it.
  */
 import type { Queryable } from './db/db';
+import { movedAway } from './state/move-rows';
 
 /** The kinds the store supervisor and the holder's request handling raise. */
 export const ALERT_KINDS = {
@@ -25,6 +26,8 @@ export const ALERT_KINDS = {
   setupFailed: 'setup_failed',
   /** The store's stored inbox relays are not all in the operator allowlist (P7): nothing is sent there. */
   inboxRelaysRefused: 'inbox_relays_refused',
+  /** The store moved to a new owner key (one row per move, on the former owner). */
+  moved: 'moved',
 } as const;
 
 export interface AlertOptions {
@@ -44,7 +47,9 @@ function defaultLog(line: string): void {
 
 /**
  * Raise an alert for `owner` (or the whole server, `undefined`): log it and
- * open its row, or refresh the open row of the same owner and kind.
+ * open its row, or refresh the open row of the same owner and kind. An owner
+ * that moved its store away only has stale runs left: their alerts are
+ * logged and dropped (never mapped to the new owner).
  */
 export async function raiseAlert(
   db: Queryable,
@@ -54,7 +59,12 @@ export async function raiseAlert(
   options: AlertOptions = {},
 ): Promise<void> {
   const at = options.now ?? nowSecs();
-  (options.log ?? defaultLog)(JSON.stringify({ alert: kind, owner: owner ?? null, message }));
+  const log = options.log ?? defaultLog;
+  if (owner !== undefined && (await movedAway(db, owner))) {
+    log(JSON.stringify({ alert: kind, owner, message, dropped: 'moved' }));
+    return;
+  }
+  log(JSON.stringify({ alert: kind, owner: owner ?? null, message }));
   await db.query(
     `insert into alerts (owner, kind, message, created_at, last_seen_at)
      values ($1, $2, $3, $4, $4)
@@ -65,13 +75,21 @@ export async function raiseAlert(
   );
 }
 
-/** Clear the open alert of `owner` and `kind`; true when one was open. */
+/**
+ * Clear the open alert of `owner` and `kind`; true when one was open. For an
+ * owner that moved its store away nothing is cleared (logged and dropped):
+ * its `moved` alert stays for the operator.
+ */
 export async function clearAlert(
   db: Queryable,
   owner: string | undefined,
   kind: string,
-  options: Pick<AlertOptions, 'now'> = {},
+  options: AlertOptions = {},
 ): Promise<boolean> {
+  if (owner !== undefined && (await movedAway(db, owner))) {
+    (options.log ?? defaultLog)(JSON.stringify({ clear: kind, owner, dropped: 'moved' }));
+    return false;
+  }
   const cleared = await db.query(
     `update alerts set cleared_at = $3
      where coalesce(owner, '') = coalesce($1::text, '') and kind = $2 and cleared_at is null

@@ -7,6 +7,8 @@ import { ApiError } from './api';
 
 export const GENERIC_ERROR = 'Something went wrong. Retry in a moment.';
 export const GENERIC_REQUEST_FAILURE = 'The change could not be applied. Retry, or message us.';
+/** Any call by an owner key whose store moved to another key. */
+export const MOVED_KEY = 'This store moved to another owner key.';
 
 /** Why the server refused an authorization (`paycore-server/src/admin/nip98.ts`, plus replay). */
 const UNAUTHORIZED_REASONS: Readonly<Record<string, string>> = {
@@ -19,6 +21,7 @@ const UNAUTHORIZED_REASONS: Readonly<Record<string, string>> = {
   method: 'The request was signed for another action. Retry.',
   payload: 'The request content does not match its signature. Retry.',
   replay: 'This exact request was already sent once. Retry.',
+  new_owner: 'The move was not signed by the new owner key. Retry.',
 };
 
 /** The server's refusal codes (`paycore-server/src/admin/api.ts`, `state/stores.ts`, `owner-events.ts`). */
@@ -49,6 +52,16 @@ const CODES: Readonly<Record<string, string>> = {
   malformed: 'The signed change could not be read. Retry.',
   signature: 'The signed change is not signed by this owner key. Sign in again and retry.',
   author: 'The signed change is not signed by this owner key. Sign in again and retry.',
+  taken:
+    'That new owner key has, or once had, a PayCore store of its own. Use a key that never owned a store.',
+  key_in_use:
+    'That new owner key already has a payout list on the relays. Use a key that was never used for a store.',
+  moved: MOVED_KEY,
+  busy: 'Your store is still applying an earlier change. Wait a moment, then retry.',
+  switching:
+    'Your store is still switching to its new owner key. Wait until that is done, then retry.',
+  payouts_differ:
+    "The payouts signed for the new key are not your store's active payouts. Reload the page and sign each one again.",
 };
 
 /** Open alert kinds (`paycore-server/src/alerts.ts`), as the merchant reads them. */
